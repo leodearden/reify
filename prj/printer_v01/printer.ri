@@ -1,0 +1,390 @@
+// printer_v01 — single-file integration.
+//
+// Multi-material CoreXY toolchanger build. See docs/projects/printer_v01.md
+// for the full design spec. This file declares the global Envelope (global
+// parameters + kinematic centerlines), all 10 sub-assembly structures (A–J)
+// with their owned geometry, and a top-level Printer that wires them
+// together, in one file (cross-file imports are not yet wired into the GUI;
+// see compile_project / ModuleDag for the future split-file path).
+
+#version(0.1)
+
+// ── Derived dimensions ──────────────────────────────────────────────────────
+
+/// Linear acceleration (m/s²).
+type Acceleration = Length / Time / Time
+
+// ── Envelope (global parameters + kinematic centerlines) ────────────────────
+
+/// Global build envelope and shared cross-cutting parameters. Geometry that
+/// belongs to a single sub-assembly (rails/bearings/tendons → B and C; bed
+/// travel centreline → E) lives in that sub-assembly, not here.
+pub structure Envelope {
+    meta {
+        project = "printer_v01",
+        kinematics = "CoreXY toolchanger, Z-bed",
+        frame = "polymer-concrete-filled steel sandwich",
+        drive = "Vectran tendons on capstan drives",
+        bearings = "HIWIN-first, air-bearing-compatible interface"
+    }
+
+    // Build envelope (X × Y × Z)
+    param build_x : Length = 500mm
+    param build_y : Length = 800mm
+    param build_z : Length = 600mm
+
+    // Motion targets
+    /// Baseline head acceleration target (priority #1).
+    param peak_accel    : Acceleration = 100  * 1m / (1s * 1s)
+    /// Stretch goal — mandates reaction-mass cancellation.
+    param stretch_accel : Acceleration = 1000 * 1m / (1s * 1s)
+
+    // Thermal targets
+    param chamber_temp_target : Temperature = 80degC
+    param chamber_temp_max    : Temperature = 130degC
+    param bed_temp_max        : Temperature = 130degC
+
+    // Tooling (4-tool dock designed in; 2 fitted at v0.1 commission)
+    param tools_fitted_v1 : Int = 2
+    param tools_designed  : Int = 4
+    param tools_stretch   : Int = 6
+
+    // Heater sizing (rough)
+    param chamber_heater_power : Power = 3kW
+    param bed_heater_power     : Power = 2kW
+
+    // Frame mass envelope
+    param frame_mass_min : Mass = 250kg
+    param frame_mass_max : Mass = 400kg
+
+    // ── Cross-cutting motion-system layout params ───────────────────────
+    /// Y-rail clearance from the build envelope. Drives the Y-rail X
+    /// position (B), the gantry total length (C), and the frame outer
+    /// footprint (A).
+    param rail_outboard_clearance : Length = 30mm
+
+    /// Single Vectran tendon diameter (Y and X share this spec).
+    param tendon_dia : Length = 6mm
+
+    /// Snapshot pose of the gantry along Y for visualisation (off-home so
+    /// tendon paths read clearly rather than collapsing through centre).
+    param gantry_y_position : Length = 200mm
+
+    /// Snapshot pose of the toolhead along X for visualisation.
+    param toolhead_x_position : Length = 100mm
+
+    // ── Kinematic reference points / frames ─────────────────────────────
+    let world_origin = point3(0mm, 0mm, 0mm)
+    let build_centre = point3(build_x / 2, build_y / 2, build_z / 2)
+    let build_top    = point3(build_x / 2, build_y / 2, build_z)
+    let bed_surface          = frame3(world_origin, orient_identity())
+    let build_centroid_frame = frame3(build_centre, orient_identity())
+
+    // Cardinal axis directions (unit-magnitude convention: 1 m).
+    let x_axis = vec3(1m, 0mm, 0mm)
+    let y_axis = vec3(0mm, 1m, 0mm)
+    let z_axis = vec3(0mm, 0mm, 1m)
+
+    // Visualisation: build-volume cuboid (FLB corner at world origin).
+    let build_volume_solid = translate(
+        box(build_x, build_y, build_z),
+        build_x / 2, build_y / 2, build_z / 2
+    )
+
+    // Sanity constraints
+    constraint build_x > 0mm
+    constraint build_y > 0mm
+    constraint build_z > 0mm
+    constraint build_y > build_x
+    constraint chamber_temp_max >= chamber_temp_target
+    constraint stretch_accel >= peak_accel
+    constraint tools_fitted_v1 >= 1
+    constraint tools_designed  >= tools_fitted_v1
+    constraint tools_stretch   >= tools_designed
+    constraint frame_mass_max  >= frame_mass_min
+}
+
+// ── Sub-assemblies (A–J) ────────────────────────────────────────────────────
+
+/// Assembly A — Frame: polymer-concrete-filled steel sandwich (structural
+/// backbone). Laser-cut steel skeleton + heterogeneous-aggregate epoxy
+/// granite fill.
+pub structure AFrame {
+    param wall_thickness : Length = 100mm
+}
+
+/// Assembly B — Y-axis: long stationary Y-rails (800 mm travel), paired
+/// Vectran tendons + capstan, Y counter-mass. Owns both Y rails, the Y-rail
+/// air-bearing carriages, and the four paired Y tendons.
+pub structure BYAxis {
+    // Envelope-derived parameters. Defaults mirror Envelope so that
+    // BYAxis renders standalone in the GUI; Printer overrides them all
+    // from `env.<...>` so the wired model stays single-source.
+    param build_x                 : Length = 500mm
+    param build_y                 : Length = 800mm
+    param build_z                 : Length = 600mm
+    param rail_outboard_clearance : Length = 30mm
+    param gantry_y_position       : Length = 200mm
+    param tendon_dia              : Length = 6mm
+
+    /// Round rail diameter — 60 mm precision-ground stainless rod, 1 per
+    /// side. Designed to accept either a profile-rail-style cassette or a
+    /// DIY cylindrical air bearing (R&D track 2). v0.1 fits cylindrical
+    /// air bearings.
+    param y_rail_dia : Length = 60mm
+
+    /// Cylindrical-air-bearing envelope (real lip clearance is ~5 µm; OD
+    /// here is the bearing-housing OD).
+    param y_bearing_od     : Length = 90mm
+    param y_bearing_length : Length = 150mm
+
+    /// Vertical separation of paired tendons above/below the rod axis,
+    /// for moment cancellation around the rod.
+    param tendon_pair_offset : Length = 12mm
+
+    // Y-rail X-positions (outboard of the build envelope).
+    let y_rail_x_left  = 0mm - rail_outboard_clearance
+    let y_rail_x_right = build_x + rail_outboard_clearance
+
+    // ── Y-axis linear guides: 60 mm "round" rods ────────────────────────
+    // NOTE: square-cross-section box stand-ins for the round rods. The
+    // straightforward `rotate(cylinder(r, h), 1, 0, 0, -90deg)` form is
+    // currently broken in reify (compile emits `ax/ay/az` arg names but
+    // eval reads `axis_x/axis_y/axis_z`, dropping the realization
+    // silently — see memory project_rotate_arg_name_mismatch_may08.md).
+    // Swap back to cylinders once the kernel-side fix lands.
+    let y_rod_left = translate(
+        box(y_rail_dia, build_y, y_rail_dia),
+        y_rail_x_left, build_y / 2, build_z
+    )
+    let y_rod_right = translate(
+        box(y_rail_dia, build_y, y_rail_dia),
+        y_rail_x_right, build_y / 2, build_z
+    )
+
+    // ── Y-axis cylindrical air-bearing carriages ────────────────────────
+    let y_bearing_left = translate(
+        box(y_bearing_od, y_bearing_length, y_bearing_od),
+        y_rail_x_left, gantry_y_position, build_z
+    )
+    let y_bearing_right = translate(
+        box(y_bearing_od, y_bearing_length, y_bearing_od),
+        y_rail_x_right, gantry_y_position, build_z
+    )
+
+    // ── Paired in-plane Y tendons (6 mm Vectran) ────────────────────────
+    // Each Y rail gets 2 tendons (above + below the rod axis) for moment
+    // cancellation. Lengths span the full rail; the closed-loop path
+    // continues off-axis through capstans + motors (next iteration).
+    let y_tendon_left_upper = translate(
+        box(tendon_dia, build_y, tendon_dia),
+        y_rail_x_left, build_y / 2, build_z + tendon_pair_offset
+    )
+    let y_tendon_left_lower = translate(
+        box(tendon_dia, build_y, tendon_dia),
+        y_rail_x_left, build_y / 2, build_z - tendon_pair_offset
+    )
+    let y_tendon_right_upper = translate(
+        box(tendon_dia, build_y, tendon_dia),
+        y_rail_x_right, build_y / 2, build_z + tendon_pair_offset
+    )
+    let y_tendon_right_lower = translate(
+        box(tendon_dia, build_y, tendon_dia),
+        y_rail_x_right, build_y / 2, build_z - tendon_pair_offset
+    )
+
+    constraint y_rail_dia > 0mm
+    constraint y_bearing_od >= y_rail_dia
+    constraint y_bearing_length > 0mm
+    constraint tendon_pair_offset > tendon_dia
+}
+
+/// Assembly C — Gantry + X-axis: gantry beam carrying 2 stacked 60 mm
+/// round rails (500 mm travel), single tendon per rail, X counter-mass on
+/// the gantry beam. Owns both X rails, the X air-bearing carriages, the
+/// toolhead carriage envelope, and both X tendons.
+pub structure CGantryX {
+    // Envelope-derived parameters. Defaults mirror Envelope so that
+    // CGantryX renders standalone in the GUI; Printer overrides them all
+    // from `env.<...>` so the wired model stays single-source.
+    param build_x                 : Length = 500mm
+    param build_z                 : Length = 600mm
+    param rail_outboard_clearance : Length = 30mm
+    param gantry_y_position       : Length = 200mm
+    param toolhead_x_position     : Length = 100mm
+    param tendon_dia              : Length = 6mm
+
+    /// 60 mm precision-ground stainless rod, 2 stacked rails on the gantry.
+    param x_rail_dia : Length = 60mm
+
+    /// Vertical centre-to-centre spacing of the stacked X rails, straddling
+    /// the Y-rail plane (Z = build_z) so the gantry is symmetric about it.
+    param x_rail_pair_spacing : Length = 100mm
+
+    /// Cylindrical-air-bearing envelope.
+    param x_bearing_od     : Length = 90mm
+    param x_bearing_length : Length = 120mm
+
+    /// Toolhead carriage envelope — embraces both X-rail air bearings.
+    param toolhead_carriage_w : Length = 100mm
+    param toolhead_carriage_d : Length = 110mm
+
+    /// In-plane offset of the single X tendon (visual separation from rod).
+    param tendon_pair_offset : Length = 12mm
+
+    // The gantry rails span the full frame width including the Y-rail
+    // outboard clearance on both sides.
+    let gantry_full_length = build_x + 2 * rail_outboard_clearance
+
+    // X-rail Z-positions (paired symmetrically around Y-rail plane Z=build_z).
+    let x_rail_z_upper = build_z + x_rail_pair_spacing / 2
+    let x_rail_z_lower = build_z - x_rail_pair_spacing / 2
+
+    // ── X-axis (gantry): 2 stacked round rails ──────────────────────────
+    let x_rod_upper = translate(
+        box(gantry_full_length, x_rail_dia, x_rail_dia),
+        build_x / 2, gantry_y_position, x_rail_z_upper
+    )
+    let x_rod_lower = translate(
+        box(gantry_full_length, x_rail_dia, x_rail_dia),
+        build_x / 2, gantry_y_position, x_rail_z_lower
+    )
+
+    // ── X-axis cylindrical air-bearing carriages ────────────────────────
+    let x_bearing_upper = translate(
+        box(x_bearing_length, x_bearing_od, x_bearing_od),
+        toolhead_x_position, gantry_y_position, x_rail_z_upper
+    )
+    let x_bearing_lower = translate(
+        box(x_bearing_length, x_bearing_od, x_bearing_od),
+        toolhead_x_position, gantry_y_position, x_rail_z_lower
+    )
+
+    // X-toolhead carriage body — embraces both X-rail air bearings.
+    let toolhead_carriage = translate(
+        box(toolhead_carriage_w, toolhead_carriage_d, x_rail_pair_spacing + x_rail_dia),
+        toolhead_x_position, gantry_y_position, build_z
+    )
+
+    // ── On-axis X tendons (1 per rail) ──────────────────────────────────
+    // The 2-rail vertical stack itself substitutes for tendon-pair moment
+    // cancellation around Y, so each X tendon runs alongside its rail
+    // (offset slightly in -Y for visual separation from the rod).
+    let x_tendon_upper = translate(
+        box(gantry_full_length, tendon_dia, tendon_dia),
+        build_x / 2, gantry_y_position - tendon_pair_offset, x_rail_z_upper
+    )
+    let x_tendon_lower = translate(
+        box(gantry_full_length, tendon_dia, tendon_dia),
+        build_x / 2, gantry_y_position - tendon_pair_offset, x_rail_z_lower
+    )
+
+    constraint x_rail_dia > 0mm
+    constraint x_rail_pair_spacing > x_rail_dia
+    constraint x_bearing_od >= x_rail_dia
+    constraint x_bearing_length > 0mm
+    constraint toolhead_carriage_w > 0mm
+    constraint toolhead_carriage_d > 0mm
+    constraint tendon_pair_offset > tendon_dia
+}
+
+/// Assembly D — Toolhead: carriage on the X-rail + 4-tool kinematic dock on
+/// the frame; v0.1 fits 2 tools (4-tool dock designed in).
+pub structure DToolhead {
+    param tool_dock_pitch : Length = 80mm
+}
+
+/// Assembly E — Z-bed: 12 mm Mic-6 plate, magnetic flexible PEI sheet,
+/// 4-corner electronic-tilt servo Z, parking shutter (no bellows). Owns
+/// the Z-travel centreline visualisation.
+pub structure EZBed {
+    // Envelope-derived parameters. Defaults mirror Envelope so EZBed
+    // renders standalone; Printer overrides from `env.<...>`.
+    param build_x : Length = 500mm
+    param build_y : Length = 800mm
+    param build_z : Length = 600mm
+
+    param bed_plate_thickness : Length = 12mm
+
+    // Z-bed travel centreline (kept thin; the plate itself is modelled later).
+    let z_bed_travel_centerline = translate(
+        box(6mm, 6mm, build_z),
+        build_x / 2, build_y / 2, build_z / 2
+    )
+
+    constraint bed_plate_thickness > 0mm
+}
+
+/// Assembly F — Chamber: insulated panels (steel skin + mineral-wool /
+/// aerogel), thermal break to frame, 2–3 kW heater + circulation, lighting.
+/// 80 °C commissioned; 130 °C-capable design.
+pub structure FChamber {
+    param panel_insulation_thickness : Length = 50mm
+}
+
+/// Assembly G — Electronics: drive enclosure (7× Granite Argon + 5× Ioni-HC)
+/// + Klipper host (Pi 5 / x86 SBC) + wiring loom; mounted OUTSIDE chamber.
+pub structure GElectronics {
+    param enclosure_depth : Length = 400mm
+}
+
+/// Assembly H — Air system: existing P4 / 3 °C dew-point shop air, augmented
+/// 0.01 μm coalescing + activated carbon + point-of-use desiccant to ISO
+/// 8573-1 class 1–2. Distributes to (track-2) air bearings + chamber pneums.
+pub structure HAir {
+    param dew_point_target : Temperature = 3degC
+}
+
+/// Assembly I — MMU (per tool): filament feeders + drying chamber + runout
+/// sensors. v0.1 fits 1 filament/tool; stretch goal 2–4/tool.
+pub structure IMmu {
+    param filaments_per_tool_v1 : Int = 1
+}
+
+/// Assembly J — Auxiliary: passive filament dryer, part-cooling fan, misc
+/// sensors (flow, pressure, environmental).
+pub structure JAuxiliary {
+    param part_cooling_fan_power : Power = 12W
+}
+
+// ── Top-level integration ───────────────────────────────────────────────────
+
+/// Top-level printer integration. Wires the 10 sub-assemblies (A–J) against
+/// the shared Envelope.
+pub structure Printer {
+    sub env = Envelope()
+
+    sub a_frame = AFrame()
+
+    sub b_y_axis = BYAxis(
+        build_x:                 self.env.build_x,
+        build_y:                 self.env.build_y,
+        build_z:                 self.env.build_z,
+        rail_outboard_clearance: self.env.rail_outboard_clearance,
+        gantry_y_position:       self.env.gantry_y_position,
+        tendon_dia:              self.env.tendon_dia
+    )
+
+    sub c_gantry_x = CGantryX(
+        build_x:                 self.env.build_x,
+        build_z:                 self.env.build_z,
+        rail_outboard_clearance: self.env.rail_outboard_clearance,
+        gantry_y_position:       self.env.gantry_y_position,
+        toolhead_x_position:     self.env.toolhead_x_position,
+        tendon_dia:              self.env.tendon_dia
+    )
+
+    sub d_toolhead = DToolhead()
+
+    sub e_z_bed = EZBed(
+        build_x: self.env.build_x,
+        build_y: self.env.build_y,
+        build_z: self.env.build_z
+    )
+
+    sub f_chamber     = FChamber()
+    sub g_electronics = GElectronics()
+    sub h_air         = HAir()
+    sub i_mmu         = IMmu()
+    sub j_auxiliary   = JAuxiliary()
+}
