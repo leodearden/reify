@@ -239,4 +239,31 @@ mod tests {
             );
         }
     }
+
+    // ------------------------------------------------------------------
+    // Step 7: build_support_bcs — (Tet, Fixed) returns 3 BCs/node
+    // ------------------------------------------------------------------
+
+    /// `build_support_bcs(&[1, 4], Fixed, Tet)` → 6 BCs at DOFs
+    /// `[3, 4, 5, 12, 13, 14]` (3-stride: `3*N + {0,1,2}` per node).
+    #[test]
+    fn build_support_bcs_tet_fixed_emits_three_bcs_per_node_with_3_stride() {
+        let (bcs, compat) =
+            build_support_bcs(&[1, 4], SupportKind::Fixed, SupportBodyKind::Tet);
+
+        // 2 nodes × 3 DOFs each
+        assert_eq!(bcs.len(), 6, "expected 6 BCs for 2 tet nodes (Fixed)");
+
+        // DOFs: 3*1 + {0,1,2} = [3,4,5], then 3*4 + {0,1,2} = [12,13,14]
+        let expected_dofs: Vec<usize> = vec![3, 4, 5, 12, 13, 14];
+        for (i, (bc, &exp_dof)) in bcs.iter().zip(expected_dofs.iter()).enumerate() {
+            assert_eq!(bc.dof, exp_dof, "bcs[{i}].dof: expected {exp_dof}, got {}", bc.dof);
+            assert_eq!(
+                bc.value.to_bits(),
+                0.0_f64.to_bits(),
+                "bcs[{i}].value must be 0.0"
+            );
+        }
+        assert_eq!(compat, SupportCompatibility::Ok, "compat must be Ok for (Tet, Fixed)");
+    }
 }
