@@ -422,3 +422,52 @@ fn moment_of_inertia_let_binding_compiles_with_tensor_2_3_moment_of_inertia_type
         ),
     );
 }
+
+// ─── Task 2699 — table-driven coverage for all 11 topology-selector cells ─────
+//
+// Single source of truth: one `Bracket` template with all 11 let-bindings
+// compiled via one `compile_source_with_stdlib` call. The table below pins
+// (cell_name, expected cell_type) per name; iterating with
+// `assert_helper_cell_typed` covers the same regression-lock as the 11 former
+// per-name `*_let_binding_compiles_with_*_type` tests, at ~1/11 the stdlib-
+// compile cost. Call shapes mirror PRD §3.9 (and the
+// `examples/topology_selectors/all_topology_selectors_wiring.ri` fixture).
+
+#[test]
+fn task_2699_topology_selector_cells_typed_per_registry() {
+    // Each row: (cell_name, RHS expression, expected cell type).
+    // RHS expressions are inlined into the Bracket source below; the
+    // cell-name / expected-type columns drive the post-compile assertion loop.
+    let cases: &[(&str, &str, Type)] = &[
+        ("all_edges",      "edges(body)",                                    Type::List(Box::new(Type::Geometry))),
+        ("all_faces",      "faces(body)",                                    Type::List(Box::new(Type::Geometry))),
+        ("short_edges",    "edges_by_length(body, 0mm..50mm)",               Type::List(Box::new(Type::Geometry))),
+        ("small_faces",    "faces_by_area(body, 0mm * 1mm .. 1m * 1m)",      Type::List(Box::new(Type::Geometry))),
+        ("top_faces",      "faces_by_normal(body, vec3(0.0, 0.0, 1.0), 1deg)", Type::List(Box::new(Type::Geometry))),
+        ("vert_edges",     "edges_parallel_to(body, vec3(1.0, 0.0, 0.0), 1deg)", Type::List(Box::new(Type::Geometry))),
+        ("bot_edges",      "edges_at_height(body, 0mm, 0.01mm)",             Type::List(Box::new(Type::Geometry))),
+        ("neighbors",      "adjacent_faces(body, body)",                     Type::List(Box::new(Type::Geometry))),
+        ("shared",         "shared_edges(body, body)",                       Type::List(Box::new(Type::Geometry))),
+        ("centroid",       "center_of_mass(body, 7850.0)",                   Type::point3(Type::length())),
+        ("inertia_tensor", "moment_of_inertia(body, 7850.0)",
+            Type::tensor(2, 3, Type::Scalar { dimension: reify_types::DimensionVector::MOMENT_OF_INERTIA })),
+    ];
+
+    let mut source = String::from("structure def Bracket {\n    let body = box(50mm, 30mm, 10mm)\n");
+    for (cell, rhs, _) in cases {
+        source.push_str(&format!("    let {cell} = {rhs}\n"));
+    }
+    source.push_str("}\n");
+
+    let compiled = compile_source_with_stdlib(&source);
+    let errors = errors_only(&compiled);
+    assert!(
+        errors.is_empty(),
+        "Bracket with all 11 task-2699 topology-selector let-bindings must compile cleanly, got errors: {:#?}",
+        errors
+    );
+
+    for (cell, _rhs, expected) in cases {
+        assert_helper_cell_typed(&compiled, cell, expected);
+    }
+}
