@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use tracing::warn;
 
-use reify_compiler::{CompiledModule, ValueCellKind};
+use reify_compiler::{CompiledModule, ValueCellKind, Visibility};
 use reify_eval::{CheckResult, Engine};
 use reify_eval::cache::NodeId;
 use reify_types::{
@@ -91,6 +91,15 @@ pub(crate) fn module_key(name: &str) -> String {
     format!("{}.ri", name)
 }
 
+/// Returns `true` for any `std` or `std.*` import path.
+///
+/// Used by `compile_entry_with_imports` at two filter sites (prelude-ref
+/// de-duplication and template merge) so both stay in lockstep if the
+/// stdlib path convention ever changes.
+fn is_stdlib_path(p: &str) -> bool {
+    p == "std" || p.starts_with("std.")
+}
+
 /// Parse and compile `source` with multi-file import resolution.
 ///
 /// This is the compile-side of `load_file`'s multi-file flow (task 3228 v1).
@@ -117,6 +126,15 @@ pub(crate) fn module_key(name: &str) -> String {
 /// 5. Compile the entry with `compile_with_prelude_context(&parsed, &ctx)`.
 /// 6. Merge non-stdlib imported templates into `compiled.templates` so that
 ///    `find_template` during eval finds imported pub structures.
+///
+/// # v1 transitive-import limitation
+///
+/// Only **direct** (1-hop) imports of the entry file have their templates merged
+/// into `compiled.templates`.  If `helper.ri` itself imports `util.ri`, `Util`'s
+/// `TopologyTemplate` will not be present at eval time, and `find_template` will
+/// fail with "unknown structure" for any `sub` referencing `Util`.  Iterating
+/// all entries in `dag.modules` and merging each would fix this; deferred to a
+/// follow-up task.
 ///
 /// # v1 source-map limitation
 ///
@@ -160,7 +178,7 @@ fn compile_entry_with_imports(
     for import_path in &import_paths {
         dag.compile_module(import_path, &resolver).map_err(|diags| {
             let msgs: Vec<String> = diags.iter().map(|d| d.message.clone()).collect();
-            format!("Compile errors: {}", msgs.join("; "))
+            format!("Compile errors in import '{}': {}", import_path, msgs.join("; "))
         })?;
     }
 
@@ -170,7 +188,7 @@ fn compile_entry_with_imports(
     let stdlib_modules = reify_compiler::stdlib_loader::load_stdlib();
     let user_import_refs: Vec<&CompiledModule> = import_paths
         .iter()
-        .filter(|p| p.as_str() != "std" && !p.starts_with("std."))
+        .filter(|p| !is_stdlib_path(p))
         .filter_map(|p| dag.modules.get(p))
         .collect();
 
@@ -197,17 +215,30 @@ fn compile_entry_with_imports(
         return Err(format!("Compile errors: {}", msgs.join("; ")));
     }
 
-    // Merge non-stdlib imported templates into the entry's compiled.templates so
-    // that reify_eval::Engine::eval / unfold can find imported pub structures via
-    // find_template(&module.templates, name).  Std.* modules are excluded: stdlib
-    // structures are not expected to appear as top-level GUI entities.
+    // Merge pub templates from direct (1-hop) non-stdlib imports into the entry's
+    // compiled.templates so that reify_eval::Engine::eval / unfold can find them
+    // via find_template(&module.templates, name).
+    //
+    // Visibility filter: only Visibility::Public templates are merged.  Private
+    // structures from imported modules must not be reachable to the eval engine,
+    // mirroring compile-time import semantics.
+    //
+    // Std.* modules are excluded: stdlib structures are not expected to appear as
+    // top-level GUI entities.
+    //
+    // v1 limitation: only DIRECT imports are merged.  If helper.ri itself imports
+    // util.ri, Util's template will be absent from this list and find_template will
+    // fail at eval for any sub referencing Util.  A future fix should iterate all
+    // dag.modules entries instead of just import_paths.
     for import_path in &import_paths {
-        if import_path.as_str() == "std" || import_path.starts_with("std.") {
+        if is_stdlib_path(import_path) {
             continue;
         }
         if let Some(imported_module) = dag.modules.get(import_path) {
             for template in &imported_module.templates {
-                compiled.templates.push(template.clone());
+                if template.visibility == Visibility::Public {
+                    compiled.templates.push(template.clone());
+                }
             }
         }
     }
