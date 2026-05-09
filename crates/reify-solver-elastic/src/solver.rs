@@ -34,13 +34,28 @@ use faer::sparse::SparseRowMat;
 ///
 /// Three mechanisms guarantee bit-stability per fixed thread count:
 ///
-/// (a) Chunk size `n.div_ceil(threads).max(1)` is a deterministic function of
-///     `(n, threads)` only — no work-stealing or load-balancing.
-/// (b) Threads spawn sequentially in chunk-iteration order; handle slot `t`
-///     always corresponds to the worker for chunk `t`.
-/// (c) Worker handles are joined in spawn order (t-ascending), and the
-///     cross-thread combine runs `pairwise_tree_sum` over the spawn-ordered
-///     partial-sums Vec.
+/// (a) **Chunk size** `n.div_ceil(threads).max(1)` is a deterministic function
+///     of `(n, threads)` only — no work-stealing or load-balancing. Switching
+///     to a dynamic scheduler would break the contract.
+/// (b) **Sequential spawn** in chunk-iteration order; handle slot `t` always
+///     corresponds to the worker for chunk `t`, regardless of OS thread ID.
+/// (c) **Join in t-ascending order**; the cross-thread combine runs
+///     `pairwise_tree_sum` over the spawn-ordered partial-sums Vec so the
+///     final tree shape is a deterministic function of `(n, threads)`.
+///
+/// Corollary: `Parallel { threads: 1 }` is exactly equivalent to
+/// `Deterministic` — a single worker processes all `n` rows with the same
+/// pairwise-tree shape as the sequential path. The
+/// `parallel_disjoint_block_k_bit_equal_to_deterministic` test exercises this
+/// at `t = 1` as the degenerate case.
+///
+/// Tests:
+/// - `parallel_disjoint_block_k_bit_equal_to_deterministic` — bit-equality vs
+///   Deterministic on block-diagonal K for `t ∈ {1, 2, 4}` (strongest claim;
+///   no cross-block interference).
+/// - `parallel_shared_dof_k_tolerance_equivalent_and_back_to_back_bit_stable`
+///   — tolerance-equivalence vs Deterministic on shared-DOF fan-mesh K (`t=4`),
+///   and back-to-back bit-stability for fixed `t=4`.
 ///
 /// `Parallel { threads: 0 }` panics rather than auto-falling back to
 /// single-threaded — auto-fallback would silently mask caller bugs (e.g. a
