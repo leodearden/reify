@@ -45,10 +45,7 @@ pub(crate) fn eval_fea(name: &str, args: &[Value]) -> Option<Value> {
         "linear_combine" => linear_combine(args),
         "envelope_von_mises" => envelope_von_mises(args),
         "envelope_max_principal" => envelope_max_principal(args),
-        // Convenience-helper stub (step 8 replaces with the real implementation).
-        // Reserves the dispatch slot so the dispatcher-signal test passes before
-        // the body is wired up.
-        "envelope_displacement_magnitude" => Value::Undef,
+        "envelope_displacement_magnitude" => envelope_displacement_magnitude(args),
         // `worst_case` real implementation lives in
         // `crates/reify-expr/src/lib.rs` (Lambda-aware, requires `EvalContext`).
         // The arm here is a permanent stub returning `Value::Undef` — fired
@@ -383,23 +380,60 @@ fn envelope_max_principal(args: &[Value]) -> Value {
     envelope_tensor_projection(args, "stress", TensorProjection::MaxPrincipal)
 }
 
-/// Codomain shape for per-case Field validation in `envelope_tensor_projection`.
+/// Per-grid envelope of the Euclidean magnitude of the displacement vector
+/// across cases.
 ///
-/// More variants will be added in steps 6 (`Vector3` for principal-stress
-/// reuse) and 8 (`Vector3` for displacement-magnitude). For step-4 only the
-/// 3×3 matrix shape is needed; deferring the additional variants keeps each
-/// TDD step minimal.
+/// # Input shape
+///
+/// `args == [MultiCaseResult-shaped Map]` — `Value::Map { "cases" ->
+/// Value::Map<Value::String, ElasticResult-Map> }`. Each per-case
+/// ElasticResult Map must have a `displacement` field bound to a Sampled
+/// `Value::Field` whose codomain is a 3-vector (`Type::Vector { n: 3, .. }`
+/// or `Type::Tensor { rank: 1, n: 3, .. }`). The codomain quantity (e.g.
+/// `Length`) is propagated unchanged to the result's scalar codomain —
+/// magnitude does not introduce or strip dimensions.
+///
+/// # Output
+///
+/// `Value::Field { source: Sampled, codomain_type: <quantity>, .. }` whose
+/// `data[i]` equals `max over cases of |displacement[case].data[i*3..i*3+3]|`,
+/// where `|·|` is the Euclidean norm `sqrt(x² + y² + z²)`. Domain and grid
+/// metadata propagate unchanged from the per-case Sampled fields (which
+/// `envelope_reduce` validates for equality).
+///
+/// # Failure modes (silent-Undef per PRD task #10 deferral)
+///
+/// - arity != 1
+/// - `args[0]` is not a valid `MultiCaseResult` shape
+/// - empty cases Map (delegated to `envelope_reduce`'s empty guard)
+/// - any case ElasticResult is not `Value::Map`
+/// - any case ElasticResult is missing the `displacement` key
+/// - any case displacement field is not Sampled (Analytical / Composed / derived)
+/// - any case displacement field's codomain is not 3-vector-shaped
+/// - any case displacement field's `data.len()` != grid_count * 3 (stride violation)
+/// - per-case grid mismatch (delegated to `envelope_reduce`'s
+///   `metadata_matches` enforcement)
+fn envelope_displacement_magnitude(args: &[Value]) -> Value {
+    envelope_tensor_projection(args, "displacement", TensorProjection::Magnitude)
+}
+
+/// Codomain shape for per-case Field validation in `envelope_tensor_projection`.
 #[derive(Clone, Copy)]
 enum TensorShape {
     /// 3×3 row-major tensor: `Type::Matrix { m: 3, n: 3, .. }` or
     /// `Type::Tensor { rank: 2, n: 3, .. }`. Stride 9 on the data buffer.
     Matrix3x3,
+    /// 3-component vector: `Type::Vector { n: 3, .. }` or
+    /// `Type::Tensor { rank: 1, n: 3, .. }`. Stride 3 on the data buffer.
+    /// Used by `envelope_displacement_magnitude`.
+    Vector3,
 }
 
 impl TensorShape {
     fn stride(self) -> usize {
         match self {
             TensorShape::Matrix3x3 => 9,
+            TensorShape::Vector3 => 3,
         }
     }
 
@@ -407,7 +441,9 @@ impl TensorShape {
     /// (extracts the scalar quantity for the result codomain), `None`
     /// otherwise. The result scalar codomain inherits the quantity (e.g.
     /// `Pressure` from a `Matrix<3,3,Pressure>` becomes the result's
-    /// `Type::Scalar { dimension: PRESSURE }`).
+    /// `Type::Scalar { dimension: PRESSURE }`; `Length` from a
+    /// `Vector<3,Length>` becomes the result's
+    /// `Type::Scalar { dimension: LENGTH }`).
     fn extract_quantity(self, codomain: &Type) -> Option<Type> {
         match (self, codomain) {
             (TensorShape::Matrix3x3, Type::Matrix { m: 3, n: 3, quantity }) => {
@@ -416,14 +452,18 @@ impl TensorShape {
             (TensorShape::Matrix3x3, Type::Tensor { rank: 2, n: 3, quantity }) => {
                 Some(*quantity.clone())
             }
+            (TensorShape::Vector3, Type::Vector { n: 3, quantity }) => {
+                Some(*quantity.clone())
+            }
+            (TensorShape::Vector3, Type::Tensor { rank: 1, n: 3, quantity }) => {
+                Some(*quantity.clone())
+            }
             _ => None,
         }
     }
 }
 
 /// Per-grid scalar projection applied per-case before envelope_reduce.
-///
-/// One more variant lands in step 8 (`Magnitude`).
 #[derive(Clone, Copy)]
 enum TensorProjection {
     /// von Mises equivalent stress on a 3×3 row-major window.
@@ -433,12 +473,18 @@ enum TensorProjection {
     /// `crate::analysis::compute_eigenvalues_3x3` (`pub(crate)`-promoted
     /// for this cross-module reuse).
     MaxPrincipal,
+    /// Euclidean magnitude of a 3-vector window: `sqrt(x² + y² + z²)`.
+    /// Used by `envelope_displacement_magnitude`. The output preserves
+    /// the input quantity unchanged (Length → Length); magnitude does
+    /// not introduce or strip dimensions.
+    Magnitude,
 }
 
 impl TensorProjection {
     fn shape(self) -> TensorShape {
         match self {
             TensorProjection::VonMises | TensorProjection::MaxPrincipal => TensorShape::Matrix3x3,
+            TensorProjection::Magnitude => TensorShape::Vector3,
         }
     }
 
@@ -454,6 +500,12 @@ impl TensorProjection {
                     Some(eigs) => eigs[2],
                     None => f64::NAN,
                 }
+            }
+            TensorProjection::Magnitude => {
+                // Stride-3 Vector3 magnitude. Closed-form sqrt of squared
+                // components — independent of the analysis module since
+                // there's no shared scalar formula to factor through.
+                (window[0] * window[0] + window[1] * window[1] + window[2] * window[2]).sqrt()
             }
         }
     }
