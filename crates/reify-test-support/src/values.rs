@@ -1680,6 +1680,7 @@ mod tests {
         ]);
         match v {
             Value::Map(outer) => {
+                assert_eq!(outer.len(), 1, "outer map should have exactly one key");
                 let cases_key = Value::String("cases".to_string());
                 match outer.get(&cases_key) {
                     Some(Value::Map(inner)) => {
