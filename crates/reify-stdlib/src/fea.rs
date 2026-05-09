@@ -43,11 +43,11 @@ pub(crate) fn eval_fea(name: &str, args: &[Value]) -> Option<Value> {
         "case_names" => case_names(args),
         "result_for" => result_for(args),
         "linear_combine" => linear_combine(args),
-        // Convenience-helper stubs (steps 4/6/8 replace these with the real
+        "envelope_von_mises" => envelope_von_mises(args),
+        // Convenience-helper stubs (steps 6/8 replace these with the real
         // implementations). Reserves the dispatch slot so the four
         // `eval_fea_*_returns_some` dispatcher-signal tests pass before the
         // bodies are wired up.
-        "envelope_von_mises" => Value::Undef,
         "envelope_max_principal" => Value::Undef,
         "envelope_displacement_magnitude" => Value::Undef,
         // `worst_case` real implementation lives in
@@ -307,6 +307,223 @@ fn linear_combine(args: &[Value]) -> Value {
     result_map.insert(Value::String("iterations".to_string()), Value::Undef);
 
     Value::Map(result_map)
+}
+
+/// Compute von Mises equivalent stress per grid point for a 3×3 row-major
+/// stress window. Mirrors the closed-form formula in
+/// `crates/reify-stdlib/src/analysis.rs::von_mises` so envelope_von_mises
+/// stays self-contained on the SampledField.data hot path (avoids the
+/// wrapping/unwrapping cost of routing each grid point through
+/// `eval_builtin("von_mises", ...)`, which would also reject Sampled paths
+/// because it expects `Value::Tensor`).
+///
+/// Input layout: d[0]=σ_xx, d[1]=σ_xy, d[2]=σ_xz,
+///               d[3]=σ_yx, d[4]=σ_yy, d[5]=σ_yz,
+///               d[6]=σ_zx, d[7]=σ_zy, d[8]=σ_zz
+fn apply_von_mises_to_3x3_window(d: &[f64]) -> f64 {
+    debug_assert!(d.len() >= 9, "von_mises window requires ≥9 floats");
+    let sxx = d[0];
+    let syy = d[4];
+    let szz = d[8];
+    let sxy = d[1];
+    let syz = d[5];
+    let sxz = d[2];
+    (0.5
+        * ((sxx - syy).powi(2)
+            + (syy - szz).powi(2)
+            + (szz - sxx).powi(2)
+            + 6.0 * (sxy.powi(2) + syz.powi(2) + sxz.powi(2))))
+    .sqrt()
+}
+
+/// Per-grid envelope of von Mises stress across cases.
+///
+/// # Input shape
+///
+/// `args == [MultiCaseResult-shaped Map]` — `Value::Map { "cases" ->
+/// Value::Map<Value::String, ElasticResult-Map> }`. Each per-case
+/// ElasticResult Map must have a `stress` field bound to a Sampled
+/// `Value::Field` whose codomain is a 3×3 tensor (`Type::Matrix { m: 3, n: 3, .. }`
+/// or `Type::Tensor { rank: 2, n: 3, .. }`). The codomain quantity (e.g.
+/// `Pressure`) is propagated unchanged to the result's scalar codomain.
+///
+/// # Output
+///
+/// `Value::Field { source: Sampled, codomain_type: <quantity>, .. }` whose
+/// `data[i]` equals `max over cases of vm(stress[case].data[i*9..i*9+9])`.
+/// Domain and grid metadata propagate unchanged from the per-case Sampled
+/// fields (which `envelope_reduce` validates for equality).
+///
+/// # Failure modes (silent-Undef per PRD task #10 deferral)
+///
+/// - arity != 1
+/// - `args[0]` is not a valid `MultiCaseResult` shape
+/// - empty cases Map (delegated to `envelope_reduce`'s empty guard)
+/// - any case ElasticResult is not `Value::Map`
+/// - any case ElasticResult is missing the `stress` key
+/// - any case stress field is not Sampled (Analytical / Composed / derived)
+/// - any case stress field's codomain is not 3×3 tensor-shaped
+/// - any case stress field's `data.len()` != grid_count * 9 (stride violation)
+/// - per-case grid mismatch (delegated to `envelope_reduce`'s
+///   `metadata_matches` enforcement)
+fn envelope_von_mises(args: &[Value]) -> Value {
+    envelope_tensor_projection(args, "stress", TensorProjection::VonMises)
+}
+
+/// Codomain shape for per-case Field validation in `envelope_tensor_projection`.
+///
+/// More variants will be added in steps 6 (`Vector3` for principal-stress
+/// reuse) and 8 (`Vector3` for displacement-magnitude). For step-4 only the
+/// 3×3 matrix shape is needed; deferring the additional variants keeps each
+/// TDD step minimal.
+#[derive(Clone, Copy)]
+enum TensorShape {
+    /// 3×3 row-major tensor: `Type::Matrix { m: 3, n: 3, .. }` or
+    /// `Type::Tensor { rank: 2, n: 3, .. }`. Stride 9 on the data buffer.
+    Matrix3x3,
+}
+
+impl TensorShape {
+    fn stride(self) -> usize {
+        match self {
+            TensorShape::Matrix3x3 => 9,
+        }
+    }
+
+    /// Returns `Some(quantity)` when `codomain` matches this tensor shape
+    /// (extracts the scalar quantity for the result codomain), `None`
+    /// otherwise. The result scalar codomain inherits the quantity (e.g.
+    /// `Pressure` from a `Matrix<3,3,Pressure>` becomes the result's
+    /// `Type::Scalar { dimension: PRESSURE }`).
+    fn extract_quantity(self, codomain: &Type) -> Option<Type> {
+        match (self, codomain) {
+            (TensorShape::Matrix3x3, Type::Matrix { m: 3, n: 3, quantity }) => {
+                Some(*quantity.clone())
+            }
+            (TensorShape::Matrix3x3, Type::Tensor { rank: 2, n: 3, quantity }) => {
+                Some(*quantity.clone())
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Per-grid scalar projection applied per-case before envelope_reduce.
+///
+/// More variants land in steps 6 (`MaxPrincipal`) and 8 (`Magnitude`).
+#[derive(Clone, Copy)]
+enum TensorProjection {
+    /// von Mises equivalent stress on a 3×3 row-major window.
+    VonMises,
+}
+
+impl TensorProjection {
+    fn shape(self) -> TensorShape {
+        match self {
+            TensorProjection::VonMises => TensorShape::Matrix3x3,
+        }
+    }
+
+    /// Apply the per-window scalar projection. Window must be at least
+    /// `self.shape().stride()` floats long; only the first stride elements
+    /// are read.
+    fn apply(self, window: &[f64]) -> f64 {
+        match self {
+            TensorProjection::VonMises => apply_von_mises_to_3x3_window(window),
+        }
+    }
+}
+
+/// Shared body for `envelope_von_mises` / `envelope_max_principal` /
+/// `envelope_displacement_magnitude`: validate the MultiCaseResult shape,
+/// extract the per-case Sampled tensor/vector field, apply a per-grid-point
+/// scalar projection, then dispatch to `envelope_reduce` for the across-case
+/// max reduction.
+///
+/// `field_name` is the per-case ElasticResult key to read (`"stress"` or
+/// `"displacement"`). `projection` controls the codomain shape (matrix vs
+/// vector), the data stride, and the per-window scalar projection function.
+fn envelope_tensor_projection(
+    args: &[Value],
+    field_name: &str,
+    projection: TensorProjection,
+) -> Value {
+    if args.len() != 1 {
+        return Value::Undef;
+    }
+    let cases_map = match extract_cases_map(&args[0]) {
+        Some(m) => m,
+        None => return Value::Undef,
+    };
+    if cases_map.is_empty() {
+        return Value::Undef;
+    }
+
+    let shape = projection.shape();
+    let stride = shape.stride();
+
+    // Build per-case Map<String, Value::Field> of projected scalar fields.
+    let mut projected_map: BTreeMap<Value, Value> = BTreeMap::new();
+    for (case_name, case_val) in cases_map {
+        // Validate case_val is Value::Map (ElasticResult struct shape).
+        let case_map = match case_val {
+            Value::Map(m) => m,
+            _ => return Value::Undef,
+        };
+        // Look up the per-case Sampled tensor/vector field.
+        let field_val = match case_map.get(&Value::String(field_name.to_string())) {
+            Some(v) => v,
+            None => return Value::Undef,
+        };
+        let (dom, cod, sf) = match as_sampled_field(field_val) {
+            Some(t) => t,
+            None => return Value::Undef,
+        };
+        // Codomain must match the projection's expected tensor shape.
+        let scalar_quantity = match shape.extract_quantity(cod) {
+            Some(q) => q,
+            None => return Value::Undef,
+        };
+        // Stride validation: data.len() must equal grid_count * stride.
+        let grid_count: usize = sf.axis_grids.iter().map(|g| g.len()).product();
+        if sf.data.len() != grid_count * stride {
+            return Value::Undef;
+        }
+
+        // Apply the per-grid-point projection to produce a scalar buffer.
+        let mut scalar_data: Vec<f64> = Vec::with_capacity(grid_count);
+        for i in 0..grid_count {
+            let window = &sf.data[i * stride..i * stride + stride];
+            scalar_data.push(projection.apply(window));
+        }
+
+        // Construct a per-case projected SampledField with stride-1 scalar
+        // codomain. Grid metadata propagates unchanged from the input — only
+        // the data buffer length changes (grid_count * stride → grid_count).
+        let projected_sf = SampledField {
+            name: sf.name.clone(),
+            kind: sf.kind,
+            bounds_min: sf.bounds_min.clone(),
+            bounds_max: sf.bounds_max.clone(),
+            spacing: sf.spacing.clone(),
+            axis_grids: sf.axis_grids.clone(),
+            interpolation: sf.interpolation,
+            data: scalar_data,
+            oob_emitted: AtomicBool::new(false),
+        };
+        let projected_field = Value::Field {
+            domain_type: dom.clone(),
+            codomain_type: scalar_quantity,
+            source: FieldSourceKind::Sampled,
+            lambda: Arc::new(Value::SampledField(projected_sf)),
+        };
+        projected_map.insert(case_name.clone(), projected_field);
+    }
+
+    // Dispatch to envelope_reduce for the per-grid-point max across cases.
+    // envelope_reduce enforces grid-equality (`metadata_matches`) and the
+    // NaN-skip + total_cmp + first-occurrence-wins reduction discipline.
+    envelope_reduce(&[Value::Map(projected_map)], false)
 }
 
 /// Extract the inner `cases` `BTreeMap` from a `MultiCaseResult` struct
