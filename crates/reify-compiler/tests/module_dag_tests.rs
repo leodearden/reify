@@ -1838,8 +1838,8 @@ fn compile_project_with_entry_source_returns_parse_errors_for_invalid_entry_sour
         "expected non-empty diagnostics for malformed entry source"
     );
     assert!(
-        diagnostics.iter().any(|d| d.severity == Severity::Error),
-        "expected at least one Severity::Error diagnostic, got: {:?}",
+        diagnostics.iter().all(|d| d.severity == Severity::Error),
+        "expected every diagnostic to have Severity::Error, got: {:?}",
         diagnostics
     );
 }
