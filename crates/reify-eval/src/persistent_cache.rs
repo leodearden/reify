@@ -189,8 +189,9 @@ fn check_f64_vec_len(field_name: &str, len: u64) -> io::Result<usize> {
 /// big-endian hosts a temporary `Vec<u8>` is built via `to_le_bytes()` per
 /// element (per-element CPU byte-swap, single bulk `write_all` to `w`). The
 /// BE path uses `try_reserve_exact` for OOM-safe sizing; overflow of the byte
-/// count is impossible because the slab is already in memory and bounded by
-/// `MAX_F64_ELEMENTS = 1<<24` (so `len * 8 <= 1<<27`, well within `usize`).
+/// count is impossible because `slab` is already allocated — the allocator
+/// accepted `slab.len() * 8` bytes when the `Vec<f64>` was built, so
+/// multiplying that same length by 8 here cannot overflow `usize`.
 ///
 /// Empty input produces zero bytes on disk. The on-disk format is
 /// unconditionally little-endian regardless of host byte order.
@@ -201,9 +202,9 @@ fn write_f64_slab<W: Write>(w: &mut W, slab: &[f64]) -> io::Result<()> {
     }
     #[cfg(target_endian = "big")]
     {
-        // slab.len() is an in-memory Vec already accepted by the allocator and
-        // bounded by MAX_F64_ELEMENTS = 1<<24, so len * 8 <= 1<<27 cannot
-        // overflow usize on any supported target.
+        // slab is already allocated: the allocator accepted slab.len() * 8
+        // bytes when the Vec<f64> was built, so multiplying that same length
+        // by 8 here cannot overflow usize on any supported target.
         let byte_count = slab.len() * 8;
         let mut buf: Vec<u8> = Vec::new();
         buf.try_reserve_exact(byte_count).map_err(io::Error::other)?;
