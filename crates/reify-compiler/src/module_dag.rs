@@ -576,7 +576,7 @@ pub fn compile_project(
     entry_path: &Path,
     resolver: &ModuleResolver,
 ) -> Result<Vec<CompiledModule>, Vec<Diagnostic>> {
-    // Read and parse entry file
+    // Read entry file from disk, then delegate to the shared inner helper.
     let source = std::fs::read_to_string(entry_path).map_err(|e| {
         vec![Diagnostic::error(format!(
             "failed to read entry file '{}': {}",
@@ -584,13 +584,51 @@ pub fn compile_project(
             e,
         ))]
     })?;
+    compile_project_inner(entry_path, &source, resolver)
+}
 
+/// Compile a project using a caller-supplied in-memory string for the entry
+/// module's source instead of reading `entry_path` from disk.
+///
+/// This is designed for editor / IDE dirty-buffer compile flows where the
+/// user's unsaved edits should be compiled without writing to disk first.
+///
+/// - **Imports resolve from disk** via `resolver.project_root` and
+///   `resolver.stdlib_root`, exactly as in `compile_project`.
+/// - **Only the entry's source is supplied in-memory**; sibling modules are
+///   read from the filesystem by the existing `ModuleResolver` machinery.
+/// - **`entry_path` need not exist on disk.** Its `file_stem()` is used only
+///   to derive the entry module's name (so the module gets the correct path in
+///   the compiled output and in topological order).
+///
+/// Returns modules in topological order (dependencies before dependents), or
+/// a non-empty `Vec<Diagnostic>` describing any parse / compile errors in the
+/// supplied source or in any transitively imported module.
+pub fn compile_project_with_entry_source(
+    entry_path: &Path,
+    entry_source: &str,
+    resolver: &ModuleResolver,
+) -> Result<Vec<CompiledModule>, Vec<Diagnostic>> {
+    compile_project_inner(entry_path, entry_source, resolver)
+}
+
+/// Shared implementation for `compile_project` and
+/// `compile_project_with_entry_source`.
+///
+/// Receives the entry source as a `&str` (already read from disk or supplied
+/// in-memory by the caller) and drives the full parse → DAG → prelude →
+/// compile pipeline.
+fn compile_project_inner(
+    entry_path: &Path,
+    source: &str,
+    resolver: &ModuleResolver,
+) -> Result<Vec<CompiledModule>, Vec<Diagnostic>> {
     let entry_name = entry_path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("main");
     let module_path = reify_types::ModulePath::single(entry_name);
-    let parsed = reify_syntax::parse(&source, module_path);
+    let parsed = reify_syntax::parse(source, module_path);
 
     if !parsed.errors.is_empty() {
         return Err(parsed
