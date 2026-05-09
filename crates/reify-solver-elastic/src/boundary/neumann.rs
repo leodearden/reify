@@ -42,6 +42,15 @@ pub enum FaceOrder {
     P2Tri,
 }
 
+/// Maximum `E::N_NODES` across element types dispatched by [`apply_body_force`].
+///
+/// Currently `max(TetP1::N_NODES = 4, TetP2::N_NODES = 10) = 10`. Used to
+/// stack-allocate the per-call `nodal_weights` buffer in
+/// [`integrate_body_force_generic`], avoiding heap traffic on the FEA
+/// load-assembly hot path. Bump this value when adding a higher-order
+/// element (e.g. P3 tet, 20 nodes) to the [`apply_body_force`] dispatch.
+const MAX_BODY_FORCE_NODES: usize = 10;
+
 // ---------------------------------------------------------------------------
 // apply_point_load
 // ---------------------------------------------------------------------------
@@ -143,8 +152,14 @@ fn integrate_body_force_generic<E: ReferenceElement>(
         );
     }
 
-    // Accumulate per-node integration weights w_i = Σ_q N_i(q) · |det J(q)| · q.weight.
-    let mut nodal_weights = vec![0.0_f64; E::N_NODES];
+    // Stack-allocate the per-element nodal-weight accumulator to avoid
+    // per-call heap traffic on the FEA load-assembly hot path. Sized for
+    // the largest element currently dispatched (TetP2::N_NODES = 10);
+    // sliced to the actual count for this element type. The slice index
+    // panics if a future element exceeds MAX_BODY_FORCE_NODES — bump the
+    // constant in that case.
+    let mut nodal_weights_buf = [0.0_f64; MAX_BODY_FORCE_NODES];
+    let nodal_weights = &mut nodal_weights_buf[..E::N_NODES];
     for qp in element.quad_points() {
         let shapes = element.shape_at(qp.coord);
         let jac = element.jacobian(phys_nodes, qp.coord);
