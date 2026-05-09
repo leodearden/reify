@@ -61,6 +61,8 @@ use reify_types::{Value, ValueCellId, ValueMap};
 ///   `names`       = `case_names(mcr)` → `["operating", "overload"]` (lexicographic)
 ///   `op_result`   = `result_for(mcr, "operating")` → `42`
 ///   `miss_result` = `result_for(mcr, "missing")` → `Undef`
+///   `mcr_ctor`    = `MultiCaseResult(cases: map{})` → `Undef` (struct-ctor tripwire; fires
+///                  automatically when ctor eval lands — see `struct_ctor_eval_stage_2_readiness`)
 const SMOKE_SOURCE: &str = r#"
 structure def SmokeFixture {
     let cases = map{"operating" => 42, "overload" => 99}
@@ -68,6 +70,7 @@ structure def SmokeFixture {
     let names      = case_names(mcr)
     let op_result  = result_for(mcr, "operating")
     let miss_result = result_for(mcr, "missing")
+    let mcr_ctor = MultiCaseResult(cases: map{})
 }
 "#;
 
@@ -133,16 +136,36 @@ fn multi_load_case_stdlib_smoke_e2e() {
         "result_for(mcr, \"missing\") should return Undef for a missing key, \
          got: {miss_result:?}"
     );
+
+    // ── struct-ctor tripwire ──────────────────────────────────────────────────
+    // `MultiCaseResult(cases: map{})` is not a recognised builtin and currently
+    // falls through `reify_stdlib::eval_builtin` to `Value::Undef`. This
+    // assertion fires automatically on every `cargo test` run the moment ctor
+    // eval starts returning a non-Undef value, giving zero-effort signalling
+    // that Stage-2 has landed. When it fires, run the companion `#[ignore]`d
+    // `struct_ctor_eval_stage_2_readiness` test for full contract verification:
+    //   `cargo test --test multi_load_case_stdlib_smoke -- --ignored`
+    let mcr_ctor = get_value(v, "mcr_ctor");
+    assert!(
+        mcr_ctor.is_undef(),
+        "MultiCaseResult(cases: map{{}}) should still evaluate to Undef (struct-ctor eval not yet \
+         implemented); got: {mcr_ctor:?} — struct-ctor eval has landed: run \
+         `cargo test --test multi_load_case_stdlib_smoke -- --ignored` to verify the Stage-2 contract"
+    );
 }
 
-/// Stage-2 readiness probe: verify that the `MultiCaseResult(...)` struct
-/// constructor and the accessors flowing from it produce the correct
-/// `Value::Map` shape once struct-constructor eval lands.
+/// Stage-2 readiness probe: verify that the `MultiCaseResult(...)` and
+/// `LoadCase(...)` struct constructors produce the correct `Value::Map` shape,
+/// and that the accessors flowing from `MultiCaseResult` work end-to-end, once
+/// struct-constructor eval lands.
 ///
 /// Currently `#[ignore]`d because struct-constructor eval is not yet
 /// implemented: `reify_stdlib::eval_builtin` returns `Value::Undef` for
-/// unrecognised names (including `MultiCaseResult`), so the `Value::Map`-shape
-/// assertion panics with the current engine.
+/// unrecognised names (including `MultiCaseResult` and `LoadCase`), so the
+/// `Value::Map`-shape assertions panic with the current engine.
+///
+/// Both structs are probed symmetrically so that a partial Stage-2 landing
+/// (e.g. `MultiCaseResult` ctor works but `LoadCase` doesn't) is caught.
 ///
 /// To run: `cargo test --test multi_load_case_stdlib_smoke -- --ignored`
 ///
@@ -156,6 +179,7 @@ fn struct_ctor_eval_stage_2_readiness() {
     const STAGE_2_SOURCE: &str = r#"
 structure def SmokeFixture {
     let mcr = MultiCaseResult(cases: map{"operating" => 42, "overload" => 99})
+    let lc  = LoadCase(name: "tracking", loads: [], supports: [])
     let names      = case_names(mcr)
     let op_result  = result_for(mcr, "operating")
 }
@@ -186,7 +210,16 @@ structure def SmokeFixture {
         _ => panic!("mcr should be Value::Map, got: {mcr:?}"),
     }
 
-    // 3. `case_names(mcr)` returns ["operating", "overload"] in lexicographic order.
+    // 3. `lc` is a `Value::Map` (LoadCase struct-instance shape).
+    //    Probed symmetrically with `mcr` so a partial Stage-2 landing (e.g.
+    //    MultiCaseResult ctor works but LoadCase doesn't) is caught.
+    let lc = get_value(v, "lc");
+    assert!(
+        matches!(lc, Value::Map(_)),
+        "lc (LoadCase ctor) should be Value::Map, got: {lc:?}"
+    );
+
+    // 4. `case_names(mcr)` returns ["operating", "overload"] in lexicographic order.
     let names = get_value(v, "names");
     assert_eq!(
         names,
@@ -198,7 +231,7 @@ structure def SmokeFixture {
          got: {names:?}"
     );
 
-    // 4. `result_for(mcr, "operating")` returns Value::Int(42).
+    // 5. `result_for(mcr, "operating")` returns Value::Int(42).
     let op_result = get_value(v, "op_result");
     assert_eq!(
         op_result,
