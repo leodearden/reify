@@ -26,7 +26,7 @@
 use reify_constraints::SimpleConstraintChecker;
 use reify_eval::Engine;
 use reify_test_support::{errors_only, parse_and_compile_with_stdlib, MockGeometryKernel};
-use reify_types::{ExportFormat, ModulePath, Value, ValueCellId};
+use reify_types::{ExportFormat, GeometryOp, ModulePath, Value, ValueCellId};
 
 const BLOCK_INERTIA_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -256,21 +256,64 @@ fn fillet_top_edges_evals_to_solid_via_topology_walk() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
+    // Capture a shared handle to the op log *before* the kernel moves into
+    // Engine::new.  This is the established pattern used by
+    // curve_constructors_e2e.rs:86, sweep_e2e.rs:55, helpers.rs:575, etc.
+    let ops_ref = kernel.operations_ref();
     let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
-    // `fillet` is a geometry-modification op: the filleted solid is produced by
-    // the kernel and delivered via `geometry_output` (a serialised B-Rep blob).
-    // An absent or empty blob means the kernel did not produce a solid — either
-    // the topology walk failed to supply real edge handles, or the fillet op was
-    // never dispatched.
+    // The original `result.geometry_output.is_some()` assertion was vacuous:
+    // MockGeometryKernel::execute (mocks.rs:1219) allocates a fresh
+    // GeometryHandleId for *every* op — including the very first
+    // `box(50mm, 30mm, 10mm)` call — so `geometry_output` is always `Some`
+    // regardless of whether the topology-walk → fillet pipeline ever fired.
+    // (Flagged in esc-2691-81, reviewer_comprehensive suggestion 1 of 3.)
+    //
+    // The strengthened assertion suite below detects the exact regression the
+    // task names: if the topology walk silently short-circuits and only the
+    // box op is dispatched, either (a) the op count will be 1 (< 2) or (b)
+    // the last recorded op will not be a Fillet — both fire loudly.
+    let ops = ops_ref.lock().unwrap();
+
+    // (a) at least 2 ops recorded — box realization + at least one fillet op.
+    //     Catches the regression scenario where the topology walk silently
+    //     short-circuits and only the box op is dispatched.
+    assert!(
+        ops.len() >= 2,
+        "expected at least 2 recorded ops (box + fillet), got {}: {:?}",
+        ops.len(),
+        ops.iter().map(|r| r.op.kind_name()).collect::<Vec<_>>()
+    );
+
+    // (b) the LAST recorded op must be a Fillet — confirms the topology
+    //     walk → fillet pipeline ran end-to-end. MockGeometryKernel::execute
+    //     (mocks.rs:1219) returns a fresh handle for *every* op, so without
+    //     this check the geometry_output assertion below would pass on the
+    //     box handle alone (the original false-positive flagged in esc-2691-81).
+    assert!(
+        matches!(
+            ops.last().map(|r| &r.op),
+            Some(GeometryOp::Fillet { .. })
+        ),
+        "expected last recorded op to be GeometryOp::Fillet, got: {:?}",
+        ops.last().map(|r| r.op.kind_name())
+    );
+
+    // (c) sanity-pin geometry_output (kept from the original assertion)
+    //     so a future engine_build.rs:681 regression that drops the export
+    //     stage is also caught.
     assert!(
         result.geometry_output.is_some(),
-        "expected engine.build() on fillet_top_edges.ri to produce non-empty geometry_output \
-         (the kernel filleted the box along the four top-perimeter edges selected via the \
-         topology walk), but geometry_output was None — both (a) 3-arg fillet binding and \
-         (b) eval-side dispatch for topology selectors must be present"
+        "expected non-empty geometry_output after a successful Fillet op"
     );
+
+    // TODO(prereq-a, no current task ID): once 3-arg fillet binding lands and
+    // extends `GeometryOp::Fillet` with an `edges: Vec<GeometryHandleId>` field,
+    // deepen (b) to also assert `!edges.is_empty()` so that a regression where
+    // the topology walk delivers an empty edge list (the kernel is invoked but
+    // fillets *zero* edges) is caught. The variant currently has only
+    // `target: GeometryHandleId` and `radius: Value` (geometry.rs:440-443).
 }
 
 #[test]
