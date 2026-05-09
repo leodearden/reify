@@ -319,6 +319,23 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
     // Clear any pending permission prompts — after abort they are stale (the
     // underlying request_ids are gone) and the UI would show non-functional controls.
     setState('pendingPermissionRequests', []);
+    // Optimistically mark the in-flight message complete so the throbber/cursor
+    // disappear immediately. The sidecar's eventual done/error is idempotent.
+    const currentId = state.currentMessageId;
+    if (currentId !== null) {
+      const idx = findAssistantIdx(currentId);
+      if (idx !== -1) {
+        setState(
+          'messages',
+          idx,
+          produce((m: ChatMessage) => {
+            if (m.role !== 'assistant') return;
+            m.complete = true;
+            m.thinkingComplete = true;
+          }),
+        );
+      }
+    }
     options.onAbort();
   }
 
