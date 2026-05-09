@@ -3,7 +3,7 @@ import { render, screen, fireEvent } from '@solidjs/testing-library';
 import { MessageGroup } from '../panels/chat/MessageGroup';
 import { ChatPanel } from '../panels/ChatPanel';
 import { createClaudeStore } from '../stores/claudeStore';
-import type { AssistantMessage, ClaudeState, ChatMessage, UserMessage } from '../stores/claudeStore';
+import type { AssistantMessage, ClaudeState, ChatMessage, UserMessage, PermissionDecision } from '../stores/claudeStore';
 
 function makeAssistantMsg(overrides?: Partial<AssistantMessage>): AssistantMessage {
   return {
@@ -319,6 +319,114 @@ describe('ChatPanel', () => {
       const label = screen.queryByTestId('auto-context-label');
       expect(label).toBeTruthy();
       expect(label!.textContent).toContain('sphere1');
+    });
+  });
+
+  describe('permission prompt integration', () => {
+    function makePermissionStore() {
+      const onPermissionDecision = vi.fn();
+      const store = createClaudeStore({
+        onSend: vi.fn(),
+        onAbort: vi.fn(),
+        onPermissionDecision,
+      });
+      return { store, onPermissionDecision };
+    }
+
+    function feedPermissionRequest(
+      store: ReturnType<typeof createClaudeStore>,
+      opts: { requestId?: string; toolName?: string; toolInput?: Record<string, unknown> } = {},
+    ) {
+      store.sendMessage('hello', {});
+      const msgId = store.state.currentMessageId!;
+      store.handleOutboundMessage({
+        type: 'permission_request',
+        id: msgId,
+        request_id: opts.requestId ?? 'req-1',
+        tool_name: opts.toolName ?? 'Write',
+        tool_input: opts.toolInput ?? {},
+      });
+      return msgId;
+    }
+
+    it('does NOT render permission-prompts container when queue is empty', () => {
+      const { store } = makePermissionStore();
+      render(() => <ChatPanel store={store} />);
+      expect(screen.queryByTestId('permission-prompts')).toBeNull();
+    });
+
+    it('renders permission-prompts container with one PermissionPrompt per pending request', () => {
+      const { store } = makePermissionStore();
+      feedPermissionRequest(store, { requestId: 'req-1', toolName: 'Write', toolInput: { path: '/tmp/x' } });
+      render(() => <ChatPanel store={store} />);
+      expect(screen.getByTestId('permission-prompts')).toBeTruthy();
+      expect(screen.getAllByTestId('permission-prompt')).toHaveLength(1);
+    });
+
+    it('renders multiple prompts in insertion order', () => {
+      const { store } = makePermissionStore();
+      store.sendMessage('hello', {});
+      const msgId = store.state.currentMessageId!;
+      store.handleOutboundMessage({
+        type: 'permission_request',
+        id: msgId,
+        request_id: 'req-1',
+        tool_name: 'Write',
+        tool_input: { path: '/tmp/a' },
+      });
+      store.handleOutboundMessage({
+        type: 'permission_request',
+        id: msgId,
+        request_id: 'req-2',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+      });
+      render(() => <ChatPanel store={store} />);
+      const prompts = screen.getAllByTestId('permission-prompt');
+      expect(prompts).toHaveLength(2);
+      expect(prompts[0].textContent).toContain('Write');
+      expect(prompts[1].textContent).toContain('Bash');
+    });
+
+    it('permission-prompts container appears before the input area in DOM', () => {
+      const { store } = makePermissionStore();
+      feedPermissionRequest(store, { requestId: 'req-1', toolName: 'Write' });
+      render(() => <ChatPanel store={store} />);
+      const prompts = screen.getByTestId('permission-prompts');
+      const input = screen.getByTestId('chat-input');
+      // DOCUMENT_POSITION_FOLLOWING (4) means input comes after prompts in the DOM
+      const pos = prompts.compareDocumentPosition(input);
+      expect(pos & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it('clicking Allow button calls store.decidePermission with { behavior: "allow" }', () => {
+      const { store } = makePermissionStore();
+      const decideSpy = vi.spyOn(store, 'decidePermission');
+      feedPermissionRequest(store, { requestId: 'req-1', toolName: 'Write' });
+      render(() => <ChatPanel store={store} />);
+      fireEvent.click(screen.getByTestId('permission-allow'));
+      expect(decideSpy).toHaveBeenCalledOnce();
+      expect(decideSpy).toHaveBeenCalledWith('req-1', { behavior: 'allow' });
+    });
+
+    it('clicking Always allow calls store.decidePermission with { behavior: "allow", remember: true }', () => {
+      const { store } = makePermissionStore();
+      const decideSpy = vi.spyOn(store, 'decidePermission');
+      feedPermissionRequest(store, { requestId: 'req-1', toolName: 'Write' });
+      render(() => <ChatPanel store={store} />);
+      fireEvent.click(screen.getByTestId('permission-allow-always'));
+      expect(decideSpy).toHaveBeenCalledOnce();
+      expect(decideSpy).toHaveBeenCalledWith('req-1', { behavior: 'allow', remember: true });
+    });
+
+    it('clicking Deny button calls store.decidePermission with { behavior: "deny" }', () => {
+      const { store } = makePermissionStore();
+      const decideSpy = vi.spyOn(store, 'decidePermission');
+      feedPermissionRequest(store, { requestId: 'req-1', toolName: 'Write' });
+      render(() => <ChatPanel store={store} />);
+      fireEvent.click(screen.getByTestId('permission-deny'));
+      expect(decideSpy).toHaveBeenCalledOnce();
+      expect(decideSpy).toHaveBeenCalledWith('req-1', { behavior: 'deny' });
     });
   });
 });
