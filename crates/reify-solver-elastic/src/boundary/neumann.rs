@@ -51,17 +51,11 @@ pub enum FaceOrder {
 /// element (e.g. P3 tet, 20 nodes) to the [`apply_body_force`] dispatch.
 const MAX_BODY_FORCE_NODES: usize = 10;
 
-// Compile-time guard: every element arm in `apply_body_force` must fit within
-// the stack buffer. Adding a new dispatch arm without bumping MAX_BODY_FORCE_NODES
-// will produce a build error here rather than a runtime panic during integration.
-const _: () = assert!(
-    <TetP1 as ReferenceElement>::N_NODES <= MAX_BODY_FORCE_NODES,
-    "TetP1::N_NODES exceeds MAX_BODY_FORCE_NODES; bump the constant",
-);
-const _: () = assert!(
-    <TetP2 as ReferenceElement>::N_NODES <= MAX_BODY_FORCE_NODES,
-    "TetP2::N_NODES exceeds MAX_BODY_FORCE_NODES; bump the constant",
-);
+// The compile-time guard for `MAX_BODY_FORCE_NODES` lives inside
+// `integrate_body_force_generic` as an inline `const { assert!(...) }` block
+// (see below). Because `const { ... }` is evaluated per monomorphization, any
+// element type routed through that function is checked automatically — without
+// requiring a separate top-level assertion for each dispatch arm.
 
 // ---------------------------------------------------------------------------
 // apply_point_load
@@ -130,6 +124,13 @@ fn integrate_body_force_generic<E: ReferenceElement>(
     phys_nodes: &[[f64; 3]],
     body_force: [f64; 3],
 ) {
+    // Structural compile-time guard: evaluated once per monomorphization, so
+    // any element type routed through `apply_body_force` (or any future caller)
+    // is automatically checked — no per-dispatch-arm top-level assertion needed.
+    // If the assert fires, bump `MAX_BODY_FORCE_NODES` to fit the new element
+    // type's node count.
+    const { assert!(E::N_NODES <= MAX_BODY_FORCE_NODES, "E::N_NODES exceeds MAX_BODY_FORCE_NODES; bump the constant to fit the new element type's node count") };
+
     assert_eq!(
         connectivity.len(),
         E::N_NODES,
@@ -167,9 +168,9 @@ fn integrate_body_force_generic<E: ReferenceElement>(
     // Stack-allocate the per-element nodal-weight accumulator to avoid
     // per-call heap traffic on the FEA load-assembly hot path. Sized for
     // the largest element currently dispatched (TetP2::N_NODES = 10);
-    // sliced to the actual count for this element type. The slice index
-    // panics if a future element exceeds MAX_BODY_FORCE_NODES — bump the
-    // constant in that case.
+    // sliced to the actual count for this element type. The `const { assert! }`
+    // block above ensures at compile time that E::N_NODES fits within the
+    // buffer, so this slice is always in-bounds.
     let mut nodal_weights_buf = [0.0_f64; MAX_BODY_FORCE_NODES];
     let nodal_weights = &mut nodal_weights_buf[..E::N_NODES];
     for qp in element.quad_points() {
