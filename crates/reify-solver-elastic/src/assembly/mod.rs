@@ -5,6 +5,11 @@
 //! `K_e = ∫_Ω_e BᵀDB dV` integrand — for both P1 and P2 tetrahedra. Global
 //! sparse-matrix assembly via faer-rs is PRD task #9's job and consumes
 //! [`ElementStiffness`] row-major.
+//!
+//! Mixed-element (tet + shell) global assembly was added per PRD
+//! `docs/prds/v0_4/structural-analysis-shells.md` task T11; the
+//! `assemble_global_stiffness` entry point is now D-agnostic, deriving each
+//! element's `dofs_per_node` from `k_e.n_dofs / connectivity.len()`.
 
 pub mod global;
 pub mod tet;
