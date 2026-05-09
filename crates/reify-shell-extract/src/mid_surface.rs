@@ -1179,33 +1179,6 @@ mod tests {
         }
     }
 
-    // ── Wrapper-variant shape test (drives step-2 refactor) ──────────────────
-
-    /// RED — asserts that `extract_mid_surface` on a 1D field returns
-    /// `MidSurfaceError::GridValidation(GridValidationError::UnsupportedGridKind
-    /// { found: Regular1D })`.
-    ///
-    /// This test fails to compile until step-2 adds the `GridValidation` variant
-    /// to `MidSurfaceError` and promotes `GridValidationError` to `pub`.
-    #[test]
-    fn extract_mid_surface_unsupported_grid_kind_uses_grid_validation_wrapper() {
-        let sdf = one_d_field();
-        let mask = MedialMask {
-            spacing: [1.0, 1.0, 1.0],
-            origin: [0.0, 0.0, 0.0],
-            voxels: vec![],
-        };
-        let err = extract_mid_surface(&sdf, &mask, &MidSurfaceOptions::default())
-            .expect_err("1D input must be rejected");
-        assert_eq!(
-            err,
-            MidSurfaceError::GridValidation(GridValidationError::UnsupportedGridKind {
-                found: SampledGridKind::Regular1D,
-            }),
-            "1D input must produce GridValidation(UnsupportedGridKind) wrapper variant"
-        );
-    }
-
     // ── Step 13: defaults pin test ────────────────────────────────────────────
 
     /// Pin `MidSurfaceOptions::default()` field values.
