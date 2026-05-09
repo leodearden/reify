@@ -8,9 +8,6 @@
 //!   2. `result_for(mcr, "operating")` returns the correct per-case value.
 //!   3. `result_for(mcr, "missing")` returns `Value::Undef` (silent-Undef
 //!      per PRD task #10 deferral).
-//!   4. Stage 1 tracking: `LoadCase(...)` and `MultiCaseResult(...)` ctor
-//!      calls currently evaluate to `Value::Undef` (tripwire assertion —
-//!      flips RED when struct-constructor eval lands; see coverage note).
 //!
 //! # Runtime shape
 //!
@@ -53,13 +50,10 @@ use reify_types::{Value, ValueCellId, ValueMap};
 /// `crates/reify-compiler/tests/multi_load_case_stdlib_tests.rs`, which
 /// inspects the compiled module directly via `load_stdlib_module()`.
 ///
-/// Stage 1 tracking bindings (`lc_ctor`, `mcr_ctor`) ARE present below to
-/// pin the current `Value::Undef` runtime behavior of struct ctor calls. When
-/// these assertions flip RED, struct-constructor eval has landed and Stage 2
-/// becomes unblocked: swap the hand-built map literals (`cases`/`mcr`) for
-/// actual `LoadCase(...)` / `MultiCaseResult(...)` calls and assert against
-/// the resulting `Value::Map` shape. The Undef fallthrough is in
-/// `reify_stdlib::eval_builtin` (returns Undef for unrecognised names).
+/// Stage-2 readiness — when struct-ctor eval lands and the smoke fixture should
+/// swap map literals for ctor calls — is probed by the `#[ignore]`d
+/// `struct_ctor_eval_stage_2_readiness` test below; run via
+/// `cargo test --test multi_load_case_stdlib_smoke -- --ignored`.
 ///
 /// Bindings:
 ///   `cases`       = `map{"operating" => 42, "overload" => 99}` (inner Map)
@@ -67,8 +61,6 @@ use reify_types::{Value, ValueCellId, ValueMap};
 ///   `names`       = `case_names(mcr)` → `["operating", "overload"]` (lexicographic)
 ///   `op_result`   = `result_for(mcr, "operating")` → `42`
 ///   `miss_result` = `result_for(mcr, "missing")` → `Undef`
-///   `lc_ctor`     = `LoadCase(name: "tracking", loads: [], supports: [])` → `Undef` (Stage 1 tripwire)
-///   `mcr_ctor`    = `MultiCaseResult(cases: map{})` → `Undef` (Stage 1 tripwire)
 const SMOKE_SOURCE: &str = r#"
 structure def SmokeFixture {
     let cases = map{"operating" => 42, "overload" => 99}
@@ -76,8 +68,6 @@ structure def SmokeFixture {
     let names      = case_names(mcr)
     let op_result  = result_for(mcr, "operating")
     let miss_result = result_for(mcr, "missing")
-    let lc_ctor  = LoadCase(name: "tracking", loads: [], supports: [])
-    let mcr_ctor = MultiCaseResult(cases: map{})
 }
 "#;
 
@@ -102,11 +92,6 @@ fn multi_load_case_stdlib_smoke_e2e() {
     let result = engine.eval(&compiled);
 
     // No Error-severity diagnostics from eval.
-    // (Note: if struct-constructor eval lands and emits Error-severity
-    // diagnostics for the Stage-1 tripwire bindings `lc_ctor`/`mcr_ctor`,
-    // this assertion will fire before the tripwire assertions below — that
-    // is also a Stage-2 signal; see the comment block near the tripwire
-    // assertions for the full migration guide.)
     let eval_errors = collect_errors(&result.diagnostics);
     assert!(
         eval_errors.is_empty(),
@@ -147,42 +132,6 @@ fn multi_load_case_stdlib_smoke_e2e() {
         miss_result.is_undef(),
         "result_for(mcr, \"missing\") should return Undef for a missing key, \
          got: {miss_result:?}"
-    );
-
-    // ── Stage 1 tracking assertion: struct ctor calls → Undef ─────────────────
-    // `LoadCase(...)` and `MultiCaseResult(...)` are user-defined struct
-    // constructors. In the current engine they are not builtins:
-    // `reify_stdlib::eval_builtin` returns `Value::Undef` for unknown names.
-    // This assertion pins that contract as a tripwire.
-    //
-    // When struct-constructor eval lands and produces real `Value::Map`
-    // instances, BOTH of these assertions will FAIL. That is the signal to
-    // perform Stage 2: swap the hand-built map literals (`cases`/`mcr` above)
-    // for actual `LoadCase(...)` / `MultiCaseResult(...)` calls and update the
-    // assertions to inspect the resulting `Value::Map` shape.
-    //
-    // Note: a panic from `parse_and_compile_with_stdlib` above (i.e. an
-    // Error-severity compile diagnostic arising from the new ctor calls — for
-    // example a type-checker rejecting `loads: []` once empty-list inference
-    // tightens, or a real ctor evaluator rejecting missing fields) is also a
-    // Stage-2 signal. The tripwire may fire at the compile stage rather than
-    // here; both outcomes mean struct-ctor eval has changed.
-    let lc_ctor = get_value(v, "lc_ctor");
-    assert!(
-        lc_ctor.is_undef(),
-        "Stage 1 tripwire: LoadCase(...) ctor should currently return Undef \
-         (struct-constructor eval not yet implemented); got: {lc_ctor:?}. \
-         If this assertion FAILS, struct-ctor eval has landed — perform the \
-         Stage 2 migration (swap map literals for ctor calls)."
-    );
-
-    let mcr_ctor = get_value(v, "mcr_ctor");
-    assert!(
-        mcr_ctor.is_undef(),
-        "Stage 1 tripwire: MultiCaseResult(...) ctor should currently return Undef \
-         (struct-constructor eval not yet implemented); got: {mcr_ctor:?}. \
-         If this assertion FAILS, struct-ctor eval has landed — perform the \
-         Stage 2 migration (swap map literals for ctor calls)."
     );
 }
 
