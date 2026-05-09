@@ -1012,8 +1012,9 @@ mod tests {
             displacement_len: 5u64,
             stress_len: 7u64,
         };
-        let encoded: Vec<u8> =
-            bincode::serialize(&header).expect("bincode serialize must not fail for fixed-size header");
+        let mut encoded: Vec<u8> = Vec::new();
+        bincode::serialize_into(&mut encoded, &header)
+            .expect("bincode serialize_into must not fail for fixed-size header");
         // Pinned bincode 1.3 fixint-LE encoding of the fixture header.
         // Layout (struct-declaration order, LE encoding):
         //   max_von_mises_bits (u64 LE, 8 bytes): EF BE AD DE BE BA FE CA
