@@ -385,17 +385,18 @@ fn result_for(args: &[Value]) -> Value {
     if args.len() != 2 {
         return Value::Undef;
     }
+    let cases = match extract_cases_map(&args[0]) {
+        Some(c) => c,
+        None => return Value::Undef,
+    };
     let key = match &args[1] {
         Value::String(s) => s,
         _ => return Value::Undef,
     };
-    match extract_cases_map(&args[0]) {
-        Some(cases) => cases
-            .get(&Value::String(key.clone()))
-            .cloned()
-            .unwrap_or(Value::Undef),
-        None => Value::Undef,
-    }
+    cases
+        .get(&Value::String(key.clone()))
+        .cloned()
+        .unwrap_or(Value::Undef)
 }
 
 /// Per-grid-point reduction across a `Map<String, Field<Point3, T>>` of
