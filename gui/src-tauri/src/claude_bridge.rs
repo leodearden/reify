@@ -53,6 +53,38 @@ pub enum InboundMessage {
         /// Enables id-based correlation in the sidecar (avoids FIFO-by-tool_name fallback).
         tool_use_id: String,
     },
+    /// User's decision on a pending permission-prompt request.
+    /// Sent in response to an outbound `PermissionRequest` identified by `request_id`.
+    PermissionDecision {
+        request_id: String,
+        /// `"allow"` or `"deny"`.
+        behavior: String,
+        /// Optional human-readable explanation (shown in the CLI's audit log when set).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+        /// Optional override of the tool's input (PreToolUse-style patching).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        updated_input: Option<Value>,
+        /// When true, the sidecar will remember this tool as always-allowed for
+        /// the lifetime of the current permission server instance.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        remember: Option<bool>,
+    },
+}
+
+/// Arguments for the `claude_permission_decision` Tauri command.
+/// Fields map 1-to-1 to `InboundMessage::PermissionDecision`, using snake_case
+/// so they round-trip correctly through Rust serde without a camelCase bridge.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PermissionDecisionArgs {
+    pub request_id: String,
+    pub behavior: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_input: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remember: Option<bool>,
 }
 
 /// Outbound messages sent from the sidecar to the GUI (over sidecar stdout).
@@ -96,6 +128,19 @@ pub enum OutboundMessage {
         message: String,
     },
     Ready,
+    /// Permission-prompt request emitted when Claude CLI wants to use a tool
+    /// that requires user approval. The sidecar emits this; the host forwards
+    /// it to the frontend via the `claude-permission-request` Tauri event.
+    PermissionRequest {
+        /// The in-flight send_message id (for turn correlation).
+        id: String,
+        /// Unique correlator for the permission round-trip (sidecar-generated UUID).
+        request_id: String,
+        /// Name of the tool Claude wants to invoke.
+        tool_name: String,
+        /// Arguments Claude intends to pass to the tool.
+        tool_input: Value,
+    },
 }
 
 // --- Pure IPC functions ---
@@ -548,6 +593,24 @@ impl SidecarHandle {
         write_to_sidecar(&mut *writer, &msg).await?;
         Ok(id)
     }
+
+    /// Forward a permission decision to the sidecar.
+    ///
+    /// The caller is responsible for ensuring the sidecar is in the Ready state.
+    pub async fn permission_decision(
+        &mut self,
+        decision: PermissionDecisionArgs,
+    ) -> Result<(), String> {
+        let msg = InboundMessage::PermissionDecision {
+            request_id: decision.request_id,
+            behavior: decision.behavior,
+            message: decision.message,
+            updated_input: decision.updated_input,
+            remember: decision.remember,
+        };
+        let mut writer = self.stdin.lock().await;
+        write_to_sidecar(&mut *writer, &msg).await
+    }
 }
 
 impl Drop for SidecarHandle {
@@ -611,6 +674,28 @@ pub async fn claude_clear_session_impl(
     match guard.as_mut() {
         None => Err("sidecar not started".to_string()),
         Some(handle) => handle.clear_session().await,
+    }
+}
+
+/// Forward a user permission decision to the sidecar.
+///
+/// Returns an error if the sidecar is not started or not in the Ready state.
+pub async fn claude_permission_decision_impl(
+    sidecar: &Mutex<Option<SidecarHandle>>,
+    decision: PermissionDecisionArgs,
+) -> Result<(), String> {
+    let mut guard = sidecar.lock().await;
+    match guard.as_mut() {
+        None => Err("sidecar not started".to_string()),
+        Some(handle) => {
+            let state = handle.state().lock().await.clone();
+            match state {
+                SidecarState::Ready => handle.permission_decision(decision).await,
+                SidecarState::Crashed(msg) => Err(format!("sidecar crashed: {}", msg)),
+                SidecarState::NotStarted => Err("sidecar not started".to_string()),
+                SidecarState::Starting => Err("sidecar not ready (still starting)".to_string()),
+            }
+        }
     }
 }
 
@@ -902,6 +987,20 @@ pub fn outbound_to_event(msg: &OutboundMessage) -> (String, Value) {
             serde_json::json!({ "id": id, "code": code, "message": message }),
         ),
         OutboundMessage::Ready => ("claude-ready".to_string(), serde_json::json!({})),
+        OutboundMessage::PermissionRequest {
+            id,
+            request_id,
+            tool_name,
+            tool_input,
+        } => (
+            "claude-permission-request".to_string(),
+            serde_json::json!({
+                "id": id,
+                "request_id": request_id,
+                "tool_name": tool_name,
+                "tool_input": tool_input,
+            }),
+        ),
     }
 }
 

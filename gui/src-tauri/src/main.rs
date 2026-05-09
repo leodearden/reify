@@ -431,6 +431,19 @@ async fn claude_clear_session(state: tauri::State<'_, AppState>) -> Result<(), S
     reify_gui::claude_bridge::claude_clear_session_impl(&state.sidecar).await
 }
 
+/// Resolve a pending permission-prompt request from the Claude CLI.
+///
+/// Routes the user's Allow/Deny/Always decision back to the sidecar, which
+/// forwards it to the in-process MCP permission server to unblock the pending
+/// `approve_tool` call.
+#[tauri::command]
+async fn claude_permission_decision(
+    state: tauri::State<'_, AppState>,
+    decision: reify_gui::claude_bridge::PermissionDecisionArgs,
+) -> Result<(), String> {
+    reify_gui::claude_bridge::claude_permission_decision_impl(&state.sidecar, decision).await
+}
+
 /// Return the current kernel availability status.
 #[tauri::command]
 fn read_view_sidecar(
@@ -561,6 +574,7 @@ fn main() {
             claude_send_message,
             claude_abort,
             claude_clear_session,
+            claude_permission_decision,
             is_debug_enabled,
             debug_response,
             get_kernel_status,
