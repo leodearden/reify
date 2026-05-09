@@ -399,7 +399,13 @@ pub(crate) fn compile_expr_guarded(
                 }
                 // Mirror site: lower_annotations in annotations.rs handles LossyReal the same way.
                 reify_syntax::NumberClass::LossyReal(f) => {
-                    // Warning emission will be added in step-4.
+                    diagnostics.push(
+                        Diagnostic::warning(
+                            "integer literal too large to represent as Int; \
+                             using Real (precision may be lost)",
+                        )
+                        .with_label(DiagnosticLabel::new(expr.span, "precision lost")),
+                    );
                     CompiledExpr::literal(Value::Real(f), Type::Real)
                 }
             }
