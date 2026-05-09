@@ -951,6 +951,50 @@ mod tests {
         }
     }
 
+    // ── MaskVoxelOutOfBounds rejection tests ─────────────────────────────────
+
+    /// A voxel index [10, 0, 0] lies outside a 3×3×3 grid (nx=3) and must
+    /// be rejected with `MaskVoxelOutOfBounds`.
+    #[test]
+    fn extract_mid_surface_rejects_mask_voxel_out_of_bounds_positive() {
+        let sdf = minimal_3d_field(); // 3×3×3, nx=ny=nz=3
+        let mask = MedialMask {
+            spacing: [1.0, 1.0, 1.0],
+            origin: [0.0, 0.0, 0.0],
+            voxels: vec![[10, 0, 0]],
+        };
+        let err = extract_mid_surface(&sdf, &mask, &MidSurfaceOptions::default())
+            .expect_err("out-of-bounds voxel must be rejected");
+        assert_eq!(
+            err,
+            MidSurfaceError::MaskVoxelOutOfBounds {
+                voxel: [10, 0, 0],
+                grid_extent: [3, 3, 3],
+            }
+        );
+    }
+
+    /// A voxel index [-1, 0, 0] (negative i) lies outside the grid and must
+    /// be rejected with `MaskVoxelOutOfBounds`.
+    #[test]
+    fn extract_mid_surface_rejects_mask_voxel_out_of_bounds_negative() {
+        let sdf = minimal_3d_field(); // 3×3×3, nx=ny=nz=3
+        let mask = MedialMask {
+            spacing: [1.0, 1.0, 1.0],
+            origin: [0.0, 0.0, 0.0],
+            voxels: vec![[-1, 0, 0]],
+        };
+        let err = extract_mid_surface(&sdf, &mask, &MidSurfaceOptions::default())
+            .expect_err("negative out-of-bounds voxel must be rejected");
+        assert_eq!(
+            err,
+            MidSurfaceError::MaskVoxelOutOfBounds {
+                voxel: [-1, 0, 0],
+                grid_extent: [3, 3, 3],
+            }
+        );
+    }
+
     // ── Step 9: slab-centerline MC test ──────────────────────────────────────
 
     /// Slab φ = |z| − 3 on a 17×17×17 grid with the centerline plane mask.
