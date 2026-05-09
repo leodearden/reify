@@ -576,7 +576,7 @@ pub fn compile_project(
     entry_path: &Path,
     resolver: &ModuleResolver,
 ) -> Result<Vec<CompiledModule>, Vec<Diagnostic>> {
-    // Read entry file from disk, then delegate to the shared inner helper.
+    // Read entry file from disk, then delegate to the public in-memory overload.
     let source = std::fs::read_to_string(entry_path).map_err(|e| {
         vec![Diagnostic::error(format!(
             "failed to read entry file '{}': {}",
@@ -584,7 +584,7 @@ pub fn compile_project(
             e,
         ))]
     })?;
-    compile_project_inner(entry_path, &source, resolver)
+    compile_project_with_entry_source(entry_path, &source, resolver)
 }
 
 /// Compile a project using a caller-supplied in-memory string for the entry
@@ -609,26 +609,12 @@ pub fn compile_project_with_entry_source(
     entry_source: &str,
     resolver: &ModuleResolver,
 ) -> Result<Vec<CompiledModule>, Vec<Diagnostic>> {
-    compile_project_inner(entry_path, entry_source, resolver)
-}
-
-/// Shared implementation for `compile_project` and
-/// `compile_project_with_entry_source`.
-///
-/// Receives the entry source as a `&str` (already read from disk or supplied
-/// in-memory by the caller) and drives the full parse → DAG → prelude →
-/// compile pipeline.
-fn compile_project_inner(
-    entry_path: &Path,
-    source: &str,
-    resolver: &ModuleResolver,
-) -> Result<Vec<CompiledModule>, Vec<Diagnostic>> {
     let entry_name = entry_path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("main");
     let module_path = reify_types::ModulePath::single(entry_name);
-    let parsed = reify_syntax::parse(source, module_path);
+    let parsed = reify_syntax::parse(entry_source, module_path);
 
     if !parsed.errors.is_empty() {
         return Err(parsed

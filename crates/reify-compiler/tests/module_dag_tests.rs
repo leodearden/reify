@@ -1650,45 +1650,59 @@ fn compile_project_with_entry_source_dirty_entry_with_disk_import() {
 
 /// Entry-source diff is observed: in-memory source is used, not the disk file.
 ///
-/// `entry.ri` on disk contains valid source; the in-memory string passed to
-/// `compile_project_with_entry_source` is deliberately malformed. The call must
-/// return `Err` with at least one diagnostic — proving the in-memory source was
-/// parsed (had disk content been used, the compile would have succeeded).
+/// `entry.ri` on disk defines a template named `Top`; the in-memory string
+/// defines a different (valid) template named `TopMem`. The result must contain
+/// `TopMem`, not `Top` — proving the in-memory source was compiled rather than
+/// the disk file.  Using a valid alternative avoids coupling the test to parser
+/// error-handling behaviour.
 #[test]
 fn compile_project_with_entry_source_uses_in_memory_source_not_disk() {
     let _tmp = tempfile::tempdir().unwrap();
     let dir = _tmp.path().to_path_buf();
 
-    // dep.ri: sibling on disk.
+    // dep.ri: sibling on disk, imported by both the disk and in-memory variants.
     fs::write(
         dir.join("dep.ri"),
         "pub structure Helper { param d: Scalar = 1mm }",
     )
     .unwrap();
 
-    // entry.ri on disk has valid source; the in-memory version is garbage.
+    // entry.ri on disk: defines Top.
     fs::write(
         dir.join("entry.ri"),
         "import dep.Helper\nstructure Top { sub h = Helper(d: 5mm) }",
     )
     .unwrap();
 
+    // In-memory variant: valid source that defines TopMem instead of Top.
+    let in_memory = "import dep.Helper\nstructure TopMem { sub h = Helper(d: 10mm) }";
+
     let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
     let result = reify_compiler::module_dag::compile_project_with_entry_source(
         &dir.join("entry.ri"),
-        "this is not valid reify syntax !!!",
+        in_memory,
         &resolver,
     );
 
     assert!(
-        result.is_err(),
-        "expected Err (malformed in-memory source), got Ok with {} modules",
-        result.unwrap().len()
+        result.is_ok(),
+        "expected Ok, got Err: {:?}",
+        result.unwrap_err()
     );
-    let errors = result.unwrap_err();
+    let modules = result.unwrap();
+    let entry_module = modules.last().unwrap();
+
+    // The in-memory source defines TopMem; the disk file defines Top.
+    // If the compiler used the disk file we'd see Top here, not TopMem.
+    let template_names: Vec<&str> = entry_module.templates.iter().map(|t| t.name.as_str()).collect();
     assert!(
-        !errors.is_empty(),
-        "expected at least one diagnostic for malformed source"
+        template_names.contains(&"TopMem"),
+        "expected template 'TopMem' from in-memory source, got {:?}",
+        template_names
+    );
+    assert!(
+        !template_names.contains(&"Top"),
+        "unexpectedly found 'Top' (from disk) instead of in-memory 'TopMem'"
     );
 }
 
@@ -1752,7 +1766,9 @@ fn compile_project_with_entry_source_parity_with_compile_project_when_source_mat
         disk_paths, mem_paths
     );
 
-    // Same per-module template name lists.
+    // Same per-module template name lists, sub_component counts, and
+    // sub_component structure names — catching any deeper divergence in the
+    // compiled topology even when module count and paths agree.
     for (i, (dm, mm)) in disk_modules.iter().zip(mem_modules.iter()).enumerate() {
         let disk_tnames: Vec<&str> = dm.templates.iter().map(|t| t.name.as_str()).collect();
         let mem_tnames: Vec<&str> = mm.templates.iter().map(|t| t.name.as_str()).collect();
@@ -1761,5 +1777,24 @@ fn compile_project_with_entry_source_parity_with_compile_project_when_source_mat
             "template names differ at module index {}: disk={:?} mem={:?}",
             i, disk_tnames, mem_tnames
         );
+
+        for (j, (dt, mt)) in dm.templates.iter().zip(mm.templates.iter()).enumerate() {
+            assert_eq!(
+                dt.sub_components.len(),
+                mt.sub_components.len(),
+                "sub_component count differs at module {}, template {} ('{}'): disk={} mem={}",
+                i, j, dt.name, dt.sub_components.len(), mt.sub_components.len()
+            );
+
+            let disk_sub_names: Vec<&str> =
+                dt.sub_components.iter().map(|s| s.structure_name.as_str()).collect();
+            let mem_sub_names: Vec<&str> =
+                mt.sub_components.iter().map(|s| s.structure_name.as_str()).collect();
+            assert_eq!(
+                disk_sub_names, mem_sub_names,
+                "sub_component structure names differ at module {}, template {} ('{}'): disk={:?} mem={:?}",
+                i, j, dt.name, disk_sub_names, mem_sub_names
+            );
+        }
     }
 }
