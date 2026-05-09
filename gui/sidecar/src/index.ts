@@ -26,23 +26,28 @@ export async function main(
   const landlockExec = process.env.REIFY_LANDLOCK_EXEC || undefined;
 
   // Start the in-process MCP permission server and run the async landlock probe
-  // concurrently. Total startup latency = max(perm-server-start, probe) rather
-  // than their sum. Both must complete before the session is constructed and
-  // ready is emitted. If the permission server fails, exit with a structured error.
+  // concurrently via Promise.allSettled. Total startup latency = max(perm-server-start, probe)
+  // rather than their sum. allSettled is used instead of Promise.all so that a server start
+  // failure does not orphan the in-flight probe (both run to completion regardless of the
+  // other's outcome, avoiding a dangling python3 process + 2000ms watchdog timer).
+  // Both must complete before the session is constructed and ready is emitted.
   const permissionServer = createPermissionServer();
   let landlockAvailable = false;
-  try {
-    [, landlockAvailable] = await Promise.all([
-      permissionServer.start(),
-      landlockExec ? probeLandlockAsync(landlockExec) : Promise.resolve(false),
-    ]);
-  } catch (err: unknown) {
-    // Surface the failure as a structured outbound so the host sees a clean
-    // error rather than a silent hang, then exit.
-    const message = `Failed to start permission server: ${errorMessage(err)}`;
+  const [serverResult, probeResult] = await Promise.allSettled([
+    permissionServer.start(),
+    landlockExec ? probeLandlockAsync(landlockExec) : Promise.resolve(false),
+  ] as [Promise<void>, Promise<boolean>]);
+  if (serverResult.status === 'rejected') {
+    const message = `Failed to start permission server: ${errorMessage(serverResult.reason as unknown)}`;
     await sendMessage(output, { type: 'error', id: '', message });
     return;
   }
+  if (probeResult.status === 'rejected') {
+    const message = `Landlock probe failed unexpectedly: ${errorMessage(probeResult.reason as unknown)}`;
+    await sendMessage(output, { type: 'error', id: '', message });
+    return;
+  }
+  landlockAvailable = probeResult.value;
 
   const systemPrompt = buildSystemPrompt({
     workingDirectory: process.cwd(),

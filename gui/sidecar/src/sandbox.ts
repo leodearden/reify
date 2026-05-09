@@ -7,7 +7,8 @@ import * as os from 'node:os';
  *
  * When `landlockHelperPath` is falsy, returns `false` immediately without spawning.
  * Otherwise runs `python3 -c "..."` using `spawn()` (never blocks the caller).
- * A 2000ms watchdog sends SIGTERM and resolves `false` if python3 hangs.
+ * `stdio: 'ignore'` is used because the probe only cares about exit status — no pipes
+ * are created. A 2000ms watchdog sends SIGTERM and resolves `false` if python3 hangs.
  *
  * Resolution rules (first event wins; subsequent events are ignored):
  * - `'close'` with `code === 0` and `signal === null` → `true`
@@ -39,7 +40,7 @@ export async function probeLandlockAsync(landlockHelperPath?: string): Promise<b
       }
     };
 
-    const proc = spawn('python3', ['-c', probeCode], { stdio: 'pipe' });
+    const proc = spawn('python3', ['-c', probeCode], { stdio: 'ignore' });
 
     // Watchdog: if python3 hangs beyond 2000ms, kill it and resolve false.
     const watchdog = setTimeout(() => {
