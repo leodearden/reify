@@ -78,6 +78,34 @@ impl GmshKernel {
         options: &crate::MeshingOptions,
         element_order: ElementOrderTag,
     ) -> Result<VolumeMesh, GeometryError> {
+        // Validate the input mesh before acquiring the gmsh lock — fail fast
+        // with a precise diagnostic rather than letting a silent floor-divide
+        // (`vertices.len() / 3`, `indices.len() / 3`) discard trailing data
+        // and hand a partially-malformed buffer to gmsh. Cheap insurance at
+        // the FFI boundary. Bounds-checking each index also short-circuits
+        // before gmsh would otherwise produce an opaque internal error.
+        if surface.vertices.len() % 3 != 0 {
+            return Err(GeometryError::OperationFailed(format!(
+                "mesh_to_volume: surface.vertices.len() = {} is not divisible by 3 \
+                 (expected flat XYZ stride)",
+                surface.vertices.len()
+            )));
+        }
+        if surface.indices.len() % 3 != 0 {
+            return Err(GeometryError::OperationFailed(format!(
+                "mesh_to_volume: surface.indices.len() = {} is not divisible by 3 \
+                 (expected triangle stride)",
+                surface.indices.len()
+            )));
+        }
+        let n_verts = surface.vertices.len() / 3;
+        if let Some(&bad) = surface.indices.iter().find(|&&i| (i as usize) >= n_verts) {
+            return Err(GeometryError::OperationFailed(format!(
+                "mesh_to_volume: surface.indices contains {bad}, which is out of bounds \
+                 for a mesh with {n_verts} vertices (valid range 0..{n_verts})"
+            )));
+        }
+
         let _guard = init::GMSH_LOCK.lock().map_err(|e| {
             GeometryError::OperationFailed(format!("GMSH_LOCK poisoned: {e}"))
         })?;
@@ -138,8 +166,8 @@ impl GmshKernel {
         let surf_tag = ffi::add_discrete_entity(2, &[])?;
 
         // Push surface vertices: 1-indexed gmsh tags 1..=N, parallel coord
-        // array widened from f32 -> f64.
-        let n_verts = surface.vertices.len() / 3;
+        // array widened from f32 -> f64. `n_verts` was validated and computed
+        // above before lock acquisition.
         let node_tags: Vec<u64> = (1..=n_verts as u64).collect();
         let coords_f64: Vec<f64> = surface.vertices.iter().map(|&v| v as f64).collect();
         ffi::add_nodes_2d(surf_tag, &node_tags, &coords_f64)?;
