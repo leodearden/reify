@@ -470,21 +470,27 @@ fn roof_quadrant_mesh(nx: usize, ny: usize) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) 
 ///
 /// # Quadrant model: θ ∈ [0°,40°], x ∈ [0, L/2]
 ///
+/// The full roof has diaphragm supports at x=0 AND x=L=50 (both ends), with
+/// maximum deflection at the longitudinal center (x=L/2=25). The 1/4 model
+/// exploits x-symmetry (x ∈ [0, L/2]) and θ-symmetry (θ ∈ [0°, 40°]):
+///
 /// | Plane | Physical role | Constrained DOFs |
 /// |-------|---------------|-----------------|
+/// | x=0   | Rigid end diaphragm (full-model support) | u_x=0, u_z=0, θ_y=0 |
 /// | y=0 (θ=0) | Crown / longitudinal mid-plane symmetry | u_y=0, θ_x=0, θ_z=0 |
-/// | x=L/2 | Rigid end diaphragm | u_x=0, u_z=0, θ_y=0 |
+/// | x=L/2 | Longitudinal midspan (x-symmetry) | u_x=0, θ_y=0 |
 /// | θ=40° | Free longitudinal edge | (none) |
-/// | x=0   | Midspan (free in this model) | (none) |
 ///
-/// The free edge at θ=40°, x=0 is the point of maximum vertical deflection.
+/// The point of maximum deflection is the free-edge center: x=L/2, θ=40°.
+/// The x=L/2 plane is a symmetry plane (u_x=0 antisymmetric, θ_y=0 symmetric)
+/// but the vertical displacement u_z is FREE and takes its maximum value there.
 ///
 /// # Reference solution
 ///
 /// Published (MacNeal & Harder 1985): vertical (z) deflection at the
-/// free-edge midspan = 0.3024 (downward).
+/// free-edge longitudinal center = 0.3024 (downward).
 ///
-/// The initial tolerance band is [0.5, 1.5]×0.3024; step-4 refines this to
+/// The initial tolerance band is [0.5, 1.5]×0.3024; step-6 refines this to
 /// the actually observed MITC3 coarse-mesh value once the mesh helper is
 /// implemented.
 #[test]
@@ -552,41 +558,80 @@ fn scordelis_lo_roof_quadrant_vertical_deflection_at_free_edge_midpoint_matches_
 
     for (node, n) in nodes.iter().enumerate() {
         let dof = |d: usize| node * 6 + d;
-        let is_crown = n[1].abs() < tol;           // y ≈ 0: θ=0 crown symmetry
-        let is_diaphragm = (n[0] - L / 2.0).abs() < tol; // x=L/2 diaphragm end
+        let is_crown = n[1].abs() < tol;                   // y ≈ 0: θ=0 crown symmetry
+        let is_diaphragm = n[0].abs() < tol;               // x=0: rigid end diaphragm
+        let is_midspan = (n[0] - L / 2.0).abs() < tol;    // x=L/2: longitudinal midspan symmetry
 
-        // Crown / longitudinal mid-plane symmetry.
+        // Rigid end diaphragm at x=0 (one end of the full doubly-supported roof).
+        //
+        // MacNeal-Harder "rigid end diaphragm": constrains axial (u_x) and
+        // vertical (u_z) displacements at the support cross-section. The
+        // circumferential direction is free (u_y ≠ 0 at the edge).
+        if is_diaphragm {
+            bcs.push(DirichletBc { dof: dof(0), value: 0.0 }); // u_x = 0 (axial)
+            bcs.push(DirichletBc { dof: dof(2), value: 0.0 }); // u_z = 0 (vertical)
+            bcs.push(DirichletBc { dof: dof(4), value: 0.0 }); // θ_y = 0 (diaphragm moment)
+        }
+        // Crown / longitudinal mid-plane symmetry (θ=0).
         if is_crown {
             bcs.push(DirichletBc { dof: dof(1), value: 0.0 }); // u_y = 0
             bcs.push(DirichletBc { dof: dof(3), value: 0.0 }); // θ_x = 0
             bcs.push(DirichletBc { dof: dof(5), value: 0.0 }); // θ_z = 0
         }
-        // Rigid end diaphragm.
-        if is_diaphragm {
-            bcs.push(DirichletBc { dof: dof(0), value: 0.0 }); // u_x = 0
-            bcs.push(DirichletBc { dof: dof(2), value: 0.0 }); // u_z = 0
-            bcs.push(DirichletBc { dof: dof(4), value: 0.0 }); // θ_y = 0
+        // Longitudinal midspan symmetry at x=L/2.
+        //
+        // x=L/2 is the center of the full roof. For symmetric gravity loading:
+        //   u_x(x=L/2) = 0  (axial displacement antisymmetric about midspan)
+        //   θ_y(x=L/2) = 0  (rotation symmetric about midspan)
+        //
+        // Crucially, u_z is NOT constrained here — the midspan vertical
+        // displacement is the quantity we measure (it equals the max deflection).
+        if is_midspan {
+            bcs.push(DirichletBc { dof: dof(0), value: 0.0 }); // u_x = 0 (antisymmetry)
+            bcs.push(DirichletBc { dof: dof(4), value: 0.0 }); // θ_y = 0 (symmetry)
         }
     }
 
+    // Sanity-check: total applied -z force should equal g * total_area of 1/4 quadrant.
+    let total_fz: f64 = point_loads.iter().filter(|&&(dof, _)| dof % 6 == 2).map(|&(_, f)| f).sum();
+    let expected_area = R * (40.0_f64.to_radians()) * (L / 2.0); // arc-length × axial-length
+    let expected_total_fz = -G * expected_area;
+    eprintln!("DEBUG: total_fz={:.4e}, expected={:.4e} (diff={:.2}%)", total_fz, expected_total_fz, (total_fz - expected_total_fz)/expected_total_fz.abs() * 100.0);
+
     let u = solve_shell_system(&elements, n_nodes, &bcs, &point_loads);
 
-    // Free-edge midspan: x=0, θ=40° → position (0, R·sin40°, R·cos40°).
+    // Displacement at the measurement node:
+    let midspan_node_idx = (NY) * (NX + 1) + NX; // i=NY, j=NX
+    eprintln!("DEBUG: midspan free-edge node={} pos={:?}", midspan_node_idx, nodes[midspan_node_idx]);
+    eprintln!("DEBUG: u_z at midspan free-edge = {:.6e}", u[midspan_node_idx * 6 + 2]);
+    // Also show full free-edge displacement profile
+    for i in 0..=NY {
+        let nidx = i * (NX + 1) + NX;
+        eprintln!("DEBUG: free-edge i={}: x={:.1} u_z={:.4e}", i, nodes[nidx][0], u[nidx*6+2]);
+    }
+
+    // Free-edge longitudinal center: x=L/2, θ=40° → position (L/2, R·sin40°, R·cos40°).
+    // This is the point of maximum vertical deflection in the doubly-supported roof.
     let theta_40 = 40.0_f64.to_radians();
+    let target_x = L / 2.0;
     let target_y = R * theta_40.sin();
     let target_z = R * theta_40.cos();
-    let free_edge_midspan = nodes
+    let free_edge_center = nodes
         .iter()
-        .position(|n| n[0].abs() < tol && (n[1] - target_y).abs() < 1.0 && (n[2] - target_z).abs() < 1.0)
-        .expect("free-edge midspan node (x=0, θ=40°) not found in mesh");
+        .position(|n| {
+            (n[0] - target_x).abs() < tol
+                && (n[1] - target_y).abs() < 1.0
+                && (n[2] - target_z).abs() < 1.0
+        })
+        .expect("free-edge center node (x=L/2, θ=40°) not found in mesh");
 
     // Gravity loads −z ⇒ u_z < 0.  Report downward deflection (positive).
-    let vert_defl = -u[free_edge_midspan * 6 + 2];
+    let vert_defl = -u[free_edge_center * 6 + 2];
 
-    // Initial tolerance band; step-4 (impl) refines to the observed MITC3 coarse-mesh value.
+    // Initial tolerance band; step-6 refines to the observed MITC3 coarse-mesh value.
     assert!(
         vert_defl > 0.5 * MACNEAL_HARDER_REF && vert_defl < 1.5 * MACNEAL_HARDER_REF,
-        "Scordelis-Lo roof: vertical deflection at free-edge midspan = {vert_defl:.4e}; \
+        "Scordelis-Lo roof: vertical deflection at free-edge center = {vert_defl:.4e}; \
          expected [{:.4e}, {:.4e}] (MacNeal-Harder 1985 ref = {MACNEAL_HARDER_REF:.4e})",
         0.5 * MACNEAL_HARDER_REF,
         1.5 * MACNEAL_HARDER_REF,
