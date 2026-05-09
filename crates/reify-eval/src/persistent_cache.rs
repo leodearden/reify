@@ -990,8 +990,8 @@ mod tests {
     }
 
     /// Anchors the bincode 1.3.x default-options encoding
-    /// (`DefaultOptions::new().with_fixint_encoding()` per the `bincode::serialize`
-    /// free-function impl). Catches encoder drift INSIDE the `=1.3` Cargo pin that
+    /// (`DefaultOptions::new().with_fixint_encoding()` — the shared chain used by
+    /// both free-function and `serialize_into` paths). Catches encoder drift INSIDE the `=1.3` Cargo pin that
     /// the version pin alone cannot block — a hypothetical patch-level change within
     /// the 1.3.x line would still be caught here because the byte sequence is pinned
     /// explicitly. Bumping bincode past `=1.3` requires both updating this literal AND
@@ -1012,6 +1012,7 @@ mod tests {
             displacement_len: 5u64,
             stress_len: 7u64,
         };
+        // Use serialize_into to mirror the production write path (ElasticResult::serialize_to_writer).
         let mut encoded: Vec<u8> = Vec::new();
         bincode::serialize_into(&mut encoded, &header)
             .expect("bincode serialize_into must not fail for fixed-size header");
