@@ -4340,6 +4340,83 @@ describe('App externallyChanged store wiring', () => {
   });
 });
 
+// ─── handleSave aborts when file is externally changed ───────────────────────
+
+describe('App handleSave aborts when file is externally changed', () => {
+  const testState: GuiState = {
+    meshes: [],
+    values: [],
+    constraints: [],
+    files: [
+      { path: '/project/bracket.ri', content: 'structure Bracket {}' },
+    ],
+    tessellation_diagnostics: [],
+  };
+
+  let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
+
+  beforeEach(() => {
+    fileChangedCallback = undefined;
+    vi.mocked(bridge.onFileChanged).mockImplementation(async (cb: any) => {
+      fileChangedCallback = cb;
+      return () => {};
+    });
+    vi.mocked(bridge.getInitialState).mockResolvedValue(testState);
+  });
+
+  it('(a) handleSave does NOT call bridgeSaveFile and shows error toast when active file is externally changed', async () => {
+    vi.mocked(bridge.saveFile).mockResolvedValue(undefined);
+
+    render(() => <App />);
+    await waitFor(() => expect(fileChangedCallback).toBeDefined());
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+
+    // Set active file
+    capturedEditorStore.setActiveFile('/project/bracket.ri');
+
+    // Mark the file as externally changed
+    capturedEditorStore.markExternallyChanged('/project/bracket.ri');
+
+    // Trigger handleSave via Ctrl+S
+    fireEvent.keyDown(document, { key: 's', ctrlKey: true });
+
+    // Wait a beat for any async effects
+    await new Promise((r) => setTimeout(r, 20));
+
+    // bridgeSaveFile (bridge.saveFile) must NOT have been called
+    expect(bridge.saveFile).not.toHaveBeenCalled();
+
+    // An error toast mentioning "externally" must appear
+    await waitFor(() => {
+      const toasts = screen.getAllByTestId('toast');
+      const errorToast = toasts.find((t) => t.textContent?.toLowerCase().includes('externally'));
+      expect(errorToast).toBeTruthy();
+    });
+  });
+
+  it('(b) after clearExternallyChanged, handleSave DOES call bridgeSaveFile', async () => {
+    vi.mocked(bridge.saveFile).mockResolvedValue(undefined);
+
+    render(() => <App />);
+    await waitFor(() => expect(fileChangedCallback).toBeDefined());
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+
+    capturedEditorStore.setActiveFile('/project/bracket.ri');
+    capturedEditorStore.markExternallyChanged('/project/bracket.ri');
+    // Clear the external-change flag — save should now proceed
+    capturedEditorStore.clearExternallyChanged('/project/bracket.ri');
+
+    fireEvent.keyDown(document, { key: 's', ctrlKey: true });
+
+    await waitFor(() => {
+      expect(bridge.saveFile).toHaveBeenCalledWith(
+        '/project/bracket.ri',
+        expect.any(String),
+      );
+    });
+  });
+});
+
 // Counts CSS grid tracks in a `grid-template-rows` value.
 // Whitespace separates tracks at depth 0; parens (e.g. minmax(160px, 1fr))
 // keep their internal whitespace from being mistaken for a track boundary.

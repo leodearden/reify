@@ -1049,6 +1049,51 @@ describe('Editor open (Ctrl+O)', () => {
   });
 });
 
+describe('Editor Mod-s aborts when file is externally changed', () => {
+  it('(a) Mod-s does NOT call saveFile and calls onError when active file is externally changed', () => {
+    const store = setupStore();
+    const onError = vi.fn();
+    const saveSpy = vi.spyOn(bridge, 'saveFile').mockResolvedValue(undefined);
+    store.markExternallyChanged(file1.path);
+    render(() => <Editor store={store} onError={onError} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    const event = new KeyboardEvent('keydown', {
+      key: 's',
+      code: 'KeyS',
+      ctrlKey: true,
+      bubbles: true,
+    });
+    view.contentDOM.dispatchEvent(event);
+
+    // saveFile must NOT be called
+    expect(saveSpy).not.toHaveBeenCalled();
+    // onError must be called with a message mentioning external change
+    expect(onError).toHaveBeenCalledWith(expect.stringMatching(/externally/i));
+  });
+
+  it('(b) after clearExternallyChanged, Mod-s DOES call saveFile', async () => {
+    const store = setupStore();
+    const saveSpy = vi.spyOn(bridge, 'saveFile').mockResolvedValue(undefined);
+    store.markExternallyChanged(file1.path);
+    store.clearExternallyChanged(file1.path);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    const event = new KeyboardEvent('keydown', {
+      key: 's',
+      code: 'KeyS',
+      ctrlKey: true,
+      bubbles: true,
+    });
+    view.contentDOM.dispatchEvent(event);
+
+    expect(saveSpy).toHaveBeenCalledWith(file1.path, file1.content);
+  });
+});
+
 describe('Editor theme integration', () => {
   it('mounts .cm-editor element successfully with reify theme', () => {
     const store = setupStore();
