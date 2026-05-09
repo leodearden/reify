@@ -402,6 +402,146 @@ fn cylinder_octant_mesh(nx: usize, ny: usize) -> (Vec<[f64; 3]>, Vec<[usize; 3]>
     (nodes, connectivity)
 }
 
+// ─── step-3: Scordelis-Lo roof (MacNeal-Harder §3.4) ─────────────────────────
+
+/// MacNeal-Harder (1985) §3.4 Scordelis-Lo roof benchmark.
+///
+/// A cylindrical roof shell (R=25, L=50, t=0.25, semi-angle 80°, E=4.32×10⁸,
+/// ν=0.0) loaded by self-weight (gravity 90 per unit area in the −z direction).
+///
+/// # Coordinate system
+///
+/// - x: cylinder axis (horizontal)
+/// - z: vertical (upward); gravity = −z
+/// - Node position: `(x, R·sin θ, R·cos θ)`
+///   - Crown (θ=0): `(x, 0, R)` — top of roof, y=0
+///   - Free edge (θ=40°): `(x, R·sin 40°, R·cos 40°)` — side of roof
+///
+/// # Quadrant model: θ ∈ [0°,40°], x ∈ [0, L/2]
+///
+/// | Plane | Physical role | Constrained DOFs |
+/// |-------|---------------|-----------------|
+/// | y=0 (θ=0) | Crown / longitudinal mid-plane symmetry | u_y=0, θ_x=0, θ_z=0 |
+/// | x=L/2 | Rigid end diaphragm | u_x=0, u_z=0, θ_y=0 |
+/// | θ=40° | Free longitudinal edge | (none) |
+/// | x=0   | Midspan (free in this model) | (none) |
+///
+/// The free edge at θ=40°, x=0 is the point of maximum vertical deflection.
+///
+/// # Reference solution
+///
+/// Published (MacNeal & Harder 1985): vertical (z) deflection at the
+/// free-edge midspan = 0.3024 (downward).
+///
+/// The initial tolerance band is [0.5, 1.5]×0.3024; step-4 refines this to
+/// the actually observed MITC3 coarse-mesh value once the mesh helper is
+/// implemented.
+#[test]
+fn scordelis_lo_roof_quadrant_vertical_deflection_at_free_edge_midpoint_matches_reference_within_coarse_mesh_tolerance(
+) {
+    const R: f64 = 25.0;
+    const L: f64 = 50.0;
+    const T: f64 = 0.25;
+    const NX: usize = 4; // angular (θ) divisions
+    const NY: usize = 4; // axial (x) divisions
+    const G: f64 = 90.0; // gravity load per unit area
+    const MACNEAL_HARDER_REF: f64 = 0.3024;
+
+    let mat = IsotropicElastic {
+        youngs_modulus: 4.32e8,
+        poisson_ratio: 0.0,
+    };
+
+    // RED: `roof_quadrant_mesh` is not yet defined — compile error expected.
+    let (nodes, connectivity) = roof_quadrant_mesh(NX, NY);
+    let n_nodes = nodes.len();
+
+    // Build per-element stiffness with drilling stabilization.
+    let stiffness: Vec<ElementStiffness> = connectivity
+        .iter()
+        .map(|conn| {
+            let elem_nodes = [nodes[conn[0]], nodes[conn[1]], nodes[conn[2]]];
+            shell_element_stiffness_drilling_stabilized(&elem_nodes, T, &mat, 1e-6)
+        })
+        .collect();
+
+    let elements: Vec<AssemblyElement<'_>> = connectivity
+        .iter()
+        .zip(stiffness.iter())
+        .enumerate()
+        .map(|(i, (conn, k_e))| AssemblyElement { id: i, connectivity: conn, k_e })
+        .collect();
+
+    // Lumped gravity load: per-element area × G / 3 per node, in −z (DOF 2).
+    let mut point_loads: Vec<(usize, f64)> = Vec::new();
+    for conn in &connectivity {
+        let a = nodes[conn[0]];
+        let b = nodes[conn[1]];
+        let c = nodes[conn[2]];
+        // Triangle area = |AB × AC| / 2.
+        let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+        let cross = [
+            ab[1] * ac[2] - ab[2] * ac[1],
+            ab[2] * ac[0] - ab[0] * ac[2],
+            ab[0] * ac[1] - ab[1] * ac[0],
+        ];
+        let area = (cross[0].powi(2) + cross[1].powi(2) + cross[2].powi(2)).sqrt() / 2.0;
+        let f_node = -area * G / 3.0; // downward (−z)
+        for &n in conn.iter() {
+            point_loads.push((n * 6 + 2, f_node));
+        }
+    }
+
+    // BCs: detect nodes by position.
+    // tol is chosen well within each mesh spacing (spacing ≈ L/2/NY ≈ 6.25 in x;
+    // arc-length ≈ R·40°·π/180/NX ≈ 4.36 in θ-direction).
+    let tol = 0.5_f64;
+    let mut bcs: Vec<DirichletBc> = Vec::new();
+
+    for (node, n) in nodes.iter().enumerate() {
+        let dof = |d: usize| node * 6 + d;
+        let is_crown = n[1].abs() < tol;           // y ≈ 0: θ=0 crown symmetry
+        let is_diaphragm = (n[0] - L / 2.0).abs() < tol; // x=L/2 diaphragm end
+
+        // Crown / longitudinal mid-plane symmetry.
+        if is_crown {
+            bcs.push(DirichletBc { dof: dof(1), value: 0.0 }); // u_y = 0
+            bcs.push(DirichletBc { dof: dof(3), value: 0.0 }); // θ_x = 0
+            bcs.push(DirichletBc { dof: dof(5), value: 0.0 }); // θ_z = 0
+        }
+        // Rigid end diaphragm.
+        if is_diaphragm {
+            bcs.push(DirichletBc { dof: dof(0), value: 0.0 }); // u_x = 0
+            bcs.push(DirichletBc { dof: dof(2), value: 0.0 }); // u_z = 0
+            bcs.push(DirichletBc { dof: dof(4), value: 0.0 }); // θ_y = 0
+        }
+    }
+
+    let u = solve_shell_system(&elements, n_nodes, &bcs, &point_loads);
+
+    // Free-edge midspan: x=0, θ=40° → position (0, R·sin40°, R·cos40°).
+    let theta_40 = 40.0_f64.to_radians();
+    let target_y = R * theta_40.sin();
+    let target_z = R * theta_40.cos();
+    let free_edge_midspan = nodes
+        .iter()
+        .position(|n| n[0].abs() < tol && (n[1] - target_y).abs() < 1.0 && (n[2] - target_z).abs() < 1.0)
+        .expect("free-edge midspan node (x=0, θ=40°) not found in mesh");
+
+    // Gravity loads −z ⇒ u_z < 0.  Report downward deflection (positive).
+    let vert_defl = -u[free_edge_midspan * 6 + 2];
+
+    // Initial tolerance band; step-4 (impl) refines to the observed MITC3 coarse-mesh value.
+    assert!(
+        vert_defl > 0.5 * MACNEAL_HARDER_REF && vert_defl < 1.5 * MACNEAL_HARDER_REF,
+        "Scordelis-Lo roof: vertical deflection at free-edge midspan = {vert_defl:.4e}; \
+         expected [{:.4e}, {:.4e}] (MacNeal-Harder 1985 ref = {MACNEAL_HARDER_REF:.4e})",
+        0.5 * MACNEAL_HARDER_REF,
+        1.5 * MACNEAL_HARDER_REF,
+    );
+}
+
 // ─── step-1: sanity check ────────────────────────────────────────────────────
 
 /// Sanity check for the end-to-end shell pipeline.
