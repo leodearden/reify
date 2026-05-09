@@ -356,27 +356,25 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
     });
   }
 
-  function handleSidecarCrashed(_reason: string): void {
-    cancelAndFlush();
-    setState('sessionStatus', 'idle');
+  function handleSidecarCrashed(reason: string): void {
     // Mark every incomplete assistant message complete so throbbers/cursors disappear.
     // Walk all messages rather than only currentMessageId — prior turns can also leak
     // incomplete state (e.g. pre-fix error-without-thinkingComplete commits).
     batch(() => {
-      state.messages.forEach((m, idx) => {
-        if (m.role !== 'assistant' || (m as AssistantMessage).complete) return;
-        setState(
-          'messages',
-          idx,
-          produce((msg: ChatMessage) => {
-            if (msg.role !== 'assistant') return;
-            msg.complete = true;
-            msg.thinkingComplete = true;
-            msg.error = 'sidecar disconnected';
-          }),
-        );
-      });
-      addSystemMessage('sidecar', 'Claude assistant disconnected — restart in progress');
+      cancelAndFlush();
+      setState('sessionStatus', 'idle');
+      setState(
+        'messages',
+        (m: ChatMessage) => m.role === 'assistant' && !(m as AssistantMessage).complete,
+        produce((msg: ChatMessage) => {
+          if (msg.role !== 'assistant') return;
+          msg.complete = true;
+          msg.thinkingComplete = true;
+          msg.error = 'sidecar disconnected';
+        }),
+      );
+      const tail = reason ? ` (${reason})` : '';
+      addSystemMessage('sidecar', `Claude assistant disconnected${tail} — restart in progress`);
     });
   }
 
