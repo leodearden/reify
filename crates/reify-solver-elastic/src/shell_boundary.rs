@@ -528,20 +528,54 @@ mod tests {
         }
     }
 
-    /// `debug_assert!` is elided in release builds, so this test is gated by
-    /// `#[cfg(debug_assertions)]`. Without the gate, `#[should_panic]` would
-    /// incorrectly *fail* under `cargo test --release` because the expected
-    /// panic never fires (same rationale as
-    /// `crates/reify-eval/src/kernel_registry.rs:910-933`).
+    /// Parameterised across all four `(SupportKind, SupportBodyKind)` combinations to
+    /// catch a regression where dup detection might be moved into per-variant arms in
+    /// a future refactor. Today the `debug_assert!` fires before `(body, kind)` dispatch,
+    /// so all four variants share the same code path; pinning each variant explicitly lets
+    /// a regression in any one arm surface independently.
     ///
-    /// RED before the `debug_assert!` exists; GREEN after.
+    /// `debug_assert!` is elided in release builds, so this test is gated by
+    /// `#[cfg(debug_assertions)]`. Without the gate the `catch_unwind` loop would
+    /// observe `Ok(_)` for every variant and the test would fail under
+    /// `cargo test --release` (same rationale as
+    /// `crates/reify-eval/src/kernel_registry.rs:910-933`).
     #[test]
     #[cfg(debug_assertions)]
-    #[should_panic(expected = "duplicate")]
     fn build_support_bcs_panics_on_duplicate_node_indices_in_debug_builds() {
-        // Variant-independent: assert fires before (body, kind) dispatch.
-        // [0, 1, 0]: index 0 appears at positions 0 and 2 (non-adjacent) so
-        // detection is exercised mid-iteration rather than just on neighbours.
-        build_support_bcs(&[0, 1, 0], SupportKind::Fixed, SupportBodyKind::Shell);
+        // [0, 1, 0]: index 0 at positions 0 and 2 (non-adjacent) so detection
+        // is exercised mid-iteration rather than just on neighbours.
+        let cases: [(SupportKind, SupportBodyKind); 4] = [
+            (SupportKind::Fixed, SupportBodyKind::Shell),
+            (SupportKind::Pinned, SupportBodyKind::Shell),
+            (SupportKind::Fixed, SupportBodyKind::Tet),
+            (SupportKind::Pinned, SupportBodyKind::Tet),
+        ];
+        let mut failures: Vec<String> = Vec::new();
+        for (kind, body) in cases {
+            match std::panic::catch_unwind(|| {
+                build_support_bcs(&[0, 1, 0], kind, body);
+            }) {
+                Err(err) => {
+                    let msg = err
+                        .downcast_ref::<String>()
+                        .map(|s| s.as_str())
+                        .or_else(|| err.downcast_ref::<&str>().copied())
+                        .unwrap_or("");
+                    if !msg.contains("duplicate") {
+                        failures.push(format!(
+                            "({kind:?}, {body:?}): panic message was {msg:?}"
+                        ));
+                    }
+                }
+                Ok(_) => failures.push(format!(
+                    "({kind:?}, {body:?}): expected panic but did not panic"
+                )),
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "per-variant duplicate-check failures:\n{}",
+            failures.join("\n")
+        );
     }
 }
