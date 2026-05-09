@@ -25,20 +25,15 @@ const EXAMPLES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples"
 /// (recursive examples_smoke discovery) was merged on 2026-04-26.
 const SKIP_SET: &[(&str, &str)] = &[
     (
-        "topology_selectors/block_inertia.ri",
-        "topology-selectors PRD task 7 worked example; \
-         compile_with_stdlib gated on task 2699 (moment_of_inertia language-level wiring) \
-         and task 2696 (Tensor surface-syntax + MomentOfInertia named dim). \
-         Parse-only smoke is in crates/reify-eval/tests/topology_selector_smoke_tests.rs; \
-         full coverage will land via task 2691.",
-    ),
-    (
         "topology_selectors/fillet_top_edges.ri",
         "topology-selectors PRD task 7 worked example; \
-         compile_with_stdlib gated on tasks 2698 (single/flat_map list helpers) \
-         and 2699 (faces_by_normal/adjacent_faces/shared_edges language-level wiring). \
-         Parse-only smoke is in crates/reify-eval/tests/topology_selector_smoke_tests.rs; \
-         full coverage will land via task 2691.",
+         compile_with_stdlib gated on the missing 3-arg fillet(solid, edges, radius) \
+         stdlib binding — current compiler only wires 2-arg fillet(solid, radius) \
+         (crates/reify-compiler/src/geometry_modify.rs:115). \
+         This is NOT a 2698/2699 gap (those are landed); it is a separate binding. \
+         Gated compile-with-stdlib smoke is in \
+         crates/reify-eval/tests/topology_selector_smoke_tests.rs::\
+         fillet_top_edges_compiles_with_stdlib_no_errors (#[ignore]).",
     ),
 ];
 

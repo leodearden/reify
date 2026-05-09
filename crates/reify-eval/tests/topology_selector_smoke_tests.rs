@@ -1,32 +1,27 @@
 //! Worked-example smoke tests for the topology-selector function family
 //! (PRD `docs/prds/topology-selectors.md` task 7).
 //!
-//! Two `.ri` fixtures live under `examples/topology_selectors/`:
+//! Three `.ri` fixtures live under `examples/topology_selectors/`:
 //!
+//! * `all_topology_selectors_wiring.ri` — compile-time wiring for all 11 names
 //! * `block_inertia.ri` — `moment_of_inertia` on a steel box
 //! * `fillet_top_edges.ri` — `single`/`flat_map`/`adjacent_faces`/`shared_edges`/`faces_by_normal`/`fillet`
 //!
-//! ## Scope: parse-only
+//! ## Scope: parse + compile-with-stdlib + `#[ignore]`-gated eval
 //!
-//! The natural maximum coverage (parse → compile_with_stdlib → eval → constraints,
-//! per `field_source_kinds_smoke.rs`) is not achievable today: the .ri-language
-//! stdlib bindings for `moment_of_inertia`, `faces_by_normal`, `adjacent_faces`,
-//! `shared_edges`, `single`, and `flat_map` are not yet wired. Their OCCT FFIs
-//! and Rust eval implementations exist (tasks 2325, 2327), but task 2325's triage
-//! note (esc-2325-47) explicitly deferred stdlib language-level wiring until a
-//! `Tensor`/`MomentOfInertia` type-system task lands. A `compile_with_stdlib`
-//! assertion of "no errors" would therefore fail today on every undefined-name
-//! diagnostic.
+//! Coverage follows the four-level staircase from `field_source_kinds_smoke.rs`
+//! (parse → compile_with_stdlib → eval → constraints):
 //!
-//! `reify_syntax::parse` is independent of name-resolution and gives a stable,
-//! defensible signal: it pins that the fixtures are syntactically well-formed
-//! Reify source and detects regressions in tree-sitter grammar / lowering.
+//! | Fixture                              | Parse | Compile | Eval (gated) |
+//! |--------------------------------------|-------|---------|--------------|
+//! | `all_topology_selectors_wiring.ri`   | ✓ (via examples_smoke walker) | ✓ active | ✗ (eval dispatch pending) |
+//! | `block_inertia.ri`                   | ✓     | ✓ active (`block_inertia_compiles_with_stdlib_no_errors`) | `#[ignore]` (dispatch pending) |
+//! | `fillet_top_edges.ri`                | ✓     | `#[ignore]` (3-arg fillet binding missing) | `#[ignore]` (3-arg fillet + dispatch) |
 //!
-//! Richer compile_with_stdlib + eval + analytic-tensor coverage is captured as
-//! follow-up task 2691 (hard-deps on tasks 2696, 2698, 2699 — the stdlib
-//! type-system, list-helper, and language-level wiring tasks). Once those land,
-//! this file should grow to mirror `field_source_kinds_smoke.rs`'s 4-level
-//! pattern.
+//! The `#[ignore]`-gated eval tests document future-state contracts and pin the
+//! API surface so a follow-up agent knows exactly what to implement to unblock them.
+//! They are not run in CI but their presence is intentional — see each test's
+//! `#[ignore]` string for the precise blocker and pointer into the code.
 
 use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
 use reify_types::ModulePath;
