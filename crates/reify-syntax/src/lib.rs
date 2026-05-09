@@ -1126,4 +1126,11 @@ mod number_class_tests {
         // Inf is not finite → Real fallback.
         assert_eq!(classify_number_literal(f64::INFINITY, false), NumberClass::Real(f64::INFINITY));
     }
+
+    #[test]
+    fn is_real_false_overflow_past_i64_max_classifies_as_lossy_real() {
+        // 1e20 cannot be represented as i64; the round-trip check fails.
+        // The classifier must return LossyReal, not Real, so callers know to warn.
+        assert_eq!(classify_number_literal(1e20, false), NumberClass::LossyReal(1e20));
+    }
 }
