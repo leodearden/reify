@@ -989,10 +989,17 @@ fn eval_worst_case_dispatch(args: &[Value], ctx: &EvalContext) -> Value {
     };
     // Guard: second arg must be a Lambda. Pinned by
     // `worst_case_argument_shape_negatives_return_undef`'s `non_lambda_second`.
-    let lambda = match &args[1] {
-        Value::Lambda { .. } => &args[1],
-        _ => return Value::Undef,
-    };
+    //
+    // `matches!` rather than a `match`-rebinds-`&args[1]` form: the
+    // rebinding shape has bitten similar dispatch sites where the matched
+    // binding sits unused, weakening the type-driven check (adding fields
+    // to `Value::Lambda` would not fail-compile a discard-bind guard). The
+    // explicit `matches!` precondition keeps the intent legible and the
+    // `lambda` borrow appearing only after the guard succeeds.
+    if !matches!(&args[1], Value::Lambda { .. }) {
+        return Value::Undef;
+    }
+    let lambda = &args[1];
     // Guard: outer Map must carry a `"cases"` key bound to a Map. Pinned by
     // the `no_cases_key` and `cases_not_map` negatives.
     let cases = match outer.get(&Value::String("cases".to_string())) {
