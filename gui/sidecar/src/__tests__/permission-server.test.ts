@@ -394,4 +394,57 @@ describe('createPermissionServer', () => {
       server.cancelAll();
     }
   });
+
+  // success-path cleanup: each completed approve_tool call must close its per-request
+  // transport + mcpServer. With `cleaned = true` after handleRequest() the listener is
+  // short-circuited on the success path and both spies stay at 0 — proving the leak.
+  it('runs cleanup on the success path: each completed approve_tool call closes its per-request transport+mcpServer', async () => {
+    server = createPermissionServer();
+    await server.start();
+
+    let capturedRequestId = '';
+    server.onRequest((req) => {
+      capturedRequestId = req.request_id;
+    });
+
+    const mcpCloseSpy = vi.spyOn(McpServer.prototype, 'close');
+    const transportCloseSpy = vi.spyOn(StreamableHTTPServerTransport.prototype, 'close');
+
+    const client = await connectClient(server.url());
+
+    try {
+      const N = 10;
+      for (let i = 0; i < N; i++) {
+        capturedRequestId = '';
+        const toolCallPromise = client.callTool({
+          name: 'approve_tool',
+          arguments: { tool_name: 'Write', input: { i } },
+        });
+
+        // Wait for the server's onRequest callback to fire (captured request_id set).
+        await new Promise<void>((resolve) => {
+          const check = () => {
+            if (capturedRequestId) resolve();
+            else setTimeout(check, 5);
+          };
+          check();
+        });
+
+        server.decide(capturedRequestId, { behavior: 'allow' });
+        await toolCallPromise;
+      }
+
+      // Allow Node to fire post-response 'close' events through the event loop.
+      await new Promise((r) => setTimeout(r, 100));
+
+      // Each of the N requests must have triggered cleanup via the 'close' listener.
+      // With `cleaned = true` blocking the listener on the success path both counts stay 0.
+      expect(mcpCloseSpy.mock.calls.length).toBeGreaterThanOrEqual(N);
+      expect(transportCloseSpy.mock.calls.length).toBeGreaterThanOrEqual(N);
+    } finally {
+      mcpCloseSpy.mockRestore();
+      transportCloseSpy.mockRestore();
+      await client.close();
+    }
+  });
 });
