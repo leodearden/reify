@@ -902,7 +902,7 @@ pub enum GeometryQuery {
     /// `Vertex` built from `(px, py, pz)`; "on" is `distance ≤ tolerance`.
     /// Returns `Value::Bool`. The OCCT `Precision::Confusion()` (~1e-7) is
     /// the recommended default, supplied by the dispatcher; an explicit
-    /// `on(point, geometry, tol: Length)` overload is deferred per PRD §3.9.
+    /// `is_on(point, geometry, tol: Length)` overload is deferred per PRD §3.9.
     ///
     /// Note: the underlying primitive returns `true` for any interior solid
     /// point at any positive tolerance (because the closest point on a
@@ -911,7 +911,7 @@ pub enum GeometryQuery {
     /// rustdoc.
     ///
     /// Powers the v0.1 stdlib helper
-    /// `on<G: Geometry>(point: Point3<Length>, geometry: G) -> Bool`.
+    /// `is_on<G: Geometry>(point: Point3<Length>, geometry: G) -> Bool`.
     PointOnShape {
         handle: GeometryHandleId,
         px: f64,

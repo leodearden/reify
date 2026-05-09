@@ -539,7 +539,7 @@ enum QueryKey {
         pz_bits: u64,
     },
     /// PointOnShape keys the geometry handle + query point + tolerance.
-    /// Powers the v0.1 stdlib `on` helper (task 2324). Tolerance is bit-keyed
+    /// Powers the v0.1 stdlib `is_on` helper (task 2324). Tolerance is bit-keyed
     /// so a future explicit-tolerance overload can stage distinct results
     /// without re-staging the same handle/point pair.
     PointOnShape {
@@ -971,11 +971,11 @@ impl MockGeometryKernel {
     /// (geometry handle, query point, tolerance) triple.
     ///
     /// The `value` should be a `Value::Bool`. The `tolerance` is bit-keyed
-    /// (via `density_bits`) so the stub for `on(p, b)` (which the
+    /// (via `density_bits`) so the stub for `is_on(p, b)` (which the
     /// dispatcher hard-codes to `1e-7`) is distinguishable from a future
-    /// explicit-tolerance `on(p, b, tol)` overload.
+    /// explicit-tolerance `is_on(p, b, tol)` overload.
     ///
-    /// Powers the v0.1 stdlib `on` helper (task 2324).
+    /// Powers the v0.1 stdlib `is_on` helper (task 2324).
     pub fn with_point_on_shape_result(
         mut self,
         handle: GeometryHandleId,
