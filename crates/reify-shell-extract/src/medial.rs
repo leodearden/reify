@@ -2026,6 +2026,144 @@ mod tests {
         );
     }
 
+    /// Characterization — +Inf spacing on axis 0 is rejected via `is_finite()`.
+    ///
+    /// Pins the implicit behavior that +Inf spacing (not just NaN/zero/negative)
+    /// is caught by the existing `sp.is_finite() && sp > 0.0` predicate.
+    /// Future refactors of the geometry-validation block must not silently
+    /// regress ±Inf handling.
+    #[test]
+    fn compute_medial_mask_rejects_positive_infinity_spacing() {
+        let sdf = geometry_test_field(
+            [f64::INFINITY, 1.0, 1.0],
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+        );
+        let err = compute_medial_mask(&sdf, &MedialOptions::default())
+            .expect_err("+Inf spacing must be rejected");
+        assert_eq!(
+            err,
+            MedialError::InvalidAxisGeometry {
+                axis: 0,
+                spacing: f64::INFINITY,
+                bounds_min: 0.0,
+                bounds_max: 1.0,
+            }
+        );
+    }
+
+    /// Characterization — -Inf spacing on axis 0 is rejected via `is_finite()`.
+    #[test]
+    fn compute_medial_mask_rejects_negative_infinity_spacing() {
+        let sdf = geometry_test_field(
+            [f64::NEG_INFINITY, 1.0, 1.0],
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+        );
+        let err = compute_medial_mask(&sdf, &MedialOptions::default())
+            .expect_err("-Inf spacing must be rejected");
+        assert_eq!(
+            err,
+            MedialError::InvalidAxisGeometry {
+                axis: 0,
+                spacing: f64::NEG_INFINITY,
+                bounds_min: 0.0,
+                bounds_max: 1.0,
+            }
+        );
+    }
+
+    /// Characterization — +Inf bounds_max on axis 0 is rejected via `bmax.is_finite()`.
+    #[test]
+    fn compute_medial_mask_rejects_positive_infinity_bounds_max() {
+        let sdf = geometry_test_field(
+            [1.0, 1.0, 1.0],
+            [0.0, 0.0, 0.0],
+            [f64::INFINITY, 1.0, 1.0],
+        );
+        let err = compute_medial_mask(&sdf, &MedialOptions::default())
+            .expect_err("+Inf bounds_max must be rejected");
+        assert_eq!(
+            err,
+            MedialError::InvalidAxisGeometry {
+                axis: 0,
+                spacing: 1.0,
+                bounds_min: 0.0,
+                bounds_max: f64::INFINITY,
+            }
+        );
+    }
+
+    /// Characterization — -Inf bounds_min on axis 0 is rejected via `bmin.is_finite()`.
+    #[test]
+    fn compute_medial_mask_rejects_negative_infinity_bounds_min() {
+        let sdf = geometry_test_field(
+            [1.0, 1.0, 1.0],
+            [f64::NEG_INFINITY, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+        );
+        let err = compute_medial_mask(&sdf, &MedialOptions::default())
+            .expect_err("-Inf bounds_min must be rejected");
+        assert_eq!(
+            err,
+            MedialError::InvalidAxisGeometry {
+                axis: 0,
+                spacing: 1.0,
+                bounds_min: f64::NEG_INFINITY,
+                bounds_max: 1.0,
+            }
+        );
+    }
+
+    /// Characterization — zero spacing on axis 1 is rejected with `axis: 1`.
+    ///
+    /// Pins that the validator's `for axis in 0..3` loop reports the correct
+    /// non-zero axis index, not always 0. A future refactor that collapsed the
+    /// loop to axis-0-only would silently miss axis-1/2 violations.
+    #[test]
+    fn compute_medial_mask_rejects_zero_spacing_on_axis_1() {
+        let sdf = geometry_test_field(
+            [1.0, 0.0, 1.0], // axis-1 spacing = 0
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+        );
+        let err = compute_medial_mask(&sdf, &MedialOptions::default())
+            .expect_err("zero spacing on axis 1 must be rejected");
+        assert_eq!(
+            err,
+            MedialError::InvalidAxisGeometry {
+                axis: 1,
+                spacing: 0.0,
+                bounds_min: 0.0,
+                bounds_max: 1.0,
+            }
+        );
+    }
+
+    /// Characterization — inverted bounds on axis 2 are rejected with `axis: 2`.
+    ///
+    /// Pins that the `for axis in 0..3` loop correctly identifies the first
+    /// violating axis when it is axis 2. bounds_min[2]=1.0 > bounds_max[2]=0.0.
+    #[test]
+    fn compute_medial_mask_rejects_inverted_bounds_on_axis_2() {
+        let sdf = geometry_test_field(
+            [1.0, 1.0, 1.0],
+            [0.0, 0.0, 1.0], // bounds_min[2] = 1.0 > bounds_max[2] = 0.0
+            [1.0, 1.0, 0.0],
+        );
+        let err = compute_medial_mask(&sdf, &MedialOptions::default())
+            .expect_err("inverted bounds on axis 2 must be rejected");
+        assert_eq!(
+            err,
+            MedialError::InvalidAxisGeometry {
+                axis: 2,
+                spacing: 1.0,
+                bounds_min: 1.0,
+                bounds_max: 0.0,
+            }
+        );
+    }
+
     /// Unit test for `validate_flat_data_length`: exercises all three result
     /// branches (Ok, AxisExtentsOverflow, DataLengthMismatch) without
     /// constructing a full SampledField — keeping the test fast and avoiding
