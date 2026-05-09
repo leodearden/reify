@@ -1,0 +1,277 @@
+/**
+ * Tests for the main() entrypoint's permission-server lifecycle (step-5).
+ *
+ * Verifies:
+ * (a) main() creates + starts a PermissionServer before emitting `ready`
+ * (b) SidecarSession is constructed with permissionMcp.url = server.url()
+ * (c) When input is destroyed (or SIGTERM fires), server.stop() is called exactly once
+ *
+ * Uses vi.mock to stub createPermissionServer so tests never bind a real port.
+ */
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
+import type { PermissionServer } from '../permission-server.js';
+
+// --- Module mocks (hoisted by vitest) ---
+
+vi.mock('node:child_process', () => ({
+  spawn: vi.fn(),
+}));
+
+vi.mock('../permission-server.js', () => ({
+  createPermissionServer: vi.fn(),
+}));
+
+// --- Imports (after mocks) ---
+
+import { spawn } from 'node:child_process';
+import { createPermissionServer } from '../permission-server.js';
+import { main } from '../index.js';
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+const TEST_PERMISSION_URL = 'http://127.0.0.1:12345/mcp';
+
+function makePermissionServerMock(): PermissionServer & {
+  start: ReturnType<typeof vi.fn>;
+  stop: ReturnType<typeof vi.fn>;
+  url: ReturnType<typeof vi.fn>;
+  onRequest: ReturnType<typeof vi.fn>;
+  decide: ReturnType<typeof vi.fn>;
+  setRemembered: ReturnType<typeof vi.fn>;
+} {
+  return {
+    start: vi.fn().mockResolvedValue(undefined),
+    stop: vi.fn().mockResolvedValue(undefined),
+    url: vi.fn().mockReturnValue(TEST_PERMISSION_URL),
+    onRequest: vi.fn(),
+    decide: vi.fn(),
+    setRemembered: vi.fn(),
+  };
+}
+
+/**
+ * Create a minimal mock subprocess that never emits events and keeps stdout open.
+ * The test drives closing manually so main() stays blocked in the read loop.
+ */
+function makeIdleProcess(): any {
+  const proc = new EventEmitter() as any;
+  proc.stdout = new PassThrough();
+  proc.stderr = new PassThrough();
+  proc.stdin = new PassThrough();
+  proc.exitCode = null;
+  return proc;
+}
+
+/**
+ * Collect newline-delimited JSON messages from `output` until `timeoutMs` elapses.
+ */
+function collectOutput(output: PassThrough, timeoutMs = 1000): Promise<any[]> {
+  return new Promise((resolve) => {
+    const msgs: any[] = [];
+    let buffer = '';
+    const onData = (chunk: Buffer | string) => {
+      buffer += chunk.toString();
+      let idx: number;
+      while ((idx = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 1);
+        if (line.length > 0) msgs.push(JSON.parse(line));
+      }
+    };
+    output.on('data', onData);
+    setTimeout(() => {
+      output.removeListener('data', onData);
+      resolve(msgs);
+    }, timeoutMs);
+    output.on('end', () => {
+      clearTimeout(0 as any); // no-op; let timer fire
+    });
+  });
+}
+
+/**
+ * Wait until `predicate` returns true for one of the messages collected from `output`,
+ * or until `timeoutMs` elapses.
+ */
+function waitForMessage(
+  output: PassThrough,
+  predicate: (m: any) => boolean,
+  timeoutMs = 2000
+): Promise<any> {
+  return new Promise((resolve, reject) => {
+    let buffer = '';
+    const timer = setTimeout(() => {
+      output.removeListener('data', onData);
+      reject(new Error('waitForMessage timed out'));
+    }, timeoutMs);
+
+    const onData = (chunk: Buffer | string) => {
+      buffer += chunk.toString();
+      let idx: number;
+      while ((idx = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 1);
+        if (line.length > 0) {
+          try {
+            const msg = JSON.parse(line);
+            if (predicate(msg)) {
+              clearTimeout(timer);
+              output.removeListener('data', onData);
+              resolve(msg);
+            }
+          } catch {
+            // ignore parse errors
+          }
+        }
+      }
+    };
+    output.on('data', onData);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+describe('main() permission server lifecycle (step-5)', () => {
+  let serverMock: ReturnType<typeof makePermissionServerMock>;
+
+  beforeEach(() => {
+    serverMock = makePermissionServerMock();
+    vi.mocked(createPermissionServer).mockReturnValue(serverMock);
+    vi.mocked(spawn).mockReset();
+    vi.mocked(spawn).mockImplementation((() => makeIdleProcess()) as any);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // (a) server.start() is called before ready is emitted
+  it('(a) createPermissionServer() is called and start() resolves before ready is emitted', async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+
+    // Record the resolution order: 'start' when start() resolves, 'ready' when we observe
+    // the ready message. If start() is awaited before session.init(), 'start' precedes 'ready'.
+    const order: string[] = [];
+
+    let resolveStart!: () => void;
+    const startSignal = new Promise<void>((r) => { resolveStart = r; });
+
+    vi.mocked(serverMock.start).mockImplementation(async () => {
+      // Ensure start() is asynchronous so ordering is detectable
+      await new Promise<void>((r) => setImmediate(r));
+      order.push('start');
+    });
+
+    const readyWatcher = waitForMessage(output, (m) => m.type === 'ready').then((m) => {
+      order.push('ready');
+      return m;
+    });
+
+    const mainPromise = main(input, output);
+
+    // Wait for ready
+    await readyWatcher;
+
+    // Assertions: createPermissionServer was called once
+    expect(vi.mocked(createPermissionServer)).toHaveBeenCalledOnce();
+    // start() was invoked
+    expect(serverMock.start).toHaveBeenCalledOnce();
+    // start() completed before ready was emitted
+    expect(order.indexOf('start')).toBeLessThan(order.indexOf('ready'));
+
+    // Cleanup — use end() not destroy() to avoid ERR_STREAM_PREMATURE_CLOSE
+    input.end();
+    await mainPromise;
+  });
+
+  // (b) SidecarSession receives permissionMcp wired with the server's url()
+  //     Verified indirectly: when a send_message triggers spawn(), the spawn args
+  //     include --permission-prompt-tool (only added when permissionMcp is configured).
+  it('(b) spawn args include --permission-prompt-tool when permissionMcp is wired', async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+
+    const mainPromise = main(input, output);
+
+    // Wait for ready
+    await waitForMessage(output, (m) => m.type === 'ready');
+
+    // Send a message to trigger invokeSdk → spawn()
+    input.write(
+      JSON.stringify({ type: 'send_message', id: 'msg-b1', text: 'hello' }) + '\n'
+    );
+
+    // Wait until spawn is called
+    await new Promise<void>((resolve, reject) => {
+      const deadline = Date.now() + 2000;
+      const check = setInterval(() => {
+        if (vi.mocked(spawn).mock.calls.length > 0) {
+          clearInterval(check);
+          resolve();
+        } else if (Date.now() > deadline) {
+          clearInterval(check);
+          reject(new Error('spawn was never called'));
+        }
+      }, 10);
+    });
+
+    const spawnArgs: string[] = vi.mocked(spawn).mock.calls[0][1] as string[];
+    expect(spawnArgs).toContain('--permission-prompt-tool');
+    expect(spawnArgs).toContain('mcp__reify-permission__approve_tool');
+    // The URL returned by our mock server should appear in an --mcp-config file
+    // (we verify the flag is present; the file contents are tested in session.test.ts)
+    expect(spawnArgs).toContain('--mcp-config');
+
+    // Cleanup — use end() not destroy() to avoid ERR_STREAM_PREMATURE_CLOSE
+    input.end();
+    await mainPromise;
+  });
+
+  // (c) server.stop() is called exactly once when input ends (graceful shutdown)
+  it('(c) server.stop() is called exactly once when input stream ends', async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+
+    const mainPromise = main(input, output);
+
+    // Wait for ready (ensures main() is fully initialized)
+    await waitForMessage(output, (m) => m.type === 'ready');
+
+    // End input gracefully — triggers the for-await loop to finish, then finally block runs
+    input.end();
+    await mainPromise;
+
+    expect(serverMock.stop).toHaveBeenCalledOnce();
+  });
+
+  // (c-sigterm) SIGTERM also triggers server.stop() exactly once.
+  // SIGTERM calls input.destroy() (not input.end()), so main() may reject with
+  // ERR_STREAM_PREMATURE_CLOSE. We pre-attach .catch() to suppress the unhandled
+  // rejection, then wait for settlement and assert stop() was called.
+  it('(c-sigterm) SIGTERM triggers server.stop() exactly once', async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+
+    const mainPromise = main(input, output);
+    // Pre-attach to suppress "unhandled rejection" noise from ERR_STREAM_PREMATURE_CLOSE.
+    // The rejection is caused by the shutdown handler calling input.destroy().
+    const mainSettled = mainPromise.catch(() => undefined);
+
+    await waitForMessage(output, (m) => m.type === 'ready');
+
+    // Simulate SIGTERM — shutdown handler calls input.destroy() which breaks the
+    // for-await loop; the finally block should call server.stop().
+    process.emit('SIGTERM');
+
+    await mainSettled;
+
+    expect(serverMock.stop).toHaveBeenCalledOnce();
+  });
+});
