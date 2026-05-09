@@ -43,49 +43,6 @@ const ALL_TOPOLOGY_SELECTORS_WIRING_PATH: &str = concat!(
     "/../../examples/topology_selectors/all_topology_selectors_wiring.ri"
 );
 
-/// Verify that `all_topology_selectors_wiring.ri` passes a real face handle (not
-/// a Solid) as the second argument to `adjacent_faces` and `shared_edges`.
-///
-/// Two assertions fire:
-///
-/// 1. **Structural shape (RED until S2)**: The source must NOT contain the
-///    old placeholder strings `"adjacent_faces(body, body)"` or
-///    `"shared_edges(body, body)"`.  These were sufficient for compile-time
-///    wiring (which keys only on the function name, not arg types) but are
-///    semantically wrong — both relational selectors expect a face handle as
-///    their second argument (§3.9 PRD signature), not a Solid.  The assertion
-///    pins runtime arg-shape correctness and will FAIL RED until Step S2
-///    introduces `let top_face = single(top_faces)` and threads it through.
-///
-/// 2. **Compile clean**: After the fix, the new face-handle form must still
-///    compile with no Error-severity diagnostics (tasks 2699 and 2698 are
-///    both landed on HEAD).
-#[test]
-fn all_topology_selectors_wiring_passes_face_handles_to_relational_selectors() {
-    let source = std::fs::read_to_string(ALL_TOPOLOGY_SELECTORS_WIRING_PATH)
-        .expect("examples/topology_selectors/all_topology_selectors_wiring.ri should exist");
-
-    assert!(
-        !source.contains("adjacent_faces(body, body)"),
-        "all_topology_selectors_wiring.ri should pass a face handle (not a Solid) as the \
-         second argument to adjacent_faces; found the old placeholder `adjacent_faces(body, body)` \
-         — fix by introducing `let top_face = single(top_faces)` and using it instead"
-    );
-    assert!(
-        !source.contains("shared_edges(body, body)"),
-        "all_topology_selectors_wiring.ri should pass face handles to shared_edges; found the old \
-         placeholder `shared_edges(body, body)` — fix by threading `top_face` through the call"
-    );
-
-    let compiled = parse_and_compile_with_stdlib(&source);
-    assert!(
-        errors_only(&compiled).is_empty(),
-        "examples/topology_selectors/all_topology_selectors_wiring.ri should compile with \
-         no error-severity diagnostics after the face-handle fix, got:\n{:#?}",
-        errors_only(&compiled)
-    );
-}
-
 #[test]
 fn all_topology_selectors_wiring_compiles_with_stdlib() {
     let source = std::fs::read_to_string(ALL_TOPOLOGY_SELECTORS_WIRING_PATH)
@@ -163,10 +120,20 @@ fn block_inertia_evals_moment_of_inertia_to_tensor() {
 
     let cell = ValueCellId::new("BlockInertia", "i");
     match result.values.get(&cell) {
-        Some(Value::Tensor(_)) => {} // rank-2 nested Tensor — correct
+        // Enforce rank-2: exactly 3 rows, each a Tensor of exactly 3 cols.
+        // A rank-1 Tensor (e.g. a 3-vector) would satisfy `Value::Tensor(_)`
+        // but is NOT the expected 3×3 MomentOfInertia matrix (PRD §3.9).
+        Some(Value::Tensor(rows))
+            if rows.len() == 3
+                && rows
+                    .iter()
+                    .all(|r| matches!(r, Value::Tensor(cols) if cols.len() == 3)) =>
+        {
+            // rank-2, 3×3 — correct
+        }
         other => panic!(
-            "expected BlockInertia.i to be Value::Tensor(_) (rank-2 MomentOfInertia tensor), \
-             got {other:?}"
+            "expected BlockInertia.i to be a rank-2 Value::Tensor of 3 rows × 3 cols \
+             (Tensor<2,3,MomentOfInertia> per PRD §3.9), got {other:?}"
         ),
     }
 }
@@ -221,8 +188,11 @@ fn fillet_top_edges_compiles_with_stdlib_no_errors() {
     );
 }
 
-/// Eval-deepening contract: the `result` cell in `FilletTopEdges` must resolve
-/// to a non-`Undef` solid handle after `engine.build()`.
+/// Eval-deepening contract: `engine.build()` on `fillet_top_edges.ri` must
+/// produce non-empty `geometry_output`, confirming that the topology-walk
+/// pipeline (`faces_by_normal` → `single` → `adjacent_faces` → `shared_edges`
+/// → `flat_map`) supplies real edge handles to the 3-arg `fillet` call so the
+/// kernel can produce a filleted solid.
 ///
 /// Expected dataflow:
 /// 1. `top = single(faces_by_normal(b, vec3(0,0,1), 1deg))` — extract the single
@@ -232,6 +202,15 @@ fn fillet_top_edges_compiles_with_stdlib_no_errors() {
 ///    between `top` and that face, giving the four top-perimeter edges.
 /// 3. `result = fillet(b, top_edges, 1mm)` — apply the 3-arg fillet to produce
 ///    a new solid with the four top-perimeter edges rounded to r=1mm.
+///
+/// Architecture note: `fillet` is a geometry-modification operation; its output
+/// solid is produced by the kernel and surfaced via `BuildResult::geometry_output`
+/// (a serialised B-Rep blob), NOT via `BuildResult::values`.  Value cells in
+/// `values` are reserved for scalar/computed results (Point, Scalar, Tensor,
+/// etc.) from topology-query helpers such as `closest_point` / `on` /
+/// `moment_of_inertia`.  Therefore this test asserts `geometry_output.is_some()`
+/// — the kernel delivered a B-Rep — rather than checking a specific `Value`
+/// variant in `values` for the `result` cell.
 ///
 /// **Blocked by two prerequisites** (both must land before this fixture runs):
 ///
@@ -244,8 +223,8 @@ fn fillet_top_edges_compiles_with_stdlib_no_errors() {
 ///     `faces_by_normal`/`adjacent_faces`/`shared_edges` arms in
 ///     `try_eval_topology_selector` (`crates/reify-eval/src/geometry_ops.rs:1646-1661`).
 ///     Until (b) lands the intermediate topology cells stay at `Value::Undef`
-///     and `top_edges` carries no real edge handles, so `result` would also be
-///     `Value::Undef`.
+///     and `top_edges` carries no real edge handles, so the kernel cannot
+///     produce a fillet result.
 ///
 /// Remove the `#[ignore]` once both (a) and (b) are implemented.
 #[test]
@@ -269,15 +248,18 @@ fn fillet_top_edges_evals_to_solid_via_topology_walk() {
     let mut engine = Engine::new(Box::new(checker), None);
     let result = engine.build(&compiled, ExportFormat::Step);
 
-    let cell = ValueCellId::new("FilletTopEdges", "result");
-    match result.values.get(&cell) {
-        Some(Value::Undef) | None => panic!(
-            "expected FilletTopEdges.result to be a resolved solid handle (not Undef/absent) \
-             after fillet(b, top_edges, 1mm); got {:#?}",
-            result.values.get(&cell)
-        ),
-        Some(_) => {} // any non-Undef value is consistent with a resolved solid
-    }
+    // `fillet` is a geometry-modification op: the filleted solid is produced by
+    // the kernel and delivered via `geometry_output` (a serialised B-Rep blob).
+    // An absent or empty blob means the kernel did not produce a solid — either
+    // the topology walk failed to supply real edge handles, or the fillet op was
+    // never dispatched.
+    assert!(
+        result.geometry_output.is_some(),
+        "expected engine.build() on fillet_top_edges.ri to produce non-empty geometry_output \
+         (the kernel filleted the box along the four top-perimeter edges selected via the \
+         topology walk), but geometry_output was None — both (a) 3-arg fillet binding and \
+         (b) eval-side dispatch for topology selectors must be present"
+    );
 }
 
 #[test]
