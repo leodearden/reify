@@ -1959,4 +1959,99 @@ mod tests {
             }
         );
     }
+
+    /// Display contract test: formatting an `InvalidAxisGeometry` variant
+    /// that carries all-valid field values (which the validator would never
+    /// produce) must panic — the `(false, false)` arm is unreachable in
+    /// well-formed code and should signal that via `unreachable!(...)`.
+    ///
+    /// Currently FAILS (RED) because the `(false, false)` arm at lines
+    /// 290-296 emits a "no violation detected" string instead of panicking.
+    /// After step-2 replaces that arm with `unreachable!(...)`, `format!`
+    /// triggers the panic and `catch_unwind` captures it as `Err(_)`.
+    ///
+    /// `AssertUnwindSafe` is needed because `format!` borrows `err` and the
+    /// closure's capture of `&MedialError` must be declared unwind-safe.
+    /// `MedialError` derives only `Debug/Clone/PartialEq`; the explicit wrap
+    /// opts the closure in rather than relying on an auto-trait impl.
+    #[test]
+    fn invalid_axis_geometry_display_panics_when_no_violation_present() {
+        let err = MedialError::InvalidAxisGeometry {
+            axis: 1,
+            spacing: 1.0,   // valid: finite and positive
+            bounds_min: 0.0, // valid: finite
+            bounds_max: 2.0, // valid: finite and >= bounds_min
+        };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            format!("{err}")
+        }));
+        assert!(
+            result.is_err(),
+            "formatting InvalidAxisGeometry with no violation must panic (unreachable arm); \
+             got Ok({:?})",
+            result.ok()
+        );
+    }
+
+    /// Display contract test: the three real violation arms (sp_bad only,
+    /// bn_bad only, both) must produce messages that contain the axis index,
+    /// the spacing value, both bound values, and appropriate rule text.
+    ///
+    /// Pins the existing three informative arms so that step-2's surgery on
+    /// the `(false, false)` arm cannot accidentally damage them.
+    #[test]
+    fn invalid_axis_geometry_display_real_cases_list_fields_and_rules() {
+        // Case 1: spacing-only violation (zero spacing on axis 0).
+        // Triggers (sp_bad=true, bn_bad=false).
+        let sp_err = MedialError::InvalidAxisGeometry {
+            axis: 0,
+            spacing: 0.0,
+            bounds_min: 0.0,
+            bounds_max: 1.0,
+        };
+        let sp_msg = format!("{sp_err}");
+        assert!(sp_msg.contains("axis"), "sp_bad message must mention 'axis': {sp_msg}");
+        assert!(sp_msg.contains('0'), "sp_bad message must include axis index 0: {sp_msg}");
+        assert!(
+            sp_msg.contains("spacing=") || sp_msg.contains("spacing "),
+            "sp_bad message must mention spacing: {sp_msg}"
+        );
+        assert!(sp_msg.contains("bounds_min"), "sp_bad message must include bounds_min: {sp_msg}");
+        assert!(sp_msg.contains("bounds_max"), "sp_bad message must include bounds_max: {sp_msg}");
+
+        // Case 2: bounds-only violation (NaN bounds_min on axis 0).
+        // Triggers (sp_bad=false, bn_bad=true).
+        // format! writes f64::NAN as "NaN" — deterministic under Display.
+        let bn_err = MedialError::InvalidAxisGeometry {
+            axis: 0,
+            spacing: 1.0,
+            bounds_min: f64::NAN,
+            bounds_max: 1.0,
+        };
+        let bn_msg = format!("{bn_err}");
+        assert!(bn_msg.contains("axis"), "bn_bad message must mention 'axis': {bn_msg}");
+        assert!(bn_msg.contains('0'), "bn_bad message must include axis index 0: {bn_msg}");
+        assert!(bn_msg.contains("bounds_min"), "bn_bad message must include bounds_min: {bn_msg}");
+        assert!(bn_msg.contains("bounds_max"), "bn_bad message must include bounds_max: {bn_msg}");
+
+        // Case 3: both violations simultaneously (negative spacing + inverted bounds on axis 2).
+        // Triggers (sp_bad=true, bn_bad=true).
+        let both_err = MedialError::InvalidAxisGeometry {
+            axis: 2,
+            spacing: -1.0,
+            bounds_min: 5.0,
+            bounds_max: 0.0,
+        };
+        let both_msg = format!("{both_err}");
+        assert!(both_msg.contains("axis"), "both_bad message must mention 'axis': {both_msg}");
+        assert!(both_msg.contains('2'), "both_bad message must include axis index 2: {both_msg}");
+        assert!(
+            both_msg.contains("spacing=") || both_msg.contains("spacing "),
+            "both_bad message must mention spacing: {both_msg}"
+        );
+        assert!(
+            both_msg.contains("bounds_min") || both_msg.contains("bounds"),
+            "both_bad message must include bounds: {both_msg}"
+        );
+    }
 }
