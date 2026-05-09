@@ -227,4 +227,78 @@ mod tests {
         assert_eq!(err, GridValidationError::EmptyAxisGrid { axis: 0 });
     }
 
+    /// Table-driven empty-axis-grid test covering all three axes (0, 1, 2).
+    ///
+    /// Pins that `validate_regular3d` reports the correct axis index from
+    /// `enumerate()`. An off-by-one or mis-zip in the loop would be caught
+    /// because the assertion message names the failing axis.
+    #[test]
+    fn validate_regular3d_rejects_empty_axis_grid_table_driven() {
+        for axis in 0..3 {
+            let mut sdf = minimal_3d_field();
+            sdf.axis_grids[axis] = vec![];
+            let err = validate_regular3d(&sdf)
+                .expect_err(&format!("empty axis_grids[{axis}] must be rejected"));
+            assert_eq!(
+                err,
+                GridValidationError::EmptyAxisGrid { axis },
+                "axis_grids[{axis}] empty must report axis={axis}"
+            );
+        }
+    }
+
+    /// Table-driven axis-length-mismatch tests covering bounds_max, spacing,
+    /// and axis_grids fields (bounds_min is already covered by
+    /// `validate_regular3d_rejects_axis_length_mismatch`).
+    ///
+    /// Pins that the four `*_len` field assignments in `AxisLengthMismatch`
+    /// are correct for each field. A future swap of field assignments would
+    /// trip a named failing case.
+    #[test]
+    fn validate_regular3d_rejects_axis_length_mismatch_non_bounds_min() {
+        // (field name, mutated sdf, expected error)
+        let cases: &[(&str, fn(&mut SampledField), GridValidationError)] = &[
+            (
+                "bounds_max",
+                |sdf| sdf.bounds_max = vec![2.0],
+                GridValidationError::AxisLengthMismatch {
+                    bounds_min_len: 3,
+                    bounds_max_len: 1,
+                    spacing_len: 3,
+                    axis_grids_len: 3,
+                },
+            ),
+            (
+                "spacing",
+                |sdf| sdf.spacing = vec![1.0],
+                GridValidationError::AxisLengthMismatch {
+                    bounds_min_len: 3,
+                    bounds_max_len: 3,
+                    spacing_len: 1,
+                    axis_grids_len: 3,
+                },
+            ),
+            (
+                "axis_grids",
+                |sdf| sdf.axis_grids = vec![vec![0.0, 1.0, 2.0]],
+                GridValidationError::AxisLengthMismatch {
+                    bounds_min_len: 3,
+                    bounds_max_len: 3,
+                    spacing_len: 3,
+                    axis_grids_len: 1,
+                },
+            ),
+        ];
+        for (field, mutate, expected) in cases {
+            let mut sdf = minimal_3d_field();
+            mutate(&mut sdf);
+            let err = validate_regular3d(&sdf)
+                .expect_err(&format!("{field} length-1 must be rejected"));
+            assert_eq!(
+                err, *expected,
+                "{field} length-1 mismatch must report correct lengths in AxisLengthMismatch"
+            );
+        }
+    }
+
 }
