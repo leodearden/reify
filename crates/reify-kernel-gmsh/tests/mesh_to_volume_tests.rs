@@ -135,6 +135,44 @@ fn mesh_size_override_increases_tet_count() {
     );
 }
 
+/// Pin that `ElementOrderTag::P2` produces 10-node tetrahedra (stride 10
+/// in the flat `tet_indices` array).
+///
+/// Gmsh's element type 11 is a 10-node second-order tet (4 corner + 6
+/// edge-midpoint nodes). Requesting `P2` must:
+///  - set `Mesh.ElementOrder = 2` BEFORE `mesh_generate(3)` so HXT emits
+///    P2 tets in the first place;
+///  - read elements via `get_elements_by_type(11)` instead of `4`;
+///  - tag the returned `VolumeMesh.element_order` as `P2`.
+///
+/// This test fails if any of those three steps is missing.
+#[test]
+fn p2_element_order_produces_stride_10_tet_indices() {
+    let cube = unit_cube_mesh();
+    let kernel = GmshKernel::new();
+
+    let vm = kernel
+        .mesh_to_volume(&cube, &MeshingOptions::default(), ElementOrderTag::P2)
+        .expect("P2 mesh_to_volume must succeed for a closed unit cube");
+
+    assert_eq!(
+        vm.element_order,
+        ElementOrderTag::P2,
+        "element_order must echo the requested ElementOrderTag::P2",
+    );
+    assert_eq!(
+        vm.tet_indices.len() % 10,
+        0,
+        "P2 tets carry 10 nodes/element; tet_indices.len() = {} is not divisible by 10",
+        vm.tet_indices.len(),
+    );
+    assert!(
+        vm.tet_indices.len() / 10 > 0,
+        "expected at least one P2 tet from a closed unit cube; tet_indices.len() = {}",
+        vm.tet_indices.len(),
+    );
+}
+
 /// Pin that `deterministic = true` (which sets `General.NumThreads = 1`)
 /// does not fail the meshing call.
 ///
