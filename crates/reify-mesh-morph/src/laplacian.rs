@@ -108,15 +108,13 @@ pub fn laplacian_smooth(
 
     let vertex_count = old_mesh.vertices.len() / 3;
 
-    // f32 → f64 widening delegated to vertex_f64 — all interior arithmetic
-    // in f64. i < vertex_count is a loop invariant (vertex_count =
-    // vertices.len() / 3), so the .expect never trips.
-    let mut current: Vec<[f64; 3]> = (0..vertex_count)
-        .map(|i| {
-            old_mesh
-                .vertex_f64(i as u32)
-                .expect("i < vertex_count, bounds-checked above")
-        })
+    // f32 → f64 widening — vertices is a flat [x, y, z, …] buffer;
+    // chunks_exact(3) slices each triple directly, avoiding per-iteration
+    // bounds checks that vertex_f64 would re-run unnecessarily.
+    let mut current: Vec<[f64; 3]> = old_mesh
+        .vertices
+        .chunks_exact(3)
+        .map(|c| [c[0] as f64, c[1] as f64, c[2] as f64])
         .collect();
 
     // Boundary classification — node is "boundary" iff it appears in
