@@ -82,9 +82,15 @@ impl Default for CgSolverOptions {
 /// Result returned by [`solve_cg`].
 ///
 /// `iterations` counts the number of CG iterations *executed*:
-/// - On convergence: the iteration on which the residual met the tolerance.
-/// - On cap-out: `iterations == max_iter` (the budget was exhausted).
-/// - On zero RHS `‖f‖ == 0`: `iterations == 0` (trivial exact solution).
+/// - On convergence: `iterations` is the iteration on which the residual met
+///   the tolerance. For a k×k SPD with the Jacobi preconditioner, this is at
+///   most k iterations in exact arithmetic.
+/// - On cap-out (`converged == false`): `iterations == max_iter` (the budget
+///   was fully consumed; the solution `u` is the best iterate found).
+/// - On zero RHS (`‖f‖ == 0`): `iterations == 0` (trivial exact solution
+///   returned immediately; `u == 0` is exact).
+///
+/// The `max_iter_exhaustion_returns_unconverged` test pins the cap-out path.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CgResult {
     /// Solution vector `u` of length `k.nrows()`.
