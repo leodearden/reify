@@ -341,34 +341,32 @@ fn norm3(v: [f64; 3]) -> f64 {
 ///
 /// # Panics (unconditional, Task-2544 contract-explicitness convention)
 ///
-/// - `connectivity.len() != n_face_nodes`
-/// - `phys_nodes.len() != n_face_nodes`
+/// - `connectivity.len() != N`
+/// - `phys_nodes.len() != N`
 /// - `f.len() % 3 != 0`
 /// - Any entry in `connectivity` is `>= f.len() / 3` (out-of-range global node)
-#[allow(clippy::too_many_arguments)]
-fn integrate_face_generic(
+fn integrate_face_generic<const N: usize>(
     f: &mut [f64],
     connectivity: &[usize],
     phys_nodes: &[[f64; 3]],
     traction: [f64; 3],
-    n_face_nodes: usize,
     quad: &[TriQuadPoint],
-    shape_fn: impl Fn(TriRefCoord) -> Vec<f64>,
-    grad_fn: impl Fn(TriRefCoord) -> Vec<[f64; 2]>,
+    shape_fn: impl Fn(TriRefCoord) -> [f64; N],
+    grad_fn: impl Fn(TriRefCoord) -> [[f64; 2]; N],
 ) {
     assert_eq!(
         connectivity.len(),
-        n_face_nodes,
+        N,
         "integrate_face_generic: connectivity.len() = {} but expected {} face nodes",
         connectivity.len(),
-        n_face_nodes,
+        N,
     );
     assert_eq!(
         phys_nodes.len(),
-        n_face_nodes,
+        N,
         "integrate_face_generic: phys_nodes.len() = {} but expected {} face nodes",
         phys_nodes.len(),
-        n_face_nodes,
+        N,
     );
     assert!(
         f.len().is_multiple_of(3),
@@ -389,21 +387,21 @@ fn integrate_face_generic(
     }
 
     // Accumulate per-node integration weights w_i = Σ_q N_i(q) · |t_ξ × t_η|(q) · q.weight.
-    let mut nodal_weights = vec![0.0_f64; n_face_nodes];
+    let mut nodal_weights = [0.0_f64; N];
     for qp in quad {
         let shapes = shape_fn(qp.coord);
         let grads = grad_fn(qp.coord);
         // Tangent vectors: t_ξ = Σ_i (∂N_i/∂ξ) · phys_nodes[i]
         let mut t_xi = [0.0_f64; 3];
         let mut t_eta = [0.0_f64; 3];
-        for i in 0..n_face_nodes {
+        for i in 0..N {
             for d in 0..3 {
                 t_xi[d] += grads[i][0] * phys_nodes[i][d];
                 t_eta[d] += grads[i][1] * phys_nodes[i][d];
             }
         }
         let area_elem = norm3(cross(t_xi, t_eta));
-        for i in 0..n_face_nodes {
+        for i in 0..N {
             nodal_weights[i] += shapes[i] * area_elem * qp.weight;
         }
     }
@@ -453,15 +451,15 @@ pub fn apply_traction_load(
     match face_order {
         FaceOrder::P1Tri => integrate_face_generic(
             f, connectivity, phys_nodes, traction,
-            3, TRI_P1_QUAD,
-            |c| tri_p1_shape(c).to_vec(),
-            |_| TRI_P1_GRADS.to_vec(),
+            TRI_P1_QUAD,
+            tri_p1_shape,
+            |_| TRI_P1_GRADS,
         ),
         FaceOrder::P2Tri => integrate_face_generic(
             f, connectivity, phys_nodes, traction,
-            6, TRI_P2_QUAD,
-            |c| tri_p2_shape(c).to_vec(),
-            |c| tri_p2_grads(c).to_vec(),
+            TRI_P2_QUAD,
+            tri_p2_shape,
+            tri_p2_grads,
         ),
     }
 }
