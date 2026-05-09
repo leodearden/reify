@@ -231,7 +231,11 @@ macro_rules! gmsh_call {
     }};
 }
 
-pub(crate) use gmsh_call;
+// `gmsh_call!` is intentionally not re-exported via `pub(crate) use` —
+// every safe wrapper that needs it lives in this module, and re-exporting
+// would generate an unused-import warning in the (lib) target. If a sibling
+// module ever needs to invoke the macro directly, add `pub(crate) use gmsh_call;`
+// at that point.
 
 // ---------------------------------------------------------------------------
 // Safe Rust wrappers
