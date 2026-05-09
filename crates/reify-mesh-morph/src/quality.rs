@@ -18,7 +18,7 @@
 //!   integration in PRD task #10 guarantees P1 before calling this function.
 //! - **Matched connectivity.** `morphed.tet_indices.len()` is expected to equal
 //!   `source.tet_indices.len()` (morph operations preserve topology). When
-//!   lengths differ, the aspect-ratio-increase comparison is skipped
+//!   lengths differ, the aspect-ratio-factor comparison is skipped
 //!   (threshold 3 is effectively disabled); the hard-fail and min-scaled-J /
 //!   pct-below-025 checks still run on the morphed mesh.
 //! - **Valid vertex indices.** Elements referencing out-of-range vertex indices
@@ -182,7 +182,7 @@ pub enum QualityVerdict {
 /// ## Connectivity mismatch
 ///
 /// When `morphed.tet_indices.len() != source.tet_indices.len()`, the
-/// aspect-ratio-increase comparison is skipped (`max_aspect_ratio_factor`
+/// aspect-ratio-factor comparison is skipped (`max_aspect_ratio_factor`
 /// stays `None`). The hard-fail, min-scaled-J / pct-below-025, and
 /// `degenerate_morphed_element` checks still run on the morphed mesh.
 pub fn quality_check(
@@ -611,10 +611,10 @@ mod tests {
         }
     }
 
-    // ── Step-9: max_aspect_ratio_increase soft-fail threshold ─────────────────
+    // ── Step-9: max_aspect_ratio_factor soft-fail threshold ──────────────────
 
     #[test]
-    fn quality_check_with_morphed_aspect_ratio_more_than_threshold_x_source_returns_soft_fail_with_max_aspect_ratio_increase_populated(
+    fn quality_check_with_morphed_aspect_ratio_more_than_threshold_x_source_returns_soft_fail_with_max_aspect_ratio_factor_populated(
     ) {
         // source: regular unit tet (0,0,0),(1,0,0),(0,1,0),(0,0,1)
         //   AR_source ≈ max_edge / min_height
@@ -628,7 +628,7 @@ mod tests {
         //
         // min scaled J check: morphed tet has det = 5 > 0, and a stretched tet
         // stays well above 0.25 in scaled J → min_scaled_jacobian=None,
-        // pct_below_025=None. Only AR increase trips.
+        // pct_below_025=None. Only AR factor trips.
 
         // source
         #[rustfmt::skip]
@@ -662,7 +662,7 @@ mod tests {
         };
 
         // Disable min_scaled_jacobian and pct_below_025 checks so this test
-        // isolates the aspect-ratio-increase threshold.
+        // isolates the aspect-ratio-factor threshold.
         //
         // The morphed tet (node 3 at z=5) has scaled J ≈ 0.054 at corner 3
         // (far from the base plane), which would trip the 0.15 floor if left
@@ -689,12 +689,12 @@ mod tests {
                     "pct_below_025 should be None, got {:?}",
                     metrics.pct_below_025
                 );
-                let ar_increase = metrics
+                let ar_factor = metrics
                     .max_aspect_ratio_factor
                     .expect("max_aspect_ratio_factor should be Some");
                 assert!(
-                    ar_increase > 2.0,
-                    "expected max_aspect_ratio_factor > 2.0, got {ar_increase}"
+                    ar_factor > 2.0,
+                    "expected max_aspect_ratio_factor > 2.0, got {ar_factor}"
                 );
             }
             other => panic!("expected SoftFail, got: {other:?}"),
@@ -704,14 +704,14 @@ mod tests {
     // ── Connectivity-mismatch contract ────────────────────────────────────────
 
     /// When `morphed.tet_indices.len() != source.tet_indices.len()`, the
-    /// aspect-ratio-increase comparison must be skipped (`max_aspect_ratio_factor`
+    /// aspect-ratio-factor comparison must be skipped (`max_aspect_ratio_factor`
     /// stays `None`). The hard-fail and scaled-J checks must still run on the
     /// morphed mesh as documented in the module-level preconditions section.
     ///
     /// This test pins that contract so a future refactor that accidentally
     /// panics on the index mismatch or omits the AR check condition is caught.
     #[test]
-    fn quality_check_with_mismatched_connectivity_skips_ar_increase_but_runs_morphed_checks() {
+    fn quality_check_with_mismatched_connectivity_skips_ar_factor_but_runs_morphed_checks() {
         // morphed: 1 wildly-stretched tet (AR >> 2× any reasonable source AR)
         //   node 3 at (0,0,5) — scaled J ≈ 0.054 at corner 3 < 0.15 → soft trips.
         // source:  2 regular tets (different element count → connectivity mismatch)
