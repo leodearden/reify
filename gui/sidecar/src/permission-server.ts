@@ -27,8 +27,12 @@ export interface PermissionServer {
   /**
    * Register a callback to be invoked when a permission request arrives.
    * Replacing the handler replaces the previous one (last-write-wins).
+   * Pass `null` to clear the handler — useful when the registering session is
+   * destroyed and the same PermissionServer may outlive it (1:1 lifetime is
+   * the production norm in index.ts, but this sentinel keeps shared-server
+   * reuse safe by construction).
    */
-  onRequest(handler: (req: PermissionRequestEvent) => void): void;
+  onRequest(handler: ((req: PermissionRequestEvent) => void) | null): void;
   /**
    * Resolve a pending permission request.
    * No-op for unknown request_ids.
@@ -196,7 +200,7 @@ export function createPermissionServer(): PermissionServer {
       return `http://127.0.0.1:${port}/mcp`;
     },
 
-    onRequest(handler: (req: PermissionRequestEvent) => void): void {
+    onRequest(handler: ((req: PermissionRequestEvent) => void) | null): void {
       onRequestHandler = handler;
     },
 
