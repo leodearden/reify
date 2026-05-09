@@ -1691,3 +1691,75 @@ fn compile_project_with_entry_source_uses_in_memory_source_not_disk() {
         "expected at least one diagnostic for malformed source"
     );
 }
+
+/// Parity with `compile_project` when the in-memory source matches the disk file.
+///
+/// Both calls must return `Ok`, produce the same number of modules, the same
+/// per-module path strings (in topo order), and the same template name lists.
+/// This locks in the refactor's equivalence guarantee: when
+/// `entry_source == read_to_string(entry_path)`, the two entry points are
+/// observationally identical.
+#[test]
+fn compile_project_with_entry_source_parity_with_compile_project_when_source_matches_disk() {
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
+
+    let dep_source = "pub structure Helper { param d: Scalar = 1mm }";
+    let entry_source = "import dep.Helper\nstructure Top {\n    sub h = Helper(d: 5mm)\n}";
+
+    fs::write(dir.join("dep.ri"), dep_source).unwrap();
+    fs::write(dir.join("entry.ri"), entry_source).unwrap();
+
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+
+    let disk_result =
+        reify_compiler::module_dag::compile_project(&dir.join("entry.ri"), &resolver);
+    let mem_result = reify_compiler::module_dag::compile_project_with_entry_source(
+        &dir.join("entry.ri"),
+        entry_source,
+        &resolver,
+    );
+
+    assert!(
+        disk_result.is_ok(),
+        "compile_project failed: {:?}",
+        disk_result.unwrap_err()
+    );
+    assert!(
+        mem_result.is_ok(),
+        "compile_project_with_entry_source failed: {:?}",
+        mem_result.unwrap_err()
+    );
+
+    let disk_modules = disk_result.unwrap();
+    let mem_modules = mem_result.unwrap();
+
+    // Same module count.
+    assert_eq!(
+        disk_modules.len(),
+        mem_modules.len(),
+        "module count differs: disk={} mem={}",
+        disk_modules.len(),
+        mem_modules.len()
+    );
+
+    // Same per-module path strings in the same topo order.
+    let disk_paths: Vec<String> = disk_modules.iter().map(|m| format!("{}", m.path)).collect();
+    let mem_paths: Vec<String> = mem_modules.iter().map(|m| format!("{}", m.path)).collect();
+    assert_eq!(
+        disk_paths, mem_paths,
+        "module paths differ: disk={:?} mem={:?}",
+        disk_paths, mem_paths
+    );
+
+    // Same per-module template name lists.
+    for (i, (dm, mm)) in disk_modules.iter().zip(mem_modules.iter()).enumerate() {
+        let disk_tnames: Vec<&str> = dm.templates.iter().map(|t| t.name.as_str()).collect();
+        let mem_tnames: Vec<&str> = mm.templates.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(
+            disk_tnames, mem_tnames,
+            "template names differ at module index {}: disk={:?} mem={:?}",
+            i, disk_tnames, mem_tnames
+        );
+    }
+}
