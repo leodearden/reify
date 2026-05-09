@@ -394,4 +394,53 @@ describe('createPermissionServer', () => {
       server.cancelAll();
     }
   });
+
+  // success-path cleanup: each completed approve_tool call must close its per-request
+  // transport + mcpServer. With `cleaned = true` after handleRequest() the listener is
+  // short-circuited on the success path and both spies stay at 0 — proving the leak.
+  it('runs cleanup on the success path: each completed approve_tool call closes its per-request transport+mcpServer', async () => {
+    server = createPermissionServer();
+    await server.start();
+
+    const mcpCloseSpy = vi.spyOn(McpServer.prototype, 'close');
+    const transportCloseSpy = vi.spyOn(StreamableHTTPServerTransport.prototype, 'close');
+
+    const client = await connectClient(server.url());
+
+    try {
+      const N = 10;
+      for (let i = 0; i < N; i++) {
+        // Register a one-shot handler per iteration — resolves as soon as the
+        // server fires onRequest, without a setTimeout busy-poll. onRequest is
+        // last-write-wins, so each iteration cleanly replaces the previous one.
+        const requestIdPromise = new Promise<string>((resolve) => {
+          server.onRequest((req) => resolve(req.request_id));
+        });
+
+        const toolCallPromise = client.callTool({
+          name: 'approve_tool',
+          arguments: { tool_name: 'Write', input: { i } },
+        });
+
+        server.decide(await requestIdPromise, { behavior: 'allow' });
+        await toolCallPromise;
+      }
+
+      // Poll until all N close() calls have fired, with a 2 s budget — more
+      // robust than a fixed sleep on loaded CI where event-loop queuing can
+      // delay post-response 'close' events beyond any fixed wall-clock constant.
+      const deadline = Date.now() + 2000;
+      while (mcpCloseSpy.mock.calls.length < N && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 10));
+      }
+
+      // Each of the N requests must have triggered cleanup via the 'close' listener.
+      expect(mcpCloseSpy.mock.calls.length).toBeGreaterThanOrEqual(N);
+      expect(transportCloseSpy.mock.calls.length).toBeGreaterThanOrEqual(N);
+    } finally {
+      mcpCloseSpy.mockRestore();
+      transportCloseSpy.mockRestore();
+      await client.close();
+    }
+  });
 });

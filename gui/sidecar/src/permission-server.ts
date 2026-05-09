@@ -151,13 +151,29 @@ export function createPermissionServer(): PermissionServer {
 
     try {
       await mcpServer.connect(transport);
-      // Register the close listener BEFORE handleRequest so any close event fired
-      // during the await (e.g. client abort, mid-stream socket drop) still triggers
-      // cleanup. The `cleaned` guard ensures cleanup runs at most once, decoupling us
-      // from SDK-internal idempotency assumptions: Node also fires 'close' after every
-      // normal response completion, so without the guard both paths would invoke
-      // transport.close() + mcpServer.close() — once from the listener, with uncertain
-      // double-close behavior depending on the SDK version in use.
+      // Register the close listener BEFORE handleRequest so any 'close' event —
+      // whether from a client abort mid-await or from normal response completion —
+      // still triggers cleanup of this per-request transport + mcpServer pair.
+      //
+      // Node fires 'close' exactly once per response (for both paths), so the
+      // `cleaned` boolean is the sole idempotency guard needed here.
+      //
+      // SDK 1.29.0 close semantics (verified against pinned node_modules):
+      //   • StreamableHTTPServerTransport.close() (webStandardStreamableHttp.js:630-639)
+      //     iterates _streamMapping (already empty after a non-SSE POST completes),
+      //     clears it, clears _requestResponseMap, then fires onclose — effectively
+      //     idempotent on an already-finished transport.
+      //   • McpServer.close() → Server.close() (protocol.js:500-502) is
+      //     `await this._transport?.close()`. After the first close, _onclose
+      //     (lines 248-269) sets `this._transport = undefined`, so any subsequent
+      //     call is a no-op via optional chaining. No user onclose is registered on
+      //     the mcpServer here, so even a spurious second fire has no side effects.
+      // The earlier "uncertain double-close" concern (introduced in commit 1bbb6b924e)
+      // does not survive inspection of the pinned SDK; the `cleaned` guard alone is
+      // sufficient.
+      // 'cleaned' is defensive — Node fires 'close' once per response today;
+      // the guard cheaply protects against future runtime/SDK changes that
+      // could re-fire it.
       let cleaned = false;
       res.on('close', () => {
         if (cleaned) return;
@@ -166,10 +182,6 @@ export function createPermissionServer(): PermissionServer {
         mcpServer.close();
       });
       await transport.handleRequest(req, res, parsedBody);
-      // Prevent the close listener from running after normal response completion.
-      // On the abort path, the close event fires while handleRequest() is still
-      // in-flight so `cleaned` is still false — cleanup runs exactly once there.
-      cleaned = true;
     } catch (err) {
       console.error('[permission-server] Error handling MCP request:', err);
       if (!res.headersSent) {
