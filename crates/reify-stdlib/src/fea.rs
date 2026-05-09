@@ -819,6 +819,55 @@ mod tests {
         }
     }
 
+    /// Construct a 1-D `SampledField` carrying a 3×3 tensor codomain.
+    /// `tensors` is a list of per-grid-point row-major 9-float windows
+    /// (one window per axis grid point; `tensors.len() == axis.len()`).
+    /// The resulting `SampledField.data` has length `axis.len() * 9` —
+    /// the stride-9 layout established locally for envelope_von_mises /
+    /// envelope_max_principal in step-4 / step-6.
+    fn make_sampled_tensor_3x3_1d(
+        name: &str,
+        axis: Vec<f64>,
+        tensors: Vec<[f64; 9]>,
+    ) -> SampledField {
+        assert_eq!(
+            tensors.len(),
+            axis.len(),
+            "tensor count must match axis grid point count"
+        );
+        let mut data: Vec<f64> = Vec::with_capacity(axis.len() * 9);
+        for t in &tensors {
+            data.extend_from_slice(t);
+        }
+        // Reuse make_sampled_1d's grid-metadata derivation so the bounds /
+        // spacing handling stays single-sourced. The only difference is the
+        // data length — make_sampled_1d does not enforce data.len() ==
+        // axis.len(), so it accepts our stride-9 buffer unchanged.
+        make_sampled_1d(name, axis, data)
+    }
+
+    /// Construct a 1-D `SampledField` carrying a Vector3 codomain.
+    /// `vectors` is a list of per-grid-point [x, y, z] triples (one per
+    /// axis grid point). The resulting `SampledField.data` has length
+    /// `axis.len() * 3` — the stride-3 layout established locally for
+    /// envelope_displacement_magnitude in step-8.
+    fn make_sampled_vector3_1d(
+        name: &str,
+        axis: Vec<f64>,
+        vectors: Vec<[f64; 3]>,
+    ) -> SampledField {
+        assert_eq!(
+            vectors.len(),
+            axis.len(),
+            "vector count must match axis grid point count"
+        );
+        let mut data: Vec<f64> = Vec::with_capacity(axis.len() * 3);
+        for v in &vectors {
+            data.extend_from_slice(v);
+        }
+        make_sampled_1d(name, axis, data)
+    }
+
     /// Wrap a `SampledField` in a `Value::Field { source: Sampled, .. }`.
     fn wrap_sampled_field(sf: SampledField, domain: Type, codomain: Type) -> Value {
         Value::Field {
@@ -2878,5 +2927,113 @@ mod tests {
         wm.insert(Value::String("A".to_string()), Value::Real(1.0));
         wm.insert(Value::String("B".to_string()), Value::Real(1.0));
         assert!(eval_fea("linear_combine", &[mcr, Value::Map(wm)]).unwrap().is_undef());
+    }
+
+    // ── envelope_von_mises round-trip ───────────────────────────────────────
+
+    /// Hand-rolled 3×3 tensor row-major windows used by the round-trip tests.
+    /// Tensor data layout: d[0]=σ_xx, d[1]=σ_xy, d[2]=σ_xz,
+    ///                     d[3]=σ_yx, d[4]=σ_yy, d[5]=σ_yz,
+    ///                     d[6]=σ_zx, d[7]=σ_zy, d[8]=σ_zz
+    /// (matches the layout `analysis.rs::von_mises` expects.)
+
+    /// Closed-form von Mises for a 9-float row-major 3×3 stress window —
+    /// duplicates the analysis.rs formula so the round-trip test is
+    /// independent of the implementation under test.
+    fn von_mises_window(d: &[f64; 9]) -> f64 {
+        let sxx = d[0];
+        let syy = d[4];
+        let szz = d[8];
+        let sxy = d[1];
+        let syz = d[5];
+        let sxz = d[2];
+        (0.5
+            * ((sxx - syy).powi(2)
+                + (syy - szz).powi(2)
+                + (szz - sxx).powi(2)
+                + 6.0 * (sxy.powi(2) + syz.powi(2) + sxz.powi(2))))
+        .sqrt()
+    }
+
+    #[test]
+    fn envelope_von_mises_two_case_round_trip_returns_per_grid_max_of_per_case_von_mises() {
+        // 1-D 3-grid-point fixture exercising the round-trip property:
+        //   envelope_von_mises(mcr).data[i] == max over cases of vm(case[i])
+        //
+        // Hand-crafted tensors at each point with known closed-form von_mises:
+        //   Case A:
+        //     P0 = uniaxial 100 MPa σ_xx               → vm = 100
+        //     P1 = pure shear 50 MPa σ_xy = σ_yx       → vm = 50·√3 ≈ 86.6025
+        //     P2 = hydrostatic 200 MPa diagonal        → vm = 0
+        //   Case B:
+        //     P0 = hydrostatic 50 MPa diagonal         → vm = 0
+        //     P1 = uniaxial 200 MPa σ_xx               → vm = 200
+        //     P2 = pure shear 100 MPa σ_xy = σ_yx      → vm = 100·√3 ≈ 173.2050
+        //
+        // Per-grid envelope (max over cases of per-case vm):
+        //   data[0] = max(100, 0)     = 100
+        //   data[1] = max(86.60, 200) = 200
+        //   data[2] = max(0, 173.20)  = 173.2050
+        let axis = vec![0.0, 1.0, 2.0];
+        let pressure = Type::Scalar { dimension: DimensionVector::PRESSURE };
+        let tensor_codomain = Type::Matrix { m: 3, n: 3, quantity: Box::new(pressure.clone()) };
+        let domain = Type::Real;
+
+        let a_tensors: Vec<[f64; 9]> = vec![
+            [100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // P0 uniaxial σ_xx=100
+            [0.0, 50.0, 0.0, 50.0, 0.0, 0.0, 0.0, 0.0, 0.0], // P1 pure shear σ_xy=50
+            [200.0, 0.0, 0.0, 0.0, 200.0, 0.0, 0.0, 0.0, 200.0], // P2 hydrostatic 200
+        ];
+        let b_tensors: Vec<[f64; 9]> = vec![
+            [50.0, 0.0, 0.0, 0.0, 50.0, 0.0, 0.0, 0.0, 50.0], // P0 hydrostatic 50
+            [200.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // P1 uniaxial σ_xx=200
+            [0.0, 100.0, 0.0, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0], // P2 pure shear σ_xy=100
+        ];
+
+        let a_stress = wrap_sampled_field(
+            make_sampled_tensor_3x3_1d("a_stress", axis.clone(), a_tensors.clone()),
+            domain.clone(),
+            tensor_codomain.clone(),
+        );
+        let b_stress = wrap_sampled_field(
+            make_sampled_tensor_3x3_1d("b_stress", axis.clone(), b_tensors.clone()),
+            domain.clone(),
+            tensor_codomain.clone(),
+        );
+
+        // Per-case ElasticResult with displacement = Real placeholder (not read).
+        // envelope_von_mises only inspects `stress`, mirroring the per-helper
+        // field-extraction discipline documented in the plan analysis.
+        let disp_placeholder = wrap_sampled_field(
+            make_sampled_1d("disp", axis.clone(), vec![0.0, 0.0, 0.0]),
+            domain.clone(),
+            Type::Real,
+        );
+        let case_a = make_fixture_elastic_result_with_fields(disp_placeholder.clone(), a_stress);
+        let case_b = make_fixture_elastic_result_with_fields(disp_placeholder, b_stress);
+        let mcr = multi_case_result_value(&[("A", case_a), ("B", case_b)]);
+
+        let result = eval_fea("envelope_von_mises", &[mcr]).unwrap();
+        let result_sf = extract_sampled(&result);
+
+        // Independently compute expected per-grid envelope.
+        let expected: Vec<f64> = (0..axis.len())
+            .map(|i| von_mises_window(&a_tensors[i]).max(von_mises_window(&b_tensors[i])))
+            .collect();
+
+        assert_eq!(result_sf.data.len(), axis.len(), "result must have one scalar per grid point");
+        for (i, (got, want)) in result_sf.data.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (got - want).abs() < 1e-6,
+                "grid point {i}: got {got}, want {want} (envelope of per-case vm)"
+            );
+        }
+
+        // Output codomain must be Pressure — the round-trip projection produces
+        // a scalar with the same Pressure dimension as the input tensor's quantity.
+        match &result {
+            Value::Field { codomain_type, .. } => assert_eq!(*codomain_type, pressure),
+            other => panic!("expected Value::Field, got {:?}", other),
+        }
     }
 }
