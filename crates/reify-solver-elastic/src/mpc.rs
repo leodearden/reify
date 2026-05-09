@@ -603,6 +603,69 @@ mod tests {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Step 7 (RED): multiple MPCs with disjoint pivots are order-independent
+    // -----------------------------------------------------------------------
+
+    /// Applying two MPCs with disjoint pivot DOFs in either order produces
+    /// bit-identical K and tolerance-equal f.
+    ///
+    /// mpc_a: pivot 0, others {2,4}, rhs=0.
+    /// mpc_b: pivot 1, others {3},   rhs=0.5.
+    /// Disjoint pivots — set operations commute; redistribution writes touch
+    /// disjoint pivot columns.
+    #[test]
+    fn multiple_mpcs_with_disjoint_pivots_are_order_independent_within_fp_tolerance() {
+        use faer::sparse::{SparseRowMat, Triplet};
+
+        let n = 5usize;
+        let make_k = || -> SparseRowMat<usize, f64> {
+            let triplets: Vec<Triplet<usize, usize, f64>> = (0..n)
+                .flat_map(|i| (0..n).map(move |j| Triplet::new(i, j, (i * 5 + j + 1) as f64)))
+                .collect();
+            SparseRowMat::try_new_from_triplets(n, n, &triplets).unwrap()
+        };
+        let make_f = || -> Vec<f64> { (1..=5).map(|i| i as f64).collect() };
+
+        let mpc_a = MpcRow::new(vec![0, 2, 4], vec![2.0, -1.0, 1.0], 0.0);
+        let mpc_b = MpcRow::new(vec![1, 3], vec![3.0, -2.0], 0.5);
+
+        // Pipeline A: a then b
+        let mut k_a = make_k();
+        let mut f_a = make_f();
+        apply_mpc_row_elimination(&mut k_a, &mut f_a, &[mpc_a.clone(), mpc_b.clone()]);
+
+        // Pipeline B: b then a
+        let mut k_b = make_k();
+        let mut f_b = make_f();
+        apply_mpc_row_elimination(&mut k_b, &mut f_b, &[mpc_b, mpc_a]);
+
+        // K must be bit-identical
+        for i in 0..n {
+            for j in 0..n {
+                let ka = read_k(&k_a, i, j);
+                let kb = read_k(&k_b, i, j);
+                assert_eq!(
+                    ka.to_bits(),
+                    kb.to_bits(),
+                    "K[{i}][{j}]: forward={ka} reverse={kb}",
+                );
+            }
+        }
+
+        // f must agree within FP tolerance
+        for j in 0..n {
+            let fa = f_a[j];
+            let fb = f_b[j];
+            let tol = 1e-12 * fa.abs().max(fb.abs()).max(1.0);
+            let delta = (fa - fb).abs();
+            assert!(
+                delta <= tol,
+                "f[{j}]: forward={fa} reverse={fb} |Δ|={delta} > tol={tol}",
+            );
+        }
+    }
+
     /// Read entry `(i, j)` of a `SparseRowMat<usize, f64>`, returning 0.0 if
     /// the entry is not explicitly stored.
     fn read_k(k: &faer::sparse::SparseRowMat<usize, f64>, i: usize, j: usize) -> f64 {
