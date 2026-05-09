@@ -1018,6 +1018,11 @@ impl Engine {
         available: &HashSet<ReprKind>,
         demanded_tol: f64,
     ) -> f64 {
+        // `op` and `demanded` are `Copy` scalars (enum variants) — destructuring
+        // them from the const here rather than accepting them as parameters keeps
+        // the signature minimal and avoids any per-call allocation.  Only
+        // `available` is caller-supplied because constructing the `HashSet` is the
+        // one allocation we hoist to `compute_tessellation_budgets` (task 3227).
         let (op, demanded, _) = Self::BUDGET_QUERY_TRIPLE_V02;
         match dispatch(registry, op, demanded, available) {
             Some(plan) => per_stage_tolerance_for_plan(&plan, demanded_tol),
@@ -1045,7 +1050,7 @@ impl Engine {
     /// realization loop — rather than reconstructed per call inside the
     /// helper. A single grep for `BUDGET_QUERY_TRIPLE_V02` still surfaces
     /// every consumer.
-    pub(crate) const BUDGET_QUERY_TRIPLE_V02: (Operation, ReprKind, &'static [ReprKind]) =
+    pub const BUDGET_QUERY_TRIPLE_V02: (Operation, ReprKind, &'static [ReprKind]) =
         (Operation::BooleanUnion, ReprKind::BRep, &[ReprKind::BRep]);
 
     /// Precompute per-realization demanded tolerance for the cache-key
@@ -3538,29 +3543,45 @@ mod tests {
     /// `Vec<Vec<Option<f64>>>` indexed `[template_idx][realization_idx]`
     /// rather than `HashMap<(String, String), Option<f64>>`.
     ///
-    /// Fixture: module with two templates — template `A` (1 realization)
-    /// and template `B` (2 realizations), no tolerance contributors → all
-    /// cells should be `None`.
+    /// Two sub-scenarios:
+    ///
+    /// (a) **Shape + all-None**: module with two templates — template `A`
+    ///     (1 realization, entity "EntityA") and template `B` (2 realizations,
+    ///     entities "EntityB_0" / "EntityB_1"), no tolerance contributors →
+    ///     outer length == 2, inner lengths [1, 2], all cells `None`.
+    ///
+    /// (b) **Positive-path / priority-chain**: same module, but
+    ///     `active_tolerance_scope` is seeded so EntityA → `Some(1e-5)` and
+    ///     EntityB_0 → `Some(2e-5)`, while EntityB_1 is left unset.
+    ///     Asserts that `result[0][0] == Some(1e-5)`,
+    ///     `result[1][0] == Some(2e-5)`, and `result[1][1] == None` —
+    ///     pinning both the `demanded_tolerance_for_output → active_tolerance_for`
+    ///     priority chain AND correct positional alignment.
     #[test]
     fn compute_demanded_tols_returns_positionally_indexed_vec_of_vec() {
         use reify_test_support::{CompiledModuleBuilder, MockConstraintChecker, TopologyTemplateBuilder};
         use reify_types::ModulePath;
 
         let checker = MockConstraintChecker::new();
-        let engine = crate::Engine::new(Box::new(checker), None);
+        // `mut` required for the positive-path sub-scenario where we seed
+        // `active_tolerance_scope` directly (crate-internal field).
+        let mut engine = crate::Engine::new(Box::new(checker), None);
 
         let template_a = TopologyTemplateBuilder::new("EntityA")
             .realization("EntityA", 0, vec![])
             .build();
+        // Use distinct entity refs for B's two realizations so we can set one
+        // scope entry and leave the other unset, pinning positional alignment.
         let template_b = TopologyTemplateBuilder::new("EntityB")
-            .realization("EntityB", 0, vec![])
-            .realization("EntityB", 1, vec![])
+            .realization("EntityB_0", 0, vec![])
+            .realization("EntityB_1", 1, vec![])
             .build();
         let module = CompiledModuleBuilder::new(ModulePath::single("test_demanded_tols"))
             .template(template_a)
             .template(template_b)
             .build();
 
+        // ── (a) shape + all-None ─────────────────────────────────────────────
         let result: Vec<Vec<Option<f64>>> = engine.compute_demanded_tols(&module);
 
         assert_eq!(result.len(), 2, "outer Vec must have one entry per template");
@@ -3577,6 +3598,40 @@ mod tests {
         assert!(
             result[1][1].is_none(),
             "no tolerance contributor → None for template B realization 1"
+        );
+
+        // ── (b) positive-path: priority chain and positional alignment ───────
+        //
+        // Seed `active_tolerance_scope` (crate-private field, directly
+        // accessible from `mod tests` within the same crate) so that
+        // `active_tolerance_for("EntityA")` and `active_tolerance_for("EntityB_0")`
+        // return `Some`.  `compute_demanded_tols` calls
+        // `demanded_tolerance_for_output(t.name, r.id.entity).or_else(|| active_tolerance_for(r.id.entity))`;
+        // since `demanded_tolerance_for_output` already incorporates
+        // `active_tolerance_for` internally (via the `purpose_bound` path), a
+        // non-None scope entry is sufficient to drive the chain to `Some`.
+        engine.active_tolerance_scope.insert("EntityA".to_string(), 1e-5_f64);
+        engine.active_tolerance_scope.insert("EntityB_0".to_string(), 2e-5_f64);
+        // "EntityB_1" is intentionally left unset → result[1][1] stays None.
+
+        let positive: Vec<Vec<Option<f64>>> = engine.compute_demanded_tols(&module);
+
+        assert_eq!(
+            positive[0][0],
+            Some(1e-5),
+            "EntityA scope → Some(1e-5) at [template_idx=0][r_idx=0]; \
+             priority chain must surface it rather than return None"
+        );
+        assert_eq!(
+            positive[1][0],
+            Some(2e-5),
+            "EntityB_0 scope → Some(2e-5) at [template_idx=1][r_idx=0]; \
+             positional alignment: first realization must map to inner index 0"
+        );
+        assert!(
+            positive[1][1].is_none(),
+            "EntityB_1 unset → None at [template_idx=1][r_idx=1]; \
+             positional alignment: second realization must map to inner index 1"
         );
     }
 
@@ -3650,7 +3705,10 @@ mod tests {
         let registry_borrowed: BTreeMap<String, &CapabilityDescriptor> =
             single.iter().map(|(k, v)| (k.clone(), v)).collect();
 
-        let available: HashSet<ReprKind> = [ReprKind::BRep].into_iter().collect();
+        // Derive `available` from the same const that production code uses so a
+        // future change to `BUDGET_QUERY_TRIPLE_V02.2` is caught here automatically.
+        let available: HashSet<ReprKind> =
+            Engine::BUDGET_QUERY_TRIPLE_V02.2.iter().copied().collect();
         let demand = 1e-6_f64;
 
         assert_eq!(
