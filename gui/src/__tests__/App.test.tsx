@@ -114,6 +114,7 @@ vi.mock('../bridge', () => ({
   readViewSidecar: vi.fn().mockResolvedValue(null),
   writeViewSidecar: vi.fn().mockResolvedValue(undefined),
   getMechanismDescriptors: vi.fn().mockResolvedValue([]),
+  subscribeToSidecarCrashed: vi.fn().mockResolvedValue(() => {}),
 }));
 
 // Mock persistence modules so App.tsx's persistence calls can be intercepted.
@@ -164,6 +165,7 @@ beforeEach(() => {
   vi.mocked(bridge.onFocusEntity).mockResolvedValue(() => {});
   vi.mocked(bridge.onNavigateToSource).mockResolvedValue(() => {});
   vi.mocked(bridge.subscribeToClaudeEvents).mockResolvedValue(() => {});
+  vi.mocked((bridge as any).subscribeToSidecarCrashed).mockResolvedValue(() => {});
   vi.mocked(bridge.pickSavePath).mockResolvedValue('/user/chosen/path.step');
   // Persistence module mocks
   vi.mocked(sidecarPersistence.loadSidecar).mockResolvedValue(null);
@@ -515,6 +517,30 @@ describe('App async mount/cleanup race conditions', () => {
 
     // Verify the Claude event unsubscribe was called during cleanup
     expect(claudeUnsub).toHaveBeenCalled();
+  });
+
+  it('unmount calls sidecarCrashedUnsub cleanup function', async () => {
+    const sidecarCrashedUnlisten = vi.fn();
+    vi.mocked((bridge as any).subscribeToSidecarCrashed).mockResolvedValueOnce(sidecarCrashedUnlisten);
+
+    const { unmount } = render(() => <App />);
+    await waitFor(() => {
+      expect(screen.getByTestId('app-layout')).toBeTruthy();
+    });
+
+    // sidecarCrashedUnsub should not have been called while component is alive
+    expect(sidecarCrashedUnlisten).not.toHaveBeenCalled();
+
+    // Unmount — onCleanup should call sidecarCrashedUnsub?.()
+    unmount();
+
+    // Verify the sidecar-crashed unsubscribe was called during cleanup
+    expect(sidecarCrashedUnlisten).toHaveBeenCalled();
+  });
+
+  it('subscribeToSidecarCrashed is called exactly once after ready', async () => {
+    await renderAndWaitForReady();
+    expect((bridge as any).subscribeToSidecarCrashed).toHaveBeenCalledTimes(1);
   });
 
   it('does not leak Claude event listeners when unmounted before subscribeToClaudeEvents resolves', async () => {
