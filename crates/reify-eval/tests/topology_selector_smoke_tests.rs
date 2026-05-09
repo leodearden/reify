@@ -102,6 +102,30 @@ fn all_topology_selectors_wiring_compiles_with_stdlib() {
     );
 }
 
+/// Verify that `block_inertia.ri` compiles with no Error-severity diagnostics.
+///
+/// This deepens the existing parse-only smoke to compile-with-stdlib, which became
+/// achievable once task 2699 wired `moment_of_inertia` (and its return type
+/// `Tensor<2,3,MomentOfInertia>`) as a language-level stdlib binding.
+///
+/// Note: the runtime value of the `i` cell is still `Value::Undef` because
+/// eval-side dispatch for `moment_of_inertia` has not yet been added to
+/// `try_eval_topology_selector` in `crates/reify-eval/src/geometry_ops.rs`.
+/// That gap is documented by the `#[ignore]`-gated test
+/// `block_inertia_evals_moment_of_inertia_to_tensor` (step S5).
+#[test]
+fn block_inertia_compiles_with_stdlib_no_errors() {
+    let source = std::fs::read_to_string(BLOCK_INERTIA_PATH)
+        .expect("examples/topology_selectors/block_inertia.ri should exist");
+    let compiled = parse_and_compile_with_stdlib(&source);
+    assert!(
+        errors_only(&compiled).is_empty(),
+        "examples/topology_selectors/block_inertia.ri should compile with no error-severity \
+         diagnostics (task 2699 wired moment_of_inertia), got:\n{:#?}",
+        errors_only(&compiled)
+    );
+}
+
 #[test]
 fn block_inertia_ri_parses_cleanly() {
     let source = std::fs::read_to_string(BLOCK_INERTIA_PATH)
