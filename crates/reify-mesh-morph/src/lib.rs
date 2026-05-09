@@ -332,7 +332,7 @@ mod tests {
             QualityVerdict::SoftFail(crate::types::SoftFailDetails {
                 min_scaled_jacobian: None,
                 pct_below_025: None,
-                max_aspect_ratio_increase: None,
+                max_aspect_ratio_factor: None,
                 degenerate_morphed_element: None,
             });
     };

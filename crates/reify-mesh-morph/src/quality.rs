@@ -603,8 +603,8 @@ mod tests {
                     "expected pct in [0.7, 0.8], got {pct}"
                 );
                 assert!(
-                    metrics.max_aspect_ratio_increase.is_none(),
-                    "max_aspect_ratio_increase should be None"
+                    metrics.max_aspect_ratio_factor.is_none(),
+                    "max_aspect_ratio_factor should be None"
                 );
             }
             other => panic!("expected SoftFail, got: {other:?}"),
@@ -669,7 +669,7 @@ mod tests {
         // at default. Setting floor to 0.0 means only a strictly-negative
         // observed J fires (impossible for a non-inverted tet that reaches
         // the SoftFail branch). pct threshold > 1.0 is also unreachable.
-        // quality_aspect_ratio_increase_max stays at 2.0 (default).
+        // quality_aspect_ratio_factor_max stays at 2.0 (default).
         let opts = MorphOptions {
             quality_floor_min_scaled_jacobian: 0.0,
             quality_floor_pct_below_025: 1.01,
@@ -690,11 +690,11 @@ mod tests {
                     metrics.pct_below_025
                 );
                 let ar_increase = metrics
-                    .max_aspect_ratio_increase
-                    .expect("max_aspect_ratio_increase should be Some");
+                    .max_aspect_ratio_factor
+                    .expect("max_aspect_ratio_factor should be Some");
                 assert!(
                     ar_increase > 2.0,
-                    "expected max_aspect_ratio_increase > 2.0, got {ar_increase}"
+                    "expected max_aspect_ratio_factor > 2.0, got {ar_increase}"
                 );
             }
             other => panic!("expected SoftFail, got: {other:?}"),
@@ -704,7 +704,7 @@ mod tests {
     // ── Connectivity-mismatch contract ────────────────────────────────────────
 
     /// When `morphed.tet_indices.len() != source.tet_indices.len()`, the
-    /// aspect-ratio-increase comparison must be skipped (`max_aspect_ratio_increase`
+    /// aspect-ratio-increase comparison must be skipped (`max_aspect_ratio_factor`
     /// stays `None`). The hard-fail and scaled-J checks must still run on the
     /// morphed mesh as documented in the module-level preconditions section.
     ///
@@ -716,7 +716,7 @@ mod tests {
         //   node 3 at (0,0,5) — scaled J ≈ 0.054 at corner 3 < 0.15 → soft trips.
         // source:  2 regular tets (different element count → connectivity mismatch)
         // Expected:
-        //   - max_aspect_ratio_increase = None  (AR comparison skipped)
+        //   - max_aspect_ratio_factor = None  (AR comparison skipped)
         //   - min_scaled_jacobian = Some(...)   (proves morphed-only checks ran)
         //   - HardFail not returned             (morphed tet is right-handed)
         #[rustfmt::skip]
@@ -757,10 +757,10 @@ mod tests {
         match &result {
             QualityVerdict::SoftFail(metrics) => {
                 assert!(
-                    metrics.max_aspect_ratio_increase.is_none(),
-                    "max_aspect_ratio_increase must be None on connectivity mismatch, \
+                    metrics.max_aspect_ratio_factor.is_none(),
+                    "max_aspect_ratio_factor must be None on connectivity mismatch, \
                      got {:?}",
-                    metrics.max_aspect_ratio_increase
+                    metrics.max_aspect_ratio_factor
                 );
                 // Verify the morphed-only checks still ran: scaled J < 0.15 so
                 // min_scaled_jacobian should be Some (not None).
@@ -804,7 +804,7 @@ mod tests {
     /// Why AR = INFINITY (and must be skipped, per task 3172):
     /// vol = 0 → all face heights = 0 → min_height = 0 →
     /// `element_aspect_ratio` returns `f64::INFINITY`. Surfacing +inf in
-    /// `max_aspect_ratio_increase` is awkward for serialization; the
+    /// `max_aspect_ratio_factor` is awkward for serialization; the
     /// `degenerate_morphed_element` field makes the AR signal redundant for
     /// failure detection.
     #[test]
@@ -843,14 +843,14 @@ mod tests {
         // Disable min-J and pct floors to isolate degenerate_morphed_element detection.
         // Scaled J = 0 → floor 0.0: 0 < 0 is false → min_scaled_jacobian = None.
         // pct = 1.0 (1/1 below 0.25) → threshold 1.01: 1.0 > 1.01 is false → pct_below_025 = None.
-        // AR = INFINITY → skipped (task-3172 fix) → max_aspect_ratio_increase = None.
+        // AR = INFINITY → skipped (task-3172 fix) → max_aspect_ratio_factor = None.
         // degenerate_morphed_element = Some(0) because sj == 0.0 at element 0.
         let opts = MorphOptions {
             quality_floor_min_scaled_jacobian: 0.0,
             quality_floor_pct_below_025: 1.01,
             ..MorphOptions::default()
         };
-        // quality_aspect_ratio_increase_max stays at 2.0 (default).
+        // quality_aspect_ratio_factor_max stays at 2.0 (default).
 
         let result = quality_check(&morphed, &source, &opts);
         match &result {
@@ -861,7 +861,7 @@ mod tests {
                     "degenerate coplanar tet must surface as degenerate_morphed_element=Some(0)"
                 );
                 assert_eq!(
-                    metrics.max_aspect_ratio_increase,
+                    metrics.max_aspect_ratio_factor,
                     None,
                     "AR comparison must be skipped for degenerate morphed tet (task-3172 contract)"
                 );
