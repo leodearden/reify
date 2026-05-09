@@ -683,6 +683,50 @@ mod tests {
         (k, f)
     }
 
+    // -----------------------------------------------------------------------
+    // Step-7: max_iter exhaustion
+    // -----------------------------------------------------------------------
+
+    /// Use the 2×2 SPD problem with max_iter = 1 and impossibly tight
+    /// tolerance. CG makes one step (which is insufficient for full
+    /// convergence) and returns converged = false, iterations = 1.
+    /// The solution vector u is non-zero (one step took effect).
+    #[test]
+    fn max_iter_exhaustion_returns_unconverged() {
+        let k = SparseRowMat::try_new_from_triplets(
+            2,
+            2,
+            &[
+                Triplet::new(0_usize, 0_usize, 4.0_f64),
+                Triplet::new(0_usize, 1_usize, 1.0_f64),
+                Triplet::new(1_usize, 0_usize, 1.0_f64),
+                Triplet::new(1_usize, 1_usize, 3.0_f64),
+            ],
+        )
+        .unwrap();
+        let f = [1.0_f64, 2.0];
+        // max_iter = 1, impossibly tight tolerance → guaranteed non-convergence.
+        let opts = CgSolverOptions {
+            tolerance: 1e-15,
+            max_iter: 1,
+        };
+        let result = solve_cg(&k, &f, opts, SolverMode::Deterministic);
+
+        assert!(!result.converged, "must not converge with max_iter=1 and tol=1e-15");
+        assert_eq!(result.iterations, 1, "exactly the cap was consumed");
+        assert_eq!(result.u.len(), 2, "u has the correct length");
+        // At least one entry of u is non-zero (one CG step took effect).
+        assert!(
+            result.u.iter().any(|&v| v != 0.0),
+            "u must be non-zero after one CG step: {:?}",
+            result.u
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // (step-8 impl — see commit message; plumbing already correct from step-4)
+    // -----------------------------------------------------------------------
+
     /// Assembled fan-mesh K (after Dirichlet pin): solve_cg must converge and
     /// the residual ‖r‖ = ‖f − Ku‖ must be below 1e-9 · max(‖f‖, 1).
     #[test]
