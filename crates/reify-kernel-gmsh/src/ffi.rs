@@ -237,6 +237,25 @@ macro_rules! gmsh_call {
 // module ever needs to invoke the macro directly, add `pub(crate) use gmsh_call;`
 // at that point.
 
+/// Function-form companion to [`gmsh_call!`] for wrappers that need the
+/// FFI return value (an `i32` tag, owned out-buffers, etc.) and therefore
+/// can't be expressed as a single-expression macro call.
+///
+/// On `ierr == 0` returns `Ok(())`; on non-zero packages the message from
+/// `last_error_message()` into a `GeometryError::OperationFailed` annotated
+/// with the supplied `name` and the `ierr` code, in the same format the
+/// `gmsh_call!` macro emits — so error strings from the two error paths are
+/// indistinguishable to callers.
+fn check_ierr(name: &str, ierr: c_int) -> Result<(), GeometryError> {
+    if ierr == 0 {
+        return Ok(());
+    }
+    let msg = last_error_message();
+    Err(GeometryError::OperationFailed(format!(
+        "{name}: ierr={ierr} ({msg})"
+    )))
+}
+
 // ---------------------------------------------------------------------------
 // Safe Rust wrappers
 // ---------------------------------------------------------------------------
@@ -317,12 +336,7 @@ pub fn add_discrete_entity(dim: i32, boundary: &[i32]) -> Result<i32, GeometryEr
             &mut ierr,
         )
     };
-    if ierr != 0 {
-        let msg = last_error_message();
-        return Err(GeometryError::OperationFailed(format!(
-            "gmshModelAddDiscreteEntity: ierr={ierr} ({msg})"
-        )));
-    }
+    check_ierr("gmshModelAddDiscreteEntity", ierr)?;
     Ok(tag)
 }
 
@@ -441,12 +455,7 @@ pub fn get_nodes_all() -> Result<(Vec<u64>, Vec<f64>), GeometryError> {
             gmshFree(param_ptr as *mut c_void);
         }
     }
-    if ierr != 0 {
-        let msg = last_error_message();
-        return Err(GeometryError::OperationFailed(format!(
-            "gmshModelMeshGetNodes: ierr={ierr} ({msg})"
-        )));
-    }
+    check_ierr("gmshModelMeshGetNodes", ierr)?;
     Ok((node_tags, coords))
 }
 
@@ -506,12 +515,7 @@ pub fn geo_add_surface_loop(surface_tags: &[i32]) -> Result<i32, GeometryError> 
     let tag = unsafe {
         gmshModelGeoAddSurfaceLoop(surface_tags.as_ptr(), surface_tags.len(), -1, &mut ierr)
     };
-    if ierr != 0 {
-        let msg = last_error_message();
-        return Err(GeometryError::OperationFailed(format!(
-            "gmshModelGeoAddSurfaceLoop: ierr={ierr} ({msg})"
-        )));
-    }
+    check_ierr("gmshModelGeoAddSurfaceLoop", ierr)?;
     Ok(tag)
 }
 
@@ -522,12 +526,7 @@ pub fn geo_add_volume(shell_tags: &[i32]) -> Result<i32, GeometryError> {
     let tag = unsafe {
         gmshModelGeoAddVolume(shell_tags.as_ptr(), shell_tags.len(), -1, &mut ierr)
     };
-    if ierr != 0 {
-        let msg = last_error_message();
-        return Err(GeometryError::OperationFailed(format!(
-            "gmshModelGeoAddVolume: ierr={ierr} ({msg})"
-        )));
-    }
+    check_ierr("gmshModelGeoAddVolume", ierr)?;
     Ok(tag)
 }
 
@@ -572,12 +571,7 @@ pub fn get_entity_tags(dim: i32) -> Result<Vec<i32>, GeometryError> {
             gmshFree(dim_tags_ptr as *mut c_void);
         }
     }
-    if ierr != 0 {
-        let msg = last_error_message();
-        return Err(GeometryError::OperationFailed(format!(
-            "gmshModelGetEntities: ierr={ierr} ({msg})"
-        )));
-    }
+    check_ierr("gmshModelGetEntities", ierr)?;
     // gmsh returns flat (dim, tag) pairs — collect every odd index.
     let tags: Vec<i32> = pairs.chunks_exact(2).map(|p| p[1]).collect();
     Ok(tags)
@@ -625,11 +619,6 @@ pub fn get_elements_by_type(element_type: i32) -> Result<(Vec<u64>, Vec<u64>), G
             gmshFree(node_tags_ptr as *mut c_void);
         }
     }
-    if ierr != 0 {
-        let msg = last_error_message();
-        return Err(GeometryError::OperationFailed(format!(
-            "gmshModelMeshGetElementsByType: ierr={ierr} ({msg})"
-        )));
-    }
+    check_ierr("gmshModelMeshGetElementsByType", ierr)?;
     Ok((elem_tags, node_tags))
 }
