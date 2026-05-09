@@ -1150,13 +1150,11 @@ impl VolumeMesh {
     /// Returns `None` if `idx * 3 + 3` would overflow `usize` or fall
     /// outside `vertices.len()`.  Callers map `None` to whatever
     /// crate-local error variant they prefer; e.g.
-    /// `reify-mesh-morph/src/boundary.rs` maps it to
-    /// `ProjectionFailure::InvalidNodeIndex(idx)`, centralising the
-    /// duplicated bounds-check that previously lived at boundary.rs:220-232.
+    /// `compute_dirichlet_bcs` in `reify-mesh-morph::boundary` maps it to
+    /// `ProjectionFailure::InvalidNodeIndex(idx)`.
     ///
     /// The raw `f32` representation is returned; widening to `f64` for FEA
-    /// arithmetic is the caller's responsibility (see boundary.rs:191
-    /// doc-comment "single boundary — all downstream FEA arithmetic is f64").
+    /// arithmetic is the caller's responsibility.
     pub fn vertex(&self, idx: u32) -> Option<[f32; 3]> {
         let i = idx as usize;
         let base = i.checked_mul(3)?;
@@ -5055,8 +5053,9 @@ mod tests {
         assert_eq!(mesh.vertex(2), Some([7.0, 8.0, 9.0]));
         // (c) one past end — base = 9, end = 12 > 9
         assert_eq!(mesh.vertex(3), None);
-        // (d) overflow guard — checked_mul(3) overflows on 32-bit; on 64-bit
-        //     end = (u32::MAX as usize) * 3 + 3 >> vertices.len()
+        // (d) large index — on 32-bit targets checked_mul(3) overflows; on
+        //     64-bit (typical CI) it falls through to the `end > len` check.
+        //     Either path returns None, which is what matters.
         assert_eq!(mesh.vertex(u32::MAX), None);
 
         // (e) empty mesh — any index is out of range
