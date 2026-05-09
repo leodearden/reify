@@ -5,6 +5,7 @@ import * as os from 'node:os';
 import { createLineReader } from './ipc.js';
 import type { InboundMessage, OutboundMessage, SendMessage } from './types.js';
 import type { PermissionServer } from './permission-server.js';
+import { isLandlockAvailable, wrapClaudeArgs } from './sandbox.js';
 
 export interface SessionConfig {
   model: string;
@@ -22,6 +23,20 @@ export interface SessionConfig {
     /** The PermissionServer instance for registering the onRequest callback */
     server: PermissionServer;
   };
+  /**
+   * The writable workspace directory for the landlock sandbox.
+   * Falls back to `workingDirectory` when not set.
+   * Set from the REIFY_WORKSPACE env var by index.ts at startup.
+   */
+  workspace?: string;
+  /**
+   * Path to the vendored landlock_exec.py helper script.
+   * When set and the kernel supports landlock, the claude child is wrapped with
+   * `python3 <landlockExec> --writable <workspace> --writable ~/.claude --writable /tmp -- claude <args>`.
+   * When absent, no sandbox is applied (silent direct spawn).
+   * Set from the REIFY_LANDLOCK_EXEC env var by index.ts at startup.
+   */
+  landlockExec?: string;
 }
 
 /**
@@ -74,6 +89,13 @@ export class SidecarSession {
    */
   private mcpConfigTmpDir: string | null = null;
   private mcpConfigTmpFile: string | null = null;
+
+  /**
+   * Cached landlock availability probe result.
+   * null = not yet probed; false = unavailable or no landlockExec configured; true = available.
+   * Set once on the first invokeSdk call and reused for subsequent turns.
+   */
+  private landlockOk: boolean | null = null;
 
   /** The send_message id for the currently in-flight invocation, if any. */
   private currentInvocationId: string | null = null;
@@ -275,7 +297,22 @@ export class SidecarSession {
     args.push('--permission-mode', 'bypassPermissions');
     args.push('--allowed-tools', ALLOWED_TOOLS);
 
-    const proc = spawn('claude', args, {
+    // Probe landlock availability once per session (cached in this.landlockOk).
+    // When landlockExec is absent (e.g. unit-test invocation), skip the probe entirely.
+    if (this.landlockOk === null) {
+      this.landlockOk = this.config.landlockExec
+        ? isLandlockAvailable(this.config.landlockExec)
+        : false;
+    }
+
+    // Wrap the claude args with the landlock sandbox when available.
+    // effectiveLandlockExec is set to undefined if the probe failed so wrapClaudeArgs
+    // returns {cmd:'claude', args:[...args]} (passthrough, no python3 wrap).
+    const effectiveLandlockExec = this.landlockOk ? this.config.landlockExec : undefined;
+    const workspaceDir = this.config.workspace ?? this.config.workingDirectory;
+    const { cmd, args: wrappedArgs } = wrapClaudeArgs(args, workspaceDir, effectiveLandlockExec);
+
+    const proc = spawn(cmd, wrappedArgs, {
       cwd: this.config.workingDirectory,
       signal: this.abortController?.signal,
       stdio: ['pipe', 'pipe', 'pipe'],
