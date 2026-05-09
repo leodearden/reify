@@ -254,6 +254,26 @@ impl std::error::Error for PruneError {}
 ///
 /// Returns `Err` if options are invalid or the input mesh is inconsistent.
 /// See [`PruneError`] for all variants.
+///
+/// # Preconditions
+///
+/// The canonical-vertex dedup step computes bin keys via
+/// `(coord * (1.0 / grid_alignment_tolerance)).round() as i64`; Rust's
+/// `as` cast saturates on overflow, so coordinates with
+/// `|coord / grid_alignment_tolerance| ≥ i64::MAX as f64` (~9.22e18)
+/// saturate to `i64::MIN` / `i64::MAX`, producing spurious canonical-index
+/// collisions and degrading tip detection.
+///
+/// At the default `grid_alignment_tolerance = 1e-9` the saturation
+/// threshold is `|coord| ≈ 9.2e9`, far outside any practical CAD coordinate
+/// range. Inputs from untrusted sources should validate that coordinates
+/// are within reasonable magnitude before calling this function.
+///
+/// NaN and ±Inf vertex coordinates are not actively rejected here — NaN
+/// coordinates round to `0` (collide at the origin bucket); ±Inf coordinates
+/// saturate to `i64::MIN` / `i64::MAX`. These behaviours match
+/// `mesher.rs::dedup_vertices` and are documented at the quantisation site
+/// above.
 pub fn prune_branches(
     mesh: &MidSurfaceMesh,
     options: &PruneOptions,
@@ -1132,6 +1152,108 @@ mod tests {
                 ),
             }
         }
+    }
+
+    /// `prune_branches` rejects all subnormal `grid_alignment_tolerance` values.
+    ///
+    /// The `is_subnormal()` guard covers all denormals, including the gap class
+    /// (`2^-1023`) whose reciprocal is still finite (~8.99e307) but large enough
+    /// to overflow `coord * inv_tol` to ±Inf for any non-tiny coordinate,
+    /// silently collapsing all vertices into the ±Inf saturation buckets.
+    /// The earlier `!(1.0/x).is_finite()` guard (before this fix) missed that
+    /// class.
+    ///
+    /// Mirrors `mesh_mid_surface_rejects_subnormal_merge_tolerance` in mesher.rs.
+    ///
+    /// Test values:
+    /// - `f64::MIN_POSITIVE / 4.0` = `2^-1024`: subnormal, `1/x` overflows to
+    ///   `+inf` (caught by both old and new gate).
+    /// - `f64::MIN_POSITIVE / 2.0` = `2^-1023`: subnormal, but `1/x ≈ 8.99e307`
+    ///   is **finite** — the discriminating case for the new `is_subnormal()` gate.
+    /// - `5e-324`: the smallest positive denormal (`2^-1074`), `1/x` = `+inf`.
+    /// - `f64::MIN_POSITIVE` (`2^-1022`): the smallest **normal** positive —
+    ///   must still be accepted (not subnormal).
+    #[test]
+    fn prune_branches_rejects_subnormal_grid_alignment_tolerance() {
+        let empty = MidSurfaceMesh {
+            vertices: vec![],
+            triangles: vec![],
+            thickness: vec![],
+        };
+
+        // `f64::MIN_POSITIVE / 4.0` = 2^-1024 — subnormal, 1/x overflows to +inf.
+        let subnormal_a = f64::MIN_POSITIVE / 4.0;
+        assert!(
+            subnormal_a.is_subnormal() && subnormal_a.is_sign_positive(),
+            "test setup: subnormal_a should be a positive subnormal"
+        );
+        let err_a = prune_branches(
+            &empty,
+            &PruneOptions {
+                grid_alignment_tolerance: subnormal_a,
+                ..PruneOptions::default()
+            },
+        )
+        .expect_err("subnormal grid_alignment_tolerance (f64::MIN_POSITIVE/4) must be rejected");
+        assert!(
+            matches!(err_a, PruneError::InvalidGridAlignmentTolerance { value } if value == subnormal_a),
+            "expected InvalidGridAlignmentTolerance({subnormal_a}), got {err_a:?}"
+        );
+
+        // `f64::MIN_POSITIVE / 2.0` = 2^-1023 — subnormal whose reciprocal IS finite
+        // (~8.99e307).  This is the class that the old `!(1.0/x).is_finite()` gate
+        // MISSED; the new `is_subnormal()` gate must catch it.
+        let subnormal_c = f64::MIN_POSITIVE / 2.0;
+        assert!(
+            subnormal_c.is_subnormal() && subnormal_c.is_sign_positive(),
+            "test setup: subnormal_c (2^-1023) should be a positive subnormal"
+        );
+        assert!(
+            (1.0_f64 / subnormal_c).is_finite(),
+            "test setup: 1.0 / subnormal_c must be finite — this is the gap the old gate missed"
+        );
+        let err_c = prune_branches(
+            &empty,
+            &PruneOptions {
+                grid_alignment_tolerance: subnormal_c,
+                ..PruneOptions::default()
+            },
+        )
+        .expect_err("subnormal grid_alignment_tolerance (f64::MIN_POSITIVE/2) must be rejected");
+        assert!(
+            matches!(err_c, PruneError::InvalidGridAlignmentTolerance { value } if value == subnormal_c),
+            "expected InvalidGridAlignmentTolerance({subnormal_c}), got {err_c:?}"
+        );
+
+        // `5e-324` ≈ 2^-1074 — the smallest positive denormal; reciprocal is +inf.
+        let subnormal_b = 5e-324_f64;
+        assert!(subnormal_b.is_subnormal(), "test setup: 5e-324 must be subnormal");
+        let err_b = prune_branches(
+            &empty,
+            &PruneOptions {
+                grid_alignment_tolerance: subnormal_b,
+                ..PruneOptions::default()
+            },
+        )
+        .expect_err("subnormal grid_alignment_tolerance (5e-324) must be rejected");
+        assert!(
+            matches!(err_b, PruneError::InvalidGridAlignmentTolerance { value } if value == subnormal_b),
+            "expected InvalidGridAlignmentTolerance(5e-324), got {err_b:?}"
+        );
+
+        // `f64::MIN_POSITIVE` is the smallest NORMAL positive (2^-1022) — must be ACCEPTED.
+        assert!(
+            !f64::MIN_POSITIVE.is_subnormal(),
+            "test setup: f64::MIN_POSITIVE must be normal (not subnormal)"
+        );
+        prune_branches(
+            &empty,
+            &PruneOptions {
+                grid_alignment_tolerance: f64::MIN_POSITIVE,
+                ..PruneOptions::default()
+            },
+        )
+        .expect("f64::MIN_POSITIVE is the smallest normal positive — must still be accepted");
     }
 
     // ── Step 3: defaults-pin test ─────────────────────────────────────────────
