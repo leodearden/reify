@@ -3493,6 +3493,54 @@ mod tests {
         }
     }
 
+    // ── compute_demanded_tols unit tests ─────────────────────────────────────
+
+    /// Pins the new return type of `compute_demanded_tols`:
+    /// `Vec<Vec<Option<f64>>>` indexed `[template_idx][realization_idx]`
+    /// rather than `HashMap<(String, String), Option<f64>>`.
+    ///
+    /// Fixture: module with two templates — template `A` (1 realization)
+    /// and template `B` (2 realizations), no tolerance contributors → all
+    /// cells should be `None`.
+    #[test]
+    fn compute_demanded_tols_returns_positionally_indexed_vec_of_vec() {
+        use reify_test_support::{CompiledModuleBuilder, MockConstraintChecker, TopologyTemplateBuilder};
+        use reify_types::ModulePath;
+
+        let checker = MockConstraintChecker::new();
+        let engine = crate::Engine::new(Box::new(checker), None);
+
+        let template_a = TopologyTemplateBuilder::new("EntityA")
+            .realization("EntityA", 0, vec![])
+            .build();
+        let template_b = TopologyTemplateBuilder::new("EntityB")
+            .realization("EntityB", 0, vec![])
+            .realization("EntityB", 1, vec![])
+            .build();
+        let module = CompiledModuleBuilder::new(ModulePath::single("test_demanded_tols"))
+            .template(template_a)
+            .template(template_b)
+            .build();
+
+        let result: Vec<Vec<Option<f64>>> = engine.compute_demanded_tols(&module);
+
+        assert_eq!(result.len(), 2, "outer Vec must have one entry per template");
+        assert_eq!(result[0].len(), 1, "template A has 1 realization");
+        assert_eq!(result[1].len(), 2, "template B has 2 realizations");
+        assert!(
+            result[0][0].is_none(),
+            "no tolerance contributor → None for template A realization 0"
+        );
+        assert!(
+            result[1][0].is_none(),
+            "no tolerance contributor → None for template B realization 0"
+        );
+        assert!(
+            result[1][1].is_none(),
+            "no tolerance contributor → None for template B realization 1"
+        );
+    }
+
     // ── compute_realization_tolerance_budget unit tests ───────────────────────
 
     /// Pins the new 3-arg signature of `compute_realization_tolerance_budget`:
