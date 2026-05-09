@@ -20,6 +20,47 @@ vi.mock('../sandbox.js', () => ({
   _resetLandlockCache: vi.fn(),
 }));
 
+// Mock node:fs with an in-memory virtual filesystem so tests never touch real /tmp.
+// session.ts calls mkdtempSync + writeFileSync on the first invokeSdk turn; tests that
+// read back the config (e.g. "writes reify-debug MCP config unconditionally") use
+// readFileSync and roundtrip through the same virtual map. destroy() calls unlinkSync
+// and rmdirSync, which are safe no-ops here since session.ts wraps them in try/catch.
+//
+// vi.importActual('node:fs') inside individual tests still reaches the real fs module,
+// which is how the /tmp leak-guard test (task 3283) observes actual disk state.
+vi.mock('node:fs', () => {
+  const virtualFiles = new Map<string, string>();
+  const virtualDirs = new Set<string>();
+  let mkdtempCounter = 0;
+
+  return {
+    mkdtempSync: vi.fn((prefix: string): string => {
+      const dir = `${prefix}mock${++mkdtempCounter}`;
+      virtualDirs.add(dir);
+      return dir;
+    }),
+    writeFileSync: vi.fn((filePath: string, data: unknown): void => {
+      virtualFiles.set(filePath, String(data));
+    }),
+    readFileSync: vi.fn((filePath: string, _enc?: unknown): string => {
+      if (!virtualFiles.has(filePath)) {
+        const err = Object.assign(
+          new Error(`ENOENT: no such file or directory, open '${filePath}'`),
+          { code: 'ENOENT' }
+        );
+        throw err;
+      }
+      return virtualFiles.get(filePath)!;
+    }),
+    unlinkSync: vi.fn((filePath: string): void => {
+      virtualFiles.delete(filePath);
+    }),
+    rmdirSync: vi.fn((dirPath: string): void => {
+      virtualDirs.delete(dirPath);
+    }),
+  };
+});
+
 import { spawn } from 'node:child_process';
 import { SidecarSession, SPAWN_ERROR_LOG_PREFIX } from '../session.js';
 import { isLandlockAvailable, wrapClaudeArgs } from '../sandbox.js';
