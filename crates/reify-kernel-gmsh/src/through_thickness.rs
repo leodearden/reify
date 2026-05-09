@@ -164,9 +164,10 @@ pub fn through_thickness_check(
     // finite operand). A future refactor that uses tet_extents_sum on a
     // different code path would need to extend this guard.
     //
-    // Surface vertex finiteness is assumed (the BBox walk above would produce
-    // a non-finite `thickness`/`axis` if the surface mesh were pathological);
-    // that guard is the caller's responsibility and is not checked here.
+    // Surface vertex finiteness is assumed; an Inf surface vertex would be
+    // visible as a non-finite `thickness`/`axis` from the BBox walk above,
+    // but NaN surface vertices are silently absorbed by `f64::min`/`f64::max`
+    // and remain the caller's responsibility.
     if centroids.iter().any(|c| !c.is_finite()) {
         tracing::warn!(
             target: "reify_kernel_gmsh::through_thickness",
