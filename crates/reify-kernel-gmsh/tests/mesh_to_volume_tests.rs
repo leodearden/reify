@@ -208,16 +208,16 @@ fn deterministic_threads_one_succeeds() {
 /// produce tet counts within a bounded macro-regression budget (or within
 /// ±1 tet for very coarse meshes).
 ///
-/// HXT is non-deterministic by default (no fixed RNG seed in the gmsh
-/// build we link against) and runs across `available_parallelism()`
-/// threads, so successive runs vary. Empirically, the run-to-run drift
-/// for the unit cube at `mesh_size = 0.25` clusters around 1–4% but
-/// occasionally lands at 5–6% under load (variance comes from HXT's
-/// thread-scheduling-dependent insertion order). The ±10% budget below
-/// is therefore set comfortably above the observed intrinsic variance
-/// while still catching macro-regressions (a doubling of element count,
-/// a stuck-on coarseness regression, etc.) — the actual contract the
-/// PRD's "tolerance-equivalence" requires.
+/// Runs in `deterministic = true` mode, which sets `General.NumThreads = 1`
+/// and removes the dominant source of HXT run-to-run drift (thread-
+/// scheduling-dependent insertion order). Under single-thread HXT the
+/// counts should be exactly reproducible — a tight ±1% budget is the
+/// strongest assertion we can make without claiming bit-exactness, and
+/// it has real regression-detection power (anything bigger than rounding-
+/// scale noise surfaces a real change). An earlier multi-threaded
+/// formulation of this test had to relax to ±10% to chase intrinsic
+/// drift; that's too loose to catch the regressions this assertion is
+/// meant to catch.
 ///
 /// The `|n1 - n2| <= 1` short-circuit handles the low-count noise floor —
 /// at ~12 tets a 1-tet drift is already 8%, which is intrinsic mesher
@@ -227,7 +227,7 @@ fn deterministic_threads_one_succeeds() {
 /// Uses `mesh_size = 0.25` (rather than the default ~1.0 for the unit
 /// cube) so the resulting count is in the 100s and the percentage budget
 /// becomes statistically meaningful. If this test fails, that surfaces
-/// a >10% macro-regression that warrants investigation.
+/// a >1% macro-regression that warrants investigation.
 #[test]
 fn cuboid_round_trip_within_count_variation_budget() {
     let cube = unit_cube_mesh();
@@ -235,9 +235,13 @@ fn cuboid_round_trip_within_count_variation_budget() {
 
     // Finer mesh_size moves the absolute count above the noise floor so
     // the percentage budget is meaningful. With size=0.25 on a unit cube
-    // we get ~100s of tets per run.
+    // we get ~100s of tets per run. `deterministic = true` forces
+    // single-threaded HXT, eliminating the thread-scheduling drift that
+    // forced the previous multi-threaded variant of this test up to a
+    // ±10% budget.
     let opts = MeshingOptions {
         mesh_size: Some(0.25),
+        deterministic: true,
         ..Default::default()
     };
     let vm1 = kernel
@@ -252,10 +256,11 @@ fn cuboid_round_trip_within_count_variation_budget() {
     assert!(n1 > 0, "first call produced no tets (n1 = {n1})");
     assert!(n2 > 0, "second call produced no tets (n2 = {n2})");
 
-    // 10% budget: empirically HXT default-parallel drift sits ~1–6%; 10%
-    // gives ~2x headroom above the observed worst case while still
-    // catching the regressions this assertion is supposed to catch.
-    const MAX_DRIFT: f64 = 0.10;
+    // 1% budget under single-thread HXT: counts should be exactly
+    // reproducible run-to-run, but we leave a hair of slack so a future
+    // gmsh point-release that tweaks insertion-order tie-breaking
+    // doesn't immediately flake the suite.
+    const MAX_DRIFT: f64 = 0.01;
     let abs_diff = n1.abs_diff(n2);
     let max_n = n1.max(n2) as f64;
     let drift = abs_diff as f64 / max_n;
@@ -267,3 +272,87 @@ fn cuboid_round_trip_within_count_variation_budget() {
         MAX_DRIFT * 100.0,
     );
 }
+
+// ---------------------------------------------------------------------------
+// Input-validation guards (preflight at the FFI boundary)
+// ---------------------------------------------------------------------------
+//
+// `mesh_to_volume` validates its input mesh before acquiring the gmsh lock so
+// silent floor-divides (`vertices.len() / 3`, `indices.len() / 3`) don't
+// discard trailing data and feed gmsh a partially-malformed buffer, and so
+// out-of-bounds indices fail with a precise diagnostic rather than an opaque
+// gmsh internal error. The tests below pin those guards: a regression that
+// removes any of them, or swaps a modulus, would surface here.
+
+/// Vertices.len() not divisible by 3 → caller-side error before any FFI work.
+#[test]
+fn vertices_length_not_multiple_of_three_errors() {
+    let mut bad = unit_cube_mesh();
+    bad.vertices.truncate(7); // 7 floats — not a flat XYZ stride.
+    let kernel = GmshKernel::new();
+    let result = kernel.mesh_to_volume(&bad, &MeshingOptions::default(), ElementOrderTag::P1);
+    let err = result.expect_err("vertices.len()=7 must error before any FFI work");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("vertices") && msg.contains("3"),
+        "error message should mention vertices stride; got: {msg}"
+    );
+}
+
+/// Indices.len() not divisible by 3 → caller-side error before any FFI work.
+#[test]
+fn indices_length_not_multiple_of_three_errors() {
+    let bad = reify_types::Mesh {
+        vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        indices: vec![0, 1], // 2 indices — not a triangle stride.
+        normals: None,
+    };
+    let kernel = GmshKernel::new();
+    let result = kernel.mesh_to_volume(&bad, &MeshingOptions::default(), ElementOrderTag::P1);
+    let err = result.expect_err("indices.len()=2 must error before any FFI work");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("indices") && msg.contains("3"),
+        "error message should mention indices triangle stride; got: {msg}"
+    );
+}
+
+/// Index out-of-bounds for the supplied vertex buffer → caller-side error
+/// before any FFI work.
+#[test]
+fn out_of_bounds_index_errors() {
+    let bad = reify_types::Mesh {
+        vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0], // 3 vertices
+        indices: vec![0, 1, 99],                                    // 99 ≥ 3
+        normals: None,
+    };
+    let kernel = GmshKernel::new();
+    let result = kernel.mesh_to_volume(&bad, &MeshingOptions::default(), ElementOrderTag::P1);
+    let err = result.expect_err("out-of-bounds index 99 must error before any FFI work");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("99") && msg.contains("out of bounds"),
+        "error message should mention the out-of-bounds tag and phrasing; got: {msg}"
+    );
+}
+
+// Coverage gap: the `surface_tags.is_empty()` branch in
+// `kernel_real::mesh_to_volume` (post-classify_surfaces +
+// post-create_geometry) is intentionally not exercised by an integration
+// test. Empirical investigation showed that the obvious candidate input —
+// a single open triangle — does NOT hit that branch: gmsh's
+// classify_surfaces+create_geometry produces a surface entity even for an
+// open mesh, and the failure surfaces later in `gmshModelMeshGenerate(3)`
+// when HXT cannot 3D-mesh an unclosed region. Worse, an HXT mesh_generate
+// failure leaves thread-local HXT state that survives `gmshClear()` and
+// corrupts the *next* meshing call's output (it returns 0 tets instead
+// of erroring). So an integration test that reliably hits the
+// empty-entities branch isn't reachable from real input geometry, and a
+// test that triggers HXT failure pollutes other tests in the same binary.
+// The branch remains as defensive guarding against future gmsh-version
+// changes; verification relies on code review rather than runtime
+// coverage. The other three reviewer-requested validation tests
+// (`vertices_length_not_multiple_of_three_errors`,
+// `indices_length_not_multiple_of_three_errors`,
+// `out_of_bounds_index_errors`) cover the preflight validation that does
+// have testable error paths.
