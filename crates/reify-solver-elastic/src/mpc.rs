@@ -1110,6 +1110,91 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Oblique-normal four-term branch coverage
+    // -----------------------------------------------------------------------
+
+    /// Tests the four-term rotation-row branch in `MpcRow::shell_tet_tying`
+    /// (lines 484-495), which is unreachable by the existing z-/x-normal tests.
+    ///
+    /// With normal = [1/√3, 1/√3, 1/√3] and h = 1, every axis has both
+    /// rotational coefficients with magnitude 1/√3 > DRILLING_EPS, so all
+    /// three rotation/gradient rows (rows[3..6]) route into the four-term branch.
+    ///
+    /// Hand-computed expected values (coeff_bi = −ε_{a,bi,ci}·n_ci·h):
+    ///
+    /// | row | a | rot_data tuple               | coeff_b1 | coeff_b2 | pivot_b | other_b |
+    /// |-----|---|------------------------------|----------|----------|---------|---------|
+    /// |  3  | 0 | (1,2,+1, 2,1,-1)             | −1/√3    | +1/√3    | b1=1    | b2=2    |
+    /// |  4  | 1 | (0,2,-1, 2,0,+1)             | +1/√3    | −1/√3    | b1=0    | b2=2    |
+    /// |  5  | 2 | (0,1,+1, 1,0,-1)             | −1/√3    | +1/√3    | b1=0    | b2=1    |
+    ///
+    /// Because |coeff_b1| == |coeff_b2| for all axes, the `abs1 >= abs2` tie-break
+    /// selects b1 as pivot. This test pins the sign distinction between pivot_coeff
+    /// and other_coeff — a swap would still be self-consistent under row-elimination
+    /// but would flip the dofs[0]/coeffs[0] relationship.
+    ///
+    /// The implementation computes `coeff = -sign * normal[c] * h`. With
+    /// sign ∈ {+1.0, −1.0}, h = 1.0, and normal[c] = inv_sqrt3 = 1.0/√3,
+    /// IEEE 754 gives exact bit-identical values, so `.to_bits()` equality holds.
+    #[test]
+    fn shell_tet_tying_with_oblique_normal_produces_three_four_term_rotation_rows() {
+        let inv_sqrt3 = 1.0_f64 / 3.0_f64.sqrt();
+        let rows = MpcRow::shell_tet_tying(
+            [0, 1, 2],    // shell_disp
+            [3, 4, 5],    // shell_rot
+            [6, 7, 8],    // tet_top
+            [9, 10, 11],  // tet_mid
+            [12, 13, 14], // tet_bot
+            [inv_sqrt3, inv_sqrt3, inv_sqrt3], // oblique unit normal
+            1.0,          // h = 1
+        );
+        assert_eq!(rows.len(), 6, "shell_tet_tying must produce 6 rows");
+
+        // ── Displacement rows (sanity check) ────────────────────────────────
+        for a in 0..3 {
+            assert_eq!(rows[a].dofs, vec![a, 9 + a], "disp row {a} dofs");
+            assert_eq!(rows[a].coeffs, vec![1.0, -1.0], "disp row {a} coeffs");
+            assert_eq!(rows[a].rhs.to_bits(), 0.0_f64.to_bits(), "disp row {a} rhs");
+        }
+
+        // ── Rotation row 3 (a=0): rot_data (1,2,+1, 2,1,-1) ────────────────
+        // coeff_b1 = -(+1)·n[2]·h = -inv_sqrt3   → pivot_b=1 (|abs1|>=|abs2|)
+        // coeff_b2 = -(-1)·n[1]·h = +inv_sqrt3   → other_b=2
+        // dofs = [shell_rot[1]=4, shell_rot[2]=5, tet_top[0]=6, tet_bot[0]=12]
+        assert_eq!(rows[3].dofs, vec![4, 5, 6, 12], "row 3 dofs");
+        assert_eq!(rows[3].coeffs.len(), 4, "row 3 must be four-term");
+        assert_eq!(rows[3].coeffs[0].to_bits(), (-inv_sqrt3).to_bits(), "row 3 pivot_coeff");
+        assert_eq!(rows[3].coeffs[1].to_bits(), inv_sqrt3.to_bits(), "row 3 other_coeff");
+        assert_eq!(rows[3].coeffs[2].to_bits(), 1.0_f64.to_bits(), "row 3 tet_top coeff");
+        assert_eq!(rows[3].coeffs[3].to_bits(), (-1.0_f64).to_bits(), "row 3 tet_bot coeff");
+        assert_eq!(rows[3].rhs.to_bits(), 0.0_f64.to_bits(), "row 3 rhs");
+
+        // ── Rotation row 4 (a=1): rot_data (0,2,-1, 2,0,+1) ────────────────
+        // coeff_b1 = -(-1)·n[2]·h = +inv_sqrt3   → pivot_b=0 (|abs1|>=|abs2|)
+        // coeff_b2 = -(+1)·n[0]·h = -inv_sqrt3   → other_b=2
+        // dofs = [shell_rot[0]=3, shell_rot[2]=5, tet_top[1]=7, tet_bot[1]=13]
+        assert_eq!(rows[4].dofs, vec![3, 5, 7, 13], "row 4 dofs");
+        assert_eq!(rows[4].coeffs.len(), 4, "row 4 must be four-term");
+        assert_eq!(rows[4].coeffs[0].to_bits(), inv_sqrt3.to_bits(), "row 4 pivot_coeff");
+        assert_eq!(rows[4].coeffs[1].to_bits(), (-inv_sqrt3).to_bits(), "row 4 other_coeff");
+        assert_eq!(rows[4].coeffs[2].to_bits(), 1.0_f64.to_bits(), "row 4 tet_top coeff");
+        assert_eq!(rows[4].coeffs[3].to_bits(), (-1.0_f64).to_bits(), "row 4 tet_bot coeff");
+        assert_eq!(rows[4].rhs.to_bits(), 0.0_f64.to_bits(), "row 4 rhs");
+
+        // ── Rotation row 5 (a=2): rot_data (0,1,+1, 1,0,-1) ────────────────
+        // coeff_b1 = -(+1)·n[1]·h = -inv_sqrt3   → pivot_b=0 (|abs1|>=|abs2|)
+        // coeff_b2 = -(-1)·n[0]·h = +inv_sqrt3   → other_b=1
+        // dofs = [shell_rot[0]=3, shell_rot[1]=4, tet_top[2]=8, tet_bot[2]=14]
+        assert_eq!(rows[5].dofs, vec![3, 4, 8, 14], "row 5 dofs");
+        assert_eq!(rows[5].coeffs.len(), 4, "row 5 must be four-term");
+        assert_eq!(rows[5].coeffs[0].to_bits(), (-inv_sqrt3).to_bits(), "row 5 pivot_coeff");
+        assert_eq!(rows[5].coeffs[1].to_bits(), inv_sqrt3.to_bits(), "row 5 other_coeff");
+        assert_eq!(rows[5].coeffs[2].to_bits(), 1.0_f64.to_bits(), "row 5 tet_top coeff");
+        assert_eq!(rows[5].coeffs[3].to_bits(), (-1.0_f64).to_bits(), "row 5 tet_bot coeff");
+        assert_eq!(rows[5].rhs.to_bits(), 0.0_f64.to_bits(), "row 5 rhs");
+    }
+
+    // -----------------------------------------------------------------------
     // Step 15 (RED): end-to-end shell_tet_tying + apply + solve
     // -----------------------------------------------------------------------
 
