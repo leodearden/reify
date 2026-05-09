@@ -3381,4 +3381,100 @@ mod tests {
             other => panic!("expected Value::Field, got {:?}", other),
         }
     }
+
+    // ── envelope_displacement_magnitude round-trip ──────────────────────────
+
+    /// Closed-form Euclidean magnitude of a 3-vector window.
+    /// Independently duplicates the per-grid-point projection used by
+    /// `envelope_displacement_magnitude` so the round-trip test does not
+    /// rely on the implementation under test.
+    fn vector3_magnitude(v: &[f64; 3]) -> f64 {
+        (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
+    }
+
+    #[test]
+    fn envelope_displacement_magnitude_two_case_round_trip_returns_per_grid_max_of_per_case_norm() {
+        // 1-D 3-grid-point fixture exercising the round-trip property:
+        //   envelope_displacement_magnitude(mcr).data[i]
+        //     == max over cases of |displacement[case].data[i*3..i*3+3]|
+        //
+        // Hand-crafted vectors at each point with known closed-form magnitudes:
+        //   Case A:
+        //     P0 = [3, 4, 0]      → |·| = 5
+        //     P1 = [0, 0, 0]      → |·| = 0
+        //     P2 = [1, 1, 1]      → |·| = √3 ≈ 1.7320508
+        //   Case B:
+        //     P0 = [0, 0, 0]      → |·| = 0
+        //     P1 = [6, 8, 0]      → |·| = 10
+        //     P2 = [2, 0, 0]      → |·| = 2
+        //
+        // Per-grid envelope (max over cases of per-case magnitude):
+        //   data[0] = max(5,    0)     = 5
+        //   data[1] = max(0,    10)    = 10
+        //   data[2] = max(√3,   2)     = 2
+        let axis = vec![0.0, 1.0, 2.0];
+        let length = Type::Scalar { dimension: DimensionVector::LENGTH };
+        let vector_codomain = Type::Vector { n: 3, quantity: Box::new(length.clone()) };
+        let domain = Type::Real;
+
+        let a_vectors: Vec<[f64; 3]> = vec![
+            [3.0, 4.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+        ];
+        let b_vectors: Vec<[f64; 3]> = vec![
+            [0.0, 0.0, 0.0],
+            [6.0, 8.0, 0.0],
+            [2.0, 0.0, 0.0],
+        ];
+
+        let a_disp = wrap_sampled_field(
+            make_sampled_vector3_1d("a_disp", axis.clone(), a_vectors.clone()),
+            domain.clone(),
+            vector_codomain.clone(),
+        );
+        let b_disp = wrap_sampled_field(
+            make_sampled_vector3_1d("b_disp", axis.clone(), b_vectors.clone()),
+            domain.clone(),
+            vector_codomain.clone(),
+        );
+
+        // Per-case ElasticResult with stress = Real placeholder (not read).
+        // envelope_displacement_magnitude only inspects `displacement`,
+        // mirroring the per-helper field-extraction discipline.
+        let stress_placeholder = wrap_sampled_field(
+            make_sampled_1d("stress", axis.clone(), vec![0.0, 0.0, 0.0]),
+            domain.clone(),
+            Type::Real,
+        );
+        let case_a = make_fixture_elastic_result_with_fields(a_disp, stress_placeholder.clone());
+        let case_b = make_fixture_elastic_result_with_fields(b_disp, stress_placeholder);
+        let mcr = multi_case_result_value(&[("A", case_a), ("B", case_b)]);
+
+        let result = eval_fea("envelope_displacement_magnitude", &[mcr]).unwrap();
+        let result_sf = extract_sampled(&result);
+
+        // Independently compute expected per-grid envelope.
+        let expected: Vec<f64> = (0..axis.len())
+            .map(|i| vector3_magnitude(&a_vectors[i]).max(vector3_magnitude(&b_vectors[i])))
+            .collect();
+
+        assert_eq!(
+            result_sf.data.len(),
+            axis.len(),
+            "result must have one scalar per grid point"
+        );
+        for (i, (got, want)) in result_sf.data.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (got - want).abs() < 1e-6,
+                "grid point {i}: got {got}, want {want} (envelope of per-case magnitude)"
+            );
+        }
+
+        // Output codomain must be Length (preserved from input vector's quantity).
+        match &result {
+            Value::Field { codomain_type, .. } => assert_eq!(*codomain_type, length),
+            other => panic!("expected Value::Field, got {:?}", other),
+        }
+    }
 }
