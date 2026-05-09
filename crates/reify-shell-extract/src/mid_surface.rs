@@ -511,6 +511,8 @@ const TRI_TABLE: [[i8; 16]; 256] = [
 /// - Any `sdf.axis_grids[i]` is empty
 /// - `mask.spacing[i]` or `mask.origin[i]` differs from the SDF values by more
 ///   than `options.grid_alignment_tolerance`
+/// - `mask.voxels` contains an index outside `[0, nx) × [0, ny) × [0, nz)`
+///   (see [`MidSurfaceError::MaskVoxelOutOfBounds`])
 ///
 /// # Returns
 ///
