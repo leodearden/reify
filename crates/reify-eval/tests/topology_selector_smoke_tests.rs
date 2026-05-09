@@ -207,7 +207,7 @@ fn fillet_top_edges_compiles_with_stdlib_no_errors() {
 /// solid is produced by the kernel and surfaced via `BuildResult::geometry_output`
 /// (a serialised B-Rep blob), NOT via `BuildResult::values`.  Value cells in
 /// `values` are reserved for scalar/computed results (Point, Scalar, Tensor,
-/// etc.) from topology-query helpers such as `closest_point` / `on` /
+/// etc.) from topology-query helpers such as `closest_point` / `is_on` /
 /// `moment_of_inertia`.  Therefore this test asserts `geometry_output.is_some()`
 /// — the kernel delivered a B-Rep — rather than checking a specific `Value`
 /// variant in `values` for the `result` cell.

@@ -556,7 +556,7 @@ impl Engine {
                     &mut diagnostics,
                 );
                 // Task 2324: topology-selector post-process (closest_point /
-                // on / angle_between_surfaces) — sibling to the conformance-
+                // is_on / angle_between_surfaces) — sibling to the conformance-
                 // query and kinematic-query wirings; runs after `named_steps`
                 // is populated so the helpers can resolve let-bound geometry
                 // names to a `GeometryHandleId` and let-bound point names to
@@ -772,7 +772,7 @@ impl Engine {
                     &mut diagnostics,
                 );
                 // Task 2324: topology-selector post-process (closest_point /
-                // on / angle_between_surfaces) — sibling to the conformance-
+                // is_on / angle_between_surfaces) — sibling to the conformance-
                 // query and kinematic-query wirings; runs after `named_steps`
                 // is populated so the helpers can resolve let-bound geometry
                 // names to a `GeometryHandleId` and let-bound point names to
@@ -1322,7 +1322,7 @@ impl Engine {
                 diagnostics,
             );
             // Task 2324: topology-selector post-process (closest_point /
-            // on / angle_between_surfaces) — sibling to the conformance-
+            // is_on / angle_between_surfaces) — sibling to the conformance-
             // query and kinematic-query wirings; runs after `named_steps`
             // is populated so the helpers can resolve let-bound geometry
             // names to a `GeometryHandleId` and let-bound point names to
@@ -1917,13 +1917,13 @@ impl Engine {
 
     /// Post-process value cells for a template after `execute_realization_ops`
     /// has populated `named_steps`, dispatching the topology-selector helpers
-    /// `closest_point` / `on` / `angle_between_surfaces` (task 2324).
+    /// `closest_point` / `is_on` / `angle_between_surfaces` (task 2324).
     ///
     /// Sibling to `post_process_conformance_queries` and
     /// `post_process_kinematic_queries`. For each `ValueCellDecl` in
     /// `template.value_cells` whose `default_expr` is a recognised
     /// topology-selector helper, this writes the kernel-resolved value
-    /// (`Value::Point(_)` for `closest_point`, `Value::Bool(_)` for `on`,
+    /// (`Value::Point(_)` for `closest_point`, `Value::Bool(_)` for `is_on`,
     /// `Value::Scalar { dimension: ANGLE, .. }` for `angle_between_surfaces`)
     /// into `values`, overwriting the `Value::Undef` left behind by the pure
     /// `eval_expr` path. Cells whose dispatch returns `None` (literal arg,

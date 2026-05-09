@@ -1,5 +1,5 @@
 //! End-to-end runtime tests for the topology-selector stdlib helpers
-//! `closest_point`, `on`, and `angle_between_surfaces` (task 2324).
+//! `closest_point`, `is_on`, and `angle_between_surfaces` (task 2324).
 //!
 //! These tests exercise the full pipeline: parse → `compile_with_stdlib` →
 //! `Engine::build` (with `MockGeometryKernel`) → assert the resulting
@@ -109,7 +109,7 @@ fn closest_point_let_resolves_to_point3_length_via_kernel_reply() {
     );
 }
 
-/// `let on_body = on(p, body)` on a structure containing
+/// `let is_on_body = is_on(p, body)` on a structure containing
 /// `let p = point3(5mm, 0mm, 0mm)` (a point on the +x face of the box)
 /// must resolve to `Value::Bool(true)` when the kernel replies `Bool(true)`
 /// for `PointOnShape(handle=1, px=0.005, py=0.0, pz=0.0, tolerance=1e-7)`.
@@ -118,11 +118,11 @@ fn closest_point_let_resolves_to_point3_length_via_kernel_reply() {
 /// changes the default, the recorded reply would not be served and the
 /// cell would stay at `Value::Undef`.
 #[test]
-fn on_let_resolves_to_bool_true_via_kernel_reply_with_default_tolerance() {
+fn is_on_let_resolves_to_bool_true_via_kernel_reply_with_default_tolerance() {
     let source = "structure def Bracket {\n    \
         let body = box(10mm, 10mm, 10mm)\n    \
         let p = point3(5mm, 0mm, 0mm)\n    \
-        let on_body = on(p, body)\n}";
+        let is_on_body = is_on(p, body)\n}";
     let compiled = compile_no_errors(source);
     let mut engine = engine_with_mock_kernel(|k| {
         k.with_point_on_shape_result(
@@ -135,11 +135,11 @@ fn on_let_resolves_to_bool_true_via_kernel_reply_with_default_tolerance() {
 
     let result = engine.build(&compiled, ExportFormat::Step);
 
-    let cell = ValueCellId::new("Bracket", "on_body");
+    let cell = ValueCellId::new("Bracket", "is_on_body");
     assert_eq!(
         result.values.get(&cell),
         Some(&Value::Bool(true)),
-        "Bracket.on_body must resolve to Bool(true) via kernel PointOnShape reply, \
+        "Bracket.is_on_body must resolve to Bool(true) via kernel PointOnShape reply, \
          got {:?}",
         result.values.get(&cell),
     );
@@ -220,13 +220,13 @@ fn closest_point_with_literal_int_arg_falls_through_to_undef() {
     );
 }
 
-/// `on(42, body)` — literal int as the point arg. Same defensive fall-through
+/// `is_on(42, body)` — literal int as the point arg. Same defensive fall-through
 /// as `closest_point` above.
 #[test]
-fn on_with_literal_int_arg_falls_through_to_undef() {
+fn is_on_with_literal_int_arg_falls_through_to_undef() {
     let source = "structure def Bracket {\n    \
         let body = box(10mm, 10mm, 10mm)\n    \
-        let on_body = on(42, body)\n}";
+        let is_on_body = is_on(42, body)\n}";
     let compiled = compile_no_errors(source);
     let mut engine = engine_with_mock_kernel(|k| {
         k.with_point_on_shape_result(
@@ -239,11 +239,11 @@ fn on_with_literal_int_arg_falls_through_to_undef() {
 
     let result = engine.build(&compiled, ExportFormat::Step);
 
-    let cell = ValueCellId::new("Bracket", "on_body");
+    let cell = ValueCellId::new("Bracket", "is_on_body");
     assert_eq!(
         result.values.get(&cell),
         Some(&Value::Undef),
-        "Bracket.on_body with a literal-int point arg must fall through to Undef, \
+        "Bracket.is_on_body with a literal-int point arg must fall through to Undef, \
          got {:?}",
         result.values.get(&cell),
     );

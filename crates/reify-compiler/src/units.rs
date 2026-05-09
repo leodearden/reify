@@ -137,7 +137,7 @@ pub(crate) fn kinematic_query_result_type(name: &str) -> Option<reify_types::Typ
 /// ```text
 /// // Task 2324 — eval dispatch fully implemented
 /// fn closest_point<G: Geometry>(point: Point3<Length>, geometry: G) -> Point3<Length>
-/// fn on<G: Geometry>(point: Point3<Length>, geometry: G) -> Bool
+/// fn is_on<G: Geometry>(point: Point3<Length>, geometry: G) -> Bool
 /// fn angle_between_surfaces(a: Surface, b: Surface) -> Angle
 ///
 /// // Task 2699 — compile-time type wiring only; eval dispatch is task 2691
@@ -170,7 +170,7 @@ pub(crate) fn kinematic_query_result_type(name: &str) -> Option<reify_types::Typ
 pub const GEOMETRY_TOPOLOGY_SELECTOR_NAMES: &[&str] = &[
     // Task 2324 — eval dispatch fully implemented
     "closest_point",
-    "on",
+    "is_on",
     "angle_between_surfaces",
     // Task 2699 — compile-time type wiring; eval dispatch is task 2691
     "edges",
@@ -196,7 +196,7 @@ pub(crate) fn is_geometry_topology_selector(name: &str) -> bool {
 ///
 /// Task 2324 names — `Value` shape matches eval dispatch:
 /// - `closest_point(point, geometry)`        → `Type::point3(Type::length())`
-/// - `on(point, geometry)`                   → `Type::Bool`
+/// - `is_on(point, geometry)`                → `Type::Bool`
 /// - `angle_between_surfaces(a, b)`          → `Type::angle()`
 ///
 /// Task 2699 names — compile-time type only; eval dispatch is task 2691.
@@ -221,7 +221,7 @@ pub(crate) fn topology_selector_result_type(name: &str) -> Option<reify_types::T
     Some(match name {
         // Task 2324 — eval dispatch fully implemented
         "closest_point" => Type::point3(Type::length()),
-        "on" => Type::Bool,
+        "is_on" => Type::Bool,
         "angle_between_surfaces" => Type::angle(),
         // Task 2699 — compile-time type wiring; eval dispatch is task 2691
         "edges" | "faces" | "edges_by_length" | "faces_by_area" | "faces_by_normal"
@@ -551,7 +551,7 @@ mod tests {
     // Sibling list to `GEOMETRY_KINEMATIC_QUERY_NAMES` for the three
     // topology-selector helpers per `docs/prds/topology-selectors.md` §3.9:
     //   - `closest_point(point, geometry) -> Point3<Length>`
-    //   - `on(point, geometry) -> Bool`
+    //   - `is_on(point, geometry) -> Bool`
     //   - `angle_between_surfaces(a, b) -> Angle`
     // Eval-time dispatch is in
     // `reify_eval::geometry_ops::try_eval_topology_selector`, which routes to
@@ -563,8 +563,8 @@ mod tests {
     }
 
     #[test]
-    fn is_geometry_topology_selector_recognises_on() {
-        assert!(is_geometry_topology_selector("on"));
+    fn is_geometry_topology_selector_recognises_is_on() {
+        assert!(is_geometry_topology_selector("is_on"));
     }
 
     #[test]
@@ -614,9 +614,9 @@ mod tests {
     }
 
     #[test]
-    fn topology_selector_result_type_on_is_bool() {
+    fn topology_selector_result_type_is_on_is_bool() {
         assert_eq!(
-            topology_selector_result_type("on"),
+            topology_selector_result_type("is_on"),
             Some(reify_types::Type::Bool)
         );
     }

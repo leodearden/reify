@@ -408,7 +408,7 @@ Patterns return `List` for per-instance constraints; compose with `union_all` fo
 fn distance<G1: Geometry, G2: Geometry>(a: G1, b: G2) -> Scalar<Length>
 fn closest_point<G: Geometry>(point: Point3<Length>, geometry: G) -> Point3<Length>
 fn contains(solid: Solid, point: Point3<Length>) -> Bool
-fn on<G: Geometry>(point: Point3<Length>, geometry: G) -> Bool
+fn is_on<G: Geometry>(point: Point3<Length>, geometry: G) -> Bool
 fn intersects(a: Geometry, b: Geometry) -> Bool
 fn geo_equiv(a: Geometry, b: Geometry, tolerance: Length) -> Bool
 ```

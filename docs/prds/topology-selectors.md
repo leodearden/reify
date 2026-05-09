@@ -14,7 +14,7 @@ topology changes (added fillets, repositioned features) and degrade gracefully
 `faces_by_normal`, `edges_parallel_to`, `edges_at_height` (the **filtered list**
 selectors over a whole solid). `#319` shipped point-membership and intersection
 queries. This PRD covers the remaining §3.9 surface area: selectors that
-**relate to a specific feature** (closest_point, on, angle_between_surfaces,
+**relate to a specific feature** (closest_point, is_on, angle_between_surfaces,
 adjacent_faces, shared_edges) and the **mass-property triplet** (centroid is
 already in #319; this PRD adds `center_of_mass` with density and
 `moment_of_inertia`).
@@ -37,7 +37,7 @@ Stdlib §3.9 signatures (the eleven targeted by this PRD):
 
 ```reify
 fn closest_point<G: Geometry>(point: Point3<Length>, geometry: G) -> Point3<Length>
-fn on<G: Geometry>(point: Point3<Length>, geometry: G) -> Bool
+fn is_on<G: Geometry>(point: Point3<Length>, geometry: G) -> Bool
 fn angle_between_surfaces(a: Surface, b: Surface) -> Angle
 
 fn center_of_mass(solid: Solid, density: Scalar<Density>) -> Point3<Length>
@@ -52,6 +52,22 @@ fn edges_parallel_to(solid: Solid, direction: Vector3<Dimensionless>, tolerance:
 fn edges_by_length(solid: Solid, range: Range<Length>) -> List<Curve>
 fn faces_by_area(solid: Solid, range: Range<Area>) -> List<Surface>
 ```
+
+> **Rename note (task 3201, 2026-05-09):** `is_on` was originally spelled `on` in early
+> drafts of this PRD and in the initial wiring (task 2324). It was renamed to `is_on`
+> before any `.ri` user files adopted the old spelling. Three reasons drove the rename:
+> (a) **Convention alignment** — the other Bool-returning predicates in the Reify stdlib
+> (`is_watertight`, `is_manifold`, `is_orientable`) all use the `is_*` prefix; `is_on`
+> reads as a yes/no predicate at the call site, matching those siblings.
+> (b) **Future-syntax collision risk** — `on` is exceptionally generic and would collide
+> with at least three plausible future Reify syntax surfaces: event-handler blocks
+> (`on Click { ... }`), pattern-match guards, and attribute keywords. Reify has no
+> "function-name-only token" reservation policy that would protect `on` from such
+> ambiguity.
+> (c) **Kernel-side names unchanged** — the kernel method `point_on_shape`, the
+> `GeometryQuery::PointOnShape` variant, and the mock-builder
+> `with_point_on_shape_result` describe the underlying OCCT primitive and are
+> deliberately kept as-is; only the user-facing `.ri` surface name changed.
 
 ## Worked examples
 
@@ -148,7 +164,7 @@ Also references #318, #319 (existing selector FFI pattern) and #249
    tags; add per-`ShapeId` tag table on the OCCT runtime shape. Wire one
    already-shipped selector (`edges_at_height`) through the new path as
    the proof-of-concept; existing tests must still pass.
-2. **OCCT FFI: `closest_point` + `on` + `angle_between_surfaces`**.
+2. **OCCT FFI: `closest_point` + `is_on` + `angle_between_surfaces`**.
    Following #319's FFI pattern. Stdlib bindings + eval wiring + happy-path
    tests.
 3. **OCCT FFI: `center_of_mass` + `moment_of_inertia`** via
@@ -183,6 +199,6 @@ Also references #318, #319 (existing selector FFI pattern) and #249
    source: the compiler rejects unrecognised function names as undefined,
    and unregistered geometry-returning cells trip the
    `assert_value_cell_types_representable` assertion at runtime. Task 2324
-   wired the first three (`closest_point`, `on`, `angle_between_surfaces`);
+   wired the first three (`closest_point`, `is_on`, `angle_between_surfaces`);
    task 2699 wires the remaining eleven. Eval-side dispatch for the eleven
    new names (runtime/numeric coverage) is task 2691.

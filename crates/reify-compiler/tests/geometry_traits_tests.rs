@@ -190,13 +190,13 @@ fn is_orientable_let_binding_compiles_with_bool_type() {
 // ─── Topology selector helpers (task 2324 step-10) ───────────────────────────
 //
 // `closest_point(point, geometry) -> Point3<Length>`,
-// `on(point, geometry) -> Bool`, and
+// `is_on(point, geometry) -> Bool`, and
 // `angle_between_surfaces(a, b) -> Angle` are dispatched by name in the
 // compiler (`is_geometry_topology_selector` in `units.rs`) and force the
 // let-binding's compiled cell type to the registry-mandated Type via the new
 // arm in `expr.rs`. Without that branch, the cell would be typed
 // `Type::Geometry` (closest_point's geometry arg is the second arg, but
-// `Type::Point3<Length>` for `on` would still be wrong from the first-arg
+// `Type::Point3<Length>` for `is_on` would still be wrong from the first-arg
 // fallback) and trip `assert_value_cell_types_representable`.
 
 /// Compile a structure that names a topology-selector helper as a let binding
@@ -259,9 +259,9 @@ fn closest_point_let_binding_compiles_with_point3_length_type() {
 }
 
 #[test]
-fn on_let_binding_compiles_with_bool_type() {
-    let compiled = assert_topology_selector_let_compiles("on(p, body)", "on_body");
-    assert_helper_cell_typed(&compiled, "on_body", &Type::Bool);
+fn is_on_let_binding_compiles_with_bool_type() {
+    let compiled = assert_topology_selector_let_compiles("is_on(p, body)", "is_on_body");
+    assert_helper_cell_typed(&compiled, "is_on_body", &Type::Bool);
 }
 
 #[test]
