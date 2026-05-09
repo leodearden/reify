@@ -209,12 +209,7 @@ pub(crate) fn pick_lexmin_brep_kernel_in<V>(
 ) -> Option<&V> {
     registered
         .values()
-        .find(|v| {
-            descriptor_of(v)
-                .supports
-                .iter()
-                .any(|(_, r)| *r == ReprKind::BRep)
-        })
+        .find(|v| descriptor_of(v).supports_any_repr(ReprKind::BRep))
         .or_else(|| registered.values().next())
 }
 
