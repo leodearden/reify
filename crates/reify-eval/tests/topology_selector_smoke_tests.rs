@@ -184,6 +184,43 @@ fn block_inertia_ri_parses_cleanly() {
     );
 }
 
+/// Compile-with-stdlib contract for `fillet_top_edges.ri`.
+///
+/// **Blocked by**: the missing 3-arg `fillet(solid, edges, radius)` stdlib
+/// binding — the current compiler only wires 2-arg `fillet(solid, radius)` at
+/// `crates/reify-compiler/src/geometry_modify.rs:115`.  The example uses the
+/// 3-arg form on line 25 (`fillet(b, top_edges, 1mm)`), so this currently
+/// fails with `fillet() expects 2 arguments, got 3`.
+///
+/// This is **NOT** a task 2698/2699 gap — `single`, `flat_map`,
+/// `faces_by_normal`, `adjacent_faces`, and `shared_edges` are all landed on
+/// HEAD.  The sole remaining compile blocker is the 3-arg fillet binding.
+///
+/// Do NOT modify `fillet_top_edges.ri` to use the 2-arg form: that would
+/// fillet ALL edges and defeat the example's pedagogic purpose (demonstrating
+/// topology-relational edge selection).
+///
+/// Remove the `#[ignore]` once a 3-arg `fillet(solid, edges, radius)` stdlib
+/// binding is wired in `crates/reify-compiler/src/geometry_modify.rs`.
+#[test]
+#[ignore = "pending 3-arg fillet(solid, edges, radius) stdlib binding — current compiler \
+            only wires 2-arg fillet(solid, radius) per \
+            crates/reify-compiler/src/geometry_modify.rs:115. \
+            The example uses the 3-arg form (line 25 of fillet_top_edges.ri). \
+            This is NOT a task 2698/2699 binding gap (those are landed); \
+            it is a separate stdlib-binding gap tracked outside this PRD."]
+fn fillet_top_edges_compiles_with_stdlib_no_errors() {
+    let source = std::fs::read_to_string(FILLET_TOP_EDGES_PATH)
+        .expect("examples/topology_selectors/fillet_top_edges.ri should exist");
+    let compiled = parse_and_compile_with_stdlib(&source);
+    assert!(
+        errors_only(&compiled).is_empty(),
+        "examples/topology_selectors/fillet_top_edges.ri should compile with no error-severity \
+         diagnostics (unblocked by 3-arg fillet stdlib binding), got:\n{:#?}",
+        errors_only(&compiled)
+    );
+}
+
 #[test]
 fn fillet_top_edges_ri_parses_cleanly() {
     let source = std::fs::read_to_string(FILLET_TOP_EDGES_PATH)
