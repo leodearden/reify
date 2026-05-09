@@ -207,6 +207,24 @@ pub enum MedialError {
         /// The actual length of `sdf.data`.
         found: usize,
     },
+    /// The product `nx * ny * nz` (where `nx/ny/nz = axis_grids[i].len()`)
+    /// overflows `usize` when computing the expected flat-data length.
+    ///
+    /// Defends the `DataLengthMismatch` check (and downstream `data[i*nj*nk
+    /// + j*nk + k]` indexing) from a wrapped-product false-positive: without
+    /// this variant, an overflow would fall back to `unwrap_or(usize::MAX)`
+    /// and surface as a spurious `DataLengthMismatch { expected: usize::MAX,
+    /// found: actual }` — a confusing sentinel that lies about which condition
+    /// fired. The dedicated variant carries the actual extent values so
+    /// callers can report precisely why the product cannot fit in `usize`.
+    AxisExtentsOverflow {
+        /// Length of `axis_grids[0]`.
+        nx: usize,
+        /// Length of `axis_grids[1]`.
+        ny: usize,
+        /// Length of `axis_grids[2]`.
+        nz: usize,
+    },
 }
 
 impl From<GridValidationError> for MedialError {
@@ -299,6 +317,13 @@ impl std::fmt::Display for MedialError {
                 "Regular3D SampledField data length mismatch: \
                  expected {expected} values (nx*ny*nz) but found {found} \
                  (caller-side construction error: flat data does not match axis grid extents)"
+            ),
+            MedialError::AxisExtentsOverflow { nx, ny, nz } => write!(
+                f,
+                "Regular3D SampledField axis extents nx={nx}, ny={ny}, nz={nz} \
+                 overflow usize when computing the flat data length nx*ny*nz \
+                 (caller-side construction error: axis grid lengths are individually valid \
+                 but their product cannot fit in usize)"
             ),
         }
     }
