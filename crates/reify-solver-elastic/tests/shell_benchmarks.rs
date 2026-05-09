@@ -564,13 +564,18 @@ fn scordelis_lo_roof_quadrant_vertical_deflection_at_free_edge_midpoint_matches_
 
         // Rigid end diaphragm at x=0 (one end of the full doubly-supported roof).
         //
-        // MacNeal-Harder "rigid end diaphragm": constrains axial (u_x) and
-        // vertical (u_z) displacements at the support cross-section. The
-        // circumferential direction is free (u_y ≠ 0 at the edge).
+        // MacNeal-Harder "rigid end diaphragm": the end cross-section is a rigid
+        // plate in the yz-plane supported on axial rollers. The plate constrains
+        // in-plane (yz) displacement but allows axial (x) sliding:
+        //   u_y = 0  (circumferential: cross-section cannot spread sideways)
+        //   u_z = 0  (vertical: cross-section cannot sink)
+        //   u_x = FREE (axial: the plate slides freely along the cylinder axis)
+        //
+        // Note: the axial rigid-body mode is eliminated by the midspan symmetry
+        // condition u_x=0 at x=L/2, not by this diaphragm constraint.
         if is_diaphragm {
-            bcs.push(DirichletBc { dof: dof(0), value: 0.0 }); // u_x = 0 (axial)
+            bcs.push(DirichletBc { dof: dof(1), value: 0.0 }); // u_y = 0 (circumferential)
             bcs.push(DirichletBc { dof: dof(2), value: 0.0 }); // u_z = 0 (vertical)
-            bcs.push(DirichletBc { dof: dof(4), value: 0.0 }); // θ_y = 0 (diaphragm moment)
         }
         // Crown / longitudinal mid-plane symmetry (θ=0).
         if is_crown {
