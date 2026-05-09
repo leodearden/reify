@@ -5727,16 +5727,15 @@ mod tests {
     fn try_eval_topology_selector_is_on_kernel_reply_returns_bool_with_default_tolerance() {
         use reify_test_support::mocks::MockGeometryKernel;
         let body_handle = reify_types::GeometryHandleId(11);
-        // The dispatcher must use the default `1e-7` tolerance for the 2-arg
-        // `is_on(point, geometry)` form per the kernel docstring's
-        // `Precision::Confusion()` recommendation. Recording the mock under
-        // exactly this tolerance pins the contract — if the dispatcher ever
-        // changes the default, the recorded reply would not be served and
-        // the test would fail with `None`.
+        // The dispatcher must use `DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` (≈ OCCT's
+        // `Precision::Confusion()`, ~1e-7) for the 2-arg `is_on(point, geometry)`
+        // form. Recording the mock under exactly this tolerance pins the contract —
+        // if the dispatcher ever changes the default, the recorded reply would not
+        // be served and the test would fail with `None`.
         let kernel = MockGeometryKernel::new().with_point_on_shape_result(
             body_handle,
             [5.0, 0.0, 0.0],
-            1e-7,
+            reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
             reify_types::Value::Bool(true),
         );
 
@@ -5772,7 +5771,7 @@ mod tests {
             result,
             Some(reify_types::Value::Bool(true)),
             "is_on(p, body) with kernel reply Bool(true) must produce \
-             Some(Value::Bool(true)) (default tolerance 1e-7); got {:?}",
+             Some(Value::Bool(true)) (default tolerance DEFAULT_POINT_ON_SHAPE_TOLERANCE_M); got {:?}",
             result
         );
     }
@@ -6300,7 +6299,7 @@ mod tests {
         let kernel = MockGeometryKernel::new().with_point_on_shape_result(
             body_handle,
             [5.0, 0.0, 0.0],
-            1e-7,
+            reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
             // Wrong type — should trigger the non-Bool warning arm.
             reify_types::Value::Real(0.5),
         );

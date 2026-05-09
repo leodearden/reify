@@ -112,9 +112,10 @@ fn closest_point_let_resolves_to_point3_length_via_kernel_reply() {
 /// `let is_on_body = is_on(p, body)` on a structure containing
 /// `let p = point3(5mm, 0mm, 0mm)` (a point on the +x face of the box)
 /// must resolve to `Value::Bool(true)` when the kernel replies `Bool(true)`
-/// for `PointOnShape(handle=1, px=0.005, py=0.0, pz=0.0, tolerance=1e-7)`.
-/// Pins the dispatcher's hard-coded `1e-7` default tolerance — recording the
-/// mock under exactly this tolerance is the contract: if the dispatcher
+/// for `PointOnShape(handle=1, px=0.005, py=0.0, pz=0.0,
+/// tolerance=DEFAULT_POINT_ON_SHAPE_TOLERANCE_M)`.
+/// Pins the dispatcher's `DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` default — recording
+/// the mock under exactly this constant is the contract: if the dispatcher
 /// changes the default, the recorded reply would not be served and the
 /// cell would stay at `Value::Undef`.
 #[test]
@@ -128,7 +129,7 @@ fn is_on_let_resolves_to_bool_true_via_kernel_reply_with_default_tolerance() {
         k.with_point_on_shape_result(
             GeometryHandleId(1),
             [0.005, 0.0, 0.0],
-            1e-7,
+            reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
             Value::Bool(true),
         )
     });
@@ -232,7 +233,7 @@ fn is_on_with_literal_int_arg_falls_through_to_undef() {
         k.with_point_on_shape_result(
             GeometryHandleId(1),
             [42.0, 0.0, 0.0],
-            1e-7,
+            reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
             Value::Bool(true),
         )
     });
