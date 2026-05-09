@@ -1117,12 +1117,6 @@ mod number_class_tests {
     }
 
     #[test]
-    fn is_real_false_overflow_past_i64_max_classifies_as_lossy_real_existing() {
-        // 1e20 as i64 saturates; the round-trip check catches it → LossyReal.
-        assert_eq!(classify_number_literal(1e20, false), NumberClass::LossyReal(1e20));
-    }
-
-    #[test]
     fn is_real_false_nan_classifies_as_lossy_real() {
         // NaN is not finite → LossyReal fallback.
         let result = classify_number_literal(f64::NAN, false);

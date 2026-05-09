@@ -800,13 +800,28 @@ fn integer_form_overflow_literal_emits_precision_loss_warning() {
     );
 
     let warnings = warnings_only(&module);
-    let has_precision_warning = warnings
+    let precision_warnings: Vec<_> = warnings
         .iter()
-        .any(|d| d.message.contains("integer literal") && d.message.contains("precision"));
+        .filter(|d| d.message.contains("integer literal") && d.message.contains("precision"))
+        .collect();
+    assert_eq!(
+        precision_warnings.len(),
+        1,
+        "expected exactly 1 precision-loss warning, got: {:?}",
+        precision_warnings
+    );
+
+    // Assert the label's span covers the offending literal token.
+    let literal_offset = source.find("99999999999999999999").unwrap() as u32;
+    let label = precision_warnings[0]
+        .labels
+        .first()
+        .expect("precision-loss warning should carry a label");
     assert!(
-        has_precision_warning,
-        "expected warning about integer literal precision loss, got: {:?}",
-        warnings
+        label.span.start <= literal_offset && label.span.end > literal_offset,
+        "expected label span {:?} to cover the literal at byte offset {}",
+        label.span,
+        literal_offset
     );
 }
 
@@ -833,12 +848,27 @@ fn integer_form_overflow_in_annotation_arg_emits_precision_loss_warning() {
     );
 
     let warnings = warnings_only(&module);
-    let has_precision_warning = warnings
+    let precision_warnings: Vec<_> = warnings
         .iter()
-        .any(|d| d.message.contains("integer literal") && d.message.contains("precision"));
+        .filter(|d| d.message.contains("integer literal") && d.message.contains("precision"))
+        .collect();
+    assert_eq!(
+        precision_warnings.len(),
+        1,
+        "expected exactly 1 precision-loss warning in annotation arg, got: {:?}",
+        precision_warnings
+    );
+
+    // Assert the label's span covers the offending literal token.
+    let literal_offset = source.find("99999999999999999999").unwrap() as u32;
+    let label = precision_warnings[0]
+        .labels
+        .first()
+        .expect("precision-loss warning should carry a label");
     assert!(
-        has_precision_warning,
-        "expected warning about integer literal precision loss in annotation arg, got: {:?}",
-        warnings
+        label.span.start <= literal_offset && label.span.end > literal_offset,
+        "expected label span {:?} to cover the literal at byte offset {}",
+        label.span,
+        literal_offset
     );
 }
