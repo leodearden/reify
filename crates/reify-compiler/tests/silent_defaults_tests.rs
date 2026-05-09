@@ -809,3 +809,36 @@ fn integer_form_overflow_literal_emits_precision_loss_warning() {
         warnings
     );
 }
+
+#[test]
+fn integer_form_overflow_in_annotation_arg_emits_precision_loss_warning() {
+    // A too-large integer used as an annotation argument is also classified as
+    // LossyReal (via the annotations.rs call site). The compiler must emit the
+    // same non-fatal precision-loss warning.
+    // Covers the annotations.rs (lower_annotations) call site.
+    // @shell accepts a numeric thickness arg (Int or Real), so LossyReal→Real
+    // passes the shape check; the precision-loss warning is the only signal.
+    let source = r#"
+        @shell(99999999999999999999)
+        structure S {
+            param x : Real
+        }
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "integer overflow annotation arg should not produce errors, got: {:?}",
+        errors
+    );
+
+    let warnings = warnings_only(&module);
+    let has_precision_warning = warnings
+        .iter()
+        .any(|d| d.message.contains("integer literal") && d.message.contains("precision"));
+    assert!(
+        has_precision_warning,
+        "expected warning about integer literal precision loss in annotation arg, got: {:?}",
+        warnings
+    );
+}
