@@ -2931,13 +2931,14 @@ mod tests {
     #[test]
     fn point_on_shape_variant_is_constructible_and_matchable() {
         // Pin the shape of the new PointOnShape variant — the dispatcher
-        // supplies tolerance from `Precision::Confusion()` (~1e-7) by default.
+        // supplies tolerance from `DEFAULT_POINT_ON_SHAPE_TOLERANCE_M`
+        // (= OCCT `Precision::Confusion()`, ~1e-7) by default.
         let pos = GeometryQuery::PointOnShape {
             handle: GeometryHandleId(19),
             px: 4.0,
             py: 5.0,
             pz: 6.0,
-            tolerance: 1e-7,
+            tolerance: super::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
         };
         match &pos {
             GeometryQuery::PointOnShape {
@@ -2951,7 +2952,7 @@ mod tests {
                 assert_eq!(*px, 4.0);
                 assert_eq!(*py, 5.0);
                 assert_eq!(*pz, 6.0);
-                assert_eq!(*tolerance, 1e-7);
+                assert_eq!(*tolerance, super::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M);
             }
             _ => panic!("expected PointOnShape variant"),
         }
@@ -5040,7 +5041,7 @@ mod tests {
                 px: 0.0,
                 py: 0.0,
                 pz: 0.0,
-                tolerance: 1e-7,
+                tolerance: super::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
             }),
             ("SurfaceAngle", GeometryQuery::SurfaceAngle {
                 face_a: GeometryHandleId(1),
