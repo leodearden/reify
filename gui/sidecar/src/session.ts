@@ -34,6 +34,14 @@ export const SPAWN_ERROR_LOG_PREFIX = '[sidecar] spawned claude error:';
 const REIFY_DEBUG_URL = 'http://127.0.0.1:3939/mcp';
 
 /**
+ * Tools Claude is allowed to use without per-call permission prompts.
+ * Covers standard FS/shell tools plus all reify-debug MCP tools.
+ * Using bypassPermissions+allowedTools is strictly tighter than
+ * --dangerously-skip-permissions (which would allow everything).
+ */
+export const ALLOWED_TOOLS = 'Read Edit Write Bash Glob Grep mcp__reify-debug__*';
+
+/**
  * Manages a Claude Code SDK session, dispatching inbound messages
  * and emitting outbound messages via the onOutput callback.
  *
@@ -260,6 +268,12 @@ export class SidecarSession {
     if (this.config.permissionMcp) {
       args.push('--permission-prompt-tool', 'mcp__reify-permission__approve_tool');
     }
+
+    // Always bypass per-call permission prompts using an explicit allowlist.
+    // This prevents the GUI from silently stalling on missing permission-UI (see task #3206).
+    // The allowlist is strictly tighter than --dangerously-skip-permissions (which allows all tools).
+    args.push('--permission-mode', 'bypassPermissions');
+    args.push('--allowed-tools', ALLOWED_TOOLS);
 
     const proc = spawn('claude', args, {
       cwd: this.config.workingDirectory,
