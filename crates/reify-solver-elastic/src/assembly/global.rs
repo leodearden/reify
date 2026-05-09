@@ -740,18 +740,7 @@ mod tests {
         let _ = assemble_global_stiffness(3, &[element], AssemblyMode::Deterministic);
     }
 
-    /// Pins the `n_local > 0` guard at `global.rs:176-182`: an element with
-    /// an empty `connectivity` slice panics before any DOF arithmetic can run.
-    ///
-    /// We use `ElementStiffness::zeros(3)` (non-zero DOF count) deliberately
-    /// so the panic is triggered by the empty-connectivity guard, **not** by
-    /// the zero-DOFs-per-node guard that follows it. This keeps the two
-    /// contracts distinguishable under test.
-    ///
-    /// `"empty connectivity"` is chosen because it matches the canonical
-    /// phrasing on the production line ("has empty connectivity") and does
-    /// not appear in any of the other panic messages in this function
-    /// (threads-zero, divisibility, zero-DOFs-per-node, out-of-range).
+    /// Pins the `n_local > 0` guard (global.rs:176-182): empty connectivity slice ⇒ panic.
     #[test]
     #[should_panic(expected = "empty connectivity")]
     fn empty_connectivity_panics_with_descriptive_message() {
@@ -764,21 +753,7 @@ mod tests {
         let _ = assemble_global_stiffness(1, &[element], AssemblyMode::Deterministic);
     }
 
-    /// Pins the `dofs_per_node >= 1` guard at `global.rs:196-205`: an element
-    /// whose kernel emits zero DOFs panics with a message containing
-    /// `"dofs_per_node = 0"`.
-    ///
-    /// Walk-through of guard sequence with `connectivity = &[0]`, `k_e.n_dofs = 0`:
-    /// - Guard 1 (`n_local > 0`): `n_local = 1` → passes.
-    /// - Guard 2 (divisibility): `0 % 1 = 0` → passes.
-    /// - Guard 3 (`dofs_per_node >= 1`): `dofs_per_node = 0 / 1 = 0` → **fires**.
-    ///
-    /// `n_nodes = 1` keeps the connectivity-range guard trivially satisfied
-    /// (`node 0 < 1`) so it cannot pre-empt the targeted panic.
-    ///
-    /// `"dofs_per_node = 0"` pins both the contract-variable name and the
-    /// observed-zero value as formatted by the production message; a future
-    /// rewording that drops the numeric value would surface as a test failure.
+    /// Pins the `dofs_per_node >= 1` guard (global.rs:196-205): zero-DOF kernel ⇒ panic.
     #[test]
     #[should_panic(expected = "dofs_per_node = 0")]
     fn zero_dofs_per_node_panics_with_descriptive_message() {
