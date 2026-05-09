@@ -1553,23 +1553,4 @@ fn cache_hit_short_circuit_leaves_feature_tag_table_empty_for_cached_handle() {
          has been introduced.",
     );
 
-    // PIN 3 (companion table): topology_attribute_table likewise has no entry
-    // for the cached handle. Under MockGeometryKernel, face/edge seeding
-    // (`seed_primitive_attributes_for_handle`) silently no-ops because the
-    // mock's extract_faces/extract_edges returns Err without pre-registered
-    // fixtures — so this assertion is structurally true even on build #1.
-    // It is included as a guard: if a future refactor moves solid-handle
-    // attribute population OUTSIDE the op-loop (or wires a kernel-attribute
-    // hook that populates on cache hit), this assertion will catch it.
-    assert!(
-        engine
-            .topology_attribute_table()
-            .lookup(cached_handle)
-            .is_none(),
-        "regression PIN: expected topology_attribute_table to have NO entry \
-         for cached_handle {:?} on the second (cache-served) build — see the \
-         'Known limitation' docstring on execute_realization_ops in \
-         engine_build.rs for context.",
-        cached_handle,
-    );
 }

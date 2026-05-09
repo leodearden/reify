@@ -1444,10 +1444,6 @@ impl Engine {
     /// which would silently regress attribute-query results for a cached
     /// handle. Production builds skip the check entirely
     /// (`debug_assertions` cfg).
-    ///
-    /// Pinned at runtime by
-    /// `cache_hit_short_circuit_leaves_feature_tag_table_empty_for_cached_handle`
-    /// in `tests/tolerance_wiring_e2e.rs`.
     #[allow(clippy::too_many_arguments)]
     fn execute_realization_ops(
         kernel: &mut dyn GeometryKernel,
