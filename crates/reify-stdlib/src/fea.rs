@@ -3529,4 +3529,323 @@ mod tests {
             other => panic!("expected Value::Field, got {:?}", other),
         }
     }
+
+    // ── envelope_{von_mises,max_principal,displacement_magnitude} negatives ─
+    //
+    // Argument-shape negatives for the three Tensor/Vector → scalar envelope
+    // helpers. Each branch of the silent-Undef contract gets its own focused
+    // test so a regression bisects directly to the failing rejection path
+    // rather than reporting a generic bundled-test failure.
+    //
+    // Helpers below are parametric on:
+    //   - `name`: the eval_fea dispatch name ("envelope_von_mises", etc.)
+    //   - `field_name`: which per-case ElasticResult key to populate
+    //     ("stress" for von_mises / max_principal, "displacement" for magnitude)
+    //   - the expected codomain shape (3×3 matrix vs 3-vector) and stride (9 vs 3)
+    //
+    // Mirrors the existing `assert_zero_args_returns_undef` family at lines
+    // 1683-1810 that parameterises over envelope_max / envelope_min.
+
+    /// Build a 3x3 stress tensor field with the right codomain and a
+    /// stride-9 buffer matching the given grid count. Used as the "valid
+    /// other case" alongside an intentionally-bad case to exercise the
+    /// per-case validation paths.
+    fn make_valid_stress_field_3x3(grid: &[f64]) -> Value {
+        let pressure = Type::Scalar { dimension: DimensionVector::PRESSURE };
+        let tensor_codomain = Type::Matrix { m: 3, n: 3, quantity: Box::new(pressure) };
+        // Diagonal identity tensors at every grid point — eigenvalues = (1,1,1),
+        // vm = 0; arbitrary content since this case is the "valid other".
+        let tensors: Vec<[f64; 9]> = grid
+            .iter()
+            .map(|_| [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0])
+            .collect();
+        wrap_sampled_field(
+            make_sampled_tensor_3x3_1d("valid_stress", grid.to_vec(), tensors),
+            Type::Real,
+            tensor_codomain,
+        )
+    }
+
+    /// Build a 3-vector displacement field with the right codomain and
+    /// a stride-3 buffer matching the given grid count.
+    fn make_valid_displacement_field_v3(grid: &[f64]) -> Value {
+        let length = Type::Scalar { dimension: DimensionVector::LENGTH };
+        let vector_codomain = Type::Vector { n: 3, quantity: Box::new(length) };
+        let vectors: Vec<[f64; 3]> = grid.iter().map(|_| [1.0, 0.0, 0.0]).collect();
+        wrap_sampled_field(
+            make_sampled_vector3_1d("valid_disp", grid.to_vec(), vectors),
+            Type::Real,
+            vector_codomain,
+        )
+    }
+
+    /// Build a per-case ElasticResult Map populating only the requested
+    /// field; siblings get Undef placeholders. Used by negative tests
+    /// where we want to control exactly which field the validator sees.
+    fn make_elastic_result_with_only_field(field_name: &str, field_val: Value) -> Value {
+        let mut m = BTreeMap::new();
+        m.insert(Value::String(field_name.to_string()), field_val);
+        Value::Map(m)
+    }
+
+    fn assert_envelope_helper_zero_args_returns_undef(name: &str) {
+        // arity must be exactly 1 (MultiCaseResult-shaped Map).
+        assert!(eval_fea(name, &[]).unwrap().is_undef());
+    }
+
+    #[test]
+    fn envelope_von_mises_zero_args_returns_undef() {
+        assert_envelope_helper_zero_args_returns_undef("envelope_von_mises");
+    }
+
+    #[test]
+    fn envelope_max_principal_zero_args_returns_undef() {
+        assert_envelope_helper_zero_args_returns_undef("envelope_max_principal");
+    }
+
+    #[test]
+    fn envelope_displacement_magnitude_zero_args_returns_undef() {
+        assert_envelope_helper_zero_args_returns_undef("envelope_displacement_magnitude");
+    }
+
+    fn assert_envelope_helper_two_args_returns_undef(name: &str) {
+        // arity must be exactly 1; an extra positional argument rejects.
+        let mcr = multi_case_result_value(&[]);
+        let extra = Value::Real(1.0);
+        assert!(eval_fea(name, &[mcr, extra]).unwrap().is_undef());
+    }
+
+    #[test]
+    fn envelope_von_mises_two_args_returns_undef() {
+        assert_envelope_helper_two_args_returns_undef("envelope_von_mises");
+    }
+
+    #[test]
+    fn envelope_max_principal_two_args_returns_undef() {
+        assert_envelope_helper_two_args_returns_undef("envelope_max_principal");
+    }
+
+    #[test]
+    fn envelope_displacement_magnitude_two_args_returns_undef() {
+        assert_envelope_helper_two_args_returns_undef("envelope_displacement_magnitude");
+    }
+
+    fn assert_envelope_helper_non_map_arg_returns_undef(name: &str) {
+        // First argument must be a Value::Map (the MultiCaseResult struct).
+        assert!(eval_fea(name, &[Value::Real(1.0)]).unwrap().is_undef());
+    }
+
+    #[test]
+    fn envelope_von_mises_non_map_arg_returns_undef() {
+        assert_envelope_helper_non_map_arg_returns_undef("envelope_von_mises");
+    }
+
+    #[test]
+    fn envelope_max_principal_non_map_arg_returns_undef() {
+        assert_envelope_helper_non_map_arg_returns_undef("envelope_max_principal");
+    }
+
+    #[test]
+    fn envelope_displacement_magnitude_non_map_arg_returns_undef() {
+        assert_envelope_helper_non_map_arg_returns_undef("envelope_displacement_magnitude");
+    }
+
+    fn assert_envelope_helper_map_without_cases_field_returns_undef(name: &str) {
+        // Outer Map must have a "cases" key (extract_cases_map enforces).
+        let mut bad_outer = BTreeMap::new();
+        bad_outer.insert(Value::String("not_cases".to_string()), Value::Map(BTreeMap::new()));
+        assert!(eval_fea(name, &[Value::Map(bad_outer)]).unwrap().is_undef());
+    }
+
+    #[test]
+    fn envelope_von_mises_map_without_cases_field_returns_undef() {
+        assert_envelope_helper_map_without_cases_field_returns_undef("envelope_von_mises");
+    }
+
+    #[test]
+    fn envelope_max_principal_map_without_cases_field_returns_undef() {
+        assert_envelope_helper_map_without_cases_field_returns_undef("envelope_max_principal");
+    }
+
+    #[test]
+    fn envelope_displacement_magnitude_map_without_cases_field_returns_undef() {
+        assert_envelope_helper_map_without_cases_field_returns_undef("envelope_displacement_magnitude");
+    }
+
+    fn assert_envelope_helper_cases_field_non_map_returns_undef(name: &str) {
+        // "cases" key value must be a Value::Map (extract_cases_map enforces).
+        let mut bad_outer = BTreeMap::new();
+        bad_outer.insert(Value::String("cases".to_string()), Value::Real(7.0));
+        assert!(eval_fea(name, &[Value::Map(bad_outer)]).unwrap().is_undef());
+    }
+
+    #[test]
+    fn envelope_von_mises_cases_field_non_map_returns_undef() {
+        assert_envelope_helper_cases_field_non_map_returns_undef("envelope_von_mises");
+    }
+
+    #[test]
+    fn envelope_max_principal_cases_field_non_map_returns_undef() {
+        assert_envelope_helper_cases_field_non_map_returns_undef("envelope_max_principal");
+    }
+
+    #[test]
+    fn envelope_displacement_magnitude_cases_field_non_map_returns_undef() {
+        assert_envelope_helper_cases_field_non_map_returns_undef("envelope_displacement_magnitude");
+    }
+
+    /// Per-case ElasticResult is missing the field that the helper reads.
+    /// `present_field` is the unrelated field that exists on the case (so
+    /// the case is a non-empty Map but lacks `expected_field_name`).
+    fn assert_envelope_helper_per_case_missing_required_field_returns_undef(
+        name: &str,
+        expected_field_name: &str,
+        present_field_name: &str,
+        present_field_value: Value,
+    ) {
+        let bad_case = make_elastic_result_with_only_field(present_field_name, present_field_value);
+        let mcr = multi_case_result_value(&[("A", bad_case)]);
+        assert!(eval_fea(name, &[mcr]).unwrap().is_undef());
+    }
+
+    #[test]
+    fn envelope_von_mises_per_case_missing_stress_field_returns_undef() {
+        let grid = vec![0.0, 1.0, 2.0];
+        // ElasticResult with displacement only, no "stress" key.
+        let disp_only = make_valid_displacement_field_v3(&grid);
+        assert_envelope_helper_per_case_missing_required_field_returns_undef(
+            "envelope_von_mises",
+            "stress",
+            "displacement",
+            disp_only,
+        );
+    }
+
+    #[test]
+    fn envelope_max_principal_per_case_missing_stress_field_returns_undef() {
+        let grid = vec![0.0, 1.0, 2.0];
+        let disp_only = make_valid_displacement_field_v3(&grid);
+        assert_envelope_helper_per_case_missing_required_field_returns_undef(
+            "envelope_max_principal",
+            "stress",
+            "displacement",
+            disp_only,
+        );
+    }
+
+    #[test]
+    fn envelope_displacement_magnitude_per_case_missing_displacement_field_returns_undef() {
+        let grid = vec![0.0, 1.0, 2.0];
+        // ElasticResult with stress only, no "displacement" key.
+        let stress_only = make_valid_stress_field_3x3(&grid);
+        assert_envelope_helper_per_case_missing_required_field_returns_undef(
+            "envelope_displacement_magnitude",
+            "displacement",
+            "stress",
+            stress_only,
+        );
+    }
+
+    /// Per-case field has the right key but the wrong codomain shape — e.g.
+    /// scalar Real codomain instead of Matrix<3,3,Pressure> for von_mises.
+    fn assert_envelope_helper_per_case_field_wrong_codomain_returns_undef(
+        name: &str,
+        field_name: &str,
+    ) {
+        let grid = vec![0.0, 1.0, 2.0];
+        // Build a Sampled Real-codomain field — wrong shape for any of the
+        // three helpers (which need Matrix3x3 or Vector3 codomain).
+        let bad_field = wrap_sampled_field(
+            make_sampled_1d("bad", grid, vec![1.0, 2.0, 3.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let bad_case = make_elastic_result_with_only_field(field_name, bad_field);
+        let mcr = multi_case_result_value(&[("A", bad_case)]);
+        assert!(eval_fea(name, &[mcr]).unwrap().is_undef());
+    }
+
+    #[test]
+    fn envelope_von_mises_per_case_field_wrong_codomain_returns_undef() {
+        assert_envelope_helper_per_case_field_wrong_codomain_returns_undef(
+            "envelope_von_mises",
+            "stress",
+        );
+    }
+
+    #[test]
+    fn envelope_max_principal_per_case_field_wrong_codomain_returns_undef() {
+        assert_envelope_helper_per_case_field_wrong_codomain_returns_undef(
+            "envelope_max_principal",
+            "stress",
+        );
+    }
+
+    #[test]
+    fn envelope_displacement_magnitude_per_case_field_wrong_codomain_returns_undef() {
+        assert_envelope_helper_per_case_field_wrong_codomain_returns_undef(
+            "envelope_displacement_magnitude",
+            "displacement",
+        );
+    }
+
+    /// Per-case field has the right codomain but the data buffer length
+    /// violates the expected stride (data.len() != grid_count * stride).
+    fn assert_envelope_helper_per_case_field_wrong_stride_returns_undef(
+        name: &str,
+        field_name: &str,
+        expected_codomain: Type,
+        bad_data_len: usize,
+    ) {
+        let grid = vec![0.0, 1.0, 2.0];
+        // Construct a SampledField with the right codomain Type but a data
+        // buffer whose length is off by one — should reject at the stride
+        // check `data.len() != grid_count * stride`.
+        let bad_data: Vec<f64> = (0..bad_data_len).map(|i| i as f64).collect();
+        let bad_sf = make_sampled_1d("bad_stride", grid, bad_data);
+        let bad_field = wrap_sampled_field(bad_sf, Type::Real, expected_codomain);
+        let bad_case = make_elastic_result_with_only_field(field_name, bad_field);
+        let mcr = multi_case_result_value(&[("A", bad_case)]);
+        assert!(eval_fea(name, &[mcr]).unwrap().is_undef());
+    }
+
+    #[test]
+    fn envelope_von_mises_per_case_field_wrong_stride_returns_undef() {
+        // Matrix<3,3,Pressure> expects stride 9; supply a 10-float buffer
+        // (not a multiple of 9 for grid_count=3).
+        let pressure = Type::Scalar { dimension: DimensionVector::PRESSURE };
+        let codomain = Type::Matrix { m: 3, n: 3, quantity: Box::new(pressure) };
+        assert_envelope_helper_per_case_field_wrong_stride_returns_undef(
+            "envelope_von_mises",
+            "stress",
+            codomain,
+            10, // grid_count=3, stride=9 → expected len=27; 10 violates
+        );
+    }
+
+    #[test]
+    fn envelope_max_principal_per_case_field_wrong_stride_returns_undef() {
+        let pressure = Type::Scalar { dimension: DimensionVector::PRESSURE };
+        let codomain = Type::Matrix { m: 3, n: 3, quantity: Box::new(pressure) };
+        assert_envelope_helper_per_case_field_wrong_stride_returns_undef(
+            "envelope_max_principal",
+            "stress",
+            codomain,
+            10,
+        );
+    }
+
+    #[test]
+    fn envelope_displacement_magnitude_per_case_field_wrong_stride_returns_undef() {
+        // Vector<3,Length> expects stride 3; supply a 4-float buffer
+        // (not a multiple of 3 for grid_count=3 — expected len=9; 4 violates).
+        let length = Type::Scalar { dimension: DimensionVector::LENGTH };
+        let codomain = Type::Vector { n: 3, quantity: Box::new(length) };
+        assert_envelope_helper_per_case_field_wrong_stride_returns_undef(
+            "envelope_displacement_magnitude",
+            "displacement",
+            codomain,
+            4,
+        );
+    }
 }
