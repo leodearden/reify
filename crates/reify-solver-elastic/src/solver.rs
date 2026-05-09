@@ -815,4 +815,51 @@ mod tests {
         let opts = CgSolverOptions::default();
         let _ = solve_cg(&k, &f, opts, SolverMode::Deterministic);
     }
+
+    // -----------------------------------------------------------------------
+    // Step-11: deterministic back-to-back bit-stability
+    // -----------------------------------------------------------------------
+
+    /// Two consecutive Deterministic-mode calls on the same fan-mesh input
+    /// must produce bit-identical outputs (u, iterations, converged).
+    ///
+    /// Mechanism: single-threaded + pairwise-tree reductions (fixed shape per
+    /// input length) + slot-order vector ops → no scheduling dependence.
+    ///
+    /// This test pins the Deterministic-mode bit-stability contract as a
+    /// regression guard (referenced in the solve_cg docstring).
+    #[test]
+    fn deterministic_back_to_back_bit_stable() {
+        let (k, f) = fan_mesh_k_spd_and_f();
+        let opts = CgSolverOptions {
+            tolerance: 1e-10,
+            max_iter: 1000,
+        };
+
+        let result_a = solve_cg(&k, &f, opts.clone(), SolverMode::Deterministic);
+        let result_b = solve_cg(&k, &f, opts, SolverMode::Deterministic);
+
+        assert_eq!(
+            result_a.iterations, result_b.iterations,
+            "iterations must be bit-stable"
+        );
+        assert_eq!(
+            result_a.converged, result_b.converged,
+            "converged flag must be bit-stable"
+        );
+        assert_eq!(
+            result_a.u.len(),
+            result_b.u.len(),
+            "u lengths must match"
+        );
+        for i in 0..result_a.u.len() {
+            assert_eq!(
+                result_a.u[i].to_bits(),
+                result_b.u[i].to_bits(),
+                "u[{i}] not bit-stable: a={} b={}",
+                result_a.u[i],
+                result_b.u[i]
+            );
+        }
+    }
 }
