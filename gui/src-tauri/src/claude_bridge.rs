@@ -242,6 +242,52 @@ pub async fn read_sidecar_output<R: AsyncBufRead + Unpin>(
     on_exit();
 }
 
+/// Handle the sidecar process exit event: update state, notify waiters, and
+/// optionally emit a `claude-sidecar-crashed` Tauri event via the supplied emitter.
+///
+/// This is the extracted body of the `tokio::spawn(async move { ... })` block that
+/// previously lived inline inside `SidecarHandle::new_inner`'s `on_exit` closure.
+/// Extracting it here allows direct unit testing without the EngineSession /
+/// SelectionInfo ballast required by `from_parts_with_mcp`.
+///
+/// # Lock-release-before-emit invariant
+///
+/// The state guard is acquired, the state is updated, and the guard is dropped
+/// **before** `notify_waiters()` and the emitter call. Holding the lock across
+/// `emit()` would stall every other task awaiting `state.lock()` (notably
+/// `wait_ready` and `kill`) if the emitter ever blocks or panics.
+pub(crate) async fn on_sidecar_exit<F>(
+    state: Arc<Mutex<SidecarState>>,
+    notify: Arc<Notify>,
+    emitter: Option<Arc<F>>,
+) where
+    F: Fn(String, Value) + Send + Sync + 'static,
+{
+    let reason = "sidecar exited unexpectedly".to_string();
+    let should_emit = {
+        let mut s = state.lock().await;
+        let crashed = !matches!(*s, SidecarState::NotStarted);
+        if crashed {
+            *s = SidecarState::Crashed(reason.clone());
+        }
+        crashed
+    }; // lock dropped here
+    notify.notify_waiters();
+    if should_emit {
+        if let Some(ref emit) = emitter {
+            emit(
+                "claude-sidecar-crashed".to_string(),
+                serde_json::json!({ "reason": reason }),
+            );
+        } else {
+            tracing::debug!(
+                "sidecar crashed but no event emitter is wired (from_parts path); \
+                 frontend will not receive claude-sidecar-crashed"
+            );
+        }
+    }
+}
+
 /// Named configuration for MCP tool interception in the sidecar reader task.
 ///
 /// Replaces the anonymous 3-tuple `(Arc<Mutex<EngineSession>>, F, Arc<RwLock<SelectionInfo>>)`
@@ -439,43 +485,11 @@ impl SidecarHandle {
                     }
                 },
                 move || {
-                    // on_exit: set state to Crashed unless we're already NotStarted (killed).
-                    // Also notify waiters so anyone blocked in wait_ready wakes immediately
-                    // instead of hanging for the full timeout.
-                    // If we detect a genuine unexpected exit (non-NotStarted), also emit
-                    // a claude-sidecar-crashed Tauri event so the frontend can clear stuck UI.
-                    let state_inner = state_for_crash;
-                    let notify_inner = notify_for_crash;
-                    let emitter = event_emitter_for_exit;
-                    tokio::spawn(async move {
-                        // Update state and drop the guard before calling the emitter.
-                        // Holding the lock across emit() would stall every other task
-                        // awaiting state().lock() (notably wait_ready, kill) if the
-                        // emitter ever blocks or panics.
-                        let reason = "sidecar exited unexpectedly".to_string();
-                        let should_emit = {
-                            let mut s = state_inner.lock().await;
-                            let crashed = !matches!(*s, SidecarState::NotStarted);
-                            if crashed {
-                                *s = SidecarState::Crashed(reason.clone());
-                            }
-                            crashed
-                        }; // lock dropped here
-                        notify_inner.notify_waiters();
-                        if should_emit {
-                            if let Some(ref emit) = emitter {
-                                emit(
-                                    "claude-sidecar-crashed".to_string(),
-                                    serde_json::json!({ "reason": reason }),
-                                );
-                            } else {
-                                tracing::debug!(
-                                    "sidecar crashed but no event emitter is wired (from_parts path); \
-                                     frontend will not receive claude-sidecar-crashed"
-                                );
-                            }
-                        }
-                    });
+                    tokio::spawn(on_sidecar_exit(
+                        state_for_crash,
+                        notify_for_crash,
+                        event_emitter_for_exit,
+                    ));
                 },
             )
             .await;
