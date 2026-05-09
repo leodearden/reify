@@ -2039,6 +2039,9 @@ impl Engine {
         // post-3103 we pay O(graph) at most once per eval() call — exactly once when
         // at least one preserved binding re-injects, zero times when all preserved
         // bindings target purposes absent from the new module (task 3260).
+        // When `any_injected` is false, the resulting engine state matches the
+        // empty-`preserved_bindings` path: derived caches were freshly built
+        // upstream and `active_tolerance_scope` is already cleared.
         if !preserved_bindings.is_empty() {
             let mut any_injected = false;
             for (purpose_name, entity_ref) in &preserved_bindings {

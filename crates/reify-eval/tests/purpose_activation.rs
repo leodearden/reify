@@ -322,8 +322,15 @@ fn eval_cached_preserves_active_purpose_bindings_across_call() {
         "precondition: purpose must be active after activate_purpose"
     );
 
-    // (4) eval_cached must not disturb active_purposes or active_purpose_bindings.
-    engine.eval_cached(&compiled, VersionId(1));
+    // (4) eval_cached must not disturb active_purposes or active_purpose_bindings,
+    //     nor change the injected-purpose constraint count.
+    let count_before = constraint_count(&engine);
+    engine.eval_cached(&compiled, VersionId(0));
+    assert_eq!(
+        constraint_count(&engine),
+        count_before,
+        "eval_cached must not change the injected-purpose constraint count (task 3260)"
+    );
 
     // (5) active_purposes survived.
     assert!(
