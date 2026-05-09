@@ -3248,6 +3248,58 @@ describe('SidecarSession permission-prompt wiring (step-3)', () => {
       message: expect.any(String),
     });
   });
+
+  // (g) onRequest arriving AFTER a completed invocation (currentInvocationId reset to null
+  //     at session.ts:266 in the finally block) must also deny immediately and emit a notice.
+  //     This documents the post-completion race explicitly called out in the source comment.
+  it('(g) orphan permission request after a completed invocation is denied and emits a notice', async () => {
+    const { server, triggerRequest } = makeMockPermissionServer();
+
+    // Wire spawn to complete the invocation immediately with a result event
+    vi.mocked(spawn).mockImplementation(
+      () => createMockProcess([{ type: 'result', session_id: 'sess-g' }]) as any
+    );
+
+    const session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are helpful.',
+      permissionMcp: { url: 'http://127.0.0.1:29999/mcp', server },
+    } as any);
+    session.onOutput = (msg) => outputs.push(msg);
+
+    // Run a full invocation to completion — currentInvocationId is reset to null in the finally block
+    await session.handleMessage({ type: 'send_message', id: 'msg-g', text: 'Hello' });
+
+    // Reset output collector and mock call state so we get clean post-completion assertions
+    outputs.length = 0;
+    (server.decide as ReturnType<typeof vi.fn>).mockClear();
+
+    // Simulate a late CLI permission request arriving after the invocation ended
+    triggerRequest({
+      request_id: 'req-post',
+      tool_name: 'Bash',
+      tool_input: { command: 'rm -rf /' },
+    });
+
+    // (g1) No permission_request outbound must have been emitted
+    const permReqs = outputs.filter((o) => o.type === 'permission_request');
+    expect(permReqs).toHaveLength(0);
+
+    // (g2) server.decide must have been called exactly once with deny
+    expect((server.decide as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(1);
+    expect((server.decide as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith('req-post', { behavior: 'deny' });
+
+    // (g3) Exactly one diagnostic notice with code 'permission_request_orphaned' must have been emitted
+    const notices = outputs.filter((o) => o.type === 'notice') as any[];
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toMatchObject({
+      type: 'notice',
+      id: '',
+      code: 'permission_request_orphaned',
+      message: expect.any(String),
+    });
+  });
 });
 
 describe('SidecarSession reify-debug MCP wiring (task 3210)', () => {

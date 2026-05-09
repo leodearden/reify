@@ -122,6 +122,9 @@ export class SidecarSession {
     // The matching deregistration happens in destroy() via onRequest(null).
     if (config.permissionMcp) {
       config.permissionMcp.server.onRequest((req) => {
+        // Short-circuit any callbacks that race with destroy(): the session is
+        // torn down, there is nothing to do and no safe onOutput to call.
+        if (this.destroyed) return;
         // Guard: if no invocation is in-flight (e.g. a very late CLI request arriving
         // after done/abort, or before the first send_message), there is no host UI to
         // show the prompt and no message id to attach the permission_request to.
