@@ -2004,6 +2004,41 @@ mod tests {
         )
     }
 
+    /// Bare `Value::Real` components in a `Value::Point` are NOT a valid
+    /// production shape for a `Type::Point<Length>` cell.  The function MUST
+    /// return `None` so the caller falls through to "unsupported arg shape".
+    /// Returning `Some([...])` would silently reinterpret the raw floats as
+    /// SI metres at the kernel boundary — exactly the hazard this tightening
+    /// closes.  All production mocks use `Value::length(...)` components (i.e.
+    /// `Value::Scalar { dimension: LENGTH, .. }`).
+    #[test]
+    fn resolve_point3_length_arg_bare_real_components_return_none() {
+        let cell = reify_types::ValueCellId::new("Bracket", "p");
+        let expr = reify_types::CompiledExpr::value_ref(
+            cell.clone(),
+            reify_types::Type::point3(reify_types::Type::length()),
+        );
+        let mut values = reify_types::ValueMap::new();
+        values.insert(
+            cell,
+            reify_types::Value::Point(vec![
+                reify_types::Value::Real(1.0),
+                reify_types::Value::Real(2.0),
+                reify_types::Value::Real(3.0),
+            ]),
+        );
+        assert_eq!(
+            super::resolve_point3_length_arg(&expr, &values),
+            None,
+            "bare Value::Real components must produce None — production cells \
+             carry Type::Point<Length> so components must be \
+             Value::Scalar {{ dimension: LENGTH, .. }}; a bare Real slipping \
+             through would be silently reinterpreted as metres at the kernel \
+             boundary, hence the function must return None (caller falls \
+             through to 'unsupported arg shape')"
+        );
+    }
+
     // Constants `DEGENERATE_LENGTH_M`, `DEGENERATE_ANGLE_RAD`, and
     // `GEOMETRY_EPSILON` (top of file) are not pinned by a standalone unit
     // test — that would just restate the `const` definitions. Their behavior
