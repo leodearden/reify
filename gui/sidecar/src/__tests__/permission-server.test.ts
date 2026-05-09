@@ -287,6 +287,70 @@ describe('createPermissionServer', () => {
     await expect(server.stop()).resolves.not.toThrow();
   });
 
+  // onRequest(null) sentinel: clears the registered handler.
+  // The TypeScript signature on the unfixed interface rejects null — tsc --noEmit fails.
+  // At runtime (esbuild strips types) the behaviour is correct in both versions.
+
+  it('onRequest(null) clears the registered handler so subsequent approve_tool calls do not invoke the prior handler', async () => {
+    server = createPermissionServer();
+    await server.start();
+
+    let handlerCalls = 0;
+    server.onRequest(() => { handlerCalls++; });
+    server.onRequest(null); // clear the handler — TypeScript rejects this on unfixed signature
+
+    // setRemembered short-circuits the next approve_tool call (no decide() needed).
+    server.setRemembered('Write');
+
+    const client = await connectClient(server.url());
+    const result = await client.callTool({
+      name: 'approve_tool',
+      arguments: { tool_name: 'Write', input: {} },
+    });
+
+    // The cleared handler must not have been invoked.
+    expect(handlerCalls).toBe(0);
+    // Verify the call resolved correctly (setRemembered grants allow).
+    const content = result.content as Array<{ type: string; text: string }>;
+    expect(JSON.parse(content[0].text).behavior).toBe('allow');
+
+    await client.close();
+  });
+
+  it('onRequest(null) clears the handler so unremembered tool calls leave the prior handler uninvoked', async () => {
+    server = createPermissionServer();
+    await server.start();
+
+    let handlerCalls = 0;
+    server.onRequest(() => { handlerCalls++; });
+    server.onRequest(null); // clear the handler — TypeScript rejects this on unfixed signature
+
+    const client = await connectClient(server.url());
+
+    // Start a tools/call for an unremembered tool — do NOT await.
+    // With the handler cleared, no callback fires, so the call blocks indefinitely.
+    const toolCallPromise = client.callTool({
+      name: 'approve_tool',
+      arguments: { tool_name: 'Bash', input: { command: 'ls' } },
+    });
+
+    // Give the server time to process the request and enter the pending-promise await.
+    await new Promise((r) => setTimeout(r, 30));
+
+    // The cleared handler must not have been invoked during the blocking wait.
+    expect(handlerCalls).toBe(0);
+
+    // Unblock the pending call so the test and server can clean up.
+    server.cancelAll();
+    const result = await toolCallPromise;
+
+    // cancelAll() resolves all pending entries with deny.
+    const content = result.content as Array<{ type: string; text: string }>;
+    expect(JSON.parse(content[0].text).behavior).toBe('deny');
+
+    await client.close();
+  });
+
   // close-listener race: listener must be registered BEFORE handleRequest so that
   // a socket-close mid-await (e.g. client abort) still triggers transport/server cleanup.
   it('registers close-listener before awaiting handleRequest so socket-close mid-request still triggers cleanup', async () => {
