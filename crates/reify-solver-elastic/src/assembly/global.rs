@@ -1621,6 +1621,27 @@ mod tests {
     /// where contributions from two different `dofs_per_node` (3 from
     /// tet, 6 from each shell) overlap on displacement DOFs.
     ///
+    /// **Why mixed-mesh symmetry follows from per-kind symmetry +
+    /// full-block emission** (mirrors the rationale block on
+    /// `global_k_is_symmetric_within_fp_tolerance`):
+    /// `element_stiffness_p1` ships a symmetric `K_e_tet`
+    /// (Task 2915 / `tet::tests::p1_element_stiffness_is_symmetric...`)
+    /// and `shell_element_stiffness` ships a symmetric `K_e_shell`
+    /// (Task 3014 / `shell_element_stiffness_is_symmetric_within_fp_tolerance`).
+    /// faer's `try_new_from_triplets` sums duplicate `(row, col)` entries
+    /// in fixed encounter order — pinned by
+    /// `faer_sums_duplicate_triplets_in_encounter_order`. The D-derived
+    /// emission loop in step-2 emits the **full** `(a, α, b, β)` block
+    /// for every element kind (not upper-triangle only), so
+    /// `K_global[i][j]` and `K_global[j][i]` are sums of element-mirror
+    /// pairs of triplets coming from the same `K_e` matrices. The LSB
+    /// of the encounter-order summation at `(i, j)` versus `(j, i)` can
+    /// differ, but both sides reduce to the same value within the FP
+    /// summation band the tet-only case pins. A regression that breaks
+    /// the full-block invariant for **either** kind (e.g. half-block
+    /// emission for shells while keeping full blocks for tets) surfaces
+    /// here even when the per-kind symmetry tests stay green.
+    ///
     /// Tolerance `1e-9 · max(|K[i][j]|, |K[j][i]|, 1)`, identical to the
     /// pure-tet symmetry test. Iterates the upper triangle (`j in i..dim`)
     /// — `(i, j)` and `(j, i)` describe the same unordered pair so the
