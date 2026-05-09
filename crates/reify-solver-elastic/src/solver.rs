@@ -865,4 +865,71 @@ mod tests {
             );
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Step-13: parallel disjoint-block-K bit-equal to deterministic
+    // -----------------------------------------------------------------------
+
+    /// Block-diagonal K of dimension 16 (four disjoint 4×4 SPD tridiagonal
+    /// blocks). For t ∈ {1, 2, 4}: Parallel { threads: t } must produce
+    /// bit-identical result to Deterministic because each row's SpMV reads
+    /// only its own block's p-slots — no cross-thread contention.
+    ///
+    /// This is the strongest claim: on a partition-friendly K, Parallel mode
+    /// is bit-identical to Deterministic for any thread count.
+    #[test]
+    fn parallel_disjoint_block_k_bit_equal_to_deterministic() {
+        // Build a 16×16 block-diagonal SPD matrix. Four 4×4 tridiagonal blocks:
+        // each block is [[4,1,0,0],[1,4,1,0],[0,1,4,1],[0,0,1,4]] (SPD: diag-dominant).
+        let mut triplets: Vec<Triplet<usize, usize, f64>> = Vec::new();
+        for block in 0..4_usize {
+            let base = block * 4;
+            for i in 0..4_usize {
+                let row = base + i;
+                triplets.push(Triplet::new(row, row, 4.0_f64)); // diagonal
+                if i + 1 < 4 {
+                    triplets.push(Triplet::new(row, row + 1, 1.0_f64)); // super-diagonal
+                    triplets.push(Triplet::new(row + 1, row, 1.0_f64)); // sub-diagonal
+                }
+            }
+        }
+        let k = SparseRowMat::try_new_from_triplets(16, 16, &triplets).unwrap();
+
+        // Non-zero f: one entry per block.
+        let mut f = vec![0.0_f64; 16];
+        f[0] = 1.0;
+        f[4] = 2.0;
+        f[8] = 3.0;
+        f[12] = 4.0;
+
+        let opts = CgSolverOptions {
+            tolerance: 1e-10,
+            max_iter: 500,
+        };
+
+        let det = solve_cg(&k, &f, opts.clone(), SolverMode::Deterministic);
+        assert!(det.converged, "deterministic must converge");
+
+        for &t in &[1_usize, 2, 4] {
+            let par = solve_cg(&k, &f, opts.clone(), SolverMode::Parallel { threads: t });
+            assert!(
+                par.converged,
+                "Parallel {{ threads: {t} }} must converge"
+            );
+            assert_eq!(
+                par.iterations, det.iterations,
+                "Parallel {{ threads: {t} }} iterations ({}) ≠ Deterministic ({})",
+                par.iterations, det.iterations
+            );
+            for i in 0..16 {
+                assert_eq!(
+                    par.u[i].to_bits(),
+                    det.u[i].to_bits(),
+                    "Parallel {{ threads: {t} }} u[{i}] = {} ≠ Deterministic u[{i}] = {}",
+                    par.u[i],
+                    det.u[i]
+                );
+            }
+        }
+    }
 }
