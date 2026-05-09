@@ -185,3 +185,75 @@ fn multi_load_case_stdlib_smoke_e2e() {
          Stage 2 migration (swap map literals for ctor calls)."
     );
 }
+
+/// Stage-2 readiness probe: verify that the `MultiCaseResult(...)` struct
+/// constructor and the accessors flowing from it produce the correct
+/// `Value::Map` shape once struct-constructor eval lands.
+///
+/// Currently `#[ignore]`d because struct-constructor eval is not yet
+/// implemented: `reify_stdlib::eval_builtin` returns `Value::Undef` for
+/// unrecognised names (including `MultiCaseResult`), so the `Value::Map`-shape
+/// assertion panics with the current engine.
+///
+/// To run: `cargo test --test multi_load_case_stdlib_smoke -- --ignored`
+///
+/// Migration cue: when this test passes, swap the `cases`/`mcr` map literals
+/// in `SMOKE_SOURCE` for an actual `MultiCaseResult(cases: map{...})` ctor
+/// call, verify `multi_load_case_stdlib_smoke_e2e` still passes, then delete
+/// this probe.
+#[test]
+#[ignore = "Stage 2: struct-ctor eval not yet implemented"]
+fn struct_ctor_eval_stage_2_readiness() {
+    const STAGE_2_SOURCE: &str = r#"
+structure def SmokeFixture {
+    let mcr = MultiCaseResult(cases: map{"operating" => 42, "overload" => 99})
+    let names      = case_names(mcr)
+    let op_result  = result_for(mcr, "operating")
+}
+"#;
+
+    let compiled = parse_and_compile_with_stdlib(STAGE_2_SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    // 1. No Error-severity diagnostics from the ctor call.
+    let eval_errors = collect_errors(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "eval should produce no Error-severity diagnostics from the ctor call, \
+         got: {eval_errors:?}"
+    );
+
+    let v = &result.values;
+
+    // 2. `mcr` is a `Value::Map` whose `"cases"` key maps to a `Value::Map`.
+    let mcr = get_value(v, "mcr");
+    match mcr {
+        Value::Map(outer) => match outer.get(&Value::String("cases".to_string())) {
+            Some(Value::Map(_)) => {}
+            Some(other) => panic!("mcr[\"cases\"] should be Value::Map, got: {other:?}"),
+            None => panic!("mcr should have a \"cases\" key, got: {mcr:?}"),
+        },
+        _ => panic!("mcr should be Value::Map, got: {mcr:?}"),
+    }
+
+    // 3. `case_names(mcr)` returns ["operating", "overload"] in lexicographic order.
+    let names = get_value(v, "names");
+    assert_eq!(
+        names,
+        &Value::List(vec![
+            Value::String("operating".to_string()),
+            Value::String("overload".to_string()),
+        ]),
+        "case_names(mcr) should return [\"operating\", \"overload\"] in lexicographic order, \
+         got: {names:?}"
+    );
+
+    // 4. `result_for(mcr, "operating")` returns Value::Int(42).
+    let op_result = get_value(v, "op_result");
+    assert_eq!(
+        op_result,
+        &Value::Int(42),
+        "result_for(mcr, \"operating\") should return Value::Int(42), got: {op_result:?}"
+    );
+}
