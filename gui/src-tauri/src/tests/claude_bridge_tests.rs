@@ -3153,3 +3153,74 @@ mod sidecar_env {
         assert_eq!(envs[0].0, "REIFY_WORKSPACE");
     }
 }
+
+// --- apply_sidecar_env + spawn_sidecar_impl signature tests (task 3210 step-15) ---
+
+mod apply_sidecar_env_tests {
+    use crate::claude_bridge::apply_sidecar_env;
+    use std::path::Path;
+
+    #[test]
+    fn sets_workspace_only_when_no_landlock_exec() {
+        let mut cmd = tokio::process::Command::new("/bin/true");
+        apply_sidecar_env(&mut cmd, Path::new("/ws"), None);
+        let envs: Vec<_> = cmd
+            .as_std()
+            .get_envs()
+            .map(|(k, v)| (k.to_string_lossy().into_owned(), v.map(|v| v.to_string_lossy().into_owned())))
+            .collect();
+        let has_ws = envs.iter().any(|(k, v)| k == "REIFY_WORKSPACE" && v.as_deref() == Some("/ws"));
+        let has_le = envs.iter().any(|(k, _)| k == "REIFY_LANDLOCK_EXEC");
+        assert!(has_ws, "REIFY_WORKSPACE=/ws should be set: {:?}", envs);
+        assert!(!has_le, "REIFY_LANDLOCK_EXEC should not be set: {:?}", envs);
+    }
+
+    #[test]
+    fn sets_both_when_landlock_exec_some() {
+        let mut cmd = tokio::process::Command::new("/bin/true");
+        apply_sidecar_env(&mut cmd, Path::new("/ws"), Some(Path::new("/sb/le.py")));
+        let envs: Vec<_> = cmd
+            .as_std()
+            .get_envs()
+            .map(|(k, v)| (k.to_string_lossy().into_owned(), v.map(|v| v.to_string_lossy().into_owned())))
+            .collect();
+        let has_ws = envs.iter().any(|(k, v)| k == "REIFY_WORKSPACE" && v.as_deref() == Some("/ws"));
+        let has_le = envs.iter().any(|(k, v)| k == "REIFY_LANDLOCK_EXEC" && v.as_deref() == Some("/sb/le.py"));
+        assert!(has_ws, "REIFY_WORKSPACE=/ws should be set: {:?}", envs);
+        assert!(has_le, "REIFY_LANDLOCK_EXEC=/sb/le.py should be set: {:?}", envs);
+    }
+}
+
+// spawn_sidecar_impl signature test (step-15c)
+#[tokio::test]
+async fn spawn_sidecar_impl_with_workspace_and_no_landlock_returns_error_for_missing_binary() {
+    use crate::engine::EngineSession;
+    use reify_constraints::SimpleConstraintChecker;
+    use reify_test_support::MockGeometryKernel;
+    use std::path::Path;
+    use std::sync::Arc;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let engine = Arc::new(std::sync::Mutex::new(session));
+    let selection = Arc::new(std::sync::RwLock::new(reify_mcp::SelectionInfo::default()));
+
+    let result = spawn_sidecar_impl(
+        Path::new("/tmp/no-such-binary"),
+        engine,
+        |_name: String, _payload: serde_json::Value| {},
+        selection,
+        Path::new("/tmp/ws"),
+        None,
+    )
+    .await;
+
+    assert!(result.is_err(), "Expected error for missing binary");
+    let err = result.err().expect("Expected Err variant");
+    assert!(
+        err.contains("Failed to spawn sidecar"),
+        "Error should mention 'Failed to spawn sidecar': {}",
+        err
+    );
+}
