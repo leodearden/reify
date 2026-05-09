@@ -869,36 +869,34 @@ describe('claudeStore', () => {
       const systemMsgs = state.messages.filter((m: any) => m.role === 'system');
       expect(systemMsgs).toHaveLength(1);
     });
+  });
 
-    describe('with pending rAF (buffers not yet flushed at crash time)', () => {
-      // Override the outer withSynchronousRAF with a queued mock so we can
-      // exercise cancelAndFlush draining non-empty buffers before they fire.
-      const raf = withQueuedRAF();
+  describe('handleSidecarCrashed (with pending rAF buffers)', () => {
+    const raf = withQueuedRAF();
 
-      it('flushes stale buffers via cancelAndFlush, does not throw, and leaves state consistent', () => {
-        const { state, sendMessage, handleOutboundMessage, handleSidecarCrashed } = makeStore() as any;
-        sendMessage('hello', {});
-        const msgId = state.currentMessageId!;
+    it('flushes stale buffers via cancelAndFlush, does not throw, and leaves state consistent', () => {
+      const { state, sendMessage, handleOutboundMessage, handleSidecarCrashed } = makeStore() as any;
+      sendMessage('hello', {});
+      const msgId = state.currentMessageId!;
 
-        // Accumulate a thinking delta without firing rAF — buffer is now non-empty
-        handleOutboundMessage({ type: 'thinking_delta', id: msgId, content: 'stale chunk' } as OutboundMessage);
-        expect(raf.callbacks).toHaveLength(1); // rAF was scheduled but has not fired
+      // Accumulate a thinking delta without firing rAF — buffer is now non-empty
+      handleOutboundMessage({ type: 'thinking_delta', id: msgId, content: 'stale chunk' } as OutboundMessage);
+      expect(raf.callbacks).toHaveLength(1); // rAF was scheduled but has not fired
 
-        // handleSidecarCrashed calls cancelAndFlush (inside batch) which drains the buffer
-        expect(() => handleSidecarCrashed('crash')).not.toThrow();
+      // handleSidecarCrashed calls cancelAndFlush (inside batch) which drains the buffer
+      expect(() => handleSidecarCrashed('crash')).not.toThrow();
 
-        const assistantMsg = state.messages.find((m: any) => m.role === 'assistant') as any;
-        expect(assistantMsg.complete).toBe(true);
-        expect(assistantMsg.thinkingComplete).toBe(true);
-        expect(assistantMsg.error).toBe('sidecar disconnected');
-        // cancelAndFlush flushed the buffer: stale chunk landed on the assistant message
-        expect(assistantMsg.thinkingText).toBe('stale chunk');
-        expect(state.sessionStatus).toBe('idle');
+      const assistantMsg = state.messages.find((m: any) => m.role === 'assistant') as any;
+      expect(assistantMsg.complete).toBe(true);
+      expect(assistantMsg.thinkingComplete).toBe(true);
+      expect(assistantMsg.error).toBe('sidecar disconnected');
+      // cancelAndFlush flushed the buffer: stale chunk landed on the assistant message
+      expect(assistantMsg.thinkingText).toBe('stale chunk');
+      expect(state.sessionStatus).toBe('idle');
 
-        const systemMsgs = state.messages.filter((m: any) => m.role === 'system');
-        expect(systemMsgs).toHaveLength(1);
-        expect((systemMsgs[0] as any).text).toContain('crash');
-      });
+      const systemMsgs = state.messages.filter((m: any) => m.role === 'system');
+      expect(systemMsgs).toHaveLength(1);
+      expect((systemMsgs[0] as any).text).toContain('crash');
     });
   });
 });
