@@ -1127,6 +1127,45 @@ mod tests {
         }
     }
 
+    // ── Bit-exact thickness contract test ────────────────────────────────────
+
+    /// Every per-vertex thickness on the slab fixture must equal `6.0` within
+    /// `1e-12` (effectively bit-exact for this analytic fixture).
+    ///
+    /// On `slab_sdf_3d(3.0, 17)` the center voxel is at z=0, where
+    /// `φ = |0| − 3 = −3` and `thickness = 2 × |−3| = 6.0`.  All mask
+    /// corners used for thickness sampling are grid-aligned to z=0, so both
+    /// `sample_at_world` (trilinear at a grid-aligned point) and
+    /// `sample_at_index` (direct lookup) must return `−3.0` bit-exactly.
+    ///
+    /// The `1e-12` tolerance (much tighter than the `0.5`-voxel slack in the
+    /// existing `extract_mid_surface_per_vertex_thickness_matches_slab_full_thickness`
+    /// test) pins the contract that thickness sampling cannot introduce
+    /// interpolation error or silently substitute a fallback value.
+    #[test]
+    fn extract_mid_surface_per_vertex_thickness_is_bit_exact_on_grid_aligned_slab() {
+        let n = 17usize;
+        let expected = 6.0_f64; // 2 × |φ| = 2 × 3 = 6
+
+        let sdf = slab_sdf_3d(3.0, n);
+        let mask = centerline_mask(n, &sdf);
+
+        let mesh = extract_mid_surface(&sdf, &mask, &MidSurfaceOptions::default())
+            .expect("slab centerline extract must succeed");
+
+        assert!(
+            !mesh.thickness.is_empty(),
+            "thickness must be non-empty on a non-empty mask"
+        );
+        for &t in &mesh.thickness {
+            assert!(
+                (t - expected).abs() < 1e-12,
+                "per-vertex thickness {t} differs from expected {expected} by more than 1e-12; \
+                 mask corner is grid-aligned so sampling must be bit-exact"
+            );
+        }
+    }
+
     // ── Step 13: defaults pin test ────────────────────────────────────────────
 
     /// Pin `MidSurfaceOptions::default()` field values.
