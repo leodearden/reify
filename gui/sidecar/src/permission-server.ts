@@ -53,6 +53,17 @@ export interface PermissionServer {
    * Idempotent — safe to call when no requests are pending.
    */
   cancelAll(): void;
+  /**
+   * Return the number of approve_tool calls currently awaiting a decide() resolution.
+   * Exposes live pending-await depth for diagnostics and observability.
+   */
+  pendingCount(): number;
+  /**
+   * Resolve once the number of pending requests reaches at least `n`.
+   * Rejects after `timeoutMs` milliseconds (default 2000) if the condition is not met.
+   * Useful for deterministic synchronization — eliminates bounded polling on `pendingCount()`.
+   */
+  awaitPending(n: number, timeoutMs?: number): Promise<void>;
 }
 
 /**
@@ -235,6 +246,28 @@ export function createPermissionServer(): PermissionServer {
         pendingPromises.delete(reqId);
         entry.resolve({ behavior: 'deny' });
       }
+    },
+
+    pendingCount(): number {
+      return pendingPromises.size;
+    },
+
+    awaitPending(n: number, timeoutMs = 2000): Promise<void> {
+      return new Promise<void>((resolve, reject) => {
+        const deadline = Date.now() + timeoutMs;
+        const poll = () => {
+          if (pendingPromises.size >= n) {
+            resolve();
+          } else if (Date.now() >= deadline) {
+            reject(new Error(
+              `awaitPending(${n}): timed out after ${timeoutMs}ms (${pendingPromises.size} pending)`
+            ));
+          } else {
+            setTimeout(poll, 10);
+          }
+        };
+        poll();
+      });
     },
   };
 }
