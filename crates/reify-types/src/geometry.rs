@@ -4400,6 +4400,62 @@ mod tests {
         );
     }
 
+    /// `CapabilityDescriptor::supports_any_repr` returns `true` iff at least one
+    /// entry's *output* repr (the second tuple element) equals `repr`.  The
+    /// fixture carries mixed `BRep`, `Mesh`, and `Convert`-output entries.
+    /// Probes: (a) repr present as direct output → true, (b) repr present as
+    /// Convert output → true, (c) repr absent → false, (d) empty descriptor →
+    /// false, (e) Convert-output-vs-from disambiguation: `supports_any_repr(BRep)`
+    /// against a descriptor whose only entry is `(Convert{from: BRep}, Mesh)`
+    /// must be false — the helper inspects the output (second element), not the
+    /// `from` input inside `Operation::Convert`.
+    #[test]
+    fn capability_descriptor_supports_any_repr_lookup() {
+        let d = CapabilityDescriptor {
+            supports: vec![
+                (Operation::PrimitiveBox, ReprKind::BRep),
+                (Operation::BooleanUnion, ReprKind::Mesh),
+                (Operation::Convert { from: ReprKind::BRep }, ReprKind::Mesh),
+            ],
+        };
+
+        // (a) BRep is present as a direct output repr.
+        assert!(
+            d.supports_any_repr(ReprKind::BRep),
+            "(PrimitiveBox, BRep) output is BRep — supports_any_repr(BRep) must be true"
+        );
+
+        // (b) Mesh is present both as a direct output and as a Convert output.
+        assert!(
+            d.supports_any_repr(ReprKind::Mesh),
+            "(BooleanUnion, Mesh) and (Convert{{from:BRep}}, Mesh) both output Mesh — must be true"
+        );
+
+        // (c) Sdf is not the output repr of any entry in the fixture.
+        assert!(
+            !d.supports_any_repr(ReprKind::Sdf),
+            "no entry produces Sdf — supports_any_repr(Sdf) must be false"
+        );
+
+        // (d) Empty descriptor → false for every repr.
+        assert!(
+            !CapabilityDescriptor::default().supports_any_repr(ReprKind::BRep),
+            "empty descriptor — supports_any_repr must always be false"
+        );
+
+        // (e) Convert-output-vs-from disambiguation: the only entry's BRep
+        //     appears in the `from` input, NOT the output repr.  The helper
+        //     must inspect the output (second tuple element), so the result
+        //     is false.
+        let convert_only = CapabilityDescriptor {
+            supports: vec![(Operation::Convert { from: ReprKind::BRep }, ReprKind::Mesh)],
+        };
+        assert!(
+            !convert_only.supports_any_repr(ReprKind::BRep),
+            "BRep is the Convert `from` input, not the output repr — must be false"
+        );
+    }
+
     /// `Clone` derive on `CapabilityDescriptor` must round-trip the entire
     /// `supports` table. Locks the `Clone` derive contract.
     #[test]
