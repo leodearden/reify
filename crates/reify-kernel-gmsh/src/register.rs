@@ -105,7 +105,7 @@ pub fn gmsh_capability_descriptor() -> CapabilityDescriptor {
 /// follow-up task adds real FFI, this function can switch behind
 /// `cfg(has_gmsh)` without changing the registration shape.
 fn gmsh_factory() -> Box<dyn GeometryKernel> {
-    Box::new(crate::kernel::GmshKernel::new())
+    Box::new(crate::GmshKernel::new())
 }
 
 // Unconditional submit — no `cfg(has_gmsh)` gate. See module-level docs for

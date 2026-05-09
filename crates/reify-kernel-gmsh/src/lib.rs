@@ -15,29 +15,63 @@
 //! surface-mesh repair pre-stage, auto mesh-size from smallest geometric
 //! feature, and through-thickness element-count diagnostic.
 //!
-//! # v0.3 scope
+//! # Build modes
 //!
-//! Real Gmsh FFI is deferred to a follow-up task. This crate ships the
-//! adapter scaffold — `CapabilityDescriptor` declaration, inventory
-//! registration, the three pure-Rust pipeline algorithms, the cache-key
-//! derivation, and a stub `GmshKernel` that returns descriptive errors —
-//! so that the dispatcher BFS has a fifth real registered kernel
-//! to exercise the surface→volume route, and so consumers (FEA solver,
-//! cache layer) can depend on the public types today.
+//! - **`cfg(has_gmsh)`** (real FFI): `build.rs` detected `libgmsh.so` +
+//!   `gmshc.h` (default search path: `/opt/reify-deps`). The crate links
+//!   against libgmsh and exposes the real [`GmshKernel`] backed by
+//!   hand-rolled `unsafe extern "C"` bindings in [`ffi`].
+//! - **`cfg(not(has_gmsh))`** (stub): libgmsh was not found; the crate
+//!   compiles in stub-only mode. The stub [`GmshKernel`] returns
+//!   descriptive errors from every trait method.
+//!
+//! Both modes expose a single `reify_kernel_gmsh::GmshKernel` type via
+//! cfg-conditional `pub use` — external callers do not change between modes.
 //!
 //! # Design templates
 //!
-//! `crates/reify-kernel-openvdb/` — closest template (stub-only adapter,
-//! unconditional `inventory::submit!`, single coherent op surface).
+//! `crates/reify-kernel-openvdb/src/lib.rs:36-58` — closest template for
+//! the cfg-conditional module + `pub use` shape.
 //! `crates/reify-kernel-occt/build.rs` — system-library detection pattern.
 
 pub mod auto_size;
 pub mod cache_key;
-pub mod kernel;
 pub mod options;
 pub mod register;
 pub mod repair;
 pub mod through_thickness;
 
+// Real FFI bridge — only compiled when the build script detects libgmsh.
+#[cfg(has_gmsh)]
+pub mod ffi;
+
+// Shared library-initialisation + process-global lock — only compiled when
+// has_gmsh is set.
+#[cfg(has_gmsh)]
+mod init;
+
+// Real kernel (FFI-backed) — only compiled when has_gmsh is set.
+#[cfg(has_gmsh)]
+pub mod kernel_real;
+
+// Stub kernel — only compiled when has_gmsh is NOT set.
+#[cfg(not(has_gmsh))]
+pub mod kernel;
+
+// Single public `GmshKernel` ident regardless of build mode (mirrors the
+// pattern in crates/reify-kernel-openvdb/src/lib.rs:55-58).
+#[cfg(has_gmsh)]
+pub use kernel_real::GmshKernel;
+#[cfg(not(has_gmsh))]
+pub use kernel::GmshKernel;
+
 pub use cache_key::volume_mesh_cache_key;
 pub use options::MeshingOptions;
+
+/// `true` when this crate was compiled with libgmsh detected at build time
+/// (real FFI surface available); `false` otherwise (stub-only build).
+///
+/// Mirrors `reify_kernel_occt::OCCT_AVAILABLE` for runtime reflection — used
+/// by tests / CLI tools that need to skip libgmsh-dependent assertions on
+/// hosts without `/opt/reify-deps`.
+pub const GMSH_AVAILABLE: bool = cfg!(has_gmsh);

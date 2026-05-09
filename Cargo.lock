@@ -4528,6 +4528,7 @@ version = "0.1.0"
 dependencies = [
  "inventory",
  "reify-eval",
+ "reify-kernel-gmsh",
  "reify-test-support",
  "reify-types",
  "tracing",
