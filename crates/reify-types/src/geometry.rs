@@ -311,6 +311,32 @@ impl CapabilityDescriptor {
     pub fn supports(&self, op: Operation, repr: ReprKind) -> bool {
         self.supports.iter().any(|&(o, r)| o == op && r == repr)
     }
+
+    /// Return `true` iff at least one entry's *output* repr — the second tuple
+    /// element — equals `repr`.
+    ///
+    /// For [`Operation::Convert { from }`] entries the `from` field encodes the
+    /// *input* repr; only the second tuple element (the produced output repr) is
+    /// inspected here.  Concretely, a tessellation-only kernel declaring
+    /// `(Convert { from: BRep }, Mesh)` reports `supports_any_repr(BRep)` as
+    /// **false** — BRep is the FROM input, not the produced output.
+    ///
+    /// O(n) linear scan over `self.supports`.  The table is small (4 kernels ×
+    /// ~10–50 entries each in v0.2), so no index is maintained.  Hiding the
+    /// storage shape behind this helper keeps callers unconcerned with whether
+    /// the underlying container changes (e.g. to a `HashSet<(Operation,
+    /// ReprKind)>` for larger tables).
+    ///
+    /// # Callers
+    ///
+    /// - `pick_lexmin_brep_kernel_in` in `reify-eval` calls this with
+    ///   `repr = ReprKind::BRep` to select a BRep-capable kernel during engine
+    ///   construction.
+    /// - Future v0.3 dispatcher-selection may key on `Mesh`, `Sdf`, or
+    ///   `VolumeMesh` using the same predicate.
+    pub fn supports_any_repr(&self, repr: ReprKind) -> bool {
+        self.supports.iter().any(|&(_, r)| r == repr)
+    }
 }
 
 /// Static registration record for a v0.2 multi-kernel adapter.
