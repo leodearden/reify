@@ -1563,12 +1563,12 @@ describe('SidecarSession destroy() lifecycle', () => {
     expect(onRequestMock.mock.calls[1][0]).toBeNull();
   });
 
-  // Pins the `if (this.destroyed) return;` guard at session.ts:127.
+  // Pins the destroyed-guard in the constructor's onRequest handler.
   // We cannot use triggerRequest() here because destroy() calls onRequest(null), which sets
   // capturedHandler = null inside the mock, so triggerRequest() would throw before the
   // production callback runs. Instead we grab the original handler closure from mock.calls[0][0]
   // (captured before destroy()) and invoke it directly — the closure still reads `this.destroyed`.
-  it('destroyed-guard at session.ts:127 short-circuits the constructor onRequest handler', () => {
+  it('destroyed-guard short-circuits the constructor onRequest handler', () => {
     const { server } = makeMockPermissionServer();
     const permUrl = 'http://127.0.0.1:29999/mcp';
 
@@ -1587,7 +1587,7 @@ describe('SidecarSession destroy() lifecycle', () => {
 
     session.destroy();
 
-    // Invoke the captured handler directly — the destroyed-guard at session.ts:127 must fire
+    // Invoke the captured handler directly — the destroyed-guard must fire
     originalHandler({ request_id: 'req-after-destroy', tool_name: 'Write', tool_input: { path: '/tmp/x' } });
 
     // Guard short-circuited: no output was emitted (neither permission_request nor notice)
