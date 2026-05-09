@@ -46,6 +46,49 @@ const ALL_TOPOLOGY_SELECTORS_WIRING_PATH: &str = concat!(
     "/../../examples/topology_selectors/all_topology_selectors_wiring.ri"
 );
 
+/// Verify that `all_topology_selectors_wiring.ri` passes a real face handle (not
+/// a Solid) as the second argument to `adjacent_faces` and `shared_edges`.
+///
+/// Two assertions fire:
+///
+/// 1. **Structural shape (RED until S2)**: The source must NOT contain the
+///    old placeholder strings `"adjacent_faces(body, body)"` or
+///    `"shared_edges(body, body)"`.  These were sufficient for compile-time
+///    wiring (which keys only on the function name, not arg types) but are
+///    semantically wrong — both relational selectors expect a face handle as
+///    their second argument (§3.9 PRD signature), not a Solid.  The assertion
+///    pins runtime arg-shape correctness and will FAIL RED until Step S2
+///    introduces `let top_face = single(top_faces)` and threads it through.
+///
+/// 2. **Compile clean**: After the fix, the new face-handle form must still
+///    compile with no Error-severity diagnostics (tasks 2699 and 2698 are
+///    both landed on HEAD).
+#[test]
+fn all_topology_selectors_wiring_passes_face_handles_to_relational_selectors() {
+    let source = std::fs::read_to_string(ALL_TOPOLOGY_SELECTORS_WIRING_PATH)
+        .expect("examples/topology_selectors/all_topology_selectors_wiring.ri should exist");
+
+    assert!(
+        !source.contains("adjacent_faces(body, body)"),
+        "all_topology_selectors_wiring.ri should pass a face handle (not a Solid) as the \
+         second argument to adjacent_faces; found the old placeholder `adjacent_faces(body, body)` \
+         — fix by introducing `let top_face = single(top_faces)` and using it instead"
+    );
+    assert!(
+        !source.contains("shared_edges(body, body)"),
+        "all_topology_selectors_wiring.ri should pass face handles to shared_edges; found the old \
+         placeholder `shared_edges(body, body)` — fix by threading `top_face` through the call"
+    );
+
+    let compiled = parse_and_compile_with_stdlib(&source);
+    assert!(
+        errors_only(&compiled).is_empty(),
+        "examples/topology_selectors/all_topology_selectors_wiring.ri should compile with \
+         no error-severity diagnostics after the face-handle fix, got:\n{:#?}",
+        errors_only(&compiled)
+    );
+}
+
 #[test]
 fn all_topology_selectors_wiring_compiles_with_stdlib() {
     let source = std::fs::read_to_string(ALL_TOPOLOGY_SELECTORS_WIRING_PATH)
