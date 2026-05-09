@@ -753,10 +753,10 @@ mod tests {
         let _ = assemble_global_stiffness(1, &[element], AssemblyMode::Deterministic);
     }
 
-    /// Pins the `dofs_per_node >= 1` guard (global.rs:196-205): zero-DOF kernel ⇒ panic.
+    /// Pins the `dofs_per_node >= 1` guard: zero-DOF kernel ⇒ panic.
     #[test]
     #[should_panic(expected = "dofs_per_node = 0")]
-    fn zero_dofs_per_node_panics_with_descriptive_message() {
+    fn zero_dofs_per_node_panics() {
         let k_e = ElementStiffness::zeros(0);
         let conn = [0usize]; // n_local = 1; 0 % 1 = 0 (guard 2 passes); 0 / 1 = 0 (guard 3 fires).
         let element = AssemblyElement {
