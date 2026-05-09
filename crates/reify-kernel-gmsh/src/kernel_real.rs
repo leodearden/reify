@@ -84,14 +84,14 @@ impl GmshKernel {
         // and hand a partially-malformed buffer to gmsh. Cheap insurance at
         // the FFI boundary. Bounds-checking each index also short-circuits
         // before gmsh would otherwise produce an opaque internal error.
-        if surface.vertices.len() % 3 != 0 {
+        if !surface.vertices.len().is_multiple_of(3) {
             return Err(GeometryError::OperationFailed(format!(
                 "mesh_to_volume: surface.vertices.len() = {} is not divisible by 3 \
                  (expected flat XYZ stride)",
                 surface.vertices.len()
             )));
         }
-        if surface.indices.len() % 3 != 0 {
+        if !surface.indices.len().is_multiple_of(3) {
             return Err(GeometryError::OperationFailed(format!(
                 "mesh_to_volume: surface.indices.len() = {} is not divisible by 3 \
                  (expected triangle stride)",
