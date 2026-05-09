@@ -5276,3 +5276,76 @@ fn is_idle_returns_true_after_load_from_source() {
         "session should be idle after a successful load_from_source"
     );
 }
+
+// ── Multi-file import resolution (task 3228) ─────────────────────────────────
+
+/// Pin the live MCP repro: loading a .ri file that imports another user module
+/// must resolve the import, merge the imported template, and produce non-empty
+/// GUI values.
+///
+/// Pre-fix (compile_with_stdlib path): `load_file` ignores the import entirely.
+/// `structure Top` has no direct params, so compiled.templates = [Top] with
+/// value_cells = [] → state.values is empty.
+///
+/// Post-fix (compile_entry_with_imports): `ModuleResolver` resolves `helper`,
+/// Helper's template is merged into compiled.templates, phase-1 eval produces
+/// `Helper.x = 10mm`, and build_values surfaces it as a ValueData entry.
+///
+/// The checked value ("10", unit "mm") is the DEFAULT from Helper.x's
+/// declaration — the per-instance override (25mm from `sub h = Helper(x: 25mm)`)
+/// lives in check.values under the scoped key `Top.h.x` but is not surfaced by
+/// build_values' static value_cell iteration. The important invariant is that
+/// state.values is **non-empty**, confirming the import resolved and the template
+/// merged correctly.
+#[test]
+fn load_file_with_user_import_resolves_imported_structure() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+
+    // helper.ri: a public structure with one param
+    std::fs::write(
+        dir.path().join("helper.ri"),
+        "pub structure Helper { param x: Scalar = 10mm }\n",
+    )
+    .expect("write helper.ri");
+
+    // main.ri: imports helper and instantiates it as a sub-component
+    std::fs::write(
+        dir.path().join("main.ri"),
+        "import helper\nstructure Top { sub h = Helper(x: 25mm) }\n",
+    )
+    .expect("write main.ri");
+
+    let state = session
+        .load_file(&dir.path().join("main.ri"))
+        .expect("load_file should succeed with resolved import");
+
+    // Post-fix: Helper's template is merged into compiled.templates, so phase-1
+    // eval produces Helper.x = 10mm and build_values surfaces it.
+    // Pre-fix: compiled.templates = [Top] only, Top has no value_cells → empty.
+    assert!(
+        !state.values.is_empty(),
+        "state.values should be non-empty after import is resolved (got {} values)",
+        state.values.len()
+    );
+
+    let x_val = state
+        .values
+        .iter()
+        .find(|v| v.name == "x")
+        .expect("should find parameter 'x' from the imported Helper structure");
+
+    assert_eq!(
+        x_val.unit, "mm",
+        "Helper.x should have unit 'mm', got '{}'",
+        x_val.unit
+    );
+    assert_eq!(
+        x_val.value, "10",
+        "Helper.x default is 10mm; got '{}' (unit: '{}')",
+        x_val.value, x_val.unit
+    );
+}
