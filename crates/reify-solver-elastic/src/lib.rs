@@ -38,6 +38,7 @@
 //!     FaceOrder, apply_body_force, apply_point_load, apply_traction_load,
 //!     SupportKind, SupportBodyKind, SupportCompatibility, build_support_bcs,
 //!     MpcRow, apply_mpc_row_elimination,
+//!     solve_cg, CgSolverOptions, CgResult, SolverMode,
 //! };
 //!
 //! let _: TetP1 = TetP1;
@@ -188,3 +189,4 @@ pub use shell_boundary::{
 pub use shell_result::{
     ShellElementStress, ShellStress, shell_element_frame, shell_element_stress,
 };
+pub use solver::{CgResult, CgSolverOptions, SolverMode, solve_cg};
