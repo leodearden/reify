@@ -260,6 +260,7 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
             if (m.role !== 'assistant') return;
             m.error = msg.message;
             m.complete = true;
+            m.thinkingComplete = true;
           }),
         );
         break;
