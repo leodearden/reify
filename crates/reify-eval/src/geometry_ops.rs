@@ -5777,6 +5777,62 @@ mod tests {
         );
     }
 
+    /// Verifies that the dispatcher's IsOn arm passes exactly
+    /// `DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` as the tolerance — using the
+    /// constant (not a literal) to record the mock reply so that any future
+    /// drift between the constant and the dispatcher call site surfaces as a
+    /// test failure (served mock not found → result `None`).
+    #[test]
+    fn try_eval_topology_selector_is_on_dispatcher_uses_default_point_on_shape_tolerance_constant()
+    {
+        use reify_test_support::mocks::MockGeometryKernel;
+        let body_handle = reify_types::GeometryHandleId(11);
+        // Record the mock under the constant, not a literal — any dispatcher
+        // that passes a different value will get `None` instead of the reply.
+        let kernel = MockGeometryKernel::new().with_point_on_shape_result(
+            body_handle,
+            [5.0, 0.0, 0.0],
+            reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
+            reify_types::Value::Bool(true),
+        );
+
+        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        named_steps.insert("body".to_string(), body_handle);
+
+        let mut values = reify_types::ValueMap::new();
+        values.insert(
+            reify_types::ValueCellId::new("Bracket", "p"),
+            point3_length_value(5.0, 0.0, 0.0),
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "is_on",
+            "Bracket",
+            "p",
+            reify_types::Type::point3(reify_types::Type::length()),
+            "body",
+            reify_types::Type::Geometry,
+            reify_types::Type::Bool,
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_types::Value::Bool(true)),
+            "is_on(p, body) must route through DEFAULT_POINT_ON_SHAPE_TOLERANCE_M; \
+             got {:?}",
+            result
+        );
+    }
+
     #[test]
     fn try_eval_topology_selector_angle_between_surfaces_kernel_reply_returns_angle_scalar() {
         use reify_test_support::mocks::MockGeometryKernel;
