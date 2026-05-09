@@ -203,3 +203,37 @@ fn deterministic_threads_one_succeeds() {
         vm.tet_indices.len() / 4,
     );
 }
+
+/// Done-criterion #2: two back-to-back default-options calls on the same
+/// surface mesh produce tet counts within ±5% of each other.
+///
+/// HXT is non-deterministic by default (no fixed RNG seed in the gmsh
+/// build we link against), so successive runs vary. The ±5% budget is the
+/// PRD-cited tolerance for v0.3; tighter would require a seed knob, looser
+/// would defeat the purpose. If this test fails on first run, that
+/// surfaces an HXT seed/threading regression to investigate.
+#[test]
+fn cuboid_round_trip_within_5pct_count_variation() {
+    let cube = unit_cube_mesh();
+    let kernel = GmshKernel::new();
+
+    let vm1 = kernel
+        .mesh_to_volume(&cube, &MeshingOptions::default(), ElementOrderTag::P1)
+        .expect("first cube mesh_to_volume must succeed");
+    let vm2 = kernel
+        .mesh_to_volume(&cube, &MeshingOptions::default(), ElementOrderTag::P1)
+        .expect("second cube mesh_to_volume must succeed");
+
+    let n1 = vm1.tet_indices.len() / 4;
+    let n2 = vm2.tet_indices.len() / 4;
+    assert!(n1 > 0, "first call produced no tets (n1 = {n1})");
+    assert!(n2 > 0, "second call produced no tets (n2 = {n2})");
+
+    let max_n = n1.max(n2) as f64;
+    let drift = ((n1 as f64) - (n2 as f64)).abs() / max_n;
+    assert!(
+        drift <= 0.05,
+        "cuboid mesh count drift exceeds the ±5% budget: \
+         n1={n1}, n2={n2}, drift={drift:.3}",
+    );
+}
