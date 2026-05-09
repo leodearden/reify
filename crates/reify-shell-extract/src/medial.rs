@@ -392,29 +392,10 @@ pub fn compute_medial_mask(
     let nz = sdf.axis_grids[2].len();
 
     // (3) Validate the flat data vector covers exactly nx*ny*nz voxels.
-    // Safe here because validate_regular3d (EmptyAxisGrid check) confirmed
-    // nx, ny, nz ≥ 1.
-    // Without this check a caller-side construction error (mismatched
-    // data vs. axis grid extents) would produce an opaque OOB panic
-    // inside the inner loop's `sample_at_index`.
-    //
-    // checked_mul guards against wrapping overflow on a malformed input
-    // with astronomically large axis_grids (e.g. nx=ny=nz=2_000_000
-    // wraps to a small product on 64-bit usize and could pass a naive
-    // equality check with a tiny data.len()). On overflow we use
-    // usize::MAX as the sentinel expected value: no real data vector can
-    // have length usize::MAX, so the DataLengthMismatch error is still
-    // surfaced.
-    let expected_data_len = nx
-        .checked_mul(ny)
-        .and_then(|p| p.checked_mul(nz))
-        .unwrap_or(usize::MAX);
-    if sdf.data.len() != expected_data_len {
-        return Err(MedialError::DataLengthMismatch {
-            expected: expected_data_len,
-            found: sdf.data.len(),
-        });
-    }
+    // Delegates to `validate_flat_data_length` which handles both overflow
+    // (returns AxisExtentsOverflow) and size mismatch (returns
+    // DataLengthMismatch), replacing the old unwrap_or(usize::MAX) sentinel.
+    validate_flat_data_length(nx, ny, nz, sdf.data.len())?;
 
     // Narrow band threshold uses the smallest axis spacing so that
     // anisotropic grids still cover the full thickness band.
@@ -611,6 +592,35 @@ pub(crate) const GRADIENT_EPSILON: f64 = 1e-6;
 /// numerically consistent avoids a class of "exact-zero comparison"
 /// fragility issues.
 pub(crate) const ZERO_PHI_EPSILON: f64 = 1e-30;
+
+/// Validate that the flat data vector length matches the expected `nx*ny*nz`
+/// voxel count, returning a typed error for overflow or mismatch.
+///
+/// Returns:
+/// - `Ok(())` if `nx * ny * nz == data_len`.
+/// - `Err(MedialError::AxisExtentsOverflow { nx, ny, nz })` if the product
+///   overflows `usize` — defends downstream `DataLengthMismatch` from a
+///   wrapped-product false-positive (old code: `unwrap_or(usize::MAX)`).
+/// - `Err(MedialError::DataLengthMismatch { expected, found })` if the
+///   product fits in `usize` but does not equal `data_len`.
+pub(crate) fn validate_flat_data_length(
+    nx: usize,
+    ny: usize,
+    nz: usize,
+    data_len: usize,
+) -> Result<(), MedialError> {
+    let expected = nx
+        .checked_mul(ny)
+        .and_then(|p| p.checked_mul(nz))
+        .ok_or(MedialError::AxisExtentsOverflow { nx, ny, nz })?;
+    if data_len != expected {
+        return Err(MedialError::DataLengthMismatch {
+            expected,
+            found: data_len,
+        });
+    }
+    Ok(())
+}
 
 /// Look up `φ` at integer voxel indices `[i, j, k]`. Assumes
 /// row-major axis-0-outermost layout (matches
