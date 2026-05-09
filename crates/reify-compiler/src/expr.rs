@@ -943,7 +943,7 @@ pub(crate) fn compile_expr_guarded(
                         kinematic_query_result_type(name)
                             .expect("is_geometry_kinematic_query implies result type")
                     } else if is_geometry_topology_selector(name) {
-                        // closest_point / on / angle_between_surfaces: topology-
+                        // closest_point / is_on / angle_between_surfaces: topology-
                         // selector helpers dispatched at eval time by
                         // `reify_eval::geometry_ops::try_eval_topology_selector`.
                         // Per-name result type (Point3<Length> / Bool / Angle)
