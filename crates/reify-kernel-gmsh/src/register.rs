@@ -23,31 +23,37 @@
 //! exactly one entry:
 //! - `(Convert { from: Mesh }, VolumeMesh)`
 //!
-//! # Unconditional `inventory::submit!` decision
+//! # `cfg(any(has_gmsh, feature = "stub_register"))` gate on `inventory::submit!`
 //!
-//! Gmsh has only a stub in this v0.3 task, so a `cfg(has_gmsh)` gate would
-//! never fire — the registration would be dead code, defeating the point
-//! of "fifth integration in the sequence". Submitting unconditionally
-//! gives the dispatcher BFS a fifth real registered kernel that exercises
-//! the surface→volume route end-to-end, and lets sibling consumers
-//! (`reify-solver-elastic` #2914) depend on the public types and
-//! dispatcher routing today rather than waiting for the FFI follow-up.
+//! The registration is gated on `cfg(any(has_gmsh, feature = "stub_register"))`
+//! so that:
 //!
-//! Crucially, the lex-min tie-break risk that motivates `stub_register`
-//! gates on other adapters does NOT apply here: Gmsh's
-//! `(Convert{from: Mesh}, VolumeMesh)` claim is unique — no other v0.2/v0.3
-//! kernel claims `VolumeMesh` as either input or output. There is no risk
-//! of shadowing other kernels' lex-min picks because no other kernel
-//! competes for this `(op, repr)` pair.
+//! - When `/opt/reify-deps` is present (`cfg(has_gmsh)`), the real FFI-backed
+//!   kernel is registered and the dispatcher can route
+//!   `(Convert{from: Mesh}, VolumeMesh)`.
+//! - When the `stub_register` Cargo feature is on, the stub kernel is
+//!   registered so this crate's own integration tests
+//!   (`tests/dispatcher_integration.rs`, `tests/inventory_registration.rs`)
+//!   can exercise the inventory-submit → registry-materialise →
+//!   dispatcher-select pipeline in stub-only `cargo test` runs. The
+//!   `stub_register` feature is activated for ALL test binaries via the
+//!   self-dev-dep in `Cargo.toml` — `cfg(test)` alone cannot do this because
+//!   integration tests in `tests/` are separate compilation units that link
+//!   the library built WITHOUT the parent crate's `cfg(test)` flag.
+//! - In production stub builds (no `/opt/reify-deps`, no `stub_register`)
+//!   the registration is OMITTED entirely — preventing the stub from winning
+//!   the `(Convert{from: Mesh}, VolumeMesh)` routing it cannot actually
+//!   execute. Downstream consumers get a clean "no kernel available"
+//!   dispatcher error rather than a confusing stub `OperationFailed`.
 //!
-//! TODO(has_gmsh): Follow-up task #3092 will switch the factory to a real-
-//! FFI impl behind `cfg(has_gmsh)` without changing the registration shape.
+//! This mirrors the pattern in `crates/reify-kernel-openvdb/src/register.rs`
+//! (`feature = "stub_register"` + self-dev-dep activation).
 //!
 //! # Design template
 //!
 //! `crates/reify-kernel-openvdb/src/register.rs` — the closest design
-//! template (stub-only adapter, unconditional `inventory::submit!`, single
-//! coherent op surface). Only the kernel name, the supports table content
+//! template (cfg-gated `inventory::submit!`, single coherent op surface).
+//! Only the kernel name, the supports table content
 //! (`(Convert{from: Mesh}, VolumeMesh)` instead of three Voxel Booleans),
 //! and the doc-comment references differ.
 
@@ -96,30 +102,38 @@ pub fn gmsh_capability_descriptor() -> CapabilityDescriptor {
     CapabilityDescriptor { supports }
 }
 
-/// Factory invoked by the engine once at startup, returning the stub
-/// [`GmshKernel`](crate::kernel::GmshKernel).
+/// Factory invoked by the engine once at startup, returning a `GmshKernel`.
 ///
-/// Real Gmsh FFI is deferred to follow-up task #3092; this stub factory
-/// ensures the `inventory::submit!` below compiles and the registration
-/// materialises in `reify_eval::kernel_registry::registry()`. When the
-/// follow-up task adds real FFI, this function can switch behind
-/// `cfg(has_gmsh)` without changing the registration shape.
+/// When `cfg(has_gmsh)` is set, this creates the real FFI-backed kernel
+/// (`kernel_real::GmshKernel`). Otherwise it creates the stub kernel
+/// (`kernel::GmshKernel`). The single `crate::GmshKernel` ident resolves to
+/// the correct type in both cases via the `pub use` cfg-gate in `lib.rs`.
+///
+/// Gated on `cfg(any(has_gmsh, feature = "stub_register"))` together with
+/// the `inventory::submit!` below — the factory is only called from the
+/// submit, so leaving it ungated in production stub builds (no
+/// `stub_register`, no `has_gmsh`) would emit a dead-code warning.
+#[cfg(any(has_gmsh, feature = "stub_register"))]
 fn gmsh_factory() -> Box<dyn GeometryKernel> {
     Box::new(crate::GmshKernel::new())
 }
 
-// Unconditional submit — no `cfg(has_gmsh)` gate. See module-level docs for
-// the rationale (gmsh has a unique (op, repr) claim that cannot collide
-// with other kernels' lex-min picks; the registration is needed today so
-// the dispatcher BFS routes Mesh→VolumeMesh requests, even on a build
-// where libgmsh is absent — the routing produces a `GeometryError` from
-// the stub kernel rather than silently failing to plan).
+// Gate on `cfg(any(has_gmsh, feature = "stub_register"))`:
+// - has_gmsh: real FFI kernel is available; register it.
+// - stub_register: activated by the self-dev-dep in `Cargo.toml` for ALL of
+//   this crate's integration test binaries (separate compilation units that
+//   do NOT inherit `cfg(test)` from the parent crate). Without the feature,
+//   `tests/dispatcher_integration.rs` and `tests/inventory_registration.rs`
+//   would link a stub-mode lib with no `inventory::submit!` and the registry
+//   would not contain `"gmsh"`.
 //
-// TODO(has_gmsh): Follow-up task #3092 will switch this submit to
-// `#[cfg(any(has_gmsh, test))]` so the stub registers only when libgmsh is
-// actually available or within this crate's own tests. The structural
-// enforcement that gates the submit on FFI availability lands alongside
-// the real Gmsh extern "C" surface.
+// In production stub builds (no `has_gmsh`, no `stub_register`) the submit
+// is OMITTED — preventing the stub from silently winning the
+// `(Convert{from: Mesh}, VolumeMesh)` routing it cannot actually execute.
+//
+// See module-level doc for full rationale; mirrors the pattern in
+// `crates/reify-kernel-openvdb/src/register.rs:142`.
+#[cfg(any(has_gmsh, feature = "stub_register"))]
 inventory::submit! {
     KernelRegistration {
         name: GMSH_KERNEL_NAME,
