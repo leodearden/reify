@@ -101,6 +101,17 @@ pub enum MidSurfaceError {
         /// Index of the offending axis (0 / 1 / 2 for x / y / z).
         axis: usize,
     },
+    /// A voxel in `mask.voxels` lies outside the SDF grid extent
+    /// `[0, nx) × [0, ny) × [0, nz)`. Voxels outside this range would
+    /// be silently unreachable in the corner lookup (the `mask_set`
+    /// probe is only called for cell-corner indices inside the grid),
+    /// hiding caller-side off-by-one or grid-swap bugs.
+    MaskVoxelOutOfBounds {
+        /// The offending voxel index.
+        voxel: [i32; 3],
+        /// The grid extent `[nx, ny, nz]` = `[axis_grids[i].len(); 3]`.
+        grid_extent: [usize; 3],
+    },
     /// The medial mask's grid geometry does not align with the SDF grid
     /// within `tolerance`. This guard prevents off-by-one-voxel masks from
     /// silently producing mid-surfaces with wrong thickness.
@@ -163,6 +174,11 @@ impl std::fmt::Display for MidSurfaceError {
             MidSurfaceError::EmptyAxisGrid { axis } => {
                 GridValidationError::EmptyAxisGrid { axis: *axis }.fmt(f)
             }
+            MidSurfaceError::MaskVoxelOutOfBounds { voxel, grid_extent } => write!(
+                f,
+                "medial mask voxel {voxel:?} is outside grid extent {grid_extent:?}; \
+                 voxels must satisfy 0 ≤ i < nx, 0 ≤ j < ny, 0 ≤ k < nz"
+            ),
             MidSurfaceError::MaskGridMismatch {
                 sdf_spacing,
                 mask_spacing,
@@ -561,7 +577,36 @@ pub fn extract_mid_surface(
         }
     }
 
-    // Short-circuit on empty mask.
+    // Grid extents used by both the voxel-bounds check and the main loop.
+    // Safe: validate_regular3d (step 1) confirmed axis_grids[i] is non-empty.
+    let nx = sdf.axis_grids[0].len();
+    let ny = sdf.axis_grids[1].len();
+    let nz = sdf.axis_grids[2].len();
+
+    // (3) Validate mask voxel bounds before building the HashSet.
+    // Any voxel index outside [0, nx) × [0, ny) × [0, nz) would be silently
+    // unreachable in the corner-lookup loop below (cell corners only range
+    // over [0, nx-1] × [0, ny-1] × [0, nz-1]). Surface it as a typed error
+    // so callers can debug off-by-one mask construction and grid-swap bugs.
+    // Mirrors the strict treatment of MaskGridMismatch (off-by-one alignment
+    // is also rejected rather than silently absorbed).
+    for &[vi, vj, vk] in &mask.voxels {
+        if vi < 0
+            || vj < 0
+            || vk < 0
+            || vi >= nx as i32
+            || vj >= ny as i32
+            || vk >= nz as i32
+        {
+            return Err(MidSurfaceError::MaskVoxelOutOfBounds {
+                voxel: [vi, vj, vk],
+                grid_extent: [nx, ny, nz],
+            });
+        }
+    }
+
+    // Short-circuit on empty mask (checked after bounds validation so we
+    // don't skip the bounds check on later-added in-bounds voxels).
     if mask.voxels.is_empty() {
         return Ok(MidSurfaceMesh {
             vertices: vec![],
@@ -570,18 +615,14 @@ pub fn extract_mid_surface(
         });
     }
 
-    // (3) Build a HashSet for O(1) corner lookups.
+    // (4) Build a HashSet for O(1) corner lookups.
     let mask_set: HashSet<[i32; 3]> = mask.voxels.iter().copied().collect();
-
-    let nx = sdf.axis_grids[0].len();
-    let ny = sdf.axis_grids[1].len();
-    let nz = sdf.axis_grids[2].len();
 
     let mut vertices: Vec<[f64; 3]> = Vec::new();
     let mut triangles: Vec<[u32; 3]> = Vec::new();
     let mut thickness: Vec<f64> = Vec::new();
 
-    // (4) Iterate over each cube cell (i,j,k) → (i+1,j+1,k+1).
+    // (5) Iterate over each cube cell (i,j,k) → (i+1,j+1,k+1).
     for i in 0..nx.saturating_sub(1) {
         for j in 0..ny.saturating_sub(1) {
             for k in 0..nz.saturating_sub(1) {
