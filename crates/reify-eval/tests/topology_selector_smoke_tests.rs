@@ -221,6 +221,65 @@ fn fillet_top_edges_compiles_with_stdlib_no_errors() {
     );
 }
 
+/// Eval-deepening contract: the `result` cell in `FilletTopEdges` must resolve
+/// to a non-`Undef` solid handle after `engine.build()`.
+///
+/// Expected dataflow:
+/// 1. `top = single(faces_by_normal(b, vec3(0,0,1), 1deg))` — extract the single
+///    upward-facing face handle of the box via `faces_by_normal` + `single`.
+/// 2. `top_edges = flat_map(adjacent_faces(b, top), |f| shared_edges(top, f))` —
+///    walk topology: for each face adjacent to `top`, collect the edges shared
+///    between `top` and that face, giving the four top-perimeter edges.
+/// 3. `result = fillet(b, top_edges, 1mm)` — apply the 3-arg fillet to produce
+///    a new solid with the four top-perimeter edges rounded to r=1mm.
+///
+/// **Blocked by two prerequisites** (both must land before this fixture runs):
+///
+/// (a) 3-arg `fillet(solid, edges, radius)` stdlib binding —
+///     `crates/reify-compiler/src/geometry_modify.rs:115` only wires 2-arg
+///     `fillet(solid, radius)`; the example fails to compile today with
+///     `fillet() expects 2 arguments, got 3`.
+///
+/// (b) Eval-side dispatch for `single`/`flat_map` list-helper eval AND
+///     `faces_by_normal`/`adjacent_faces`/`shared_edges` arms in
+///     `try_eval_topology_selector` (`crates/reify-eval/src/geometry_ops.rs:1646-1661`).
+///     Until (b) lands the intermediate topology cells stay at `Value::Undef`
+///     and `top_edges` carries no real edge handles, so `result` would also be
+///     `Value::Undef`.
+///
+/// Remove the `#[ignore]` once both (a) and (b) are implemented.
+#[test]
+#[ignore = "pending (a) 3-arg fillet(solid, edges, radius) stdlib binding \
+            (geometry_modify.rs:115) and (b) eval-side dispatch for single/flat_map \
+            (list_helpers eval) AND faces_by_normal/adjacent_faces/shared_edges \
+            (try_eval_topology_selector arms at geometry_ops.rs:1646-1661) — \
+            both prerequisites must land before this fixture can produce a Solid \
+            result at runtime"]
+fn fillet_top_edges_evals_to_solid_via_topology_walk() {
+    let source = std::fs::read_to_string(FILLET_TOP_EDGES_PATH)
+        .expect("examples/topology_selectors/fillet_top_edges.ri should exist");
+    let compiled = parse_and_compile_with_stdlib(&source);
+    assert!(
+        errors_only(&compiled).is_empty(),
+        "compile errors (3-arg fillet binding must be present): {:#?}",
+        errors_only(&compiled)
+    );
+
+    let checker = SimpleConstraintChecker;
+    let mut engine = Engine::new(Box::new(checker), None);
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let cell = ValueCellId::new("FilletTopEdges", "result");
+    match result.values.get(&cell) {
+        Some(Value::Undef) | None => panic!(
+            "expected FilletTopEdges.result to be a resolved solid handle (not Undef/absent) \
+             after fillet(b, top_edges, 1mm); got {:#?}",
+            result.values.get(&cell)
+        ),
+        Some(_) => {} // any non-Undef value is consistent with a resolved solid
+    }
+}
+
 #[test]
 fn fillet_top_edges_ri_parses_cleanly() {
     let source = std::fs::read_to_string(FILLET_TOP_EDGES_PATH)
