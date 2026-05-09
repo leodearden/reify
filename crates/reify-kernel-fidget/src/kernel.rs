@@ -314,6 +314,11 @@ impl GeometryKernel for FidgetKernel {
     /// SDF→Mesh meshing follow-up lands and queries become available,
     /// the handle-validity check moves to the front of this method.
     fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
+        // The catch-all message names (a) the rejected query (via kind_name()),
+        // (b) the repr family (Sdf), and (c) the kernel identity (Fidget) so
+        // readers can attribute the failure. The
+        // fidget_kernel_query_export_tessellate_each_emit_op_specific_message test
+        // pins this format over GeometryQuery::Volume.
         Err(QueryError::QueryFailed(format!(
             "Fidget SDF kernel: {} queries on Sdf require meshing — see arch §10.8 \
              (SDF→Mesh follow-up task)",
