@@ -63,6 +63,13 @@ pub enum SupportCompatibility {
     /// bit-identical to `FixedSupport` on a tet. The BCs produced are valid;
     /// this tag signals a likely copy-paste mismatch between shell and tet
     /// bodies for downstream warning/logging.
+    ///
+    /// **Note on vacuous calls**: this tag is returned even when `nodes` is
+    /// empty (no BCs are emitted). The tag encodes the *call signature* —
+    /// the `(Pinned, Tet)` combination is always semantically ambiguous
+    /// regardless of whether any nodes are constrained. Callers that
+    /// interpret the tag as a per-constraint warning should suppress it when
+    /// `bcs.is_empty()`.
     PinnedOnTetEquivalentToFixed,
 }
 
@@ -91,62 +98,35 @@ pub fn build_support_bcs(
     kind: SupportKind,
     body: SupportBodyKind,
 ) -> (Vec<DirichletBc>, SupportCompatibility) {
-    match (body, kind) {
-        (SupportBodyKind::Shell, SupportKind::Fixed) => {
-            // 6 DOFs per node: u_x, u_y, u_z, θ_x, θ_y, θ_z  (offsets 0..6)
-            let bcs = nodes
-                .iter()
-                .flat_map(|&n| {
-                    (0..6).map(move |i| DirichletBc {
-                        dof: 6 * n + i,
-                        value: 0.0,
-                    })
-                })
-                .collect();
-            (bcs, SupportCompatibility::Ok)
-        }
-        (SupportBodyKind::Shell, SupportKind::Pinned) => {
-            // 3 translational DOFs per node: u_x, u_y, u_z (offsets 0..3).
-            // Rotational DOFs (offsets 3..6) are intentionally left free.
-            let bcs = nodes
-                .iter()
-                .flat_map(|&n| {
-                    (0..3).map(move |i| DirichletBc {
-                        dof: 6 * n + i,
-                        value: 0.0,
-                    })
-                })
-                .collect();
-            (bcs, SupportCompatibility::Ok)
-        }
-        (SupportBodyKind::Tet, SupportKind::Fixed) => {
-            // 3 DOFs per node: u_x, u_y, u_z (offsets 0..3). 3-stride.
-            let bcs = nodes
-                .iter()
-                .flat_map(|&n| {
-                    (0..3).map(move |i| DirichletBc {
-                        dof: 3 * n + i,
-                        value: 0.0,
-                    })
-                })
-                .collect();
-            (bcs, SupportCompatibility::Ok)
-        }
+    // Dispatch on (body, kind) to determine:
+    //   stride    — DOFs per node (global DOF = stride * node + offset)
+    //   dof_count — how many DOFs per node to clamp (offsets 0..dof_count)
+    //   compat    — diagnostic tag returned alongside the BC list
+    //
+    // Shell: 6-stride (u_x, u_y, u_z, θ_x, θ_y, θ_z per node).
+    //   Fixed  → clamp all 6 offsets.
+    //   Pinned → clamp only the 3 translational offsets (0..3); rotational free.
+    // Tet: 3-stride (u_x, u_y, u_z per node; no rotational DOFs).
+    //   Fixed  → clamp all 3 offsets.
+    //   Pinned → bit-identical to Fixed; tag signals user-intent mismatch.
+    let (stride, dof_count, compat) = match (body, kind) {
+        (SupportBodyKind::Shell, SupportKind::Fixed) => (6, 6, SupportCompatibility::Ok),
+        (SupportBodyKind::Shell, SupportKind::Pinned) => (6, 3, SupportCompatibility::Ok),
+        (SupportBodyKind::Tet, SupportKind::Fixed) => (3, 3, SupportCompatibility::Ok),
         (SupportBodyKind::Tet, SupportKind::Pinned) => {
-            // Tet nodes have no rotational DOFs, so Pinned is bit-identical to Fixed.
-            // We surface the user-intent mismatch via the compat tag.
-            let bcs = nodes
-                .iter()
-                .flat_map(|&n| {
-                    (0..3).map(move |i| DirichletBc {
-                        dof: 3 * n + i,
-                        value: 0.0,
-                    })
-                })
-                .collect();
-            (bcs, SupportCompatibility::PinnedOnTetEquivalentToFixed)
+            (3, 3, SupportCompatibility::PinnedOnTetEquivalentToFixed)
         }
-    }
+    };
+    let bcs = nodes
+        .iter()
+        .flat_map(|&n| {
+            (0..dof_count).map(move |i| DirichletBc {
+                dof: stride * n + i,
+                value: 0.0,
+            })
+        })
+        .collect();
+    (bcs, compat)
 }
 
 #[cfg(test)]
@@ -196,58 +176,53 @@ mod tests {
         nodes
     }
 
-    /// Build a 18×18 `SparseRowMat` by packing all 324 entries from a dense
+    /// Build a 18×18 `SparseRowMat` from the non-zero entries of a dense
     /// `shell_element_stiffness` output via faer triplets.
+    ///
+    /// Zero entries are skipped — this matches typical sparse-matrix
+    /// construction conventions, avoids explicit-zero storage, and ensures
+    /// `try_new_from_triplets` never sums duplicates or stores finite zeros
+    /// that could mask NaN/inf in unused entries.
     fn shell_k_sparse(nodes: &[[f64; 3]; 3]) -> SparseRowMat<usize, f64> {
         let mat = IsotropicElastic {
             youngs_modulus: 210_000.0,
             poisson_ratio: 0.3,
         };
         let k_dense = shell_element_stiffness(nodes, 0.05, &mat);
-        // Build all 324 triplets using a nested loop to avoid closure capture issues.
-        let mut triplets = Vec::with_capacity(324);
+        let mut triplets = Vec::new();
         for i in 0..18 {
             for j in 0..18 {
-                triplets.push(Triplet::new(i, j, k_dense.get(i, j)));
+                let v = k_dense.get(i, j);
+                if v != 0.0 {
+                    triplets.push(Triplet::new(i, j, v));
+                }
             }
         }
         SparseRowMat::try_new_from_triplets(18, 18, &triplets).expect("valid 18×18 triplets")
     }
 
     // ------------------------------------------------------------------
-    // Step 1: enum smoke tests — all three types, all variants, all derives
+    // Step 1: enum Debug output contains expected variant names
+    //
+    // Variant existence and Copy/Clone/PartialEq/Eq correctness are already
+    // exercised implicitly by the build_support_bcs_* tests below (they
+    // construct variants and compare with assert_eq!/assert_ne! at compile
+    // and runtime). This test anchors the one thing a compile-time check
+    // cannot verify: that the derived Debug format for each variant actually
+    // contains its name.
     // ------------------------------------------------------------------
 
     #[test]
-    fn enum_types_exist_with_correct_variants() {
-        // SupportKind
-        let fixed = SupportKind::Fixed;
-        let pinned = SupportKind::Pinned;
-        // Copy: assign without move
-        let fixed_copy = fixed;
-        assert_eq!(fixed_copy, fixed, "SupportKind must be PartialEq");
-        assert_ne!(fixed, pinned, "Fixed != Pinned");
-        // Debug
-        let _ = format!("{:?}", fixed);
-        let _ = format!("{:?}", pinned);
-
-        // SupportBodyKind
-        let shell = SupportBodyKind::Shell;
-        let tet = SupportBodyKind::Tet;
-        let shell_copy = shell;
-        assert_eq!(shell_copy, shell, "SupportBodyKind must be PartialEq");
-        assert_ne!(shell, tet, "Shell != Tet");
-        let _ = format!("{:?}", shell);
-        let _ = format!("{:?}", tet);
-
-        // SupportCompatibility
-        let ok = SupportCompatibility::Ok;
-        let equiv = SupportCompatibility::PinnedOnTetEquivalentToFixed;
-        let ok_copy = ok;
-        assert_eq!(ok_copy, ok, "SupportCompatibility must be PartialEq");
-        assert_ne!(ok, equiv, "Ok != PinnedOnTetEquivalentToFixed");
-        let _ = format!("{:?}", ok);
-        let _ = format!("{:?}", equiv);
+    fn enum_debug_output_contains_variant_name() {
+        assert!(format!("{:?}", SupportKind::Fixed).contains("Fixed"));
+        assert!(format!("{:?}", SupportKind::Pinned).contains("Pinned"));
+        assert!(format!("{:?}", SupportBodyKind::Shell).contains("Shell"));
+        assert!(format!("{:?}", SupportBodyKind::Tet).contains("Tet"));
+        assert!(format!("{:?}", SupportCompatibility::Ok).contains("Ok"));
+        assert!(
+            format!("{:?}", SupportCompatibility::PinnedOnTetEquivalentToFixed)
+                .contains("PinnedOnTetEquivalentToFixed")
+        );
     }
 
     // ------------------------------------------------------------------
