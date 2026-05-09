@@ -15,7 +15,7 @@
 
 use std::collections::HashSet;
 
-use reify_types::value::{SampledField, SampledGridKind};
+use reify_types::value::SampledField;
 
 use crate::grid_validation::{validate_regular3d, GridValidationError};
 use crate::medial::{sample_at_index, MedialMask};
@@ -78,29 +78,11 @@ impl Default for MidSurfaceOptions {
 /// Errors returned by [`extract_mid_surface`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum MidSurfaceError {
-    /// The input [`SampledField`] is not 3D — only
-    /// [`SampledGridKind::Regular3D`] is supported.
-    UnsupportedGridKind {
-        /// The actual kind found on the input field.
-        found: SampledGridKind,
-    },
-    /// One or more of `bounds_min` / `bounds_max` / `spacing` /
-    /// `axis_grids` does not have length 3 on a `Regular3D` field.
-    AxisLengthMismatch {
-        /// Length of the supplied `bounds_min` vector.
-        bounds_min_len: usize,
-        /// Length of the supplied `bounds_max` vector.
-        bounds_max_len: usize,
-        /// Length of the supplied `spacing` vector.
-        spacing_len: usize,
-        /// Length of the supplied `axis_grids` vector.
-        axis_grids_len: usize,
-    },
-    /// One axis's grid coordinate vector is empty.
-    EmptyAxisGrid {
-        /// Index of the offending axis (0 / 1 / 2 for x / y / z).
-        axis: usize,
-    },
+    /// A structural validation error produced by the shared
+    /// [`crate::grid_validation::validate_regular3d`] check. Covers
+    /// unsupported grid kind, axis-vector length mismatch, and empty
+    /// axis-grid — see [`GridValidationError`] variants for details.
+    GridValidation(GridValidationError),
     /// A voxel in `mask.voxels` lies outside the SDF grid extent
     /// `[0, nx) × [0, ny) × [0, nz)`. Voxels outside this range would
     /// be silently unreachable in the corner lookup (the `mask_set`
@@ -131,51 +113,14 @@ pub enum MidSurfaceError {
 
 impl From<GridValidationError> for MidSurfaceError {
     fn from(e: GridValidationError) -> Self {
-        match e {
-            GridValidationError::UnsupportedGridKind { found } => {
-                MidSurfaceError::UnsupportedGridKind { found }
-            }
-            GridValidationError::AxisLengthMismatch {
-                bounds_min_len,
-                bounds_max_len,
-                spacing_len,
-                axis_grids_len,
-            } => MidSurfaceError::AxisLengthMismatch {
-                bounds_min_len,
-                bounds_max_len,
-                spacing_len,
-                axis_grids_len,
-            },
-            GridValidationError::EmptyAxisGrid { axis } => {
-                MidSurfaceError::EmptyAxisGrid { axis }
-            }
-        }
+        MidSurfaceError::GridValidation(e)
     }
 }
 
 impl std::fmt::Display for MidSurfaceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            MidSurfaceError::UnsupportedGridKind { found } => {
-                GridValidationError::UnsupportedGridKind { found: *found }.fmt(f)
-            }
-            MidSurfaceError::AxisLengthMismatch {
-                bounds_min_len,
-                bounds_max_len,
-                spacing_len,
-                axis_grids_len,
-            } => GridValidationError::AxisLengthMismatch {
-                bounds_min_len: *bounds_min_len,
-                bounds_max_len: *bounds_max_len,
-                spacing_len: *spacing_len,
-                axis_grids_len: *axis_grids_len,
-            }
-            .fmt(f),
-            MidSurfaceError::EmptyAxisGrid { axis } => write!(
-                f,
-                "Regular3D SampledField axis_grids[{axis}] is empty \
-                 (a non-empty per-axis grid is required for marching-cubes iteration)"
-            ),
+            MidSurfaceError::GridValidation(inner) => write!(f, "extract_mid_surface: {inner}"),
             MidSurfaceError::MaskVoxelOutOfBounds { voxel, grid_extent } => write!(
                 f,
                 "medial mask voxel {voxel:?} is outside grid extent {grid_extent:?}; \
@@ -741,6 +686,7 @@ pub fn extract_mid_surface(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::grid_validation::GridValidationError;
     use crate::medial::MedialMask;
     use reify_types::value::{InterpolationKind, SampledField, SampledGridKind};
     use std::sync::atomic::AtomicBool;
@@ -884,8 +830,10 @@ mod tests {
             "empty mask must produce empty mid-surface mesh"
         );
 
-        // Compile-test: error type is publicly named.
-        let _: MidSurfaceError = MidSurfaceError::EmptyAxisGrid { axis: 0 };
+        // Compile-test: error type and wrapper variant are publicly named.
+        let _: MidSurfaceError = MidSurfaceError::GridValidation(
+            GridValidationError::EmptyAxisGrid { axis: 0 },
+        );
     }
 
     // ── Step 3: kind-check rejection tests ───────────────────────────────────
@@ -903,9 +851,9 @@ mod tests {
             .expect_err("1D input must be rejected");
         assert_eq!(
             err,
-            MidSurfaceError::UnsupportedGridKind {
-                found: SampledGridKind::Regular1D
-            }
+            MidSurfaceError::GridValidation(GridValidationError::UnsupportedGridKind {
+                found: SampledGridKind::Regular1D,
+            })
         );
     }
 
@@ -922,9 +870,9 @@ mod tests {
             .expect_err("2D input must be rejected");
         assert_eq!(
             err,
-            MidSurfaceError::UnsupportedGridKind {
-                found: SampledGridKind::Regular2D
-            }
+            MidSurfaceError::GridValidation(GridValidationError::UnsupportedGridKind {
+                found: SampledGridKind::Regular2D,
+            })
         );
     }
 
@@ -944,12 +892,12 @@ mod tests {
             .expect_err("axis length mismatch must be rejected");
         assert_eq!(
             err,
-            MidSurfaceError::AxisLengthMismatch {
+            MidSurfaceError::GridValidation(GridValidationError::AxisLengthMismatch {
                 bounds_min_len: 1,
                 bounds_max_len: 3,
                 spacing_len: 3,
                 axis_grids_len: 3,
-            }
+            })
         );
     }
 
@@ -965,7 +913,10 @@ mod tests {
         };
         let err = extract_mid_surface(&sdf, &mask, &MidSurfaceOptions::default())
             .expect_err("empty axis grid must be rejected");
-        assert_eq!(err, MidSurfaceError::EmptyAxisGrid { axis: 0 });
+        assert_eq!(
+            err,
+            MidSurfaceError::GridValidation(GridValidationError::EmptyAxisGrid { axis: 0 })
+        );
     }
 
     // ── Step 7: mask-alignment tests ─────────────────────────────────────────
@@ -1188,6 +1139,71 @@ mod tests {
                  mask corner is grid-aligned so sampling must be bit-exact"
             );
         }
+    }
+
+    // ── Per-axis MaskVoxelOutOfBounds characterization tests ─────────────────
+
+    /// Table-driven out-of-bounds test covering y and z axes (positive overflow
+    /// and negative), complementing the existing x-axis tests.
+    ///
+    /// Pins all six conditions of the bounds AND-chain at
+    /// `extract_mid_surface`'s voxel-validation loop. A regression dropping
+    /// `vk < 0` or `(vj as usize) >= ny` would trip a named failing case.
+    #[test]
+    fn extract_mid_surface_rejects_mask_voxel_out_of_bounds_per_axis_table_driven() {
+        // 3×3×3 grid → valid voxel indices are [0..3) on each axis.
+        // Each case below violates exactly one axis/sign condition.
+        let cases: &[([i32; 3], &str)] = &[
+            ([0, 10, 0], "y-axis positive overflow"),
+            ([0, -1, 0], "y-axis negative"),
+            ([0, 0, 10], "z-axis positive overflow"),
+            ([0, 0, -1], "z-axis negative"),
+        ];
+        for &(voxel, label) in cases {
+            let sdf = minimal_3d_field(); // 3×3×3
+            let mask = MedialMask {
+                spacing: [1.0, 1.0, 1.0],
+                origin: [0.0, 0.0, 0.0],
+                voxels: vec![voxel],
+            };
+            let err = extract_mid_surface(&sdf, &mask, &MidSurfaceOptions::default())
+                .expect_err(&format!("{label}: out-of-bounds voxel must be rejected"));
+            assert_eq!(
+                err,
+                MidSurfaceError::MaskVoxelOutOfBounds {
+                    voxel,
+                    grid_extent: [3, 3, 3],
+                },
+                "{label}: must produce MaskVoxelOutOfBounds"
+            );
+        }
+    }
+
+    // ── Wrapper-variant shape test (drives step-2 refactor) ──────────────────
+
+    /// RED — asserts that `extract_mid_surface` on a 1D field returns
+    /// `MidSurfaceError::GridValidation(GridValidationError::UnsupportedGridKind
+    /// { found: Regular1D })`.
+    ///
+    /// This test fails to compile until step-2 adds the `GridValidation` variant
+    /// to `MidSurfaceError` and promotes `GridValidationError` to `pub`.
+    #[test]
+    fn extract_mid_surface_unsupported_grid_kind_uses_grid_validation_wrapper() {
+        let sdf = one_d_field();
+        let mask = MedialMask {
+            spacing: [1.0, 1.0, 1.0],
+            origin: [0.0, 0.0, 0.0],
+            voxels: vec![],
+        };
+        let err = extract_mid_surface(&sdf, &mask, &MidSurfaceOptions::default())
+            .expect_err("1D input must be rejected");
+        assert_eq!(
+            err,
+            MidSurfaceError::GridValidation(GridValidationError::UnsupportedGridKind {
+                found: SampledGridKind::Regular1D,
+            }),
+            "1D input must produce GridValidation(UnsupportedGridKind) wrapper variant"
+        );
     }
 
     // ── Step 13: defaults pin test ────────────────────────────────────────────

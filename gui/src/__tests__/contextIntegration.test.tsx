@@ -48,6 +48,7 @@ vi.mock('../editor/FileTabs', () => ({
 // Mock bridge functions
 vi.mock('../bridge', () => ({
   getInitialState: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [] }),
+  getEntityTree: vi.fn().mockResolvedValue([]),
   setParameter: vi.fn().mockResolvedValue(undefined),
   exportGeometry: vi.fn().mockResolvedValue(undefined),
   pickSavePath: vi.fn().mockResolvedValue('/path.step'),
@@ -71,7 +72,6 @@ vi.mock('../bridge', () => ({
   getContainingDefinition: vi.fn().mockResolvedValue(null),
   getDefPreview: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [] }),
   getMechanismDescriptors: vi.fn().mockResolvedValue([]),
-  getEntityTree: vi.fn().mockResolvedValue([]),
 }));
 
 import { ChatPanel } from '../panels/ChatPanel';

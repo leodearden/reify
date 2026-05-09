@@ -31,7 +31,7 @@
 //! No bug today — just a flag for the perf-tuning pass that follows
 //! once the OpenVDB FFI is wired in.
 
-use reify_types::value::{SampledField, SampledGridKind};
+use reify_types::value::SampledField;
 
 use crate::grid_validation::{validate_regular3d, GridValidationError};
 
@@ -137,36 +137,11 @@ impl Default for MedialOptions {
 /// can pattern-match on the variant to drive recovery logic.
 #[derive(Debug, Clone, PartialEq)]
 pub enum MedialError {
-    /// The input [`SampledField`] is not 3D — only [`SampledGridKind::Regular3D`]
-    /// is supported. The medial-axis test is intrinsically 3D (it walks
-    /// the SDF gradient in two opposing directions in 3-space); 1D / 2D
-    /// inputs are rejected up front rather than silently producing an
-    /// empty mask.
-    UnsupportedGridKind {
-        /// The actual kind found on the input field.
-        found: SampledGridKind,
-    },
-    /// One or more of [`SampledField::bounds_min`] / `bounds_max` /
-    /// `spacing` / `axis_grids` does not have length 3, contradicting
-    /// the field's `kind = Regular3D`. Defends downstream indexing
-    /// (e.g. `bounds_min[i]`) against a caller-side construction
-    /// mistake that would otherwise panic mid-loop.
-    AxisLengthMismatch {
-        /// Length of the supplied `bounds_min` vector.
-        bounds_min_len: usize,
-        /// Length of the supplied `bounds_max` vector.
-        bounds_max_len: usize,
-        /// Length of the supplied `spacing` vector.
-        spacing_len: usize,
-        /// Length of the supplied `axis_grids` vector.
-        axis_grids_len: usize,
-    },
-    /// One axis's grid coordinate vector is empty, which would yield a
-    /// zero-extent grid and break the narrow-band iteration.
-    EmptyAxisGrid {
-        /// Index of the offending axis (0/1/2 for x/y/z).
-        axis: usize,
-    },
+    /// A structural validation error produced by the shared
+    /// [`crate::grid_validation::validate_regular3d`] check. Covers
+    /// unsupported grid kind, axis-vector length mismatch, and empty
+    /// axis-grid — see [`GridValidationError`] variants for details.
+    GridValidation(GridValidationError),
     /// A per-axis geometry invariant is violated. Covers two related
     /// classes of caller-side construction error:
     ///
@@ -229,51 +204,14 @@ pub enum MedialError {
 
 impl From<GridValidationError> for MedialError {
     fn from(e: GridValidationError) -> Self {
-        match e {
-            GridValidationError::UnsupportedGridKind { found } => {
-                MedialError::UnsupportedGridKind { found }
-            }
-            GridValidationError::AxisLengthMismatch {
-                bounds_min_len,
-                bounds_max_len,
-                spacing_len,
-                axis_grids_len,
-            } => MedialError::AxisLengthMismatch {
-                bounds_min_len,
-                bounds_max_len,
-                spacing_len,
-                axis_grids_len,
-            },
-            GridValidationError::EmptyAxisGrid { axis } => {
-                MedialError::EmptyAxisGrid { axis }
-            }
-        }
+        MedialError::GridValidation(e)
     }
 }
 
 impl std::fmt::Display for MedialError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            MedialError::UnsupportedGridKind { found } => {
-                GridValidationError::UnsupportedGridKind { found: *found }.fmt(f)
-            }
-            MedialError::AxisLengthMismatch {
-                bounds_min_len,
-                bounds_max_len,
-                spacing_len,
-                axis_grids_len,
-            } => GridValidationError::AxisLengthMismatch {
-                bounds_min_len: *bounds_min_len,
-                bounds_max_len: *bounds_max_len,
-                spacing_len: *spacing_len,
-                axis_grids_len: *axis_grids_len,
-            }
-            .fmt(f),
-            MedialError::EmptyAxisGrid { axis } => write!(
-                f,
-                "Regular3D SampledField axis_grids[{axis}] is empty \
-                 (a non-empty per-axis grid is required for narrow-band iteration)"
-            ),
+            MedialError::GridValidation(inner) => write!(f, "compute_medial_mask: {inner}"),
             MedialError::InvalidAxisGeometry {
                 axis,
                 spacing,
@@ -1041,6 +979,7 @@ fn normalize3(v: [f64; 3]) -> Option<[f64; 3]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::grid_validation::GridValidationError;
     use reify_types::value::{InterpolationKind, SampledGridKind};
     use std::sync::atomic::AtomicBool;
 
@@ -1087,9 +1026,12 @@ mod tests {
              empty medial mask"
         );
 
-        // Reach the error type from the crate root too — sanity-checks
-        // that `MedialError` is publicly named.
-        let _: MedialError = MedialError::EmptyAxisGrid { axis: 0 };
+        // Reach the error type and wrapper variant from the crate root too
+        // — sanity-checks that `MedialError` and `GridValidationError` are
+        // publicly named.
+        let _: MedialError = MedialError::GridValidation(
+            GridValidationError::EmptyAxisGrid { axis: 0 },
+        );
     }
 
     /// Build a Regular1D `SampledField` with three nodes along x. The
@@ -1132,9 +1074,9 @@ mod tests {
             .expect_err("1D input must be rejected");
         assert_eq!(
             err,
-            MedialError::UnsupportedGridKind {
-                found: SampledGridKind::Regular1D
-            }
+            MedialError::GridValidation(GridValidationError::UnsupportedGridKind {
+                found: SampledGridKind::Regular1D,
+            })
         );
     }
 
@@ -1145,9 +1087,9 @@ mod tests {
             .expect_err("2D input must be rejected");
         assert_eq!(
             err,
-            MedialError::UnsupportedGridKind {
-                found: SampledGridKind::Regular2D
-            }
+            MedialError::GridValidation(GridValidationError::UnsupportedGridKind {
+                found: SampledGridKind::Regular2D,
+            })
         );
     }
 
@@ -1685,12 +1627,12 @@ mod tests {
             .expect_err("axis-length-mismatch input must be rejected");
         assert_eq!(
             err,
-            MedialError::AxisLengthMismatch {
+            MedialError::GridValidation(GridValidationError::AxisLengthMismatch {
                 bounds_min_len: 1,
                 bounds_max_len: 3,
                 spacing_len: 3,
                 axis_grids_len: 3,
-            }
+            })
         );
     }
 
@@ -1743,7 +1685,10 @@ mod tests {
         };
         let err = compute_medial_mask(&sdf, &MedialOptions::default())
             .expect_err("empty-axis-grid input must be rejected");
-        assert_eq!(err, MedialError::EmptyAxisGrid { axis: 0 });
+        assert_eq!(
+            err,
+            MedialError::GridValidation(GridValidationError::EmptyAxisGrid { axis: 0 })
+        );
     }
 
     /// Helper: build a 2×2×2 Regular3D SampledField with the given
@@ -2344,6 +2289,29 @@ mod tests {
         assert!(
             msg.contains("5000000"),
             "AxisExtentsOverflow Display must include nz=5000000: {msg}"
+        );
+    }
+
+    // ── Wrapper-variant shape test (drives step-4 refactor) ──────────────────
+
+    /// RED — asserts that `compute_medial_mask` on a 1D field returns
+    /// `MedialError::GridValidation(GridValidationError::UnsupportedGridKind
+    /// { found: Regular1D })`.
+    ///
+    /// This test fails to compile until step-4 adds the `GridValidation`
+    /// variant to `MedialError`. (`GridValidationError` is already `pub` from
+    /// step-2, so only the missing variant causes the compile failure.)
+    #[test]
+    fn compute_medial_mask_unsupported_grid_kind_uses_grid_validation_wrapper() {
+        let sdf = one_d_field();
+        let err = compute_medial_mask(&sdf, &MedialOptions::default())
+            .expect_err("1D input must be rejected");
+        assert_eq!(
+            err,
+            MedialError::GridValidation(GridValidationError::UnsupportedGridKind {
+                found: SampledGridKind::Regular1D,
+            }),
+            "1D input must produce GridValidation(UnsupportedGridKind) wrapper variant"
         );
     }
 
