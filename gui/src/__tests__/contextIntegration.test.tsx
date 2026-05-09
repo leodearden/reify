@@ -126,6 +126,7 @@ beforeEach(() => {
   vi.mocked(bridge.onValueRemoved).mockResolvedValue(() => {});
   vi.mocked(bridge.onConstraintRemoved).mockResolvedValue(() => {});
   vi.mocked(bridge.onFileChanged).mockResolvedValue(() => {});
+  vi.mocked(bridge.getEntityTree).mockResolvedValue([]);
 });
 
 afterEach(() => {
