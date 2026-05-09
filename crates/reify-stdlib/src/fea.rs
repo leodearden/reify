@@ -44,11 +44,10 @@ pub(crate) fn eval_fea(name: &str, args: &[Value]) -> Option<Value> {
         "result_for" => result_for(args),
         "linear_combine" => linear_combine(args),
         "envelope_von_mises" => envelope_von_mises(args),
-        // Convenience-helper stubs (steps 6/8 replace these with the real
-        // implementations). Reserves the dispatch slot so the four
-        // `eval_fea_*_returns_some` dispatcher-signal tests pass before the
-        // bodies are wired up.
-        "envelope_max_principal" => Value::Undef,
+        "envelope_max_principal" => envelope_max_principal(args),
+        // Convenience-helper stub (step 8 replaces with the real implementation).
+        // Reserves the dispatch slot so the dispatcher-signal test passes before
+        // the body is wired up.
         "envelope_displacement_magnitude" => Value::Undef,
         // `worst_case` real implementation lives in
         // `crates/reify-expr/src/lib.rs` (Lambda-aware, requires `EvalContext`).
@@ -370,6 +369,20 @@ fn envelope_von_mises(args: &[Value]) -> Value {
     envelope_tensor_projection(args, "stress", TensorProjection::VonMises)
 }
 
+/// Per-grid envelope of the largest principal stress across cases.
+///
+/// Same input/output shape as `envelope_von_mises`, but the per-grid scalar
+/// projection is the largest eigenvalue of the 3×3 symmetric stress tensor
+/// (computed via the closed-form `analysis::compute_eigenvalues_3x3`, which
+/// returns eigenvalues sorted ascending — `eigs[2]` is the maximum).
+///
+/// Same failure modes as `envelope_von_mises`: silent-Undef on any shape
+/// mismatch, missing field, wrong codomain, stride violation, or per-case
+/// grid mismatch (delegated to `envelope_reduce`'s `metadata_matches`).
+fn envelope_max_principal(args: &[Value]) -> Value {
+    envelope_tensor_projection(args, "stress", TensorProjection::MaxPrincipal)
+}
+
 /// Codomain shape for per-case Field validation in `envelope_tensor_projection`.
 ///
 /// More variants will be added in steps 6 (`Vector3` for principal-stress
@@ -410,17 +423,22 @@ impl TensorShape {
 
 /// Per-grid scalar projection applied per-case before envelope_reduce.
 ///
-/// More variants land in steps 6 (`MaxPrincipal`) and 8 (`Magnitude`).
+/// One more variant lands in step 8 (`Magnitude`).
 #[derive(Clone, Copy)]
 enum TensorProjection {
     /// von Mises equivalent stress on a 3×3 row-major window.
     VonMises,
+    /// Largest principal stress (`eigs[2]` of the 3×3 symmetric tensor,
+    /// where eigenvalues are sorted ascending). Routes through
+    /// `crate::analysis::compute_eigenvalues_3x3` (`pub(crate)`-promoted
+    /// for this cross-module reuse).
+    MaxPrincipal,
 }
 
 impl TensorProjection {
     fn shape(self) -> TensorShape {
         match self {
-            TensorProjection::VonMises => TensorShape::Matrix3x3,
+            TensorProjection::VonMises | TensorProjection::MaxPrincipal => TensorShape::Matrix3x3,
         }
     }
 
@@ -430,6 +448,13 @@ impl TensorProjection {
     fn apply(self, window: &[f64]) -> f64 {
         match self {
             TensorProjection::VonMises => apply_von_mises_to_3x3_window(window),
+            TensorProjection::MaxPrincipal => {
+                match crate::analysis::compute_eigenvalues_3x3(window) {
+                    // eigs sorted ascending; eigs[2] is the largest.
+                    Some(eigs) => eigs[2],
+                    None => f64::NAN,
+                }
+            }
         }
     }
 }
