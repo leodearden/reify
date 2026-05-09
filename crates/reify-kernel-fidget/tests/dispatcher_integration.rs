@@ -7,15 +7,32 @@
 //!
 //! This test lives in `crates/reify-kernel-fidget/tests/` with `reify-eval`
 //! as a dev-dep on the fidget crate — NOT in `crates/reify-eval/tests/` with
-//! fidget as a dev-dep of reify-eval. Inverting the dep direction is critical:
-//! adding `reify-kernel-fidget` as a dev-dep of `reify-eval` would pull
-//! fidget's `inventory::submit!` into the existing `reify-eval` test binaries.
-//! Because `"fidget" < "manifold" < "occt"` lexicographically, `pick_lexmin_kernel()`
-//! would return the fidget registration, silently breaking the existing
-//! `engine_with_registered_kernel_picks_occt_for_brep_box_build` test in
-//! `crates/reify-eval/tests/kernel_registry_inventory.rs`. Keeping the
-//! dev-dep on fidget's side isolates fidget's link closure to fidget's own
-//! test binaries; the existing OCCT and Manifold tests are unaffected.
+//! fidget as a dev-dep of reify-eval. Inverting the dep direction guards
+//! against the v0.3 BFS-tie-break breakage path (now the load-bearing reason
+//! — the present-day path no longer applies; see below).
+//!
+//! **Present-day (BRep filter).** `Engine::with_registered_kernel` now calls
+//! `pick_lexmin_brep_kernel()` at
+//! `crates/reify-eval/src/kernel_registry.rs:177-179` (call site:
+//! `crates/reify-eval/src/engine_admin.rs:382`) — a BRep-preferring picker
+//! that filters for kernels claiming at least one `(_, ReprKind::BRep)` pair
+//! before falling back to lex-min. Since fidget's supports table at
+//! `crates/reify-kernel-fidget/src/register.rs` declares only Sdf pairs,
+//! OCCT is selected for `engine_with_registered_kernel_picks_occt_for_brep_box_build`
+//! regardless of `"fidget" < "manifold" < "occt"` lex order — even if fidget's
+//! `inventory::submit!` fired in `reify-eval` test binaries. The
+//! previously-documented present-day breakage path therefore no longer applies.
+//!
+//! **v0.3 (BFS chain tie-break).** When the v0.3 dispatcher BFS exposes a
+//! chain that crosses an Sdf rung (e.g. a future `Sdf → Fidget BooleanUnion`
+//! step in an equal-cost multi-hop path), a lex-min tie-break between
+//! equal-cost BFS paths could misroute if fidget's `inventory::submit!` fired
+//! in `reify-eval` test binaries via dev-dep transitivity.
+//!
+//! Keeping the dep on fidget's side isolates its link closure to fidget's own
+//! test binaries and prevents the v0.3 BFS-tie-break breakage path.
+//! Dep-direction inversion is the structural defensive isolation now that the
+//! `inventory::submit!` is unconditional (no longer feature-gated).
 //!
 //! # What this test covers
 //!
