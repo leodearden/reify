@@ -840,6 +840,38 @@ mod tests {
         assert!(eval_fea("envelope_min", &[]).is_some());
     }
 
+    #[test]
+    fn eval_fea_envelope_von_mises_returns_some() {
+        // Recognised name — `eval_fea` must return `Some(_)`. The actual
+        // value is `Value::Undef` on empty args (arity validation rejects),
+        // but the dispatch slot is reserved so the dispatch chain in
+        // `lib.rs` does not fall through to the unknown-builtin path.
+        assert!(eval_fea("envelope_von_mises", &[]).is_some());
+    }
+
+    #[test]
+    fn eval_fea_envelope_max_principal_returns_some() {
+        assert!(eval_fea("envelope_max_principal", &[]).is_some());
+    }
+
+    #[test]
+    fn eval_fea_envelope_displacement_magnitude_returns_some() {
+        assert!(eval_fea("envelope_displacement_magnitude", &[]).is_some());
+    }
+
+    #[test]
+    fn eval_fea_worst_case_returns_some() {
+        // `worst_case` is dispatched in two locations: the real (Lambda-aware)
+        // implementation lives in `crates/reify-expr/src/lib.rs` (because
+        // invoking a `Value::Lambda` requires `EvalContext`, which `eval_fea`
+        // cannot supply), but the name is also reserved here as a stub
+        // returning `Value::Undef`. The stub preserves the "recognised name"
+        // contract for callers that route through `eval_builtin` directly,
+        // matching the dual-arm pattern of `von_mises`'s lib.rs Field-arg
+        // arm coexisting with `eval_analysis`'s tensor-arg arm.
+        assert!(eval_fea("worst_case", &[]).is_some());
+    }
+
     // ── single-case behaviour ───────────────────────────────────────────────
 
     #[test]
