@@ -556,6 +556,58 @@ mod tests {
         }
     }
 
+    /// Pins the scatter target: non-contiguous connectivity `[4, 0, 7, 2]` into
+    /// a 10-node global `f` (length 30). A regression treating local index `i`
+    /// as the global index would write into `f[0..12]` instead of the correct
+    /// `{f[12..15], f[0..3], f[21..24], f[6..9]}` and fail this test.
+    #[test]
+    fn apply_body_force_p1_non_contiguous_connectivity_scatter() {
+        let phys_nodes: [[f64; 3]; 4] = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ];
+        // Local nodes 0/1/2/3 → global nodes 4/0/7/2.
+        let conn = [4usize, 0, 7, 2];
+        let mut f = vec![0.0_f64; 30]; // 10 global nodes × 3 DOFs
+        apply_body_force(&mut f, ElementOrder::P1, &conn, &phys_nodes, [1.0, 0.0, 0.0]);
+
+        // vol/4 = (1/6)/4 = 1/24 per local node on the unit reference tet.
+        let expected = 1.0 / 24.0;
+
+        // Global node 4: f[12..15]
+        assert!((f[12] - expected).abs() < TOL, "f[12] (node 4 x-DOF) = {}, expected {expected}", f[12]);
+        assert_eq!(f[13], 0.0, "f[13] (node 4 y-DOF) should be 0");
+        assert_eq!(f[14], 0.0, "f[14] (node 4 z-DOF) should be 0");
+
+        // Global node 0: f[0..3]
+        assert!((f[0] - expected).abs() < TOL, "f[0] (node 0 x-DOF) = {}, expected {expected}", f[0]);
+        assert_eq!(f[1], 0.0, "f[1] (node 0 y-DOF) should be 0");
+        assert_eq!(f[2], 0.0, "f[2] (node 0 z-DOF) should be 0");
+
+        // Global node 7: f[21..24]
+        assert!((f[21] - expected).abs() < TOL, "f[21] (node 7 x-DOF) = {}, expected {expected}", f[21]);
+        assert_eq!(f[22], 0.0, "f[22] (node 7 y-DOF) should be 0");
+        assert_eq!(f[23], 0.0, "f[23] (node 7 z-DOF) should be 0");
+
+        // Global node 2: f[6..9]
+        assert!((f[6] - expected).abs() < TOL, "f[6] (node 2 x-DOF) = {}, expected {expected}", f[6]);
+        assert_eq!(f[7], 0.0, "f[7] (node 2 y-DOF) should be 0");
+        assert_eq!(f[8], 0.0, "f[8] (node 2 z-DOF) should be 0");
+
+        // All other entries must remain zero.
+        let touched: std::collections::HashSet<usize> = [0, 1, 2, 6, 7, 8, 12, 13, 14, 21, 22, 23]
+            .iter()
+            .cloned()
+            .collect();
+        for i in 0..30 {
+            if !touched.contains(&i) {
+                assert_eq!(f[i], 0.0, "f[{i}] should be 0.0 (not a body-force DOF)");
+            }
+        }
+    }
+
     // =======================================================================
     // apply_body_force — P2
     // =======================================================================
