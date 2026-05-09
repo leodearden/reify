@@ -1249,6 +1249,150 @@ mod tests {
         }
     }
 
+    /// One P1 tet sharing only node 0 with one MITC3+ shell → unified
+    /// 6-DOF/node global K with the right per-node-pair contributions.
+    ///
+    /// Mesh: tet on connectivity `[0, 1, 2, 3]`, shell on connectivity
+    /// `[0, 4, 5]`. The two elements share *only* node 0. `n_nodes = 6`,
+    /// expected global dim `6 · 6 = 36`.
+    ///
+    /// Pinning strategy (each assertion locks a different contract):
+    /// - **dim**: `D = 6` derives from `max(d_e)` = `max(3, 6)` = 6.
+    /// - **node 0 displacement block (rows/cols 0..3)**: both tet and
+    ///   shell touch translational DOFs. faer sums duplicates in encounter
+    ///   order — tet emits first (it appears first in the slice), shell
+    ///   emits second — so the bit-for-bit expected value is
+    ///   `K_e_tet[α][β] + K_e_shell[α][β]` summed in that order.
+    /// - **node 0 rotation block (rows/cols 3..6)**: only the shell has
+    ///   rotation DOFs; the tet's 3-DOF/node emission stops at α < 3, so
+    ///   nothing lands at α ∈ [3, 6). Bit-equal to `K_e_shell[3+α][3+β]`.
+    /// - **tet-only nodes 1..4**: rotation DOFs (`6n + 3..6n + 6`) read
+    ///   as `0.0` exactly — the shell does not touch these nodes, the
+    ///   tet emits no rotation DOFs, so the orphan rotation rows/cols
+    ///   are unstored and densify to zero.
+    /// - **shell-only nodes 4, 5**: all 6 DOFs/node match
+    ///   `K_e_shell[6·a_local + α][6·b_local + β]` exactly (only shell
+    ///   contributes; encounter order has just one summand).
+    #[test]
+    fn mixed_tet_and_shell_share_node_assembles_into_unified_6dof_per_node_global_k() {
+        let mat = dimensionless_steel_like();
+        let k_e_tet = element_stiffness_p1(&UNIT_TET_P1, &mat);
+        let k_e_shell = shell_element_stiffness(&UNIT_TRI, SHELL_T, &mat);
+        assert_eq!(k_e_tet.n_dofs, 12);
+        assert_eq!(k_e_shell.n_dofs, 18);
+
+        let conn_tet = [0usize, 1, 2, 3];
+        let conn_shell = [0usize, 4, 5];
+        let elements = [
+            AssemblyElement {
+                id: 0,
+                connectivity: &conn_tet,
+                k_e: &k_e_tet,
+            },
+            AssemblyElement {
+                id: 1,
+                connectivity: &conn_shell,
+                k_e: &k_e_shell,
+            },
+        ];
+        let n_nodes = 6;
+        let k = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
+
+        // (i) dim = 6 · n_nodes (max(d_e) = max(3, 6) = 6).
+        assert_eq!(k.nrows(), 36);
+        assert_eq!(k.ncols(), 36);
+
+        // (ii) Node 0 displacement-displacement block (α, β ∈ 0..3): both
+        // elements contribute. Encounter order is tet (slice index 0) then
+        // shell (slice index 1); faer sums duplicates left-to-right.
+        for alpha in 0..3 {
+            for beta in 0..3 {
+                let i = alpha;
+                let j = beta;
+                let actual = read(&k, i, j);
+                let expected =
+                    k_e_tet.get(alpha, beta) + k_e_shell.get(alpha, beta);
+                assert_eq!(
+                    actual.to_bits(),
+                    expected.to_bits(),
+                    "K_global[{i}][{j}] (node 0 disp-disp): \
+                     actual = {actual}, expected = K_tet+K_shell = {expected}",
+                );
+            }
+        }
+
+        // (iii) Node 0 rotation-rotation block (α, β ∈ 3..6 in K_e_shell;
+        // global rows/cols 3..6 because n_dofs_per_node = 6 and node = 0).
+        for alpha in 0..3 {
+            for beta in 0..3 {
+                let i = 3 + alpha; // rows 3..6
+                let j = 3 + beta; // cols 3..6
+                let actual = read(&k, i, j);
+                // Local shell index for node 0's rotation DOFs is 3 + α.
+                let expected = k_e_shell.get(3 + alpha, 3 + beta);
+                assert_eq!(
+                    actual.to_bits(),
+                    expected.to_bits(),
+                    "K_global[{i}][{j}] (node 0 rot-rot): \
+                     actual = {actual}, expected = K_shell[{}][{}] = {expected}",
+                    3 + alpha,
+                    3 + beta,
+                );
+            }
+        }
+
+        // (iv) Tet-only nodes 1..=3 (touched by tet only; tet emits 3
+        // DOFs/node so rotation DOFs at these nodes are orphan zeros).
+        // Node 4 and 5 are shell-only (handled in (v)).
+        for tet_only_node in 1..=3 {
+            for alpha in 3..6 {
+                for j in 0..36 {
+                    let i = 6 * tet_only_node + alpha;
+                    let actual = read(&k, i, j);
+                    assert_eq!(
+                        actual, 0.0,
+                        "K_global[{i}][{j}] (orphan rotation row at tet-only node {tet_only_node}): \
+                         expected 0.0, got {actual}",
+                    );
+                }
+            }
+        }
+
+        // (v) Shell-only nodes 4 and 5: all 6×6 DOF blocks match
+        // `K_e_shell[6·a_local + α][6·b_local + β]` exactly. Local index
+        // 0 = global node 0 (skipped — covered above), local 1 = node 4,
+        // local 2 = node 5.
+        let shell_node_to_local = |gn: usize| -> Option<usize> {
+            match gn {
+                0 => Some(0),
+                4 => Some(1),
+                5 => Some(2),
+                _ => None,
+            }
+        };
+        for &gn_a in &[4usize, 5] {
+            let la = shell_node_to_local(gn_a).unwrap();
+            for &gn_b in &[4usize, 5] {
+                let lb = shell_node_to_local(gn_b).unwrap();
+                for alpha in 0..6 {
+                    for beta in 0..6 {
+                        let i = 6 * gn_a + alpha;
+                        let j = 6 * gn_b + beta;
+                        let actual = read(&k, i, j);
+                        let expected = k_e_shell.get(6 * la + alpha, 6 * lb + beta);
+                        assert_eq!(
+                            actual.to_bits(),
+                            expected.to_bits(),
+                            "K_global[{i}][{j}] (shell-only node-pair (gn={gn_a}, gn={gn_b}), \
+                             local ({la}, {lb}), α={alpha} β={beta}): \
+                             actual = {actual}, expected = {expected}",
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// Single 18-DOF MITC3+ shell element with identity connectivity
     /// `[0, 1, 2]` → `K_global` equals `K_e` bit-for-bit at every entry.
     ///
