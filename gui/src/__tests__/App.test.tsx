@@ -138,6 +138,9 @@ import * as bridge from '../bridge';
 import { STORAGE_KEY } from '../hooks/useLayoutPersistence';
 import * as sidecarPersistence from '../stores/sidecarPersistence';
 import * as viewPersistence from '../stores/viewPersistence';
+import { listen } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
+import { initDebugBridge } from '../debug/bridge';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -4414,6 +4417,121 @@ describe('App handleSave aborts when file is externally changed', () => {
         expect.any(String),
       );
     });
+  });
+});
+
+// ─── e2e integration: file-changed → debug bridge outOfSyncWithDisk ──────────
+//
+// Reproduces the original bug: dirty: false + buffer != disk was unobservable
+// through the mcp__reify-debug__editor_content surface. After the fix, the
+// debug bridge must report outOfSyncWithDisk: true and externallyChanged: true
+// for an open file that was modified on disk while the user hasn't typed.
+
+describe('App e2e integration: file-changed event surfaces outOfSyncWithDisk via debug bridge', () => {
+  const testState: GuiState = {
+    meshes: [],
+    values: [],
+    constraints: [],
+    files: [
+      { path: '/project/bracket.ri', content: 'structure Bracket {}' },
+    ],
+    tessellation_diagnostics: [],
+  };
+
+  let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
+  let capturedDebugHandler: ((event: { payload: { id: number; command: string; params: Record<string, unknown> } }) => Promise<void>) | undefined;
+
+  beforeEach(() => {
+    fileChangedCallback = undefined;
+    capturedDebugHandler = undefined;
+    vi.mocked(bridge.onFileChanged).mockImplementation(async (cb: any) => {
+      fileChangedCallback = cb;
+      return () => {};
+    });
+    vi.mocked(bridge.getInitialState).mockResolvedValue(testState);
+    // Capture the debug-request event handler when initDebugBridge calls listen
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedDebugHandler = handler as any;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    // Restore listen to the default mock so other tests are unaffected
+    vi.mocked(listen).mockResolvedValue(() => {});
+    delete window.__REIFY_DEBUG__;
+  });
+
+  it('after file-changed event, debug bridge editor_content reports outOfSyncWithDisk: true and externallyChanged: true', async () => {
+    render(() => <App />);
+    await waitFor(() => expect(fileChangedCallback).toBeDefined());
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+
+    // The file is NOT dirty — the user has not typed anything
+    expect(capturedEditorStore.state.dirtyFiles).not.toContain('/project/bracket.ri');
+
+    // Simulate the Tauri file-changed event (as if git checkout -- or an
+    // external editor wrote a new version of the file to disk)
+    fileChangedCallback!({ path: '/project/bracket.ri', content: 'externally modified' });
+
+    // The store should now track the path as externally changed
+    await waitFor(() => {
+      expect(capturedEditorStore.state.externallyChanged).toContain('/project/bracket.ri');
+    });
+
+    // Now query the debug bridge (the surface originally cited in the bug report:
+    // mcp__reify-debug__editor_content) using the same real editor store that App
+    // is using. This confirms the full chain: file-changed → store → bridge surface.
+    await initDebugBridge({
+      engine: {
+        state: {
+          meshes: {} as any,
+          values: {} as any,
+          constraints: {} as any,
+          evalStatus: { phase: 'idle' },
+        },
+        initFromState: vi.fn(),
+      },
+      editor: capturedEditorStore,
+      selection: {
+        state: {
+          selectedEntity: null,
+          selectedEntities: [],
+          anchorEntity: null,
+          hoveredEntity: null,
+          highlightedParams: [],
+        } as any,
+        selectEntity: vi.fn(),
+        hoverEntity: vi.fn(),
+      },
+      claude: {
+        state: {
+          messages: [],
+          sessionStatus: 'idle',
+          currentMessageId: null,
+        },
+      },
+    });
+    expect(capturedDebugHandler).toBeDefined();
+
+    vi.mocked(invoke).mockClear();
+    await capturedDebugHandler!({
+      payload: { id: 777, command: 'editor_content', params: {} },
+    });
+
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    const result = JSON.parse(payload.result);
+
+    // Bug-fix verification: the originally invisible state is now observable
+    expect(result.outOfSyncWithDisk).toBe(true);
+    const file = result.openFiles.find((f: any) => f.path === '/project/bracket.ri');
+    expect(file).toBeDefined();
+    expect(file.externallyChanged).toBe(true);
+    // Confirm dirty: false — the user hasn't typed (this was already correct before the fix)
+    expect(file.dirty).toBe(false);
   });
 });
 
