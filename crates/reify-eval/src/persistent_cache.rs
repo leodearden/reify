@@ -189,9 +189,9 @@ fn check_f64_vec_len(field_name: &str, len: u64) -> io::Result<usize> {
 /// big-endian hosts a temporary `Vec<u8>` is built via `to_le_bytes()` per
 /// element (per-element CPU byte-swap, single bulk `write_all` to `w`). The
 /// BE path uses `try_reserve_exact` for OOM-safe sizing; overflow of the byte
-/// count is impossible because `slab` is already allocated — the allocator
-/// accepted `slab.len() * 8` bytes when the `Vec<f64>` was built, so
-/// multiplying that same length by 8 here cannot overflow `usize`.
+/// count is impossible because the slice already exists in memory, so its byte
+/// length (`slab.len() * 8`) is by construction representable in `usize` on
+/// any supported target.
 ///
 /// Empty input produces zero bytes on disk. The on-disk format is
 /// unconditionally little-endian regardless of host byte order.
@@ -202,9 +202,9 @@ fn write_f64_slab<W: Write>(w: &mut W, slab: &[f64]) -> io::Result<()> {
     }
     #[cfg(target_endian = "big")]
     {
-        // slab is already allocated: the allocator accepted slab.len() * 8
-        // bytes when the Vec<f64> was built, so multiplying that same length
-        // by 8 here cannot overflow usize on any supported target.
+        // The slice already exists in memory, so its byte length
+        // (slab.len() * 8) is by construction representable in usize on any
+        // supported target — no overflow is possible.
         let byte_count = slab.len() * 8;
         let mut buf: Vec<u8> = Vec::new();
         buf.try_reserve_exact(byte_count).map_err(io::Error::other)?;
@@ -957,9 +957,10 @@ mod tests {
     /// which exercises the BE conversion kernel in isolation. On LE CI hosts
     /// `read_f64_slab` takes the zero-copy `spare_capacity_mut` + `set_len`
     /// fast path and never calls the kernel; the kernel test therefore does
-    /// NOT cover that path. This test calls `read_f64_slab` directly with
-    /// known LE bytes and asserts the decoded `to_bits()` values, complementing
-    /// the existing `&buf[..8]` host-independent assertion in
+    /// NOT cover that path. On BE hosts, this test exercises the kernel path
+    /// again, providing a cross-host pin. This test calls `read_f64_slab`
+    /// directly with known LE bytes and asserts the decoded `to_bits()` values,
+    /// complementing the existing `&buf[..8]` host-independent assertion in
     /// `elastic_result_serialized_slab_section_is_little_endian_bytewise`.
     ///
     /// Fixed literals (`[00..F0 3F]` → `1.0`, `[00..04 C0]` → `-2.5`) catch a
@@ -978,12 +979,12 @@ mod tests {
         assert_eq!(decoded.len(), 2);
         assert_eq!(
             decoded[0].to_bits(),
-            1.0_f64.to_bits(),
+            0x3FF0_0000_0000_0000_u64,
             "1.0 fixture: LE bytes [00..F0 3F] must decode to 1.0, not from_be/ne_bytes"
         );
         assert_eq!(
             decoded[1].to_bits(),
-            (-2.5_f64).to_bits(),
+            0xC004_0000_0000_0000_u64,
             "-2.5 fixture: LE bytes [00..04 C0] must decode to -2.5, not from_be/ne_bytes"
         );
     }
