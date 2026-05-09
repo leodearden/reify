@@ -8,8 +8,22 @@ vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
 }));
 
+// Mock the sandbox module — isLandlockAvailable and wrapClaudeArgs.
+// Default: isLandlockAvailable() returns undefined (falsy); wrapClaudeArgs passes
+// through to {cmd:'claude'} when landlockExec is undefined, so existing tests
+// that don't set landlockExec in the config continue to work correctly.
+vi.mock('../sandbox.js', () => ({
+  isLandlockAvailable: vi.fn(),
+  wrapClaudeArgs: vi.fn((args: string[], _ws: string, le?: string) =>
+    le ? { cmd: 'python3', args: [le, ...args] } : { cmd: 'claude', args: [...args] }
+  ),
+  _resetLandlockCache: vi.fn(),
+}));
+
 import { spawn } from 'node:child_process';
 import { SidecarSession, SPAWN_ERROR_LOG_PREFIX } from '../session.js';
+import { isLandlockAvailable, wrapClaudeArgs } from '../sandbox.js';
+import * as os from 'node:os';
 import { main } from '../index.js';
 
 /**
@@ -3294,5 +3308,133 @@ describe('SidecarSession permission-mode + allowed-tools (task 3210)', () => {
   it('(c) args do NOT contain --dangerously-skip-permissions (no permissionMcp)', async () => {
     const args = await runSession(false);
     expect(args).not.toContain('--dangerously-skip-permissions');
+  });
+});
+
+describe('SidecarSession sandbox wrap (task 3210)', () => {
+  let outputs: OutboundMessage[];
+
+  beforeEach(() => {
+    outputs = [];
+    vi.mocked(spawn).mockReset();
+    vi.mocked(isLandlockAvailable).mockReset();
+    // Restore wrapClaudeArgs default implementation: passthrough with/without landlockExec
+    vi.mocked(wrapClaudeArgs).mockReset();
+    vi.mocked(wrapClaudeArgs).mockImplementation((args: string[], _ws: string, le?: string) =>
+      le ? { cmd: 'python3', args: [le, ...args] } : { cmd: 'claude', args: [...args] }
+    );
+  });
+
+  // (a) landlock available — spawn called with python3 wrap
+  it('(a) landlock_available=true: spawn uses python3 wrap, wrapClaudeArgs called with landlockExec', async () => {
+    const le = '/path/landlock_exec.py';
+    const ws = '/tmp/ws';
+
+    vi.mocked(isLandlockAvailable).mockReturnValue(true);
+    vi.mocked(wrapClaudeArgs).mockImplementation((args: string[], workspace: string, landlockExec?: string) => ({
+      cmd: 'python3',
+      args: [landlockExec!, '--writable', workspace, '--writable', os.homedir() + '/.claude', '--writable', '/tmp', '--', 'claude', ...args],
+    }));
+
+    let spawnCmd = '';
+    let spawnArgs: string[] = [];
+    vi.mocked(spawn).mockImplementation(((cmd: string, args: string[]) => {
+      spawnCmd = cmd;
+      spawnArgs = args;
+      return createMockProcess([{ type: 'result', session_id: 'sess-sandbox-a' }]);
+    }) as any);
+
+    const session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are helpful.',
+      workspace: ws,
+      landlockExec: le,
+    } as any);
+    session.onOutput = (msg) => outputs.push(msg);
+
+    await session.handleMessage({ type: 'send_message', id: 'msg-sandbox-a', text: 'Hello' });
+
+    // spawn called with python3 (not claude directly)
+    expect(spawnCmd).toBe('python3');
+    // first arg in args is the landlockExec path
+    expect(spawnArgs[0]).toBe(le);
+    // writable flags and workspace are present
+    expect(spawnArgs).toContain('--writable');
+    expect(spawnArgs).toContain(ws);
+    // '--' separator present
+    expect(spawnArgs).toContain('--');
+    // 'claude' appears right after '--'
+    const ddIdx = spawnArgs.indexOf('--');
+    expect(spawnArgs[ddIdx + 1]).toBe('claude');
+    // claude-specific args follow (including permission-mode and mcp-config from step-6/step-4)
+    const postClaude = spawnArgs.slice(ddIdx + 2);
+    expect(postClaude).toContain('--permission-mode');
+    expect(postClaude).toContain('bypassPermissions');
+    expect(postClaude).toContain('--mcp-config');
+
+    // wrapClaudeArgs was called with (claudeArgs, workspace, landlockExec)
+    expect(vi.mocked(wrapClaudeArgs)).toHaveBeenCalledTimes(1);
+    const [wrapArgs, wrapWs, wrapLe] = vi.mocked(wrapClaudeArgs).mock.calls[0] as [string[], string, string | undefined];
+    expect(wrapWs).toBe(ws);
+    expect(wrapLe).toBe(le);
+    // the claude args passed to wrapClaudeArgs include the allowlist args
+    expect(wrapArgs).toContain('--permission-mode');
+  });
+
+  // (b) landlock unavailable (but landlockExec provided) — wrapClaudeArgs called with undefined
+  it('(b) landlock_available=false: wrapClaudeArgs called with undefined landlockExec, spawn uses claude', async () => {
+    vi.mocked(isLandlockAvailable).mockReturnValue(false);
+    // wrapClaudeArgs uses default mock (returns {cmd:'claude',...} when le is undefined)
+
+    let spawnCmd = '';
+    vi.mocked(spawn).mockImplementation(((cmd: string, _args: string[]) => {
+      spawnCmd = cmd;
+      return createMockProcess([{ type: 'result', session_id: 'sess-sandbox-b' }]);
+    }) as any);
+
+    const session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are helpful.',
+      workspace: '/tmp/ws',
+      landlockExec: '/path/le.py',  // provided, but probe says unavailable
+    } as any);
+    session.onOutput = (msg) => outputs.push(msg);
+
+    await session.handleMessage({ type: 'send_message', id: 'msg-sandbox-b', text: 'Hello' });
+
+    // spawn called with claude (no python3 wrap since probe failed)
+    expect(spawnCmd).toBe('claude');
+
+    // wrapClaudeArgs was called with undefined landlockExec (probe failed → no wrap)
+    expect(vi.mocked(wrapClaudeArgs)).toHaveBeenCalledTimes(1);
+    const [, , wrapLe] = vi.mocked(wrapClaudeArgs).mock.calls[0] as [string[], string, string | undefined];
+    expect(wrapLe).toBeUndefined();
+  });
+
+  // (c) no landlockExec configured — isLandlockAvailable NOT called, direct claude spawn
+  it('(c) no landlockExec: isLandlockAvailable NOT called, spawn called with claude', async () => {
+    let spawnCmd = '';
+    vi.mocked(spawn).mockImplementation(((cmd: string, _args: string[]) => {
+      spawnCmd = cmd;
+      return createMockProcess([{ type: 'result', session_id: 'sess-sandbox-c' }]);
+    }) as any);
+
+    const session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are helpful.',
+      // No workspace or landlockExec — sandbox not requested
+    });
+    session.onOutput = (msg) => outputs.push(msg);
+
+    await session.handleMessage({ type: 'send_message', id: 'msg-sandbox-c', text: 'Hello' });
+
+    // isLandlockAvailable was NOT called (no sandbox configured)
+    expect(vi.mocked(isLandlockAvailable)).not.toHaveBeenCalled();
+
+    // spawn called with claude (no python3 wrap)
+    expect(spawnCmd).toBe('claude');
   });
 });
