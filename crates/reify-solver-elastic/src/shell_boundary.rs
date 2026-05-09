@@ -68,6 +68,8 @@ pub enum SupportCompatibility {
 mod tests {
     use super::*;
 
+    use crate::boundary::DirichletBc;
+
     // ------------------------------------------------------------------
     // Step 1: enum smoke tests — all three types, all variants, all derives
     // ------------------------------------------------------------------
@@ -102,5 +104,41 @@ mod tests {
         assert_ne!(ok, equiv, "Ok != PinnedOnTetEquivalentToFixed");
         let _ = format!("{:?}", ok);
         let _ = format!("{:?}", equiv);
+    }
+
+    // ------------------------------------------------------------------
+    // Step 3: build_support_bcs — (Shell, Fixed) returns 6 BCs/node
+    // ------------------------------------------------------------------
+
+    /// `build_support_bcs(&[2, 5], Fixed, Shell)` → 12 BCs at DOFs
+    /// `[12,13,14,15,16,17, 30,31,32,33,34,35]`, all values 0.0, compat `Ok`.
+    ///
+    /// Also checks the empty-input case: `build_support_bcs(&[], Fixed, Shell)`
+    /// returns `(Vec::new(), Ok)`.
+    #[test]
+    fn build_support_bcs_shell_fixed_emits_six_bcs_per_node() {
+        let (bcs, compat) =
+            build_support_bcs(&[2, 5], SupportKind::Fixed, SupportBodyKind::Shell);
+
+        // 2 nodes × 6 DOFs each
+        assert_eq!(bcs.len(), 12, "expected 12 BCs for 2 shell nodes (Fixed)");
+
+        // DOFs: 6*2 + {0..5}, then 6*5 + {0..5}
+        let expected_dofs: Vec<usize> = vec![12, 13, 14, 15, 16, 17, 30, 31, 32, 33, 34, 35];
+        for (i, (bc, &exp_dof)) in bcs.iter().zip(expected_dofs.iter()).enumerate() {
+            assert_eq!(bc.dof, exp_dof, "bcs[{i}].dof: expected {exp_dof}, got {}", bc.dof);
+            assert_eq!(
+                bc.value.to_bits(),
+                0.0_f64.to_bits(),
+                "bcs[{i}].value must be 0.0"
+            );
+        }
+        assert_eq!(compat, SupportCompatibility::Ok, "compat must be Ok");
+
+        // Empty-input case
+        let (empty_bcs, empty_compat) =
+            build_support_bcs(&[], SupportKind::Fixed, SupportBodyKind::Shell);
+        assert!(empty_bcs.is_empty(), "empty nodes → empty BC list");
+        assert_eq!(empty_compat, SupportCompatibility::Ok);
     }
 }
