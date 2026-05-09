@@ -972,8 +972,8 @@ impl MockGeometryKernel {
     ///
     /// The `value` should be a `Value::Bool`. The `tolerance` is bit-keyed
     /// (via `density_bits`) so the stub for `is_on(p, b)` (which the
-    /// dispatcher hard-codes to `1e-7`) is distinguishable from a future
-    /// explicit-tolerance `is_on(p, b, tol)` overload.
+    /// dispatcher routes through `reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M`)
+    /// is distinguishable from a future explicit-tolerance `is_on(p, b, tol)` overload.
     ///
     /// Powers the v0.1 stdlib `is_on` helper (task 2324).
     pub fn with_point_on_shape_result(
@@ -3860,7 +3860,7 @@ mod tests {
         let kernel = MockGeometryKernel::new().with_point_on_shape_result(
             handle,
             [5.0, 0.0, 0.0],
-            1e-7,
+            reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
             Value::Bool(true),
         );
         let result = kernel
@@ -3869,7 +3869,7 @@ mod tests {
                 px: 5.0,
                 py: 0.0,
                 pz: 0.0,
-                tolerance: 1e-7,
+                tolerance: reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
             })
             .unwrap();
         assert_eq!(result, Value::Bool(true));
