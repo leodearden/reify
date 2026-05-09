@@ -233,11 +233,30 @@ fn pinched_cylinder_octant_radial_displacement_at_load_matches_macneal_harder_wi
 
         let dof = |d: usize| node * 6 + d;
 
-        // Diaphragm end (z=L/2): prevent radial/tangential + torsion.
+        // Diaphragm end (z=L/2): MacNeal-Harder "rigid end diaphragm" condition.
+        //
+        // From MacNeal & Harder (1985): "Support: Rigid end diaphragm (v=0, w=0)"
+        // where v is the circumferential displacement and w = u_z is the axial.
+        //
+        // In global Cartesian (cylinder axis = z):
+        //   w = u_z = 0  (axial constraint)
+        //   v = −sin θ · u_x + cos θ · u_y = 0  (circumferential)
+        //
+        // The exact circumferential constraint v=0 is an oblique (rotated) BC that
+        // cannot be expressed as a simple per-DOF constraint with the current API.
+        // For the OCTANT model:
+        //   • Corner θ=0  (j=0, y=0 plane): v = u_y = 0 already from y=0 symmetry BC.
+        //   • Corner θ=π/2 (j=nx, x=0 plane): v = −u_x = 0 already from x=0 symmetry BC.
+        //   • Intermediate θ (j=1..nx-1): v=0 is omitted; these nodes can slide
+        //     tangentially — an accepted coarse-mesh approximation (see design
+        //     decision in plan.json). The radial degree of freedom (u_r) is
+        //     intentionally left FREE so the cylinder can breathe at the ends.
+        //
+        // θ_z=0 (torsion) is added for numerical robustness at interior diaphragm nodes
+        // that are not already stabilised by the symmetry-plane BCs.
         if is_diaphragm {
-            bcs.push(DirichletBc { dof: dof(0), value: 0.0 }); // u_x
-            bcs.push(DirichletBc { dof: dof(1), value: 0.0 }); // u_y
-            bcs.push(DirichletBc { dof: dof(5), value: 0.0 }); // θ_z
+            bcs.push(DirichletBc { dof: dof(2), value: 0.0 }); // w = u_z = 0
+            bcs.push(DirichletBc { dof: dof(5), value: 0.0 }); // θ_z = 0 (torsion)
         }
         // Symmetry at y=0 (θ=0): xz-plane.
         if is_y0 {
