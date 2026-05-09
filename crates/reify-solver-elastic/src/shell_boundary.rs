@@ -143,30 +143,10 @@ mod tests {
         k.get(i, j).copied().unwrap_or(0.0)
     }
 
-    /// Build Q = Ry(45°) · Rz(30°) (same rotation used by the covariance test
-    /// in `shell_assembly.rs` to avoid drilling-singularity alignment).
-    fn tilted_q() -> [[f64; 3]; 3] {
-        let cos30 = (30.0_f64.to_radians()).cos();
-        let sin30 = (30.0_f64.to_radians()).sin();
-        let cos45 = (45.0_f64.to_radians()).cos();
-        let sin45 = (45.0_f64.to_radians()).sin();
-        let rz: [[f64; 3]; 3] = [[cos30, -sin30, 0.0], [sin30, cos30, 0.0], [0.0, 0.0, 1.0]];
-        let ry: [[f64; 3]; 3] = [[cos45, 0.0, sin45], [0.0, 1.0, 0.0], [-sin45, 0.0, cos45]];
-        let mut q = [[0.0_f64; 3]; 3];
-        for i in 0..3 {
-            for j in 0..3 {
-                for k in 0..3 {
-                    q[i][j] += ry[i][k] * rz[k][j];
-                }
-            }
-        }
-        q
-    }
-
     /// Build the tilted triangle nodes from UNIT_TRI rotated by Q = Ry(45°)·Rz(30°).
     fn tilted_tri() -> [[f64; 3]; 3] {
         const UNIT_TRI: [[f64; 3]; 3] = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
-        let q = tilted_q();
+        let q = crate::shell_assembly::tilted_q_for_shell_tests();
         let mut nodes = [[0.0_f64; 3]; 3];
         for (ni, node) in UNIT_TRI.iter().enumerate() {
             for i in 0..3 {
