@@ -1168,6 +1168,20 @@ impl VolumeMesh {
             self.vertices[base + 2],
         ])
     }
+
+    /// Return the XYZ coordinates of node `idx` as `[f64; 3]`, widening from
+    /// the stored `f32` representation.
+    ///
+    /// This is a f64-widening sibling of [`Self::vertex`], intended for
+    /// callers whose downstream computation runs in f64 (FEA arithmetic,
+    /// Laplacian smoothing).  All bounds-checking is delegated to `vertex`;
+    /// this method adds no new indexing logic.
+    ///
+    /// Returns `None` for the same out-of-range or overflow conditions as
+    /// `vertex`.
+    pub fn vertex_f64(&self, idx: u32) -> Option<[f64; 3]> {
+        self.vertex(idx).map(|[x, y, z]| [x as f64, y as f64, z as f64])
+    }
 }
 
 /// Errors from geometry operations.
