@@ -52,7 +52,7 @@ use reify_types::{GeometryHandleId, GeometryKernel, GeometryOp};
 ///   - `b = [0.5, 1.5] × [0,1] × [0,1]`
 ///   - `u = a ∪ b` (~1.5×1×1 hull)
 ///   - `d = a - b` (the [0, 0.5] x-slab of `a`)
-///   - `result = u ∩ a` (= `a`, since `a ⊂ u`)
+///   - `result = u ∩ d` (= `d`, since `d ⊂ u`)
 ///
 /// We tessellate `result` and pin the structural mesh contract: at least
 /// one vertex, at least one triangle, vertex count divisible by 3 (xyz),
@@ -85,7 +85,7 @@ fn boolean_ops_round_trip_via_factory_and_geometry_kernel_trait_object() {
         })
         .expect("Union of two valid cubes must succeed");
 
-    let _d = kernel
+    let d = kernel
         .execute(&GeometryOp::Difference {
             left: a,
             right: b,
@@ -95,9 +95,9 @@ fn boolean_ops_round_trip_via_factory_and_geometry_kernel_trait_object() {
     let result = kernel
         .execute(&GeometryOp::Intersection {
             left: u.id,
-            right: a,
+            right: d.id,
         })
-        .expect("Intersection of u and a must succeed (a ⊂ u, so result = a)");
+        .expect("Intersection of u and d must succeed (d ⊂ u, so result = d)");
 
     let mesh = kernel
         .tessellate(result.id, 0.0)
