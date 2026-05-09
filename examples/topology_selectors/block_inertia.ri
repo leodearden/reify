@@ -9,17 +9,20 @@
 //   1. box(L, W, H) primitive constructor
 //   2. moment_of_inertia(solid, density) stdlib call (PRD task 3)
 //
-// This fixture is fully compile-clean post-task-2699, which wired
-// `moment_of_inertia` as a language-level stdlib binding.  Active
-// compile-with-stdlib smoke lives in:
+// Compile-with-stdlib coverage (task 2699 landed `moment_of_inertia` wiring):
 //   crates/reify-eval/tests/topology_selector_smoke_tests.rs::
-//     block_inertia_compiles_with_stdlib_no_errors
+//     block_inertia_compiles_with_stdlib_no_errors   ← active, passes today
 //
-// Runtime eval of the `i` cell will land once `try_eval_topology_selector`
-// in crates/reify-eval/src/geometry_ops.rs adds the `moment_of_inertia` arm
-// (per PRD topology-selectors.md task 8; today the cell stays at Value::Undef).
-// That contract is documented by the #[ignore]-gated test:
-//   block_inertia_evals_moment_of_inertia_to_tensor
+// Eval-deepening coverage (gated on eval-side dispatch landing):
+//   crates/reify-eval/tests/topology_selector_smoke_tests.rs::
+//     block_inertia_evals_moment_of_inertia_to_tensor  ← #[ignore]-gated
+//
+// The `i` cell stays at Value::Undef until `try_eval_topology_selector` in
+// crates/reify-eval/src/geometry_ops.rs adds the `moment_of_inertia` arm
+// (the 11 task-2699 names fall through to `_ => return None` today; see
+// geometry_ops.rs:1646-1661).  The gated test documents the expected
+// Value::Tensor shape (rank-2, 3×3 MomentOfInertia-dimensioned scalars;
+// analytic form: I_xx = (1/12)·m·(H²+D²), etc.) per PRD §3.9.
 
 structure def BlockInertia {
     let b = box(50mm, 30mm, 10mm)
