@@ -3311,6 +3311,10 @@ describe('SidecarSession permission-prompt wiring (step-3)', () => {
     } as any);
     session.onOutput = (msg) => outputs.push(msg);
 
+    // Snapshot the map size before triggering — the orphan branch must not mutate it
+    // (session.ts:133: "Do NOT register in pendingPermissionRequests since there is no decision lifecycle to track.")
+    const sizeBefore = (session as any).pendingPermissionRequests.size;
+
     // Simulate a late/orphan permission request arriving with no active invocation
     triggerRequest({
       request_id: 'req-orphan',
@@ -3335,6 +3339,9 @@ describe('SidecarSession permission-prompt wiring (step-3)', () => {
       code: 'permission_request_orphaned',
       message: expect.any(String),
     });
+
+    // (f4) pendingPermissionRequests must not have been mutated (orphan branch skips .set())
+    expect((session as any).pendingPermissionRequests.size).toBe(sizeBefore);
   });
 
   // (g) onRequest arriving AFTER a completed invocation (currentInvocationId reset to null
@@ -3363,6 +3370,10 @@ describe('SidecarSession permission-prompt wiring (step-3)', () => {
     outputs.length = 0;
     (server.decide as ReturnType<typeof vi.fn>).mockClear();
 
+    // Snapshot the map size after the prior invocation completed — the orphan branch must not mutate it
+    // (session.ts:133: "Do NOT register in pendingPermissionRequests since there is no decision lifecycle to track.")
+    const sizeBefore = (session as any).pendingPermissionRequests.size;
+
     // Simulate a late CLI permission request arriving after the invocation ended
     triggerRequest({
       request_id: 'req-post',
@@ -3387,6 +3398,9 @@ describe('SidecarSession permission-prompt wiring (step-3)', () => {
       code: 'permission_request_orphaned',
       message: expect.any(String),
     });
+
+    // (g4) pendingPermissionRequests must not have been mutated (orphan branch skips .set())
+    expect((session as any).pendingPermissionRequests.size).toBe(sizeBefore);
   });
 });
 
