@@ -1,27 +1,48 @@
 //! Integration tests for the shell FEA pipeline (PRD v0.4 task #21).
 //!
+//! # Scope: smoke tests, NOT validated benchmarks
+//!
 //! This file exercises the end-to-end shell assembly pipeline
 //! (`shell_element_stiffness` → `assemble_global_stiffness` →
 //! `apply_dirichlet_row_elimination` → dense-LU solve) on four canonical
-//! shell-formulation benchmarks from MacNeal & Harder (1985):
+//! shell-formulation geometries: the pinched cylinder, Scordelis-Lo roof,
+//! hemisphere-with-point-loads, and twisted cantilever beam.
 //!
-//! 1. **Pinched cylinder** (§3.3): 1/8 octant by symmetry, 4×4 elements.
-//! 2. **Scordelis-Lo roof** (§3.4): 1/4 quadrant by symmetry.
-//! 3. **Hemisphere with point loads** (§3.5): 1/4 by symmetry.
-//! 4. **Twisted beam** (§3.6): full 12×2 element mesh.
+//! These geometries are **drawn from** MacNeal & Harder (1985), but the
+//! present tests are **smoke tests**, not validated benchmarks. The
+//! tip-displacement assertions check only:
+//!   - **sign** (response is in the loaded direction),
+//!   - **finiteness** (not NaN, not infinite),
+//!   - **order of magnitude** (within a wide physically-plausible band).
 //!
-//! Plus a **locking-detection** test verifying that MITC3 does not collapse
-//! under decreasing thickness (the signature of shear-locking in naive
-//! Reissner-Mindlin elements).
+//! They do **not** assert against the published MacNeal-Harder reference
+//! values: the bare MITC3 element used today suffers from severe membrane
+//! locking on curved geometry (factor 21–2200× under-prediction at coarse
+//! mesh resolution), so a tight band around the published references would
+//! fail today, and a tight band around today's locked output would block
+//! the MITC3+ correctness fix that closes the gap. See follow-up task for
+//! the proper benchmark suite that lands once MITC3+ bubble enrichment is
+//! wired (`shell_assembly.rs:25-34`).
 //!
-//! # Drilling-DOF stabilization
+//! In addition to the four geometry smoke tests, this file contains:
+//!   - a **locking-detection** test verifying that MITC3 does not collapse
+//!     under decreasing thickness (signature of shear-locking),
+//!   - a flat-plate cantilever sanity test exercising the same end-to-end
+//!     pipeline on a non-curved patch.
+//!
+//! # Drilling rotation (no test-local workaround)
 //!
 //! MITC3 carries zero stiffness along the local drilling rotation (θ_z,
-//! rotation about the element normal). For curved-shell meshes this makes
-//! K_global rank-deficient. All tests use the test-local helper
-//! `shell_element_stiffness_drilling_stabilized` (Hughes-Brezzi penalty,
-//! ε = 1e-6) to add a small, physically inert stabilization term before
-//! global assembly. The production fix is tracked as a follow-up task.
+//! rotation about the element normal). On the four curved benchmarks the
+//! symmetry-plane Dirichlet BCs already pin enough θ_z DOFs that the
+//! drilling kernel is fully constrained, so each test calls
+//! `shell_element_stiffness` directly — no Hughes-Brezzi penalty helper
+//! is interposed and the production assembly path is exercised
+//! end-to-end. The flat-plate sanity test additionally pins θ_z=0 at its
+//! free nodes (its elements all share a single normal, so the kernel
+//! survives without that pin). MITC3+ bubble enrichment, when wired,
+//! will add a real drilling rotation field and these explicit pins can
+//! be reviewed at that point. Review escalation: `esc-3034-165`.
 //!
 //! # PRD reference
 //!
@@ -31,71 +52,10 @@
 use reify_solver_elastic::{
     AssemblyElement, AssemblyMode, ElementStiffness, assemble_global_stiffness,
     apply_dirichlet_row_elimination, DirichletBc,
-    shell_element_stiffness, build_shell_frame, IsotropicElastic,
+    shell_element_stiffness, IsotropicElastic,
 };
 
 // ─── test-local helpers ──────────────────────────────────────────────────────
-
-/// Per-element MITC3 stiffness with Hughes-Brezzi drilling-DOF stabilization.
-///
-/// # Why this is needed
-///
-/// MITC3 (Bathe-Dvorkin 1985, no Allman/Hughes enrichment) carries **zero
-/// stiffness** along the local drilling rotation θ_z (rotation about the
-/// element normal `e3`). For any curved-shell mesh this makes `K_global`
-/// rank-deficient, so `partial_piv_lu` cannot solve reliably.
-///
-/// # Stabilization approach
-///
-/// Add `ε · max_diag · e3 ⊗ e3` into each node's rotation 3×3 sub-block
-/// (rows/cols `6n+3 .. 6n+6` for `n ∈ {0,1,2}`), where:
-///
-/// - `e3 = build_shell_frame(nodes).r[2]` — element normal in global coords
-/// - `max_diag = max_i |K_e[i,i]|` — representative stiffness scale
-/// - `ε = 1e-6` — well below the FP tolerance of all benchmark assertions
-///
-/// With `ε = 1e-6` the perturbation is at the floating-point roundoff level
-/// relative to the bending/membrane stiffness modes, yet adds 6 finite
-/// eigenvalues to the otherwise-zero drilling subspace.
-///
-/// # Production note
-///
-/// This is a **test-local** workaround. The correct fix belongs in
-/// `shell_assembly.rs` or `assembly/global.rs` (follow-up task).
-fn shell_element_stiffness_drilling_stabilized(
-    nodes: &[[f64; 3]; 3],
-    thickness: f64,
-    material: &IsotropicElastic,
-    eps: f64,
-) -> ElementStiffness {
-    let mut k_e = shell_element_stiffness(nodes, thickness, material);
-    debug_assert_eq!(k_e.n_dofs, 18, "expected 18-DOF MITC3 element");
-
-    // Element normal in global coordinates — the drilling singularity axis.
-    let frame = build_shell_frame(nodes);
-    let e3 = frame.r[2];
-
-    // Representative stiffness scale: max absolute diagonal entry.
-    let max_diag = (0..k_e.n_dofs)
-        .map(|i| k_e.data[i * k_e.n_dofs + i].abs())
-        .fold(0.0_f64, f64::max);
-
-    let drill_k = eps * max_diag;
-
-    // Add ε · max_diag · (e3 ⊗ e3) to each node's rotation sub-block.
-    // Node n occupies global DOFs [6n .. 6n+6]; rotation DOFs are [6n+3 .. 6n+6].
-    for node in 0..3_usize {
-        let base = 6 * node + 3; // first rotation DOF for this node
-        for i in 0..3_usize {
-            for j in 0..3_usize {
-                k_e.data[(base + i) * k_e.n_dofs + (base + j)] +=
-                    drill_k * e3[i] * e3[j];
-            }
-        }
-    }
-
-    k_e
-}
 
 /// Assemble, apply Dirichlet BCs, and solve a pure-shell FEA system via
 /// dense LU factorization.
@@ -161,7 +121,12 @@ fn solve_shell_system(
 
 // ─── step-2: pinched cylinder (MacNeal-Harder §3.3) ─────────────────────────
 
-/// MacNeal-Harder (1985) §3.3 pinched cylinder benchmark.
+/// Pinched cylinder smoke test — geometry from MacNeal-Harder (1985) §3.3.
+///
+/// **NOT a validated benchmark** — see file-level docs. Asserts only that
+/// the response is finite, signed, and within a wide order-of-magnitude
+/// band; today's bare MITC3 element under-predicts the published reference
+/// by ~76× due to membrane locking on curved geometry.
 ///
 /// A thin cylindrical shell (R=300, L=600, t=3, E=3×10⁶, ν=0.3) is
 /// loaded by two equal and opposite radial point loads P=1 at the midspan
@@ -177,29 +142,24 @@ fn solve_shell_system(
 /// | x=0   | θ=π/2 symmetry (yz-plane) | u_x=0, θ_y=0, θ_z=0 |
 /// | z=0   | Mid-span symmetry | u_z=0, θ_x=0, θ_y=0 |
 ///
-/// # Pinned coarse-mesh baseline
+/// # Smoke-test envelope
 ///
-/// This test pins the observed coarse-mesh MITC3 radial displacement at the
-/// load point: **2.4111×10⁻⁷**.
+/// Today's coarse-mesh MITC3 radial displacement at the load point is
+/// **~2.4×10⁻⁷** (bare MITC3, 4×4 octant). The published
+/// MacNeal-Harder (1985) reference is **1.8248×10⁻⁵** (a ~76× gap due to
+/// membrane locking of flat MITC3 on curved geometry; resolves with MITC3+
+/// bubble enrichment, deferred — see `shell_assembly.rs:25-34`).
 ///
-/// For comparison, the published MacNeal-Harder (1985) reference is
-/// **1.8248×10⁻⁵** — kept here only as a future ratchet target once MITC3+
-/// bubble enrichment lands. This test does **not** assert against the
-/// published reference; the band `[0.3, 3.0] × COARSE_MITC3_OBS` is so
-/// wide it would not catch a 10× accuracy regression.
-///
-/// The large gap (~76×) is due to **membrane locking** of the flat-element
-/// MITC3 approximation on a curved surface. The flat element cannot represent
-/// the cylinder's inextensional bending mode without generating spurious
-/// in-plane (membrane) strains, so the response is dominated by membrane
-/// stiffness (~E·t/(1−ν²)) rather than bending stiffness (~E·t³/12·R²).
-/// MITC3 only addresses transverse-shear locking (via the assumed-strain MITC
-/// technique); membrane locking on curved geometry requires the MITC3+ bubble
-/// enrichment (deferred, see `shell_assembly.rs:25-34`) or a finer mesh.
-///
-/// Tolerance band pins to the observed value: [0.3, 3.0] × 2.4111×10⁻⁷.
+/// This test asserts only:
+///   - radial displacement is **finite** (not NaN/inf),
+///   - radial displacement is **positive** (radially inward, matching the
+///     applied −F_y load direction at θ=π/2),
+///   - radial displacement is bounded inside a wide envelope spanning
+///     today's locked output and the published reference, which means a
+///     correctness fix that closes the locking gap will NOT regress this
+///     test, but a sign error / runaway / total collapse will.
 #[test]
-fn pinched_cylinder_octant_radial_displacement_pins_observed_coarse_mitc3_baseline(
+fn pinched_cylinder_octant_smoke_test_radial_displacement_is_finite_and_inward(
 ) {
     const R: f64 = 300.0;
     const L: f64 = 600.0;
@@ -218,12 +178,12 @@ fn pinched_cylinder_octant_radial_displacement_pins_observed_coarse_mitc3_baseli
     let (nodes, connectivity) = cylinder_octant_mesh(NX, NY);
     let n_nodes = nodes.len();
 
-    // Build per-element stiffness with drilling stabilization.
+    // Build per-element stiffness via the production code path.
     let stiffness: Vec<ElementStiffness> = connectivity
         .iter()
         .map(|conn| {
             let elem_nodes = [nodes[conn[0]], nodes[conn[1]], nodes[conn[2]]];
-            shell_element_stiffness_drilling_stabilized(&elem_nodes, T, &mat, 1e-6)
+            shell_element_stiffness(&elem_nodes, T, &mat)
         })
         .collect();
 
@@ -331,20 +291,31 @@ fn pinched_cylinder_octant_radial_displacement_pins_observed_coarse_mitc3_baseli
     // Radial displacement = -u_y (inward = positive).
     let radial_disp = -u[load_node * 6 + 1];
 
-    // Pinned regression baseline at the observed coarse-mesh value
-    // (NOT published-reference validation; see doc comment).
-    // Published ref: 1.8248e-5; observed: 2.4111e-7 (factor ~76 gap).
-    const COARSE_MITC3_OBS: f64 = 2.4111e-7;
+    // Smoke-test envelope: spans today's locked MITC3 output (~2.4e-7) and
+    // the published MacNeal-Harder reference (~1.8e-5). A correctness fix
+    // (e.g. MITC3+) will move radial_disp UPWARD inside this band; only
+    // sign errors, NaN, runaway, or total collapse will fail.
+    //   floor = 1e-9 → 240× margin below observed locked output
+    //   ceil  = 1e-3 → 55× margin above published reference
+    const SMOKE_FLOOR: f64 = 1.0e-9;
+    const SMOKE_CEIL: f64 = 1.0e-3;
     assert!(
-        radial_disp > 0.3 * COARSE_MITC3_OBS && radial_disp < 3.0 * COARSE_MITC3_OBS,
-        "pinched cylinder: radial_disp = {radial_disp:.4e}; \
-         expected [{:.4e}, {:.4e}] (observed MITC3 4×4 coarse mesh). \
-         Published MacNeal-Harder 1985 ref = {MACNEAL_HARDER_REF:.4e} \
-         (factor ~{:.0} gap due to MITC3 membrane locking on curved surface; \
-         resolves with MITC3+ bubble enrichment or finer mesh)",
-        0.3 * COARSE_MITC3_OBS,
-        3.0 * COARSE_MITC3_OBS,
-        MACNEAL_HARDER_REF / COARSE_MITC3_OBS,
+        radial_disp.is_finite(),
+        "pinched cylinder smoke test: radial_disp = {radial_disp} is not finite"
+    );
+    assert!(
+        radial_disp > 0.0,
+        "pinched cylinder smoke test: radial_disp = {radial_disp:.4e} \
+         must be positive (inward) under inward radial load; sign reversal \
+         indicates a BC or load-direction bug"
+    );
+    assert!(
+        radial_disp > SMOKE_FLOOR && radial_disp < SMOKE_CEIL,
+        "pinched cylinder smoke test: radial_disp = {radial_disp:.4e} \
+         outside order-of-magnitude envelope [{SMOKE_FLOOR:.0e}, {SMOKE_CEIL:.0e}]. \
+         Today's locked MITC3 4×4 output is ~2.4e-7; published \
+         MacNeal-Harder reference is {MACNEAL_HARDER_REF:.4e}. A correctness \
+         fix should land inside this band, not outside it."
     );
 }
 
@@ -572,7 +543,12 @@ fn twisted_beam_mesh(nz: usize, ny: usize) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
 
 // ─── step-3: Scordelis-Lo roof (MacNeal-Harder §3.4) ─────────────────────────
 
-/// MacNeal-Harder (1985) §3.4 Scordelis-Lo roof benchmark.
+/// Scordelis-Lo roof smoke test — geometry from MacNeal-Harder (1985) §3.4.
+///
+/// **NOT a validated benchmark** — see file-level docs. Asserts only that
+/// the response is finite, signed, and within a wide order-of-magnitude
+/// band; today's bare MITC3 element under-predicts the published reference
+/// by ~21× due to membrane locking on curved geometry.
 ///
 /// A cylindrical roof shell (R=25, L=50, t=0.25, semi-angle 80°, E=4.32×10⁸,
 /// ν=0.0) loaded by self-weight (gravity 90 per unit area in the −z direction).
@@ -602,28 +578,18 @@ fn twisted_beam_mesh(nz: usize, ny: usize) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
 /// The x=L/2 plane is a symmetry plane (u_x=0 antisymmetric, θ_y=0 symmetric)
 /// but the vertical displacement u_z is FREE and takes its maximum value there.
 ///
-/// # Pinned coarse-mesh baseline
+/// # Smoke-test envelope
 ///
-/// This test pins the observed coarse-mesh MITC3 vertical deflection at the
-/// free-edge longitudinal center: **1.4334×10⁻²** (downward).
+/// Today's coarse-mesh MITC3 vertical deflection at the free-edge
+/// longitudinal center is **~1.4×10⁻²** (bare MITC3, 4×4 quadrant,
+/// downward). The published MacNeal-Harder (1985) reference is **0.3024**
+/// (a ~21× gap due to membrane locking on curved geometry; resolves with
+/// MITC3+ bubble enrichment, deferred — see `shell_assembly.rs:25-34`).
 ///
-/// For comparison, the published MacNeal-Harder (1985) reference is
-/// **0.3024** — kept here only as a future ratchet target once MITC3+ bubble
-/// enrichment lands. This test does **not** assert against the published
-/// reference; the band `[0.3, 3.0] × COARSE_MITC3_OBS` is so wide it would
-/// not catch a 10× accuracy regression.
-///
-/// The large gap (~21×) is due to **membrane locking** of the flat-triangle
-/// MITC3 approximation on a curved surface (same mechanism as the pinched
-/// cylinder). The Scordelis-Lo roof involves significant membrane action in
-/// addition to bending; MITC3's assumed-strain technique addresses only
-/// transverse-shear locking, not the in-plane (membrane) locking that
-/// afflicts curved geometry. Resolves with MITC3+ bubble enrichment or a
-/// finer mesh.
-///
-/// Tolerance band pins to the observed value: [0.3, 3.0] × 1.4334×10⁻².
+/// This test asserts only sign / finiteness / order-of-magnitude — see the
+/// pinched-cylinder smoke test above for the same rationale.
 #[test]
-fn scordelis_lo_roof_quadrant_vertical_deflection_pins_observed_coarse_mitc3_baseline(
+fn scordelis_lo_roof_quadrant_smoke_test_vertical_deflection_is_finite_and_downward(
 ) {
     const R: f64 = 25.0;
     const L: f64 = 50.0;
@@ -641,12 +607,12 @@ fn scordelis_lo_roof_quadrant_vertical_deflection_pins_observed_coarse_mitc3_bas
     let (nodes, connectivity) = roof_quadrant_mesh(NX, NY);
     let n_nodes = nodes.len();
 
-    // Build per-element stiffness with drilling stabilization.
+    // Build per-element stiffness via the production code path.
     let stiffness: Vec<ElementStiffness> = connectivity
         .iter()
         .map(|conn| {
             let elem_nodes = [nodes[conn[0]], nodes[conn[1]], nodes[conn[2]]];
-            shell_element_stiffness_drilling_stabilized(&elem_nodes, T, &mat, 1e-6)
+            shell_element_stiffness(&elem_nodes, T, &mat)
         })
         .collect();
 
@@ -745,26 +711,42 @@ fn scordelis_lo_roof_quadrant_vertical_deflection_pins_observed_coarse_mitc3_bas
     // Gravity loads −z ⇒ u_z < 0.  Report downward deflection (positive).
     let vert_defl = -u[free_edge_center * 6 + 2];
 
-    // Pinned regression baseline at the observed coarse-mesh value
-    // (NOT published-reference validation; see doc comment).
-    // Published ref: 0.3024; observed: 1.4334e-2 (factor ~21 gap).
-    const COARSE_MITC3_OBS: f64 = 1.4334e-2;
+    // Smoke-test envelope spans today's locked output (~1.4e-2) and the
+    // published reference (0.3024). See pinched_cylinder rationale.
+    //   floor = 1e-4 → 140× margin below observed locked output
+    //   ceil  = 5.0  → 16× margin above published reference
+    const SMOKE_FLOOR: f64 = 1.0e-4;
+    const SMOKE_CEIL: f64 = 5.0;
     assert!(
-        vert_defl > 0.3 * COARSE_MITC3_OBS && vert_defl < 3.0 * COARSE_MITC3_OBS,
-        "Scordelis-Lo roof: vertical deflection at free-edge center = {vert_defl:.4e}; \
-         expected [{:.4e}, {:.4e}] (observed MITC3 4×4 coarse mesh). \
-         Published MacNeal-Harder 1985 ref = {MACNEAL_HARDER_REF:.4e} \
-         (factor ~{:.0} gap due to MITC3 membrane locking on curved surface; \
-         resolves with MITC3+ bubble enrichment or finer mesh)",
-        0.3 * COARSE_MITC3_OBS,
-        3.0 * COARSE_MITC3_OBS,
-        MACNEAL_HARDER_REF / COARSE_MITC3_OBS,
+        vert_defl.is_finite(),
+        "Scordelis-Lo smoke test: vert_defl = {vert_defl} is not finite"
+    );
+    assert!(
+        vert_defl > 0.0,
+        "Scordelis-Lo smoke test: vert_defl = {vert_defl:.4e} \
+         must be positive (downward) under gravity load; sign reversal \
+         indicates a BC or load-direction bug"
+    );
+    assert!(
+        vert_defl > SMOKE_FLOOR && vert_defl < SMOKE_CEIL,
+        "Scordelis-Lo smoke test: vert_defl = {vert_defl:.4e} outside \
+         envelope [{SMOKE_FLOOR:.0e}, {SMOKE_CEIL:.0e}]. Today's locked \
+         MITC3 4×4 output is ~1.4e-2; published MacNeal-Harder reference \
+         is {MACNEAL_HARDER_REF:.4e}. A correctness fix should land inside \
+         this band, not outside it."
     );
 }
 
 // ─── step-7: hemisphere with point loads (MacNeal-Harder §3.5) ──────────────
 
-/// MacNeal-Harder (1985) §3.5 hemisphere with alternating point loads.
+/// Hemisphere-with-point-loads smoke test — geometry from MacNeal-Harder
+/// (1985) §3.5.
+///
+/// **NOT a validated benchmark** — see file-level docs. Asserts only that
+/// the response is finite, signed, and within a wide order-of-magnitude
+/// band; today's bare MITC3 element under-predicts the published reference
+/// by ~2200× due to severe membrane locking on this very thin shell
+/// (R/t=250).
 ///
 /// A hemispherical shell (R=10, t=0.04, E=6.825×10⁷, ν=0.3) with an 18°
 /// polar cut-out, loaded by alternating ±P=±2 point loads along the x and y
@@ -789,28 +771,19 @@ fn scordelis_lo_roof_quadrant_vertical_deflection_pins_observed_coarse_mitc3_bas
 /// equal-and-opposite −P contribution from the other half, so only a P/4 net
 /// load appears in the quadrant model.
 ///
-/// # Pinned coarse-mesh baseline
+/// # Smoke-test envelope
 ///
-/// This test pins the observed coarse-mesh MITC3 radial displacement at the
-/// loaded equator corner: **4.2792×10⁻⁵** (outward).
+/// Today's coarse-mesh MITC3 radial displacement at the loaded equator
+/// corner is **~4.3×10⁻⁵** (bare MITC3, 4×4 quadrant, outward).
+/// The published MacNeal-Harder (1985) reference is **0.0940** (a ~2200×
+/// gap due to severe membrane locking on this very thin shell, R/t=250;
+/// resolves with MITC3+ bubble enrichment, deferred — see
+/// `shell_assembly.rs:25-34`).
 ///
-/// For comparison, the published MacNeal-Harder (1985) reference is
-/// **0.0940** — kept here only as a future ratchet target once MITC3+ bubble
-/// enrichment lands. This test does **not** assert against the published
-/// reference; the band `[0.3, 3.0] × COARSE_MITC3_OBS` is so wide it would
-/// not catch a 10× accuracy regression.
-///
-/// The extremely large gap (~2200×) is due to **severe membrane locking** on
-/// this very thin shell (R/t = 250 — much thinner than the pinched cylinder
-/// at R/t = 100). MITC3's assumed-strain technique removes transverse-shear
-/// locking but not the in-plane membrane locking that dominates highly curved
-/// thin shells. The hemisphere is well-known as one of the most demanding
-/// benchmarks for shell elements without bubble enrichment (MITC3+). Resolves
-/// with MITC3+ bubble enrichment or a significantly finer mesh.
-///
-/// Tolerance band pins to the observed value: [0.3, 3.0] × 4.2792×10⁻⁵.
+/// This test asserts only sign / finiteness / order-of-magnitude — see the
+/// pinched-cylinder smoke test for the same rationale.
 #[test]
-fn hemisphere_with_point_loads_radial_displacement_pins_observed_coarse_mitc3_baseline(
+fn hemisphere_with_point_loads_smoke_test_radial_displacement_is_finite_and_outward(
 ) {
     const R: f64 = 10.0;
     const T: f64 = 0.04;
@@ -828,12 +801,12 @@ fn hemisphere_with_point_loads_radial_displacement_pins_observed_coarse_mitc3_ba
     let (nodes, connectivity) = hemisphere_quadrant_mesh(NX, NY);
     let n_nodes = nodes.len();
 
-    // Build per-element stiffness with drilling stabilization.
+    // Build per-element stiffness via the production code path.
     let stiffness: Vec<ElementStiffness> = connectivity
         .iter()
         .map(|conn| {
             let elem_nodes = [nodes[conn[0]], nodes[conn[1]], nodes[conn[2]]];
-            shell_element_stiffness_drilling_stabilized(&elem_nodes, T, &mat, 1e-6)
+            shell_element_stiffness(&elem_nodes, T, &mat)
         })
         .collect();
 
@@ -886,27 +859,44 @@ fn hemisphere_with_point_loads_radial_displacement_pins_observed_coarse_mitc3_ba
     // equator point, so the radial displacement = u_x (positive = outward).
     let radial_disp = u[load_node * 6 + 0];
 
-    // Pinned regression baseline at the observed coarse-mesh value
-    // (NOT published-reference validation; see doc comment).
-    // Far below the published reference due to severe membrane locking (R/t=250).
-    // Published ref: 0.0940; observed: 4.2792e-5 (factor ~2200 gap).
-    const COARSE_MITC3_OBS: f64 = 4.2792e-5;
+    // Smoke-test envelope spans today's locked output (~4.3e-5) and the
+    // published reference (0.0940). The huge ~2200× gap is the well-known
+    // bare-MITC3 hemisphere result; envelope is intentionally wide enough
+    // to absorb the MITC3+ correctness fix without regression.
+    //   floor = 1e-7 → 430× margin below observed locked output
+    //   ceil  = 1.0  → 11× margin above published reference
+    const SMOKE_FLOOR: f64 = 1.0e-7;
+    const SMOKE_CEIL: f64 = 1.0;
     assert!(
-        radial_disp > 0.3 * COARSE_MITC3_OBS && radial_disp < 3.0 * COARSE_MITC3_OBS,
-        "hemisphere: radial displacement at loaded equator corner = {radial_disp:.4e}; \
-         expected [{:.4e}, {:.4e}] (observed MITC3 4×4 coarse mesh). \
-         Published MacNeal-Harder 1985 ref = {MACNEAL_HARDER_REF:.4e} \
-         (factor ~{:.0} gap due to severe MITC3 membrane locking, R/t=250; \
-         resolves with MITC3+ bubble enrichment or finer mesh)",
-        0.3 * COARSE_MITC3_OBS,
-        3.0 * COARSE_MITC3_OBS,
-        MACNEAL_HARDER_REF / COARSE_MITC3_OBS,
+        radial_disp.is_finite(),
+        "hemisphere smoke test: radial_disp = {radial_disp} is not finite"
+    );
+    assert!(
+        radial_disp > 0.0,
+        "hemisphere smoke test: radial_disp = {radial_disp:.4e} \
+         must be positive (outward) under +F_x load; sign reversal \
+         indicates a BC or load-direction bug"
+    );
+    assert!(
+        radial_disp > SMOKE_FLOOR && radial_disp < SMOKE_CEIL,
+        "hemisphere smoke test: radial_disp = {radial_disp:.4e} outside \
+         envelope [{SMOKE_FLOOR:.0e}, {SMOKE_CEIL:.0e}]. Today's locked \
+         MITC3 4×4 output is ~4.3e-5; published MacNeal-Harder reference \
+         is {MACNEAL_HARDER_REF:.4e}. A correctness fix should land inside \
+         this band, not outside it."
     );
 }
 
 // ─── step-9: twisted beam (MacNeal-Harder §3.6) ──────────────────────────────
 
-/// MacNeal-Harder (1985) §3.6 twisted cantilever beam benchmark.
+/// Twisted cantilever beam smoke test — geometry from MacNeal-Harder
+/// (1985) §3.6.
+///
+/// **NOT a validated benchmark** — see file-level docs. Asserts only that
+/// the response is finite, signed, and within a wide order-of-magnitude
+/// band; today's bare MITC3 element under-predicts the published reference
+/// by ~1.7× (much milder than the curved benchmarks because the helicoid's
+/// elements are nearly planar).
 ///
 /// A flat strip twisted uniformly 90° about its long axis from root to tip,
 /// clamped at the root and loaded by a transverse point load at the tip.
@@ -929,27 +919,18 @@ fn hemisphere_with_point_loads_radial_displacement_pins_observed_coarse_mitc3_ba
 ///
 /// The measurement: u_y at the tip centroid (s=0, z=L) → node at (0,0,L).
 ///
-/// # Pinned coarse-mesh baseline
+/// # Smoke-test envelope
 ///
-/// This test pins the observed coarse-mesh MITC3 out-of-plane tip
-/// displacement: **1.0106×10⁻³**.
+/// Today's coarse-mesh MITC3 out-of-plane tip displacement is
+/// **~1.0×10⁻³** (bare MITC3, 12×2). The published MacNeal-Harder
+/// (1985) reference is **1.754×10⁻³** (only a ~1.7× gap — best-performing
+/// of the four geometries because the helicoid elements are nearly planar
+/// and the assumed-strain MITC technique is effective there).
 ///
-/// For comparison, the published MacNeal-Harder (1985) reference is
-/// **1.754×10⁻³** — kept here only as a future ratchet target once MITC3+
-/// bubble enrichment lands. This test does **not** assert against the
-/// published reference; the band `[0.3, 3.0] × COARSE_MITC3_OBS` is so
-/// wide it would not catch a 10× accuracy regression.
-///
-/// The modest gap (~1.73×) is expected: the twisted beam has near-planar
-/// elements (small curvature per element), so MITC3's assumed-strain technique
-/// effectively removes transverse-shear locking. The remaining gap is from the
-/// coarse mesh resolution (12×2 = 24 elements) and the lack of the MITC3+
-/// bubble enrichment. This is the best-performing benchmark for MITC3 in this
-/// suite.
-///
-/// Tolerance band pins to the observed value: [0.3, 3.0] × 1.0106×10⁻³.
+/// This test asserts only sign / finiteness / order-of-magnitude — see the
+/// pinched-cylinder smoke test for the same rationale.
 #[test]
-fn twisted_beam_tip_out_of_plane_load_displacement_pins_observed_coarse_mitc3_baseline() {
+fn twisted_beam_tip_out_of_plane_load_smoke_test_displacement_is_finite_and_signed() {
     const L: f64 = 12.0;
     const NZ: usize = 12; // segments along z
     const NY: usize = 2;  // strips across width
@@ -965,12 +946,12 @@ fn twisted_beam_tip_out_of_plane_load_displacement_pins_observed_coarse_mitc3_ba
     let (nodes, connectivity) = twisted_beam_mesh(NZ, NY);
     let n_nodes = nodes.len();
 
-    // Build per-element stiffness with drilling stabilization.
+    // Build per-element stiffness via the production code path.
     let stiffness: Vec<ElementStiffness> = connectivity
         .iter()
         .map(|conn| {
             let elem_nodes = [nodes[conn[0]], nodes[conn[1]], nodes[conn[2]]];
-            shell_element_stiffness_drilling_stabilized(&elem_nodes, thickness, &mat, 1e-6)
+            shell_element_stiffness(&elem_nodes, thickness, &mat)
         })
         .collect();
 
@@ -1021,21 +1002,30 @@ fn twisted_beam_tip_out_of_plane_load_displacement_pins_observed_coarse_mitc3_ba
     // Out-of-plane displacement = u_y at tip centroid.
     let tip_defl = u[centroid_node * 6 + 1];
 
-    // Pinned regression baseline at the observed coarse-mesh value
-    // (NOT published-reference validation; see doc comment).
-    // Within ~42% of the published reference — the best-performing benchmark
-    // in this suite due to near-planar elements.
-    // Published ref: 1.754e-3; observed: 1.0106e-3 (factor ~1.7 gap).
-    const COARSE_MITC3_OBS: f64 = 1.0106e-3;
+    // Smoke-test envelope spans today's locked output (~1.0e-3) and the
+    // published reference (1.754e-3). The gap is small here, so the band
+    // is correspondingly narrower than the curved-shell benchmarks.
+    //   floor = 1e-5 → 100× margin below observed locked output
+    //   ceil  = 1e-1 → 57× margin above published reference
+    const SMOKE_FLOOR: f64 = 1.0e-5;
+    const SMOKE_CEIL: f64 = 1.0e-1;
     assert!(
-        tip_defl > 0.3 * COARSE_MITC3_OBS && tip_defl < 3.0 * COARSE_MITC3_OBS,
-        "twisted beam: out-of-plane tip deflection = {tip_defl:.4e}; \
-         expected [{:.4e}, {:.4e}] (observed MITC3 12×2 coarse mesh). \
-         Published MacNeal-Harder 1985 ref = {MACNEAL_HARDER_REF:.4e} \
-         (factor ~{:.1} gap; near-planar elements reduce locking)",
-        0.3 * COARSE_MITC3_OBS,
-        3.0 * COARSE_MITC3_OBS,
-        MACNEAL_HARDER_REF / COARSE_MITC3_OBS,
+        tip_defl.is_finite(),
+        "twisted beam smoke test: tip_defl = {tip_defl} is not finite"
+    );
+    assert!(
+        tip_defl > 0.0,
+        "twisted beam smoke test: tip_defl = {tip_defl:.4e} \
+         must be positive (in +F_y direction) under +F_y tip load; \
+         sign reversal indicates a BC or load-direction bug"
+    );
+    assert!(
+        tip_defl > SMOKE_FLOOR && tip_defl < SMOKE_CEIL,
+        "twisted beam smoke test: tip_defl = {tip_defl:.4e} outside \
+         envelope [{SMOKE_FLOOR:.0e}, {SMOKE_CEIL:.0e}]. Today's locked \
+         MITC3 12×2 output is ~1.0e-3; published MacNeal-Harder reference \
+         is {MACNEAL_HARDER_REF:.4e}. A correctness fix should land inside \
+         this band, not outside it."
     );
 }
 
@@ -1194,7 +1184,7 @@ fn mitc3_thin_shell_pinched_cylinder_does_not_lock_under_decreasing_thickness() 
             .iter()
             .map(|conn| {
                 let elem_nodes = [nodes[conn[0]], nodes[conn[1]], nodes[conn[2]]];
-                shell_element_stiffness_drilling_stabilized(&elem_nodes, t, &mat, 1e-6)
+                shell_element_stiffness(&elem_nodes, t, &mat)
             })
             .collect();
 
@@ -1291,12 +1281,12 @@ fn flat_plate_cantilever_under_tip_load_displaces_in_load_direction() {
     let thickness = 0.1;
     let n_nodes = nodes.len();
 
-    // Build per-element stiffness matrices with drilling stabilization.
+    // Build per-element stiffness matrices via the production code path.
     let stiffness: Vec<ElementStiffness> = connectivity
         .iter()
         .map(|conn| {
             let elem_nodes = [nodes[conn[0]], nodes[conn[1]], nodes[conn[2]]];
-            shell_element_stiffness_drilling_stabilized(&elem_nodes, thickness, &mat, 1e-6)
+            shell_element_stiffness(&elem_nodes, thickness, &mat)
         })
         .collect();
 
@@ -1320,6 +1310,19 @@ fn flat_plate_cantilever_under_tip_load_displaces_in_load_direction() {
             bcs.push(DirichletBc { dof: node * 6 + dof, value: 0.0 });
         }
     }
+    // Pin θ_z (drilling rotation about the element normal) at the free
+    // nodes. On this flat patch every element shares the same normal
+    // e3 = (0,0,1), so the local θ_z DOF coincides with the global θ_z
+    // DOF and `shell_element_stiffness` carries zero stiffness for it
+    // (MITC3 has no drilling rotation; bubble enrichment in MITC3+ would
+    // add it). Without this pin, `K_global` is rank-deficient on a flat
+    // patch and the LU solve produces NaN. The four curved MacNeal-Harder
+    // smoke tests don't need this pin because their adjacent elements
+    // have different normals — the variation across normals supplies the
+    // missing local θ_z constraint at each interior node.
+    for node in [1_usize, 3_usize] {
+        bcs.push(DirichletBc { dof: node * 6 + 5, value: 0.0 });
+    }
 
     // Load: transverse (+z) unit load at free-edge nodes 1 and 3.
     let point_loads: Vec<(usize, f64)> = vec![
@@ -1342,3 +1345,15 @@ fn flat_plate_cantilever_under_tip_load_displaces_in_load_direction() {
         u[3 * 6 + 2]
     );
 }
+
+// Note: the four MacNeal-Harder smoke tests + the locking-detection test +
+// the flat-plate sanity test all call `shell_element_stiffness` directly
+// (no test-local drilling penalty). That closes the integration-coverage
+// gap raised in review escalation `esc-3034-165`: the curved benchmarks'
+// symmetry-plane BCs already pin enough θ_z DOFs that the local drilling
+// kernel of MITC3 is fully constrained, and the flat-plate test pins θ_z
+// at its free nodes for the same reason. No production-singularity canary
+// is needed because no production singularity manifests under these
+// configurations. If a future test exercises a configuration where a
+// drilling kernel survives (e.g. a flat patch loaded with no θ_z BCs),
+// it will fail with NaN — that natural failure mode is the canary.
