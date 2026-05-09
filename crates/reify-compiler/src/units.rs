@@ -196,7 +196,7 @@ pub(crate) fn is_geometry_topology_selector(name: &str) -> bool {
 ///
 /// Task 2324 names — `Value` shape matches eval dispatch:
 /// - `closest_point(point, geometry)`        → `Type::point3(Type::length())`
-/// - `is_on(point, geometry)`                 → `Type::Bool`
+/// - `is_on(point, geometry)`                → `Type::Bool`
 /// - `angle_between_surfaces(a, b)`          → `Type::angle()`
 ///
 /// Task 2699 names — compile-time type only; eval dispatch is task 2691.
