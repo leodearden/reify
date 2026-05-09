@@ -1815,9 +1815,6 @@ fn resolve_point3_length_arg(
                 }
                 out[i] = *si_value;
             }
-            // Bare `Real` is intentionally accepted for mock test fixtures
-            // that may store points as raw `Real`s without a Length wrap.
-            reify_types::Value::Real(v) => out[i] = *v,
             _ => return None,
         }
     }
