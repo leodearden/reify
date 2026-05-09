@@ -51,6 +51,18 @@ pub enum FaceOrder {
 /// element (e.g. P3 tet, 20 nodes) to the [`apply_body_force`] dispatch.
 const MAX_BODY_FORCE_NODES: usize = 10;
 
+// Compile-time guard: every element arm in `apply_body_force` must fit within
+// the stack buffer. Adding a new dispatch arm without bumping MAX_BODY_FORCE_NODES
+// will produce a build error here rather than a runtime panic during integration.
+const _: () = assert!(
+    <TetP1 as ReferenceElement>::N_NODES <= MAX_BODY_FORCE_NODES,
+    "TetP1::N_NODES exceeds MAX_BODY_FORCE_NODES; bump the constant",
+);
+const _: () = assert!(
+    <TetP2 as ReferenceElement>::N_NODES <= MAX_BODY_FORCE_NODES,
+    "TetP2::N_NODES exceeds MAX_BODY_FORCE_NODES; bump the constant",
+);
+
 // ---------------------------------------------------------------------------
 // apply_point_load
 // ---------------------------------------------------------------------------
@@ -714,6 +726,47 @@ mod tests {
 
         // Each DOF must be exactly n_calls × the single-call value.
         for i in 0..30 {
+            let got = f_many[i];
+            let expected = n_calls as f64 * f_one[i];
+            assert!(
+                (got - expected).abs() < TOL * n_calls as f64,
+                "DOF {i}: got {got}, expected {expected} ({n_calls} × f_one[{i}] = {})",
+                f_one[i],
+            );
+        }
+    }
+
+    /// P1 counterpart of `apply_body_force_p2_repeated_calls_accumulate_linearly`.
+    ///
+    /// Exercises the P1 dispatch arm of `apply_body_force` under the same
+    /// hot-loop scenario. The stack-buffer optimization (Task 3256) applies to
+    /// both P1 and P2 arms; this test ensures neither arm silently retains state
+    /// across calls. A future change that special-cases TetP1 with a different
+    /// buffer scheme would be caught here if it introduced cross-call leakage.
+    #[test]
+    fn apply_body_force_p1_repeated_calls_accumulate_linearly() {
+        let phys: [[f64; 3]; 4] = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ];
+        let conn: [usize; 4] = [0, 1, 2, 3];
+        let body_force = [1.0, 0.0, 0.0];
+
+        // Single-call baseline.
+        let mut f_one = vec![0.0_f64; 12]; // 4 nodes × 3 DOFs
+        apply_body_force(&mut f_one, ElementOrder::P1, &conn, &phys, body_force);
+
+        // 100-call accumulation into a shared load vector.
+        let n_calls = 100;
+        let mut f_many = vec![0.0_f64; 12];
+        for _ in 0..n_calls {
+            apply_body_force(&mut f_many, ElementOrder::P1, &conn, &phys, body_force);
+        }
+
+        // Each DOF must be exactly n_calls × the single-call value.
+        for i in 0..12 {
             let got = f_many[i];
             let expected = n_calls as f64 * f_one[i];
             assert!(
