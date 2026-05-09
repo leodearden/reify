@@ -1991,6 +1991,47 @@ mod tests {
         );
     }
 
+    /// Display contract test: `MedialError::AxisExtentsOverflow` must format
+    /// with "overflow" in the message and include each of the three extent
+    /// values (nx, ny, nz), and must NOT leak the `usize::MAX` sentinel that
+    /// the old `unwrap_or(usize::MAX)` code would have emitted through
+    /// `DataLengthMismatch`.
+    ///
+    /// Currently FAILS to compile (RED) because `AxisExtentsOverflow` does
+    /// not yet exist in `MedialError`. After step-4 adds the variant and its
+    /// Display arm, this test compiles and passes.
+    #[test]
+    fn axis_extents_overflow_display_includes_extents_and_says_overflow() {
+        let err = MedialError::AxisExtentsOverflow {
+            nx: 3_000_000,
+            ny: 4_000_000,
+            nz: 5_000_000,
+        };
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("overflow"),
+            "AxisExtentsOverflow Display must mention 'overflow': {msg}"
+        );
+        assert!(
+            msg.contains("3000000"),
+            "AxisExtentsOverflow Display must include nx=3000000: {msg}"
+        );
+        assert!(
+            msg.contains("4000000"),
+            "AxisExtentsOverflow Display must include ny=4000000: {msg}"
+        );
+        assert!(
+            msg.contains("5000000"),
+            "AxisExtentsOverflow Display must include nz=5000000: {msg}"
+        );
+        // The old sentinel-based code leaked usize::MAX through DataLengthMismatch.
+        // The new typed variant must never emit that sentinel value.
+        assert!(
+            !msg.contains("18446744073709551615"),
+            "AxisExtentsOverflow Display must not leak usize::MAX sentinel: {msg}"
+        );
+    }
+
     /// Display contract test: the three real violation arms (sp_bad only,
     /// bn_bad only, both) must produce messages that contain the axis index,
     /// the spacing value, both bound values, and appropriate rule text.
