@@ -26,11 +26,9 @@ vi.mock('../permission-server.js', () => ({
 // Sandbox helpers are imported by session.ts (and index.ts after task 3281).
 // Mock them so tests never invoke real python3.
 vi.mock('../sandbox.js', () => ({
-  isLandlockAvailable: vi.fn().mockReturnValue(false),
   wrapClaudeArgs: vi.fn((args: string[], _ws: string, le?: string) =>
     le ? { cmd: 'python3', args: [le, ...args] } : { cmd: 'claude', args: [...args] }
   ),
-  _resetLandlockCache: vi.fn(),
   probeLandlockAsync: vi.fn().mockResolvedValue(false),
 }));
 
@@ -38,7 +36,7 @@ vi.mock('../sandbox.js', () => ({
 
 import { spawn } from 'node:child_process';
 import { createPermissionServer } from '../permission-server.js';
-import { wrapClaudeArgs, isLandlockAvailable, probeLandlockAsync } from '../sandbox.js';
+import { wrapClaudeArgs, probeLandlockAsync } from '../sandbox.js';
 import { main } from '../index.js';
 
 // ---------------------------------------------------------------------------
@@ -316,8 +314,7 @@ describe('main() workspace + landlock env propagation (task 3210)', () => {
     vi.mocked(wrapClaudeArgs).mockImplementation((args, _ws, le) =>
       le ? { cmd: 'python3', args: [le, ...args] } : { cmd: 'claude', args: [...args] }
     );
-    // isLandlockAvailable no longer controls the production path (task 3281).
-    // probeLandlockAsync is the new startup probe; default to false (no sandbox).
+    // probeLandlockAsync is the startup probe (task 3281); default to false (no sandbox).
     vi.mocked(probeLandlockAsync).mockReset();
     vi.mocked(probeLandlockAsync).mockResolvedValue(false);
   });
