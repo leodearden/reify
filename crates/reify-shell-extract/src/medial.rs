@@ -1919,7 +1919,7 @@ mod tests {
     /// behavior is covered separately by
     /// `precompute_gradient_grid_skips_out_of_band_voxels`.
     #[test]
-    fn precompute_gradient_grid_matches_gradient_at_index_on_slab() {
+    fn precompute_gradient_grid_matches_gradient_at_index_on_slab_when_gate_disabled() {
         let n = 16usize;
         let sdf = slab_sdf_3d(3.0, n);
         let ny = sdf.axis_grids[1].len();
