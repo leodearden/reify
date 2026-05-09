@@ -291,6 +291,13 @@ impl SidecarHandle {
     /// Construct a SidecarHandle from pre-existing I/O parts.
     /// The reader task handles Ready state transitions and crash detection.
     /// Use [`from_parts_with_mcp`] to also wire up event emission and MCP interception.
+    ///
+    /// # Note: no `claude-sidecar-crashed` event
+    ///
+    /// This constructor does **not** wire up a Tauri event emitter. If the sidecar
+    /// crashes, state transitions to `Crashed` as usual, but no `claude-sidecar-crashed`
+    /// event is emitted to the frontend. Use [`from_parts_with_mcp`] for production
+    /// code paths where the frontend must be notified of unexpected sidecar exits.
     pub fn from_parts<W, R>(writer: W, reader: R, state: Arc<Mutex<SidecarState>>) -> Self
     where
         W: AsyncWrite + Unpin + Send + 'static,
@@ -441,18 +448,33 @@ impl SidecarHandle {
                     let notify_inner = notify_for_crash;
                     let emitter = event_emitter_for_exit;
                     tokio::spawn(async move {
-                        let mut s = state_inner.lock().await;
-                        if !matches!(*s, SidecarState::NotStarted) {
-                            let reason = "sidecar exited unexpectedly".to_string();
-                            *s = SidecarState::Crashed(reason.clone());
+                        // Update state and drop the guard before calling the emitter.
+                        // Holding the lock across emit() would stall every other task
+                        // awaiting state().lock() (notably wait_ready, kill) if the
+                        // emitter ever blocks or panics.
+                        let reason = "sidecar exited unexpectedly".to_string();
+                        let should_emit = {
+                            let mut s = state_inner.lock().await;
+                            let crashed = !matches!(*s, SidecarState::NotStarted);
+                            if crashed {
+                                *s = SidecarState::Crashed(reason.clone());
+                            }
+                            crashed
+                        }; // lock dropped here
+                        notify_inner.notify_waiters();
+                        if should_emit {
                             if let Some(ref emit) = emitter {
                                 emit(
                                     "claude-sidecar-crashed".to_string(),
                                     serde_json::json!({ "reason": reason }),
                                 );
+                            } else {
+                                tracing::debug!(
+                                    "sidecar crashed but no event emitter is wired (from_parts path); \
+                                     frontend will not receive claude-sidecar-crashed"
+                                );
                             }
                         }
-                        notify_inner.notify_waiters();
                     });
                 },
             )

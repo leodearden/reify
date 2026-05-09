@@ -376,8 +376,8 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
           }),
         );
       });
+      addSystemMessage('sidecar', 'Claude assistant disconnected — restart in progress');
     });
-    addSystemMessage('sidecar', 'Claude assistant disconnected — restart in progress');
   }
 
   return {

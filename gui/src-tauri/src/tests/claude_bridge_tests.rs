@@ -906,10 +906,20 @@ async fn on_exit_emits_sidecar_crashed_event_via_emitter() {
     // Drop data_writer to simulate sidecar crash (EOF on reader)
     drop(data_writer);
 
-    // Yield to let the on_exit spawned task run
-    for _ in 0..50 {
-        tokio::task::yield_now().await;
-    }
+    // Wait deterministically for the on_exit spawned task to run and transition
+    // state to Crashed. Polling under a timeout avoids the flakiness of a fixed
+    // yield count on a loaded CI runner (the spawned task must acquire the state
+    // mutex, which may not happen within N yields on a contended system).
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if matches!(*handle.state().lock().await, SidecarState::Crashed(_)) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("Timed out waiting for SidecarState::Crashed after EOF");
 
     // (a) Sink must contain a claude-sidecar-crashed entry
     let emitted = events.lock().unwrap();
