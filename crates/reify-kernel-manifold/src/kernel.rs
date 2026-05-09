@@ -598,7 +598,7 @@ mod tests {
     /// underlying [`Manifold`] carries its own tolerance set at
     /// construction, and the `tessellate` boundary intentionally ignores
     /// the caller-supplied tolerance for the v0.2 path. Step-8 wires
-    /// `tessellate` via `Manifold::to_mesh_gl64()`.
+    /// `tessellate` via `Manifold::to_mesh_f64()`.
     ///
     /// Currently fails because `tessellate` returns the stub
     /// `TessError::TessellationFailed`.
