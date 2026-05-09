@@ -25,7 +25,7 @@
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_eval::Engine;
-use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
+use reify_test_support::{errors_only, parse_and_compile_with_stdlib, MockGeometryKernel};
 use reify_types::{ExportFormat, ModulePath, Value, ValueCellId};
 
 const BLOCK_INERTIA_PATH: &str = concat!(
@@ -227,6 +227,16 @@ fn fillet_top_edges_compiles_with_stdlib_no_errors() {
 ///     produce a fillet result.
 ///
 /// Remove the `#[ignore]` once both (a) and (b) are implemented.
+///
+/// **Test scaffolding note**: the test plumbs `MockGeometryKernel::new()` into
+/// `Engine::new(Box::new(checker), Some(Box::new(kernel)))` — no `.with_*_result()`
+/// configuration is needed for the `geometry_output.is_some()` assertion because the
+/// default mock returns `b"MOCK_EXPORT_DATA"` from `export()`.  Plumbing the kernel
+/// is a structural prerequisite of the assertion: `engine_build.rs:681` gates
+/// `geometry_output` on `self.geometry_kernel.is_some()`, so a `None`-kernel
+/// `Engine` would always produce `geometry_output = None` even after both (a) and
+/// (b) land.  This is not a third semantic gap — it is an invisible test-scaffolding
+/// requirement that would otherwise confuse a future agent removing the `#[ignore]`.
 #[test]
 #[ignore = "pending (a) 3-arg fillet(solid, edges, radius) stdlib binding \
             (geometry_modify.rs:115) and (b) eval-side dispatch for single/flat_map \
@@ -245,7 +255,8 @@ fn fillet_top_edges_evals_to_solid_via_topology_walk() {
     );
 
     let checker = SimpleConstraintChecker;
-    let mut engine = Engine::new(Box::new(checker), None);
+    let kernel = MockGeometryKernel::new();
+    let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // `fillet` is a geometry-modification op: the filleted solid is produced by
