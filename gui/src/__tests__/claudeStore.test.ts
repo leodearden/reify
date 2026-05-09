@@ -3,10 +3,16 @@ import { createClaudeStore } from '../stores/claudeStore';
 import type { OutboundMessage } from '../../sidecar/src/types';
 
 describe('claudeStore', () => {
-  function makeStore(overrides?: { onSend?: ReturnType<typeof vi.fn>; onAbort?: ReturnType<typeof vi.fn> }) {
+  function makeStore(overrides?: {
+    onSend?: ReturnType<typeof vi.fn>;
+    onAbort?: ReturnType<typeof vi.fn>;
+    onPermissionDecision?: ReturnType<typeof vi.fn>;
+  }) {
     const onSend = overrides?.onSend ?? vi.fn();
     const onAbort = overrides?.onAbort ?? vi.fn();
-    return { ...createClaudeStore({ onSend, onAbort }), onSend, onAbort };
+    const onPermissionDecision = overrides?.onPermissionDecision ?? vi.fn();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return { ...createClaudeStore({ onSend, onAbort, onPermissionDecision } as any), onSend, onAbort, onPermissionDecision };
   }
 
   describe('initial state', () => {
@@ -607,6 +613,133 @@ describe('claudeStore', () => {
       expect(assistantMsg.complete).toBe(true);
       expect(assistantMsg.thinkingComplete).toBe(true);
       expect(state.sessionStatus).toBe('idle');
+    });
+  });
+
+  describe('pendingPermissionRequests', () => {
+    it('initial state has empty pendingPermissionRequests array', () => {
+      const { state } = makeStore();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((state as any).pendingPermissionRequests).toEqual([]);
+    });
+
+    it('permission_request outbound appends to pendingPermissionRequests', () => {
+      const { state, sendMessage, handleOutboundMessage } = makeStore();
+      sendMessage('hello', {});
+      const msgId = state.currentMessageId!;
+
+      handleOutboundMessage({
+        type: 'permission_request',
+        id: msgId,
+        request_id: 'r1',
+        tool_name: 'Write',
+        tool_input: { path: '/tmp/x' },
+      } as OutboundMessage);
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pending = (state as any).pendingPermissionRequests as any[];
+      expect(pending).toHaveLength(1);
+      expect(pending[0]).toMatchObject({
+        requestId: 'r1',
+        toolName: 'Write',
+        toolInput: { path: '/tmp/x' },
+        messageId: msgId,
+      });
+    });
+
+    it('duplicate request_id does not duplicate in pendingPermissionRequests', () => {
+      const { state, sendMessage, handleOutboundMessage } = makeStore();
+      sendMessage('hello', {});
+      const msgId = state.currentMessageId!;
+      const pr = {
+        type: 'permission_request' as const,
+        id: msgId,
+        request_id: 'r1',
+        tool_name: 'Write',
+        tool_input: { path: '/tmp/x' },
+      };
+
+      handleOutboundMessage(pr as OutboundMessage);
+      handleOutboundMessage(pr as OutboundMessage);
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pending = (state as any).pendingPermissionRequests as any[];
+      expect(pending).toHaveLength(1);
+    });
+
+    it('multiple distinct requests are all queued', () => {
+      const { state, sendMessage, handleOutboundMessage } = makeStore();
+      sendMessage('hello', {});
+      const msgId = state.currentMessageId!;
+
+      handleOutboundMessage({
+        type: 'permission_request', id: msgId,
+        request_id: 'r1', tool_name: 'Write', tool_input: { path: '/a' },
+      } as OutboundMessage);
+      handleOutboundMessage({
+        type: 'permission_request', id: msgId,
+        request_id: 'r2', tool_name: 'Bash', tool_input: { command: 'ls' },
+      } as OutboundMessage);
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pending = (state as any).pendingPermissionRequests as any[];
+      expect(pending).toHaveLength(2);
+      expect(pending.map((p: any) => p.requestId)).toEqual(['r1', 'r2']);
+    });
+  });
+
+  describe('decidePermission', () => {
+    function setupWithPermissionRequest() {
+      const onPermissionDecision = vi.fn();
+      const store = makeStore({ onPermissionDecision });
+      store.sendMessage('hello', {});
+      const msgId = store.state.currentMessageId!;
+      store.handleOutboundMessage({
+        type: 'permission_request', id: msgId,
+        request_id: 'r1', tool_name: 'Write', tool_input: { path: '/tmp/x' },
+      } as OutboundMessage);
+      return { ...store, onPermissionDecision };
+    }
+
+    it('decidePermission(allow) calls onPermissionDecision with the decision', () => {
+      const { decidePermission, onPermissionDecision } = setupWithPermissionRequest() as any;
+      decidePermission('r1', { behavior: 'allow' });
+      expect(onPermissionDecision).toHaveBeenCalledOnce();
+      expect(onPermissionDecision).toHaveBeenCalledWith({ requestId: 'r1', behavior: 'allow' });
+    });
+
+    it('decidePermission(allow) removes the entry from pendingPermissionRequests', () => {
+      const { state, decidePermission } = setupWithPermissionRequest() as any;
+      decidePermission('r1', { behavior: 'allow' });
+      expect(state.pendingPermissionRequests).toHaveLength(0);
+    });
+
+    it('decidePermission(allow, remember:true) forwards remember:true to callback', () => {
+      const { decidePermission, onPermissionDecision } = setupWithPermissionRequest() as any;
+      decidePermission('r1', { behavior: 'allow', remember: true });
+      expect(onPermissionDecision).toHaveBeenCalledWith({ requestId: 'r1', behavior: 'allow', remember: true });
+    });
+
+    it('decidePermission(deny, message) forwards both fields to callback', () => {
+      const { decidePermission, onPermissionDecision } = setupWithPermissionRequest() as any;
+      decidePermission('r1', { behavior: 'deny', message: 'not allowed' });
+      expect(onPermissionDecision).toHaveBeenCalledWith({
+        requestId: 'r1', behavior: 'deny', message: 'not allowed',
+      });
+    });
+
+    it('decidePermission for unknown requestId is a no-op', () => {
+      const { state, decidePermission, onPermissionDecision } = setupWithPermissionRequest() as any;
+      decidePermission('unknown-id', { behavior: 'allow' });
+      expect(onPermissionDecision).not.toHaveBeenCalled();
+      expect(state.pendingPermissionRequests).toHaveLength(1); // original request still there
+    });
+
+    it('clearSession clears pendingPermissionRequests', () => {
+      const { state, clearSession } = setupWithPermissionRequest() as any;
+      expect(state.pendingPermissionRequests).toHaveLength(1);
+      clearSession();
+      expect(state.pendingPermissionRequests).toHaveLength(0);
     });
   });
 });
