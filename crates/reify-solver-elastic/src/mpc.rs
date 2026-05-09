@@ -501,6 +501,97 @@ mod tests {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Step 5 (RED): inhomogeneous MPC subtracts column into RHS and pins β
+    // -----------------------------------------------------------------------
+
+    /// Inhomogeneous MpcRow (rhs=1.5, β=0.75) subtracts `K_before[j][p]·β`
+    /// from `f[j]` for all `j ≠ p` and pins `f[p] = β`.
+    ///
+    /// Same 5×5 fully-dense fixture as step-3.  The K redistribution terms
+    /// (αᵢ depend only on coeffs, not rhs) are identical to the homogeneous case.
+    ///
+    /// RED if any short-circuit on β==0 suppresses the `f[j] -= ... · β` path.
+    #[test]
+    fn inhomogeneous_mpc_subtracts_column_into_rhs_and_pins_pivot_to_beta() {
+        use faer::sparse::{SparseRowMat, Triplet};
+
+        let n = 5usize;
+        let triplets: Vec<Triplet<usize, usize, f64>> = (0..n)
+            .flat_map(|i| (0..n).map(move |j| Triplet::new(i, j, (i * 5 + j + 1) as f64)))
+            .collect();
+        let mut k: SparseRowMat<usize, f64> =
+            SparseRowMat::try_new_from_triplets(n, n, &triplets).unwrap();
+        let mut f: Vec<f64> = (1..=5).map(|i| i as f64).collect();
+
+        let k_before: Vec<Vec<f64>> =
+            (0..n).map(|i| (0..n).map(|j| read_k(&k, i, j)).collect()).collect();
+        let f_before = f.clone();
+
+        // rhs=1.5 → β=1.5/2.0=0.75, α_1=0.5, α_2=-0.5 (same as step-3)
+        let row = MpcRow::new(vec![0, 2, 4], vec![2.0, -1.0, 1.0], 1.5);
+        let beta = 0.75_f64;
+        let alpha_1 = 0.5_f64;
+        let alpha_2 = -0.5_f64;
+
+        apply_mpc_row_elimination(&mut k, &mut f, &[row]);
+
+        let p = 0usize;
+        let d1 = 2usize;
+        let d2 = 4usize;
+
+        // (a) f[0] = β = 0.75 exactly
+        assert_eq!(f[p].to_bits(), beta.to_bits(), "f[0] must be β={beta}");
+
+        // (b) f[j] for j≠0 must be f_before[j] - K_before[j][0] · β (single-summand)
+        for j in 1..n {
+            let expected = f_before[j] - k_before[j][p] * beta;
+            assert_eq!(
+                f[j].to_bits(),
+                expected.to_bits(),
+                "f[{j}]: expected {expected} (f_before={} - K[{j}][0]={} · β={beta}), got {}",
+                f_before[j],
+                k_before[j][p],
+                f[j],
+            );
+        }
+
+        // (c) Pivot row: K[0][0]=1, K[0][2]=-α_1=-0.5, K[0][4]=-α_2=+0.5, rest zero
+        assert_eq!(read_k(&k, p, p).to_bits(), 1.0_f64.to_bits(), "K[0][0] must be 1.0");
+        assert_eq!(
+            read_k(&k, p, d1).to_bits(),
+            (-alpha_1).to_bits(),
+            "K[0][2] must be -α_1={}", -alpha_1
+        );
+        assert_eq!(
+            read_k(&k, p, d2).to_bits(),
+            (-alpha_2).to_bits(),
+            "K[0][4] must be -α_2={}", -alpha_2
+        );
+        for j in 0..n {
+            if j != p && j != d1 && j != d2 {
+                assert_eq!(read_k(&k, p, j), 0.0, "K[0][{j}] should be 0 in pivot row");
+            }
+        }
+
+        // (d) Same K redistribution as homogeneous (αᵢ don't depend on rhs)
+        for j in 1..n {
+            assert_eq!(read_k(&k, j, p), 0.0, "K[{j}][0] should be 0 (column p eliminated)");
+            let expected_d1 = k_before[j][d1] + k_before[j][p] * alpha_1;
+            assert_eq!(
+                read_k(&k, j, d1).to_bits(),
+                expected_d1.to_bits(),
+                "K[{j}][{d1}] mismatch",
+            );
+            let expected_d2 = k_before[j][d2] + k_before[j][p] * alpha_2;
+            assert_eq!(
+                read_k(&k, j, d2).to_bits(),
+                expected_d2.to_bits(),
+                "K[{j}][{d2}] mismatch",
+            );
+        }
+    }
+
     /// Read entry `(i, j)` of a `SparseRowMat<usize, f64>`, returning 0.0 if
     /// the entry is not explicitly stored.
     fn read_k(k: &faer::sparse::SparseRowMat<usize, f64>, i: usize, j: usize) -> f64 {
