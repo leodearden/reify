@@ -152,6 +152,67 @@ pub fn build_support_bcs(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::boundary::apply_dirichlet_row_elimination;
+    use crate::constitutive::IsotropicElastic;
+    use crate::shell_assembly::shell_element_stiffness;
+    use faer::sparse::{SparseRowMat, Triplet};
+
+    /// Read entry `(i, j)` of a `SparseRowMat<usize, f64>`, returning `0.0`
+    /// if the entry is not stored (same pattern as `dirichlet.rs` tests).
+    fn read(k: &SparseRowMat<usize, f64>, i: usize, j: usize) -> f64 {
+        k.get(i, j).copied().unwrap_or(0.0)
+    }
+
+    /// Build Q = Ry(45°) · Rz(30°) (same rotation used by the covariance test
+    /// in `shell_assembly.rs` to avoid drilling-singularity alignment).
+    fn tilted_q() -> [[f64; 3]; 3] {
+        let cos30 = (30.0_f64.to_radians()).cos();
+        let sin30 = (30.0_f64.to_radians()).sin();
+        let cos45 = (45.0_f64.to_radians()).cos();
+        let sin45 = (45.0_f64.to_radians()).sin();
+        let rz: [[f64; 3]; 3] = [[cos30, -sin30, 0.0], [sin30, cos30, 0.0], [0.0, 0.0, 1.0]];
+        let ry: [[f64; 3]; 3] = [[cos45, 0.0, sin45], [0.0, 1.0, 0.0], [-sin45, 0.0, cos45]];
+        let mut q = [[0.0_f64; 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                for k in 0..3 {
+                    q[i][j] += ry[i][k] * rz[k][j];
+                }
+            }
+        }
+        q
+    }
+
+    /// Build the tilted triangle nodes from UNIT_TRI rotated by Q = Ry(45°)·Rz(30°).
+    fn tilted_tri() -> [[f64; 3]; 3] {
+        const UNIT_TRI: [[f64; 3]; 3] = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let q = tilted_q();
+        let mut nodes = [[0.0_f64; 3]; 3];
+        for (ni, node) in UNIT_TRI.iter().enumerate() {
+            for i in 0..3 {
+                nodes[ni][i] = q[i][0] * node[0] + q[i][1] * node[1] + q[i][2] * node[2];
+            }
+        }
+        nodes
+    }
+
+    /// Build a 18×18 `SparseRowMat` by packing all 324 entries from a dense
+    /// `shell_element_stiffness` output via faer triplets.
+    fn shell_k_sparse(nodes: &[[f64; 3]; 3]) -> SparseRowMat<usize, f64> {
+        let mat = IsotropicElastic {
+            youngs_modulus: 210_000.0,
+            poisson_ratio: 0.3,
+        };
+        let k_dense = shell_element_stiffness(nodes, 0.05, &mat);
+        // Build all 324 triplets using a nested loop to avoid closure capture issues.
+        let mut triplets = Vec::with_capacity(324);
+        for i in 0..18 {
+            for j in 0..18 {
+                triplets.push(Triplet::new(i, j, k_dense.get(i, j)));
+            }
+        }
+        SparseRowMat::try_new_from_triplets(18, 18, &triplets).expect("valid 18×18 triplets")
+    }
 
     // ------------------------------------------------------------------
     // Step 1: enum smoke tests — all three types, all variants, all derives
@@ -336,5 +397,89 @@ mod tests {
             build_support_bcs(&[], SupportKind::Pinned, SupportBodyKind::Tet);
         assert!(empty_bcs.is_empty());
         assert_eq!(empty_compat, SupportCompatibility::PinnedOnTetEquivalentToFixed);
+    }
+
+    // ------------------------------------------------------------------
+    // Step 11: end-to-end (Shell, Fixed) — node 0, tilted triangle fixture
+    // ------------------------------------------------------------------
+
+    /// Feed `build_support_bcs(&[0], Fixed, Shell)` into
+    /// `apply_dirichlet_row_elimination` on a 18-DOF shell K.
+    ///
+    /// Uses the tilted triangle (Q = Ry(45°)·Rz(30°)) so that the drilling
+    /// null-direction mixes across all rotational DOFs and every diagonal
+    /// entry is nonzero — avoiding the singularity of the xy-plane UNIT_TRI.
+    #[test]
+    fn e2e_shell_fixed_node0_apply_dirichlet_bcs_correct() {
+        let nodes = tilted_tri();
+        let mut k = shell_k_sparse(&nodes);
+        let mut f: Vec<f64> = (1..=18).map(|i| i as f64).collect();
+
+        // Snapshot K and f before BC application.
+        let k_before: Vec<Vec<f64>> =
+            (0..18).map(|i| (0..18).map(|j| read(&k, i, j)).collect()).collect();
+        let f_before = f.clone();
+
+        // Build Fixed BCs for node 0 (DOFs 0..6) and apply.
+        let (bcs, compat) = build_support_bcs(&[0], SupportKind::Fixed, SupportBodyKind::Shell);
+        assert_eq!(compat, SupportCompatibility::Ok);
+        assert_eq!(bcs.len(), 6);
+        apply_dirichlet_row_elimination(&mut k, &mut f, &bcs);
+
+        // (a) f[0..6] must be 0.0 (prescribed value for homogeneous BCs).
+        for i in 0..6 {
+            assert_eq!(
+                f[i].to_bits(),
+                0.0_f64.to_bits(),
+                "f[{i}] must be 0.0 after Fixed on node 0"
+            );
+        }
+
+        // (b) Row i in 0..6: diagonal = 1.0, all off-diagonals = 0.0.
+        for i in 0..6 {
+            assert_eq!(read(&k, i, i), 1.0, "K[{i}][{i}] must be 1.0");
+            for j in 0..18 {
+                if j != i {
+                    assert_eq!(
+                        read(&k, i, j),
+                        0.0,
+                        "K[{i}][{j}] must be 0.0 (row {i} zeroed)"
+                    );
+                }
+            }
+        }
+
+        // (c) Column i in 0..6: all off-diagonal entries zero.
+        for i in 0..6 {
+            for j in 0..18 {
+                if j != i {
+                    assert_eq!(
+                        read(&k, j, i),
+                        0.0,
+                        "K[{j}][{i}] must be 0.0 (col {i} zeroed)"
+                    );
+                }
+            }
+        }
+
+        // (d) f[6..18] bit-identical to snapshot (homogeneous BCs → no RHS change).
+        for j in 6..18 {
+            assert_eq!(
+                f[j].to_bits(),
+                f_before[j].to_bits(),
+                "f[{j}] must be bit-identical (homogeneous BCs contribute 0 to col-into-RHS)"
+            );
+        }
+
+        // Regression guard: K[6..18][6..18] sub-block is untouched by FixedSupport on node 0.
+        for i in 6..18 {
+            for j in 6..18 {
+                assert_eq!(
+                    read(&k, i, j).to_bits(),
+                    k_before[i][j].to_bits(),
+                    "K[{i}][{j}] in unconstrained sub-block must be unchanged"
+                );
+            }
+        }
     }
 }
