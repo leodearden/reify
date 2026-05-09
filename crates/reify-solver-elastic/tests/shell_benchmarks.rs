@@ -1027,6 +1027,171 @@ fn twisted_beam_tip_out_of_plane_load_displaces_within_macneal_harder_tolerance(
     );
 }
 
+// ─── step-11: locking detection ──────────────────────────────────────────────
+
+/// MITC3 shear-locking detection test for the pinched cylinder.
+///
+/// # What this test checks
+///
+/// For a thin pinched cylinder under a fixed radial load P, a **locking-free**
+/// element produces a displacement `u_r(t)` that scales so that the normalized
+/// quantity `n(t) = u_r · E · t / P` remains **bounded above a positive floor**
+/// as thickness `t` decreases. A **locking** element collapses `n(t) → 0` as
+/// `t → 0`, because spurious stiffness blocks the inextensional bending mode.
+///
+/// Three thicknesses spanning two decades (`t ∈ {1.0, 0.1, 0.01}`, with
+/// `R=1, L=2, E=1, ν=0.3, P=1`) test whether MITC3 maintains a non-trivial
+/// bending response across the thin-shell range.
+///
+/// # Why MITC3 (mostly) passes this test
+///
+/// MITC3's assumed-strain MITC technique decouples the bending/transverse-shear
+/// coupling that causes Reissner-Mindlin shear-locking. However, MITC3 (without
+/// the MITC3+ bubble enrichment) still exhibits **membrane locking** on curved
+/// surfaces — the flat-element approximation generates spurious in-plane strains
+/// under inextensional bending. As a result:
+///
+/// - MITC3 does NOT fully lock (n(t) does not collapse to machine-epsilon), but
+/// - n(t) does decrease significantly with t (the element is stiffer than the
+///   reference, by the same mechanism seen in the cylinder benchmark test).
+///
+/// The test asserts n(t) stays above an empirical floor, below a ceiling, and
+/// does not collapse by more than ~3 decades across the thickness range. This
+/// catches a regression that reintroduces NAIVE Reissner-Mindlin (no assumed
+/// strain), which would drop n(t) by 10+ decades.
+///
+/// # Regression risk
+///
+/// Any change to `shell_element_stiffness` that removes or degrades the MITC
+/// assumed-strain projection would be caught here because n(t) at t=0.01 would
+/// collapse below the empirical floor. Conversely, if a future MITC3+ bubble
+/// enrichment is added, n(t) values should INCREASE toward the analytical
+/// reference — tightening these bounds is the intended next step.
+#[test]
+fn mitc3_thin_shell_pinched_cylinder_does_not_lock_under_decreasing_thickness() {
+    use std::f64::consts::FRAC_PI_2;
+
+    // Dimensionless cylinder octant (R=1, L=2 → L/2=1 half-length).
+    const R: f64 = 1.0;
+    const L: f64 = 2.0;
+    const NX: usize = 4; // θ-direction divisions
+    const NY: usize = 4; // z-direction divisions
+    const P: f64 = 1.0; // total radial load
+
+    // Build the mesh (same topology as cylinder_octant_mesh but with R=1, L=2).
+    let mut nodes = Vec::with_capacity((NX + 1) * (NY + 1));
+    for i in 0..=NY {
+        let z = i as f64 * (L / 2.0) / NY as f64;
+        for j in 0..=NX {
+            let theta = j as f64 * FRAC_PI_2 / NX as f64;
+            nodes.push([R * theta.cos(), R * theta.sin(), z]);
+        }
+    }
+
+    let mut connectivity: Vec<[usize; 3]> = Vec::with_capacity(2 * NX * NY);
+    for i in 0..NY {
+        for j in 0..NX {
+            let a = i * (NX + 1) + j;
+            let b = i * (NX + 1) + (j + 1);
+            let c = (i + 1) * (NX + 1) + j;
+            let d = (i + 1) * (NX + 1) + (j + 1);
+            connectivity.push([a, b, d]);
+            connectivity.push([a, d, c]);
+        }
+    }
+    let n_nodes = nodes.len();
+
+    // Build Dirichlet BCs (same logic as the pinched-cylinder test in step-4).
+    // These are fixed for all thickness values — only stiffness changes with t.
+    let tol = 0.1_f64; // safe well inside mesh spacing (~R·π/2/NX ≈ 0.39 arc)
+    let mut bcs: Vec<DirichletBc> = Vec::new();
+    for (node, n) in nodes.iter().enumerate() {
+        let is_diaphragm = (n[2] - L / 2.0).abs() < tol;
+        let is_y0 = n[1].abs() < tol;
+        let is_x0 = n[0].abs() < tol;
+        let is_z0 = n[2].abs() < tol;
+        let dof = |d: usize| node * 6 + d;
+        if is_diaphragm {
+            bcs.push(DirichletBc { dof: dof(2), value: 0.0 }); // u_z = 0
+            bcs.push(DirichletBc { dof: dof(5), value: 0.0 }); // θ_z = 0
+        }
+        if is_y0 {
+            bcs.push(DirichletBc { dof: dof(1), value: 0.0 }); // u_y
+            bcs.push(DirichletBc { dof: dof(3), value: 0.0 }); // θ_x
+            bcs.push(DirichletBc { dof: dof(5), value: 0.0 }); // θ_z
+        }
+        if is_x0 {
+            bcs.push(DirichletBc { dof: dof(0), value: 0.0 }); // u_x
+            bcs.push(DirichletBc { dof: dof(4), value: 0.0 }); // θ_y
+            bcs.push(DirichletBc { dof: dof(5), value: 0.0 }); // θ_z
+        }
+        if is_z0 {
+            bcs.push(DirichletBc { dof: dof(2), value: 0.0 }); // u_z = 0
+            if is_y0 { bcs.push(DirichletBc { dof: dof(4), value: 0.0 }); } // θ_y at θ=0
+            if is_x0 { bcs.push(DirichletBc { dof: dof(3), value: 0.0 }); } // θ_x at θ=π/2
+        }
+    }
+
+    // Load node: corner at (0, R, 0) — θ=π/2, z=0.
+    let load_node = nodes
+        .iter()
+        .position(|n| n[0].abs() < tol && (n[1] - R).abs() < tol && n[2].abs() < tol)
+        .expect("load node (0, R, 0) not found");
+    let point_loads = vec![(load_node * 6 + 1, -P / 4.0)]; // F_y = -P/4 (radially inward)
+
+    // Loop over three thicknesses spanning two decades.
+    let thicknesses = [1.0_f64, 0.1, 0.01];
+    let mat_e = 1.0_f64;
+
+    let mut n_vals = [0.0_f64; 3];
+    for (idx, &t) in thicknesses.iter().enumerate() {
+        let mat = IsotropicElastic { youngs_modulus: mat_e, poisson_ratio: 0.3 };
+
+        let stiffness: Vec<ElementStiffness> = connectivity
+            .iter()
+            .map(|conn| {
+                let elem_nodes = [nodes[conn[0]], nodes[conn[1]], nodes[conn[2]]];
+                shell_element_stiffness_drilling_stabilized(&elem_nodes, t, &mat, 1e-6)
+            })
+            .collect();
+
+        let elements: Vec<AssemblyElement<'_>> = connectivity
+            .iter()
+            .zip(stiffness.iter())
+            .enumerate()
+            .map(|(i, (conn, k_e))| AssemblyElement { id: i, connectivity: conn, k_e })
+            .collect();
+
+        let u = solve_shell_system(&elements, n_nodes, &bcs, &point_loads);
+        let u_r = -u[load_node * 6 + 1]; // radial inward displacement (positive)
+        n_vals[idx] = u_r * mat_e * t / P; // normalized dimensionless response
+    }
+
+    // Assertions (step-11 initial values; step-12 refines after observing actual n_vals).
+    for (idx, &t) in thicknesses.iter().enumerate() {
+        let n = n_vals[idx];
+        assert!(
+            n > 1e-4,
+            "locking floor violated at t={t}: n(t)={n:.4e} < floor=1e-4 \
+             (a naive Reissner-Mindlin element collapses n→0 here)"
+        );
+        assert!(
+            n < 1e2,
+            "locking ceiling violated at t={t}: n(t)={n:.4e} > ceiling=1e2 \
+             (indicates NaN or runaway response)"
+        );
+    }
+    // The ratio n(thin)/n(thick) must not collapse by more than 3 decades.
+    let ratio = n_vals[2] / n_vals[0]; // n(t=0.01) / n(t=1.0)
+    assert!(
+        ratio > 1e-3,
+        "locking detected: n(0.01)/n(1.0) = {ratio:.4e} < 1e-3 \
+         (three-decade collapse indicates severe locking). \
+         n values: t=1.0→{:.4e}, t=0.1→{:.4e}, t=0.01→{:.4e}",
+        n_vals[0], n_vals[1], n_vals[2],
+    );
+}
+
 // ─── step-1: sanity check ────────────────────────────────────────────────────
 
 /// Sanity check for the end-to-end shell pipeline.
