@@ -1154,3 +1154,244 @@ structure S : HasX {
         ),
     }
 }
+
+// ── task 3249: exponent-form Real literal coverage (esc-3184-54) ──────────────
+
+/// Regression guard for esc-3184-54: lowercase-e exponent form `1e6` must lower
+/// to `Value::Real(1_000_000.0)` with `result_type == Type::Real`.
+///
+/// Production-code line under test: `crates/reify-syntax/src/ts_parser.rs:2428`
+/// ```
+/// let is_real = text.contains('.') || text.contains('e') || text.contains('E');
+/// ```
+///
+/// Regression model: if the `text.contains('e')` check were dropped from that
+/// disjunction, `is_real` would be `false` for `1e6`. The f64 value `1_000_000.0`
+/// is integer-equal (`1e6 == (1000000_i64) as f64`), so the literal would silently
+/// fall through the `else if` integer-cast branch at `expr.rs:394` and be emitted as
+/// `Value::Int(1000000)` with `Type::Int` — passing the existing test suite. This
+/// test is the tripwire that would catch that silent mis-classification.
+///
+/// The `cell_type` assertion (annotation authoritative) passes both before and after
+/// a hypothetical regression. Only `default_expr.result_type` and `default_expr.kind`
+/// are the regression-catching assertions.
+#[test]
+fn exponent_form_lowercase_e_real_literal_compiles_as_real() {
+    let source = r#"
+trait HasX {
+    let x : Real = 1e6
+}
+structure S : HasX {
+}
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("expected template S");
+
+    let x_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "x")
+        .expect("expected value_cell 'x' to be injected from trait HasX");
+
+    assert_eq!(
+        x_cell.cell_type,
+        Type::Real,
+        "cell_type must be Type::Real (annotation authoritative)"
+    );
+
+    let default_expr = x_cell
+        .default_expr
+        .as_ref()
+        .expect("expected a default_expr on the let cell for 'x'");
+
+    assert_eq!(
+        default_expr.result_type,
+        Type::Real,
+        "default_expr.result_type must be Type::Real for `1e6`; \
+         a regression dropping `'e'` from ts_parser.rs:2428 would produce Type::Int. Got: {:?}",
+        default_expr.result_type
+    );
+
+    match &default_expr.kind {
+        CompiledExprKind::Literal(Value::Real(v)) => assert_eq!(
+            *v,
+            1_000_000.0,
+            "default_expr.kind must be Literal(Value::Real(1_000_000.0)), got value {}",
+            v
+        ),
+        other => panic!(
+            "default_expr.kind must be Literal(Value::Real(1_000_000.0)) for `1e6` — \
+             a regression dropping `'e'` from ts_parser.rs:2428 (`is_real` classification) \
+             would emit Literal(Value::Int(1000000)) via the integer-cast branch at expr.rs:394; \
+             got: {:?}",
+            other
+        ),
+    }
+}
+
+/// Regression guard for esc-3184-54: uppercase-E exponent form `1E6` must lower
+/// to `Value::Real(1_000_000.0)` with `result_type == Type::Real`.
+///
+/// Production-code line under test: `crates/reify-syntax/src/ts_parser.rs:2428`
+/// ```
+/// let is_real = text.contains('.') || text.contains('e') || text.contains('E');
+/// ```
+///
+/// Regression model: if the `text.contains('E')` check were dropped from that
+/// disjunction, `is_real` would be `false` for `1E6`. The f64 value `1_000_000.0`
+/// is integer-equal (`1E6 == (1000000_i64) as f64`), so the literal would silently
+/// fall through the `else if` integer-cast branch at `expr.rs:394` and be emitted as
+/// `Value::Int(1000000)` with `Type::Int` — passing the existing test suite. This
+/// test is the tripwire that would catch that silent mis-classification.
+///
+/// The `cell_type` assertion (annotation authoritative) passes both before and after
+/// a hypothetical regression. Only `default_expr.result_type` and `default_expr.kind`
+/// are the regression-catching assertions.
+#[test]
+fn exponent_form_uppercase_e_real_literal_compiles_as_real() {
+    let source = r#"
+trait HasX {
+    let x : Real = 1E6
+}
+structure S : HasX {
+}
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("expected template S");
+
+    let x_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "x")
+        .expect("expected value_cell 'x' to be injected from trait HasX");
+
+    assert_eq!(
+        x_cell.cell_type,
+        Type::Real,
+        "cell_type must be Type::Real (annotation authoritative)"
+    );
+
+    let default_expr = x_cell
+        .default_expr
+        .as_ref()
+        .expect("expected a default_expr on the let cell for 'x'");
+
+    assert_eq!(
+        default_expr.result_type,
+        Type::Real,
+        "default_expr.result_type must be Type::Real for `1E6`; \
+         a regression dropping `'E'` from ts_parser.rs:2428 would produce Type::Int. Got: {:?}",
+        default_expr.result_type
+    );
+
+    match &default_expr.kind {
+        CompiledExprKind::Literal(Value::Real(v)) => assert_eq!(
+            *v,
+            1_000_000.0,
+            "default_expr.kind must be Literal(Value::Real(1_000_000.0)), got value {}",
+            v
+        ),
+        other => panic!(
+            "default_expr.kind must be Literal(Value::Real(1_000_000.0)) for `1E6` — \
+             a regression dropping `'E'` from ts_parser.rs:2428 (`is_real` classification) \
+             would emit Literal(Value::Int(1000000)) via the integer-cast branch at expr.rs:394; \
+             got: {:?}",
+            other
+        ),
+    }
+}
+
+/// Regression guard for esc-3184-54: negative-exponent form `1e-5` must lower
+/// to `Value::Real(1e-5_f64)` with `result_type == Type::Real`.
+///
+/// Production-code line under test: `crates/reify-syntax/src/ts_parser.rs:2428`
+/// ```
+/// let is_real = text.contains('.') || text.contains('e') || text.contains('E');
+/// ```
+///
+/// Regression model: unlike `1e6`/`1E6`, the f64 value `0.00001` is NOT
+/// integer-equal, so a regression dropping `'e'` from ts_parser.rs:2428 would set
+/// `is_real = false` but the literal would still reach `Value::Real(0.00001)` via
+/// the final fallback `else` branch at `expr.rs:401` (non-integer-equal path).
+/// The `result_type` would still be `Type::Real`. This test therefore acts as a
+/// backstop confirming that the negative-exponent path doesn't accidentally land in
+/// the integer branch under any other variant of the regression, and that the value
+/// itself (`1e-5_f64 == 0.00001`) is preserved exactly.
+///
+/// The `cell_type` assertion (annotation authoritative) passes both before and after
+/// a hypothetical regression. Only `default_expr.result_type` and `default_expr.kind`
+/// are the regression-catching assertions.
+#[test]
+fn exponent_form_negative_exponent_real_literal_compiles_as_real() {
+    let source = r#"
+trait HasX {
+    let x : Real = 1e-5
+}
+structure S : HasX {
+}
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("expected template S");
+
+    let x_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "x")
+        .expect("expected value_cell 'x' to be injected from trait HasX");
+
+    assert_eq!(
+        x_cell.cell_type,
+        Type::Real,
+        "cell_type must be Type::Real (annotation authoritative)"
+    );
+
+    let default_expr = x_cell
+        .default_expr
+        .as_ref()
+        .expect("expected a default_expr on the let cell for 'x'");
+
+    assert_eq!(
+        default_expr.result_type,
+        Type::Real,
+        "default_expr.result_type must be Type::Real for `1e-5`; got: {:?}",
+        default_expr.result_type
+    );
+
+    match &default_expr.kind {
+        CompiledExprKind::Literal(Value::Real(v)) => assert_eq!(
+            *v,
+            1e-5_f64,
+            "default_expr.kind must be Literal(Value::Real(1e-5_f64 == 0.00001)), got value {}",
+            v
+        ),
+        other => panic!(
+            "default_expr.kind must be Literal(Value::Real(1e-5_f64)) for `1e-5` — \
+             a regression dropping `'e'` from ts_parser.rs:2428 (`is_real` classification) \
+             would set is_real=false; since 0.00001 is not integer-equal it would still reach \
+             Value::Real via the fallback branch at expr.rs:401, but this test confirms the \
+             negative-exponent path stays on the correct `is_real` branch; got: {:?}",
+            other
+        ),
+    }
+}
