@@ -332,6 +332,89 @@ fn norm3(v: [f64; 3]) -> f64 {
     (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
 }
 
+/// Generic surface-traction integrator over a single triangular face.
+///
+/// Computes `w_i = Σ_q N_i(q.coord) · |t_ξ × t_η|(q) · q.weight` for each
+/// face node `i` using the caller-supplied quadrature rule `quad` and shape /
+/// gradient functions `shape_fn` / `grad_fn`, then scatters
+/// `f[3 * connectivity[i] + α] += w_i * traction[α]`.
+///
+/// # Panics (unconditional, Task-2544 contract-explicitness convention)
+///
+/// - `connectivity.len() != n_face_nodes`
+/// - `phys_nodes.len() != n_face_nodes`
+/// - `f.len() % 3 != 0`
+/// - Any entry in `connectivity` is `>= f.len() / 3` (out-of-range global node)
+fn integrate_face_generic(
+    f: &mut [f64],
+    connectivity: &[usize],
+    phys_nodes: &[[f64; 3]],
+    traction: [f64; 3],
+    n_face_nodes: usize,
+    quad: &[TriQuadPoint],
+    shape_fn: impl Fn(TriRefCoord) -> Vec<f64>,
+    grad_fn: impl Fn(TriRefCoord) -> Vec<[f64; 2]>,
+) {
+    assert_eq!(
+        connectivity.len(),
+        n_face_nodes,
+        "integrate_face_generic: connectivity.len() = {} but expected {} face nodes",
+        connectivity.len(),
+        n_face_nodes,
+    );
+    assert_eq!(
+        phys_nodes.len(),
+        n_face_nodes,
+        "integrate_face_generic: phys_nodes.len() = {} but expected {} face nodes",
+        phys_nodes.len(),
+        n_face_nodes,
+    );
+    assert!(
+        f.len().is_multiple_of(3),
+        "integrate_face_generic: f.len() = {} is not a multiple of 3; \
+         the global load vector must have exactly 3 DOFs per node",
+        f.len(),
+    );
+    let n_global_nodes = f.len() / 3;
+    for (local_i, &global_node) in connectivity.iter().enumerate() {
+        assert!(
+            global_node < n_global_nodes,
+            "integrate_face_generic: connectivity[{}] = {} is out of range; \
+             f.len() / 3 = {} global nodes",
+            local_i,
+            global_node,
+            n_global_nodes,
+        );
+    }
+
+    // Accumulate per-node integration weights w_i = Σ_q N_i(q) · |t_ξ × t_η|(q) · q.weight.
+    let mut nodal_weights = vec![0.0_f64; n_face_nodes];
+    for qp in quad {
+        let shapes = shape_fn(qp.coord);
+        let grads = grad_fn(qp.coord);
+        // Tangent vectors: t_ξ = Σ_i (∂N_i/∂ξ) · phys_nodes[i]
+        let mut t_xi = [0.0_f64; 3];
+        let mut t_eta = [0.0_f64; 3];
+        for i in 0..n_face_nodes {
+            for d in 0..3 {
+                t_xi[d] += grads[i][0] * phys_nodes[i][d];
+                t_eta[d] += grads[i][1] * phys_nodes[i][d];
+            }
+        }
+        let area_elem = norm3(cross(t_xi, t_eta));
+        for i in 0..n_face_nodes {
+            nodal_weights[i] += shapes[i] * area_elem * qp.weight;
+        }
+    }
+
+    // Scatter into global f.
+    for (i, &global_node) in connectivity.iter().enumerate() {
+        for alpha in 0..3 {
+            f[3 * global_node + alpha] += nodal_weights[i] * traction[alpha];
+        }
+    }
+}
+
 /// Apply a uniform surface traction over a single triangular face.
 ///
 /// Computes `∫_Γ N^T t dA` via triangle quadrature, using the surface area
@@ -366,91 +449,19 @@ pub fn apply_traction_load(
     phys_nodes: &[[f64; 3]],
     traction: [f64; 3],
 ) {
-    let n_face_nodes = match face_order {
-        FaceOrder::P1Tri => 3,
-        FaceOrder::P2Tri => 6,
-    };
-
-    assert_eq!(
-        connectivity.len(),
-        n_face_nodes,
-        "apply_traction_load: connectivity.len() = {} but expected {} face nodes for {:?}",
-        connectivity.len(),
-        n_face_nodes,
-        face_order,
-    );
-    assert_eq!(
-        phys_nodes.len(),
-        n_face_nodes,
-        "apply_traction_load: phys_nodes.len() = {} but expected {} face nodes for {:?}",
-        phys_nodes.len(),
-        n_face_nodes,
-        face_order,
-    );
-    assert!(
-        f.len().is_multiple_of(3),
-        "apply_traction_load: f.len() = {} is not a multiple of 3; \
-         the global load vector must have exactly 3 DOFs per node",
-        f.len(),
-    );
-    let n_global_nodes = f.len() / 3;
-    for (local_i, &global_node) in connectivity.iter().enumerate() {
-        assert!(
-            global_node < n_global_nodes,
-            "apply_traction_load: connectivity[{}] = {} is out of range; \
-             f.len() / 3 = {} global nodes",
-            local_i,
-            global_node,
-            n_global_nodes,
-        );
-    }
-
-    let mut nodal_weights = vec![0.0_f64; n_face_nodes];
-
     match face_order {
-        FaceOrder::P1Tri => {
-            for qp in TRI_P1_QUAD {
-                let shapes = tri_p1_shape(qp.coord);
-                // Tangent vectors: t_ξ = Σ_i (∂N_i/∂ξ) · phys_nodes[i]
-                let mut t_xi = [0.0_f64; 3];
-                let mut t_eta = [0.0_f64; 3];
-                for i in 0..3 {
-                    for d in 0..3 {
-                        t_xi[d] += TRI_P1_GRADS[i][0] * phys_nodes[i][d];
-                        t_eta[d] += TRI_P1_GRADS[i][1] * phys_nodes[i][d];
-                    }
-                }
-                let area_elem = norm3(cross(t_xi, t_eta));
-                for i in 0..3 {
-                    nodal_weights[i] += shapes[i] * area_elem * qp.weight;
-                }
-            }
-        }
-        FaceOrder::P2Tri => {
-            for qp in TRI_P2_QUAD {
-                let shapes = tri_p2_shape(qp.coord);
-                let grads = tri_p2_grads(qp.coord);
-                let mut t_xi = [0.0_f64; 3];
-                let mut t_eta = [0.0_f64; 3];
-                for i in 0..6 {
-                    for d in 0..3 {
-                        t_xi[d] += grads[i][0] * phys_nodes[i][d];
-                        t_eta[d] += grads[i][1] * phys_nodes[i][d];
-                    }
-                }
-                let area_elem = norm3(cross(t_xi, t_eta));
-                for i in 0..6 {
-                    nodal_weights[i] += shapes[i] * area_elem * qp.weight;
-                }
-            }
-        }
-    }
-
-    // Scatter into global f.
-    for (i, &global_node) in connectivity.iter().enumerate() {
-        for alpha in 0..3 {
-            f[3 * global_node + alpha] += nodal_weights[i] * traction[alpha];
-        }
+        FaceOrder::P1Tri => integrate_face_generic(
+            f, connectivity, phys_nodes, traction,
+            3, TRI_P1_QUAD,
+            |c| tri_p1_shape(c).to_vec(),
+            |_| TRI_P1_GRADS.to_vec(),
+        ),
+        FaceOrder::P2Tri => integrate_face_generic(
+            f, connectivity, phys_nodes, traction,
+            6, TRI_P2_QUAD,
+            |c| tri_p2_shape(c).to_vec(),
+            |c| tri_p2_grads(c).to_vec(),
+        ),
     }
 }
 
