@@ -3704,7 +3704,7 @@ describe('SidecarSession sandbox wrap (task 3210)', () => {
     const notices = outputs.filter((o) => o.type === 'notice') as Array<{ type: 'notice'; id: string; code: string; message: string }>;
     expect(notices).toHaveLength(1);
     expect(notices[0].code).toBe('sandbox_unavailable');
-    expect(notices[0].id).toBe('');
+    expect(notices[0].id).toBe('msg-notice-a');
     expect(notices[0].message).toMatch(/unrestricted/i);
 
     // console.warn called with a message mentioning sandbox
@@ -3800,6 +3800,7 @@ describe('SidecarSession sandbox wrap (task 3210)', () => {
     // notice emitted exactly once (not twice)
     const notices = outputs.filter((o) => o.type === 'notice' && (o as any).code === 'sandbox_unavailable');
     expect(notices).toHaveLength(1);
+    expect(notices[0].id).toBe('msg-notice-d1');
     expect(warnSpy).toHaveBeenCalledTimes(1);
 
     warnSpy.mockRestore();
