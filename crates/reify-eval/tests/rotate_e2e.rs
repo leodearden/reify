@@ -24,8 +24,7 @@ use reify_types::{ExportFormat, GeometryOp, Severity};
 fn rotate_with_explicit_deg_unit_realization_lands_in_kernel() {
     let source = r#"
         structure def S {
-            let body = cylinder(30mm, 800mm)
-            let r = rotate(body, 1, 0, 0, 90deg)
+            let r = rotate(cylinder(30mm, 800mm), 1, 0, 0, 90deg)
         }
     "#;
 
@@ -114,8 +113,7 @@ fn rotate_with_explicit_deg_unit_realization_lands_in_kernel() {
 fn rotate_around_with_explicit_deg_unit_realization_lands_in_kernel() {
     let source = r#"
         structure def S {
-            let body = cylinder(30mm, 800mm)
-            let r = rotate_around(body, 0mm, 0mm, 0mm, 0, 0, 1, 90deg)
+            let r = rotate_around(cylinder(30mm, 800mm), 0mm, 0mm, 0mm, 0, 0, 1, 90deg)
         }
     "#;
 

@@ -433,7 +433,7 @@ pub(crate) fn compile_geometry_op(
                 }
                 reify_compiler::TransformKind::Rotate => Ok(reify_types::GeometryOp::Rotate {
                     target: target_id,
-                    axis: [f64_arg("axis_x")?, f64_arg("axis_y")?, f64_arg("axis_z")?],
+                    axis: [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?],
                     // NOTE: bare numeric angle is passed through as-is (radians).
                     // circular_pattern converts bare numbers as degrees; aligning
                     // rotate/rotate_around/revolve is tracked as a follow-up task.
@@ -469,7 +469,7 @@ pub(crate) fn compile_geometry_op(
                     Ok(reify_types::GeometryOp::RotateAround {
                         target: target_id,
                         point: [f64_arg("px")?, f64_arg("py")?, f64_arg("pz")?],
-                        axis: [f64_arg("axis_x")?, f64_arg("axis_y")?, f64_arg("axis_z")?],
+                        axis: [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?],
                         // NOTE: bare numeric angle is passed through as-is (radians).
                         // circular_pattern converts bare numbers as degrees; aligning
                         // rotate/rotate_around/revolve is tracked as a follow-up task.
@@ -2059,9 +2059,9 @@ mod tests {
                 ("px".into(), literal_f64(0.05)),
                 ("py".into(), literal_f64(0.0)),
                 ("pz".into(), literal_f64(0.0)),
-                ("axis_x".into(), literal_f64(0.0)),
-                ("axis_y".into(), literal_f64(0.0)),
-                ("axis_z".into(), literal_f64(1.0)),
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
                 ("angle".into(), literal_f64(std::f64::consts::FRAC_PI_2)),
             ],
         };
@@ -2755,7 +2755,7 @@ mod tests {
         let step_handles = vec![GeometryHandleId(99)];
         let values = ValueMap::new();
 
-        // RotateAround with missing axis_z
+        // RotateAround with missing az
         let op = CompiledGeometryOp::Transform {
             kind: TransformKind::RotateAround,
             target: GeomRef::Step(0),
@@ -2763,9 +2763,9 @@ mod tests {
                 ("px".into(), literal_f64(0.0)),
                 ("py".into(), literal_f64(0.0)),
                 ("pz".into(), literal_f64(0.0)),
-                ("axis_x".into(), literal_f64(0.0)),
-                ("axis_y".into(), literal_f64(1.0)),
-                // axis_z deliberately omitted
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(1.0)),
+                // az deliberately omitted
                 ("angle".into(), literal_f64(1.0)),
             ],
         };
@@ -2779,7 +2779,7 @@ mod tests {
             &HashMap::new(),
             &mut Vec::new(),
         );
-        assert!(result.is_err(), "missing axis_z should return None");
+        assert!(result.is_err(), "missing az should return None");
     }
 
     #[test]
