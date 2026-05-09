@@ -930,6 +930,69 @@ mod tests {
         );
     }
 
+    /// P2Tri triangle in the yz-plane (rotated out of the xy-plane). Normal
+    /// points in +x. Verifies that `apply_traction_load` handles non-axis-aligned
+    /// P2 faces correctly: the computed `|t_ξ × t_η|` area element must equal 1
+    /// and conservation `Σ f = area · traction` must still hold.
+    ///
+    /// Vertices: `(0,0,0)`, `(0,1,0)`, `(0,0,1)` — unit right triangle in the
+    /// yz-plane, area = 1/2. For constant traction on a P2 element, vertex nodes
+    /// get 0 and edge-midpoint nodes each get area/3 = 1/6 of each traction
+    /// component.
+    ///
+    /// Mirrors `apply_traction_p1tri_rotated_yz_plane_conservation` but for
+    /// the P2 arm, closing the coverage gap for non-axis-aligned P2 faces.
+    #[test]
+    fn apply_traction_p2tri_rotated_yz_plane_conservation() {
+        let face_phys: [[f64; 3]; 6] = [
+            [0.0, 0.0, 0.0], // v0
+            [0.0, 1.0, 0.0], // v1
+            [0.0, 0.0, 1.0], // v2
+            [0.0, 0.5, 0.0], // m01
+            [0.0, 0.5, 0.5], // m12
+            [0.0, 0.0, 0.5], // m20
+        ];
+        let conn: [usize; 6] = [0, 1, 2, 3, 4, 5];
+        let traction = [3.0, -1.0, 2.0];
+        let mut f = vec![0.0_f64; 18]; // 6 nodes × 3 DOFs
+        apply_traction_load(&mut f, FaceOrder::P2Tri, &conn, &face_phys, traction);
+
+        // Vertex nodes (0..3) get 0 for constant traction on a P2 element.
+        for node in 0..3 {
+            for alpha in 0..3 {
+                let got = f[3 * node + alpha];
+                assert!(
+                    got.abs() < TOL,
+                    "vertex node {node} axis {alpha}: got {got}, expected 0",
+                );
+            }
+        }
+
+        // Edge-midpoint nodes (3..6) each get area/3 = 1/6 of each traction component.
+        let area = 0.5_f64;
+        let expected_per_midpt = area / 3.0; // 1/6
+        for node in 3..6 {
+            for alpha in 0..3 {
+                let got = f[3 * node + alpha];
+                let expected = expected_per_midpt * traction[alpha];
+                assert!(
+                    (got - expected).abs() < TOL,
+                    "midpoint node {node} axis {alpha}: got {got}, expected {expected}",
+                );
+            }
+        }
+
+        // Conservation: sum over all 6 nodes == area * traction (per axis).
+        for alpha in 0..3 {
+            let total: f64 = (0..6).map(|n| f[3 * n + alpha]).sum();
+            let expected_total = area * traction[alpha];
+            assert!(
+                (total - expected_total).abs() < TOL,
+                "axis {alpha}: total = {total}, expected {expected_total}",
+            );
+        }
+    }
+
     // =======================================================================
     // apply_traction_load — contract panics
     // =======================================================================
