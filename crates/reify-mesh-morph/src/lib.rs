@@ -329,7 +329,7 @@ mod tests {
                 jacobian: -0.5,
             });
         let _: QualityVerdict =
-            QualityVerdict::SoftFail(crate::types::MetricsBreached {
+            QualityVerdict::SoftFail(crate::types::SoftFailDetails {
                 min_scaled_jacobian: None,
                 pct_below_025: None,
                 max_aspect_ratio_increase: None,
