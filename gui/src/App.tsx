@@ -464,6 +464,10 @@ const App: Component = () => {
     if (!activeFile) return;
     const file = editorStore.state.openFiles.find((f) => f.path === activeFile);
     if (!file) return;
+    if (editorStore.state.externallyChanged.includes(activeFile)) {
+      showToast('File changed externally — reload or dismiss the prompt before saving', 'error');
+      return;
+    }
     try {
       await bridgeSaveFile(file.path, file.content);
       editorStore.markClean(file.path);

@@ -133,6 +133,12 @@ export function Editor(props: EditorProps) {
                 console.error('Save aborted: file not in store', path);
                 return true;
               }
+              if (props.store.state.externallyChanged.includes(path)) {
+                props.onError?.(
+                  'File changed externally — reload or dismiss the prompt before saving',
+                );
+                return true;
+              }
               saveFile(path, file.content)
                 .then(() => props.store.markClean(path))
                 .catch((err: unknown) =>
