@@ -4372,6 +4372,35 @@ describe('App externallyChanged store wiring', () => {
       expect(capturedEditorStore.state.externallyChanged).toEqual([]);
     });
   });
+
+  it('(e) handleDismissReload with multiple paths clears all entries from externallyChanged', async () => {
+    render(() => <App />);
+    await waitFor(() => expect(fileChangedCallback).toBeDefined());
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+
+    // Trigger changedFiles for bracket.ri so the Dismiss button appears
+    fileChangedCallback!({ path: '/project/bracket.ri', content: 'new' });
+    await waitFor(() =>
+      expect(capturedEditorStore.state.externallyChanged).toContain('/project/bracket.ri'),
+    );
+
+    // Add two more paths directly (simulates concurrent disk changes to other open files)
+    capturedEditorStore.markExternallyChanged('/project/b.ri');
+    capturedEditorStore.markExternallyChanged('/project/c.ri');
+    expect(capturedEditorStore.state.externallyChanged).toEqual([
+      '/project/bracket.ri',
+      '/project/b.ri',
+      '/project/c.ri',
+    ]);
+
+    // Click Dismiss — should atomically clear all three
+    await waitFor(() => expect(screen.getByText('Dismiss')).toBeTruthy());
+    fireEvent.click(screen.getByText('Dismiss'));
+
+    await waitFor(() => {
+      expect(capturedEditorStore.state.externallyChanged).toEqual([]);
+    });
+  });
 });
 
 // ─── handleSave aborts when file is externally changed ───────────────────────
