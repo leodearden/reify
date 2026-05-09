@@ -30,6 +30,9 @@ export interface SessionConfig {
  */
 export const SPAWN_ERROR_LOG_PREFIX = '[sidecar] spawned claude error:';
 
+/** MCP endpoint URL for the reify-debug server (always registered). */
+const REIFY_DEBUG_URL = 'http://127.0.0.1:3939/mcp';
+
 /**
  * Manages a Claude Code SDK session, dispatching inbound messages
  * and emitting outbound messages via the onOutput callback.
@@ -235,25 +238,26 @@ export class SidecarSession {
       args.push('--resume', this.sessionId);
     }
 
-    // Wire the permission server CLI flags. The MCP config file is written lazily on
-    // the first invokeSdk call and cached for the session lifetime (mcpConfigTmpFile /
-    // mcpConfigTmpDir fields), so subsequent turns avoid repeated mkdtemp+writeFile I/O.
-    // Cleanup happens in destroy() rather than per-invocation.
+    // Write the MCP config file lazily on the first invokeSdk call and cache it for the
+    // session lifetime (mcpConfigTmpFile / mcpConfigTmpDir fields), so subsequent turns
+    // avoid repeated mkdtemp+writeFile I/O. Cleanup happens in destroy().
+    // The config always includes the reify-debug entry (for GUI tooling); the
+    // reify-permission entry is added only when a permission server is configured.
+    if (!this.mcpConfigTmpFile) {
+      this.mcpConfigTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'reify-mcp-'));
+      this.mcpConfigTmpFile = path.join(this.mcpConfigTmpDir, 'mcp-config.json');
+      const mcpConfig = {
+        mcpServers: {
+          'reify-debug': { type: 'http', url: REIFY_DEBUG_URL },
+          ...(this.config.permissionMcp
+            ? { 'reify-permission': { type: 'http', url: this.config.permissionMcp.url } }
+            : {}),
+        },
+      };
+      fs.writeFileSync(this.mcpConfigTmpFile, JSON.stringify(mcpConfig));
+    }
+    args.push('--mcp-config', this.mcpConfigTmpFile);
     if (this.config.permissionMcp) {
-      if (!this.mcpConfigTmpFile) {
-        this.mcpConfigTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'reify-perm-'));
-        this.mcpConfigTmpFile = path.join(this.mcpConfigTmpDir, 'mcp-config.json');
-        const mcpConfig = {
-          mcpServers: {
-            'reify-permission': {
-              type: 'http',
-              url: this.config.permissionMcp.url,
-            },
-          },
-        };
-        fs.writeFileSync(this.mcpConfigTmpFile, JSON.stringify(mcpConfig));
-      }
-      args.push('--mcp-config', this.mcpConfigTmpFile);
       args.push('--permission-prompt-tool', 'mcp__reify-permission__approve_tool');
     }
 
