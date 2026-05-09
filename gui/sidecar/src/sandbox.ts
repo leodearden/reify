@@ -13,12 +13,14 @@ let cached: boolean | undefined;
  * Result is cached for the lifetime of the process; call `_resetLandlockCache()` to re-probe.
  */
 export function isLandlockAvailable(landlockHelperPath?: string): boolean {
+  // When no path is provided, return false immediately WITHOUT writing to `cached`.
+  // Poisoning the cache here would silently short-circuit every subsequent call —
+  // even a real call with a helper path — returning false forever until reset.
+  if (!landlockHelperPath) {
+    return false;
+  }
   if (cached !== undefined) {
     return cached;
-  }
-  if (!landlockHelperPath) {
-    cached = false;
-    return false;
   }
 
   const helperDir = path.dirname(landlockHelperPath);
@@ -30,8 +32,11 @@ export function isLandlockAvailable(landlockHelperPath?: string): boolean {
   ].join('; ');
 
   try {
-    const result = spawnSync('python3', ['-c', probeCode], { stdio: 'pipe' });
-    cached = result.status === 0;
+    // timeout:2000 ensures a hung python3 (broken interpreter, slow FS) fails fast
+    // rather than blocking session startup indefinitely on the first invokeSdk call.
+    // Treat a non-zero exit OR a signal (timeout/kill) as unavailable.
+    const result = spawnSync('python3', ['-c', probeCode], { stdio: 'pipe', timeout: 2000 });
+    cached = result.status === 0 && result.signal == null;
   } catch {
     cached = false;
   }

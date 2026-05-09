@@ -55,6 +55,22 @@ describe('sandbox helpers (task 3210)', () => {
       expect(isLandlockAvailable()).toBe(false);
       expect(vi.mocked(spawnSync)).not.toHaveBeenCalled();
     });
+
+    it('(f2) no-arg call does NOT poison the cache — subsequent call with real path still probes', () => {
+      // A no-arg call returns false without setting `cached`, so the next call with a real
+      // helper path must still run spawnSync rather than short-circuiting to false.
+      vi.mocked(spawnSync).mockReturnValue({ status: 0, pid: 1, output: [], stdout: Buffer.from(''), stderr: Buffer.from(''), signal: null, error: undefined });
+      expect(isLandlockAvailable()).toBe(false);             // no-arg: no probe, no cache write
+      expect(vi.mocked(spawnSync)).not.toHaveBeenCalled();  // probe hasn't run yet
+      expect(isLandlockAvailable('/path/x')).toBe(true);    // real path: probe runs
+      expect(vi.mocked(spawnSync)).toHaveBeenCalledTimes(1); // probe was invoked
+    });
+
+    it('(f3) spawnSync timeout/signal result treated as unavailable', () => {
+      // Simulate python3 being killed by SIGTERM (e.g. 2 s timeout expired)
+      vi.mocked(spawnSync).mockReturnValue({ status: null, pid: 1, output: [], stdout: Buffer.from(''), stderr: Buffer.from(''), signal: 'SIGTERM', error: undefined });
+      expect(isLandlockAvailable('/path/to/landlock_exec.py')).toBe(false);
+    });
   });
 
   describe('wrapClaudeArgs', () => {
