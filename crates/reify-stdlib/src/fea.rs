@@ -2001,11 +2001,11 @@ mod tests {
             .expect("result must have 'converged' key");
         assert_eq!(*converged, Value::Bool(true));
 
-        // iterations = 0 (synthesised, not solved).
+        // iterations = Undef (synthesised, not solved — distinguishes from solver-converged-on-iter-0).
         let iterations = result_map
             .get(&Value::String("iterations".to_string()))
             .expect("result must have 'iterations' key");
-        assert_eq!(*iterations, Value::Int(0));
+        assert_eq!(*iterations, Value::Undef);
     }
 
     // ── linear_combine multi-case LRFD happy path ───────────────────────────
