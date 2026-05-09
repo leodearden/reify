@@ -257,7 +257,8 @@ mod tests {
     #[test]
     fn validate_regular3d_rejects_axis_length_mismatch_non_bounds_min() {
         // (field name, mutated sdf, expected error)
-        let cases: &[(&str, fn(&mut SampledField), GridValidationError)] = &[
+        type AxisLenCase = (&'static str, fn(&mut SampledField), GridValidationError);
+        let cases: &[AxisLenCase] = &[
             (
                 "bounds_max",
                 |sdf| sdf.bounds_max = vec![2.0],

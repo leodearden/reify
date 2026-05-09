@@ -362,6 +362,7 @@ mod tests {
     /// null-direction mixes across all rotational DOFs and every diagonal
     /// entry is nonzero — avoiding the singularity of the xy-plane UNIT_TRI.
     #[test]
+    #[allow(clippy::needless_range_loop)] // explicit indexing reads parallel matrices
     fn e2e_shell_fixed_node0_apply_dirichlet_bcs_correct() {
         let nodes = tilted_tri();
         let mut k = shell_k_sparse(&nodes);
@@ -446,6 +447,7 @@ mod tests {
     /// clamped — the K rows/cols and f entries for those DOFs must be
     /// bit-identical to their pre-call snapshots.
     #[test]
+    #[allow(clippy::needless_range_loop)] // explicit indexing reads parallel matrices
     fn e2e_shell_pinned_node0_leaves_rotational_dofs_untouched() {
         let nodes = tilted_tri();
         let mut k = shell_k_sparse(&nodes);

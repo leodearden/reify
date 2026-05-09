@@ -396,7 +396,7 @@ fn empty_tet_indices_returns_empty_vec() {
 /// under a WARN-counting subscriber, and asserts:
 ///
 /// - (a) the returned `Vec` is empty — a non-finite centroid signals upstream
-///       pathology, not an under-resolved region,
+///   pathology, not an under-resolved region,
 /// - (b) exactly one WARN event is emitted at the
 ///   `reify_kernel_gmsh::through_thickness` target.
 fn assert_non_finite_first_vertex_returns_empty(coord: f32) {

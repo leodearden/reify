@@ -597,6 +597,7 @@ mod tests {
     ///
     /// RED: `apply_mpc_row_elimination` is not yet defined.
     #[test]
+    #[allow(clippy::needless_range_loop)] // explicit indexing reads parallel matrices
     fn single_homogeneous_mpc_zeros_pivot_row_redistributes_column_and_pins_pivot_to_constraint() {
         use faer::sparse::{SparseRowMat, Triplet};
 
@@ -705,6 +706,7 @@ mod tests {
     ///
     /// RED if any short-circuit on β==0 suppresses the `f[j] -= ... · β` path.
     #[test]
+    #[allow(clippy::needless_range_loop)] // explicit indexing reads parallel matrices
     fn inhomogeneous_mpc_subtracts_column_into_rhs_and_pins_pivot_to_beta() {
         use faer::sparse::{SparseRowMat, Triplet};
 
@@ -949,6 +951,7 @@ mod tests {
     /// Regression guard for future refactors that might allocate scratch
     /// buffers unconditionally.
     #[test]
+    #[allow(clippy::needless_range_loop)] // explicit indexing reads parallel matrices
     fn apply_mpc_with_empty_slice_leaves_k_and_f_unchanged() {
         use faer::sparse::{SparseRowMat, Triplet};
 

@@ -867,6 +867,7 @@ fn app_state_has_sidecar_field() {
 // --- on_exit emits claude-sidecar-crashed event (task 3211 step-9) ---
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)] // guard is explicitly dropped before any await — see drop(emitted) below
 async fn on_exit_emits_sidecar_crashed_event_via_emitter() {
     use crate::engine::EngineSession;
     use reify_constraints::SimpleConstraintChecker;
