@@ -290,32 +290,9 @@ describe('createPermissionServer', () => {
   // onRequest(null) sentinel: clears the registered handler.
   // The TypeScript signature on the unfixed interface rejects null — tsc --noEmit fails.
   // At runtime (esbuild strips types) the behaviour is correct in both versions.
-
-  it('onRequest(null) clears the registered handler so subsequent approve_tool calls do not invoke the prior handler', async () => {
-    server = createPermissionServer();
-    await server.start();
-
-    let handlerCalls = 0;
-    server.onRequest(() => { handlerCalls++; });
-    server.onRequest(null); // clear the handler — TypeScript rejects this on unfixed signature
-
-    // setRemembered short-circuits the next approve_tool call (no decide() needed).
-    server.setRemembered('Write');
-
-    const client = await connectClient(server.url());
-    const result = await client.callTool({
-      name: 'approve_tool',
-      arguments: { tool_name: 'Write', input: {} },
-    });
-
-    // The cleared handler must not have been invoked.
-    expect(handlerCalls).toBe(0);
-    // Verify the call resolved correctly (setRemembered grants allow).
-    const content = result.content as Array<{ type: string; text: string }>;
-    expect(JSON.parse(content[0].text).behavior).toBe('allow');
-
-    await client.close();
-  });
+  //
+  // The test uses an unremembered tool so the handler would ordinarily be consulted —
+  // making `handlerCalls === 0` a meaningful assertion that the handler was actually cleared.
 
   it('onRequest(null) clears the handler so unremembered tool calls leave the prior handler uninvoked', async () => {
     server = createPermissionServer();
@@ -355,9 +332,15 @@ describe('createPermissionServer', () => {
   // a socket-close mid-await (e.g. client abort) still triggers transport/server cleanup.
   it('registers close-listener before awaiting handleRequest so socket-close mid-request still triggers cleanup', async () => {
     server = createPermissionServer();
-    // Register a no-op handler so approve_tool can invoke onRequest, keeping the
-    // tool call pending indefinitely (until decide() or cancelAll() is called).
-    server.onRequest(() => { /* intentionally empty — lets approve_tool block */ });
+
+    // Use a promise to deterministically detect when the server-side approve_tool handler
+    // has entered its blocking await (i.e., handleRequest() is suspended). The onRequest
+    // callback fires synchronously inside the Promise executor that creates the pending
+    // decision entry — so by the time `serverPending` resolves and our test resumes, the
+    // tool handler is guaranteed to be suspended and handleRequest() is in-flight.
+    let signalPending!: () => void;
+    const serverPending = new Promise<void>((resolve) => { signalPending = resolve; });
+    server.onRequest(() => { signalPending(); });
     await server.start();
 
     const mcpCloseSpy = vi.spyOn(McpServer.prototype, 'close');
@@ -386,9 +369,10 @@ describe('createPermissionServer', () => {
         signal: ac.signal,
       });
 
-      // Give the server's tool handler time to enter the blocking await
-      // (pendingPromises entry set, handleRequest() is now suspended).
-      await new Promise((r) => setTimeout(r, 20));
+      // Wait deterministically until the server's onRequest callback has fired —
+      // at that point handleRequest() is guaranteed to be suspended in the decision await.
+      // This replaces the previous fixed-delay approach which was flaky on slow CI.
+      await serverPending;
 
       // Abort — this closes the client-side socket, which propagates to the server's
       // res and fires the 'close' event while handleRequest() is still awaiting.

@@ -153,12 +153,23 @@ export function createPermissionServer(): PermissionServer {
       await mcpServer.connect(transport);
       // Register the close listener BEFORE handleRequest so any close event fired
       // during the await (e.g. client abort, mid-stream socket drop) still triggers
-      // cleanup. transport.close() and mcpServer.close() are idempotent.
+      // cleanup. The `cleaned` guard ensures cleanup runs at most once, decoupling us
+      // from SDK-internal idempotency assumptions: Node also fires 'close' after every
+      // normal response completion, so without the guard both paths would invoke
+      // transport.close() + mcpServer.close() — once from the listener, with uncertain
+      // double-close behavior depending on the SDK version in use.
+      let cleaned = false;
       res.on('close', () => {
+        if (cleaned) return;
+        cleaned = true;
         transport.close();
         mcpServer.close();
       });
       await transport.handleRequest(req, res, parsedBody);
+      // Prevent the close listener from running after normal response completion.
+      // On the abort path, the close event fires while handleRequest() is still
+      // in-flight so `cleaned` is still false — cleanup runs exactly once there.
+      cleaned = true;
     } catch (err) {
       console.error('[permission-server] Error handling MCP request:', err);
       if (!res.headersSent) {
