@@ -436,12 +436,12 @@ fn edges_parallel_to_nan_tol_returns_query_failed() {
     assert_edges_parallel_to_tol_rejected(f64::NAN);
 }
 
-fn assert_edges_parallel_to_tol_accepted_at_boundaries() {
+/// Shared fixture: build a single-edge kernel with tangent `[1,0,0]`, run
+/// `edges_parallel_to` at the given `tol`, and assert the edge is returned.
+/// `label` is used only in failure messages to identify the boundary case.
+fn check_boundary_accepts(tol: f64, label: &str) {
     let parent = GeometryHandleId(1);
     let edge = GeometryHandleId(2);
-
-    // Lower bound — tol=0.0: a tangent exactly parallel to the axis has
-    // |dot(t, axis)| = 1 = cos(0), satisfying `|dot| >= 1` (tests `>=` not `>`).
     let mut kernel = MockGeometryKernel::new()
         .with_extracted_edges(parent, vec![edge])
         .with_edge_tangent_result(
@@ -449,46 +449,31 @@ fn assert_edges_parallel_to_tol_accepted_at_boundaries() {
             Value::String("{\"x\":1.0,\"y\":0.0,\"z\":0.0}".into()),
         );
     let result =
-        topology_selectors::edges_parallel_to(&mut kernel, parent, [1.0, 0.0, 0.0], 0.0)
+        topology_selectors::edges_parallel_to(&mut kernel, parent, [1.0, 0.0, 0.0], tol)
             .unwrap_or_else(|e| {
                 panic!(
-                    "edges_parallel_to must accept tol=0.0 and include an exactly-parallel edge, \
+                    "edges_parallel_to must accept tol={label} with a parallel tangent, \
                      got Err: {e:?}"
                 )
             });
     assert_eq!(
         result,
         vec![edge],
-        "edge with tangent exactly parallel to axis must be included at tol=0 (inclusive lower bound)"
+        "edge with tangent |dot|=1 must be returned at tol={label}"
     );
+}
+
+fn assert_edges_parallel_to_tol_accepted_at_boundaries() {
+    // Lower bound — tol=0.0: a tangent exactly parallel to the axis has
+    // |dot(t, axis)| = 1 = cos(0), satisfying `|dot| >= 1` (tests `>=` not `>`).
+    check_boundary_accepts(0.0, "0.0");
 
     // Upper bound — tol=π/2: cos(π/2) is not exactly representable as 0.0 in f64
     // (~6.12e-17), so no tangent sits exactly on this boundary without artificial
-    // construction. Instead we use a tangent strictly above the threshold (|dot|=1),
-    // pinning that both validate_angular_tol(π/2) AND the predicate evaluation accept
-    // a parallel edge.
-    let mut kernel = MockGeometryKernel::new()
-        .with_extracted_edges(parent, vec![edge])
-        .with_edge_tangent_result(
-            edge,
-            Value::String("{\"x\":1.0,\"y\":0.0,\"z\":0.0}".into()),
-        );
-    let result = topology_selectors::edges_parallel_to(
-        &mut kernel,
-        parent,
-        [1.0, 0.0, 0.0],
-        std::f64::consts::FRAC_PI_2,
-    )
-    .unwrap_or_else(|e| {
-        panic!(
-            "edges_parallel_to must accept tol=π/2 with a parallel tangent, got Err: {e:?}"
-        )
-    });
-    assert_eq!(
-        result,
-        vec![edge],
-        "edge with tangent |dot|=1 must be returned at tol=π/2 (cos(π/2)≈6.12e-17, well below |dot|=1)"
-    );
+    // construction. Instead we use an exactly-parallel tangent (|dot|=1), which is
+    // well above the cos(π/2) threshold ≈ 6.12e-17 — pinning that both
+    // validate_angular_tol(π/2) AND the predicate evaluation accept a parallel edge.
+    check_boundary_accepts(std::f64::consts::FRAC_PI_2, "π/2");
 }
 
 #[test]
