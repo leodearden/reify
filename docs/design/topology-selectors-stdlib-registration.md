@@ -16,6 +16,7 @@
 | `shared_edges` parent derivation | **Option A**: `kernel.query(OwnerBody(face_a))` + verify match against `OwnerBody(face_b)`. Warning + empty list on cross-solid input. No new trait method. |
 | 3-arg `fillet(solid, edges, radius)` | **Separate task**, not #2699's scope. The parse-only `fillet_top_edges.ri` fixture stays parse-only until that task lands. |
 | List element typing | `Type::List(Box::new(Type::Geometry))` for v0.1; defer Edge/Face/Vertex discrimination to #2691 or future PRD revision. |
+| `on` → `is_on` rename (2026-05-09, task #3201) | The surface-language helper `on(point, geometry) -> Bool` was renamed to `is_on` to match the `is_*` prefix convention shared by `is_watertight`/`is_manifold`/`is_orientable`, and to avoid future collision with `on Click {}` event-handler syntax. The kernel-side `GeometryQuery::PointOnShape` variant and `point_on_shape` method name are deliberately **not** renamed — they describe the underlying primitive operation and are infrastructure-layer concerns independent of the user-facing surface name. |
 
 ---
 
@@ -51,7 +52,7 @@ The 14 selectors break into the buckets below. Each bucket inherits an existing 
 
 This is the canonical pattern. It covers nine of the 14 selectors:
 
-`closest_point` *(done — Task 2324)*, `on` *(done)*, `angle_between_surfaces` *(done)*, plus the ones still to wire: `edges_by_length`, `faces_by_area`, `faces_by_normal`, `edges_parallel_to`, `edges_at_height`, `adjacent_faces`, `shared_edges`, `center_of_mass`, `moment_of_inertia`.
+`closest_point` *(done — Task 2324)*, `is_on` *(done)*, `angle_between_surfaces` *(done)*, plus the ones still to wire: `edges_by_length`, `faces_by_area`, `faces_by_normal`, `edges_parallel_to`, `edges_at_height`, `adjacent_faces`, `shared_edges`, `center_of_mass`, `moment_of_inertia`.
 
 **Cluster-A prerequisite (one-time):** widen `try_eval_topology_selector` (`crates/reify-eval/src/geometry_ops.rs:1668`) and `Engine::post_process_topology_selectors` (`crates/reify-eval/src/engine_build.rs:1348`) from `kernel: &dyn GeometryKernel` to `kernel: &mut dyn GeometryKernel`, propagating through the three call sites at `engine_build.rs:519/662/879`. The three call sites already hold `&mut kernel` and downgrade self-imposedly. ~10 lines total. Required because every new selector calls `kernel.extract_edges(...)` / `kernel.extract_faces(...)`, both of which take `&mut self` (they populate the kernel's idempotent extract caches at `crates/reify-kernel-occt/src/lib.rs:495/499`). Sibling `try_eval_conformance_query` and `try_eval_kinematic_query` keep `&dyn` (they only call `kernel.query(...)`).
 
@@ -120,14 +121,14 @@ For `shared_edges(face_a, face_b)` the additional requirement is that both faces
 
 ```rust
 pub const GEOMETRY_TOPOLOGY_SELECTOR_NAMES: &[&str] =
-    &["closest_point", "on", "angle_between_surfaces", "edges"];
+    &["closest_point", "is_on", "angle_between_surfaces", "edges"];
 //                                                       ^^^^^^^^
 
 pub(crate) fn topology_selector_result_type(name: &str) -> Option<reify_types::Type> {
     use reify_types::Type;
     Some(match name {
         "closest_point" => Type::point3(Type::length()),
-        "on" => Type::Bool,
+        "is_on" => Type::Bool,
         "angle_between_surfaces" => Type::angle(),
         "edges" => Type::List(Box::new(Type::Geometry)),
         _ => return None,
@@ -156,7 +157,7 @@ Recognise the name (line 1678–1683):
 ```rust
 let helper = match function.name.as_str() {
     "closest_point" => TopologySelectorHelper::ClosestPoint,
-    "on" => TopologySelectorHelper::On,
+    "is_on" => TopologySelectorHelper::IsOn,
     "angle_between_surfaces" => TopologySelectorHelper::AngleBetweenSurfaces,
     "edges" => TopologySelectorHelper::Edges,
     _ => return None,
