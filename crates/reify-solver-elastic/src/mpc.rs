@@ -75,13 +75,17 @@ use faer::sparse::SparseRowMat;
 /// 4. **Pin RHS** — `f[p] = β`.
 ///
 /// The sparsity pattern of `K` is not changed — only stored values are
-/// overwritten.  Every `(j, dofs[i])` entry that step 1 writes, and every
-/// `(p, dofs[i])` entry that step 3 writes, **must already be stored** in K.
-/// Missing entries are detected and the function panics with a descriptive
-/// message naming the missing `(row, col)` pair.  Downstream MPC-aware
-/// assembly is responsible for pre-allocating these entries; test fixtures
-/// use `try_new_from_triplets` with explicit zero entries at each required
-/// position.
+/// overwritten.  Every `(j, dofs[i])` entry that step 1 could write, and
+/// every `(p, dofs[i])` entry that step 3 writes, **must already be stored**
+/// in K.  The function asserts this eagerly: if `K[j][p]` is stored (even as
+/// a structural zero), all redistribution targets `K[j][dofs[i]]` are
+/// looked up and their absence panics with a descriptive message naming the
+/// missing `(row, col)` pair — regardless of whether `K[j][p]` is zero.
+/// (Only truly absent `K[j][p]` entries — those with no stored slot — skip
+/// the redistribution check, since they can never contribute to the write.)
+/// Downstream MPC-aware assembly is responsible for pre-allocating these
+/// entries; test fixtures use `try_new_from_triplets` with explicit zero
+/// entries at each required position.
 ///
 /// # Inhomogeneous constraints
 ///
@@ -199,9 +203,14 @@ pub fn apply_mpc_row_elimination(
         //
         // For j ≠ p:
         //   - locate K[j][p] in CSR;
+        //   - if the entry has no stored slot, skip (nothing to redistribute or zero);
+        //   - if the entry IS stored (even as a structural zero), run the
+        //     redistribution-target lookup eagerly — missing targets are caught here
+        //     before a future non-zero K[j][p] would trigger a seemingly-unprovoked panic;
         //   - read its value BEFORE zeroing (capture-then-update-then-zero);
-        //   - f[j] -= captured · β (step 1 RHS);
-        //   - for each i: locate K[j][dofs[i+1]] and add captured · αᵢ (step 1 redistribution);
+        //   - f[j] -= captured · β (step 1 RHS, skipped when captured == 0);
+        //   - for each i: locate K[j][dofs[i+1]] (assert found) and add captured · αᵢ
+        //     (step 1 redistribution, skipped when captured == 0);
         //   - zero K[j][p] (column p elimination).
         //
         // For j == p: the row was already zeroed in step 2; step 3 fills it after
@@ -223,22 +232,24 @@ pub fn apply_mpc_row_elimination(
                     break;
                 }
             }
-            if kjp == 0.0 {
-                // Entry not stored or is structural zero — redistribution is zero, skip.
-                // (If the entry isn't stored at all, no write is needed.)
-                if let Some(idx) = kjp_idx {
-                    vals[idx] = 0.0;
-                }
-                continue;
+            // If K[j][p] has no stored entry at all, no redistribution write
+            // ever targets this row — skip entirely.
+            let Some(kjp_store_idx) = kjp_idx else { continue };
+            // K[j][p] IS stored (possibly as a structural zero).  Run the
+            // redistribution-target lookup regardless of kjp's value so that
+            // missing sparsity entries are caught eagerly.
+            if kjp != 0.0 {
+                // f[j] -= K[j][p] · β
+                f[j] -= kjp * beta;
             }
-            // f[j] -= K[j][p] · β
-            f[j] -= kjp * beta;
-            // For each i > 0: K[j][dofs[i]] += K[j][p] · αᵢ
+            // For each i > 0: K[j][dofs[i]] += K[j][p] · αᵢ (assert target exists)
             for (i, (&di, &ai)) in other_dofs.iter().zip(alphas.iter()).enumerate() {
                 let mut found = false;
                 for idx in start..end {
                     if col_idx[idx] == di {
-                        vals[idx] += kjp * ai;
+                        if kjp != 0.0 {
+                            vals[idx] += kjp * ai;
+                        }
                         found = true;
                         break;
                     }
@@ -251,9 +262,7 @@ pub fn apply_mpc_row_elimination(
                 );
             }
             // Zero K[j][p] (column p eliminated for this row).
-            if let Some(idx) = kjp_idx {
-                vals[idx] = 0.0;
-            }
+            vals[kjp_store_idx] = 0.0;
         }
 
         // Step 3: write pivot equation in row p.
