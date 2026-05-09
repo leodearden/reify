@@ -3299,7 +3299,7 @@ describe('SidecarSession permission-prompt wiring (step-3)', () => {
 
   // (f) onRequest arriving outside an in-flight invocation (currentInvocationId is null)
   //     must deny immediately, emit a diagnostic notice, and NOT emit permission_request
-  it('(f) orphan permission request (no in-flight invocation) is denied and emits a notice', () => {
+  it('(f) orphan permission request (no in-flight invocation) is denied and emits a notice', async () => {
     const { server, triggerRequest } = makeMockPermissionServer();
 
     // Create the session but do NOT call handleMessage — currentInvocationId stays null
@@ -3310,10 +3310,6 @@ describe('SidecarSession permission-prompt wiring (step-3)', () => {
       permissionMcp: { url: 'http://127.0.0.1:29999/mcp', server },
     } as any);
     session.onOutput = (msg) => outputs.push(msg);
-
-    // Snapshot the map size before triggering — the orphan branch must not mutate it
-    // (session.ts:133: "Do NOT register in pendingPermissionRequests since there is no decision lifecycle to track.")
-    const sizeBefore = (session as any).pendingPermissionRequests.size;
 
     // Simulate a late/orphan permission request arriving with no active invocation
     triggerRequest({
@@ -3340,8 +3336,12 @@ describe('SidecarSession permission-prompt wiring (step-3)', () => {
       message: expect.any(String),
     });
 
-    // (f4) pendingPermissionRequests must not have been mutated (orphan branch skips .set())
-    expect((session as any).pendingPermissionRequests.size).toBe(sizeBefore);
+    // (f4) A follow-up permission_decision for req-orphan does NOT trigger setRemembered —
+    //      proving the orphan branch never registered the entry in pendingPermissionRequests
+    //      (see the 'Do NOT register in pendingPermissionRequests' comment in session.ts).
+    (server.decide as ReturnType<typeof vi.fn>).mockClear();
+    await session.handleMessage({ type: 'permission_decision', request_id: 'req-orphan', behavior: 'allow', remember: true } as any);
+    expect((server.setRemembered as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
   });
 
   // (g) onRequest arriving AFTER a completed invocation (currentInvocationId reset to null
@@ -3370,10 +3370,6 @@ describe('SidecarSession permission-prompt wiring (step-3)', () => {
     outputs.length = 0;
     (server.decide as ReturnType<typeof vi.fn>).mockClear();
 
-    // Snapshot the map size after the prior invocation completed — the orphan branch must not mutate it
-    // (session.ts:133: "Do NOT register in pendingPermissionRequests since there is no decision lifecycle to track.")
-    const sizeBefore = (session as any).pendingPermissionRequests.size;
-
     // Simulate a late CLI permission request arriving after the invocation ended
     triggerRequest({
       request_id: 'req-post',
@@ -3399,8 +3395,12 @@ describe('SidecarSession permission-prompt wiring (step-3)', () => {
       message: expect.any(String),
     });
 
-    // (g4) pendingPermissionRequests must not have been mutated (orphan branch skips .set())
-    expect((session as any).pendingPermissionRequests.size).toBe(sizeBefore);
+    // (g4) A follow-up permission_decision for req-post does NOT trigger setRemembered —
+    //      proving the orphan branch never registered the entry in pendingPermissionRequests
+    //      (see the 'Do NOT register in pendingPermissionRequests' comment in session.ts).
+    (server.decide as ReturnType<typeof vi.fn>).mockClear();
+    await session.handleMessage({ type: 'permission_decision', request_id: 'req-post', behavior: 'allow', remember: true } as any);
+    expect((server.setRemembered as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
   });
 });
 
