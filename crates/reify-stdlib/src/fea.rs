@@ -74,7 +74,7 @@ pub(crate) fn eval_fea(name: &str, args: &[Value]) -> Option<Value> {
 ///   - `max_von_mises`: `Value::Real(max(|combined_stress.data|))` over finite data,
 ///     or `Value::Undef` when the stress buffer is empty or contains no finite values
 ///   - `converged`:   `Value::Bool(true)`
-///   - `iterations`:  `Value::Int(0)` (synthesised, not solved)
+///   - `iterations`:  `Value::Undef` (synthesised, not solved — distinguishes from solver-converged-on-iter-0)
 ///
 /// # Failure modes (silent-Undef per PRD task #10 deferral)
 ///
@@ -282,7 +282,9 @@ fn linear_combine(args: &[Value]) -> Value {
     result_map.insert(Value::String("frame".to_string()), Value::Undef);
     result_map.insert(Value::String("max_von_mises".to_string()), mvm_value);
     result_map.insert(Value::String("converged".to_string()), Value::Bool(true));
-    result_map.insert(Value::String("iterations".to_string()), Value::Int(0));
+    // iterations = Undef: synthesised result, not solved — same rationale as
+    // frame: Value::Undef above. Distinguishes from solver-converged-on-iter-0.
+    result_map.insert(Value::String("iterations".to_string()), Value::Undef);
 
     Value::Map(result_map)
 }
