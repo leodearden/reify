@@ -114,12 +114,15 @@ use faer::sparse::SparseRowMat;
 ///
 /// # Order-independence
 ///
-/// For MPC rows with **disjoint pivot DOFs**, applying them in any order
-/// produces bit-identical K and tolerance-equal f.  The mechanism mirrors
-/// Dirichlet: MPC₁'s row-zero on row `p₁` zeros `K[p₁][p₂]`, so when MPC₂
-/// later reads `K[p₂][p₁]` for its column-into-RHS step it reads the
-/// still-original value (MPC₁'s column zeroing happens row-by-row, not
-/// column-by-column, so `K[p₂][p₁]` is unaffected until MPC₂ touches it).
+/// For MPC rows with **pairwise-disjoint full DOF sets** (no two rows share
+/// any DOF index, pivot or otherwise), applying them in any order produces
+/// bit-identical K and tolerance-equal f.  When the full DOF sets are
+/// disjoint, each row's redistribution writes touch disjoint columns, so no
+/// row's update can affect the input values read by any other row.
+///
+/// Note: disjoint *pivots alone* are not sufficient — if two rows share a
+/// non-pivot DOF, one row's redistribution can modify a column entry that
+/// the other row then reads, making the result order-dependent.
 ///
 /// # Panics
 ///
@@ -528,6 +531,33 @@ mod tests {
     fn mpc_row_new_panics_on_zero_pivot_coefficient() {
         // zero pivot — must panic
         let _ = MpcRow::new(vec![3, 7], vec![0.0, 1.0], 0.0);
+    }
+
+    /// `MpcRow::new` must panic when `dofs` is empty (zero DOFs).
+    #[test]
+    #[should_panic(expected = "at least one")]
+    fn mpc_row_new_panics_on_empty_dofs() {
+        // len-equality passes (0 == 0), but is_empty check fires.
+        let _ = MpcRow::new(vec![], vec![], 0.0);
+    }
+
+    /// `MpcRow::new` must panic when `coeffs[0]` is NaN.
+    ///
+    /// NaN passes the `!= 0.0` guard (IEEE 754: `NaN == 0.0` is false, so
+    /// `NaN != 0.0` is true), so this test pins that the `is_finite` guard
+    /// is the one that catches NaN.  Reordering those two pivot-coefficient
+    /// asserts would silently break this contract.
+    #[test]
+    #[should_panic(expected = "finite")]
+    fn mpc_row_new_panics_on_nan_pivot() {
+        let _ = MpcRow::new(vec![1], vec![f64::NAN], 0.0);
+    }
+
+    /// `MpcRow::new` must panic when `rhs` is infinite.
+    #[test]
+    #[should_panic(expected = "rhs")]
+    fn mpc_row_new_panics_on_infinite_rhs() {
+        let _ = MpcRow::new(vec![1], vec![1.0], f64::INFINITY);
     }
 
     /// `MpcRow::new` constructs and the fields round-trip exactly.
@@ -1047,11 +1077,20 @@ mod tests {
         assert_eq!(rows[3].dofs, vec![6, 12], "row 3: drilling fallback for axis 0");
         assert_eq!(rows[3].coeffs, vec![1.0, -1.0], "row 3: coeffs");
 
-        // Rows 4 and 5 have rotational coefficients (n_x=1 contributes)
-        // Each pivot coefficient must be non-zero
-        assert!(rows[4].coeffs[0] != 0.0, "row 4 pivot must be non-zero");
-        assert!(rows[5].coeffs[0] != 0.0, "row 5 pivot must be non-zero");
+        // Row 4 — axis 1 (y): pivot = shell_rot[2]=5 (b2=2, largest |coeff| for n_x=1)
+        // rot_data[1]: (b1=0,c1=2,sign1=-1), (b2=2,c2=0,sign2=+1)
+        // coeff_b1 = -(-1)·n[2]·h = 0;  coeff_b2 = -(+1)·n[0]·h = -1.0
+        // → two-term row: pivot shell_rot[2]=5, coeffs=[-1, +1, -1]
+        assert_eq!(rows[4].dofs, vec![5, 7, 13], "row 4: dofs");
+        assert_eq!(rows[4].coeffs, vec![-1.0, 1.0, -1.0], "row 4: coeffs");
         assert_eq!(rows[4].rhs.to_bits(), 0.0_f64.to_bits(), "row 4 rhs=0");
+
+        // Row 5 — axis 2 (z): pivot = shell_rot[1]=4 (b2=1, largest |coeff| for n_x=1)
+        // rot_data[2]: (b1=0,c1=1,sign1=+1), (b2=1,c2=0,sign2=-1)
+        // coeff_b1 = -(+1)·n[1]·h = 0;  coeff_b2 = -(-1)·n[0]·h = +1.0
+        // → two-term row: pivot shell_rot[1]=4, coeffs=[+1, +1, -1]
+        assert_eq!(rows[5].dofs, vec![4, 8, 14], "row 5: dofs");
+        assert_eq!(rows[5].coeffs, vec![1.0, 1.0, -1.0], "row 5: coeffs");
         assert_eq!(rows[5].rhs.to_bits(), 0.0_f64.to_bits(), "row 5 rhs=0");
     }
 
