@@ -383,6 +383,25 @@ pub fn assemble_global_stiffness(
 /// node-pair block and the remaining `D − d_e` rows/cols stay zero
 /// (orphan DOFs at tet-only nodes in a `D = 6` system).
 ///
+/// # Worked examples (per-element local stride `d_e` × global stride `D`)
+///
+/// - **P1 tet in pure-tet mesh** (`d_e = 3`, `n_local = 4`, `D = 3`):
+///   emits `9 · 16 = 144` triplets at `(3·conn[a]+α, 3·conn[b]+β)`.
+/// - **P2 tet in pure-tet mesh** (`d_e = 3`, `n_local = 10`, `D = 3`):
+///   emits `9 · 100 = 900` triplets at `(3·conn[a]+α, 3·conn[b]+β)`.
+/// - **MITC3+ shell in pure-shell mesh** (`d_e = 6`, `n_local = 3`,
+///   `D = 6`): emits `36 · 9 = 324` triplets at
+///   `(6·conn[a]+α, 6·conn[b]+β)`.
+/// - **P1 tet in mixed tet+shell mesh** (`d_e = 3`, `n_local = 4`,
+///   `D = 6`): emits the same `144` triplets at
+///   `(6·conn[a]+α, 6·conn[b]+β)` for `α, β ∈ 0..3` — leaves
+///   `α, β ∈ 3..6` rows/cols **unstored** at the touched nodes,
+///   producing the orphan rotation rows/cols densified to zero.
+/// - **MITC3+ shell in mixed tet+shell mesh** (`d_e = 6`, `n_local = 3`,
+///   `D = 6`): identical to the pure-shell case (the local and global
+///   strides agree). Both translation and rotation DOFs land at
+///   `(6·conn[a]+α, 6·conn[b]+β)` for `α, β ∈ 0..6`.
+///
 /// The emission order is the C-style row-major nesting
 /// `for a in 0..n_local { for α in 0..d_e { for b in 0..n_local { for β in 0..d_e } } }` —
 /// chosen so the within-block `(row, col)` sequence is monotonic, which
