@@ -1,9 +1,14 @@
 //! Global sparse-matrix assembly for the linear-elastostatic FEA solver.
 //!
-//! See PRD `docs/prds/v0_3/structural-analysis-fea.md` task #9. This module
+//! See PRD `docs/prds/v0_3/structural-analysis-fea.md` task #9 and v0.4
+//! `docs/prds/v0_4/structural-analysis-shells.md` task T11. This module
 //! scatters per-element [`crate::assembly::ElementStiffness`] dense matrices
-//! into a global sparse stiffness matrix `K` of size `3N × 3N` (N = global
-//! node count) using `faer-rs` CSR triplet builders.
+//! into a global sparse stiffness matrix `K` of size `D·N × D·N`, where
+//! `N` is the global node count and `D` is the global DOFs-per-node count
+//! (derived as `max` over the per-element `k_e.n_dofs / connectivity.len()`,
+//! defaulting to `3` for empty inputs). Tet-only meshes ⇒ `D = 3`,
+//! pure-shell meshes ⇒ `D = 6`, mixed tet+shell meshes ⇒ `D = 6` (shell
+//! dominates). Uses `faer-rs` CSR triplet builders.
 
 use faer::sparse::{SparseRowMat, Triplet};
 
@@ -12,9 +17,13 @@ use super::ElementStiffness;
 /// One element's contribution to the global system.
 ///
 /// `connectivity` lists the global node IDs of the element's local nodes in
-/// the same order as the rows/columns of `k_e` — that is, the local DOF index
-/// `3 * a + α` (axis `α ∈ {0, 1, 2}`) maps to global DOF
-/// `3 * connectivity[a] + α`.
+/// the same order as the rows/columns of `k_e`. The per-element
+/// DOFs-per-node count `d_e` is derived as `k_e.n_dofs / connectivity.len()`
+/// (which must divide evenly): tet ⇒ `d_e = 3`, MITC3+ shell ⇒ `d_e = 6`.
+/// The local DOF index `d_e * a + α` (axis/component
+/// `α ∈ {0, ..., d_e - 1}`) maps to global DOF
+/// `D * connectivity[a] + α`, where `D` is the global DOFs-per-node count
+/// `max(d_e)` over all elements (see module docs).
 ///
 /// The `id` field is descriptive metadata used in panic messages (e.g. to
 /// name the offending element in a contract violation) and is *not* used
@@ -24,7 +33,9 @@ use super::ElementStiffness;
 pub struct AssemblyElement<'a> {
     /// Element ID (descriptive metadata; surfaces in panic messages).
     pub id: usize,
-    /// Global node IDs — `connectivity.len() * 3 == k_e.n_dofs`.
+    /// Global node IDs — `k_e.n_dofs % connectivity.len() == 0` is required,
+    /// and the derived per-element DOFs-per-node `k_e.n_dofs / connectivity.len()`
+    /// is the element's DOF stride (3 for tet, 6 for MITC3+ shell).
     pub connectivity: &'a [usize],
     /// Per-element stiffness matrix.
     pub k_e: &'a ElementStiffness,
@@ -70,14 +81,31 @@ pub enum AssemblyMode {
     },
 }
 
-/// Scatter per-element stiffness matrices into a global `3N × 3N` sparse
-/// stiffness matrix.
+/// Scatter per-element stiffness matrices into a global `D·N × D·N` sparse
+/// stiffness matrix, where `D` is the global DOFs-per-node count derived
+/// from the element slice (see below) and `N = n_nodes`.
 ///
 /// `n_nodes` is the global node count; the returned matrix has
-/// `3 * n_nodes` rows and columns. `elements` is the slice of element
-/// contributions (see [`AssemblyElement`]); each contribution emits a full
-/// dense `(a, b, α, β)` block of `9 · k_e.n_local²` triplets, and faer's
-/// CSR builder sums duplicates that share a `(row, col)` pair.
+/// `D * n_nodes` rows and columns, where:
+///
+/// - `D = max(k_e.n_dofs / connectivity.len())` over all elements, with
+///   `unwrap_or(3)` so empty inputs yield the v0.3 tet-only `3N × 3N`
+///   shape. This rule produces:
+///     - pure-tet meshes ⇒ `D = 3` (backward-compatible),
+///     - pure-shell meshes ⇒ `D = 6`,
+///     - mixed tet + shell meshes ⇒ `D = 6` (shell dominates).
+///
+/// `elements` is the slice of element contributions (see
+/// [`AssemblyElement`]); each contribution emits a full dense `(a, b, α, β)`
+/// block of `d_e² · n_local²` triplets (where `d_e = k_e.n_dofs / n_local`
+/// is the element's own DOFs-per-node count), and faer's CSR builder sums
+/// duplicates that share a `(row, col)` pair.
+///
+/// Tet-only nodes in a `D = 6` mixed-element global system carry orphan
+/// rotation rows/cols of zero (rows/cols `D·n + 3..D·n + 6` at any node
+/// touched only by tets). Stabilising those orphan DOFs is the
+/// downstream BC/MPC layers' job (Dirichlet auto-clamp on rotations,
+/// shell-tet tying via `crate::mpc`); the assembler ships them as zeros.
 ///
 /// # Symmetry
 ///
@@ -109,10 +137,12 @@ pub enum AssemblyMode {
 ///   defaulting `threads` to 0); the panic surfaces them at the call site.
 ///   The "tiny problems run single-threaded" policy lives in the
 ///   `ElasticOptions` resolution layer (PRD task #16), not in this primitive.
-/// - `connectivity.len() * 3 != k_e.n_dofs` for any element — the per-element
-///   DOF count must agree with the connectivity, otherwise the
-///   `(3·conn[a]+α, 3·conn[b]+β)` mapping is ill-defined. The panic message
-///   names the offending element id.
+/// - `k_e.n_dofs % connectivity.len() != 0` for any element — `k_e.n_dofs`
+///   must be divisible by `connectivity.len()` so the per-element DOFs-per-node
+///   count `d_e = k_e.n_dofs / connectivity.len()` is an integer; otherwise
+///   the `(D·conn[a]+α, D·conn[b]+β)` mapping is ill-defined. The panic
+///   message names the offending element id, observed `connectivity.len()`,
+///   observed `k_e.n_dofs`, and the divisibility remainder.
 /// - `connectivity[i] >= n_nodes` for any element — out-of-range global node
 ///   ID would translate to an out-of-range DOF row/col index. The panic
 ///   message names the offending element id and node id.
@@ -142,14 +172,36 @@ pub fn assemble_global_stiffness(
         );
     }
     for element in elements {
-        assert_eq!(
-            element.connectivity.len() * 3,
-            element.k_e.n_dofs,
-            "AssemblyElement {{ id: {} }} has connectivity.len() = {} \
-             but k_e.n_dofs = {}; expected connectivity.len() * 3 == k_e.n_dofs",
+        let n_local = element.connectivity.len();
+        assert!(
+            n_local > 0,
+            "AssemblyElement {{ id: {} }} has empty connectivity \
+             (k_e.n_dofs = {}); cannot derive dofs_per_node from zero nodes",
             element.id,
-            element.connectivity.len(),
             element.k_e.n_dofs,
+        );
+        let remainder = element.k_e.n_dofs % n_local;
+        assert!(
+            remainder == 0,
+            "AssemblyElement {{ id: {} }} has connectivity.len() = {} \
+             but k_e.n_dofs (= {}) is not divisible by connectivity.len() \
+             (remainder = {}); expected k_e.n_dofs to be a multiple of \
+             connectivity.len() so the per-element dofs_per_node is an integer",
+            element.id,
+            n_local,
+            element.k_e.n_dofs,
+            remainder,
+        );
+        let dofs_per_node = element.k_e.n_dofs / n_local;
+        assert!(
+            dofs_per_node >= 1,
+            "AssemblyElement {{ id: {} }} has connectivity.len() = {} \
+             but k_e.n_dofs = {} ⇒ dofs_per_node = {} < 1; element kernels \
+             must emit at least one DOF per node",
+            element.id,
+            n_local,
+            element.k_e.n_dofs,
+            dofs_per_node,
         );
         for &node in element.connectivity {
             assert!(
@@ -164,27 +216,46 @@ pub fn assemble_global_stiffness(
         }
     }
 
+    // Global DOFs-per-node `D` is the maximum over all per-element
+    // `d_e = k_e.n_dofs / connectivity.len()`. Empty inputs default to
+    // `3` so the v0.3 tet-only `3N × 3N` empty-mesh shape is preserved
+    // bit-for-bit. Pure-tet meshes ⇒ `D = 3`. Pure-shell meshes ⇒
+    // `D = 6`. Mixed tet+shell meshes ⇒ `D = 6` (shell dominates;
+    // tet-only nodes carry orphan rotation rows/cols of zero, which
+    // downstream BC/MPC layers handle).
+    let n_dofs_per_node: usize = elements
+        .iter()
+        .map(|e| e.k_e.n_dofs / e.connectivity.len())
+        .max()
+        .unwrap_or(3);
+
     // Mode-specific dispatch. The deterministic arm exercises the shared
     // `emit_element_triplets` scatter primitive in slice order; the
     // parallel arm partitions into `threads` chunks via
     // `std::thread::scope` and merges per-thread Vecs in spawn order.
     //
-    // Each element emits a full dense block of `9 · n_local²` triplets
-    // (3 axes × 3 axes × n_local² local DOF pairs). Pre-sizing both the
-    // merged accumulator and per-thread local Vecs to the exact triplet
-    // count avoids the O(log N) reallocs `Vec::new()` would walk through
-    // on the FEA hot path — for ~10K P1 elements at 144 triplets each
-    // (24 B per `Triplet<usize, usize, f64>`), that's ~34 MB of
-    // allocator churn the worker would otherwise perform per chunk.
+    // Each element emits a full dense block of `d_e² · n_local²` triplets
+    // where `d_e = k_e.n_dofs / n_local` is the element's per-node DOF
+    // count (3 for tet, 6 for MITC3+ shell). Worked examples: P1 tet
+    // ⇒ 3² · 4² = 144; P2 tet ⇒ 3² · 10² = 900; MITC3+ shell
+    // ⇒ 6² · 3² = 324. Pre-sizing both the merged accumulator and
+    // per-thread local Vecs to the exact triplet count avoids the
+    // O(log N) reallocs `Vec::new()` would walk through on the FEA hot
+    // path — for ~10K P1 elements at 144 triplets each (24 B per
+    // `Triplet<usize, usize, f64>`), that's ~34 MB of allocator churn
+    // the worker would otherwise perform per chunk.
     let total_triplets: usize = elements
         .iter()
-        .map(|e| 9 * e.connectivity.len() * e.connectivity.len())
+        .map(|e| {
+            let dpn = e.k_e.n_dofs / e.connectivity.len();
+            dpn * dpn * e.connectivity.len() * e.connectivity.len()
+        })
         .sum();
     let triplets: Vec<Triplet<usize, usize, f64>> = match mode {
         AssemblyMode::Deterministic => {
             let mut acc = Vec::with_capacity(total_triplets);
             for element in elements {
-                emit_element_triplets(element, &mut acc);
+                emit_element_triplets(element, n_dofs_per_node, &mut acc);
             }
             acc
         }
@@ -235,11 +306,14 @@ pub fn assemble_global_stiffness(
                         // see the rationale on `total_triplets` above.
                         let cap: usize = chunk
                             .iter()
-                            .map(|e| 9 * e.connectivity.len() * e.connectivity.len())
+                            .map(|e| {
+                                let dpn = e.k_e.n_dofs / e.connectivity.len();
+                                dpn * dpn * e.connectivity.len() * e.connectivity.len()
+                            })
                             .sum();
                         let mut local: Vec<Triplet<usize, usize, f64>> = Vec::with_capacity(cap);
                         for element in chunk {
-                            emit_element_triplets(element, &mut local);
+                            emit_element_triplets(element, n_dofs_per_node, &mut local);
                         }
                         local
                     }));
@@ -292,13 +366,25 @@ pub fn assemble_global_stiffness(
     // that sums in a `BTreeMap<(row, col), f64>` keyed by the canonical
     // `(row, col)` order. step-5's `two_p1_elements_sharing_face_*` test
     // would also surface the regression.
-    SparseRowMat::try_new_from_triplets(3 * n_nodes, 3 * n_nodes, &triplets)
-        .expect("triplets within declared 3*n_nodes dims (per-element bounds enforced upstream)")
+    let dim = n_dofs_per_node * n_nodes;
+    SparseRowMat::try_new_from_triplets(dim, dim, &triplets).expect(
+        "triplets within declared n_dofs_per_node*n_nodes dims \
+         (per-element bounds enforced upstream)",
+    )
 }
 
-/// Emit one dense `9 · n_local²` block of triplets for `element` and append
-/// to `out`. The emission order is the C-style row-major nesting
-/// `for a in 0..n_local { for α in 0..3 { for b in 0..n_local { for β in 0..3 } } }` —
+/// Emit one dense `d_e² · n_local²` block of triplets for `element` and
+/// append to `out`. `d_e = element.k_e.n_dofs / n_local` is the element's
+/// per-node DOF count (3 for tet, 6 for MITC3+ shell). `n_dofs_per_node`
+/// is the **global** per-node DOF count (`D` in module docs); it sets the
+/// global row/col stride `D · conn[a] + α` independent of `d_e`. When
+/// `D > d_e` (e.g. tet element in a 6-DOF/node mixed system, `D = 6`,
+/// `d_e = 3`), the element fills only the first `d_e` rows/cols at each
+/// node-pair block and the remaining `D − d_e` rows/cols stay zero
+/// (orphan DOFs at tet-only nodes in a `D = 6` system).
+///
+/// The emission order is the C-style row-major nesting
+/// `for a in 0..n_local { for α in 0..d_e { for b in 0..n_local { for β in 0..d_e } } }` —
 /// chosen so the within-block `(row, col)` sequence is monotonic, which
 /// gives faer's duplicate-summation step a stable input ordering and
 /// matches the row-major layout of [`ElementStiffness::data`] (one
@@ -316,33 +402,41 @@ pub fn assemble_global_stiffness(
 /// intentional — zero-pruning here would couple the helper to K_e's sparsity
 /// pattern without benefiting current consumers.
 ///
-/// # N-agnostic contract
+/// # N-agnostic / D-agnostic contract
 ///
-/// The loop bounds derive from `n_local = element.connectivity.len()` and
-/// the constant `3` (axes per node) exclusively — there is no hardcoded
-/// `4` (P1 node count) or `10` (P2 node count) anywhere in the body. The
-/// `assemble_global_stiffness` entry-point's per-element contract check
-/// (`connectivity.len() * 3 == k_e.n_dofs`) is the only coupling between
-/// `n_local` and `k_e`, so this primitive accepts any element shape whose
-/// K_e satisfies that invariant. Pinned by the
-/// `single_p2_element_identity_connectivity_matches_k_e_bit_for_bit` test.
-fn emit_element_triplets(element: &AssemblyElement<'_>, out: &mut Vec<Triplet<usize, usize, f64>>) {
+/// The loop bounds derive from `n_local = element.connectivity.len()`,
+/// `d_e = element.k_e.n_dofs / n_local`, and the global `n_dofs_per_node`
+/// stride exclusively — there is no hardcoded `4` (P1 node count) or `10`
+/// (P2 node count) or `3` (tet axes per node) or `6` (shell DOFs per node)
+/// anywhere in the body. The `assemble_global_stiffness` entry-point's
+/// per-element contract check (`k_e.n_dofs % connectivity.len() == 0`) is
+/// the only coupling between `n_local` and `k_e`, so this primitive
+/// accepts any element shape whose K_e satisfies that invariant. Pinned by
+/// `single_p2_element_identity_connectivity_matches_k_e_bit_for_bit` (n=10,
+/// d=3) and `single_shell_18dof_element_identity_connectivity_matches_k_e_bit_for_bit`
+/// (n=3, d=6).
+fn emit_element_triplets(
+    element: &AssemblyElement<'_>,
+    n_dofs_per_node: usize,
+    out: &mut Vec<Triplet<usize, usize, f64>>,
+) {
     let n_local = element.connectivity.len();
-    // Iteration order is `(a, α, b, β)` so row = 3*conn[a]+α stays fixed
+    let local_dofs_per_node = element.k_e.n_dofs / n_local;
+    // Iteration order is `(a, α, b, β)` so row = D*conn[a]+α stays fixed
     // for the inner `(b, β)` sweep — that's the row-major traversal of
     // both the local k_e block and the global K row, minimizing cache
     // pressure and giving faer monotonically non-decreasing rows for
     // duplicate-summation stability.
     for a in 0..n_local {
         let row_node = element.connectivity[a];
-        for alpha in 0..3 {
-            let row = 3 * row_node + alpha;
-            let local_row = 3 * a + alpha;
+        for alpha in 0..local_dofs_per_node {
+            let row = n_dofs_per_node * row_node + alpha;
+            let local_row = local_dofs_per_node * a + alpha;
             for b in 0..n_local {
                 let col_node = element.connectivity[b];
-                for beta in 0..3 {
-                    let col = 3 * col_node + beta;
-                    let local_col = 3 * b + beta;
+                for beta in 0..local_dofs_per_node {
+                    let col = n_dofs_per_node * col_node + beta;
+                    let local_col = local_dofs_per_node * b + beta;
                     let val = element.k_e.get(local_row, local_col);
                     out.push(Triplet::new(row, col, val));
                 }
