@@ -16,21 +16,16 @@ describe('claudeStore', () => {
   }
 
   // ─── rAF mock helpers ──────────────────────────────────────────────────────
-  // Install a synchronous rAF mock for the enclosing describe block.
-  // Each requestAnimationFrame call fires its callback immediately, then
-  // returns null so rafHandle stays null — allowing multiple consecutive
-  // scheduleFlush calls within the same test to each flush synchronously.
-  function withSynchronousRAF(): void {
+  // Shared lifecycle: capture originals, install `impl` as the rAF mock with
+  // a no-op cancelAnimationFrame stub, and restore both in afterEach.
+  function installRAFMock(impl: (cb: FrameRequestCallback) => number): void {
     let origRAF: typeof globalThis.requestAnimationFrame;
     let origCancelRAF: typeof globalThis.cancelAnimationFrame;
 
     beforeEach(() => {
       origRAF = globalThis.requestAnimationFrame;
       origCancelRAF = globalThis.cancelAnimationFrame;
-      globalThis.requestAnimationFrame = (cb: FrameRequestCallback) => {
-        cb(performance.now());
-        return null as unknown as number;
-      };
+      globalThis.requestAnimationFrame = impl;
       globalThis.cancelAnimationFrame = () => {};
     });
 
@@ -40,30 +35,30 @@ describe('claudeStore', () => {
     });
   }
 
+  // Install a synchronous rAF mock for the enclosing describe block.
+  // Each requestAnimationFrame call fires its callback immediately, then
+  // returns null so rafHandle stays null — allowing multiple consecutive
+  // scheduleFlush calls within the same test to each flush synchronously.
+  function withSynchronousRAF(): void {
+    installRAFMock((cb: FrameRequestCallback) => {
+      cb(performance.now());
+      return null as unknown as number;
+    });
+  }
+
   // Install a queued rAF mock for the enclosing describe block.
   // Callbacks are stored; tests fire them manually via `raf.callbacks[i]()`.
   function withQueuedRAF(): { readonly callbacks: Array<() => void> } {
     let rafCallbacks: Array<() => void> = [];
-    let origRAF: typeof globalThis.requestAnimationFrame;
-    let origCancelRAF: typeof globalThis.cancelAnimationFrame;
 
     beforeEach(() => {
       rafCallbacks = [];
-      origRAF = globalThis.requestAnimationFrame;
-      origCancelRAF = globalThis.cancelAnimationFrame;
-      globalThis.requestAnimationFrame = (cb: FrameRequestCallback) => {
-        const id = rafCallbacks.length + 1;
-        rafCallbacks.push(() => cb(performance.now()));
-        return id;
-      };
-      globalThis.cancelAnimationFrame = (_id: number) => {
-        // no-op: cancelAndFlush handles buffer cleanup
-      };
     });
 
-    afterEach(() => {
-      globalThis.requestAnimationFrame = origRAF;
-      globalThis.cancelAnimationFrame = origCancelRAF;
+    installRAFMock((cb: FrameRequestCallback) => {
+      const id = rafCallbacks.length + 1;
+      rafCallbacks.push(() => cb(performance.now()));
+      return id;
     });
 
     return { get callbacks() { return rafCallbacks; } };
