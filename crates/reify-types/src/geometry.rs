@@ -4992,4 +4992,51 @@ mod tests {
             );
         }
     }
+
+    // ──────────────────────────────────────────────────────────────────
+    // VolumeMesh::vertex — safe flat-XYZ indexing helper
+    //
+    // The helper centralises the overflow-safe bounds-check/indexing
+    // pattern previously inlined at reify-mesh-morph/src/boundary.rs
+    // and (parallel duplicate) laplacian.rs.
+    // ──────────────────────────────────────────────────────────────────
+
+    /// Verify `VolumeMesh::vertex` returns `Some([x, y, z])` for valid indices
+    /// and `None` for out-of-range or overflow inputs.
+    ///
+    /// Fixture: 3-node mesh with distinct coordinates so each triple is
+    /// unambiguous.  The five sub-cases cover (a) first node, (b) last valid
+    /// node, (c) one-past-end, (d) u32::MAX overflow guard, and (e) empty mesh.
+    #[test]
+    fn volume_mesh_vertex_returns_some_for_valid_indices_and_none_for_out_of_range_or_overflow() {
+        let mesh = VolumeMesh {
+            vertices: vec![
+                1.0, 2.0, 3.0, // v0
+                4.0, 5.0, 6.0, // v1
+                7.0, 8.0, 9.0, // v2
+            ],
+            tet_indices: vec![],
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+
+        // (a) first node
+        assert_eq!(mesh.vertex(0), Some([1.0, 2.0, 3.0]));
+        // (b) last valid node — base = 6, end = 9 == vertices.len()
+        assert_eq!(mesh.vertex(2), Some([7.0, 8.0, 9.0]));
+        // (c) one past end — base = 9, end = 12 > 9
+        assert_eq!(mesh.vertex(3), None);
+        // (d) overflow guard — checked_mul(3) overflows on 32-bit; on 64-bit
+        //     end = (u32::MAX as usize) * 3 + 3 >> vertices.len()
+        assert_eq!(mesh.vertex(u32::MAX), None);
+
+        // (e) empty mesh — any index is out of range
+        let empty = VolumeMesh {
+            vertices: vec![],
+            tet_indices: vec![],
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+        assert_eq!(empty.vertex(0), None);
+    }
 }
