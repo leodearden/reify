@@ -1233,3 +1233,122 @@ fn engine_build_emits_imported_tolerance_promise_warning_in_canonical_user_flow_
         matched[0].message,
     );
 }
+
+/// Task 3176, step-1 (RED) — pins that an anonymous realization (one whose
+/// `RealizationDecl.name == None`, constructed via
+/// `TopologyTemplateBuilder::realization(...)` rather than
+/// `realization_named(...)`) does NOT populate the `RealizationCache` even
+/// when a demanded tolerance is active.
+///
+/// **Why anonymous realizations exist in this test only**: the production
+/// compiler always emits `Some(name)` for every `RealizationDecl` it produces
+/// (see `crates/reify-compiler/src/types.rs:848-857`). `None` only arises
+/// from the `TopologyTemplateBuilder::realization(...)` test-support helper,
+/// which is what this test uses to exercise the anonymous-realization code
+/// path.
+///
+/// **The asymmetry this test exposes**: before the step-2 fix, the
+/// post-success cache-insert at `engine_build.rs` fires whenever
+/// `demanded_tol.is_some()`, regardless of `realization_name`. But the
+/// cache-hit short-circuit at the top of `execute_realization_ops` requires
+/// BOTH `demanded_tol.is_some()` AND `realization_name.is_some()`. The
+/// result: an anonymous realization populates the cache on the first build
+/// but can never be served from it. On subsequent builds the lookup
+/// short-circuit skips (no name), the kernel re-runs, and the post-success
+/// insert hits `ToleranceBucket::insert`'s partial-order rejection (the
+/// prior entry already satisfies). The cached slot is wasted and the op
+/// chain re-runs every build.
+///
+/// After the step-2 fix tightens the insert gate to match the lookup gate
+/// (`if let (Some(tol), Some(_name)) = (demanded_tol, realization_name)`),
+/// this test passes: the anonymous realization never populates the cache.
+///
+/// Sequence:
+///   (a) `engine.eval(&module)` → `engine.activate_purpose("manufacturing",
+///       "MyDesign")` → `engine.build(&module, ExportFormat::Step)`.
+///   (b) Assert kernel was invoked (premise check: build path reached
+///       `execute_realization_ops`).
+///   (c) Assert `engine.realization_cache().len() == 0` — the anonymous
+///       realization must not populate the cache.
+///   (d) Second `engine.build(...)` → assert `len() == 0` again (no slot
+///       wastage across repeated builds).
+///
+/// Complements `build_populates_realization_cache_keyed_on_demanded_tolerance`
+/// (which pins that NAMED realizations DO populate the cache) and the existing
+/// `edit_param_clears_realization_cache_...` pin (cache-clear mechanism).
+#[test]
+fn anonymous_realization_does_not_populate_realization_cache_when_lookup_gate_requires_name() {
+    // Build a module with an ANONYMOUS realization — `realization(...)` not
+    // `realization_named(...)` — so `RealizationDecl.name == None`.
+    let mm_lit = |v: f64| CompiledExpr::literal(mm(v), Type::length());
+    let box_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Box,
+        args: vec![
+            ("width".into(), mm_lit(10.0)),
+            ("height".into(), mm_lit(20.0)),
+            ("depth".into(), mm_lit(5.0)),
+        ],
+    };
+    let anonymous_template = TopologyTemplateBuilder::new("MyDesign")
+        .param("MyDesign", "thickness", Type::Real, None)
+        // `realization(...)` → `RealizationDecl.name == None`
+        .realization("MyDesign", 0, vec![box_op])
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::new(vec![
+        "test_anonymous_realization_does_not_populate_cache".to_string(),
+    ]))
+    .template(step_output_template(1e-6))
+    .template(anonymous_template)
+    .compiled_purpose(manufacturing_purpose("manufacturing", 1e-6))
+    .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_handle = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // (a) Canonical user flow: eval → activate_purpose → build.
+    engine.eval(&module);
+    engine.activate_purpose("manufacturing", "MyDesign");
+    engine.build(&module, ExportFormat::Step);
+
+    // (b) Premise check: the kernel was invoked (build actually reached
+    // `execute_realization_ops` and dispatched at least one op).
+    let ops_after_first = ops_handle.lock().unwrap().len();
+    assert!(
+        ops_after_first >= 1,
+        "test premise: expected build() to invoke the kernel at least once \
+         (execute_realization_ops dispatched at least one op); got \
+         ops_after_first={}. If this fails the test is vacuous.",
+        ops_after_first,
+    );
+
+    // (c) Core assertion: the anonymous realization must NOT populate the cache.
+    // Before the step-2 fix the insert fires (demanded_tol.is_some() is
+    // sufficient); after the fix it is skipped (realization_name.is_none()).
+    assert_eq!(
+        engine.realization_cache().len(),
+        0,
+        "expected RealizationCache to be empty after building an anonymous \
+         realization (RealizationDecl.name == None): the post-success insert \
+         gate must require realization_name.is_some() to match the lookup gate. \
+         Cache len={}, dump: {:?}",
+        engine.realization_cache().len(),
+        engine.realization_cache(),
+    );
+
+    // (d) Belt-and-braces: a second build must also leave the cache empty —
+    // no slot wastage across repeated builds.
+    // Note: task 3103 made eval() preserve active_purpose_bindings across
+    // its internal round-trip, so no re-activation is needed here.
+    engine.build(&module, ExportFormat::Step);
+    assert_eq!(
+        engine.realization_cache().len(),
+        0,
+        "expected RealizationCache to remain empty after a second build with \
+         an anonymous realization; cache len={}, dump: {:?}",
+        engine.realization_cache().len(),
+        engine.realization_cache(),
+    );
+}
