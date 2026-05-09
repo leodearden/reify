@@ -2895,6 +2895,7 @@ function makeMockPermissionServer(): {
     }),
     decide: vi.fn(),
     setRemembered: vi.fn(),
+    cancelAll: vi.fn(),
   };
 
   return {

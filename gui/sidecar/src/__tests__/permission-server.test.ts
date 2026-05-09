@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { createPermissionServer } from '../permission-server.js';
-import type { PermissionServer, PermissionDecision } from '../permission-server.js';
+import type { PermissionServer } from '../permission-server.js';
 
 /**
  * Helper: connect an MCP SDK client to the permission server.

@@ -56,6 +56,14 @@ export class SidecarSession {
    */
   private pendingPermissionRequests: Map<string, string> = new Map();
 
+  /**
+   * Cached MCP config file path and its parent temp directory.
+   * Written once on the first invokeSdk call (lazily) and cleaned up in destroy().
+   * Caching avoids repeated mkdtemp+writeFile+unlink per turn for a fixed-lifetime URL.
+   */
+  private mcpConfigTmpDir: string | null = null;
+  private mcpConfigTmpFile: string | null = null;
+
   /** The send_message id for the currently in-flight invocation, if any. */
   private currentInvocationId: string | null = null;
 
@@ -102,11 +110,22 @@ export class SidecarSession {
     if (this.destroyed) return;
     this.destroyed = true;
     this.abortController?.abort();
+    // Cancel any pending permission requests so suspended HTTP handlers are unblocked.
+    this.config.permissionMcp?.server.cancelAll();
     this.sessionId = null;
     this.toolNameById.clear();
     this.pendingToolUseIds.clear();
     this.pendingPermissionRequests.clear();
     this.currentInvocationId = null;
+    // Clean up the cached MCP config file and its temp directory.
+    if (this.mcpConfigTmpFile) {
+      try { fs.unlinkSync(this.mcpConfigTmpFile); } catch {}
+      this.mcpConfigTmpFile = null;
+    }
+    if (this.mcpConfigTmpDir) {
+      try { fs.rmdirSync(this.mcpConfigTmpDir); } catch {}
+      this.mcpConfigTmpDir = null;
+    }
   }
 
   /**
@@ -183,6 +202,12 @@ export class SidecarSession {
     } finally {
       this.abortController = null;
       this.currentInvocationId = null;
+      // Cancel any permission requests that were still pending when the invocation
+      // ended (abort, error, or normal exit). Without this, a killed subprocess
+      // leaves the approve_tool HTTP handlers suspended forever since the Claude CLI
+      // closed its side of the connection but pendingPromises still holds the resolvers.
+      this.config.permissionMcp?.server.cancelAll();
+      this.pendingPermissionRequests.clear();
     }
   }
 
@@ -210,23 +235,25 @@ export class SidecarSession {
       args.push('--resume', this.sessionId);
     }
 
-    // Write a temp MCP config file for the permission server and add the CLI flags.
-    // The file is deleted in the finally block (after invokeSdk exits / proc closes).
-    let mcpConfigTmpDir: string | null = null;
-    let mcpConfigTmpFile: string | null = null;
+    // Wire the permission server CLI flags. The MCP config file is written lazily on
+    // the first invokeSdk call and cached for the session lifetime (mcpConfigTmpFile /
+    // mcpConfigTmpDir fields), so subsequent turns avoid repeated mkdtemp+writeFile I/O.
+    // Cleanup happens in destroy() rather than per-invocation.
     if (this.config.permissionMcp) {
-      mcpConfigTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'reify-perm-'));
-      mcpConfigTmpFile = path.join(mcpConfigTmpDir, 'mcp-config.json');
-      const mcpConfig = {
-        mcpServers: {
-          'reify-permission': {
-            type: 'http',
-            url: this.config.permissionMcp.url,
+      if (!this.mcpConfigTmpFile) {
+        this.mcpConfigTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'reify-perm-'));
+        this.mcpConfigTmpFile = path.join(this.mcpConfigTmpDir, 'mcp-config.json');
+        const mcpConfig = {
+          mcpServers: {
+            'reify-permission': {
+              type: 'http',
+              url: this.config.permissionMcp.url,
+            },
           },
-        },
-      };
-      fs.writeFileSync(mcpConfigTmpFile, JSON.stringify(mcpConfig));
-      args.push('--mcp-config', mcpConfigTmpFile);
+        };
+        fs.writeFileSync(this.mcpConfigTmpFile, JSON.stringify(mcpConfig));
+      }
+      args.push('--mcp-config', this.mcpConfigTmpFile);
       args.push('--permission-prompt-tool', 'mcp__reify-permission__approve_tool');
     }
 
@@ -411,13 +438,8 @@ export class SidecarSession {
     } finally {
       clearTimeout(timeoutId);
       this.currentStdin = null;
-      // Clean up the temp MCP config file and directory.
-      if (mcpConfigTmpFile) {
-        try { fs.unlinkSync(mcpConfigTmpFile); } catch {}
-      }
-      if (mcpConfigTmpDir) {
-        try { fs.rmdirSync(mcpConfigTmpDir); } catch {}
-      }
+      // MCP config file cleanup is deferred to destroy() since the file is
+      // now cached for the session lifetime rather than written per-turn.
     }
 
     // Wait for process exit and check exit code
@@ -549,6 +571,10 @@ export class SidecarSession {
     this.sessionId = null;
     this.toolNameById.clear();
     this.pendingToolUseIds.clear();
+    // Cancel any in-flight permission requests before clearing the tracking map.
+    // Without this, the HTTP handlers awaiting pendingPromises in the permission
+    // server would hang forever (no one calls decide() after the map is cleared).
+    this.config.permissionMcp?.server.cancelAll();
     this.pendingPermissionRequests.clear();
     this.onOutput({ type: 'ready' });
   }

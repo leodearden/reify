@@ -38,8 +38,17 @@ export interface PermissionServer {
    * Mark a tool name as always-allowed for the lifetime of this server.
    * Future approve_tool calls for this tool_name will resolve immediately
    * without invoking the onRequest callback.
+   * Any currently in-flight approve_tool calls for this tool_name are also
+   * resolved immediately with `{ behavior: 'allow' }`.
    */
   setRemembered(toolName: string): void;
+  /**
+   * Cancel all pending permission requests by resolving them with `{ behavior: 'deny' }`.
+   * Call this when clearing or destroying a session so that any suspended MCP HTTP handlers
+   * are unblocked and resolver references can be garbage-collected.
+   * Idempotent — safe to call when no requests are pending.
+   */
+  cancelAll(): void;
 }
 
 /**
@@ -55,13 +64,21 @@ export function createPermissionServer(): PermissionServer {
   let stopped = false;
   let onRequestHandler: ((req: PermissionRequestEvent) => void) | null = null;
 
-  /** request_id → resolve function for pending approve_tool calls */
-  const pendingPromises = new Map<string, (decision: PermissionDecisionResult) => void>();
+  /** request_id → { resolver, toolName } for pending approve_tool calls.
+   *  toolName is stored so setRemembered() can retroactively resolve in-flight
+   *  requests and cancelAll() can drain all pending entries. */
+  const pendingPromises = new Map<string, {
+    resolve: (decision: PermissionDecisionResult) => void;
+    toolName: string;
+  }>();
   /** Tool names that are always approved without prompting */
   const rememberedTools = new Set<string>();
 
   const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
-    if (req.url !== '/mcp') {
+    // Parse the pathname from req.url so query strings and trailing slashes are
+    // tolerated — Claude CLI is the sole client but strict equality is fragile.
+    const pathname = req.url ? new URL(req.url, 'http://localhost').pathname : '';
+    if (pathname !== '/mcp') {
       res.writeHead(404).end();
       return;
     }
@@ -112,8 +129,10 @@ export function createPermissionServer(): PermissionServer {
         const requestId = randomUUID();
 
         // Await the host's decision, blocking the MCP tool call until decide() fires.
+        // Store toolName alongside the resolver so setRemembered() and cancelAll()
+        // can operate on in-flight entries without a separate lookup.
         const decision = await new Promise<PermissionDecisionResult>((resolve) => {
-          pendingPromises.set(requestId, resolve);
+          pendingPromises.set(requestId, { resolve, toolName: tool_name });
           // Notify the host via the registered onRequest handler.
           onRequestHandler?.({ request_id: requestId, tool_name, tool_input: input });
         });
@@ -179,16 +198,33 @@ export function createPermissionServer(): PermissionServer {
     },
 
     decide(requestId: string, decision: PermissionDecisionResult): void {
-      const resolve = pendingPromises.get(requestId);
-      if (resolve) {
+      const entry = pendingPromises.get(requestId);
+      if (entry) {
         pendingPromises.delete(requestId);
-        resolve(decision);
+        entry.resolve(decision);
       }
       // Unknown request_id: silent no-op as specified.
     },
 
     setRemembered(toolName: string): void {
       rememberedTools.add(toolName);
+      // Retroactively resolve any in-flight requests for this tool so the user
+      // is not prompted again for a tool they just elected to always allow.
+      for (const [reqId, entry] of pendingPromises) {
+        if (entry.toolName === toolName) {
+          pendingPromises.delete(reqId);
+          entry.resolve({ behavior: 'allow' });
+        }
+      }
+    },
+
+    cancelAll(): void {
+      // Resolve all pending entries with deny to unblock suspended HTTP handlers
+      // and free resolver references. Safe to call when no entries are pending.
+      for (const [reqId, entry] of pendingPromises) {
+        pendingPromises.delete(reqId);
+        entry.resolve({ behavior: 'deny' });
+      }
     },
   };
 }

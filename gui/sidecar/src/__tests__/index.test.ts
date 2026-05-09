@@ -42,6 +42,7 @@ function makePermissionServerMock(): PermissionServer & {
   onRequest: ReturnType<typeof vi.fn>;
   decide: ReturnType<typeof vi.fn>;
   setRemembered: ReturnType<typeof vi.fn>;
+  cancelAll: ReturnType<typeof vi.fn>;
 } {
   return {
     start: vi.fn().mockResolvedValue(undefined),
@@ -50,6 +51,7 @@ function makePermissionServerMock(): PermissionServer & {
     onRequest: vi.fn(),
     decide: vi.fn(),
     setRemembered: vi.fn(),
+    cancelAll: vi.fn(),
   };
 }
 
@@ -266,11 +268,25 @@ describe('main() permission server lifecycle (step-5)', () => {
 
     await waitForMessage(output, (m) => m.type === 'ready');
 
-    // Simulate SIGTERM — shutdown handler calls input.destroy() which breaks the
-    // for-await loop; the finally block should call server.stop().
-    process.emit('SIGTERM');
+    // Snapshot SIGTERM listeners before emitting so we can clean up any that
+    // main() fails to remove if the test fails before its own finally block runs.
+    // (main() *does* call process.removeListener in its finally, but this guard
+    // makes the test robust against future regressions and vitest worker reuse.)
+    const sigtermBefore = process.rawListeners('SIGTERM').slice() as ((...args: unknown[]) => void)[];
 
-    await mainSettled;
+    try {
+      // Simulate SIGTERM — shutdown handler calls input.destroy() which breaks
+      // the for-await loop; the finally block should call server.stop().
+      process.emit('SIGTERM');
+      await mainSettled;
+    } finally {
+      // Remove any SIGTERM listeners that main() may have left registered.
+      const added = (process.rawListeners('SIGTERM') as ((...args: unknown[]) => void)[])
+        .filter((fn) => !sigtermBefore.includes(fn));
+      for (const fn of added) {
+        process.removeListener('SIGTERM', fn);
+      }
+    }
 
     expect(serverMock.stop).toHaveBeenCalledOnce();
   });
