@@ -1637,6 +1637,24 @@ impl Engine {
             //    may reject this insert if a tighter or equal entry is
             //    already cached; either way the post-condition "a satisfying
             //    entry exists at `(entity, BRep, tol)`" holds.
+            //
+            //    **Symmetric insert↔lookup gate (task 3176)**: we only insert
+            //    when BOTH `demanded_tol.is_some()` AND
+            //    `realization_name.is_some()` — exactly the pair the cache-hit
+            //    short-circuit at the top of this function requires (see the
+            //    `if let (Some(tol), Some(name)) = (demanded_tol,
+            //    realization_name)` guard above). The lookup path also writes
+            //    `named_steps[name] = cached_handle`, which is unreachable
+            //    without a name, so symmetry is required by contract.
+            //
+            //    The production compiler always emits `Some(name)` for every
+            //    `RealizationDecl` (crates/reify-compiler/src/types.rs:848-857),
+            //    so this gate is a no-op for production builds — anonymous
+            //    realizations can only originate from
+            //    `TopologyTemplateBuilder::realization(...)` test-support code.
+            //    Pinned by
+            //    `anonymous_realization_does_not_populate_realization_cache_when_lookup_gate_requires_name`
+            //    in tests/tolerance_wiring_e2e.rs.
             if let Some(kind) = classify_swept_body(&realization_ops, &step_handles[handle_start..])
                 && let Some(&last) = step_handles[handle_start..].last()
             {
@@ -1646,7 +1664,7 @@ impl Engine {
                 if let Some(name) = realization_name {
                     named_steps.insert(name.to_string(), last);
                 }
-                if let Some(tol) = demanded_tol {
+                if let (Some(tol), Some(_name)) = (demanded_tol, realization_name) {
                     realization_cache.insert(&realization_id.entity, ReprKind::BRep, tol, last);
                 }
             }
