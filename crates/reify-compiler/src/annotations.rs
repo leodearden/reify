@@ -23,7 +23,7 @@ pub(crate) fn lower_annotations(
                                 reify_syntax::NumberClass::Real(f) => reify_types::AnnotationArg::Real(f),
                                 // Mirror site: compile_expr_guarded in expr.rs handles LossyReal the same way.
                                 reify_syntax::NumberClass::LossyReal(f) => {
-                                    diagnostics.push(crate::expr::lossy_real_warning(expr.span));
+                                    diagnostics.push(crate::diagnostics::lossy_real_warning(expr.span));
                                     reify_types::AnnotationArg::Real(f)
                                 }
                             })

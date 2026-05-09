@@ -370,21 +370,6 @@ fn resolve_collection_sub_to_list(scope: &CompilationScope, sub_name: &str) -> C
     CompiledExpr::value_ref(list_id, list_type)
 }
 
-/// Build the precision-loss warning for an integer-form literal that overflowed i64 bounds
-/// and was classified as [`reify_syntax::NumberClass::LossyReal`].
-///
-/// Shared between `compile_expr_guarded` (this file) and `lower_annotations`
-/// (`crate::annotations`) so both sites emit an identical diagnostic — keeping
-/// the message text in one place mirrors why `classify_number_literal` was
-/// centralised in `reify-syntax` (task 3251).
-pub(crate) fn lossy_real_warning(span: SourceSpan) -> Diagnostic {
-    Diagnostic::warning(
-        "integer literal too large to represent as Int; \
-         using Real (precision may be lost)",
-    )
-    .with_label(DiagnosticLabel::new(span, "precision lost"))
-}
-
 /// Compile an `Expr` from the AST into a `CompiledExpr`, with guard context.
 ///
 /// When `current_guard` is Some, references to names guarded by a different
@@ -414,7 +399,7 @@ pub(crate) fn compile_expr_guarded(
                 }
                 // Mirror site: lower_annotations in annotations.rs handles LossyReal the same way.
                 reify_syntax::NumberClass::LossyReal(f) => {
-                    diagnostics.push(lossy_real_warning(expr.span));
+                    diagnostics.push(crate::diagnostics::lossy_real_warning(expr.span));
                     CompiledExpr::literal(Value::Real(f), Type::Real)
                 }
             }
