@@ -97,6 +97,12 @@ export class SidecarSession {
    */
   private landlockOk: boolean | null = null;
 
+  /**
+   * Whether the one-shot sandbox_unavailable notice has already been emitted for this session.
+   * Guards against emitting the warning on every subsequent turn after the first failed probe.
+   */
+  private sandboxNoticeEmitted = false;
+
   /** The send_message id for the currently in-flight invocation, if any. */
   private currentInvocationId: string | null = null;
 
@@ -303,6 +309,20 @@ export class SidecarSession {
       this.landlockOk = this.config.landlockExec
         ? isLandlockAvailable(this.config.landlockExec)
         : false;
+    }
+
+    // When a sandbox was requested (landlockExec set) but the kernel can't deliver it,
+    // emit a one-shot notice so the frontend can surface a toast. The !sandboxNoticeEmitted
+    // guard prevents spamming the notice on every subsequent turn of the same session.
+    if (this.config.landlockExec && !this.landlockOk && !this.sandboxNoticeEmitted) {
+      this.sandboxNoticeEmitted = true;
+      this.onOutput({
+        type: 'notice',
+        id: '',
+        code: 'sandbox_unavailable',
+        message: 'Sandbox unavailable; Claude will run unrestricted.',
+      });
+      console.warn('[sidecar] sandbox unavailable; claude will run unrestricted');
     }
 
     // Wrap the claude args with the landlock sandbox when available.
