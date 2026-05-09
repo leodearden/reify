@@ -3341,6 +3341,10 @@ describe('SidecarSession permission-prompt wiring (step-3)', () => {
     //      (see the 'Do NOT register in pendingPermissionRequests' comment in session.ts).
     (server.decide as ReturnType<typeof vi.fn>).mockClear();
     await session.handleMessage({ type: 'permission_decision', request_id: 'req-orphan', behavior: 'allow', remember: true } as any);
+    expect(server.decide as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
+      'req-orphan',
+      expect.objectContaining({ behavior: 'allow' }),
+    );
     expect((server.setRemembered as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
   });
 
@@ -3400,6 +3404,10 @@ describe('SidecarSession permission-prompt wiring (step-3)', () => {
     //      (see the 'Do NOT register in pendingPermissionRequests' comment in session.ts).
     (server.decide as ReturnType<typeof vi.fn>).mockClear();
     await session.handleMessage({ type: 'permission_decision', request_id: 'req-post', behavior: 'allow', remember: true } as any);
+    expect(server.decide as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
+      'req-post',
+      expect.objectContaining({ behavior: 'allow' }),
+    );
     expect((server.setRemembered as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
   });
 });
