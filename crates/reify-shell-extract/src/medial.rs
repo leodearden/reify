@@ -2016,6 +2016,45 @@ mod tests {
         );
     }
 
+    /// Unit test for `validate_flat_data_length`: exercises all three result
+    /// branches (Ok, AxisExtentsOverflow, DataLengthMismatch) without
+    /// constructing a full SampledField — keeping the test fast and avoiding
+    /// the memory pressure needed to trigger a real overflow through the
+    /// public API.
+    ///
+    /// Currently FAILS to compile (RED) because `validate_flat_data_length`
+    /// does not yet exist. After step-6 adds the helper, all three assertions
+    /// pass.
+    #[test]
+    fn validate_flat_data_length_routes_overflow_and_mismatch() {
+        // (a) Ok on matching inputs: 2×3×4 = 24.
+        validate_flat_data_length(2, 3, 4, 24).expect("ok on consistent inputs");
+
+        // (b) AxisExtentsOverflow when the product overflows usize.
+        // 2^22 = 4_194_304; cubed = 2^66 which overflows both 32- and 64-bit usize.
+        let n = 1usize << 22;
+        match validate_flat_data_length(n, n, n, 0) {
+            Err(MedialError::AxisExtentsOverflow { nx, ny, nz }) => {
+                assert_eq!(nx, n, "AxisExtentsOverflow must carry nx");
+                assert_eq!(ny, n, "AxisExtentsOverflow must carry ny");
+                assert_eq!(nz, n, "AxisExtentsOverflow must carry nz");
+            }
+            other => panic!(
+                "expected AxisExtentsOverflow, got {other:?}"
+            ),
+        }
+
+        // (c) DataLengthMismatch when the product is valid but data_len differs.
+        assert_eq!(
+            validate_flat_data_length(2, 3, 4, 23),
+            Err(MedialError::DataLengthMismatch {
+                expected: 24,
+                found: 23,
+            }),
+            "DataLengthMismatch must carry expected=24 and found=23"
+        );
+    }
+
     /// Display contract test: `MedialError::AxisExtentsOverflow` must format
     /// with "overflow" in the message and include each of the three extent
     /// values (nx, ny, nz), and must NOT leak the `usize::MAX` sentinel that
