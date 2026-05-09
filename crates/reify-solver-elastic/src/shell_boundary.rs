@@ -550,6 +550,11 @@ mod tests {
             (SupportKind::Fixed, SupportBodyKind::Tet),
             (SupportKind::Pinned, SupportBodyKind::Tet),
         ];
+        // Silence the default panic hook so each caught panic does not flood
+        // test output with a backtrace; restore the previous hook afterward.
+        let prev_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+
         let mut failures: Vec<String> = Vec::new();
         for (kind, body) in cases {
             match std::panic::catch_unwind(|| {
@@ -559,12 +564,15 @@ mod tests {
                     let msg = err
                         .downcast_ref::<String>()
                         .map(|s| s.as_str())
-                        .or_else(|| err.downcast_ref::<&str>().copied())
-                        .unwrap_or("");
-                    if !msg.contains("duplicate") {
-                        failures.push(format!(
+                        .or_else(|| err.downcast_ref::<&str>().copied());
+                    match msg {
+                        Some(msg) if msg.contains("duplicate") => {} // expected
+                        Some(msg) => failures.push(format!(
                             "({kind:?}, {body:?}): panic message was {msg:?}"
-                        ));
+                        )),
+                        None => failures.push(format!(
+                            "({kind:?}, {body:?}): panic with non-string payload (TypeId mismatch)"
+                        )),
                     }
                 }
                 Ok(_) => failures.push(format!(
@@ -572,6 +580,9 @@ mod tests {
                 )),
             }
         }
+
+        std::panic::set_hook(prev_hook);
+
         assert!(
             failures.is_empty(),
             "per-variant duplicate-check failures:\n{}",
