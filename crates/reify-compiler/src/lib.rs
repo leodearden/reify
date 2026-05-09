@@ -11,6 +11,7 @@ mod compile_builder;
 mod conformance;
 mod connect;
 mod constants;
+mod diagnostics;
 mod entity;
 mod expr;
 mod forall_elaborate;
