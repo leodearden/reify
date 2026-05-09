@@ -777,3 +777,35 @@ fn exists_over_non_collection_emits_diagnostic() {
         errors
     );
 }
+
+// ── task-3252: integer-form overflow literal precision-loss warnings ──────────
+
+#[test]
+fn integer_form_overflow_literal_emits_precision_loss_warning() {
+    // A bare integer literal too large to represent as i64 (e.g. 20-digit integer)
+    // is parsed as f64 (→ Infinity) with is_real=false, classified as LossyReal.
+    // The compiler must emit a non-fatal warning about precision loss.
+    // Covers the expr.rs (compile_expr_guarded) call site.
+    let source = r#"
+        structure S {
+            let x = 99999999999999999999
+        }
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "integer overflow literal should not produce errors, got: {:?}",
+        errors
+    );
+
+    let warnings = warnings_only(&module);
+    let has_precision_warning = warnings
+        .iter()
+        .any(|d| d.message.contains("integer literal") && d.message.contains("precision"));
+    assert!(
+        has_precision_warning,
+        "expected warning about integer literal precision loss, got: {:?}",
+        warnings
+    );
+}
