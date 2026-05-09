@@ -177,27 +177,29 @@ fn solve_shell_system(
 /// | x=0   | θ=π/2 symmetry (yz-plane) | u_x=0, θ_y=0, θ_z=0 |
 /// | z=0   | Mid-span symmetry | u_z=0, θ_x=0, θ_y=0 |
 ///
-/// # Reference solution
+/// # Pinned coarse-mesh baseline
 ///
-/// Published reference (MacNeal & Harder 1985): radial displacement at
-/// load point = 1.8248×10⁻⁵.
+/// This test pins the observed coarse-mesh MITC3 radial displacement at the
+/// load point: **2.4111×10⁻⁷**.
 ///
-/// Observed coarse-mesh MITC3 (4×4 octant, no bubble enrichment):
-/// **2.4111×10⁻⁷** — approximately 76× below the published reference.
+/// For comparison, the published MacNeal-Harder (1985) reference is
+/// **1.8248×10⁻⁵** — kept here only as a future ratchet target once MITC3+
+/// bubble enrichment lands. This test does **not** assert against the
+/// published reference; the band `[0.3, 3.0] × COARSE_MITC3_OBS` is so
+/// wide it would not catch a 10× accuracy regression.
 ///
-/// The large gap is due to **membrane locking** of the flat-element MITC3
-/// approximation on a curved surface. The flat element cannot represent the
-/// cylinder's inextensional bending mode without generating spurious in-plane
-/// (membrane) strains, so the response is dominated by membrane stiffness
-/// (~E·t/(1−ν²)) rather than bending stiffness (~E·t³/12·R²). MITC3 only
-/// addresses transverse-shear locking (via the assumed-strain MITC technique);
-/// membrane locking on curved geometry requires the MITC3+ bubble enrichment
-/// (deferred, see `shell_assembly.rs:25-34`) or a finer mesh.
+/// The large gap (~76×) is due to **membrane locking** of the flat-element
+/// MITC3 approximation on a curved surface. The flat element cannot represent
+/// the cylinder's inextensional bending mode without generating spurious
+/// in-plane (membrane) strains, so the response is dominated by membrane
+/// stiffness (~E·t/(1−ν²)) rather than bending stiffness (~E·t³/12·R²).
+/// MITC3 only addresses transverse-shear locking (via the assumed-strain MITC
+/// technique); membrane locking on curved geometry requires the MITC3+ bubble
+/// enrichment (deferred, see `shell_assembly.rs:25-34`) or a finer mesh.
 ///
 /// Tolerance band pins to the observed value: [0.3, 3.0] × 2.4111×10⁻⁷.
-/// A future MITC3+ retrofit can tighten these bounds toward the reference.
 #[test]
-fn pinched_cylinder_octant_radial_displacement_at_load_matches_macneal_harder_within_coarse_mesh_tolerance(
+fn pinched_cylinder_octant_radial_displacement_pins_observed_coarse_mitc3_baseline(
 ) {
     const R: f64 = 300.0;
     const L: f64 = 600.0;
@@ -329,8 +331,8 @@ fn pinched_cylinder_octant_radial_displacement_at_load_matches_macneal_harder_wi
     // Radial displacement = -u_y (inward = positive).
     let radial_disp = -u[load_node * 6 + 1];
 
-    // Observed coarse-mesh MITC3 value (pinned regression baseline).
-    // Far below the published reference due to membrane locking — see doc comment.
+    // Pinned regression baseline at the observed coarse-mesh value
+    // (NOT published-reference validation; see doc comment).
     // Published ref: 1.8248e-5; observed: 2.4111e-7 (factor ~76 gap).
     const COARSE_MITC3_OBS: f64 = 2.4111e-7;
     assert!(
@@ -600,25 +602,28 @@ fn twisted_beam_mesh(nz: usize, ny: usize) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
 /// The x=L/2 plane is a symmetry plane (u_x=0 antisymmetric, θ_y=0 symmetric)
 /// but the vertical displacement u_z is FREE and takes its maximum value there.
 ///
-/// # Reference solution
+/// # Pinned coarse-mesh baseline
 ///
-/// Published (MacNeal & Harder 1985): vertical (z) deflection at the
-/// free-edge longitudinal center = 0.3024 (downward).
+/// This test pins the observed coarse-mesh MITC3 vertical deflection at the
+/// free-edge longitudinal center: **1.4334×10⁻²** (downward).
 ///
-/// Observed coarse-mesh MITC3 (4×4 quadrant, no bubble enrichment):
-/// **1.4334×10⁻²** — approximately 21× below the published reference.
+/// For comparison, the published MacNeal-Harder (1985) reference is
+/// **0.3024** — kept here only as a future ratchet target once MITC3+ bubble
+/// enrichment lands. This test does **not** assert against the published
+/// reference; the band `[0.3, 3.0] × COARSE_MITC3_OBS` is so wide it would
+/// not catch a 10× accuracy regression.
 ///
-/// The large gap is due to **membrane locking** of the flat-triangle MITC3
-/// approximation on a curved surface (same mechanism as the pinched cylinder).
-/// The Scordelis-Lo roof involves significant membrane action in addition to
-/// bending; MITC3's assumed-strain technique addresses only transverse-shear
-/// locking, not the in-plane (membrane) locking that afflicts curved geometry.
-/// Resolves with MITC3+ bubble enrichment or a finer mesh.
+/// The large gap (~21×) is due to **membrane locking** of the flat-triangle
+/// MITC3 approximation on a curved surface (same mechanism as the pinched
+/// cylinder). The Scordelis-Lo roof involves significant membrane action in
+/// addition to bending; MITC3's assumed-strain technique addresses only
+/// transverse-shear locking, not the in-plane (membrane) locking that
+/// afflicts curved geometry. Resolves with MITC3+ bubble enrichment or a
+/// finer mesh.
 ///
 /// Tolerance band pins to the observed value: [0.3, 3.0] × 1.4334×10⁻².
-/// A future MITC3+ retrofit can tighten these bounds toward the reference.
 #[test]
-fn scordelis_lo_roof_quadrant_vertical_deflection_at_free_edge_midpoint_matches_reference_within_coarse_mesh_tolerance(
+fn scordelis_lo_roof_quadrant_vertical_deflection_pins_observed_coarse_mitc3_baseline(
 ) {
     const R: f64 = 25.0;
     const L: f64 = 50.0;
@@ -740,8 +745,8 @@ fn scordelis_lo_roof_quadrant_vertical_deflection_at_free_edge_midpoint_matches_
     // Gravity loads −z ⇒ u_z < 0.  Report downward deflection (positive).
     let vert_defl = -u[free_edge_center * 6 + 2];
 
-    // Observed coarse-mesh MITC3 value (pinned regression baseline).
-    // Far below the published reference due to membrane locking — see doc comment.
+    // Pinned regression baseline at the observed coarse-mesh value
+    // (NOT published-reference validation; see doc comment).
     // Published ref: 0.3024; observed: 1.4334e-2 (factor ~21 gap).
     const COARSE_MITC3_OBS: f64 = 1.4334e-2;
     assert!(
@@ -784,26 +789,28 @@ fn scordelis_lo_roof_quadrant_vertical_deflection_at_free_edge_midpoint_matches_
 /// equal-and-opposite −P contribution from the other half, so only a P/4 net
 /// load appears in the quadrant model.
 ///
-/// # Reference solution
+/// # Pinned coarse-mesh baseline
 ///
-/// Published (MacNeal & Harder 1985): radial displacement at the loaded
-/// equator corner = 0.0940 (outward).
+/// This test pins the observed coarse-mesh MITC3 radial displacement at the
+/// loaded equator corner: **4.2792×10⁻⁵** (outward).
 ///
-/// Observed coarse-mesh MITC3 (4×4 quadrant, no bubble enrichment):
-/// **4.2792×10⁻⁵** — approximately 2200× below the published reference.
+/// For comparison, the published MacNeal-Harder (1985) reference is
+/// **0.0940** — kept here only as a future ratchet target once MITC3+ bubble
+/// enrichment lands. This test does **not** assert against the published
+/// reference; the band `[0.3, 3.0] × COARSE_MITC3_OBS` is so wide it would
+/// not catch a 10× accuracy regression.
 ///
-/// The extremely large gap is due to **severe membrane locking** on this very
-/// thin shell (R/t = 250 — much thinner than the pinched cylinder at R/t = 100).
-/// MITC3's assumed-strain technique removes transverse-shear locking but not
-/// the in-plane membrane locking that dominates highly curved thin shells.
-/// The hemisphere is well-known as one of the most demanding benchmarks for
-/// shell elements without bubble enrichment (MITC3+). Resolves with MITC3+
-/// bubble enrichment or a significantly finer mesh.
+/// The extremely large gap (~2200×) is due to **severe membrane locking** on
+/// this very thin shell (R/t = 250 — much thinner than the pinched cylinder
+/// at R/t = 100). MITC3's assumed-strain technique removes transverse-shear
+/// locking but not the in-plane membrane locking that dominates highly curved
+/// thin shells. The hemisphere is well-known as one of the most demanding
+/// benchmarks for shell elements without bubble enrichment (MITC3+). Resolves
+/// with MITC3+ bubble enrichment or a significantly finer mesh.
 ///
 /// Tolerance band pins to the observed value: [0.3, 3.0] × 4.2792×10⁻⁵.
-/// A future MITC3+ retrofit can tighten these bounds toward the reference.
 #[test]
-fn hemisphere_with_point_loads_radial_displacement_at_load_matches_macneal_harder_within_coarse_mesh_tolerance(
+fn hemisphere_with_point_loads_radial_displacement_pins_observed_coarse_mitc3_baseline(
 ) {
     const R: f64 = 10.0;
     const T: f64 = 0.04;
@@ -879,9 +886,9 @@ fn hemisphere_with_point_loads_radial_displacement_at_load_matches_macneal_harde
     // equator point, so the radial displacement = u_x (positive = outward).
     let radial_disp = u[load_node * 6 + 0];
 
-    // Observed coarse-mesh MITC3 value (pinned regression baseline).
-    // Far below the published reference due to severe membrane locking (R/t=250)
-    // — see doc comment above.
+    // Pinned regression baseline at the observed coarse-mesh value
+    // (NOT published-reference validation; see doc comment).
+    // Far below the published reference due to severe membrane locking (R/t=250).
     // Published ref: 0.0940; observed: 4.2792e-5 (factor ~2200 gap).
     const COARSE_MITC3_OBS: f64 = 4.2792e-5;
     assert!(
@@ -922,23 +929,27 @@ fn hemisphere_with_point_loads_radial_displacement_at_load_matches_macneal_harde
 ///
 /// The measurement: u_y at the tip centroid (s=0, z=L) → node at (0,0,L).
 ///
-/// # Reference solution
+/// # Pinned coarse-mesh baseline
 ///
-/// Published (MacNeal & Harder 1985): out-of-plane tip displacement = 1.754×10⁻³.
+/// This test pins the observed coarse-mesh MITC3 out-of-plane tip
+/// displacement: **1.0106×10⁻³**.
 ///
-/// Observed coarse-mesh MITC3 (12×2 mesh, no bubble enrichment):
-/// **1.0106×10⁻³** — approximately 58% of the published reference (1.73× below).
+/// For comparison, the published MacNeal-Harder (1985) reference is
+/// **1.754×10⁻³** — kept here only as a future ratchet target once MITC3+
+/// bubble enrichment lands. This test does **not** assert against the
+/// published reference; the band `[0.3, 3.0] × COARSE_MITC3_OBS` is so
+/// wide it would not catch a 10× accuracy regression.
 ///
-/// The modest gap is expected: the twisted beam has near-planar elements (small
-/// curvature per element), so MITC3's assumed-strain technique effectively
-/// removes transverse-shear locking. The remaining gap is from the coarse mesh
-/// resolution (12×2 = 24 elements) and the lack of the MITC3+ bubble enrichment.
-/// This is the best-performing benchmark for MITC3 in this suite.
+/// The modest gap (~1.73×) is expected: the twisted beam has near-planar
+/// elements (small curvature per element), so MITC3's assumed-strain technique
+/// effectively removes transverse-shear locking. The remaining gap is from the
+/// coarse mesh resolution (12×2 = 24 elements) and the lack of the MITC3+
+/// bubble enrichment. This is the best-performing benchmark for MITC3 in this
+/// suite.
 ///
 /// Tolerance band pins to the observed value: [0.3, 3.0] × 1.0106×10⁻³.
-/// A future MITC3+ retrofit can tighten these bounds toward the reference.
 #[test]
-fn twisted_beam_tip_out_of_plane_load_displaces_within_macneal_harder_tolerance() {
+fn twisted_beam_tip_out_of_plane_load_displacement_pins_observed_coarse_mitc3_baseline() {
     const L: f64 = 12.0;
     const NZ: usize = 12; // segments along z
     const NY: usize = 2;  // strips across width
@@ -1010,9 +1021,10 @@ fn twisted_beam_tip_out_of_plane_load_displaces_within_macneal_harder_tolerance(
     // Out-of-plane displacement = u_y at tip centroid.
     let tip_defl = u[centroid_node * 6 + 1];
 
-    // Observed coarse-mesh MITC3 value (pinned regression baseline).
+    // Pinned regression baseline at the observed coarse-mesh value
+    // (NOT published-reference validation; see doc comment).
     // Within ~42% of the published reference — the best-performing benchmark
-    // in this suite due to near-planar elements. See doc comment above.
+    // in this suite due to near-planar elements.
     // Published ref: 1.754e-3; observed: 1.0106e-3 (factor ~1.7 gap).
     const COARSE_MITC3_OBS: f64 = 1.0106e-3;
     assert!(
