@@ -717,4 +717,51 @@ mod tests {
              intentional attribute-loss diagnostic per PRD line 70",
         );
     }
+
+    /// RED for item 4 of task 3186: pins that `store_mesh_for_test` returns
+    /// `Err(GeometryError::OperationFailed(_))` when given an invalid
+    /// (non-manifold) mesh.
+    ///
+    /// A single open triangle is structurally not a closed orientable manifold
+    /// (it has three boundary edges with no closing surface), so
+    /// `Manifold::from_mesh_f64` must reject it. Match-on-variant rather than
+    /// equality because `GeometryError` does not derive `PartialEq` — mirrors
+    /// `execute_union_with_unknown_handle_returns_invalid_reference` (lines
+    /// 528-543).
+    ///
+    /// This test does not need `#[cfg(feature = "test-fixtures")]` because it
+    /// lives inside the unit `mod tests` block, which is compiled under
+    /// `cfg(test)` — the gating predicate `cfg(any(test, feature =
+    /// "test-fixtures"))` is satisfied by `cfg(test)` alone.
+    ///
+    /// **RED state:** fails to compile against the current `store_mesh_for_test`
+    /// signature (which returns `GeometryHandleId`, not `Result`). Step-2
+    /// (GREEN) fixes the signature.
+    #[test]
+    fn store_mesh_for_test_with_invalid_mesh_returns_err_operation_failed() {
+        let mut kernel = ManifoldKernel::new();
+        // A single open triangle — three vertices, one triangle face.
+        // Not a closed manifold: three boundary edges, no closing surface.
+        // `Manifold::from_mesh_f64` requires closed orientable surfaces and
+        // must fail on this input.
+        let bad_mesh = Mesh {
+            vertices: vec![
+                0.0_f32, 0.0, 0.0, // v0
+                1.0, 0.0, 0.0,     // v1
+                0.0, 1.0, 0.0,     // v2
+            ],
+            indices: vec![0, 1, 2],
+            normals: None,
+        };
+
+        let result = kernel.store_mesh_for_test(&bad_mesh);
+
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            other => panic!(
+                "store_mesh_for_test with a single-triangle (non-manifold) mesh must return \
+                 Err(GeometryError::OperationFailed(_)); got {other:?}"
+            ),
+        }
+    }
 }
