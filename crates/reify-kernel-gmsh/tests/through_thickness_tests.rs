@@ -446,3 +446,75 @@ fn nan_centroid_returns_empty_and_emits_warn() {
         warn_count
     );
 }
+
+/// A volume mesh whose first vertex has +Inf coordinates must not produce a
+/// spurious layer count — Inf poisons `bin_width` (avg_tet_extent → Inf →
+/// half_bin → Inf → `(w[1] - w[0]).abs() > Inf` is always false → layer_count
+/// collapses to 1 regardless of geometry). Instead the function must
+/// early-return `Vec::new()` and emit exactly one WARN-level event at the
+/// `reify_kernel_gmsh::through_thickness` target.
+///
+/// RED contract (without fix): the existing `is_nan()` guard does not trip on
+/// Inf, the layer-count walk runs to completion on a 1-tet input
+/// (layer_count=1 < threshold=2), and returns 1 spurious warning. Zero WARN
+/// events are emitted to the named target. After the fix (`!is_finite()`
+/// predicate): early-return hits, Vec is empty, WARN counter == 1.
+#[test]
+fn inf_centroid_returns_empty_and_emits_warn() {
+    // Prime the callsite cache so per-test with_default subscribers see events
+    // even if a prior test thread hit the callsite with no subscriber active.
+    reify_test_support::prime_tracing_callsite_cache();
+
+    let surface = slab_surface_mesh();
+
+    // Single P1 tet whose first vertex is all-Inf: the projected centroid is
+    // sum(Inf + finite + finite + finite) * 0.25 = Inf.
+    let volume = VolumeMesh {
+        vertices: vec![
+            // Vertex 0 — all-Inf (upstream pathology)
+            f32::INFINITY, f32::INFINITY, f32::INFINITY,
+            // Vertices 1..3 — finite slab corners
+            10.0, 0.0, 0.0,
+            10.0, 10.0, 0.5,
+            0.0, 10.0, 0.5,
+        ],
+        tet_indices: vec![0, 1, 2, 3],
+        element_order: ElementOrderTag::P1,
+        normals: None,
+    };
+    let cfg = ThroughThicknessConfig {
+        min_elements_through_thickness: 2,
+    };
+
+    let (subscriber, counters) = reify_test_support::CountingSubscriberBuilder::new()
+        .count_level(tracing::Level::WARN)
+        .target_prefix("reify_kernel_gmsh::through_thickness")
+        .build();
+    let warn_arc = Arc::clone(&counters[&tracing::Level::WARN]);
+
+    let warnings = tracing::subscriber::with_default(subscriber, || {
+        through_thickness_check(&volume, &surface, cfg)
+    });
+
+    // (a) Must return empty Vec — an Inf centroid signals upstream pathology,
+    //     not an under-resolved region; no ThroughThicknessWarning should be
+    //     produced.
+    assert!(
+        warnings.is_empty(),
+        "inf centroid must produce empty Vec, not a spurious layer-count warning; \
+         got {} warning(s): {:?}",
+        warnings.len(),
+        warnings.iter().map(|w| &w.message).collect::<Vec<_>>()
+    );
+
+    // (b) No panic (implicit — reaching this point means the function returned).
+
+    // (c) Exactly one WARN event must be emitted at the
+    //     reify_kernel_gmsh::through_thickness target.
+    let warn_count = warn_arc.load(Ordering::Acquire);
+    assert_eq!(
+        warn_count, 1,
+        "expected exactly 1 WARN event at reify_kernel_gmsh::through_thickness; got {}",
+        warn_count
+    );
+}
