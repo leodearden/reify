@@ -402,11 +402,6 @@ describe('createPermissionServer', () => {
     server = createPermissionServer();
     await server.start();
 
-    let capturedRequestId = '';
-    server.onRequest((req) => {
-      capturedRequestId = req.request_id;
-    });
-
     const mcpCloseSpy = vi.spyOn(McpServer.prototype, 'close');
     const transportCloseSpy = vi.spyOn(StreamableHTTPServerTransport.prototype, 'close');
 
@@ -415,30 +410,31 @@ describe('createPermissionServer', () => {
     try {
       const N = 10;
       for (let i = 0; i < N; i++) {
-        capturedRequestId = '';
+        // Register a one-shot handler per iteration — resolves as soon as the
+        // server fires onRequest, without a setTimeout busy-poll. onRequest is
+        // last-write-wins, so each iteration cleanly replaces the previous one.
+        const requestIdPromise = new Promise<string>((resolve) => {
+          server.onRequest((req) => resolve(req.request_id));
+        });
+
         const toolCallPromise = client.callTool({
           name: 'approve_tool',
           arguments: { tool_name: 'Write', input: { i } },
         });
 
-        // Wait for the server's onRequest callback to fire (captured request_id set).
-        await new Promise<void>((resolve) => {
-          const check = () => {
-            if (capturedRequestId) resolve();
-            else setTimeout(check, 5);
-          };
-          check();
-        });
-
-        server.decide(capturedRequestId, { behavior: 'allow' });
+        server.decide(await requestIdPromise, { behavior: 'allow' });
         await toolCallPromise;
       }
 
-      // Allow Node to fire post-response 'close' events through the event loop.
-      await new Promise((r) => setTimeout(r, 100));
+      // Poll until all N close() calls have fired, with a 2 s budget — more
+      // robust than a fixed sleep on loaded CI where event-loop queuing can
+      // delay post-response 'close' events beyond any fixed wall-clock constant.
+      const deadline = Date.now() + 2000;
+      while (mcpCloseSpy.mock.calls.length < N && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 10));
+      }
 
       // Each of the N requests must have triggered cleanup via the 'close' listener.
-      // With `cleaned = true` blocking the listener on the success path both counts stay 0.
       expect(mcpCloseSpy.mock.calls.length).toBeGreaterThanOrEqual(N);
       expect(transportCloseSpy.mock.calls.length).toBeGreaterThanOrEqual(N);
     } finally {

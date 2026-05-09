@@ -171,6 +171,9 @@ export function createPermissionServer(): PermissionServer {
       // The earlier "uncertain double-close" concern (introduced in commit 1bbb6b924e)
       // does not survive inspection of the pinned SDK; the `cleaned` guard alone is
       // sufficient.
+      // 'cleaned' is defensive — Node fires 'close' once per response today;
+      // the guard cheaply protects against future runtime/SDK changes that
+      // could re-fire it.
       let cleaned = false;
       res.on('close', () => {
         if (cleaned) return;
