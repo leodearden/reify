@@ -765,6 +765,20 @@ pub fn compute_sidecar_env(
     envs
 }
 
+/// Apply workspace + landlock env vars to a [`tokio::process::Command`].
+///
+/// Calls [`compute_sidecar_env`] and sets each key-value pair on the command
+/// via [`tokio::process::Command::env`].
+pub fn apply_sidecar_env(
+    cmd: &mut tokio::process::Command,
+    workspace: &std::path::Path,
+    landlock_exec: Option<&std::path::Path>,
+) {
+    for (k, v) in compute_sidecar_env(workspace, landlock_exec) {
+        cmd.env(k, v);
+    }
+}
+
 /// Spawn the Claude sidecar process and return a [`SidecarHandle`] in `Starting` state.
 ///
 /// Extracts stdin/stdout from the child, wraps stdout in a [`BufReader`], and
@@ -773,20 +787,29 @@ pub fn compute_sidecar_env(
 /// [`ensure_sidecar_ready`] to store it in the shared sidecar slot and await readiness,
 /// or can call [`SidecarHandle::wait_ready`] manually.
 ///
+/// `workspace` is the landlock-writable directory injected as `REIFY_WORKSPACE`.
+/// `landlock_exec` is the path to the vendored `landlock_exec.py` helper,
+/// injected as `REIFY_LANDLOCK_EXEC` when `Some`.
+///
 /// Returns `Err` if the process cannot be spawned or if stdin/stdout are unavailable.
 pub async fn spawn_sidecar_impl<F>(
     path: &Path,
     engine: Arc<std::sync::Mutex<crate::engine::EngineSession>>,
     event_emitter: F,
     selection: Arc<std::sync::RwLock<reify_mcp::SelectionInfo>>,
+    workspace: &std::path::Path,
+    landlock_exec: Option<&std::path::Path>,
 ) -> Result<SidecarHandle, String>
 where
     F: Fn(String, Value) + Send + Sync + 'static,
 {
-    let mut proc = tokio::process::Command::new(path)
+    let mut command = tokio::process::Command::new(path);
+    command
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit());
+    apply_sidecar_env(&mut command, workspace, landlock_exec);
+    let mut proc = command
         .spawn()
         .map_err(|e| format!("Failed to spawn sidecar {:?}: {}", path, e))?;
 

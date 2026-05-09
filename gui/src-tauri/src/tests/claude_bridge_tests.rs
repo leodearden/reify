@@ -860,6 +860,7 @@ fn app_state_has_sidecar_field() {
         watcher: Mutex::new(None),
         sidecar: tokio::sync::Mutex::new(None),
         selection: Arc::new(RwLock::new(SelectionInfo::default())),
+        initial_file: Mutex::new(None),
     };
 }
 
@@ -1678,6 +1679,8 @@ async fn spawn_sidecar_impl_returns_error_for_missing_binary() {
         engine,
         |_name: String, _payload: serde_json::Value| {},
         selection,
+        Path::new("/tmp/test-ws"),
+        None,
     )
     .await;
 
@@ -1710,6 +1713,8 @@ async fn spawn_sidecar_impl_returns_handle_for_valid_binary() {
         engine,
         |_name: String, _payload: serde_json::Value| {},
         selection,
+        Path::new("/tmp/test-ws"),
+        None,
     )
     .await;
 

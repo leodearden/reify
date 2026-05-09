@@ -23,6 +23,8 @@ pub struct AppState {
     pub sidecar: tokio::sync::Mutex<Option<SidecarHandle>>,
     /// Shared selection state updated by the frontend, read by MCP tools.
     pub selection: Arc<RwLock<SelectionInfo>>,
+    /// Initial file passed on the CLI at startup (used for workspace resolution).
+    pub initial_file: Mutex<Option<std::path::PathBuf>>,
 }
 
 // --- Helper functions for testability ---
