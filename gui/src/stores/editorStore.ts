@@ -81,6 +81,10 @@ export function createEditorStore() {
     setState('externallyChanged', (ec) => ec.filter((p) => p !== path));
   }
 
+  function clearAllExternallyChanged() {
+    setState('externallyChanged', []);
+  }
+
   function setCursorPosition(lineOrNull: number | null, column?: number) {
     if (lineOrNull === null) {
       setState('cursorPosition', null);
@@ -89,5 +93,5 @@ export function createEditorStore() {
     }
   }
 
-  return { state, openFile, updateFileContent, closeFile, setActiveFile, markDirty, markClean, markExternallyChanged, clearExternallyChanged, setCursorPosition };
+  return { state, openFile, updateFileContent, closeFile, setActiveFile, markDirty, markClean, markExternallyChanged, clearExternallyChanged, clearAllExternallyChanged, setCursorPosition };
 }
