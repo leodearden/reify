@@ -158,6 +158,11 @@ pub fn pick_lexmin_kernel() -> Option<&'static KernelRegistration> {
 /// the current `pick_lexmin_kernel` behaviour.  The fallback chain is:
 /// `find(brep) → values().next()`.
 ///
+/// Note: for `Operation::Convert{from}` entries the tuple's repr is the
+/// *output*, so a `BRep→Mesh` tessellation kernel would not match this filter
+/// even though it consumes BRep input.  Acceptable for v0.2 because OCCT is
+/// the only BRep producer.
+///
 /// # Performance
 ///
 /// Each call invokes `(reg.descriptor)()` once per registered kernel until a
