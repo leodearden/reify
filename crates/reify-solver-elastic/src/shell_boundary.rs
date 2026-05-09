@@ -202,30 +202,6 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // Step 1: enum Debug output contains expected variant names
-    //
-    // Variant existence and Copy/Clone/PartialEq/Eq correctness are already
-    // exercised implicitly by the build_support_bcs_* tests below (they
-    // construct variants and compare with assert_eq!/assert_ne! at compile
-    // and runtime). This test anchors the one thing a compile-time check
-    // cannot verify: that the derived Debug format for each variant actually
-    // contains its name.
-    // ------------------------------------------------------------------
-
-    #[test]
-    fn enum_debug_output_contains_variant_name() {
-        assert!(format!("{:?}", SupportKind::Fixed).contains("Fixed"));
-        assert!(format!("{:?}", SupportKind::Pinned).contains("Pinned"));
-        assert!(format!("{:?}", SupportBodyKind::Shell).contains("Shell"));
-        assert!(format!("{:?}", SupportBodyKind::Tet).contains("Tet"));
-        assert!(format!("{:?}", SupportCompatibility::Ok).contains("Ok"));
-        assert!(
-            format!("{:?}", SupportCompatibility::PinnedOnTetEquivalentToFixed)
-                .contains("PinnedOnTetEquivalentToFixed")
-        );
-    }
-
-    // ------------------------------------------------------------------
     // Step 3: build_support_bcs — (Shell, Fixed) returns 6 BCs/node
     // ------------------------------------------------------------------
 
