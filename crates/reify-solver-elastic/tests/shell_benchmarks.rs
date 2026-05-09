@@ -151,6 +151,131 @@ fn solve_shell_system(
     rhs.col_as_slice(0_usize).to_vec()
 }
 
+// ─── step-2: pinched cylinder (MacNeal-Harder §3.3) ─────────────────────────
+
+/// MacNeal-Harder (1985) §3.3 pinched cylinder benchmark.
+///
+/// A thin cylindrical shell (R=300, L=600, t=3, E=3×10⁶, ν=0.3) is
+/// loaded by two equal and opposite radial point loads P=1 at the midspan
+/// (z=0). By 1/8 octant symmetry (z ∈ [0, L/2], θ ∈ [0, π/2]) the
+/// octant model applies P/4 at the loaded corner (θ=π/2, z=0).
+///
+/// # Boundary conditions
+///
+/// | Plane | Physical role | Constrained DOFs |
+/// |-------|---------------|-----------------|
+/// | z=L/2 | Rigid diaphragm end | u_x=0, u_y=0, θ_z=0 |
+/// | y=0   | θ=0 symmetry (xz-plane) | u_y=0, θ_x=0, θ_z=0 |
+/// | x=0   | θ=π/2 symmetry (yz-plane) | u_x=0, θ_y=0, θ_z=0 |
+/// | z=0   | Mid-span symmetry | u_z=0, θ_x=0, θ_y=0 |
+///
+/// # Reference solution
+///
+/// Published reference (MacNeal & Harder 1985): radial displacement at
+/// load point = 1.8248×10⁻⁵.
+/// Coarse-mesh MITC3 (no bubble enrichment) typically achieves 30–80% of
+/// the converged reference; tolerance band = [0.3, 1.5] × reference.
+#[test]
+fn pinched_cylinder_octant_radial_displacement_at_load_matches_macneal_harder_within_coarse_mesh_tolerance(
+) {
+    const R: f64 = 300.0;
+    const L: f64 = 600.0;
+    const T: f64 = 3.0;
+    const NX: usize = 4; // θ-direction divisions
+    const NY: usize = 4; // z-direction divisions
+    const P: f64 = 1.0; // total applied load
+    const MACNEAL_HARDER_REF: f64 = 1.8248e-5;
+
+    let mat = IsotropicElastic {
+        youngs_modulus: 3e6,
+        poisson_ratio: 0.3,
+    };
+
+    // Mesh: nodes at (R·cos θ, R·sin θ, z); RED until cylinder_octant_mesh is defined.
+    let (nodes, connectivity) = cylinder_octant_mesh(NX, NY);
+    let n_nodes = nodes.len();
+
+    // Build per-element stiffness with drilling stabilization.
+    let stiffness: Vec<ElementStiffness> = connectivity
+        .iter()
+        .map(|conn| {
+            let elem_nodes = [nodes[conn[0]], nodes[conn[1]], nodes[conn[2]]];
+            shell_element_stiffness_drilling_stabilized(&elem_nodes, T, &mat, 1e-6)
+        })
+        .collect();
+
+    let elements: Vec<AssemblyElement<'_>> = connectivity
+        .iter()
+        .zip(stiffness.iter())
+        .enumerate()
+        .map(|(i, (conn, k_e))| AssemblyElement { id: i, connectivity: conn, k_e })
+        .collect();
+
+    // Build Dirichlet BCs.
+    // Tolerance 1.0 is well within each mesh spacing (~75 for z, ~115 arc-len
+    // for θ at R=300), so node-on-boundary detection is exact for this mesh.
+    let tol = 1.0_f64;
+    let mut bcs: Vec<DirichletBc> = Vec::new();
+
+    for (node, n) in nodes.iter().enumerate() {
+        let is_diaphragm = (n[2] - L / 2.0).abs() < tol; // z=L/2 end ring
+        let is_y0 = n[1].abs() < tol; // θ=0 symmetry plane
+        let is_x0 = n[0].abs() < tol; // θ=π/2 symmetry plane
+        let is_z0 = n[2].abs() < tol; // z=0 mid-span plane
+
+        let dof = |d: usize| node * 6 + d;
+
+        // Diaphragm end (z=L/2): prevent radial/tangential + torsion.
+        if is_diaphragm {
+            bcs.push(DirichletBc { dof: dof(0), value: 0.0 }); // u_x
+            bcs.push(DirichletBc { dof: dof(1), value: 0.0 }); // u_y
+            bcs.push(DirichletBc { dof: dof(5), value: 0.0 }); // θ_z
+        }
+        // Symmetry at y=0 (θ=0): xz-plane.
+        if is_y0 {
+            bcs.push(DirichletBc { dof: dof(1), value: 0.0 }); // u_y
+            bcs.push(DirichletBc { dof: dof(3), value: 0.0 }); // θ_x
+            bcs.push(DirichletBc { dof: dof(5), value: 0.0 }); // θ_z
+        }
+        // Symmetry at x=0 (θ=π/2): yz-plane.
+        if is_x0 {
+            bcs.push(DirichletBc { dof: dof(0), value: 0.0 }); // u_x
+            bcs.push(DirichletBc { dof: dof(4), value: 0.0 }); // θ_y
+            bcs.push(DirichletBc { dof: dof(5), value: 0.0 }); // θ_z
+        }
+        // Mid-span symmetry at z=0.
+        if is_z0 {
+            bcs.push(DirichletBc { dof: dof(2), value: 0.0 }); // u_z
+            bcs.push(DirichletBc { dof: dof(3), value: 0.0 }); // θ_x
+            bcs.push(DirichletBc { dof: dof(4), value: 0.0 }); // θ_y
+        }
+    }
+
+    // Load node: corner at (0, R, 0) = θ=π/2, z=0.
+    // Both is_x0 and is_z0 apply → only u_y is free after BCs.
+    let load_node = nodes
+        .iter()
+        .position(|n| n[0].abs() < tol && (n[1] - R).abs() < tol && n[2].abs() < tol)
+        .expect("load node (0, R, 0) not found in mesh");
+
+    // Radially inward load: F_y = -P/4 (by 1/8 octant symmetry, see plan).
+    let point_loads = vec![(load_node * 6 + 1, -P / 4.0)];
+
+    let u = solve_shell_system(&elements, n_nodes, &bcs, &point_loads);
+
+    // Radial displacement = -u_y (inward = positive).
+    let radial_disp = -u[load_node * 6 + 1];
+
+    assert!(
+        radial_disp > 0.3 * MACNEAL_HARDER_REF && radial_disp < 1.5 * MACNEAL_HARDER_REF,
+        "pinched cylinder: radial_disp = {radial_disp:.4e}; \
+         expected [{:.4e}, {:.4e}] \
+         (MacNeal-Harder 1985 ref = {MACNEAL_HARDER_REF:.4e})",
+        0.3 * MACNEAL_HARDER_REF,
+        1.5 * MACNEAL_HARDER_REF,
+    );
+}
+
 // ─── step-1: sanity check ────────────────────────────────────────────────────
 
 /// Sanity check for the end-to-end shell pipeline.
