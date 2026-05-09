@@ -1,6 +1,7 @@
 .env
 .mcp.json
-.claude/
+.claude/*
+!.claude/skills/
 /target
 **/*.rs.bk
 .task/
