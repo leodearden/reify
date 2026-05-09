@@ -43,6 +43,21 @@ pub(crate) fn eval_fea(name: &str, args: &[Value]) -> Option<Value> {
         "case_names" => case_names(args),
         "result_for" => result_for(args),
         "linear_combine" => linear_combine(args),
+        // Convenience-helper stubs (steps 4/6/8 replace these with the real
+        // implementations). Reserves the dispatch slot so the four
+        // `eval_fea_*_returns_some` dispatcher-signal tests pass before the
+        // bodies are wired up.
+        "envelope_von_mises" => Value::Undef,
+        "envelope_max_principal" => Value::Undef,
+        "envelope_displacement_magnitude" => Value::Undef,
+        // `worst_case` real implementation lives in
+        // `crates/reify-expr/src/lib.rs` (Lambda-aware, requires `EvalContext`).
+        // The arm here is a permanent stub returning `Value::Undef` — fired
+        // only when the lib.rs dispatch declines (e.g., wrong arg shape).
+        // Preserves the "recognised name" contract for direct `eval_builtin`
+        // callers; mirrors the dual-arm pattern of `von_mises`'s lib.rs
+        // Field-arg arm coexisting with `eval_analysis`'s tensor-arg arm.
+        "worst_case" => Value::Undef,
         _ => return None,
     })
 }
