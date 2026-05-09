@@ -131,6 +131,16 @@
 //! // surface check; the dofs/coeffs equal-length invariant is T10's
 //! // constructor's job, not a literal-vs-literal len comparison here.
 //! let _row = MpcRow { dofs: vec![0, 6], coeffs: vec![1.0, -1.0], rhs: 0.0 };
+//!
+//! // T10 smoke tests (Task 3020): pin apply_mpc_row_elimination and
+//! // MpcRow::shell_tet_tying are discoverable from the crate root.
+//! use reify_solver_elastic::apply_mpc_row_elimination;
+//! let _ = apply_mpc_row_elimination;
+//! let _rows = MpcRow::shell_tet_tying(
+//!     [0, 1, 2], [3, 4, 5], [6, 7, 8], [9, 10, 11], [12, 13, 14],
+//!     [0.0, 0.0, 1.0], 0.05,
+//! );
+//! assert_eq!(_rows.len(), 6, "shell_tet_tying must produce 6 constraint rows");
 //! ```
 
 pub mod assembly;
