@@ -1728,20 +1728,20 @@ pub(crate) fn try_eval_topology_selector(
                     dispatch_closest_point(kernel, &query, &function.name, diagnostics)
                 }
                 TopologySelectorHelper::IsOn => {
-                    // Hard-code OCCT's `Precision::Confusion()` (~1e-7) as the
-                    // default tolerance for the v0.1 2-arg `is_on(point, geometry)`
-                    // surface. Kernel docstring at
-                    // `crates/reify-kernel-occt/src/lib.rs` (`OcctKernel::point_on_shape`)
-                    // recommends this value. A future explicit-tolerance
-                    // overload `is_on(point, geometry, tol)` will plumb the user-
-                    // supplied tolerance through here.
-                    const DEFAULT_ON_TOLERANCE_M: f64 = 1e-7;
+                    // Use `reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` (= OCCT's
+                    // `Precision::Confusion()`, ~1e-7) as the default tolerance for the
+                    // v0.1 2-arg `is_on(point, geometry)` form.  The constant is the
+                    // single source of truth shared between this dispatcher and
+                    // `OcctKernel::point_on_shape`
+                    // (`crates/reify-kernel-occt/src/lib.rs`).  A future explicit-
+                    // tolerance overload `is_on(point, geometry, tol)` will plumb the
+                    // user-supplied tolerance through here.
                     let query = reify_types::GeometryQuery::PointOnShape {
                         handle,
                         px: point[0],
                         py: point[1],
                         pz: point[2],
-                        tolerance: DEFAULT_ON_TOLERANCE_M,
+                        tolerance: reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
                     };
                     dispatch_point_on_shape(kernel, &query, &function.name, diagnostics)
                 }
