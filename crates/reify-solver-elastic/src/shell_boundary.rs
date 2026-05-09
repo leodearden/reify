@@ -539,6 +539,7 @@ mod tests {
     #[cfg(debug_assertions)]
     #[should_panic(expected = "duplicate")]
     fn build_support_bcs_panics_on_duplicate_node_indices_in_debug_builds() {
+        // Variant-independent: assert fires before (body, kind) dispatch.
         // [0, 1, 0]: index 0 appears at positions 0 and 2 (non-adjacent) so
         // detection is exercised mid-iteration rather than just on neighbours.
         build_support_bcs(&[0, 1, 0], SupportKind::Fixed, SupportBodyKind::Shell);
