@@ -94,9 +94,8 @@ describe('createPermissionServer', () => {
     server = createPermissionServer();
     await server.start();
 
-    let capturedRequestId = '';
-    server.onRequest((req) => {
-      capturedRequestId = req.request_id;
+    const requestIdPromise = new Promise<string>((resolve) => {
+      server.onRequest((req) => resolve(req.request_id));
     });
 
     const client = await connectClient(server.url());
@@ -105,16 +104,7 @@ describe('createPermissionServer', () => {
       arguments: { tool_name: 'Bash', input: { command: 'ls' } },
     });
 
-    // Wait for the request_id to be captured
-    await new Promise<void>((resolve) => {
-      const check = () => {
-        if (capturedRequestId) resolve();
-        else setTimeout(check, 10);
-      };
-      check();
-    });
-
-    server.decide(capturedRequestId, { behavior: 'allow' });
+    server.decide(await requestIdPromise, { behavior: 'allow' });
 
     const result = await toolCallPromise;
     // Result content should contain behavior: 'allow'
@@ -129,9 +119,8 @@ describe('createPermissionServer', () => {
     server = createPermissionServer();
     await server.start();
 
-    let capturedRequestId = '';
-    server.onRequest((req) => {
-      capturedRequestId = req.request_id;
+    const requestIdPromise = new Promise<string>((resolve) => {
+      server.onRequest((req) => resolve(req.request_id));
     });
 
     const client = await connectClient(server.url());
@@ -140,15 +129,7 @@ describe('createPermissionServer', () => {
       arguments: { tool_name: 'Write', input: { path: '/etc/passwd' } },
     });
 
-    await new Promise<void>((resolve) => {
-      const check = () => {
-        if (capturedRequestId) resolve();
-        else setTimeout(check, 10);
-      };
-      check();
-    });
-
-    server.decide(capturedRequestId, { behavior: 'deny', message: 'no' });
+    server.decide(await requestIdPromise, { behavior: 'deny', message: 'no' });
 
     const result = await toolCallPromise;
     const content = result.content as Array<{ type: string; text: string }>;
@@ -189,20 +170,13 @@ describe('createPermissionServer', () => {
     server = createPermissionServer();
     await server.start();
 
-    let requestedToolName = '';
-    server.onRequest((req) => {
-      requestedToolName = req.tool_name;
-    });
-
     server.setRemembered('Write');
 
     const client = await connectClient(server.url());
 
     // 'Bash' is not remembered, so onRequest should fire
-    let capturedRequestId = '';
-    server.onRequest((req) => {
-      capturedRequestId = req.request_id;
-      requestedToolName = req.tool_name;
+    const requestPromise = new Promise<{ request_id: string; tool_name: string }>((resolve) => {
+      server.onRequest((req) => resolve({ request_id: req.request_id, tool_name: req.tool_name }));
     });
 
     const toolCallPromise = client.callTool({
@@ -210,16 +184,9 @@ describe('createPermissionServer', () => {
       arguments: { tool_name: 'Bash', input: { command: 'ls' } },
     });
 
-    await new Promise<void>((resolve) => {
-      const check = () => {
-        if (capturedRequestId) resolve();
-        else setTimeout(check, 10);
-      };
-      check();
-    });
-
-    expect(requestedToolName).toBe('Bash');
-    server.decide(capturedRequestId, { behavior: 'allow' });
+    const { request_id, tool_name } = await requestPromise;
+    expect(tool_name).toBe('Bash');
+    server.decide(request_id, { behavior: 'allow' });
     await toolCallPromise;
 
     await client.close();
@@ -244,8 +211,11 @@ describe('createPermissionServer', () => {
     await server.start();
 
     const requests: Array<{ request_id: string; tool_name: string; tool_input: Record<string, unknown> }> = [];
-    server.onRequest((req) => {
-      requests.push(req);
+    const twoRequestsReady = new Promise<void>((resolve) => {
+      server.onRequest((req) => {
+        requests.push(req);
+        if (requests.length >= 2) resolve();
+      });
     });
 
     const client = await connectClient(server.url());
@@ -254,13 +224,7 @@ describe('createPermissionServer', () => {
     const p2 = client.callTool({ name: 'approve_tool', arguments: { tool_name: 'Bash', input: { command: 'rm -rf' } } });
 
     // Wait for both requests to arrive
-    await new Promise<void>((resolve) => {
-      const check = () => {
-        if (requests.length >= 2) resolve();
-        else setTimeout(check, 10);
-      };
-      check();
-    });
+    await twoRequestsReady;
 
     // Resolve in reverse order to prove independence
     server.decide(requests[1].request_id, { behavior: 'deny', message: 'no bash' });
