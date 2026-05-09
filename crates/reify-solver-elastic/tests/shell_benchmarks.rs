@@ -138,8 +138,16 @@ fn solve_shell_system(
         f[dof] += value;
     }
 
+    // Deduplicate BCs: apply_dirichlet_row_elimination panics on duplicate DOF
+    // indices in debug builds. Corner nodes that lie on multiple symmetry planes
+    // may appear in more than one BC group; we sort and dedup, keeping the first
+    // occurrence (all our symmetry BCs are homogeneous, so value=0.0 always).
+    let mut bcs: Vec<DirichletBc> = dirichlet_bcs.to_vec();
+    bcs.sort_by_key(|bc| bc.dof);
+    bcs.dedup_by_key(|bc| bc.dof);
+
     // Apply Dirichlet BCs via symmetric row elimination.
-    apply_dirichlet_row_elimination(&mut k, &mut f, dirichlet_bcs);
+    apply_dirichlet_row_elimination(&mut k, &mut f, &bcs);
 
     // Dense LU solve: K · u = f.
     // Follows the pattern in dirichlet.rs:729-733.
@@ -274,6 +282,62 @@ fn pinched_cylinder_octant_radial_displacement_at_load_matches_macneal_harder_wi
         0.3 * MACNEAL_HARDER_REF,
         1.5 * MACNEAL_HARDER_REF,
     );
+}
+
+// ─── mesh helpers ────────────────────────────────────────────────────────────
+
+/// Mesh the 1/8 octant of the MacNeal-Harder pinched cylinder.
+///
+/// # Geometry
+///
+/// Cylindrical mid-surface: θ ∈ [0, π/2], z ∈ [0, L/2], R=300, L=600.
+/// Node positions: `(R·cos θ, R·sin θ, z)` with θ and z uniformly spaced.
+///
+/// # Outputs
+///
+/// `(nodes, connectivity)` where `nodes[k]` is the 3-D position of node `k`
+/// and `connectivity[e]` gives the three node indices for triangle `e`.
+///
+/// # Node ordering
+///
+/// Row-major (z varies slowly, θ varies fast):
+/// `node(i, j) = i*(nx+1) + j`, `i` = z-index ∈ [0, ny], `j` = θ-index ∈ [0, nx].
+///
+/// # Element count
+///
+/// `2·nx·ny` MITC3 triangles — each quad cell split along the A→D diagonal.
+fn cylinder_octant_mesh(nx: usize, ny: usize) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
+    use std::f64::consts::FRAC_PI_2;
+    const R: f64 = 300.0;
+    const L: f64 = 600.0;
+
+    let mut nodes = Vec::with_capacity((nx + 1) * (ny + 1));
+    for i in 0..=ny {
+        let z = i as f64 * (L / 2.0) / ny as f64;
+        for j in 0..=nx {
+            let theta = j as f64 * FRAC_PI_2 / nx as f64;
+            nodes.push([R * theta.cos(), R * theta.sin(), z]);
+        }
+    }
+
+    let mut connectivity = Vec::with_capacity(2 * nx * ny);
+    for i in 0..ny {
+        for j in 0..nx {
+            // Four corners of the rectangular cell (i, j):
+            //   A───B      i+1: C, D
+            //   │   │      i:   A, B
+            //   C───D      j:   left/right (θ)
+            let a = i * (nx + 1) + j;       // (i, j)
+            let b = i * (nx + 1) + (j + 1); // (i, j+1)
+            let c = (i + 1) * (nx + 1) + j; // (i+1, j)
+            let d = (i + 1) * (nx + 1) + (j + 1); // (i+1, j+1)
+            // Split along A→D diagonal: two counter-clockwise triangles.
+            connectivity.push([a, b, d]);
+            connectivity.push([a, d, c]);
+        }
+    }
+
+    (nodes, connectivity)
 }
 
 // ─── step-1: sanity check ────────────────────────────────────────────────────
