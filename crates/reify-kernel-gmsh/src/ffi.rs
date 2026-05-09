@@ -132,6 +132,53 @@ unsafe extern "C" {
         numTasks: usize,
         ierr: *mut c_int,
     );
+
+    /// `void gmshModelMeshClassifySurfaces(double angle, int boundary, int forReparametrization, double curveAngle, int exportDiscrete, int* ierr)`
+    pub fn gmshModelMeshClassifySurfaces(
+        angle: f64,
+        boundary: c_int,
+        forReparametrization: c_int,
+        curveAngle: f64,
+        exportDiscrete: c_int,
+        ierr: *mut c_int,
+    );
+
+    /// `void gmshModelMeshCreateGeometry(const int* dimTags, size_t dimTags_n, int* ierr)`
+    pub fn gmshModelMeshCreateGeometry(
+        dimTags: *const c_int,
+        dimTags_n: usize,
+        ierr: *mut c_int,
+    );
+
+    /// `int gmshModelGeoAddSurfaceLoop(const int* surfaceTags, size_t surfaceTags_n, int tag, int* ierr)`
+    pub fn gmshModelGeoAddSurfaceLoop(
+        surfaceTags: *const c_int,
+        surfaceTags_n: usize,
+        tag: c_int,
+        ierr: *mut c_int,
+    ) -> c_int;
+
+    /// `int gmshModelGeoAddVolume(const int* shellTags, size_t shellTags_n, int tag, int* ierr)`
+    pub fn gmshModelGeoAddVolume(
+        shellTags: *const c_int,
+        shellTags_n: usize,
+        tag: c_int,
+        ierr: *mut c_int,
+    ) -> c_int;
+
+    /// `void gmshModelGeoSynchronize(int* ierr)`
+    pub fn gmshModelGeoSynchronize(ierr: *mut c_int);
+
+    /// `void gmshModelMeshGenerate(int dim, int* ierr)`
+    pub fn gmshModelMeshGenerate(dim: c_int, ierr: *mut c_int);
+
+    /// `void gmshModelGetEntities(int** dimTags, size_t* dimTags_n, int dim, int* ierr)`
+    pub fn gmshModelGetEntities(
+        dimTags: *mut *mut c_int,
+        dimTags_n: *mut usize,
+        dim: c_int,
+        ierr: *mut c_int,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -397,6 +444,139 @@ pub fn get_nodes_all() -> Result<(Vec<u64>, Vec<f64>), GeometryError> {
         )));
     }
     Ok((node_tags, coords))
+}
+
+/// Classify surfaces from the discrete mesh: build curve / surface
+/// boundaries from the mesh edges using the supplied dihedral angle as
+/// the feature-edge threshold.
+///
+/// `angle`: dihedral angle in radians (e.g. `π/2` = 90° splits cube faces).
+/// `boundary`: nonzero to create boundary edges.
+/// `for_reparam`: nonzero to also build a parametric representation suitable
+///   for `gmshModelMeshCreateGeometry` to attach a B-rep.
+/// `curve_angle`: dihedral angle in radians for curve-feature detection.
+/// `export_discrete`: nonzero to overwrite the discrete model with the
+///   reclassified one (we leave at 0; the discrete model stays for our reads).
+pub fn classify_surfaces(
+    angle: f64,
+    boundary: i32,
+    for_reparam: i32,
+    curve_angle: f64,
+    export_discrete: i32,
+) -> Result<(), GeometryError> {
+    gmsh_call!(
+        "gmshModelMeshClassifySurfaces",
+        ierr,
+        gmshModelMeshClassifySurfaces(
+            angle,
+            boundary,
+            for_reparam,
+            curve_angle,
+            export_discrete,
+            &mut ierr,
+        )
+    )
+}
+
+/// Build geometry (B-rep curves/surfaces) from the classified mesh.
+///
+/// Pass an empty `dim_tags` slice to have gmsh process all classified
+/// entities.
+pub fn create_geometry(dim_tags: &[i32]) -> Result<(), GeometryError> {
+    let (ptr_, n) = if dim_tags.is_empty() {
+        (ptr::null(), 0)
+    } else {
+        (dim_tags.as_ptr(), dim_tags.len())
+    };
+    gmsh_call!(
+        "gmshModelMeshCreateGeometry",
+        ierr,
+        gmshModelMeshCreateGeometry(ptr_, n, &mut ierr)
+    )
+}
+
+/// Add a built-in-CAD surface loop from the given surface tags. Returns the
+/// assigned loop tag (positive integer chosen by gmsh).
+pub fn geo_add_surface_loop(surface_tags: &[i32]) -> Result<i32, GeometryError> {
+    let mut ierr: c_int = 0;
+    let tag = unsafe {
+        gmshModelGeoAddSurfaceLoop(surface_tags.as_ptr(), surface_tags.len(), -1, &mut ierr)
+    };
+    if ierr != 0 {
+        let msg = last_error_message();
+        return Err(GeometryError::OperationFailed(format!(
+            "gmshModelGeoAddSurfaceLoop: ierr={ierr} ({msg})"
+        )));
+    }
+    Ok(tag)
+}
+
+/// Add a built-in-CAD volume from the given surface-loop (shell) tags.
+/// Returns the assigned volume tag.
+pub fn geo_add_volume(shell_tags: &[i32]) -> Result<i32, GeometryError> {
+    let mut ierr: c_int = 0;
+    let tag = unsafe {
+        gmshModelGeoAddVolume(shell_tags.as_ptr(), shell_tags.len(), -1, &mut ierr)
+    };
+    if ierr != 0 {
+        let msg = last_error_message();
+        return Err(GeometryError::OperationFailed(format!(
+            "gmshModelGeoAddVolume: ierr={ierr} ({msg})"
+        )));
+    }
+    Ok(tag)
+}
+
+/// Synchronise the built-in CAD model into the gmsh internal model.
+pub fn geo_synchronize() -> Result<(), GeometryError> {
+    gmsh_call!(
+        "gmshModelGeoSynchronize",
+        ierr,
+        gmshModelGeoSynchronize(&mut ierr)
+    )
+}
+
+/// Generate the mesh up to the given dimension (`3` = volumetric tets).
+pub fn mesh_generate(dim: i32) -> Result<(), GeometryError> {
+    gmsh_call!(
+        "gmshModelMeshGenerate",
+        ierr,
+        gmshModelMeshGenerate(dim, &mut ierr)
+    )
+}
+
+/// Read all entity tags of the given dimension from the current model.
+///
+/// Returns the second elements of gmsh's `(dim, tag)` flat list — that is,
+/// just the tags. Useful after `classify_surfaces` + `create_geometry`,
+/// which create new geometric surface entities whose tags may differ from
+/// the discrete-mesh entity tags initially passed to `add_discrete_entity`.
+pub fn get_entity_tags(dim: i32) -> Result<Vec<i32>, GeometryError> {
+    let mut dim_tags_ptr: *mut c_int = ptr::null_mut();
+    let mut dim_tags_n: usize = 0;
+    let mut ierr: c_int = 0;
+    unsafe {
+        gmshModelGetEntities(&mut dim_tags_ptr, &mut dim_tags_n, dim, &mut ierr);
+    }
+    let pairs: Vec<c_int> = if dim_tags_ptr.is_null() || dim_tags_n == 0 {
+        Vec::new()
+    } else {
+        unsafe { std::slice::from_raw_parts(dim_tags_ptr, dim_tags_n) }.to_vec()
+    };
+    unsafe {
+        if !dim_tags_ptr.is_null() {
+            gmshFree(dim_tags_ptr as *mut c_void);
+        }
+    }
+    if ierr != 0 {
+        let msg = last_error_message();
+        return Err(GeometryError::OperationFailed(format!(
+            "gmshModelGetEntities: ierr={ierr} ({msg})"
+        )));
+    }
+    // gmsh returns flat (dim, tag) pairs — collect every odd index.
+    let tags: Vec<i32> = pairs.chunks_exact(2).map(|p| p[1]).collect();
+    Ok(tags)
 }
 
 /// Read all elements of the given type from the current model into owned
