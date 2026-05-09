@@ -981,6 +981,17 @@ impl Engine {
     /// just the test seam) build the borrowed view themselves at the call
     /// site.
     ///
+    /// **Signature** (amendment 3, task 3227): takes `available:
+    /// &HashSet<ReprKind>` as a caller-supplied parameter rather than
+    /// synthesising it from `BUDGET_QUERY_TRIPLE_V02.2` on every call.
+    /// The slice inside the triple is `&'static [ReprKind]` so its
+    /// contents are const; constructing a `HashSet` from it per-call was
+    /// purely a translation artefact. The construction now lives in
+    /// [`Self::compute_tessellation_budgets`] (one allocation per build,
+    /// not one per realization). Direct callers (test seam) build the
+    /// `HashSet` at their own call site, mirroring the amendment-2
+    /// pattern for the borrowed registry view.
+    ///
     /// **Production wiring** (task 2874 step-12): `tessellate_from_values`
     /// calls this indirectly through `compute_tessellation_budgets`,
     /// which collects the registry via
@@ -1000,11 +1011,11 @@ impl Engine {
     pub fn compute_realization_tolerance_budget(
         &self,
         registry: &BTreeMap<String, &CapabilityDescriptor>,
+        available: &HashSet<ReprKind>,
         demanded_tol: f64,
     ) -> f64 {
-        let (op, demanded, available_arr) = Self::BUDGET_QUERY_TRIPLE_V02;
-        let available: HashSet<ReprKind> = available_arr.iter().copied().collect();
-        match dispatch(registry, op, demanded, &available) {
+        let (op, demanded, _) = Self::BUDGET_QUERY_TRIPLE_V02;
+        match dispatch(registry, op, demanded, available) {
             Some(plan) => per_stage_tolerance_for_plan(&plan, demanded_tol),
             None => demanded_tol,
         }
@@ -1091,6 +1102,13 @@ impl Engine {
         // build — see the "Borrow-map allocation cost" note above.
         let registry_borrowed: BTreeMap<String, &CapabilityDescriptor> =
             registry.iter().map(|(k, v)| (k.clone(), v)).collect();
+        // Hoist the HashSet<ReprKind> construction once per build alongside
+        // the borrowed-registry view. The available slice inside
+        // BUDGET_QUERY_TRIPLE_V02 is `&'static [ReprKind]` so its contents
+        // are const; there is no need to rebuild the HashSet per realization.
+        // Cost drops from R allocations to 1 per build (task 3227).
+        let available: HashSet<ReprKind> =
+            Self::BUDGET_QUERY_TRIPLE_V02.2.iter().copied().collect();
         let mut map: HashMap<(String, String), f64> = HashMap::new();
         for t in &module.templates {
             for r in &t.realizations {
@@ -1100,7 +1118,11 @@ impl Engine {
                     .copied()
                     .flatten()
                     .unwrap_or_else(|| Self::effective_tessellation_tolerance(module));
-                let budget = self.compute_realization_tolerance_budget(&registry_borrowed, req_tol);
+                let budget = self.compute_realization_tolerance_budget(
+                    &registry_borrowed,
+                    &available,
+                    req_tol,
+                );
                 map.insert(key, budget);
             }
         }
