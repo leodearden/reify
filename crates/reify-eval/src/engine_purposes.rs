@@ -37,9 +37,12 @@ impl Engine {
     /// preservation site.
     ///
     /// **Idempotency:** calling `activate_purpose` twice for the same
-    /// `(purpose_name, entity_ref)` pair is a no-op via the
-    /// `active_purposes.contains_key` early return below. This means existing
-    /// callers that manually re-activate between consecutive builds continue
+    /// `purpose_name` is a no-op via the `active_purposes.contains_key` early
+    /// return in `activate_purpose_constraints` — **the first binding wins
+    /// regardless of `entity_ref`**. A second call with a different `entity_ref`
+    /// is silently ignored; to rebind a purpose to a new entity, call
+    /// `deactivate_purpose` first. This means existing callers that manually
+    /// re-activate between consecutive builds (with the same entity) continue
     /// to work harmlessly — the second call is silently skipped.
     pub fn activate_purpose(&mut self, purpose_name: &str, entity_ref: &str) {
         // Delegate to the constraint-injection helper; rebuild infrastructure only
@@ -68,7 +71,8 @@ impl Engine {
         purpose_name: &str,
         entity_ref: &str,
     ) -> bool {
-        // No-op if already active
+        // No-op if already active — first binding wins; a different entity_ref
+        // is ignored.  Call deactivate_purpose first to rebind to a new entity.
         if self.active_purposes.contains_key(purpose_name) {
             return false;
         }
