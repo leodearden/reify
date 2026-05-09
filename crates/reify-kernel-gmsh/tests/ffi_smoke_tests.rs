@@ -1,4 +1,12 @@
-//! Pin the lifecycle FFI surface against libgmsh 4.15.2.
+//! Pin the surface-mesh-I/O FFI surface against libgmsh 4.15.2.
+//!
+//! All tests in this binary route through [`init::ensure_initialized`]
+//! (the `OnceLock<()>`-guarded init path that production code uses). The
+//! direct-`ffi::initialize`/`ffi::finalize` lifecycle test lives in its
+//! own binary at `tests/ffi_lifecycle_test.rs` so it cannot share
+//! process state with these tests; mixing the two paths in one binary
+//! would couple test ordering to gmsh's process-wide initialisation
+//! semantics (see that file's module doc for the failure modes).
 //!
 //! Only compiled / run when `cfg(has_gmsh)` is set by `build.rs`. On stub
 //! builds (no `/opt/reify-deps`) the file is empty and the test binary
@@ -9,37 +17,6 @@
 
 use reify_kernel_gmsh::ffi;
 use reify_kernel_gmsh::init;
-
-/// Round-trip the gmsh library lifecycle through our extern "C" wrappers.
-///
-/// 1. Acquire the process-global `init::GMSH_LOCK` — gmsh has process-wide
-///    state that other tests in this binary may also touch.
-/// 2. `ffi::initialize()` — boxes `gmshInitialize(0, null, 0, 0, &mut ierr)`.
-/// 3. Assert `ffi::is_initialized()` returns `true`.
-/// 4. `ffi::finalize()` — drops the gmsh runtime state.
-/// 5. Assert `ffi::is_initialized()` returns `false`.
-///
-/// Pins the four lifecycle bindings and the GMSH_LOCK plumbing in a single
-/// scope so a future binding regression (wrong ABI, missing extern, etc.)
-/// surfaces here before reaching `mesh_to_volume`.
-#[test]
-fn gmsh_initialize_and_finalize_round_trip() {
-    let _guard = init::GMSH_LOCK
-        .lock()
-        .expect("GMSH_LOCK poisoned — a prior test panicked while holding it");
-
-    ffi::initialize().expect("ffi::initialize failed");
-    assert!(
-        ffi::is_initialized(),
-        "ffi::is_initialized must return true immediately after ffi::initialize",
-    );
-
-    ffi::finalize().expect("ffi::finalize failed");
-    assert!(
-        !ffi::is_initialized(),
-        "ffi::is_initialized must return false immediately after ffi::finalize",
-    );
-}
 
 /// Round-trip a single triangle through the gmsh model API: add a discrete
 /// surface entity, push 3 nodes + 1 triangle into it, then read them back
