@@ -4,6 +4,28 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Gmsh surface-to-volume tetrahedral mesher kernel adapter (v0.3 FEA pipeline)"
+build = "build.rs"
+
+[features]
+# Pure compile-gate: no implicit deps.  Activating this feature causes
+# `inventory::submit!` and `gmsh_factory()` in `src/register.rs` to compile in,
+# registering the Gmsh kernel in the inventory-driven multi-kernel registry
+# even when `cfg(has_gmsh)` is unset.
+#
+# In production stub builds (no `/opt/reify-deps`, no `stub_register`) the
+# submit is OMITTED — the stub kernel is NOT registered, preventing "gmsh"
+# from silently winning a `(Convert{from:Mesh}, VolumeMesh)` routing it cannot
+# actually execute.
+#
+# For integration test binaries in `tests/` (separate compilation units that
+# do NOT inherit `cfg(test)` from the parent crate) this feature is activated
+# via the self-dev-dep below — mirroring the pattern at:
+#   crates/reify-kernel-openvdb/Cargo.toml:9-29
+#   crates/reify-kernel-manifold/Cargo.toml:27
+#
+# When `has_gmsh` is set (real FFI build), the submit fires regardless of this
+# feature — the gate is `cfg(any(has_gmsh, feature = "stub_register"))`.
+stub_register = []
 
 [dependencies]
 reify-types.workspace = true
@@ -22,3 +44,10 @@ tracing.workspace = true
 [dev-dependencies]
 reify-eval.workspace = true
 reify-test-support.workspace = true
+# Self-dev-dep: activates `stub_register` for ALL integration test binaries in
+# `tests/` (which are separate compilation units — they do NOT inherit
+# `cfg(test)` from the parent crate, so `cfg(test)` alone cannot reach the
+# gated `inventory::submit!`).  Same pattern used by:
+#   crates/reify-kernel-openvdb/Cargo.toml:72
+#   crates/reify-kernel-manifold/Cargo.toml:51
+reify-kernel-gmsh = { path = ".", features = ["stub_register"] }
