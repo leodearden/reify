@@ -698,6 +698,7 @@ const App: Component = () => {
         const isOpen = editorStore.state.openFiles.some((f) => f.path === data.path);
         if (isOpen) {
           setChangedFiles((prev) => new Set([...prev, data.path]));
+          editorStore.markExternallyChanged(data.path);
         }
       });
       if (!alive) {
@@ -955,6 +956,9 @@ const App: Component = () => {
           }
           return next;
         });
+        for (const path of succeededPaths) {
+          editorStore.clearExternallyChanged(path);
+        }
         if (failedPaths.length > 0) {
           const count = failedPaths.length;
           showToast(
