@@ -439,6 +439,126 @@ describe('debug bridge set_camera', () => {
   });
 });
 
+describe('debug bridge open_file', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatch(handler: DebugRequestHandler, id: number, params: Record<string, unknown>) {
+    vi.mocked(invoke).mockClear();
+    await handler({ payload: { id, command: 'open_file', params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  it('opens file in editor and returns { ok: true, path } when guiState is omitted', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    expect(capturedHandler).toBeDefined();
+
+    const result = await dispatch(capturedHandler!, 500, {
+      path: '/tmp/foo.ri',
+      content: 'def Foo() {}',
+    });
+
+    expect(result).toEqual({ ok: true, path: '/tmp/foo.ri' });
+    expect(stores.editor.openFile).toHaveBeenCalledWith({ path: '/tmp/foo.ri', content: 'def Foo() {}' });
+    expect(stores.engine.initFromState).not.toHaveBeenCalled();
+  });
+
+  it('initFromState is called when guiState is provided', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    const rawGuiState = {
+      meshes: [],
+      values: [],
+      constraints: [],
+      files: [],
+      tessellation_diagnostics: [],
+    };
+
+    const result = await dispatch(capturedHandler!, 501, {
+      path: '/tmp/bar.ri',
+      content: 'def Bar() {}',
+      guiState: rawGuiState,
+    });
+
+    expect(result).toEqual({ ok: true, path: '/tmp/bar.ri' });
+    expect(stores.engine.initFromState).toHaveBeenCalledTimes(1);
+    // Verify the converted GuiState shape was passed (meshes converted to typed arrays)
+    const passed = vi.mocked(stores.engine.initFromState).mock.calls[0][0];
+    expect(passed.meshes).toEqual([]);
+    expect(passed.values).toEqual([]);
+    expect(passed.constraints).toEqual([]);
+  });
+
+  it('initFromState invocation triggers the onEngineReinitialized callback wired in App.tsx', async () => {
+    // This test verifies the bridge → engineStore wiring contract: when the
+    // bridge calls engine.initFromState, any onEngineReinitialized callback
+    // registered by App.tsx fires. Uses a real engineStore (no mock) to
+    // exercise the integration boundary the bug report identified.
+    const reinitSpy = vi.fn();
+    const { createEngineStore } = await import('../stores/engineStore');
+    const realEngine = createEngineStore({ onEngineReinitialized: reinitSpy });
+    const stores: DebugStores = {
+      ...makeStores(),
+      engine: realEngine,
+    };
+    await initDebugBridge(stores);
+
+    const rawGuiState = {
+      meshes: [],
+      values: [],
+      constraints: [],
+      files: [],
+      tessellation_diagnostics: [],
+    };
+
+    await dispatch(capturedHandler!, 502, {
+      path: '/tmp/baz.ri',
+      content: 'def Baz() {}',
+      guiState: rawGuiState,
+    });
+
+    expect(reinitSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns { error } when path is missing', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    const result = await dispatch(capturedHandler!, 503, { content: 'x' });
+    expect(result).toHaveProperty('error');
+    expect(stores.editor.openFile).not.toHaveBeenCalled();
+    expect(stores.engine.initFromState).not.toHaveBeenCalled();
+  });
+
+  it('returns { error } when content is missing', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    const result = await dispatch(capturedHandler!, 504, { path: '/tmp/foo.ri' });
+    expect(result).toHaveProperty('error');
+    expect(stores.editor.openFile).not.toHaveBeenCalled();
+    expect(stores.engine.initFromState).not.toHaveBeenCalled();
+  });
+});
+
 describe('debug bridge set_test_mode', () => {
   let capturedHandler: DebugRequestHandler | undefined;
 

@@ -31,6 +31,10 @@ export interface EngineState {
 
 export interface EngineStoreOptions {
   onEntityRemoved?: (id: string) => void;
+  // Fires after `initFromState` writes new state. Needed because `initFromState`
+  // does not move `evalStatus.phase`, so phase-transition listeners do not
+  // observe a file load — derived data (entity tree, mechanisms) would go stale.
+  onEngineReinitialized?: () => void;
 }
 
 export function createEngineStore(options?: EngineStoreOptions) {
@@ -60,6 +64,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
     }
 
     setState({ meshes, values, constraints, tessellationDiagnostics: guiState.tessellation_diagnostics });
+    options?.onEngineReinitialized?.();
   }
 
   function applyMeshUpdate(mesh: MeshData) {

@@ -488,6 +488,62 @@ describe('engineStore', () => {
     });
   });
 
+  // onEngineReinitialized: fires once per initFromState call so callers
+  // (App.tsx) can refresh derived data — entity tree, mechanism descriptors —
+  // without depending on evalStatus.phase transitions.
+  it('onEngineReinitialized callback fires when initFromState is called', () => {
+    createRoot((dispose) => {
+      const spy = vi.fn();
+      const { initFromState } = createEngineStore({ onEngineReinitialized: spy });
+      const guiState: GuiState = {
+        meshes: [sampleMesh],
+        values: [sampleValue],
+        constraints: [sampleConstraint],
+        files: [],
+        tessellation_diagnostics: [],
+      };
+      initFromState(guiState);
+      expect(spy).toHaveBeenCalledTimes(1);
+      dispose();
+    });
+  });
+
+  it('onEngineReinitialized fires once per initFromState invocation across multiple loads', () => {
+    createRoot((dispose) => {
+      const spy = vi.fn();
+      const { initFromState } = createEngineStore({ onEngineReinitialized: spy });
+      const guiState: GuiState = {
+        meshes: [],
+        values: [],
+        constraints: [],
+        files: [],
+        tessellation_diagnostics: [],
+      };
+      initFromState(guiState);
+      initFromState(guiState);
+      initFromState(guiState);
+      expect(spy).toHaveBeenCalledTimes(3);
+      dispose();
+    });
+  });
+
+  it('createEngineStore works without onEngineReinitialized (option is optional)', () => {
+    createRoot((dispose) => {
+      const { state, initFromState } = createEngineStore();
+      const guiState: GuiState = {
+        meshes: [sampleMesh],
+        values: [],
+        constraints: [],
+        files: [],
+        tessellation_diagnostics: [],
+      };
+      // Must not throw when the callback is omitted.
+      expect(() => initFromState(guiState)).not.toThrow();
+      expect(state.meshes['Bracket.body']).toEqual(sampleMesh);
+      dispose();
+    });
+  });
+
   it('onEntityRemoved callback fires for event-driven removals via subscribeToEvents', async () => {
     await createRoot(async (dispose) => {
       const spy = vi.fn();
