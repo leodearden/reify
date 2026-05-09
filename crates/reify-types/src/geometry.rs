@@ -689,6 +689,27 @@ impl GeometryOp {
     }
 }
 
+/// Default tolerance (in metres) used when testing whether a world-space point
+/// lies on a shape, matching OCCT's `Precision::Confusion()` (~1e-7 m).
+///
+/// This is the single source of truth for the tolerance value shared between:
+/// - [`crate::GeometryQuery::PointOnShape`] — the kernel query variant whose
+///   `tolerance` field is populated with this value by the dispatcher.
+/// - `OcctKernel::point_on_shape` (`reify-kernel-occt/src/lib.rs`) — the
+///   kernel-side implementation that interprets the tolerance.
+/// - `try_eval_topology_selector` IsOn arm (`reify-eval/src/geometry_ops.rs`)
+///   — the dispatcher that passes this constant as the `tolerance` field.
+///
+/// Re-exported as `reify_kernel_occt::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` for
+/// kernel-side callers (stubs, integration tests) that already import from that
+/// crate. The dispatcher must use `reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M`
+/// because `reify-kernel-occt` is a dev-dependency only of `reify-eval`.
+///
+/// A future `is_on(point, geometry, tol: Length)` 3-arg overload (PRD §3.9)
+/// will allow callers to pass a custom tolerance; this constant remains the
+/// no-tolerance-argument default.
+pub const DEFAULT_POINT_ON_SHAPE_TOLERANCE_M: f64 = 1e-7;
+
 /// Queries against geometry handles.
 #[derive(Debug, Clone)]
 pub enum GeometryQuery {
@@ -900,8 +921,9 @@ pub enum GeometryQuery {
     ///
     /// Backed by `BRepExtrema_DistShapeShape` between the handle and a
     /// `Vertex` built from `(px, py, pz)`; "on" is `distance ≤ tolerance`.
-    /// Returns `Value::Bool`. The OCCT `Precision::Confusion()` (~1e-7) is
-    /// the recommended default, supplied by the dispatcher; an explicit
+    /// Returns `Value::Bool`. The OCCT `Precision::Confusion()` (~1e-7),
+    /// exposed as [`DEFAULT_POINT_ON_SHAPE_TOLERANCE_M`], is the recommended
+    /// default, supplied by the dispatcher; an explicit
     /// `is_on(point, geometry, tol: Length)` overload is deferred per PRD §3.9.
     ///
     /// Note: the underlying primitive returns `true` for any interior solid

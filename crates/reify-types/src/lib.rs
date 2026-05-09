@@ -61,6 +61,7 @@ pub use geometry::{
 };
 pub use hash::ContentHash;
 pub use identity::*;
+pub use geometry::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M;
 pub use kernel_validation::{BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE};
 pub use node_traits::{NodeArchKind, NodeTraits};
 pub use persistent::PersistentMap;
