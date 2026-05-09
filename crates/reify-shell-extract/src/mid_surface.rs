@@ -171,9 +171,11 @@ impl std::fmt::Display for MidSurfaceError {
                 axis_grids_len: *axis_grids_len,
             }
             .fmt(f),
-            MidSurfaceError::EmptyAxisGrid { axis } => {
-                GridValidationError::EmptyAxisGrid { axis: *axis }.fmt(f)
-            }
+            MidSurfaceError::EmptyAxisGrid { axis } => write!(
+                f,
+                "Regular3D SampledField axis_grids[{axis}] is empty \
+                 (a non-empty per-axis grid is required for marching-cubes iteration)"
+            ),
             MidSurfaceError::MaskVoxelOutOfBounds { voxel, grid_extent } => write!(
                 f,
                 "medial mask voxel {voxel:?} is outside grid extent {grid_extent:?}; \
@@ -593,12 +595,15 @@ pub fn extract_mid_surface(
     // Mirrors the strict treatment of MaskGridMismatch (off-by-one alignment
     // is also rejected rather than silently absorbed).
     for &[vi, vj, vk] in &mask.voxels {
+        // Check negativity first; only then cast to usize for the upper-bound
+        // comparison — avoids any signed→unsigned narrowing that `nx as i32`
+        // would introduce for pathological grids with n >= 2^31.
         if vi < 0
             || vj < 0
             || vk < 0
-            || vi >= nx as i32
-            || vj >= ny as i32
-            || vk >= nz as i32
+            || (vi as usize) >= nx
+            || (vj as usize) >= ny
+            || (vk as usize) >= nz
         {
             return Err(MidSurfaceError::MaskVoxelOutOfBounds {
                 voxel: [vi, vj, vk],
@@ -607,8 +612,8 @@ pub fn extract_mid_surface(
         }
     }
 
-    // Short-circuit on empty mask (checked after bounds validation so we
-    // don't skip the bounds check on later-added in-bounds voxels).
+    // Short-circuit on empty mask after the bounds check (the loop above
+    // is a no-op for empty masks, so the order is purely for clarity).
     if mask.voxels.is_empty() {
         return Ok(MidSurfaceMesh {
             vertices: vec![],

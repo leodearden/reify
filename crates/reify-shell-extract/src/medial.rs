@@ -251,9 +251,11 @@ impl std::fmt::Display for MedialError {
                 axis_grids_len: *axis_grids_len,
             }
             .fmt(f),
-            MedialError::EmptyAxisGrid { axis } => {
-                GridValidationError::EmptyAxisGrid { axis: *axis }.fmt(f)
-            }
+            MedialError::EmptyAxisGrid { axis } => write!(
+                f,
+                "Regular3D SampledField axis_grids[{axis}] is empty \
+                 (a non-empty per-axis grid is required for narrow-band iteration)"
+            ),
             MedialError::InvalidAxisGeometry {
                 axis,
                 spacing,

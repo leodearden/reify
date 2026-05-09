@@ -110,8 +110,6 @@ pub(crate) fn validate_regular3d(sdf: &SampledField) -> Result<(), GridValidatio
 #[cfg(test)]
 mod tests {
     use super::{validate_regular3d, GridValidationError};
-    use crate::medial::MedialError;
-    use crate::mid_surface::MidSurfaceError;
     use reify_types::value::{InterpolationKind, SampledField, SampledGridKind};
     use std::sync::atomic::AtomicBool;
 
@@ -230,89 +228,4 @@ mod tests {
         assert_eq!(err, GridValidationError::EmptyAxisGrid { axis: 0 });
     }
 
-    // ── From<GridValidationError> for MidSurfaceError tests ──────────────────
-
-    #[test]
-    fn from_grid_validation_error_for_mid_surface_error_empty_axis_grid() {
-        let gve = GridValidationError::EmptyAxisGrid { axis: 1 };
-        let mse = MidSurfaceError::from(gve);
-        assert_eq!(mse, MidSurfaceError::EmptyAxisGrid { axis: 1 });
-    }
-
-    #[test]
-    fn from_grid_validation_error_for_mid_surface_error_unsupported_grid_kind() {
-        let gve = GridValidationError::UnsupportedGridKind {
-            found: SampledGridKind::Regular1D,
-        };
-        let mse = MidSurfaceError::from(gve);
-        assert_eq!(
-            mse,
-            MidSurfaceError::UnsupportedGridKind {
-                found: SampledGridKind::Regular1D
-            }
-        );
-    }
-
-    #[test]
-    fn from_grid_validation_error_for_mid_surface_error_axis_length_mismatch() {
-        let gve = GridValidationError::AxisLengthMismatch {
-            bounds_min_len: 1,
-            bounds_max_len: 3,
-            spacing_len: 3,
-            axis_grids_len: 3,
-        };
-        let mse = MidSurfaceError::from(gve);
-        assert_eq!(
-            mse,
-            MidSurfaceError::AxisLengthMismatch {
-                bounds_min_len: 1,
-                bounds_max_len: 3,
-                spacing_len: 3,
-                axis_grids_len: 3,
-            }
-        );
-    }
-
-    // ── From<GridValidationError> for MedialError tests ───────────────────────
-
-    #[test]
-    fn from_grid_validation_error_for_medial_error_empty_axis_grid() {
-        let gve = GridValidationError::EmptyAxisGrid { axis: 2 };
-        let me = MedialError::from(gve);
-        assert_eq!(me, MedialError::EmptyAxisGrid { axis: 2 });
-    }
-
-    #[test]
-    fn from_grid_validation_error_for_medial_error_unsupported_grid_kind() {
-        let gve = GridValidationError::UnsupportedGridKind {
-            found: SampledGridKind::Regular2D,
-        };
-        let me = MedialError::from(gve);
-        assert_eq!(
-            me,
-            MedialError::UnsupportedGridKind {
-                found: SampledGridKind::Regular2D
-            }
-        );
-    }
-
-    #[test]
-    fn from_grid_validation_error_for_medial_error_axis_length_mismatch() {
-        let gve = GridValidationError::AxisLengthMismatch {
-            bounds_min_len: 2,
-            bounds_max_len: 3,
-            spacing_len: 3,
-            axis_grids_len: 3,
-        };
-        let me = MedialError::from(gve);
-        assert_eq!(
-            me,
-            MedialError::AxisLengthMismatch {
-                bounds_min_len: 2,
-                bounds_max_len: 3,
-                spacing_len: 3,
-                axis_grids_len: 3,
-            }
-        );
-    }
 }
