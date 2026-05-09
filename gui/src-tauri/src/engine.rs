@@ -376,6 +376,15 @@ impl EngineSession {
     /// On any error (parse, compile, or a panic in check()), the session state is left
     /// completely unchanged — source_map, module_name, compiled, and last_check all
     /// retain their previous values. All mutations are deferred until after check() returns.
+    ///
+    /// # v1 limitation (task 3228)
+    ///
+    /// `update_source` deliberately uses `compile_with_stdlib` (single-file compile, no
+    /// `ModuleResolver`).  Editing a file in the GUI buffer after `load_file` opened it
+    /// temporarily reverts to single-file behavior — `import` declarations are wired at
+    /// `load_file` time but not on subsequent dirty-buffer edits.  The cross-crate API
+    /// extension needed to pass an in-memory entry buffer to `compile_project` was
+    /// deferred by the steward (esc-3228-41); wire it here once that API exists.
     pub fn update_source(&mut self, path: &str, content: &str) -> Result<GuiState, String> {
         let module_name = Path::new(path)
             .file_stem()
