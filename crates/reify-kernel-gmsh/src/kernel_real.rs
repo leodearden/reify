@@ -105,6 +105,20 @@ impl GmshKernel {
                  for a mesh with {n_verts} vertices (valid range 0..{n_verts})"
             )));
         }
+        // Reject empty input outright: gmsh accepts empty add_nodes_2d /
+        // add_elements_2d calls but the resulting `mesh_generate(3)` produces
+        // a zero-tet VolumeMesh, which is never a useful caller outcome.
+        // Failing fast at the boundary keeps the diagnostic close to the
+        // real cause (caller passed nothing to mesh) rather than letting a
+        // silent zero-tet result propagate downstream.
+        if surface.vertices.is_empty() || surface.indices.is_empty() {
+            return Err(GeometryError::OperationFailed(format!(
+                "mesh_to_volume: empty surface mesh \
+                 (vertices.len()={}, indices.len()={})",
+                surface.vertices.len(),
+                surface.indices.len()
+            )));
+        }
 
         // Recover from a poisoned lock rather than propagating the failure:
         // every call begins with `ffi::clear()` immediately below, which
@@ -228,7 +242,32 @@ impl GmshKernel {
         };
 
         let (node_tags, coord_buf) = ffi::get_nodes_all()?;
+        // Defend the chunks_exact zip below: if gmsh ever returns mismatched
+        // buffers, surfacing the real readback-stride mismatch beats a
+        // silent prefix-truncation that would later masquerade as an
+        // "unknown node tag" connectivity error.
+        if coord_buf.len() != node_tags.len() * 3 {
+            return Err(GeometryError::OperationFailed(format!(
+                "gmsh get_nodes_all stride mismatch: node_tags.len()={}, \
+                 coord_buf.len()={} (expected {} = node_tags.len()*3)",
+                node_tags.len(),
+                coord_buf.len(),
+                node_tags.len() * 3,
+            )));
+        }
         let (_elem_tags, elem_node_tags) = ffi::get_elements_by_type(elem_type)?;
+        let nodes_per_elem: usize = match element_order {
+            ElementOrderTag::P1 => 4,
+            ElementOrderTag::P2 => 10,
+        };
+        if !elem_node_tags.len().is_multiple_of(nodes_per_elem) {
+            return Err(GeometryError::OperationFailed(format!(
+                "gmsh get_elements_by_type stride mismatch: elem_node_tags.len()={} \
+                 is not a multiple of {nodes_per_elem} (expected {nodes_per_elem} \
+                 nodes per {element_order:?} tet)",
+                elem_node_tags.len(),
+            )));
+        }
 
         // Build (gmsh_tag → 0-based local idx) by sorting node tags and
         // assigning indices in tag order. Vertices are emitted in the same
@@ -246,7 +285,16 @@ impl GmshKernel {
         let mut tag_to_idx: HashMap<u64, u32> = HashMap::with_capacity(paired.len());
         let mut vertices: Vec<f32> = Vec::with_capacity(paired.len() * 3);
         for (idx, (tag, xyz)) in paired.iter().enumerate() {
-            tag_to_idx.insert(*tag, idx as u32);
+            // VolumeMesh.tet_indices is u32; if a future huge-mesh regression
+            // pushes the count past 2^32, fail explicitly rather than wrap.
+            let idx_u32 = u32::try_from(idx).map_err(|_| {
+                GeometryError::OperationFailed(format!(
+                    "mesh has {} nodes, exceeding the u32 connectivity limit \
+                     of VolumeMesh.tet_indices",
+                    paired.len()
+                ))
+            })?;
+            tag_to_idx.insert(*tag, idx_u32);
             vertices.extend(xyz.iter().map(|&v| v as f32));
         }
 

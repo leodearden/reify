@@ -349,11 +349,19 @@ pub fn add_nodes_2d(
     node_tags: &[u64],
     coords: &[f64],
 ) -> Result<(), GeometryError> {
-    debug_assert_eq!(
-        coords.len(),
-        node_tags.len() * 3,
-        "add_nodes_2d: coords.len() must equal node_tags.len() * 3"
-    );
+    // Runtime check (not debug_assert): mismatched slices here would feed a
+    // bad buffer to gmsh in release builds — opaque internal error or
+    // out-of-bounds reads on the C side. This is a public FFI-boundary
+    // function; pay the equality check on every call.
+    if coords.len() != node_tags.len() * 3 {
+        return Err(GeometryError::OperationFailed(format!(
+            "add_nodes_2d: coords.len()={} must equal node_tags.len()*3={} \
+             (node_tags.len()={})",
+            coords.len(),
+            node_tags.len() * 3,
+            node_tags.len(),
+        )));
+    }
     // SAFETY: u64 == usize == size_t on every supported target (compile-time
     // assert at module top); the slice memory layout is identical.
     let node_tags_ptr = node_tags.as_ptr() as *const usize;
@@ -387,6 +395,29 @@ pub fn add_elements_2d(
     element_tags: &[u64],
     node_tags: &[u64],
 ) -> Result<(), GeometryError> {
+    // Mirror add_nodes_2d's stride check: `node_tags.len()` must be
+    // `element_tags.len() * nodes_per_element`. Only the two element types
+    // this crate actually feeds gmsh are checked — `2` (3-node triangle) and
+    // `3` (4-node quad). For any other type the caller is on its own
+    // (gmsh's own error message will surface) and we let the call through.
+    let nodes_per_element: Option<usize> = match element_type {
+        2 => Some(3),
+        3 => Some(4),
+        _ => None,
+    };
+    if let Some(npe) = nodes_per_element
+        && node_tags.len() != element_tags.len() * npe
+    {
+        return Err(GeometryError::OperationFailed(format!(
+            "add_elements_2d: node_tags.len()={} must equal element_tags.len()*{}={} \
+             for element_type={} (element_tags.len()={})",
+            node_tags.len(),
+            npe,
+            element_tags.len() * npe,
+            element_type,
+            element_tags.len(),
+        )));
+    }
     let element_tags_ptr = element_tags.as_ptr() as *const usize;
     let node_tags_ptr = node_tags.as_ptr() as *const usize;
     gmsh_call!(

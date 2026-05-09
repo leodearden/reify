@@ -96,6 +96,45 @@ fn cube_surface_produces_nonempty_p1_tet_mesh() {
             );
         }
     }
+
+    // Connectivity bounds: every tet index must address a real vertex.
+    // A regression in the gmsh-tag → 0-based-idx remap could push indices
+    // past the end of `vertices` and the tests above would still pass
+    // (counts/divisibility/bbox don't witness it) — assert it explicitly.
+    let n_local_verts = vm.vertices.len() / 3;
+    assert!(
+        vm.tet_indices.iter().all(|&i| (i as usize) < n_local_verts),
+        "tet_indices contains an out-of-range index for a {n_local_verts}-vertex mesh; \
+         max idx = {:?}",
+        vm.tet_indices.iter().max(),
+    );
+}
+
+/// Pin that an explicit `MeshingOptions.threads` override propagates through
+/// `mesh_to_volume` without erroring.
+///
+/// Doesn't assert a specific thread count is honoured by HXT — that's not
+/// observable from the API surface. Only proves the option round-trips
+/// (i.e. the `Some(t) => t as f64` arm of the match in
+/// `kernel_real::mesh_to_volume` still wires `General.NumThreads`). A
+/// regression that drops that arm would be silently masked on most CI
+/// machines by the `available_parallelism` fallback.
+#[test]
+fn threads_override_succeeds() {
+    let cube = unit_cube_mesh();
+    let kernel = GmshKernel::new();
+    let opts = MeshingOptions {
+        threads: Some(2),
+        ..Default::default()
+    };
+    let vm = kernel
+        .mesh_to_volume(&cube, &opts, ElementOrderTag::P1)
+        .expect("threads=Some(2) mesh_to_volume must succeed");
+    assert!(
+        vm.tet_indices.len() / 4 > 0,
+        "threads=Some(2) must still produce tets; tet count = {}",
+        vm.tet_indices.len() / 4,
+    );
 }
 
 /// Pin that an explicit `mesh_size` override produces a strictly finer mesh
@@ -314,6 +353,26 @@ fn indices_length_not_multiple_of_three_errors() {
     assert!(
         msg.contains("indices") && msg.contains("3"),
         "error message should mention indices triangle stride; got: {msg}"
+    );
+}
+
+/// Empty surface mesh → caller-side error before any FFI work. Gmsh accepts
+/// empty input but produces a useless zero-tet result; failing fast keeps
+/// the diagnostic close to the real cause.
+#[test]
+fn empty_surface_mesh_errors() {
+    let bad = reify_types::Mesh {
+        vertices: vec![],
+        indices: vec![],
+        normals: None,
+    };
+    let kernel = GmshKernel::new();
+    let result = kernel.mesh_to_volume(&bad, &MeshingOptions::default(), ElementOrderTag::P1);
+    let err = result.expect_err("empty surface mesh must error before any FFI work");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("empty surface mesh"),
+        "error message should mention empty surface mesh; got: {msg}"
     );
 }
 
