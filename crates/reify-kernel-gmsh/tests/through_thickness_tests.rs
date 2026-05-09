@@ -307,7 +307,9 @@ fn warning_includes_face_or_region_identifier() {
     let _: u32 = warnings[0].element_count;
 }
 
-/// Pins the LHS branch of the early-return guard at `src/through_thickness.rs:80`:
+/// Pins the LHS branch of the early-return OR-guard at the top of
+/// `through_thickness_check` (fires when either `surface.vertices` or
+/// `volume.tet_indices` is empty):
 /// `if surface.vertices.is_empty() || volume.tet_indices.is_empty() { return Vec::new(); }`
 ///
 /// This test exercises the LHS short-circuit specifically: `surface.vertices` is
@@ -341,7 +343,9 @@ fn empty_surface_vertices_returns_empty_vec() {
     );
 }
 
-/// Pins the RHS branch of the early-return guard at `src/through_thickness.rs:80`:
+/// Pins the RHS branch of the early-return OR-guard at the top of
+/// `through_thickness_check` (fires when either `surface.vertices` or
+/// `volume.tet_indices` is empty):
 /// `if surface.vertices.is_empty() || volume.tet_indices.is_empty() { return Vec::new(); }`
 ///
 /// This test exercises the RHS short-circuit specifically: `surface.vertices` is
@@ -350,8 +354,8 @@ fn empty_surface_vertices_returns_empty_vec() {
 /// with both inputs empty would only exercise the LHS (Rust's `||` short-circuits
 /// on the first true operand) and would leave this branch unpinned.
 ///
-/// Note: a secondary guard at `src/through_thickness.rs:113-116` (`if n_tets == 0`)
-/// would also catch empty `tet_indices` after the BBox walk. Pinning the documented
+/// Note: a secondary `n_tets == 0` guard inside `through_thickness_check` after
+/// the BBox walk would also catch empty `tet_indices`. Pinning the documented
 /// `tet_indices.is_empty()` contract directly catches a regression that drops
 /// EITHER guard — not just the secondary one.
 ///
