@@ -324,23 +324,23 @@ describe('main() workspace + landlock env propagation (task 3210)', () => {
   });
 
   /**
-   * Trigger invokeSdk by sending a send_message, then wait for spawn() to be called.
-   * After this, wrapClaudeArgs.mock.calls[0] contains the workspace and landlockExec.
+   * Trigger invokeSdk by sending a send_message, then await a promise that resolves
+   * exactly when spawn() is called — no interval polling, no 2 s ceiling.
+   *
+   * wrapClaudeArgs is called before spawn in session.ts, so by the time this promise
+   * settles, wrapClaudeArgs.mock.calls[0] is already populated.
    */
   async function triggerInvokeSdk(input: PassThrough): Promise<void> {
-    input.write(JSON.stringify({ type: 'send_message', id: 'msg-ws', text: 'hello' }) + '\n');
-    await new Promise<void>((resolve, reject) => {
-      const deadline = Date.now() + 2000;
-      const check = setInterval(() => {
-        if (vi.mocked(spawn).mock.calls.length > 0) {
-          clearInterval(check);
-          resolve();
-        } else if (Date.now() > deadline) {
-          clearInterval(check);
-          reject(new Error('spawn was never called'));
-        }
-      }, 10);
+    let resolveSpawnCalled!: () => void;
+    const spawnCalledPromise = new Promise<void>((resolve) => {
+      resolveSpawnCalled = resolve;
     });
+    vi.mocked(spawn).mockImplementation((() => {
+      resolveSpawnCalled();
+      return makeIdleProcess();
+    }) as any);
+    input.write(JSON.stringify({ type: 'send_message', id: 'msg-ws', text: 'hello' }) + '\n');
+    await spawnCalledPromise;
   }
 
   // (a) REIFY_WORKSPACE propagates to wrapClaudeArgs workspace arg
@@ -440,6 +440,36 @@ describe('main() workspace + landlock env propagation (task 3210)', () => {
     } finally {
       if (origLe === undefined) delete process.env.REIFY_LANDLOCK_EXEC;
       else process.env.REIFY_LANDLOCK_EXEC = origLe;
+    }
+  });
+
+  // (e) workspace is pinned at startup — mutating REIFY_WORKSPACE after main() begins
+  //     does NOT change the workspace passed to subsequent wrapClaudeArgs calls.
+  it('(e) workspace is pinned at main() startup — env mutation after ready has no effect', async () => {
+    const origWs = process.env.REIFY_WORKSPACE;
+    process.env.REIFY_WORKSPACE = '/pinned/workspace';
+    try {
+      const input = new PassThrough();
+      const output = new PassThrough();
+      const mainPromise = main(input, output);
+      await waitForMessage(output, (m) => m.type === 'ready');
+
+      // Mutate the env var AFTER main() has captured its value
+      process.env.REIFY_WORKSPACE = '/mutated/workspace';
+
+      await triggerInvokeSdk(input);
+
+      // wrapClaudeArgs should have been called with the ORIGINAL workspace,
+      // not the mutated one — index.ts reads env once at startup.
+      expect(vi.mocked(wrapClaudeArgs)).toHaveBeenCalled();
+      const wsArg = vi.mocked(wrapClaudeArgs).mock.calls[0][1];
+      expect(wsArg).toBe('/pinned/workspace');
+
+      input.end();
+      await mainPromise;
+    } finally {
+      if (origWs === undefined) delete process.env.REIFY_WORKSPACE;
+      else process.env.REIFY_WORKSPACE = origWs;
     }
   });
 });
