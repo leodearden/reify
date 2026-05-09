@@ -691,29 +691,29 @@ describe('debug bridge editor_content', () => {
     return JSON.parse(payload.result);
   }
 
-  it('(a) when no file is active, outOfSyncWithDisk is false', async () => {
+  it('(a) when no file is active, activeFileOutOfSyncWithDisk is false', async () => {
     const stores = makeStores();
     // No active file, no open files
     const result = await dispatchEditorContent(stores);
-    expect(result.outOfSyncWithDisk).toBe(false);
+    expect(result.activeFileOutOfSyncWithDisk).toBe(false);
   });
 
-  it('(b) when active file is in externallyChanged, outOfSyncWithDisk is true', async () => {
+  it('(b) when active file is in externallyChanged, activeFileOutOfSyncWithDisk is true', async () => {
     const stores = makeStores();
     stores.editor.state.openFiles = [{ path: 'bracket.ri', content: 'x' }];
     stores.editor.state.activeFile = 'bracket.ri';
     stores.editor.state.externallyChanged = ['bracket.ri'];
     const result = await dispatchEditorContent(stores);
-    expect(result.outOfSyncWithDisk).toBe(true);
+    expect(result.activeFileOutOfSyncWithDisk).toBe(true);
   });
 
-  it('(b) when active file is NOT in externallyChanged, outOfSyncWithDisk is false', async () => {
+  it('(b) when active file is NOT in externallyChanged, activeFileOutOfSyncWithDisk is false', async () => {
     const stores = makeStores();
     stores.editor.state.openFiles = [{ path: 'bracket.ri', content: 'x' }];
     stores.editor.state.activeFile = 'bracket.ri';
     stores.editor.state.externallyChanged = [];
     const result = await dispatchEditorContent(stores);
-    expect(result.outOfSyncWithDisk).toBe(false);
+    expect(result.activeFileOutOfSyncWithDisk).toBe(false);
   });
 
   it('(c) each openFiles[] entry gains externallyChanged boolean', async () => {
@@ -731,7 +731,7 @@ describe('debug bridge editor_content', () => {
     expect(fileB.externallyChanged).toBe(true);
   });
 
-  it('(d) dirty and outOfSyncWithDisk are independent — both true simultaneously', async () => {
+  it('(d) dirty and activeFileOutOfSyncWithDisk are independent — both true simultaneously', async () => {
     const stores = makeStores();
     stores.editor.state.openFiles = [{ path: 'bracket.ri', content: 'x' }];
     stores.editor.state.activeFile = 'bracket.ri';
@@ -742,11 +742,11 @@ describe('debug bridge editor_content', () => {
     const file = result.openFiles.find((f: any) => f.path === 'bracket.ri');
     expect(file.dirty).toBe(true);
     expect(file.externallyChanged).toBe(true);
-    // top-level outOfSyncWithDisk true as well
-    expect(result.outOfSyncWithDisk).toBe(true);
+    // top-level activeFileOutOfSyncWithDisk true as well
+    expect(result.activeFileOutOfSyncWithDisk).toBe(true);
   });
 
-  it('(d) dirty true does not imply outOfSyncWithDisk true', async () => {
+  it('(d) dirty true does not imply activeFileOutOfSyncWithDisk true', async () => {
     const stores = makeStores();
     stores.editor.state.openFiles = [{ path: 'bracket.ri', content: 'x' }];
     stores.editor.state.activeFile = 'bracket.ri';
@@ -756,6 +756,6 @@ describe('debug bridge editor_content', () => {
     const file = result.openFiles.find((f: any) => f.path === 'bracket.ri');
     expect(file.dirty).toBe(true);
     expect(file.externallyChanged).toBe(false);
-    expect(result.outOfSyncWithDisk).toBe(false);
+    expect(result.activeFileOutOfSyncWithDisk).toBe(false);
   });
 });
