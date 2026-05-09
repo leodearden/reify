@@ -1293,6 +1293,59 @@ mod tests {
         }
     }
 
+    /// Existing P2-only mesh assembles with `D = 3` under the new
+    /// max-over-elements DOFs-per-node derivation — i.e. pure-tet meshes
+    /// keep their v0.3 `3 · n_nodes` global dim, *not* a 6-DOF/node shape.
+    ///
+    /// Re-runs the same identity-connectivity invariant as
+    /// `single_p2_element_identity_connectivity_matches_k_e_bit_for_bit`
+    /// but additionally asserts `K.nrows() == 30` and `K.ncols() == 30`
+    /// (= `3 · 10`, not `6 · 10 = 60`). Locks the design decision: the
+    /// global D is `max(d_e)` rather than e.g. `max(d_e, 6)` or
+    /// `unwrap_or(6)` (typo guards). A future regression that, say,
+    /// flips the `unwrap_or(3)` default to `unwrap_or(6)` would surface
+    /// here as a 60-row matrix.
+    #[test]
+    fn existing_p2_global_assembly_pattern_unchanged_under_d_derived_loop() {
+        let mat = dimensionless_steel_like();
+        let phys = scaled_p2_phys_nodes(1.0);
+        let k_e = element_stiffness_p2(&phys, &mat);
+        assert_eq!(k_e.n_dofs, 30);
+
+        let connectivity: [usize; 10] = std::array::from_fn(|i| i);
+        let element = AssemblyElement {
+            id: 0,
+            connectivity: &connectivity,
+            k_e: &k_e,
+        };
+        let k = assemble_global_stiffness(10, &[element], AssemblyMode::Deterministic);
+
+        // Pure-P2 mesh ⇒ max(d_e) = 3 ⇒ dim = 30 (NOT 60).
+        assert_eq!(
+            k.nrows(),
+            30,
+            "pure-P2 mesh must derive D = 3, giving 3·10 = 30 rows (not 6·10 = 60)",
+        );
+        assert_eq!(
+            k.ncols(),
+            30,
+            "pure-P2 mesh must derive D = 3, giving 3·10 = 30 cols (not 6·10 = 60)",
+        );
+
+        // Reassert bit-equality at every entry.
+        for i in 0..30 {
+            for j in 0..30 {
+                let actual = read(&k, i, j);
+                let expected = k_e.get(i, j);
+                assert_eq!(
+                    actual.to_bits(),
+                    expected.to_bits(),
+                    "K_global[{i}][{j}] = {actual} but K_e[{i}][{j}] = {expected}",
+                );
+            }
+        }
+    }
+
     /// One P1 tet sharing only node 0 with one MITC3+ shell → unified
     /// 6-DOF/node global K with the right per-node-pair contributions.
     ///
