@@ -397,6 +397,11 @@ pub(crate) fn compile_expr_guarded(
                 reify_syntax::NumberClass::Real(f) => {
                     CompiledExpr::literal(Value::Real(f), Type::Real)
                 }
+                // Mirror site: lower_annotations in annotations.rs handles LossyReal the same way.
+                reify_syntax::NumberClass::LossyReal(f) => {
+                    // Warning emission will be added in step-4.
+                    CompiledExpr::literal(Value::Real(f), Type::Real)
+                }
             }
         }
         reify_syntax::ExprKind::QuantityLiteral { value, unit } => {

@@ -778,11 +778,15 @@ pub struct Expr {
 pub enum NumberClass {
     Int(i64),
     Real(f64),
+    /// An integer-form token whose f64 value is non-finite or does not round-trip
+    /// cleanly through i64 (e.g. `99999999999999999999` → `f64::INFINITY`).
+    /// The caller **must** emit a precision-loss diagnostic for this variant.
+    LossyReal(f64),
 }
 
-/// Classify a parsed numeric literal as Int or Real, matching the AST's
-/// `is_real` flag and falling back to Real for integer-form tokens whose
-/// f64 value isn't a clean i64.
+/// Classify a parsed numeric literal as `Int`, `Real`, or `LossyReal`,
+/// matching the AST's `is_real` flag and detecting integer-form tokens whose
+/// f64 value cannot cleanly represent the source integer.
 ///
 /// Branch semantics:
 ///
@@ -793,11 +797,15 @@ pub enum NumberClass {
 /// * `is_real == false` and the f64 round-trips cleanly through `i64`
 ///   (i.e. `value.is_finite() && value == (value as i64) as f64`) →
 ///   `Int(value as i64)`.
-/// * `is_real == false` otherwise → `Real(value)`. Reached when an
-///   integer-form token's f64 value isn't a clean i64 (overflow past
-///   2^63, e.g. `100000000000000000000`, or NaN/Inf from a hypothetical
-///   parser edge case). Falls back to Real to avoid a saturated `as i64`
-///   cast.
+/// * `is_real == false` otherwise → `LossyReal(value)`. This path is
+///   reachable in production: an integer-form token too long to fit in f64
+///   (e.g. `99999999999999999999`, 20-digit integers) parses to `f64::INFINITY`
+///   or a finite f64 that does not round-trip through i64. Callers **must**
+///   emit a precision-loss diagnostic when they receive `LossyReal` — the
+///   variant's purpose is to make the lossiness visible at the type level so
+///   call sites cannot silently ignore it. The f64 payload should be used as
+///   the runtime value (preserving current behavior), but the diagnostic is
+///   required.
 ///
 /// This is the single source of truth for the Int/Real boundary on
 /// `ExprKind::NumberLiteral`; both `compile_expr_guarded` and
@@ -808,7 +816,7 @@ pub fn classify_number_literal(value: f64, is_real: bool) -> NumberClass {
     } else if value.is_finite() && value == (value as i64) as f64 {
         NumberClass::Int(value as i64)
     } else {
-        NumberClass::Real(value)
+        NumberClass::LossyReal(value)
     }
 }
 
@@ -1109,22 +1117,22 @@ mod number_class_tests {
     }
 
     #[test]
-    fn is_real_false_overflow_past_i64_max_falls_back_to_real() {
-        // 1e20 as i64 saturates; the round-trip check catches it.
-        assert_eq!(classify_number_literal(1e20, false), NumberClass::Real(1e20));
+    fn is_real_false_overflow_past_i64_max_classifies_as_lossy_real_existing() {
+        // 1e20 as i64 saturates; the round-trip check catches it → LossyReal.
+        assert_eq!(classify_number_literal(1e20, false), NumberClass::LossyReal(1e20));
     }
 
     #[test]
-    fn is_real_false_nan_falls_back_to_real() {
-        // NaN is not finite → Real fallback.
+    fn is_real_false_nan_classifies_as_lossy_real() {
+        // NaN is not finite → LossyReal fallback.
         let result = classify_number_literal(f64::NAN, false);
-        assert!(matches!(result, NumberClass::Real(v) if v.is_nan()));
+        assert!(matches!(result, NumberClass::LossyReal(v) if v.is_nan()));
     }
 
     #[test]
-    fn is_real_false_infinity_falls_back_to_real() {
-        // Inf is not finite → Real fallback.
-        assert_eq!(classify_number_literal(f64::INFINITY, false), NumberClass::Real(f64::INFINITY));
+    fn is_real_false_infinity_classifies_as_lossy_real() {
+        // Inf is not finite → LossyReal fallback.
+        assert_eq!(classify_number_literal(f64::INFINITY, false), NumberClass::LossyReal(f64::INFINITY));
     }
 
     #[test]
