@@ -197,3 +197,108 @@ fn large_vertex_count_emits_warn_does_not_panic() {
         warn_count
     );
 }
+
+/// Verifies the TRANSITIVE (chain) merge property documented in `repair.rs`
+/// lines 59-70. When vertices A↔B and B↔C are each within `vertex_merge_epsilon`
+/// but A↔C is NOT directly within epsilon, the first-match-wins-and-break loop
+/// still collapses all three into A's position via the chain:
+///
+///   i=1, j=0 → merge_map[1] = merge_map[0] = 0   (A is B's survivor)
+///   i=2, j=0 misses (|A-C|² > eps_sq),
+///   i=2, j=1 hits  → merge_map[2] = merge_map[1] = 0   (transitive: A is C's survivor)
+///
+/// Existing tests (`near_coincident_vertices_are_merged`) only cover the DIRECT
+/// pair case. A future refactor that switches the inner `break` to `continue`,
+/// or a spatial-hash refinement that drops chain semantics, would still pass the
+/// direct-pair test but would fail THIS test.
+///
+/// Numerical stability: vertex spacing 1e-9, epsilon 1.5e-9 →
+///   eps_sq = 2.25e-18, |A-B|² = |B-C|² ≈ 1e-18 ≤ eps_sq (both merge),
+///   |A-C|² ≈ 4e-18 > eps_sq (no direct merge).
+///   f32 round-trip noise near 1e-9 is ~1.2e-16 — five orders of magnitude
+///   below the 1.25e-18 gap between the merge and non-merge thresholds.
+#[test]
+fn chain_merge_collapses_via_intermediate_vertex() {
+    // A=(0,0,0), B=(1e-9,0,0), C=(2e-9,0,0): the three chain vertices.
+    // D=(10,0,0), E=(10,10,0): far vertices used to form non-degenerate triangles.
+    // Three triangles: (A,D,E), (B,D,E), (C,D,E) — each ~50 m² area, far above
+    // the sliver_area_threshold of 1e-12.
+    let mesh = Mesh {
+        vertices: vec![
+            0.0_f32,  0.0, 0.0, // v0 = A
+            1e-9_f32, 0.0, 0.0, // v1 = B  (1e-9 from A, within epsilon 1.5e-9)
+            2e-9_f32, 0.0, 0.0, // v2 = C  (1e-9 from B; 2e-9 from A: no direct A↔C merge)
+            10.0_f32, 0.0, 0.0, // v3 = D
+            10.0_f32, 10.0, 0.0, // v4 = E
+        ],
+        indices: vec![
+            0, 3, 4, // triangle (A, D, E)
+            1, 3, 4, // triangle (B, D, E)
+            2, 3, 4, // triangle (C, D, E)
+        ],
+        normals: None,
+    };
+    let cfg = RepairConfig {
+        sliver_area_threshold: 1e-12, // far below the ~50 m² triangle areas
+        vertex_merge_epsilon: 1.5e-9,
+    };
+    let repaired = repair_surface_mesh(&mesh, cfg);
+
+    // (1) Only A, D, E survive after compaction (B and C merged into A):
+    //     3 vertices × 3 floats = 9.
+    assert_eq!(
+        repaired.vertices.len(),
+        9,
+        "only A, D, E should survive after chain-merge compaction; \
+         got {} floats = {} vertices",
+        repaired.vertices.len(),
+        repaired.vertices.len() / 3
+    );
+
+    // (2) All three triangles survive — none are degenerate after merging
+    //     (each maps to distinct compacted indices A_slot, D_slot, E_slot)
+    //     and none are slivers (~50 m² >> 1e-12 threshold).
+    assert_eq!(
+        repaired.indices.len(),
+        9,
+        "all 3 triangles should survive (none degenerate, none slivers); \
+         got {} indices = {} triangles",
+        repaired.indices.len(),
+        repaired.indices.len() / 3
+    );
+
+    // (3) All three triangles' first-corner indices must be EQUAL — proves that
+    //     B chain-merged to A's survivor AND that C TRANSITIVELY chain-merged
+    //     through B to A's survivor. These are the key regression assertions:
+    //     a refactor that switches the inner `break` to `continue` would leave
+    //     B and C as separate survivors and fail these checks.
+    assert_eq!(
+        repaired.indices[0], repaired.indices[3],
+        "B should chain-merge to A's survivor \
+         (indices[0] = triangle-(A,D,E) first-corner, \
+          indices[3] = triangle-(B,D,E) first-corner after merge)"
+    );
+    assert_eq!(
+        repaired.indices[0], repaired.indices[6],
+        "C should TRANSITIVELY chain-merge to A's survivor via B \
+         (indices[6] = triangle-(C,D,E) first-corner after merge)"
+    );
+
+    // (4) The survivor's position must be A=(0,0,0), pinning the lowest-index-wins
+    //     semantic. A regression that picked a different survivor (e.g., averaged
+    //     positions or chose the highest-index vertex) would fail here while still
+    //     passing assertions (1)-(3).
+    let survivor_slot = repaired.indices[0] as usize;
+    let tol = 1e-6_f32;
+    let sx = repaired.vertices[survivor_slot * 3];
+    let sy = repaired.vertices[survivor_slot * 3 + 1];
+    let sz = repaired.vertices[survivor_slot * 3 + 2];
+    assert!(
+        sx.abs() < tol && sy.abs() < tol && sz.abs() < tol,
+        "chain-merge survivor must be A=(0,0,0) (lowest-index wins); \
+         got ({}, {}, {})",
+        sx,
+        sy,
+        sz
+    );
+}
