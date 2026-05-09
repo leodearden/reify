@@ -34,6 +34,123 @@ use reify_solver_elastic::{
     shell_element_stiffness, build_shell_frame, IsotropicElastic,
 };
 
+// ─── test-local helpers ──────────────────────────────────────────────────────
+
+/// Per-element MITC3 stiffness with Hughes-Brezzi drilling-DOF stabilization.
+///
+/// # Why this is needed
+///
+/// MITC3 (Bathe-Dvorkin 1985, no Allman/Hughes enrichment) carries **zero
+/// stiffness** along the local drilling rotation θ_z (rotation about the
+/// element normal `e3`). For any curved-shell mesh this makes `K_global`
+/// rank-deficient, so `partial_piv_lu` cannot solve reliably.
+///
+/// # Stabilization approach
+///
+/// Add `ε · max_diag · e3 ⊗ e3` into each node's rotation 3×3 sub-block
+/// (rows/cols `6n+3 .. 6n+6` for `n ∈ {0,1,2}`), where:
+///
+/// - `e3 = build_shell_frame(nodes).r[2]` — element normal in global coords
+/// - `max_diag = max_i |K_e[i,i]|` — representative stiffness scale
+/// - `ε = 1e-6` — well below the FP tolerance of all benchmark assertions
+///
+/// With `ε = 1e-6` the perturbation is at the floating-point roundoff level
+/// relative to the bending/membrane stiffness modes, yet adds 6 finite
+/// eigenvalues to the otherwise-zero drilling subspace.
+///
+/// # Production note
+///
+/// This is a **test-local** workaround. The correct fix belongs in
+/// `shell_assembly.rs` or `assembly/global.rs` (follow-up task).
+fn shell_element_stiffness_drilling_stabilized(
+    nodes: &[[f64; 3]; 3],
+    thickness: f64,
+    material: &IsotropicElastic,
+    eps: f64,
+) -> ElementStiffness {
+    let mut k_e = shell_element_stiffness(nodes, thickness, material);
+    debug_assert_eq!(k_e.n_dofs, 18, "expected 18-DOF MITC3 element");
+
+    // Element normal in global coordinates — the drilling singularity axis.
+    let frame = build_shell_frame(nodes);
+    let e3 = frame.r[2];
+
+    // Representative stiffness scale: max absolute diagonal entry.
+    let max_diag = (0..k_e.n_dofs)
+        .map(|i| k_e.data[i * k_e.n_dofs + i].abs())
+        .fold(0.0_f64, f64::max);
+
+    let drill_k = eps * max_diag;
+
+    // Add ε · max_diag · (e3 ⊗ e3) to each node's rotation sub-block.
+    // Node n occupies global DOFs [6n .. 6n+6]; rotation DOFs are [6n+3 .. 6n+6].
+    for node in 0..3_usize {
+        let base = 6 * node + 3; // first rotation DOF for this node
+        for i in 0..3_usize {
+            for j in 0..3_usize {
+                k_e.data[(base + i) * k_e.n_dofs + (base + j)] +=
+                    drill_k * e3[i] * e3[j];
+            }
+        }
+    }
+
+    k_e
+}
+
+/// Assemble, apply Dirichlet BCs, and solve a pure-shell FEA system via
+/// dense LU factorization.
+///
+/// # Arguments
+///
+/// * `elements` — assembled shell elements (each with connectivity and K_e)
+/// * `n_nodes` — total number of nodes; K_global is `(6·n_nodes)²`
+/// * `dirichlet_bcs` — prescribed DOF values (row-elimination method)
+/// * `point_loads_per_dof` — `(dof_index, force_value)` pairs accumulated
+///   into the RHS vector
+///
+/// # Returns
+///
+/// Dense displacement vector `u` of length `6·n_nodes`: for node `n`, the
+/// six entries `u[6n .. 6n+6]` are `[u_x, u_y, u_z, θ_x, θ_y, θ_z]`.
+///
+/// # Solve method
+///
+/// Dense LU via `faer`: replicates the pattern established in the existing
+/// `dirichlet_bc_elimination_satisfies_original_equilibrium_at_free_dofs`
+/// test (`crates/reify-solver-elastic/src/boundary/dirichlet.rs:696-732`).
+/// Dense LU is adequate for coarse-mesh benchmarks (≤ ~300 DOFs).
+fn solve_shell_system(
+    elements: &[AssemblyElement<'_>],
+    n_nodes: usize,
+    dirichlet_bcs: &[DirichletBc],
+    point_loads_per_dof: &[(usize, f64)],
+) -> Vec<f64> {
+    use faer::linalg::solvers::Solve;
+
+    let ndof = 6 * n_nodes;
+
+    // Assemble global stiffness matrix (pure-shell: D = 6 DOFs/node).
+    let mut k = assemble_global_stiffness(n_nodes, elements, AssemblyMode::Deterministic);
+
+    // Build load vector by accumulating point loads.
+    let mut f = vec![0.0_f64; ndof];
+    for &(dof, value) in point_loads_per_dof {
+        f[dof] += value;
+    }
+
+    // Apply Dirichlet BCs via symmetric row elimination.
+    apply_dirichlet_row_elimination(&mut k, &mut f, dirichlet_bcs);
+
+    // Dense LU solve: K · u = f.
+    // Follows the pattern in dirichlet.rs:729-733.
+    let k_dense = k.to_dense();
+    let plu = k_dense.partial_piv_lu();
+    let mut rhs = faer::Mat::<f64>::from_fn(ndof, 1, |i, _| f[i]);
+    plu.solve_in_place(&mut rhs);
+
+    rhs.col_as_slice(0_usize).to_vec()
+}
+
 // ─── step-1: sanity check ────────────────────────────────────────────────────
 
 /// Sanity check for the end-to-end shell pipeline.
