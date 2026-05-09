@@ -703,6 +703,31 @@ mod tests {
         let _ = assemble_global_stiffness(10, &[element], AssemblyMode::Deterministic);
     }
 
+    /// `k_e.n_dofs` not divisible by `connectivity.len()` panics with a
+    /// descriptive message containing both `"k_e.n_dofs"` (so the existing
+    /// `mismatched_connectivity_length_and_k_e_n_dofs_panics` substring
+    /// match still locks the same code path) and `"divisible by"` (so the
+    /// new contract's intent — "the per-element DOFs-per-node must be
+    /// integer" — is named explicitly in the message).
+    ///
+    /// Uses a synthetic `ElementStiffness::zeros(20)` (3 nodes, 20 DOFs ⇒
+    /// 20 % 3 = 2, not divisible). `ElementStiffness::zeros` is `pub` so
+    /// the test does not depend on a real element kernel; the panic fires
+    /// in the entry-point's per-element divisibility assertion before any
+    /// emission happens.
+    #[test]
+    #[should_panic(expected = "k_e.n_dofs (= 20) is not divisible by")]
+    fn non_divisible_n_dofs_per_node_panics_with_descriptive_message() {
+        let k_e = ElementStiffness::zeros(20);
+        let conn = [0usize, 1, 2]; // 3 nodes — 20 % 3 = 2 ≠ 0.
+        let element = AssemblyElement {
+            id: 13,
+            connectivity: &conn,
+            k_e: &k_e,
+        };
+        let _ = assemble_global_stiffness(3, &[element], AssemblyMode::Deterministic);
+    }
+
     /// Out-of-range connectivity entry (`>= n_nodes`) panics with a
     /// descriptive message naming the offending element id and node id.
     #[test]
