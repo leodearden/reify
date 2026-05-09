@@ -53,6 +53,38 @@ pub enum InboundMessage {
         /// Enables id-based correlation in the sidecar (avoids FIFO-by-tool_name fallback).
         tool_use_id: String,
     },
+    /// User's decision on a pending permission-prompt request.
+    /// Sent in response to an outbound `PermissionRequest` identified by `request_id`.
+    PermissionDecision {
+        request_id: String,
+        /// `"allow"` or `"deny"`.
+        behavior: String,
+        /// Optional human-readable explanation (shown in the CLI's audit log when set).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+        /// Optional override of the tool's input (PreToolUse-style patching).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        updated_input: Option<Value>,
+        /// When true, the sidecar will remember this tool as always-allowed for
+        /// the lifetime of the current permission server instance.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        remember: Option<bool>,
+    },
+}
+
+/// Arguments for the `claude_permission_decision` Tauri command.
+/// Fields map 1-to-1 to `InboundMessage::PermissionDecision`, using snake_case
+/// so they round-trip correctly through Rust serde without a camelCase bridge.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PermissionDecisionArgs {
+    pub request_id: String,
+    pub behavior: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_input: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remember: Option<bool>,
 }
 
 /// Outbound messages sent from the sidecar to the GUI (over sidecar stdout).
@@ -96,6 +128,19 @@ pub enum OutboundMessage {
         message: String,
     },
     Ready,
+    /// Permission-prompt request emitted when Claude CLI wants to use a tool
+    /// that requires user approval. The sidecar emits this; the host forwards
+    /// it to the frontend via the `claude-permission-request` Tauri event.
+    PermissionRequest {
+        /// The in-flight send_message id (for turn correlation).
+        id: String,
+        /// Unique correlator for the permission round-trip (sidecar-generated UUID).
+        request_id: String,
+        /// Name of the tool Claude wants to invoke.
+        tool_name: String,
+        /// Arguments Claude intends to pass to the tool.
+        tool_input: Value,
+    },
 }
 
 // --- Pure IPC functions ---
@@ -112,14 +157,25 @@ pub fn parse_outbound(line: &str) -> Result<OutboundMessage, String> {
     serde_json::from_str(line.trim()).map_err(|e| format!("parse_outbound: {}", e))
 }
 
+/// Write an InboundMessage as a JSON line, returning the raw `io::Error`.
+///
+/// This is the low-level primitive. Callers that need `ErrorKind` inspection (e.g.
+/// `SidecarHandle::abort` checking for `BrokenPipe`) use this directly; callers that
+/// want a `String` error use `write_to_sidecar`.
+async fn try_write_inbound<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    msg: &InboundMessage,
+) -> Result<(), std::io::Error> {
+    let line = format_inbound(msg);
+    writer.write_all(line.as_bytes()).await
+}
+
 /// Write an InboundMessage as a JSON line to the sidecar stdin.
 pub async fn write_to_sidecar<W: AsyncWrite + Unpin>(
     writer: &mut W,
     msg: &InboundMessage,
 ) -> Result<(), String> {
-    let line = format_inbound(msg);
-    writer
-        .write_all(line.as_bytes())
+    try_write_inbound(writer, msg)
         .await
         .map_err(|e| format!("write_to_sidecar: {}", e))
 }
@@ -482,9 +538,34 @@ impl SidecarHandle {
     }
 
     /// Send an abort signal to the sidecar (cancels the current message).
+    ///
+    /// This method is idempotent against a dead sidecar:
+    /// - Returns `Ok(())` immediately if the sidecar is known not running
+    ///   (`NotStarted` or `Crashed`), without touching stdin.
+    /// - If the sidecar's stdin pipe happens to be closed (race window between
+    ///   pipe closure and state transition to `Crashed`), the resulting
+    ///   `BrokenPipe` error is also silently converted to `Ok(())` — the
+    ///   user-visible action ("stop the request") is already complete.
     pub async fn abort(&mut self) -> Result<(), String> {
+        // State pre-check: end the lock-guard temporary before taking the stdin lock
+        // to avoid holding two locks simultaneously (matches lock-ordering hygiene in
+        // claude_send_message_impl). A block drops the guard at `}` without a clone.
+        let early_return = {
+            let s = self.state.lock().await;
+            matches!(*s, SidecarState::NotStarted | SidecarState::Crashed(_))
+        };
+        if early_return {
+            return Ok(());
+        }
+
         let mut writer = self.stdin.lock().await;
-        write_to_sidecar(&mut *writer, &InboundMessage::Abort).await
+        match try_write_inbound(&mut *writer, &InboundMessage::Abort).await {
+            Ok(()) => Ok(()),
+            // The sidecar already exited and its stdin pipe is closed.
+            // The user-visible action ("stop the request") is trivially complete.
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+            Err(e) => Err(format!("write_to_sidecar: {}", e)),
+        }
     }
 
     /// Send a clear_session signal to the sidecar (resets conversation history).
@@ -511,6 +592,24 @@ impl SidecarHandle {
         let mut writer = self.stdin.lock().await;
         write_to_sidecar(&mut *writer, &msg).await?;
         Ok(id)
+    }
+
+    /// Forward a permission decision to the sidecar.
+    ///
+    /// The caller is responsible for ensuring the sidecar is in the Ready state.
+    pub async fn permission_decision(
+        &mut self,
+        decision: PermissionDecisionArgs,
+    ) -> Result<(), String> {
+        let msg = InboundMessage::PermissionDecision {
+            request_id: decision.request_id,
+            behavior: decision.behavior,
+            message: decision.message,
+            updated_input: decision.updated_input,
+            remember: decision.remember,
+        };
+        let mut writer = self.stdin.lock().await;
+        write_to_sidecar(&mut *writer, &msg).await
     }
 }
 
@@ -578,6 +677,108 @@ pub async fn claude_clear_session_impl(
     }
 }
 
+/// Forward a user permission decision to the sidecar.
+///
+/// Returns an error if the sidecar is not started or not in the Ready state.
+pub async fn claude_permission_decision_impl(
+    sidecar: &Mutex<Option<SidecarHandle>>,
+    decision: PermissionDecisionArgs,
+) -> Result<(), String> {
+    let mut guard = sidecar.lock().await;
+    match guard.as_mut() {
+        None => Err("sidecar not started".to_string()),
+        Some(handle) => {
+            let state = handle.state().lock().await.clone();
+            match state {
+                SidecarState::Ready => handle.permission_decision(decision).await,
+                SidecarState::Crashed(msg) => Err(format!("sidecar crashed: {}", msg)),
+                SidecarState::NotStarted => Err("sidecar not started".to_string()),
+                SidecarState::Starting => Err("sidecar not ready (still starting)".to_string()),
+            }
+        }
+    }
+}
+
+/// Resolve the writable workspace directory for the Claude sidecar sandbox.
+///
+/// Resolution chain (first non-empty parent wins):
+/// 1. `message_context.current_file` parent — the dir of the currently-open editor file.
+/// 2. `initial_file` parent — the dir of the file passed on the CLI at startup.
+/// 3. `fallback_cwd` — typically `std::env::current_dir()`.
+///
+/// Paths without a parent component (e.g. bare filenames like `"main.ri"`) and
+/// empty strings both fall through to the next option.
+pub fn resolve_workspace_dir(
+    message_context: Option<&MessageContext>,
+    initial_file: Option<&std::path::Path>,
+    fallback_cwd: &std::path::Path,
+) -> std::path::PathBuf {
+    // 1. current_file from message context
+    if let Some(ctx) = message_context {
+        if let Some(ref cf) = ctx.current_file {
+            if !cf.is_empty() {
+                let p = std::path::Path::new(cf);
+                if let Some(parent) = p.parent() {
+                    // parent is empty ("") for bare filenames — filter that out
+                    if parent != std::path::Path::new("") {
+                        return parent.to_path_buf();
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. initial_file
+    if let Some(init) = initial_file {
+        if let Some(parent) = init.parent() {
+            if parent != std::path::Path::new("") {
+                return parent.to_path_buf();
+            }
+        }
+    }
+
+    // 3. fallback
+    fallback_cwd.to_path_buf()
+}
+
+/// Build the environment variable list to inject into the spawned sidecar process.
+///
+/// Always includes `REIFY_WORKSPACE` (the landlock-writable workspace dir).
+/// Includes `REIFY_LANDLOCK_EXEC` only when `landlock_exec` is `Some`.
+/// Ordering is deterministic: workspace first, then landlock_exec if present.
+pub fn compute_sidecar_env(
+    workspace: &std::path::Path,
+    landlock_exec: Option<&std::path::Path>,
+) -> Vec<(String, String)> {
+    let mut envs = vec![
+        (
+            "REIFY_WORKSPACE".to_string(),
+            workspace.to_string_lossy().into_owned(),
+        ),
+    ];
+    if let Some(le) = landlock_exec {
+        envs.push((
+            "REIFY_LANDLOCK_EXEC".to_string(),
+            le.to_string_lossy().into_owned(),
+        ));
+    }
+    envs
+}
+
+/// Apply workspace + landlock env vars to a [`tokio::process::Command`].
+///
+/// Calls [`compute_sidecar_env`] and sets each key-value pair on the command
+/// via [`tokio::process::Command::env`].
+pub fn apply_sidecar_env(
+    cmd: &mut tokio::process::Command,
+    workspace: &std::path::Path,
+    landlock_exec: Option<&std::path::Path>,
+) {
+    for (k, v) in compute_sidecar_env(workspace, landlock_exec) {
+        cmd.env(k, v);
+    }
+}
+
 /// Spawn the Claude sidecar process and return a [`SidecarHandle`] in `Starting` state.
 ///
 /// Extracts stdin/stdout from the child, wraps stdout in a [`BufReader`], and
@@ -586,20 +787,29 @@ pub async fn claude_clear_session_impl(
 /// [`ensure_sidecar_ready`] to store it in the shared sidecar slot and await readiness,
 /// or can call [`SidecarHandle::wait_ready`] manually.
 ///
+/// `workspace` is the landlock-writable directory injected as `REIFY_WORKSPACE`.
+/// `landlock_exec` is the path to the vendored `landlock_exec.py` helper,
+/// injected as `REIFY_LANDLOCK_EXEC` when `Some`.
+///
 /// Returns `Err` if the process cannot be spawned or if stdin/stdout are unavailable.
 pub async fn spawn_sidecar_impl<F>(
     path: &Path,
     engine: Arc<std::sync::Mutex<crate::engine::EngineSession>>,
     event_emitter: F,
     selection: Arc<std::sync::RwLock<reify_mcp::SelectionInfo>>,
+    workspace: &std::path::Path,
+    landlock_exec: Option<&std::path::Path>,
 ) -> Result<SidecarHandle, String>
 where
     F: Fn(String, Value) + Send + Sync + 'static,
 {
-    let mut proc = tokio::process::Command::new(path)
+    let mut command = tokio::process::Command::new(path);
+    command
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit());
+    apply_sidecar_env(&mut command, workspace, landlock_exec);
+    let mut proc = command
         .spawn()
         .map_err(|e| format!("Failed to spawn sidecar {:?}: {}", path, e))?;
 
@@ -866,6 +1076,20 @@ pub fn outbound_to_event(msg: &OutboundMessage) -> (String, Value) {
             serde_json::json!({ "id": id, "code": code, "message": message }),
         ),
         OutboundMessage::Ready => ("claude-ready".to_string(), serde_json::json!({})),
+        OutboundMessage::PermissionRequest {
+            id,
+            request_id,
+            tool_name,
+            tool_input,
+        } => (
+            "claude-permission-request".to_string(),
+            serde_json::json!({
+                "id": id,
+                "request_id": request_id,
+                "tool_name": tool_name,
+                "tool_input": tool_input,
+            }),
+        ),
     }
 }
 

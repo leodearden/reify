@@ -256,7 +256,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                                     span: SourceSpan::new(286, 291),
                                 }),
                                 right: Box::new(Expr {
-                                    kind: ExprKind::NumberLiteral(4.0),
+                                    kind: ExprKind::NumberLiteral { value: 4.0, is_real: false },
                                     span: SourceSpan::new(294, 295),
                                 }),
                             },
@@ -286,7 +286,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                                     span: SourceSpan::new(327, 336),
                                 }),
                                 right: Box::new(Expr {
-                                    kind: ExprKind::NumberLiteral(2.0),
+                                    kind: ExprKind::NumberLiteral { value: 2.0, is_real: false },
                                     span: SourceSpan::new(339, 340),
                                 }),
                             },

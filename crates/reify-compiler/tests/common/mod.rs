@@ -296,7 +296,7 @@ pub fn assert_trait_constraint_binop(
         op
     );
     match &right.kind {
-        ExprKind::NumberLiteral(v) => assert!(
+        ExprKind::NumberLiteral { value: v, .. } => assert!(
             (*v - expected_rhs).abs() <= rhs_epsilon,
             "{} constraint RHS for '{}' should be {} (±{}), got {}",
             trait_name,

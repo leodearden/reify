@@ -77,7 +77,8 @@ function makeDefPreviewStore(meshPaths: string[] = [], defName: string | null = 
 const DEFAULT_TEST_CAMERA = {
   position: [0, 0, 5] as [number, number, number],
   target: [0, 0, 0] as [number, number, number],
-  up: [0, 1, 0] as [number, number, number],
+  // Use current Z-up convention so fixtures stay consistent with the seeded default.
+  up: [0, 0, 1] as [number, number, number],
   zoom: 1,
 };
 

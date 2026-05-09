@@ -37,6 +37,12 @@ export function createScene(
 
   // Camera
   const camera = new PerspectiveCamera(60, width / height, 0.1, 10000);
+  // Reify kernel is Z-up (XY ground plane, +Z extrusion direction). Set this BEFORE
+  // OrbitControls is constructed in Viewport.tsx so its rotation basis is correct.
+  camera.up.set(0, 0, 1);
+  // (5, 5, 5) is intentional under Z-up: z=5 places the camera above the XY ground plane
+  // and the position gives a usable iso-ish view. A strict CAD iso would be ~(1,-1,1)*d but
+  // the symmetric default is sufficient for first-launch framing.
   camera.position.set(5, 5, 5);
 
   // Renderer
@@ -61,6 +67,8 @@ export function createScene(
 
   // Helpers
   const grid = new GridHelper(20, 20, 0x444466, 0x333344);
+  // GridHelper lays in the XZ plane (Y-up default); rotate to lie on the XY plane (the floor under Z-up).
+  grid.rotation.x = Math.PI / 2;
   scene.add(grid);
 
   const axes = new AxesHelper(2);

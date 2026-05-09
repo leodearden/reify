@@ -74,6 +74,7 @@ describe('claude bridge integration', () => {
       onAbort: () => {
         claudeAbort().catch(console.error);
       },
+      onPermissionDecision: () => {},
     });
 
     store.sendMessage('fix the bracket', {
@@ -102,6 +103,7 @@ describe('claude bridge integration', () => {
       onAbort: () => {
         claudeAbort().catch(console.error);
       },
+      onPermissionDecision: () => {},
     });
 
     store.claudeAbort();
@@ -122,6 +124,7 @@ describe('claude bridge integration', () => {
     const store = createClaudeStore({
       onSend: () => {},
       onAbort: () => {},
+      onPermissionDecision: () => {},
     });
 
     // Wire up events
@@ -172,6 +175,7 @@ describe('claude bridge integration', () => {
     const store = createClaudeStore({
       onSend: () => {},
       onAbort: () => {},
+      onPermissionDecision: () => {},
     });
 
     await subscribeToClaudeEvents(store.handleOutboundMessage);
@@ -217,6 +221,7 @@ describe('claude bridge integration', () => {
     const store = createClaudeStore({
       onSend: () => {},
       onAbort: () => {},
+      onPermissionDecision: () => {},
     });
 
     await subscribeToClaudeEvents(store.handleOutboundMessage);
@@ -275,6 +280,7 @@ describe('claude bridge integration', () => {
     const store = createClaudeStore({
       onSend: () => {},
       onAbort: () => {},
+      onPermissionDecision: () => {},
     });
 
     await subscribeToClaudeEvents(store.handleOutboundMessage);
@@ -322,6 +328,7 @@ describe('claude bridge integration', () => {
     const store = createClaudeStore({
       onSend: () => {},
       onAbort: () => {},
+      onPermissionDecision: () => {},
     });
 
     await subscribeToClaudeEvents(store.handleOutboundMessage);
@@ -356,6 +363,7 @@ describe('claude bridge integration', () => {
     const store = createClaudeStore({
       onSend: () => {},
       onAbort: () => {},
+      onPermissionDecision: () => {},
     });
 
     await subscribeToClaudeEvents(store.handleOutboundMessage);

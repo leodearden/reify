@@ -21,10 +21,60 @@ impl Engine {
     ///
     /// Requires a prior call to `eval()` so an evaluation state exists.
     /// If the purpose is already active, this is a no-op.
+    ///
+    /// **Persistence across `eval()` (task 3103):** `Engine::eval` preserves
+    /// the per-purpose binding set across the call by snapshotting
+    /// `active_purpose_bindings` (user intent) before clearing the derived
+    /// state (`active_purposes`, `active_objective_map`,
+    /// `active_tolerance_scope`), then re-applying each captured binding via
+    /// this method after the fresh snapshot is stored. The canonical user flow
+    /// `engine.eval → activate_purpose → engine.build` therefore keeps purpose
+    /// state intact across `build()`'s internal `check() → eval()` round-trip;
+    /// production callers do **not** need to re-activate purposes between
+    /// consecutive builds. The snapshot surfaces (`build_snapshot` /
+    /// `tessellate_snapshot`) participate in the same contract — bindings
+    /// persist across all three flow shapes. See `engine_eval.rs` for the
+    /// preservation site.
+    ///
+    /// **Idempotency:** calling `activate_purpose` twice for the same
+    /// `purpose_name` is a no-op via the `active_purposes.contains_key` early
+    /// return in `activate_purpose_constraints` — **the first binding wins
+    /// regardless of `entity_ref`**. A second call with a different `entity_ref`
+    /// is silently ignored; to rebind a purpose to a new entity, call
+    /// `deactivate_purpose` first. This means existing callers that manually
+    /// re-activate between consecutive builds (with the same entity) continue
+    /// to work harmlessly — the second call is silently skipped.
     pub fn activate_purpose(&mut self, purpose_name: &str, entity_ref: &str) {
-        // No-op if already active
+        // Delegate to the constraint-injection helper; rebuild infrastructure only
+        // once rather than once per call.  For the single-activation case (N=1)
+        // this is equivalent to the previous inline implementation.
+        if self.activate_purpose_constraints(purpose_name, entity_ref) {
+            self.rebuild_purpose_infrastructure();
+        }
+    }
+
+    /// Inject a purpose's constraints, demand entries, and objective into the
+    /// current evaluation graph, and record the binding in `active_purposes`,
+    /// `active_purpose_bindings`, and `active_objective_map`.
+    ///
+    /// Returns `true` if the injection was performed, `false` when this is a
+    /// no-op (purpose already active, purpose not found in `compiled_purposes`,
+    /// or no `eval_state` present).
+    ///
+    /// **Does NOT** rebuild `reverse_index`, `trace_map`, `rebuild_cone`, or
+    /// `active_tolerance_scope`.  Call `rebuild_purpose_infrastructure()` once
+    /// after a batch of calls to amortise those O(graph) passes into a single
+    /// pass — this is what `Engine::eval`'s preserved-binding loop does (task
+    /// 3103, S1 reviewer suggestion).
+    pub(crate) fn activate_purpose_constraints(
+        &mut self,
+        purpose_name: &str,
+        entity_ref: &str,
+    ) -> bool {
+        // No-op if already active — first binding wins; a different entity_ref
+        // is ignored.  Call deactivate_purpose first to rebind to a new entity.
         if self.active_purposes.contains_key(purpose_name) {
-            return;
+            return false;
         }
 
         // Look up the compiled purpose
@@ -34,13 +84,13 @@ impl Engine {
             .find(|p| p.name == purpose_name)
         {
             Some(p) => p.clone(),
-            None => return, // Purpose not found — silently ignore
+            None => return false, // Purpose not found — silently ignore
         };
 
         // Get mutable access to the evaluation state
         let state = match self.eval_state.as_mut() {
             Some(s) => s,
-            None => return, // No eval state — silently ignore
+            None => return false, // No eval state — silently ignore
         };
 
         // Build a unique entity prefix for the purpose-injected constraints
@@ -126,24 +176,46 @@ impl Engine {
         self.active_purposes
             .insert(purpose_name.to_string(), injected_ids);
 
-        // Rebuild infrastructure so incremental eval (edit_param) propagates
-        // through purpose constraint dependencies correctly.
-        //
-        // We reborrow eval_state mutably here — the immutable borrow (`state`)
-        // created earlier was already released after inserting into the graph.
-        //
-        // Compose-field edge preservation (task-2343): pass `&compiled_fields`
-        // into the `_and_fields` builders so composed-field reverse-index
-        // edges (`__field.<dep>` → `Value(__field.<composed>)`) survive the
-        // rebuild. Without this, every composed-field edge would be dropped
-        // here, breaking the cache invariant downstream — pinned by
-        // `purpose_activation_preserves_composed_field_reverse_index` in
-        // `crates/reify-eval/tests/purpose_activation.rs`. The
-        // `Arc::clone(&self.compiled_fields)` happens BEFORE the
-        // `self.eval_state.as_mut()` reborrow because both go through
-        // `&mut self`; cloning the Arc first into a fully owned local
-        // sidesteps the cross-field borrow. Mirrors the pattern at
-        // `engine_edit.rs:829`.
+        // Inject the optimization objective if the purpose has one.
+        if let Some(ref objective) = rewritten_objective {
+            self.active_objective_map
+                .insert(purpose_name.to_string(), objective.clone());
+        }
+
+        // Record the per-purpose entity binding.  The binding insert MUST run
+        // before any call to recompute_tolerance_scope() — which happens in the
+        // caller via rebuild_purpose_infrastructure() — so this purpose's
+        // `RepresentationWithin` contribution is included in the resulting
+        // scope; tighter contributions across purposes win via `min`. See
+        // `crates/reify-eval/src/tolerance_scope.rs` for the recognition
+        // matcher and propagation walk.
+        self.active_purpose_bindings
+            .insert(purpose_name.to_string(), entity_ref.to_string());
+
+        true
+    }
+
+    /// Rebuild the purpose-activation infrastructure (reverse_index, trace_map,
+    /// rebuild_cone, and active_tolerance_scope) against the current graph state.
+    ///
+    /// Called once after `activate_purpose_constraints` (or once after a batch
+    /// of such calls) to materialise the incremental-eval routing tables and the
+    /// tolerance scope.  When N purposes are re-injected — e.g. in `Engine::eval`'s
+    /// preserved-binding loop (task 3103) — a single call here amortises the
+    /// O(graph) rebuild cost into one pass instead of N independent passes.
+    ///
+    /// Compose-field edge preservation (task-2343): passes `&compiled_fields`
+    /// into the `_and_fields` builders so composed-field reverse-index edges
+    /// (`__field.<dep>` → `Value(__field.<composed>)`) survive the rebuild.
+    /// Without this, every composed-field edge would be dropped here, breaking
+    /// the cache invariant downstream — pinned by
+    /// `purpose_activation_preserves_composed_field_reverse_index` in
+    /// `crates/reify-eval/tests/purpose_activation.rs`.  The
+    /// `Arc::clone(&self.compiled_fields)` happens BEFORE the
+    /// `self.eval_state.as_mut()` reborrow because both go through `&mut self`;
+    /// cloning the Arc first into a fully owned local sidesteps the cross-field
+    /// borrow.  Mirrors the pattern at `engine_edit.rs:829`.
+    pub(crate) fn rebuild_purpose_infrastructure(&mut self) {
         let compiled_fields = Arc::clone(&self.compiled_fields);
         if let Some(state) = self.eval_state.as_mut() {
             state.reverse_index = ReverseDependencyIndex::build_from_graph_and_fields(
@@ -156,23 +228,6 @@ impl Engine {
         if let Some(state) = self.eval_state.as_ref() {
             self.demand.rebuild_cone(&state.snapshot.graph);
         }
-
-        // Inject the optimization objective if the purpose has one
-        if let Some(ref objective) = rewritten_objective {
-            self.active_objective_map
-                .insert(purpose_name.to_string(), objective.clone());
-        }
-
-        // Record the per-purpose entity binding then rebuild the tolerance
-        // scope (task 2647 / PRD `docs/prds/v0_2/per-purpose-tolerance.md`,
-        // "Resolved design decisions" → "Tolerance lives at the purpose").
-        // The binding insert MUST run before the recompute so this purpose's
-        // `RepresentationWithin` contribution is included in the resulting
-        // scope; tighter contributions across purposes win via `min`. See
-        // `crates/reify-eval/src/tolerance_scope.rs` for the recognition
-        // matcher and propagation walk.
-        self.active_purpose_bindings
-            .insert(purpose_name.to_string(), entity_ref.to_string());
         self.recompute_tolerance_scope();
     }
 
@@ -262,6 +317,27 @@ impl Engine {
     /// incremental-update strategy keyed on entity_ref) inside this
     /// helper. Keep the recompute entry point so callers don't have to
     /// know the strategy changed.
+    ///
+    /// **Note on `Engine::realization_cache` interaction (task 2874 step-14 + amendment scope-correction)**:
+    /// this helper does NOT explicitly clear or invalidate the realization
+    /// cache. The cache's partial-order rule (`cached_tol ≤ requested_tol`,
+    /// enforced by `RealizationCache::lookup` → `ToleranceBucket::lookup`)
+    /// produces the correct cache-miss behaviour when the recomputed scope
+    /// tightens the demanded tolerance for a previously-cached entity, and
+    /// the correct cache-hit behaviour when the scope loosens or remains
+    /// unchanged. Pinned by the integration test
+    /// `cache_lookup_misses_when_purpose_changes_demanded_tolerance` in
+    /// `crates/reify-eval/tests/tolerance_wiring_e2e.rs`.
+    ///
+    /// IMPORTANT: the partial-order rule covers ONLY tolerance-driven
+    /// staleness. Handle-stability hazards orthogonal to demanded tolerance
+    /// (e.g. parameter edits invalidating the underlying geometry while
+    /// keeping `(entity_id, BRep, demanded_tol)` constant — a cache hit
+    /// would then return a stale `GeometryHandleId`) are NOT mitigated by
+    /// the partial-order rule and require their own invalidation strategy,
+    /// which is OUT OF SCOPE for this MVP wiring (follow-up task expected).
+    /// See the `Engine::realization_cache` field docstring on `lib.rs` for
+    /// the full known-limitation rundown.
     fn recompute_tolerance_scope(&mut self) {
         self.active_tolerance_scope.clear();
 

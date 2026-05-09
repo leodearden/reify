@@ -1,5 +1,6 @@
 import type { Readable, Writable } from 'node:stream';
 import { createLineReader, parseInboundMessage, sendMessage } from './ipc.js';
+import { createPermissionServer } from './permission-server.js';
 import { SidecarSession } from './session.js';
 import { buildSystemPrompt } from './system-prompt.js';
 import { errorMessage } from './utils.js';
@@ -14,6 +15,28 @@ export async function main(
   input: Readable = process.stdin,
   output: Writable = process.stdout
 ): Promise<void> {
+  // Start the in-process MCP permission server before anything else so that
+  // its URL is available when constructing the SidecarSession.
+  const permissionServer = createPermissionServer();
+  try {
+    await permissionServer.start();
+  } catch (err: unknown) {
+    // Surface the failure as a structured outbound so the host sees a clean
+    // error rather than a silent hang, then exit.
+    const message = `Failed to start permission server: ${errorMessage(err)}`;
+    await sendMessage(output, { type: 'error', id: '', message });
+    return;
+  }
+
+  // Workspace dir: parent dir of the active editor file at sidecar-spawn time.
+  // Set by the Rust host via REIFY_WORKSPACE; falls back to cwd when absent.
+  const workspace = process.env.REIFY_WORKSPACE ?? process.cwd();
+
+  // Path to the vendored landlock_exec.py sandbox helper.
+  // Set by the Rust host via REIFY_LANDLOCK_EXEC when the resource file exists.
+  // Empty string is treated as absent (no sandbox).
+  const landlockExec = process.env.REIFY_LANDLOCK_EXEC || undefined;
+
   const systemPrompt = buildSystemPrompt({
     workingDirectory: process.cwd(),
   });
@@ -22,6 +45,12 @@ export async function main(
     model: 'claude-opus-4-6',
     workingDirectory: process.cwd(),
     systemPrompt,
+    permissionMcp: {
+      url: permissionServer.url(),
+      server: permissionServer,
+    },
+    workspace,
+    landlockExec,
   });
 
   // Wire session output to the writable stream
@@ -63,5 +92,7 @@ export async function main(
     process.removeListener('SIGTERM', shutdown);
     process.removeListener('SIGINT', shutdown);
     session.destroy();
+    // Stop the permission server last (idempotent; safe to call even if already stopped).
+    await permissionServer.stop();
   }
 }

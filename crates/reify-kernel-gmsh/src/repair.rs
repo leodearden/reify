@@ -71,22 +71,27 @@ impl Default for RepairConfig {
 pub fn repair_surface_mesh(mesh: &Mesh, cfg: RepairConfig) -> Mesh {
     let vert_count = mesh.vertices.len() / 3;
 
-    // Debug-only perf canary: the O(n²) merge scan is cheap on v0.3 surface
-    // meshes (typically <100k vertices) but visibly slow above that.
-    // `debug_assert!` fires only in debug/test builds, so production is
-    // unaffected; CI runs in debug-or-test mode and will surface a regression
-    // if a future caller hands us a much larger mesh before the spatial-hash
-    // refinement lands. Threshold chosen as `LARGE_VERT_THRESHOLD` constant
-    // for ease of future tuning.
+    // Perf canary: the O(n²) merge scan is cheap on v0.3 surface meshes
+    // (typically <100k vertices) but visibly slow above that. Rather than a
+    // `debug_assert!` (which hard-crashes debug/test builds and CI), we emit a
+    // `tracing::warn!` so the concern stays visible in any build without
+    // crashing tests. Operators can filter via `RUST_LOG=reify_kernel_gmsh::repair=warn`.
+    // A future spatial-hash bucket refinement (cell-binned by vertex_merge_epsilon)
+    // would drop the bound to O(n) average; the function signature is stable
+    // enough that swapping implementations is a contained follow-up.
+    // Threshold constant kept for ease of future tuning.
     const LARGE_VERT_THRESHOLD: usize = 100_000;
-    debug_assert!(
-        vert_count <= LARGE_VERT_THRESHOLD,
-        "repair_surface_mesh: vertex count {} exceeds the O(n²) scan's \
-         comfort threshold ({}). Consider landing the spatial-hash bucket \
-         refinement before relying on this code path at scale.",
-        vert_count,
-        LARGE_VERT_THRESHOLD,
-    );
+    if vert_count > LARGE_VERT_THRESHOLD {
+        tracing::warn!(
+            target: "reify_kernel_gmsh::repair",
+            reason = "large_mesh_perf",
+            vert_count = vert_count,
+            threshold = LARGE_VERT_THRESHOLD,
+            "repair_surface_mesh: vertex count exceeds the O(n²) scan's comfort \
+             threshold; consider landing the spatial-hash bucket refinement \
+             before relying on this code path at scale"
+        );
+    }
 
     // -----------------------------------------------------------------
     // (1) Build vertex-merge map: each vertex → its lowest-index near-coincident

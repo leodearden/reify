@@ -8,20 +8,22 @@
 //! This test lives in `crates/reify-kernel-manifold/tests/` with `reify-eval`
 //! as a dev-dep on the manifold crate — NOT in `crates/reify-eval/tests/` with
 //! manifold as a dev-dep of reify-eval. Inverting the dep direction guards
-//! against two breakage paths.
+//! against the v0.3 BFS-tie-break breakage path (now the sole load-bearing
+//! reason — the present-day path no longer applies; see below).
 //!
-//! **Present-day (name-only pick).** `pick_lexmin_kernel()` at
-//! `crates/reify-eval/src/kernel_registry.rs:94-96` is implemented as
-//! `registry().values().next().copied()` — it selects the lex-min kernel by
-//! *name*, ignoring `(op, repr)` descriptors entirely. If manifold's
-//! `inventory::submit!` fired in `reify-eval` test binaries, the registry
-//! would contain both `"manifold"` and `"occt"`, and `pick_lexmin_kernel()`
-//! would return manifold (`"manifold" < "occt"`). `Engine::with_registered_kernel`
-//! would then instantiate `ManifoldKernel` for a BRep box build, breaking
-//! `engine_with_registered_kernel_picks_occt_for_brep_box_build` in
-//! `crates/reify-eval/tests/kernel_registry_inventory.rs:77` — even though
-//! OCCT and Manifold claim entirely disjoint `(op, repr)` pairs today (see
-//! `crates/reify-kernel-manifold/src/register.rs:92-98`).
+//! **Present-day (BRep filter).** `Engine::with_registered_kernel` now calls
+//! `pick_lexmin_brep_kernel()` at
+//! `crates/reify-eval/src/kernel_registry.rs:177-179` (call site:
+//! `crates/reify-eval/src/engine_admin.rs:382`) — a BRep-preferring picker
+//! that filters for kernels claiming at least one `(_, ReprKind::BRep)` pair
+//! before falling back to lex-min. Since manifold's supports table at
+//! `crates/reify-kernel-manifold/src/register.rs` declares only Mesh pairs,
+//! OCCT is selected for `engine_with_registered_kernel_picks_occt_for_brep_box_build`
+//! regardless of `"manifold" < "occt"` lex order — even if manifold's
+//! `inventory::submit!` fired in `reify-eval` test binaries. The
+//! previously-documented present-day breakage path therefore no longer applies;
+//! the v0.3 BFS-tie-break paragraph below is now the load-bearing reason for
+//! keeping the dep direction inverted.
 //!
 //! **v0.3 (BFS chain tie-break).** When OCCT's supports table gains
 //! `(Operation::Convert { from: BRep }, Mesh)` (the planned v0.3 entry at
@@ -32,7 +34,7 @@
 //! dev-dep transitivity.
 //!
 //! Keeping the dep on manifold's side isolates its link closure to manifold's
-//! own test binaries and prevents both breakage paths. Dep-direction
+//! own test binaries and prevents the v0.3 BFS-tie-break breakage path. Dep-direction
 //! inversion is the structural defensive isolation now that the
 //! `inventory::submit!` is unconditional (no longer feature-gated, since
 //! `manifold3d` is a regular cargo dep that's always present when the crate

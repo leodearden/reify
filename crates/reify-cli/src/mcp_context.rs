@@ -108,6 +108,8 @@ impl CliToolContext {
         let engine = ensure_engine(&mut state);
         engine.clear_param_overrides();
         engine.eval(&compiled);
+        // Maintain state.files.keys() == {active_file} — see task 3183 audit.
+        state.files.retain(|key, _| key == &abs_path);
         state.files.insert(
             abs_path.clone(),
             FileEntry {
@@ -448,13 +450,16 @@ impl ReifyToolContext for CliToolContext {
         // b.ri's module — byte-span offsets from b's diagnostics would then be resolved
         // against a's source, producing wrong line/column numbers.
         //
-        // Asymmetry note: load_file and open_file do NOT retain-prune — they accumulate
-        // entries in state.files across successive calls.  The per-entry-point state-shape is:
-        //   • update_source(p) → files.keys() == {p}   (exactly one entry; pruned here)
-        //   • load_file(p)     → files.keys() ⊇ {p}    (prior entries kept)
-        //   • open_file(p)     → files.keys() ⊇ {p}    (prior entries kept)
-        // This asymmetry is intentional: extending load_file or open_file with the same
-        // retain() would be a separate decision requiring a multi-document consumer audit.
+        // Uniform singleton invariant (task 3183 — multi-document consumer audit):
+        // All three state-mutating entry points now maintain state.files.keys() == {p}
+        // via a retain(|key, _| key == &p) call immediately before their insert:
+        //   • update_source(p) → files.keys() == {p}   (retain here, line ~429)
+        //   • load_file(p)     → files.keys() == {p}   (retain added by task 3183)
+        //   • open_file(p)     → files.keys() == {p}   (retain added by task 3183)
+        // The prior asymmetry (load_file/open_file accumulated; update_source pruned)
+        // was resolved by task 3183.  Future multi-document support requires lifting
+        // the single-compiled / single-active_file engine assumption alongside this
+        // invariant — that is strictly out of scope for an audit task.
         state.active_file = Some(canonical.clone());
 
         Ok(UpdateResult {
@@ -571,6 +576,8 @@ impl ReifyToolContext for CliToolContext {
         };
 
         let mut state = self.lock_state();
+        // Maintain state.files.keys() == {active_file} — see task 3183 audit.
+        state.files.retain(|key, _| key == &abs_path);
         state.files.insert(
             abs_path.clone(),
             FileEntry {
@@ -587,6 +594,17 @@ impl ReifyToolContext for CliToolContext {
             engine.clear_param_overrides();
             engine.eval(&compiled);
             state.compiled = Some(compiled);
+        } else {
+            // parse failed or non-.ri file — compiled no longer reflects active_file.
+            // Clear it so get_diagnostics() / get_source_location() do not resolve
+            // byte-spans from a prior module against the new file's source
+            // (wrong line/column numbers).  Task 3183 review: the retain() added
+            // above prunes state.files to {abs_path}; without clearing compiled, a
+            // stale CompiledModule from the prior file would remain while state.files
+            // no longer contains that file's source — the same mismatch that
+            // update_source's parse-fail-no-mutation rule (lines ~409-416) prevents
+            // for inline edits.
+            state.compiled = None;
         }
 
         Ok(OpenFileInfo {
@@ -649,6 +667,8 @@ mod tests {
     const BRACKET_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/bracket.ri");
     const BRACKET_COMPILE_ERROR_PATH: &str =
         concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/bracket_compile_error.ri");
+    const BRACKET_PARSE_ERROR_PATH: &str =
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/bracket_parse_error.ri");
 
     /// Obviously-nonsense Reify source: a single top-level `{` with no matching
     /// close brace.  No token in the Reify grammar begins a top-level declaration
@@ -1516,6 +1536,199 @@ mod tests {
             err3_str.contains("bracket.ri"),
             "phase 4: error message must mention the prior bracket.ri path; got: {:?}",
             err3
+        );
+    }
+
+    /// Shared three-phase invariant checker for singleton-`files` pruning tests.
+    ///
+    /// Invokes `op` in place of `load_file` / `open_file` and asserts that
+    /// `state.files.keys() == {active_file}` holds after every call — i.e.
+    /// the entry for the prior path is dropped (not accumulated).
+    ///
+    /// Phase structure (a = BRACKET_PATH, b = BRACKET_COMPILE_ERROR_PATH):
+    ///   Phase 1 — op(a): baseline, len == 1.
+    ///   Phase 2 — op(b): len still 1; surviving entry ends_with(b);
+    ///             get_source(a) errors with "file not open".
+    ///   Phase 3 — op(a) back: len still 1; surviving entry ends_with(a);
+    ///             get_source(b) errors with "file not open".
+    ///
+    /// Path assertions use `ends_with` rather than exact equality — same
+    /// flake-avoidance rationale as `update_source_after_load_file_switches_active_file`.
+    fn assert_singleton_files_invariant(ctx: &CliToolContext, op: impl Fn(&CliToolContext, &str)) {
+        // --- Phase 1: op(a) ---
+        op(ctx, BRACKET_PATH);
+        assert_eq!(
+            ctx.get_open_files().unwrap().len(),
+            1,
+            "baseline: exactly one file open after first op call"
+        );
+
+        // --- Phase 2: op(b) — files-map must NOT grow to 2 ---
+        op(ctx, BRACKET_COMPILE_ERROR_PATH);
+        assert_eq!(
+            ctx.get_open_files().unwrap().len(),
+            1,
+            "state.files must be pruned to a single entry after op(b); \
+             prior bracket.ri entry must be dropped (not 2)"
+        );
+        let open_files = ctx.get_open_files().unwrap();
+        assert!(
+            open_files[0].path.ends_with("bracket_compile_error.ri"),
+            "surviving entry must be bracket_compile_error.ri after op(b); got {:?}",
+            open_files[0].path
+        );
+        // ToolError::EngineError("file not open: …") formats as "engine error: file not open: …".
+        let err = ctx.get_source(Some(BRACKET_PATH)).unwrap_err();
+        let err_str = err.to_string();
+        assert!(
+            err_str.contains("file not open"),
+            "get_source(bracket.ri) must fail with 'file not open' after op(b); got: {:?}",
+            err
+        );
+        assert!(
+            err_str.contains("bracket.ri"),
+            "error must mention bracket.ri; got: {:?}",
+            err
+        );
+
+        // --- Phase 3: loop guard — op(a) back ---
+        op(ctx, BRACKET_PATH);
+        assert_eq!(
+            ctx.get_open_files().unwrap().len(),
+            1,
+            "state.files must remain bounded after switching back to a"
+        );
+        let open_files2 = ctx.get_open_files().unwrap();
+        assert!(
+            open_files2[0].path.ends_with("bracket.ri"),
+            "surviving entry must be bracket.ri after switching back; got {:?}",
+            open_files2[0].path
+        );
+        let err2 = ctx.get_source(Some(BRACKET_COMPILE_ERROR_PATH)).unwrap_err();
+        let err2_str = err2.to_string();
+        assert!(
+            err2_str.contains("file not open"),
+            "get_source(bracket_compile_error.ri) must fail with 'file not open'; got: {:?}",
+            err2
+        );
+        assert!(
+            err2_str.contains("bracket_compile_error.ri"),
+            "error must mention bracket_compile_error.ri; got: {:?}",
+            err2
+        );
+    }
+
+    /// Verify that `load_file` prunes `state.files` to a singleton on every call,
+    /// so that `get_open_files()` never advertises more than one file.
+    ///
+    /// Pre-fix, `load_file`'s `state.files.insert(...)` accumulated entries — calling
+    /// `load_file(a)` then `load_file(b)` left both `a` and `b` in `state.files`,
+    /// while `compiled` / `active_file` reflected only `b`.
+    ///
+    /// Post-fix: all three state-mutating entry points (`update_source`, `load_file`,
+    /// `open_file`) maintain `state.files.keys() == {active_file}` — see task 3183.
+    #[test]
+    fn load_file_drops_prior_files_map_entries() {
+        let ctx = fresh_ctx();
+        assert_singleton_files_invariant(&ctx, |ctx, path| {
+            ctx.load_file(path)
+                .expect("load_file should succeed");
+        });
+    }
+
+    /// Verify that `open_file` prunes `state.files` to a singleton on every call,
+    /// so that `get_open_files()` never advertises more than one file.
+    ///
+    /// Pre-fix, `open_file`'s `state.files.insert(...)` accumulated entries — calling
+    /// `open_file(a)` then `open_file(b)` left both `a` and `b` in `state.files`,
+    /// while `compiled` / `active_file` reflected only `b`.
+    ///
+    /// Post-fix: all three state-mutating entry points (`update_source`, `load_file`,
+    /// `open_file`) maintain `state.files.keys() == {active_file}` — see task 3183.
+    #[test]
+    fn open_file_drops_prior_files_map_entries() {
+        let ctx = fresh_ctx();
+        assert_singleton_files_invariant(&ctx, |ctx, path| {
+            ctx.open_file(path)
+                .expect("open_file should succeed");
+        });
+    }
+
+    /// Regression: when `open_file` opens a parse-failing .ri file after a
+    /// successful prior load, `state.compiled` must be cleared — NOT left as a
+    /// stale pointer to the previous module.
+    ///
+    /// Phase 1 uses `BRACKET_COMPILE_ERROR_PATH` (parse-clean, compile-time
+    /// diagnostics present) rather than a fully-clean fixture.  That matters
+    /// because a fully-clean fixture produces no diagnostics in `state.compiled`,
+    /// so `get_diagnostics()` returns `[]` even if `state.compiled` is stale —
+    /// the core assertion would pass regardless of the line-607 fix and the test
+    /// would not catch the regression.  With a compile-error fixture, `state.compiled`
+    /// carries labelled diagnostics whose byte-spans target `bracket_compile_error.ri`'s
+    /// source; if the subsequent `open_file(BRACKET_PARSE_ERROR_PATH)` leaves
+    /// `state.compiled` intact those stale spans are resolved against the parse-error
+    /// file's source and `get_diagnostics()` returns non-empty (wrong-line/col) output.
+    /// Setting `state.compiled = None` on the non-pipeline path (line 607) keeps
+    /// (active_file, files, compiled) mutually consistent and makes the core assertion
+    /// pass correctly.
+    #[test]
+    fn open_file_parse_error_clears_compiled() {
+        let ctx = fresh_ctx();
+
+        // Open bracket_compile_error.ri — parse-clean but carries compile-time
+        // diagnostics.  After this call state.compiled holds a module whose
+        // byte-spans target bracket_compile_error.ri's source.
+        ctx.open_file(BRACKET_COMPILE_ERROR_PATH)
+            .expect("open_file should succeed for bracket_compile_error.ri");
+
+        let open_files_1 = ctx.get_open_files().unwrap();
+        assert_eq!(
+            open_files_1.len(),
+            1,
+            "sanity: one file open after bracket_compile_error.ri"
+        );
+
+        // Precondition: confirm that the compile-error fixture actually produces
+        // non-empty diagnostics — otherwise the core assertion below could pass
+        // even if state.compiled is NOT cleared (the stale module's diagnostic
+        // list would also be empty, producing a false green).
+        let pre_diags = ctx
+            .get_diagnostics()
+            .expect("get_diagnostics should succeed after open_file(bracket_compile_error.ri)");
+        assert!(
+            !pre_diags.is_empty(),
+            "precondition: bracket_compile_error.ri must produce non-empty diagnostics \
+             so the byte-spans would misresolve against the parse-error fixture's source \
+             if state.compiled were not cleared; got {pre_diags:?}"
+        );
+
+        // Open a parse-failing .ri file — open_file should still succeed (the file
+        // is registered), but compiled must be cleared.
+        ctx.open_file(BRACKET_PARSE_ERROR_PATH)
+            .expect("open_file should succeed (registers file) for bracket_parse_error.ri");
+
+        let open_files_2 = ctx.get_open_files().unwrap();
+        assert_eq!(
+            open_files_2.len(),
+            1,
+            "one file open after bracket_parse_error.ri"
+        );
+        assert!(
+            open_files_2[0].path.ends_with("bracket_parse_error.ri"),
+            "active file must be bracket_parse_error.ri; got {:?}",
+            open_files_2[0].path
+        );
+
+        // Core assertion: get_diagnostics() must return an empty Vec — NOT
+        // diagnostics from the prior bracket_compile_error.ri module resolved against
+        // bracket_parse_error.ri's source (which would produce wrong line/columns).
+        let diagnostics = ctx
+            .get_diagnostics()
+            .expect("get_diagnostics should succeed after open_file(parse_error.ri)");
+        assert!(
+            diagnostics.is_empty(),
+            "get_diagnostics() must be empty after opening a parse-failing .ri: \
+             compiled must be cleared to prevent stale-span resolution; got {diagnostics:?}"
         );
     }
 }

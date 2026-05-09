@@ -1472,21 +1472,22 @@ structure Panel {
     // Cross-check values entry-for-entry.
     assert_values_match(&incr.values, &cold_result.values);
 
-    // Anchor: `result` must be Int(7) = 3 + 4 (refreshed sum body).
-    // A missing functions-table refresh would produce Int(12) = 3 * 4 from module_A's
-    // multiply body; seeing Int(7) on both paths confirms the '+' body is used.
+    // Anchor: `result` must be Real(7.0) = 3.0 + 4.0 (refreshed sum body).
+    // `3.0` and `4.0` are decimal-form literals → Value::Real after task 3184.
+    // A missing functions-table refresh would produce Real(12.0) = 3.0 * 4.0 from
+    // module_A's multiply body; seeing Real(7.0) on both paths confirms the '+' body is used.
     let result_id = ValueCellId::new("Panel", "result");
     assert_eq!(
         incr.values.get(&result_id),
-        Some(&Value::Int(7)),
-        "Panel.result should be Int(7) = foo(width, height) with the refreshed '+' body; \
+        Some(&Value::Real(7.0)),
+        "Panel.result should be Real(7.0) = foo(width, height) with the refreshed '+' body; \
          got {:?} — likely the functions table was not refreshed",
         incr.values.get(&result_id)
     );
     assert_eq!(
         cold_result.values.get(&result_id),
-        Some(&Value::Int(7)),
-        "cold Panel.result should also be Int(7)"
+        Some(&Value::Real(7.0)),
+        "cold Panel.result should also be Real(7.0)"
     );
 }
 

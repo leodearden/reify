@@ -39,7 +39,9 @@ use fidget::shape::EzShape;
 
 use reify_types::{
     BRepKind, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId,
-    GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value,
+    GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError,
+    SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE, BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE,
+    TessError, Value,
 };
 
 /// Tree-backed Fidget SDF kernel.
@@ -234,106 +236,6 @@ fn is_positive_finite(v: f64) -> bool {
     v.is_finite() && v > 0.0
 }
 
-/// Validate that `value` is finite and strictly positive.
-///
-/// Returns `Err(GeometryError::OperationFailed)` with a message of the form
-/// `"{label} must be a finite positive value"` when `is_positive_finite(value)`
-/// is false.
-///
-/// Mirrors the OCCT kernel's `validate_positive_finite` helper
-/// (`crates/reify-kernel-occt/src/lib.rs:145-160`) but kept local to this
-/// crate to avoid expanding scope past the `#[cfg(has_occt)]` boundary.
-fn validate_positive_finite(value: f64, label: &str) -> Result<(), GeometryError> {
-    if is_positive_finite(value) {
-        Ok(())
-    } else {
-        Err(GeometryError::OperationFailed(format!(
-            "{label} must be a finite positive value"
-        )))
-    }
-}
-
-/// Stable static label for a `GeometryQuery` variant — same role as
-/// [`op_kind_name`] but for the query-error catch-all.
-fn query_kind_name(q: &GeometryQuery) -> &'static str {
-    match q {
-        GeometryQuery::Volume(_) => "Volume",
-        GeometryQuery::SurfaceArea(_) => "SurfaceArea",
-        GeometryQuery::Centroid(_) => "Centroid",
-        GeometryQuery::BoundingBox(_) => "BoundingBox",
-        GeometryQuery::Distance { .. } => "Distance",
-        GeometryQuery::MomentOfInertia { .. } => "MomentOfInertia",
-        GeometryQuery::AdjacentFaces { .. } => "AdjacentFaces",
-        GeometryQuery::AncestorFacesOfEdge { .. } => "AncestorFacesOfEdge",
-        GeometryQuery::SharedEdges { .. } => "SharedEdges",
-        GeometryQuery::IsWatertight(_) => "IsWatertight",
-        GeometryQuery::IsManifold(_) => "IsManifold",
-        GeometryQuery::IsOrientable(_) => "IsOrientable",
-        GeometryQuery::CenterOfMass { .. } => "CenterOfMass",
-        GeometryQuery::InertiaTensor { .. } => "InertiaTensor",
-        GeometryQuery::EdgeLength(_) => "EdgeLength",
-        GeometryQuery::EdgeTangent(_) => "EdgeTangent",
-        GeometryQuery::FaceNormal(_) => "FaceNormal",
-        GeometryQuery::FaceSurfaceKind(_) => "FaceSurfaceKind",
-        GeometryQuery::EdgeCurveKind(_) => "EdgeCurveKind",
-        GeometryQuery::OwnerBody(_) => "OwnerBody",
-        GeometryQuery::ClosestPointOnShape { .. } => "ClosestPointOnShape",
-        GeometryQuery::PointOnShape { .. } => "PointOnShape",
-        GeometryQuery::SurfaceAngle { .. } => "SurfaceAngle",
-    }
-}
-
-/// Stable static label for a `GeometryOp` variant — used in error
-/// messages so the format string interpolates a stable token rather than
-/// the full `Debug` print.
-///
-/// # Contract
-///
-/// The catch-all error message in [`FidgetKernel::execute`] names
-/// (a) the rejected op, (b) the descriptor's claimed repr family
-/// (`Sdf`), and (c) the kernel's identity (`Fidget`) so operators
-/// reading the diagnostic can attribute the failure correctly. The
-/// `fidget_kernel_execute_unsupported_op_names_op_in_message` test
-/// pins this contract over `Fillet` and `Translate`.
-fn op_kind_name(op: &GeometryOp) -> &'static str {
-    match op {
-        GeometryOp::Box { .. } => "Box",
-        GeometryOp::Cylinder { .. } => "Cylinder",
-        GeometryOp::Sphere { .. } => "Sphere",
-        GeometryOp::Tube { .. } => "Tube",
-        GeometryOp::Union { .. } => "Union",
-        GeometryOp::Difference { .. } => "Difference",
-        GeometryOp::Intersection { .. } => "Intersection",
-        GeometryOp::Fillet { .. } => "Fillet",
-        GeometryOp::Chamfer { .. } => "Chamfer",
-        GeometryOp::Translate { .. } => "Translate",
-        GeometryOp::Rotate { .. } => "Rotate",
-        GeometryOp::Scale { .. } => "Scale",
-        GeometryOp::RotateAround { .. } => "RotateAround",
-        GeometryOp::LinearPattern { .. } => "LinearPattern",
-        GeometryOp::CircularPattern { .. } => "CircularPattern",
-        GeometryOp::Mirror { .. } => "Mirror",
-        GeometryOp::LinearPattern2D { .. } => "LinearPattern2D",
-        GeometryOp::ArbitraryPattern { .. } => "ArbitraryPattern",
-        GeometryOp::Loft { .. } => "Loft",
-        GeometryOp::Extrude { .. } => "Extrude",
-        GeometryOp::Revolve { .. } => "Revolve",
-        GeometryOp::Sweep { .. } => "Sweep",
-        GeometryOp::Pipe { .. } => "Pipe",
-        GeometryOp::ExtrudeSymmetric { .. } => "ExtrudeSymmetric",
-        GeometryOp::SweepGuided { .. } => "SweepGuided",
-        GeometryOp::LoftGuided { .. } => "LoftGuided",
-        GeometryOp::LineSegment { .. } => "LineSegment",
-        GeometryOp::Arc { .. } => "Arc",
-        GeometryOp::Helix { .. } => "Helix",
-        GeometryOp::InterpCurve { .. } => "InterpCurve",
-        GeometryOp::BezierCurve { .. } => "BezierCurve",
-        GeometryOp::NurbsCurve { .. } => "NurbsCurve",
-        GeometryOp::Draft { .. } => "Draft",
-        GeometryOp::Thicken { .. } => "Thicken",
-        GeometryOp::Shell { .. } => "Shell",
-    }
-}
 
 impl GeometryKernel for FidgetKernel {
     fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
@@ -342,7 +244,11 @@ impl GeometryKernel for FidgetKernel {
             // assume a finite positive radius.
             GeometryOp::Sphere { radius } => {
                 let r = extract_f64(radius)?;
-                validate_positive_finite(r, "sphere radius")?;
+                if !is_positive_finite(r) {
+                    return Err(GeometryError::OperationFailed(
+                        SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE.into(),
+                    ));
+                }
                 let tree = Self::sphere_tree(r);
                 Ok(self.insert_tree(tree))
             }
@@ -354,12 +260,14 @@ impl GeometryKernel for FidgetKernel {
                 let w = extract_f64(width)?;
                 let h = extract_f64(height)?;
                 let d = extract_f64(depth)?;
-                // Combined check matches OCCT's single-message convention
-                // (`crates/reify-kernel-occt/src/lib.rs:1497-1507`) so the
-                // error string is byte-identical across kernels.
+                // Combined check: all three dimensions validated together so
+                // a single shared const covers any failure.  Using
+                // `BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE` (from
+                // `reify_types`) makes the error string byte-identical to
+                // OCCT's emission — structural, not just conventional.
                 if !(is_positive_finite(w) && is_positive_finite(h) && is_positive_finite(d)) {
                     return Err(GeometryError::OperationFailed(
-                        "box dimensions must be finite positive values".into(),
+                        BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE.into(),
                     ));
                 }
                 let tree = Self::box_tree(w, h, d);
@@ -382,9 +290,14 @@ impl GeometryKernel for FidgetKernel {
                 let tree = a.max(b.neg());
                 Ok(self.insert_tree(tree))
             }
+            // The catch-all message names (a) the rejected op, (b) the repr
+            // family (Sdf), and (c) the kernel identity (Fidget) so readers
+            // can attribute the failure. The
+            // fidget_kernel_execute_unsupported_op_names_op_in_message test
+            // pins this format over "Fillet" and "Translate".
             other => Err(GeometryError::OperationFailed(format!(
                 "Fidget SDF kernel: {} not yet supported on Sdf representation",
-                op_kind_name(other)
+                other.kind_name()
             ))),
         }
     }
@@ -401,10 +314,15 @@ impl GeometryKernel for FidgetKernel {
     /// SDF→Mesh meshing follow-up lands and queries become available,
     /// the handle-validity check moves to the front of this method.
     fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
+        // The catch-all message names (a) the rejected query (via kind_name()),
+        // (b) the repr family (Sdf), and (c) the kernel identity (Fidget) so
+        // readers can attribute the failure. The
+        // fidget_kernel_query_export_tessellate_each_emit_op_specific_message test
+        // pins this format over GeometryQuery::Volume.
         Err(QueryError::QueryFailed(format!(
             "Fidget SDF kernel: {} queries on Sdf require meshing — see arch §10.8 \
              (SDF→Mesh follow-up task)",
-            query_kind_name(query),
+            query.kind_name(),
         )))
     }
 
@@ -746,13 +664,10 @@ mod tests {
             });
             match result {
                 Err(GeometryError::OperationFailed(msg)) => {
-                    assert!(
-                        msg.contains("sphere radius"),
-                        "message must name 'sphere radius'; radius={radius:?}, got {msg:?}",
-                    );
-                    assert!(
-                        msg.contains("finite positive"),
-                        "message must contain 'finite positive'; radius={radius:?}, got {msg:?}",
+                    assert_eq!(
+                        msg.as_str(),
+                        SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE,
+                        "sphere-radius rejection message must be byte-identical to the shared const; radius={radius:?}, got {msg:?}",
                     );
                 }
                 Ok(handle) => panic!(
@@ -809,13 +724,10 @@ mod tests {
             });
             match result {
                 Err(GeometryError::OperationFailed(msg)) => {
-                    assert!(
-                        msg.contains("box dimensions"),
-                        "message must name 'box dimensions'; triple=({width:?},{height:?},{depth:?}), got {msg:?}",
-                    );
-                    assert!(
-                        msg.contains("finite positive"),
-                        "message must contain 'finite positive'; triple=({width:?},{height:?},{depth:?}), got {msg:?}",
+                    assert_eq!(
+                        msg.as_str(),
+                        BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE,
+                        "box-dimensions rejection message must be byte-identical to the shared const; triple=({width:?},{height:?},{depth:?}), got {msg:?}",
                     );
                 }
                 Ok(handle) => panic!(

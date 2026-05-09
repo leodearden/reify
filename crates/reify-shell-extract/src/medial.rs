@@ -33,6 +33,8 @@
 
 use reify_types::value::{SampledField, SampledGridKind};
 
+use crate::grid_validation::{validate_regular3d, GridValidationError};
+
 /// Sparse voxel mask: indices `(i, j, k)` of every voxel tagged as medial
 /// by [`compute_medial_mask`].
 ///
@@ -205,29 +207,68 @@ pub enum MedialError {
         /// The actual length of `sdf.data`.
         found: usize,
     },
+    /// The product `nx * ny * nz` (where `nx/ny/nz = axis_grids[i].len()`)
+    /// overflows `usize` when computing the expected flat-data length.
+    ///
+    /// Defends the `DataLengthMismatch` check (and downstream `data[i*nj*nk
+    /// + j*nk + k]` indexing) from a wrapped-product false-positive: without
+    /// this variant, an overflow would fall back to `unwrap_or(usize::MAX)`
+    /// and surface as a spurious `DataLengthMismatch { expected: usize::MAX,
+    ///   found: actual }` — a confusing sentinel that lies about which condition
+    /// fired. The dedicated variant carries the actual extent values so
+    /// callers can report precisely why the product cannot fit in `usize`.
+    AxisExtentsOverflow {
+        /// Length of `axis_grids[0]`.
+        nx: usize,
+        /// Length of `axis_grids[1]`.
+        ny: usize,
+        /// Length of `axis_grids[2]`.
+        nz: usize,
+    },
+}
+
+impl From<GridValidationError> for MedialError {
+    fn from(e: GridValidationError) -> Self {
+        match e {
+            GridValidationError::UnsupportedGridKind { found } => {
+                MedialError::UnsupportedGridKind { found }
+            }
+            GridValidationError::AxisLengthMismatch {
+                bounds_min_len,
+                bounds_max_len,
+                spacing_len,
+                axis_grids_len,
+            } => MedialError::AxisLengthMismatch {
+                bounds_min_len,
+                bounds_max_len,
+                spacing_len,
+                axis_grids_len,
+            },
+            GridValidationError::EmptyAxisGrid { axis } => {
+                MedialError::EmptyAxisGrid { axis }
+            }
+        }
+    }
 }
 
 impl std::fmt::Display for MedialError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            MedialError::UnsupportedGridKind { found } => write!(
-                f,
-                "reify-shell-extract requires a Regular3D SampledField input \
-                 (the medial-axis test walks the SDF gradient in 3-space); \
-                 got {found:?}"
-            ),
+            MedialError::UnsupportedGridKind { found } => {
+                GridValidationError::UnsupportedGridKind { found: *found }.fmt(f)
+            }
             MedialError::AxisLengthMismatch {
                 bounds_min_len,
                 bounds_max_len,
                 spacing_len,
                 axis_grids_len,
-            } => write!(
-                f,
-                "Regular3D SampledField axis-vector length mismatch: \
-                 bounds_min has {bounds_min_len}, bounds_max has {bounds_max_len}, \
-                 spacing has {spacing_len}, axis_grids has {axis_grids_len} \
-                 (all four must be 3)"
-            ),
+            } => GridValidationError::AxisLengthMismatch {
+                bounds_min_len: *bounds_min_len,
+                bounds_max_len: *bounds_max_len,
+                spacing_len: *spacing_len,
+                axis_grids_len: *axis_grids_len,
+            }
+            .fmt(f),
             MedialError::EmptyAxisGrid { axis } => write!(
                 f,
                 "Regular3D SampledField axis_grids[{axis}] is empty \
@@ -266,10 +307,10 @@ impl std::fmt::Display for MedialError {
                     ),
                     (false, false) => write!(
                         f,
-                        "Regular3D SampledField axis {axis}: InvalidAxisGeometry \
-                         constructed with spacing={spacing}, \
-                         bounds_min={bounds_min}, bounds_max={bounds_max} \
-                         (no violation detected — variant was constructed outside the validator)"
+                        "Regular3D SampledField axis {axis}: no violation detected \
+                         (spacing={spacing}, bounds_min={bounds_min}, \
+                         bounds_max={bounds_max}) \
+                         — variant was constructed outside the validator"
                     ),
                 }
             }
@@ -278,6 +319,13 @@ impl std::fmt::Display for MedialError {
                 "Regular3D SampledField data length mismatch: \
                  expected {expected} values (nx*ny*nz) but found {found} \
                  (caller-side construction error: flat data does not match axis grid extents)"
+            ),
+            MedialError::AxisExtentsOverflow { nx, ny, nz } => write!(
+                f,
+                "Regular3D SampledField axis extents nx={nx}, ny={ny}, nz={nz} \
+                 overflow usize when computing the flat data length nx*ny*nz \
+                 (caller-side construction error: axis grid lengths are individually valid \
+                 but their product cannot fit in usize)"
             ),
         }
     }
@@ -298,32 +346,15 @@ pub fn compute_medial_mask(
     sdf: &SampledField,
     options: &MedialOptions,
 ) -> Result<MedialMask, MedialError> {
-    // (1) Reject non-3D inputs up front. The medial-axis test is
-    // intrinsically 3D (walks the SDF gradient in 3-space).
-    if sdf.kind != SampledGridKind::Regular3D {
-        return Err(MedialError::UnsupportedGridKind { found: sdf.kind });
-    }
+    // (1) Structural Regular3D validation: kind, axis-vector lengths, non-empty
+    // axis grids. The `?` converts GridValidationError → MedialError via the
+    // From impl above, preserving the existing variant names and PartialEq
+    // contract for all callers.
+    validate_regular3d(sdf)?;
 
-    // (2) Defend downstream indexing: `Regular3D` requires every axis
-    // vector to have length 3. A caller-side construction mistake
-    // (e.g. building a `Regular3D` SampledField with 1-element
-    // bounds_min) would otherwise panic on `bounds_min[i]` mid-loop.
-    if sdf.bounds_min.len() != 3
-        || sdf.bounds_max.len() != 3
-        || sdf.spacing.len() != 3
-        || sdf.axis_grids.len() != 3
-    {
-        return Err(MedialError::AxisLengthMismatch {
-            bounds_min_len: sdf.bounds_min.len(),
-            bounds_max_len: sdf.bounds_max.len(),
-            spacing_len: sdf.spacing.len(),
-            axis_grids_len: sdf.axis_grids.len(),
-        });
-    }
-
-    // (3) Geometry validity: spacing must be finite and positive, and
-    // bounds must not be inverted. Safe here because step 2 confirmed
-    // all axis vectors have length 3, so sdf.spacing[axis] /
+    // (2) Geometry validity: spacing must be finite and positive, and
+    // bounds must not be inverted. Safe here because validate_regular3d
+    // confirmed all axis vectors have length 3, so sdf.spacing[axis] /
     // sdf.bounds_min[axis] / sdf.bounds_max[axis] are all in-bounds.
     //
     // Spacing rule — rejects zero (divide-by-zero in sample_at_world),
@@ -355,14 +386,6 @@ pub fn compute_medial_mask(
         }
     }
 
-    // (4) Each axis grid must be non-empty — a zero-extent axis
-    // collapses the iteration domain.
-    for (axis, axis_grid) in sdf.axis_grids.iter().enumerate() {
-        if axis_grid.is_empty() {
-            return Err(MedialError::EmptyAxisGrid { axis });
-        }
-    }
-
     let spacing = [sdf.spacing[0], sdf.spacing[1], sdf.spacing[2]];
     let origin = [sdf.bounds_min[0], sdf.bounds_min[1], sdf.bounds_min[2]];
 
@@ -370,29 +393,11 @@ pub fn compute_medial_mask(
     let ny = sdf.axis_grids[1].len();
     let nz = sdf.axis_grids[2].len();
 
-    // (5) Validate the flat data vector covers exactly nx*ny*nz voxels.
-    // Safe here because step 4 (EmptyAxisGrid) confirmed nx, ny, nz ≥ 1.
-    // Without this check a caller-side construction error (mismatched
-    // data vs. axis grid extents) would produce an opaque OOB panic
-    // inside the inner loop's `sample_at_index`.
-    //
-    // checked_mul guards against wrapping overflow on a malformed input
-    // with astronomically large axis_grids (e.g. nx=ny=nz=2_000_000
-    // wraps to a small product on 64-bit usize and could pass a naive
-    // equality check with a tiny data.len()). On overflow we use
-    // usize::MAX as the sentinel expected value: no real data vector can
-    // have length usize::MAX, so the DataLengthMismatch error is still
-    // surfaced.
-    let expected_data_len = nx
-        .checked_mul(ny)
-        .and_then(|p| p.checked_mul(nz))
-        .unwrap_or(usize::MAX);
-    if sdf.data.len() != expected_data_len {
-        return Err(MedialError::DataLengthMismatch {
-            expected: expected_data_len,
-            found: sdf.data.len(),
-        });
-    }
+    // (3) Validate the flat data vector covers exactly nx*ny*nz voxels.
+    // Delegates to `validate_flat_data_length` which handles both overflow
+    // (returns AxisExtentsOverflow) and size mismatch (returns
+    // DataLengthMismatch), replacing the old unwrap_or(usize::MAX) sentinel.
+    validate_flat_data_length(nx, ny, nz, sdf.data.len())?;
 
     // Narrow band threshold uses the smallest axis spacing so that
     // anisotropic grids still cover the full thickness band.
@@ -408,100 +413,163 @@ pub fn compute_medial_mask(
     let walk_step = 0.25 * min_spacing;
     let max_steps = ((max_walk_dist / walk_step).ceil() as usize).max(2);
 
-    let mut voxels: Vec<[i32; 3]> = Vec::new();
+    // Pre-compute the per-voxel gradient once before the main loop.
+    // Avoids repeating the 6-sample central-difference stencil inside
+    // the hot path; the lookup is O(1) via i*ny*nz + j*nz + k.
+    let gradient_grid = precompute_gradient_grid(sdf);
 
-    for i in 0..nx {
-        for j in 0..ny {
-            for k in 0..nz {
-                let phi = sample_at_index(sdf, [i, j, k]);
+    // Parallel outer (i-axis) loop.
+    //
+    // Determinism contract (mirrors global.rs:191-228):
+    // (a) `i_indices.chunks(chunk_size)` partitions indices in stable
+    //     ascending order (chunks() is a stable slice partition);
+    // (b) threads spawn in chunk-iteration order, so handle slot `t`
+    //     corresponds to chunk `t` regardless of OS thread assignment;
+    // (c) `for h in handles` joins in spawn order and appends in that
+    //     order — preserving spawn order in the merged Vec;
+    // (d) `sort_unstable()` normalises the merged Vec to strict lex
+    //     order, independent of future chunk-distribution changes.
+    //     Duplicates cannot appear: each (i,j,k) is visited by exactly
+    //     one thread's chunk.
+    // Per Task-2544: panics in workers are forwarded via `resume_unwind`
+    // so the original payload reaches the caller intact.
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .min(nx.max(1));
+    let chunk_size = nx.div_ceil(threads).max(1);
+    let i_indices: Vec<usize> = (0..nx).collect();
+    // Extract Copy scalars from `options` so closures capture by value
+    // (required for `Send` — closures cannot hold a `&MedialOptions`
+    // borrow across the scope boundary when `options` is not `Sync`-
+    // verified by the caller; extracting Copy fields is safer).
+    let dist_tol = options.distance_tolerance;
+    let antipar_thr = options.normal_antiparallel_threshold;
+    // Shared immutable borrow of gradient_grid across all threads.
+    // `&[[f64;3]]` is `Copy + Send` (since `[f64;3]: Sync`), so each
+    // `move` closure copies the fat-pointer rather than moving the Vec.
+    let gradient_grid_ref: &[[f64; 3]] = &gradient_grid;
 
-                // (a) narrow-band filter
-                if phi.abs() > band_width {
-                    continue;
+    let mut voxels: Vec<[i32; 3]> = std::thread::scope(|s| {
+        let mut handles = Vec::with_capacity(threads);
+        for chunk in i_indices.chunks(chunk_size) {
+            let chunk_owned: Vec<usize> = chunk.to_vec();
+            handles.push(s.spawn(move || {
+                // Pre-size to ~1/32 of the chunk's voxel count; the narrow-band
+                // filter rejects ≥95% of voxels in typical slab/sphere fixtures,
+                // so this starting capacity avoids most reallocations without
+                // over-allocating.
+                let mut local: Vec<[i32; 3]> =
+                    Vec::with_capacity(chunk_owned.len() * ny * nz / 32);
+                for &i in &chunk_owned {
+                    for j in 0..ny {
+                        for k in 0..nz {
+                            let phi = sample_at_index(sdf, [i, j, k]);
+
+                            // (a) narrow-band filter
+                            if phi.abs() > band_width {
+                                continue;
+                            }
+
+                            // (b) gradient at the voxel; reject degenerate
+                            let grad = gradient_grid_ref[i * ny * nz + j * nz + k];
+                            let gnorm = (grad[0] * grad[0]
+                                + grad[1] * grad[1]
+                                + grad[2] * grad[2])
+                                .sqrt();
+                            if gnorm < GRADIENT_EPSILON {
+                                continue;
+                            }
+                            let g = [grad[0] / gnorm, grad[1] / gnorm, grad[2] / gnorm];
+
+                            // (c) bidirectional ray walk from the voxel's
+                            // world coordinate in ±g, with sub-voxel
+                            // zero-crossing refinement.
+                            let world = world_at_index(sdf, [i, j, k]);
+                            let Some((d_plus, d_minus, hit_plus, hit_minus)) =
+                                bidirectional_distances(sdf, world, g, max_steps, walk_step)
+                            else {
+                                continue;
+                            };
+
+                            // (d) gradient at each surface hit; reject if
+                            // either is degenerate (we cannot make a
+                            // distinctness call without two well-defined
+                            // normals).
+                            let gp_raw = gradient_at_world(sdf, hit_plus);
+                            let gm_raw = gradient_at_world(sdf, hit_minus);
+                            let Some(gp) = normalize3(gp_raw) else { continue };
+                            let Some(gm) = normalize3(gm_raw) else { continue };
+
+                            // (e) gradient-discontinuity test: opposing-face
+                            // hits have antiparallel normals (dot near -1).
+                            if !surface_patches_distinct(gp, gm, antipar_thr) {
+                                continue;
+                            }
+
+                            // (f) bidirectional-distance equality.
+                            let dmax = d_plus.max(d_minus);
+                            if dmax <= 0.0 {
+                                continue;
+                            }
+                            // Defends against a long-walk-on-one-side /
+                            // short-on-the-other ratio coincidence: if the
+                            // sum exceeds the configured maximum thickness,
+                            // treat the voxel as outside the band rather
+                            // than letting two non-comparable walks pass the
+                            // relative test.
+                            if d_plus + d_minus > 2.0 * max_walk_dist {
+                                continue;
+                            }
+                            // Equality threshold combines two terms:
+                            //  - relative `distance_tolerance × max(d⁺, d⁻)` —
+                            //    the PRD's "~5%" rule, sharply discriminates
+                            //    centerline voxels when the medial axis aligns
+                            //    with a voxel.
+                            //  - absolute one-voxel slack `min_spacing` —
+                            //    handles voxelized medial axes that fall
+                            //    *between* grid points (the analytic medial of
+                            //    an axis-aligned slab on an even-N grid lies on
+                            //    a half-voxel boundary, so the two closest
+                            //    voxels see a one-voxel asymmetry in d⁺/d⁻ —
+                            //    namely `min_spacing` — that the strict
+                            //    relative rule would reject). The slack is
+                            //    therefore exactly `min_spacing`, NOT
+                            //    `½·min_spacing`. See the doc comment on
+                            //    `MedialOptions::distance_tolerance` for the
+                            //    discriminative-regime caveat.
+                            let abs_diff = (d_plus - d_minus).abs();
+                            let equality_threshold = dist_tol * dmax + min_spacing;
+                            if abs_diff < equality_threshold {
+                                local.push([i as i32, j as i32, k as i32]);
+                            }
+                        }
+                    }
                 }
-
-                // (b) gradient at the voxel; reject degenerate
-                let grad = gradient_at_index(sdf, [i, j, k]);
-                let gnorm = (grad[0] * grad[0] + grad[1] * grad[1] + grad[2] * grad[2]).sqrt();
-                if gnorm < GRADIENT_EPSILON {
-                    continue;
-                }
-                let g = [grad[0] / gnorm, grad[1] / gnorm, grad[2] / gnorm];
-
-                // (c) bidirectional ray walk from the voxel's world
-                // coordinate in ±g, with sub-voxel zero-crossing
-                // refinement.
-                let world = world_at_index(sdf, [i, j, k]);
-                let Some((d_plus, d_minus, hit_plus, hit_minus)) =
-                    bidirectional_distances(sdf, world, g, max_steps, walk_step)
-                else {
-                    continue;
-                };
-
-                // (d) gradient at each surface hit; reject if either
-                // is degenerate (we cannot make a distinctness call
-                // without two well-defined normals).
-                let gp_raw = gradient_at_world(sdf, hit_plus);
-                let gm_raw = gradient_at_world(sdf, hit_minus);
-                let Some(gp) = normalize3(gp_raw) else { continue };
-                let Some(gm) = normalize3(gm_raw) else { continue };
-
-                // (e) gradient-discontinuity test: opposing-face
-                // hits have antiparallel normals (dot near -1).
-                if !surface_patches_distinct(gp, gm, options.normal_antiparallel_threshold) {
-                    continue;
-                }
-
-                // (f) bidirectional-distance equality.
-                let dmax = d_plus.max(d_minus);
-                if dmax <= 0.0 {
-                    continue;
-                }
-                // Defends against a long-walk-on-one-side / short-on-
-                // the-other ratio coincidence: if the sum exceeds the
-                // configured maximum thickness, treat the voxel as
-                // outside the band rather than letting two
-                // non-comparable walks pass the relative test.
-                if d_plus + d_minus > 2.0 * max_walk_dist {
-                    continue;
-                }
-                // Equality threshold combines two terms:
-                //  - relative `distance_tolerance × max(d⁺, d⁻)` — the
-                //    PRD's "~5%" rule, sharply discriminates centerline
-                //    voxels when the medial axis aligns with a voxel.
-                //  - absolute one-voxel slack `min_spacing` — handles
-                //    voxelized medial axes that fall *between* grid
-                //    points (the analytic medial of an axis-aligned
-                //    slab on an even-N grid lies on a half-voxel
-                //    boundary, so the two closest voxels see a
-                //    one-voxel asymmetry in d⁺/d⁻ — namely
-                //    `min_spacing` — that the strict relative rule
-                //    would reject). The slack is therefore exactly
-                //    `min_spacing`, NOT `½·min_spacing`: a half-voxel
-                //    *offset* of the voxel center from the analytic
-                //    medial produces a full-voxel asymmetry in
-                //    d⁺/d⁻ along the gradient direction. Equivalent
-                //    to requiring the bisecting midpoint of the two
-                //    surface hits to lie within `½(min_spacing +
-                //    distance_tolerance × max(d⁺, d⁻))` of the voxel
-                //    center along the gradient direction — i.e.
-                //    inside the voxel itself, with a small
-                //    relative-error cushion.
-                //
-                //  CONSEQUENCE: for thicknesses ≪ 20 voxels the
-                //  absolute slack dominates and `distance_tolerance`
-                //  is effectively inert at typical (≤ 0.05) values.
-                //  See the doc comment on
-                //  `MedialOptions::distance_tolerance` for the
-                //  discriminative-regime caveat.
-                let abs_diff = (d_plus - d_minus).abs();
-                let equality_threshold = options.distance_tolerance * dmax + min_spacing;
-                if abs_diff < equality_threshold {
-                    voxels.push([i as i32, j as i32, k as i32]);
-                }
+                local
+            }));
+        }
+        let mut acc: Vec<[i32; 3]> = Vec::new();
+        for h in handles {
+            match h.join() {
+                Ok(local) => acc.extend(local),
+                Err(payload) => std::panic::resume_unwind(payload),
             }
         }
-    }
+        acc
+    });
+    // Normalise to strict lex order regardless of chunk distribution.
+    // sort_unstable is safe: no duplicates (each voxel owned by one thread).
+    //
+    // In debug builds, assert that the parallel merge already produced
+    // near-lex-sorted output — a regression here (e.g. chunk ordering changes
+    // without a corresponding sort fix) would surface immediately.
+    debug_assert!(
+        voxels.windows(2).all(|w| w[0] <= w[1]),
+        "parallel merge should already produce lex-sorted output; \
+         if this fires, chunk ordering or join order changed"
+    );
+    voxels.sort_unstable();
 
     Ok(MedialMask {
         spacing,
@@ -526,6 +594,27 @@ pub(crate) const GRADIENT_EPSILON: f64 = 1e-6;
 /// numerically consistent avoids a class of "exact-zero comparison"
 /// fragility issues.
 pub(crate) const ZERO_PHI_EPSILON: f64 = 1e-30;
+
+/// Check that `data_len == nx * ny * nz`; see [`MedialError::AxisExtentsOverflow`]
+/// for the overflow path and [`MedialError::DataLengthMismatch`] for the mismatch path.
+fn validate_flat_data_length(
+    nx: usize,
+    ny: usize,
+    nz: usize,
+    data_len: usize,
+) -> Result<(), MedialError> {
+    let expected = nx
+        .checked_mul(ny)
+        .and_then(|p| p.checked_mul(nz))
+        .ok_or(MedialError::AxisExtentsOverflow { nx, ny, nz })?;
+    if data_len != expected {
+        return Err(MedialError::DataLengthMismatch {
+            expected,
+            found: data_len,
+        });
+    }
+    Ok(())
+}
 
 /// Look up `φ` at integer voxel indices `[i, j, k]`. Assumes
 /// row-major axis-0-outermost layout (matches
@@ -655,6 +744,82 @@ pub(crate) fn gradient_at_index(sdf: &SampledField, idx: [usize; 3]) -> [f64; 3]
         (sample_at_index(sdf, [i, j, k + 1]) - sample_at_index(sdf, [i, j, k - 1])) / (2.0 * dz)
     };
     [gx, gy, gz]
+}
+
+/// Pre-compute a dense gradient grid: one `[f64; 3]` entry per voxel,
+/// laid out row-major as `grid[i*ny*nz + j*nz + k]` matching the
+/// `SampledField::data` convention.
+///
+/// Each entry equals `gradient_at_index(sdf, [i, j, k])` — a faithful hoist
+/// of the central-difference (with axis-boundary forward/backward fallbacks)
+/// that the main loop performs per voxel. The cache is intentionally dense
+/// (one entry for every grid point, including out-of-band voxels) so that
+/// lookup is an O(1) slice index rather than a hash probe. Memory cost at
+/// 256³ is ~384 MB (16 M voxels × 24 B); flagged for replacement with a
+/// sparse representation once the OpenVDB FFI lands and
+/// `narrow_band_half_width_voxels` becomes a true sparse-iterator gate.
+///
+/// **Index formula.** The formula `i*nj*nk + j*nk + k` is identical to
+/// [`sample_at_index`]'s layout so cache reads in the main loop are
+/// cache-line-friendly for the innermost (k) sweep.
+pub(crate) fn precompute_gradient_grid(sdf: &SampledField) -> Vec<[f64; 3]> {
+    let nx = sdf.axis_grids[0].len();
+    let ny = sdf.axis_grids[1].len();
+    let nz = sdf.axis_grids[2].len();
+
+    // Parallel construction via std::thread::scope + slice::chunks_mut.
+    //
+    // Each thread receives an exclusive mutable sub-slice of `grid` via
+    // `chunks_mut` and writes directly — no transient per-thread Vec, no
+    // copy_from_slice. This halves peak memory relative to a build-then-copy
+    // approach (from ~768 MB to ~384 MB at 256³).
+    //
+    // `i_indices.chunks(chunk_size)` and `grid.chunks_mut(chunk_size*ny*nz)`
+    // are zipped: the k-th i-chunk pairs with the k-th sub-slice, which are
+    // non-overlapping by the guarantee of `chunks_mut`. Each `dst` borrow is
+    // valid for the scope lifetime (≤ lifetime of `grid`), and
+    // `&mut [[f64;3]]: Send` (since `[f64;3]: Send + Sync`).
+    //
+    // Determinism: handles joined in spawn order = chunk-iteration order =
+    // ascending i order; writes target non-overlapping slices. Per Task-2544:
+    // panics forwarded via `resume_unwind` so the original payload reaches
+    // the caller intact (contract-explicitness convention).
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .min(nx.max(1));
+    let chunk_size = nx.div_ceil(threads).max(1);
+    let i_indices: Vec<usize> = (0..nx).collect();
+
+    let mut grid = vec![[0.0f64; 3]; nx * ny * nz];
+
+    std::thread::scope(|s| {
+        let mut handles = Vec::with_capacity(threads);
+        for (chunk, dst) in i_indices
+            .chunks(chunk_size)
+            .zip(grid.chunks_mut(chunk_size * ny * nz))
+        {
+            let chunk_owned: Vec<usize> = chunk.to_vec();
+            handles.push(s.spawn(move || {
+                for (idx, &i) in chunk_owned.iter().enumerate() {
+                    for j in 0..ny {
+                        for k in 0..nz {
+                            dst[idx * ny * nz + j * nz + k] =
+                                gradient_at_index(sdf, [i, j, k]);
+                        }
+                    }
+                }
+            }));
+        }
+        for h in handles {
+            match h.join() {
+                Ok(()) => {}
+                Err(p) => std::panic::resume_unwind(p),
+            }
+        }
+    });
+
+    grid
 }
 
 /// Gradient at a world coordinate via central finite differences over
@@ -1652,6 +1817,139 @@ mod tests {
         }
     }
 
+    /// Contract test: `compute_medial_mask` must return voxels in strict
+    /// lexicographic ascending order (element-wise `[i32; 3]` comparison).
+    ///
+    /// **Why pin this now?** The serial triple-nested loop (i → j → k)
+    /// produces lex-sorted output by construction; downstream consumers
+    /// (e.g. binary-search-style mask queries) already rely on this.
+    /// Pinning the contract here ensures that step-6's parallel
+    /// chunk-merge + `sort_unstable` cannot silently regress it: if the
+    /// final sort is ever accidentally removed, or the per-chunk Vecs are
+    /// concatenated in a non-deterministic order, this test will catch the
+    /// regression before any downstream consumer is affected.
+    ///
+    /// The `windows(2).all(|w| w[0] < w[1])` check enforces *strict*
+    /// ordering (no duplicates); each voxel is visited at most once so
+    /// equality would indicate a bug in the parallelisation logic.
+    #[test]
+    fn compute_medial_mask_voxels_are_sorted_in_lex_order_on_slab() {
+        let sdf = slab_sdf_3d(3.0, 16);
+        let mask = compute_medial_mask(&sdf, &MedialOptions::default())
+            .expect("slab compute succeeds");
+
+        // The slab fixture produces at least 128 medial voxels (asserted by
+        // the existing slab test), so the windows(2) check is load-bearing.
+        assert!(
+            mask.voxels.len() >= 2,
+            "need ≥ 2 voxels for ordering check; got {}",
+            mask.voxels.len()
+        );
+
+        let out_of_order = mask.voxels.windows(2).find(|w| w[0] >= w[1]);
+        assert!(
+            out_of_order.is_none(),
+            "medial mask voxels must be strictly lex-ordered; \
+             found {:?} ≥ {:?}",
+            out_of_order.unwrap()[0],
+            out_of_order.unwrap()[1]
+        );
+    }
+
+    /// Contract test: `compute_medial_mask` must return bit-identical output
+    /// across ≥3 independent sequential calls on the same input.
+    ///
+    /// **Why ≥3 runs?** Two in-process runs share scheduler state and a true
+    /// non-determinism bug (e.g., unsorted parallel-chunk merge, missing
+    /// `sort_unstable`) can pass by luck when both runs happen to produce the
+    /// same ordering. Three independent sequential runs make scheduler-state
+    /// coincidence significantly less likely: a merge-order bug that passes 2
+    /// runs with probability p passes 3 runs with probability p², and typical
+    /// ordering bugs have p ≈ 0.5 so p² ≈ 0.25 vs p = 0.5 for 2-run tests.
+    ///
+    /// **Why both fixture sizes?** 16³ gives fast CI feedback; at this size
+    /// with `available_parallelism() ≥ 4` each chunk covers only 4 i-rows —
+    /// per-chunk runtimes are nearly identical, limiting scheduling variance.
+    /// 48³ gives the OS scheduler 12× more per-chunk work, exposing chunk-
+    /// interleaving opportunities that 16³ would miss. Both are needed: 16³
+    /// catches constant-factor bugs; 48³ catches variance-dependent bugs.
+    ///
+    /// **Equality semantics.** Each subsequent run is compared against run 0
+    /// (not all-pairs). Transitive equality holds: if run 1 == run 0 and
+    /// run 2 == run 0, then run 1 == run 2 — so comparing against run 0 is
+    /// sufficient and has linear cost in the run count.
+    ///
+    /// Checks `voxels` (full Vec including ordering), `spacing`, and `origin`.
+    #[test]
+    fn compute_medial_mask_is_deterministic_across_three_runs_on_multiple_slab_sizes() {
+        let opts = MedialOptions::default();
+        for n in [16usize, 48usize] {
+            let sdf = slab_sdf_3d(3.0, n);
+            let runs: Vec<MedialMask> = (0..3)
+                .map(|run| {
+                    compute_medial_mask(&sdf, &opts)
+                        .unwrap_or_else(|e| panic!("run {run} on n={n} failed: {e:?}"))
+                })
+                .collect();
+            for (run_idx, run) in runs.iter().enumerate().skip(1) {
+                assert_eq!(
+                    run.voxels, runs[0].voxels,
+                    "n={n} run={run_idx}: voxels differ from run 0"
+                );
+                assert_eq!(
+                    run.spacing, runs[0].spacing,
+                    "n={n} run={run_idx}: spacing differs from run 0"
+                );
+                assert_eq!(
+                    run.origin, runs[0].origin,
+                    "n={n} run={run_idx}: origin differs from run 0"
+                );
+            }
+        }
+    }
+
+    /// Contract test: `precompute_gradient_grid` must return a flat Vec
+    /// whose entry at `i*ny*nz + j*nz + k` equals
+    /// `gradient_at_index(sdf, [i, j, k])` exactly (bit-for-bit, not
+    /// approximately).
+    ///
+    /// **Why exact equality?** The cache MUST be a faithful precomputation,
+    /// not a numerically-different approximation. If the cached gradient
+    /// differs from the inline `gradient_at_index` call — even by a single
+    /// ULP — the parallel medial-mask impl would make different
+    /// inclusion/exclusion decisions than the serial reference, silently
+    /// changing the medial mask. The helper is a verbatim hoist of the
+    /// same computation, so exact `==` is the correct invariant.
+    #[test]
+    fn precompute_gradient_grid_matches_gradient_at_index_on_slab() {
+        let n = 16usize;
+        let sdf = slab_sdf_3d(3.0, n);
+        let ny = sdf.axis_grids[1].len();
+        let nz = sdf.axis_grids[2].len();
+
+        let grid = precompute_gradient_grid(&sdf);
+
+        assert_eq!(
+            grid.len(),
+            n * ny * nz,
+            "gradient grid length must be nx*ny*nz"
+        );
+
+        for i in 0..n {
+            for j in 0..ny {
+                for k in 0..nz {
+                    let expected = gradient_at_index(&sdf, [i, j, k]);
+                    let got = grid[i * ny * nz + j * nz + k];
+                    assert_eq!(
+                        got, expected,
+                        "gradient mismatch at ({i},{j},{k}): \
+                         cache={got:?}, inline={expected:?}"
+                    );
+                }
+            }
+        }
+    }
+
     /// RED — inverted bounds on axis 0 (`bounds_min > bounds_max`)
     /// must return `InvalidAxisGeometry`. The `world_at_index` and
     /// `sample_at_world` helpers produce geometrically nonsensical
@@ -1676,4 +1974,245 @@ mod tests {
             }
         );
     }
+
+
+    /// Characterization — asymmetric-extents DataLengthMismatch: 3×4×5 grid
+    /// (nx*ny*nz = 60) with only 59 data elements.
+    ///
+    /// Pins (a) the validator handles non-cubic grids (axis lengths differ on
+    /// each axis) and (b) `validate_flat_data_length`'s checked_mul math is
+    /// exercised on asymmetric extents through the public API, not just the
+    /// unit test from step-5. The existing test at line 1628 uses a 2×2×2
+    /// cube; this complements it with an asymmetric case.
+    #[test]
+    fn compute_medial_mask_rejects_data_length_mismatch_on_asymmetric_extents() {
+        let sdf = SampledField {
+            name: "test-asymmetric-3x4x5".to_string(),
+            kind: SampledGridKind::Regular3D,
+            bounds_min: vec![0.0, 0.0, 0.0],
+            bounds_max: vec![2.0, 3.0, 4.0],
+            spacing: vec![1.0, 1.0, 1.0],
+            axis_grids: vec![
+                vec![0.0, 1.0, 2.0],           // nx = 3
+                vec![0.0, 1.0, 2.0, 3.0],      // ny = 4
+                vec![0.0, 1.0, 2.0, 3.0, 4.0], // nz = 5
+            ],
+            interpolation: InterpolationKind::Linear,
+            data: vec![0.0; 59], // should be 60 (3*4*5)
+            oob_emitted: AtomicBool::new(false),
+        };
+        let err = compute_medial_mask(&sdf, &MedialOptions::default())
+            .expect_err("3×4×5 grid with 59 data elements must be rejected");
+        assert_eq!(
+            err,
+            MedialError::DataLengthMismatch {
+                expected: 60,
+                found: 59,
+            },
+            "validate_flat_data_length must compute 3*4*5=60 and report found=59"
+        );
+    }
+
+    /// Characterization — +Inf spacing on axis 0 is rejected via `is_finite()`.
+    ///
+    /// Pins the implicit behavior that +Inf spacing (not just NaN/zero/negative)
+    /// is caught by the existing `sp.is_finite() && sp > 0.0` predicate.
+    /// Future refactors of the geometry-validation block must not silently
+    /// regress ±Inf handling.
+    #[test]
+    fn compute_medial_mask_rejects_positive_infinity_spacing() {
+        let sdf = geometry_test_field(
+            [f64::INFINITY, 1.0, 1.0],
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+        );
+        let err = compute_medial_mask(&sdf, &MedialOptions::default())
+            .expect_err("+Inf spacing must be rejected");
+        assert_eq!(
+            err,
+            MedialError::InvalidAxisGeometry {
+                axis: 0,
+                spacing: f64::INFINITY,
+                bounds_min: 0.0,
+                bounds_max: 1.0,
+            }
+        );
+    }
+
+    /// Characterization — -Inf spacing on axis 0 is rejected via `is_finite()`.
+    #[test]
+    fn compute_medial_mask_rejects_negative_infinity_spacing() {
+        let sdf = geometry_test_field(
+            [f64::NEG_INFINITY, 1.0, 1.0],
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+        );
+        let err = compute_medial_mask(&sdf, &MedialOptions::default())
+            .expect_err("-Inf spacing must be rejected");
+        assert_eq!(
+            err,
+            MedialError::InvalidAxisGeometry {
+                axis: 0,
+                spacing: f64::NEG_INFINITY,
+                bounds_min: 0.0,
+                bounds_max: 1.0,
+            }
+        );
+    }
+
+    /// Characterization — +Inf bounds_max on axis 0 is rejected via `bmax.is_finite()`.
+    #[test]
+    fn compute_medial_mask_rejects_positive_infinity_bounds_max() {
+        let sdf = geometry_test_field(
+            [1.0, 1.0, 1.0],
+            [0.0, 0.0, 0.0],
+            [f64::INFINITY, 1.0, 1.0],
+        );
+        let err = compute_medial_mask(&sdf, &MedialOptions::default())
+            .expect_err("+Inf bounds_max must be rejected");
+        assert_eq!(
+            err,
+            MedialError::InvalidAxisGeometry {
+                axis: 0,
+                spacing: 1.0,
+                bounds_min: 0.0,
+                bounds_max: f64::INFINITY,
+            }
+        );
+    }
+
+    /// Characterization — -Inf bounds_min on axis 0 is rejected via `bmin.is_finite()`.
+    #[test]
+    fn compute_medial_mask_rejects_negative_infinity_bounds_min() {
+        let sdf = geometry_test_field(
+            [1.0, 1.0, 1.0],
+            [f64::NEG_INFINITY, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+        );
+        let err = compute_medial_mask(&sdf, &MedialOptions::default())
+            .expect_err("-Inf bounds_min must be rejected");
+        assert_eq!(
+            err,
+            MedialError::InvalidAxisGeometry {
+                axis: 0,
+                spacing: 1.0,
+                bounds_min: f64::NEG_INFINITY,
+                bounds_max: 1.0,
+            }
+        );
+    }
+
+    /// Characterization — zero spacing on axis 1 is rejected with `axis: 1`.
+    ///
+    /// Pins that the validator's `for axis in 0..3` loop reports the correct
+    /// non-zero axis index, not always 0. A future refactor that collapsed the
+    /// loop to axis-0-only would silently miss axis-1/2 violations.
+    #[test]
+    fn compute_medial_mask_rejects_zero_spacing_on_axis_1() {
+        let sdf = geometry_test_field(
+            [1.0, 0.0, 1.0], // axis-1 spacing = 0
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+        );
+        let err = compute_medial_mask(&sdf, &MedialOptions::default())
+            .expect_err("zero spacing on axis 1 must be rejected");
+        assert_eq!(
+            err,
+            MedialError::InvalidAxisGeometry {
+                axis: 1,
+                spacing: 0.0,
+                bounds_min: 0.0,
+                bounds_max: 1.0,
+            }
+        );
+    }
+
+    /// Characterization — inverted bounds on axis 2 are rejected with `axis: 2`.
+    ///
+    /// Pins that the `for axis in 0..3` loop correctly identifies the first
+    /// violating axis when it is axis 2. bounds_min[2]=1.0 > bounds_max[2]=0.0.
+    #[test]
+    fn compute_medial_mask_rejects_inverted_bounds_on_axis_2() {
+        let sdf = geometry_test_field(
+            [1.0, 1.0, 1.0],
+            [0.0, 0.0, 1.0], // bounds_min[2] = 1.0 > bounds_max[2] = 0.0
+            [1.0, 1.0, 0.0],
+        );
+        let err = compute_medial_mask(&sdf, &MedialOptions::default())
+            .expect_err("inverted bounds on axis 2 must be rejected");
+        assert_eq!(
+            err,
+            MedialError::InvalidAxisGeometry {
+                axis: 2,
+                spacing: 1.0,
+                bounds_min: 1.0,
+                bounds_max: 0.0,
+            }
+        );
+    }
+
+    /// Unit test for `validate_flat_data_length`: exercises all three result
+    /// branches (Ok, AxisExtentsOverflow, DataLengthMismatch) without
+    /// constructing a full SampledField — keeping the test fast and avoiding
+    /// the memory pressure needed to trigger a real overflow through the
+    /// public API.
+    ///
+    /// Currently FAILS to compile (RED) because `validate_flat_data_length`
+    /// does not yet exist. After step-6 adds the helper, all three assertions
+    /// pass.
+    #[test]
+    fn validate_flat_data_length_routes_overflow_and_mismatch() {
+        // (a) Ok on matching inputs: 2×3×4 = 24.
+        validate_flat_data_length(2, 3, 4, 24).expect("ok on consistent inputs");
+
+        // (b) AxisExtentsOverflow when the product overflows usize.
+        // 2^22 = 4_194_304; cubed = 2^66 which overflows both 32- and 64-bit usize.
+        let n = 1usize << 22;
+        match validate_flat_data_length(n, n, n, 0) {
+            Err(MedialError::AxisExtentsOverflow { nx, ny, nz }) => {
+                assert_eq!(nx, n, "AxisExtentsOverflow must carry nx");
+                assert_eq!(ny, n, "AxisExtentsOverflow must carry ny");
+                assert_eq!(nz, n, "AxisExtentsOverflow must carry nz");
+            }
+            other => panic!(
+                "expected AxisExtentsOverflow, got {other:?}"
+            ),
+        }
+
+        // (c) DataLengthMismatch when the product is valid but data_len differs.
+        assert_eq!(
+            validate_flat_data_length(2, 3, 4, 23),
+            Err(MedialError::DataLengthMismatch {
+                expected: 24,
+                found: 23,
+            }),
+            "DataLengthMismatch must carry expected=24 and found=23"
+        );
+    }
+
+    /// Display data-flow test: `MedialError::AxisExtentsOverflow` must include
+    /// each of the three extent values (nx, ny, nz) in the formatted message,
+    /// verifying that the variant fields are surfaced to the user.
+    #[test]
+    fn axis_extents_overflow_display_includes_extents_and_says_overflow() {
+        let err = MedialError::AxisExtentsOverflow {
+            nx: 3_000_000,
+            ny: 4_000_000,
+            nz: 5_000_000,
+        };
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("3000000"),
+            "AxisExtentsOverflow Display must include nx=3000000: {msg}"
+        );
+        assert!(
+            msg.contains("4000000"),
+            "AxisExtentsOverflow Display must include ny=4000000: {msg}"
+        );
+        assert!(
+            msg.contains("5000000"),
+            "AxisExtentsOverflow Display must include nz=5000000: {msg}"
+        );
+    }
+
 }

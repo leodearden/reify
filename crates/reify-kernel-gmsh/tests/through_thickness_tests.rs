@@ -6,6 +6,9 @@
 //! volume mesh and emits a warning whenever any geometric thickness has
 //! fewer than `min_elements_through_thickness` (default 2) tets through it.
 
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+
 use reify_kernel_gmsh::through_thickness::{
     through_thickness_check, ThroughThicknessConfig, ThroughThicknessWarning,
 };
@@ -302,4 +305,182 @@ fn warning_includes_face_or_region_identifier() {
     // — these are part of the public diagnostic surface.
     let _: f64 = warnings[0].thickness;
     let _: u32 = warnings[0].element_count;
+}
+
+/// Pins the LHS branch of the early-return OR-guard at the top of
+/// `through_thickness_check` (fires when either `surface.vertices` or
+/// `volume.tet_indices` is empty):
+/// `if surface.vertices.is_empty() || volume.tet_indices.is_empty() { return Vec::new(); }`
+///
+/// This test exercises the LHS short-circuit specifically: `surface.vertices` is
+/// empty, so the `||` returns immediately without evaluating `tet_indices.is_empty()`.
+/// The volume mesh has NON-empty `tet_indices` to force this distinction — a test
+/// with BOTH inputs empty would only exercise the LHS and leave the RHS branch
+/// unpinned (Rust's `||` short-circuits on the first true operand).
+///
+/// Partner test `empty_tet_indices_returns_empty_vec` covers the RHS branch.
+#[test]
+fn empty_surface_vertices_returns_empty_vec() {
+    let surface = Mesh {
+        vertices: vec![], // empty surface — triggers LHS of the OR
+        indices: vec![],
+        normals: None,
+    };
+    // NON-empty tet_indices: forces the LHS branch to be the one that fires.
+    let volume = VolumeMesh {
+        vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+        tet_indices: vec![0, 1, 2, 3],
+        element_order: ElementOrderTag::P1,
+        normals: None,
+    };
+    let cfg = ThroughThicknessConfig::default();
+    let warnings = through_thickness_check(&volume, &surface, cfg);
+    assert!(
+        warnings.is_empty(),
+        "empty surface vertices must yield empty Vec (LHS branch of OR guard); \
+         got {} warning(s)",
+        warnings.len()
+    );
+}
+
+/// Pins the RHS branch of the early-return OR-guard at the top of
+/// `through_thickness_check` (fires when either `surface.vertices` or
+/// `volume.tet_indices` is empty):
+/// `if surface.vertices.is_empty() || volume.tet_indices.is_empty() { return Vec::new(); }`
+///
+/// This test exercises the RHS short-circuit specifically: `surface.vertices` is
+/// NON-empty (using the `slab_surface_mesh()` helper), so the `||` evaluates the
+/// RHS and triggers the early-return on `tet_indices.is_empty()`. A single test
+/// with both inputs empty would only exercise the LHS (Rust's `||` short-circuits
+/// on the first true operand) and would leave this branch unpinned.
+///
+/// Note: a secondary `n_tets == 0` guard inside `through_thickness_check` after
+/// the BBox walk would also catch empty `tet_indices`. Pinning the documented
+/// `tet_indices.is_empty()` contract directly catches a regression that drops
+/// EITHER guard — not just the secondary one.
+///
+/// Partner test `empty_surface_vertices_returns_empty_vec` covers the LHS branch.
+#[test]
+fn empty_tet_indices_returns_empty_vec() {
+    // NON-empty surface: forces LHS of the OR to be false, so the RHS is evaluated.
+    let surface = slab_surface_mesh();
+    let volume = VolumeMesh {
+        vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+        tet_indices: vec![], // empty tet_indices — triggers RHS of the OR
+        element_order: ElementOrderTag::P1,
+        normals: None,
+    };
+    let cfg = ThroughThicknessConfig::default();
+    let warnings = through_thickness_check(&volume, &surface, cfg);
+    assert!(
+        warnings.is_empty(),
+        "empty tet_indices must yield empty Vec (RHS branch of OR guard); \
+         got {} warning(s)",
+        warnings.len()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Non-finite centroid tests: NaN, +Inf, −Inf.
+//
+// All three share the same assertion contract — non-finite centroid → empty
+// Vec + exactly one WARN at the target — so the scaffolding is factored into
+// a single private helper parameterised by the vertex coordinate value.
+// ---------------------------------------------------------------------------
+
+/// Shared scaffold for the three non-finite-centroid guard tests.
+///
+/// Primes the tracing callsite cache, builds a single-P1-tet `VolumeMesh`
+/// whose first vertex has `coord` for all three coordinates (the remaining
+/// three vertices are the finite slab corners), runs `through_thickness_check`
+/// under a WARN-counting subscriber, and asserts:
+///
+/// - (a) the returned `Vec` is empty — a non-finite centroid signals upstream
+///       pathology, not an under-resolved region,
+/// - (b) exactly one WARN event is emitted at the
+///   `reify_kernel_gmsh::through_thickness` target.
+fn assert_non_finite_first_vertex_returns_empty(coord: f32) {
+    // Prime the callsite cache so per-test with_default subscribers see events
+    // even if a prior test thread hit the callsite with no subscriber active.
+    reify_test_support::prime_tracing_callsite_cache();
+
+    let surface = slab_surface_mesh();
+
+    // Single P1 tet whose first vertex uses `coord` for all three axes.
+    // Vertex 0 is the pathological one; vertices 1..3 are finite slab corners.
+    let volume = VolumeMesh {
+        vertices: vec![
+            coord, coord, coord,
+            10.0, 0.0, 0.0,
+            10.0, 10.0, 0.5,
+            0.0, 10.0, 0.5,
+        ],
+        tet_indices: vec![0, 1, 2, 3],
+        element_order: ElementOrderTag::P1,
+        normals: None,
+    };
+    let cfg = ThroughThicknessConfig {
+        min_elements_through_thickness: 2,
+    };
+
+    let (subscriber, counters) = reify_test_support::CountingSubscriberBuilder::new()
+        .count_level(tracing::Level::WARN)
+        .target_prefix("reify_kernel_gmsh::through_thickness")
+        .build();
+    let warn_arc = Arc::clone(&counters[&tracing::Level::WARN]);
+
+    let warnings = tracing::subscriber::with_default(subscriber, || {
+        through_thickness_check(&volume, &surface, cfg)
+    });
+
+    // (a) Must return empty Vec — non-finite centroid signals upstream pathology.
+    assert!(
+        warnings.is_empty(),
+        "non-finite centroid (coord={coord}) must produce empty Vec, not a \
+         spurious layer-count warning; got {} warning(s): {:?}",
+        warnings.len(),
+        warnings.iter().map(|w| &w.message).collect::<Vec<_>>()
+    );
+
+    // (b) No panic (implicit — reaching this point means the function returned).
+
+    // (c) Exactly one WARN event must be emitted at the named target.
+    let warn_count = warn_arc.load(Ordering::Acquire);
+    assert_eq!(
+        warn_count, 1,
+        "expected exactly 1 WARN event at reify_kernel_gmsh::through_thickness \
+         (coord={coord}); got {warn_count}"
+    );
+}
+
+/// A volume mesh whose first vertex has NaN coordinates must not produce a
+/// spurious layer count — NaN poisons `partial_cmp` (treated as Equal against
+/// every value), silently scrambling the sort. Instead the function must
+/// early-return `Vec::new()` and emit exactly one WARN at the
+/// `reify_kernel_gmsh::through_thickness` target.
+#[test]
+fn nan_centroid_returns_empty_and_emits_warn() {
+    assert_non_finite_first_vertex_returns_empty(f32::NAN);
+}
+
+/// A volume mesh whose first vertex has +Inf coordinates must not produce a
+/// spurious layer count — Inf poisons `bin_width` (avg_tet_extent → Inf →
+/// half_bin → Inf → `(w[1] - w[0]).abs() > Inf` is always false →
+/// layer_count collapses to 1 regardless of geometry). The function must
+/// early-return `Vec::new()` and emit exactly one WARN at the
+/// `reify_kernel_gmsh::through_thickness` target.
+#[test]
+fn inf_centroid_returns_empty_and_emits_warn() {
+    assert_non_finite_first_vertex_returns_empty(f32::INFINITY);
+}
+
+/// A volume mesh whose first vertex has −Inf coordinates must not produce a
+/// spurious layer count. −Inf takes a slightly different arithmetic path than
+/// +Inf (avoids any +Inf + −Inf = NaN interaction that could mask the failure
+/// mode), so it is tested separately to close the `!is_finite()` predicate's
+/// coverage. The expected contract is identical: early-return `Vec::new()` and
+/// emit exactly one WARN at the `reify_kernel_gmsh::through_thickness` target.
+#[test]
+fn neg_inf_centroid_returns_empty_and_emits_warn() {
+    assert_non_finite_first_vertex_returns_empty(f32::NEG_INFINITY);
 }

@@ -180,10 +180,6 @@ pub fn apply_dirichlet_row_elimination(
         }
     }
 
-    if bcs.is_empty() {
-        return;
-    }
-
     for bc in bcs {
         let i = bc.dof;
         let u = bc.value;

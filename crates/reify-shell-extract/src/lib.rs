@@ -98,6 +98,7 @@
 //!     extract_mid_surface(&sdf, &mask, &MidSurfaceOptions::default()).unwrap();
 //! assert!(mesh.vertices.is_empty() && mesh.triangles.is_empty() && mesh.thickness.is_empty());
 //! let _: MidSurfaceError = MidSurfaceError::EmptyAxisGrid { axis: 0 };
+//! let _: MidSurfaceError = MidSurfaceError::MaskVoxelOutOfBounds { voxel: [0, 0, 0], grid_extent: [1, 1, 1] };
 //! ```
 //!
 //! # Medial-mask extraction smoke test
@@ -135,6 +136,7 @@ pub mod mesher;
 pub mod mid_surface;
 pub mod pruning;
 pub mod segmentation;
+pub(crate) mod grid_validation;
 
 pub use medial::{MedialError, MedialMask, MedialOptions, compute_medial_mask};
 pub use mesher::{

@@ -2418,9 +2418,16 @@ impl<'a> Lowering<'a> {
     }
 
     fn lower_number_literal(&self, node: tree_sitter::Node) -> Option<Expr> {
-        let value: f64 = self.node_text(node).parse().ok()?;
+        let text = self.node_text(node);
+        let value: f64 = text.parse().ok()?;
+        // Classify as Real when the token contains the fractional or exponent part of
+        // the grammar's `number_literal` rule: `\d+(\.\d+)?([eE][+-]?\d+)?`
+        // (tree-sitter-reify/grammar.js).  This scan must stay in sync with that regex —
+        // if the grammar gains new number-literal forms (e.g. hex floats, `_` separators),
+        // update both the grammar and this classification.
+        let is_real = text.contains('.') || text.contains('e') || text.contains('E');
         Some(Expr {
-            kind: ExprKind::NumberLiteral(value),
+            kind: ExprKind::NumberLiteral { value, is_real },
             span: self.span(node),
         })
     }
@@ -2825,7 +2832,7 @@ mod tests {
                     ExprKind::BinOp {
                         right: inner_right, ..
                     } => match &inner_right.kind {
-                        ExprKind::NumberLiteral(v) => {
+                        ExprKind::NumberLiteral { value: v, .. } => {
                             assert!((v - 4.0).abs() < f64::EPSILON);
                         }
                         other => panic!("expected NumberLiteral(4), got {:?}", other),
@@ -3753,13 +3760,13 @@ mod tests {
             ExprKind::ListLiteral(elems) => {
                 assert_eq!(elems.len(), 3);
                 assert!(
-                    matches!(&elems[0].kind, ExprKind::NumberLiteral(v) if (*v - 1.0).abs() < f64::EPSILON)
+                    matches!(&elems[0].kind, ExprKind::NumberLiteral { value: v, .. } if (*v - 1.0).abs() < f64::EPSILON)
                 );
                 assert!(
-                    matches!(&elems[1].kind, ExprKind::NumberLiteral(v) if (*v - 2.0).abs() < f64::EPSILON)
+                    matches!(&elems[1].kind, ExprKind::NumberLiteral { value: v, .. } if (*v - 2.0).abs() < f64::EPSILON)
                 );
                 assert!(
-                    matches!(&elems[2].kind, ExprKind::NumberLiteral(v) if (*v - 3.0).abs() < f64::EPSILON)
+                    matches!(&elems[2].kind, ExprKind::NumberLiteral { value: v, .. } if (*v - 3.0).abs() < f64::EPSILON)
                 );
             }
             other => panic!("expected ListLiteral, got {:?}", other),
@@ -3784,13 +3791,13 @@ mod tests {
             ExprKind::SetLiteral(elems) => {
                 assert_eq!(elems.len(), 3);
                 assert!(
-                    matches!(&elems[0].kind, ExprKind::NumberLiteral(v) if (*v - 1.0).abs() < f64::EPSILON)
+                    matches!(&elems[0].kind, ExprKind::NumberLiteral { value: v, .. } if (*v - 1.0).abs() < f64::EPSILON)
                 );
                 assert!(
-                    matches!(&elems[1].kind, ExprKind::NumberLiteral(v) if (*v - 2.0).abs() < f64::EPSILON)
+                    matches!(&elems[1].kind, ExprKind::NumberLiteral { value: v, .. } if (*v - 2.0).abs() < f64::EPSILON)
                 );
                 assert!(
-                    matches!(&elems[2].kind, ExprKind::NumberLiteral(v) if (*v - 3.0).abs() < f64::EPSILON)
+                    matches!(&elems[2].kind, ExprKind::NumberLiteral { value: v, .. } if (*v - 3.0).abs() < f64::EPSILON)
                 );
             }
             other => panic!("expected SetLiteral, got {:?}", other),
@@ -3816,11 +3823,11 @@ mod tests {
                 assert_eq!(entries.len(), 2);
                 assert!(matches!(&entries[0].0.kind, ExprKind::StringLiteral(s) if s == "a"));
                 assert!(
-                    matches!(&entries[0].1.kind, ExprKind::NumberLiteral(v) if (*v - 1.0).abs() < f64::EPSILON)
+                    matches!(&entries[0].1.kind, ExprKind::NumberLiteral { value: v, .. } if (*v - 1.0).abs() < f64::EPSILON)
                 );
                 assert!(matches!(&entries[1].0.kind, ExprKind::StringLiteral(s) if s == "b"));
                 assert!(
-                    matches!(&entries[1].1.kind, ExprKind::NumberLiteral(v) if (*v - 2.0).abs() < f64::EPSILON)
+                    matches!(&entries[1].1.kind, ExprKind::NumberLiteral { value: v, .. } if (*v - 2.0).abs() < f64::EPSILON)
                 );
             }
             other => panic!("expected MapLiteral, got {:?}", other),
@@ -3845,7 +3852,7 @@ mod tests {
             ExprKind::IndexAccess { object, index } => {
                 assert!(matches!(&object.kind, ExprKind::Ident(n) if n == "items"));
                 assert!(
-                    matches!(&index.kind, ExprKind::NumberLiteral(v) if (*v - 0.0).abs() < f64::EPSILON)
+                    matches!(&index.kind, ExprKind::NumberLiteral { value: v, .. } if (*v - 0.0).abs() < f64::EPSILON)
                 );
             }
             other => panic!("expected IndexAccess, got {:?}", other),
@@ -3874,10 +3881,10 @@ mod tests {
                     ExprKind::ListLiteral(inner) => {
                         assert_eq!(inner.len(), 2);
                         assert!(
-                            matches!(&inner[0].kind, ExprKind::NumberLiteral(v) if (*v - 1.0).abs() < f64::EPSILON)
+                            matches!(&inner[0].kind, ExprKind::NumberLiteral { value: v, .. } if (*v - 1.0).abs() < f64::EPSILON)
                         );
                         assert!(
-                            matches!(&inner[1].kind, ExprKind::NumberLiteral(v) if (*v - 2.0).abs() < f64::EPSILON)
+                            matches!(&inner[1].kind, ExprKind::NumberLiteral { value: v, .. } if (*v - 2.0).abs() < f64::EPSILON)
                         );
                     }
                     other => panic!("expected inner ListLiteral, got {:?}", other),
@@ -3886,10 +3893,10 @@ mod tests {
                     ExprKind::ListLiteral(inner) => {
                         assert_eq!(inner.len(), 2);
                         assert!(
-                            matches!(&inner[0].kind, ExprKind::NumberLiteral(v) if (*v - 3.0).abs() < f64::EPSILON)
+                            matches!(&inner[0].kind, ExprKind::NumberLiteral { value: v, .. } if (*v - 3.0).abs() < f64::EPSILON)
                         );
                         assert!(
-                            matches!(&inner[1].kind, ExprKind::NumberLiteral(v) if (*v - 4.0).abs() < f64::EPSILON)
+                            matches!(&inner[1].kind, ExprKind::NumberLiteral { value: v, .. } if (*v - 4.0).abs() < f64::EPSILON)
                         );
                     }
                     other => panic!("expected inner ListLiteral, got {:?}", other),
@@ -4131,13 +4138,13 @@ mod tests {
                 assert_eq!(selector, "point");
                 assert_eq!(args.len(), 3);
                 assert!(
-                    matches!(&args[0].kind, ExprKind::NumberLiteral(v) if (*v - 1.0).abs() < f64::EPSILON)
+                    matches!(&args[0].kind, ExprKind::NumberLiteral { value: v, .. } if (*v - 1.0).abs() < f64::EPSILON)
                 );
                 assert!(
-                    matches!(&args[1].kind, ExprKind::NumberLiteral(v) if (*v - 2.0).abs() < f64::EPSILON)
+                    matches!(&args[1].kind, ExprKind::NumberLiteral { value: v, .. } if (*v - 2.0).abs() < f64::EPSILON)
                 );
                 assert!(
-                    matches!(&args[2].kind, ExprKind::NumberLiteral(v) if (*v - 3.0).abs() < f64::EPSILON)
+                    matches!(&args[2].kind, ExprKind::NumberLiteral { value: v, .. } if (*v - 3.0).abs() < f64::EPSILON)
                 );
             }
             other => panic!("expected AdHocSelector, got {:?}", other),

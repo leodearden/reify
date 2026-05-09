@@ -127,6 +127,42 @@ structure def LoadCase {
 //   - `result_for(mcr : MultiCaseResult, name : String) -> ElasticResult`:
 //     returns the `ElasticResult` for `name`, or `Undef` on miss (silent-Undef
 //     per PRD task #10 deferral, matching the `envelope_*` convention).
+//   - `linear_combine(base_results : MultiCaseResult, weights : Map<String, Number>) -> ElasticResult`:
+//     weighted linear superposition of per-case displacement and stress fields.
+//     Computes `sum(weight_i * field_i)` element-wise over the flat
+//     `SampledField.data` buffers for each named case.  The output is a
+//     synthesised `ElasticResult` with:
+//       `displacement` — combined Sampled Field (name="linear_combine")
+//       `stress`       — combined Sampled Field (name="linear_combine")
+//       `frame`        — `Undef` (tet-elastic convention: no per-element
+//                        local frame for solid elements)
+//       `max_von_mises`— `max(|combined_stress.data|)` over finite values
+//                        (scalar interpretation; tensor recomputation deferred
+//                        to task #3117 when stress becomes Tensor<2,3,Pressure>)
+//       `converged`    — `true` (synthesised, not solved)
+//       `iterations`   — `Undef` (synthesised, not solved)
+//
+//     Valid only for linear-elastic results from solve_elastic_static /
+//     solve_load_cases.  Non-linear analyses (plasticity, contact, large
+//     deformation) violate the superposition assumption; future non-linear
+//     solver result types will not provide linear_combine overloads.
+//
+//     LRFD example:
+//       let combined = linear_combine(results, {"D": 1.4, "L": 1.7})
+//
+//     Compatibility check: all referenced cases must share identical Sampled
+//     field grid metadata (grid kind, axis lengths, bounds, spacing,
+//     domain_type, codomain_type) per `metadata_matches` in fea.rs.  This is
+//     the contemporaneously-available proxy for option-derived mesh
+//     compatibility (field grids describe what the solver *actually meshed*,
+//     which is a strictly stronger signal than what was *requested*).
+//     Tightening to also inspect `effective_options` per case is deferred to
+//     when `solve_load_cases` (task #3009) captures per-case options.
+//
+//     All pre-check failures collapse to `Undef` (silent-Undef discipline
+//     shared with `envelope_*` / `case_names` / `result_for`).  Diagnostic
+//     emission is deferred to PRD task #10 (Diagnostic mapping for
+//     multi-case-specific failure modes).
 //
 // Field rationale:
 //   `cases` — Map from case name to `ElasticResult`. Keys match the

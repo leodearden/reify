@@ -48,6 +48,14 @@ fn main() {
     // Declare has_gmsh as a known cfg so rustc doesn't warn about it.
     println!("cargo::rustc-check-cfg=cfg(has_gmsh)");
 
+    // Tell cargo to re-run this build script when the Gmsh env vars change.
+    // Without these directives, cargo caches the build script output and won't
+    // re-run it after the user installs libgmsh and sets GMSH_INCLUDE_DIR /
+    // GMSH_LIB_DIR — so `has_gmsh` would stay un-set forever in that cached
+    // build. Mirrors crates/reify-kernel-openvdb/build.rs:61-62.
+    println!("cargo:rerun-if-env-changed=GMSH_INCLUDE_DIR");
+    println!("cargo:rerun-if-env-changed=GMSH_LIB_DIR");
+
     // Auto-detect Gmsh availability. Same fail-soft posture as
     // `crates/reify-kernel-occt/build.rs`: if the system lacks libgmsh, the
     // crate still compiles — only the stub kernel is exposed.

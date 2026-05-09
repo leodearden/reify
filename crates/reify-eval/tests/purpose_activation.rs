@@ -171,10 +171,10 @@ purpose mfg_ready(subject : Structure) {
     );
 }
 
-// ── §2: eval() clears stale purpose state (migrated from purpose_eval.rs) ────
+// ── §2: eval() preserves active purpose state across re-eval (task 3103) ─────
 
 #[test]
-fn eval_clears_stale_purpose_state() {
+fn eval_preserves_active_purpose_state_across_re_eval() {
     let compiled = parse_and_compile(SIMPLE_MFG_SRC);
     let mut engine = make_engine();
     engine.eval(&compiled);
@@ -183,17 +183,105 @@ fn eval_clears_stale_purpose_state() {
         engine.is_purpose_active("mfg_ready"),
         "purpose should be active after activation"
     );
-    // Second eval — fresh snapshot; purpose state should be cleared (lib.rs:930-931)
+    // Second eval — fresh snapshot; active_purpose_bindings (user intent) must
+    // be preserved and re-injected into the new graph (task 3103).
     engine.eval(&compiled);
     assert!(
-        !engine.is_purpose_active("mfg_ready"),
-        "purpose should NOT be active after a fresh eval() call"
+        engine.is_purpose_active("mfg_ready"),
+        "purpose MUST still be active after a fresh eval() call — task 3103 preserves bindings"
     );
-    // Re-activation should work (not blocked by stale 'already active' guard)
+    // Re-activation should be an idempotent no-op (not blocked, not doubled)
     engine.activate_purpose("mfg_ready", "Bracket");
     assert!(
         engine.is_purpose_active("mfg_ready"),
-        "purpose should be re-activatable after fresh eval()"
+        "purpose should still be active after a redundant activate_purpose call"
+    );
+}
+
+/// Task 3103 (S4, reviewer) — the optimization objective re-injected by the
+/// preserved-binding loop in `Engine::eval` must survive the call.
+///
+/// `activate_purpose_constraints` (called inside the loop) inserts into
+/// `active_objective_map`; `rebuild_purpose_infrastructure` follows with the
+/// single shared infrastructure rebuild.  A future refactor that stops
+/// re-applying the objective during preserved-binding re-injection would leave
+/// `active_objectives()` empty after the second eval — this test catches that.
+#[test]
+fn eval_preserves_optimization_objective_across_re_eval() {
+    let compiled = parse_and_compile(MINIMIZE_SRC);
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+    engine.activate_purpose("lightweight", "Bracket");
+
+    // Precondition: objective is active before re-eval.
+    let objectives_before = engine.active_objectives();
+    assert_eq!(
+        objectives_before.len(),
+        1,
+        "precondition: one objective must be active after activation"
+    );
+    assert!(
+        matches!(objectives_before[0], OptimizationObjective::Minimize(_)),
+        "precondition: objective must be Minimize"
+    );
+
+    // Second eval — task 3103 preserves active_purpose_bindings and re-injects
+    // all purposes (including their objectives) into the new graph.
+    engine.eval(&compiled);
+
+    let objectives_after = engine.active_objectives();
+    assert_eq!(
+        objectives_after.len(),
+        1,
+        "optimization objective must survive eval() — task 3103 preserved-binding \
+         re-injection must re-insert into active_objective_map via \
+         activate_purpose_constraints()"
+    );
+    assert!(
+        matches!(objectives_after[0], OptimizationObjective::Minimize(_)),
+        "re-injected objective must still be Minimize after eval()"
+    );
+}
+
+/// Task 3103 (S4, reviewer) — a preserved binding for a purpose that is absent
+/// from the new module must be silently dropped (no panic, `is_purpose_active`
+/// returns false) after `eval()` on the new module.
+///
+/// `activate_purpose_constraints` early-returns `false` when the purpose name
+/// is not found in `compiled_purposes`; `active_purpose_bindings` is therefore
+/// not populated for that name, and `is_purpose_active` returns false. A future
+/// refactor that skips the early-return guard would insert stale graph nodes and
+/// leave `is_purpose_active` returning true — this test catches that.
+#[test]
+fn eval_drops_stale_binding_when_purpose_removed_from_module() {
+    // Module A has the purpose.
+    let module_with_purpose = parse_and_compile(SIMPLE_MFG_SRC);
+    // Module B is the same structure with NO purpose declaration.
+    let module_without_purpose = parse_and_compile(
+        r#"
+structure Bracket {
+    param width : Length = 80mm
+}
+"#,
+    );
+
+    let mut engine = make_engine();
+    engine.eval(&module_with_purpose);
+    engine.activate_purpose("mfg_ready", "Bracket");
+    assert!(
+        engine.is_purpose_active("mfg_ready"),
+        "precondition: purpose must be active after activation"
+    );
+
+    // eval() on a module without the purpose: the preserved binding for
+    // "mfg_ready" must be silently dropped — no panic, no stale injection.
+    engine.eval(&module_without_purpose);
+
+    assert!(
+        !engine.is_purpose_active("mfg_ready"),
+        "stale binding must be dropped when the purpose is absent from the new \
+         module — activate_purpose_constraints() must early-return false for an \
+         unknown purpose name rather than inserting stale graph nodes"
     );
 }
 

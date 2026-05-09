@@ -17,7 +17,8 @@ use std::collections::HashSet;
 
 use reify_types::value::{SampledField, SampledGridKind};
 
-use crate::medial::{sample_at_world, MedialMask};
+use crate::grid_validation::{validate_regular3d, GridValidationError};
+use crate::medial::{sample_at_index, MedialMask};
 
 /// Triangle mesh representing the mid-surface of a thin solid.
 ///
@@ -100,6 +101,17 @@ pub enum MidSurfaceError {
         /// Index of the offending axis (0 / 1 / 2 for x / y / z).
         axis: usize,
     },
+    /// A voxel in `mask.voxels` lies outside the SDF grid extent
+    /// `[0, nx) × [0, ny) × [0, nz)`. Voxels outside this range would
+    /// be silently unreachable in the corner lookup (the `mask_set`
+    /// probe is only called for cell-corner indices inside the grid),
+    /// hiding caller-side off-by-one or grid-swap bugs.
+    MaskVoxelOutOfBounds {
+        /// The offending voxel index.
+        voxel: [i32; 3],
+        /// The grid extent `[nx, ny, nz]` = `[axis_grids[i].len(); 3]`.
+        grid_extent: [usize; 3],
+    },
     /// The medial mask's grid geometry does not align with the SDF grid
     /// within `tolerance`. This guard prevents off-by-one-voxel masks from
     /// silently producing mid-surfaces with wrong thickness.
@@ -117,30 +129,57 @@ pub enum MidSurfaceError {
     },
 }
 
+impl From<GridValidationError> for MidSurfaceError {
+    fn from(e: GridValidationError) -> Self {
+        match e {
+            GridValidationError::UnsupportedGridKind { found } => {
+                MidSurfaceError::UnsupportedGridKind { found }
+            }
+            GridValidationError::AxisLengthMismatch {
+                bounds_min_len,
+                bounds_max_len,
+                spacing_len,
+                axis_grids_len,
+            } => MidSurfaceError::AxisLengthMismatch {
+                bounds_min_len,
+                bounds_max_len,
+                spacing_len,
+                axis_grids_len,
+            },
+            GridValidationError::EmptyAxisGrid { axis } => {
+                MidSurfaceError::EmptyAxisGrid { axis }
+            }
+        }
+    }
+}
+
 impl std::fmt::Display for MidSurfaceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            MidSurfaceError::UnsupportedGridKind { found } => write!(
-                f,
-                "reify-shell-extract requires a Regular3D SampledField input \
-                 (mid-surface extraction is intrinsically 3D); got {found:?}"
-            ),
+            MidSurfaceError::UnsupportedGridKind { found } => {
+                GridValidationError::UnsupportedGridKind { found: *found }.fmt(f)
+            }
             MidSurfaceError::AxisLengthMismatch {
                 bounds_min_len,
                 bounds_max_len,
                 spacing_len,
                 axis_grids_len,
-            } => write!(
-                f,
-                "Regular3D SampledField axis-vector length mismatch: \
-                 bounds_min has {bounds_min_len}, bounds_max has {bounds_max_len}, \
-                 spacing has {spacing_len}, axis_grids has {axis_grids_len} \
-                 (all four must be 3)"
-            ),
+            } => GridValidationError::AxisLengthMismatch {
+                bounds_min_len: *bounds_min_len,
+                bounds_max_len: *bounds_max_len,
+                spacing_len: *spacing_len,
+                axis_grids_len: *axis_grids_len,
+            }
+            .fmt(f),
             MidSurfaceError::EmptyAxisGrid { axis } => write!(
                 f,
                 "Regular3D SampledField axis_grids[{axis}] is empty \
                  (a non-empty per-axis grid is required for marching-cubes iteration)"
+            ),
+            MidSurfaceError::MaskVoxelOutOfBounds { voxel, grid_extent } => write!(
+                f,
+                "medial mask voxel {voxel:?} is outside grid extent {grid_extent:?}; \
+                 voxels must satisfy 0 ≤ i < nx, 0 ≤ j < ny, 0 ≤ k < nz"
             ),
             MidSurfaceError::MaskGridMismatch {
                 sdf_spacing,
@@ -474,6 +513,8 @@ const TRI_TABLE: [[i8; 16]; 256] = [
 /// - Any `sdf.axis_grids[i]` is empty
 /// - `mask.spacing[i]` or `mask.origin[i]` differs from the SDF values by more
 ///   than `options.grid_alignment_tolerance`
+/// - `mask.voxels` contains an index outside `[0, nx) × [0, ny) × [0, nz)`
+///   (see [`MidSurfaceError::MaskVoxelOutOfBounds`])
 ///
 /// # Returns
 ///
@@ -516,33 +557,13 @@ pub fn extract_mid_surface(
     mask: &MedialMask,
     options: &MidSurfaceOptions,
 ) -> Result<MidSurfaceMesh, MidSurfaceError> {
-    // (1) Reject non-3D inputs up front.
-    if sdf.kind != SampledGridKind::Regular3D {
-        return Err(MidSurfaceError::UnsupportedGridKind { found: sdf.kind });
-    }
+    // (1) Structural Regular3D validation: kind, axis-vector lengths, non-empty
+    // axis grids. The `?` converts GridValidationError → MidSurfaceError via
+    // the From impl above, preserving the existing variant names and PartialEq
+    // contract for all callers.
+    validate_regular3d(sdf)?;
 
-    // (2) Defend downstream indexing: Regular3D requires length-3 axis vectors.
-    if sdf.bounds_min.len() != 3
-        || sdf.bounds_max.len() != 3
-        || sdf.spacing.len() != 3
-        || sdf.axis_grids.len() != 3
-    {
-        return Err(MidSurfaceError::AxisLengthMismatch {
-            bounds_min_len: sdf.bounds_min.len(),
-            bounds_max_len: sdf.bounds_max.len(),
-            spacing_len: sdf.spacing.len(),
-            axis_grids_len: sdf.axis_grids.len(),
-        });
-    }
-
-    // (3) Each axis grid must be non-empty.
-    for (axis, axis_grid) in sdf.axis_grids.iter().enumerate() {
-        if axis_grid.is_empty() {
-            return Err(MidSurfaceError::EmptyAxisGrid { axis });
-        }
-    }
-
-    // (4) Mask must be aligned with the SDF grid within tolerance.
+    // (2) Mask must be aligned with the SDF grid within tolerance.
     let sdf_spacing = [sdf.spacing[0], sdf.spacing[1], sdf.spacing[2]];
     let sdf_origin = [sdf.bounds_min[0], sdf.bounds_min[1], sdf.bounds_min[2]];
     let tol = options.grid_alignment_tolerance;
@@ -560,7 +581,39 @@ pub fn extract_mid_surface(
         }
     }
 
-    // Short-circuit on empty mask.
+    // Grid extents used by both the voxel-bounds check and the main loop.
+    // Safe: validate_regular3d (step 1) confirmed axis_grids[i] is non-empty.
+    let nx = sdf.axis_grids[0].len();
+    let ny = sdf.axis_grids[1].len();
+    let nz = sdf.axis_grids[2].len();
+
+    // (3) Validate mask voxel bounds before building the HashSet.
+    // Any voxel index outside [0, nx) × [0, ny) × [0, nz) would be silently
+    // unreachable in the corner-lookup loop below (cell corners only range
+    // over [0, nx-1] × [0, ny-1] × [0, nz-1]). Surface it as a typed error
+    // so callers can debug off-by-one mask construction and grid-swap bugs.
+    // Mirrors the strict treatment of MaskGridMismatch (off-by-one alignment
+    // is also rejected rather than silently absorbed).
+    for &[vi, vj, vk] in &mask.voxels {
+        // Check negativity first; only then cast to usize for the upper-bound
+        // comparison — avoids any signed→unsigned narrowing that `nx as i32`
+        // would introduce for pathological grids with n >= 2^31.
+        if vi < 0
+            || vj < 0
+            || vk < 0
+            || (vi as usize) >= nx
+            || (vj as usize) >= ny
+            || (vk as usize) >= nz
+        {
+            return Err(MidSurfaceError::MaskVoxelOutOfBounds {
+                voxel: [vi, vj, vk],
+                grid_extent: [nx, ny, nz],
+            });
+        }
+    }
+
+    // Short-circuit on empty mask after the bounds check (the loop above
+    // is a no-op for empty masks, so the order is purely for clarity).
     if mask.voxels.is_empty() {
         return Ok(MidSurfaceMesh {
             vertices: vec![],
@@ -569,18 +622,14 @@ pub fn extract_mid_surface(
         });
     }
 
-    // (5) Build a HashSet for O(1) corner lookups.
+    // (4) Build a HashSet for O(1) corner lookups.
     let mask_set: HashSet<[i32; 3]> = mask.voxels.iter().copied().collect();
-
-    let nx = sdf.axis_grids[0].len();
-    let ny = sdf.axis_grids[1].len();
-    let nz = sdf.axis_grids[2].len();
 
     let mut vertices: Vec<[f64; 3]> = Vec::new();
     let mut triangles: Vec<[u32; 3]> = Vec::new();
     let mut thickness: Vec<f64> = Vec::new();
 
-    // (6) Iterate over each cube cell (i,j,k) → (i+1,j+1,k+1).
+    // (5) Iterate over each cube cell (i,j,k) → (i+1,j+1,k+1).
     for i in 0..nx.saturating_sub(1) {
         for j in 0..ny.saturating_sub(1) {
             for k in 0..nz.saturating_sub(1) {
@@ -649,12 +698,29 @@ pub fn extract_mid_surface(
                         let ia = (i as i32) + (off_a[0] as i32);
                         let ja = (j as i32) + (off_a[1] as i32);
                         let ka = (k as i32) + (off_a[2] as i32);
-                        let mask_corner_world = if mask_set.contains(&[ia, ja, ka]) {
-                            wa
+                        // Direct integer-index lookup at the mask corner —
+                        // infallible by construction: corner indices lie in
+                        // [0, nx)×[0, ny)×[0, nz) because (a) mask voxels were
+                        // validated by MaskVoxelOutOfBounds above, so the in-mask
+                        // corner is guaranteed in-bounds, and (b) the per-cell loop
+                        // bounds (i < nx-1, off ∈ {0,1}) keep the out-of-mask
+                        // corner in [0, nx) too.  Skips the 8-corner trilinear
+                        // collapse that `sample_at_world` would perform at this
+                        // grid-aligned point.
+                        let mask_corner_idx = if mask_set.contains(&[ia, ja, ka]) {
+                            [
+                                i + off_a[0] as usize,
+                                j + off_a[1] as usize,
+                                k + off_a[2] as usize,
+                            ]
                         } else {
-                            wb
+                            [
+                                i + off_b[0] as usize,
+                                j + off_b[1] as usize,
+                                k + off_b[2] as usize,
+                            ]
                         };
-                        let phi = sample_at_world(sdf, mask_corner_world).unwrap_or(0.0);
+                        let phi = sample_at_index(sdf, mask_corner_idx);
                         thickness.push(2.0 * phi.abs());
                     }
 
@@ -950,6 +1016,50 @@ mod tests {
         }
     }
 
+    // ── MaskVoxelOutOfBounds rejection tests ─────────────────────────────────
+
+    /// A voxel index [10, 0, 0] lies outside a 3×3×3 grid (nx=3) and must
+    /// be rejected with `MaskVoxelOutOfBounds`.
+    #[test]
+    fn extract_mid_surface_rejects_mask_voxel_out_of_bounds_positive() {
+        let sdf = minimal_3d_field(); // 3×3×3, nx=ny=nz=3
+        let mask = MedialMask {
+            spacing: [1.0, 1.0, 1.0],
+            origin: [0.0, 0.0, 0.0],
+            voxels: vec![[10, 0, 0]],
+        };
+        let err = extract_mid_surface(&sdf, &mask, &MidSurfaceOptions::default())
+            .expect_err("out-of-bounds voxel must be rejected");
+        assert_eq!(
+            err,
+            MidSurfaceError::MaskVoxelOutOfBounds {
+                voxel: [10, 0, 0],
+                grid_extent: [3, 3, 3],
+            }
+        );
+    }
+
+    /// A voxel index [-1, 0, 0] (negative i) lies outside the grid and must
+    /// be rejected with `MaskVoxelOutOfBounds`.
+    #[test]
+    fn extract_mid_surface_rejects_mask_voxel_out_of_bounds_negative() {
+        let sdf = minimal_3d_field(); // 3×3×3, nx=ny=nz=3
+        let mask = MedialMask {
+            spacing: [1.0, 1.0, 1.0],
+            origin: [0.0, 0.0, 0.0],
+            voxels: vec![[-1, 0, 0]],
+        };
+        let err = extract_mid_surface(&sdf, &mask, &MidSurfaceOptions::default())
+            .expect_err("negative out-of-bounds voxel must be rejected");
+        assert_eq!(
+            err,
+            MidSurfaceError::MaskVoxelOutOfBounds {
+                voxel: [-1, 0, 0],
+                grid_extent: [3, 3, 3],
+            }
+        );
+    }
+
     // ── Step 9: slab-centerline MC test ──────────────────────────────────────
 
     /// Slab φ = |z| − 3 on a 17×17×17 grid with the centerline plane mask.
@@ -1037,6 +1147,45 @@ mod tests {
                 (t - expected).abs() < 0.5,
                 "per-vertex thickness {t} is too far from expected {expected} \
                  (tolerance 0.5 voxel)"
+            );
+        }
+    }
+
+    // ── Bit-exact thickness contract test ────────────────────────────────────
+
+    /// Every per-vertex thickness on the slab fixture must equal `6.0` within
+    /// `1e-12` (effectively bit-exact for this analytic fixture).
+    ///
+    /// On `slab_sdf_3d(3.0, 17)` the center voxel is at z=0, where
+    /// `φ = |0| − 3 = −3` and `thickness = 2 × |−3| = 6.0`.  All mask
+    /// corners used for thickness sampling are grid-aligned to z=0, so both
+    /// `sample_at_world` (trilinear at a grid-aligned point) and
+    /// `sample_at_index` (direct lookup) must return `−3.0` bit-exactly.
+    ///
+    /// The `1e-12` tolerance (much tighter than the `0.5`-voxel slack in the
+    /// existing `extract_mid_surface_per_vertex_thickness_matches_slab_full_thickness`
+    /// test) pins the contract that thickness sampling cannot introduce
+    /// interpolation error or silently substitute a fallback value.
+    #[test]
+    fn extract_mid_surface_per_vertex_thickness_is_bit_exact_on_grid_aligned_slab() {
+        let n = 17usize;
+        let expected = 6.0_f64; // 2 × |φ| = 2 × 3 = 6
+
+        let sdf = slab_sdf_3d(3.0, n);
+        let mask = centerline_mask(n, &sdf);
+
+        let mesh = extract_mid_surface(&sdf, &mask, &MidSurfaceOptions::default())
+            .expect("slab centerline extract must succeed");
+
+        assert!(
+            !mesh.thickness.is_empty(),
+            "thickness must be non-empty on a non-empty mask"
+        );
+        for &t in &mesh.thickness {
+            assert!(
+                (t - expected).abs() < 1e-12,
+                "per-vertex thickness {t} differs from expected {expected} by more than 1e-12; \
+                 mask corner is grid-aligned so sampling must be bit-exact"
             );
         }
     }

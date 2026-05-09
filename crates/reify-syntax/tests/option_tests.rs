@@ -40,7 +40,7 @@ structure S {
             assert_eq!(name, "some");
             assert_eq!(args.len(), 1);
             assert!(
-                matches!(&args[0].kind, ExprKind::NumberLiteral(v) if *v == 42.0),
+                matches!(&args[0].kind, ExprKind::NumberLiteral { value: v, .. } if *v == 42.0),
                 "expected NumberLiteral(42), got {:?}",
                 args[0].kind
             );

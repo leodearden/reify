@@ -34,6 +34,7 @@
 
 use rustc_hash::FxHashMap;
 
+use crate::mesher::is_quantization_tolerance_valid;
 use crate::mid_surface::MidSurfaceMesh;
 
 // ── Public types ─────────────────────────────────────────────────────────────
@@ -96,6 +97,21 @@ pub struct PruneOptions {
     ///   Pruning's canonical-dedup is structurally identical — the precedent
     ///   establishes the documented NaN/±Inf saturation semantics shared by
     ///   both paths (see the COUPLING NOTE in `prune_branches`).
+    ///
+    /// **Caveat — upper end.** Validation rejects the lower-end pathologies
+    /// (zero, negative, NaN, ±Inf, subnormal). Values much larger than the
+    /// caller's maximum coordinate magnitude (e.g., `1e30` against unit-magnitude
+    /// vertex coords) are accepted but reduce pruning to a no-op:
+    /// `(coord * inv_tol).round() as i64` rounds every coordinate to `0`,
+    /// collapsing every vertex into canonical index 0, every edge becomes
+    /// interior (incidence ≥ 2), no triangle qualifies as a tip, and
+    /// `prune_branches` leaves the input mesh unchanged. The upper end is left
+    /// to the caller because a hard bound would require knowing the coordinate
+    /// magnitude in advance; for the internal T2 pipeline (binary-MC midpoints
+    /// in unit-cell coordinates) any tolerance below ~`1e-3` is safe. The
+    /// symmetric LARGE-COORD failure mode (large coordinates against the default
+    /// tolerance) is documented in the `# Preconditions` block on
+    /// [`prune_branches`].
     pub grid_alignment_tolerance: f64,
 }
 
@@ -167,13 +183,17 @@ pub enum PruneError {
         /// The offending value supplied by the caller.
         value: u32,
     },
-    /// `grid_alignment_tolerance` must be strictly positive and finite.
+    /// `grid_alignment_tolerance` must be strictly positive, finite, and normal
+    /// (not subnormal).
     ///
     /// A zero or negative tolerance produces `inv_tol = 1/tol = ±Inf`, which
     /// saturates all non-zero coordinates to `i64::MAX`/`i64::MIN` and
     /// collapses them into one or two canonical buckets — every edge appears
     /// shared and tip detection degrades silently.  A NaN tolerance collapses
     /// every vertex into a single canonical index for the same reason.
+    /// Subnormal values are also rejected: even the largest subnormals have
+    /// reciprocals large enough (~2^1022) that `coord * inv_tol` overflows to
+    /// ±Inf for any non-tiny coordinate, producing the same silent collapse.
     InvalidGridAlignmentTolerance {
         /// The offending value supplied by the caller.
         value: f64,
@@ -211,8 +231,9 @@ impl std::fmt::Display for PruneError {
             ),
             PruneError::InvalidGridAlignmentTolerance { value } => write!(
                 f,
-                "grid_alignment_tolerance must be strictly positive and finite \
-                 (got {value}); use 1e-9 for the default (matches \
+                "grid_alignment_tolerance must be strictly positive, finite, and normal \
+                 (got {value}); subnormal values produce reciprocals that overflow vertex \
+                 bin keys; use 1e-9 for the default (matches \
                  MidSurfaceOptions::grid_alignment_tolerance)"
             ),
             PruneError::InconsistentInputMesh {
@@ -250,6 +271,26 @@ impl std::error::Error for PruneError {}
 ///
 /// Returns `Err` if options are invalid or the input mesh is inconsistent.
 /// See [`PruneError`] for all variants.
+///
+/// # Preconditions
+///
+/// The canonical-vertex dedup step computes bin keys via
+/// `(coord * (1.0 / grid_alignment_tolerance)).round() as i64`; Rust's
+/// `as` cast saturates on overflow, so coordinates with
+/// `|coord / grid_alignment_tolerance| ≥ i64::MAX as f64` (~9.22e18)
+/// saturate to `i64::MIN` / `i64::MAX`, producing spurious canonical-index
+/// collisions and degrading tip detection.
+///
+/// At the default `grid_alignment_tolerance = 1e-9` the saturation
+/// threshold is `|coord| ≈ 9.2e9`, far outside any practical CAD coordinate
+/// range. Inputs from untrusted sources should validate that coordinates
+/// are within reasonable magnitude before calling this function.
+///
+/// NaN and ±Inf vertex coordinates are not actively rejected here — NaN
+/// coordinates round to `0` (collide at the origin bucket); ±Inf coordinates
+/// saturate to `i64::MIN` / `i64::MAX`. These behaviours match
+/// `mesher.rs::dedup_vertices` and are documented at the quantisation site
+/// above.
 pub fn prune_branches(
     mesh: &MidSurfaceMesh,
     options: &PruneOptions,
@@ -265,7 +306,7 @@ pub fn prune_branches(
             value: options.max_prune_iterations,
         });
     }
-    if options.grid_alignment_tolerance <= 0.0 || !options.grid_alignment_tolerance.is_finite() {
+    if !is_quantization_tolerance_valid(options.grid_alignment_tolerance) {
         return Err(PruneError::InvalidGridAlignmentTolerance {
             value: options.grid_alignment_tolerance,
         });
@@ -821,9 +862,13 @@ mod tests {
     //
     // These tests ensure the prune predicate `branch_length / local_thickness < ratio`
     // is correctly sensitive to the configured threshold.  The spike fixture has
-    // ratio exactly 1.0; testing at 1.05 and 0.95 straddles the boundary.  A
-    // regression that flipped `<` to `<=` or changed the metric definition
-    // (e.g. min vs max edge length) would cause at least one of these to fail.
+    // ratio exactly 1.0; testing at `default + 0.05` and `default − 0.05` straddles
+    // both the live threshold boundary AND the current default.  A regression that
+    // flipped `<` to `<=` or changed the metric definition (e.g. min vs max edge
+    // length) would cause at least one of these to fail.  Deriving from the default
+    // also ensures that if the default drifts significantly (e.g. above 1.05), the
+    // retention test will fail — alerting developers that the default and these
+    // straddle tests need joint re-evaluation.
 
     /// Shared fixture for threshold-straddling tests.
     ///
@@ -843,19 +888,27 @@ mod tests {
         }
     }
 
-    /// With `shell_branch_prune_ratio = 1.05`, the spike (ratio 1.0 < 1.05) is
-    /// pruned; the body (ratio ≈ 10 ≫ 1.05) survives.
+    /// With `shell_branch_prune_ratio = default + 0.05`, the spike (ratio 1.0 <
+    /// default + 0.05) is pruned; the body (ratio ≈ 10 ≫ threshold) survives.
+    ///
+    /// Derives the threshold from `PruneOptions::default().shell_branch_prune_ratio + 0.05`
+    /// so that this test always straddles the actual default — coupled with the
+    /// complementary retention test below, any significant drift of the default
+    /// above ~1.05 will cause that test to fail (spike ratio 1.0 would no longer
+    /// be ≥ default − 0.05).
     #[test]
     fn prune_branches_prunes_spike_just_below_threshold() {
+        let default_ratio = PruneOptions::default().shell_branch_prune_ratio;
+        let threshold = default_ratio + 0.05;
         let mesh = threshold_straddle_fixture();
         let opts = PruneOptions {
-            shell_branch_prune_ratio: 1.05,
+            shell_branch_prune_ratio: threshold,
             ..PruneOptions::default()
         };
         let result = prune_branches(&mesh, &opts).expect("valid mesh");
         assert_eq!(
             result.metrics.pruned_triangle_count, 1,
-            "spike (ratio=1.0) must be pruned when threshold=1.05"
+            "spike (ratio=1.0) must be pruned when threshold={threshold} (default+0.05)"
         );
         assert_eq!(result.mesh.triangles.len(), 1, "body must survive");
         assert!(
@@ -864,19 +917,26 @@ mod tests {
         );
     }
 
-    /// With `shell_branch_prune_ratio = 0.95`, the spike (ratio 1.0 ≥ 0.95)
-    /// survives; no triangles are pruned.
+    /// With `shell_branch_prune_ratio = default − 0.05`, the spike (ratio 1.0 ≥
+    /// default − 0.05) survives; no triangles are pruned.
+    ///
+    /// Derives the threshold from `PruneOptions::default().shell_branch_prune_ratio − 0.05`
+    /// so that this test always straddles the actual default.  If the default were
+    /// to drift above ~1.05, this test would fail (spike ratio 1.0 < threshold),
+    /// signalling that the default and both straddle tests need joint re-evaluation.
     #[test]
     fn prune_branches_retains_spike_just_above_threshold() {
+        let default_ratio = PruneOptions::default().shell_branch_prune_ratio;
+        let threshold = default_ratio - 0.05;
         let mesh = threshold_straddle_fixture();
         let opts = PruneOptions {
-            shell_branch_prune_ratio: 0.95,
+            shell_branch_prune_ratio: threshold,
             ..PruneOptions::default()
         };
         let result = prune_branches(&mesh, &opts).expect("valid mesh");
         assert_eq!(
             result.metrics.pruned_triangle_count, 0,
-            "spike (ratio=1.0) must survive when threshold=0.95"
+            "spike (ratio=1.0) must survive when threshold={threshold} (default-0.05)"
         );
         assert_eq!(result.mesh.triangles.len(), 2, "both triangles must survive");
         assert!(
@@ -1108,6 +1168,108 @@ mod tests {
         }
     }
 
+    /// `prune_branches` rejects all subnormal `grid_alignment_tolerance` values.
+    ///
+    /// The `is_subnormal()` guard covers all denormals, including the gap class
+    /// (`2^-1023`) whose reciprocal is still finite (~8.99e307) but large enough
+    /// to overflow `coord * inv_tol` to ±Inf for any non-tiny coordinate,
+    /// silently collapsing all vertices into the ±Inf saturation buckets.
+    /// The earlier `!(1.0/x).is_finite()` guard (before this fix) missed that
+    /// class.
+    ///
+    /// Mirrors `mesh_mid_surface_rejects_subnormal_merge_tolerance` in mesher.rs.
+    ///
+    /// Test values:
+    /// - `f64::MIN_POSITIVE / 4.0` = `2^-1024`: subnormal, `1/x` overflows to
+    ///   `+inf` (caught by both old and new gate).
+    /// - `f64::MIN_POSITIVE / 2.0` = `2^-1023`: subnormal, but `1/x ≈ 8.99e307`
+    ///   is **finite** — the discriminating case for the new `is_subnormal()` gate.
+    /// - `5e-324`: the smallest positive denormal (`2^-1074`), `1/x` = `+inf`.
+    /// - `f64::MIN_POSITIVE` (`2^-1022`): the smallest **normal** positive —
+    ///   must still be accepted (not subnormal).
+    #[test]
+    fn prune_branches_rejects_subnormal_grid_alignment_tolerance() {
+        let empty = MidSurfaceMesh {
+            vertices: vec![],
+            triangles: vec![],
+            thickness: vec![],
+        };
+
+        // `f64::MIN_POSITIVE / 4.0` = 2^-1024 — subnormal, 1/x overflows to +inf.
+        let subnormal_a = f64::MIN_POSITIVE / 4.0;
+        assert!(
+            subnormal_a.is_subnormal() && subnormal_a.is_sign_positive(),
+            "test setup: subnormal_a should be a positive subnormal"
+        );
+        let err_a = prune_branches(
+            &empty,
+            &PruneOptions {
+                grid_alignment_tolerance: subnormal_a,
+                ..PruneOptions::default()
+            },
+        )
+        .expect_err("subnormal grid_alignment_tolerance (f64::MIN_POSITIVE/4) must be rejected");
+        assert!(
+            matches!(err_a, PruneError::InvalidGridAlignmentTolerance { value } if value == subnormal_a),
+            "expected InvalidGridAlignmentTolerance({subnormal_a}), got {err_a:?}"
+        );
+
+        // `f64::MIN_POSITIVE / 2.0` = 2^-1023 — subnormal whose reciprocal IS finite
+        // (~8.99e307).  This is the class that the old `!(1.0/x).is_finite()` gate
+        // MISSED; the new `is_subnormal()` gate must catch it.
+        let subnormal_c = f64::MIN_POSITIVE / 2.0;
+        assert!(
+            subnormal_c.is_subnormal() && subnormal_c.is_sign_positive(),
+            "test setup: subnormal_c (2^-1023) should be a positive subnormal"
+        );
+        assert!(
+            (1.0_f64 / subnormal_c).is_finite(),
+            "test setup: 1.0 / subnormal_c must be finite — this is the gap the old gate missed"
+        );
+        let err_c = prune_branches(
+            &empty,
+            &PruneOptions {
+                grid_alignment_tolerance: subnormal_c,
+                ..PruneOptions::default()
+            },
+        )
+        .expect_err("subnormal grid_alignment_tolerance (f64::MIN_POSITIVE/2) must be rejected");
+        assert!(
+            matches!(err_c, PruneError::InvalidGridAlignmentTolerance { value } if value == subnormal_c),
+            "expected InvalidGridAlignmentTolerance({subnormal_c}), got {err_c:?}"
+        );
+
+        // `5e-324` ≈ 2^-1074 — the smallest positive denormal; reciprocal is +inf.
+        let subnormal_b = 5e-324_f64;
+        assert!(subnormal_b.is_subnormal(), "test setup: 5e-324 must be subnormal");
+        let err_b = prune_branches(
+            &empty,
+            &PruneOptions {
+                grid_alignment_tolerance: subnormal_b,
+                ..PruneOptions::default()
+            },
+        )
+        .expect_err("subnormal grid_alignment_tolerance (5e-324) must be rejected");
+        assert!(
+            matches!(err_b, PruneError::InvalidGridAlignmentTolerance { value } if value == subnormal_b),
+            "expected InvalidGridAlignmentTolerance(5e-324), got {err_b:?}"
+        );
+
+        // `f64::MIN_POSITIVE` is the smallest NORMAL positive (2^-1022) — must be ACCEPTED.
+        assert!(
+            !f64::MIN_POSITIVE.is_subnormal(),
+            "test setup: f64::MIN_POSITIVE must be normal (not subnormal)"
+        );
+        prune_branches(
+            &empty,
+            &PruneOptions {
+                grid_alignment_tolerance: f64::MIN_POSITIVE,
+                ..PruneOptions::default()
+            },
+        )
+        .expect("f64::MIN_POSITIVE is the smallest normal positive — must still be accepted");
+    }
+
     // ── Step 3: defaults-pin test ─────────────────────────────────────────────
 
     /// Pin `PruneOptions::default()` struct shape via pattern destructuring.
@@ -1116,10 +1278,22 @@ mod tests {
     /// field is renamed or removed, this test fails at compile time rather than
     /// silently passing with stale bindings.
     ///
-    /// Asserts `shell_branch_prune_ratio == 1.0` (PRD §89 conservative default),
-    /// `max_prune_iterations == 8` (chain-collapse bound doubled for safety), and
-    /// `grid_alignment_tolerance == 1e-9` (controls canonical-vertex dedup tolerance
-    /// for the T2→T3 shared-edge contract).
+    /// `shell_branch_prune_ratio` is range-checked against `[0.5, 2.0]`; it is a
+    /// documented "v0.4 empirical default pending real-corpus tuning" — exact pinning
+    /// would block tuning.  Behaviour coverage is provided by
+    /// `prune_branches_prunes_spike_just_below_threshold` and
+    /// `prune_branches_retains_spike_just_above_threshold`, which derive their
+    /// thresholds from `default ± 0.05` so they always straddle the live default
+    /// (if the default drifts significantly above ~1.05, the retention test will
+    /// self-enforce a failure, prompting joint re-evaluation of default and tests).
+    ///
+    /// `max_prune_iterations` is pinned exactly to 8: it is documented as twice the
+    /// ⌊log₂ 17⌋ = 4 chain-collapse minimum — a deliberate structural constant,
+    /// not a tuning parameter.  Behaviour coverage is provided by
+    /// `prune_branches_slab_end_to_end_pipeline`.
+    ///
+    /// `grid_alignment_tolerance` retains its exact `1e-9` pin because it is the
+    /// T2→T3 shared-edge contract value, not an empirical default.
     ///
     /// Mirrors `mesher_options_defaults_pin_empirical_constants` (mesher.rs)
     /// and `mid_surface_options_defaults_pin_empirical_constants` (mid_surface.rs).
@@ -1132,13 +1306,14 @@ mod tests {
             // controls canonical-vertex dedup tolerance for the T2→T3 shared-edge contract
             grid_alignment_tolerance,
         } = PruneOptions::default();
-        assert_eq!(
-            shell_branch_prune_ratio, 1.0,
-            "shell_branch_prune_ratio default must be 1.0 (PRD §89 conservative threshold)"
+        assert!(
+            (0.5..=2.0).contains(&shell_branch_prune_ratio),
+            "shell_branch_prune_ratio default {shell_branch_prune_ratio} outside expected range [0.5, 2.0]"
         );
         assert_eq!(
             max_prune_iterations, 8,
-            "max_prune_iterations default must be 8 (chain-collapse bound)"
+            "max_prune_iterations default must be 8 (twice the ⌊log₂ 17⌋ = 4 chain-collapse \
+             minimum; a deliberate structural constant, not a tuning parameter)"
         );
         assert_eq!(
             grid_alignment_tolerance, 1e-9,
@@ -1353,25 +1528,16 @@ mod tests {
         let result = prune_branches(&raw, &PruneOptions::default())
             .expect("5×5×5 slab prune_branches should succeed");
 
-        // (a) Body must retain a meaningful interior — a regression that treated
-        // every shared edge as boundary would prune the entire body to 0.
-        //
-        // Derivation of the ≥ 8 threshold:
-        //   • 5×5×5 grid → 4×4 = 16 centerline cells per z-layer (the cells
-        //     that straddle the z=0 mid-plane and actually produce surface
-        //     triangles via Marching Cubes).
-        //   • MC emits ~2 triangles per active cube on a flat slab, so
-        //     16 cells × 2 ≈ 32 raw triangles before pruning.
-        //   • Branch pruning removes the outer ring of boundary-only cells
-        //     (the 4×4 grid has 12 edge cells, leaving 4 interior cells).
-        //     4 interior cells × 2 triangles = 8 triangles minimum.
-        //   • Hence ≥ 8 is the tightest count that survives legitimate pruning
-        //     of a flat 5×5×5 slab.  If T2's MC variant changes (e.g. adds
-        //     fan-triangulation), update this bound to match the new interior
-        //     cell count × triangles-per-cell.
+        // (a) Body must retain N≈60 triangles. The 5×5×5 slab has 4×4=16
+        // centerline cells per z-layer × 2 layers = 32 raw cells; after T2
+        // emits 2 triangles per cell and T3 prunes boundary tips, ≈60 interior
+        // triangles remain (the mid-surface). The narrow window (±2) catches
+        // both the over-prune regression (full body collapse to 0, e.g.
+        // shared-edge dedup broken) AND the under-prune regression (stragglers
+        // retained, e.g. tip detection broken).
         assert!(
-            result.mesh.triangles.len() >= 8,
-            "body must retain at least 8 triangles after pruning; got {}",
+            (58..=62).contains(&result.mesh.triangles.len()),
+            "body must retain N≈60 triangles after pruning (got {})",
             result.mesh.triangles.len()
         );
 

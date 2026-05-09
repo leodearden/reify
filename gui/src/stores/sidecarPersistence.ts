@@ -27,7 +27,7 @@ function isPersistentViewState(value: unknown): value is PersistentViewState {
   if (typeof value !== 'object' || value === null) return false;
   const v = value as Record<string, unknown>;
 
-  if (v['version'] !== '1') return false;
+  if (v['version'] !== '2') return false;
   if (typeof v['activeViewId'] !== 'string') return false;
   if (!Array.isArray(v['userViews'])) return false;
   if (typeof v['explicit'] !== 'object' || v['explicit'] === null || Array.isArray(v['explicit']))
@@ -59,7 +59,19 @@ function isPersistentViewState(value: unknown): value is PersistentViewState {
 export async function loadSidecar(riPath: string): Promise<PersistentViewState | null> {
   const raw = await readViewSidecar(riPath);
   if (raw === null) return null;
-  if (!isPersistentViewState(raw)) return null;
+  if (!isPersistentViewState(raw)) {
+    // Emit a diagnostic when a version field is present but wrong — most
+    // commonly a legacy v1 sidecar left over from before the schema bump.
+    const maybeVersion = (raw as unknown as Record<string, unknown>)['version'];
+    if (maybeVersion !== undefined) {
+      console.warn(
+        `[sidecarPersistence] Discarding sidecar for "${riPath}": ` +
+          `legacy schema version ${JSON.stringify(maybeVersion)} (expected "2"). ` +
+          `Falling back to defaults.`,
+      );
+    }
+    return null;
+  }
   return raw;
 }
 

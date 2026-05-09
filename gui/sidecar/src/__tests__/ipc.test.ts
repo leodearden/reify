@@ -304,3 +304,70 @@ describe('sendMessage', () => {
     expect(parsed).toEqual({ type: 'text_delta', id: 'msg-1', content: 'a long message to fill the buffer' });
   });
 });
+
+// --- Step-3 failing tests: parseInboundMessage should accept permission_decision ---
+describe('parseInboundMessage — permission_decision (step-3)', () => {
+  it('accepts a valid permission_decision with behavior: "allow"', () => {
+    const line = JSON.stringify({
+      type: 'permission_decision',
+      request_id: 'req-1',
+      behavior: 'allow',
+    });
+    const msg = parseInboundMessage(line);
+    expect(msg.type).toBe('permission_decision');
+    expect((msg as any).request_id).toBe('req-1');
+    expect((msg as any).behavior).toBe('allow');
+  });
+
+  it('accepts a valid permission_decision with behavior: "deny" and optional fields', () => {
+    const line = JSON.stringify({
+      type: 'permission_decision',
+      request_id: 'req-2',
+      behavior: 'deny',
+      message: 'not allowed',
+      remember: true,
+    });
+    const msg = parseInboundMessage(line);
+    expect(msg.type).toBe('permission_decision');
+    expect((msg as any).request_id).toBe('req-2');
+    expect((msg as any).behavior).toBe('deny');
+    expect((msg as any).message).toBe('not allowed');
+    expect((msg as any).remember).toBe(true);
+  });
+
+  it('accepts permission_decision with allow + updated_input', () => {
+    const line = JSON.stringify({
+      type: 'permission_decision',
+      request_id: 'req-3',
+      behavior: 'allow',
+      updated_input: { path: '/tmp/safe' },
+    });
+    const msg = parseInboundMessage(line);
+    expect(msg.type).toBe('permission_decision');
+    expect((msg as any).updated_input).toEqual({ path: '/tmp/safe' });
+  });
+
+  it('throws on permission_decision missing request_id', () => {
+    const line = JSON.stringify({ type: 'permission_decision', behavior: 'allow' });
+    expect(() => parseInboundMessage(line)).toThrow(/request_id/i);
+  });
+
+  it('throws on permission_decision with empty request_id', () => {
+    const line = JSON.stringify({ type: 'permission_decision', request_id: '', behavior: 'allow' });
+    expect(() => parseInboundMessage(line)).toThrow(/request_id/i);
+  });
+
+  it('throws on permission_decision missing behavior', () => {
+    const line = JSON.stringify({ type: 'permission_decision', request_id: 'req-x' });
+    expect(() => parseInboundMessage(line)).toThrow(/behavior/i);
+  });
+
+  it('throws on permission_decision with behavior not in {allow, deny}', () => {
+    const line = JSON.stringify({
+      type: 'permission_decision',
+      request_id: 'req-y',
+      behavior: 'maybe',
+    });
+    expect(() => parseInboundMessage(line)).toThrow(/behavior/i);
+  });
+});

@@ -311,6 +311,32 @@ impl CapabilityDescriptor {
     pub fn supports(&self, op: Operation, repr: ReprKind) -> bool {
         self.supports.iter().any(|&(o, r)| o == op && r == repr)
     }
+
+    /// Return `true` iff at least one entry's *output* repr — the second tuple
+    /// element — equals `repr`.
+    ///
+    /// For [`Operation::Convert { from }`] entries the `from` field encodes the
+    /// *input* repr; only the second tuple element (the produced output repr) is
+    /// inspected here.  Concretely, a tessellation-only kernel declaring
+    /// `(Convert { from: BRep }, Mesh)` reports `supports_any_repr(BRep)` as
+    /// **false** — BRep is the FROM input, not the produced output.
+    ///
+    /// O(n) linear scan over `self.supports`.  The table is small (4 kernels ×
+    /// ~10–50 entries each in v0.2), so no index is maintained.  Hiding the
+    /// storage shape behind this helper keeps callers unconcerned with whether
+    /// the underlying container changes (e.g. to a `HashSet<(Operation,
+    /// ReprKind)>` for larger tables).
+    ///
+    /// # Callers
+    ///
+    /// - `pick_lexmin_brep_kernel_in` in `reify-eval` calls this with
+    ///   `repr = ReprKind::BRep` to select a BRep-capable kernel during engine
+    ///   construction.
+    /// - Future v0.3 dispatcher-selection may key on `Mesh`, `Sdf`, or
+    ///   `VolumeMesh` using the same predicate.
+    pub fn supports_any_repr(&self, repr: ReprKind) -> bool {
+        self.supports.iter().any(|&(_, r)| r == repr)
+    }
 }
 
 /// Static registration record for a v0.2 multi-kernel adapter.
@@ -613,6 +639,56 @@ pub enum GeometryOp {
     },
 }
 
+impl GeometryOp {
+    /// Stable static label for this variant — used in error messages so format
+    /// strings interpolate a stable token rather than the full `Debug` print.
+    ///
+    /// Returning `&'static str` makes the method zero-allocation. The
+    /// exhaustive `match` means adding a new `GeometryOp` variant requires
+    /// adding an arm here at the same diff site; the compiler enforces
+    /// this — eliminating the cross-crate drift surface where downstream
+    /// kernels previously had to maintain their own copy of this table.
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            GeometryOp::Box { .. } => "Box",
+            GeometryOp::Cylinder { .. } => "Cylinder",
+            GeometryOp::Sphere { .. } => "Sphere",
+            GeometryOp::Tube { .. } => "Tube",
+            GeometryOp::Union { .. } => "Union",
+            GeometryOp::Difference { .. } => "Difference",
+            GeometryOp::Intersection { .. } => "Intersection",
+            GeometryOp::Fillet { .. } => "Fillet",
+            GeometryOp::Chamfer { .. } => "Chamfer",
+            GeometryOp::Translate { .. } => "Translate",
+            GeometryOp::Rotate { .. } => "Rotate",
+            GeometryOp::Scale { .. } => "Scale",
+            GeometryOp::RotateAround { .. } => "RotateAround",
+            GeometryOp::LinearPattern { .. } => "LinearPattern",
+            GeometryOp::CircularPattern { .. } => "CircularPattern",
+            GeometryOp::Mirror { .. } => "Mirror",
+            GeometryOp::LinearPattern2D { .. } => "LinearPattern2D",
+            GeometryOp::ArbitraryPattern { .. } => "ArbitraryPattern",
+            GeometryOp::Loft { .. } => "Loft",
+            GeometryOp::Extrude { .. } => "Extrude",
+            GeometryOp::Revolve { .. } => "Revolve",
+            GeometryOp::Sweep { .. } => "Sweep",
+            GeometryOp::Pipe { .. } => "Pipe",
+            GeometryOp::ExtrudeSymmetric { .. } => "ExtrudeSymmetric",
+            GeometryOp::SweepGuided { .. } => "SweepGuided",
+            GeometryOp::LoftGuided { .. } => "LoftGuided",
+            GeometryOp::LineSegment { .. } => "LineSegment",
+            GeometryOp::Arc { .. } => "Arc",
+            GeometryOp::Helix { .. } => "Helix",
+            GeometryOp::InterpCurve { .. } => "InterpCurve",
+            GeometryOp::BezierCurve { .. } => "BezierCurve",
+            GeometryOp::NurbsCurve { .. } => "NurbsCurve",
+            GeometryOp::Draft { .. } => "Draft",
+            GeometryOp::Thicken { .. } => "Thicken",
+            GeometryOp::Shell { .. } => "Shell",
+        }
+    }
+}
+
 /// Queries against geometry handles.
 #[derive(Debug, Clone)]
 pub enum GeometryQuery {
@@ -859,6 +935,44 @@ pub enum GeometryQuery {
     },
 }
 
+impl GeometryQuery {
+    /// Stable static label for this variant — used in error messages so format
+    /// strings interpolate a stable token rather than the full `Debug` print.
+    ///
+    /// Returning `&'static str` makes the method zero-allocation. The
+    /// exhaustive `match` means adding a new `GeometryQuery` variant requires
+    /// adding an arm here at the same diff site; the compiler enforces
+    /// this — eliminating the cross-crate drift surface where downstream
+    /// kernels previously had to maintain their own copy of this table.
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            GeometryQuery::Volume(_) => "Volume",
+            GeometryQuery::SurfaceArea(_) => "SurfaceArea",
+            GeometryQuery::Centroid(_) => "Centroid",
+            GeometryQuery::BoundingBox(_) => "BoundingBox",
+            GeometryQuery::Distance { .. } => "Distance",
+            GeometryQuery::MomentOfInertia { .. } => "MomentOfInertia",
+            GeometryQuery::AdjacentFaces { .. } => "AdjacentFaces",
+            GeometryQuery::AncestorFacesOfEdge { .. } => "AncestorFacesOfEdge",
+            GeometryQuery::SharedEdges { .. } => "SharedEdges",
+            GeometryQuery::IsWatertight(_) => "IsWatertight",
+            GeometryQuery::IsManifold(_) => "IsManifold",
+            GeometryQuery::IsOrientable(_) => "IsOrientable",
+            GeometryQuery::CenterOfMass { .. } => "CenterOfMass",
+            GeometryQuery::InertiaTensor { .. } => "InertiaTensor",
+            GeometryQuery::EdgeLength(_) => "EdgeLength",
+            GeometryQuery::EdgeTangent(_) => "EdgeTangent",
+            GeometryQuery::FaceNormal(_) => "FaceNormal",
+            GeometryQuery::FaceSurfaceKind(_) => "FaceSurfaceKind",
+            GeometryQuery::EdgeCurveKind(_) => "EdgeCurveKind",
+            GeometryQuery::OwnerBody(_) => "OwnerBody",
+            GeometryQuery::ClosestPointOnShape { .. } => "ClosestPointOnShape",
+            GeometryQuery::PointOnShape { .. } => "PointOnShape",
+            GeometryQuery::SurfaceAngle { .. } => "SurfaceAngle",
+        }
+    }
+}
+
 /// Geometric kind of a face's underlying surface, matching OCCT's
 /// `GeomAbs_*` taxonomy via `BRepAdaptor_Surface::GetType()`.
 ///
@@ -1027,6 +1141,33 @@ pub struct VolumeMesh {
     /// boundary-extraction step can carry surface normals through without
     /// changing the type's shape.
     pub normals: Option<Vec<f32>>,
+}
+
+impl VolumeMesh {
+    /// Read the XYZ position of node `idx` from the flat `vertices` buffer
+    /// (layout: `[x0, y0, z0, x1, y1, z1, …]`, stride 3).
+    ///
+    /// Returns `None` if `idx * 3 + 3` would overflow `usize` or fall
+    /// outside `vertices.len()`.  Callers map `None` to whatever
+    /// crate-local error variant they prefer; e.g.
+    /// `compute_dirichlet_bcs` in `reify-mesh-morph::boundary` maps it to
+    /// `ProjectionFailure::InvalidNodeIndex(idx)`.
+    ///
+    /// The raw `f32` representation is returned; widening to `f64` for FEA
+    /// arithmetic is the caller's responsibility.
+    pub fn vertex(&self, idx: u32) -> Option<[f32; 3]> {
+        let i = idx as usize;
+        let base = i.checked_mul(3)?;
+        let end = base.checked_add(3)?;
+        if end > self.vertices.len() {
+            return None;
+        }
+        Some([
+            self.vertices[base],
+            self.vertices[base + 1],
+            self.vertices[base + 2],
+        ])
+    }
 }
 
 /// Errors from geometry operations.
@@ -4312,6 +4453,62 @@ mod tests {
         );
     }
 
+    /// `CapabilityDescriptor::supports_any_repr` returns `true` iff at least one
+    /// entry's *output* repr (the second tuple element) equals `repr`.  The
+    /// fixture carries mixed `BRep`, `Mesh`, and `Convert`-output entries.
+    /// Probes: (a) repr present as direct output → true, (b) repr present as
+    /// Convert output → true, (c) repr absent → false, (d) empty descriptor →
+    /// false, (e) Convert-output-vs-from disambiguation: `supports_any_repr(BRep)`
+    /// against a descriptor whose only entry is `(Convert{from: BRep}, Mesh)`
+    /// must be false — the helper inspects the output (second element), not the
+    /// `from` input inside `Operation::Convert`.
+    #[test]
+    fn capability_descriptor_supports_any_repr_lookup() {
+        let d = CapabilityDescriptor {
+            supports: vec![
+                (Operation::PrimitiveBox, ReprKind::BRep),
+                (Operation::BooleanUnion, ReprKind::Mesh),
+                (Operation::Convert { from: ReprKind::BRep }, ReprKind::Mesh),
+            ],
+        };
+
+        // (a) BRep is present as a direct output repr.
+        assert!(
+            d.supports_any_repr(ReprKind::BRep),
+            "(PrimitiveBox, BRep) output is BRep — supports_any_repr(BRep) must be true"
+        );
+
+        // (b) Mesh is present both as a direct output and as a Convert output.
+        assert!(
+            d.supports_any_repr(ReprKind::Mesh),
+            "(BooleanUnion, Mesh) and (Convert{{from:BRep}}, Mesh) both output Mesh — must be true"
+        );
+
+        // (c) Sdf is not the output repr of any entry in the fixture.
+        assert!(
+            !d.supports_any_repr(ReprKind::Sdf),
+            "no entry produces Sdf — supports_any_repr(Sdf) must be false"
+        );
+
+        // (d) Empty descriptor → false for every repr.
+        assert!(
+            !CapabilityDescriptor::default().supports_any_repr(ReprKind::BRep),
+            "empty descriptor — supports_any_repr must always be false"
+        );
+
+        // (e) Convert-output-vs-from disambiguation: the only entry's BRep
+        //     appears in the `from` input, NOT the output repr.  The helper
+        //     must inspect the output (second tuple element), so the result
+        //     is false.
+        let convert_only = CapabilityDescriptor {
+            supports: vec![(Operation::Convert { from: ReprKind::BRep }, ReprKind::Mesh)],
+        };
+        assert!(
+            !convert_only.supports_any_repr(ReprKind::BRep),
+            "BRep is the Convert `from` input, not the output repr — must be false"
+        );
+    }
+
     /// `Clone` derive on `CapabilityDescriptor` must round-trip the entire
     /// `supports` table. Locks the `Clone` derive contract.
     #[test]
@@ -4545,5 +4742,329 @@ mod tests {
             }
             _ => panic!("expected EdgeCurveKind variant"),
         }
+    }
+
+    #[test]
+    fn geometry_op_kind_name_returns_stable_token_per_variant() {
+        // Every GeometryOp variant must produce a stable token via kind_name().
+        // Tokens are the variant names verbatim — any rename breaks this test
+        // visibly (compile-time exhaustiveness + runtime string check).
+        let cases: &[(&str, GeometryOp)] = &[
+            ("Box", GeometryOp::Box {
+                width: Value::Real(1.0),
+                height: Value::Real(1.0),
+                depth: Value::Real(1.0),
+            }),
+            ("Cylinder", GeometryOp::Cylinder {
+                radius: Value::Real(1.0),
+                height: Value::Real(1.0),
+            }),
+            ("Sphere", GeometryOp::Sphere {
+                radius: Value::Real(1.0),
+            }),
+            ("Tube", GeometryOp::Tube {
+                outer_r: Value::Real(0.01),
+                inner_r: Value::Real(0.005),
+                height: Value::Real(0.02),
+            }),
+            ("Union", GeometryOp::Union {
+                left: GeometryHandleId(1),
+                right: GeometryHandleId(2),
+            }),
+            ("Difference", GeometryOp::Difference {
+                left: GeometryHandleId(1),
+                right: GeometryHandleId(2),
+            }),
+            ("Intersection", GeometryOp::Intersection {
+                left: GeometryHandleId(1),
+                right: GeometryHandleId(2),
+            }),
+            ("Fillet", GeometryOp::Fillet {
+                target: GeometryHandleId(1),
+                radius: Value::Real(0.001),
+            }),
+            ("Chamfer", GeometryOp::Chamfer {
+                target: GeometryHandleId(1),
+                distance: Value::Real(0.001),
+            }),
+            ("Translate", GeometryOp::Translate {
+                target: GeometryHandleId(1),
+                dx: 1.0,
+                dy: 0.0,
+                dz: 0.0,
+            }),
+            ("Rotate", GeometryOp::Rotate {
+                target: GeometryHandleId(1),
+                axis: [0.0, 0.0, 1.0],
+                angle_rad: 0.0,
+            }),
+            ("Scale", GeometryOp::Scale {
+                target: GeometryHandleId(1),
+                factor: 2.0,
+            }),
+            ("RotateAround", GeometryOp::RotateAround {
+                target: GeometryHandleId(1),
+                point: [0.0, 0.0, 0.0],
+                axis: [0.0, 0.0, 1.0],
+                angle_rad: 0.0,
+            }),
+            ("LinearPattern", GeometryOp::LinearPattern {
+                target: GeometryHandleId(1),
+                direction: [1.0, 0.0, 0.0],
+                count: 3,
+                spacing: Value::Real(0.01),
+            }),
+            ("CircularPattern", GeometryOp::CircularPattern {
+                target: GeometryHandleId(1),
+                axis_origin: [0.0, 0.0, 0.0],
+                axis_dir: [0.0, 0.0, 1.0],
+                count: 4,
+                angle: Value::Real(std::f64::consts::TAU),
+            }),
+            ("Mirror", GeometryOp::Mirror {
+                target: GeometryHandleId(1),
+                plane_origin: [0.0, 0.0, 0.0],
+                plane_normal: [1.0, 0.0, 0.0],
+            }),
+            ("LinearPattern2D", GeometryOp::LinearPattern2D {
+                target: GeometryHandleId(1),
+                direction1: [1.0, 0.0, 0.0],
+                count1: 2,
+                spacing1: Value::Real(0.01),
+                direction2: [0.0, 1.0, 0.0],
+                count2: 2,
+                spacing2: Value::Real(0.01),
+            }),
+            ("ArbitraryPattern", GeometryOp::ArbitraryPattern {
+                target: GeometryHandleId(1),
+                transforms: vec![[0.0, 0.0, 0.0]],
+            }),
+            ("Loft", GeometryOp::Loft {
+                profiles: vec![GeometryHandleId(1), GeometryHandleId(2)],
+            }),
+            ("Extrude", GeometryOp::Extrude {
+                profile: GeometryHandleId(1),
+                distance: Value::Real(0.01),
+            }),
+            ("Revolve", GeometryOp::Revolve {
+                profile: GeometryHandleId(1),
+                axis_origin: [0.0, 0.0, 0.0],
+                axis_dir: [0.0, 0.0, 1.0],
+                angle_rad: std::f64::consts::TAU,
+            }),
+            ("Sweep", GeometryOp::Sweep {
+                profile: GeometryHandleId(1),
+                path: GeometryHandleId(2),
+            }),
+            ("Pipe", GeometryOp::Pipe {
+                path: GeometryHandleId(1),
+                radius: Value::Real(0.002),
+            }),
+            ("ExtrudeSymmetric", GeometryOp::ExtrudeSymmetric {
+                profile: GeometryHandleId(1),
+                distance: Value::Real(0.01),
+            }),
+            ("SweepGuided", GeometryOp::SweepGuided {
+                profile: GeometryHandleId(1),
+                path: GeometryHandleId(2),
+                guide: GeometryHandleId(3),
+            }),
+            ("LoftGuided", GeometryOp::LoftGuided {
+                profiles: vec![GeometryHandleId(1), GeometryHandleId(2)],
+                guides: vec![GeometryHandleId(3)],
+            }),
+            ("LineSegment", GeometryOp::LineSegment {
+                x1: 0.0, y1: 0.0, z1: 0.0,
+                x2: 1.0, y2: 0.0, z2: 0.0,
+            }),
+            ("Arc", GeometryOp::Arc {
+                center: [0.0, 0.0, 0.0],
+                radius: 1.0,
+                start_angle: 0.0,
+                end_angle: std::f64::consts::FRAC_PI_2,
+                axis: [0.0, 0.0, 1.0],
+            }),
+            ("Helix", GeometryOp::Helix {
+                radius: 0.01,
+                pitch: 0.002,
+                height: 0.02,
+            }),
+            ("InterpCurve", GeometryOp::InterpCurve {
+                points: vec![[0.0, 0.0, 0.0], [1.0, 1.0, 0.0], [2.0, 0.0, 0.0]],
+            }),
+            ("BezierCurve", GeometryOp::BezierCurve {
+                control_points: vec![[0.0, 0.0, 0.0], [1.0, 2.0, 0.0], [2.0, 0.0, 0.0]],
+            }),
+            ("NurbsCurve", GeometryOp::NurbsCurve {
+                control_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                weights: vec![1.0, 1.0],
+                knots: vec![0.0, 0.0, 1.0, 1.0],
+                degree: 1,
+            }),
+            ("Draft", GeometryOp::Draft {
+                target: GeometryHandleId(1),
+                angle: Value::Real(0.1),
+                plane: GeometryHandleId(2),
+            }),
+            ("Thicken", GeometryOp::Thicken {
+                target: GeometryHandleId(1),
+                offset: Value::Real(0.001),
+            }),
+            ("Shell", GeometryOp::Shell {
+                target: GeometryHandleId(1),
+                thickness: Value::Real(0.001),
+                faces_to_remove: vec![0],
+            }),
+        ];
+        // Changing this constant forces the test to be updated whenever a
+        // variant is added or removed from GeometryOp — compile-time
+        // exhaustiveness on kind_name() guarantees correctness, this assertion
+        // guarantees the token list here stays in sync.
+        const GEOMETRY_OP_VARIANT_COUNT: usize = 35;
+        assert_eq!(
+            cases.len(),
+            GEOMETRY_OP_VARIANT_COUNT,
+            "Update `cases` and kind_name() when adding/removing GeometryOp variants",
+        );
+        for (expected, op) in cases {
+            assert_eq!(
+                op.kind_name(),
+                *expected,
+                "kind_name() mismatch for GeometryOp::{expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn geometry_query_kind_name_returns_stable_token_per_variant() {
+        // Every GeometryQuery variant must produce a stable token via kind_name().
+        // Tokens are the variant names verbatim — any rename breaks this test
+        // visibly (compile-time exhaustiveness + runtime string check).
+        let cases: &[(&str, GeometryQuery)] = &[
+            ("Volume", GeometryQuery::Volume(GeometryHandleId(1))),
+            ("SurfaceArea", GeometryQuery::SurfaceArea(GeometryHandleId(1))),
+            ("Centroid", GeometryQuery::Centroid(GeometryHandleId(1))),
+            ("BoundingBox", GeometryQuery::BoundingBox(GeometryHandleId(1))),
+            ("Distance", GeometryQuery::Distance {
+                from: GeometryHandleId(1),
+                to: GeometryHandleId(2),
+            }),
+            ("MomentOfInertia", GeometryQuery::MomentOfInertia {
+                handle: GeometryHandleId(1),
+                axis: [0.0, 0.0, 1.0],
+            }),
+            ("AdjacentFaces", GeometryQuery::AdjacentFaces {
+                shape: GeometryHandleId(1),
+                face_index: 0,
+            }),
+            ("AncestorFacesOfEdge", GeometryQuery::AncestorFacesOfEdge {
+                shape: GeometryHandleId(1),
+                edge_index: 0,
+            }),
+            ("SharedEdges", GeometryQuery::SharedEdges {
+                shape: GeometryHandleId(1),
+                face_a: 0,
+                face_b: 1,
+            }),
+            ("IsWatertight", GeometryQuery::IsWatertight(GeometryHandleId(1))),
+            ("IsManifold", GeometryQuery::IsManifold(GeometryHandleId(1))),
+            ("IsOrientable", GeometryQuery::IsOrientable(GeometryHandleId(1))),
+            ("CenterOfMass", GeometryQuery::CenterOfMass {
+                handle: GeometryHandleId(1),
+                density: 1000.0,
+            }),
+            ("InertiaTensor", GeometryQuery::InertiaTensor {
+                handle: GeometryHandleId(1),
+                density: 1000.0,
+            }),
+            ("EdgeLength", GeometryQuery::EdgeLength(GeometryHandleId(1))),
+            ("EdgeTangent", GeometryQuery::EdgeTangent(GeometryHandleId(1))),
+            ("FaceNormal", GeometryQuery::FaceNormal(GeometryHandleId(1))),
+            ("FaceSurfaceKind", GeometryQuery::FaceSurfaceKind(GeometryHandleId(1))),
+            ("EdgeCurveKind", GeometryQuery::EdgeCurveKind(GeometryHandleId(1))),
+            ("OwnerBody", GeometryQuery::OwnerBody(GeometryHandleId(1))),
+            ("ClosestPointOnShape", GeometryQuery::ClosestPointOnShape {
+                handle: GeometryHandleId(1),
+                px: 0.0,
+                py: 0.0,
+                pz: 0.0,
+            }),
+            ("PointOnShape", GeometryQuery::PointOnShape {
+                handle: GeometryHandleId(1),
+                px: 0.0,
+                py: 0.0,
+                pz: 0.0,
+                tolerance: 1e-7,
+            }),
+            ("SurfaceAngle", GeometryQuery::SurfaceAngle {
+                face_a: GeometryHandleId(1),
+                face_b: GeometryHandleId(2),
+            }),
+        ];
+        // Changing this constant forces the test to be updated whenever a
+        // variant is added or removed from GeometryQuery — compile-time
+        // exhaustiveness on kind_name() guarantees correctness, this assertion
+        // guarantees the token list here stays in sync.
+        const GEOMETRY_QUERY_VARIANT_COUNT: usize = 23;
+        assert_eq!(
+            cases.len(),
+            GEOMETRY_QUERY_VARIANT_COUNT,
+            "Update `cases` and kind_name() when adding/removing GeometryQuery variants",
+        );
+        for (expected, q) in cases {
+            assert_eq!(
+                q.kind_name(),
+                *expected,
+                "kind_name() mismatch for GeometryQuery::{expected}"
+            );
+        }
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // VolumeMesh::vertex — safe flat-XYZ indexing helper
+    //
+    // The helper centralises the overflow-safe bounds-check/indexing
+    // pattern previously inlined at reify-mesh-morph/src/boundary.rs
+    // and (parallel duplicate) laplacian.rs.
+    // ──────────────────────────────────────────────────────────────────
+
+    /// Verify `VolumeMesh::vertex` returns `Some([x, y, z])` for valid indices
+    /// and `None` for out-of-range or overflow inputs.
+    ///
+    /// Fixture: 3-node mesh with distinct coordinates so each triple is
+    /// unambiguous.  The five sub-cases cover (a) first node, (b) last valid
+    /// node, (c) one-past-end, (d) u32::MAX overflow guard, and (e) empty mesh.
+    #[test]
+    fn volume_mesh_vertex_returns_some_for_valid_indices_and_none_for_out_of_range_or_overflow() {
+        let mesh = VolumeMesh {
+            vertices: vec![
+                1.0, 2.0, 3.0, // v0
+                4.0, 5.0, 6.0, // v1
+                7.0, 8.0, 9.0, // v2
+            ],
+            tet_indices: vec![],
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+
+        // (a) first node
+        assert_eq!(mesh.vertex(0), Some([1.0, 2.0, 3.0]));
+        // (b) last valid node — base = 6, end = 9 == vertices.len()
+        assert_eq!(mesh.vertex(2), Some([7.0, 8.0, 9.0]));
+        // (c) one past end — base = 9, end = 12 > 9
+        assert_eq!(mesh.vertex(3), None);
+        // (d) large index — on 32-bit targets checked_mul(3) overflows; on
+        //     64-bit (typical CI) it falls through to the `end > len` check.
+        //     Either path returns None, which is what matters.
+        assert_eq!(mesh.vertex(u32::MAX), None);
+
+        // (e) empty mesh — any index is out of range
+        let empty = VolumeMesh {
+            vertices: vec![],
+            tet_indices: vec![],
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+        assert_eq!(empty.vertex(0), None);
     }
 }

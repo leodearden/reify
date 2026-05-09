@@ -1597,3 +1597,204 @@ fn sequential_embedded_fallback_no_duplicates_in_topo_order() {
         dag.modules.len()
     );
 }
+
+// ── task-3268: compile_project_with_entry_source overload ────────────────────
+
+/// Dirty-entry + clean import.
+///
+/// `dep.ri` is on disk; `entry.ri` is deliberately NOT written to disk.
+/// Calling `compile_project_with_entry_source` with an in-memory source string
+/// must succeed and resolve the on-disk sibling `Helper` structure.
+///
+/// - The absence of `entry.ri` on disk proves the entry source came from memory.
+/// - The successful resolution of `Helper` proves the on-disk resolver still
+///   works for siblings.
+#[test]
+fn compile_project_with_entry_source_dirty_entry_with_disk_import() {
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
+
+    // Only the sibling dep.ri is on disk; entry.ri is never created.
+    fs::write(
+        dir.join("dep.ri"),
+        "pub structure Helper { param d: Scalar = 1mm }",
+    )
+    .unwrap();
+
+    let entry_source = "import dep.Helper\nstructure Top {\n    sub h = Helper(d: 5mm)\n}";
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+    let result = reify_compiler::module_dag::compile_project_with_entry_source(
+        &dir.join("entry.ri"),
+        entry_source,
+        &resolver,
+    );
+
+    assert!(result.is_ok(), "expected Ok, got {:?}", result.unwrap_err());
+    let modules = result.unwrap();
+    assert_eq!(
+        modules.len(),
+        2,
+        "expected 2 modules (dep + entry), got {}",
+        modules.len()
+    );
+
+    // Entry module (last in topo order) must have 1 template named "Top"
+    // with a sub_component referencing "Helper".
+    let entry_module = modules.last().unwrap();
+    assert_eq!(entry_module.templates.len(), 1);
+    let template = &entry_module.templates[0];
+    assert_eq!(template.name, "Top");
+    assert_eq!(template.sub_components.len(), 1);
+    assert_eq!(template.sub_components[0].structure_name, "Helper");
+}
+
+/// Entry-source diff is observed: in-memory source is used, not the disk file.
+///
+/// `entry.ri` on disk defines a template named `Top`; the in-memory string
+/// defines a different (valid) template named `TopMem`. The result must contain
+/// `TopMem`, not `Top` — proving the in-memory source was compiled rather than
+/// the disk file.  Using a valid alternative avoids coupling the test to parser
+/// error-handling behaviour.
+#[test]
+fn compile_project_with_entry_source_uses_in_memory_source_not_disk() {
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
+
+    // dep.ri: sibling on disk, imported by both the disk and in-memory variants.
+    fs::write(
+        dir.join("dep.ri"),
+        "pub structure Helper { param d: Scalar = 1mm }",
+    )
+    .unwrap();
+
+    // entry.ri on disk: defines Top.
+    fs::write(
+        dir.join("entry.ri"),
+        "import dep.Helper\nstructure Top { sub h = Helper(d: 5mm) }",
+    )
+    .unwrap();
+
+    // In-memory variant: valid source that defines TopMem instead of Top.
+    let in_memory = "import dep.Helper\nstructure TopMem { sub h = Helper(d: 10mm) }";
+
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+    let result = reify_compiler::module_dag::compile_project_with_entry_source(
+        &dir.join("entry.ri"),
+        in_memory,
+        &resolver,
+    );
+
+    assert!(
+        result.is_ok(),
+        "expected Ok, got Err: {:?}",
+        result.unwrap_err()
+    );
+    let modules = result.unwrap();
+    let entry_module = modules.last().unwrap();
+
+    // The in-memory source defines TopMem; the disk file defines Top.
+    // If the compiler used the disk file we'd see Top here, not TopMem.
+    let template_names: Vec<&str> = entry_module.templates.iter().map(|t| t.name.as_str()).collect();
+    assert!(
+        template_names.contains(&"TopMem"),
+        "expected template 'TopMem' from in-memory source, got {:?}",
+        template_names
+    );
+    assert!(
+        !template_names.contains(&"Top"),
+        "unexpectedly found 'Top' (from disk) instead of in-memory 'TopMem'"
+    );
+}
+
+/// Parity with `compile_project` when the in-memory source matches the disk file.
+///
+/// Both calls must return `Ok`, produce the same number of modules, the same
+/// per-module path strings (in topo order), and the same template name lists.
+/// This locks in the refactor's equivalence guarantee: when
+/// `entry_source == read_to_string(entry_path)`, the two entry points are
+/// observationally identical.
+#[test]
+fn compile_project_with_entry_source_parity_with_compile_project_when_source_matches_disk() {
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
+
+    let dep_source = "pub structure Helper { param d: Scalar = 1mm }";
+    let entry_source = "import dep.Helper\nstructure Top {\n    sub h = Helper(d: 5mm)\n}";
+
+    fs::write(dir.join("dep.ri"), dep_source).unwrap();
+    fs::write(dir.join("entry.ri"), entry_source).unwrap();
+
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+
+    let disk_result =
+        reify_compiler::module_dag::compile_project(&dir.join("entry.ri"), &resolver);
+    let mem_result = reify_compiler::module_dag::compile_project_with_entry_source(
+        &dir.join("entry.ri"),
+        entry_source,
+        &resolver,
+    );
+
+    assert!(
+        disk_result.is_ok(),
+        "compile_project failed: {:?}",
+        disk_result.unwrap_err()
+    );
+    assert!(
+        mem_result.is_ok(),
+        "compile_project_with_entry_source failed: {:?}",
+        mem_result.unwrap_err()
+    );
+
+    let disk_modules = disk_result.unwrap();
+    let mem_modules = mem_result.unwrap();
+
+    // Same module count.
+    assert_eq!(
+        disk_modules.len(),
+        mem_modules.len(),
+        "module count differs: disk={} mem={}",
+        disk_modules.len(),
+        mem_modules.len()
+    );
+
+    // Same per-module path strings in the same topo order.
+    let disk_paths: Vec<String> = disk_modules.iter().map(|m| format!("{}", m.path)).collect();
+    let mem_paths: Vec<String> = mem_modules.iter().map(|m| format!("{}", m.path)).collect();
+    assert_eq!(
+        disk_paths, mem_paths,
+        "module paths differ: disk={:?} mem={:?}",
+        disk_paths, mem_paths
+    );
+
+    // Same per-module template name lists, sub_component counts, and
+    // sub_component structure names — catching any deeper divergence in the
+    // compiled topology even when module count and paths agree.
+    for (i, (dm, mm)) in disk_modules.iter().zip(mem_modules.iter()).enumerate() {
+        let disk_tnames: Vec<&str> = dm.templates.iter().map(|t| t.name.as_str()).collect();
+        let mem_tnames: Vec<&str> = mm.templates.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(
+            disk_tnames, mem_tnames,
+            "template names differ at module index {}: disk={:?} mem={:?}",
+            i, disk_tnames, mem_tnames
+        );
+
+        for (j, (dt, mt)) in dm.templates.iter().zip(mm.templates.iter()).enumerate() {
+            assert_eq!(
+                dt.sub_components.len(),
+                mt.sub_components.len(),
+                "sub_component count differs at module {}, template {} ('{}'): disk={} mem={}",
+                i, j, dt.name, dt.sub_components.len(), mt.sub_components.len()
+            );
+
+            let disk_sub_names: Vec<&str> =
+                dt.sub_components.iter().map(|s| s.structure_name.as_str()).collect();
+            let mem_sub_names: Vec<&str> =
+                mt.sub_components.iter().map(|s| s.structure_name.as_str()).collect();
+            assert_eq!(
+                disk_sub_names, mem_sub_names,
+                "sub_component structure names differ at module {}, template {} ('{}'): disk={:?} mem={:?}",
+                i, j, dt.name, disk_sub_names, mem_sub_names
+            );
+        }
+    }
+}

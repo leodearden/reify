@@ -768,11 +768,66 @@ pub struct Expr {
     pub span: SourceSpan,
 }
 
+/// Classification of a numeric literal as Int or Real.
+///
+/// Returned by [`classify_number_literal`] to centralize the Int/Real
+/// boundary so that compiler call sites (literal lowering in
+/// `reify-compiler/src/expr.rs` and annotation arg lowering in
+/// `reify-compiler/src/annotations.rs`) cannot drift from each other.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum NumberClass {
+    Int(i64),
+    Real(f64),
+    /// An integer-form token whose f64 value is non-finite or does not round-trip
+    /// cleanly through i64 (e.g. `99999999999999999999` → `f64::INFINITY`).
+    /// The caller **must** emit a precision-loss diagnostic for this variant.
+    LossyReal(f64),
+}
+
+/// Classify a parsed numeric literal as `Int`, `Real`, or `LossyReal`,
+/// matching the AST's `is_real` flag and detecting integer-form tokens whose
+/// f64 value cannot cleanly represent the source integer.
+///
+/// Branch semantics:
+///
+/// * `is_real == true` → always `Real(value)`. The parser sets `is_real`
+///   when the source token contains `.`, `e`, or `E`. A whole-number
+///   real literal like `1.0` stays Real (Int→Real widening at annotated-let
+///   injection sites covers `let x : Real = 42`).
+/// * `is_real == false` and the f64 round-trips cleanly through `i64`
+///   (i.e. `value.is_finite() && value == (value as i64) as f64`) →
+///   `Int(value as i64)`.
+/// * `is_real == false` otherwise → `LossyReal(value)`. This path is
+///   reachable in production: an integer-form token too long to fit in f64
+///   (e.g. `99999999999999999999`, 20-digit integers) parses to `f64::INFINITY`
+///   or a finite f64 that does not round-trip through i64. Callers **must**
+///   emit a precision-loss diagnostic when they receive `LossyReal` — the
+///   variant's purpose is to make the lossiness visible at the type level so
+///   call sites cannot silently ignore it. The f64 payload should be used as
+///   the runtime value (preserving current behavior), but the diagnostic is
+///   required.
+///
+/// This is the single source of truth for the Int/Real boundary on
+/// `ExprKind::NumberLiteral`; both `compile_expr_guarded` and
+/// `lower_annotations` delegate here.
+pub fn classify_number_literal(value: f64, is_real: bool) -> NumberClass {
+    if is_real {
+        NumberClass::Real(value)
+    } else if value.is_finite() && value == (value as i64) as f64 {
+        NumberClass::Int(value as i64)
+    } else {
+        NumberClass::LossyReal(value)
+    }
+}
+
 /// Expression kinds in the AST.
 #[derive(Debug, Clone)]
 pub enum ExprKind {
-    /// Numeric literal: `42`, `3.14`
-    NumberLiteral(f64),
+    /// Numeric literal: `42`, `3.14`, `1.0`, `1e6`.
+    /// `is_real` is `true` when the source token contains `.`, `e`, or `E`;
+    /// `false` for bare integer tokens (e.g. `42`, `0`). Used by the compiler
+    /// to distinguish `1.0 : Real` from `1 : Int` without re-inspecting source text.
+    NumberLiteral { value: f64, is_real: bool },
     /// Quantity literal: `80mm`, `45deg`
     QuantityLiteral { value: f64, unit: String },
     /// String literal: `"hello"`
@@ -1025,4 +1080,59 @@ pub fn parse_with_prelude_enums(
     prelude_enum_names: &[&'static str],
 ) -> ParsedModule {
     ts_parser::parse_with_prelude_enums(source, module_path, prelude_enum_names)
+}
+
+#[cfg(test)]
+mod number_class_tests {
+    use super::{NumberClass, classify_number_literal};
+
+    #[test]
+    fn is_real_true_whole_number_stays_real() {
+        // Whole-number token written with `.` (e.g. `1.0`) must stay Real.
+        assert_eq!(classify_number_literal(1.0, true), NumberClass::Real(1.0));
+    }
+
+    #[test]
+    fn is_real_true_clean_i64_value_stays_real() {
+        // Even if the value would round-trip cleanly as i64, is_real=true wins.
+        assert_eq!(classify_number_literal(42.0, true), NumberClass::Real(42.0));
+    }
+
+    #[test]
+    fn is_real_false_clean_i64_becomes_int() {
+        // Bare integer token `42` → Int(42).
+        assert_eq!(classify_number_literal(42.0, false), NumberClass::Int(42));
+    }
+
+    #[test]
+    fn is_real_false_zero_becomes_int() {
+        // Zero edge case.
+        assert_eq!(classify_number_literal(0.0, false), NumberClass::Int(0));
+    }
+
+    #[test]
+    fn is_real_false_negative_clean_i64_becomes_int() {
+        // Sign-symmetric: negative clean i64 should also produce Int.
+        assert_eq!(classify_number_literal(-5.0, false), NumberClass::Int(-5));
+    }
+
+    #[test]
+    fn is_real_false_nan_classifies_as_lossy_real() {
+        // NaN is not finite → LossyReal fallback.
+        let result = classify_number_literal(f64::NAN, false);
+        assert!(matches!(result, NumberClass::LossyReal(v) if v.is_nan()));
+    }
+
+    #[test]
+    fn is_real_false_infinity_classifies_as_lossy_real() {
+        // Inf is not finite → LossyReal fallback.
+        assert_eq!(classify_number_literal(f64::INFINITY, false), NumberClass::LossyReal(f64::INFINITY));
+    }
+
+    #[test]
+    fn is_real_false_overflow_past_i64_max_classifies_as_lossy_real() {
+        // 1e20 cannot be represented as i64; the round-trip check fails.
+        // The classifier must return LossyReal, not Real, so callers know to warn.
+        assert_eq!(classify_number_literal(1e20, false), NumberClass::LossyReal(1e20));
+    }
 }

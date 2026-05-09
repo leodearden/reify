@@ -433,7 +433,7 @@ pub(crate) fn compile_geometry_op(
                 }
                 reify_compiler::TransformKind::Rotate => Ok(reify_types::GeometryOp::Rotate {
                     target: target_id,
-                    axis: [f64_arg("axis_x")?, f64_arg("axis_y")?, f64_arg("axis_z")?],
+                    axis: [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?],
                     // NOTE: bare numeric angle is passed through as-is (radians).
                     // circular_pattern converts bare numbers as degrees; aligning
                     // rotate/rotate_around/revolve is tracked as a follow-up task.
@@ -469,7 +469,7 @@ pub(crate) fn compile_geometry_op(
                     Ok(reify_types::GeometryOp::RotateAround {
                         target: target_id,
                         point: [f64_arg("px")?, f64_arg("py")?, f64_arg("pz")?],
-                        axis: [f64_arg("axis_x")?, f64_arg("axis_y")?, f64_arg("axis_z")?],
+                        axis: [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?],
                         // NOTE: bare numeric angle is passed through as-is (radians).
                         // circular_pattern converts bare numbers as degrees; aligning
                         // rotate/rotate_around/revolve is tracked as a follow-up task.
@@ -1624,20 +1624,43 @@ fn kernel_distance(
     }
 }
 
-// ── Topology-selector dispatch (task 2324) ──────────────────────────────────
+// ── Topology-selector dispatch (tasks 2324, 2699) ────────────────────────────
 //
 // `try_eval_topology_selector` is the kernel-aware eval-time dispatch for the
-// stdlib helpers `closest_point`, `on`, and `angle_between_surfaces` (PRD
-// `docs/prds/topology-selectors.md` §3.9). Sibling to
-// `try_eval_conformance_query` and `try_eval_kinematic_query` — same
-// arg-shape / fall-through contract.
+// topology-selector helper family (PRD `docs/prds/topology-selectors.md`
+// §3.9). Sibling to `try_eval_conformance_query` and
+// `try_eval_kinematic_query` — same arg-shape / fall-through contract.
 //
-// Helper-name → kernel-query mapping:
+// ── Which names get eval dispatch here (task 2324) ──────────────────────────
+//
+// The per-name `match` at step (2) below is the SOURCE OF TRUTH for which
+// helpers get a kernel-routed `Value` payload — NOT the compile-time recogniser
+// `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` in `reify_compiler::units` (which is the
+// broader classification list).
+//
+// Currently dispatched:
 //   `closest_point(point, geometry)` → `GeometryQuery::ClosestPointOnShape`
 //   `on(point, geometry)`            → `GeometryQuery::PointOnShape`
 //   `angle_between_surfaces(a, b)`   → `GeometryQuery::SurfaceAngle`
 //
-// Arg-shape contract:
+// ── Which names are compile-time typed but NOT eval-dispatched (task 2699) ──
+//
+// Task 2699 added 11 names to `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` and
+// `topology_selector_result_type`, wiring their compile-time cell types.
+// They fall through the `_ => return None` arm at step (2) below, so the
+// cell stays at the `Value::Undef` set by the regular eval path.
+// `value_type_kind_matches` accepts `Value::Undef` for any type
+// (`reify_eval::lib:196`), so the cell typechecks until task 2691 wires
+// the actual dispatch arms here:
+//   `edges` / `faces`                       → List<Geometry>  (task 2691)
+//   `edges_by_length` / `faces_by_area`     → List<Geometry>  (task 2691)
+//   `faces_by_normal` / `edges_parallel_to` → List<Geometry>  (task 2691)
+//   `edges_at_height`                       → List<Geometry>  (task 2691)
+//   `adjacent_faces` / `shared_edges`       → List<Geometry>  (task 2691)
+//   `center_of_mass`                        → Point3<Length>  (task 2691)
+//   `moment_of_inertia`                     → Tensor<2,3,MI>  (task 2691)
+//
+// Arg-shape contract (applies to all dispatched names):
 //   - Both args must be `ValueRef`s — literal / inline-call shapes fall
 //     through to `None` so the cell stays at its compiled default
 //     (`Value::Undef`). Pinned by the
@@ -2036,9 +2059,9 @@ mod tests {
                 ("px".into(), literal_f64(0.05)),
                 ("py".into(), literal_f64(0.0)),
                 ("pz".into(), literal_f64(0.0)),
-                ("axis_x".into(), literal_f64(0.0)),
-                ("axis_y".into(), literal_f64(0.0)),
-                ("axis_z".into(), literal_f64(1.0)),
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
                 ("angle".into(), literal_f64(std::f64::consts::FRAC_PI_2)),
             ],
         };
@@ -2732,7 +2755,7 @@ mod tests {
         let step_handles = vec![GeometryHandleId(99)];
         let values = ValueMap::new();
 
-        // RotateAround with missing axis_z
+        // RotateAround with missing az
         let op = CompiledGeometryOp::Transform {
             kind: TransformKind::RotateAround,
             target: GeomRef::Step(0),
@@ -2740,9 +2763,9 @@ mod tests {
                 ("px".into(), literal_f64(0.0)),
                 ("py".into(), literal_f64(0.0)),
                 ("pz".into(), literal_f64(0.0)),
-                ("axis_x".into(), literal_f64(0.0)),
-                ("axis_y".into(), literal_f64(1.0)),
-                // axis_z deliberately omitted
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(1.0)),
+                // az deliberately omitted
                 ("angle".into(), literal_f64(1.0)),
             ],
         };
@@ -2756,7 +2779,7 @@ mod tests {
             &HashMap::new(),
             &mut Vec::new(),
         );
-        assert!(result.is_err(), "missing axis_z should return None");
+        assert!(result.is_err(), "missing az should return Err");
     }
 
     #[test]
@@ -5979,6 +6002,67 @@ mod tests {
         );
     }
 
+    /// Pins the DIMENSIONLESS leniency documented at the `dispatch_surface_angle`
+    /// Scalar arm (see comment block around line 1902). A mock kernel that returns
+    /// `Value::Scalar { dimension: DIMENSIONLESS, si_value: x }` must be accepted
+    /// alongside ANGLE without emitting any diagnostic, and must resolve to
+    /// `Value::angle(x)`. Without this test, tightening the guard to ANGLE-only
+    /// would not be caught by the existing ANGLE or Real fixtures.
+    #[test]
+    fn try_eval_topology_selector_angle_between_surfaces_kernel_reply_scalar_dimensionless_resolves_as_angle()
+     {
+        use reify_test_support::mocks::MockGeometryKernel;
+        let face_a = reify_types::GeometryHandleId(31);
+        let face_b = reify_types::GeometryHandleId(37);
+        let kernel = MockGeometryKernel::new().with_surface_angle_result(
+            face_a,
+            face_b,
+            reify_types::Value::Scalar {
+                si_value: std::f64::consts::FRAC_PI_2,
+                dimension: reify_types::DimensionVector::DIMENSIONLESS,
+            },
+        );
+
+        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        named_steps.insert("face_a".to_string(), face_a);
+        named_steps.insert("face_b".to_string(), face_b);
+
+        let values = reify_types::ValueMap::new();
+
+        let expr = topology_selector_call_two_value_refs(
+            "angle_between_surfaces",
+            "Bracket",
+            "face_a",
+            reify_types::Type::Geometry,
+            "face_b",
+            reify_types::Type::Geometry,
+            reify_types::Type::angle(),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_types::Value::angle(std::f64::consts::FRAC_PI_2)),
+            "angle_between_surfaces with kernel Scalar(DIMENSIONLESS, PI/2) reply must \
+             resolve to Some(Value::angle(PI/2)); got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "DIMENSIONLESS Scalar reply must NOT emit diagnostics (intentional leniency), \
+             got: {:?}",
+            diagnostics
+        );
+    }
+
     /// Shared fixture for the two wrong-dim-Scalar tests below. Builds a
     /// `MockGeometryKernel` wired to return a LENGTH-dimensioned Scalar for the
     /// `angle_between_surfaces(face_a, face_b)` call, together with the
@@ -6070,12 +6154,15 @@ mod tests {
             diag.message
         );
         // DimensionVector::LENGTH displays as "m" (via its fmt::Display impl).
-        // Asserting "dimension=m" pins that the warning names the actual
-        // offending dimension rather than just any wording about dimensions.
+        // The format string is `"(dimension={}, si_value={})"`  so the rendered
+        // fragment is `"dimension=m, si_value="`.  Anchoring past the trailing
+        // comma prevents false positives from dimensions that also start with
+        // "m" (e.g. m^2, m·s^-1, mol, …).
         assert!(
-            diag.message.contains("dimension=m"),
-            "diagnostic must mention the offending dimension (LENGTH displays as 'm'); \
-             got: {}",
+            diag.message.contains("dimension=m, si_value="),
+            "diagnostic must mention the offending dimension anchored by the trailing \
+             ', si_value=' (LENGTH displays as 'm'; bare 'dimension=m' would also \
+             match m^2, m·… etc.); got: {}",
             diag.message
         );
     }

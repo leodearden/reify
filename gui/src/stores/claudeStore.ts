@@ -49,15 +49,31 @@ export interface MessageContext {
 
 export type ChatMessage = UserMessage | AssistantMessage | SystemMessage;
 
+export interface PendingPermissionRequest {
+  requestId: string;
+  toolName: string;
+  toolInput: Record<string, unknown>;
+  messageId: string;
+}
+
 export interface ClaudeState {
   messages: ChatMessage[];
   sessionStatus: SessionStatus;
   currentMessageId: string | null;
+  pendingPermissionRequests: PendingPermissionRequest[];
+}
+
+export interface PermissionDecision {
+  behavior: 'allow' | 'deny';
+  message?: string;
+  updatedInput?: Record<string, unknown>;
+  remember?: boolean;
 }
 
 export interface ClaudeStoreOptions {
   onSend: (id: string, text: string, context: MessageContext) => void;
   onAbort: () => void;
+  onPermissionDecision: (decision: { requestId: string } & PermissionDecision) => void;
 }
 
 let messageCounter = 0;
@@ -70,6 +86,7 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
     messages: [],
     sessionStatus: 'idle',
     currentMessageId: null,
+    pendingPermissionRequests: [],
   });
 
   // --- Delta batching for 60fps rendering ---
@@ -195,6 +212,9 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
       case 'done': {
         cancelAndFlush();
         setState('sessionStatus', 'idle');
+        // Clear any permission prompts that were outstanding during this turn —
+        // their request_ids are now stale and showing them would be misleading.
+        setState('pendingPermissionRequests', []);
         const idx = findAssistantIdx(msg.id);
         if (idx === -1) break;
         setState(
@@ -225,6 +245,9 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
       case 'error': {
         cancelAndFlush();
         setState('sessionStatus', 'idle');
+        // Clear any permission prompts that were outstanding during this turn —
+        // their request_ids are now stale and showing them would be misleading.
+        setState('pendingPermissionRequests', []);
         // Auto-classify error and add system message
         const classified = classifyError(msg.message);
         addSystemMessage(classified.type, classified.userMessage);
@@ -239,6 +262,24 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
             m.complete = true;
           }),
         );
+        break;
+      }
+
+      case 'permission_request': {
+        // Deduplicate by requestId
+        const alreadyPending = state.pendingPermissionRequests.some(
+          (r) => r.requestId === msg.request_id,
+        );
+        if (alreadyPending) break;
+        setState('pendingPermissionRequests', (reqs) => [
+          ...reqs,
+          {
+            requestId: msg.request_id,
+            toolName: msg.tool_name,
+            toolInput: msg.tool_input,
+            messageId: msg.id,
+          },
+        ]);
         break;
       }
     }
@@ -274,7 +315,17 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
   function claudeAbort(): void {
     cancelAndClear();
     setState('sessionStatus', 'idle');
+    // Clear any pending permission prompts — after abort they are stale (the
+    // underlying request_ids are gone) and the UI would show non-functional controls.
+    setState('pendingPermissionRequests', []);
     options.onAbort();
+  }
+
+  function decidePermission(requestId: string, decision: PermissionDecision): void {
+    const exists = state.pendingPermissionRequests.some((r) => r.requestId === requestId);
+    if (!exists) return;
+    options.onPermissionDecision({ requestId, ...decision });
+    setState('pendingPermissionRequests', (reqs) => reqs.filter((r) => r.requestId !== requestId));
   }
 
   function clearSession(): void {
@@ -283,6 +334,7 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
       setState('messages', []);
       setState('sessionStatus', 'idle');
       setState('currentMessageId', null);
+      setState('pendingPermissionRequests', []);
     });
   }
 
@@ -293,5 +345,6 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
     addSystemMessage,
     claudeAbort,
     clearSession,
+    decidePermission,
   };
 }

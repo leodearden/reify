@@ -2459,7 +2459,7 @@ describe('viewStateStore — applyPersistedState / serializePersistedState (step
       visibility: { 'Root.geo': 'show', 'Root.strut': 'hidden' },
     };
     return {
-      version: '1',
+      version: '2',
       activeViewId: 'user:saved-abc',
       userViews: [userView],
       explicit: { 'Root.geo': 'show', 'Root.strut': 'hidden' },
@@ -2551,7 +2551,7 @@ describe('viewStateStore — applyPersistedState / serializePersistedState (step
     });
   });
 
-  it('(d) serialize returns only user views (filters auto), activeViewId, explicit snapshot, and version "1"', () => {
+  it('(d) serialize returns only user views (filters auto), activeViewId, explicit snapshot, and version "2"', () => {
     createRoot((dispose) => {
       const store = createViewStateStore();
 
@@ -2564,7 +2564,7 @@ describe('viewStateStore — applyPersistedState / serializePersistedState (step
       const serialized: Omit<PersistentViewState, 'viewportCameras' | 'timestamp'> =
         (store as any).serializePersistedState();
 
-      expect(serialized.version).toBe('1');
+      expect(serialized.version).toBe('2');
       expect(serialized.activeViewId).toBe(userId);
 
       // Only user views in userViews — no auto:*

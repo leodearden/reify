@@ -1,6 +1,6 @@
-//! Tests for stdlib/fea.ri — `std.fea.multi_case` module: `LoadCase` and
-//! `MultiCaseResult` structure definitions for the v0.3.x multi-load-case FEA
-//! workflow.
+//! Tests for `crates/reify-compiler/stdlib/fea_multi_case.ri` — `std.fea.multi_case` module:
+//! `LoadCase` and `MultiCaseResult` structure definitions for the v0.3.x
+//! multi-load-case FEA workflow.
 //!
 //! Tests validate that the .ri file is loaded by the production stdlib path,
 //! that `LoadCase` and `MultiCaseResult` are correctly represented in the
@@ -9,6 +9,9 @@
 //! All tests use the production-path `load_stdlib_module()` helper that
 //! exercises the same embedded + sequential-prelude compilation path as
 //! production. This mirrors the helper trio in `solver_elastic_tests.rs`.
+//!
+//! Accessor argument contract (pinned in the companion smoke test):
+//!   `result_for(mcr, key)` — `mcr` is `args[0]`, `key` is `args[1]`.
 
 use reify_compiler::*;
 use reify_types::*;
@@ -97,7 +100,7 @@ fn std_fea_multi_case_module_loads_with_no_errors() {
         .collect();
     assert!(
         errors.is_empty(),
-        "unexpected error diagnostics in fea.ri (std/fea/multi_case): {:?}",
+        "unexpected error diagnostics in fea_multi_case.ri (std/fea/multi_case): {:?}",
         errors
     );
 }
@@ -276,22 +279,26 @@ fn multi_case_result_struct_has_correct_param_shape() {
 
 // ─── shallow-kind-match invariant ────────────────────────────────────────────
 
-/// Pins the runtime shallow-kind-match invariant that `List<Real>` placeholder
-/// types silently accept a `Value::List` of any inner element kinds.
+/// Pins the compile-time invariant that `List<Real>` placeholder types accept
+/// `List<Int>` literals for `loads` and `supports` without Error-severity
+/// diagnostics.
 ///
 /// `LoadCase.loads` and `LoadCase.supports` are typed `List<Real>` as
 /// placeholders (pending `trait def Load` / `trait def Support`). The Reify
-/// runtime type-checker is shallow kind-match only (`value_type_kind_matches`
-/// in `reify-eval/src/lib.rs`): `Type::List(_)` accepts any `Value::List`
-/// regardless of inner element kinds. At runtime, load constructors produce
-/// `Value::Map` instances (not `Value::Real`), but these pass the shallow
-/// kind-match because only the outer `List` kind is checked.
+/// compiler's type-checker permits integer list literals (`List<Int>`) in
+/// `List<Real>` parameter slots — inner element kinds are not validated at
+/// compile time. This test exercises only the compile-time path
+/// (`parse_with_stdlib` → `compile_with_stdlib`), pinning the compile-time
+/// acceptance guarantee. Runtime shallow-kind behaviour
+/// (`value_type_kind_matches` in `reify-eval/src/lib.rs`) is a separate
+/// concern not covered here; it becomes testable once struct-constructor eval
+/// lands (Stage 2).
 ///
 /// This test compiles a `LoadCase` instantiation with integer list literals
 /// for `loads` and `supports`, and asserts no Error-severity diagnostics are
-/// emitted. If the type-checker is ever tightened to validate inner element
-/// kinds, this test fails first — surfacing the breakage before downstream
-/// PRD task #2 (`solve_load_cases`) lands.
+/// emitted. If the compiler is ever tightened to reject `List<Int>` in a
+/// `List<Real>` slot, this test fails first — surfacing the breakage before
+/// downstream PRD task #2 (`solve_load_cases`) lands.
 #[test]
 fn loadcase_list_real_placeholder_compiles_without_errors() {
     // Compile a user source that passes integer-list literals for `loads` and

@@ -43,7 +43,7 @@ export interface ViewportStoreState {
 const DEFAULT_CAMERA: CameraState = {
   position: [5, 5, 5],
   target: [0, 0, 0],
-  up: [0, 1, 0],
+  up: [0, 0, 1],
   zoom: 1,
 };
 

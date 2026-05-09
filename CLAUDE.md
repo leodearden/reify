@@ -81,3 +81,29 @@ Reflect and write each as a separate `add_memory` call:
 - Brief session summary (what was accomplished, what's left)
 
 Use `/memory` for detailed guidance on writing effective memories.
+
+## Vendored sandbox helpers
+
+`gui/src-tauri/sandbox/landlock.py` and `gui/src-tauri/sandbox/landlock_exec.py` are vendored verbatim from dark-factory@86e54a8498fda03060c2418b4583d6d1ad4ee97d.
+
+### Refresh procedure
+
+```
+cp /home/leo/src/dark-factory/orchestrator/src/orchestrator/agents/landlock.py gui/src-tauri/sandbox/landlock.py
+cp /home/leo/src/dark-factory/orchestrator/src/orchestrator/agents/landlock_exec.py gui/src-tauri/sandbox/landlock_exec.py
+# Update the VENDORED_FROM SHA header in each file to match the new commit
+```
+
+### Why not bwrap?
+
+bwrap is **not** vendored — it is known broken on this kernel: Bun v1.3.13 + kernel 6.17 triggers a uid-map self-init segfault inside `bwrap`. Landlock sidesteps this by not using user namespaces at all.
+
+### Sandbox scope
+
+Landlock is FS-only — it bounds **writes**, not reads. `/etc/passwd` and other read-only paths remain readable by sandboxed processes. The sandbox prevents Claude from writing outside the designated workspace, `~/.claude`, and `/tmp`; it does not prevent exfiltration via reads or network.
+
+**Known limitation:** `/tmp` write access is granted wholesale (`FS_V1_ALL`), which means a sandboxed Claude process can also write to other same-UID temp files under `/tmp` — including the sidecar's own MCP-config tmpdir (`reify-mcp-*`). This is an accepted v1 limitation; a future narrowing could grant writes only to a per-session tmp subdir (e.g. `mkdtempSync(…,'reify-agent-tmp-')`) but adds session-startup complexity with minimal practical security benefit given the existing trust model.
+
+### Tauri bundling
+
+`gui/src-tauri/tauri.conf.json` includes `bundle.resources: ["sandbox/landlock.py", "sandbox/landlock_exec.py"]` so packaged builds ship the helpers. In dev, the helpers resolve via `app.path().resource_dir()` → `target/<profile>/sandbox/`. In bundled builds they go into the AppImage/AppDir resource directory.

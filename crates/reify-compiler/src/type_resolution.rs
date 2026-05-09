@@ -286,7 +286,7 @@ pub(crate) fn evaluate_const_expr(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<f64> {
     match &expr.kind {
-        reify_syntax::ExprKind::NumberLiteral(v) => Some(*v),
+        reify_syntax::ExprKind::NumberLiteral { value: v, .. } => Some(*v),
         reify_syntax::ExprKind::BinOp { op, left, right } => {
             let lhs = evaluate_const_expr(left, registry, diagnostics)?;
             let rhs = evaluate_const_expr(right, registry, diagnostics)?;

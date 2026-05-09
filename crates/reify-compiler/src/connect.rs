@@ -19,7 +19,7 @@ pub(crate) fn resolve_port_name(expr: &reify_syntax::Expr) -> Option<String> {
                 match (&inner.kind, &index.kind) {
                     (
                         reify_syntax::ExprKind::Ident(obj_name),
-                        reify_syntax::ExprKind::NumberLiteral(n),
+                        reify_syntax::ExprKind::NumberLiteral { value: n, .. },
                     ) => Some(format!("{}[{}].{}", obj_name, *n as i64, member)),
                     _ => None,
                 }
@@ -36,7 +36,7 @@ pub(crate) fn resolve_port_name(expr: &reify_syntax::Expr) -> Option<String> {
             match (&object.kind, &index.kind) {
                 (
                     reify_syntax::ExprKind::Ident(obj_name),
-                    reify_syntax::ExprKind::NumberLiteral(n),
+                    reify_syntax::ExprKind::NumberLiteral { value: n, .. },
                 ) => Some(format!("{}[{}]", obj_name, *n as i64)),
                 _ => None,
             }

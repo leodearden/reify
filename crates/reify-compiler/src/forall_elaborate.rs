@@ -138,7 +138,7 @@ fn resolve_forall_elements(
                                         span: coll_span,
                                     }),
                                     index: Box::new(Expr {
-                                        kind: ExprKind::NumberLiteral(i as f64),
+                                        kind: ExprKind::NumberLiteral { value: i as f64, is_real: false },
                                         span: coll_span,
                                     }),
                                 },
@@ -332,7 +332,7 @@ pub(crate) fn elaborate_forall_constraint(
                                 span: coll_span,
                             }),
                             index: Box::new(reify_syntax::Expr {
-                                kind: reify_syntax::ExprKind::NumberLiteral(0.0),
+                                kind: reify_syntax::ExprKind::NumberLiteral { value: 0.0, is_real: false },
                                 span: coll_span,
                             }),
                         },
@@ -557,7 +557,7 @@ pub(crate) fn elaborate_forall_connect(
                                 span: coll_span,
                             }),
                             index: Box::new(reify_syntax::Expr {
-                                kind: reify_syntax::ExprKind::NumberLiteral(0.0),
+                                kind: reify_syntax::ExprKind::NumberLiteral { value: 0.0, is_real: false },
                                 span: coll_span,
                             }),
                         },

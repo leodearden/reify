@@ -327,14 +327,14 @@ export interface MechanismDescriptor {
  * file.  Only user views are persisted (auto views are regenerated from the
  * entity tree on every open).
  *
- * `version` is stamped at `"1"` for forward-compat; unknown versions fall back
+ * `version` is stamped at `"2"` for forward-compat; unknown versions fall back
  * to defaults at load time.
  *
  * Mirrors the Rust `PersistentViewState` struct in `gui/src-tauri/src/types.rs`.
  */
 export interface PersistentViewState {
-  /** Schema version — always `"1"` in this generation. */
-  version: '1';
+  /** Schema version — always `"2"` in this generation. */
+  version: '2';
   /** Id of the active view at persist time (may be auto or user). */
   activeViewId: string;
   /** Snapshot of user-created views (auto views excluded). */

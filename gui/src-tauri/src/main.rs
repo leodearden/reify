@@ -388,6 +388,28 @@ async fn claude_send_message(
         .map(|p| p.join("reify-sidecar"))
         .unwrap_or_else(|_| std::path::PathBuf::from("reify-sidecar"));
 
+    // Resolve the writable workspace directory for the landlock sandbox.
+    let initial_file_opt: Option<std::path::PathBuf> = state
+        .initial_file
+        .lock()
+        .ok()
+        .and_then(|g| g.clone());
+    let fallback_cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let workspace = reify_gui::claude_bridge::resolve_workspace_dir(
+        context.as_ref(),
+        initial_file_opt.as_deref(),
+        &fallback_cwd,
+    );
+
+    // Resolve the landlock helper path from the bundle resource dir.
+    // Only set when the file actually exists (dev + bundled builds have it; CI/test may not).
+    let landlock_exec_path: Option<std::path::PathBuf> = app
+        .path()
+        .resource_dir()
+        .ok()
+        .map(|p| p.join("sandbox/landlock_exec.py"))
+        .filter(|p| p.exists());
+
     let app_for_events = app.clone();
     let engine = Arc::clone(&state.engine);
     let selection = Arc::clone(&state.selection);
@@ -400,6 +422,8 @@ async fn claude_send_message(
             let app_c = app_for_events;
             let eng = engine;
             let sel = selection;
+            let ws = workspace;
+            let le = landlock_exec_path;
             async move {
                 reify_gui::claude_bridge::spawn_sidecar_impl(
                     &path,
@@ -408,6 +432,8 @@ async fn claude_send_message(
                         app_c.emit(&name, payload).ok();
                     },
                     sel,
+                    &ws,
+                    le.as_deref(),
                 )
                 .await
             }
@@ -429,6 +455,19 @@ async fn claude_abort(state: tauri::State<'_, AppState>) -> Result<(), String> {
 #[tauri::command]
 async fn claude_clear_session(state: tauri::State<'_, AppState>) -> Result<(), String> {
     reify_gui::claude_bridge::claude_clear_session_impl(&state.sidecar).await
+}
+
+/// Resolve a pending permission-prompt request from the Claude CLI.
+///
+/// Routes the user's Allow/Deny/Always decision back to the sidecar, which
+/// forwards it to the in-process MCP permission server to unblock the pending
+/// `approve_tool` call.
+#[tauri::command]
+async fn claude_permission_decision(
+    state: tauri::State<'_, AppState>,
+    decision: reify_gui::claude_bridge::PermissionDecisionArgs,
+) -> Result<(), String> {
+    reify_gui::claude_bridge::claude_permission_decision_impl(&state.sidecar, decision).await
 }
 
 /// Return the current kernel availability status.
@@ -488,6 +527,7 @@ fn main() {
         watcher: Mutex::new(None),
         sidecar: tokio::sync::Mutex::new(None),
         selection: Arc::clone(&selection_arc),
+        initial_file: Mutex::new(initial_file.clone()),
     };
 
     tauri::Builder::default()
@@ -561,6 +601,7 @@ fn main() {
             claude_send_message,
             claude_abort,
             claude_clear_session,
+            claude_permission_decision,
             is_debug_enabled,
             debug_response,
             get_kernel_status,

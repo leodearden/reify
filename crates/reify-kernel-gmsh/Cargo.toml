@@ -8,6 +8,7 @@ description = "Gmsh surface-to-volume tetrahedral mesher kernel adapter (v0.3 FE
 [dependencies]
 reify-types.workspace = true
 inventory.workspace = true
+tracing.workspace = true
 
 # `reify-eval` is a dev-dependency (not a normal dep) for the same reason the
 # OCCT, Manifold, Fidget, and OpenVDB adapters exclude it from production deps:

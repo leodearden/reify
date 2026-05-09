@@ -14,7 +14,7 @@ const mockReadViewSidecar = vi.mocked(readViewSidecar);
 const mockWriteViewSidecar = vi.mocked(writeViewSidecar);
 
 const validState: PersistentViewState = {
-  version: '1',
+  version: '2',
   activeViewId: 'auto:default',
   userViews: [],
   explicit: {},
@@ -42,6 +42,30 @@ describe('loadSidecar', () => {
     const result = await loadSidecar('/project/bracket.ri');
 
     expect(result).toEqual(validState);
+  });
+
+  it('returns null when bridge returns a legacy v1 payload — version is the sole differentiator (Task 3233)', async () => {
+    // Construct the same payload twice, differing only in the `version` field.
+    // The positive case (v2) must load; the negative case (v1) must be rejected.
+    // This pins the rejection to the version field specifically, making the test
+    // resilient to unrelated schema additions.
+    const sharedPayload = {
+      activeViewId: 'auto:default',
+      userViews: [],
+      explicit: {},
+      viewportCameras: { 'design-main': { position: [0, 10, 0], target: [0, 0, 0], up: [0, 1, 0], zoom: 1 } },
+      timestamp: '2026-04-22T00:00:00.000Z',
+    };
+
+    // v2 — same data, must load successfully
+    const v2Payload = { version: '2', ...sharedPayload } as unknown as PersistentViewState;
+    mockReadViewSidecar.mockResolvedValue(v2Payload);
+    expect(await loadSidecar('/project/bracket.ri')).not.toBeNull();
+
+    // v1 — identical payload, only version differs; must be rejected
+    const legacyPayload = { version: '1', ...sharedPayload } as unknown as PersistentViewState;
+    mockReadViewSidecar.mockResolvedValue(legacyPayload);
+    expect(await loadSidecar('/project/bracket.ri')).toBeNull();
   });
 
   it('returns null when payload fails shape validation (defensive guard)', async () => {

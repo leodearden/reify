@@ -1147,14 +1147,32 @@ impl Engine {
         // re-elaborate composed fields incrementally when their tracked
         // dependencies change (task 2343 step-8).
         self.compiled_fields = Arc::new(module.fields.clone());
-        // Clear stale purpose state from previous eval() calls — the fresh
-        // snapshot discards all purpose-injected constraints/objectives.
+        // Preserve user-intent purpose bindings across eval() (task 3103).
+        // `active_purpose_bindings` (purpose_name → entity_ref) is pure user
+        // intent and does not reference any snapshot data, so it can be carried
+        // across a fresh eval() losslessly.  We snapshot it here via mem::take
+        // (leaving the field empty) so the derived-state clears below are safe,
+        // then re-apply each binding via activate_purpose() AFTER the new
+        // eval_state is stored at the end of this function.
+        //
+        // `active_purposes`, `active_objective_map`, and `active_tolerance_scope`
+        // are *derived* state — they hold ConstraintNodeIds and value-cell
+        // references tied to the OLD snapshot.  These must be rebuilt against the
+        // fresh graph, which activate_purpose() does for us.
+        let mut preserved_bindings: Vec<(String, String)> =
+            std::mem::take(&mut self.active_purpose_bindings)
+                .into_iter()
+                .collect();
+        // Sort by purpose name for deterministic re-injection order (S2, reviewer).
+        // HashMap iteration is non-deterministic across runs; sorting here makes
+        // diagnostics, demand-cone rebuild order, and any future order-sensitive
+        // instrumentation reproducible.  Correctness is unaffected (constraint IDs
+        // are keyed by purpose name; tolerance-scope merge is min-commutative).
+        preserved_bindings.sort_by(|a, b| a.0.cmp(&b.0));
         self.active_purposes.clear();
         self.active_objective_map.clear();
-        // Discard stale tolerance-scope state (task 2647) — the fresh
-        // snapshot has no active purposes, so no entity carries an inherited
-        // tolerance until activate_purpose is called again.
-        self.active_purpose_bindings.clear();
+        // Discard stale tolerance-scope state (task 2647) — rebuilt below by
+        // activate_purpose() against the fresh value_cells.
         self.active_tolerance_scope.clear();
         // Build meta_map: template name → meta key/value pairs.
         // Only includes templates with non-empty meta blocks.
@@ -2003,6 +2021,28 @@ impl Engine {
         });
         self.demand = demand;
         self.last_eval_set = Vec::new(); // Cold start: no incremental eval set
+
+        // Re-apply preserved purpose bindings against the fresh snapshot (task 3103).
+        // activate_purpose_constraints() requires eval_state to be Some — satisfied
+        // by the assignment above.  For each captured binding it injects constraints
+        // into the new graph, restores the optimization objective, and populates
+        // active_purpose_bindings.  If a purpose was removed by the re-eval
+        // (different module), activate_purpose_constraints() returns false silently
+        // — the stale binding is dropped automatically.  The already-active guard
+        // (active_purposes.contains_key) is NOT hit because active_purposes was
+        // cleared above; re-injection is safe.
+        //
+        // Performance (S1, reviewer): a single rebuild_purpose_infrastructure() call
+        // after the loop amortises the O(graph) reverse_index/trace_map/rebuild_cone/
+        // recompute_tolerance_scope cost into one pass regardless of N preserved
+        // purposes.  Pre-3103 preserved_bindings was always empty (zero cost);
+        // post-3103 we pay O(graph) exactly once per eval() call regardless of N.
+        if !preserved_bindings.is_empty() {
+            for (purpose_name, entity_ref) in &preserved_bindings {
+                self.activate_purpose_constraints(purpose_name, entity_ref);
+            }
+            self.rebuild_purpose_infrastructure();
+        }
 
         // Drain runtime diagnostics (task 2341 step-16) into the result
         // diagnostics vec. The sink was populated by `eval_expr` calls

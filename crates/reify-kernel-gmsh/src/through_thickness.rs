@@ -147,6 +147,39 @@ pub fn through_thickness_check(
         tet_extents_sum += max_axis - min_axis;
     }
 
+    // Fail-closed: non-finite centroids corrupt the layer-counting walk in two
+    // distinct ways. NaN poisons partial_cmp (NaN is treated as Equal against
+    // every value), silently scrambling the sort. Inf poisons bin_width:
+    // avg_tet_extent → Inf → half_bin → Inf → `(w[1] - w[0]).abs() > Inf` is
+    // always false → layer_count collapses to 1 regardless of geometry. Both
+    // are upstream pathology in the volume mesh vertex data — conditions that
+    // must surface to operators rather than producing a meaningless layer count
+    // that the FEA pipeline trusts. Emit a WARN and early-return with no
+    // findings. Operators can filter via
+    // `RUST_LOG=reify_kernel_gmsh::through_thickness=warn`.
+    //
+    // Checking centroids is sufficient because the early-return below skips all
+    // downstream uses of tet_extents_sum; we do not rely on tet_extents_sum
+    // being non-finite itself (f64::min/max with one NaN operand returns the
+    // finite operand). A future refactor that uses tet_extents_sum on a
+    // different code path would need to extend this guard.
+    //
+    // Surface vertex finiteness is assumed; an Inf surface vertex would be
+    // visible as a non-finite `thickness`/`axis` from the BBox walk above,
+    // but NaN surface vertices are silently absorbed by `f64::min`/`f64::max`
+    // and remain the caller's responsibility.
+    if centroids.iter().any(|c| !c.is_finite()) {
+        tracing::warn!(
+            target: "reify_kernel_gmsh::through_thickness",
+            reason = "non_finite_centroid",
+            n_tets = n_tets,
+            "Through-thickness diagnostic skipped: encountered non-finite centroid \
+             (likely upstream pathology in volume mesh vertex data); returning \
+             no warnings to avoid silently corrupting the layer-counting walk"
+        );
+        return Vec::new();
+    }
+
     centroids.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
     // Bin width: average per-tet extent along the thinnest axis. This is the

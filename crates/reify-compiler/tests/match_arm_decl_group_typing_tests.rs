@@ -744,7 +744,7 @@ fn index_access(object: Expr, idx_val: f64) -> Expr {
         kind: ExprKind::IndexAccess {
             object: Box::new(object),
             index: Box::new(Expr {
-                kind: ExprKind::NumberLiteral(idx_val),
+                kind: ExprKind::NumberLiteral { value: idx_val, is_real: false },
                 span: zero_span(),
             }),
         },

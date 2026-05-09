@@ -406,16 +406,17 @@ fn elastic_options_param_defaults_match_spec() {
 ///                                          thickness/extent ratio)
 ///   shell_voxel_size       = none         (solver derives thickness/3 at runtime;
 ///                                          PRD T1/T2/T18)
-///   shell_branch_prune_ratio = 1.01       (empirical placeholder; PRD T17,
-///                                          §"Open design questions" →
-///                                          "Medial-extraction edge-pruning
-///                                          threshold"; PRD T3 will revise)
+///   shell_branch_prune_ratio = 1.0         (canonical PRD T17 default;
+///                                          correctly represented as
+///                                          Value::Real(1.0) since task 3184
+///                                          added int-vs-real to the AST)
 ///   shell_force            = ShellForce.Auto  (PRD T17, §"Resolved design
 ///                                              decisions"; "auto-classification
 ///                                              by default")
 ///
 /// `0.2` and `1.0` are asserted with strict equality — same IEEE-754
-/// round-to-nearest discipline as `cg_tolerance`.
+/// round-to-nearest discipline as `cg_tolerance`. (Formerly `1.01` as a
+/// workaround for the int-vs-real parser bug; task 3184 fixed that.)
 /// `shell_voxel_size = none` mirrors the `mesh_size = none` precedent;
 /// the result_type is `Option<Length>`.
 /// `shell_force = ShellForce.Auto` mirrors the `element_order = ElementOrder.P1`
@@ -454,24 +455,20 @@ fn elastic_options_shell_param_defaults_match_spec() {
         shell_voxel_size_default.result_type
     );
 
-    // shell_branch_prune_ratio = 1.01 (strict Real equality). The default is
-    // 1.01 rather than a whole-number decimal like 1.0 to exercise the Real
-    // parser path deterministically: whole-number decimal literals like `1.0`
-    // are stored as Int(1) due to a parser quirk (the tokenizer lexes `1` as
-    // an integer token, then `.0` as a member-access that resolves to nothing).
-    // Using 1.01 avoids encoding that parser bug as a permitted contract and
-    // ensures the strict-equality discipline matches the shell_threshold and
-    // cg_tolerance tests. The 1% margin above 1.0 is semantically negligible
-    // for this empirical heuristic (PRD T17, §"Open design questions").
+    // shell_branch_prune_ratio = 1.0 (strict Real equality). The canonical
+    // PRD T17 default is 1.0. Task 3184 fixed the int-vs-real AST distinction
+    // so `1.0` now correctly lowers to Value::Real(1.0) rather than Value::Int(1).
+    // The stdlib was previously set to 1.01 as a workaround; that workaround
+    // is now reverted.
     let shell_branch_prune_ratio_default = require_default(template, "shell_branch_prune_ratio");
     match &shell_branch_prune_ratio_default.kind {
         CompiledExprKind::Literal(Value::Real(v)) => assert_eq!(
-            *v, 1.01,
-            "shell_branch_prune_ratio default should be exactly 1.01, got: {}",
+            *v, 1.0,
+            "shell_branch_prune_ratio default should be exactly 1.0, got: {}",
             v
         ),
         other => panic!(
-            "shell_branch_prune_ratio default should be Literal(Value::Real(1.01)), got: {:?}",
+            "shell_branch_prune_ratio default should be Literal(Value::Real(1.0)), got: {:?}",
             other
         ),
     }

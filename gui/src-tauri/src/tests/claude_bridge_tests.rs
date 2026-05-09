@@ -860,6 +860,7 @@ fn app_state_has_sidecar_field() {
         watcher: Mutex::new(None),
         sidecar: tokio::sync::Mutex::new(None),
         selection: Arc::new(RwLock::new(SelectionInfo::default())),
+        initial_file: Mutex::new(None),
     };
 }
 
@@ -933,6 +934,98 @@ async fn sidecar_handle_abort_writes_abort_json() {
     let n = reader_end.read(&mut buf).await.unwrap();
     let written = std::str::from_utf8(&buf[..n]).unwrap();
     assert_eq!(written, "{\"type\":\"abort\"}\n");
+}
+
+#[tokio::test]
+async fn sidecar_handle_abort_returns_ok_when_stdin_pipe_is_broken() {
+    use std::sync::Arc;
+    use tokio::io::BufReader;
+    use tokio::sync::Mutex;
+
+    // State=Ready so the state pre-check does NOT short-circuit;
+    // this test must exercise the BrokenPipe path specifically.
+    let state = Arc::new(Mutex::new(SidecarState::Ready));
+    // Drop the read half immediately so any write to writer returns BrokenPipe.
+    let (writer, stdin_reader) = tokio::io::duplex(1024);
+    drop(stdin_reader);
+    let data: &[u8] = b"";
+    let empty_reader = BufReader::new(data);
+    let mut handle = SidecarHandle::from_parts(writer, empty_reader, state);
+
+    let result = handle.abort().await;
+    assert!(
+        result.is_ok(),
+        "expected abort() against a closed stdin to be a no-op success, got: {:?}",
+        result
+    );
+}
+
+#[tokio::test]
+async fn sidecar_handle_abort_short_circuits_when_state_is_crashed() {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, BufReader};
+    use tokio::sync::Mutex;
+
+    // State=Crashed so the upcoming state pre-check should short-circuit before writing.
+    let state = Arc::new(Mutex::new(SidecarState::Crashed("simulated".to_string())));
+    // Keep the read half alive so writes would succeed if attempted.
+    let (writer, mut reader_end) = tokio::io::duplex(1024);
+    let data: &[u8] = b"";
+    let empty_reader = BufReader::new(data);
+    let mut handle = SidecarHandle::from_parts(writer, empty_reader, state);
+
+    let result = handle.abort().await;
+    assert!(
+        result.is_ok(),
+        "expected abort() in Crashed state to return Ok, got: {:?}",
+        result
+    );
+
+    // Assert no bytes were written to stdin — if the short-circuit fires, the pipe
+    // should be silent. A read with a short timeout should time out (not return bytes).
+    let mut buf = vec![0u8; 64];
+    let read_result =
+        tokio::time::timeout(Duration::from_millis(50), reader_end.read(&mut buf)).await;
+    assert!(
+        read_result.is_err(),
+        "expected no write to stdin when state is Crashed, but read bytes: {:?}",
+        read_result.map(|r| r.map(|n| std::str::from_utf8(&buf[..n]).unwrap_or("<invalid utf8>").to_string()))
+    );
+}
+
+#[tokio::test]
+async fn sidecar_handle_abort_short_circuits_when_state_is_not_started() {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, BufReader};
+    use tokio::sync::Mutex;
+
+    // State=NotStarted so the state pre-check should short-circuit before writing.
+    let state = Arc::new(Mutex::new(SidecarState::NotStarted));
+    // Keep the read half alive so writes would succeed if attempted.
+    let (writer, mut reader_end) = tokio::io::duplex(1024);
+    let data: &[u8] = b"";
+    let empty_reader = BufReader::new(data);
+    let mut handle = SidecarHandle::from_parts(writer, empty_reader, state);
+
+    let result = handle.abort().await;
+    assert!(
+        result.is_ok(),
+        "expected abort() in NotStarted state to return Ok, got: {:?}",
+        result
+    );
+
+    // Assert no bytes were written to stdin — if the short-circuit fires, the pipe
+    // should be silent. A read with a short timeout should time out (not return bytes).
+    let mut buf = vec![0u8; 64];
+    let read_result =
+        tokio::time::timeout(Duration::from_millis(50), reader_end.read(&mut buf)).await;
+    assert!(
+        read_result.is_err(),
+        "expected no write to stdin when state is NotStarted, but read bytes: {:?}",
+        read_result.map(|r| r.map(|n| std::str::from_utf8(&buf[..n]).unwrap_or("<invalid utf8>").to_string()))
+    );
 }
 
 #[tokio::test]
@@ -1586,6 +1679,8 @@ async fn spawn_sidecar_impl_returns_error_for_missing_binary() {
         engine,
         |_name: String, _payload: serde_json::Value| {},
         selection,
+        Path::new("/tmp/test-ws"),
+        None,
     )
     .await;
 
@@ -1618,6 +1713,8 @@ async fn spawn_sidecar_impl_returns_handle_for_valid_binary() {
         engine,
         |_name: String, _payload: serde_json::Value| {},
         selection,
+        Path::new("/tmp/test-ws"),
+        None,
     )
     .await;
 
@@ -2676,6 +2773,250 @@ async fn ensure_sidecar_ready_returns_ok_via_recheck_when_ready_during_spawn() {
     }
 }
 
+// --- Permission-prompt wire types (task-3206/step-7) ---
+
+/// (a) OutboundMessage::PermissionRequest deserializes from wire JSON.
+#[test]
+fn outbound_permission_request_deserializes() {
+    let json_str = r#"{"type":"permission_request","id":"msg-1","request_id":"r1","tool_name":"Write","tool_input":{"path":"/tmp/x"}}"#;
+    let msg: OutboundMessage = serde_json::from_str(json_str).unwrap();
+    match msg {
+        OutboundMessage::PermissionRequest {
+            id,
+            request_id,
+            tool_name,
+            tool_input,
+        } => {
+            assert_eq!(id, "msg-1");
+            assert_eq!(request_id, "r1");
+            assert_eq!(tool_name, "Write");
+            assert_eq!(tool_input["path"], "/tmp/x");
+        }
+        _ => panic!("Expected PermissionRequest"),
+    }
+}
+
+/// (a) parse_outbound also handles permission_request lines correctly.
+#[test]
+fn parse_outbound_permission_request() {
+    let line = r#"{"type":"permission_request","id":"msg-1","request_id":"r1","tool_name":"Write","tool_input":{"path":"/tmp/x"}}"#;
+    let msg = parse_outbound(line).unwrap();
+    assert_eq!(
+        msg,
+        OutboundMessage::PermissionRequest {
+            id: "msg-1".to_string(),
+            request_id: "r1".to_string(),
+            tool_name: "Write".to_string(),
+            tool_input: json!({"path": "/tmp/x"}),
+        }
+    );
+}
+
+/// (b) InboundMessage::PermissionDecision serializes with snake_case keys and
+/// skips None optional fields (message, updated_input, remember).
+#[test]
+fn inbound_permission_decision_minimal_serializes() {
+    let msg = InboundMessage::PermissionDecision {
+        request_id: "r1".to_string(),
+        behavior: "allow".to_string(),
+        message: None,
+        updated_input: None,
+        remember: None,
+    };
+    let json_val: Value = serde_json::to_value(&msg).unwrap();
+    assert_eq!(json_val["type"], "permission_decision");
+    assert_eq!(json_val["request_id"], "r1");
+    assert_eq!(json_val["behavior"], "allow");
+    // None fields must be absent — skip_serializing_if = Option::is_none
+    assert!(json_val.get("message").is_none(), "None message should be absent");
+    assert!(json_val.get("updated_input").is_none(), "None updated_input should be absent");
+    assert!(json_val.get("remember").is_none(), "None remember should be absent");
+}
+
+/// (b) InboundMessage::PermissionDecision with all optional fields present serializes all.
+#[test]
+fn inbound_permission_decision_full_serializes() {
+    let msg = InboundMessage::PermissionDecision {
+        request_id: "r2".to_string(),
+        behavior: "deny".to_string(),
+        message: Some("no".to_string()),
+        updated_input: Some(json!({"path": "/safe/path"})),
+        remember: Some(true),
+    };
+    let json_val: Value = serde_json::to_value(&msg).unwrap();
+    assert_eq!(json_val["type"], "permission_decision");
+    assert_eq!(json_val["request_id"], "r2");
+    assert_eq!(json_val["behavior"], "deny");
+    assert_eq!(json_val["message"], "no");
+    assert_eq!(json_val["updated_input"]["path"], "/safe/path");
+    assert_eq!(json_val["remember"], true);
+}
+
+/// (b) format_inbound(PermissionDecision) round-trips through JSON as a line.
+#[test]
+fn format_inbound_permission_decision_produces_json_line() {
+    let msg = InboundMessage::PermissionDecision {
+        request_id: "r3".to_string(),
+        behavior: "allow".to_string(),
+        message: None,
+        updated_input: None,
+        remember: Some(false),
+    };
+    let line = format_inbound(&msg);
+    assert!(line.ends_with('\n'), "Should end with newline");
+    let json_val: Value = serde_json::from_str(line.trim_end()).unwrap();
+    assert_eq!(json_val["type"], "permission_decision");
+    assert_eq!(json_val["request_id"], "r3");
+    assert_eq!(json_val["behavior"], "allow");
+    assert_eq!(json_val["remember"], false);
+    assert!(json_val.get("message").is_none());
+    assert!(json_val.get("updated_input").is_none());
+}
+
+/// (c) outbound_to_event maps PermissionRequest to "claude-permission-request"
+/// with the full { id, request_id, tool_name, tool_input } payload.
+#[test]
+fn outbound_to_event_permission_request() {
+    let msg = OutboundMessage::PermissionRequest {
+        id: "msg-1".to_string(),
+        request_id: "r1".to_string(),
+        tool_name: "Write".to_string(),
+        tool_input: json!({"path": "/tmp/x"}),
+    };
+    let (name, payload) = outbound_to_event(&msg);
+    assert_eq!(name, "claude-permission-request");
+    assert_eq!(payload["id"], "msg-1");
+    assert_eq!(payload["request_id"], "r1");
+    assert_eq!(payload["tool_name"], "Write");
+    assert_eq!(payload["tool_input"]["path"], "/tmp/x");
+}
+
+/// (d) claude_permission_decision_impl returns Err when sidecar is None.
+#[tokio::test]
+async fn claude_permission_decision_impl_errors_when_sidecar_is_none() {
+    let sidecar: tokio::sync::Mutex<Option<SidecarHandle>> = tokio::sync::Mutex::new(None);
+    let decision = PermissionDecisionArgs {
+        request_id: "r1".to_string(),
+        behavior: "allow".to_string(),
+        message: None,
+        updated_input: None,
+        remember: None,
+    };
+    let result = claude_permission_decision_impl(&sidecar, decision).await;
+    assert!(
+        result.is_err(),
+        "Expected error when sidecar is None, got: {:?}",
+        result
+    );
+}
+
+/// (d) claude_permission_decision_impl writes the correct JSON line to sidecar stdin
+/// when the sidecar is Ready, with optional fields absent for None values.
+#[tokio::test]
+async fn claude_permission_decision_impl_writes_json_when_ready() {
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, BufReader};
+
+    let state = Arc::new(tokio::sync::Mutex::new(SidecarState::Ready));
+    let (writer, mut reader_end) = tokio::io::duplex(1024);
+    let empty_reader = BufReader::new(&b""[..]);
+    let handle = SidecarHandle::from_parts(writer, empty_reader, state);
+    let sidecar = tokio::sync::Mutex::new(Some(handle));
+
+    let decision = PermissionDecisionArgs {
+        request_id: "r1".to_string(),
+        behavior: "allow".to_string(),
+        message: None,
+        updated_input: None,
+        remember: None,
+    };
+    let result = claude_permission_decision_impl(&sidecar, decision).await;
+    assert!(
+        result.is_ok(),
+        "Expected success when sidecar is Ready: {:?}",
+        result
+    );
+
+    let mut buf = vec![0u8; 1024];
+    let n = reader_end.read(&mut buf).await.unwrap();
+    let written = std::str::from_utf8(&buf[..n]).unwrap();
+    let json_val: Value = serde_json::from_str(written.trim_end()).unwrap();
+    assert_eq!(json_val["type"], "permission_decision");
+    assert_eq!(json_val["request_id"], "r1");
+    assert_eq!(json_val["behavior"], "allow");
+    // None fields must be absent (skip_serializing_if = Option::is_none)
+    assert!(json_val.get("message").is_none(), "None message must be absent from wire");
+    assert!(json_val.get("updated_input").is_none(), "None updated_input must be absent from wire");
+    assert!(json_val.get("remember").is_none(), "None remember must be absent from wire");
+}
+
+/// (d) All optional fields present in the decision are forwarded to the wire.
+#[tokio::test]
+async fn claude_permission_decision_impl_writes_all_optional_fields() {
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, BufReader};
+
+    let state = Arc::new(tokio::sync::Mutex::new(SidecarState::Ready));
+    let (writer, mut reader_end) = tokio::io::duplex(1024);
+    let empty_reader = BufReader::new(&b""[..]);
+    let handle = SidecarHandle::from_parts(writer, empty_reader, state);
+    let sidecar = tokio::sync::Mutex::new(Some(handle));
+
+    let decision = PermissionDecisionArgs {
+        request_id: "r2".to_string(),
+        behavior: "deny".to_string(),
+        message: Some("not allowed".to_string()),
+        updated_input: None,
+        remember: Some(true),
+    };
+    let result = claude_permission_decision_impl(&sidecar, decision).await;
+    assert!(result.is_ok(), "Expected success: {:?}", result);
+
+    let mut buf = vec![0u8; 1024];
+    let n = reader_end.read(&mut buf).await.unwrap();
+    let written = std::str::from_utf8(&buf[..n]).unwrap();
+    let json_val: Value = serde_json::from_str(written.trim_end()).unwrap();
+    assert_eq!(json_val["request_id"], "r2");
+    assert_eq!(json_val["behavior"], "deny");
+    assert_eq!(json_val["message"], "not allowed");
+    assert_eq!(json_val["remember"], true);
+    assert!(json_val.get("updated_input").is_none());
+}
+
+/// (d) claude_permission_decision_impl returns Err when sidecar is not in Ready state.
+#[tokio::test]
+async fn claude_permission_decision_impl_errors_when_sidecar_not_ready() {
+    use std::sync::Arc;
+    use tokio::io::BufReader;
+
+    let state = Arc::new(tokio::sync::Mutex::new(SidecarState::Starting));
+    let (writer, _reader_end) = tokio::io::duplex(1024);
+    let empty_reader = BufReader::new(&b""[..]);
+    let handle = SidecarHandle::from_parts(writer, empty_reader, state);
+    let sidecar = tokio::sync::Mutex::new(Some(handle));
+
+    let decision = PermissionDecisionArgs {
+        request_id: "r1".to_string(),
+        behavior: "allow".to_string(),
+        message: None,
+        updated_input: None,
+        remember: None,
+    };
+    let result = claude_permission_decision_impl(&sidecar, decision).await;
+    assert!(
+        result.is_err(),
+        "Expected error when sidecar is Starting: {:?}",
+        result
+    );
+}
+
+/// (e) PermissionDecisionArgs satisfies the full IPC contract (Serialize +
+/// DeserializeOwned + Clone + Debug + PartialEq). This is a compile-time assertion.
+#[test]
+fn permission_decision_args_satisfies_ipc_contract() {
+    super::assert_ipc_contract::<PermissionDecisionArgs>();
+}
+
 /// Regression test: make_ready_handle's empty b"" reader causes immediate EOF,
 /// which triggers the on_exit callback setting state to Crashed.  On a
 /// multi_thread runtime the spawned on_exit task can run between yield points,
@@ -2696,5 +3037,195 @@ async fn make_ready_handle_stays_ready_on_multi_thread() {
         "Expected SidecarState::Ready after yield, got {:?} — \
          the empty-reader EOF race caused a Crashed transition",
         current,
+    );
+}
+
+// --- workspace_resolution tests (task 3210 step-13) ---
+
+mod workspace_resolution {
+    use crate::claude_bridge::{resolve_workspace_dir, MessageContext};
+    use std::path::{Path, PathBuf};
+
+    fn ctx_with_file(path: &str) -> MessageContext {
+        MessageContext {
+            selected_entity: None,
+            diagnostics: None,
+            constraints: None,
+            current_file: Some(path.to_string()),
+            attached_contexts: None,
+        }
+    }
+
+    #[test]
+    fn current_file_returns_its_parent() {
+        let ctx = ctx_with_file("/proj/main.ri");
+        let fallback = PathBuf::from("/fallback");
+        let result = resolve_workspace_dir(Some(&ctx), None, &fallback);
+        assert_eq!(result, PathBuf::from("/proj"));
+    }
+
+    #[test]
+    fn initial_file_used_when_no_current_file() {
+        let ctx = MessageContext {
+            selected_entity: None,
+            diagnostics: None,
+            constraints: None,
+            current_file: None,
+            attached_contexts: None,
+        };
+        let fallback = PathBuf::from("/fallback");
+        let result = resolve_workspace_dir(Some(&ctx), Some(Path::new("/init/foo.ri")), &fallback);
+        assert_eq!(result, PathBuf::from("/init"));
+    }
+
+    #[test]
+    fn both_none_returns_fallback_cwd() {
+        let fallback = PathBuf::from("/my/cwd");
+        let result = resolve_workspace_dir(None, None, &fallback);
+        assert_eq!(result, fallback);
+    }
+
+    #[test]
+    fn current_file_no_parent_falls_through_to_fallback() {
+        // "main.ri" has no parent component
+        let ctx = ctx_with_file("main.ri");
+        let fallback = PathBuf::from("/fallback");
+        let result = resolve_workspace_dir(Some(&ctx), None, &fallback);
+        assert_eq!(result, fallback);
+    }
+
+    #[test]
+    fn current_file_empty_string_falls_through_to_fallback() {
+        let ctx = ctx_with_file("");
+        let fallback = PathBuf::from("/fallback");
+        let result = resolve_workspace_dir(Some(&ctx), None, &fallback);
+        assert_eq!(result, fallback);
+    }
+
+    #[test]
+    fn no_context_but_initial_file_uses_initial_parent() {
+        let fallback = PathBuf::from("/fallback");
+        let result = resolve_workspace_dir(None, Some(Path::new("/init/foo.ri")), &fallback);
+        assert_eq!(result, PathBuf::from("/init"));
+    }
+}
+
+// --- sidecar_env tests (task 3210 step-13) ---
+
+mod sidecar_env {
+    use crate::claude_bridge::compute_sidecar_env;
+    use std::path::Path;
+
+    #[test]
+    fn workspace_and_landlock_exec_both_present() {
+        let envs = compute_sidecar_env(Path::new("/ws"), Some(Path::new("/sb/le.py")));
+        let reify_ws = envs.iter().find(|(k, _)| k == "REIFY_WORKSPACE");
+        let reify_le = envs.iter().find(|(k, _)| k == "REIFY_LANDLOCK_EXEC");
+        assert_eq!(
+            reify_ws,
+            Some(&("REIFY_WORKSPACE".to_string(), "/ws".to_string()))
+        );
+        assert_eq!(
+            reify_le,
+            Some(&("REIFY_LANDLOCK_EXEC".to_string(), "/sb/le.py".to_string()))
+        );
+    }
+
+    #[test]
+    fn landlock_exec_none_omits_key() {
+        let envs = compute_sidecar_env(Path::new("/ws"), None);
+        let reify_ws = envs.iter().find(|(k, _)| k == "REIFY_WORKSPACE");
+        let reify_le = envs.iter().find(|(k, _)| k == "REIFY_LANDLOCK_EXEC");
+        assert_eq!(
+            reify_ws,
+            Some(&("REIFY_WORKSPACE".to_string(), "/ws".to_string()))
+        );
+        assert!(reify_le.is_none(), "REIFY_LANDLOCK_EXEC should not appear when None");
+    }
+
+    #[test]
+    fn ordering_is_workspace_first_then_landlock_exec() {
+        let envs = compute_sidecar_env(Path::new("/ws"), Some(Path::new("/sb/le.py")));
+        assert_eq!(envs.len(), 2);
+        assert_eq!(envs[0].0, "REIFY_WORKSPACE");
+        assert_eq!(envs[1].0, "REIFY_LANDLOCK_EXEC");
+    }
+
+    #[test]
+    fn only_workspace_when_no_landlock() {
+        let envs = compute_sidecar_env(Path::new("/ws"), None);
+        assert_eq!(envs.len(), 1);
+        assert_eq!(envs[0].0, "REIFY_WORKSPACE");
+    }
+}
+
+// --- apply_sidecar_env + spawn_sidecar_impl signature tests (task 3210 step-15) ---
+
+mod apply_sidecar_env_tests {
+    use crate::claude_bridge::apply_sidecar_env;
+    use std::path::Path;
+
+    #[test]
+    fn sets_workspace_only_when_no_landlock_exec() {
+        let mut cmd = tokio::process::Command::new("/bin/true");
+        apply_sidecar_env(&mut cmd, Path::new("/ws"), None);
+        let envs: Vec<_> = cmd
+            .as_std()
+            .get_envs()
+            .map(|(k, v)| (k.to_string_lossy().into_owned(), v.map(|v| v.to_string_lossy().into_owned())))
+            .collect();
+        let has_ws = envs.iter().any(|(k, v)| k == "REIFY_WORKSPACE" && v.as_deref() == Some("/ws"));
+        let has_le = envs.iter().any(|(k, _)| k == "REIFY_LANDLOCK_EXEC");
+        assert!(has_ws, "REIFY_WORKSPACE=/ws should be set: {:?}", envs);
+        assert!(!has_le, "REIFY_LANDLOCK_EXEC should not be set: {:?}", envs);
+    }
+
+    #[test]
+    fn sets_both_when_landlock_exec_some() {
+        let mut cmd = tokio::process::Command::new("/bin/true");
+        apply_sidecar_env(&mut cmd, Path::new("/ws"), Some(Path::new("/sb/le.py")));
+        let envs: Vec<_> = cmd
+            .as_std()
+            .get_envs()
+            .map(|(k, v)| (k.to_string_lossy().into_owned(), v.map(|v| v.to_string_lossy().into_owned())))
+            .collect();
+        let has_ws = envs.iter().any(|(k, v)| k == "REIFY_WORKSPACE" && v.as_deref() == Some("/ws"));
+        let has_le = envs.iter().any(|(k, v)| k == "REIFY_LANDLOCK_EXEC" && v.as_deref() == Some("/sb/le.py"));
+        assert!(has_ws, "REIFY_WORKSPACE=/ws should be set: {:?}", envs);
+        assert!(has_le, "REIFY_LANDLOCK_EXEC=/sb/le.py should be set: {:?}", envs);
+    }
+}
+
+// spawn_sidecar_impl signature test (step-15c)
+#[tokio::test]
+async fn spawn_sidecar_impl_with_workspace_and_no_landlock_returns_error_for_missing_binary() {
+    use crate::engine::EngineSession;
+    use reify_constraints::SimpleConstraintChecker;
+    use reify_test_support::MockGeometryKernel;
+    use std::path::Path;
+    use std::sync::Arc;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let engine = Arc::new(std::sync::Mutex::new(session));
+    let selection = Arc::new(std::sync::RwLock::new(reify_mcp::SelectionInfo::default()));
+
+    let result = spawn_sidecar_impl(
+        Path::new("/tmp/no-such-binary"),
+        engine,
+        |_name: String, _payload: serde_json::Value| {},
+        selection,
+        Path::new("/tmp/ws"),
+        None,
+    )
+    .await;
+
+    assert!(result.is_err(), "Expected error for missing binary");
+    let err = result.err().expect("Expected Err variant");
+    assert!(
+        err.contains("Failed to spawn sidecar"),
+        "Error should mention 'Failed to spawn sidecar': {}",
+        err
     );
 }

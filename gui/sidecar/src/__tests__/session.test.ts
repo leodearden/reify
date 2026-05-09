@@ -8,8 +8,22 @@ vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
 }));
 
+// Mock the sandbox module — isLandlockAvailable and wrapClaudeArgs.
+// Default: isLandlockAvailable() returns undefined (falsy); wrapClaudeArgs passes
+// through to {cmd:'claude'} when landlockExec is undefined, so existing tests
+// that don't set landlockExec in the config continue to work correctly.
+vi.mock('../sandbox.js', () => ({
+  isLandlockAvailable: vi.fn(),
+  wrapClaudeArgs: vi.fn((args: string[], _ws: string, le?: string) =>
+    le ? { cmd: 'python3', args: [le, ...args] } : { cmd: 'claude', args: [...args] }
+  ),
+  _resetLandlockCache: vi.fn(),
+}));
+
 import { spawn } from 'node:child_process';
-import { SidecarSession } from '../session.js';
+import { SidecarSession, SPAWN_ERROR_LOG_PREFIX } from '../session.js';
+import { isLandlockAvailable, wrapClaudeArgs } from '../sandbox.js';
+import * as os from 'node:os';
 import { main } from '../index.js';
 
 /**
@@ -2712,7 +2726,7 @@ describe('SidecarSession proc error handling', () => {
 
       // (d) ABORT_ERR is suppressed silently — must NOT appear in console.error
       expect(consoleErrorSpy).not.toHaveBeenCalledWith(
-        expect.stringMatching(/\[sidecar\] spawned claude error:/),
+        SPAWN_ERROR_LOG_PREFIX,
         expect.anything()
       );
     } finally {
@@ -2768,13 +2782,16 @@ describe('SidecarSession proc error handling', () => {
 
       // (a) console.error was called with the diagnostic prefix and the error
       expect(consoleErrorSpy).toHaveBeenCalledWith(
-        expect.stringMatching(/\[sidecar\] spawned claude error:/),
+        SPAWN_ERROR_LOG_PREFIX,
         expect.objectContaining({ code: 'ENOENT' })
       );
 
-      // (b) The close-path still emits an error outbound (exitCode === 1)
+      // (b) The close-path emits exactly one error outbound (exitCode === 1)
       const errors = outputs.filter((o) => o.type === 'error');
-      expect(errors.length).toBeGreaterThanOrEqual(1);
+      expect(errors).toHaveLength(1);
+      if (errors[0].type !== 'error') throw new Error('Expected error message');
+      expect(errors[0].message).toMatch(/Claude CLI exited with code 1/);
+      expect(errors[0].id).toBe('msg-enoent');
     } finally {
       consoleErrorSpy.mockRestore();
     }
@@ -2829,8 +2846,18 @@ describe('SidecarSession proc error handling', () => {
         text: 'Hanging task',
       });
 
-      // Give it a tick to set up before aborting
-      await new Promise((r) => setTimeout(r, 10));
+      // Wait deterministically for the abortController to be initialised.
+      // handleSendMessage sets abortController synchronously before invokeSdk's first
+      // await, so this resolves within one microtask tick in practice; the deadline
+      // guard prevents a silent hang if the implementation ever adds an async step
+      // before that initialisation.
+      {
+        const deadline = Date.now() + 1000;
+        while (!session.isInvocationActive()) {
+          if (Date.now() > deadline) throw new Error('timed out waiting for abortController');
+          await Promise.resolve();
+        }
+      }
 
       // User-initiated abort (reason is undefined, NOT 'timeout')
       await session.handleMessage({ type: 'abort' });
@@ -2847,11 +2874,692 @@ describe('SidecarSession proc error handling', () => {
 
       // (c) ABORT_ERR was suppressed silently — must NOT appear in console.error
       expect(consoleErrorSpy).not.toHaveBeenCalledWith(
-        expect.stringMatching(/\[sidecar\] spawned claude error:/),
+        SPAWN_ERROR_LOG_PREFIX,
         expect.anything()
       );
     } finally {
       consoleErrorSpy.mockRestore();
     }
+  });
+});
+
+
+// === Step-3 failing tests: permission-prompt wiring ===
+// These fail because session.ts does not yet support permissionMcp config,
+// and ipc.ts does not yet accept permission_decision inbound messages.
+
+import { readFileSync } from 'node:fs';
+import type { PermissionServer } from '../permission-server.js';
+
+/**
+ * Build a mock PermissionServer whose onRequest() captures the registered handler.
+ */
+function makeMockPermissionServer(): {
+  server: PermissionServer;
+  triggerRequest: (req: { request_id: string; tool_name: string; tool_input: Record<string, unknown> }) => void;
+} {
+  let capturedHandler: ((req: any) => void) | null = null;
+
+  const server: PermissionServer = {
+    start: vi.fn().mockResolvedValue(undefined),
+    stop: vi.fn().mockResolvedValue(undefined),
+    url: vi.fn().mockReturnValue('http://127.0.0.1:29999/mcp'),
+    onRequest: vi.fn((handler: (req: any) => void) => {
+      capturedHandler = handler;
+    }),
+    decide: vi.fn(),
+    setRemembered: vi.fn(),
+    cancelAll: vi.fn(),
+  };
+
+  return {
+    server,
+    triggerRequest: (req) => {
+      if (!capturedHandler) throw new Error('onRequest handler was never registered by the session');
+      capturedHandler(req);
+    },
+  };
+}
+
+describe('SidecarSession permission-prompt wiring (step-3)', () => {
+  let outputs: OutboundMessage[];
+
+  beforeEach(() => {
+    outputs = [];
+    vi.mocked(spawn).mockReset();
+  });
+
+  // (a) spawn args include --permission-prompt-tool and --mcp-config when permissionMcp configured
+  it('(a) spawn includes --permission-prompt-tool and --mcp-config when permissionMcp is configured', async () => {
+    const { server } = makeMockPermissionServer();
+    const permUrl = 'http://127.0.0.1:29999/mcp';
+
+    let capturedMcpConfig: unknown = null;
+    vi.mocked(spawn).mockImplementation((((_cmd: string, args: string[]) => {
+      const mcpConfigIdx = args.indexOf('--mcp-config');
+      if (mcpConfigIdx !== -1) {
+        const filePath = args[mcpConfigIdx + 1];
+        try {
+          capturedMcpConfig = JSON.parse(readFileSync(filePath, 'utf-8'));
+        } catch {}
+      }
+      return createMockProcess([{ type: 'result', session_id: 'sess-perm-a' }]);
+    }) as any));
+
+    const session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are helpful.',
+      permissionMcp: { url: permUrl, server },
+    } as any);
+    session.onOutput = (msg) => outputs.push(msg);
+
+    await session.handleMessage({ type: 'send_message', id: 'msg-perm-a', text: 'Hello' });
+
+    const callArgs = vi.mocked(spawn).mock.calls[0]?.[1] as string[];
+
+    // (a1) --permission-prompt-tool with the correct tool path
+    const ptIdx = callArgs.indexOf('--permission-prompt-tool');
+    expect(ptIdx).toBeGreaterThanOrEqual(0);
+    expect(callArgs[ptIdx + 1]).toBe('mcp__reify-permission__approve_tool');
+
+    // (a2) --mcp-config points to a temp file
+    const mcpIdx = callArgs.indexOf('--mcp-config');
+    expect(mcpIdx).toBeGreaterThanOrEqual(0);
+
+    // (a3) The temp file contains both reify-debug and reify-permission entries
+    expect(capturedMcpConfig).toEqual({
+      mcpServers: {
+        'reify-debug': {
+          type: 'http',
+          url: 'http://127.0.0.1:3939/mcp',
+        },
+        'reify-permission': {
+          type: 'http',
+          url: permUrl,
+        },
+      },
+    });
+  });
+
+  // (b) onRequest fires → session emits permission_request outbound
+  it('(b) onRequest callback causes session to emit permission_request outbound', async () => {
+    const { server, triggerRequest } = makeMockPermissionServer();
+
+    // Use a hanging process so the invocation stays alive while we test mid-flight events
+    const mockProc = new EventEmitter() as any;
+    const stdout = new PassThrough();
+    mockProc.stdout = stdout;
+    mockProc.stderr = new PassThrough();
+    mockProc.stdin = new PassThrough();
+
+    vi.mocked(spawn).mockImplementation((() => mockProc) as any);
+
+    const session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are helpful.',
+      permissionMcp: { url: 'http://127.0.0.1:29999/mcp', server },
+    } as any);
+    session.onOutput = (msg) => outputs.push(msg);
+
+    // Start an invocation (don't await — it's hanging until stdout closes)
+    const msgPromise = session.handleMessage({
+      type: 'send_message',
+      id: 'msg-perm-b',
+      text: 'Write something',
+    });
+
+    // Give the session a tick to call onRequest
+    await new Promise((r) => setTimeout(r, 10));
+
+    // (b1) The session must have registered an onRequest handler with the permission server
+    expect((server.onRequest as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(1);
+
+    // (b2) Triggering the handler should cause a permission_request outbound
+    triggerRequest({
+      request_id: 'req-b1',
+      tool_name: 'Write',
+      tool_input: { path: '/tmp/x' },
+    });
+
+    await new Promise((r) => setTimeout(r, 10));
+
+    const permReq = outputs.find((o) => o.type === 'permission_request') as any;
+    expect(permReq).toBeDefined();
+    expect(permReq.id).toBe('msg-perm-b');
+    expect(permReq.request_id).toBe('req-b1');
+    expect(permReq.tool_name).toBe('Write');
+    expect(permReq.tool_input).toEqual({ path: '/tmp/x' });
+
+    // Cleanup: close the process
+    stdout.push(null);
+    mockProc.exitCode = 0;
+    mockProc.emit('close', 0);
+    await msgPromise;
+  });
+
+  // (c) handleMessage(permission_decision) calls server.decide()
+  it('(c) handleMessage(permission_decision) calls server.decide()', async () => {
+    const { server, triggerRequest } = makeMockPermissionServer();
+
+    const mockProc = new EventEmitter() as any;
+    const stdout = new PassThrough();
+    mockProc.stdout = stdout;
+    mockProc.stderr = new PassThrough();
+    mockProc.stdin = new PassThrough();
+
+    vi.mocked(spawn).mockImplementation((() => mockProc) as any);
+
+    const session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are helpful.',
+      permissionMcp: { url: 'http://127.0.0.1:29999/mcp', server },
+    } as any);
+    session.onOutput = (msg) => outputs.push(msg);
+
+    const msgPromise = session.handleMessage({
+      type: 'send_message',
+      id: 'msg-perm-c',
+      text: 'Write something',
+    });
+
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Trigger the onRequest to register a pending request_id
+    triggerRequest({ request_id: 'req-c1', tool_name: 'Write', tool_input: { path: '/tmp/y' } });
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Send the permission_decision inbound
+    await session.handleMessage({
+      type: 'permission_decision',
+      request_id: 'req-c1',
+      behavior: 'allow',
+    } as any);
+
+    // server.decide() must have been called with the correct args
+    expect((server.decide as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith('req-c1', { behavior: 'allow' });
+
+    // Cleanup
+    stdout.push(null);
+    mockProc.exitCode = 0;
+    mockProc.emit('close', 0);
+    await msgPromise;
+  });
+
+  // (d) handleMessage(permission_decision) with remember: true calls server.setRemembered()
+  it('(d) permission_decision with remember: true calls server.setRemembered(tool_name)', async () => {
+    const { server, triggerRequest } = makeMockPermissionServer();
+
+    const mockProc = new EventEmitter() as any;
+    const stdout = new PassThrough();
+    mockProc.stdout = stdout;
+    mockProc.stderr = new PassThrough();
+    mockProc.stdin = new PassThrough();
+
+    vi.mocked(spawn).mockImplementation((() => mockProc) as any);
+
+    const session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are helpful.',
+      permissionMcp: { url: 'http://127.0.0.1:29999/mcp', server },
+    } as any);
+    session.onOutput = (msg) => outputs.push(msg);
+
+    const msgPromise = session.handleMessage({
+      type: 'send_message',
+      id: 'msg-perm-d',
+      text: 'Write something',
+    });
+
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Register a pending request for 'Write'
+    triggerRequest({ request_id: 'req-d1', tool_name: 'Write', tool_input: {} });
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Send permission_decision with remember: true
+    await session.handleMessage({
+      type: 'permission_decision',
+      request_id: 'req-d1',
+      behavior: 'allow',
+      remember: true,
+    } as any);
+
+    // Both decide() and setRemembered() should have been called
+    expect((server.decide as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith('req-d1', expect.objectContaining({ behavior: 'allow' }));
+    expect((server.setRemembered as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith('Write');
+
+    // Cleanup
+    stdout.push(null);
+    mockProc.exitCode = 0;
+    mockProc.emit('close', 0);
+    await msgPromise;
+  });
+
+  // (e) permission_decision with no permission server configured produces error outbound
+  it('(e) permission_decision with no permissionMcp configured emits a structured error', async () => {
+    // Session created without permissionMcp
+    const session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are helpful.',
+    });
+    session.onOutput = (msg) => outputs.push(msg);
+
+    await session.handleMessage({
+      type: 'permission_decision',
+      request_id: 'req-e1',
+      behavior: 'allow',
+    } as any);
+
+    const errors = outputs.filter((o) => o.type === 'error');
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as any).message).toMatch(/permission/i);
+    // Should not crash or throw
+  });
+});
+
+describe('SidecarSession reify-debug MCP wiring (task 3210)', () => {
+  let outputs: OutboundMessage[];
+
+  beforeEach(() => {
+    outputs = [];
+    vi.mocked(spawn).mockReset();
+  });
+
+  it('writes reify-debug MCP config unconditionally (no permissionMcp)', async () => {
+    let capturedMcpConfig: unknown = null;
+    let capturedArgs: string[] = [];
+
+    vi.mocked(spawn).mockImplementation((((_cmd: string, args: string[]) => {
+      capturedArgs = args;
+      const mcpConfigIdx = args.indexOf('--mcp-config');
+      if (mcpConfigIdx !== -1) {
+        const filePath = args[mcpConfigIdx + 1];
+        try {
+          capturedMcpConfig = JSON.parse(readFileSync(filePath, 'utf-8'));
+        } catch {}
+      }
+      return createMockProcess([{ type: 'result', session_id: 'sess-debug-mcp' }]);
+    }) as any));
+
+    const session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are helpful.',
+      // No permissionMcp — reify-debug should still be written
+    });
+    session.onOutput = (msg) => outputs.push(msg);
+
+    await session.handleMessage({ type: 'send_message', id: 'msg-debug-mcp', text: 'Hello' });
+
+    // --mcp-config must be present even without permissionMcp
+    const mcpIdx = capturedArgs.indexOf('--mcp-config');
+    expect(mcpIdx).toBeGreaterThanOrEqual(0);
+    expect(capturedArgs[mcpIdx + 1]).toBeTruthy();
+
+    // MCP config contains reify-debug only (no reify-permission)
+    expect(capturedMcpConfig).toEqual({
+      mcpServers: {
+        'reify-debug': {
+          type: 'http',
+          url: 'http://127.0.0.1:3939/mcp',
+        },
+      },
+    });
+  });
+
+  it('does NOT include --permission-prompt-tool when permissionMcp is not configured', async () => {
+    let capturedArgs: string[] = [];
+
+    vi.mocked(spawn).mockImplementation((((_cmd: string, args: string[]) => {
+      capturedArgs = args;
+      return createMockProcess([{ type: 'result', session_id: 'sess-debug-nopp' }]);
+    }) as any));
+
+    const session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are helpful.',
+    });
+    session.onOutput = (msg) => outputs.push(msg);
+
+    await session.handleMessage({ type: 'send_message', id: 'msg-debug-nopp', text: 'Hello' });
+
+    expect(capturedArgs).not.toContain('--permission-prompt-tool');
+  });
+});
+
+describe('SidecarSession permission-mode + allowed-tools (task 3210)', () => {
+  let outputs: OutboundMessage[];
+
+  beforeEach(() => {
+    outputs = [];
+    vi.mocked(spawn).mockReset();
+  });
+
+  function captureSpawnArgs(): string[] {
+    let args: string[] = [];
+    vi.mocked(spawn).mockImplementation((((_cmd: string, a: string[]) => {
+      args = a;
+      return createMockProcess([{ type: 'result', session_id: 'sess-perm-mode' }]);
+    }) as any));
+    return args; // reference captured by closure
+  }
+
+  async function runSession(withPermissionMcp: boolean): Promise<string[]> {
+    let capturedArgs: string[] = [];
+    vi.mocked(spawn).mockImplementation((((_cmd: string, a: string[]) => {
+      capturedArgs = a;
+      return createMockProcess([{ type: 'result', session_id: 'sess-pm' }]);
+    }) as any));
+
+    const config: any = {
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are helpful.',
+    };
+    if (withPermissionMcp) {
+      const { server } = makeMockPermissionServer();
+      config.permissionMcp = { url: 'http://127.0.0.1:29999/mcp', server };
+    }
+    const session = new SidecarSession(config);
+    session.onOutput = (msg) => outputs.push(msg);
+    await session.handleMessage({ type: 'send_message', id: 'msg-pm', text: 'Hello' });
+    return capturedArgs;
+  }
+
+  it('(a) args contain --permission-mode bypassPermissions (with permissionMcp)', async () => {
+    const args = await runSession(true);
+    const idx = args.indexOf('--permission-mode');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(args[idx + 1]).toBe('bypassPermissions');
+  });
+
+  it('(b) args contain --allowed-tools with correct string (with permissionMcp)', async () => {
+    const args = await runSession(true);
+    const idx = args.indexOf('--allowed-tools');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(args[idx + 1]).toBe('Read Edit Write Bash Glob Grep mcp__reify-debug__*');
+  });
+
+  it('(c) args do NOT contain --dangerously-skip-permissions (with permissionMcp)', async () => {
+    const args = await runSession(true);
+    expect(args).not.toContain('--dangerously-skip-permissions');
+  });
+
+  it('(a) args contain --permission-mode bypassPermissions (no permissionMcp)', async () => {
+    const args = await runSession(false);
+    const idx = args.indexOf('--permission-mode');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(args[idx + 1]).toBe('bypassPermissions');
+  });
+
+  it('(b) args contain --allowed-tools with correct string (no permissionMcp)', async () => {
+    const args = await runSession(false);
+    const idx = args.indexOf('--allowed-tools');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(args[idx + 1]).toBe('Read Edit Write Bash Glob Grep mcp__reify-debug__*');
+  });
+
+  it('(c) args do NOT contain --dangerously-skip-permissions (no permissionMcp)', async () => {
+    const args = await runSession(false);
+    expect(args).not.toContain('--dangerously-skip-permissions');
+  });
+});
+
+describe('SidecarSession sandbox wrap (task 3210)', () => {
+  let outputs: OutboundMessage[];
+
+  beforeEach(() => {
+    outputs = [];
+    vi.mocked(spawn).mockReset();
+    vi.mocked(isLandlockAvailable).mockReset();
+    // Restore wrapClaudeArgs default implementation: passthrough with/without landlockExec
+    vi.mocked(wrapClaudeArgs).mockReset();
+    vi.mocked(wrapClaudeArgs).mockImplementation((args: string[], _ws: string, le?: string) =>
+      le ? { cmd: 'python3', args: [le, ...args] } : { cmd: 'claude', args: [...args] }
+    );
+  });
+
+  // (a) landlock available — spawn called with python3 wrap
+  it('(a) landlock_available=true: spawn uses python3 wrap, wrapClaudeArgs called with landlockExec', async () => {
+    const le = '/path/landlock_exec.py';
+    const ws = '/tmp/ws';
+
+    vi.mocked(isLandlockAvailable).mockReturnValue(true);
+    vi.mocked(wrapClaudeArgs).mockImplementation((args: string[], workspace: string, landlockExec?: string) => ({
+      cmd: 'python3',
+      args: [landlockExec!, '--writable', workspace, '--writable', os.homedir() + '/.claude', '--writable', '/tmp', '--', 'claude', ...args],
+    }));
+
+    let spawnCmd = '';
+    let spawnArgs: string[] = [];
+    vi.mocked(spawn).mockImplementation(((cmd: string, args: string[]) => {
+      spawnCmd = cmd;
+      spawnArgs = args;
+      return createMockProcess([{ type: 'result', session_id: 'sess-sandbox-a' }]);
+    }) as any);
+
+    const session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are helpful.',
+      workspace: ws,
+      landlockExec: le,
+    } as any);
+    session.onOutput = (msg) => outputs.push(msg);
+
+    await session.handleMessage({ type: 'send_message', id: 'msg-sandbox-a', text: 'Hello' });
+
+    // spawn called with python3 (not claude directly)
+    expect(spawnCmd).toBe('python3');
+    // first arg in args is the landlockExec path
+    expect(spawnArgs[0]).toBe(le);
+    // writable flags and workspace are present
+    expect(spawnArgs).toContain('--writable');
+    expect(spawnArgs).toContain(ws);
+    // '--' separator present
+    expect(spawnArgs).toContain('--');
+    // 'claude' appears right after '--'
+    const ddIdx = spawnArgs.indexOf('--');
+    expect(spawnArgs[ddIdx + 1]).toBe('claude');
+    // claude-specific args follow (including permission-mode and mcp-config from step-6/step-4)
+    const postClaude = spawnArgs.slice(ddIdx + 2);
+    expect(postClaude).toContain('--permission-mode');
+    expect(postClaude).toContain('bypassPermissions');
+    expect(postClaude).toContain('--mcp-config');
+
+    // wrapClaudeArgs was called with (claudeArgs, workspace, landlockExec)
+    expect(vi.mocked(wrapClaudeArgs)).toHaveBeenCalledTimes(1);
+    const [wrapArgs, wrapWs, wrapLe] = vi.mocked(wrapClaudeArgs).mock.calls[0] as [string[], string, string | undefined];
+    expect(wrapWs).toBe(ws);
+    expect(wrapLe).toBe(le);
+    // the claude args passed to wrapClaudeArgs include the allowlist args
+    expect(wrapArgs).toContain('--permission-mode');
+  });
+
+  // (b) landlock unavailable (but landlockExec provided) — wrapClaudeArgs called with undefined
+  it('(b) landlock_available=false: wrapClaudeArgs called with undefined landlockExec, spawn uses claude', async () => {
+    vi.mocked(isLandlockAvailable).mockReturnValue(false);
+    // wrapClaudeArgs uses default mock (returns {cmd:'claude',...} when le is undefined)
+
+    let spawnCmd = '';
+    vi.mocked(spawn).mockImplementation(((cmd: string, _args: string[]) => {
+      spawnCmd = cmd;
+      return createMockProcess([{ type: 'result', session_id: 'sess-sandbox-b' }]);
+    }) as any);
+
+    const session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are helpful.',
+      workspace: '/tmp/ws',
+      landlockExec: '/path/le.py',  // provided, but probe says unavailable
+    } as any);
+    session.onOutput = (msg) => outputs.push(msg);
+
+    await session.handleMessage({ type: 'send_message', id: 'msg-sandbox-b', text: 'Hello' });
+
+    // spawn called with claude (no python3 wrap since probe failed)
+    expect(spawnCmd).toBe('claude');
+
+    // wrapClaudeArgs was called with undefined landlockExec (probe failed → no wrap)
+    expect(vi.mocked(wrapClaudeArgs)).toHaveBeenCalledTimes(1);
+    const [, , wrapLe] = vi.mocked(wrapClaudeArgs).mock.calls[0] as [string[], string, string | undefined];
+    expect(wrapLe).toBeUndefined();
+  });
+
+  // (c) no landlockExec configured — isLandlockAvailable NOT called, direct claude spawn
+  it('(c) no landlockExec: isLandlockAvailable NOT called, spawn called with claude', async () => {
+    let spawnCmd = '';
+    vi.mocked(spawn).mockImplementation(((cmd: string, _args: string[]) => {
+      spawnCmd = cmd;
+      return createMockProcess([{ type: 'result', session_id: 'sess-sandbox-c' }]);
+    }) as any);
+
+    const session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are helpful.',
+      // No workspace or landlockExec — sandbox not requested
+    });
+    session.onOutput = (msg) => outputs.push(msg);
+
+    await session.handleMessage({ type: 'send_message', id: 'msg-sandbox-c', text: 'Hello' });
+
+    // isLandlockAvailable was NOT called (no sandbox configured)
+    expect(vi.mocked(isLandlockAvailable)).not.toHaveBeenCalled();
+
+    // spawn called with claude (no python3 wrap)
+    expect(spawnCmd).toBe('claude');
+  });
+
+  // (notice-a) sandbox unavailable → emits one notice + console.warn
+  it('(notice-a) landlockExec provided but unavailable: emits sandbox_unavailable notice and console.warn', async () => {
+    vi.mocked(isLandlockAvailable).mockReturnValue(false);
+    vi.mocked(spawn).mockImplementation((() =>
+      createMockProcess([{ type: 'result', session_id: 'sess-notice-a' }])
+    ) as any);
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are helpful.',
+      workspace: '/tmp/ws',
+      landlockExec: '/path/le.py',
+    } as any);
+    session.onOutput = (msg) => outputs.push(msg);
+
+    await session.handleMessage({ type: 'send_message', id: 'msg-notice-a', text: 'Hello' });
+
+    // exactly one notice with code 'sandbox_unavailable'
+    const notices = outputs.filter((o) => o.type === 'notice') as Array<{ type: 'notice'; id: string; code: string; message: string }>;
+    expect(notices).toHaveLength(1);
+    expect(notices[0].code).toBe('sandbox_unavailable');
+    expect(notices[0].id).toBe('');
+    expect(notices[0].message).toMatch(/unrestricted/i);
+
+    // console.warn called with a message mentioning sandbox
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0][0]).toMatch(/sandbox unavailable/i);
+
+    warnSpy.mockRestore();
+  });
+
+  // (notice-b) sandbox available → no notice, no console.warn
+  it('(notice-b) landlockExec provided and available: no sandbox_unavailable notice', async () => {
+    vi.mocked(isLandlockAvailable).mockReturnValue(true);
+    vi.mocked(spawn).mockImplementation((() =>
+      createMockProcess([{ type: 'result', session_id: 'sess-notice-b' }])
+    ) as any);
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are helpful.',
+      workspace: '/tmp/ws',
+      landlockExec: '/path/le.py',
+    } as any);
+    session.onOutput = (msg) => outputs.push(msg);
+
+    await session.handleMessage({ type: 'send_message', id: 'msg-notice-b', text: 'Hello' });
+
+    // no sandbox_unavailable notice
+    const notices = outputs.filter((o) => o.type === 'notice' && (o as any).code === 'sandbox_unavailable');
+    expect(notices).toHaveLength(0);
+
+    // no console.warn
+    expect(warnSpy).not.toHaveBeenCalled();
+
+    warnSpy.mockRestore();
+  });
+
+  // (notice-c) no landlockExec → no notice, no console.warn
+  it('(notice-c) no landlockExec: no sandbox_unavailable notice emitted', async () => {
+    vi.mocked(spawn).mockImplementation((() =>
+      createMockProcess([{ type: 'result', session_id: 'sess-notice-c' }])
+    ) as any);
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are helpful.',
+      // No landlockExec — no sandbox was requested
+    });
+    session.onOutput = (msg) => outputs.push(msg);
+
+    await session.handleMessage({ type: 'send_message', id: 'msg-notice-c', text: 'Hello' });
+
+    // no notice of any kind for sandbox
+    const notices = outputs.filter((o) => o.type === 'notice' && (o as any).code === 'sandbox_unavailable');
+    expect(notices).toHaveLength(0);
+    expect(warnSpy).not.toHaveBeenCalled();
+
+    warnSpy.mockRestore();
+  });
+
+  // (notice-d) idempotency: notice emitted only once across multiple send_message calls
+  it('(notice-d) sandbox_unavailable notice emitted exactly once per session', async () => {
+    vi.mocked(isLandlockAvailable).mockReturnValue(false);
+    vi.mocked(spawn).mockImplementation((() =>
+      createMockProcess([{ type: 'result', session_id: 'sess-notice-d' }])
+    ) as any);
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are helpful.',
+      workspace: '/tmp/ws',
+      landlockExec: '/path/le.py',
+    } as any);
+    session.onOutput = (msg) => outputs.push(msg);
+
+    // First call
+    await session.handleMessage({ type: 'send_message', id: 'msg-notice-d1', text: 'Hello' });
+    // Reset spawn mock for the second call
+    vi.mocked(spawn).mockImplementation((() =>
+      createMockProcess([{ type: 'result', session_id: 'sess-notice-d2' }])
+    ) as any);
+    // Second call
+    await session.handleMessage({ type: 'send_message', id: 'msg-notice-d2', text: 'World' });
+
+    // notice emitted exactly once (not twice)
+    const notices = outputs.filter((o) => o.type === 'notice' && (o as any).code === 'sandbox_unavailable');
+    expect(notices).toHaveLength(1);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+
+    warnSpy.mockRestore();
   });
 });

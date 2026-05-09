@@ -91,8 +91,9 @@ use std::collections::HashMap;
 
 #[cfg(has_occt)]
 use reify_types::{
-    ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryOp,
-    BRepKind, GeometryQuery, Mesh, OpaqueState, QueryError, TessError, Value, WarmStartable,
+    BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, BRepKind, ExportError, ExportFormat, GeometryError,
+    GeometryHandle, GeometryHandleId, GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError,
+    SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE, TessError, Value, WarmStartable,
 };
 
 #[cfg(has_occt)]
@@ -1502,7 +1503,7 @@ impl OcctKernel {
                     && d > 0.0)
                 {
                     return Err(GeometryError::OperationFailed(
-                        "box dimensions must be finite positive values".into(),
+                        BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE.into(),
                     ));
                 }
                 ffi::ffi::make_box(w, h, d)
@@ -1528,7 +1529,7 @@ impl OcctKernel {
                 let r = extract_f64(radius)?;
                 if !(r.is_finite() && r > 0.0) {
                     return Err(GeometryError::OperationFailed(
-                        "sphere radius must be a finite positive value".into(),
+                        SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE.into(),
                     ));
                 }
                 ffi::ffi::make_sphere(r)
@@ -3582,7 +3583,9 @@ mod tests {
             depth: Value::Real(10.0),
         });
         match result {
-            Err(GeometryError::OperationFailed(_)) => {}
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert_eq!(msg, BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, "box-dimensions rejection must emit the byte-identical shared const; got {msg:?}");
+            }
             Err(other) => panic!("expected OperationFailed, got {:?}", other),
             Ok(_) => panic!("expected error for zero-width box"),
         }
@@ -3597,7 +3600,9 @@ mod tests {
             depth: Value::Real(10.0),
         });
         match result {
-            Err(GeometryError::OperationFailed(_)) => {}
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert_eq!(msg, BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, "box-dimensions rejection must emit the byte-identical shared const; got {msg:?}");
+            }
             Err(other) => panic!("expected OperationFailed, got {:?}", other),
             Ok(_) => panic!("expected error for negative-width box"),
         }
@@ -3638,7 +3643,9 @@ mod tests {
             radius: Value::Real(0.0),
         });
         match result {
-            Err(GeometryError::OperationFailed(_)) => {}
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert_eq!(msg, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE, "sphere-radius rejection must emit the byte-identical shared const; got {msg:?}");
+            }
             Err(other) => panic!("expected OperationFailed, got {:?}", other),
             Ok(_) => panic!("expected error for zero-radius sphere"),
         }
@@ -3651,7 +3658,9 @@ mod tests {
             radius: Value::Real(-1.0),
         });
         match result {
-            Err(GeometryError::OperationFailed(_)) => {}
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert_eq!(msg, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE, "sphere-radius rejection must emit the byte-identical shared const; got {msg:?}");
+            }
             Err(other) => panic!("expected OperationFailed, got {:?}", other),
             Ok(_) => panic!("expected error for negative-radius sphere"),
         }
@@ -3690,7 +3699,9 @@ mod tests {
             depth: Value::Real(10.0),
         });
         match result {
-            Err(GeometryError::OperationFailed(_)) => {}
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert_eq!(msg, BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, "box-dimensions rejection must emit the byte-identical shared const; got {msg:?}");
+            }
             Err(other) => panic!("expected OperationFailed, got {:?}", other),
             Ok(_) => panic!("expected error for NaN-width box"),
         }
@@ -3705,7 +3716,9 @@ mod tests {
             depth: Value::Real(10.0),
         });
         match result {
-            Err(GeometryError::OperationFailed(_)) => {}
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert_eq!(msg, BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, "box-dimensions rejection must emit the byte-identical shared const; got {msg:?}");
+            }
             Err(other) => panic!("expected OperationFailed, got {:?}", other),
             Ok(_) => panic!("expected error for infinity-width box"),
         }
@@ -3720,7 +3733,9 @@ mod tests {
             depth: Value::Real(10.0),
         });
         match result {
-            Err(GeometryError::OperationFailed(_)) => {}
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert_eq!(msg, BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, "box-dimensions rejection must emit the byte-identical shared const; got {msg:?}");
+            }
             Err(other) => panic!("expected OperationFailed, got {:?}", other),
             Ok(_) => panic!("expected error for neg-infinity-width box"),
         }
@@ -3761,7 +3776,9 @@ mod tests {
             radius: Value::Real(f64::NAN),
         });
         match result {
-            Err(GeometryError::OperationFailed(_)) => {}
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert_eq!(msg, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE, "sphere-radius rejection must emit the byte-identical shared const; got {msg:?}");
+            }
             Err(other) => panic!("expected OperationFailed, got {:?}", other),
             Ok(_) => panic!("expected error for NaN-radius sphere"),
         }
@@ -3774,7 +3791,9 @@ mod tests {
             radius: Value::Real(f64::INFINITY),
         });
         match result {
-            Err(GeometryError::OperationFailed(_)) => {}
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert_eq!(msg, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE, "sphere-radius rejection must emit the byte-identical shared const; got {msg:?}");
+            }
             Err(other) => panic!("expected OperationFailed, got {:?}", other),
             Ok(_) => panic!("expected error for infinity-radius sphere"),
         }

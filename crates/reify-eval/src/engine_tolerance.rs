@@ -1,6 +1,7 @@
 // Split from engine_build.rs / engine_purposes.rs (task 2792) — tolerance query methods.
 
 use crate::Engine;
+use reify_compiler::CompiledModule;
 use reify_types::Diagnostic;
 
 impl Engine {
@@ -189,5 +190,107 @@ impl Engine {
         });
         let purpose_bound = self.active_tolerance_for(subject_entity_ref);
         crate::tolerance_combine::combine_demanded_tolerance(output_bound, purpose_bound)
+    }
+
+    /// Walk `module.templates`, identify (Input, Output) occurrence templates,
+    /// and emit one imported-tolerance-promise diagnostic per
+    /// (Input × Output × active-purpose-binding) triple by forwarding the
+    /// `Some(diag)` return of [`Engine::check_imported_tolerance_promise`].
+    ///
+    /// # Recognition shapes
+    ///
+    /// - **Input templates** — those whose `(template.name, "tolerance")`
+    ///   value-cell entry passes [`crate::tolerance_promise::extract_input_tolerance_promise`]
+    ///   (i.e. the promise extractor returns `Some`).
+    /// - **Output templates** — those whose constraints contain a
+    ///   `RepresentationWithin(<ValueRef typed StructureRef>, <length-literal>)`
+    ///   shape recognised by [`crate::tolerance_combine::extract_output_tolerance_bound`]
+    ///   (i.e. the bound extractor returns `Some`).
+    ///
+    /// # Subject entity binding
+    ///
+    /// `Engine::active_purpose_bindings` is the canonical
+    /// `purpose_name → entity_ref` map populated by `activate_purpose`. The
+    /// helper iterates the bindings' values (each value is a subject
+    /// `entity_ref`) and treats each as the third argument to
+    /// [`Engine::check_imported_tolerance_promise`].
+    ///
+    /// # Code-agnostic forwarding
+    ///
+    /// The dispatcher `check_imported_tolerance_promise` emits **two** distinct
+    /// `DiagnosticCode`s — `ImportedTolerancePromiseInsufficient` (strict-`<`
+    /// branch) and `InputTolerancePromiseIsZero` (zero-promise branch). This
+    /// helper's contract is to **forward whatever the dispatcher emits**, with
+    /// no code-filtering — both branches must reach `BuildResult.diagnostics`
+    /// so production-side observability matches the unit-test surface in
+    /// `tests/tolerance_import_promise.rs`.
+    ///
+    /// # Empty cases
+    ///
+    /// - No `eval_state`: helper is a no-op (no snapshot to scan).
+    /// - No active purposes: helper is a no-op (no `(input, output, entity)`
+    ///   triple has a subject to demand against).
+    /// - No Input templates OR no Output templates: helper is a no-op (no
+    ///   pair to dispatch on).
+    pub(crate) fn emit_imported_tolerance_promise_diagnostics_for_module(
+        &self,
+        module: &CompiledModule,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        // Bail early if no eval state — no snapshot to scan, so neither the
+        // promise extractor nor the bound extractor can fire.
+        let state = match self.eval_state.as_ref() {
+            Some(s) => s,
+            None => return,
+        };
+
+        // Identify Input occurrence templates — those whose
+        // `extract_input_tolerance_promise` returns Some(_) against the
+        // post-eval snapshot's value-cell map. The probe is bounded by the
+        // existing extractor's complexity (one HashMap lookup + scalar gate).
+        let input_template_names: Vec<&str> = module
+            .templates
+            .iter()
+            .filter(|t| {
+                crate::tolerance_promise::extract_input_tolerance_promise(
+                    &state.snapshot.values,
+                    &t.name,
+                )
+                .is_some()
+            })
+            .map(|t| t.name.as_str())
+            .collect();
+
+        // Identify Output occurrence templates — those whose
+        // `extract_output_tolerance_bound` returns Some(_) against the
+        // post-eval snapshot's constraint map.
+        let output_template_names: Vec<&str> = module
+            .templates
+            .iter()
+            .filter(|t| {
+                crate::tolerance_combine::extract_output_tolerance_bound(
+                    &state.snapshot.graph.constraints,
+                    &t.name,
+                )
+                .is_some()
+            })
+            .map(|t| t.name.as_str())
+            .collect();
+
+        // For every (Input × Output × active-purpose-binding) triple, forward
+        // whatever `check_imported_tolerance_promise` returns. The helper is
+        // code-agnostic: both `ImportedTolerancePromiseInsufficient` and
+        // `InputTolerancePromiseIsZero` codes flow through unchanged.
+        for input_name in &input_template_names {
+            for output_name in &output_template_names {
+                for entity_ref in self.active_purpose_bindings.values() {
+                    if let Some(diag) =
+                        self.check_imported_tolerance_promise(input_name, entity_ref, output_name)
+                    {
+                        diagnostics.push(diag);
+                    }
+                }
+            }
+        }
     }
 }

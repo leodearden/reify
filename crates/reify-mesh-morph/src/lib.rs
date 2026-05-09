@@ -40,7 +40,7 @@ pub use eligibility::{Eligibility, MorphSnapshot, Reason, morph_eligible};
 pub use laplacian::{LaplacianFailure, laplacian_smooth};
 pub use options::{MorphFailure, MorphOptions};
 pub use quality::{QualityVerdict, quality_check};
-pub use types::{BRep, InversionDetails, MetricsBreached, SolverErrorPayload};
+pub use types::{BRep, InversionDetails, SoftFailDetails, SolverErrorPayload};
 
 /// Re-exported so consumers can pattern-match `Reason::BijectionFailure(_)`
 /// without depending on `reify-eval` directly.
@@ -56,11 +56,11 @@ pub use reify_eval::{
 /// `false` otherwise. The structured rejection [`Reason`] is discarded;
 /// callers that need it for failure-mode visibility counters (PRD task #11)
 /// should call [`morph_eligible`] directly.
-pub fn eligible(old_brep: &BRep, new_brep: &BRep) -> bool {
-    // Deref the &BRep — `BRep<'a>` is a `Copy` type alias for
-    // `MorphSnapshot<'a>` and `morph_eligible` takes the snapshot by value.
+pub fn eligible(old_brep: BRep, new_brep: BRep) -> bool {
+    // `BRep` is `Copy` (alias for `MorphSnapshot<'a>`); pass by value matches
+    // `morph_eligible`'s signature directly.
     matches!(
-        eligibility::morph_eligible(*old_brep, *new_brep),
+        eligibility::morph_eligible(old_brep, new_brep),
         Eligibility::Eligible(_)
     )
 }
@@ -92,14 +92,13 @@ pub fn eligible(old_brep: &BRep, new_brep: &BRep) -> bool {
 /// tasks #7 and #9.
 pub fn morph(
     old_mesh: &reify_types::VolumeMesh,
-    old_brep: &BRep,
-    new_brep: &BRep,
+    old_brep: BRep,
+    new_brep: BRep,
     options: &MorphOptions,
 ) -> Result<reify_types::VolumeMesh, MorphFailure> {
     let _ = old_mesh;
     let _ = options;
-    // Deref — see note in `eligible()` above.
-    match eligibility::morph_eligible(*old_brep, *new_brep) {
+    match eligibility::morph_eligible(old_brep, new_brep) {
         Eligibility::Ineligible(reason) => Err(MorphFailure::Ineligible(reason)),
         Eligibility::Eligible(_correspondence_map) => Err(MorphFailure::SolverError(
             SolverErrorPayload::new(
@@ -206,7 +205,7 @@ mod tests {
         let table = TopologyAttributeTable::default();
         let old_brep = make_brep(&old_graph, &values, &table);
         let new_brep = make_brep(&new_graph, &values, &table);
-        assert!(eligible(&old_brep, &new_brep));
+        assert!(eligible(old_brep, new_brep));
     }
 
     #[test]
@@ -219,7 +218,7 @@ mod tests {
         let table = TopologyAttributeTable::default();
         let old_brep = make_brep(&old_graph, &values, &table);
         let new_brep = make_brep(&new_graph, &values, &table);
-        assert!(!eligible(&old_brep, &new_brep));
+        assert!(!eligible(old_brep, new_brep));
     }
 
     // ── Step-7/amendment: morph() Ineligible and Eligible paths ─────────────
@@ -238,7 +237,7 @@ mod tests {
         let new_brep = make_brep(&new_graph, &values, &table);
         let mesh = empty_mesh();
         let options = MorphOptions::default();
-        let result = morph(&mesh, &old_brep, &new_brep, &options);
+        let result = morph(&mesh, old_brep, new_brep, &options);
         assert!(
             matches!(result, Err(MorphFailure::SolverError(_))),
             "eligible path should return SolverError (unimplemented), got: {result:?}"
@@ -257,7 +256,7 @@ mod tests {
         let new_brep = make_brep(&new_graph, &values, &table);
         let mesh = empty_mesh();
         let options = MorphOptions::default();
-        let result = morph(&mesh, &old_brep, &new_brep, &options);
+        let result = morph(&mesh, old_brep, new_brep, &options);
         assert!(matches!(
             result,
             Err(MorphFailure::Ineligible(Reason::StructuralChange))
@@ -330,12 +329,37 @@ mod tests {
                 jacobian: -0.5,
             });
         let _: QualityVerdict =
-            QualityVerdict::SoftFail(crate::types::MetricsBreached {
+            QualityVerdict::SoftFail(crate::types::SoftFailDetails {
                 min_scaled_jacobian: None,
                 pct_below_025: None,
-                max_aspect_ratio_increase: None,
+                max_aspect_ratio_factor: None,
                 degenerate_morphed_element: None,
             });
+    };
+
+    // ── Step 1 (task 3153): pin the by-value `eligible` signature ────────────
+
+    // Compile fence: fails to compile until `eligible` takes `BRep` by value.
+    // Mirrors the boundary/laplacian/quality fence discipline above.
+    #[allow(unused)]
+    const _: fn() = || {
+        let _fn_ref: fn(BRep, BRep) -> bool = eligible;
+        let _ = _fn_ref;
+    };
+
+    // ── Step 3 (task 3153): pin the by-value `morph` signature ───────────────
+
+    // Compile fence: fails to compile until `morph` takes `BRep` by value.
+    // `old_mesh` and `options` remain `&`-bound (not `Copy`).
+    #[allow(unused)]
+    const _: fn() = || {
+        let _fn_ref: fn(
+            &reify_types::VolumeMesh,
+            BRep,
+            BRep,
+            &MorphOptions,
+        ) -> Result<reify_types::VolumeMesh, MorphFailure> = morph;
+        let _ = _fn_ref;
     };
 
     // ── Steps 1-2 (task 3142): Stage-B regression guards ─────────────────────
@@ -379,7 +403,7 @@ mod tests {
 
         let mesh = empty_mesh();
         let options = MorphOptions::default();
-        let result = morph(&mesh, &old_brep, &new_brep, &options);
+        let result = morph(&mesh, old_brep, new_brep, &options);
         assert!(
             matches!(result, Err(MorphFailure::Ineligible(Reason::BijectionFailure(_)))),
             "Stage-B CountMismatch should project to MorphFailure::Ineligible(BijectionFailure), got: {result:?}"
@@ -422,7 +446,7 @@ mod tests {
 
         let mesh = empty_mesh();
         let options = MorphOptions::default();
-        let result = morph(&mesh, &old_brep, &new_brep, &options);
+        let result = morph(&mesh, old_brep, new_brep, &options);
         assert!(
             matches!(
                 result,

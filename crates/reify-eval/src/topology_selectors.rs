@@ -445,6 +445,8 @@ pub(crate) fn validate_angular_tol(
     max: f64,
     max_label: &'static str,
 ) -> Result<(), QueryError> {
+    // `!tol.is_finite()` is redundant (the range check already rejects NaN and ±∞)
+    // but kept for readability — it makes the NaN/infinity guard explicit at a glance.
     if !tol.is_finite() || !(0.0..=max).contains(&tol) {
         return Err(QueryError::QueryFailed(format!(
             "{fn_name}: angular_tol_rad must be finite and in [0, {max_label}] (got {tol})"

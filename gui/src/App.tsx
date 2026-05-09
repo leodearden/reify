@@ -48,6 +48,7 @@ import {
   focusEntity as bridgeFocusEntity,
   claudeSendMessage,
   claudeAbort,
+  claudePermissionDecision,
   subscribeToClaudeEvents,
   isDebugEnabled,
   getKernelStatus,
@@ -102,6 +103,11 @@ const App: Component = () => {
       claudeAbort().catch((err) => {
         console.error('[claude] abort failed:', err);
         showToast(`Abort failed: ${errorMessage(err)}`, 'error');
+      });
+    },
+    onPermissionDecision: ({ requestId, behavior, message, updatedInput, remember }) => {
+      claudePermissionDecision({ requestId, behavior, message, updatedInput, remember }).catch((err) => {
+        showToast(`Permission decision failed: ${errorMessage(err)}`, 'error');
       });
     },
   });
@@ -497,7 +503,19 @@ const App: Component = () => {
     });
   }
 
+  // Guard for File→New and File→Open: returns true when it is safe to proceed.
+  // We check ALL dirty files rather than just the active tab because loadPathIntoStores
+  // replaces the full engine state (initFromState), view state, and current path — any
+  // open buffer with unsaved edits is effectively unreachable after the switch.
+  // TODO(ux): replace window.confirm with a Tauri async dialog (bridge.ask / custom
+  //   modal) once the rest of the confirmation UI migrates away from native prompts.
+  function confirmDiscardIfDirty(): boolean {
+    if (editorStore.state.dirtyFiles.length === 0) return true;
+    return window.confirm('You have unsaved changes. Discard them?');
+  }
+
   async function handleOpen() {
+    if (!confirmDiscardIfDirty()) return;
     try {
       const path = await pickOpenPath();
       if (!path) return;
@@ -510,6 +528,7 @@ const App: Component = () => {
   }
 
   async function handleNew() {
+    if (!confirmDiscardIfDirty()) return;
     try {
       const path = await pickSavePath('untitled.ri', 'ri');
       if (!path) return;

@@ -1880,7 +1880,7 @@ fn match_arm_decl_group_outside_let_collision_emits_diagnostic() {
         is_pub: false,
         type_expr: None,
         value: Expr {
-            kind: ExprKind::NumberLiteral(1.0),
+            kind: ExprKind::NumberLiteral { value: 1.0, is_real: false },
             span: zero_span(),
         },
         where_clause: None,
@@ -2797,7 +2797,7 @@ fn match_arm_decl_group_duplicate_outside_let_anchors_to_first_decl() {
         is_pub: false,
         type_expr: None,
         value: Expr {
-            kind: ExprKind::NumberLiteral(1.0),
+            kind: ExprKind::NumberLiteral { value: 1.0, is_real: false },
             span: zero_span(),
         },
         where_clause: None,
@@ -2812,7 +2812,7 @@ fn match_arm_decl_group_duplicate_outside_let_anchors_to_first_decl() {
         is_pub: false,
         type_expr: None,
         value: Expr {
-            kind: ExprKind::NumberLiteral(2.0),
+            kind: ExprKind::NumberLiteral { value: 2.0, is_real: false },
             span: zero_span(),
         },
         where_clause: None,

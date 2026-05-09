@@ -85,6 +85,7 @@ function makeStore(overrides?: { onSend?: ReturnType<typeof vi.fn>; onAbort?: Re
   return createClaudeStore({
     onSend: overrides?.onSend ?? vi.fn(),
     onAbort: overrides?.onAbort ?? vi.fn(),
+    onPermissionDecision: vi.fn(),
   });
 }
 

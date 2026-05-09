@@ -2093,7 +2093,7 @@ describe('App Ctrl+O open file', () => {
     });
 
     // Mock pickOpenPath to return a path
-    vi.mocked((bridge as any).pickOpenPath).mockResolvedValue('/project/other.ri');
+    vi.mocked(bridge.pickOpenPath).mockResolvedValue('/project/other.ri');
     vi.mocked(bridge.openFile).mockResolvedValue({ path: '/project/other.ri', content: 'structure Other {}' });
 
     render(() => <App />);
@@ -2106,12 +2106,98 @@ describe('App Ctrl+O open file', () => {
 
     // Should call pickOpenPath, then openFile with the returned path
     await waitFor(() => {
-      expect((bridge as any).pickOpenPath).toHaveBeenCalled();
+      expect(bridge.pickOpenPath).toHaveBeenCalled();
     });
 
     await waitFor(() => {
       expect(bridge.openFile).toHaveBeenCalledWith('/project/other.ri');
     });
+  });
+});
+
+describe('App handleOpen dirty-check confirmation', () => {
+  function setupHappyPathMocks() {
+    vi.mocked(bridge.pickOpenPath).mockResolvedValue('/project/other.ri');
+    vi.mocked(bridge.openFile).mockResolvedValue({ path: '/project/other.ri', content: 'structure Other {}' });
+    vi.mocked(bridge.openFileEngine).mockResolvedValue({
+      meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [],
+    });
+  }
+
+  it('Ctrl+O with dirty buffer and confirm cancelled: pickOpenPath not called', async () => {
+    setupHappyPathMocks();
+    await renderAndWaitForReady();
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+    capturedEditorStore.markDirty('/project/bracket.ri');
+
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    try {
+      fireEvent.keyDown(document, { key: 'o', ctrlKey: true });
+      await flushMacrotasks();
+      expect(confirmSpy).toHaveBeenCalledTimes(1);
+      expect(bridge.pickOpenPath).not.toHaveBeenCalled();
+      expect(bridge.openFile).not.toHaveBeenCalled();
+      expect(bridge.openFileEngine).not.toHaveBeenCalled();
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  });
+
+  it('Ctrl+O with dirty buffer and confirm accepted: bridge sequence fires', async () => {
+    setupHappyPathMocks();
+    await renderAndWaitForReady();
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+    capturedEditorStore.markDirty('/project/bracket.ri');
+
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    try {
+      fireEvent.keyDown(document, { key: 'o', ctrlKey: true });
+      await waitFor(() => {
+        expect(bridge.pickOpenPath).toHaveBeenCalled();
+      });
+      await waitFor(() => {
+        expect(bridge.openFile).toHaveBeenCalledWith('/project/other.ri');
+      });
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  });
+
+  it('Ctrl+O with dirty buffer, confirm accepted, and pickOpenPath returns null: openFile/openFileEngine not called', async () => {
+    setupHappyPathMocks();
+    vi.mocked(bridge.pickOpenPath).mockResolvedValue(null);
+    await renderAndWaitForReady();
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+    capturedEditorStore.markDirty('/project/bracket.ri');
+
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    try {
+      fireEvent.keyDown(document, { key: 'o', ctrlKey: true });
+      await flushMacrotasks();
+      expect(confirmSpy).toHaveBeenCalledTimes(1);
+      expect(bridge.pickOpenPath).toHaveBeenCalledTimes(1);
+      expect(bridge.openFile).not.toHaveBeenCalled();
+      expect(bridge.openFileEngine).not.toHaveBeenCalled();
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  });
+
+  it('Ctrl+O with clean buffer: window.confirm not called, bridge sequence fires', async () => {
+    setupHappyPathMocks();
+    await renderAndWaitForReady();
+    // No markDirty — buffer is clean
+
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    try {
+      fireEvent.keyDown(document, { key: 'o', ctrlKey: true });
+      await waitFor(() => {
+        expect(bridge.pickOpenPath).toHaveBeenCalled();
+      });
+      expect(confirmSpy).not.toHaveBeenCalled();
+    } finally {
+      confirmSpy.mockRestore();
+    }
   });
 });
 
@@ -2227,6 +2313,83 @@ describe('App File→New (Ctrl+N) save-as-you-go flow', () => {
       const paths = capturedEditorStore.state.openFiles.map((f: any) => f.path);
       expect(paths).toContain(newPath);
     });
+  });
+});
+
+describe('App handleNew dirty-check confirmation', () => {
+  const newPath = '/user/chosen/new.ri';
+  const newContent = NEW_FILE_TEMPLATE;
+
+  function setupHappyPathMocks() {
+    vi.mocked(bridge.pickSavePath).mockResolvedValue(newPath);
+    vi.mocked(bridge.saveFile).mockResolvedValue(undefined);
+    vi.mocked(bridge.openFile).mockResolvedValue({ path: newPath, content: newContent });
+    vi.mocked(bridge.openFileEngine).mockResolvedValue({
+      meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [],
+    });
+  }
+
+  it('Ctrl+N with dirty buffer and confirm cancelled: pickSavePath not called', async () => {
+    setupHappyPathMocks();
+    await renderAndWaitForReady();
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+    capturedEditorStore.markDirty('/project/bracket.ri');
+
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    try {
+      fireEvent.keyDown(document, { key: 'n', ctrlKey: true });
+      await flushMacrotasks();
+      expect(confirmSpy).toHaveBeenCalledTimes(1);
+      expect(bridge.pickSavePath).not.toHaveBeenCalled();
+      expect(bridge.saveFile).not.toHaveBeenCalled();
+      expect(bridge.openFile).not.toHaveBeenCalled();
+      expect(bridge.openFileEngine).not.toHaveBeenCalled();
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  });
+
+  it('Ctrl+N with dirty buffer and confirm accepted: bridge sequence fires', async () => {
+    setupHappyPathMocks();
+    await renderAndWaitForReady();
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+    capturedEditorStore.markDirty('/project/bracket.ri');
+
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    try {
+      fireEvent.keyDown(document, { key: 'n', ctrlKey: true });
+      await waitFor(() => {
+        expect(bridge.pickSavePath).toHaveBeenCalledWith('untitled.ri', 'ri');
+      });
+      await waitFor(() => {
+        expect(bridge.saveFile).toHaveBeenCalledWith(newPath, newContent);
+      });
+      await waitFor(() => {
+        expect(bridge.openFile).toHaveBeenCalledWith(newPath);
+      });
+      await waitFor(() => {
+        expect(bridge.openFileEngine).toHaveBeenCalledWith(newPath);
+      });
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  });
+
+  it('Ctrl+N with clean buffer: window.confirm not called, bridge sequence fires', async () => {
+    setupHappyPathMocks();
+    await renderAndWaitForReady();
+    // No markDirty — buffer is clean
+
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    try {
+      fireEvent.keyDown(document, { key: 'n', ctrlKey: true });
+      await waitFor(() => {
+        expect(bridge.pickSavePath).toHaveBeenCalledWith('untitled.ri', 'ri');
+      });
+      expect(confirmSpy).not.toHaveBeenCalled();
+    } finally {
+      confirmSpy.mockRestore();
+    }
   });
 });
 
@@ -3285,7 +3448,7 @@ describe('DualViewport wiring', () => {
 /** Minimal valid PersistentViewState for test helpers. */
 function makePersistedState(overrides: Partial<import('../types').PersistentViewState> = {}): import('../types').PersistentViewState {
   return {
-    version: '1',
+    version: '2',
     activeViewId: 'user:my-view',
     userViews: [],
     explicit: {},
@@ -3481,7 +3644,7 @@ describe('App persistence wiring — debounced save (step-31)', () => {
       const raw = localStorage.getItem('reify:views:/test/bracket.ri');
       expect(raw).not.toBeNull();
       const parsed = JSON.parse(raw!);
-      expect(parsed.version).toBe('1');
+      expect(parsed.version).toBe('2');
       expect(typeof parsed.timestamp).toBe('string');
     } finally {
       vi.useRealTimers();
@@ -3536,7 +3699,7 @@ describe('App persistence wiring — Save views action (step-33)', () => {
     await waitFor(() => {
       expect(sidecarPersistence.saveSidecar).toHaveBeenCalledWith(
         '/test/bracket.ri',
-        expect.objectContaining({ version: '1' }),
+        expect.objectContaining({ version: '2' }),
       );
     });
   });
@@ -3584,7 +3747,7 @@ describe('App persistence wiring — camera state restoration (step-37)', () => 
     vi.mocked(bridge.pickOpenPath).mockResolvedValue(path);
     vi.mocked(bridge.openFile).mockResolvedValue({ path, content: '' });
     vi.mocked(sidecarPersistence.loadSidecar).mockResolvedValue({
-      version: '1',
+      version: '2',
       activeViewId: 'auto:default',
       userViews: [],
       explicit: {},

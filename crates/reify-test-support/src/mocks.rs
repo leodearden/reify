@@ -699,6 +699,18 @@ impl QueryKey {
 pub struct MockGeometryKernel {
     next_id: u64,
     operations: Arc<Mutex<Vec<GeometryOpRecord>>>,
+    /// Tolerance values forwarded to every `tessellate(handle, tol)` call,
+    /// in invocation order. Recorded behind an `Arc<Mutex<…>>` so
+    /// integration tests can observe the recorded sequence across an
+    /// engine ownership boundary (mirrors `operations` recorder pattern).
+    /// Task 2874 step-11 adds this field so the per-realization tolerance-
+    /// budget pipeline added by step-12 can be pinned at the kernel
+    /// boundary: the recorder captures the post-budget tolerance the
+    /// engine forwards to the kernel, not the demanded tolerance from the
+    /// engine's tolerance-scope query — so the test catches a regression
+    /// where the budget pipeline is bypassed and `effective_tessellation_tolerance`
+    /// is forwarded instead.
+    tessellate_tolerances: Arc<Mutex<Vec<f64>>>,
     /// Generic handle-only query results (fallback).
     queries: HashMap<GeometryHandleId, Value>,
     /// Per-query-type results (takes precedence over generic).
@@ -714,6 +726,7 @@ impl MockGeometryKernel {
         Self {
             next_id: 1,
             operations: Arc::new(Mutex::new(Vec::new())),
+            tessellate_tolerances: Arc::new(Mutex::new(Vec::new())),
             queries: HashMap::new(),
             typed_queries: HashMap::new(),
             extracted_edges: HashMap::new(),
@@ -1145,6 +1158,28 @@ impl MockGeometryKernel {
         self.operations.clone()
     }
 
+    /// Get a shared reference to recorded tessellate-tolerance values, in
+    /// invocation order. Each entry is the `tolerance` argument passed to a
+    /// `tessellate(handle, tolerance)` call; the recorder grows by one
+    /// element per `tessellate` invocation.
+    ///
+    /// Used by task 2874 step-11/12 to pin that the engine's per-stage
+    /// tolerance-budget pipeline (`compute_realization_tolerance_budget`
+    /// → `kernel.tessellate(_, budget)`) actually routes the demanded
+    /// tolerance through to the kernel, rather than forwarding the
+    /// module-level `effective_tessellation_tolerance` default.
+    pub fn tessellate_tolerances_ref(&self) -> Arc<Mutex<Vec<f64>>> {
+        self.tessellate_tolerances.clone()
+    }
+
+    /// Snapshot of recorded tessellate-tolerance values (clone of the
+    /// underlying `Vec<f64>`). Equivalent to
+    /// `tessellate_tolerances_ref().lock().unwrap().clone()`; provided as a
+    /// convenience symmetric to `operations()`.
+    pub fn tessellate_tolerances(&self) -> Vec<f64> {
+        self.tessellate_tolerances.lock().unwrap().clone()
+    }
+
     /// Return the most recently executed operation, or `None` if no ops have been recorded.
     pub fn last_op(&self) -> Option<GeometryOpRecord> {
         self.operations.lock().unwrap().last().cloned()
@@ -1299,7 +1334,13 @@ impl GeometryKernel for MockGeometryKernel {
             .map_err(|e| ExportError::IoError(e.to_string()))
     }
 
-    fn tessellate(&self, _handle: GeometryHandleId, _tolerance: f64) -> Result<Mesh, TessError> {
+    fn tessellate(&self, _handle: GeometryHandleId, tolerance: f64) -> Result<Mesh, TessError> {
+        // Task 2874 step-11: record the tolerance forwarded to each
+        // `tessellate` call so integration tests can verify the engine's
+        // per-stage tolerance-budget pipeline (step-12) routes the demanded
+        // tolerance through to the kernel rather than the module-level
+        // `effective_tessellation_tolerance` default.
+        self.tessellate_tolerances.lock().unwrap().push(tolerance);
         // Return a minimal valid mesh (one triangle)
         Ok(Mesh {
             vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],

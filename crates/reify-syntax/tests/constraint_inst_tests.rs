@@ -77,7 +77,7 @@ fn parse_multi_arg_constraint_inst() {
 
     // lo: 1 → NumberLiteral(1.0)
     match &inst.args[0].1.kind {
-        ExprKind::NumberLiteral(n) => assert!((n - 1.0).abs() < 1e-9, "expected 1.0"),
+        ExprKind::NumberLiteral { value: n, .. } => assert!((n - 1.0).abs() < 1e-9, "expected 1.0"),
         other => panic!("expected NumberLiteral(1.0) for 'lo', got {:?}", other),
     }
     // hi: t → Ident('t')

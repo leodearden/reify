@@ -777,3 +777,98 @@ fn exists_over_non_collection_emits_diagnostic() {
         errors
     );
 }
+
+// ── task-3252: integer-form overflow literal precision-loss warnings ──────────
+
+#[test]
+fn integer_form_overflow_literal_emits_precision_loss_warning() {
+    // A bare integer literal too large to represent as i64 (e.g. 20-digit integer)
+    // is parsed as f64 (→ Infinity) with is_real=false, classified as LossyReal.
+    // The compiler must emit a non-fatal warning about precision loss.
+    // Covers the expr.rs (compile_expr_guarded) call site.
+    let source = r#"
+        structure S {
+            let x = 99999999999999999999
+        }
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "integer overflow literal should not produce errors, got: {:?}",
+        errors
+    );
+
+    let warnings = warnings_only(&module);
+    let precision_warnings: Vec<_> = warnings
+        .iter()
+        .filter(|d| d.message.contains("integer literal") && d.message.contains("precision"))
+        .collect();
+    assert_eq!(
+        precision_warnings.len(),
+        1,
+        "expected exactly 1 precision-loss warning, got: {:?}",
+        precision_warnings
+    );
+
+    // Assert the label's span covers the offending literal token.
+    let literal_offset = source.find("99999999999999999999").unwrap() as u32;
+    let label = precision_warnings[0]
+        .labels
+        .first()
+        .expect("precision-loss warning should carry a label");
+    assert!(
+        label.span.start <= literal_offset && label.span.end > literal_offset,
+        "expected label span {:?} to cover the literal at byte offset {}",
+        label.span,
+        literal_offset
+    );
+}
+
+#[test]
+fn integer_form_overflow_in_annotation_arg_emits_precision_loss_warning() {
+    // A too-large integer used as an annotation argument is also classified as
+    // LossyReal (via the annotations.rs call site). The compiler must emit the
+    // same non-fatal precision-loss warning.
+    // Covers the annotations.rs (lower_annotations) call site.
+    // @shell accepts a numeric thickness arg (Int or Real), so LossyReal→Real
+    // passes the shape check; the precision-loss warning is the only signal.
+    let source = r#"
+        @shell(99999999999999999999)
+        structure S {
+            param x : Real
+        }
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "integer overflow annotation arg should not produce errors, got: {:?}",
+        errors
+    );
+
+    let warnings = warnings_only(&module);
+    let precision_warnings: Vec<_> = warnings
+        .iter()
+        .filter(|d| d.message.contains("integer literal") && d.message.contains("precision"))
+        .collect();
+    assert_eq!(
+        precision_warnings.len(),
+        1,
+        "expected exactly 1 precision-loss warning in annotation arg, got: {:?}",
+        precision_warnings
+    );
+
+    // Assert the label's span covers the offending literal token.
+    let literal_offset = source.find("99999999999999999999").unwrap() as u32;
+    let label = precision_warnings[0]
+        .labels
+        .first()
+        .expect("precision-loss warning should carry a label");
+    assert!(
+        label.span.start <= literal_offset && label.span.end > literal_offset,
+        "expected label span {:?} to cover the literal at byte offset {}",
+        label.span,
+        literal_offset
+    );
+}

@@ -1527,7 +1527,7 @@ mod tests {
             visited.len()
         );
         assert!(
-            matches!(visited[0].kind, reify_syntax::ExprKind::NumberLiteral(_)),
+            matches!(visited[0].kind, reify_syntax::ExprKind::NumberLiteral { .. }),
             "expected NumberLiteral kind for param default, got {:?}",
             visited[0].kind
         );
@@ -1587,7 +1587,7 @@ mod tests {
         assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
         let mut values: Vec<f64> = vec![];
         super::visit_structure_member_root_exprs(&module, |expr| {
-            if let reify_syntax::ExprKind::NumberLiteral(v) = &expr.kind {
+            if let reify_syntax::ExprKind::NumberLiteral { value: v, .. } = &expr.kind {
                 values.push(*v);
             }
         });

@@ -65,7 +65,7 @@ describe('panels smoke integration', () => {
   });
 
   it('ChatPanel mounts with expected data-testid', () => {
-    const store = createClaudeStore({ onSend: vi.fn(), onAbort: vi.fn() });
+    const store = createClaudeStore({ onSend: vi.fn(), onAbort: vi.fn(), onPermissionDecision: vi.fn() });
     render(() => <ChatPanel store={store} />);
     expect(screen.getByTestId('chat-panel')).toBeTruthy();
   });

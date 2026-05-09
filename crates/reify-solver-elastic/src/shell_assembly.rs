@@ -507,6 +507,27 @@ pub fn shell_element_stiffness(
     k_e
 }
 
+/// Rotation matrix Q = Ry(45°) · Rz(30°) used as a shared test fixture by
+/// both `shell_assembly` and `shell_boundary` tests.
+///
+/// The orientation was chosen so that no entry of Q is zero: the drilling
+/// singularity mixes across all rotational DOFs, and every diagonal entry of
+/// the rotated K is nonzero — avoiding the axis-aligned singularity of an
+/// xy-plane `UNIT_TRI`.
+///
+/// **Single source of truth.** Both test modules import this function.  Edit
+/// the rotation here and the change propagates to `shell_boundary` automatically.
+#[cfg(test)]
+pub(crate) fn tilted_q_for_shell_tests() -> [[f64; 3]; 3] {
+    let cos30 = (30.0_f64.to_radians()).cos();
+    let sin30 = (30.0_f64.to_radians()).sin();
+    let cos45 = (45.0_f64.to_radians()).cos();
+    let sin45 = (45.0_f64.to_radians()).sin();
+    let rz: [[f64; 3]; 3] = [[cos30, -sin30, 0.0], [sin30, cos30, 0.0], [0.0, 0.0, 1.0]];
+    let ry: [[f64; 3]; 3] = [[cos45, 0.0, sin45], [0.0, 1.0, 0.0], [-sin45, 0.0, cos45]];
+    mat3_mul(&ry, &rz)
+}
+
 #[cfg(test)]
 #[allow(clippy::needless_range_loop)]
 #[allow(clippy::identity_op)] // explicit `ndp * node + dof` form mirrors the DOF layout
@@ -815,6 +836,44 @@ mod tests {
         }
     }
 
+    // --- Fixture invariants (step 1) ---
+
+    /// Verify that `tilted_q_for_shell_tests()` returns a proper rotation matrix:
+    /// each row is a unit vector, rows are mutually orthogonal, and det = +1.
+    #[test]
+    fn tilted_q_for_shell_tests_returns_orthonormal_rotation() {
+        let q = super::tilted_q_for_shell_tests();
+
+        // (a) Each row has unit Euclidean norm.
+        for (i, row) in q.iter().enumerate() {
+            let norm_sq: f64 = row.iter().map(|x| x * x).sum();
+            assert!(
+                (norm_sq - 1.0).abs() < 1e-12,
+                "row {i}: ||row||^2 = {norm_sq} (expected 1.0)"
+            );
+        }
+
+        // (b) All pairs of distinct rows are mutually orthogonal.
+        for i in 0..3 {
+            for j in (i + 1)..3 {
+                let dot: f64 = (0..3).map(|k| q[i][k] * q[j][k]).sum();
+                assert!(
+                    dot.abs() < 1e-12,
+                    "rows {i} and {j}: dot = {dot} (expected 0.0)"
+                );
+            }
+        }
+
+        // (c) det(Q) = +1 (right-handed / proper rotation).
+        let det = q[0][0] * (q[1][1] * q[2][2] - q[1][2] * q[2][1])
+            - q[0][1] * (q[1][0] * q[2][2] - q[1][2] * q[2][0])
+            + q[0][2] * (q[1][0] * q[2][1] - q[1][1] * q[2][0]);
+        assert!(
+            (det - 1.0).abs() < 1e-12,
+            "det(Q) = {det} (expected +1.0)"
+        );
+    }
+
     // --- Frame covariance (step 21) ---
 
     #[test]
@@ -837,17 +896,9 @@ mod tests {
                 .map(|(a, b)| a * b)
                 .sum::<f64>();
 
-        // Global rotation Q: 30° about z, then 45° about y.
-        let cos30 = (30.0_f64.to_radians()).cos();
-        let sin30 = (30.0_f64.to_radians()).sin();
-        let cos45 = (45.0_f64.to_radians()).cos();
-        let sin45 = (45.0_f64.to_radians()).sin();
-        // Rz(30°)
-        let rz = [[cos30, -sin30, 0.0], [sin30, cos30, 0.0], [0.0, 0.0, 1.0]];
-        // Ry(45°)
-        let ry = [[cos45, 0.0, sin45], [0.0, 1.0, 0.0], [-sin45, 0.0, cos45]];
-        // Q = Ry · Rz
-        let q = mat3_mul(&ry, &rz);
+        // Global rotation Q = Ry(45°) · Rz(30°) — shared fixture, single source of
+        // truth in `super::tilted_q_for_shell_tests`.
+        let q = super::tilted_q_for_shell_tests();
 
         // Rotate nodes
         let mut rot_nodes = [[0.0_f64; 3]; 3];
@@ -1088,14 +1139,8 @@ mod tests {
         // --- Step 1: flat (xy-plane) stiffness; R_flat = I, so K_flat = K_local ---
         let k_flat = shell_element_stiffness(&UNIT_TRI, t, &mat);
 
-        // --- Step 2: build Q = Ry(45°) · Rz(30°) (same as the covariance test) ---
-        let cos30 = (30.0_f64.to_radians()).cos();
-        let sin30 = (30.0_f64.to_radians()).sin();
-        let cos45 = (45.0_f64.to_radians()).cos();
-        let sin45 = (45.0_f64.to_radians()).sin();
-        let rz = [[cos30, -sin30, 0.0], [sin30, cos30, 0.0], [0.0, 0.0, 1.0]];
-        let ry = [[cos45, 0.0, sin45], [0.0, 1.0, 0.0], [-sin45, 0.0, cos45]];
-        let q = mat3_mul(&ry, &rz);
+        // --- Step 2: build Q = Ry(45°) · Rz(30°) — shared fixture ---
+        let q = super::tilted_q_for_shell_tests();
 
         // --- Step 3: tilt the triangle nodes by Q ---
         let mut tilted_nodes = [[0.0_f64; 3]; 3];

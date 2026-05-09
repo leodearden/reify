@@ -48,21 +48,21 @@ structure S {
             // Arm 0: In => 1
             assert_eq!(arms[0].patterns, vec!["In"]);
             match &arms[0].body.kind {
-                ExprKind::NumberLiteral(v) => assert_eq!(*v, 1.0),
+                ExprKind::NumberLiteral { value: v, .. } => assert_eq!(*v, 1.0),
                 other => panic!("expected NumberLiteral(1), got {:?}", other),
             }
 
             // Arm 1: Out => 2
             assert_eq!(arms[1].patterns, vec!["Out"]);
             match &arms[1].body.kind {
-                ExprKind::NumberLiteral(v) => assert_eq!(*v, 2.0),
+                ExprKind::NumberLiteral { value: v, .. } => assert_eq!(*v, 2.0),
                 other => panic!("expected NumberLiteral(2), got {:?}", other),
             }
 
             // Arm 2: Bidi => 3
             assert_eq!(arms[2].patterns, vec!["Bidi"]);
             match &arms[2].body.kind {
-                ExprKind::NumberLiteral(v) => assert_eq!(*v, 3.0),
+                ExprKind::NumberLiteral { value: v, .. } => assert_eq!(*v, 3.0),
                 other => panic!("expected NumberLiteral(3), got {:?}", other),
             }
         }
@@ -130,7 +130,7 @@ fn parse_match_wildcard_arm() {
             // Second arm: _ => 0 (wildcard)
             assert_eq!(arms[1].patterns, vec!["_"]);
             match &arms[1].body.kind {
-                ExprKind::NumberLiteral(v) => assert_eq!(*v, 0.0),
+                ExprKind::NumberLiteral { value: v, .. } => assert_eq!(*v, 0.0),
                 other => panic!("expected NumberLiteral(0), got {:?}", other),
             }
         }

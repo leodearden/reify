@@ -29,6 +29,8 @@
 //! default at the dispatcher level — this function returns only the
 //! auto-suggested value.
 
+use std::fmt;
+
 use reify_types::Mesh;
 
 /// Configuration for the [`auto_mesh_size_from_features`] heuristic.
@@ -50,30 +52,82 @@ impl Default for AutoSizeConfig {
     }
 }
 
+/// Errors returned by [`auto_mesh_size_from_features`].
+///
+/// The variant carries structured fields so callers can surface diagnostics
+/// without parsing message strings — mirrors the shape of
+/// `reify_types::QueryError::NonFiniteParameter { u, v }`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AutoSizeError {
+    /// A value in `mesh.indices` references a vertex slot beyond
+    /// `mesh.vertices.len() / 3`.
+    IndexOutOfBounds {
+        /// The offending index value.
+        index: u32,
+        /// The vertex count (`mesh.vertices.len() / 3`) at call time.
+        n_vertices: usize,
+    },
+}
+
+impl fmt::Display for AutoSizeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AutoSizeError::IndexOutOfBounds { index, n_vertices } => write!(
+                f,
+                "auto_mesh_size_from_features: index {index} is out of bounds \
+                 for a mesh with {n_vertices} vertices (valid range 0..{n_vertices})"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for AutoSizeError {}
+
 /// Derive the auto-suggested `mesh_size` from the smallest triangle-edge
 /// length in `mesh`.
 ///
 /// Iterates every triangle in `mesh.indices` (chunks of 3), computes the
 /// three edge lengths per triangle (Euclidean distance between the
 /// referenced vertex positions), tracks the global minimum, and returns
-/// `min_edge_length * cfg.feature_multiplier`.
+/// `Ok(min_edge_length * cfg.feature_multiplier)`.
 ///
-/// Returns `0.0` when `mesh.indices` is empty (no triangles → no edges
+/// Returns `Ok(0.0)` when `mesh.indices` is empty (no triangles → no edges
 /// → no minimum). Callers should treat a zero return as "auto-size
 /// unavailable" and fall back to a configured default.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics with an out-of-bounds slice access if any value in
-/// `mesh.indices` is ≥ `mesh.vertices.len() / 3`. The implementation
-/// indexes `mesh.vertices[idx as usize * 3 + {0,1,2}]` directly without
-/// a bounds check on every triangle. The upstream invariant is that
-/// surface meshes produced by the kernel pipeline are well-formed (all
-/// indices in range); enforcing the precondition at the function
-/// boundary would slow the inner loop on the well-formed common case.
-/// If you are passing a `Mesh` from an unverified source, validate
-/// indices against `vertices.len() / 3` before calling.
-pub fn auto_mesh_size_from_features(mesh: &Mesh, cfg: AutoSizeConfig) -> f64 {
+/// Returns [`AutoSizeError::IndexOutOfBounds`] if any value in
+/// `mesh.indices` is ≥ `mesh.vertices.len() / 3`. The check is a single
+/// up-front pass over all indices; the inner per-triangle loop keeps
+/// unconditional indexing so the well-formed common case stays fast.
+///
+/// # Caller invariants
+///
+/// `mesh.vertices.len()` must be a multiple of 3 (one `(x, y, z)` triple
+/// per vertex). This is not validated by the function — in practice all
+/// upstream producers (OCCT tessellator, manifold adapter) emit
+/// triplet-aligned buffers. A malformed buffer whose length is not divisible
+/// by 3 will be silently treated as if the trailing partial coordinate did
+/// not exist (`n_vertices = mesh.vertices.len() / 3` truncates).
+pub fn auto_mesh_size_from_features(
+    mesh: &Mesh,
+    cfg: AutoSizeConfig,
+) -> Result<f64, AutoSizeError> {
+    if mesh.indices.is_empty() {
+        return Ok(0.0);
+    }
+
+    // Single up-front validation pass: fail closed on any out-of-range index
+    // before the inner loop runs. O(n) over mesh.indices; negligible compared
+    // to the O(triangles × 3 edges × sqrt) main computation below.
+    let n_vertices = mesh.vertices.len() / 3;
+    for &idx in &mesh.indices {
+        if idx as usize >= n_vertices {
+            return Err(AutoSizeError::IndexOutOfBounds { index: idx, n_vertices });
+        }
+    }
+
     let mut min_edge: f64 = f64::INFINITY;
     for tri in mesh.indices.chunks_exact(3) {
         let positions: [(f64, f64, f64); 3] = [
@@ -106,7 +160,7 @@ pub fn auto_mesh_size_from_features(mesh: &Mesh, cfg: AutoSizeConfig) -> f64 {
         }
     }
     if min_edge.is_infinite() {
-        return 0.0;
+        return Ok(0.0);
     }
-    min_edge * cfg.feature_multiplier
+    Ok(min_edge * cfg.feature_multiplier)
 }

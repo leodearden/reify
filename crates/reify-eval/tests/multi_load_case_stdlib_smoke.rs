@@ -14,7 +14,8 @@
 //! `MultiCaseResult` struct instances are `Value::Map{"cases" -> Value::Map}`
 //! at runtime — there is no `Value::StructureInstance` variant. Structure
 //! constructors (e.g. `ElasticResult(...)`) are not builtins and evaluate to
-//! `Value::Undef` (confirmed by `engine_eval.rs:115-125`). Therefore this
+//! `Value::Undef` (confirmed by `reify_stdlib::eval_builtin` falling through
+//! to Undef for unknown names). Therefore this
 //! smoke test constructs the runtime-shape Maps **directly via map literals**,
 //! bypassing the struct-constructor path that would Undef-out.
 //!
@@ -40,24 +41,28 @@ use reify_types::{Value, ValueCellId, ValueMap};
 /// # Coverage note
 ///
 /// This file does NOT exercise `LoadCase` or `MultiCaseResult` struct
-/// *definitions* through the parse→compile→eval pipeline. Struct constructors
-/// (e.g. `LoadCase(...)`, `MultiCaseResult(...)`) evaluate to `Value::Undef`
-/// in the current engine, so attempting to assert their fields would always
-/// observe Undef regardless of struct validity. Struct-presence coverage
-/// (template existence, param shapes, defaults) is delegated to the
-/// compiler-level test in
+/// *definitions* through the parse→compile→eval pipeline for their field
+/// values. Struct constructors (e.g. `LoadCase(...)`, `MultiCaseResult(...)`)
+/// evaluate to `Value::Undef` in the current engine, so attempting to assert
+/// their fields would always observe Undef regardless of struct validity.
+/// Struct-presence coverage (template existence, param shapes, defaults) is
+/// delegated to the compiler-level test in
 /// `crates/reify-compiler/tests/multi_load_case_stdlib_tests.rs`, which
-/// inspects the compiled module directly via `load_stdlib_module()`. Future
-/// maintainers: if struct constructors are wired to produce real Values,
-/// promote the struct-construction assertions from the compiler test into
-/// this smoke test.
+/// inspects the compiled module directly via `load_stdlib_module()`.
+///
+/// Stage-2 readiness — when struct-ctor eval lands and the smoke fixture should
+/// swap map literals for ctor calls — is probed by the `#[ignore]`d
+/// `struct_ctor_eval_stage_2_readiness` test below; run via
+/// `cargo test --test multi_load_case_stdlib_smoke -- --ignored`.
 ///
 /// Bindings:
-///   `cases`      = `map{"operating" => 42, "overload" => 99}` (inner Map)
-///   `mcr`        = `map{"cases" => cases}` (struct-shaped outer Map)
-///   `names`      = `case_names(mcr)` → `["operating", "overload"]` (lexicographic)
-///   `op_result`  = `result_for(mcr, "operating")` → `42`
+///   `cases`       = `map{"operating" => 42, "overload" => 99}` (inner Map)
+///   `mcr`         = `map{"cases" => cases}` (struct-shaped outer Map)
+///   `names`       = `case_names(mcr)` → `["operating", "overload"]` (lexicographic)
+///   `op_result`   = `result_for(mcr, "operating")` → `42`
 ///   `miss_result` = `result_for(mcr, "missing")` → `Undef`
+///   `mcr_ctor`    = `MultiCaseResult(cases: map{})` → `Undef` (struct-ctor tripwire; fires
+///                  automatically when ctor eval lands — see `struct_ctor_eval_stage_2_readiness`)
 const SMOKE_SOURCE: &str = r#"
 structure def SmokeFixture {
     let cases = map{"operating" => 42, "overload" => 99}
@@ -65,6 +70,7 @@ structure def SmokeFixture {
     let names      = case_names(mcr)
     let op_result  = result_for(mcr, "operating")
     let miss_result = result_for(mcr, "missing")
+    let mcr_ctor = MultiCaseResult(cases: map{})
 }
 "#;
 
@@ -74,6 +80,41 @@ fn get_value<'a>(values: &'a ValueMap, name: &str) -> &'a Value {
     values
         .get(&id)
         .unwrap_or_else(|| panic!("SmokeFixture.{name} not found in eval result"))
+}
+
+/// Regression guard: asserts that the `std/fea/multi_case` module is
+/// registered by the stdlib loader with zero Error-severity compile
+/// diagnostics.
+///
+/// The accessor smoke test (`multi_load_case_stdlib_smoke_e2e`) constructs the
+/// `MultiCaseResult` runtime shape via raw map literals, bypassing the struct
+/// constructor path. As a result it would still pass even if the loader
+/// silently swallowed a compile error from `fea_multi_case.ri`. This test
+/// closes that gap by inspecting the registered module directly — matching the
+/// approach in `crates/reify-compiler/tests/multi_load_case_stdlib_tests.rs`.
+#[test]
+fn multi_load_case_stdlib_module_registers_without_errors() {
+    let stdlib = reify_compiler::stdlib_loader::load_stdlib();
+    let module = stdlib
+        .iter()
+        .find(|m| m.path.to_string() == "std/fea/multi_case")
+        .expect(
+            "std/fea/multi_case must be registered by the stdlib loader; \
+             check that fea_multi_case.ri is included in the embedded-source \
+             list and registered in stdlib_loader.rs",
+        );
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+
+    assert!(
+        errors.is_empty(),
+        "std/fea/multi_case should have no Error-severity compile diagnostics; \
+         got: {errors:?}"
+    );
 }
 
 /// Smoke test: compile and eval the fixture source; assert all three accessor
@@ -129,5 +170,127 @@ fn multi_load_case_stdlib_smoke_e2e() {
         miss_result.is_undef(),
         "result_for(mcr, \"missing\") should return Undef for a missing key, \
          got: {miss_result:?}"
+    );
+
+    // ── struct-ctor tripwire ──────────────────────────────────────────────────
+    // `MultiCaseResult(cases: map{})` is not a recognised builtin and currently
+    // falls through `reify_stdlib::eval_builtin` to `Value::Undef`. This
+    // assertion fires automatically on every `cargo test` run the moment ctor
+    // eval starts returning a non-Undef value, giving zero-effort signalling
+    // that Stage-2 has landed. When it fires, run the companion `#[ignore]`d
+    // `struct_ctor_eval_stage_2_readiness` test for full contract verification:
+    //   `cargo test --test multi_load_case_stdlib_smoke -- --ignored`
+    let mcr_ctor = get_value(v, "mcr_ctor");
+    assert!(
+        mcr_ctor.is_undef(),
+        "MultiCaseResult(cases: map{{}}) should still evaluate to Undef (struct-ctor eval not yet \
+         implemented); got: {mcr_ctor:?} — struct-ctor eval has landed: run \
+         `cargo test --test multi_load_case_stdlib_smoke -- --ignored` to verify the Stage-2 contract"
+    );
+}
+
+/// Stage-2 readiness probe: verify that the `MultiCaseResult(...)` and
+/// `LoadCase(...)` struct constructors produce the correct `Value::Map` shape,
+/// and that the accessors flowing from `MultiCaseResult` work end-to-end, once
+/// struct-constructor eval lands.
+///
+/// Currently `#[ignore]`d because struct-constructor eval is not yet
+/// implemented: `reify_stdlib::eval_builtin` returns `Value::Undef` for
+/// unrecognised names (including `MultiCaseResult` and `LoadCase`), so the
+/// `Value::Map`-shape assertions panic with the current engine.
+///
+/// Both structs are probed symmetrically so that a partial Stage-2 landing
+/// (e.g. `MultiCaseResult` ctor works but `LoadCase` doesn't) is caught.
+///
+/// To run: `cargo test --test multi_load_case_stdlib_smoke -- --ignored`
+///
+/// Migration cue: when this test passes, swap the `cases`/`mcr` map literals
+/// in `SMOKE_SOURCE` for an actual `MultiCaseResult(cases: map{...})` ctor
+/// call, verify `multi_load_case_stdlib_smoke_e2e` still passes, then delete
+/// this probe.
+#[test]
+#[ignore = "Stage 2: struct-ctor eval not yet implemented"]
+fn struct_ctor_eval_stage_2_readiness() {
+    const STAGE_2_SOURCE: &str = r#"
+structure def SmokeFixture {
+    let mcr = MultiCaseResult(cases: map{"operating" => 42, "overload" => 99})
+    let lc  = LoadCase(name: "tracking", loads: [], supports: [])
+    let names      = case_names(mcr)
+    let op_result  = result_for(mcr, "operating")
+    let miss_result = result_for(mcr, "missing")
+}
+"#;
+
+    let compiled = parse_and_compile_with_stdlib(STAGE_2_SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    // 1. No Error-severity diagnostics from the ctor call.
+    let eval_errors = collect_errors(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "eval should produce no Error-severity diagnostics from the ctor call, \
+         got: {eval_errors:?}"
+    );
+
+    let v = &result.values;
+
+    // 2. `mcr` is a `Value::Map` whose `"cases"` key maps to a `Value::Map`.
+    let mcr = get_value(v, "mcr");
+    match mcr {
+        Value::Map(outer) => match outer.get(&Value::String("cases".to_string())) {
+            Some(Value::Map(_)) => {}
+            Some(other) => panic!("mcr[\"cases\"] should be Value::Map, got: {other:?}"),
+            None => panic!("mcr should have a \"cases\" key, got: {mcr:?}"),
+        },
+        _ => panic!("mcr should be Value::Map, got: {mcr:?}"),
+    }
+
+    // 3. `lc` is a `Value::Map` (LoadCase struct-instance shape) whose `"name"`
+    //    key maps to `Value::String("tracking")`. Probed symmetrically with `mcr`
+    //    so a partial Stage-2 landing (e.g. MultiCaseResult ctor works but
+    //    LoadCase doesn't) is caught. Pinning the `name` field distinguishes a
+    //    real LoadCase ctor result from any incidental empty-Map or wrong-named Map.
+    let lc = get_value(v, "lc");
+    match lc {
+        Value::Map(outer) => match outer.get(&Value::String("name".to_string())) {
+            Some(Value::String(name)) if name == "tracking" => {}
+            Some(other) => panic!(
+                "lc[\"name\"] should be Value::String(\"tracking\"), got: {other:?}"
+            ),
+            None => panic!("lc should have a \"name\" key, got: {lc:?}"),
+        },
+        _ => panic!("lc (LoadCase ctor) should be Value::Map, got: {lc:?}"),
+    }
+
+    // 4. `case_names(mcr)` returns ["operating", "overload"] in lexicographic order.
+    let names = get_value(v, "names");
+    assert_eq!(
+        names,
+        &Value::List(vec![
+            Value::String("operating".to_string()),
+            Value::String("overload".to_string()),
+        ]),
+        "case_names(mcr) should return [\"operating\", \"overload\"] in lexicographic order, \
+         got: {names:?}"
+    );
+
+    // 5. `result_for(mcr, "missing")` returns Undef (silent-Undef contract per
+    //    PRD task #10 deferral, re-flowed through the ctor path so Stage-2 ctor-built
+    //    MCR values certify the missing-key behavior end-to-end — mirrors the
+    //    map-literal coverage in `multi_load_case_stdlib_smoke_e2e`).
+    let miss_result = get_value(v, "miss_result");
+    assert!(
+        miss_result.is_undef(),
+        "result_for(mcr, \"missing\") should return Undef for a missing key on a \
+         ctor-built MultiCaseResult, got: {miss_result:?}"
+    );
+
+    // 6. `result_for(mcr, "operating")` returns Value::Int(42).
+    let op_result = get_value(v, "op_result");
+    assert_eq!(
+        op_result,
+        &Value::Int(42),
+        "result_for(mcr, \"operating\") should return Value::Int(42), got: {op_result:?}"
     );
 }

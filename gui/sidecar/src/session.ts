@@ -1,6 +1,11 @@
 import { spawn } from 'node:child_process';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import * as os from 'node:os';
 import { createLineReader } from './ipc.js';
 import type { InboundMessage, OutboundMessage, SendMessage } from './types.js';
+import type { PermissionServer } from './permission-server.js';
+import { isLandlockAvailable, wrapClaudeArgs } from './sandbox.js';
 
 export interface SessionConfig {
   model: string;
@@ -8,7 +13,48 @@ export interface SessionConfig {
   systemPrompt: string;
   /** Timeout in milliseconds for each SDK invocation. Default: 300_000 (5 minutes). */
   timeoutMs?: number;
+  /**
+   * Optional permission-prompt MCP server to wire Claude CLI's --permission-prompt-tool.
+   * When provided, invokeSdk appends --mcp-config and --permission-prompt-tool args.
+   */
+  permissionMcp?: {
+    /** The MCP endpoint URL (e.g. http://127.0.0.1:<port>/mcp) */
+    url: string;
+    /** The PermissionServer instance for registering the onRequest callback */
+    server: PermissionServer;
+  };
+  /**
+   * The writable workspace directory for the landlock sandbox.
+   * Falls back to `workingDirectory` when not set.
+   * Set from the REIFY_WORKSPACE env var by index.ts at startup.
+   */
+  workspace?: string;
+  /**
+   * Path to the vendored landlock_exec.py helper script.
+   * When set and the kernel supports landlock, the claude child is wrapped with
+   * `python3 <landlockExec> --writable <workspace> --writable ~/.claude --writable /tmp -- claude <args>`.
+   * When absent, no sandbox is applied (silent direct spawn).
+   * Set from the REIFY_LANDLOCK_EXEC env var by index.ts at startup.
+   */
+  landlockExec?: string;
 }
+
+/**
+ * Diagnostic log prefix used by the proc.on('error') handler for non-ABORT spawn errors.
+ * Exported so tests can reference it without hardcoding the string literal.
+ */
+export const SPAWN_ERROR_LOG_PREFIX = '[sidecar] spawned claude error:';
+
+/** MCP endpoint URL for the reify-debug server (always registered). */
+const REIFY_DEBUG_URL = 'http://127.0.0.1:3939/mcp';
+
+/**
+ * Tools Claude is allowed to use without per-call permission prompts.
+ * Covers standard FS/shell tools plus all reify-debug MCP tools.
+ * Using bypassPermissions+allowedTools is strictly tighter than
+ * --dangerously-skip-permissions (which would allow everything).
+ */
+export const ALLOWED_TOOLS = 'Read Edit Write Bash Glob Grep mcp__reify-debug__*';
 
 /**
  * Manages a Claude Code SDK session, dispatching inbound messages
@@ -30,11 +76,62 @@ export class SidecarSession {
   /** The stdin of the currently in-flight claude CLI process, if any. */
   private currentStdin: NodeJS.WritableStream | null = null;
 
+  /**
+   * Maps request_id → tool_name for pending permission requests.
+   * Used to look up the tool_name when a permission_decision with remember:true arrives.
+   */
+  private pendingPermissionRequests: Map<string, string> = new Map();
+
+  /**
+   * Cached MCP config file path and its parent temp directory.
+   * Written once on the first invokeSdk call (lazily) and cleaned up in destroy().
+   * Caching avoids repeated mkdtemp+writeFile+unlink per turn for a fixed-lifetime URL.
+   */
+  private mcpConfigTmpDir: string | null = null;
+  private mcpConfigTmpFile: string | null = null;
+
+  /**
+   * Cached landlock availability probe result.
+   * null = not yet probed; false = unavailable or no landlockExec configured; true = available.
+   * Set once on the first invokeSdk call and reused for subsequent turns.
+   */
+  private landlockOk: boolean | null = null;
+
+  /**
+   * Whether the one-shot sandbox_unavailable notice has already been emitted for this session.
+   * Guards against emitting the warning on every subsequent turn after the first failed probe.
+   */
+  private sandboxNoticeEmitted = false;
+
+  /** The send_message id for the currently in-flight invocation, if any. */
+  private currentInvocationId: string | null = null;
+
   /** Called when the session produces an outbound message. */
   onOutput: (msg: OutboundMessage) => void = () => {};
 
+  /** Returns true while a handleSendMessage invocation is in-flight. Exposed for tests. */
+  isInvocationActive(): boolean {
+    return this.abortController !== null;
+  }
+
   constructor(config: SessionConfig) {
     this.config = config;
+    // Register the permission-request handler immediately if a permission server is configured.
+    // The handler reads currentInvocationId dynamically so it picks up the correct id for
+    // whichever send_message invocation is in flight when the callback fires.
+    if (config.permissionMcp) {
+      config.permissionMcp.server.onRequest((req) => {
+        const id = this.currentInvocationId ?? '';
+        this.pendingPermissionRequests.set(req.request_id, req.tool_name);
+        this.onOutput({
+          type: 'permission_request',
+          id,
+          request_id: req.request_id,
+          tool_name: req.tool_name,
+          tool_input: req.tool_input,
+        });
+      });
+    }
   }
 
   /**
@@ -52,9 +149,22 @@ export class SidecarSession {
     if (this.destroyed) return;
     this.destroyed = true;
     this.abortController?.abort();
+    // Cancel any pending permission requests so suspended HTTP handlers are unblocked.
+    this.config.permissionMcp?.server.cancelAll();
     this.sessionId = null;
     this.toolNameById.clear();
     this.pendingToolUseIds.clear();
+    this.pendingPermissionRequests.clear();
+    this.currentInvocationId = null;
+    // Clean up the cached MCP config file and its temp directory.
+    if (this.mcpConfigTmpFile) {
+      try { fs.unlinkSync(this.mcpConfigTmpFile); } catch {}
+      this.mcpConfigTmpFile = null;
+    }
+    if (this.mcpConfigTmpDir) {
+      try { fs.rmdirSync(this.mcpConfigTmpDir); } catch {}
+      this.mcpConfigTmpDir = null;
+    }
   }
 
   /**
@@ -75,6 +185,9 @@ export class SidecarSession {
         break;
       case 'tool_result':
         this.handleToolResult(msg.tool_name, msg.result, msg.id, msg.tool_use_id);
+        break;
+      case 'permission_decision':
+        this.handlePermissionDecision(msg.request_id, msg.behavior, msg.message, msg.updated_input, msg.remember);
         break;
     }
   }
@@ -113,6 +226,7 @@ export class SidecarSession {
 
     // Create abort controller for this request
     this.abortController = new AbortController();
+    this.currentInvocationId = id;
 
     try {
       await this.invokeSdk(id, prompt);
@@ -126,6 +240,13 @@ export class SidecarSession {
       }
     } finally {
       this.abortController = null;
+      this.currentInvocationId = null;
+      // Cancel any permission requests that were still pending when the invocation
+      // ended (abort, error, or normal exit). Without this, a killed subprocess
+      // leaves the approve_tool HTTP handlers suspended forever since the Claude CLI
+      // closed its side of the connection but pendingPromises still holds the resolvers.
+      this.config.permissionMcp?.server.cancelAll();
+      this.pendingPermissionRequests.clear();
     }
   }
 
@@ -153,7 +274,73 @@ export class SidecarSession {
       args.push('--resume', this.sessionId);
     }
 
-    const proc = spawn('claude', args, {
+    // Write the MCP config file lazily on the first invokeSdk call and cache it for the
+    // session lifetime (mcpConfigTmpFile / mcpConfigTmpDir fields), so subsequent turns
+    // avoid repeated mkdtemp+writeFile I/O. Cleanup happens in destroy().
+    // The config always includes the reify-debug entry (for GUI tooling); the
+    // reify-permission entry is added only when a permission server is configured.
+    if (!this.mcpConfigTmpFile) {
+      this.mcpConfigTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'reify-mcp-'));
+      this.mcpConfigTmpFile = path.join(this.mcpConfigTmpDir, 'mcp-config.json');
+      const mcpConfig = {
+        mcpServers: {
+          'reify-debug': { type: 'http', url: REIFY_DEBUG_URL },
+          ...(this.config.permissionMcp
+            ? { 'reify-permission': { type: 'http', url: this.config.permissionMcp.url } }
+            : {}),
+        },
+      };
+      fs.writeFileSync(this.mcpConfigTmpFile, JSON.stringify(mcpConfig));
+    }
+    args.push('--mcp-config', this.mcpConfigTmpFile);
+    if (this.config.permissionMcp) {
+      args.push('--permission-prompt-tool', 'mcp__reify-permission__approve_tool');
+    }
+
+    // Always bypass per-call permission prompts using an explicit allowlist.
+    // This prevents the GUI from silently stalling on missing permission-UI (see task #3206).
+    // The allowlist is strictly tighter than --dangerously-skip-permissions (which allows all tools).
+    //
+    // Precedence note: --permission-mode bypassPermissions auto-approves ALL tool calls without
+    // asking — so --permission-prompt-tool (reify-permission) is NOT consulted for any tool in
+    // bypassPermissions mode. The two flags are complementary in purpose but operate on different
+    // axes: --allowed-tools restricts which tools Claude is permitted to invoke (anything outside
+    // the list is rejected outright); --permission-mode bypassPermissions means approved tool
+    // calls need no further confirmation prompt. The permission MCP (reify-permission) would only
+    // become active if a future configuration uses a non-bypass permission mode.
+    args.push('--permission-mode', 'bypassPermissions');
+    args.push('--allowed-tools', ALLOWED_TOOLS);
+
+    // Probe landlock availability once per session (cached in this.landlockOk).
+    // When landlockExec is absent (e.g. unit-test invocation), skip the probe entirely.
+    if (this.landlockOk === null) {
+      this.landlockOk = this.config.landlockExec
+        ? isLandlockAvailable(this.config.landlockExec)
+        : false;
+    }
+
+    // When a sandbox was requested (landlockExec set) but the kernel can't deliver it,
+    // emit a one-shot notice so the frontend can surface a toast. The !sandboxNoticeEmitted
+    // guard prevents spamming the notice on every subsequent turn of the same session.
+    if (this.config.landlockExec && !this.landlockOk && !this.sandboxNoticeEmitted) {
+      this.sandboxNoticeEmitted = true;
+      this.onOutput({
+        type: 'notice',
+        id: '',
+        code: 'sandbox_unavailable',
+        message: 'Sandbox unavailable; Claude will run unrestricted.',
+      });
+      console.warn('[sidecar] sandbox unavailable; claude will run unrestricted');
+    }
+
+    // Wrap the claude args with the landlock sandbox when available.
+    // effectiveLandlockExec is set to undefined if the probe failed so wrapClaudeArgs
+    // returns {cmd:'claude', args:[...args]} (passthrough, no python3 wrap).
+    const effectiveLandlockExec = this.landlockOk ? this.config.landlockExec : undefined;
+    const workspaceDir = this.config.workspace ?? this.config.workingDirectory;
+    const { cmd, args: wrappedArgs } = wrapClaudeArgs(args, workspaceDir, effectiveLandlockExec);
+
+    const proc = spawn(cmd, wrappedArgs, {
       cwd: this.config.workingDirectory,
       signal: this.abortController?.signal,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -177,7 +364,7 @@ export class SidecarSession {
     // Mirrors the orphan-stream-error convention used by proc.stdin?.on('error', ...) below.
     proc.on('error', (err: Error & { code?: string }) => {
       if (err.code !== 'ABORT_ERR') {
-        console.error('[sidecar] spawned claude error:', err);
+        console.error(SPAWN_ERROR_LOG_PREFIX, err);
       }
     });
 
@@ -334,6 +521,8 @@ export class SidecarSession {
     } finally {
       clearTimeout(timeoutId);
       this.currentStdin = null;
+      // MCP config file cleanup is deferred to destroy() since the file is
+      // now cached for the session lifetime rather than written per-turn.
     }
 
     // Wait for process exit and check exit code
@@ -465,6 +654,55 @@ export class SidecarSession {
     this.sessionId = null;
     this.toolNameById.clear();
     this.pendingToolUseIds.clear();
+    // Cancel any in-flight permission requests before clearing the tracking map.
+    // Without this, the HTTP handlers awaiting pendingPromises in the permission
+    // server would hang forever (no one calls decide() after the map is cleared).
+    this.config.permissionMcp?.server.cancelAll();
+    this.pendingPermissionRequests.clear();
     this.onOutput({ type: 'ready' });
+  }
+
+  /**
+   * Handle an inbound permission_decision: forward it to the permission server's decide()
+   * and, when remember is true, also call setRemembered() with the associated tool_name.
+   * Emits a structured error outbound when no permission server is configured or the
+   * request_id is unknown.
+   */
+  private handlePermissionDecision(
+    requestId: string,
+    behavior: 'allow' | 'deny',
+    message?: string,
+    updatedInput?: Record<string, unknown>,
+    remember?: boolean,
+  ): void {
+    const permServer = this.config.permissionMcp?.server;
+    if (!permServer) {
+      this.onOutput({
+        type: 'error',
+        id: this.currentInvocationId ?? '',
+        message: 'permission_decision received but no permission server is configured',
+      });
+      return;
+    }
+
+    // Look up the tool_name for this request_id (needed for setRemembered).
+    const toolName = this.pendingPermissionRequests.get(requestId);
+
+    // Build the decision object — omit undefined optional fields.
+    const decision: { behavior: 'allow' | 'deny'; message?: string; updatedInput?: Record<string, unknown> } = { behavior };
+    if (message !== undefined) decision.message = message;
+    if (updatedInput !== undefined) decision.updatedInput = updatedInput;
+
+    permServer.decide(requestId, decision);
+
+    if (remember && toolName !== undefined) {
+      permServer.setRemembered(toolName);
+    }
+
+    // Clean up the tracking entry (decide() on the server already consumed the promise,
+    // keeping the map entry only wastes memory on long sessions).
+    if (toolName !== undefined) {
+      this.pendingPermissionRequests.delete(requestId);
+    }
   }
 }

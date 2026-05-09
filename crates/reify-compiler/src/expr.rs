@@ -370,6 +370,21 @@ fn resolve_collection_sub_to_list(scope: &CompilationScope, sub_name: &str) -> C
     CompiledExpr::value_ref(list_id, list_type)
 }
 
+/// Build the precision-loss warning for an integer-form literal that overflowed i64 bounds
+/// and was classified as [`reify_syntax::NumberClass::LossyReal`].
+///
+/// Shared between `compile_expr_guarded` (this file) and `lower_annotations`
+/// (`crate::annotations`) so both sites emit an identical diagnostic — keeping
+/// the message text in one place mirrors why `classify_number_literal` was
+/// centralised in `reify-syntax` (task 3251).
+pub(crate) fn lossy_real_warning(span: SourceSpan) -> Diagnostic {
+    Diagnostic::warning(
+        "integer literal too large to represent as Int; \
+         using Real (precision may be lost)",
+    )
+    .with_label(DiagnosticLabel::new(span, "precision lost"))
+}
+
 /// Compile an `Expr` from the AST into a `CompiledExpr`, with guard context.
 ///
 /// When `current_guard` is Some, references to names guarded by a different
@@ -385,12 +400,23 @@ pub(crate) fn compile_expr_guarded(
     lambda_counter: &mut u32,
 ) -> CompiledExpr {
     match &expr.kind {
-        reify_syntax::ExprKind::NumberLiteral(v) => {
-            // Whole numbers become Int, fractional become Real
-            if *v == (*v as i64) as f64 && v.is_finite() {
-                CompiledExpr::literal(Value::Int(*v as i64), Type::Int)
-            } else {
-                CompiledExpr::literal(Value::Real(*v), Type::Real)
+        reify_syntax::ExprKind::NumberLiteral { value, is_real } => {
+            // Int/Real classification (incl. integer-form overflow fallback) is
+            // shared with `lower_annotations` via reify_syntax::classify_number_literal
+            // so the boundary cannot drift between literal lowering and annotation
+            // lowering.
+            match reify_syntax::classify_number_literal(*value, *is_real) {
+                reify_syntax::NumberClass::Int(i) => {
+                    CompiledExpr::literal(Value::Int(i), Type::Int)
+                }
+                reify_syntax::NumberClass::Real(f) => {
+                    CompiledExpr::literal(Value::Real(f), Type::Real)
+                }
+                // Mirror site: lower_annotations in annotations.rs handles LossyReal the same way.
+                reify_syntax::NumberClass::LossyReal(f) => {
+                    diagnostics.push(lossy_real_warning(expr.span));
+                    CompiledExpr::literal(Value::Real(f), Type::Real)
+                }
             }
         }
         reify_syntax::ExprKind::QuantityLiteral { value, unit } => {
@@ -1293,7 +1319,7 @@ pub(crate) fn compile_expr_guarded(
                 && let Some(clusters) = scope.sub_match_arm_groups.get(col_sub_name.as_str())
                 && let Some((_group, per_arm)) =
                     clusters.iter().find(|(g, _)| &g.name == group_name)
-                && let reify_syntax::ExprKind::NumberLiteral(n) = &index.kind
+                && let reify_syntax::ExprKind::NumberLiteral { value: n, .. } = &index.kind
             {
                 if !n.is_finite() || *n >= i64::MAX as f64 {
                     // Out-of-range or non-finite index in a cluster-routing pattern:
@@ -1362,7 +1388,7 @@ pub(crate) fn compile_expr_guarded(
                 };
 
                 // For literal integer index, resolve directly to a scoped ValueRef
-                if let reify_syntax::ExprKind::NumberLiteral(n) = &index.kind {
+                if let reify_syntax::ExprKind::NumberLiteral { value: n, .. } = &index.kind {
                     // Task 3045: guard non-finite / out-of-representable-range values first.
                     // `*n as i64` silently saturates to i64::MAX for inputs like 1e20 or
                     // any finite float ≥ 2^63, producing a bogus scoped ValueRef with no
@@ -2230,7 +2256,7 @@ pub(crate) fn compile_expr_guarded(
                         return propagate_poison();
                     }
                     // Check that the argument is a string literal (type check)
-                    if let reify_syntax::ExprKind::NumberLiteral(_) = &args[0].kind {
+                    if let reify_syntax::ExprKind::NumberLiteral { .. } = &args[0].kind {
                         // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
                         return make_poison_literal(
                             diagnostics,

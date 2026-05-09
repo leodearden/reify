@@ -12,7 +12,7 @@
 
 use reify_compiler::DefaultKind;
 use reify_test_support::{compile_source, errors_only};
-use reify_types::{Diagnostic, DimensionVector, Type};
+use reify_types::{CompiledExprKind, Diagnostic, DimensionVector, Type, Value};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -313,15 +313,15 @@ structure S : HasX {
 
 /// Pins the Int→Real widening carve-out that justifies `type_compatible`
 /// (rather than `implicitly_converts_to`) at the annotation cross-check site
-/// in `conformance.rs` — see the in-code comment near that call (~line 508-518).
+/// in `conformance.rs` — see the in-code comment near that call.
 ///
-/// Rationale: whole-number literals like `5.0` / `42` are parsed as `Int`
-/// (documented parser quirk, `reify-parser/src/literals.rs`). Without the
-/// widening carve-out, `let x : Real = 42` would emit a spurious type-mismatch
-/// diagnostic even though Int values are usable wherever Real is expected.
+/// Rationale: integer-form literals (no `.`/`e`/`E` in source text) lower as
+/// `Type::Int` (see `expr.rs:388-395`). Without the widening carve-out,
+/// `let x : Real = 42` would emit a spurious type-mismatch diagnostic even
+/// though Int values are usable wherever Real is expected.
 ///
 /// The neighbouring mismatch test (`annotated_let_expr_type_mismatch_emits_diagnostic`)
-/// relies on both the parser quirk AND the Length/Real cross-dimension
+/// relies on both the Int-lowering behaviour AND the Length/Real cross-dimension
 /// incompatibility to trigger; it does not exercise the widening relation.
 /// The happy-path test (`annotated_let_injected_cell_uses_annotation_type`)
 /// uses `5mm` (already Scalar<Length>) which similarly bypasses widening.
@@ -1015,4 +1015,290 @@ structure S : T {
          expression. Diagnostics: {:?}",
         trait_member_mismatch_a
     );
+}
+
+// ── task 3184: int-vs-real AST distinction — compiler-level tests ─────────────
+
+/// RED test for task 3184: `1.0` (a whole-number decimal literal) must lower to
+/// `Value::Real(1.0)` with `result_type == Type::Real`, not `Value::Int(1)`.
+///
+/// Before the fix, `expr.rs` used a value-based heuristic: any f64 that equals
+/// its integer cast becomes `Int`. So `1.0` → `Int(1)`. This test FAILS until
+/// step-4 replaces the heuristic with the `is_real` flag added to the AST in
+/// step-2.
+///
+/// The `cell_type` assertion (annotation authoritative) passes both before and
+/// after the fix. Only `default_expr.result_type` and `default_expr.kind` are
+/// the RED assertions.
+#[test]
+fn whole_number_real_literal_compiles_as_real() {
+    let source = r#"
+trait HasX {
+    let x : Real = 1.0
+}
+structure S : HasX {
+}
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("expected template S");
+
+    let x_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "x")
+        .expect("expected value_cell 'x' to be injected from trait HasX");
+
+    assert_eq!(
+        x_cell.cell_type,
+        Type::Real,
+        "cell_type must be Type::Real (annotation authoritative)"
+    );
+
+    let default_expr = x_cell
+        .default_expr
+        .as_ref()
+        .expect("expected a default_expr on the let cell for 'x'");
+
+    assert_eq!(
+        default_expr.result_type,
+        Type::Real,
+        "default_expr.result_type must be Type::Real for `1.0`; \
+         before task 3184 step-4 it was Type::Int (value-based heuristic). Got: {:?}",
+        default_expr.result_type
+    );
+
+    match &default_expr.kind {
+        CompiledExprKind::Literal(Value::Real(v)) => assert_eq!(
+            *v,
+            1.0,
+            "default_expr.kind must be Literal(Value::Real(1.0)), got value {}",
+            v
+        ),
+        other => panic!(
+            "default_expr.kind must be Literal(Value::Real(1.0)) — \
+             before task 3184 step-4 it was Literal(Value::Int(1)); got: {:?}",
+            other
+        ),
+    }
+}
+
+/// Regression guard for task 3184 step-4: `let x : Real = 42` (bare integer token,
+/// no `.`/`e`/`E`) must continue to compile cleanly via Int→Real widening.
+///
+/// The `is_real` flag for `42` is false, so the expression lowers as `Int(42)`.
+/// The annotation `: Real` is accepted via `type_compatible` at the cross-check site.
+///
+/// Pins two invariants:
+///   1. No error diagnostic — widening still works after the fix.
+///   2. The raw `default_expr` carries `Value::Int(42)`, not `Value::Real(42.0)`.
+///      Widening happens at the annotation cross-check layer, not at literal lowering.
+#[test]
+fn integer_literal_in_real_param_still_widens() {
+    let source = r#"
+trait HasX {
+    let x : Real = 42
+}
+structure S : HasX {
+}
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors — `let x : Real = 42` must widen Int to Real via \
+         `type_compatible` at the annotation cross-check site. Got: {:?}",
+        errors
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("expected template S");
+
+    let x_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "x")
+        .expect("expected value_cell 'x' to be injected from trait HasX");
+
+    assert_eq!(
+        x_cell.cell_type,
+        Type::Real,
+        "cell_type must be Type::Real (annotation authoritative)"
+    );
+
+    let default_expr = x_cell
+        .default_expr
+        .as_ref()
+        .expect("expected a default_expr on the let cell for 'x'");
+
+    match &default_expr.kind {
+        CompiledExprKind::Literal(Value::Int(v)) => assert_eq!(
+            *v,
+            42,
+            "default_expr.kind must be Literal(Value::Int(42)), got value {}",
+            v
+        ),
+        other => panic!(
+            "default_expr.kind must be Literal(Value::Int(42)) — integer tokens \
+             (no `.`/`e`/`E`) always lower as Int even with a Real annotation; got: {:?}",
+            other
+        ),
+    }
+}
+
+// ── task 3249: exponent-form Real literal coverage (esc-3184-54) ──────────────
+
+/// Shared compile-and-assert helper for the three exponent-form regression tests
+/// below.  Builds `trait HasX { let x : Real = <literal> } structure S : HasX {}`,
+/// compiles it, and asserts:
+///
+/// 1. Zero error diagnostics.
+/// 2. `x_cell.cell_type == Type::Real` (annotation authoritative; sanity only).
+/// 3. `default_expr.result_type == Type::Real` (catches Int re-classification).
+/// 4. `default_expr.kind == Literal(Value::Real(expected_value))` (catches
+///    value-typed regression with the most specific signal).
+///
+/// `label` is a short human-readable tag included in assertion failure messages
+/// (e.g. `"lowercase e (1e6)"`) for quick triage.
+fn assert_let_real_literal(literal: &str, expected_value: f64, label: &str) {
+    let source = format!(
+        "trait HasX {{\n    let x : Real = {literal}\n}}\nstructure S : HasX {{}}\n"
+    );
+    let module = compile_source(&source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no compile errors for `{}` literal, got: {:?}",
+        label,
+        errors
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("expected template S");
+
+    let x_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "x")
+        .expect("expected value_cell 'x' to be injected from trait HasX");
+
+    assert_eq!(
+        x_cell.cell_type,
+        Type::Real,
+        "cell_type must be Type::Real (annotation authoritative) for `{}`",
+        label
+    );
+
+    let default_expr = x_cell
+        .default_expr
+        .as_ref()
+        .expect("expected a default_expr on the let cell for 'x'");
+
+    assert_eq!(
+        default_expr.result_type,
+        Type::Real,
+        "default_expr.result_type must be Type::Real for `{}`; \
+         a regression dropping a character check from the `is_real` classifier in \
+         `lower_number_literal` in reify-syntax/src/ts_parser.rs would emit Type::Int \
+         for integer-equal exponent forms. Got: {:?}",
+        label,
+        default_expr.result_type
+    );
+
+    match &default_expr.kind {
+        CompiledExprKind::Literal(Value::Real(v)) => assert_eq!(
+            *v,
+            expected_value,
+            "default_expr.kind must be Literal(Value::Real({:?})) for `{}`, got value {}",
+            expected_value,
+            label,
+            v
+        ),
+        other => panic!(
+            "default_expr.kind must be Literal(Value::Real({:?})) for `{}` — \
+             a regression dropping an `'e'`/`'E'` check from the `is_real` classifier \
+             in `lower_number_literal` (reify-syntax/src/ts_parser.rs) would emit \
+             Literal(Value::Int(...)) via the integer-cast branch in the NumberLiteral \
+             lowering arm of reify-compiler/src/expr.rs for integer-equal exponent forms; \
+             got: {:?}",
+            expected_value,
+            label,
+            other
+        ),
+    }
+}
+
+/// Regression guard for esc-3184-54: lowercase-e exponent form `1e6` must lower
+/// to `Value::Real(1_000_000.0)` with `result_type == Type::Real`.
+///
+/// Production code under test: the `is_real` classifier in `lower_number_literal`
+/// in `crates/reify-syntax/src/ts_parser.rs` (look for `text.contains('e')`).
+///
+/// Regression model: if the `text.contains('e')` check were dropped from the
+/// `is_real` disjunction, `is_real` would be `false` for `1e6`. The f64 value
+/// `1_000_000.0` is integer-equal (`1e6 == (1000000_i64) as f64`), so the literal
+/// would silently fall through the integer-cast branch in the NumberLiteral lowering
+/// arm of `reify-compiler/src/expr.rs` and be emitted as `Value::Int(1000000)` with
+/// `Type::Int` — passing the existing test suite. This test is the tripwire that
+/// would catch that silent mis-classification.
+///
+/// The `cell_type` assertion (annotation authoritative) passes both before and after
+/// a hypothetical regression. Only `default_expr.result_type` and `default_expr.kind`
+/// are the regression-catching assertions.
+#[test]
+fn exponent_form_lowercase_e_real_literal_compiles_as_real() {
+    assert_let_real_literal("1e6", 1_000_000.0, "lowercase e (1e6)");
+}
+
+/// Regression guard for esc-3184-54: uppercase-E exponent form `1E6` must lower
+/// to `Value::Real(1_000_000.0)` with `result_type == Type::Real`.
+///
+/// Production code under test: the `is_real` classifier in `lower_number_literal`
+/// in `crates/reify-syntax/src/ts_parser.rs` (look for `text.contains('E')`).
+///
+/// Regression model: if the `text.contains('E')` check were dropped from the
+/// `is_real` disjunction, `is_real` would be `false` for `1E6`. The f64 value
+/// `1_000_000.0` is integer-equal (`1E6 == (1000000_i64) as f64`), so the literal
+/// would silently fall through the integer-cast branch in the NumberLiteral lowering
+/// arm of `reify-compiler/src/expr.rs` and be emitted as `Value::Int(1000000)` with
+/// `Type::Int` — passing the existing test suite. This test is the tripwire that
+/// would catch that silent mis-classification.
+///
+/// The `cell_type` assertion (annotation authoritative) passes both before and after
+/// a hypothetical regression. Only `default_expr.result_type` and `default_expr.kind`
+/// are the regression-catching assertions.
+#[test]
+fn exponent_form_uppercase_e_real_literal_compiles_as_real() {
+    assert_let_real_literal("1E6", 1_000_000.0, "uppercase E (1E6)");
+}
+
+/// Value-preservation sanity check for esc-3184-54: negative-exponent form `1e-5`
+/// must lower to `Value::Real(1e-5_f64)` with `result_type == Type::Real`.
+///
+/// Production code under test: the `is_real` classifier in `lower_number_literal`
+/// in `crates/reify-syntax/src/ts_parser.rs` (look for `text.contains('e')`).
+///
+/// **Note:** unlike the `1e6`/`1E6` tests, this case **cannot** serve as a
+/// regression tripwire for esc-3184-54. The f64 value `0.00001` is NOT integer-equal,
+/// so a regression dropping `'e'` from the `is_real` disjunction would set
+/// `is_real = false`, but the literal would still reach `Value::Real(0.00001)` via
+/// the non-integer-equal Real fallback in the NumberLiteral lowering arm of
+/// `reify-compiler/src/expr.rs` — both `result_type == Type::Real` and
+/// `Value::Real(0.00001)` would still hold. This test is a **value-preservation
+/// sanity check** for the negative-exponent code path, not a regression tripwire.
+#[test]
+fn exponent_form_negative_exponent_real_literal_compiles_as_real() {
+    assert_let_real_literal("1e-5", 1e-5_f64, "negative exponent (1e-5)");
 }

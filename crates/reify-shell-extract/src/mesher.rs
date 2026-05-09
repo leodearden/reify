@@ -137,13 +137,12 @@ pub struct MesherResult {
 /// Errors returned by [`mesh_mid_surface`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum MesherError {
-    /// `merge_tolerance` must be finite, strictly positive, AND its reciprocal
-    /// must be finite (i.e. the value must not be so small that
-    /// `1.0 / merge_tolerance` overflows to ±inf). Subnormal (denormal)
-    /// positive values that satisfy `> 0.0 && is_finite()` but have an
-    /// infinite reciprocal are rejected here, because they would cause
-    /// `inv_tol = +inf` in the dedup hash, silently collapsing every vertex
-    /// into the `i64::MIN` / `i64::MAX` boundary bins.
+    /// `merge_tolerance` must be strictly positive, finite, and normal (not
+    /// subnormal). Subnormal (denormal) positive values satisfy `> 0.0 &&
+    /// is_finite()`, but produce reciprocals large enough (~2^1022 for the
+    /// largest subnormals) that `coord * inv_tol` overflows to ±Inf for any
+    /// non-tiny coordinate, silently collapsing all vertices into the ±Inf
+    /// saturation buckets and corrupting the dedup hash.
     InvalidMergeTolerance {
         /// The offending value supplied by the caller.
         value: f64,
@@ -165,14 +164,18 @@ pub enum MesherError {
         /// Number of thickness entries in the mesh.
         thickness_len: usize,
     },
-    /// A triangle index references a vertex beyond `mesh.vertices.len()`.
-    OutOfRangeTriangleIndex {
-        /// Zero-based index of the offending triangle in `mesh.triangles`.
-        triangle_index: usize,
-        /// The vertex index that is out of range.
-        vertex_index: u32,
-        /// The total number of vertices in the mesh.
-        vertices_len: usize,
+    /// A vertex coordinate in `mesh.vertices` is non-finite (`NaN`, `+Inf`, or
+    /// `-Inf`). Non-finite coordinates silently corrupt the dedup hash:
+    /// `NaN` casts to `0` (all NaN vertices collapse into the origin bin) and
+    /// `±Inf` saturates to `i64::MIN`/`i64::MAX` (all infinite vertices
+    /// merge into the same boundary bin). Both failure modes produce incorrect
+    /// mesh topology without any runtime error.
+    NonFiniteVertex {
+        /// Zero-based index of the vertex in `mesh.vertices` whose coordinate
+        /// is non-finite.
+        vertex_index: usize,
+        /// The specific non-finite coordinate value (`NaN`, `+Inf`, or `-Inf`).
+        coord: f64,
     },
     /// A thickness entry in `mesh.thickness` is non-finite (`NaN`, `+Inf`, or
     /// `-Inf`). Non-finite thickness values would poison the per-vertex averaged
@@ -186,18 +189,14 @@ pub enum MesherError {
         /// The specific non-finite thickness value (`NaN`, `+Inf`, or `-Inf`).
         value: f64,
     },
-    /// A vertex coordinate in `mesh.vertices` is non-finite (`NaN`, `+Inf`, or
-    /// `-Inf`). Non-finite coordinates silently corrupt the dedup hash:
-    /// `NaN` casts to `0` (all NaN vertices collapse into the origin bin) and
-    /// `±Inf` saturates to `i64::MIN`/`i64::MAX` (all infinite vertices
-    /// merge into the same boundary bin). Both failure modes produce incorrect
-    /// mesh topology without any runtime error.
-    NonFiniteVertex {
-        /// Zero-based index of the vertex in `mesh.vertices` whose coordinate
-        /// is non-finite.
-        vertex_index: usize,
-        /// The specific non-finite coordinate value (`NaN`, `+Inf`, or `-Inf`).
-        coord: f64,
+    /// A triangle index references a vertex beyond `mesh.vertices.len()`.
+    OutOfRangeTriangleIndex {
+        /// Zero-based index of the offending triangle in `mesh.triangles`.
+        triangle_index: usize,
+        /// The vertex index that is out of range.
+        vertex_index: u32,
+        /// The total number of vertices in the mesh.
+        vertices_len: usize,
     },
     /// One or more triangles failed the quality gate after `remesh_iterations`
     /// rounds of smoothing. Carries the full quality metrics and the
@@ -220,11 +219,11 @@ impl std::fmt::Display for MesherError {
         match self {
             MesherError::InvalidMergeTolerance { value } => write!(
                 f,
-                "merge_tolerance must be finite, strictly positive, and its reciprocal \
-                 must also be finite (got {value}); subnormal values where \
-                 `1.0 / merge_tolerance` overflows to ±inf corrupt the dedup hash bins; \
-                 use 1e-9 for bit-exact binary-MC output or a larger value for \
-                 float-noisy producers"
+                "merge_tolerance must be strictly positive, finite, and normal \
+                 (got {value}); subnormal values produce reciprocals that overflow \
+                 vertex bin keys, silently collapsing all vertices into the ±Inf \
+                 saturation buckets; use 1e-9 for bit-exact binary-MC output or a \
+                 larger value for float-noisy producers"
             ),
             MesherError::InvalidMinAspectRatio { value } => write!(
                 f,
@@ -246,14 +245,12 @@ impl std::fmt::Display for MesherError {
                 "mesh.thickness.len() ({thickness_len}) ≠ mesh.vertices.len() \
                  ({vertices_len}); the two parallel arrays must be the same length"
             ),
-            MesherError::OutOfRangeTriangleIndex {
-                triangle_index,
-                vertex_index,
-                vertices_len,
-            } => write!(
+            MesherError::NonFiniteVertex { vertex_index, coord } => write!(
                 f,
-                "triangle {triangle_index} references vertex index {vertex_index} \
-                 which is out of range (mesh has {vertices_len} vertices)"
+                "vertex {vertex_index} contains non-finite coordinate {coord}; \
+                 vertex coordinates must be finite (NaN silently collapses into \
+                 the dedup origin bin; ±Inf saturates to i64 boundary bins, \
+                 merging unrelated vertices and corrupting mesh topology)"
             ),
             MesherError::NonFiniteThickness { vertex_index, value } => write!(
                 f,
@@ -262,12 +259,14 @@ impl std::fmt::Display for MesherError {
                  duplicate-vertex merges and propagate to downstream FEA stiffness \
                  matrix assembly)"
             ),
-            MesherError::NonFiniteVertex { vertex_index, coord } => write!(
+            MesherError::OutOfRangeTriangleIndex {
+                triangle_index,
+                vertex_index,
+                vertices_len,
+            } => write!(
                 f,
-                "vertex {vertex_index} contains non-finite coordinate {coord}; \
-                 vertex coordinates must be finite (NaN silently collapses into \
-                 the dedup origin bin; ±Inf saturates to i64 boundary bins, \
-                 merging unrelated vertices and corrupting mesh topology)"
+                "triangle {triangle_index} references vertex index {vertex_index} \
+                 which is out of range (mesh has {vertices_len} vertices)"
             ),
             MesherError::QualityBelowThreshold {
                 metrics,
@@ -288,6 +287,32 @@ impl std::fmt::Display for MesherError {
 }
 
 impl std::error::Error for MesherError {}
+
+// ── Crate-visible quantization utility ───────────────────────────────────────
+
+/// Returns `true` if `value` is a valid inverse-tolerance operand: strictly
+/// positive, finite, and normal (not subnormal).
+///
+/// **Structural boundary, not safety boundary.**  The gate rejects subnormals
+/// at the float type-system boundary.  This is *not* a magnitude-based safety
+/// check: the smallest accepted value, `f64::MIN_POSITIVE` (2^-1022 ≈ 2.2e-308),
+/// has a reciprocal of ~4.5e307 — large enough that
+/// `(coord * inv_tol).round() as i64` saturates to `i64::MIN` / `i64::MAX`
+/// for any coordinate with `|coord| ≥ 1.0`.  Very small *normal* tolerances
+/// therefore produce the same silent vertex-collapse pathology that this gate's
+/// previous docstring described as exclusive to subnormals.
+///
+/// **Residual hazard.**  For the full magnitude-based caller obligation —
+/// `coord_max / merge_tolerance < i64::MAX as f64` (~9.2e18) — see the
+/// **Preconditions** sections of [`mesh_mid_surface`] and
+/// [`crate::pruning::prune_branches`].
+///
+/// Used by both [`mesh_mid_surface`] and [`crate::pruning::prune_branches`]
+/// to gate their respective tolerance parameters at the same structural rule.
+#[inline]
+pub(crate) fn is_quantization_tolerance_valid(value: f64) -> bool {
+    value > 0.0 && value.is_finite() && !value.is_subnormal()
+}
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
 
@@ -429,7 +454,7 @@ fn triangle_min_angle_degrees(p0: [f64; 3], p1: [f64; 3], p2: [f64; 3]) -> f64 {
 ///
 /// | Variant | Condition |
 /// |---------|-----------|
-/// | [`MesherError::InvalidMergeTolerance`] | `merge_tolerance ≤ 0`, non-finite, or subnormal (where `1.0/x` would overflow to ±inf) |
+/// | [`MesherError::InvalidMergeTolerance`] | `merge_tolerance ≤ 0`, non-finite, or subnormal  |
 /// | [`MesherError::InvalidMinAspectRatio`] | `min_aspect_ratio ∉ (0, 1]` |
 /// | [`MesherError::InvalidMinAngleDegrees`] | `min_angle_degrees ∉ (0, 60)` |
 /// | [`MesherError::InconsistentInputMesh`] | `thickness.len() ≠ vertices.len()` |
@@ -458,14 +483,11 @@ pub fn mesh_mid_surface(
     options: &MesherOptions,
 ) -> Result<MesherResult, MesherError> {
     // ── 1. Validate options ───────────────────────────────────────────────────
-    // Reject merge_tolerance if it is ≤ 0, non-finite, OR subnormal — i.e.
-    // any value where `1.0 / merge_tolerance` would overflow to ±inf.  Such
-    // subnormals pass `> 0.0 && is_finite()` but produce `inv_tol = +inf` in
-    // `dedup_vertices`, silently collapsing all vertices into two boundary bins.
-    if options.merge_tolerance <= 0.0
-        || !options.merge_tolerance.is_finite()
-        || !(1.0_f64 / options.merge_tolerance).is_finite()
-    {
+    // Reject merge_tolerance if it is ≤ 0, non-finite, or subnormal.
+    // `is_quantization_tolerance_valid` centralises the rule shared with
+    // `prune_branches`.  See its doc for the structural-boundary rationale
+    // and the residual saturation hazard for small-but-normal tolerances.
+    if !is_quantization_tolerance_valid(options.merge_tolerance) {
         return Err(MesherError::InvalidMergeTolerance {
             value: options.merge_tolerance,
         });
@@ -1561,22 +1583,26 @@ mod tests {
         );
     }
 
-    // ── task-3194 step-1: subnormal merge_tolerance rejection ─────────────────
+    // ── task-3194/3222 step-1: subnormal merge_tolerance rejection ───────────
 
-    /// `mesh_mid_surface` rejects subnormal `merge_tolerance` values where
-    /// `1.0 / merge_tolerance` overflows to `+inf`.
+    /// `mesh_mid_surface` rejects all subnormal `merge_tolerance` values.
     ///
-    /// Subnormal (denormal) positive values pass the current `> 0.0 &&
-    /// is_finite()` gate but produce `inv_tol = +inf` in `dedup_vertices`,
-    /// which makes every bin key saturate to `i64::MIN` or `i64::MAX` —
-    /// silently collapsing all vertices into two boundary bins regardless of
-    /// their actual positions.
+    /// Subnormal (denormal) positive values are rejected by the
+    /// `is_subnormal()` guard.  Even subnormals whose reciprocal fits in f64
+    /// (e.g. `2^-1023` → `1/x ≈ 8.99e307`) still cause `coord * inv_tol` to
+    /// overflow to ±Inf for any non-tiny coordinate, silently collapsing all
+    /// vertices into one or two extreme buckets.  The earlier
+    /// `!(1.0/x).is_finite()` guard failed to reject this class.
     ///
-    /// Test values chosen:
-    /// - `f64::MIN_POSITIVE / 4.0` = `2^-1024`: a subnormal where
-    ///   `1.0 / x = 2^1024 > f64::MAX` → overflows to `+inf`.
-    /// - `5e-324`: the smallest positive denormal (`2^-1074`); reciprocal
-    ///   is `2^1074 ≫ f64::MAX` → `+inf`.
+    /// Test values:
+    /// - `f64::MIN_POSITIVE / 4.0` = `2^-1024`: subnormal, `1/x` overflows to
+    ///   `+inf` (caught by both old and new gate).
+    /// - `f64::MIN_POSITIVE / 2.0` = `2^-1023`: subnormal, but `1/x ≈ 8.99e307`
+    ///   is **finite** — the new `is_subnormal()` gate catches this; the old
+    ///   `!(1.0/x).is_finite()` gate did NOT.
+    /// - `5e-324`: the smallest positive denormal (`2^-1074`), `1/x` = `+inf`.
+    /// - `f64::MIN_POSITIVE` (`2^-1022`): the smallest **normal** positive —
+    ///   must still be accepted (not subnormal).
     #[test]
     fn mesh_mid_surface_rejects_subnormal_merge_tolerance() {
         let empty = MidSurfaceMesh {
@@ -1587,12 +1613,8 @@ mod tests {
 
         // `f64::MIN_POSITIVE / 4.0` = 2^-1024 — subnormal, 1/x overflows to +inf.
         let subnormal_a = f64::MIN_POSITIVE / 4.0;
-        assert!(!subnormal_a.is_subnormal() || subnormal_a.is_sign_positive(),
+        assert!(subnormal_a.is_subnormal() && subnormal_a.is_sign_positive(),
             "test setup: subnormal_a should be a positive subnormal");
-        assert!(
-            !( 1.0_f64 / subnormal_a ).is_finite(),
-            "test setup: 1.0 / subnormal_a must be +inf for this test to be meaningful"
-        );
         let err = mesh_mid_surface(
             &empty,
             &MesherOptions { merge_tolerance: subnormal_a, ..MesherOptions::default() },
@@ -1603,12 +1625,29 @@ mod tests {
             "expected InvalidMergeTolerance({subnormal_a}), got {err:?}"
         );
 
+        // `f64::MIN_POSITIVE / 2.0` = 2^-1023 — subnormal whose reciprocal IS finite
+        // (~8.99e307).  This is the class that the old `!(1.0/x).is_finite()` gate
+        // MISSED; the new `is_subnormal()` gate must catch it.
+        let subnormal_c = f64::MIN_POSITIVE / 2.0;
+        assert!(subnormal_c.is_subnormal() && subnormal_c.is_sign_positive(),
+            "test setup: subnormal_c (2^-1023) should be a positive subnormal");
+        assert!(
+            (1.0_f64 / subnormal_c).is_finite(),
+            "test setup: 1.0 / subnormal_c must be finite — this is the gap the old gate missed"
+        );
+        let err_c = mesh_mid_surface(
+            &empty,
+            &MesherOptions { merge_tolerance: subnormal_c, ..MesherOptions::default() },
+        )
+        .expect_err("subnormal merge_tolerance (f64::MIN_POSITIVE/2) must be rejected");
+        assert!(
+            matches!(err_c, MesherError::InvalidMergeTolerance { value } if value == subnormal_c),
+            "expected InvalidMergeTolerance({subnormal_c}), got {err_c:?}"
+        );
+
         // `5e-324` ≈ 2^-1074 — the smallest positive denormal; reciprocal is +inf.
         let subnormal_b = 5e-324_f64;
-        assert!(
-            !( 1.0_f64 / subnormal_b ).is_finite(),
-            "test setup: 1.0 / 5e-324 must be +inf"
-        );
+        assert!(subnormal_b.is_subnormal(), "test setup: 5e-324 must be subnormal");
         let err2 = mesh_mid_surface(
             &empty,
             &MesherOptions { merge_tolerance: subnormal_b, ..MesherOptions::default() },
@@ -1619,10 +1658,10 @@ mod tests {
             "expected InvalidMergeTolerance(5e-324), got {err2:?}"
         );
 
-        // `f64::MIN_POSITIVE` itself must still be ACCEPTED (its reciprocal is finite).
+        // `f64::MIN_POSITIVE` is the smallest NORMAL positive (2^-1022) — must be ACCEPTED.
         assert!(
-            ( 1.0_f64 / f64::MIN_POSITIVE ).is_finite(),
-            "test setup: 1.0 / f64::MIN_POSITIVE must be finite"
+            !f64::MIN_POSITIVE.is_subnormal(),
+            "test setup: f64::MIN_POSITIVE must be normal (not subnormal)"
         );
         mesh_mid_surface(
             &empty,

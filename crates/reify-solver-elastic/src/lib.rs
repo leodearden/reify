@@ -35,6 +35,8 @@
 //!     ShellStress,
 //!     ShellElementStress, shell_element_frame, shell_element_stress,
 //!     DirichletBc, apply_dirichlet_row_elimination,
+//!     FaceOrder, apply_body_force, apply_point_load, apply_traction_load,
+//!     SupportKind, SupportBodyKind, SupportCompatibility, build_support_bcs,
 //! };
 //!
 //! let _: TetP1 = TetP1;
@@ -101,6 +103,26 @@
 //! assert_eq!(bc.clone(), bc, "DirichletBc must round-trip through Clone");
 //! // Verify apply_dirichlet_row_elimination is callable (empty bcs = no-op).
 //! let _ = apply_dirichlet_row_elimination;
+//!
+//! // Neumann BC smoke tests (T2918): verify public surface is callable.
+//! let _ = FaceOrder::P1Tri;
+//! let _ = FaceOrder::P2Tri;
+//! let mut f_smoke = vec![0.0_f64; 12];
+//! apply_point_load(&mut f_smoke, 0, [1.0, 2.0, 3.0]);
+//! assert_eq!(f_smoke[0], 1.0, "apply_point_load smoke: f[0]");
+//! assert_eq!(f_smoke[1], 2.0, "apply_point_load smoke: f[1]");
+//! assert_eq!(f_smoke[2], 3.0, "apply_point_load smoke: f[2]");
+//!
+//! // Shell BC smoke tests (T8): verify public surface is callable.
+//! let _ = SupportKind::Fixed;
+//! let _ = SupportKind::Pinned;
+//! let _ = SupportBodyKind::Shell;
+//! let _ = SupportBodyKind::Tet;
+//! let _ = SupportCompatibility::Ok;
+//! let _ = SupportCompatibility::PinnedOnTetEquivalentToFixed;
+//! let (bcs_t8, compat_t8) = build_support_bcs(&[0], SupportKind::Fixed, SupportBodyKind::Shell);
+//! assert_eq!(bcs_t8.len(), 6, "FixedSupport on shell node 0 → 6 BCs");
+//! assert_eq!(compat_t8, SupportCompatibility::Ok, "Fixed on Shell → Ok compat");
 //! ```
 
 pub mod assembly;
@@ -108,13 +130,17 @@ pub mod boundary;
 pub mod constitutive;
 pub mod elements;
 pub mod shell_assembly;
+pub mod shell_boundary;
 pub mod shell_result;
 
 pub use assembly::{
     AssemblyElement, AssemblyMode, ElementOrder, ElementStiffness, assemble_global_stiffness,
     element_stiffness,
 };
-pub use boundary::{DirichletBc, apply_dirichlet_row_elimination};
+pub use boundary::{
+    DirichletBc, FaceOrder, apply_body_force, apply_dirichlet_row_elimination, apply_point_load,
+    apply_traction_load,
+};
 pub use constitutive::IsotropicElastic;
 pub use elements::{
     Jacobian, QuadraturePoint, ReferenceCoord, ReferenceElement,
@@ -124,6 +150,9 @@ pub use elements::{
     tet_p2::TetP2,
 };
 pub use shell_assembly::{ShellFrame, build_shell_frame, plane_stress_d, shell_element_stiffness};
+pub use shell_boundary::{
+    SupportBodyKind, SupportCompatibility, SupportKind, build_support_bcs,
+};
 pub use shell_result::{
     ShellElementStress, ShellStress, shell_element_frame, shell_element_stress,
 };

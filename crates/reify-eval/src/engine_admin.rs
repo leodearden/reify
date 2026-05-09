@@ -170,6 +170,13 @@ impl Engine {
             // `Engine::execute_realization_ops` and cleared at every build
             // entry point.
             swept_kind_table: crate::sweep_classifier::SweptKindTable::default(),
+            // Empty realization cache (task 2874). Populated by
+            // `execute_realization_ops` after fully-successful realizations
+            // when a demanded tolerance is available; consulted at the start
+            // of the helper to short-circuit kernel re-execution when a
+            // cached handle satisfies the request under the partial-order
+            // rule.
+            realization_cache: crate::realization_cache::RealizationCache::new(),
             // Only initialised in test / `test-instrumentation` builds; the
             // field is absent in production (see lib.rs and engine_eval.rs
             // for the matching cfg gates on the declaration and read site).
@@ -217,6 +224,77 @@ impl Engine {
         &self.swept_kind_table
     }
 
+    /// **Test-instrumentation only — not a stable public metric.**
+    ///
+    /// Immutable access to the per-engine [`RealizationCache`] populated by
+    /// `execute_realization_ops` after fully-successful realizations whose
+    /// demanded tolerance is known. Tests use this accessor to assert that
+    /// `(entity_id, ReprKind::BRep, demanded_tol)` lookups return the
+    /// expected cached `GeometryHandleId` after `build()` /
+    /// `build_snapshot()` / `tessellate_realizations()` runs.
+    ///
+    /// Mirrors the cfg-gating pattern used by [`cache_store`](Self::cache_store):
+    /// the cache stores kernel-internal `GeometryHandleId` values, so exposing
+    /// the accessor in production builds would leak kernel implementation
+    /// detail into the public surface. Task 2874 (initial cache wiring)
+    /// adds the read-only test seam; broader cache invalidation control
+    /// surfaces are deferred to a follow-up.
+    ///
+    /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn realization_cache(
+        &self,
+    ) -> &crate::realization_cache::RealizationCache<reify_types::GeometryHandleId> {
+        &self.realization_cache
+    }
+
+    /// Flush the per-engine [`RealizationCache`](crate::realization_cache::RealizationCache),
+    /// dropping every cached `(entity_id, repr_kind, demanded_tol) →
+    /// GeometryHandleId` entry.
+    ///
+    /// **Production escape hatch (task 2874, step-22).** Gives callers
+    /// explicit control over cache invalidation when they know an external
+    /// event has rendered cached `GeometryHandleId`s stale — for example,
+    /// swapping the geometry kernel via test seams, or an upstream module
+    /// reload that did not flow through `edit_source` (e.g. a CLI workflow
+    /// that constructs a fresh `CompiledModule` and feeds it in via a
+    /// non-`edit_source` path).
+    ///
+    /// **Most callers do NOT need to call this manually.** Both
+    /// [`Engine::edit_param`](crate::Engine::edit_param) and
+    /// [`Engine::edit_source`](crate::Engine::edit_source) already invoke
+    /// the same reset internally near function entry (the auto-invalidation
+    /// hook points pinned by tests
+    /// `edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot`
+    /// and `edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build`
+    /// in `tests/tolerance_wiring_e2e.rs`). This method is the escape hatch
+    /// for scenarios that fall OUTSIDE those hook points; it is NOT a
+    /// required pre-`build_snapshot` step.
+    ///
+    /// **Shape**: takes `&mut self`, returns nothing, idempotent on an
+    /// already-empty cache. Mirrors the precedent set by
+    /// [`Engine::clear_param_overrides`](Self::clear_param_overrides) — no
+    /// cfg gate, no return value, single-purpose mutator. The READ-side
+    /// accessor [`Engine::realization_cache`](Self::realization_cache)
+    /// keeps its `#[cfg(any(test, feature = "test-instrumentation"))]`
+    /// gate (cache contents are kernel-internal `GeometryHandleId` values
+    /// that should not leak into the production surface), but the
+    /// WRITE-side mutator is unconditionally available so production
+    /// callers can satisfy the cache-invalidation contract that the
+    /// `Engine::realization_cache` field's docstring documents.
+    ///
+    /// **What this method does NOT touch**: `eval_state`, `snapshot`,
+    /// `cache`, `journal`, `feature_tag_table`, `topology_attribute_table`,
+    /// `param_overrides`, registered solvers/kernels, or any other engine
+    /// state. The reset is single-purpose: only `realization_cache` is
+    /// reseat to a fresh [`RealizationCache::new()`](crate::realization_cache::RealizationCache::new).
+    ///
+    /// Pinned by `clear_realization_cache_public_api_resets_cache_for_production_callers`
+    /// in `tests/tolerance_wiring_e2e.rs`.
+    pub fn clear_realization_cache(&mut self) {
+        self.realization_cache = crate::realization_cache::RealizationCache::new();
+    }
+
     /// Construct an Engine with the embedded stdlib as its prelude.
     ///
     /// This is the standard constructor for production use. For tests that
@@ -237,17 +315,16 @@ impl Engine {
     /// design decisions").
     ///
     /// Reads the static linker-collected set of [`reify_types::KernelRegistration`] records
-    /// once at startup, picks the lexicographically smallest entry by `name`
-    /// (matching the dispatcher's tie-break contract and the `collect_registry`
-    /// BTreeMap key ordering), invokes its `factory` to instantiate a
-    /// [`GeometryKernel`], and forwards to [`Engine::with_prelude`] with the
-    /// embedded stdlib.
+    /// once at startup, picks the **BRep-preferring lex-smallest** entry (see
+    /// [`crate::kernel_registry::pick_lexmin_brep_kernel`]), invokes its
+    /// `factory` to instantiate a [`GeometryKernel`], and forwards to
+    /// [`Engine::with_prelude`] with the embedded stdlib.
     ///
     /// # v0.2 single-kernel scope
     ///
     /// In v0.2 OCCT is the only adapter that submits a registration (gated on
     /// `cfg(has_occt)` in `crates/reify-kernel-occt/src/register.rs`), so the
-    /// lex-smallest pick is unambiguous. In v0.3 once additional adapters
+    /// BRep-preferring pick is unambiguous. In v0.3 once additional adapters
     /// (`reify-kernel-manifold`, `-fidget`, `-openvdb`) ship, the per-op
     /// dispatch decision moves into [`crate::dispatcher::dispatch`] — which
     /// already accepts a `&BTreeMap<String, &CapabilityDescriptor>`
@@ -263,20 +340,22 @@ impl Engine {
     /// None)`. The existing build-path error surface ("no geometry kernel
     /// registered") fires cleanly without a non-functional stub kernel.
     ///
-    /// # Manifold stub feature gate
+    /// # BRep-preferring picker (task 3224)
     ///
-    /// `reify-kernel-manifold`'s `inventory::submit!` is gated on
-    /// `#[cfg(feature = "stub_register")]` (no `cfg(test)` clause — see
-    /// rationale in `crates/reify-kernel-manifold/src/register.rs`).  In
-    /// production builds without that feature the Manifold stub contributes
-    /// **no entry** to `kernel_registry::registry()`, so the lex-min
-    /// tie-break in [`crate::kernel_registry::pick_lexmin_kernel`] is a
-    /// no-op for that kernel.  This prevents `"manifold" < "occt"` from
-    /// silently routing geometry ops through an unimplemented stub when no
-    /// operator has explicitly requested the Manifold kernel.  Integration
-    /// test binaries activate the feature via a self-dev-dep in
-    /// `crates/reify-kernel-manifold/Cargo.toml` — see the
-    /// `stub_register` feature comment there for the full rationale.
+    /// This constructor uses [`crate::kernel_registry::pick_lexmin_brep_kernel`]
+    /// rather than the pure [`crate::kernel_registry::pick_lexmin_kernel`].  The
+    /// distinction matters if a binary ever links both `reify-kernel-manifold`
+    /// (Mesh-only stub; name `"manifold"`) and `reify-kernel-occt` (full BRep;
+    /// name `"occt"`): `"manifold" < "occt"` in ASCII order, so a pure lex-min
+    /// pick would silently route every BRep op through the Manifold stub which
+    /// returns `OperationFailed`.  The BRep-preferring picker avoids this by
+    /// filtering for BRep-capable kernels first.
+    ///
+    /// When no registered kernel claims any BRep pair (e.g. a hypothetical
+    /// Mesh-only build), the picker falls back to pure lex-min — a Mesh-only
+    /// binary still wants *some* kernel.  Empty-registry semantics are
+    /// unchanged: `None` is returned and forwarded to `Engine::with_prelude`
+    /// as before.
     ///
     /// # Why additive (not a replacement)
     ///
@@ -288,23 +367,23 @@ impl Engine {
     ///
     /// # Operator visibility
     ///
-    /// A structured tracing event is emitted after the lex-min pick; see
+    /// A structured tracing event is emitted after the pick; see
     /// [`crate::kernel_registry::emit_kernel_selection`] for the level-selection
     /// contract. The event fires only when a [`tracing::Subscriber`] is installed,
     /// so bare tests and binaries that install no subscriber are unaffected.
     pub fn with_registered_kernel(constraint_checker: Box<dyn ConstraintChecker>) -> Self {
-        // Centralised lex-min: both this constructor and (in v0.3+) any
-        // dispatcher selection share the same tie-break helper, so the
-        // "lex-smallest by `name`" invariant lives in one place rather than
-        // being independently re-derived. The helper reads the memoized
-        // [`crate::kernel_registry::registry`] BTreeMap, so the inventory walk
-        // happens at most once per process even if other call paths
-        // (collect_registry, future dispatcher wiring) also hit the registry.
-        let picked = crate::kernel_registry::pick_lexmin_kernel();
+        // BRep-preferring lex-min picker (task 3224): uses pick_lexmin_brep_kernel
+        // rather than pick_lexmin_kernel so a Mesh-only kernel registered under a
+        // lex-smaller name (e.g. "manifold" < "occt") cannot silently win the pick
+        // when a BRep-capable kernel is also registered. The fallback to pure lex-min
+        // (when no entry claims a BRep pair) preserves Mesh-only-binary semantics.
+        // The helper reads the OnceLock-memoized registry(), so the inventory walk
+        // happens at most once per process even if other call paths also hit it.
+        let picked = crate::kernel_registry::pick_lexmin_brep_kernel();
         if let Some(reg) = picked {
             let total = crate::kernel_registry::registry().len();
-            // Same `&'static` map as `pick_lexmin_kernel` saw — `registry()` is
-            // `OnceLock`-memoized, so the count cannot disagree with the pick.
+            // Same `&'static` map as pick_lexmin_brep_kernel saw — registry() is
+            // OnceLock-memoized, so the count cannot disagree with the pick.
             crate::kernel_registry::emit_kernel_selection(reg.name, total);
         }
         let kernel: Option<Box<dyn GeometryKernel>> = picked.map(|reg| (reg.factory)());

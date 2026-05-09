@@ -14,12 +14,19 @@ pub(crate) fn lower_annotations(
                 .filter_map(|expr| {
                     use reify_syntax::ExprKind;
                     match &expr.kind {
-                        ExprKind::NumberLiteral(value) => {
-                            if *value == value.floor() && value.abs() < i64::MAX as f64 {
-                                Some(reify_types::AnnotationArg::Int(*value as i64))
-                            } else {
-                                Some(reify_types::AnnotationArg::Real(*value))
-                            }
+                        ExprKind::NumberLiteral { value, is_real } => {
+                            // Int/Real classification (incl. integer-form overflow fallback) is
+                            // shared with `compile_expr_guarded` via
+                            // reify_syntax::classify_number_literal so the two sites cannot drift.
+                            Some(match reify_syntax::classify_number_literal(*value, *is_real) {
+                                reify_syntax::NumberClass::Int(i) => reify_types::AnnotationArg::Int(i),
+                                reify_syntax::NumberClass::Real(f) => reify_types::AnnotationArg::Real(f),
+                                // Mirror site: compile_expr_guarded in expr.rs handles LossyReal the same way.
+                                reify_syntax::NumberClass::LossyReal(f) => {
+                                    diagnostics.push(crate::expr::lossy_real_warning(expr.span));
+                                    reify_types::AnnotationArg::Real(f)
+                                }
+                            })
                         }
                         ExprKind::StringLiteral(s) => {
                             Some(reify_types::AnnotationArg::String(s.clone()))

@@ -216,58 +216,93 @@ fn faces_by_normal_zero_target_returns_query_failed() {
     }
 }
 
-#[test]
-fn faces_by_normal_negative_tol_returns_query_failed() {
+fn assert_faces_by_normal_tol_rejected(tol: f64) {
     let parent = GeometryHandleId(1);
     let mut kernel = MockGeometryKernel::new();
-    let result = topology_selectors::faces_by_normal(&mut kernel, parent, [0.0, 0.0, 1.0], -0.1);
+    let result = topology_selectors::faces_by_normal(&mut kernel, parent, [0.0, 0.0, 1.0], tol);
     match result {
-        Err(QueryError::QueryFailed(msg)) => {
-            assert!(
-                msg.contains("angular_tol_rad"),
-                "error should mention 'angular_tol_rad', got: {msg:?}"
-            );
-        }
-        other => panic!("expected Err(QueryFailed) for negative tol, got {:?}", other),
+        Err(QueryError::QueryFailed(msg)) => assert!(
+            msg.contains("angular_tol_rad"),
+            "error should mention 'angular_tol_rad', got: {msg:?}"
+        ),
+        other => panic!(
+            "expected Err(QueryFailed) for tol {:?}, got {:?}",
+            tol, other
+        ),
     }
+}
+
+#[test]
+fn faces_by_normal_negative_tol_returns_query_failed() {
+    assert_faces_by_normal_tol_rejected(-0.1);
 }
 
 #[test]
 fn faces_by_normal_tol_above_pi_returns_query_failed() {
-    let parent = GeometryHandleId(1);
-    let mut kernel = MockGeometryKernel::new();
-    let result = topology_selectors::faces_by_normal(
-        &mut kernel,
-        parent,
-        [0.0, 0.0, 1.0],
-        std::f64::consts::PI + 1e-3,
-    );
-    match result {
-        Err(QueryError::QueryFailed(msg)) => {
-            assert!(
-                msg.contains("angular_tol_rad"),
-                "error should mention 'angular_tol_rad', got: {msg:?}"
-            );
-        }
-        other => panic!("expected Err(QueryFailed) for tol > π, got {:?}", other),
-    }
+    assert_faces_by_normal_tol_rejected(std::f64::consts::PI + 1e-3);
 }
 
 #[test]
 fn faces_by_normal_nan_tol_returns_query_failed() {
+    assert_faces_by_normal_tol_rejected(f64::NAN);
+}
+
+fn assert_faces_by_normal_tol_accepted_at_boundaries() {
     let parent = GeometryHandleId(1);
-    let mut kernel = MockGeometryKernel::new();
+    let face = GeometryHandleId(2);
+
+    // Lower bound — tol=0.0: a face whose normal is exactly aligned with the target has
+    // angle = acos(1) = 0, satisfying `angle <= 0` (tests `<=` not `<`).
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_faces(parent, vec![face])
+        .with_face_normal_result(
+            face,
+            Value::String("{\"x\":0.0,\"y\":0.0,\"z\":1.0}".into()),
+        );
     let result =
-        topology_selectors::faces_by_normal(&mut kernel, parent, [0.0, 0.0, 1.0], f64::NAN);
-    match result {
-        Err(QueryError::QueryFailed(msg)) => {
-            assert!(
-                msg.contains("angular_tol_rad"),
-                "error should mention 'angular_tol_rad', got: {msg:?}"
-            );
-        }
-        other => panic!("expected Err(QueryFailed) for NaN tol, got {:?}", other),
-    }
+        topology_selectors::faces_by_normal(&mut kernel, parent, [0.0, 0.0, 1.0], 0.0)
+            .unwrap_or_else(|e| {
+                panic!(
+                    "faces_by_normal must accept tol=0.0 and include an exactly-aligned face, \
+                     got Err: {e:?}"
+                )
+            });
+    assert_eq!(
+        result,
+        vec![face],
+        "face at angle=0 must be included at tol=0 (inclusive lower bound)"
+    );
+
+    // Upper bound — tol=π: an anti-parallel face has angle = acos(-1) = π,
+    // satisfying `angle <= π` (tests the inclusive upper bound: `<=` not `<`).
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_faces(parent, vec![face])
+        .with_face_normal_result(
+            face,
+            Value::String("{\"x\":0.0,\"y\":0.0,\"z\":-1.0}".into()),
+        );
+    let result = topology_selectors::faces_by_normal(
+        &mut kernel,
+        parent,
+        [0.0, 0.0, 1.0],
+        std::f64::consts::PI,
+    )
+    .unwrap_or_else(|e| {
+        panic!(
+            "faces_by_normal must accept tol=π and include an anti-parallel face, \
+             got Err: {e:?}"
+        )
+    });
+    assert_eq!(
+        result,
+        vec![face],
+        "anti-parallel face (angle=π) must be included at tol=π (inclusive upper bound)"
+    );
+}
+
+#[test]
+fn faces_by_normal_inclusive_boundaries_zero_and_pi_are_accepted() {
+    assert_faces_by_normal_tol_accepted_at_boundaries();
 }
 
 #[test]
@@ -369,59 +404,81 @@ fn edges_parallel_to_nan_axis_returns_query_failed() {
     );
 }
 
-#[test]
-fn edges_parallel_to_negative_tol_returns_query_failed() {
+fn assert_edges_parallel_to_tol_rejected(tol: f64) {
     let parent = GeometryHandleId(1);
     let mut kernel = MockGeometryKernel::new();
     let result =
-        topology_selectors::edges_parallel_to(&mut kernel, parent, [1.0, 0.0, 0.0], -0.1);
+        topology_selectors::edges_parallel_to(&mut kernel, parent, [1.0, 0.0, 0.0], tol);
     match result {
-        Err(QueryError::QueryFailed(msg)) => {
-            assert!(
-                msg.contains("angular_tol_rad"),
-                "error should mention 'angular_tol_rad', got: {msg:?}"
-            );
-        }
-        other => panic!("expected Err(QueryFailed) for negative tol, got {:?}", other),
+        Err(QueryError::QueryFailed(msg)) => assert!(
+            msg.contains("angular_tol_rad"),
+            "error should mention 'angular_tol_rad', got: {msg:?}"
+        ),
+        other => panic!(
+            "expected Err(QueryFailed) for tol {:?}, got {:?}",
+            tol, other
+        ),
     }
+}
+
+#[test]
+fn edges_parallel_to_negative_tol_returns_query_failed() {
+    assert_edges_parallel_to_tol_rejected(-0.1);
 }
 
 #[test]
 fn edges_parallel_to_tol_above_half_pi_returns_query_failed() {
-    let parent = GeometryHandleId(1);
-    let mut kernel = MockGeometryKernel::new();
-    let result = topology_selectors::edges_parallel_to(
-        &mut kernel,
-        parent,
-        [1.0, 0.0, 0.0],
-        std::f64::consts::FRAC_PI_2 + 1e-3,
-    );
-    match result {
-        Err(QueryError::QueryFailed(msg)) => {
-            assert!(
-                msg.contains("angular_tol_rad"),
-                "error should mention 'angular_tol_rad', got: {msg:?}"
-            );
-        }
-        other => panic!("expected Err(QueryFailed) for tol > π/2, got {:?}", other),
-    }
+    assert_edges_parallel_to_tol_rejected(std::f64::consts::FRAC_PI_2 + 1e-3);
 }
 
 #[test]
 fn edges_parallel_to_nan_tol_returns_query_failed() {
+    assert_edges_parallel_to_tol_rejected(f64::NAN);
+}
+
+/// Shared fixture: build a single-edge kernel with tangent `[1,0,0]`, run
+/// `edges_parallel_to` at the given `tol`, and assert the edge is returned.
+/// `label` is used only in failure messages to identify the boundary case.
+fn check_boundary_accepts(tol: f64, label: &str) {
     let parent = GeometryHandleId(1);
-    let mut kernel = MockGeometryKernel::new();
+    let edge = GeometryHandleId(2);
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_edges(parent, vec![edge])
+        .with_edge_tangent_result(
+            edge,
+            Value::String("{\"x\":1.0,\"y\":0.0,\"z\":0.0}".into()),
+        );
     let result =
-        topology_selectors::edges_parallel_to(&mut kernel, parent, [1.0, 0.0, 0.0], f64::NAN);
-    match result {
-        Err(QueryError::QueryFailed(msg)) => {
-            assert!(
-                msg.contains("angular_tol_rad"),
-                "error should mention 'angular_tol_rad', got: {msg:?}"
-            );
-        }
-        other => panic!("expected Err(QueryFailed) for NaN tol, got {:?}", other),
-    }
+        topology_selectors::edges_parallel_to(&mut kernel, parent, [1.0, 0.0, 0.0], tol)
+            .unwrap_or_else(|e| {
+                panic!(
+                    "edges_parallel_to must accept tol={label} with a parallel tangent, \
+                     got Err: {e:?}"
+                )
+            });
+    assert_eq!(
+        result,
+        vec![edge],
+        "edge with tangent |dot|=1 must be returned at tol={label}"
+    );
+}
+
+fn assert_edges_parallel_to_tol_accepted_at_boundaries() {
+    // Lower bound — tol=0.0: a tangent exactly parallel to the axis has
+    // |dot(t, axis)| = 1 = cos(0), satisfying `|dot| >= 1` (tests `>=` not `>`).
+    check_boundary_accepts(0.0, "0.0");
+
+    // Upper bound — tol=π/2: cos(π/2) is not exactly representable as 0.0 in f64
+    // (~6.12e-17), so no tangent sits exactly on this boundary without artificial
+    // construction. Instead we use an exactly-parallel tangent (|dot|=1), which is
+    // well above the cos(π/2) threshold ≈ 6.12e-17 — pinning that both
+    // validate_angular_tol(π/2) AND the predicate evaluation accept a parallel edge.
+    check_boundary_accepts(std::f64::consts::FRAC_PI_2, "π/2");
+}
+
+#[test]
+fn edges_parallel_to_inclusive_boundaries_zero_and_half_pi_are_accepted() {
+    assert_edges_parallel_to_tol_accepted_at_boundaries();
 }
 
 /// EdgeTangent contract requires Value::String. A Value::Real payload must

@@ -487,7 +487,7 @@ describe('bridge def-preview commands', () => {
 // --- View sidecar bridge commands (step-9) ---
 
 const samplePersistentState: PersistentViewState = {
-  version: '1',
+  version: '2',
   activeViewId: 'auto:default',
   userViews: [],
   explicit: {},

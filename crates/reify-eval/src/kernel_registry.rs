@@ -117,14 +117,105 @@ pub fn registry() -> &'static BTreeMap<String, &'static KernelRegistration> {
 /// registry, or `None` if no adapter has submitted one (e.g. stub-mode build
 /// with `cfg(has_occt)` off).
 ///
-/// Centralises the "lex-min on `name`" tie-break used by
+/// Centralises the "lex-min on `name`" tie-break used historically by
 /// [`crate::Engine::with_registered_kernel`] (and, in v0.3+, by any
 /// dispatcher selection that wants the same fallback ordering). Routing
 /// every caller through this helper guarantees the tie-break invariant lives
 /// in one place — a future change (e.g. environment-variable-driven default
 /// selection) would only need to update this function.
+///
+/// **Engine construction should prefer [`pick_lexmin_brep_kernel`]** which
+/// applies a BRep-capability filter first so a Mesh-only kernel registered
+/// under a lex-smaller name (e.g. `"manifold" < "occt"`) cannot silently win
+/// the pick when a BRep-capable kernel is also registered.  This function
+/// retains its existing pure lex-min contract for v0.3 dispatcher reuse and
+/// any other caller that explicitly wants the lex-min regardless of capability.
 pub fn pick_lexmin_kernel() -> Option<&'static KernelRegistration> {
     registry().values().next().copied()
+}
+
+/// Returns the lex-smallest BRep-capable registered kernel, or falls back to
+/// lex-min overall when no registered kernel claims any BRep pair.
+///
+/// Returns `None` on an empty registry (preserving the stub-mode "no kernel
+/// registered" semantics used by [`crate::Engine::with_registered_kernel`]).
+///
+/// # Why prefer this over [`pick_lexmin_kernel`] for engine construction
+///
+/// `pick_lexmin_kernel` does a pure name-order walk — whichever kernel name
+/// sorts first lexicographically wins.  If both `"manifold"` (Mesh-only
+/// stub) and `"occt"` (full BRep) are linked into the same binary,
+/// `"manifold" < "occt"` so `pick_lexmin_kernel` silently routes every BRep
+/// operation through the Manifold stub, which returns `OperationFailed`.
+/// This function prevents that by filtering for BRep capability first.
+///
+/// # Fallback semantics
+///
+/// When no registered kernel claims any `(_, ReprKind::BRep)` pair (e.g. a
+/// hypothetical Mesh-only build), the function falls back to the pure lex-min
+/// of all registered kernels rather than returning `None`.  A Mesh-only build
+/// still wants *some* kernel; refusing to pick one would degrade further than
+/// the current `pick_lexmin_kernel` behaviour.  The fallback chain is:
+/// `find(brep) → values().next()`.
+///
+/// Note: for `Operation::Convert{from}` entries the tuple's repr is the
+/// *output*, so a `BRep→Mesh` tessellation kernel would not match this filter
+/// even though it consumes BRep input.  Acceptable for v0.2 because OCCT is
+/// the only BRep producer.
+///
+/// # Performance
+///
+/// Each call invokes `(reg.descriptor)()` once per registered kernel until a
+/// BRep-capable entry is found — allocating a fresh `CapabilityDescriptor`
+/// (and its inner `Vec`) per iteration.  The `registry()` `OnceLock` does
+/// **not** cache these calls.  With v0.2's single OCCT adapter the cost is
+/// trivial (one allocation, found immediately), but as v0.3 adds 3–4 adapters
+/// the scan is O(N) descriptor allocations per call.  **Do not call this on a
+/// hot path.**  It is intended exclusively for one-shot engine construction
+/// inside [`crate::Engine::with_registered_kernel`].
+///
+/// # Consumer
+///
+/// [`crate::Engine::with_registered_kernel`] uses this function (task 3224).
+/// The generic helper [`pick_lexmin_brep_kernel_in`] contains the testable
+/// filter-and-fallback logic.
+pub fn pick_lexmin_brep_kernel() -> Option<&'static KernelRegistration> {
+    pick_lexmin_brep_kernel_in(registry(), |reg| (reg.descriptor)()).copied()
+}
+
+/// Generic BRep-preferring lex-min helper over a caller-supplied map.
+///
+/// Returns the lex-smallest entry in `registered` whose descriptor (as
+/// returned by `descriptor_of`) claims at least one `(_, ReprKind::BRep)`
+/// pair.  Falls back to the lex-smallest entry overall when no entry claims
+/// any BRep pair.  Returns `None` when `registered` is empty.
+///
+/// # Why a generic helper is extracted
+///
+/// `registry()` is a `BTreeMap<String, &'static KernelRegistration>` whose
+/// descriptor is obtained by calling `(reg.descriptor)()`.  Lifting the
+/// filter-and-fallback logic into a generic `pick_lexmin_brep_kernel_in<V>`
+/// lets unit tests drive it with a synthetic
+/// `BTreeMap<String, CapabilityDescriptor>` and a plain `|d| d.clone()`
+/// descriptor closure — covering the three behavioral cases (BRep wins,
+/// no-BRep falls back to lex-min, empty returns None) without registering
+/// additional `cfg(test)` synthetics that would shift the global lex-min and
+/// force coordinated edits to existing tests.
+///
+/// Mirrors the extraction pattern used for [`emit_kernel_selection`] and
+/// [`warn_if_duplicate_op_repr_pairs`].
+///
+/// # Caller
+///
+/// [`pick_lexmin_brep_kernel`] is the only production caller.
+pub(crate) fn pick_lexmin_brep_kernel_in<V>(
+    registered: &BTreeMap<String, V>,
+    descriptor_of: impl Fn(&V) -> CapabilityDescriptor,
+) -> Option<&V> {
+    registered
+        .values()
+        .find(|v| descriptor_of(v).supports_any_repr(ReprKind::BRep))
+        .or_else(|| registered.values().next())
 }
 
 /// Iterate the static linker-collected set of [`KernelRegistration`] records
@@ -335,19 +426,36 @@ fn build_registry() -> BTreeMap<String, &'static KernelRegistration> {
 // `cargo test --lib` builds for this crate but are invisible to integration
 // test binaries (which compile the lib without `cfg(test)`).
 //
-// Three synthetics are registered:
+// Four synthetics are registered:
 //
-//   __a_kernel  — lex-min in the test build; descriptor: PrimitiveBox/BRep
-//   __b_kernel  — second; descriptor: PrimitiveCylinder/BRep
-//   __test_synthetic_kernel — third; descriptor: PrimitiveSphere/BRep (unique per synthetic)
+//   __0_mesh_kernel — lex-min (BTreeMap key order) in the test build;
+//                     descriptor: BooleanUnion/Mesh (NO BRep entry).
+//                     Added in task 3224 to exercise the BRep filter in
+//                     pick_lexmin_brep_kernel(): this entry sorts before
+//                     __a_kernel but must not win the brep-preferring pick.
+//   __a_kernel      — second in lex order; descriptor: PrimitiveBox/BRep.
+//                     BRep-capable → must be returned by pick_lexmin_brep_kernel().
+//   __b_kernel      — third; descriptor: PrimitiveCylinder/BRep.
+//   __test_synthetic_kernel — fourth; descriptor: PrimitiveSphere/BRep.
 //
-// ASCII sort order: '_' = 0x5F, 'a' = 0x61, 'b' = 0x62, 't' = 0x74.
-// Therefore: __a_kernel < __b_kernel < __test_synthetic_kernel.
+// ASCII sort order:
+//   '0' = 0x30, '_' = 0x5F, 'a' = 0x61, 'b' = 0x62, 't' = 0x74.
+// For names starting with "__":
+//   __0_mesh_kernel < __a_kernel < __b_kernel < __test_synthetic_kernel
+// because '0' (0x30) < 'a' (0x61).
 //
-// This means the lex-min test (`pick_lexmin_kernel_returns_lex_smaller_of_known_pair`)
-// can assert pick_lexmin_kernel() == __a_kernel non-tautologically, and the
-// smoke test (`collect_registry_returns_typed_btreemap_smoke`) still finds
-// __test_synthetic_kernel by its stable NAME constant.
+// Impact on existing tests:
+//   pick_lexmin_kernel_returns_lex_smaller_of_known_pair:
+//     Assertion (2): `lexmin.name <= NAME_A` — still satisfied because
+//       __0_mesh_kernel < __a_kernel, so lexmin.name == "__0_mesh_kernel" ≤ __a_kernel.
+//     Assertion (2b): `lexmin.name < NAME_B` — still satisfied for the same reason.
+//     Assertion (3): `lexmin.name == registry().keys().next()` — still satisfied
+//       because __0_mesh_kernel is now the BTreeMap minimum, and pick_lexmin_kernel()
+//       returns values().next() = the BTreeMap minimum. All three assertions hold.
+//
+//   collect_registry_returns_typed_btreemap_smoke:
+//     The distinctness and content assertions reference NAME_A and NAME_B by their
+//     stable names; adding __0_mesh_kernel as a fourth entry doesn't affect them.
 //
 // All factories are `unreachable!()`: any code path that instantiates a
 // synthetic as a real kernel (e.g. Engine::with_registered_kernel from a unit
@@ -359,9 +467,23 @@ mod test_synthetic_kernel {
     use super::*;
     use reify_types::{GeometryKernel, Operation, ReprKind};
 
+    // ── __0_mesh_kernel ────────────────────────────────────────────────────
+    // BTreeMap-minimum synthetic (task 3224). Uses BooleanUnion/Mesh so it
+    // claims NO BRep entry — pick_lexmin_brep_kernel() must skip it and return
+    // __a_kernel instead. Name prefix '0' (0x30) sorts before 'a' (0x61), so
+    // __0_mesh_kernel is lex-smaller than __a_kernel.
+    pub(super) const NAME_MESH_ONLY: &str = "__0_mesh_kernel";
+
+    fn descriptor_mesh_only() -> CapabilityDescriptor {
+        CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
+        }
+    }
+
     // ── __a_kernel ─────────────────────────────────────────────────────────
-    // Lex-smallest synthetic in the test build. Used by the lex-min contract
-    // test to assert pick_lexmin_kernel() returns the smaller of a known pair.
+    // Lex-second synthetic (after __0_mesh_kernel) in the test build. Used by
+    // the lex-min contract test and the BRep-preference test to verify
+    // pick_lexmin_brep_kernel() returns the lex-smallest BRep-capable entry.
     pub(super) const NAME_A: &str = "__a_kernel";
 
     fn descriptor_a() -> CapabilityDescriptor {
@@ -408,6 +530,14 @@ mod test_synthetic_kernel {
              reify-eval) misused Engine::with_registered_kernel — a synthetic was \
              instantiated as if it were a real kernel."
         );
+    }
+
+    inventory::submit! {
+        KernelRegistration {
+            name: NAME_MESH_ONLY,
+            descriptor: descriptor_mesh_only,
+            factory: unreachable_factory,
+        }
     }
 
     inventory::submit! {
@@ -655,6 +785,106 @@ mod tests {
         );
     }
 
+    /// When the lex-smallest registered kernel is Mesh-only,
+    /// `pick_lexmin_brep_kernel_in` must return the lex-smallest BRep-capable
+    /// entry instead.
+    ///
+    /// Constructs a synthetic `BTreeMap` with `"__0_mesh"` (Mesh-only,
+    /// lex-smaller) and `"__a_brep"` (BRep-capable, lex-larger). The BTreeMap
+    /// minimum is `"__0_mesh"`, so a pure lex-min pick would return it.
+    /// `pick_lexmin_brep_kernel_in` must skip it and return `"__a_brep"`'s
+    /// descriptor instead.
+    ///
+    /// This test is RED before step-2 impl: `pick_lexmin_brep_kernel_in` does
+    /// not yet exist, so the test fails to compile.
+    #[test]
+    fn pick_lexmin_brep_kernel_in_returns_brep_capable_when_lex_smaller_kernel_is_mesh_only() {
+        let mut map: BTreeMap<String, CapabilityDescriptor> = BTreeMap::new();
+        map.insert(
+            "__0_mesh".to_string(),
+            CapabilityDescriptor {
+                supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
+            },
+        );
+        map.insert(
+            "__a_brep".to_string(),
+            CapabilityDescriptor {
+                supports: vec![(Operation::PrimitiveBox, ReprKind::BRep)],
+            },
+        );
+
+        let result = pick_lexmin_brep_kernel_in(&map, |d| d.clone());
+
+        let brep_desc = map.get("__a_brep").expect("__a_brep must be in the map");
+        assert_eq!(
+            result.map(|d| &d.supports),
+            Some(&brep_desc.supports),
+            "pick_lexmin_brep_kernel_in must return the BRep-capable entry (__a_brep), \
+             not the lex-smaller Mesh-only entry (__0_mesh); \
+             a pure lex-min pick would wrongly select __0_mesh",
+        );
+    }
+
+    /// When NO registered kernel claims any BRep pair, `pick_lexmin_brep_kernel_in`
+    /// must fall back to the lex-min of all registered kernels.
+    ///
+    /// Constructs a synthetic BTreeMap with two Mesh-only entries:
+    /// `"__0_mesh"` and `"__1_mesh"`.  No BRep-capable entry exists, so the
+    /// BRep filter produces no match.  The fallback should select `"__0_mesh"`
+    /// (lex-min of the full map).
+    ///
+    /// This test is RED before step-4 impl: the current helper has no fallback,
+    /// so it returns `None` instead of the expected lex-min value.
+    #[test]
+    fn pick_lexmin_brep_kernel_in_falls_back_to_lex_min_when_no_brep_kernel() {
+        let mut map: BTreeMap<String, CapabilityDescriptor> = BTreeMap::new();
+        map.insert(
+            "__0_mesh".to_string(),
+            CapabilityDescriptor {
+                supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
+            },
+        );
+        map.insert(
+            "__1_mesh".to_string(),
+            CapabilityDescriptor {
+                supports: vec![(Operation::BooleanDifference, ReprKind::Mesh)],
+            },
+        );
+
+        let result = pick_lexmin_brep_kernel_in(&map, |d: &CapabilityDescriptor| d.clone());
+
+        // __0_mesh is lex-min; expect fallback to return its descriptor.
+        let expected = map.get("__0_mesh").expect("__0_mesh must be in the map");
+        assert_eq!(
+            result.map(|d| &d.supports),
+            Some(&expected.supports),
+            "pick_lexmin_brep_kernel_in must fall back to lex-min (__0_mesh) \
+             when no entry claims a BRep pair; got None instead of the expected \
+             fallback (step-4 impl adds .or_else(|| registered.values().next()))",
+        );
+    }
+
+    /// An empty registry must produce `None` from `pick_lexmin_brep_kernel_in`.
+    ///
+    /// This pins the empty-registry contract relied on by
+    /// [`crate::Engine::with_registered_kernel`]'s "no kernel registered"
+    /// diagnostic path (stub-mode build with `cfg(has_occt)` off).
+    ///
+    /// After step-4, both `find(brep)` and `values().next()` on an empty map
+    /// return `None`, so the test already passes — it is written here for
+    /// explicit contract documentation and as a guard against future refactors
+    /// that might accidentally return a sentinel value on empty input.
+    #[test]
+    fn pick_lexmin_brep_kernel_in_returns_none_for_empty_registry() {
+        let map: BTreeMap<String, CapabilityDescriptor> = BTreeMap::new();
+        let result = pick_lexmin_brep_kernel_in(&map, |d: &CapabilityDescriptor| d.clone());
+        assert_eq!(
+            result, None,
+            "pick_lexmin_brep_kernel_in must return None for an empty registry — \
+             preserves Engine::with_registered_kernel's 'no kernel registered' semantics",
+        );
+    }
+
     /// The Operator-visibility contract table on `emit_kernel_selection`
     /// declares `total == 0` emits no event.
     /// The `debug_assert!(total >= 1, …)` enforces this structurally: callers
@@ -791,6 +1021,43 @@ mod tests {
         );
 
         assert_emits_one_warn(&registered, "an intra-kernel duplicate (op, repr) pair");
+    }
+
+    /// `pick_lexmin_brep_kernel()` must return the lex-smallest BRep-capable
+    /// entry from the global registry, NOT the lex-smaller `__0_mesh_kernel`
+    /// synthetic which is Mesh-only.
+    ///
+    /// Asserts:
+    /// (a) `registry().contains_key("__0_mesh_kernel")` — the Mesh-only
+    ///     synthetic is registered and visible in the global walk.
+    /// (b) `pick_lexmin_brep_kernel().name == NAME_A` — the BRep filter picks
+    ///     `__a_kernel` over the lex-smaller `__0_mesh_kernel`.
+    ///
+    /// This test is RED before step-8 impl: both `pick_lexmin_brep_kernel` and
+    /// `__0_mesh_kernel` synthetic do not yet exist in the global registry.
+    #[test]
+    fn pick_lexmin_brep_kernel_returns_lex_smallest_brep_capable_synthetic_when_lex_smaller_mesh_only_synthetic_present(
+    ) {
+        // (a) The Mesh-only synthetic must be visible in the global registry.
+        assert!(
+            registry().contains_key(test_synthetic_kernel::NAME_MESH_ONLY),
+            "registry must contain the Mesh-only synthetic {:?} (step-8 adds it); \
+             if absent, the BRep-preference test has no Mesh-only entry to filter",
+            test_synthetic_kernel::NAME_MESH_ONLY,
+        );
+        // (b) pick_lexmin_brep_kernel must return __a_kernel (BRep-capable),
+        //     not __0_mesh_kernel (Mesh-only, lex-smaller in ASCII order).
+        let picked = pick_lexmin_brep_kernel()
+            .expect("pick_lexmin_brep_kernel must return Some in a cfg(test) build");
+        assert_eq!(
+            picked.name,
+            test_synthetic_kernel::NAME_A,
+            "pick_lexmin_brep_kernel must return __a_kernel ({:?}), not the lex-smaller \
+             Mesh-only synthetic __0_mesh_kernel ({:?}); \
+             '0'=0x30 < 'a'=0x61 so __0_mesh_kernel < __a_kernel in ASCII order",
+            test_synthetic_kernel::NAME_A,
+            test_synthetic_kernel::NAME_MESH_ONLY,
+        );
     }
 
     /// Contract pin: `pick_lexmin_kernel()` returns the lexicographically
