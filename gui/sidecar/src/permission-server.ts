@@ -53,6 +53,13 @@ export interface PermissionServer {
    * Idempotent — safe to call when no requests are pending.
    */
   cancelAll(): void;
+  /**
+   * Return the number of pending permission requests (i.e., approve_tool calls
+   * awaiting a decide() resolution). Primarily for tests and diagnostics —
+   * lets callers deterministically detect when a request has reached the
+   * pending-await state without relying on fixed delays.
+   */
+  pendingCount(): number;
 }
 
 /**
@@ -235,6 +242,10 @@ export function createPermissionServer(): PermissionServer {
         pendingPromises.delete(reqId);
         entry.resolve({ behavior: 'deny' });
       }
+    },
+
+    pendingCount(): number {
+      return pendingPromises.size;
     },
   };
 }
