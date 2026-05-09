@@ -49,15 +49,31 @@ export interface MessageContext {
 
 export type ChatMessage = UserMessage | AssistantMessage | SystemMessage;
 
+export interface PendingPermissionRequest {
+  requestId: string;
+  toolName: string;
+  toolInput: Record<string, unknown>;
+  messageId: string;
+}
+
 export interface ClaudeState {
   messages: ChatMessage[];
   sessionStatus: SessionStatus;
   currentMessageId: string | null;
+  pendingPermissionRequests: PendingPermissionRequest[];
+}
+
+export interface PermissionDecision {
+  behavior: 'allow' | 'deny';
+  message?: string;
+  updatedInput?: Record<string, unknown>;
+  remember?: boolean;
 }
 
 export interface ClaudeStoreOptions {
   onSend: (id: string, text: string, context: MessageContext) => void;
   onAbort: () => void;
+  onPermissionDecision: (decision: { requestId: string } & PermissionDecision) => void;
 }
 
 let messageCounter = 0;
@@ -70,6 +86,7 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
     messages: [],
     sessionStatus: 'idle',
     currentMessageId: null,
+    pendingPermissionRequests: [],
   });
 
   // --- Delta batching for 60fps rendering ---
@@ -241,6 +258,24 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
         );
         break;
       }
+
+      case 'permission_request': {
+        // Deduplicate by requestId
+        const alreadyPending = state.pendingPermissionRequests.some(
+          (r) => r.requestId === msg.request_id,
+        );
+        if (alreadyPending) break;
+        setState('pendingPermissionRequests', (reqs) => [
+          ...reqs,
+          {
+            requestId: msg.request_id,
+            toolName: msg.tool_name,
+            toolInput: msg.tool_input,
+            messageId: msg.id,
+          },
+        ]);
+        break;
+      }
     }
   }
 
@@ -277,12 +312,20 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
     options.onAbort();
   }
 
+  function decidePermission(requestId: string, decision: PermissionDecision): void {
+    const exists = state.pendingPermissionRequests.some((r) => r.requestId === requestId);
+    if (!exists) return;
+    options.onPermissionDecision({ requestId, ...decision });
+    setState('pendingPermissionRequests', (reqs) => reqs.filter((r) => r.requestId !== requestId));
+  }
+
   function clearSession(): void {
     cancelAndClear();
     batch(() => {
       setState('messages', []);
       setState('sessionStatus', 'idle');
       setState('currentMessageId', null);
+      setState('pendingPermissionRequests', []);
     });
   }
 
@@ -293,5 +336,6 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
     addSystemMessage,
     claudeAbort,
     clearSession,
+    decidePermission,
   };
 }
