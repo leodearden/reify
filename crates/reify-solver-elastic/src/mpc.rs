@@ -83,6 +83,17 @@ use faer::sparse::SparseRowMat;
 /// use `try_new_from_triplets` with explicit zero entries at each required
 /// position.
 ///
+/// # Inhomogeneous constraints
+///
+/// When `rhs ≠ 0`, the pivot displacement is `β = rhs / coeffs[0]` rather
+/// than zero.  The column-into-RHS subtraction `f[j] -= K_before[j][p] · β`
+/// runs unconditionally for all `j ≠ p`, encoding the inhomogeneous constraint
+/// into the free-DOF load vector so that the solved displacements satisfy the
+/// original constraint.  `f[p] = β` pins the pivot directly.  There is no
+/// short-circuit on `β == 0`; a homogeneous constraint with `rhs = 0` simply
+/// subtracts zero, which is bit-identical to not subtracting at all.  This
+/// mirrors the inhomogeneous BC path in `apply_dirichlet_row_elimination`.
+///
 /// # Empty slice
 ///
 /// An empty `rows` slice is a perfect identity operation — no stored value in
