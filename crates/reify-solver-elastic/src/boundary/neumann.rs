@@ -664,6 +664,52 @@ mod tests {
     }
 
     // =======================================================================
+    // apply_body_force — repeated-call accumulation (hot-loop regression)
+    // =======================================================================
+
+    /// Pins the no-per-call-state-leakage contract for the FEA load-assembly
+    /// hot path (Task 3256).
+    ///
+    /// The FEA load assembler calls `apply_body_force` once per element in a
+    /// tight loop, accumulating into a shared `f`. After N calls, every DOF
+    /// must equal exactly N times the single-call contribution. Any
+    /// implementation that retained state across calls — e.g. a `static mut`
+    /// or thread-local `nodal_weights` that was not zeroed before each call —
+    /// would produce N² growth rather than N×.
+    ///
+    /// Also doubles as a hot-loop fixture in the absence of a `criterion`
+    /// microbench: the crate has no `benches/` directory, so a runtime test is
+    /// the closest available proxy for the assembly-loop scenario.
+    #[test]
+    fn apply_body_force_p2_repeated_calls_accumulate_linearly() {
+        let phys = scaled_p2_phys_nodes(1.0);
+        let conn: [usize; 10] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+        let body_force = [1.0, 0.0, 0.0];
+
+        // Single-call baseline.
+        let mut f_one = vec![0.0_f64; 30]; // 10 nodes × 3 DOFs
+        apply_body_force(&mut f_one, ElementOrder::P2, &conn, &phys, body_force);
+
+        // 100-call accumulation into a shared load vector.
+        let n_calls = 100;
+        let mut f_many = vec![0.0_f64; 30];
+        for _ in 0..n_calls {
+            apply_body_force(&mut f_many, ElementOrder::P2, &conn, &phys, body_force);
+        }
+
+        // Each DOF must be exactly n_calls × the single-call value.
+        for i in 0..30 {
+            let got = f_many[i];
+            let expected = n_calls as f64 * f_one[i];
+            assert!(
+                (got - expected).abs() < TOL * n_calls as f64,
+                "DOF {i}: got {got}, expected {expected} ({n_calls} × f_one[{i}] = {})",
+                f_one[i],
+            );
+        }
+    }
+
+    // =======================================================================
     // apply_body_force — volume scaling
     // =======================================================================
 
