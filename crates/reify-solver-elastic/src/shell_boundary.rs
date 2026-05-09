@@ -106,7 +106,18 @@ pub fn build_support_bcs(
             (bcs, SupportCompatibility::Ok)
         }
         (SupportBodyKind::Shell, SupportKind::Pinned) => {
-            unimplemented!("(Shell, Pinned) — step-6")
+            // 3 translational DOFs per node: u_x, u_y, u_z (offsets 0..3).
+            // Rotational DOFs (offsets 3..6) are intentionally left free.
+            let bcs = nodes
+                .iter()
+                .flat_map(|&n| {
+                    (0..3).map(move |i| DirichletBc {
+                        dof: 6 * n + i,
+                        value: 0.0,
+                    })
+                })
+                .collect();
+            (bcs, SupportCompatibility::Ok)
         }
         (SupportBodyKind::Tet, SupportKind::Fixed) => {
             unimplemented!("(Tet, Fixed) — step-8")
