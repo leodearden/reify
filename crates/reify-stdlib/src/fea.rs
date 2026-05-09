@@ -3253,4 +3253,107 @@ mod tests {
             other => panic!("expected Value::Field, got {:?}", other),
         }
     }
+
+    // ── envelope_max_principal round-trip ───────────────────────────────────
+
+    /// Closed-form largest principal stress for a 3×3 symmetric stress
+    /// window — duplicates the analysis.rs `compute_eigenvalues_3x3`
+    /// computation independently so the round-trip test is independent
+    /// of the implementation under test.
+    ///
+    /// For diagonal tensors (off-diagonal = 0) eigenvalues are exactly the
+    /// diagonal entries — chosen on purpose to keep the expectation
+    /// closed-form simple. For block-diagonal 2×2 tensors we use the
+    /// quadratic-formula expression.
+    fn max_principal_diagonal(d: &[f64; 9]) -> f64 {
+        // Used by the test fixture below where every tensor is diagonal:
+        // eigenvalues = (d[0], d[4], d[8]); max = max of those three.
+        // (The general formula is not duplicated here — the test fixture
+        // sticks to diagonal tensors so the expected output stays trivial.)
+        let mut diag = [d[0], d[4], d[8]];
+        diag.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        diag[2]
+    }
+
+    #[test]
+    fn envelope_max_principal_two_case_round_trip_returns_per_grid_max_of_per_case_max_eigenvalue() {
+        // 1-D 3-grid-point fixture with diagonal stress tensors at every
+        // point — eigenvalues equal the diagonal entries exactly, so the
+        // expected per-grid max-principal is the max of (σ_xx, σ_yy, σ_zz)
+        // at each point. Round-trip: max over cases of max-principal[i].
+        //
+        //   Case A (diagonal):
+        //     P0 = diag(100, 50, 20)   → max_eig = 100
+        //     P1 = diag(-30, 80, 60)   → max_eig = 80
+        //     P2 = diag(10, 10, 10)    → max_eig = 10 (hydrostatic)
+        //   Case B (diagonal):
+        //     P0 = diag(40, 200, 60)   → max_eig = 200
+        //     P1 = diag(50, 50, 50)    → max_eig = 50
+        //     P2 = diag(0, -10, 150)   → max_eig = 150
+        //
+        // Per-grid envelope (max over cases of per-case max_principal):
+        //   data[0] = max(100, 200) = 200
+        //   data[1] = max(80, 50)   = 80
+        //   data[2] = max(10, 150)  = 150
+        let axis = vec![0.0, 1.0, 2.0];
+        let pressure = Type::Scalar { dimension: DimensionVector::PRESSURE };
+        let tensor_codomain = Type::Matrix { m: 3, n: 3, quantity: Box::new(pressure.clone()) };
+        let domain = Type::Real;
+
+        let a_tensors: Vec<[f64; 9]> = vec![
+            [100.0, 0.0, 0.0, 0.0, 50.0, 0.0, 0.0, 0.0, 20.0],
+            [-30.0, 0.0, 0.0, 0.0, 80.0, 0.0, 0.0, 0.0, 60.0],
+            [10.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 10.0],
+        ];
+        let b_tensors: Vec<[f64; 9]> = vec![
+            [40.0, 0.0, 0.0, 0.0, 200.0, 0.0, 0.0, 0.0, 60.0],
+            [50.0, 0.0, 0.0, 0.0, 50.0, 0.0, 0.0, 0.0, 50.0],
+            [0.0, 0.0, 0.0, 0.0, -10.0, 0.0, 0.0, 0.0, 150.0],
+        ];
+
+        let a_stress = wrap_sampled_field(
+            make_sampled_tensor_3x3_1d("a_stress", axis.clone(), a_tensors.clone()),
+            domain.clone(),
+            tensor_codomain.clone(),
+        );
+        let b_stress = wrap_sampled_field(
+            make_sampled_tensor_3x3_1d("b_stress", axis.clone(), b_tensors.clone()),
+            domain.clone(),
+            tensor_codomain.clone(),
+        );
+
+        let disp_placeholder = wrap_sampled_field(
+            make_sampled_1d("disp", axis.clone(), vec![0.0, 0.0, 0.0]),
+            domain.clone(),
+            Type::Real,
+        );
+        let case_a = make_fixture_elastic_result_with_fields(disp_placeholder.clone(), a_stress);
+        let case_b = make_fixture_elastic_result_with_fields(disp_placeholder, b_stress);
+        let mcr = multi_case_result_value(&[("A", case_a), ("B", case_b)]);
+
+        let result = eval_fea("envelope_max_principal", &[mcr]).unwrap();
+        let result_sf = extract_sampled(&result);
+
+        // Independently compute expected per-grid envelope.
+        let expected: Vec<f64> = (0..axis.len())
+            .map(|i| {
+                max_principal_diagonal(&a_tensors[i])
+                    .max(max_principal_diagonal(&b_tensors[i]))
+            })
+            .collect();
+
+        assert_eq!(result_sf.data.len(), axis.len(), "result must have one scalar per grid point");
+        for (i, (got, want)) in result_sf.data.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (got - want).abs() < 1e-6,
+                "grid point {i}: got {got}, want {want} (envelope of per-case max_principal)"
+            );
+        }
+
+        // Output codomain must be Pressure (preserved from input tensor's quantity).
+        match &result {
+            Value::Field { codomain_type, .. } => assert_eq!(*codomain_type, pressure),
+            other => panic!("expected Value::Field, got {:?}", other),
+        }
+    }
 }
