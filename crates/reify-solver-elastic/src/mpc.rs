@@ -163,4 +163,125 @@ mod tests {
         assert_eq!(row.coeffs, vec![1.0, -0.5, 0.5]);
         assert_eq!(row.rhs.to_bits(), 0.25_f64.to_bits());
     }
+
+    // -----------------------------------------------------------------------
+    // Step 3 (RED): apply_mpc_row_elimination — homogeneous single MPC
+    // -----------------------------------------------------------------------
+
+    /// Build a fully-dense 5×5 sparse K and apply a single homogeneous MpcRow
+    /// with pivot p=0 and other DOFs d1=2, d2=4.
+    ///
+    /// Asserts:
+    /// (a) pivot row 0 reads: K[0][0]=1, K[0][2]=-α_1=-0.5, K[0][4]=-α_2=+0.5,
+    ///     all other entries in row 0 are zero.
+    /// (b) for j in {1,2,3,4}: K[j][0] is zeroed (column p eliminated);
+    ///     K[j][2] == K_before[j][2] + K_before[j][0]·α_1 (bit-identical);
+    ///     K[j][4] == K_before[j][4] + K_before[j][0]·α_2 (bit-identical).
+    /// (c) f[0] = β = 0 (homogeneous → rhs/c0 = 0/2 = 0).
+    /// (d) f[j] for j in {1,2,3,4} bit-identical to before (β=0 → no subtract).
+    /// (e) all other K entries (rows 1..5, cols not in {0,2,4}) bit-identical to snapshot.
+    ///
+    /// RED: `apply_mpc_row_elimination` is not yet defined.
+    #[test]
+    fn single_homogeneous_mpc_zeros_pivot_row_redistributes_column_and_pins_pivot_to_constraint() {
+        use faer::sparse::{SparseRowMat, Triplet};
+
+        let n = 5usize;
+        // Build a fully-dense 5×5 K: K[i][j] = (i*5 + j + 1) as f64
+        let triplets: Vec<Triplet<usize, usize, f64>> = (0..n)
+            .flat_map(|i| (0..n).map(move |j| Triplet::new(i, j, (i * 5 + j + 1) as f64)))
+            .collect();
+        let mut k: SparseRowMat<usize, f64> =
+            SparseRowMat::try_new_from_triplets(n, n, &triplets).unwrap();
+        let mut f: Vec<f64> = (1..=5).map(|i| i as f64).collect();
+
+        // Snapshot K and f
+        let k_before: Vec<Vec<f64>> =
+            (0..n).map(|i| (0..n).map(|j| read_k(&k, i, j)).collect()).collect();
+        let f_before = f.clone();
+
+        // MpcRow: pivot p=0, d1=2, d2=4; coeffs=[2.0, -1.0, 1.0], rhs=0
+        // α_1 = -(-1.0)/2.0 = 0.5, α_2 = -(1.0)/2.0 = -0.5, β = 0/2 = 0
+        let row = MpcRow::new(vec![0, 2, 4], vec![2.0, -1.0, 1.0], 0.0);
+        let alpha_1 = 0.5_f64;  // -coeffs[1]/c0
+        let alpha_2 = -0.5_f64; // -coeffs[2]/c0
+
+        apply_mpc_row_elimination(&mut k, &mut f, &[row]);
+
+        let p = 0usize;
+        let d1 = 2usize;
+        let d2 = 4usize;
+
+        // (a) Pivot row
+        assert_eq!(read_k(&k, p, p).to_bits(), 1.0_f64.to_bits(), "K[0][0] must be 1.0");
+        assert_eq!(
+            read_k(&k, p, d1).to_bits(),
+            (-alpha_1).to_bits(),
+            "K[0][2] must be -α_1 = {}",
+            -alpha_1
+        );
+        assert_eq!(
+            read_k(&k, p, d2).to_bits(),
+            (-alpha_2).to_bits(),
+            "K[0][4] must be -α_2 = {}",
+            -alpha_2
+        );
+        for j in 0..n {
+            if j != p && j != d1 && j != d2 {
+                assert_eq!(read_k(&k, p, j), 0.0, "K[0][{j}] should be 0 in pivot row");
+            }
+        }
+
+        // (b) Non-pivot rows
+        for j in 1..n {
+            assert_eq!(read_k(&k, j, p), 0.0, "K[{j}][0] should be 0 (column p eliminated)");
+            let expected_d1 = k_before[j][d1] + k_before[j][p] * alpha_1;
+            assert_eq!(
+                read_k(&k, j, d1).to_bits(),
+                expected_d1.to_bits(),
+                "K[{j}][{d1}] mismatch: got {}, expected {}",
+                read_k(&k, j, d1),
+                expected_d1,
+            );
+            let expected_d2 = k_before[j][d2] + k_before[j][p] * alpha_2;
+            assert_eq!(
+                read_k(&k, j, d2).to_bits(),
+                expected_d2.to_bits(),
+                "K[{j}][{d2}] mismatch: got {}, expected {}",
+                read_k(&k, j, d2),
+                expected_d2,
+            );
+        }
+
+        // (c) f[0] = β = 0
+        assert_eq!(f[p].to_bits(), 0.0_f64.to_bits(), "f[0] must be β=0");
+
+        // (d) f[j] for j≠0 bit-identical (β=0 → no subtract)
+        for j in 1..n {
+            assert_eq!(
+                f[j].to_bits(),
+                f_before[j].to_bits(),
+                "f[{j}] should be unchanged (homogeneous β=0)"
+            );
+        }
+
+        // (e) Other K entries (rows 1..5, cols not in {0, 2, 4}) bit-identical
+        for j in 1..n {
+            for col in 0..n {
+                if col != p && col != d1 && col != d2 {
+                    assert_eq!(
+                        read_k(&k, j, col).to_bits(),
+                        k_before[j][col].to_bits(),
+                        "K[{j}][{col}] should be unchanged"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Read entry `(i, j)` of a `SparseRowMat<usize, f64>`, returning 0.0 if
+    /// the entry is not explicitly stored.
+    fn read_k(k: &faer::sparse::SparseRowMat<usize, f64>, i: usize, j: usize) -> f64 {
+        k.get(i, j).copied().unwrap_or(0.0)
+    }
 }
