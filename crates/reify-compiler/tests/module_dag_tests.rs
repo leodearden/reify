@@ -1597,3 +1597,53 @@ fn sequential_embedded_fallback_no_duplicates_in_topo_order() {
         dag.modules.len()
     );
 }
+
+// ── task-3268: compile_project_with_entry_source overload ────────────────────
+
+/// Dirty-entry + clean import.
+///
+/// `dep.ri` is on disk; `entry.ri` is deliberately NOT written to disk.
+/// Calling `compile_project_with_entry_source` with an in-memory source string
+/// must succeed and resolve the on-disk sibling `Helper` structure.
+///
+/// - The absence of `entry.ri` on disk proves the entry source came from memory.
+/// - The successful resolution of `Helper` proves the on-disk resolver still
+///   works for siblings.
+#[test]
+fn compile_project_with_entry_source_dirty_entry_with_disk_import() {
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
+
+    // Only the sibling dep.ri is on disk; entry.ri is never created.
+    fs::write(
+        dir.join("dep.ri"),
+        "pub structure Helper { param d: Scalar = 1mm }",
+    )
+    .unwrap();
+
+    let entry_source = "import dep.Helper\nstructure Top {\n    sub h = Helper(d: 5mm)\n}";
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+    let result = reify_compiler::module_dag::compile_project_with_entry_source(
+        &dir.join("entry.ri"),
+        entry_source,
+        &resolver,
+    );
+
+    assert!(result.is_ok(), "expected Ok, got {:?}", result.unwrap_err());
+    let modules = result.unwrap();
+    assert_eq!(
+        modules.len(),
+        2,
+        "expected 2 modules (dep + entry), got {}",
+        modules.len()
+    );
+
+    // Entry module (last in topo order) must have 1 template named "Top"
+    // with a sub_component referencing "Helper".
+    let entry_module = modules.last().unwrap();
+    assert_eq!(entry_module.templates.len(), 1);
+    let template = &entry_module.templates[0];
+    assert_eq!(template.name, "Top");
+    assert_eq!(template.sub_components.len(), 1);
+    assert_eq!(template.sub_components[0].structure_name, "Helper");
+}
