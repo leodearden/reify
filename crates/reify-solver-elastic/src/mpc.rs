@@ -91,4 +91,33 @@ mod tests {
             rhs: 0.0,
         };
     }
+
+    // -----------------------------------------------------------------------
+    // Step 1 (RED): MpcRow::new constructor contract tests
+    // -----------------------------------------------------------------------
+
+    /// `MpcRow::new` must panic when `dofs.len() != coeffs.len()`.
+    #[test]
+    #[should_panic(expected = "dofs.len()")]
+    fn mpc_row_new_panics_on_length_mismatch() {
+        // len 2 vs len 1 — must panic
+        let _ = MpcRow::new(vec![1, 2], vec![1.0], 0.0);
+    }
+
+    /// `MpcRow::new` must panic when `coeffs[0]` (the pivot coefficient) is zero.
+    #[test]
+    #[should_panic(expected = "pivot")]
+    fn mpc_row_new_panics_on_zero_pivot_coefficient() {
+        // zero pivot — must panic
+        let _ = MpcRow::new(vec![3, 7], vec![0.0, 1.0], 0.0);
+    }
+
+    /// `MpcRow::new` constructs and the fields round-trip exactly.
+    #[test]
+    fn mpc_row_new_round_trips_dofs_coeffs_rhs() {
+        let row = MpcRow::new(vec![3, 7, 11], vec![1.0, -0.5, 0.5], 0.25);
+        assert_eq!(row.dofs, vec![3, 7, 11]);
+        assert_eq!(row.coeffs, vec![1.0, -0.5, 0.5]);
+        assert_eq!(row.rhs.to_bits(), 0.25_f64.to_bits());
+    }
 }
