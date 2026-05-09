@@ -1647,3 +1647,47 @@ fn compile_project_with_entry_source_dirty_entry_with_disk_import() {
     assert_eq!(template.sub_components.len(), 1);
     assert_eq!(template.sub_components[0].structure_name, "Helper");
 }
+
+/// Entry-source diff is observed: in-memory source is used, not the disk file.
+///
+/// `entry.ri` on disk contains valid source; the in-memory string passed to
+/// `compile_project_with_entry_source` is deliberately malformed. The call must
+/// return `Err` with at least one diagnostic — proving the in-memory source was
+/// parsed (had disk content been used, the compile would have succeeded).
+#[test]
+fn compile_project_with_entry_source_uses_in_memory_source_not_disk() {
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
+
+    // dep.ri: sibling on disk.
+    fs::write(
+        dir.join("dep.ri"),
+        "pub structure Helper { param d: Scalar = 1mm }",
+    )
+    .unwrap();
+
+    // entry.ri on disk has valid source; the in-memory version is garbage.
+    fs::write(
+        dir.join("entry.ri"),
+        "import dep.Helper\nstructure Top { sub h = Helper(d: 5mm) }",
+    )
+    .unwrap();
+
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+    let result = reify_compiler::module_dag::compile_project_with_entry_source(
+        &dir.join("entry.ri"),
+        "this is not valid reify syntax !!!",
+        &resolver,
+    );
+
+    assert!(
+        result.is_err(),
+        "expected Err (malformed in-memory source), got Ok with {} modules",
+        result.unwrap().len()
+    );
+    let errors = result.unwrap_err();
+    assert!(
+        !errors.is_empty(),
+        "expected at least one diagnostic for malformed source"
+    );
+}
