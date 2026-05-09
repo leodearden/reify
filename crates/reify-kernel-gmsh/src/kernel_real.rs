@@ -20,7 +20,7 @@
 //! corrupt each other's outputs. The lock is `pub static` so test binaries
 //! can serialise their own gmsh access against the production code path.
 
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 
 use reify_types::{
     ElementOrderTag, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId,
@@ -106,9 +106,14 @@ impl GmshKernel {
             )));
         }
 
-        let _guard = init::GMSH_LOCK.lock().map_err(|e| {
-            GeometryError::OperationFailed(format!("GMSH_LOCK poisoned: {e}"))
-        })?;
+        // Recover from a poisoned lock rather than propagating the failure:
+        // every call begins with `ffi::clear()` immediately below, which
+        // wipes any half-built model state left over from a panicked prior
+        // call. Without this, a single panic anywhere under the lock would
+        // permanently disable meshing for the rest of the process lifetime.
+        let _guard = init::GMSH_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         init::ensure_initialized();
         ffi::clear()?;
         // Silence gmsh's stdout chatter — keeps test output readable.
@@ -194,8 +199,10 @@ impl GmshKernel {
         ffi::create_geometry(&[])?;
 
         // After classify+createGeometry, gmsh creates new geometric surface
-        // entities whose tags may differ from `surf_tag`. Query them so
-        // `geo_add_surface_loop` references the correct entities.
+        // entities whose tags supersede the original discrete-entity
+        // `surf_tag`; query them so `geo_add_surface_loop` references the
+        // correct entities. (`surf_tag` is the discrete-mesh entity tag and
+        // is no longer referenced from this point on.)
         let surface_tags = ffi::get_entity_tags(2)?;
         if surface_tags.is_empty() {
             return Err(GeometryError::OperationFailed(
@@ -204,7 +211,6 @@ impl GmshKernel {
                     .into(),
             ));
         }
-        let _ = surf_tag; // Original discrete-entity tag is no longer used.
 
         // Wrap the reclassified surface(s) in a surface loop and a volume
         // so HXT has a closed region to mesh.
@@ -235,8 +241,9 @@ impl GmshKernel {
             .collect();
         paired.sort_by_key(|(t, _)| *t);
 
-        let mut tag_to_idx: BTreeMap<u64, u32> =
-            BTreeMap::new();
+        // HashMap (not BTreeMap): we never iterate `tag_to_idx` in tag order;
+        // the only access is the per-element O(1) lookup below.
+        let mut tag_to_idx: HashMap<u64, u32> = HashMap::with_capacity(paired.len());
         let mut vertices: Vec<f32> = Vec::with_capacity(paired.len() * 3);
         for (idx, (tag, xyz)) in paired.iter().enumerate() {
             tag_to_idx.insert(*tag, idx as u32);
@@ -255,8 +262,11 @@ impl GmshKernel {
         }
 
         // Defensive cleanup: clear the model so the next mesh_to_volume call
-        // starts from a known-empty state.
-        ffi::clear()?;
+        // starts from a known-empty state. Errors here are deliberately
+        // ignored — the next call's leading `ffi::clear()?` (line ~120)
+        // covers re-entry, so a hiccup during teardown shouldn't turn a
+        // successfully produced VolumeMesh into a user-visible failure.
+        let _ = ffi::clear();
 
         Ok(VolumeMesh {
             vertices,
