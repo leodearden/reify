@@ -2499,6 +2499,51 @@ mod tests {
         );
     }
 
+    #[test]
+    fn linear_combine_inf_weight_returns_undef() {
+        // ±Inf weights would poison the accumulator just as NaN does.
+        // This is a regression-pin test: the existing is_finite() guard at
+        // fea.rs:132 already rejects ±Inf, so it passes against current code.
+        // It locks the guard in place before the weight-extraction rewrite in
+        // step-3 (dimensionless-only Scalar match).
+        let axis = vec![0.0, 1.0, 2.0];
+        let disp_field = wrap_sampled_field(
+            make_sampled_1d("d", axis.clone(), vec![1.0, 2.0, 3.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let stress_field = wrap_sampled_field(
+            make_sampled_1d("s", axis, vec![10.0, 20.0, 30.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let case_a = make_fixture_elastic_result_with_fields(disp_field, stress_field);
+        let mcr = make_multi_case_result_value(&[("A", case_a)]);
+
+        // +Inf weight must reject to Undef.
+        let mut wm_pos = BTreeMap::new();
+        wm_pos.insert(Value::String("A".to_string()), Value::Real(f64::INFINITY));
+        assert!(
+            eval_fea("linear_combine", &[mcr.clone(), Value::Map(wm_pos)])
+                .unwrap()
+                .is_undef(),
+            "+Inf weight must reject to Undef"
+        );
+
+        // -Inf weight must reject to Undef.
+        let mut wm_neg = BTreeMap::new();
+        wm_neg.insert(
+            Value::String("A".to_string()),
+            Value::Real(f64::NEG_INFINITY),
+        );
+        assert!(
+            eval_fea("linear_combine", &[mcr, Value::Map(wm_neg)])
+                .unwrap()
+                .is_undef(),
+            "-Inf weight must reject to Undef"
+        );
+    }
+
     // ── linear_combine stress-field source rejection (symmetric with disp) ───
 
     #[test]
