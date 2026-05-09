@@ -594,6 +594,29 @@ describe('main() startup landlock probe (task 3281)', () => {
     }
   });
 
+  // (f) probeLandlockAsync rejects (unexpected) → structured error emitted and main() returns
+  // probeLandlockAsync should never reject in production (all errors resolve to false),
+  // but the contract for what happens if it does is locked here: an 'error' outbound is
+  // emitted and main() exits — analogous to permission-server start failure handling.
+  it('(f) probeLandlockAsync rejects → structured error outbound is emitted and main() exits', async () => {
+    const origLe = process.env.REIFY_LANDLOCK_EXEC;
+    process.env.REIFY_LANDLOCK_EXEC = '/sb/le.py';
+    vi.mocked(probeLandlockAsync).mockRejectedValue(new Error('unexpected probe failure'));
+    try {
+      const input = new PassThrough();
+      const output = new PassThrough();
+      // Run main() and waitForMessage concurrently — main() emits an 'error' then returns.
+      const [errorMsg] = await Promise.all([
+        waitForMessage(output, (m) => m.type === 'error'),
+        main(input, output),
+      ]);
+      expect(errorMsg).toMatchObject({ type: 'error' });
+    } finally {
+      if (origLe === undefined) delete process.env.REIFY_LANDLOCK_EXEC;
+      else process.env.REIFY_LANDLOCK_EXEC = origLe;
+    }
+  });
+
   // (e) probe and permissionServer.start() run concurrently (both in-flight before ready)
   it('(e) probe and permissionServer.start() are both in-flight simultaneously before ready', async () => {
     const origLe = process.env.REIFY_LANDLOCK_EXEC;

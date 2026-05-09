@@ -113,5 +113,10 @@ describe('probeLandlockAsync (task 3281)', () => {
     expect(await promise).toBe(false);
     // The watchdog must have sent SIGTERM to kill the hanging process
     expect(fakeProc.kill).toHaveBeenCalledWith('SIGTERM');
+    // Security-critical idempotency: a late 'close' event with code 0 arriving
+    // AFTER the watchdog has already killed the proc and settled the promise to
+    // false must NOT flip the result to true. The settled guard prevents this.
+    fakeProc.emit('close', 0, null);
+    expect(await promise).toBe(false);
   });
 });
