@@ -961,7 +961,10 @@ const App: Component = () => {
           return next;
         });
         for (const path of succeededPaths) {
-          editorStore.clearExternallyChanged(path);
+          // markClean clears both dirtyFiles and externallyChanged: after a
+          // reload the buffer is replaced with disk content, so unsaved user
+          // edits are gone and the disk-divergence flag must be cleared too.
+          editorStore.markClean(path);
         }
         if (failedPaths.length > 0) {
           const count = failedPaths.length;

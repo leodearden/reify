@@ -60,6 +60,13 @@ export function createEditorStore() {
   }
 
   function markClean(path: string) {
+    // Called after a successful save or reload: the buffer now matches disk,
+    // so both "user-typed-since-save" (dirtyFiles) and
+    // "disk-diverged-since-load" (externallyChanged) flags are cleared.
+    // This coupling is intentional — a save/reload always resolves both
+    // conditions simultaneously.  Do NOT call markClean in a context where
+    // only one flag should change; use clearExternallyChanged or markDirty
+    // individually for narrower state transitions.
     setState('dirtyFiles', (dirty) => dirty.filter((p) => p !== path));
     setState('externallyChanged', (ec) => ec.filter((p) => p !== path));
   }

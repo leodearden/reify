@@ -4323,6 +4323,37 @@ describe('App externallyChanged store wiring', () => {
     });
   });
 
+  it('(c2) after handleReload succeeds, dirtyFiles is also cleared when the file had unsaved edits', async () => {
+    render(() => <App />);
+    await waitFor(() => expect(fileChangedCallback).toBeDefined());
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+
+    // Simulate: user had typed unsaved edits AND an external file-changed event arrives
+    capturedEditorStore.markDirty('/project/bracket.ri');
+    fileChangedCallback!({ path: '/project/bracket.ri', content: 'disk content' });
+    await waitFor(() =>
+      expect(capturedEditorStore.state.externallyChanged).toContain('/project/bracket.ri'),
+    );
+    expect(capturedEditorStore.state.dirtyFiles).toContain('/project/bracket.ri');
+
+    // First Reload click: dirty overlap detected → shows "Reload Anyway" confirmation
+    await waitFor(() => expect(screen.getByText('Reload')).toBeTruthy());
+    fireEvent.click(screen.getByText('Reload'));
+
+    // Second click on "Reload Anyway" → proceeds with actual reload
+    await waitFor(() => expect(screen.getByText('Reload Anyway')).toBeTruthy());
+    fireEvent.click(screen.getByText('Reload Anyway'));
+
+    // After reload both flags are cleared: the buffer was replaced with disk
+    // content so neither user-edits nor disk-divergence remain.
+    await waitFor(() => {
+      expect(capturedEditorStore.state.dirtyFiles).not.toContain('/project/bracket.ri');
+    });
+    await waitFor(() => {
+      expect(capturedEditorStore.state.externallyChanged).not.toContain('/project/bracket.ri');
+    });
+  });
+
   it('(d) handleDismissReload clears all paths from externallyChanged', async () => {
     render(() => <App />);
     await waitFor(() => expect(fileChangedCallback).toBeDefined());
