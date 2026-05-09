@@ -23,21 +23,22 @@ vi.mock('../permission-server.js', () => ({
   createPermissionServer: vi.fn(),
 }));
 
-// Sandbox helpers are imported by session.ts; mock them so index.test.ts tests
-// never invoke real python3, and so we can inspect wrapClaudeArgs call args.
+// Sandbox helpers are imported by session.ts (and index.ts after task 3281).
+// Mock them so tests never invoke real python3.
 vi.mock('../sandbox.js', () => ({
   isLandlockAvailable: vi.fn().mockReturnValue(false),
   wrapClaudeArgs: vi.fn((args: string[], _ws: string, le?: string) =>
     le ? { cmd: 'python3', args: [le, ...args] } : { cmd: 'claude', args: [...args] }
   ),
   _resetLandlockCache: vi.fn(),
+  probeLandlockAsync: vi.fn().mockResolvedValue(false),
 }));
 
 // --- Imports (after mocks) ---
 
 import { spawn } from 'node:child_process';
 import { createPermissionServer } from '../permission-server.js';
-import { wrapClaudeArgs, isLandlockAvailable } from '../sandbox.js';
+import { wrapClaudeArgs, isLandlockAvailable, probeLandlockAsync } from '../sandbox.js';
 import { main } from '../index.js';
 
 // ---------------------------------------------------------------------------
@@ -315,8 +316,10 @@ describe('main() workspace + landlock env propagation (task 3210)', () => {
     vi.mocked(wrapClaudeArgs).mockImplementation((args, _ws, le) =>
       le ? { cmd: 'python3', args: [le, ...args] } : { cmd: 'claude', args: [...args] }
     );
-    vi.mocked(isLandlockAvailable).mockReset();
-    vi.mocked(isLandlockAvailable).mockReturnValue(false);
+    // isLandlockAvailable no longer controls the production path (task 3281).
+    // probeLandlockAsync is the new startup probe; default to false (no sandbox).
+    vi.mocked(probeLandlockAsync).mockReset();
+    vi.mocked(probeLandlockAsync).mockResolvedValue(false);
   });
 
   afterEach(() => {
@@ -368,12 +371,12 @@ describe('main() workspace + landlock env propagation (task 3210)', () => {
     }
   });
 
-  // (b) REIFY_LANDLOCK_EXEC propagates — when probe succeeds, landlockExec reaches wrapClaudeArgs
+  // (b) REIFY_LANDLOCK_EXEC propagates — when async probe succeeds, landlockExec reaches wrapClaudeArgs
   it('(b) REIFY_LANDLOCK_EXEC env var → landlockExec passed to wrapClaudeArgs when probe succeeds', async () => {
     const origLe = process.env.REIFY_LANDLOCK_EXEC;
     process.env.REIFY_LANDLOCK_EXEC = '/sb/landlock_exec.py';
-    // Simulate probe succeeding so effectiveLandlockExec is not nulled out
-    vi.mocked(isLandlockAvailable).mockReturnValue(true);
+    // Simulate async probe succeeding so landlockAvailable=true is forwarded to the session
+    vi.mocked(probeLandlockAsync).mockResolvedValue(true);
     try {
       const input = new PassThrough();
       const output = new PassThrough();
@@ -470,6 +473,176 @@ describe('main() workspace + landlock env propagation (task 3210)', () => {
     } finally {
       if (origWs === undefined) delete process.env.REIFY_WORKSPACE;
       else process.env.REIFY_WORKSPACE = origWs;
+    }
+  });
+});
+
+describe('main() startup landlock probe (task 3281)', () => {
+  let serverMock: ReturnType<typeof makePermissionServerMock>;
+
+  /**
+   * Trigger invokeSdk by sending a send_message, then await spawn() being called.
+   * wrapClaudeArgs is called before spawn, so its mock.calls[0] is populated by then.
+   */
+  async function triggerInvokeSdk(input: PassThrough): Promise<void> {
+    let resolveSpawnCalled!: () => void;
+    const spawnCalledPromise = new Promise<void>((resolve) => {
+      resolveSpawnCalled = resolve;
+    });
+    vi.mocked(spawn).mockImplementation((() => {
+      resolveSpawnCalled();
+      return makeIdleProcess();
+    }) as any);
+    input.write(JSON.stringify({ type: 'send_message', id: 'msg-probe', text: 'hello' }) + '\n');
+    await spawnCalledPromise;
+  }
+
+  beforeEach(() => {
+    serverMock = makePermissionServerMock();
+    vi.mocked(createPermissionServer).mockReturnValue(serverMock);
+    vi.mocked(spawn).mockReset();
+    vi.mocked(spawn).mockImplementation((() => makeIdleProcess()) as any);
+    vi.mocked(wrapClaudeArgs).mockReset();
+    vi.mocked(wrapClaudeArgs).mockImplementation((args, _ws, le) =>
+      le ? { cmd: 'python3', args: [le, ...args] } : { cmd: 'claude', args: [...args] }
+    );
+    vi.mocked(probeLandlockAsync).mockReset();
+    vi.mocked(probeLandlockAsync).mockResolvedValue(false);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // (a) REIFY_LANDLOCK_EXEC set → probeLandlockAsync called once with that path before ready
+  it('(a) REIFY_LANDLOCK_EXEC=/sb/le.py → probeLandlockAsync called once with /sb/le.py before ready', async () => {
+    const origLe = process.env.REIFY_LANDLOCK_EXEC;
+    process.env.REIFY_LANDLOCK_EXEC = '/sb/le.py';
+    try {
+      const input = new PassThrough();
+      const output = new PassThrough();
+      const mainPromise = main(input, output);
+      // ready is emitted by session.init(), which runs AFTER Promise.all([start, probe]) resolves.
+      // By the time ready is observed, probe must have been called and its result resolved.
+      await waitForMessage(output, (m) => m.type === 'ready');
+      expect(vi.mocked(probeLandlockAsync)).toHaveBeenCalledOnce();
+      expect(vi.mocked(probeLandlockAsync)).toHaveBeenCalledWith('/sb/le.py');
+      input.end();
+      await mainPromise;
+    } finally {
+      if (origLe === undefined) delete process.env.REIFY_LANDLOCK_EXEC;
+      else process.env.REIFY_LANDLOCK_EXEC = origLe;
+    }
+  });
+
+  // (b) REIFY_LANDLOCK_EXEC unset → probeLandlockAsync is NOT called
+  it('(b) REIFY_LANDLOCK_EXEC unset → probeLandlockAsync is not called', async () => {
+    const origLe = process.env.REIFY_LANDLOCK_EXEC;
+    delete process.env.REIFY_LANDLOCK_EXEC;
+    try {
+      const input = new PassThrough();
+      const output = new PassThrough();
+      const mainPromise = main(input, output);
+      await waitForMessage(output, (m) => m.type === 'ready');
+      expect(vi.mocked(probeLandlockAsync)).not.toHaveBeenCalled();
+      input.end();
+      await mainPromise;
+    } finally {
+      if (origLe === undefined) delete process.env.REIFY_LANDLOCK_EXEC;
+      else process.env.REIFY_LANDLOCK_EXEC = origLe;
+    }
+  });
+
+  // (c) probe resolves true → wrapClaudeArgs receives non-undefined landlockExec
+  it('(c) probe resolves true → wrapClaudeArgs receives landlockExec on first invokeSdk', async () => {
+    const origLe = process.env.REIFY_LANDLOCK_EXEC;
+    process.env.REIFY_LANDLOCK_EXEC = '/sb/le.py';
+    vi.mocked(probeLandlockAsync).mockResolvedValue(true);
+    try {
+      const input = new PassThrough();
+      const output = new PassThrough();
+      const mainPromise = main(input, output);
+      await waitForMessage(output, (m) => m.type === 'ready');
+      await triggerInvokeSdk(input);
+      expect(vi.mocked(wrapClaudeArgs)).toHaveBeenCalled();
+      const leArg = vi.mocked(wrapClaudeArgs).mock.calls[0][2];
+      expect(leArg).toBe('/sb/le.py');
+      input.end();
+      await mainPromise;
+    } finally {
+      if (origLe === undefined) delete process.env.REIFY_LANDLOCK_EXEC;
+      else process.env.REIFY_LANDLOCK_EXEC = origLe;
+    }
+  });
+
+  // (d) probe resolves false → wrapClaudeArgs receives undefined landlockExec
+  it('(d) probe resolves false → wrapClaudeArgs receives undefined landlockExec on first invokeSdk', async () => {
+    const origLe = process.env.REIFY_LANDLOCK_EXEC;
+    process.env.REIFY_LANDLOCK_EXEC = '/sb/le.py';
+    vi.mocked(probeLandlockAsync).mockResolvedValue(false);
+    try {
+      const input = new PassThrough();
+      const output = new PassThrough();
+      const mainPromise = main(input, output);
+      await waitForMessage(output, (m) => m.type === 'ready');
+      await triggerInvokeSdk(input);
+      expect(vi.mocked(wrapClaudeArgs)).toHaveBeenCalled();
+      const leArg = vi.mocked(wrapClaudeArgs).mock.calls[0][2];
+      expect(leArg).toBeUndefined();
+      input.end();
+      await mainPromise;
+    } finally {
+      if (origLe === undefined) delete process.env.REIFY_LANDLOCK_EXEC;
+      else process.env.REIFY_LANDLOCK_EXEC = origLe;
+    }
+  });
+
+  // (e) probe and permissionServer.start() run concurrently (both in-flight before ready)
+  it('(e) probe and permissionServer.start() are both in-flight simultaneously before ready', async () => {
+    const origLe = process.env.REIFY_LANDLOCK_EXEC;
+    process.env.REIFY_LANDLOCK_EXEC = '/sb/le.py';
+
+    const callOrder: string[] = [];
+
+    // Make start async with a yield so the event loop can interleave
+    vi.mocked(serverMock.start).mockImplementation(async () => {
+      callOrder.push('start-begin');
+      await new Promise<void>((r) => setImmediate(r));
+      callOrder.push('start-end');
+    });
+
+    vi.mocked(probeLandlockAsync).mockImplementation(async () => {
+      callOrder.push('probe-begin');
+      await new Promise<void>((r) => setImmediate(r));
+      callOrder.push('probe-end');
+      return false;
+    });
+
+    try {
+      const input = new PassThrough();
+      const output = new PassThrough();
+      const mainPromise = main(input, output);
+
+      await waitForMessage(output, (m) => m.type === 'ready');
+
+      // Both must have been called and completed before ready
+      expect(callOrder).toContain('start-begin');
+      expect(callOrder).toContain('probe-begin');
+      expect(callOrder).toContain('start-end');
+      expect(callOrder).toContain('probe-end');
+
+      // Concurrency assertion: probe-begin appears BEFORE start-end.
+      // Sequential order would be: [start-begin, start-end, probe-begin, probe-end].
+      // Concurrent (Promise.all) order: [start-begin, probe-begin, ..., start-end, probe-end].
+      const probeBeginIdx = callOrder.indexOf('probe-begin');
+      const startEndIdx = callOrder.indexOf('start-end');
+      expect(probeBeginIdx).toBeLessThan(startEndIdx);
+
+      input.end();
+      await mainPromise;
+    } finally {
+      if (origLe === undefined) delete process.env.REIFY_LANDLOCK_EXEC;
+      else process.env.REIFY_LANDLOCK_EXEC = origLe;
     }
   });
 });
