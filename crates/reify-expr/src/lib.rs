@@ -419,16 +419,28 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 // worst_case(mcr, lambda): dispatched here (not in
                 // `reify_stdlib::eval_builtin` → `eval_fea`) because applying
                 // the lambda requires `EvalContext`, mirroring `flat_map` /
-                // `flat_map_pairs` above. Body extracted into
-                // `eval_worst_case_dispatch` to keep this recursive frame
-                // small in debug builds — the per-iteration `String` and
-                // `Option<(String, f64)>` locals would otherwise sit on every
-                // `eval_expr` frame and risk overflowing the 2 MiB test-thread
-                // stack at `MAX_RECURSION_DEPTH` (cf. the existing
+                // `flat_map_pairs` above.
+                //
+                // Tie-break invariant: strict `>` ensures the first-seen
+                // case wins on ties; combined with `BTreeMap` lexicographic
+                // iteration over `Value::String` keys, this delivers
+                // deterministic lex-min tie-break for free — no separate
+                // sort. Mirrors the first-occurrence-wins discipline of
+                // `envelope_reduce` (`crates/reify-stdlib/src/fea.rs`) and
+                // `argmax_argmin_index` (`field_reductions.rs`). Pinned by
+                // the `worst_case_tied_max_returns_lex_smaller_case_name`
+                // smoke test.
+                //
+                // Body extracted into `eval_worst_case_dispatch` to keep
+                // this recursive frame small in debug builds — the
+                // per-iteration `String` and `Option<(String, f64)>` locals
+                // would otherwise sit on every `eval_expr` frame and risk
+                // overflowing the 2 MiB test-thread stack at
+                // `MAX_RECURSION_DEPTH` (cf. the existing
                 // `eval_user_fn_recursion_depth_exceeded` test and the
                 // matching extraction of `eval_quantifier`). See
-                // `eval_worst_case_dispatch` for the dispatch contract,
-                // tie-break invariant, and silent-Undef discipline.
+                // `eval_worst_case_dispatch` for the full dispatch contract
+                // and silent-Undef discipline.
                 "worst_case" if evaluated_args.len() == 2 => {
                     eval_worst_case_dispatch(&evaluated_args, ctx)
                 }
