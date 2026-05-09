@@ -307,6 +307,75 @@ fn warning_includes_face_or_region_identifier() {
     let _: u32 = warnings[0].element_count;
 }
 
+/// Pins the LHS branch of the early-return guard at `src/through_thickness.rs:80`:
+/// `if surface.vertices.is_empty() || volume.tet_indices.is_empty() { return Vec::new(); }`
+///
+/// This test exercises the LHS short-circuit specifically: `surface.vertices` is
+/// empty, so the `||` returns immediately without evaluating `tet_indices.is_empty()`.
+/// The volume mesh has NON-empty `tet_indices` to force this distinction — a test
+/// with BOTH inputs empty would only exercise the LHS and leave the RHS branch
+/// unpinned (Rust's `||` short-circuits on the first true operand).
+///
+/// Partner test `empty_tet_indices_returns_empty_vec` covers the RHS branch.
+#[test]
+fn empty_surface_vertices_returns_empty_vec() {
+    let surface = Mesh {
+        vertices: vec![], // empty surface — triggers LHS of the OR
+        indices: vec![],
+        normals: None,
+    };
+    // NON-empty tet_indices: forces the LHS branch to be the one that fires.
+    let volume = VolumeMesh {
+        vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+        tet_indices: vec![0, 1, 2, 3],
+        element_order: ElementOrderTag::P1,
+        normals: None,
+    };
+    let cfg = ThroughThicknessConfig::default();
+    let warnings = through_thickness_check(&volume, &surface, cfg);
+    assert!(
+        warnings.is_empty(),
+        "empty surface vertices must yield empty Vec (LHS branch of OR guard); \
+         got {} warning(s)",
+        warnings.len()
+    );
+}
+
+/// Pins the RHS branch of the early-return guard at `src/through_thickness.rs:80`:
+/// `if surface.vertices.is_empty() || volume.tet_indices.is_empty() { return Vec::new(); }`
+///
+/// This test exercises the RHS short-circuit specifically: `surface.vertices` is
+/// NON-empty (using the `slab_surface_mesh()` helper), so the `||` evaluates the
+/// RHS and triggers the early-return on `tet_indices.is_empty()`. A single test
+/// with both inputs empty would only exercise the LHS (Rust's `||` short-circuits
+/// on the first true operand) and would leave this branch unpinned.
+///
+/// Note: a secondary guard at `src/through_thickness.rs:113-116` (`if n_tets == 0`)
+/// would also catch empty `tet_indices` after the BBox walk. Pinning the documented
+/// `tet_indices.is_empty()` contract directly catches a regression that drops
+/// EITHER guard — not just the secondary one.
+///
+/// Partner test `empty_surface_vertices_returns_empty_vec` covers the LHS branch.
+#[test]
+fn empty_tet_indices_returns_empty_vec() {
+    // NON-empty surface: forces LHS of the OR to be false, so the RHS is evaluated.
+    let surface = slab_surface_mesh();
+    let volume = VolumeMesh {
+        vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+        tet_indices: vec![], // empty tet_indices — triggers RHS of the OR
+        element_order: ElementOrderTag::P1,
+        normals: None,
+    };
+    let cfg = ThroughThicknessConfig::default();
+    let warnings = through_thickness_check(&volume, &surface, cfg);
+    assert!(
+        warnings.is_empty(),
+        "empty tet_indices must yield empty Vec (RHS branch of OR guard); \
+         got {} warning(s)",
+        warnings.len()
+    );
+}
+
 /// A volume mesh whose first vertex has NaN coordinates must not produce a
 /// spurious layer count — NaN poisons the centroid calculation and would
 /// silently corrupt the layer-counting walk. Instead the function must
