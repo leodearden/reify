@@ -843,6 +843,120 @@ fn hemisphere_with_point_loads_radial_displacement_at_load_matches_macneal_harde
     );
 }
 
+// ─── step-9: twisted beam (MacNeal-Harder §3.6) ──────────────────────────────
+
+/// MacNeal-Harder (1985) §3.6 twisted cantilever beam benchmark.
+///
+/// A flat strip twisted uniformly 90° about its long axis from root to tip,
+/// clamped at the root and loaded by a transverse point load at the tip.
+/// Parameters: L=12, w=1.1, t=0.32, E=29×10⁶, ν=0.22.
+///
+/// # Geometry
+///
+/// The mid-surface is a helicoid:
+/// - Root (z=0): cross-section along +x, mid-surface in the xz-plane.
+/// - Tip (z=L): cross-section along +y (rotated 90°), mid-surface in the yz-plane.
+/// - Twist angle: α(z) = (π/2) · z/L.
+/// - Node position: `(s·cos α, s·sin α, z)` where s ∈ [−w/2, +w/2].
+///
+/// # Load case: out-of-plane tip load (MacNeal-Harder reference = 1.754×10⁻³)
+///
+/// "Out-of-plane" is defined relative to the root cross-section: the root's
+/// mid-surface is in the xz-plane, so the out-of-plane direction is +y.
+/// Applying F_y = 1.0 at the tip (distributed equally among the ny+1 tip nodes)
+/// produces a transverse bending + twisting response.
+///
+/// The measurement: u_y at the tip centroid (s=0, z=L) → node at (0,0,L).
+///
+/// # Reference solution
+///
+/// Published (MacNeal & Harder 1985): out-of-plane tip displacement = 1.754×10⁻³.
+///
+/// The initial tolerance band is [0.5, 1.5]×1.754e-3; step-10 refines this
+/// to the actually observed MITC3 coarse-mesh value.
+#[test]
+fn twisted_beam_tip_out_of_plane_load_displaces_within_macneal_harder_tolerance() {
+    const L: f64 = 12.0;
+    const NZ: usize = 12; // segments along z
+    const NY: usize = 2;  // strips across width
+    const MACNEAL_HARDER_REF: f64 = 1.754e-3;
+
+    let mat = IsotropicElastic {
+        youngs_modulus: 29.0e6,
+        poisson_ratio: 0.22,
+    };
+    let thickness = 0.32;
+
+    // RED: `twisted_beam_mesh` is not yet defined — compile error expected.
+    let (nodes, connectivity) = twisted_beam_mesh(NZ, NY);
+    let n_nodes = nodes.len();
+
+    // Build per-element stiffness with drilling stabilization.
+    let stiffness: Vec<ElementStiffness> = connectivity
+        .iter()
+        .map(|conn| {
+            let elem_nodes = [nodes[conn[0]], nodes[conn[1]], nodes[conn[2]]];
+            shell_element_stiffness_drilling_stabilized(&elem_nodes, thickness, &mat, 1e-6)
+        })
+        .collect();
+
+    let elements: Vec<AssemblyElement<'_>> = connectivity
+        .iter()
+        .zip(stiffness.iter())
+        .enumerate()
+        .map(|(i, (conn, k_e))| AssemblyElement { id: i, connectivity: conn, k_e })
+        .collect();
+
+    // BCs: fully clamp every z=0 node (all 6 DOFs = 0).
+    // z-spacing = L/NZ = 1.0; tol = 0.1 is safely inside the first strip.
+    let tol = 0.1_f64;
+    let mut bcs: Vec<DirichletBc> = Vec::new();
+
+    for (node, n) in nodes.iter().enumerate() {
+        if n[2].abs() < tol {
+            // Root (z=0): clamp all 6 DOFs.
+            for dof_idx in 0..6_usize {
+                bcs.push(DirichletBc { dof: node * 6 + dof_idx, value: 0.0 });
+            }
+        }
+    }
+
+    // Load: F_y = 1.0 distributed equally among the NY+1 tip nodes.
+    // Each tip node receives F_y = 1.0 / (NY+1).
+    // The out-of-plane direction at the root is +y, making F_y the
+    // "out-of-plane" load case per the MacNeal-Harder convention.
+    let tip_f = 1.0 / (NY + 1) as f64;
+    let mut point_loads: Vec<(usize, f64)> = Vec::new();
+    for (node, n) in nodes.iter().enumerate() {
+        if (n[2] - L).abs() < tol {
+            point_loads.push((node * 6 + 1, tip_f)); // F_y at each tip node
+        }
+    }
+
+    let u = solve_shell_system(&elements, n_nodes, &bcs, &point_loads);
+
+    // Tip centroid: node at (0, 0, L) — s=0 (centroid), z=L.
+    // At z=L (α=90°): position = (s·cos 90°, s·sin 90°, L) = (0, 0, L) for s=0.
+    let centroid_node = nodes
+        .iter()
+        .position(|n| {
+            (n[2] - L).abs() < tol && n[0].abs() < tol && n[1].abs() < tol
+        })
+        .expect("tip centroid node (0, 0, L) not found in twisted-beam mesh");
+
+    // Out-of-plane displacement = u_y at tip centroid.
+    let tip_defl = u[centroid_node * 6 + 1];
+
+    // Initial tolerance band; step-10 refines to the observed MITC3 coarse-mesh value.
+    assert!(
+        tip_defl > 0.5 * MACNEAL_HARDER_REF && tip_defl < 1.5 * MACNEAL_HARDER_REF,
+        "twisted beam: out-of-plane tip deflection = {tip_defl:.4e}; \
+         expected [{:.4e}, {:.4e}] (MacNeal-Harder 1985 ref = {MACNEAL_HARDER_REF:.4e})",
+        0.5 * MACNEAL_HARDER_REF,
+        1.5 * MACNEAL_HARDER_REF,
+    );
+}
+
 // ─── step-1: sanity check ────────────────────────────────────────────────────
 
 /// Sanity check for the end-to-end shell pipeline.
