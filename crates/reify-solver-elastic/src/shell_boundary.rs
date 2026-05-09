@@ -120,7 +120,17 @@ pub fn build_support_bcs(
             (bcs, SupportCompatibility::Ok)
         }
         (SupportBodyKind::Tet, SupportKind::Fixed) => {
-            unimplemented!("(Tet, Fixed) — step-8")
+            // 3 DOFs per node: u_x, u_y, u_z (offsets 0..3). 3-stride.
+            let bcs = nodes
+                .iter()
+                .flat_map(|&n| {
+                    (0..3).map(move |i| DirichletBc {
+                        dof: 3 * n + i,
+                        value: 0.0,
+                    })
+                })
+                .collect();
+            (bcs, SupportCompatibility::Ok)
         }
         (SupportBodyKind::Tet, SupportKind::Pinned) => {
             unimplemented!("(Tet, Pinned) — step-10")
