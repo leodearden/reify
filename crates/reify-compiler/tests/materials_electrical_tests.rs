@@ -357,5 +357,5 @@ structure def Glass : Insulating {
 
     // Both inherited Insulating constraints must have correct operator and literal injected.
     assert_gt_constraint("dielectric_strength", 0.0, 0.0);   // dielectric_strength > 0.0
-    assert_gt_constraint("resistivity", 1_000_000.0, 1.0);   // resistivity > 1000000.0
+    assert_gt_constraint("resistivity", 1_000_000.0, 0.0);   // resistivity > 1000000.0
 }
