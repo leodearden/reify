@@ -1,29 +1,25 @@
-//! Stub `GmshKernel` — all operations return descriptive errors.
+//! Stub `GmshKernel` — only compiled when `cfg(not(has_gmsh))` (libgmsh
+//! was not detected by `build.rs`). All trait operations return a
+//! descriptive error pointing callers at the real entry points.
+//!
+//! When `cfg(has_gmsh)` is set this module is omitted entirely and
+//! `crate::GmshKernel` resolves to [`kernel_real::GmshKernel`](crate::kernel_real::GmshKernel)
+//! via the cfg-conditional `pub use` in `lib.rs`.
 //!
 //! # Design templates
 //!
 //! `crates/reify-kernel-openvdb/src/kernel.rs` — closest template
-//! (stub-only kernel, `_private: ()` field, `new()` constructor, all-error
-//! trait impl, `assert_stub_kernel_errors!` invocation).
-//!
-//! # v0.3 scope
-//!
-//! Real Gmsh FFI is deferred to follow-up task #3092. This stub exists so
-//! the `inventory::submit!` in `register.rs` has a factory that compiles.
-//! When the follow-up task lands, the factory can switch to the real impl
-//! behind `cfg(has_gmsh)` without changing the registration shape — see
-//! the OCCT precedent (`crates/reify-kernel-occt/build.rs` +
-//! `crates/reify-kernel-occt/src/`) for the cfg-gated pattern that lands
-//! alongside the FFI.
+//! (cfg(not(has_*))-gated stub, `_private: ()` field, `new()` constructor,
+//! all-error trait impl, `assert_stub_kernel_errors!` invocation).
 
 use reify_types::{
     ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
     GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value,
 };
 
-const STUB_MSG: &str = "Gmsh volume-mesh kernel not yet implemented; \
-    reify-kernel-gmsh is a registration-only scaffold for v0.3 task 2925. \
-    Real Gmsh FFI is follow-up task 3092.";
+const STUB_MSG: &str = "Gmsh trait dispatch through GeometryKernel::execute is not yet \
+    routed for Mesh→VolumeMesh; call `GmshKernel::mesh_to_volume` directly. \
+    (libgmsh not detected at build time — building stub-only.)";
 
 /// Stub Gmsh kernel — all operations return descriptive errors.
 ///
