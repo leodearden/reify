@@ -129,15 +129,18 @@ pub struct CgResult {
 ///
 /// # Determinism contract (Deterministic mode)
 ///
-/// - Single-threaded execution ⟹ no thread-scheduling order dependence.
-/// - Pairwise-tree reductions have a tree shape that is a deterministic
-///   function of input length only ⟹ no scheduler-dependent reduction order.
-/// - All vector ops iterate slot `0 → n−1` in slice order ⟹ no
-///   iteration-order dependence.
+/// Identical inputs produce bit-for-bit identical outputs **on the same
+/// machine and across machines**. The `deterministic_back_to_back_bit_stable`
+/// test pins this contract as a regression guard. Three mechanisms guarantee
+/// it:
 ///
-/// The `deterministic_back_to_back_bit_stable` test pins this contract as a
-/// regression guard: identical inputs produce bit-for-bit identical outputs
-/// on the same machine and across machines.
+/// 1. **Single-threaded execution** — no thread-scheduling order dependence.
+/// 2. **Pairwise-tree reductions** — the tree shape is a deterministic
+///    function of input length only; `pairwise_tree_sum` recurses by halving
+///    with a fixed base case of ≤ 8 elements, so the same `len` always
+///    produces the same reduction order regardless of scheduling.
+/// 3. **Slot-order vector ops** — `u += α p`, `r -= α Kp`, `p = z + β p`
+///    iterate slot `0 → n−1` in slice order; no iteration-order dependence.
 ///
 /// # Panics
 ///
