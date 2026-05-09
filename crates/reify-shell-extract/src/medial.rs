@@ -1863,67 +1863,55 @@ mod tests {
     }
 
     /// Contract test: `compute_medial_mask` must return bit-identical output
-    /// across two independent calls on the same input.
+    /// across ≥3 independent sequential calls on the same input.
     ///
-    /// **Why pin this now?** The serial impl is trivially deterministic; but
-    /// the upcoming parallel impl (step-6) concatenates per-thread Vecs and
-    /// applies `sort_unstable`. If the concatenation order ever depended on
-    /// OS scheduling, or if `sort_unstable` was applied only sometimes, the
-    /// two runs could diverge. This test catches that regression before it
-    /// can affect downstream determinism (FEA reproducibility,
-    /// regression-test stability).
+    /// **Why ≥3 runs?** Two in-process runs share scheduler state and a true
+    /// non-determinism bug (e.g., unsorted parallel-chunk merge, missing
+    /// `sort_unstable`) can pass by luck when both runs happen to produce the
+    /// same ordering. Three independent sequential runs make scheduler-state
+    /// coincidence significantly less likely: a merge-order bug that passes 2
+    /// runs with probability p passes 3 runs with probability p², and typical
+    /// ordering bugs have p ≈ 0.5 so p² ≈ 0.25 vs p = 0.5 for 2-run tests.
     ///
-    /// Checks full Vec equality (including ordering) plus `spacing` and
-    /// `origin` for completeness.
+    /// **Why both fixture sizes?** 16³ gives fast CI feedback; at this size
+    /// with `available_parallelism() ≥ 4` each chunk covers only 4 i-rows —
+    /// per-chunk runtimes are nearly identical, limiting scheduling variance.
+    /// 48³ gives the OS scheduler 12× more per-chunk work, exposing chunk-
+    /// interleaving opportunities that 16³ would miss. Both are needed: 16³
+    /// catches constant-factor bugs; 48³ catches variance-dependent bugs.
+    ///
+    /// **Equality semantics.** Each subsequent run is compared against run 0
+    /// (not all-pairs). Transitive equality holds: if run 1 == run 0 and
+    /// run 2 == run 0, then run 1 == run 2 — so comparing against run 0 is
+    /// sufficient and has linear cost in the run count.
+    ///
+    /// Checks `voxels` (full Vec including ordering), `spacing`, and `origin`.
     #[test]
-    fn compute_medial_mask_is_deterministic_across_runs_on_slab() {
-        let sdf = slab_sdf_3d(3.0, 16);
+    fn compute_medial_mask_is_deterministic_across_three_runs_on_multiple_slab_sizes() {
         let opts = MedialOptions::default();
-        let mask_a = compute_medial_mask(&sdf, &opts).expect("first run succeeds");
-        let mask_b = compute_medial_mask(&sdf, &opts).expect("second run succeeds");
-
-        assert_eq!(
-            mask_a.voxels, mask_b.voxels,
-            "medial mask voxels must be identical across runs"
-        );
-        assert_eq!(
-            mask_a.spacing, mask_b.spacing,
-            "medial mask spacing must be identical across runs"
-        );
-        assert_eq!(
-            mask_a.origin, mask_b.origin,
-            "medial mask origin must be identical across runs"
-        );
-    }
-
-    /// Companion to `compute_medial_mask_is_deterministic_across_runs_on_slab`:
-    /// same bit-identical contract exercised on a 48³ fixture.
-    ///
-    /// **Why 48³?** At 16³ with `available_parallelism() ≥ 4`, each chunk
-    /// covers only 4 i-rows — per-chunk runtimes are nearly identical, so a
-    /// non-deterministic merge bug would not surface via scheduling variance.
-    /// At 48³ the per-chunk work is 12× larger, giving the OS scheduler more
-    /// opportunity to interleave chunks if the determinism contract were
-    /// violated. Runs in <1 s on development hardware.
-    #[test]
-    fn compute_medial_mask_is_deterministic_across_runs_on_larger_slab() {
-        let sdf = slab_sdf_3d(3.0, 48);
-        let opts = MedialOptions::default();
-        let mask_a = compute_medial_mask(&sdf, &opts).expect("first run succeeds");
-        let mask_b = compute_medial_mask(&sdf, &opts).expect("second run succeeds");
-
-        assert_eq!(
-            mask_a.voxels, mask_b.voxels,
-            "medial mask voxels must be identical across runs (48³ fixture)"
-        );
-        assert_eq!(
-            mask_a.spacing, mask_b.spacing,
-            "medial mask spacing must be identical across runs (48³ fixture)"
-        );
-        assert_eq!(
-            mask_a.origin, mask_b.origin,
-            "medial mask origin must be identical across runs (48³ fixture)"
-        );
+        for n in [16usize, 48usize] {
+            let sdf = slab_sdf_3d(3.0, n);
+            let runs: Vec<MedialMask> = (0..3)
+                .map(|run| {
+                    compute_medial_mask(&sdf, &opts)
+                        .unwrap_or_else(|e| panic!("run {run} on n={n} failed: {e:?}"))
+                })
+                .collect();
+            for (run_idx, run) in runs.iter().enumerate().skip(1) {
+                assert_eq!(
+                    run.voxels, runs[0].voxels,
+                    "n={n} run={run_idx}: voxels differ from run 0"
+                );
+                assert_eq!(
+                    run.spacing, runs[0].spacing,
+                    "n={n} run={run_idx}: spacing differs from run 0"
+                );
+                assert_eq!(
+                    run.origin, runs[0].origin,
+                    "n={n} run={run_idx}: origin differs from run 0"
+                );
+            }
+        }
     }
 
     /// Contract test: `precompute_gradient_grid` must return a flat Vec
