@@ -3034,3 +3034,122 @@ async fn make_ready_handle_stays_ready_on_multi_thread() {
         current,
     );
 }
+
+// --- workspace_resolution tests (task 3210 step-13) ---
+
+mod workspace_resolution {
+    use crate::claude_bridge::{resolve_workspace_dir, MessageContext};
+    use std::path::{Path, PathBuf};
+
+    fn ctx_with_file(path: &str) -> MessageContext {
+        MessageContext {
+            selected_entity: None,
+            diagnostics: None,
+            constraints: None,
+            current_file: Some(path.to_string()),
+            attached_contexts: None,
+        }
+    }
+
+    #[test]
+    fn current_file_returns_its_parent() {
+        let ctx = ctx_with_file("/proj/main.ri");
+        let fallback = PathBuf::from("/fallback");
+        let result = resolve_workspace_dir(Some(&ctx), None, &fallback);
+        assert_eq!(result, PathBuf::from("/proj"));
+    }
+
+    #[test]
+    fn initial_file_used_when_no_current_file() {
+        let ctx = MessageContext {
+            selected_entity: None,
+            diagnostics: None,
+            constraints: None,
+            current_file: None,
+            attached_contexts: None,
+        };
+        let fallback = PathBuf::from("/fallback");
+        let result = resolve_workspace_dir(Some(&ctx), Some(Path::new("/init/foo.ri")), &fallback);
+        assert_eq!(result, PathBuf::from("/init"));
+    }
+
+    #[test]
+    fn both_none_returns_fallback_cwd() {
+        let fallback = PathBuf::from("/my/cwd");
+        let result = resolve_workspace_dir(None, None, &fallback);
+        assert_eq!(result, fallback);
+    }
+
+    #[test]
+    fn current_file_no_parent_falls_through_to_fallback() {
+        // "main.ri" has no parent component
+        let ctx = ctx_with_file("main.ri");
+        let fallback = PathBuf::from("/fallback");
+        let result = resolve_workspace_dir(Some(&ctx), None, &fallback);
+        assert_eq!(result, fallback);
+    }
+
+    #[test]
+    fn current_file_empty_string_falls_through_to_fallback() {
+        let ctx = ctx_with_file("");
+        let fallback = PathBuf::from("/fallback");
+        let result = resolve_workspace_dir(Some(&ctx), None, &fallback);
+        assert_eq!(result, fallback);
+    }
+
+    #[test]
+    fn no_context_but_initial_file_uses_initial_parent() {
+        let fallback = PathBuf::from("/fallback");
+        let result = resolve_workspace_dir(None, Some(Path::new("/init/foo.ri")), &fallback);
+        assert_eq!(result, PathBuf::from("/init"));
+    }
+}
+
+// --- sidecar_env tests (task 3210 step-13) ---
+
+mod sidecar_env {
+    use crate::claude_bridge::compute_sidecar_env;
+    use std::path::Path;
+
+    #[test]
+    fn workspace_and_landlock_exec_both_present() {
+        let envs = compute_sidecar_env(Path::new("/ws"), Some(Path::new("/sb/le.py")));
+        let reify_ws = envs.iter().find(|(k, _)| k == "REIFY_WORKSPACE");
+        let reify_le = envs.iter().find(|(k, _)| k == "REIFY_LANDLOCK_EXEC");
+        assert_eq!(
+            reify_ws,
+            Some(&("REIFY_WORKSPACE".to_string(), "/ws".to_string()))
+        );
+        assert_eq!(
+            reify_le,
+            Some(&("REIFY_LANDLOCK_EXEC".to_string(), "/sb/le.py".to_string()))
+        );
+    }
+
+    #[test]
+    fn landlock_exec_none_omits_key() {
+        let envs = compute_sidecar_env(Path::new("/ws"), None);
+        let reify_ws = envs.iter().find(|(k, _)| k == "REIFY_WORKSPACE");
+        let reify_le = envs.iter().find(|(k, _)| k == "REIFY_LANDLOCK_EXEC");
+        assert_eq!(
+            reify_ws,
+            Some(&("REIFY_WORKSPACE".to_string(), "/ws".to_string()))
+        );
+        assert!(reify_le.is_none(), "REIFY_LANDLOCK_EXEC should not appear when None");
+    }
+
+    #[test]
+    fn ordering_is_workspace_first_then_landlock_exec() {
+        let envs = compute_sidecar_env(Path::new("/ws"), Some(Path::new("/sb/le.py")));
+        assert_eq!(envs.len(), 2);
+        assert_eq!(envs[0].0, "REIFY_WORKSPACE");
+        assert_eq!(envs[1].0, "REIFY_LANDLOCK_EXEC");
+    }
+
+    #[test]
+    fn only_workspace_when_no_landlock() {
+        let envs = compute_sidecar_env(Path::new("/ws"), None);
+        assert_eq!(envs.len(), 1);
+        assert_eq!(envs[0].0, "REIFY_WORKSPACE");
+    }
+}
