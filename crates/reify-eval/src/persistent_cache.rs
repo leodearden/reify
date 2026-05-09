@@ -291,7 +291,7 @@ fn read_f64_slab<R: Read>(r: &mut R, len: usize) -> io::Result<Vec<f64>> {
 /// and unreachable on LE CI hosts; calling `read_f64_slab` from a test on a LE
 /// host exercises the LE `set_len` fast path — NOT the `chunks_exact(8) →
 /// f64::from_le_bytes` algorithm. Extracting the conversion-only logic here
-/// (without any `#[cfg]` gate) allows the test
+/// allows the test
 /// `decode_f64_slab_from_le_bytes_pins_chunks_exact_le_decode_algorithm` to run
 /// on every host and pin the BE algorithm against byte-layout regressions.
 ///
@@ -301,6 +301,11 @@ fn read_f64_slab<R: Read>(r: &mut R, len: usize) -> io::Result<Vec<f64>> {
 ///
 /// On BE hosts `read_f64_slab` delegates to this helper after `read_exact` so
 /// the algorithm is dogfooded on real BE hardware and not duplicated.
+///
+/// `#[cfg(any(test, target_endian = "big"))]` keeps this function out of LE
+/// release builds (where it has no call site) without hiding it from tests on
+/// any host.
+#[cfg(any(test, target_endian = "big"))]
 fn decode_f64_slab_from_le_bytes(bytes: &[u8]) -> Vec<f64> {
     let mut out: Vec<f64> = Vec::with_capacity(bytes.len() / 8);
     for chunk in bytes.chunks_exact(8) {
