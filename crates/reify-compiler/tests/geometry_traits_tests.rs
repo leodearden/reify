@@ -320,7 +320,7 @@ fn task_2699_topology_selector_cells_typed_per_registry() {
     let errors = errors_only(&compiled);
     assert!(
         errors.is_empty(),
-        "Bracket with all 11 task-2699 topology-selector let-bindings must compile cleanly, got errors: {:#?}",
+        "Bracket with all 11 task-2699 topology-selector let-bindings must compile cleanly.\n\nSource:\n{source}\n\nErrors: {:#?}",
         errors
     );
 
