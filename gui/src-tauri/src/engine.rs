@@ -91,6 +91,130 @@ pub(crate) fn module_key(name: &str) -> String {
     format!("{}.ri", name)
 }
 
+/// Parse and compile `source` with multi-file import resolution.
+///
+/// This is the compile-side of `load_file`'s multi-file flow (task 3228 v1).
+/// It composes existing public compiler APIs to wire `ModuleResolver` +
+/// `ModuleDag` + `parse_with_stdlib` + `compile_with_prelude_context` without
+/// adding any new functions to the compiler crate (deferred by steward,
+/// esc-3228-41).
+///
+/// # Flow
+///
+/// 1. Parse `source` with `parse_with_stdlib` (preserves stdlib enum
+///    disambiguation, e.g. `CorrosionClass.C5` → `EnumAccess`).
+/// 2. Build `ModuleResolver::new(project_root, stdlib_root)` where
+///    `project_root` is the directory containing `entry_path` and
+///    `stdlib_root = project_root.join("crates/reify-compiler/stdlib")`.
+///    Matching the LSP heuristic: for user projects the stdlib dir usually
+///    doesn't exist on disk, so `ModuleDag` falls back to the embedded stdlib.
+/// 3. For each `import` declaration in the parsed module, call
+///    `dag.compile_module(&import.path, &resolver)`.  Errors are surfaced as
+///    `"Compile errors: ..."` strings.
+/// 4. Build prelude refs: stdlib modules (from `load_stdlib()`) + user imports
+///    from `dag.modules` (in declaration order, skipping `std.*` keys which are
+///    already present via the stdlib slice).
+/// 5. Compile the entry with `compile_with_prelude_context(&parsed, &ctx)`.
+/// 6. Merge non-stdlib imported templates into `compiled.templates` so that
+///    `find_template` during eval finds imported pub structures.
+///
+/// # v1 source-map limitation
+///
+/// Only the entry's source is stored in `source_map` (under the entry module
+/// key). Imported file contents are not added to `source_map`; the GUI's
+/// "files" panel will show only the entry file.  See task 3228 for the
+/// planned follow-up.
+fn compile_entry_with_imports(
+    entry_path: &Path,
+    source: &str,
+    module_name: &str,
+) -> Result<(CompiledModule, reify_syntax::ParsedModule), String> {
+    // Parse with stdlib enum pre-seeding (same as load_from_source / update_source).
+    let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(module_name));
+    if !parsed.errors.is_empty() {
+        let msgs: Vec<String> = parsed.errors.iter().map(|e| e.message.clone()).collect();
+        return Err(format!("Parse errors: {}", msgs.join("; ")));
+    }
+
+    // project_root = directory of the entry file; stdlib_root matches LSP heuristic.
+    let project_root = entry_path.parent().unwrap_or(Path::new("."));
+    let stdlib_root = project_root.join("crates/reify-compiler/stdlib");
+
+    let resolver = reify_compiler::module_dag::ModuleResolver::new(project_root, &stdlib_root);
+    let mut dag = reify_compiler::module_dag::ModuleDag::new();
+
+    // Collect import paths from the parsed module (top-level Import declarations only).
+    let import_paths: Vec<String> = parsed
+        .declarations
+        .iter()
+        .filter_map(|decl| {
+            if let reify_syntax::Declaration::Import(imp) = decl {
+                Some(imp.path.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Compile each import (including std.* — ModuleDag handles the embedded fallback).
+    for import_path in &import_paths {
+        dag.compile_module(import_path, &resolver).map_err(|diags| {
+            let msgs: Vec<String> = diags.iter().map(|d| d.message.clone()).collect();
+            format!("Compile errors: {}", msgs.join("; "))
+        })?;
+    }
+
+    // Build prelude refs: stdlib (static) + user imports from dag.modules.
+    // Skipping std.* keys from the import list because the full stdlib is already
+    // present via the load_stdlib() slice — adding them again would be redundant.
+    let stdlib_modules = reify_compiler::stdlib_loader::load_stdlib();
+    let user_import_refs: Vec<&CompiledModule> = import_paths
+        .iter()
+        .filter(|p| p.as_str() != "std" && !p.starts_with("std."))
+        .filter_map(|p| dag.modules.get(p))
+        .collect();
+
+    let prelude_refs: Vec<&CompiledModule> = stdlib_modules
+        .iter()
+        .chain(user_import_refs.iter().copied())
+        .collect();
+
+    let ctx = reify_compiler::PreludeContext::new(&prelude_refs);
+    let mut compiled = reify_compiler::compile_with_prelude_context(&parsed, &ctx);
+
+    // Surface compile errors.
+    let has_errors = compiled
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Error);
+    if has_errors {
+        let msgs: Vec<String> = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .map(|d| d.message.clone())
+            .collect();
+        return Err(format!("Compile errors: {}", msgs.join("; ")));
+    }
+
+    // Merge non-stdlib imported templates into the entry's compiled.templates so
+    // that reify_eval::Engine::eval / unfold can find imported pub structures via
+    // find_template(&module.templates, name).  Std.* modules are excluded: stdlib
+    // structures are not expected to appear as top-level GUI entities.
+    for import_path in &import_paths {
+        if import_path.as_str() == "std" || import_path.starts_with("std.") {
+            continue;
+        }
+        if let Some(imported_module) = dag.modules.get(import_path) {
+            for template in &imported_module.templates {
+                compiled.templates.push(template.clone());
+            }
+        }
+    }
+
+    Ok((compiled, parsed))
+}
+
 impl EngineSession {
     /// Shared field-initializer from a pre-constructed `Engine`.
     ///
@@ -217,6 +341,16 @@ impl EngineSession {
     }
 
     /// Load a .ri file from disk.
+    ///
+    /// Unlike `load_from_source`, this method wires multi-file import resolution:
+    /// it builds a `ModuleResolver` rooted at the file's parent directory and
+    /// compiles each `import` declaration via `ModuleDag` before composing the
+    /// entry's prelude.  See `compile_entry_with_imports` for the full flow.
+    ///
+    /// # v1 limitation
+    ///
+    /// Composed using existing public compiler APIs from within the GUI crate to
+    /// avoid adding cross-crate functions (deferred by steward in esc-3228-41).
     pub fn load_file(&mut self, path: &Path) -> Result<GuiState, String> {
         let source = std::fs::read_to_string(path)
             .map_err(|e| format!("Error reading {}: {}", path.display(), e))?;
@@ -227,7 +361,11 @@ impl EngineSession {
             .unwrap_or("unnamed");
 
         self.file_path = Some(path.to_path_buf());
-        self.load_from_source(&source, module_name)
+
+        let (compiled, parsed) = compile_entry_with_imports(path, &source, module_name)?;
+        let check_result = self.engine.check(&compiled);
+        self.commit_state(parsed, compiled, check_result, module_name, &source);
+        self.build_gui_state()
     }
 
     /// Update source code and re-evaluate from scratch.
