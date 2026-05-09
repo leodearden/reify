@@ -699,6 +699,72 @@ pub async fn claude_permission_decision_impl(
     }
 }
 
+/// Resolve the writable workspace directory for the Claude sidecar sandbox.
+///
+/// Resolution chain (first non-empty parent wins):
+/// 1. `message_context.current_file` parent — the dir of the currently-open editor file.
+/// 2. `initial_file` parent — the dir of the file passed on the CLI at startup.
+/// 3. `fallback_cwd` — typically `std::env::current_dir()`.
+///
+/// Paths without a parent component (e.g. bare filenames like `"main.ri"`) and
+/// empty strings both fall through to the next option.
+pub fn resolve_workspace_dir(
+    message_context: Option<&MessageContext>,
+    initial_file: Option<&std::path::Path>,
+    fallback_cwd: &std::path::Path,
+) -> std::path::PathBuf {
+    // 1. current_file from message context
+    if let Some(ctx) = message_context {
+        if let Some(ref cf) = ctx.current_file {
+            if !cf.is_empty() {
+                let p = std::path::Path::new(cf);
+                if let Some(parent) = p.parent() {
+                    // parent is empty ("") for bare filenames — filter that out
+                    if parent != std::path::Path::new("") {
+                        return parent.to_path_buf();
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. initial_file
+    if let Some(init) = initial_file {
+        if let Some(parent) = init.parent() {
+            if parent != std::path::Path::new("") {
+                return parent.to_path_buf();
+            }
+        }
+    }
+
+    // 3. fallback
+    fallback_cwd.to_path_buf()
+}
+
+/// Build the environment variable list to inject into the spawned sidecar process.
+///
+/// Always includes `REIFY_WORKSPACE` (the landlock-writable workspace dir).
+/// Includes `REIFY_LANDLOCK_EXEC` only when `landlock_exec` is `Some`.
+/// Ordering is deterministic: workspace first, then landlock_exec if present.
+pub fn compute_sidecar_env(
+    workspace: &std::path::Path,
+    landlock_exec: Option<&std::path::Path>,
+) -> Vec<(String, String)> {
+    let mut envs = vec![
+        (
+            "REIFY_WORKSPACE".to_string(),
+            workspace.to_string_lossy().into_owned(),
+        ),
+    ];
+    if let Some(le) = landlock_exec {
+        envs.push((
+            "REIFY_LANDLOCK_EXEC".to_string(),
+            le.to_string_lossy().into_owned(),
+        ));
+    }
+    envs
+}
+
 /// Spawn the Claude sidecar process and return a [`SidecarHandle`] in `Starting` state.
 ///
 /// Extracts stdin/stdout from the child, wraps stdout in a [`BufReader`], and
