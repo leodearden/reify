@@ -93,11 +93,32 @@ pub enum SupportCompatibility {
 ///
 /// All produced BCs have `value = 0.0` (homogeneous Dirichlet). Non-zero
 /// prescribed displacements are handled by `DisplacementSupport` (separate task).
+///
+/// # Duplicates
+///
+/// `nodes` must not contain duplicate indices. If the same node index appears
+/// more than once, `build_support_bcs` will produce duplicate [`DirichletBc`]
+/// rows for that node, and `apply_dirichlet_row_elimination` documents
+/// duplicate rows as **caller error** (the first matching BC is applied;
+/// subsequent ones are redundant but not harmful). Deduplicating `nodes`
+/// before calling is the caller's responsibility. In debug builds, a
+/// `debug_assert!` will panic on duplicate indices to catch upstream bugs
+/// early (e.g. overlapping `FixedSupport`/`PinnedSupport` node sets).
 pub fn build_support_bcs(
     nodes: &[usize],
     kind: SupportKind,
     body: SupportBodyKind,
 ) -> (Vec<DirichletBc>, SupportCompatibility) {
+    debug_assert!(
+        {
+            let mut seen = std::collections::HashSet::new();
+            nodes.iter().all(|n| seen.insert(n))
+        },
+        "build_support_bcs: duplicate node indices detected in `nodes`; \
+         duplicate DirichletBc rows are caller error \
+         (see apply_dirichlet_row_elimination). \
+         Deduplicate `nodes` before calling (e.g. overlapping FixedSupport/PinnedSupport sets)."
+    );
     // Dispatch on (body, kind) to determine:
     //   stride    — DOFs per node (global DOF = stride * node + offset)
     //   dof_count — how many DOFs per node to clamp (offsets 0..dof_count)
