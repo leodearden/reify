@@ -118,6 +118,7 @@ pub mod boundary;
 pub mod constitutive;
 pub mod elements;
 pub mod shell_assembly;
+pub mod shell_boundary;
 pub mod shell_result;
 
 pub use assembly::{
