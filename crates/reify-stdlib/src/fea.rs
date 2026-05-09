@@ -57,14 +57,13 @@ pub(crate) fn eval_fea(name: &str, args: &[Value]) -> Option<Value> {
 /// - `args[0]`: A `MultiCaseResult` struct instance
 ///   (`Value::Map { "cases" -> Value::Map<Value::String, ElasticResult-Map> }`).
 /// - `args[1]`: A non-empty `Value::Map<Value::String, numeric>` of (case name,
-///   weight) pairs. Weights may be any **finite** `Value` for which `as_f64()`
-///   returns `Some` (covers `Value::Real`, `Value::Int`, and `Value::Scalar`
-///   — note: `Value::Scalar` supplies its raw SI-numeric component, so a
-///   dimensionful scalar like `1.4 m` would be silently accepted as `1.4`;
-///   callers that require strictly unitless weights must validate dimension
-///   upstream. Non-finite values — NaN, ±Inf — and values for which
-///   `as_f64()` returns `None` (e.g. `Value::String`, `Value::Bool`,
-///   `Value::Map`, `Value::List`, `Value::Undef`) all reject to `Value::Undef`).
+///   weight) pairs. Accepted weight types are `Value::Real`, `Value::Int`,
+///   and `Value::Scalar` **with a dimensionless dimension** (i.e.
+///   `dimension.is_dimensionless()` is true). A `Value::Scalar` with a
+///   non-dimensionless dimension (e.g. `1.4 m`) is explicitly rejected to
+///   `Value::Undef` — the contract is stated here in production code rather
+///   than relying on test coverage alone (Task 2544 convention). Non-finite
+///   values — NaN, ±Inf — also reject to `Value::Undef`.
 ///
 /// # Output
 ///
@@ -83,8 +82,10 @@ pub(crate) fn eval_fea(name: &str, args: &[Value]) -> Option<Value> {
 ///   `cases` not a Map)
 /// - `args[1]` is not `Value::Map` or is empty
 /// - any weight key is not `Value::String`
-/// - any weight value has no f64 representation (`as_f64()` returns None), or
-///   has a non-finite representation (NaN, ±Inf)
+/// - any weight value is not `Value::Real`, `Value::Int`, or a dimensionless
+///   `Value::Scalar` (i.e. `Value::Scalar` with non-dimensionless dimension
+///   such as `1.4 m` is rejected)
+/// - any weight value has a non-finite representation (NaN, ±Inf)
 /// - a weight name is absent from `base_results.cases`
 /// - a case value is not `Value::Map`
 /// - a case Map is missing `displacement` or `stress` key
@@ -123,10 +124,14 @@ fn linear_combine(args: &[Value]) -> Value {
             Value::String(s) => s,
             _ => return Value::Undef,
         };
-        // Weight: as_f64() must return Some (covers Real, Int, Scalar SI-component).
-        let weight = match weight_val.as_f64() {
-            Some(w) => w,
-            None => return Value::Undef,
+        // Weight must be Real, Int, or a dimensionless Scalar.
+        // Explicit pattern match makes the dimensionless-only contract visible
+        // in production code (Task 2544 convention: contract in impl, not just tests).
+        let weight = match weight_val {
+            Value::Real(r) => *r,
+            Value::Int(i) => *i as f64,
+            Value::Scalar { si_value, dimension } if dimension.is_dimensionless() => *si_value,
+            _ => return Value::Undef,
         };
         // Non-finite weights (NaN, ±Inf) would poison the accumulator — reject.
         if !weight.is_finite() {
