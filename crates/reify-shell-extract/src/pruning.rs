@@ -97,6 +97,21 @@ pub struct PruneOptions {
     ///   Pruning's canonical-dedup is structurally identical — the precedent
     ///   establishes the documented NaN/±Inf saturation semantics shared by
     ///   both paths (see the COUPLING NOTE in `prune_branches`).
+    ///
+    /// **Caveat — upper end.** Validation rejects the lower-end pathologies
+    /// (zero, negative, NaN, ±Inf, subnormal). Values much larger than the
+    /// caller's maximum coordinate magnitude (e.g., `1e30` against unit-magnitude
+    /// vertex coords) are accepted but reduce pruning to a no-op:
+    /// `(coord * inv_tol).round() as i64` rounds every coordinate to `0`,
+    /// collapsing every vertex into canonical index 0, every edge becomes
+    /// interior (incidence ≥ 2), no triangle qualifies as a tip, and
+    /// `prune_branches` leaves the input mesh unchanged. The upper end is left
+    /// to the caller because a hard bound would require knowing the coordinate
+    /// magnitude in advance; for the internal T2 pipeline (binary-MC midpoints
+    /// in unit-cell coordinates) any tolerance below ~`1e-3` is safe. The
+    /// symmetric LARGE-COORD failure mode (large coordinates against the default
+    /// tolerance) is documented in the `# Preconditions` block on
+    /// [`prune_branches`].
     pub grid_alignment_tolerance: f64,
 }
 
