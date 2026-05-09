@@ -1,6 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createPermissionServer } from '../permission-server.js';
 import type { PermissionServer } from '../permission-server.js';
 
@@ -283,5 +285,65 @@ describe('createPermissionServer', () => {
     await server.start();
     await server.stop();
     await expect(server.stop()).resolves.not.toThrow();
+  });
+
+  // close-listener race: listener must be registered BEFORE handleRequest so that
+  // a socket-close mid-await (e.g. client abort) still triggers transport/server cleanup.
+  it('registers close-listener before awaiting handleRequest so socket-close mid-request still triggers cleanup', async () => {
+    server = createPermissionServer();
+    // Register a no-op handler so approve_tool can invoke onRequest, keeping the
+    // tool call pending indefinitely (until decide() or cancelAll() is called).
+    server.onRequest(() => { /* intentionally empty — lets approve_tool block */ });
+    await server.start();
+
+    const mcpCloseSpy = vi.spyOn(McpServer.prototype, 'close');
+    const transportCloseSpy = vi.spyOn(StreamableHTTPServerTransport.prototype, 'close');
+
+    try {
+      const ac = new AbortController();
+
+      // Send a tools/call that blocks on the server side: approve_tool awaits decide()
+      // so handleRequest() stays in-flight for the entire duration of our abort window.
+      const fetchPromise = fetch(server.url(), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json, text/event-stream',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: {
+            name: 'approve_tool',
+            arguments: { tool_name: 'Write', input: {} },
+          },
+        }),
+        signal: ac.signal,
+      });
+
+      // Give the server's tool handler time to enter the blocking await
+      // (pendingPromises entry set, handleRequest() is now suspended).
+      await new Promise((r) => setTimeout(r, 20));
+
+      // Abort — this closes the client-side socket, which propagates to the server's
+      // res and fires the 'close' event while handleRequest() is still awaiting.
+      ac.abort();
+      await fetchPromise.catch(() => {}); // AbortError is expected
+
+      // Allow the close event to propagate through Node's event loop.
+      await new Promise((r) => setTimeout(r, 100));
+
+      // With the fix: the close listener is registered before handleRequest(), so it
+      // catches the close event and calls transport.close() + mcpServer.close().
+      // With the bug: the listener is registered after handleRequest() — already too late.
+      expect(mcpCloseSpy).toHaveBeenCalled();
+      expect(transportCloseSpy).toHaveBeenCalled();
+    } finally {
+      mcpCloseSpy.mockRestore();
+      transportCloseSpy.mockRestore();
+      // Drain pending permission requests so the server can shut down cleanly in afterEach.
+      server.cancelAll();
+    }
   });
 });
