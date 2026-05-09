@@ -1,4 +1,4 @@
-//! Tests for `stdlib/fea_multi_case.ri` — `std.fea.multi_case` module:
+//! Tests for `crates/reify-compiler/stdlib/fea_multi_case.ri` — `std.fea.multi_case` module:
 //! `LoadCase` and `MultiCaseResult` structure definitions for the v0.3.x
 //! multi-load-case FEA workflow.
 //!
@@ -288,9 +288,11 @@ fn multi_case_result_struct_has_correct_param_shape() {
 /// compiler's type-checker permits integer list literals (`List<Int>`) in
 /// `List<Real>` parameter slots — inner element kinds are not validated at
 /// compile time. This test exercises only the compile-time path
-/// (`parse_with_stdlib` → `compile_with_stdlib`); the separate runtime
-/// shallow-kind-match contract (`value_type_kind_matches` in
-/// `reify-eval/src/lib.rs`) is exercised by the accessor smoke test.
+/// (`parse_with_stdlib` → `compile_with_stdlib`), pinning the compile-time
+/// acceptance guarantee. Runtime shallow-kind behaviour
+/// (`value_type_kind_matches` in `reify-eval/src/lib.rs`) is a separate
+/// concern not covered here; it becomes testable once struct-constructor eval
+/// lands (Stage 2).
 ///
 /// This test compiles a `LoadCase` instantiation with integer list literals
 /// for `loads` and `supports`, and asserts no Error-severity diagnostics are
