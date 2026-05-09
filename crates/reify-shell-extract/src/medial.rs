@@ -214,7 +214,7 @@ pub enum MedialError {
     /// + j*nk + k]` indexing) from a wrapped-product false-positive: without
     /// this variant, an overflow would fall back to `unwrap_or(usize::MAX)`
     /// and surface as a spurious `DataLengthMismatch { expected: usize::MAX,
-    /// found: actual }` — a confusing sentinel that lies about which condition
+    ///   found: actual }` — a confusing sentinel that lies about which condition
     /// fired. The dedicated variant carries the actual extent values so
     /// callers can report precisely why the product cannot fit in `usize`.
     AxisExtentsOverflow {
