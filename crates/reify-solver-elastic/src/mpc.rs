@@ -755,6 +755,51 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------------
+    // Step 11: empty-slice no-op contract
+    // -----------------------------------------------------------------------
+
+    /// Calling `apply_mpc_row_elimination` with an empty slice leaves K and f
+    /// bit-identical to their pre-call snapshots.
+    ///
+    /// Regression guard for future refactors that might allocate scratch
+    /// buffers unconditionally.
+    #[test]
+    fn apply_mpc_with_empty_slice_leaves_k_and_f_unchanged() {
+        use faer::sparse::{SparseRowMat, Triplet};
+
+        let n = 4usize;
+        let triplets: Vec<Triplet<usize, usize, f64>> = (0..n)
+            .flat_map(|i| (0..n).map(move |j| Triplet::new(i, j, (i * n + j + 1) as f64)))
+            .collect();
+        let mut k: SparseRowMat<usize, f64> =
+            SparseRowMat::try_new_from_triplets(n, n, &triplets).unwrap();
+        let mut f: Vec<f64> = (1..=n).map(|i| i as f64).collect();
+
+        let k_before: Vec<Vec<f64>> =
+            (0..n).map(|i| (0..n).map(|j| read_k(&k, i, j)).collect()).collect();
+        let f_before = f.clone();
+
+        apply_mpc_row_elimination(&mut k, &mut f, &[]);
+
+        for i in 0..n {
+            for j in 0..n {
+                assert_eq!(
+                    read_k(&k, i, j).to_bits(),
+                    k_before[i][j].to_bits(),
+                    "K[{i}][{j}] changed after empty-MPC call: was {}, now {}",
+                    k_before[i][j],
+                    read_k(&k, i, j),
+                );
+            }
+            assert_eq!(
+                f[i].to_bits(),
+                f_before[i].to_bits(),
+                "f[{i}] changed after empty-MPC call",
+            );
+        }
+    }
+
     /// Read entry `(i, j)` of a `SparseRowMat<usize, f64>`, returning 0.0 if
     /// the entry is not explicitly stored.
     fn read_k(k: &faer::sparse::SparseRowMat<usize, f64>, i: usize, j: usize) -> f64 {
