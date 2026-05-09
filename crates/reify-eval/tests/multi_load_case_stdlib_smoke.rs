@@ -273,6 +273,78 @@ fn worst_case_three_case_returns_dominant_case_name() {
     );
 }
 
+/// Reify source: a `WorstCaseTieFixture` structure that exercises the
+/// tie-break invariant of `worst_case` — when two or more cases share the
+/// largest max, the lexicographically smallest case name must win.
+///
+/// Engineered: alpha and beta both have max 100; gamma has max 50.
+/// Expected winner: `"alpha"` (lex-smaller of the two tied maxes).
+///
+/// Pins the strict-`>` running-best comparator combined with `BTreeMap`'s
+/// lexicographic iteration over `Value::String` keys. A regression to `>=`
+/// (or to a non-deterministic iteration order) would let `"beta"` win
+/// instead. Mirrors the first-occurrence-wins discipline of
+/// `argmax_argmin_index` (`field_reductions.rs:198`) and `envelope_reduce`
+/// (`fea.rs`). See `eval_worst_case_dispatch` for the dispatch contract.
+///
+/// Uses the identity-lambda variant (`|f| f`) for the same reason as
+/// `worst_case_three_case_returns_dominant_case_name` — see that test's
+/// docstring.
+///
+/// Bindings:
+///   `cases`  = `map{"alpha" => disp_alpha, "beta" => disp_beta, "gamma" => disp_gamma}`
+///   `mcr`    = `map{"cases" => cases}`
+///   `winner` = `worst_case(mcr, |f| f)` → `"alpha"`
+const WORST_CASE_TIE_SOURCE: &str = r#"
+field def disp_alpha : Length -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [10.0, 20.0, 100.0] } }
+field def disp_beta  : Length -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [50.0, 100.0, 80.0] } }
+field def disp_gamma : Length -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [10.0, 30.0, 50.0] } }
+
+structure def WorstCaseTieFixture {
+    let cases = map{"alpha" => disp_alpha, "beta" => disp_beta, "gamma" => disp_gamma}
+    let mcr = map{"cases" => cases}
+    let winner = worst_case(mcr, |f| f)
+}
+"#;
+
+/// Look up a `WorstCaseTieFixture` binding from an eval result map by member
+/// name.
+fn get_worst_case_tie_value<'a>(values: &'a ValueMap, name: &str) -> &'a Value {
+    let id = ValueCellId::new("WorstCaseTieFixture", name);
+    values
+        .get(&id)
+        .unwrap_or_else(|| panic!("WorstCaseTieFixture.{name} not found in eval result"))
+}
+
+/// Smoke test: when two or more cases share the largest per-case max,
+/// `worst_case` returns the lexicographically smallest case name (engineered:
+/// alpha=100, beta=100, gamma=50 → winner = "alpha").
+///
+/// Pins the strict-`>` + BTreeMap-lex iteration tie-break invariant of
+/// `eval_worst_case_dispatch` end-to-end through compile + eval. A regression
+/// to `>=` (or to a non-deterministic iteration order) would let `"beta"` win
+/// instead.
+#[test]
+fn worst_case_tied_max_returns_lex_smaller_case_name() {
+    let compiled = parse_and_compile_with_stdlib(WORST_CASE_TIE_SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let eval_errors = collect_errors(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "eval should produce no Error-severity diagnostics, got: {eval_errors:?}"
+    );
+
+    let winner = get_worst_case_tie_value(&result.values, "winner");
+    assert_eq!(
+        winner,
+        &Value::String("alpha".to_string()),
+        "worst_case should return \"alpha\" (lex-min of the two tied maxes; alpha and beta both have max=100, gamma=50), \
+         got: {winner:?}"
+    );
+}
+
 /// Stage-2 readiness probe: verify that the `MultiCaseResult(...)` and
 /// `LoadCase(...)` struct constructors produce the correct `Value::Map` shape,
 /// and that the accessors flowing from `MultiCaseResult` work end-to-end, once
