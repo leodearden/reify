@@ -125,6 +125,15 @@ impl GmshKernel {
         };
         ffi::option_set_number("General.NumThreads", num_threads)?;
 
+        // Element order: must be set BEFORE mesh_generate(3) so HXT emits
+        // tets of the requested order. Readback later uses the matching
+        // gmsh element-type code (4 = P1 4-node tet, 11 = P2 10-node tet).
+        let element_order_value: f64 = match element_order {
+            ElementOrderTag::P1 => 1.0,
+            ElementOrderTag::P2 => 2.0,
+        };
+        ffi::option_set_number("Mesh.ElementOrder", element_order_value)?;
+
         ffi::model_add("reify_volume_mesh")?;
         let surf_tag = ffi::add_discrete_entity(2, &[])?;
 
