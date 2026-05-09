@@ -97,3 +97,71 @@ fn cube_surface_produces_nonempty_p1_tet_mesh() {
         }
     }
 }
+
+/// Pin that an explicit `mesh_size` override produces a strictly finer mesh
+/// than the default options.
+///
+/// With a unit cube (1.0 m edges), the auto-derived default `mesh_size` is
+/// `1.0` (the smallest triangle edge), giving a coarse mesh. Forcing
+/// `mesh_size = 0.25` quarters the target edge length, which under HXT
+/// produces strictly more tets.
+///
+/// This test fails if `kernel_real::mesh_to_volume` ignores
+/// `MeshingOptions.mesh_size` (i.e. does not propagate it to
+/// `gmshOptionSetNumber("Mesh.MeshSizeMin/Max", ...)`).
+#[test]
+fn mesh_size_override_increases_tet_count() {
+    let cube = unit_cube_mesh();
+    let kernel = GmshKernel::new();
+
+    let vm_default = kernel
+        .mesh_to_volume(&cube, &MeshingOptions::default(), ElementOrderTag::P1)
+        .expect("default-options mesh_to_volume must succeed");
+    let n_default = vm_default.tet_indices.len() / 4;
+
+    let override_options = MeshingOptions {
+        mesh_size: Some(0.25),
+        ..Default::default()
+    };
+    let vm_fine = kernel
+        .mesh_to_volume(&cube, &override_options, ElementOrderTag::P1)
+        .expect("mesh_size=0.25 override mesh_to_volume must succeed");
+    let n_fine = vm_fine.tet_indices.len() / 4;
+
+    assert!(
+        n_fine > n_default,
+        "expected mesh_size=0.25 to produce strictly more tets than the default; \
+         got n_default={n_default}, n_fine={n_fine}",
+    );
+}
+
+/// Pin that `deterministic = true` (which sets `General.NumThreads = 1`)
+/// does not fail the meshing call.
+///
+/// Doesn't assert bit-exact reproducibility — that's the job of the
+/// downstream cache-key + replay layer (sibling task #2926). This test
+/// only proves the option propagates without erroring out HXT's threading
+/// configuration.
+///
+/// This test fails if `kernel_real::mesh_to_volume` ignores
+/// `MeshingOptions.deterministic` and the resulting `General.NumThreads`
+/// value happens to be invalid (it currently isn't, but the assertion pins
+/// the contract for future drift).
+#[test]
+fn deterministic_threads_one_succeeds() {
+    let cube = unit_cube_mesh();
+    let kernel = GmshKernel::new();
+
+    let det_options = MeshingOptions {
+        deterministic: true,
+        ..Default::default()
+    };
+    let vm = kernel
+        .mesh_to_volume(&cube, &det_options, ElementOrderTag::P1)
+        .expect("deterministic=true mesh_to_volume must succeed");
+    assert!(
+        vm.tet_indices.len() / 4 > 0,
+        "deterministic=true must still produce tets; tet count = {}",
+        vm.tet_indices.len() / 4,
+    );
+}
