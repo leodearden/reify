@@ -386,19 +386,17 @@ pub(crate) fn compile_expr_guarded(
 ) -> CompiledExpr {
     match &expr.kind {
         reify_syntax::ExprKind::NumberLiteral { value, is_real } => {
-            // Syntactic distinction: tokens written with `.` or `e`/`E` are Real;
-            // bare integer tokens are Int. Int→Real widening at annotated-let
-            // injection sites (conformance/checker.rs) covers `let x : Real = 42`.
-            if *is_real {
-                CompiledExpr::literal(Value::Real(*value), Type::Real)
-            } else if value.is_finite() && *value == (*value as i64) as f64 {
-                CompiledExpr::literal(Value::Int(*value as i64), Type::Int)
-            } else {
-                // Reached when an integer-form token's f64 value isn't a clean i64
-                // (overflow past 2^63, e.g. `100000000000000000000`, or NaN/Inf from
-                // a hypothetical parser edge case). Falls back to Real to avoid a
-                // saturated `as i64` cast.
-                CompiledExpr::literal(Value::Real(*value), Type::Real)
+            // Int/Real classification (incl. integer-form overflow fallback) is
+            // shared with `lower_annotations` via reify_syntax::classify_number_literal
+            // so the boundary cannot drift between literal lowering and annotation
+            // lowering.
+            match reify_syntax::classify_number_literal(*value, *is_real) {
+                reify_syntax::NumberClass::Int(i) => {
+                    CompiledExpr::literal(Value::Int(i), Type::Int)
+                }
+                reify_syntax::NumberClass::Real(f) => {
+                    CompiledExpr::literal(Value::Real(f), Type::Real)
+                }
             }
         }
         reify_syntax::ExprKind::QuantityLiteral { value, unit } => {
