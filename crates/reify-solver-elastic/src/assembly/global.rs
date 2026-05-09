@@ -740,10 +740,10 @@ mod tests {
         let _ = assemble_global_stiffness(3, &[element], AssemblyMode::Deterministic);
     }
 
-    /// Pins the `n_local > 0` guard (global.rs:176-182): empty connectivity slice ⇒ panic.
+    /// Pins the `n_local > 0` guard: empty connectivity slice ⇒ panic.
     #[test]
     #[should_panic(expected = "empty connectivity")]
-    fn empty_connectivity_panics_with_descriptive_message() {
+    fn empty_connectivity_panics() {
         let k_e = ElementStiffness::zeros(3);
         let element = AssemblyElement {
             id: 7,
