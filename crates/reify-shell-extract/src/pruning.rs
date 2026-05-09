@@ -1513,11 +1513,16 @@ mod tests {
         let result = prune_branches(&raw, &PruneOptions::default())
             .expect("5×5×5 slab prune_branches should succeed");
 
-        // (a) Body must retain a meaningful interior — a regression that treated
-        // every shared edge as boundary would prune the entire body to 0.
+        // (a) Body must retain N≈60 triangles. The 5×5×5 slab has 4×4=16
+        // centerline cells per z-layer × 2 layers = 32 raw cells; after T2
+        // emits 2 triangles per cell and T3 prunes boundary tips, ≈60 interior
+        // triangles remain (the mid-surface). The narrow window (±2) catches
+        // both the over-prune regression (full body collapse to 0, e.g.
+        // shared-edge dedup broken) AND the under-prune regression (stragglers
+        // retained, e.g. tip detection broken).
         assert!(
-            result.mesh.triangles.len() >= 8,
-            "body must retain at least 8 triangles after pruning; got {}",
+            (58..=62).contains(&result.mesh.triangles.len()),
+            "body must retain N≈60 triangles after pruning (got {})",
             result.mesh.triangles.len()
         );
 
