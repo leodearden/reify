@@ -356,6 +356,16 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
     });
   }
 
+  /**
+   * Called by the Tauri bridge when the Claude sidecar process exits unexpectedly.
+   * The `reason` string is interpolated directly into the SystemMessage shown in the
+   * chat transcript (`Claude assistant disconnected (${reason}) — restart in progress`),
+   * so callers MUST pass a user-friendly phrase suitable for end-user consumption.
+   * An empty string is handled safely (no parenthetical is appended), but callers
+   * should always supply a meaningful reason rather than relying on this fallback.
+   * The sole current call site is the Rust `on_exit` hook in `claude_bridge.rs`,
+   * which passes `"sidecar exited unexpectedly"`.
+   */
   function handleSidecarCrashed(reason: string): void {
     // Mark every incomplete assistant message complete so throbbers/cursors disappear.
     // Walk all messages rather than only currentMessageId — prior turns can also leak
