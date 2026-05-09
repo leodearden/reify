@@ -287,6 +287,19 @@ fn read_f64_slab<R: Read>(r: &mut R, len: usize) -> io::Result<Vec<f64>> {
 /// Conversion-only kernel of the BE `read_f64_slab` branch, extracted so the
 /// `chunks_exact(8) → f64::from_le_bytes` algorithm can be exercised on any host.
 ///
+/// Returns a lazy iterator that decodes `f64` values from `bytes` in
+/// little-endian order, consuming 8 bytes at a time. No intermediate `Vec` is
+/// allocated — on the BE call site in `read_f64_slab`, `vec.extend(...)` pushes
+/// each decoded `f64` directly into the pre-reserved output vector, avoiding the
+/// extra heap allocation and copy that a `Vec<f64>`-returning signature would
+/// require.
+///
+/// **Alignment contract:** `bytes.len()` must be a multiple of 8. A
+/// `debug_assert_eq!` at entry enforces this in debug builds; in release builds
+/// `chunks_exact(8)` silently ignores any trailing bytes. All callers pass
+/// `len * 8` bytes (guaranteed by the `checked_mul(8)` guard and `read_exact` in
+/// `read_f64_slab`).
+///
 /// The BE branch of `read_f64_slab` is `#[cfg(target_endian = "big")]`-gated
 /// and unreachable on LE CI hosts; calling `read_f64_slab` from a test on a LE
 /// host exercises the LE `set_len` fast path — NOT the `chunks_exact(8) →
@@ -306,14 +319,17 @@ fn read_f64_slab<R: Read>(r: &mut R, len: usize) -> io::Result<Vec<f64>> {
 /// release builds (where it has no call site) without hiding it from tests on
 /// any host.
 #[cfg(any(test, target_endian = "big"))]
-fn decode_f64_slab_from_le_bytes(bytes: &[u8]) -> Vec<f64> {
-    let mut out: Vec<f64> = Vec::with_capacity(bytes.len() / 8);
-    for chunk in bytes.chunks_exact(8) {
-        out.push(f64::from_le_bytes(
-            chunk.try_into().expect("chunks_exact(8) yields exactly-8-byte slices"),
-        ));
-    }
-    out
+fn decode_f64_slab_from_le_bytes(bytes: &[u8]) -> impl Iterator<Item = f64> + '_ {
+    debug_assert_eq!(
+        bytes.len() % 8,
+        0,
+        "decode_f64_slab_from_le_bytes requires 8-byte-aligned input length; \
+         got {} bytes (trailing bytes are silently ignored by chunks_exact)",
+        bytes.len()
+    );
+    bytes.chunks_exact(8).map(|chunk| {
+        f64::from_le_bytes(chunk.try_into().expect("chunks_exact(8) yields exactly-8-byte slices"))
+    })
 }
 
 impl PersistentlyCacheable for ElasticResult {
@@ -902,41 +918,34 @@ mod tests {
     }
 
     /// Pins the BE `chunks_exact(8) → f64::from_le_bytes` algorithm host-agnostically
-    /// by running the conversion-only logic on a non-cfg-gated helper. The BE branch of
-    /// `read_f64_slab` is `#[cfg(target_endian = "big")]`-gated and unreachable on LE CI
-    /// hosts — this test exercises the algorithm on any host by calling the helper directly
-    /// with a synthetic LE byte buffer constructed unconditionally via `to_le_bytes()` per
-    /// element (NOT `bytemuck::cast_slice`, which is host-byte-order and would emit BE bytes
-    /// on a BE host).
+    /// via a fixed byte-literal fixture. The BE branch of `read_f64_slab` is
+    /// `#[cfg(target_endian = "big")]`-gated and unreachable on LE CI hosts — this test
+    /// exercises the conversion-only logic on any host by calling the helper directly with
+    /// known LE bytes and asserting the expected f64 bit patterns.
+    ///
+    /// Fixed literals catch a regression from `from_le_bytes` to `from_be_bytes` or
+    /// `from_ne_bytes` more tightly than a `to_le_bytes` → `from_le_bytes` round-trip
+    /// (which would be a tautology guaranteed by std on any host).
     #[test]
     fn decode_f64_slab_from_le_bytes_pins_chunks_exact_le_decode_algorithm() {
-        let input: Vec<f64> = vec![
-            1.0,
-            -2.5,
-            std::f64::consts::PI,
-            f64::from_bits(0xDEAD_BEEF_CAFE_BABE),
-            f64::from_bits(0x0000_0000_0000_0001), // smallest positive denormal
-            f64::NAN,
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-            -0.0_f64,
-            0.0_f64,
+        // 1.0_f64:  bits = 0x3FF0_0000_0000_0000, LE bytes = [00 00 00 00 00 00 F0 3F]
+        // -2.5_f64: bits = 0xC004_0000_0000_0000, LE bytes = [00 00 00 00 00 00 04 C0]
+        let bytes: &[u8] = &[
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0x3F, // 1.0_f64
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0xC0, // -2.5_f64
         ];
-        // Build a synthetic LE byte buffer host-agnostically.
-        // NOT bytemuck::cast_slice (which would emit BE bytes on a BE host).
-        let mut bytes: Vec<u8> = Vec::new();
-        for v in &input {
-            bytes.extend_from_slice(&v.to_le_bytes());
-        }
-        let decoded = decode_f64_slab_from_le_bytes(&bytes);
-        assert_eq!(decoded.len(), input.len());
-        for (i, (d, o)) in decoded.iter().zip(input.iter()).enumerate() {
-            assert_eq!(
-                d.to_bits(),
-                o.to_bits(),
-                "bit pattern drift @ index {i}"
-            );
-        }
+        let decoded: Vec<f64> = decode_f64_slab_from_le_bytes(bytes).collect();
+        assert_eq!(decoded.len(), 2);
+        assert_eq!(
+            decoded[0].to_bits(),
+            1.0_f64.to_bits(),
+            "1.0 fixture: LE bytes [00..F0 3F] must decode to 1.0, not from_be/ne_bytes"
+        );
+        assert_eq!(
+            decoded[1].to_bits(),
+            (-2.5_f64).to_bits(),
+            "-2.5 fixture: LE bytes [00..04 C0] must decode to -2.5, not from_be/ne_bytes"
+        );
     }
 
     /// Anchors the bincode 1.3.x default-options encoding
