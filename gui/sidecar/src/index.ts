@@ -2,6 +2,7 @@ import type { Readable, Writable } from 'node:stream';
 import { createLineReader, parseInboundMessage, sendMessage } from './ipc.js';
 import { createPermissionServer } from './permission-server.js';
 import { SidecarSession } from './session.js';
+import { probeLandlockAsync } from './sandbox.js';
 import { buildSystemPrompt } from './system-prompt.js';
 import { errorMessage } from './utils.js';
 
@@ -15,19 +16,6 @@ export async function main(
   input: Readable = process.stdin,
   output: Writable = process.stdout
 ): Promise<void> {
-  // Start the in-process MCP permission server before anything else so that
-  // its URL is available when constructing the SidecarSession.
-  const permissionServer = createPermissionServer();
-  try {
-    await permissionServer.start();
-  } catch (err: unknown) {
-    // Surface the failure as a structured outbound so the host sees a clean
-    // error rather than a silent hang, then exit.
-    const message = `Failed to start permission server: ${errorMessage(err)}`;
-    await sendMessage(output, { type: 'error', id: '', message });
-    return;
-  }
-
   // Workspace dir: parent dir of the active editor file at sidecar-spawn time.
   // Set by the Rust host via REIFY_WORKSPACE; falls back to cwd when absent.
   const workspace = process.env.REIFY_WORKSPACE ?? process.cwd();
@@ -36,6 +24,25 @@ export async function main(
   // Set by the Rust host via REIFY_LANDLOCK_EXEC when the resource file exists.
   // Empty string is treated as absent (no sandbox).
   const landlockExec = process.env.REIFY_LANDLOCK_EXEC || undefined;
+
+  // Start the in-process MCP permission server and run the async landlock probe
+  // concurrently. Total startup latency = max(perm-server-start, probe) rather
+  // than their sum. Both must complete before the session is constructed and
+  // ready is emitted. If the permission server fails, exit with a structured error.
+  const permissionServer = createPermissionServer();
+  let landlockAvailable = false;
+  try {
+    [, landlockAvailable] = await Promise.all([
+      permissionServer.start(),
+      landlockExec ? probeLandlockAsync(landlockExec) : Promise.resolve(false),
+    ]);
+  } catch (err: unknown) {
+    // Surface the failure as a structured outbound so the host sees a clean
+    // error rather than a silent hang, then exit.
+    const message = `Failed to start permission server: ${errorMessage(err)}`;
+    await sendMessage(output, { type: 'error', id: '', message });
+    return;
+  }
 
   const systemPrompt = buildSystemPrompt({
     workingDirectory: process.cwd(),
@@ -51,6 +58,7 @@ export async function main(
     },
     workspace,
     landlockExec,
+    landlockAvailable,
   });
 
   // Wire session output to the writable stream
