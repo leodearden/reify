@@ -17,6 +17,7 @@ import {
   claudeClearSession,
   claudePermissionDecision,
   subscribeToClaudeEvents,
+  subscribeToSidecarCrashed,
   MESSAGE_CONTEXT_FIELD_MAP,
   BUILD_CONTEXT_HANDLED_FIELDS,
   mapContextToWire,
@@ -1089,6 +1090,72 @@ describe('subscribeToClaudeEvents', () => {
       expect(received).not.toHaveProperty('_debug');
       expect(received).not.toHaveProperty('_timestamp');
     });
+  });
+});
+
+describe('subscribeToSidecarCrashed', () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('calls listen("claude-sidecar-crashed", ...) exactly once and returns the unlisten function', async () => {
+    const unlisten = vi.fn();
+    mockListen.mockResolvedValue(unlisten);
+    const handler = vi.fn();
+    const result = await subscribeToSidecarCrashed(handler);
+    expect(mockListen).toHaveBeenCalledOnce();
+    expect(mockListen.mock.calls[0][0]).toBe('claude-sidecar-crashed');
+    result();
+    expect(unlisten).toHaveBeenCalledOnce();
+  });
+
+  it('forwards valid { reason: string } payload to handler as a plain string', async () => {
+    let capturedListener: ((event: { payload: unknown }) => void) | undefined;
+    mockListen.mockImplementation(async (_name, handler) => {
+      capturedListener = handler as (event: { payload: unknown }) => void;
+      return vi.fn();
+    });
+    const handler = vi.fn();
+    await subscribeToSidecarCrashed(handler);
+    capturedListener!({ payload: { reason: 'sidecar exited unexpectedly' } });
+    expect(handler).toHaveBeenCalledOnce();
+    expect(handler).toHaveBeenCalledWith('sidecar exited unexpectedly');
+  });
+
+  it('drops payload with missing "reason" field without invoking handler', async () => {
+    let capturedListener: ((event: { payload: unknown }) => void) | undefined;
+    mockListen.mockImplementation(async (_name, handler) => {
+      capturedListener = handler as (event: { payload: unknown }) => void;
+      return vi.fn();
+    });
+    const handler = vi.fn();
+    await subscribeToSidecarCrashed(handler);
+    capturedListener!({ payload: { message: 'oops' } });
+    expect(handler).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledOnce();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('claude-sidecar-crashed'),
+      { message: 'oops' },
+    );
+  });
+
+  it('drops non-object payload without invoking handler', async () => {
+    let capturedListener: ((event: { payload: unknown }) => void) | undefined;
+    mockListen.mockImplementation(async (_name, handler) => {
+      capturedListener = handler as (event: { payload: unknown }) => void;
+      return vi.fn();
+    });
+    const handler = vi.fn();
+    await subscribeToSidecarCrashed(handler);
+    capturedListener!({ payload: 'not-an-object' });
+    expect(handler).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledOnce();
   });
 });
 
