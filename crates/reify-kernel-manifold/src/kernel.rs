@@ -116,28 +116,32 @@ impl ManifoldKernel {
     /// task plan: "Reify's tolerance regime is f64; manifold internals stay
     /// f64 throughout") and the u32 indices to u64 (per the
     /// `from_mesh_f64` API signature), then constructs a `Manifold` via
-    /// `Manifold::from_mesh_f64`. Panics on invalid mesh input — acceptable
-    /// for a test fixture; the underlying manifold3d error is surfaced in
-    /// the panic message so a winding-order regression in a fixture is
-    /// debuggable rather than presenting as a generic "must be a valid
-    /// manifold" message.
+    /// `Manifold::from_mesh_f64`. Returns
+    /// `Err(GeometryError::OperationFailed)` on invalid mesh input — the
+    /// underlying manifold3d error is surfaced in the `OperationFailed`
+    /// payload so a winding-order regression in a fixture is debuggable
+    /// rather than presenting as a generic "must be a valid manifold"
+    /// message.
     ///
     /// Gated on `cfg(any(test, feature = "test-fixtures"))` so the API is
     /// reachable from in-crate `mod tests` (cfg(test)) AND from cross-crate
     /// integration tests in `tests/` (which set the `test-fixtures` feature
     /// via the self-dev-dep in `Cargo.toml`).
     #[cfg(any(test, feature = "test-fixtures"))]
-    pub fn store_mesh_for_test(&mut self, mesh: &Mesh) -> GeometryHandleId {
+    pub fn store_mesh_for_test(
+        &mut self,
+        mesh: &Mesh,
+    ) -> Result<GeometryHandleId, GeometryError> {
         let vert_props_f64: Vec<f64> = mesh.vertices.iter().map(|&v| v as f64).collect();
         let tri_indices_u64: Vec<u64> = mesh.indices.iter().map(|&i| i as u64).collect();
         let manifold = Manifold::from_mesh_f64(&vert_props_f64, 3, &tri_indices_u64)
-            .unwrap_or_else(|e| {
-                panic!(
+            .map_err(|e| {
+                GeometryError::OperationFailed(format!(
                     "store_mesh_for_test: input Mesh must be a valid manifold; \
                      manifold3d::from_mesh_f64 reported: {e:?}"
-                )
-            });
-        self.store(manifold).id
+                ))
+            })?;
+        Ok(self.store(manifold).id)
     }
 }
 
@@ -397,8 +401,12 @@ mod tests {
     #[test]
     fn union_of_two_stored_cubes_returns_ok_handle() {
         let mut kernel = ManifoldKernel::new();
-        let l = kernel.store_mesh_for_test(&unit_cube_mesh([0.0, 0.0, 0.0]));
-        let r = kernel.store_mesh_for_test(&unit_cube_mesh([0.5, 0.0, 0.0]));
+        let l = kernel
+            .store_mesh_for_test(&unit_cube_mesh([0.0, 0.0, 0.0]))
+            .expect("unit_cube_mesh fixture must be a valid manifold");
+        let r = kernel
+            .store_mesh_for_test(&unit_cube_mesh([0.5, 0.0, 0.0]))
+            .expect("unit_cube_mesh fixture must be a valid manifold");
 
         let result = kernel.execute(&GeometryOp::Union {
             left: l,
@@ -420,8 +428,12 @@ mod tests {
     #[test]
     fn difference_of_two_stored_cubes_returns_ok_handle() {
         let mut kernel = ManifoldKernel::new();
-        let l = kernel.store_mesh_for_test(&unit_cube_mesh([0.0, 0.0, 0.0]));
-        let r = kernel.store_mesh_for_test(&unit_cube_mesh([0.5, 0.0, 0.0]));
+        let l = kernel
+            .store_mesh_for_test(&unit_cube_mesh([0.0, 0.0, 0.0]))
+            .expect("unit_cube_mesh fixture must be a valid manifold");
+        let r = kernel
+            .store_mesh_for_test(&unit_cube_mesh([0.5, 0.0, 0.0]))
+            .expect("unit_cube_mesh fixture must be a valid manifold");
 
         let result = kernel.execute(&GeometryOp::Difference {
             left: l,
@@ -452,8 +464,12 @@ mod tests {
     #[test]
     fn intersection_of_two_overlapping_cubes_returns_ok_handle() {
         let mut kernel = ManifoldKernel::new();
-        let l = kernel.store_mesh_for_test(&unit_cube_mesh([0.0, 0.0, 0.0]));
-        let r = kernel.store_mesh_for_test(&unit_cube_mesh([0.5, 0.0, 0.0]));
+        let l = kernel
+            .store_mesh_for_test(&unit_cube_mesh([0.0, 0.0, 0.0]))
+            .expect("unit_cube_mesh fixture must be a valid manifold");
+        let r = kernel
+            .store_mesh_for_test(&unit_cube_mesh([0.5, 0.0, 0.0]))
+            .expect("unit_cube_mesh fixture must be a valid manifold");
 
         let result = kernel.execute(&GeometryOp::Intersection {
             left: l,
@@ -481,9 +497,13 @@ mod tests {
     #[test]
     fn tessellate_of_intersection_of_disjoint_cubes_returns_empty_mesh() {
         let mut kernel = ManifoldKernel::new();
-        let l = kernel.store_mesh_for_test(&unit_cube_mesh([0.0, 0.0, 0.0]));
+        let l = kernel
+            .store_mesh_for_test(&unit_cube_mesh([0.0, 0.0, 0.0]))
+            .expect("unit_cube_mesh fixture must be a valid manifold");
         // Offset >> 1.0 so the two cubes share no volume.
-        let r = kernel.store_mesh_for_test(&unit_cube_mesh([5.0, 0.0, 0.0]));
+        let r = kernel
+            .store_mesh_for_test(&unit_cube_mesh([5.0, 0.0, 0.0]))
+            .expect("unit_cube_mesh fixture must be a valid manifold");
 
         let intersection_handle = kernel
             .execute(&GeometryOp::Intersection {
@@ -586,8 +606,12 @@ mod tests {
     #[test]
     fn tessellate_of_stored_union_returns_nonempty_mesh() {
         let mut kernel = ManifoldKernel::new();
-        let l = kernel.store_mesh_for_test(&unit_cube_mesh([0.0, 0.0, 0.0]));
-        let r = kernel.store_mesh_for_test(&unit_cube_mesh([0.5, 0.0, 0.0]));
+        let l = kernel
+            .store_mesh_for_test(&unit_cube_mesh([0.0, 0.0, 0.0]))
+            .expect("unit_cube_mesh fixture must be a valid manifold");
+        let r = kernel
+            .store_mesh_for_test(&unit_cube_mesh([0.5, 0.0, 0.0]))
+            .expect("unit_cube_mesh fixture must be a valid manifold");
 
         let union_handle = kernel
             .execute(&GeometryOp::Union {

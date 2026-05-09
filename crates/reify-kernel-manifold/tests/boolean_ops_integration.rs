@@ -71,8 +71,12 @@ fn boolean_ops_round_trip_via_factory_and_geometry_kernel_trait_object() {
     // concrete `ManifoldKernel` type.
     let mut kernel = ManifoldKernel::new();
 
-    let a: GeometryHandleId = kernel.store_mesh_for_test(&unit_cube_mesh([0.0, 0.0, 0.0]));
-    let b: GeometryHandleId = kernel.store_mesh_for_test(&unit_cube_mesh([0.5, 0.0, 0.0]));
+    let a: GeometryHandleId = kernel
+        .store_mesh_for_test(&unit_cube_mesh([0.0, 0.0, 0.0]))
+        .expect("unit_cube_mesh fixture must be a valid manifold");
+    let b: GeometryHandleId = kernel
+        .store_mesh_for_test(&unit_cube_mesh([0.5, 0.0, 0.0]))
+        .expect("unit_cube_mesh fixture must be a valid manifold");
 
     let u = kernel
         .execute(&GeometryOp::Union {
