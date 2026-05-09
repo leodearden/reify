@@ -306,30 +306,23 @@ fn linear_combine(args: &[Value]) -> Value {
 }
 
 /// Compute von Mises equivalent stress per grid point for a 3×3 row-major
-/// stress window. Mirrors the closed-form formula in
-/// `crates/reify-stdlib/src/analysis.rs::von_mises` so envelope_von_mises
-/// stays self-contained on the SampledField.data hot path (avoids the
-/// wrapping/unwrapping cost of routing each grid point through
-/// `eval_builtin("von_mises", ...)`, which would also reject Sampled paths
-/// because it expects `Value::Tensor`).
+/// stress window. Thin wrapper around
+/// `crate::analysis::compute_von_mises_3x3` — kept as a local symbol so the
+/// call sites in `TensorProjection::apply` stay self-documenting (they
+/// project a stress window per grid point on the hot path) without
+/// duplicating the closed-form formula.
+///
+/// `compute_von_mises_3x3` is the single source of truth for the von Mises
+/// closed-form formula; routing through it (rather than the eager
+/// `eval_builtin("von_mises", ...)` dispatch path that wraps `Value::Tensor`)
+/// avoids the per-grid-point Value wrap/unwrap cost on the SampledField.data
+/// hot path.
 ///
 /// Input layout: d[0]=σ_xx, d[1]=σ_xy, d[2]=σ_xz,
 ///               d[3]=σ_yx, d[4]=σ_yy, d[5]=σ_yz,
 ///               d[6]=σ_zx, d[7]=σ_zy, d[8]=σ_zz
 fn apply_von_mises_to_3x3_window(d: &[f64]) -> f64 {
-    debug_assert!(d.len() >= 9, "von_mises window requires ≥9 floats");
-    let sxx = d[0];
-    let syy = d[4];
-    let szz = d[8];
-    let sxy = d[1];
-    let syz = d[5];
-    let sxz = d[2];
-    (0.5
-        * ((sxx - syy).powi(2)
-            + (syy - szz).powi(2)
-            + (szz - sxx).powi(2)
-            + 6.0 * (sxy.powi(2) + syz.powi(2) + sxz.powi(2))))
-    .sqrt()
+    crate::analysis::compute_von_mises_3x3(d)
 }
 
 /// Per-grid envelope of von Mises stress across cases.
@@ -520,6 +513,28 @@ impl TensorProjection {
 /// `field_name` is the per-case ElasticResult key to read (`"stress"` or
 /// `"displacement"`). `projection` controls the codomain shape (matrix vs
 /// vector), the data stride, and the per-window scalar projection function.
+///
+/// # Two-pass layout
+///
+/// Per-case scalar projection is materialised into a fresh `Vec<f64>` of
+/// length `grid_count` and wrapped in a per-case Sampled `Value::Field`
+/// before `envelope_reduce` runs the across-case max. This is two passes
+/// over the data and N intermediate `Vec<f64>` allocations for an N-case
+/// fixture — chosen deliberately over a streaming reduction so:
+/// - `envelope_reduce`'s grid-equality check (`metadata_matches`) runs on
+///   already-projected scalar fields with stride-1 codomain, matching the
+///   pre-existing reduction's invariants without bespoke argument shapes;
+/// - the per-grid `total_cmp` + first-finite-init + NaN-skip discipline
+///   lives in exactly one place (`envelope_reduce`) rather than being
+///   reimplemented per projection;
+/// - failure modes (grid mismatch, missing axis, etc.) report through the
+///   shared `envelope_reduce` path with consistent silent-Undef semantics.
+///
+/// If/when FEA grids reach sizes where the intermediate allocations matter
+/// (\~1e6 grid points · \~10 cases · \~1 float = \~80 MB), folding the
+/// projection into `envelope_reduce`'s per-index loop via a closure becomes
+/// the right trade-off; until then, the two-pass shape keeps the reduction
+/// invariants centralised.
 fn envelope_tensor_projection(
     args: &[Value],
     field_name: &str,
@@ -570,6 +585,14 @@ fn envelope_tensor_projection(
         // Construct a per-case projected SampledField with stride-1 scalar
         // codomain. Grid metadata propagates unchanged from the input — only
         // the data buffer length changes (grid_count * stride → grid_count).
+        //
+        // `oob_emitted: AtomicBool::new(false)` is a fresh diagnostic flag,
+        // not inherited from the source `sf`: the projected field is an
+        // internal-only intermediary handed straight to `envelope_reduce`
+        // and never directly OOB-queried by user code, so there is no
+        // user-visible duplicate-warning surface to suppress. Keeping the
+        // flag fresh preserves the simple "one diagnostic per
+        // distinctly-instantiated SampledField" mental model.
         let projected_sf = SampledField {
             name: sf.name.clone(),
             kind: sf.kind,
@@ -3265,43 +3288,30 @@ mod tests {
     ///                     d[6]=σ_zx, d[7]=σ_zy, d[8]=σ_zz
     /// (matches the layout `analysis.rs::von_mises` expects.)
 
-    /// Closed-form von Mises for a 9-float row-major 3×3 stress window —
-    /// duplicates the analysis.rs formula so the round-trip test is
-    /// independent of the implementation under test.
-    fn von_mises_window(d: &[f64; 9]) -> f64 {
-        let sxx = d[0];
-        let syy = d[4];
-        let szz = d[8];
-        let sxy = d[1];
-        let syz = d[5];
-        let sxz = d[2];
-        (0.5
-            * ((sxx - syy).powi(2)
-                + (syy - szz).powi(2)
-                + (szz - sxx).powi(2)
-                + 6.0 * (sxy.powi(2) + syz.powi(2) + sxz.powi(2))))
-        .sqrt()
-    }
-
     #[test]
     fn envelope_von_mises_two_case_round_trip_returns_per_grid_max_of_per_case_von_mises() {
         // 1-D 3-grid-point fixture exercising the round-trip property:
         //   envelope_von_mises(mcr).data[i] == max over cases of vm(case[i])
         //
-        // Hand-crafted tensors at each point with known closed-form von_mises:
+        // Hand-crafted tensors at each point with known closed-form von_mises
+        // (computed off-line — the test pins explicit numeric literals rather
+        // than re-implementing the closed-form formula in a duplicate
+        // `von_mises_window` helper, so a regression in either side surfaces
+        // as a literal-mismatch instead of two coupled implementations
+        // drifting in lockstep):
         //   Case A:
         //     P0 = uniaxial 100 MPa σ_xx               → vm = 100
-        //     P1 = pure shear 50 MPa σ_xy = σ_yx       → vm = 50·√3 ≈ 86.6025
+        //     P1 = pure shear 50 MPa σ_xy = σ_yx       → vm = 50·√3
         //     P2 = hydrostatic 200 MPa diagonal        → vm = 0
         //   Case B:
         //     P0 = hydrostatic 50 MPa diagonal         → vm = 0
         //     P1 = uniaxial 200 MPa σ_xx               → vm = 200
-        //     P2 = pure shear 100 MPa σ_xy = σ_yx      → vm = 100·√3 ≈ 173.2050
+        //     P2 = pure shear 100 MPa σ_xy = σ_yx      → vm = 100·√3
         //
         // Per-grid envelope (max over cases of per-case vm):
-        //   data[0] = max(100, 0)     = 100
-        //   data[1] = max(86.60, 200) = 200
-        //   data[2] = max(0, 173.20)  = 173.2050
+        //   data[0] = max(100, 0)             = 100.0
+        //   data[1] = max(50·√3 ≈ 86.6, 200)  = 200.0
+        //   data[2] = max(0, 100·√3 ≈ 173.2)  = 100·√3
         let axis = vec![0.0, 1.0, 2.0];
         let pressure = Type::Scalar { dimension: DimensionVector::PRESSURE };
         let tensor_codomain = Type::Matrix { m: 3, n: 3, quantity: Box::new(pressure.clone()) };
@@ -3344,10 +3354,15 @@ mod tests {
         let result = eval_fea("envelope_von_mises", &[mcr]).unwrap();
         let result_sf = extract_sampled(&result);
 
-        // Independently compute expected per-grid envelope.
-        let expected: Vec<f64> = (0..axis.len())
-            .map(|i| von_mises_window(&a_tensors[i]).max(von_mises_window(&b_tensors[i])))
-            .collect();
+        // Hand-computed expected per-grid envelope (no duplicate helper —
+        // see comment block above for the per-case vm derivation). The
+        // `3.0_f64.sqrt()` literal is the closed-form √3; `f64::consts`
+        // does not yet stabilise `SQRT_3`.
+        let expected: [f64; 3] = [
+            100.0,                    // max(vm_A=100, vm_B=0)
+            200.0,                    // max(vm_A=50·√3, vm_B=200)
+            100.0 * 3.0_f64.sqrt(),   // max(vm_A=0, vm_B=100·√3)
+        ];
 
         assert_eq!(result_sf.data.len(), axis.len(), "result must have one scalar per grid point");
         for (i, (got, want)) in result_sf.data.iter().zip(expected.iter()).enumerate() {
