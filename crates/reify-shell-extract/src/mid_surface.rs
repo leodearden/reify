@@ -120,7 +120,7 @@ impl From<GridValidationError> for MidSurfaceError {
 impl std::fmt::Display for MidSurfaceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            MidSurfaceError::GridValidation(inner) => inner.fmt(f),
+            MidSurfaceError::GridValidation(inner) => write!(f, "extract_mid_surface: {inner}"),
             MidSurfaceError::MaskVoxelOutOfBounds { voxel, grid_extent } => write!(
                 f,
                 "medial mask voxel {voxel:?} is outside grid extent {grid_extent:?}; \

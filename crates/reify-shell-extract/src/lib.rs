@@ -141,7 +141,7 @@ pub mod mesher;
 pub mod mid_surface;
 pub mod pruning;
 pub mod segmentation;
-pub mod grid_validation;
+pub(crate) mod grid_validation;
 
 pub use grid_validation::GridValidationError;
 pub use medial::{MedialError, MedialMask, MedialOptions, compute_medial_mask};

@@ -211,7 +211,7 @@ impl From<GridValidationError> for MedialError {
 impl std::fmt::Display for MedialError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            MedialError::GridValidation(inner) => inner.fmt(f),
+            MedialError::GridValidation(inner) => write!(f, "compute_medial_mask: {inner}"),
             MedialError::InvalidAxisGeometry {
                 axis,
                 spacing,
