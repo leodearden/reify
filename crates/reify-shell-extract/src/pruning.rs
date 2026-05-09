@@ -34,6 +34,7 @@
 
 use rustc_hash::FxHashMap;
 
+use crate::mesher::is_quantization_tolerance_valid;
 use crate::mid_surface::MidSurfaceMesh;
 
 // ── Public types ─────────────────────────────────────────────────────────────
@@ -215,8 +216,9 @@ impl std::fmt::Display for PruneError {
             ),
             PruneError::InvalidGridAlignmentTolerance { value } => write!(
                 f,
-                "grid_alignment_tolerance must be strictly positive and finite \
-                 (got {value}); use 1e-9 for the default (matches \
+                "grid_alignment_tolerance must be strictly positive, finite, and normal \
+                 (got {value}); subnormal values produce reciprocals that overflow vertex \
+                 bin keys; use 1e-9 for the default (matches \
                  MidSurfaceOptions::grid_alignment_tolerance)"
             ),
             PruneError::InconsistentInputMesh {
@@ -289,10 +291,7 @@ pub fn prune_branches(
             value: options.max_prune_iterations,
         });
     }
-    if options.grid_alignment_tolerance <= 0.0
-        || !options.grid_alignment_tolerance.is_finite()
-        || options.grid_alignment_tolerance.is_subnormal()
-    {
+    if !is_quantization_tolerance_valid(options.grid_alignment_tolerance) {
         return Err(PruneError::InvalidGridAlignmentTolerance {
             value: options.grid_alignment_tolerance,
         });

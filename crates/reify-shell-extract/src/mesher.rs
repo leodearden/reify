@@ -137,13 +137,12 @@ pub struct MesherResult {
 /// Errors returned by [`mesh_mid_surface`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum MesherError {
-    /// `merge_tolerance` must be finite, strictly positive, AND its reciprocal
-    /// must be finite (i.e. the value must not be so small that
-    /// `1.0 / merge_tolerance` overflows to ±inf). Subnormal (denormal)
-    /// positive values that satisfy `> 0.0 && is_finite()` but have an
-    /// infinite reciprocal are rejected here, because they would cause
-    /// `inv_tol = +inf` in the dedup hash, silently collapsing every vertex
-    /// into the `i64::MIN` / `i64::MAX` boundary bins.
+    /// `merge_tolerance` must be strictly positive, finite, and normal (not
+    /// subnormal). Subnormal (denormal) positive values satisfy `> 0.0 &&
+    /// is_finite()`, but produce reciprocals large enough (~2^1022 for the
+    /// largest subnormals) that `coord * inv_tol` overflows to ±Inf for any
+    /// non-tiny coordinate, silently collapsing all vertices into the ±Inf
+    /// saturation buckets and corrupting the dedup hash.
     InvalidMergeTolerance {
         /// The offending value supplied by the caller.
         value: f64,
@@ -220,11 +219,11 @@ impl std::fmt::Display for MesherError {
         match self {
             MesherError::InvalidMergeTolerance { value } => write!(
                 f,
-                "merge_tolerance must be finite, strictly positive, and its reciprocal \
-                 must also be finite (got {value}); subnormal values where \
-                 `1.0 / merge_tolerance` overflows to ±inf corrupt the dedup hash bins; \
-                 use 1e-9 for bit-exact binary-MC output or a larger value for \
-                 float-noisy producers"
+                "merge_tolerance must be strictly positive, finite, and normal \
+                 (got {value}); subnormal values produce reciprocals that overflow \
+                 vertex bin keys, silently collapsing all vertices into the ±Inf \
+                 saturation buckets; use 1e-9 for bit-exact binary-MC output or a \
+                 larger value for float-noisy producers"
             ),
             MesherError::InvalidMinAspectRatio { value } => write!(
                 f,
@@ -288,6 +287,23 @@ impl std::fmt::Display for MesherError {
 }
 
 impl std::error::Error for MesherError {}
+
+// ── Crate-visible quantization utility ───────────────────────────────────────
+
+/// Returns `true` if `value` is safe as an inverse-tolerance operand.
+///
+/// A "safe" tolerance is strictly positive, finite, and normal (not subnormal).
+/// Subnormal values — even those whose reciprocal still fits in `f64` (e.g.
+/// `2^-1023 → 1/x ≈ 8.99e307`) — produce reciprocals large enough that
+/// `coord * (1.0 / value)` overflows to `±Inf` for any non-tiny coordinate,
+/// silently collapsing all vertices into the `±Inf` saturation buckets.
+///
+/// Used by both [`mesh_mid_surface`] and [`crate::pruning::prune_branches`]
+/// to gate their respective tolerance parameters at the same rule.
+#[inline]
+pub(crate) fn is_quantization_tolerance_valid(value: f64) -> bool {
+    value > 0.0 && value.is_finite() && !value.is_subnormal()
+}
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
 
@@ -459,17 +475,10 @@ pub fn mesh_mid_surface(
 ) -> Result<MesherResult, MesherError> {
     // ── 1. Validate options ───────────────────────────────────────────────────
     // Reject merge_tolerance if it is ≤ 0, non-finite, or subnormal.
-    // The subnormal check is the tighter gate: all subnormals are positive and
-    // finite, but even the largest subnormals (~2^-1022) have reciprocals large
-    // enough (~2^1022) that `coord * inv_tol` overflows to ±Inf for any
-    // non-tiny coordinate, silently collapsing all vertices into the ±inf
-    // saturation buckets.  This subsumes the earlier
-    // `!(1.0 / merge_tolerance).is_finite()` check, which failed to reject
-    // subnormals whose reciprocal still fits in f64 (e.g. 2^-1023 → 1/x ≈ 9e307).
-    if options.merge_tolerance <= 0.0
-        || !options.merge_tolerance.is_finite()
-        || options.merge_tolerance.is_subnormal()
-    {
+    // `is_quantization_tolerance_valid` centralises the rule shared with
+    // `prune_branches` (same `coord * inv_tol` overflow hazard).  See its
+    // doc for the subnormal-saturation rationale.
+    if !is_quantization_tolerance_valid(options.merge_tolerance) {
         return Err(MesherError::InvalidMergeTolerance {
             value: options.merge_tolerance,
         });
