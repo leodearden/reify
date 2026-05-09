@@ -23,8 +23,10 @@
 //! They are not run in CI but their presence is intentional — see each test's
 //! `#[ignore]` string for the precise blocker and pointer into the code.
 
+use reify_constraints::SimpleConstraintChecker;
+use reify_eval::Engine;
 use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
-use reify_types::ModulePath;
+use reify_types::{ExportFormat, ModulePath, Value, ValueCellId};
 
 const BLOCK_INERTIA_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -119,6 +121,54 @@ fn block_inertia_compiles_with_stdlib_no_errors() {
          diagnostics (task 2699 wired moment_of_inertia), got:\n{:#?}",
         errors_only(&compiled)
     );
+}
+
+/// Eval-deepening contract: the `i` cell in `BlockInertia` must resolve to a
+/// rank-2 `Value::Tensor` (a `Tensor<2, 3, MomentOfInertia>` per PRD §3.9 —
+/// a 3×3 matrix of `MomentOfInertia`-dimensioned scalars).
+///
+/// For a uniform-density box with side lengths W=50mm, H=30mm, D=10mm and
+/// density ρ=7850 kg/m³, the principal moments satisfy I_xx = (1/12)·m·(H²+D²),
+/// etc.  The test asserts the nested-Tensor shape rather than numeric values so
+/// it remains valid for any kernel-precision implementation.
+///
+/// **Blocked by**: eval-side dispatch for `moment_of_inertia` in
+/// `crates/reify-eval/src/geometry_ops.rs::try_eval_topology_selector` — the
+/// 11 task-2699 names fall through to `_ => return None` today (see
+/// `geometry_ops.rs:1646-1661`), leaving cells at `Value::Undef`.  Tracked by
+/// PRD `docs/prds/topology-selectors.md` task 8 as task 2691's eval arms.
+/// This smoke test documents the contract and lands the gating test; remove the
+/// `#[ignore]` once the `moment_of_inertia` arm is added to
+/// `try_eval_topology_selector`.
+#[test]
+#[ignore = "pending eval-side dispatch for moment_of_inertia in \
+            crates/reify-eval/src/geometry_ops.rs::try_eval_topology_selector — \
+            the 11 task-2699 names fall through to None today (see geometry_ops.rs:1646-1661), \
+            leaving cells at Value::Undef. Tracked by PRD docs/prds/topology-selectors.md \
+            task 8 as task 2691's eval arms; this smoke task documents the contract and \
+            lands the gating test."]
+fn block_inertia_evals_moment_of_inertia_to_tensor() {
+    let source = std::fs::read_to_string(BLOCK_INERTIA_PATH)
+        .expect("examples/topology_selectors/block_inertia.ri should exist");
+    let compiled = parse_and_compile_with_stdlib(&source);
+    assert!(
+        errors_only(&compiled).is_empty(),
+        "compile errors: {:#?}",
+        errors_only(&compiled)
+    );
+
+    let checker = SimpleConstraintChecker;
+    let mut engine = Engine::new(Box::new(checker), None);
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let cell = ValueCellId::new("BlockInertia", "i");
+    match result.values.get(&cell) {
+        Some(Value::Tensor(_)) => {} // rank-2 nested Tensor — correct
+        other => panic!(
+            "expected BlockInertia.i to be Value::Tensor(_) (rank-2 MomentOfInertia tensor), \
+             got {other:?}"
+        ),
+    }
 }
 
 #[test]
