@@ -94,6 +94,19 @@ use faer::sparse::SparseRowMat;
 /// subtracts zero, which is bit-identical to not subtracting at all.  This
 /// mirrors the inhomogeneous BC path in `apply_dirichlet_row_elimination`.
 ///
+/// # End-to-end recovery property
+///
+/// After applying MPCs and solving the eliminated system `K_after · u = f_after`,
+/// the original constraint `Σᵢ coeffs[i] · u[dofs[i]] = rhs` is satisfied to
+/// FP tolerance for each `MpcRow` in the input slice.  The mechanism: the pivot
+/// row equation `u[p] = β + Σᵢ>0 αᵢ · u[dofs[i]]` is directly encoded into
+/// `K_after`'s row `p` and `f_after[p]`, so the solve recovers `u[p]`
+/// consistent with the constraint by construction.  The
+/// `shell_tet_tying_constraints_compose_with_apply_mpc_row_elimination_to_satisfy_constraint_after_solve`
+/// test is the regression pin for this invariant — paralleling
+/// `dirichlet_bc_elimination_satisfies_original_equilibrium_at_free_dofs` in
+/// `apply_dirichlet_row_elimination`.
+///
 /// # Empty slice
 ///
 /// An empty `rows` slice is a perfect identity operation — no stored value in
