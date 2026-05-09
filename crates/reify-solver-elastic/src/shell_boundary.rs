@@ -133,7 +133,18 @@ pub fn build_support_bcs(
             (bcs, SupportCompatibility::Ok)
         }
         (SupportBodyKind::Tet, SupportKind::Pinned) => {
-            unimplemented!("(Tet, Pinned) — step-10")
+            // Tet nodes have no rotational DOFs, so Pinned is bit-identical to Fixed.
+            // We surface the user-intent mismatch via the compat tag.
+            let bcs = nodes
+                .iter()
+                .flat_map(|&n| {
+                    (0..3).map(move |i| DirichletBc {
+                        dof: 3 * n + i,
+                        value: 0.0,
+                    })
+                })
+                .collect();
+            (bcs, SupportCompatibility::PinnedOnTetEquivalentToFixed)
         }
     }
 }
