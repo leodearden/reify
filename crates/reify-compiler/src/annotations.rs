@@ -15,20 +15,13 @@ pub(crate) fn lower_annotations(
                     use reify_syntax::ExprKind;
                     match &expr.kind {
                         ExprKind::NumberLiteral { value, is_real } => {
-                            // Mirror the same Int/Real classification used in expr.rs:
-                            // the AST `is_real` flag (set by the parser when the token
-                            // contains `.`, `e`, or `E`) drives the branch; the overflow
-                            // guard only applies for bare-integer tokens whose f64 value
-                            // isn't a clean i64 (e.g. `100000000000000000000`).
-                            if *is_real {
-                                Some(reify_types::AnnotationArg::Real(*value))
-                            } else if value.is_finite() && *value == (*value as i64) as f64 {
-                                Some(reify_types::AnnotationArg::Int(*value as i64))
-                            } else {
-                                // Integer-form token whose f64 isn't a clean i64 (overflow
-                                // past 2^63). Falls back to Real to avoid a saturated cast.
-                                Some(reify_types::AnnotationArg::Real(*value))
-                            }
+                            // Int/Real classification (incl. integer-form overflow fallback) is
+                            // shared with `compile_expr_guarded` via
+                            // reify_syntax::classify_number_literal so the two sites cannot drift.
+                            Some(match reify_syntax::classify_number_literal(*value, *is_real) {
+                                reify_syntax::NumberClass::Int(i) => reify_types::AnnotationArg::Int(i),
+                                reify_syntax::NumberClass::Real(f) => reify_types::AnnotationArg::Real(f),
+                            })
                         }
                         ExprKind::StringLiteral(s) => {
                             Some(reify_types::AnnotationArg::String(s.clone()))
