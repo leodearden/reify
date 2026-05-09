@@ -2036,12 +2036,17 @@ impl Engine {
         // after the loop amortises the O(graph) reverse_index/trace_map/rebuild_cone/
         // recompute_tolerance_scope cost into one pass regardless of N preserved
         // purposes.  Pre-3103 preserved_bindings was always empty (zero cost);
-        // post-3103 we pay O(graph) exactly once per eval() call regardless of N.
+        // post-3103 we pay O(graph) at most once per eval() call — exactly once when
+        // at least one preserved binding re-injects, zero times when all preserved
+        // bindings target purposes absent from the new module (task 3260).
         if !preserved_bindings.is_empty() {
+            let mut any_injected = false;
             for (purpose_name, entity_ref) in &preserved_bindings {
-                self.activate_purpose_constraints(purpose_name, entity_ref);
+                any_injected |= self.activate_purpose_constraints(purpose_name, entity_ref);
             }
-            self.rebuild_purpose_infrastructure();
+            if any_injected {
+                self.rebuild_purpose_infrastructure();
+            }
         }
 
         // Drain runtime diagnostics (task 2341 step-16) into the result
