@@ -6181,6 +6181,43 @@ fn commit_state_clears_last_compile_diagnostics_on_successful_load() {
     );
 }
 
+/// After a successful recovery (valid `load_from_source` after a prior failed live
+/// edit), `commit_state` must clear `live_compile_diagnostics` so stale live-failure
+/// diagnostics are not surfaced after recovery.
+///
+/// Pins step-3/step-4 of the task-3386 plan: `commit_state` must call
+/// `self.live_compile_diagnostics.clear()` and the `live_compile_diagnostics_for_test`
+/// accessor must expose the field for test introspection.
+#[test]
+fn commit_state_clears_live_compile_diagnostics_on_successful_recovery() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // Establish a successful compiled state (compiled is Some).
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("valid source should load successfully");
+
+    // Trigger a failed live edit to populate live_compile_diagnostics.
+    let _ = session.load_from_source("this is not valid reify syntax {{{}}}", "bad");
+
+    assert!(
+        !session.live_compile_diagnostics_for_test().is_empty(),
+        "live_compile_diagnostics should be non-empty after a failed live edit"
+    );
+
+    // Recover with a successful load — commit_state must clear live_compile_diagnostics.
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("valid source should load successfully after recovery");
+
+    assert!(
+        session.live_compile_diagnostics_for_test().is_empty(),
+        "live_compile_diagnostics should be cleared after a successful recovery"
+    );
+}
+
 /// When `last_tessellation_diagnostics` is populated (via the test injector) and
 /// `compiled` is `None`, `build_gui_state` must surface those diagnostics through
 /// `state.tessellation_diagnostics`.
