@@ -6297,18 +6297,20 @@ fn build_gui_state_surfaces_parse_error_after_failed_load_file() {
 }
 
 /// After a session already has a successful compile (`compiled` is `Some`), a
-/// subsequent failed `load_from_source` must NOT overwrite `last_compile_diagnostics`.
+/// subsequent failed `load_from_source` must surface the live compile failure
+/// in `build_gui_state`'s `compile_diagnostics`.
 ///
-/// Pins the `if self.compiled.is_none()` gate added by the amendment pass (task
-/// 3351, reviewer suggestion "stale_state_after_recovered_failure").
+/// Pins the new behavior introduced in task 3386: when `compiled is Some` at
+/// failure time, the failure diagnostics are stored in `live_compile_diagnostics`
+/// (not `last_compile_diagnostics`), and `build_gui_state`'s non-early-return
+/// branch appends them so the user sees the live error alongside any warnings
+/// from the prior good compile.
 ///
-/// Rationale: when `compiled` is `Some`, `build_gui_state` does NOT take the
-/// early-return branch, so any failure diagnostics stored in
-/// `last_compile_diagnostics` would be silently stale — stored but never
-/// surfaced — rather than shown to the user.  The gate keeps the field
-/// semantically tied to the cold-start path where it is actually consulted.
+/// Replaces `last_compile_diagnostics_not_overwritten_when_prior_compile_exists`
+/// (task 3351 pinning test) which pinned the opposite (now-removed) behavior.
 #[test]
-fn last_compile_diagnostics_not_overwritten_when_prior_compile_exists() {
+fn build_gui_state_surfaces_live_compile_failure_after_failed_load_from_source_with_prior_compile()
+{
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
@@ -6318,28 +6320,47 @@ fn last_compile_diagnostics_not_overwritten_when_prior_compile_exists() {
         .load_from_source(bracket_source(), "bracket")
         .expect("valid source should load successfully");
 
+    // last_compile_diagnostics must remain empty (cold-start field untouched).
     assert!(
         session.last_compile_diagnostics_for_test().is_empty(),
         "last_compile_diagnostics should be empty after a successful load"
     );
 
-    // Now fail a subsequent load — compiled is Some, so the gate should prevent
-    // the field from being overwritten with the failure diagnostics.
+    // Now fail a subsequent load — compiled is Some, so the new path stores
+    // failure diagnostics in live_compile_diagnostics (not last_compile_diagnostics).
     let _ = session.load_from_source("this is not valid reify syntax {{{}}}", "bad");
 
+    // live_compile_diagnostics must have been populated by the failure.
+    assert!(
+        !session.live_compile_diagnostics_for_test().is_empty(),
+        "live_compile_diagnostics should be non-empty after a failed load_from_source with prior compile"
+    );
+    // last_compile_diagnostics must remain empty — this field is cold-start only.
     assert!(
         session.last_compile_diagnostics_for_test().is_empty(),
-        "last_compile_diagnostics must not be overwritten when compiled is already Some; \
-         the field is only consulted on the cold-start early-return path"
+        "last_compile_diagnostics must not be touched when compiled is already Some"
     );
 
-    // build_gui_state should still return the previously-compiled good state
-    // (compile_diagnostics empty, not the failure).
+    // build_gui_state must surface the live failure diagnostics.
     let state = session
         .build_gui_state()
-        .expect("build_gui_state should return Ok with the prior good state");
+        .expect("build_gui_state should return Ok with the prior good state plus live errors");
+
     assert!(
-        state.compile_diagnostics.is_empty(),
-        "compile_diagnostics should be empty — stale failure diagnostics must not be surfaced"
+        !state.compile_diagnostics.is_empty(),
+        "compile_diagnostics must be non-empty — live compile failure must be surfaced"
+    );
+    let has_error = state
+        .compile_diagnostics
+        .iter()
+        .any(|d| d.severity == "Error");
+    assert!(
+        has_error,
+        "at least one diagnostic must have severity Error; got: {:?}",
+        state
+            .compile_diagnostics
+            .iter()
+            .map(|d| &d.severity)
+            .collect::<Vec<_>>()
     );
 }
