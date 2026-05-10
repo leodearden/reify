@@ -199,6 +199,108 @@ fn assembly_elements_for<'a>(
         .collect()
 }
 
+/// Build the pinched-cylinder octant symmetry Dirichlet BCs for the 1/8
+/// octant model (θ ∈ [0, π/2], z ∈ [0, L/2]).
+///
+/// # Arguments
+///
+/// * `nodes` — node coordinates (`nodes[k]` is the 3-D position of node `k`)
+/// * `l` — total cylinder length; the diaphragm plane is at `z = l/2`
+/// * `tol` — node-on-boundary detection tolerance; should be well within the
+///   smallest mesh spacing (e.g. `1.0` for R=300, L=600; `0.1` for R=1, L=2)
+///
+/// # BC groups
+///
+/// ## Diaphragm end (z=L/2): MacNeal-Harder "rigid end diaphragm" condition
+///
+/// From MacNeal & Harder (1985): "Support: Rigid end diaphragm (v=0, w=0)"
+/// where v is the circumferential displacement and w = u_z is the axial.
+///
+/// In global Cartesian (cylinder axis = z):
+///   w = u_z = 0  (axial constraint)
+///   v = −sin θ · u_x + cos θ · u_y = 0  (circumferential)
+///
+/// The exact circumferential constraint v=0 is an oblique (rotated) BC that
+/// cannot be expressed as a simple per-DOF constraint with the current API.
+/// For the OCTANT model:
+///   • Corner θ=0  (j=0, y=0 plane): v = u_y = 0 already from y=0 symmetry BC.
+///   • Corner θ=π/2 (j=nx, x=0 plane): v = −u_x = 0 already from x=0 symmetry BC.
+///   • Intermediate θ (j=1..nx-1): v=0 is omitted; these nodes can slide
+///     tangentially — an accepted coarse-mesh approximation. The radial degree
+///     of freedom (u_r) is intentionally left FREE so the cylinder can breathe.
+///
+/// θ_z=0 (torsion) is added for numerical robustness at interior diaphragm
+/// nodes not already stabilised by the symmetry-plane BCs.
+///
+/// ## Symmetry at y=0 (θ=0): xz-plane
+///   u_y=0, θ_x=0, θ_z=0
+///
+/// ## Symmetry at x=0 (θ=π/2): yz-plane
+///   u_x=0, θ_y=0, θ_z=0
+///
+/// ## Mid-span symmetry at z=0
+///
+/// Physical z-symmetry conditions for the Reissner-Mindlin shell:
+///   u_z = 0 (axial translation, antisymmetric about z=0).
+///   meridional rotation = 0: the director tilt in the z-direction must
+///     vanish at the symmetry plane. In cylindrical terms this is the
+///     rotation about the circumferential direction e_θ = (−sin θ, cos θ, 0):
+///       β = −sin θ · θ_x + cos θ · θ_y = 0  (oblique, varies with θ)
+///
+/// The oblique constraint cannot be expressed as a per-DOF BC with the
+/// current DirichletBc API except at axis-aligned corner nodes:
+///   θ=0   (j=0, is_y0):   −sin 0 · θ_x + cos 0 · θ_y = θ_y = 0
+///   θ=π/2 (j=nx, is_x0): −sin(π/2) · θ_x + cos(π/2) · θ_y = −θ_x = 0
+///
+/// For intermediate nodes (j=1..nx-1), the meridional rotation constraint is
+/// omitted — the same accepted approximation used for the tangential BC at the
+/// diaphragm end. These nodes are slightly more flexible than the symmetric
+/// reference solution; the resulting over-estimate is within the coarse-mesh
+/// tolerance band.
+///
+/// Cross-reference: reviewer escalation `esc-3034-165`.
+fn pinched_cylinder_octant_symmetry_bcs(
+    nodes: &[[f64; 3]],
+    l: f64,
+    tol: f64,
+) -> Vec<DirichletBc> {
+    let mut bcs = Vec::new();
+    for (node, n) in nodes.iter().enumerate() {
+        let is_diaphragm = (n[2] - l / 2.0).abs() < tol; // z=L/2 end ring
+        let is_y0 = n[1].abs() < tol; // θ=0 symmetry plane
+        let is_x0 = n[0].abs() < tol; // θ=π/2 symmetry plane
+        let is_z0 = n[2].abs() < tol; // z=0 mid-span plane
+
+        let dof = |d: usize| node * 6 + d;
+
+        if is_diaphragm {
+            bcs.push(DirichletBc { dof: dof(2), value: 0.0 }); // w = u_z = 0
+            bcs.push(DirichletBc { dof: dof(5), value: 0.0 }); // θ_z = 0 (torsion)
+        }
+        if is_y0 {
+            bcs.push(DirichletBc { dof: dof(1), value: 0.0 }); // u_y
+            bcs.push(DirichletBc { dof: dof(3), value: 0.0 }); // θ_x
+            bcs.push(DirichletBc { dof: dof(5), value: 0.0 }); // θ_z
+        }
+        if is_x0 {
+            bcs.push(DirichletBc { dof: dof(0), value: 0.0 }); // u_x
+            bcs.push(DirichletBc { dof: dof(4), value: 0.0 }); // θ_y
+            bcs.push(DirichletBc { dof: dof(5), value: 0.0 }); // θ_z
+        }
+        if is_z0 {
+            bcs.push(DirichletBc { dof: dof(2), value: 0.0 }); // u_z = 0
+            // Meridional rotation at axis-aligned corners only:
+            if is_y0 {
+                bcs.push(DirichletBc { dof: dof(4), value: 0.0 }); // θ_y = 0 at θ=0
+            }
+            if is_x0 {
+                bcs.push(DirichletBc { dof: dof(3), value: 0.0 }); // θ_x = 0 at θ=π/2
+            }
+        }
+    }
+    bcs
+}
+
 // ─── step-2: pinched cylinder (MacNeal-Harder §3.3) ─────────────────────────
 
 /// Pinched cylinder smoke test — geometry from MacNeal-Harder (1985) §3.3.
@@ -262,87 +364,12 @@ fn pinched_cylinder_octant_smoke_test_radial_displacement_is_finite_and_inward(
     let stiffness = build_shell_stiffnesses(&nodes, &connectivity, T, &mat);
     let elements = assembly_elements_for(&connectivity, &stiffness);
 
-    // Build Dirichlet BCs.
+    // Build Dirichlet BCs (octant symmetry + rigid end diaphragm).
     // Tolerance 1.0 is well within each mesh spacing (~75 for z, ~115 arc-len
     // for θ at R=300), so node-on-boundary detection is exact for this mesh.
+    // Full BC rationale lives in `pinched_cylinder_octant_symmetry_bcs`.
     let tol = 1.0_f64;
-    let mut bcs: Vec<DirichletBc> = Vec::new();
-
-    for (node, n) in nodes.iter().enumerate() {
-        let is_diaphragm = (n[2] - L / 2.0).abs() < tol; // z=L/2 end ring
-        let is_y0 = n[1].abs() < tol; // θ=0 symmetry plane
-        let is_x0 = n[0].abs() < tol; // θ=π/2 symmetry plane
-        let is_z0 = n[2].abs() < tol; // z=0 mid-span plane
-
-        let dof = |d: usize| node * 6 + d;
-
-        // Diaphragm end (z=L/2): MacNeal-Harder "rigid end diaphragm" condition.
-        //
-        // From MacNeal & Harder (1985): "Support: Rigid end diaphragm (v=0, w=0)"
-        // where v is the circumferential displacement and w = u_z is the axial.
-        //
-        // In global Cartesian (cylinder axis = z):
-        //   w = u_z = 0  (axial constraint)
-        //   v = −sin θ · u_x + cos θ · u_y = 0  (circumferential)
-        //
-        // The exact circumferential constraint v=0 is an oblique (rotated) BC that
-        // cannot be expressed as a simple per-DOF constraint with the current API.
-        // For the OCTANT model:
-        //   • Corner θ=0  (j=0, y=0 plane): v = u_y = 0 already from y=0 symmetry BC.
-        //   • Corner θ=π/2 (j=nx, x=0 plane): v = −u_x = 0 already from x=0 symmetry BC.
-        //   • Intermediate θ (j=1..nx-1): v=0 is omitted; these nodes can slide
-        //     tangentially — an accepted coarse-mesh approximation (see design
-        //     decision in plan.json). The radial degree of freedom (u_r) is
-        //     intentionally left FREE so the cylinder can breathe at the ends.
-        //
-        // θ_z=0 (torsion) is added for numerical robustness at interior diaphragm nodes
-        // that are not already stabilised by the symmetry-plane BCs.
-        if is_diaphragm {
-            bcs.push(DirichletBc { dof: dof(2), value: 0.0 }); // w = u_z = 0
-            bcs.push(DirichletBc { dof: dof(5), value: 0.0 }); // θ_z = 0 (torsion)
-        }
-        // Symmetry at y=0 (θ=0): xz-plane.
-        if is_y0 {
-            bcs.push(DirichletBc { dof: dof(1), value: 0.0 }); // u_y
-            bcs.push(DirichletBc { dof: dof(3), value: 0.0 }); // θ_x
-            bcs.push(DirichletBc { dof: dof(5), value: 0.0 }); // θ_z
-        }
-        // Symmetry at x=0 (θ=π/2): yz-plane.
-        if is_x0 {
-            bcs.push(DirichletBc { dof: dof(0), value: 0.0 }); // u_x
-            bcs.push(DirichletBc { dof: dof(4), value: 0.0 }); // θ_y
-            bcs.push(DirichletBc { dof: dof(5), value: 0.0 }); // θ_z
-        }
-        // Mid-span symmetry at z=0.
-        //
-        // Physical z-symmetry conditions for the Reissner-Mindlin shell:
-        //   u_z = 0 (axial translation, antisymmetric about z=0).
-        //   meridional rotation = 0: the director tilt in the z-direction must
-        //     vanish at the symmetry plane. In cylindrical terms this is the
-        //     rotation about the circumferential direction e_θ = (−sin θ, cos θ, 0):
-        //       β = −sin θ · θ_x + cos θ · θ_y = 0  (oblique, varies with θ)
-        //
-        // The oblique constraint cannot be expressed as a per-DOF BC with the
-        // current DirichletBc API except at axis-aligned corner nodes:
-        //   θ=0   (j=0, is_y0):   −sin 0 · θ_x + cos 0 · θ_y = θ_y = 0
-        //   θ=π/2 (j=nx, is_x0): −sin(π/2) · θ_x + cos(π/2) · θ_y = −θ_x = 0
-        //
-        // For intermediate nodes (j=1..nx-1), the meridional rotation constraint is
-        // omitted — the same accepted approximation used for the tangential BC at the
-        // diaphragm end. These nodes are slightly more flexible than the symmetric
-        // reference solution; the resulting over-estimate of displacement is within
-        // the coarse-mesh tolerance band (see assertion below).
-        if is_z0 {
-            bcs.push(DirichletBc { dof: dof(2), value: 0.0 }); // u_z = 0
-            // Meridional rotation at axis-aligned corners only:
-            if is_y0 {
-                bcs.push(DirichletBc { dof: dof(4), value: 0.0 }); // θ_y = 0 at θ=0
-            }
-            if is_x0 {
-                bcs.push(DirichletBc { dof: dof(3), value: 0.0 }); // θ_x = 0 at θ=π/2
-            }
-        }
-    }
+    let bcs = pinched_cylinder_octant_symmetry_bcs(&nodes, L, tol);
 
     // Load node: corner at (0, R, 0) = θ=π/2, z=0.
     // Both is_x0 and is_z0 apply → only u_y is free after BCs.
@@ -1150,36 +1177,11 @@ fn mitc3_thin_shell_pinched_cylinder_does_not_lock_under_decreasing_thickness() 
     let (nodes, connectivity) = cylinder_octant_mesh(NX, NY, R, L);
     let n_nodes = nodes.len();
 
-    // Build Dirichlet BCs (same logic as the pinched-cylinder test in step-4).
+    // Build Dirichlet BCs (same logic as the pinched-cylinder smoke test).
     // These are fixed for all thickness values — only stiffness changes with t.
+    // Full BC rationale lives in `pinched_cylinder_octant_symmetry_bcs`.
     let tol = 0.1_f64; // safe well inside mesh spacing (~R·π/2/NX ≈ 0.39 arc)
-    let mut bcs: Vec<DirichletBc> = Vec::new();
-    for (node, n) in nodes.iter().enumerate() {
-        let is_diaphragm = (n[2] - L / 2.0).abs() < tol;
-        let is_y0 = n[1].abs() < tol;
-        let is_x0 = n[0].abs() < tol;
-        let is_z0 = n[2].abs() < tol;
-        let dof = |d: usize| node * 6 + d;
-        if is_diaphragm {
-            bcs.push(DirichletBc { dof: dof(2), value: 0.0 }); // u_z = 0
-            bcs.push(DirichletBc { dof: dof(5), value: 0.0 }); // θ_z = 0
-        }
-        if is_y0 {
-            bcs.push(DirichletBc { dof: dof(1), value: 0.0 }); // u_y
-            bcs.push(DirichletBc { dof: dof(3), value: 0.0 }); // θ_x
-            bcs.push(DirichletBc { dof: dof(5), value: 0.0 }); // θ_z
-        }
-        if is_x0 {
-            bcs.push(DirichletBc { dof: dof(0), value: 0.0 }); // u_x
-            bcs.push(DirichletBc { dof: dof(4), value: 0.0 }); // θ_y
-            bcs.push(DirichletBc { dof: dof(5), value: 0.0 }); // θ_z
-        }
-        if is_z0 {
-            bcs.push(DirichletBc { dof: dof(2), value: 0.0 }); // u_z = 0
-            if is_y0 { bcs.push(DirichletBc { dof: dof(4), value: 0.0 }); } // θ_y at θ=0
-            if is_x0 { bcs.push(DirichletBc { dof: dof(3), value: 0.0 }); } // θ_x at θ=π/2
-        }
-    }
+    let bcs = pinched_cylinder_octant_symmetry_bcs(&nodes, L, tol);
 
     // Load node: corner at (0, R, 0) — θ=π/2, z=0.
     let load_node = nodes
