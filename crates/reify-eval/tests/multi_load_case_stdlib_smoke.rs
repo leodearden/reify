@@ -352,50 +352,6 @@ fn worst_case_tied_max_returns_lex_smaller_case_name() {
     );
 }
 
-/// Reify source: a `WorstCaseNegativesFixture` structure that exercises the
-/// silent-Undef discipline of `worst_case` across every shape-failure path.
-///
-/// Each binding is engineered to trip a specific guard in
-/// `eval_worst_case_dispatch` (or its fall-through to the `eval_fea`
-/// `worst_case` Undef stub), and is asserted to evaluate to
-/// `Value::Undef` by `worst_case_argument_shape_negatives_return_undef`.
-///
-/// Pinned guards (per [`eval_worst_case_dispatch`] and the fall-through to
-/// the `worst_case` arm in `crates/reify-stdlib/src/fea.rs::eval_fea`):
-///
-/// - **wrong arity (1, 3)** — the `evaluated_args.len() == 2` guard in the
-///   inline dispatch arm declines, falling through to
-///   `reify_stdlib::eval_builtin` → `eval_fea` → permanent Undef stub.
-/// - **non-Map first arg** — `match &args[0] { Value::Map(m) => m, _ =>
-///   return Value::Undef }` in `eval_worst_case_dispatch`. Pinned by
-///   `non_map_first`.
-/// - **non-Lambda second arg** — `match &args[1] { Value::Lambda { .. } =>
-///   …, _ => return Value::Undef }`. Pinned by `non_lambda_second`.
-/// - **Map without `"cases"` key** — `outer.get(&Value::String("cases"))`
-///   yields `None`, hits `_ => return Value::Undef`.
-/// - **`"cases"` value not a Map** — same `outer.get` match arm requires
-///   `Some(Value::Map(c))`; non-Map returns Undef.
-/// - **lambda returns non-Field** — `field_reductions::compute_max` returns
-///   Undef on non-Field input; `as_f64()` returns None; the case is skipped
-///   via `_ => continue`. With ALL cases skipped, `best` is None and the
-///   dispatch arm returns `Value::Undef`.
-const WORST_CASE_NEGATIVES_SOURCE: &str = r#"
-field def disp_neg : Length -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [10.0, 20.0, 50.0] } }
-
-structure def WorstCaseNegativesFixture {
-    let cases = map{"a" => disp_neg}
-    let mcr = map{"cases" => cases}
-
-    let arity_one         = worst_case(mcr)
-    let arity_three       = worst_case(mcr, |f| f, |f| f)
-    let non_map_first     = worst_case(42, |f| f)
-    let non_lambda_second = worst_case(mcr, 42)
-    let no_cases_key      = worst_case(map{"foo" => 1}, |f| f)
-    let cases_not_map     = worst_case(map{"cases" => 42}, |f| f)
-    let lambda_non_field  = worst_case(mcr, |f| 42)
-}
-"#;
-
 /// Look up a `WorstCaseNegativesFixture` binding from an eval result map by
 /// member name.
 fn get_worst_case_negative_value<'a>(values: &'a ValueMap, name: &str) -> &'a Value {
@@ -403,43 +359,6 @@ fn get_worst_case_negative_value<'a>(values: &'a ValueMap, name: &str) -> &'a Va
     values
         .get(&id)
         .unwrap_or_else(|| panic!("WorstCaseNegativesFixture.{name} not found in eval result"))
-}
-
-/// Negative-path smoke test: every `worst_case` shape-failure path collapses
-/// to `Value::Undef` per the silent-Undef discipline shared with
-/// `envelope_reduce` / `case_names` / `result_for`.
-///
-/// Pins the guards in `eval_worst_case_dispatch` (and its fall-through to the
-/// `eval_fea` Undef stub for wrong-arity calls). See the
-/// `WORST_CASE_NEGATIVES_SOURCE` docstring for the per-binding rationale.
-#[test]
-fn worst_case_argument_shape_negatives_return_undef() {
-    let compiled = parse_and_compile_with_stdlib(WORST_CASE_NEGATIVES_SOURCE);
-    let mut engine = make_simple_engine();
-    let result = engine.eval(&compiled);
-
-    let eval_errors = collect_errors(&result.diagnostics);
-    assert!(
-        eval_errors.is_empty(),
-        "eval should produce no Error-severity diagnostics, got: {eval_errors:?}"
-    );
-
-    for binding in [
-        "arity_one",
-        "arity_three",
-        "non_map_first",
-        "non_lambda_second",
-        "no_cases_key",
-        "cases_not_map",
-        "lambda_non_field",
-    ] {
-        let v = get_worst_case_negative_value(&result.values, binding);
-        assert!(
-            v.is_undef(),
-            "WorstCaseNegativesFixture.{binding} should be Undef per worst_case silent-Undef discipline, \
-             got: {v:?}"
-        );
-    }
 }
 
 /// Reify source for the `arity_one` negative: `worst_case(mcr)` has only one
