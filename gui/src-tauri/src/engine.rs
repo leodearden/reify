@@ -2306,6 +2306,21 @@ impl EngineSession {
         &self.last_compile_diagnostics
     }
 
+    /// Inject synthetic diagnostics into `last_tessellation_diagnostics` for testing.
+    ///
+    /// Allows tests to exercise the `build_gui_state` early-return tessellation
+    /// wiring without requiring a production population path (which does not exist
+    /// yet — tessellation only runs when `compiled is Some`).  Mirrors the style of
+    /// `inject_diagnostic_for_test` (engine.rs:2091).
+    ///
+    /// Replaces any previously-stored diagnostics; call with an empty vec to clear.
+    pub(crate) fn inject_last_tessellation_diagnostics_for_test(
+        &mut self,
+        diags: Vec<DiagnosticInfo>,
+    ) {
+        self.last_tessellation_diagnostics = diags;
+    }
+
     /// Directly inject a `CompiledModule` as the session's current compiled state,
     /// bypassing parse / compile / check.
     ///
