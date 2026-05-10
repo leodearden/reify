@@ -248,6 +248,50 @@ describe('FeaModeToolbar — deformation controls', () => {
 
     expect(store.state.warpFactor).toBe(25);
   });
+
+  // --- step-19: preset buttons ---
+
+  it('(e) three preset buttons are rendered when showDeformed is true', () => {
+    const store = renderEnabled();
+    store.setShowDeformed(true);
+
+    const btn1 = screen.getByTestId('fea-mode-warp-preset-1');
+    const btn10 = screen.getByTestId('fea-mode-warp-preset-10');
+    const btn100 = screen.getByTestId('fea-mode-warp-preset-100');
+
+    expect(btn1.tagName.toLowerCase()).toBe('button');
+    expect(btn10.tagName.toLowerCase()).toBe('button');
+    expect(btn100.tagName.toLowerCase()).toBe('button');
+  });
+
+  it('(e) preset buttons are NOT rendered when showDeformed is false', () => {
+    renderEnabled();
+    expect(screen.queryByTestId('fea-mode-warp-preset-1')).toBeNull();
+    expect(screen.queryByTestId('fea-mode-warp-preset-10')).toBeNull();
+    expect(screen.queryByTestId('fea-mode-warp-preset-100')).toBeNull();
+  });
+
+  it('(e) clicking preset-10 sets store.state.warpFactor to 10', () => {
+    const store = renderEnabled();
+    store.setShowDeformed(true);
+    fireEvent.click(screen.getByTestId('fea-mode-warp-preset-10'));
+    expect(store.state.warpFactor).toBe(10);
+  });
+
+  it('(e) clicking preset-100 sets store.state.warpFactor to 100', () => {
+    const store = renderEnabled();
+    store.setShowDeformed(true);
+    fireEvent.click(screen.getByTestId('fea-mode-warp-preset-100'));
+    expect(store.state.warpFactor).toBe(100);
+  });
+
+  it('(e) clicking preset-1 resets store.state.warpFactor to 1', () => {
+    const store = renderEnabled();
+    store.setShowDeformed(true);
+    store.setWarpFactor(50);
+    fireEvent.click(screen.getByTestId('fea-mode-warp-preset-1'));
+    expect(store.state.warpFactor).toBe(1);
+  });
 });
 
 describe('FeaModeToolbar — collapsible suite', () => {
