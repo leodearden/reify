@@ -528,13 +528,19 @@ impl EngineSession {
             })
             .collect();
 
+        // Collect compile-time diagnostics (warnings, info) from the most
+        // recently compiled module. Called after tessellate_snapshot so the
+        // mutable engine borrow is already released.  Takes &self — coexists
+        // safely with the existing immutable borrows of compiled/check/files.
+        let compile_diagnostics = self.get_diagnostics();
+
         Ok(GuiState {
             meshes,
             values,
             constraints,
             files,
             tessellation_diagnostics,
-            compile_diagnostics: Vec::new(),
+            compile_diagnostics,
         })
     }
 
