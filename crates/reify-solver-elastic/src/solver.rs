@@ -709,7 +709,8 @@ where
 mod tests {
     #![allow(clippy::needless_range_loop)] // index-parallel loops in test asserts
     use super::{
-        CgSolverOptions, SolverMode, norm2_squared, pairwise_tree_sum_fn, solve_cg, spmv_seq,
+        CgSolverOptions, SolverMode, norm2_squared, pairwise_tree_sum_fn, solve_cg, solve_cg_warm,
+        spmv_seq,
     };
     use faer::sparse::{SparseRowMat, Triplet};
 
@@ -1340,6 +1341,79 @@ mod tests {
                     det.u[i]
                 );
             }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 2921: warm-state plumbing — `solve_cg_warm` None-shim equivalence
+    // -----------------------------------------------------------------------
+
+    /// `solve_cg_warm(&k, &f, None, opts, mode)` must produce a `CgResult`
+    /// bit-equal to `solve_cg(&k, &f, opts, mode)` on the same input.
+    ///
+    /// This is the backward-compatibility contract: the `None` initial-guess
+    /// branch in `solve_cg_warm` must take the exact same code path as the
+    /// existing `solve_cg` (u₀ = 0, r₀ = f) so every existing caller and test
+    /// of `solve_cg` continues to produce bit-identical output. The
+    /// fan-mesh fixture exercises a non-trivial CG iteration count.
+    ///
+    /// Both `Deterministic` and `Parallel { threads: 4 }` modes are pinned —
+    /// the determinism contract is per-mode, so we verify the None-shim
+    /// preserves bit-equality in each.
+    #[test]
+    fn solve_cg_warm_with_none_matches_solve_cg_bit_for_bit() {
+        let (k, f) = fan_mesh_k_spd_and_f();
+        let opts = CgSolverOptions {
+            tolerance: 1e-10,
+            max_iter: 1000,
+        };
+
+        // Deterministic mode.
+        let det_cold = solve_cg(&k, &f, opts.clone(), SolverMode::Deterministic);
+        let det_warm_none = solve_cg_warm(&k, &f, None, opts.clone(), SolverMode::Deterministic);
+        assert_eq!(
+            det_cold.iterations, det_warm_none.iterations,
+            "Deterministic: solve_cg_warm(None) iterations must match solve_cg"
+        );
+        assert_eq!(
+            det_cold.converged, det_warm_none.converged,
+            "Deterministic: solve_cg_warm(None) converged must match solve_cg"
+        );
+        assert_eq!(
+            det_cold.u.len(),
+            det_warm_none.u.len(),
+            "Deterministic: u lengths must match"
+        );
+        for i in 0..det_cold.u.len() {
+            assert_eq!(
+                det_cold.u[i].to_bits(),
+                det_warm_none.u[i].to_bits(),
+                "Deterministic: solve_cg_warm(None) u[{i}] = {} ≠ solve_cg u[{i}] = {}",
+                det_warm_none.u[i],
+                det_cold.u[i],
+            );
+        }
+
+        // Parallel { threads: 4 } mode.
+        let par_cold = solve_cg(&k, &f, opts.clone(), SolverMode::Parallel { threads: 4 });
+        let par_warm_none =
+            solve_cg_warm(&k, &f, None, opts.clone(), SolverMode::Parallel { threads: 4 });
+        assert_eq!(
+            par_cold.iterations, par_warm_none.iterations,
+            "Parallel: solve_cg_warm(None) iterations must match solve_cg"
+        );
+        assert_eq!(
+            par_cold.converged, par_warm_none.converged,
+            "Parallel: solve_cg_warm(None) converged must match solve_cg"
+        );
+        for i in 0..par_cold.u.len() {
+            assert_eq!(
+                par_cold.u[i].to_bits(),
+                par_warm_none.u[i].to_bits(),
+                "Parallel: solve_cg_warm(None) u[{i}] = {} ≠ solve_cg u[{i}] = {}",
+                par_warm_none.u[i],
+                par_cold.u[i],
+            );
         }
     }
 
