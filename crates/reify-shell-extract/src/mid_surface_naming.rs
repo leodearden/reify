@@ -113,6 +113,113 @@ mod tests {
         );
     }
 
+    /// Test helper: build a `RegionInfo` with the given label and dummy
+    /// metrics. Tests in this module only care about `label`; metrics are
+    /// realistic enough to keep `extent > 0` so `thickness_extent_ratio`
+    /// is finite.
+    fn region(label: u32) -> RegionInfo {
+        RegionInfo {
+            label,
+            voxels: vec![],
+            mean_thickness: 1.0,
+            extent: 10.0,
+            thickness_extent_ratio: 0.1,
+            classification: RegionClassification::ShellEligible,
+        }
+    }
+
+    #[test]
+    fn populate_emits_one_edge_record_per_unique_inter_region_adjacency_with_canonical_min_max_pair_ordering(
+    ) {
+        // Two triangles sharing edge (1,2): triangle 0 = (0,1,2),
+        // triangle 1 = (0,2,3). Triangle labels live in two different
+        // regions; the shared mesh-edge is therefore an inter-region
+        // adjacency edge and must be emitted exactly once with canonical
+        // (min, max) ordering — i.e. (5, 7) regardless of which triangle
+        // carries label 5 vs 7.
+        let mesh = MidSurfaceMesh {
+            vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]],
+            triangles: vec![[0, 1, 2], [0, 2, 3]],
+            thickness: vec![1.0, 1.0, 1.0, 1.0],
+        };
+        // Region 11 is intentionally unused — exercises that the face
+        // count tracks regions, not edges.
+        let parent = FeatureId::new("Body#realization[0]");
+        let derived = FeatureId::new("Body#realization[0]/mid_surface");
+
+        // Sub-test A: triangle_labels = [5, 7] — canonical pair (5, 7).
+        let segmentation_a = SegmentationResult {
+            regions: vec![region(5), region(7), region(11)],
+            vertex_labels: vec![5, 5, 7, 7],
+            triangle_labels: vec![5, 7],
+        };
+        let attrs_a = populate_mid_surface_attributes(&parent, &mesh, &segmentation_a);
+        assert_eq!(attrs_a.edge_records.len(), 1, "sub-test A: one edge");
+        assert_eq!(attrs_a.edge_region_pairs, vec![(5, 7)]);
+        assert_eq!(attrs_a.edge_records[0].feature_id, derived);
+        assert_eq!(attrs_a.edge_records[0].role, Role::MidSurfaceEdge);
+        assert_eq!(attrs_a.edge_records[0].local_index, 0);
+        assert!(attrs_a.edge_records[0].user_label.is_none());
+        assert!(attrs_a.edge_records[0].mod_history.is_empty());
+
+        // Sub-test B: triangle_labels = [7, 5] — same canonical pair
+        // (5, 7) regardless of which triangle's label is bigger.
+        let segmentation_b = SegmentationResult {
+            regions: vec![region(5), region(7), region(11)],
+            vertex_labels: vec![7, 7, 5, 5],
+            triangle_labels: vec![7, 5],
+        };
+        let attrs_b = populate_mid_surface_attributes(&parent, &mesh, &segmentation_b);
+        assert_eq!(
+            attrs_b.edge_region_pairs,
+            vec![(5, 7)],
+            "canonical (min, max) ordering must be insensitive to triangle label order"
+        );
+
+        // Sub-test C: three triangles forming three pairwise-adjacent
+        // regions. Mesh: 5 vertices forming a fan; triangles share
+        // pairwise edges (0,1), (1,2), and (0,2) ... — easier to set
+        // up with three non-overlapping triangles that share three
+        // distinct mesh-edges across three labels.
+        //
+        // We use the configuration:
+        //   triangle 0 = (0,1,2)  label=0
+        //   triangle 1 = (0,2,3)  label=1   shares edge (0,2) with t0
+        //   triangle 2 = (0,3,1)  label=2   shares edge (0,3) with t1
+        //                                   shares edge (0,1) with t0
+        //
+        // → three inter-region pairs: (0,1) from edge (0,2),
+        //   (0,2) from edge (0,1), (1,2) from edge (0,3). After
+        //   canonical sort: [(0,1), (0,2), (1,2)].
+        let mesh3 = MidSurfaceMesh {
+            vertices: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            triangles: vec![[0, 1, 2], [0, 2, 3], [0, 3, 1]],
+            thickness: vec![1.0, 1.0, 1.0, 1.0],
+        };
+        let segmentation_c = SegmentationResult {
+            regions: vec![region(0), region(1), region(2)],
+            vertex_labels: vec![0, 0, 1, 2],
+            triangle_labels: vec![0, 1, 2],
+        };
+        let attrs_c = populate_mid_surface_attributes(&parent, &mesh3, &segmentation_c);
+        assert_eq!(
+            attrs_c.edge_region_pairs,
+            vec![(0, 1), (0, 2), (1, 2)],
+            "three-region case: canonical ascending pair sort"
+        );
+        assert_eq!(attrs_c.edge_records.len(), 3);
+        for (i, rec) in attrs_c.edge_records.iter().enumerate() {
+            assert_eq!(rec.local_index, i as u32, "edge_records[{i}].local_index");
+            assert_eq!(rec.role, Role::MidSurfaceEdge);
+            assert_eq!(rec.feature_id, derived);
+        }
+    }
+
     #[test]
     fn populate_emits_one_face_record_per_region_with_derived_feature_id_role_and_local_index_eq_region_label(
     ) {
