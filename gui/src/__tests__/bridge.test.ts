@@ -29,6 +29,7 @@ import {
   onEvaluationStatus,
   onSerializationError,
   onTessellationDiagnostics,
+  onCompileDiagnostics,
   pickOpenPath,
   onFocusEntity,
   onNavigateToSource,
@@ -355,6 +356,38 @@ describe('bridge event listeners', () => {
     expect(callback).toHaveBeenCalledWith(
       expect.arrayContaining([
         expect.objectContaining({ severity: 'Error', message: 'geometry error: kernel failure' }),
+      ])
+    );
+  });
+
+  it("onCompileDiagnostics subscribes to 'compile-diagnostics' event", async () => {
+    const unlisten = vi.fn();
+    mockListen.mockResolvedValue(unlisten);
+
+    const callback = vi.fn();
+    const result = await onCompileDiagnostics(callback);
+
+    expect(mockListen).toHaveBeenCalledWith('compile-diagnostics', expect.any(Function));
+    expect(result).toBe(unlisten);
+  });
+
+  it('onCompileDiagnostics passes DiagnosticInfo[] payload to callback', async () => {
+    const unlisten = vi.fn();
+    mockListen.mockImplementation(async (_event, handler) => {
+      const payload = [
+        { file_path: 'helper.ri', line: 3, column: 1, end_line: 3, end_column: 10,
+          severity: 'Warning', message: "unknown port type 'Foo'", code: null },
+      ];
+      (handler as (event: { payload: unknown }) => void)({ payload });
+      return unlisten;
+    });
+
+    const callback = vi.fn();
+    await onCompileDiagnostics(callback);
+
+    expect(callback).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ severity: 'Warning', message: "unknown port type 'Foo'" }),
       ])
     );
   });
