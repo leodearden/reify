@@ -734,6 +734,7 @@ fn norm2_squared_parallel(v: &[f64], threads: usize) -> f64 {
 /// `f_norm_sq == 0.0` short-circuit at the dispatch site, and avoids the
 /// `0/0` from `α = rz / pkp` when `rz ≈ 0, pkp ≈ 0`. Pinned by
 /// `warm_start_at_exact_solution_returns_in_zero_iterations`.
+#[allow(clippy::too_many_arguments)] // 8 args: state (5) + mode-injected closures (3).
 fn cg_loop<S, D, N>(
     mut u: Vec<f64>,
     mut r: Vec<f64>,
