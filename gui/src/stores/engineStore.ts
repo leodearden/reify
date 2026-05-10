@@ -7,6 +7,7 @@ import type {
   EvaluationStatus,
   GuiState,
   DiagnosticInfo,
+  AutoResolveIteration,
 } from '../types';
 import {
   onMeshUpdate,
@@ -21,6 +22,12 @@ import {
 } from '../bridge';
 import type { KernelStatus } from '../bridge';
 
+/** State for an auto-resolve loop (param x = auto optimisation). */
+export interface AutoResolveLoopState {
+  active: boolean;
+  iterations: AutoResolveIteration[];
+}
+
 export interface EngineState {
   meshes: Record<string, MeshData>;
   values: Record<string, ValueData>;
@@ -29,6 +36,7 @@ export interface EngineState {
   tessellationDiagnostics: DiagnosticInfo[];
   compileDiagnostics: DiagnosticInfo[];
   kernelStatus: KernelStatus | null;
+  autoResolve: AutoResolveLoopState;
 }
 
 export interface EngineStoreOptions {
@@ -48,6 +56,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
     tessellationDiagnostics: [],
     compileDiagnostics: [],
     kernelStatus: null,
+    autoResolve: { active: false, iterations: [] },
   });
 
   function initFromState(guiState: GuiState) {
@@ -121,6 +130,21 @@ export function createEngineStore(options?: EngineStoreOptions) {
     setState('kernelStatus', status);
   }
 
+  /** Start a new auto-resolve loop: flip active=true and clear previous iterations. */
+  function beginAutoResolveLoop() {
+    setState('autoResolve', { active: true, iterations: [] });
+  }
+
+  /** Append one iteration snapshot to the accumulating iterations array. */
+  function applyAutoResolveIteration(iter: AutoResolveIteration) {
+    setState(produce((s) => { s.autoResolve.iterations.push(iter); }));
+  }
+
+  /** Mark the loop as finished; preserve iterations for post-run inspection. */
+  function endAutoResolveLoop() {
+    setState('autoResolve', 'active', false);
+  }
+
   async function subscribeToEvents(): Promise<() => void> {
     const results = await Promise.allSettled([
       onMeshUpdate(applyMeshUpdate),
@@ -163,6 +187,9 @@ export function createEngineStore(options?: EngineStoreOptions) {
     setTessellationDiagnostics,
     setCompileDiagnostics,
     setKernelStatus,
+    beginAutoResolveLoop,
+    applyAutoResolveIteration,
+    endAutoResolveLoop,
     subscribeToEvents,
   };
 }
