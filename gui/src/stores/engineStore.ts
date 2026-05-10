@@ -17,6 +17,7 @@ import {
   onValueRemoved,
   onConstraintRemoved,
   onTessellationDiagnostics,
+  onCompileDiagnostics,
 } from '../bridge';
 import type { KernelStatus } from '../bridge';
 
