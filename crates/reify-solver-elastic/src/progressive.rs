@@ -132,6 +132,26 @@ impl Default for ProgressiveOptions {
 mod tests {
     use super::*;
 
+    fn make_result(max_von_mises: f64) -> PartialElasticResult {
+        PartialElasticResult {
+            displacement: vec![],
+            stress: vec![],
+            max_von_mises,
+            converged: false,
+            iterations: 0,
+        }
+    }
+
+    #[test]
+    fn near_constraint_boundary_returns_false_when_yield_stress_is_none() {
+        let opts = ProgressiveOptions { yield_stress: None, ..Default::default() };
+        let result = make_result(1e30);
+        assert!(
+            !near_constraint_boundary(&result, &opts),
+            "near_constraint_boundary must return false when yield_stress is None"
+        );
+    }
+
     #[test]
     fn refinement_pass_tuning_halves_mesh_and_tenths_cg_per_level() {
         let opts = ProgressiveOptions { target_tolerance: 0.05, ..Default::default() };
