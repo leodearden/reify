@@ -277,14 +277,23 @@ export function createPermissionServer(): PermissionServer & { readonly __testHo
       awaitPending(n: number, timeoutMs = 2000): Promise<void> {
         if (pendingPromises.size >= n) return Promise.resolve();
         return new Promise<void>((resolve, reject) => {
-          const timer = setTimeout(() => {
-            const idx = waiters.findIndex((w) => w.resolve === resolve);
+          // Construct the waiter object first so the timer callback can close
+          // over `w` directly — giving O(1) identity-based lookup via indexOf
+          // rather than O(N) findIndex over resolve references. This is robust
+          // to future wrapping of `resolve` (e.g. telemetry taps).
+          const w: { n: number; resolve: () => void; timer: ReturnType<typeof setTimeout> } = {
+            n,
+            resolve,
+            timer: undefined as unknown as ReturnType<typeof setTimeout>,
+          };
+          w.timer = setTimeout(() => {
+            const idx = waiters.indexOf(w);
             if (idx !== -1) waiters.splice(idx, 1);
             reject(new Error(
               `awaitPending(${n}): timed out after ${timeoutMs}ms (${pendingPromises.size} pending)`
             ));
           }, timeoutMs);
-          waiters.push({ n, resolve, timer });
+          waiters.push(w);
         });
       },
     },
