@@ -36,6 +36,7 @@
 
 pub mod auto_size;
 pub mod cache_key;
+pub mod mesh_volume;
 pub mod options;
 pub mod register;
 pub mod repair;
@@ -69,6 +70,12 @@ pub use kernel_real::GmshKernel;
 pub use kernel::GmshKernel;
 
 pub use cache_key::volume_mesh_cache_key;
+pub use mesh_volume::MeshSurfaceToVolumeReport;
+pub use mesh_volume::{apply_repair_if_requested, compute_thickness_warnings, resolve_mesh_size};
+// mesh_surface_to_volume_with_diagnostics is only available in FFI builds
+// (it calls GmshKernel::mesh_to_volume which requires the gmsh library).
+#[cfg(has_gmsh)]
+pub use mesh_volume::mesh_surface_to_volume_with_diagnostics;
 pub use options::MeshingOptions;
 
 /// `true` when this crate was compiled with libgmsh detected at build time
