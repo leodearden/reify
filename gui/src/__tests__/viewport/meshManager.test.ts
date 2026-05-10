@@ -1849,6 +1849,87 @@ describe('meshManager', () => {
     });
   });
 
+  describe('undeformed overlay', () => {
+    const vertices = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+    const displaced = new Float32Array([0.1, 0, 0, 1.1, 0, 0, 0.1, 1, 0]);
+
+    function setupWithOverlay() {
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+      const meshA: MeshData = {
+        entity_path: 'A',
+        vertices: vertices.slice(),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        displaced_positions: displaced.slice(),
+      };
+      const meshB: MeshData = {
+        entity_path: 'B',
+        vertices: new Float32Array([2, 0, 0, 3, 0, 0, 2, 1, 0]),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        // no displaced_positions
+      };
+      manager.sync({ A: meshA, B: meshB });
+      vi.clearAllMocks();
+      return { scene, manager };
+    }
+
+    it('(a) getDeformedOverlays() returns empty Map before setDeformation', () => {
+      const { manager } = setupWithOverlay();
+      expect(manager.getDeformedOverlays().size).toBe(0);
+    });
+
+    it('(b) after setDeformation({warpFactor:5}), getDeformedOverlays() has size 1 with key "A"', () => {
+      const { manager } = setupWithOverlay();
+      manager.setDeformation({ warpFactor: 5 });
+
+      const overlays = manager.getDeformedOverlays();
+      expect(overlays.size).toBe(1);
+      expect(overlays.has('A')).toBe(true);
+    });
+
+    it('(b) overlay material is transparent with opacity 0.25 and depthWrite false', () => {
+      const { manager } = setupWithOverlay();
+      manager.setDeformation({ warpFactor: 5 });
+
+      const overlay = manager.getDeformedOverlays().get('A')!;
+      expect(overlay.material).toBeDefined();
+      const mat = overlay.material as any;
+      expect(mat.transparent).toBe(true);
+      expect(mat.opacity).toBe(0.25);
+      expect(mat.depthWrite).toBe(false);
+    });
+
+    it('(b) overlay renderOrder is less than deformed mesh renderOrder (overlay behind)', () => {
+      const { manager } = setupWithOverlay();
+      manager.setDeformation({ warpFactor: 5 });
+
+      const deformedMesh = manager.getSceneMeshes().get('A')!;
+      const overlay = manager.getDeformedOverlays().get('A')!;
+      expect(overlay.renderOrder).toBeLessThan(deformedMesh.renderOrder === undefined ? 0 : deformedMesh.renderOrder + 1);
+      expect(overlay.renderOrder).toBe(-1);
+    });
+
+    it('(b) overlay position.array equals original vertices (NOT warped)', () => {
+      const { manager } = setupWithOverlay();
+      manager.setDeformation({ warpFactor: 5 });
+
+      const overlay = manager.getDeformedOverlays().get('A')!;
+      const posAttr = (overlay.geometry as any).attributes.position;
+      expect(Array.from(posAttr.array as Float32Array)).toEqual(Array.from(vertices));
+    });
+
+    it('(c) mesh B (no displaced_positions) gets no overlay — size remains 1', () => {
+      const { manager } = setupWithOverlay();
+      manager.setDeformation({ warpFactor: 5 });
+
+      expect(manager.getDeformedOverlays().size).toBe(1);
+      expect(manager.getDeformedOverlays().has('B')).toBe(false);
+    });
+  });
+
   describe('setDeformation — sync re-apply', () => {
     const vertA1 = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
     const dispA1 = new Float32Array([0.1, 0, 0, 1.1, 0, 0, 0.1, 1, 0]);
