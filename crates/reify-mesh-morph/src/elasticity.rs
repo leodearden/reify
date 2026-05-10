@@ -176,6 +176,64 @@ mod tests {
         }
     }
 
+    // ── Step-7: smallest end-to-end test — zero-displacement BCs on single tet ─
+
+    /// Smallest end-to-end test of the full FEA pipeline: one tet, four
+    /// vertices, all four corners pinned to themselves (zero displacement).
+    /// With every DOF Dirichlet-pinned (12/12), the post-Dirichlet K becomes
+    /// `diag(1.0)`; CG converges in ≤ 1 iteration; `u = prescribed
+    /// displacements = 0`; output positions equal input positions within fp
+    /// tolerance. Exercises element_stiffness + assemble_global_stiffness +
+    /// apply_dirichlet_row_elimination + solve_cg in one shot. RED until
+    /// step-8 lands the full pipeline.
+    #[test]
+    fn elasticity_morph_with_zero_displacement_bcs_on_single_tet_returns_input_positions_within_fp_tolerance()
+     {
+        let mesh = VolumeMesh {
+            vertices: vec![
+                0.0_f32, 0.0, 0.0, // node 0
+                1.0, 0.0, 0.0, // node 1
+                0.0, 1.0, 0.0, // node 2
+                0.0, 0.0, 1.0, // node 3
+            ],
+            tet_indices: vec![0, 1, 2, 3],
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+        // All 4 nodes pinned to themselves → zero displacement everywhere.
+        let prescribed = vec![
+            (0_u32, [0.0_f64, 0.0, 0.0]),
+            (1, [1.0, 0.0, 0.0]),
+            (2, [0.0, 1.0, 0.0]),
+            (3, [0.0, 0.0, 1.0]),
+        ];
+
+        let out =
+            elasticity_morph(&mesh, &prescribed, &crate::MorphOptions::default()).unwrap();
+
+        let tol = 1e-6_f32;
+        let expected: [f32; 12] = [
+            0.0, 0.0, 0.0, // node 0
+            1.0, 0.0, 0.0, // node 1
+            0.0, 1.0, 0.0, // node 2
+            0.0, 0.0, 1.0, // node 3
+        ];
+        assert_eq!(out.vertices.len(), expected.len());
+        for axis in 0..expected.len() {
+            assert!(
+                (out.vertices[axis] - expected[axis]).abs() <= tol,
+                "vertices[{axis}]: out={} expected={}",
+                out.vertices[axis],
+                expected[axis],
+            );
+        }
+
+        // Structural fields carry through unchanged.
+        assert_eq!(out.tet_indices, vec![0u32, 1, 2, 3]);
+        assert_eq!(out.element_order, ElementOrderTag::P1);
+        assert!(out.normals.is_none());
+    }
+
     // ── Step-3: P2 element order rejection ────────────────────────────────────
 
     /// P2 element order must be rejected with
