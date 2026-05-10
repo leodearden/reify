@@ -2269,7 +2269,7 @@ mod tests {
     /// each of the three extent values (nx, ny, nz) in the formatted message,
     /// verifying that the variant fields are surfaced to the user.
     #[test]
-    fn axis_extents_overflow_display_includes_extents_and_says_overflow() {
+    fn axis_extents_overflow_display_includes_extent_values() {
         let err = MedialError::AxisExtentsOverflow {
             nx: 3_000_000,
             ny: 4_000_000,
