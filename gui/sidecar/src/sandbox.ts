@@ -19,6 +19,11 @@ import * as os from 'node:os';
  * Kill calls (SIGTERM and SIGKILL) are guarded with try/catch: Node's ChildProcess.kill
  * can throw synchronously (e.g. EPERM, ESRCH) if libuv has already reaped the pid.
  *
+ * SIGKILL escalation: if the proc ignores SIGTERM, a second timer fires 500ms later
+ * and sends SIGKILL. The escalation timer is cleared if 'close' or 'error' fires first.
+ * The promise resolves `false` at the 2000ms watchdog — escalation is best-effort
+ * cleanup that happens after the promise has already settled.
+ *
  * Invariant: this Promise never rejects; all error paths resolve to `false`.
  */
 export async function probeLandlockAsync(landlockHelperPath?: string): Promise<boolean> {
@@ -36,6 +41,7 @@ export async function probeLandlockAsync(landlockHelperPath?: string): Promise<b
 
   return new Promise<boolean>((resolve) => {
     let settled = false;
+    let killEscalation: ReturnType<typeof setTimeout> | null = null;
 
     const settle = (result: boolean): void => {
       if (!settled) {
@@ -51,13 +57,19 @@ export async function probeLandlockAsync(landlockHelperPath?: string): Promise<b
     const watchdog = setTimeout(() => {
       try { proc.kill('SIGTERM'); } catch { /* proc may have been reaped already; ignore. */ }
       settle(false);
+      // Escalation: if the proc ignores SIGTERM, send SIGKILL after 500ms.
+      killEscalation = setTimeout(() => {
+        try { proc.kill('SIGKILL'); } catch { /* proc may have been reaped already; ignore. */ }
+      }, 500);
     }, 2000);
 
     proc.on('close', (code: number | null, signal: string | null) => {
+      if (killEscalation !== null) clearTimeout(killEscalation);
       settle(code === 0 && signal === null);
     });
 
     proc.on('error', (_err: Error) => {
+      if (killEscalation !== null) clearTimeout(killEscalation);
       settle(false);
     });
   });
