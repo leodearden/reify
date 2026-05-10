@@ -2857,11 +2857,12 @@ mod tests {
         use std::collections::HashMap;
 
         use reify_types::{
-            FeatureId, GeometryHandleId, ModEntry, Role, SourceSpan, TopologyAttribute,
+            CapKind, FeatureId, GeometryHandleId, ModEntry, Role, SourceSpan, TopologyAttribute,
         };
 
         use super::super::{
             LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M, detect_local_index_reassignment_diagnostics,
+            role_human_name,
         };
 
         /// Synthetic span used by every detect_* test — pinning a stable
@@ -3086,6 +3087,50 @@ mod tests {
                 diag.message.contains("local_index assignments at indices 0 and 1"),
                 "expected the smallest tied pair (0 and 1) to be named, got: {}",
                 diag.message
+            );
+        }
+
+        #[test]
+        fn role_human_name_returns_stable_string_for_each_variant() {
+            assert_eq!(role_human_name(&Role::Cap(CapKind::Top)), "Cap(Top)");
+            assert_eq!(role_human_name(&Role::Cap(CapKind::Bottom)), "Cap(Bottom)");
+            assert_eq!(role_human_name(&Role::Cap(CapKind::Start)), "Cap(Start)");
+            assert_eq!(role_human_name(&Role::Cap(CapKind::End)), "Cap(End)");
+            assert_eq!(role_human_name(&Role::Side), "Side");
+            assert_eq!(role_human_name(&Role::NewEdge), "NewEdge");
+            assert_eq!(role_human_name(&Role::RevolvedFace), "RevolvedFace");
+            assert_eq!(role_human_name(&Role::AxisFace), "AxisFace");
+            assert_eq!(role_human_name(&Role::SweptFace), "SweptFace");
+            assert_eq!(role_human_name(&Role::LoftedFace), "LoftedFace");
+            assert_eq!(role_human_name(&Role::MidSurfaceFace), "MidSurfaceFace");
+            assert_eq!(role_human_name(&Role::MidSurfaceEdge), "MidSurfaceEdge");
+        }
+
+        #[test]
+        fn detect_local_index_reassignment_uses_role_human_name_for_message_role_field() {
+            // Cap(Top) has a sub-variant — its human name "Cap(Top)" contains
+            // parentheses, distinguishing it from a plain Debug-repr that might
+            // change if the enum were ever reformatted.
+            let attr0 = make_attr("F#realization[0]", Role::Cap(CapKind::Top), 0);
+            let attr1 = make_attr("F#realization[0]", Role::Cap(CapKind::Top), 1);
+            let h0 = GeometryHandleId(10);
+            let h1 = GeometryHandleId(11);
+            let mut centroids: HashMap<GeometryHandleId, [f64; 3]> = HashMap::new();
+            centroids.insert(h0, [0.0, 0.0, 0.0]);
+            centroids.insert(h1, [0.0, 0.0, 0.0]);
+            let mut diagnostics = Vec::new();
+            detect_local_index_reassignment_diagnostics(
+                &[(h0, &attr0), (h1, &attr1)],
+                &centroids,
+                LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M,
+                synthetic_span(),
+                &mut diagnostics,
+            );
+            assert_eq!(diagnostics.len(), 1);
+            let msg = &diagnostics[0].message;
+            assert!(
+                msg.contains("Cap(Top)"),
+                "diagnostic message should contain role human name 'Cap(Top)', got: {msg}"
             );
         }
     }
