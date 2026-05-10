@@ -119,12 +119,17 @@ pub struct GuiState {
     /// no diagnostics. Distinct from `tessellation_diagnostics` — compile
     /// diagnostics are produced before tessellation runs.
     ///
-    /// Also used to surface the most recent fatal parse/compile failure on a fresh
-    /// session (when no module has yet been successfully loaded), via the
-    /// `EngineSession::last_compile_diagnostics` stored field.  In that case, the
-    /// entry originates from a prior failed load rather than a successful compile
-    /// pass.  Frontends should show these diagnostics in the diagnostics panel
-    /// even when the viewport is empty (i.e. `meshes`, `values`, etc. are empty).
+    /// Two additional sources populate this field beyond the normal compile output:
+    ///
+    /// 1. **Cold-start failure** (no prior successful compile): surfaced via
+    ///    `EngineSession::last_compile_diagnostics` on the early-return branch of
+    ///    `build_gui_state` (when `compiled` is `None`).  Frontends should show
+    ///    these even when the viewport is empty (`meshes`, `values`, etc. are empty).
+    ///
+    /// 2. **Live-edit failure** (prior good compile exists): surfaced via
+    ///    `EngineSession::live_compile_diagnostics` on the non-early-return branch
+    ///    of `build_gui_state` (appended after `get_diagnostics()` output so
+    ///    warnings from the prior good state remain visible alongside the error).
     pub compile_diagnostics: Vec<DiagnosticInfo>,
 }
 

@@ -79,17 +79,19 @@ pub struct EngineSession {
     /// share the same lifecycle.  Left `None` when `parsed_cache` is `None` at population time
     /// — preserves the per-template WARN so fallback regressions remain visible.
     consumed_idents_cache: Option<HashMap<String, HashSet<String>>>,
-    /// Structured diagnostics from the most recent failed parse/compile attempt.
+    /// Structured diagnostics from the most recent failed parse/compile attempt on the
+    /// cold-start path (when `compiled` was `None` at the time of failure).
     ///
     /// Populated on `Err` by `load_from_source`, `update_source`, and `load_file` when
-    /// the compile helpers return structured error payloads alongside the human-readable
-    /// error string.  Cleared atomically in `commit_state` when a successful
-    /// parse+compile+check cycle commits — ensuring stale failure diagnostics are never
-    /// surfaced after a recovery.
+    /// `self.compiled` is `None` at failure time.  When `compiled` is `Some` (live-edit
+    /// failure after a prior good compile), diagnostics go to `live_compile_diagnostics`
+    /// instead — the two fields are semantically disjoint.
     ///
-    /// `build_gui_state` emits this field into `GuiState::compile_diagnostics` when
-    /// `compiled` is `None` (i.e. the session has never completed a successful load),
-    /// replacing the former stub that always returned `Vec::new()`.
+    /// Cleared atomically in `commit_state` when a successful parse+compile+check cycle
+    /// commits — ensuring stale failure diagnostics are never surfaced after a recovery.
+    ///
+    /// `build_gui_state` emits this field into `GuiState::compile_diagnostics` only on
+    /// the early-return branch (when `compiled` is `None`).
     last_compile_diagnostics: Vec<DiagnosticInfo>,
     /// Structured diagnostics from the most recent tessellation failure.
     ///
@@ -562,6 +564,8 @@ impl EngineSession {
             .map_err(|(msg, diags)| {
                 if self.compiled.is_none() {
                     self.last_compile_diagnostics = diags;
+                } else {
+                    self.live_compile_diagnostics = diags;
                 }
                 msg
             })?;
