@@ -1086,6 +1086,56 @@ mod tests {
         assert_eq!(decoded.stress_len, header.stress_len);
     }
 
+    // ── ENGINE_VERSION_HASH const tests ──────────────────────────────────────
+
+    #[test]
+    fn engine_version_hash_const_is_thirty_two_lowercase_hex_chars() {
+        assert_eq!(
+            ENGINE_VERSION_HASH.len(),
+            32,
+            "ENGINE_VERSION_HASH must be exactly 32 chars, got {:?}",
+            ENGINE_VERSION_HASH
+        );
+        assert!(
+            ENGINE_VERSION_HASH
+                .chars()
+                .all(|c| matches!(c, '0'..='9' | 'a'..='f')),
+            "ENGINE_VERSION_HASH must be all lowercase hex, got {:?}",
+            ENGINE_VERSION_HASH
+        );
+    }
+
+    #[test]
+    fn engine_version_hash_const_is_not_all_zeros() {
+        // A regression that wires up an empty contributor list (or fails to read
+        // any file) would collapse to the all-zeros sentinel. A real build with at
+        // least one non-empty contributor cannot collide on this value.
+        assert_ne!(
+            ENGINE_VERSION_HASH,
+            "00000000000000000000000000000000",
+            "ENGINE_VERSION_HASH must not be the all-zeros sentinel"
+        );
+    }
+
+    #[test]
+    fn engine_version_hash_const_matches_compose_engine_version_hash_output_shape() {
+        // Pins that ENGINE_VERSION_HASH obeys the same wire-format as the library
+        // function (catches a future regression where the const switches to e.g.
+        // base64 or a different length encoding).
+        let sample = compose_engine_version_hash(&[b"x"]);
+        assert_eq!(
+            ENGINE_VERSION_HASH.len(),
+            sample.len(),
+            "ENGINE_VERSION_HASH length differs from compose_engine_version_hash output"
+        );
+        assert!(
+            sample
+                .chars()
+                .all(|c| matches!(c, '0'..='9' | 'a'..='f')),
+            "compose_engine_version_hash output must be lowercase hex"
+        );
+    }
+
     // ── compose_engine_version_hash tests ────────────────────────────────────
 
     #[test]
