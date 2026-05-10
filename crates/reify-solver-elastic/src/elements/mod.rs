@@ -4,7 +4,7 @@
 //!
 //! # Canonical reference geometries
 //!
-//! This module contains three families of elements, each with its own
+//! This module contains four families of elements, each with its own
 //! canonical reference geometry and coordinate type:
 //!
 //! - **3D tetrahedral elements** ([`tet_p1::TetP1`], [`tet_p2::TetP2`]) —
@@ -16,6 +16,12 @@
 //! - **3D hexahedral elements** ([`hex_p1::HexP1`]) — defined on the
 //!   **reference cube** `[-1, 1]³` in `(ξ, η, ζ)` coordinates
 //!   (reference-cube volume `8`).  Use [`ReferenceCoord`] for these
+//!   elements.
+//!
+//! - **3D triangular-prism elements** ([`wedge_p1::WedgeP1`]) — defined on
+//!   the **unit reference prism** = unit triangle × `[-1, +1]` in
+//!   `(ξ, η, ζ)` coordinates (`ξ ≥ 0, η ≥ 0, ξ+η ≤ 1, ζ ∈ [-1, +1]`,
+//!   reference-prism volume `1`).  Use [`ReferenceCoord`] for these
 //!   elements.
 //!
 //! - **2D triangular shell elements** ([`mitc3_plus::Mitc3Plus`]) — defined
@@ -37,6 +43,8 @@ pub mod wedge_p1;
 ///   `(0,0,0), (1,0,0), (0,1,0), (0,0,1)`; barycentric coordinates are
 ///   `(1-ξ-η-ζ, ξ, η, ζ)`.
 /// - **`HexP1`** — reference cube `[-1, 1]³` with corners at `{±1}³`.
+/// - **`WedgeP1`** — unit triangle × `[-1, +1]`; `ξ ≥ 0, η ≥ 0, ξ+η ≤ 1,
+///   ζ ∈ [-1, +1]`; barycentric coordinates on the base are `(1-ξ-η, ξ, η)`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ReferenceCoord {
     pub xi: f64,
@@ -81,7 +89,7 @@ impl Jacobian {
 ///
 /// Weights sum to the implementing element's reference volume:
 /// `1/6` for `TetP1`/`TetP2` (unit-tet simplex), `8` for `HexP1`
-/// (reference cube `[-1, 1]³`).
+/// (reference cube `[-1, 1]³`), `1` for `WedgeP1` (unit-triangle × `[-1, +1]`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct QuadraturePoint {
     pub coord: ReferenceCoord,
@@ -147,7 +155,7 @@ pub trait ReferenceElement {
     /// canonical reference geometry.
     ///
     /// Weights sum to that geometry's volume: `1/6` for `TetP1`/`TetP2`,
-    /// `8` for `HexP1`.
+    /// `8` for `HexP1`, `1` for `WedgeP1`.
     fn quad_points(&self) -> &'static [QuadraturePoint];
 
     /// Reference→physical Jacobian at `ref_coord`.
@@ -167,6 +175,10 @@ pub trait ReferenceElement {
     ///   cube `[-1, 1]³` in canonical Hughes/Gmsh hex8 order: bottom face
     ///   (ζ = −1) traversed counter-clockwise from `(-1,-1,-1)`, then top
     ///   face (ζ = +1) in the same cyclic order.
+    /// - **`WedgeP1`** — 6 vertices of the unit reference prism in Gmsh
+    ///   PRI6 order: bottom face (ζ = −1) at barycentric vertices
+    ///   `(0,0,-1), (1,0,-1), (0,1,-1)` (nodes 0–2), then top face
+    ///   (ζ = +1) in the same cyclic barycentric order (nodes 3–5).
     fn jacobian(&self, phys_nodes: &[[f64; 3]], ref_coord: ReferenceCoord) -> Jacobian {
         // Intentionally unconditional (`assert_eq!`, not `debug_assert_eq!`):
         // the public contract is explicit in every build profile per the

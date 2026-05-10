@@ -3,10 +3,11 @@
 //! # PRD reference
 //!
 //! `docs/prds/v0_3/structural-analysis-fea.md` task #7. This crate ships
-//! the reference-element primitives (P1/P2 tetrahedra and P1 hex: shape
-//! functions, gradients, Gauss quadrature, reference→physical Jacobian)
+//! the reference-element primitives (P1/P2 tetrahedra, P1 hex, P1 wedge:
+//! shape functions, gradients, Gauss quadrature, reference→physical Jacobian)
 //! used by the later assembly/CG/etc. tasks (PRD tasks #8–#15).
 //! P1 hex shipped per `docs/prds/v0_3/hex-wedge-meshing.md` task #2.
+//! P1 wedge shipped per `docs/prds/v0_3/hex-wedge-meshing.md` task #3.
 //!
 //! # v0.3 scope
 //!
@@ -184,6 +185,7 @@ pub use elements::{
     mitc3_plus::{Mitc3Plus, ShellReferenceCoord, TyingPoint},
     tet_p1::TetP1,
     tet_p2::TetP2,
+    wedge_p1::WedgeP1,
 };
 pub use shell_assembly::{ShellFrame, build_shell_frame, plane_stress_d, shell_element_stiffness};
 pub use shell_boundary::{
