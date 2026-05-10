@@ -10,6 +10,10 @@
 //! - `docs/prds/v0_2/persistent-naming-v2.md` lines 52-66
 //!   (TopologyAttribute shape / per-op populator pattern).
 
+use std::collections::BTreeSet;
+
+use rustc_hash::FxHashMap;
+
 use reify_types::geometry::{FeatureId, Role, TopologyAttribute};
 
 use crate::mid_surface::MidSurfaceMesh;
@@ -54,10 +58,26 @@ pub struct MidSurfaceAttributes {
 ///
 /// # Edge records
 ///
-/// Inter-region adjacency edge derivation is added by later plan steps.
+/// One [`TopologyAttribute`] is emitted per unique inter-region adjacency
+/// edge, sorted ascending by canonical `(min, max)` region-pair tuple.
+/// `role = Role::MidSurfaceEdge`, `local_index` = sorted position. The
+/// derivation algorithm builds a mesh-edge → triangle-list adjacency map
+/// (using sorted vertex pairs as keys) and, for every mesh edge shared
+/// by ≥2 triangles in distinct regions, records the canonical
+/// `(min(region_a, region_b), max(region_a, region_b))` pair into a
+/// [`BTreeSet`] (auto-sorts). The set is then drained into both
+/// `edge_records` and the parallel `edge_region_pairs` sidecar.
+///
+/// Sentinel triangles (`segmentation.triangle_labels[t] == u32::MAX`)
+/// are excluded from edge derivation — see
+/// `reify_shell_extract::segmentation` lines 188-191 for the sentinel
+/// definition. A pair `(u32::MAX, region_x)` would be a spurious
+/// "boundary" between an unknown-region and a known-region; skipping
+/// sentinel triangles means well-formed inputs produce zero spurious
+/// edges.
 pub fn populate_mid_surface_attributes(
     parent: &FeatureId,
-    _mesh: &MidSurfaceMesh,
+    mesh: &MidSurfaceMesh,
     segmentation: &SegmentationResult,
 ) -> MidSurfaceAttributes {
     let derived_feature_id = FeatureId::derived_mid_surface(parent);
@@ -74,10 +94,69 @@ pub fn populate_mid_surface_attributes(
         })
         .collect();
 
+    // Mesh-edge → list of incident triangle indices. Key is the sorted
+    // vertex pair (min, max) so each undirected edge is canonical.
+    let mut edge_to_triangles: FxHashMap<(u32, u32), Vec<usize>> = FxHashMap::default();
+    for (t_idx, tri) in mesh.triangles.iter().enumerate() {
+        // Sentinel-triangle filter: skip triangles with no region
+        // identity. (segmentation.rs:188-191 defines u32::MAX as the
+        // sentinel for triangles whose three vertices are all unlabeled.)
+        if t_idx >= segmentation.triangle_labels.len() {
+            continue;
+        }
+        if segmentation.triangle_labels[t_idx] == u32::MAX {
+            continue;
+        }
+        for (a, b) in [(tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])] {
+            let key = if a < b { (a, b) } else { (b, a) };
+            edge_to_triangles.entry(key).or_default().push(t_idx);
+        }
+    }
+
+    // Pairwise distinct-region scan over each shared mesh-edge. Use a
+    // BTreeSet to auto-sort the canonical (min, max) pairs.
+    let mut region_pairs: BTreeSet<(u32, u32)> = BTreeSet::new();
+    for triangles in edge_to_triangles.values() {
+        if triangles.len() < 2 {
+            continue;
+        }
+        for i in 0..triangles.len() {
+            let label_a = segmentation.triangle_labels[triangles[i]];
+            if label_a == u32::MAX {
+                continue;
+            }
+            for j in (i + 1)..triangles.len() {
+                let label_b = segmentation.triangle_labels[triangles[j]];
+                if label_b == u32::MAX || label_a == label_b {
+                    continue;
+                }
+                let pair = if label_a < label_b {
+                    (label_a, label_b)
+                } else {
+                    (label_b, label_a)
+                };
+                region_pairs.insert(pair);
+            }
+        }
+    }
+
+    let edge_region_pairs: Vec<(u32, u32)> = region_pairs.into_iter().collect();
+    let edge_records: Vec<TopologyAttribute> = edge_region_pairs
+        .iter()
+        .enumerate()
+        .map(|(i, _pair)| TopologyAttribute {
+            feature_id: derived_feature_id.clone(),
+            role: Role::MidSurfaceEdge,
+            local_index: i as u32,
+            user_label: None,
+            mod_history: Vec::new(),
+        })
+        .collect();
+
     MidSurfaceAttributes {
         face_records,
-        edge_records: Vec::new(),
-        edge_region_pairs: Vec::new(),
+        edge_records,
+        edge_region_pairs,
     }
 }
 
