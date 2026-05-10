@@ -1095,6 +1095,22 @@ mod tests {
         );
     }
 
+    /// Floor on `compute_medial_mask(&slab_sdf_3d(3.0, 16), …).voxels.len()`.
+    ///
+    /// Derived from `n * n / 2` for the 16×16 centerline plane: the medial
+    /// algorithm is expected to flag at least half the voxels on that plane
+    /// (lower bound, not exact count). For `n = 16`: `16 * 16 / 2 = 128`.
+    ///
+    /// **Load-bearing call sites** (update all three when changing this value):
+    /// - [`slab_sdf_3d_n16_yields_at_least_min_medial_voxels`] — the dedicated
+    ///   contract test that *owns* this assertion.
+    /// - [`compute_medial_mask_flags_slab_centerline_voxels`] — uses it as the
+    ///   floor in part (c) of its centerline-plane assertion.
+    /// - [`compute_medial_mask_voxels_are_sorted_in_lex_order_on_slab`] — uses
+    ///   it as a load-bearing precondition: the `windows(2)` ordering check
+    ///   requires at least this many voxels to be meaningful.
+    const SLAB_16_MIN_MEDIAL_VOXELS: usize = 128;
+
     /// Build an analytic-slab Regular3D `SampledField` representing
     /// `φ(x, y, z) = |z| − half_thickness` over a `voxel_count^3`
     /// grid centered on the origin with unit voxel spacing. Useful
