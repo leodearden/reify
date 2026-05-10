@@ -212,6 +212,7 @@ pub mod shell_assembly;
 pub mod shell_boundary;
 pub mod shell_result;
 pub mod solver;
+pub mod warm_state;
 
 pub use assembly::{
     AssemblyElement, AssemblyMode, ElementOrder, ElementStiffness, assemble_global_stiffness,
