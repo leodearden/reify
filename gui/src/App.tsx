@@ -415,6 +415,12 @@ const App: Component = () => {
 
   // Diagnostics panel state
   const [diagnosticsOpen, setDiagnosticsOpen] = createSignal(false);
+  // Both compile and tessellation diagnostics share the DiagnosticInfo schema, so the
+  // panel renders them as a single merged list — no schema change or extra state needed.
+  const allDiagnostics = createMemo(() => [
+    ...engineStore.state.compileDiagnostics,
+    ...engineStore.state.tessellationDiagnostics,
+  ]);
 
   // Keyboard help overlay state
   const [showHelp, setShowHelp] = createSignal(false);
@@ -1319,7 +1325,7 @@ const App: Component = () => {
           />
           <DiagnosticsPanel
             open={diagnosticsOpen()}
-            diagnostics={engineStore.state.compileDiagnostics}
+            diagnostics={allDiagnostics()}
             onClose={() => setDiagnosticsOpen(false)}
             onNavigate={handleNavigateToDiagnostic}
           />
