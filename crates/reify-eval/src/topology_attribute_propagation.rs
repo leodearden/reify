@@ -2829,5 +2829,58 @@ mod tests {
             // Singleton group: no pairwise comparison to do → no diagnostic.
             assert!(diagnostics.is_empty());
         }
+
+        #[test]
+        fn detect_local_index_reassignment_emits_diagnostic_when_two_entries_have_tied_centroids() {
+            use reify_types::Severity;
+            let attr0 = make_attr("F#realization[0]", Role::Side, 0);
+            let attr1 = make_attr("F#realization[0]", Role::Side, 1);
+            let h0 = GeometryHandleId(1);
+            let h1 = GeometryHandleId(2);
+            let mut centroids: HashMap<GeometryHandleId, [f64; 3]> = HashMap::new();
+            // Identical centroids → squared distance == 0 ≤ tol_m^2.
+            centroids.insert(h0, [1.0, 2.0, 3.0]);
+            centroids.insert(h1, [1.0, 2.0, 3.0]);
+            let mut diagnostics = Vec::new();
+            detect_local_index_reassignment_diagnostics(
+                &[(h0, &attr0), (h1, &attr1)],
+                &centroids,
+                1e-9,
+                synthetic_span(),
+                &mut diagnostics,
+            );
+            assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
+            let diag = &diagnostics[0];
+            assert_eq!(diag.severity, Severity::Warning);
+            assert_eq!(
+                diag.code,
+                Some(reify_types::DiagnosticCode::TopologyAttributeLocalIndexReassigned)
+            );
+            assert!(
+                diag.message.contains("topology-attribute selector for"),
+                "missing canonical prefix in message: {}",
+                diag.message
+            );
+            assert!(
+                diag.message.contains("F#realization[0]"),
+                "missing feature_id in message: {}",
+                diag.message
+            );
+            assert!(
+                diag.message.contains("Side"),
+                "missing role in message: {}",
+                diag.message
+            );
+            assert!(
+                diag.message.contains("local_index assignments at indices 0 and 1"),
+                "missing tied indices in message: {}",
+                diag.message
+            );
+            // Label should span selector_span with text "selector call".
+            assert_eq!(diag.labels.len(), 1, "expected exactly one label");
+            let label = &diag.labels[0];
+            assert_eq!(label.span, synthetic_span());
+            assert_eq!(label.message, "selector call");
+        }
     }
 }
