@@ -243,7 +243,11 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     // 'Show deformed' is visually symmetric with meshes present at toggle time.
     if (currentDeformation !== null && data.displaced_positions) {
       applyWarpToMesh(mesh, entityPath, currentDeformation.warpFactor);
-      addUndeformedOverlay(entityPath, mesh);
+      // Warp runs for all meshes so the position buffer is correct if visibility
+      // changes later. Overlay only for 'show' entities — hidden/ghost get none.
+      if ((visibilityMap.get(entityPath) ?? 'show') === 'show') {
+        addUndeformedOverlay(entityPath, mesh);
+      }
     }
 
     return mesh;
@@ -332,8 +336,12 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
         applyWarpToMesh(mesh, mesh.name, currentDeformation.warpFactor);
         // Rebuild overlay: remove the stale one (if any) and create a fresh one
         // pointing at the just-updated meshOriginalVertices entry.
+        // Remove stale overlay unconditionally (idempotent), then re-add only
+        // for 'show' entities — hidden/ghost must not get an overlay.
         removeUndeformedOverlay(mesh.name);
-        addUndeformedOverlay(mesh.name, mesh);
+        if ((visibilityMap.get(mesh.name) ?? 'show') === 'show') {
+          addUndeformedOverlay(mesh.name, mesh);
+        }
       } else {
         // displaced_positions disappeared (e.g. backend turned off FEA solve):
         // remove any lingering overlay so no ghost shape persists for this entity.
@@ -564,19 +572,31 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
       if (state === 'ghost') {
         scene.remove(mesh);
         addGhostClone(entityPath, mesh);
+        // Ghost is a translucent deformed rendering — a separate overlay is redundant.
+        if (currentDeformation !== null) removeUndeformedOverlay(entityPath);
       } else if (state === 'hidden') {
         scene.remove(mesh);
+        // Hidden means no visual at all — tear down the overlay if deformation is on.
+        if (currentDeformation !== null) removeUndeformedOverlay(entityPath);
       }
     } else if (prevState === 'ghost') {
       if (state === 'show') {
         removeGhostClone(entityPath);
         scene.add(mesh);
+        // Restore overlay now that entity is visible again.
+        if (currentDeformation !== null && meshDisplacedPositions.has(entityPath)) {
+          addUndeformedOverlay(entityPath, mesh);
+        }
       } else if (state === 'hidden') {
         removeGhostClone(entityPath);
       }
     } else if (prevState === 'hidden') {
       if (state === 'show') {
         scene.add(mesh);
+        // Overlay was absent while hidden — add it now that the entity is visible.
+        if (currentDeformation !== null && meshDisplacedPositions.has(entityPath)) {
+          addUndeformedOverlay(entityPath, mesh);
+        }
       } else if (state === 'ghost') {
         addGhostClone(entityPath, mesh);
       }
