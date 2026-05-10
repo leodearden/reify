@@ -423,10 +423,9 @@ mod tests {
 
     #[test]
     fn populate_dedups_to_one_edge_when_two_distinct_mesh_edges_separate_same_region_pair() {
-        // Pins the BTreeSet dedup contract documented at lines 88-99:
-        // one MidSurfaceEdgeRecord per unique inter-region pair, even when
-        // multiple distinct mesh-edges straddle the same canonical
-        // (min, max) region pair.
+        // Pins the BTreeSet dedup contract: one MidSurfaceEdgeRecord per
+        // unique inter-region pair, even when multiple distinct mesh-edges
+        // straddle the same canonical (min, max) region pair.
         //
         // Setup: 8 vertices forming two independent unit-square pairs
         // (no shared vertices between pair A [0..3] and pair B [4..7]).
@@ -448,9 +447,9 @@ mod tests {
         // guard — no confounding edges to investigate on failure.
         //
         // Passes today because the impl uses `BTreeSet<(u32, u32)>` to
-        // collect region pairs (line 178); will fail RED only if a future
-        // refactor swaps it for a `Vec` without manual dedup, behaviorally
-        // locking in the dedup contract documented at lines 88-99.
+        // collect region pairs; will fail RED only if a future refactor
+        // swaps it for a `Vec` without manual dedup, behaviorally locking
+        // in the BTreeSet dedup contract.
         let mesh = MidSurfaceMesh {
             vertices: vec![
                 // pair A — indices 0..3
@@ -468,7 +467,7 @@ mod tests {
             thickness: vec![1.0; 8],
         };
         let parent = FeatureId::new("Body#realization[0]");
-        let derived = FeatureId::new("Body#realization[0]/mid_surface");
+        let derived = FeatureId::derived_mid_surface(&parent);
         let segmentation = SegmentationResult {
             regions: vec![region(5), region(7)],
             vertex_labels: vec![], // unread by populate_mid_surface_attributes
@@ -494,14 +493,14 @@ mod tests {
 
     #[test]
     fn populate_emits_no_edge_when_two_triangles_share_edge_with_same_triangle_label() {
-        // Pins the intra-region exclusion contract documented at lines
-        // 88-99: a mesh-edge shared by two triangles that both belong to
-        // the SAME region must not produce an edge record.
+        // Pins the intra-region exclusion contract: a mesh-edge shared by
+        // two triangles that both belong to the SAME region must not
+        // produce an edge record.
         //
         // Setup: the standard 4-vertex 2-triangle motif (triangles
         // [0,1,2] and [0,2,3] sharing edge (0,2)), but with both
         // triangles carrying the same label (3).  The pairwise label scan
-        // hits `label_a == label_b` at line 190 and short-circuits before
+        // hits the `label_a == label_b` guard and short-circuits before
         // any insert → no region pairs → attrs.edges is empty.
         //
         // The face_records assertion confirms the populator fully processed
@@ -510,10 +509,9 @@ mod tests {
         // pins that the empty-edges outcome is specifically due to the
         // intra-region filter, not a no-op early exit elsewhere.
         //
-        // Passes today because the pairwise scan filters `label_a ==
-        // label_b` (line 190); will fail RED only if a future refactor
-        // strips that guard, behaviorally locking the intra-region
-        // exclusion contract documented at lines 88-99.
+        // Passes today because the pairwise scan filters on `label_a ==
+        // label_b`; will fail RED only if a future refactor strips that
+        // guard, behaviorally locking the intra-region exclusion contract.
         let mesh = MidSurfaceMesh {
             vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]],
             triangles: vec![[0, 1, 2], [0, 2, 3]],
