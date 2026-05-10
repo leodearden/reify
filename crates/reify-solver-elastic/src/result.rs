@@ -307,6 +307,96 @@ mod tests {
     }
 
     #[test]
+    fn recover_nodal_stress_uniform_strain_patch_test_yields_constant_field_across_two_element_fan()
+    {
+        // The canonical FE patch test:
+        //   Two unit P1 tets sharing a face, apply a uniform linear
+        //   displacement field u(x) = a · x ê_x ⇒ ε_xx = a everywhere,
+        //   uniform stress. Recovery must preserve uniformity (recovered
+        //   nodal field is constant across all nodes) and equal the
+        //   analytical D · [a, 0, 0, 0, 0, 0]ᵀ.
+        let a = 0.01_f64;
+        let mat = dimensionless_steel_like();
+        let e = mat.youngs_modulus;
+        let nu = mat.poisson_ratio;
+        let factor = e / ((1.0 + nu) * (1.0 - 2.0 * nu));
+        let lambda = factor * nu;
+        let two_mu = factor * (1.0 - 2.0 * nu);
+        let lambda_plus_two_mu = lambda + two_mu;
+
+        // Two-element fan sharing the face (x ∈ [0,1], y + z ≤ 1 on
+        // x = 1)... simpler: split the unit cube along its diagonal into
+        // two tets sharing a face. Use the canonical unit tet for tet0,
+        // and a mirrored tet for tet1 that shares face {1,2,3}.
+        //
+        // tet0: [v0, v1, v2, v3] = [(0,0,0), (1,0,0), (0,1,0), (0,0,1)]
+        //   ⇒ shares face on the plane x + y + z = 1, namely the
+        //   triangle (1,0,0)–(0,1,0)–(0,0,1).
+        // tet1: shares that face; the fourth vertex sits on the other
+        //   side of that plane, e.g. (1,1,1).
+        let nodes = [
+            [0.0_f64, 0.0, 0.0],   // 0
+            [1.0, 0.0, 0.0],       // 1
+            [0.0, 1.0, 0.0],       // 2
+            [0.0, 0.0, 1.0],       // 3
+            [1.0, 1.0, 1.0],       // 4
+        ];
+        let tet0_nodes = [nodes[0], nodes[1], nodes[2], nodes[3]];
+        let tet1_nodes = [nodes[1], nodes[2], nodes[3], nodes[4]];
+        let conn0 = [0_usize, 1, 2, 3];
+        let conn1 = [1_usize, 2, 3, 4];
+
+        // Uniform displacement u(x) = (a·x, 0, 0).
+        let mut u0 = [0.0_f64; 12];
+        for (i, x) in tet0_nodes.iter().enumerate() {
+            u0[3 * i] = a * x[0];
+        }
+        let mut u1 = [0.0_f64; 12];
+        for (i, x) in tet1_nodes.iter().enumerate() {
+            u1[3 * i] = a * x[0];
+        }
+
+        let stress0 = element_stress_p1(&tet0_nodes, &mat, &u0);
+        let stress1 = element_stress_p1(&tet1_nodes, &mat, &u1);
+
+        let element0 = StressElement {
+            connectivity: &conn0,
+            stress: stress0,
+            volume: tet_volume_p1(&tet0_nodes),
+        };
+        let element1 = StressElement {
+            connectivity: &conn1,
+            stress: stress1,
+            volume: tet_volume_p1(&tet1_nodes),
+        };
+
+        let nodal = recover_nodal_stress_p1(5, &[element0, element1]);
+
+        // Expected analytical stress: σ_xx = (λ+2μ)·a, σ_yy = σ_zz = λ·a.
+        let expected = [
+            [lambda_plus_two_mu * a, 0.0, 0.0],
+            [0.0, lambda * a, 0.0],
+            [0.0, 0.0, lambda * a],
+        ];
+
+        // (a) Uniform across all 5 nodes (within 1e-9 relative tol on the
+        //     largest expected entry). (b) Equal to the analytical value.
+        let scale = expected[0][0].abs().max(1.0);
+        for (n, t) in nodal.iter().enumerate() {
+            for i in 0..3 {
+                for j in 0..3 {
+                    assert!(
+                        (t[i][j] - expected[i][j]).abs() < 1e-9 * scale,
+                        "node {n} σ[{i}][{j}] = {} expected {} (uniform-strain patch test)",
+                        t[i][j],
+                        expected[i][j],
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn recover_nodal_stress_volume_weighted_average_two_unequal_volume_elements() {
         // Two elements share node 0; element A also touches [1,2,3],
         // element B also touches [4,5,6]. Pin the volume-weighted-average
