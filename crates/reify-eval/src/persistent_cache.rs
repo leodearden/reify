@@ -81,6 +81,24 @@ pub fn compose_engine_version_hash(parts: &[&[u8]]) -> String {
 /// `Cargo.toml`.
 const ELASTIC_RESULT_FORMAT_VERSION: u32 = 1;
 
+/// Canonical engine-version hash for FEA persistent-cache keys. Baked at
+/// build time by `build.rs` over the contributor source files listed in
+/// `CONTRIBUTORS_RELATIVE` (reify-solver-elastic, reify-kernel-gmsh, stdlib
+/// FEA helpers, and per-purpose tolerance impls in this crate).
+///
+/// **Distinct from `ELASTIC_RESULT_FORMAT_VERSION`**: `FORMAT_VERSION` tracks
+/// the wire format (encoding layout — bump when `bincode`/`zstd` encoding
+/// changes). `ENGINE_VERSION_HASH` tracks result semantics — bump happens
+/// automatically when any contributor source file changes; no manual bump is
+/// ever needed.
+///
+/// When any contributor changes, `build.rs` recomputes this hash; all existing
+/// cache entries miss and are recomputed from scratch (invalidate-by-miss per
+/// PRD `docs/prds/v0_3/persistent-fea-cache.md` §"Cache invalidation on engine
+/// version"). Cross-reference: [`compose_engine_version_hash`] is the library
+/// function that documents and pins the hashing algorithm.
+pub const ENGINE_VERSION_HASH: &str = env!("REIFY_ENGINE_VERSION_HASH");
+
 // Compile-time sentinel: `bincode::ErrorKind` is part of the public bincode
 // 1.x API but does not exist in bincode 2.x (which ships an entirely different
 // error model). If the `=1.3` pin in `Cargo.toml` is ever relaxed past the
