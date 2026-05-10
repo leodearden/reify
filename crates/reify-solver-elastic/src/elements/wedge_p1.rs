@@ -34,6 +34,59 @@
 
 use crate::elements::{QuadraturePoint, ReferenceCoord, ReferenceElement};
 
+/// Gauss-Legendre 1/√3 coordinate for the 2-point line rule on `[-1, +1]`.
+///
+/// Written as a literal so the constant is usable in `const` context regardless
+/// of MSRV's `f64::sqrt` const-stability status — mirrors the `HEX_P1_GAUSS_PT`
+/// pattern in `hex_p1.rs`.
+const WEDGE_P1_LINE_GAUSS_PT: f64 = 0.5773502691896257; // ≈ 1/√3
+
+/// 3×2 tensor-product Gauss quadrature rule for the reference prism.
+///
+/// Triangle base: 3-point Gauss rule (degree-2 exact) at barycentric
+/// `(2/3, 1/6, 1/6)` and its 2 cyclic permutations, each with triangle weight
+/// `1/6` (sum = `1/2` = unit-triangle area).
+///
+/// Line sweep: 2-point Gauss-Legendre on `[-1, +1]` at `±1/√3`, each with
+/// weight `1` (sum = `2` = line length, degree-3 exact).
+///
+/// Tensor product → 6 points, all with weight `(1/6)·1 = 1/6`.
+/// Total weight = `1` = reference-prism volume `= (1/2)·2`.
+/// Exact for degree-2-in-triangle × degree-3-in-line integrands — sufficient
+/// for `BᵀDB` on a constant-Jacobian wedge.
+const WEDGE_P1_QUAD: &[QuadraturePoint] = &[
+    // Triangle point A: (ξ, η) = (2/3, 1/6), ζ = +1/√3
+    QuadraturePoint {
+        coord: ReferenceCoord::new(2.0 / 3.0, 1.0 / 6.0, WEDGE_P1_LINE_GAUSS_PT),
+        weight: 1.0 / 6.0,
+    },
+    // Triangle point A: (ξ, η) = (2/3, 1/6), ζ = −1/√3
+    QuadraturePoint {
+        coord: ReferenceCoord::new(2.0 / 3.0, 1.0 / 6.0, -WEDGE_P1_LINE_GAUSS_PT),
+        weight: 1.0 / 6.0,
+    },
+    // Triangle point B: (ξ, η) = (1/6, 2/3), ζ = +1/√3
+    QuadraturePoint {
+        coord: ReferenceCoord::new(1.0 / 6.0, 2.0 / 3.0, WEDGE_P1_LINE_GAUSS_PT),
+        weight: 1.0 / 6.0,
+    },
+    // Triangle point B: (ξ, η) = (1/6, 2/3), ζ = −1/√3
+    QuadraturePoint {
+        coord: ReferenceCoord::new(1.0 / 6.0, 2.0 / 3.0, -WEDGE_P1_LINE_GAUSS_PT),
+        weight: 1.0 / 6.0,
+    },
+    // Triangle point C: (ξ, η) = (1/6, 1/6), ζ = +1/√3
+    QuadraturePoint {
+        coord: ReferenceCoord::new(1.0 / 6.0, 1.0 / 6.0, WEDGE_P1_LINE_GAUSS_PT),
+        weight: 1.0 / 6.0,
+    },
+    // Triangle point C: (ξ, η) = (1/6, 1/6), ζ = −1/√3
+    QuadraturePoint {
+        coord: ReferenceCoord::new(1.0 / 6.0, 1.0 / 6.0, -WEDGE_P1_LINE_GAUSS_PT),
+        weight: 1.0 / 6.0,
+    },
+];
+
 /// First-order Lagrangian triangular prism (wedge6).
 pub struct WedgeP1;
 
@@ -105,7 +158,7 @@ impl ReferenceElement for WedgeP1 {
     }
 
     fn quad_points(&self) -> &'static [QuadraturePoint] {
-        &[] // STUB — will be filled in step-6
+        WEDGE_P1_QUAD
     }
 }
 
