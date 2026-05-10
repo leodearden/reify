@@ -782,6 +782,19 @@ mod tests {
         let _ = solve_cg(&k, &f, opts, SolverMode::Deterministic);
     }
 
+    /// `opts.max_iter == 0` must panic with a message naming `max_iter`.
+    #[test]
+    #[should_panic(expected = "max_iter")]
+    fn max_iter_zero_panics() {
+        let k = identity_1x1();
+        let f = [1.0_f64];
+        let opts = CgSolverOptions {
+            tolerance: 1e-8,
+            max_iter: 0,
+        };
+        let _ = solve_cg(&k, &f, opts, SolverMode::Deterministic);
+    }
+
     /// `opts.tolerance == 0.0` must panic with a message naming `tolerance`.
     #[test]
     #[should_panic(expected = "tolerance")]
