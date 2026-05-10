@@ -112,7 +112,7 @@ export const StatusBar: Component<StatusBarProps> = (props) => {
           class={`${styles.section} ${styles.diagnosticsTrigger}`}
           data-testid="tessellation-errors"
           data-has-errors={diagnosticSummary().errorCount > 0 ? 'true' : 'false'}
-          aria-label={`Show ${props.tessellationDiagnostics?.length ?? 0} tessellation diagnostics`}
+          aria-label={`Show ${props.tessellationDiagnostics?.length ?? 0} tessellation diagnostic${(props.tessellationDiagnostics?.length ?? 0) === 1 ? '' : 's'}`}
           onClick={() => props.onToggleDiagnostics?.()}
         >
           <DiagBadgeContent getSummary={diagnosticSummary} />
@@ -124,7 +124,7 @@ export const StatusBar: Component<StatusBarProps> = (props) => {
           type="button"
           class={`${styles.section} ${styles.diagnosticsTrigger}`}
           data-testid="diagnostics-count"
-          aria-label={`Show ${props.compileDiagnostics?.length ?? 0} compile diagnostics`}
+          aria-label={`Show ${props.compileDiagnostics?.length ?? 0} compile diagnostic${(props.compileDiagnostics?.length ?? 0) === 1 ? '' : 's'}`}
           onClick={() => props.onToggleDiagnostics?.()}
         >
           <DiagBadgeContent getSummary={compileSummary} />
