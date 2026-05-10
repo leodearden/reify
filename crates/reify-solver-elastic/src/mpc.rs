@@ -136,10 +136,10 @@ use faer::sparse::SparseRowMat;
 /// - Any redistribution target `K[j][dofs[i]]` or pivot-row target
 ///   `K[p][dofs[i]]` has no stored entry in K — sparsity precondition
 ///   violated (see above).
-/// - `K` has unsorted column indices within any row — `col_idx[start..end]`
-///   must be sorted in increasing order (faer `try_new_from_triplets`
-///   guarantees this; matrices built via `new_unsorted_checked` are not
-///   supported).
+/// - In debug builds, panics if `K` has unsorted (or duplicate) column
+///   indices within any row — `col_idx[start..end]` must be strictly
+///   increasing (faer `try_new_from_triplets` guarantees this; matrices
+///   built via `new_unsorted_checked` are caller-checked here).
 pub fn apply_mpc_row_elimination(
     k: &mut SparseRowMat<usize, f64>,
     f: &mut [f64],
@@ -183,6 +183,35 @@ pub fn apply_mpc_row_elimination(
                  undefined output — deduplicate before calling apply_mpc_row_elimination",
                 w[0],
             );
+        }
+    }
+
+    // Debug-only: walk all rows and assert strictly-increasing col_idx.
+    // binary_search on an unsorted slice returns an unspecified result —
+    // a wrong Ok/Err corrupts K[j][p] redistribution writes or f[j]
+    // subtracts silently. Surface it eagerly here before any per-MpcRow work.
+    // O(nnz) total per call, paid only in debug builds. Asserting strictly
+    // increasing (`<`) also catches duplicate (row, col) entries.
+    #[cfg(debug_assertions)]
+    {
+        let sym = k.symbolic();
+        let row_ptr = sym.row_ptr();
+        let col_idx = sym.col_idx();
+        let n = sym.nrows();
+        for j in 0..n {
+            let start = row_ptr[j];
+            let end = row_ptr[j + 1];
+            for w in col_idx[start..end].windows(2) {
+                assert!(
+                    w[0] < w[1],
+                    "apply_mpc_row_elimination: col_idx is unsorted within row {j}: \
+                     adjacent entries {w0} >= {w1}; col_idx[start..end] must be strictly \
+                     increasing (faer try_new_from_triplets guarantees this; ensure \
+                     col_idx is sorted before calling apply_mpc_row_elimination)",
+                    w0 = w[0],
+                    w1 = w[1],
+                );
+            }
         }
     }
 
