@@ -78,9 +78,14 @@ pub enum ElasticityFailure {
 ///   [`crate::compute_dirichlet_bcs`] (PRD task #5). The internal pipeline
 ///   converts each pair into a per-axis [`DirichletBc`] with
 ///   `value = new_position[axis] - old_position[axis]` (delta, not absolute).
-/// - `_options` — `MorphOptions` carries the fictitious-stiffness parameters
-///   (`fictitious_youngs_modulus_base`, `fictitious_poisson_ratio`). Currently
-///   only consulted in step-8's full pipeline; this stub ignores it.
+///   **Duplicate `node_index` entries are a precondition violation**: each
+///   occurrence appends three more `DirichletBc` entries for the same DOFs,
+///   and `apply_dirichlet_row_elimination` asserts uniqueness in debug builds
+///   (boundary/dirichlet.rs:170-186). The natural producer
+///   (`compute_dirichlet_bcs` via `BTreeMap`) always emits each node once.
+/// - `options` — supplies the fictitious-stiffness parameters
+///   (`fictitious_youngs_modulus_base`, `fictitious_poisson_ratio`) used to
+///   build the [`IsotropicElastic`] material driving the FEA solve.
 ///
 /// ## Output normals
 ///
@@ -113,9 +118,17 @@ pub fn elasticity_morph(
             .ok_or(ElasticityFailure::InvalidNodeIndex(*node_idx))?;
     }
 
-    if old_mesh.vertices.is_empty() {
+    // Short-circuit when there are no tets to assemble: covers both the empty-
+    // mesh case (vertices.is_empty()) and a mesh with vertices but no tets
+    // (tet_indices.is_empty()). Without this guard, a no-tet mesh falls into
+    // the FEA pipeline and panics: assemble_global_stiffness emits a 3N×3N
+    // matrix with zero stored entries, and apply_dirichlet_row_elimination
+    // asserts `DirichletBc has no explicit diagonal entry` (debug build) or
+    // solve_cg panics in extract_diag_jacobi on a zero/missing diagonal.
+    // Return the input vertices unchanged; drop normals per the contract above.
+    if old_mesh.vertices.is_empty() || old_mesh.tet_indices.is_empty() {
         return Ok(VolumeMesh {
-            vertices: Vec::new(),
+            vertices: old_mesh.vertices.clone(),
             tet_indices: old_mesh.tet_indices.clone(),
             element_order: old_mesh.element_order,
             normals: None,
@@ -136,10 +149,12 @@ pub fn elasticity_morph(
     let mut k_elements: Vec<ElementStiffness> = Vec::with_capacity(n_elements);
     let mut connectivities: Vec<[usize; 4]> = Vec::with_capacity(n_elements);
     for tet in old_mesh.tet_indices.chunks_exact(4) {
-        // Per-tet physical-node coordinates. Out-of-range tet indices
-        // (precondition violation per the doc-comment on tet_indices) get
-        // silently substituted with [0; 3] — same defensive stance
-        // laplacian_smooth takes (laplacian.rs:144-153).
+        // Per-tet physical-node coordinates. Out-of-range tet indices are
+        // a precondition violation per the doc-comment on tet_indices; the
+        // substituted [0;3] keeps element_stiffness total, but the raw
+        // index is forwarded into AssemblyElement.connectivity and
+        // assemble_global_stiffness will panic with a structured
+        // 'connectivity references node N >= n_nodes' message.
         let phys: [[f64; 3]; 4] = [
             old_mesh.vertex_f64(tet[0]).unwrap_or([0.0; 3]),
             old_mesh.vertex_f64(tet[1]).unwrap_or([0.0; 3]),
@@ -292,8 +307,7 @@ mod tests {
     /// `diag(1.0)`; CG converges in ≤ 1 iteration; `u = prescribed
     /// displacements = 0`; output positions equal input positions within fp
     /// tolerance. Exercises element_stiffness + assemble_global_stiffness +
-    /// apply_dirichlet_row_elimination + solve_cg in one shot. RED until
-    /// step-8 lands the full pipeline.
+    /// apply_dirichlet_row_elimination + solve_cg in one shot.
     #[test]
     fn elasticity_morph_with_zero_displacement_bcs_on_single_tet_returns_input_positions_within_fp_tolerance()
      {
@@ -539,6 +553,40 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ── Robustness: non-empty vertices, empty tet_indices ────────────────────
+
+    /// A P1 mesh with non-empty `vertices` but empty `tet_indices` (orphan
+    /// nodes) is handled by the short-circuit — no FEA pipeline runs.
+    ///
+    /// Without the `tet_indices.is_empty()` guard, `assemble_global_stiffness`
+    /// produces a 3N×3N matrix with zero stored entries. Subsequent calls to
+    /// `apply_dirichlet_row_elimination` then panic in debug builds with
+    /// "DirichletBc has no explicit diagonal entry" (boundary/dirichlet.rs:271),
+    /// and `solve_cg` panics in `extract_diag_jacobi` on zero/missing diagonal
+    /// when prescribed_positions is empty.
+    ///
+    /// The output preserves the input vertices unchanged and drops normals.
+    #[test]
+    fn elasticity_morph_with_non_empty_vertices_but_empty_tet_indices_returns_input_vertices() {
+        let mesh = VolumeMesh {
+            vertices: vec![0.0_f32, 0.0, 0.0, 1.0, 1.0, 1.0],
+            tet_indices: Vec::new(),
+            element_order: ElementOrderTag::P1,
+            normals: Some(vec![1.0_f32, 0.0, 0.0, 0.0, 1.0, 0.0]),
+        };
+        // Node 0 is valid; prescribed_positions must not cause a panic because
+        // we short-circuit before any assembly.
+        let result =
+            elasticity_morph(&mesh, &[(0, [0.5, 0.5, 0.5])], &crate::MorphOptions::default());
+        let out = result.unwrap();
+        // Vertices returned unchanged.
+        assert_eq!(out.vertices, mesh.vertices);
+        assert!(out.tet_indices.is_empty());
+        assert_eq!(out.element_order, ElementOrderTag::P1);
+        // Normals dropped regardless of input.
+        assert!(out.normals.is_none());
     }
 
     // ── Step-3: P2 element order rejection ────────────────────────────────────
