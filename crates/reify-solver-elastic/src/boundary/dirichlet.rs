@@ -931,6 +931,64 @@ mod tests {
     // Empty BC list: no-op contract
     // -----------------------------------------------------------------------
 
+    // -----------------------------------------------------------------------
+    // Debug-only: sorted col_idx assertion
+    // -----------------------------------------------------------------------
+
+    /// Debug-only: `apply_dirichlet_row_elimination` panics in debug builds
+    /// when any row of `K` has unsorted column indices.
+    ///
+    /// Fixture: 3×3 sparse K where row 0 has col_idx `[2, 0]` — out of
+    /// order.  Bypasses `try_new_from_triplets` (which sorts on construction)
+    /// by using `SymbolicSparseRowMat::new_unsorted_checked` +
+    /// `SparseRowMat::new`, so the deliberate sort violation reaches
+    /// `apply_dirichlet_row_elimination` intact.
+    ///
+    /// The new `#[cfg(debug_assertions)]` sorted-col_idx walk at function
+    /// entry must fire before any `binary_search` work, producing a panic
+    /// message that contains "unsorted".
+    ///
+    /// Gated by `#[cfg(debug_assertions)]` so `cargo test --release` does
+    /// not false-fail — `debug_assert!` is elided in release builds, meaning
+    /// no panic would be raised and `#[should_panic]` would falsely trip.
+    /// Same pattern as
+    /// `crates/reify-solver-elastic/src/shell_boundary.rs:542-548`.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "unsorted")]
+    fn apply_dirichlet_panics_in_debug_when_col_idx_unsorted_within_row() {
+        use faer::sparse::SymbolicSparseRowMat;
+
+        // Build a 3×3 CSR with row 0 having col_idx [2, 0] — unsorted.
+        //   row_ptr = [0, 2, 3, 4]:
+        //     row 0 → slots 0..2  (col_idx = [2, 0], out of order)
+        //     row 1 → slots 2..3  (col_idx = [1])
+        //     row 2 → slots 3..4  (col_idx = [2])
+        //   vals = [1.0, 2.0, 3.0, 4.0]
+        // K has explicit diagonals at rows 1 and 2 but not row 0.  The debug
+        // walk fires on row 0 (adjacent entries 2 ≥ 0) before any BC work.
+        let symbolic = SymbolicSparseRowMat::<usize>::new_unsorted_checked(
+            3_usize,
+            3_usize,
+            vec![0_usize, 2, 3, 4],
+            None,
+            vec![2_usize, 0, 1, 2],
+        );
+        let mut k = SparseRowMat::<usize, f64>::new(symbolic, vec![1.0, 2.0, 3.0, 4.0]);
+        let mut f = vec![0.0_f64; 3];
+        // BC at dof=0; the sorted-col_idx debug check runs at function entry
+        // and fires on row 0 before any binary_search work.
+        apply_dirichlet_row_elimination(
+            &mut k,
+            &mut f,
+            &[DirichletBc { dof: 0, value: 0.0 }],
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Empty BC list: no-op contract
+    // -----------------------------------------------------------------------
+
     /// Empty BC list → K and f are bit-identical to their pre-call snapshots.
     ///
     /// Pins the no-op contract: passing `bcs = &[]` must be a perfect
