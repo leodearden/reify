@@ -119,4 +119,16 @@ describe('probeLandlockAsync (task 3281)', () => {
     fakeProc.emit('close', 0, null);
     expect(await promise).toBe(false);
   });
+
+  it("(vii) does not crash when proc.kill('SIGTERM') throws (e.g. ESRCH for already-reaped pid); promise still resolves false", async () => {
+    vi.useFakeTimers();
+    fakeProc.kill.mockImplementation((sig: string) => {
+      if (sig === 'SIGTERM') throw Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' });
+    });
+    const promise = probeLandlockAsync('/path/to/landlock_exec.py');
+    vi.advanceTimersByTime(2001);
+    expect(await promise).toBe(false);
+    // The watchdog reached the kill site and the throw was swallowed
+    expect(fakeProc.kill).toHaveBeenCalledWith('SIGTERM');
+  });
 });
