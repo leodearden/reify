@@ -85,7 +85,7 @@ pub enum SolverMode {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CgSolverOptions {
     /// Relative residual tolerance: converge when `‖r‖ < tolerance · ‖f‖`.
-    /// Must be `> 0`. Default: `1e-8`.
+    /// Must be a finite positive value. Default: `1e-8`.
     pub tolerance: f64,
     /// Maximum number of CG iterations before giving up.
     /// Must be `>= 1`. Default: `1000`.
@@ -172,8 +172,10 @@ pub struct CgResult {
 /// - `k.nrows() != k.ncols()` — `K` must be square.
 /// - Any row `i` of `K` has no stored diagonal entry or has `K[i][i] == 0.0`
 ///   (Jacobi preconditioner is undefined without a non-zero diagonal).
-/// - `opts.tolerance <= 0.0` — convergence check `‖r‖² < tol² · ‖f‖²` is
-///   unreachable, masking solution quality.
+/// - `opts.tolerance` is not finite or not positive — non-positive tolerance
+///   makes the convergence check `‖r‖² < tol² · ‖f‖²` unreachable; infinite
+///   tolerance makes it trivially satisfied on the first iteration; NaN makes
+///   the comparison undefined.
 /// - `opts.max_iter == 0` — the iteration loop runs zero times and would
 ///   return `iterations == 0, converged == false`, colliding with the
 ///   `CgResult` zero-RHS guarantee that `iterations == 0 ⟹ converged: true`.
@@ -203,8 +205,8 @@ pub fn solve_cg(
         );
     }
     assert!(
-        opts.tolerance > 0.0,
-        "CgSolverOptions.tolerance = {} must be > 0",
+        opts.tolerance.is_finite() && opts.tolerance > 0.0,
+        "CgSolverOptions.tolerance = {} must be a finite positive value",
         opts.tolerance,
     );
     assert!(
@@ -823,6 +825,34 @@ mod tests {
         let f = [1.0_f64];
         let opts = CgSolverOptions {
             tolerance: -1.0,
+            max_iter: 100,
+        };
+        let _ = solve_cg(&k, &f, opts, SolverMode::Deterministic);
+    }
+
+    /// `opts.tolerance == f64::INFINITY` must panic: infinite tolerance makes
+    /// the convergence check trivially satisfied on the first iteration.
+    #[test]
+    #[should_panic(expected = "tolerance")]
+    fn tolerance_infinite_panics() {
+        let k = identity_1x1();
+        let f = [1.0_f64];
+        let opts = CgSolverOptions {
+            tolerance: f64::INFINITY,
+            max_iter: 100,
+        };
+        let _ = solve_cg(&k, &f, opts, SolverMode::Deterministic);
+    }
+
+    /// `opts.tolerance == f64::NAN` must panic: NaN makes the convergence
+    /// comparison undefined.
+    #[test]
+    #[should_panic(expected = "tolerance")]
+    fn tolerance_nan_panics() {
+        let k = identity_1x1();
+        let f = [1.0_f64];
+        let opts = CgSolverOptions {
+            tolerance: f64::NAN,
             max_iter: 100,
         };
         let _ = solve_cg(&k, &f, opts, SolverMode::Deterministic);
