@@ -66,6 +66,25 @@ pub(crate) fn strain_energies(
     (u_k, 0.5 * eps_dot_d_eps * volume)
 }
 
+/// Shape parameters for the generic element-stiffness behavioral suite.
+///
+/// Wrapped in a struct rather than passed positionally so call sites use
+/// field-labeled literals (8 unlabeled scalars conflate too easily).
+pub(crate) struct ElementStiffnessTestSpec {
+    /// Total DOFs (= 3 × n_nodes for a 3-axis displacement element).
+    pub n_dofs: usize,
+    /// Number of nodes in the element (8 for hex P1, 6 for wedge P1).
+    pub n_nodes: usize,
+    /// Physical volume at scale s = 1 (8.0 for hex [−1,1]³, 1.0 for wedge reference prism).
+    pub vol_ref: f64,
+    /// Centroid of the unit fixture (used by the RB-rotation null-space test).
+    pub centroid: [f64; 3],
+    /// `(i, j)` node indices to swap to produce a left-handed fixture.
+    pub swap_pair: (usize, usize),
+    /// Effective quadrature volume of the swapped (left-handed) element.
+    pub vol_swapped: f64,
+}
+
 /// Run the 7 behavioral tests common to any P1 hex/wedge-class element:
 /// symmetry, rigid-body translation/rotation null spaces, normal-strain and
 /// full-6-component patch tests, volume scaling, and left-handed orientation.
@@ -73,22 +92,19 @@ pub(crate) fn strain_energies(
 /// # Parameters
 /// - `compute_k`: stiffness entry point wrapped as `&[[f64;3]] × &IsotropicElastic → ElementStiffness`.
 /// - `make_phys`: returns the canonical fixture at scale `s` as a `Vec<[f64;3]>`.
-/// - `n_dofs` / `n_nodes`: 24/8 for hex P1, 18/6 for wedge P1.
-/// - `vol_ref`: physical volume at `s = 1` (8.0 for hex, 1.0 for wedge reference prism).
-/// - `centroid`: element centroid for the rigid-body rotation test.
-/// - `swap_pair`: `(i, j)` indices to swap to produce a left-handed fixture.
-/// - `vol_swapped`: effective quadrature volume of the swapped (left-handed) element.
+/// - `spec`: shape parameters for the element (DOF count, node count, volume, centroid, swap pair).
 #[allow(clippy::needless_range_loop)]
 pub(crate) fn run_element_stiffness_tests(
     compute_k: &dyn Fn(&[[f64; 3]], &IsotropicElastic) -> ElementStiffness,
     make_phys: &dyn Fn(f64) -> Vec<[f64; 3]>,
-    n_dofs: usize,
-    n_nodes: usize,
-    vol_ref: f64,
-    centroid: [f64; 3],
-    swap_pair: (usize, usize),
-    vol_swapped: f64,
+    spec: ElementStiffnessTestSpec,
 ) {
+    let n_dofs = spec.n_dofs;
+    let n_nodes = spec.n_nodes;
+    let vol_ref = spec.vol_ref;
+    let centroid = spec.centroid;
+    let swap_pair = spec.swap_pair;
+    let vol_swapped = spec.vol_swapped;
     let mat = dimensionless_steel_like();
     let phys1 = make_phys(1.0);
     let k = compute_k(&phys1, &mat);

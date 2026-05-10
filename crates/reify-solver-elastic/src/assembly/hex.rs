@@ -40,7 +40,7 @@ pub fn element_stiffness_hex_p1(
 mod tests {
     use super::*;
     use crate::assembly::test_support::{
-        self, dimensionless_steel_like, scaled_unit_hex_phys_nodes,
+        self, dimensionless_steel_like, scaled_unit_hex_phys_nodes, ElementStiffnessTestSpec,
     };
 
     #[test]
@@ -56,20 +56,22 @@ mod tests {
     fn hex_p1_behavioral_pins() {
         // Tests (b)–(h): symmetry, rigid-body null spaces, patch tests (normal
         // strain + full 6-component), volume scaling, and left-handed orientation.
-        // Centroid of [−1,1]³ is the origin; swap nodes 0↔6 (opposite corners)
-        // to flip orientation; physical volume of the swapped element = 4.
         test_support::run_element_stiffness_tests(
             &|nodes, mat| {
                 let arr: &[[f64; 3]; 8] = nodes.try_into().unwrap();
                 element_stiffness_hex_p1(arr, mat)
             },
             &|s| scaled_unit_hex_phys_nodes(s).to_vec(),
-            24,
-            8,
-            8.0,
-            [0.0, 0.0, 0.0],
-            (0, 6),
-            4.0,
+            ElementStiffnessTestSpec {
+                n_dofs: 24,
+                n_nodes: 8,
+                vol_ref: 8.0,
+                // Centroid of [−1,1]³ is the origin.
+                centroid: [0.0, 0.0, 0.0],
+                // Swap opposite corners (0↔6) to flip orientation.
+                swap_pair: (0, 6),
+                vol_swapped: 4.0,
+            },
         );
     }
 }
