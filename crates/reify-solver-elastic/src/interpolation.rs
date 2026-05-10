@@ -128,6 +128,48 @@ pub fn point_in_tet_p1(phys_nodes: &[[f64; 3]; 4], p: [f64; 3], tol: f64) -> boo
     bary.iter().all(|&n| n >= -tol && n <= 1.0 + tol)
 }
 
+/// Interpolate a vector-valued nodal field at a query point inside a P1
+/// tetrahedron.
+///
+/// Returns `Σ_i N_i(p) · nodal_values[i]` componentwise, where `N_i` are
+/// the P1 barycentric shape functions from [`barycentric_p1`].
+///
+/// At each vertex `v_i` the result equals `nodal_values[i]` exactly
+/// (Kronecker δ); at the centroid it equals the arithmetic mean of the
+/// four nodal values (partition of unity).
+///
+/// # Engine wrapping
+///
+/// This is the building block the engine layer (PRD §16) wraps as a
+/// `Field<Point3<Length>, Vector3<Length>>` displacement evaluator: at
+/// any query point `p`, [`locate_element_p1`] finds the containing
+/// element, then this function interpolates the per-element nodal
+/// displacement vector `u_e` to `p`. Mirrors the `shell_result.rs`
+/// pattern of shipping plain-`f64` Rust primitives that the engine
+/// later wraps as `Field`-typed values.
+///
+/// # Preconditions
+///
+/// The tet must be non-degenerate (`det J != 0`); see [`barycentric_p1`].
+/// `p` may lie outside the tet — the interpolant is a well-defined
+/// polynomial on all of `R^3`, but the result is then an **extrapolation**
+/// rather than an interpolation. Callers that want strict-inside behaviour
+/// should gate on [`point_in_tet_p1`].
+pub fn interpolate_p1_at_point(
+    phys_nodes: &[[f64; 3]; 4],
+    nodal_values: &[[f64; 3]; 4],
+    p: [f64; 3],
+) -> [f64; 3] {
+    let bary = barycentric_p1(phys_nodes, p);
+    let mut out = [0.0_f64; 3];
+    for i in 0..4 {
+        for k in 0..3 {
+            out[k] += bary[i] * nodal_values[i][k];
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
