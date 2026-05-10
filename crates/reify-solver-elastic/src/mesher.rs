@@ -227,4 +227,58 @@ mod tests {
         assert!(!opts.deterministic);
         assert_eq!(opts.recombine_skew_threshold, std::f64::consts::FRAC_PI_4);
     }
+
+    // ---- step-3: compute_quad_skew ----
+    //
+    // Definition: per-corner unsigned deviation from \u{3c0}/2; the function
+    // returns the maximum over the four corners.
+
+    #[test]
+    fn compute_quad_skew_unit_square_is_zero() {
+        // Each corner is exactly \u{3c0}/2 — skew is 0.
+        let q = [[0.0_f64, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+        let s = compute_quad_skew(&q);
+        assert!(s.abs() < 1e-12, "unit-square skew = {s}, expected 0.0");
+    }
+
+    #[test]
+    fn compute_quad_skew_collapsed_corner_is_large() {
+        // Repeated vertex collapses one edge to zero length; the two
+        // adjacent corners are degenerate. The function must return a
+        // value at least \u{3c0}/4 to flag this as bad.
+        let q = [[0.0_f64, 0.0], [1.0, 0.0], [1.0, 0.0], [0.0, 1.0]];
+        let s = compute_quad_skew(&q);
+        assert!(
+            s >= std::f64::consts::FRAC_PI_4,
+            "collapsed-corner skew = {s}, expected >= \u{3c0}/4"
+        );
+    }
+
+    #[test]
+    fn compute_quad_skew_parallelogram_matches_geometry() {
+        // Parallelogram with top side shifted by 0.5: two corners are
+        // atan(2) above \u{3c0}/2 and two are below. The max deviation is
+        // |\u{3c0}/2 - atan(2)| = atan(0.5) \u{2248} 0.4636 rad.
+        let q = [[0.0_f64, 0.0], [1.0, 0.0], [1.5, 1.0], [0.5, 1.0]];
+        let expected = (0.5_f64).atan();
+        let s = compute_quad_skew(&q);
+        assert!(
+            (s - expected).abs() < 1e-9,
+            "parallelogram skew = {s}, expected {expected}"
+        );
+    }
+
+    #[test]
+    fn compute_quad_skew_is_orientation_agnostic() {
+        // CCW and CW orderings of the same shape must produce the same
+        // skew score: skew is an unsigned geometric property.
+        let ccw = [[0.0_f64, 0.0], [1.0, 0.0], [1.5, 1.0], [0.5, 1.0]];
+        let cw = [[0.0_f64, 0.0], [0.5, 1.0], [1.5, 1.0], [1.0, 0.0]];
+        let s_ccw = compute_quad_skew(&ccw);
+        let s_cw = compute_quad_skew(&cw);
+        assert!(
+            (s_ccw - s_cw).abs() < 1e-12,
+            "skew is sign-dependent: CCW={s_ccw} CW={s_cw}"
+        );
+    }
 }
