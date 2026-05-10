@@ -676,6 +676,104 @@ mod tests {
         );
     }
 
+    // ── task 2945 step-7: InverseEdgeLengthSquared distinctness + determinism ──
+
+    /// Helper that builds the asymmetric cone fixture (5 nodes, 4 tets, `p`
+    /// near `a`) and the non-rigid prescribed positions (b stretched to
+    /// (2, 0, 0)). Shared by the step-5 and step-7 tests to avoid duplication.
+    fn asymmetric_cone_fixture() -> (reify_types::VolumeMesh, Vec<(u32, [f64; 3])>) {
+        let mesh = reify_types::VolumeMesh {
+            vertices: vec![
+                0.0_f32, 0.0, 0.0,  // 0: a
+                1.0, 0.0, 0.0,       // 1: b
+                0.0, 1.0, 0.0,       // 2: c
+                0.0, 0.0, 1.0,       // 3: d
+                0.05, 0.05, 0.05,    // 4: p (near a → three small tets, one large)
+            ],
+            tet_indices: vec![
+                0, 1, 2, 4, // a, b, c, p  — small vol
+                0, 1, 3, 4, // a, b, d, p  — small vol
+                0, 2, 3, 4, // a, c, d, p  — small vol
+                1, 2, 3, 4, // b, c, d, p  — large vol
+            ],
+            element_order: reify_types::ElementOrderTag::P1,
+            normals: None,
+        };
+        let prescribed: Vec<(u32, [f64; 3])> = vec![
+            (0, [0.0, 0.0, 0.0]), // a fixed
+            (2, [0.0, 1.0, 0.0]), // c fixed
+            (3, [0.0, 0.0, 1.0]), // d fixed
+            (1, [2.0, 0.0, 0.0]), // b stretched
+        ];
+        (mesh, prescribed)
+    }
+
+    /// Green-on-arrival characterization + regression guard.
+    ///
+    /// Asserts that `InverseEdgeLengthSquared` is:
+    /// (a) distinct from `Uniform` and `InverseVolume` (genuinely different rule)
+    /// (b) deterministic — two calls on the same input produce bit-equal results
+    ///
+    /// Also asserts all output vertices are finite (no NaN/Inf), guarding
+    /// against degenerate-element regressions.
+    ///
+    /// Passes immediately because step-6 already implemented all three rules.
+    /// Acts as a regression guard against future refactors that might collapse
+    /// two rules into one or break determinism for non-Uniform paths.
+    #[test]
+    fn elasticity_morph_inverse_edge_length_squared_rule_is_distinct_from_uniform_and_inverse_volume_and_is_deterministic()
+    {
+        let (mesh, prescribed) = asymmetric_cone_fixture();
+
+        let opts_uniform = crate::MorphOptions {
+            stiffness_rule: crate::options::StiffnessRule::Uniform,
+            ..crate::MorphOptions::default()
+        };
+        let opts_inv_vol = crate::MorphOptions {
+            stiffness_rule: crate::options::StiffnessRule::InverseVolume,
+            ..crate::MorphOptions::default()
+        };
+        let opts_inv_edge = crate::MorphOptions {
+            stiffness_rule: crate::options::StiffnessRule::InverseEdgeLengthSquared,
+            ..crate::MorphOptions::default()
+        };
+
+        let out_uniform = elasticity_morph(&mesh, &prescribed, &opts_uniform)
+            .expect("Uniform should succeed");
+        let out_inv_vol = elasticity_morph(&mesh, &prescribed, &opts_inv_vol)
+            .expect("InverseVolume should succeed");
+        let out_inv_edge = elasticity_morph(&mesh, &prescribed, &opts_inv_edge)
+            .expect("InverseEdgeLengthSquared should succeed");
+
+        // (b) Determinism: running InverseEdgeLengthSquared twice yields bit-equal output.
+        let out_inv_edge_2 = elasticity_morph(&mesh, &prescribed, &opts_inv_edge)
+            .expect("InverseEdgeLengthSquared second run should succeed");
+        assert_eq!(
+            out_inv_edge.vertices, out_inv_edge_2.vertices,
+            "InverseEdgeLengthSquared must be deterministic (bit-equal on identical input)"
+        );
+
+        // (b) All output vertices are finite — no NaN/Inf from degenerate-element paths.
+        for (i, &v) in out_inv_edge.vertices.iter().enumerate() {
+            assert!(
+                v.is_finite(),
+                "InverseEdgeLengthSquared output vertex[{i}] = {v} is not finite"
+            );
+        }
+
+        // (a) Genuinely distinct from Uniform.
+        assert_ne!(
+            out_inv_edge.vertices, out_uniform.vertices,
+            "InverseEdgeLengthSquared must produce different vertices than Uniform on a graded mesh"
+        );
+
+        // (a) Genuinely distinct from InverseVolume.
+        assert_ne!(
+            out_inv_edge.vertices, out_inv_vol.vertices,
+            "InverseEdgeLengthSquared must produce different vertices than InverseVolume on an irregular mesh"
+        );
+    }
+
     // ── Step-15: exhaustive variant fence for ElasticityFailure ──────────────
 
     /// No-wildcard match guarantees that adding/removing/renaming a variant
