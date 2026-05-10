@@ -9,6 +9,22 @@
 //!   `body.mid_surface().edge("flex_root")`).
 //! - `docs/prds/v0_2/persistent-naming-v2.md` lines 52-66
 //!   (TopologyAttribute shape / per-op populator pattern).
+//!
+//! # Why a struct return rather than `TopologyAttributeTable` mutation
+//!
+//! The existing per-op populators (e.g. `populate_loft_attributes`,
+//! `populate_revolve_attributes` in
+//! `reify-eval/src/topology_attribute_propagation.rs`) mutate a
+//! `TopologyAttributeTable` keyed by `GeometryHandleId` (the OCCT
+//! topology handle). Mid-surface geometry is **derived** (voxel-side)
+//! and pre-dates OCCT-handle assignment — there is no handle to key
+//! against at the point of population. The downstream engine integration
+//! (deferred to T18) takes this struct, assigns handles to the regions
+//! and edges, and then folds the records into the table. Co-locating
+//! the populator with its inputs (`MidSurfaceMesh`, `SegmentationResult`,
+//! `RegionInfo`) in `reify-shell-extract` mirrors the existing pattern
+//! where each crate owns its own value-producers; the asymmetry from
+//! the mutate-table populators is intentional and contained.
 
 use std::collections::BTreeSet;
 
@@ -19,26 +35,39 @@ use reify_types::geometry::{FeatureId, Role, TopologyAttribute};
 use crate::mid_surface::MidSurfaceMesh;
 use crate::segmentation::SegmentationResult;
 
+/// One inter-region adjacency edge of a derived mid-surface, paired with
+/// the canonical `(min, max)` segmentation-region pair that produced it.
+///
+/// Bundling the [`TopologyAttribute`] and its companion region pair into
+/// a single record keeps the mapping structurally enforced — callers
+/// cannot filter or sort one without the other and risk desync. The
+/// `region_pair` is purely diagnostic; the persistent-naming-relevant
+/// identity is encoded in `attribute.local_index` (the 0-based sorted
+/// position among all inter-region pairs).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MidSurfaceEdgeRecord {
+    /// The persistent-naming record. `role = Role::MidSurfaceEdge`,
+    /// `local_index` = 0-based sorted position among all inter-region
+    /// pairs (canonical ascending order on `(min, max)` tuples).
+    pub attribute: TopologyAttribute,
+    /// The canonical `(min(region_a, region_b), max(region_a, region_b))`
+    /// segmentation-region pair this edge separates.
+    pub region_pair: (u32, u32),
+}
+
 /// Per-region face records and per-inter-region-pair edge records for a
 /// derived mid-surface, populated by [`populate_mid_surface_attributes`].
-///
-/// `edge_region_pairs[i]` is the canonical `(min, max)` segmentation-region
-/// pair for `edge_records[i]` — a parallel sidecar so callers can introspect
-/// the pair without re-scanning the records.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MidSurfaceAttributes {
     /// One [`TopologyAttribute`] per [`crate::segmentation::RegionInfo`],
     /// in segmentation-supplied order. `local_index` carries the region
     /// label.
     pub face_records: Vec<TopologyAttribute>,
-    /// One [`TopologyAttribute`] per inter-region adjacency edge, sorted
-    /// by canonical `(min, max)` region-pair tuple. `local_index` is the
-    /// 0-based sorted position.
-    pub edge_records: Vec<TopologyAttribute>,
-    /// Parallel-array sidecar: `edge_region_pairs[i]` is the canonical
-    /// `(min(region_a, region_b), max(region_a, region_b))` for
-    /// `edge_records[i]`.
-    pub edge_region_pairs: Vec<(u32, u32)>,
+    /// One [`MidSurfaceEdgeRecord`] per inter-region adjacency edge,
+    /// sorted by canonical `(min, max)` region-pair tuple. The bundled
+    /// shape (vs. parallel `Vec`s) prevents callers from desyncing the
+    /// record/pair mapping.
+    pub edges: Vec<MidSurfaceEdgeRecord>,
 }
 
 /// Populate per-region face attributes and inter-region edge attributes
@@ -58,15 +87,25 @@ pub struct MidSurfaceAttributes {
 ///
 /// # Edge records
 ///
-/// One [`TopologyAttribute`] is emitted per unique inter-region adjacency
-/// edge, sorted ascending by canonical `(min, max)` region-pair tuple.
-/// `role = Role::MidSurfaceEdge`, `local_index` = sorted position. The
-/// derivation algorithm builds a mesh-edge → triangle-list adjacency map
-/// (using sorted vertex pairs as keys) and, for every mesh edge shared
-/// by ≥2 triangles in distinct regions, records the canonical
-/// `(min(region_a, region_b), max(region_a, region_b))` pair into a
-/// [`BTreeSet`] (auto-sorts). The set is then drained into both
-/// `edge_records` and the parallel `edge_region_pairs` sidecar.
+/// One [`MidSurfaceEdgeRecord`] is emitted per unique inter-region
+/// adjacency edge, sorted ascending by canonical `(min, max)`
+/// region-pair tuple. `role = Role::MidSurfaceEdge`, `local_index` =
+/// sorted position. The derivation algorithm builds a mesh-edge →
+/// triangle-list adjacency map (using sorted vertex pairs as keys) and,
+/// for every mesh edge shared by ≥2 triangles in distinct regions,
+/// records the canonical `(min(region_a, region_b), max(region_a,
+/// region_b))` pair into a [`BTreeSet`] (auto-sorts). The set is then
+/// drained into the bundled `edges: Vec<MidSurfaceEdgeRecord>` so the
+/// attribute and its companion region pair stay structurally linked.
+///
+/// # Input-parallelism contract
+///
+/// Per [`crate::segmentation::SegmentationResult::triangle_labels`]
+/// (segmentation.rs:186), `triangle_labels` must be parallel to
+/// `mesh.triangles` (same length, same indexing). This invariant is
+/// enforced in debug builds via `debug_assert_eq!`; release builds
+/// trust the upstream contract and will panic on out-of-bounds index
+/// rather than silently truncate.
 ///
 /// # Sentinel-triangle exclusion contract
 ///
@@ -94,6 +133,13 @@ pub fn populate_mid_surface_attributes(
     mesh: &MidSurfaceMesh,
     segmentation: &SegmentationResult,
 ) -> MidSurfaceAttributes {
+    debug_assert_eq!(
+        mesh.triangles.len(),
+        segmentation.triangle_labels.len(),
+        "triangle_labels must be parallel to mesh.triangles \
+         (segmentation.rs:186 contract)"
+    );
+
     let derived_feature_id = FeatureId::derived_mid_surface(parent);
 
     let face_records: Vec<TopologyAttribute> = segmentation
@@ -115,9 +161,9 @@ pub fn populate_mid_surface_attributes(
         // Sentinel-triangle filter: skip triangles with no region
         // identity. (segmentation.rs:188-191 defines u32::MAX as the
         // sentinel for triangles whose three vertices are all unlabeled.)
-        if t_idx >= segmentation.triangle_labels.len() {
-            continue;
-        }
+        // The triangle_labels-vs-mesh.triangles parallelism is asserted
+        // above; an out-of-range index here is a contract violation
+        // upstream and will panic in release.
         if segmentation.triangle_labels[t_idx] == u32::MAX {
             continue;
         }
@@ -154,23 +200,24 @@ pub fn populate_mid_surface_attributes(
         }
     }
 
-    let edge_region_pairs: Vec<(u32, u32)> = region_pairs.into_iter().collect();
-    let edge_records: Vec<TopologyAttribute> = edge_region_pairs
-        .iter()
+    let edges: Vec<MidSurfaceEdgeRecord> = region_pairs
+        .into_iter()
         .enumerate()
-        .map(|(i, _pair)| TopologyAttribute {
-            feature_id: derived_feature_id.clone(),
-            role: Role::MidSurfaceEdge,
-            local_index: i as u32,
-            user_label: None,
-            mod_history: Vec::new(),
+        .map(|(i, region_pair)| MidSurfaceEdgeRecord {
+            attribute: TopologyAttribute {
+                feature_id: derived_feature_id.clone(),
+                role: Role::MidSurfaceEdge,
+                local_index: i as u32,
+                user_label: None,
+                mod_history: Vec::new(),
+            },
+            region_pair,
         })
         .collect();
 
     MidSurfaceAttributes {
         face_records,
-        edge_records,
-        edge_region_pairs,
+        edges,
     }
 }
 
@@ -199,9 +246,7 @@ mod tests {
             &segmentation,
         );
         assert!(
-            attrs.face_records.is_empty()
-                && attrs.edge_records.is_empty()
-                && attrs.edge_region_pairs.is_empty(),
+            attrs.face_records.is_empty() && attrs.edges.is_empty(),
             "empty segmentation must yield empty face/edge records"
         );
     }
@@ -241,31 +286,35 @@ mod tests {
         let derived = FeatureId::new("Body#realization[0]/mid_surface");
 
         // Sub-test A: triangle_labels = [5, 7] — canonical pair (5, 7).
+        // (`vertex_labels` is unread by `populate_mid_surface_attributes`;
+        // the populator's only segmentation input is `triangle_labels`.
+        // We pass empty vertex_labels here to avoid suggesting otherwise.)
         let segmentation_a = SegmentationResult {
             regions: vec![region(5), region(7), region(11)],
-            vertex_labels: vec![5, 5, 7, 7],
+            vertex_labels: vec![],
             triangle_labels: vec![5, 7],
         };
         let attrs_a = populate_mid_surface_attributes(&parent, &mesh, &segmentation_a);
-        assert_eq!(attrs_a.edge_records.len(), 1, "sub-test A: one edge");
-        assert_eq!(attrs_a.edge_region_pairs, vec![(5, 7)]);
-        assert_eq!(attrs_a.edge_records[0].feature_id, derived);
-        assert_eq!(attrs_a.edge_records[0].role, Role::MidSurfaceEdge);
-        assert_eq!(attrs_a.edge_records[0].local_index, 0);
-        assert!(attrs_a.edge_records[0].user_label.is_none());
-        assert!(attrs_a.edge_records[0].mod_history.is_empty());
+        assert_eq!(attrs_a.edges.len(), 1, "sub-test A: one edge");
+        assert_eq!(attrs_a.edges[0].region_pair, (5, 7));
+        assert_eq!(attrs_a.edges[0].attribute.feature_id, derived);
+        assert_eq!(attrs_a.edges[0].attribute.role, Role::MidSurfaceEdge);
+        assert_eq!(attrs_a.edges[0].attribute.local_index, 0);
+        assert!(attrs_a.edges[0].attribute.user_label.is_none());
+        assert!(attrs_a.edges[0].attribute.mod_history.is_empty());
 
         // Sub-test B: triangle_labels = [7, 5] — same canonical pair
         // (5, 7) regardless of which triangle's label is bigger.
         let segmentation_b = SegmentationResult {
             regions: vec![region(5), region(7), region(11)],
-            vertex_labels: vec![7, 7, 5, 5],
+            vertex_labels: vec![],
             triangle_labels: vec![7, 5],
         };
         let attrs_b = populate_mid_surface_attributes(&parent, &mesh, &segmentation_b);
+        assert_eq!(attrs_b.edges.len(), 1);
         assert_eq!(
-            attrs_b.edge_region_pairs,
-            vec![(5, 7)],
+            attrs_b.edges[0].region_pair,
+            (5, 7),
             "canonical (min, max) ordering must be insensitive to triangle label order"
         );
 
@@ -296,20 +345,24 @@ mod tests {
         };
         let segmentation_c = SegmentationResult {
             regions: vec![region(0), region(1), region(2)],
-            vertex_labels: vec![0, 0, 1, 2],
+            vertex_labels: vec![], // unread by populator (see sub-test A comment)
             triangle_labels: vec![0, 1, 2],
         };
         let attrs_c = populate_mid_surface_attributes(&parent, &mesh3, &segmentation_c);
+        let pairs_c: Vec<(u32, u32)> = attrs_c.edges.iter().map(|e| e.region_pair).collect();
         assert_eq!(
-            attrs_c.edge_region_pairs,
+            pairs_c,
             vec![(0, 1), (0, 2), (1, 2)],
             "three-region case: canonical ascending pair sort"
         );
-        assert_eq!(attrs_c.edge_records.len(), 3);
-        for (i, rec) in attrs_c.edge_records.iter().enumerate() {
-            assert_eq!(rec.local_index, i as u32, "edge_records[{i}].local_index");
-            assert_eq!(rec.role, Role::MidSurfaceEdge);
-            assert_eq!(rec.feature_id, derived);
+        assert_eq!(attrs_c.edges.len(), 3);
+        for (i, edge) in attrs_c.edges.iter().enumerate() {
+            assert_eq!(
+                edge.attribute.local_index, i as u32,
+                "edges[{i}].attribute.local_index"
+            );
+            assert_eq!(edge.attribute.role, Role::MidSurfaceEdge);
+            assert_eq!(edge.attribute.feature_id, derived);
         }
     }
 
@@ -334,11 +387,13 @@ mod tests {
 
         // Sub-test A: one labeled triangle (label=3), one sentinel.
         // Three regions [3, 8, 11] must all yield face_records, but
-        // edge_records must be empty — the (3, u32::MAX) "boundary"
-        // is suppressed.
+        // edges must be empty — the (3, u32::MAX) "boundary" is
+        // suppressed.
+        // (`vertex_labels` is unread by `populate_mid_surface_attributes`;
+        // empty here for clarity.)
         let segmentation_a = SegmentationResult {
             regions: vec![region(3), region(8), region(11)],
-            vertex_labels: vec![3, 3, u32::MAX, u32::MAX],
+            vertex_labels: vec![],
             triangle_labels: vec![3, u32::MAX],
         };
         let attrs_a = populate_mid_surface_attributes(&parent, &mesh, &segmentation_a);
@@ -348,24 +403,22 @@ mod tests {
             "faces follow regions, not triangles"
         );
         assert!(
-            attrs_a.edge_records.is_empty(),
+            attrs_a.edges.is_empty(),
             "(3, u32::MAX) sentinel boundary must NOT be emitted"
         );
-        assert!(attrs_a.edge_region_pairs.is_empty());
 
         // Sub-test B: BOTH triangles share the sentinel. No edges of
         // any kind — no spurious (MAX, MAX) record.
         let segmentation_b = SegmentationResult {
             regions: vec![region(0)],
-            vertex_labels: vec![u32::MAX, u32::MAX, u32::MAX, u32::MAX],
+            vertex_labels: vec![],
             triangle_labels: vec![u32::MAX, u32::MAX],
         };
         let attrs_b = populate_mid_surface_attributes(&parent, &mesh, &segmentation_b);
         assert!(
-            attrs_b.edge_records.is_empty(),
+            attrs_b.edges.is_empty(),
             "two sentinel triangles must yield no spurious (MAX, MAX) edge"
         );
-        assert!(attrs_b.edge_region_pairs.is_empty());
     }
 
     #[test]
