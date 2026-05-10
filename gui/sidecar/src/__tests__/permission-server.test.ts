@@ -424,4 +424,42 @@ describe('createPermissionServer', () => {
       /timed out after 50ms/,
     );
   });
+
+  // __testHooks.awaitPending — synchronous short-circuit branch
+  // When pendingPromises.size >= n at call time, awaitPending must return
+  // Promise.resolve() immediately without enqueuing any waiter.
+  it('__testHooks.awaitPending resolves synchronously when threshold is already met', async () => {
+    server = createPermissionServer();
+    await server.start();
+
+    // Register a handler that signals as soon as the request is pending.
+    let signalLanded!: () => void;
+    const requestLanded = new Promise<void>((resolve) => { signalLanded = resolve; });
+    server.onRequest(() => { signalLanded(); });
+
+    const client = await connectClient(server.url());
+
+    // Start the tool call but do NOT await — it will block server-side until
+    // decide() or cancelAll() is called, keeping pendingPromises.size === 1.
+    const toolCallPromise = client.callTool({
+      name: 'approve_tool',
+      arguments: { tool_name: 'Bash', input: { command: 'echo hi' } },
+    });
+
+    // Wait deterministically until the request has entered pendingPromises.
+    // The onRequest callback fires synchronously inside the pending-promise
+    // constructor, so by the time requestLanded resolves, size >= 1.
+    await requestLanded;
+
+    // At this point pendingPromises.size === 1 >= 1: the synchronous short-
+    // circuit must kick in and return Promise.resolve() with no waiter queued.
+    // timeoutMs=0 is deliberate: any waiter path would never fire before the
+    // Promise resolves, proving we took the synchronous branch.
+    await server.__testHooks.awaitPending(1, 0);
+
+    // Drain the in-flight request so afterEach can stop the server cleanly.
+    server.cancelAll();
+    await toolCallPromise;
+    await client.close();
+  });
 });
