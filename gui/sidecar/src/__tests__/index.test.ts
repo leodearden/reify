@@ -519,7 +519,7 @@ describe('main() startup landlock probe (task 3281)', () => {
       const input = new PassThrough();
       const output = new PassThrough();
       const mainPromise = main(input, output);
-      // ready is emitted by session.init(), which runs AFTER Promise.all([start, probe]) resolves.
+      // ready is emitted by session.init(), which runs AFTER Promise.allSettled([start, probe]) resolves.
       // By the time ready is observed, probe must have been called and its result resolved.
       await waitForMessage(output, (m) => m.type === 'ready');
       expect(vi.mocked(probeLandlockAsync)).toHaveBeenCalledOnce();
@@ -659,7 +659,7 @@ describe('main() startup landlock probe (task 3281)', () => {
 
       // Concurrency assertion: probe-begin appears BEFORE start-end.
       // Sequential order would be: [start-begin, start-end, probe-begin, probe-end].
-      // Concurrent (Promise.all) order: [start-begin, probe-begin, ..., start-end, probe-end].
+      // Concurrent (Promise.allSettled) order: [start-begin, probe-begin, ..., start-end, probe-end].
       const probeBeginIdx = callOrder.indexOf('probe-begin');
       const startEndIdx = callOrder.indexOf('start-end');
       expect(probeBeginIdx).toBeLessThan(startEndIdx);
