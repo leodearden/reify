@@ -22,6 +22,16 @@ const DiagBadgeContent: Component<{ getSummary: () => DiagnosticSummary }> = (pr
   </>
 );
 
+function summarize(diags: DiagnosticInfo[] | undefined): DiagnosticSummary {
+  let errorCount = 0;
+  let warningCount = 0;
+  for (const d of diags ?? []) {
+    if (d.severity === 'Error') errorCount++;
+    else if (d.severity === 'Warning') warningCount++;
+  }
+  return { errorCount, warningCount };
+}
+
 export interface StatusBarProps {
   evalStatus: EvaluationStatus;
   meshes: Record<string, MeshData>;
@@ -52,27 +62,9 @@ export const StatusBar: Component<StatusBarProps> = (props) => {
     return counts;
   });
 
-  const diagnosticSummary = createMemo(() => {
-    const diags = props.tessellationDiagnostics ?? [];
-    let errorCount = 0;
-    let warningCount = 0;
-    for (const d of diags) {
-      if (d.severity === 'Error') errorCount++;
-      else if (d.severity === 'Warning') warningCount++;
-    }
-    return { errorCount, warningCount };
-  });
+  const diagnosticSummary = createMemo(() => summarize(props.tessellationDiagnostics));
 
-  const compileSummary = createMemo(() => {
-    const diags = props.compileDiagnostics ?? [];
-    let errorCount = 0;
-    let warningCount = 0;
-    for (const d of diags) {
-      if (d.severity === 'Error') errorCount++;
-      else if (d.severity === 'Warning') warningCount++;
-    }
-    return { errorCount, warningCount };
-  });
+  const compileSummary = createMemo(() => summarize(props.compileDiagnostics));
 
   function claudeStatusText(status: SessionStatus): string {
     switch (status) {
