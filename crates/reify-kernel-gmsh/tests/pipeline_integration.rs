@@ -16,7 +16,7 @@ use reify_kernel_gmsh::mesh_volume::{
 use reify_kernel_gmsh::repair::RepairConfig;
 use reify_kernel_gmsh::through_thickness::ThroughThicknessConfig;
 use reify_kernel_gmsh::MeshingOptions;
-use reify_types::{ElementOrderTag, Mesh, VolumeMesh};
+use reify_types::{ElementOrderTag, GeometryError, Mesh, VolumeMesh};
 
 // ---------------------------------------------------------------------------
 // Helpers shared across multiple tests in this file
@@ -199,6 +199,71 @@ fn resolve_mesh_size_empty_indices_collapses_to_none() {
         size,
         None,
         "auto returns 0.0 for empty-indices mesh; wrapper must collapse to Ok(None)"
+    );
+}
+
+/// When `auto_mesh_size_from_features` fails (e.g. out-of-bounds index),
+/// `resolve_mesh_size` must propagate the error as
+/// `GeometryError::OperationFailed` with the prescribed prefix, and must NOT
+/// emit a DEBUG event (the `if let Ok(...)` guard suppresses it on the error
+/// path).
+///
+/// Regression guard for both halves of the error contract:
+/// (a) the format-string wrapping prefix `"auto_mesh_size_from_features failed: "`;
+/// (b) DEBUG event count == 0 on the error path.
+#[test]
+fn resolve_mesh_size_propagates_auto_size_error_and_suppresses_debug_event() {
+    use std::sync::Arc;
+
+    reify_test_support::prime_tracing_callsite_cache();
+
+    // 3 vertices (9 floats) → n_vertices = 3. Index 99 is out of range;
+    // auto_mesh_size_from_features returns Err(AutoSizeError::IndexOutOfBounds).
+    // Pattern mirrors auto_size_tests.rs::out_of_bounds_index_returns_err.
+    let mesh = Mesh {
+        vertices: vec![
+            0.0, 0.0, 0.0, // v0
+            1.0, 0.0, 0.0, // v1
+            0.0, 1.0, 0.0, // v2
+        ],
+        indices: vec![0, 1, 99],
+        normals: None,
+    };
+
+    let (subscriber, counters) = reify_test_support::CountingSubscriberBuilder::new()
+        .count_level(tracing::Level::DEBUG)
+        .target_prefix("reify_kernel_gmsh::mesh_volume")
+        .build();
+    let debug_arc = Arc::clone(&counters[&tracing::Level::DEBUG]);
+
+    let result = tracing::subscriber::with_default(subscriber, || {
+        resolve_mesh_size(&mesh, &MeshingOptions::default(), Some(AutoSizeConfig::default()))
+    });
+
+    // (a) Verify error variant and message prefix.
+    match result {
+        Err(GeometryError::OperationFailed(ref msg)) => {
+            assert!(
+                msg.contains("auto_mesh_size_from_features failed:"),
+                "OperationFailed message must start with the prescribed prefix; \
+                 got: {msg:?}"
+            );
+        }
+        Err(other) => panic!(
+            "expected Err(GeometryError::OperationFailed(...)) for out-of-bounds \
+             index, but got a different GeometryError variant: {other:?}"
+        ),
+        Ok(v) => panic!(
+            "expected Err(GeometryError::OperationFailed(...)) for out-of-bounds \
+             index, but got Ok({v:?})"
+        ),
+    }
+
+    // (b) Verify DEBUG event was suppressed on the error path.
+    let debug_count = debug_arc.load(Ordering::Acquire);
+    assert_eq!(
+        debug_count, 0,
+        "error path must suppress the DEBUG 'mesh_size resolved' event; got {debug_count}"
     );
 }
 
