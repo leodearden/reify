@@ -362,7 +362,7 @@ pub fn compute_medial_mask(
 
     // Parallel outer (i-axis) loop.
     //
-    // Determinism contract (mirrors global.rs:191-228):
+    // Determinism contract (mirrors crates/reify-solver-elastic/src/assembly/global.rs § "# Determinism contract"):
     // (a) `i_indices.chunks(chunk_size)` partitions indices in stable
     //     ascending order (chunks() is a stable slice partition);
     // (b) threads spawn in chunk-iteration order, so handle slot `t`
@@ -395,15 +395,14 @@ pub fn compute_medial_mask(
     let mut voxels: Vec<[i32; 3]> = std::thread::scope(|s| {
         let mut handles = Vec::with_capacity(threads);
         for chunk in i_indices.chunks(chunk_size) {
-            let chunk_owned: Vec<usize> = chunk.to_vec();
             handles.push(s.spawn(move || {
                 // Pre-size to ~1/32 of the chunk's voxel count; the narrow-band
                 // filter rejects ≥95% of voxels in typical slab/sphere fixtures,
                 // so this starting capacity avoids most reallocations without
                 // over-allocating.
                 let mut local: Vec<[i32; 3]> =
-                    Vec::with_capacity(chunk_owned.len() * ny * nz / 32);
-                for &i in &chunk_owned {
+                    Vec::with_capacity(chunk.len() * ny * nz / 32);
+                for &i in chunk {
                     for j in 0..ny {
                         for k in 0..nz {
                             let phi = sample_at_index(sdf, [i, j, k]);
@@ -781,9 +780,8 @@ pub(crate) fn precompute_gradient_grid(sdf: &SampledField, band_width: f64) -> V
             .chunks(chunk_size)
             .zip(grid.chunks_mut(chunk_size * ny * nz))
         {
-            let chunk_owned: Vec<usize> = chunk.to_vec();
             handles.push(s.spawn(move || {
-                for (idx, &i) in chunk_owned.iter().enumerate() {
+                for (idx, &i) in chunk.iter().enumerate() {
                     for j in 0..ny {
                         for k in 0..nz {
                             if sample_at_index(sdf, [i, j, k]).abs() <= band_width {
@@ -1838,8 +1836,8 @@ mod tests {
         // The slab fixture produces at least 128 medial voxels (asserted by
         // the existing slab test), so the windows(2) check is load-bearing.
         assert!(
-            mask.voxels.len() >= 2,
-            "need ≥ 2 voxels for ordering check; got {}",
+            mask.voxels.len() >= 128,
+            "need ≥ 128 voxels for ordering check; got {}",
             mask.voxels.len()
         );
 
@@ -1860,9 +1858,9 @@ mod tests {
     /// non-determinism bug (e.g., unsorted parallel-chunk merge, missing
     /// `sort_unstable`) can pass by luck when both runs happen to produce the
     /// same ordering. Three independent sequential runs make scheduler-state
-    /// coincidence significantly less likely: a merge-order bug that passes 2
-    /// runs with probability p passes 3 runs with probability p², and typical
-    /// ordering bugs have p ≈ 0.5 so p² ≈ 0.25 vs p = 0.5 for 2-run tests.
+    /// coincidence strictly less likely than two runs do; we choose 3 as a
+    /// small constant that meaningfully reduces the false-pass surface without
+    /// significantly inflating CI time.
     ///
     /// **Why both fixture sizes?** 16³ gives fast CI feedback; at this size
     /// with `available_parallelism() ≥ 4` each chunk covers only 4 i-rows —
@@ -2237,10 +2235,6 @@ mod tests {
     /// constructing a full SampledField — keeping the test fast and avoiding
     /// the memory pressure needed to trigger a real overflow through the
     /// public API.
-    ///
-    /// Currently FAILS to compile (RED) because `validate_flat_data_length`
-    /// does not yet exist. After step-6 adds the helper, all three assertions
-    /// pass.
     #[test]
     fn validate_flat_data_length_routes_overflow_and_mismatch() {
         // (a) Ok on matching inputs: 2×3×4 = 24.
@@ -2275,7 +2269,7 @@ mod tests {
     /// each of the three extent values (nx, ny, nz) in the formatted message,
     /// verifying that the variant fields are surfaced to the user.
     #[test]
-    fn axis_extents_overflow_display_includes_extents_and_says_overflow() {
+    fn axis_extents_overflow_display_includes_extent_values() {
         let err = MedialError::AxisExtentsOverflow {
             nx: 3_000_000,
             ny: 4_000_000,
