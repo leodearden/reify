@@ -1987,6 +1987,21 @@ impl TopologyAttributeTable {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
+
+    /// Iterate over all `(GeometryHandleId, &TopologyAttribute)` pairs in the table.
+    ///
+    /// Iteration order is **unspecified** — the table is HashMap-backed, so
+    /// callers needing a deterministic order must collect and sort
+    /// (e.g. by `GeometryHandleId` or `(feature_id, role, local_index)`).
+    ///
+    /// Used by per-realization fragility detection in
+    /// `reify_eval::engine_build` to filter the just-completed realization's
+    /// attribute entries (`attr.feature_id == realization_feature_id`) for
+    /// the `detect_local_index_reassignment_diagnostics` helper
+    /// (PRD `docs/prds/v0_2/persistent-naming-v2.md` line 72).
+    pub fn iter(&self) -> impl Iterator<Item = (GeometryHandleId, &TopologyAttribute)> {
+        self.entries.iter().map(|(k, v)| (*k, v))
+    }
 }
 
 // --- BRepAlgoAPI history records (v0.2 persistent-naming-v2, task 2590) ---
