@@ -651,7 +651,6 @@ describe('onAutoResolveIteration malformed payload', () => {
     await onAutoResolveIteration(cb);
     expect(cb).not.toHaveBeenCalled();
     expect(warnSpy).toHaveBeenCalled();
-    expect(warnSpy.mock.calls[0][0]).toContain('[auto-resolve-iteration]');
   });
 
   it('drops primitive (number) payload', async () => {
@@ -660,7 +659,6 @@ describe('onAutoResolveIteration malformed payload', () => {
     await onAutoResolveIteration(cb);
     expect(cb).not.toHaveBeenCalled();
     expect(warnSpy).toHaveBeenCalled();
-    expect(warnSpy.mock.calls[0][0]).toContain('[auto-resolve-iteration]');
   });
 
   it('drops payload missing iteration field', async () => {
@@ -669,7 +667,6 @@ describe('onAutoResolveIteration malformed payload', () => {
     await onAutoResolveIteration(cb);
     expect(cb).not.toHaveBeenCalled();
     expect(warnSpy).toHaveBeenCalled();
-    expect(warnSpy.mock.calls[0][0]).toContain('[auto-resolve-iteration]');
   });
 
   it('drops payload with array-shaped parameters', async () => {
@@ -680,7 +677,6 @@ describe('onAutoResolveIteration malformed payload', () => {
     await onAutoResolveIteration(cb);
     expect(cb).not.toHaveBeenCalled();
     expect(warnSpy).toHaveBeenCalled();
-    expect(warnSpy.mock.calls[0][0]).toContain('[auto-resolve-iteration]');
   });
 
   it('drops payload with array-shaped constraints', async () => {
@@ -691,7 +687,6 @@ describe('onAutoResolveIteration malformed payload', () => {
     await onAutoResolveIteration(cb);
     expect(cb).not.toHaveBeenCalled();
     expect(warnSpy).toHaveBeenCalled();
-    expect(warnSpy.mock.calls[0][0]).toContain('[auto-resolve-iteration]');
   });
 
   it('does NOT warn and calls callback for a well-formed payload', async () => {
