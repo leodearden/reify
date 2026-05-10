@@ -1463,6 +1463,41 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Task 2921: warm-state plumbing — initial-guess contract panic
+    // -----------------------------------------------------------------------
+
+    /// `solve_cg_warm` with an `initial_guess` whose length does not match
+    /// `k.nrows()` must panic with a message naming `initial_guess`.
+    /// Mirrors the existing `dimension_mismatch_f_len_panics` pattern.
+    #[test]
+    #[should_panic(expected = "initial_guess")]
+    fn initial_guess_length_mismatch_panics() {
+        // 2×2 SPD fixture (same as `hand_computed_2x2_spd_within_tolerance`).
+        let k = SparseRowMat::try_new_from_triplets(
+            2,
+            2,
+            &[
+                Triplet::new(0_usize, 0_usize, 4.0_f64),
+                Triplet::new(0_usize, 1_usize, 1.0_f64),
+                Triplet::new(1_usize, 0_usize, 1.0_f64),
+                Triplet::new(1_usize, 1_usize, 3.0_f64),
+            ],
+        )
+        .unwrap();
+        let f = [1.0_f64, 2.0];
+        // initial_guess.len() = 3 but k.nrows() = 2 → must panic.
+        let initial_guess = [1.0_f64, 2.0, 3.0];
+        let opts = CgSolverOptions::default();
+        let _ = solve_cg_warm(
+            &k,
+            &f,
+            Some(&initial_guess),
+            opts,
+            SolverMode::Deterministic,
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // Task 2921: warm-state plumbing — `solve_cg_warm` None-shim equivalence
     // -----------------------------------------------------------------------
 
