@@ -282,6 +282,28 @@ describe('DiagnosticsPanel', () => {
     expect(dialog.style.resize).toBe('both');
   });
 
+  it('list element has the list CSS class and dialog has no lineWrapOn class by default', () => {
+    const diag: DiagnosticEntry = { ...makeDiag('Error', { message: 'oops' }), source: 'compile' };
+    render(() => (
+      <DiagnosticsPanel
+        open={true}
+        diagnostics={[diag]}
+        onClose={vi.fn()}
+        onNavigate={vi.fn()}
+      />
+    ));
+    // The row's parent is the list container
+    const row = screen.getByTestId('diagnostic-row');
+    const list = row.parentElement as HTMLElement;
+    // The list element should have the 'list' class (CSS module mangling
+    // produces a hashed class in production but vitest inlines the name)
+    expect(list.className).toContain('list');
+
+    // Without any click the dialog should NOT carry the lineWrapOn class
+    const dialog = screen.getByTestId('diagnostics-dialog') as HTMLElement;
+    expect(dialog.className).not.toContain('lineWrapOn');
+  });
+
   it('ResizeObserver callback persists current size to localStorage', () => {
     capturedResizeCallback = null;
     render(() => (
