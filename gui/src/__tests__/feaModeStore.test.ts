@@ -202,6 +202,28 @@ describe('feaModeStore', () => {
         expect(store.state.warpFactor).toBe(5);
       });
     });
+
+    it('(f) setWarpFactor(-1) returns false and leaves state.warpFactor unchanged (negative values rejected)', () => {
+      // The warp slider is bounded to [0, 100]. Accepting negative values would create
+      // a UI/store split: the slider clamps to 0 visually while the label shows a
+      // negative. Rejecting negatives keeps the slider and store in sync.
+      withRoot(() => {
+        const store = createFeaModeStore();
+        store.setWarpFactor(5);
+        const result = store.setWarpFactor(-1);
+        expect(result).toBe(false);
+        expect(store.state.warpFactor).toBe(5);
+      });
+    });
+
+    it('(f) setWarpFactor(0) returns true (zero is valid — shows undeformed shape)', () => {
+      withRoot(() => {
+        const store = createFeaModeStore();
+        const result = store.setWarpFactor(0);
+        expect(result).toBe(true);
+        expect(store.state.warpFactor).toBe(0);
+      });
+    });
   });
 
   describe('simple setters', () => {

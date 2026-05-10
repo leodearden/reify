@@ -31,7 +31,9 @@ export interface FeaModeState {
    * Scale factor applied to the displacement delta.
    * position[i] = vertices[i] + warpFactor * (displaced[i] - vertices[i])
    * 1.0 = true-scale deformation; 10.0 / 100.0 = amplified for small displacements.
-   * Default: 1.0. Non-finite values are rejected by setWarpFactor.
+   * 0.0 shows the undeformed shape exactly (same as setDeformation(null) visually).
+   * Default: 1.0. Valid domain: [0, ∞) finite — negatives and non-finite values
+   * are rejected by setWarpFactor to keep the slider and store in sync.
    */
   warpFactor: number;
 }
@@ -55,7 +57,11 @@ export interface FeaModeStore {
   setShowDeformed(b: boolean): void;
   /**
    * Set the warp factor for deformed-shape rendering.
-   * Returns false and is a no-op when `f` is NaN or ±Infinity.
+   * Returns false and is a no-op when `f` is NaN, ±Infinity, or negative.
+   * Negative values are rejected because the slider is bounded to [0, 100]:
+   * accepting them would create a visible UI/store split where the slider
+   * clamps to 0 but the label shows the negative value.
+   * Valid domain: [0, ∞) finite. Zero shows the undeformed shape exactly.
    * Mirrors the non-finite guard in setRange.
    */
   setWarpFactor(f: number): boolean;
@@ -117,7 +123,10 @@ export function createFeaModeStore(): FeaModeStore {
   }
 
   function setWarpFactor(f: number): boolean {
-    if (!Number.isFinite(f)) return false;
+    // Reject non-finite and negative values. Negative warp would extrapolate
+    // in the opposite direction and cannot be expressed by the [0, 100] slider,
+    // creating a UI/store split (slider clamped to 0, label showing negative).
+    if (!Number.isFinite(f) || f < 0) return false;
     setState('warpFactor', f);
     return true;
   }
