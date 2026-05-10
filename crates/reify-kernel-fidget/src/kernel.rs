@@ -775,4 +775,44 @@ mod tests {
             ),
         }
     }
+
+    /// Pins the architectural rule that [`FidgetKernel`] must not
+    /// misclassify its handles as `Some(BRepKind::Solid)` — a Fidget SDF
+    /// `Tree` belongs to the [`ReprKind::Sdf`] family, not the B-rep family.
+    /// An SDF is `f(x,y,z) → distance`, not a topology, so there is no
+    /// meaningful B-rep sub-shape classification and `repr` must be `None`.
+    ///
+    /// # Context
+    ///
+    /// - **Task 3179 wave 2**: step-2 deliberately left Fidget on
+    ///   `Some(BRepKind::Solid)` as an intermediate state so this test could
+    ///   drive the flip via TDD (without the intermediate state this test
+    ///   would not be RED — it would be asserting already-passing impl).
+    /// - **Task 3093 review esc-3093-33**: The original acknowledgement of
+    ///   the semantic abuse — `insert_tree` carried an inline comment "the
+    ///   closest fine-grained classifier for 'implicit-surface-defined
+    ///   solid'", explicitly noting the misclassification.
+    /// - **Architectural rule**: `BRepKind` is documented as a *B-rep
+    ///   sub-shape classifier for geometry handles managed by the OCCT
+    ///   kernel*. Non-B-rep kernels (Mesh/Sdf/Voxel/VolumeMesh families per
+    ///   [`ReprKind`]) genuinely have no B-rep sub-shape. `None` is
+    ///   structurally honest — a regression guard so the `ReprKind::Sdf`
+    ///   family is never mis-filed under a B-rep variant again.
+    #[test]
+    fn fidget_kernel_handle_repr_is_none_for_non_brep_kernel() {
+        let mut kernel = FidgetKernel::new();
+        let handle = kernel
+            .execute(&GeometryOp::Sphere {
+                radius: Value::Real(1.0),
+            })
+            .expect("Sphere execution must succeed on FidgetKernel");
+
+        assert!(
+            handle.repr.is_none(),
+            "FidgetKernel handles must carry `repr: None` — Fidget SDF Trees \
+             belong to ReprKind::Sdf and have no meaningful B-rep sub-shape \
+             classification. See task 3179 option (b) and task 3093 review \
+             esc-3093-33.",
+        );
+    }
 }
