@@ -695,6 +695,34 @@ fn optimized_annotation_on_function_is_accepted() {
     );
 }
 
+// ── Step 5 (task 3377): missing-target warning on function context ───────────
+
+/// `@optimized` (no target) on a `fn` must emit the same missing-target warning
+/// that fires on a `constraint_def` — the target is now consumed in both contexts.
+///
+/// RED: fails before the missing-target gate at annotations.rs is widened from
+/// `context == "constraint_def"` to `matches!(context, "constraint_def" | "function")`.
+#[test]
+fn optimized_without_target_on_function_warns() {
+    let module = compile_source(r#"@optimized() fn f(x: Real) -> Real { x }"#);
+
+    let errors = error_diags(&module.diagnostics);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    let relevant: Vec<_> = warning_diags(&module.diagnostics)
+        .into_iter()
+        .filter(|d| {
+            d.message
+                .contains("@optimized requires a string literal target")
+        })
+        .collect();
+    assert!(
+        !relevant.is_empty(),
+        "expected a missing-target warning on @optimized() on fn, got none; all diags: {:?}",
+        module.diagnostics
+    );
+}
+
 /// A valid single `@optimized("target")` must NOT trip any of the new
 /// malformed-annotation warnings.
 #[test]
