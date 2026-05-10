@@ -172,6 +172,31 @@ mod tests {
     }
 
     #[test]
+    fn near_constraint_boundary_triggers_at_and_above_threshold_false_well_below() {
+        // yield_stress = 200e6, near_boundary_pct = 0.10 → threshold = 180e6
+        let opts = ProgressiveOptions {
+            yield_stress: Some(200e6),
+            near_boundary_pct: 0.10,
+            ..Default::default()
+        };
+        // (a) well below threshold: max_von_mises = 100e6 → false
+        assert!(
+            !near_constraint_boundary(&make_result(100e6), &opts),
+            "100 MPa is well below threshold (180 MPa), must return false"
+        );
+        // (b) exactly at threshold: max_von_mises = 180e6 → true (>= semantics)
+        assert!(
+            near_constraint_boundary(&make_result(180e6), &opts),
+            "180 MPa is exactly at threshold, must return true (>= semantics)"
+        );
+        // (c) above threshold: max_von_mises = 195e6 → true
+        assert!(
+            near_constraint_boundary(&make_result(195e6), &opts),
+            "195 MPa is above threshold (180 MPa), must return true"
+        );
+    }
+
+    #[test]
     fn near_constraint_boundary_returns_false_when_yield_stress_is_none() {
         let opts = ProgressiveOptions { yield_stress: None, ..Default::default() };
         let result = make_result(1e30);
