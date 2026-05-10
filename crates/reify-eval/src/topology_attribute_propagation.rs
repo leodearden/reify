@@ -986,8 +986,7 @@ pub fn detect_local_index_reassignment_diagnostics(
             let Some(c_i) = centroids.get(&h_i) else {
                 continue;
             };
-            for j in (i + 1)..sorted.len() {
-                let (h_j, idx_j) = sorted[j];
+            for &(h_j, idx_j) in sorted.iter().skip(i + 1) {
                 let Some(c_j) = centroids.get(&h_j) else {
                     continue;
                 };
