@@ -3885,3 +3885,30 @@ describe('session.test.ts /tmp leak guard (task 3283)', () => {
     expect(REIFY_MCP_TMP_PREFIX.test('reify-mcp-ab12CD')).toBe(true);
   });
 });
+
+describe('virtual node:fs mock readFileSync semantics (task 3306)', () => {
+  it('returns Buffer unless an encoding is explicitly supplied (matches Node.js options-object semantics)', () => {
+    const p = '/virt/hello.txt';
+    (mockFs as any).writeFileSync(p, 'hello');
+
+    // Case 1: no second arg → Buffer (regression guard, already passes)
+    const buf = mockFs.readFileSync(p);
+    expect(Buffer.isBuffer(buf)).toBe(true);
+    expect((buf as Buffer).toString('utf-8')).toBe('hello');
+
+    // Case 2: string encoding → string (regression guard, already passes)
+    const str = mockFs.readFileSync(p, 'utf-8');
+    expect(typeof str).toBe('string');
+    expect(str).toBe('hello');
+
+    // Case 3: empty options object → Buffer (load-bearing — currently FAILS because
+    // mock returns a string for any non-nullish second arg via `enc != null` check)
+    const bufFromOpts = mockFs.readFileSync(p, {});
+    expect(Buffer.isBuffer(bufFromOpts)).toBe(true);
+
+    // Case 4: options object with encoding → string (must keep passing after the fix)
+    const strFromOpts = mockFs.readFileSync(p, { encoding: 'utf-8' });
+    expect(typeof strFromOpts).toBe('string');
+    expect(strFromOpts).toBe('hello');
+  });
+});
