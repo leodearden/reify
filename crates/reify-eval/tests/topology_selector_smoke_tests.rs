@@ -256,49 +256,22 @@ fn fillet_top_edges_evals_to_solid_via_topology_walk() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    // Capture a shared handle to the op log *before* the kernel moves into
-    // Engine::new.  This is the established pattern used by
-    // curve_constructors_e2e.rs:86, sweep_e2e.rs:55, helpers.rs:575, etc.
     let ops_ref = kernel.operations_ref();
     let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
-    // The original `result.geometry_output.is_some()` assertion was vacuous:
-    // MockGeometryKernel::execute (mocks.rs:1219) allocates a fresh
-    // GeometryHandleId for *every* op — including the very first
-    // `box(50mm, 30mm, 10mm)` call — so `geometry_output` is always `Some`
-    // regardless of whether the topology-walk → fillet pipeline ever fired.
-    // (Flagged in esc-2691-81, reviewer_comprehensive suggestion 1 of 3.)
-    //
-    // The strengthened assertion suite below detects the exact regression the
-    // task names: if the topology walk silently short-circuits and no Fillet
-    // op fires, (a) the first op will not be a Box, or (b) the last op will
-    // not be a Fillet — the boundary assertions pin both ends of the expected
-    // box → ... → fillet sequence and fire loudly on either failure.
-    //
-    // ops_ref is the only surviving Arc clone for this kernel instance — the
-    // original Arc moved into Engine::new — so a poisoned mutex on assertion
-    // failure is locally contained and cannot affect other tests.
+    // geometry_output.is_some() alone is vacuous because the mock allocates
+    // a fresh handle per op (mocks.rs:1219); pin both ends of the
+    // box → … → fillet sequence by checking first/last recorded ops.
+    // (esc-2691-81 / esc-3282-96 reviewer_comprehensive)
     let ops = ops_ref.lock().unwrap();
 
-    // (a) the FIRST recorded op must be a Box realization, pinning the expected
-    //     box → ... → fillet execution sequence at both ends. This is a tighter
-    //     guard than a plain `ops.len() >= 2` lower bound: a stray intermediate
-    //     realization would still pass a count check even if no Fillet ever ran.
-    //     Assertion (b) is the primary correctness check; (a) makes the full
-    //     Box-then-Fillet structure explicit so both ends of the sequence are
-    //     asserted.
     assert!(
         matches!(ops.first().map(|r| &r.op), Some(GeometryOp::Box { .. })),
         "expected first recorded op to be GeometryOp::Box, got: {:?}",
         ops.first().map(|r| r.op.kind_name())
     );
 
-    // (b) the LAST recorded op must be a Fillet — confirms the topology
-    //     walk → fillet pipeline ran end-to-end. MockGeometryKernel::execute
-    //     (mocks.rs:1219) returns a fresh handle for *every* op, so without
-    //     this check the geometry_output assertion below would pass on the
-    //     box handle alone (the original false-positive flagged in esc-2691-81).
     assert!(
         matches!(
             ops.last().map(|r| &r.op),
@@ -308,9 +281,6 @@ fn fillet_top_edges_evals_to_solid_via_topology_walk() {
         ops.last().map(|r| r.op.kind_name())
     );
 
-    // (c) sanity-pin geometry_output (kept from the original assertion)
-    //     so a future engine_build.rs:681 regression that drops the export
-    //     stage is also caught.
     assert!(
         result.geometry_output.is_some(),
         "expected non-empty geometry_output after a successful Fillet op"

@@ -3754,7 +3754,11 @@ mod tests {
     ) {
         let bad_case = make_elastic_result_with_only_field(present_field_name, present_field_value);
         let mcr = multi_case_result_value(&[("A", bad_case)]);
-        assert!(eval_fea(name, &[mcr]).unwrap().is_undef());
+        assert!(
+            eval_fea(name, &[mcr]).unwrap().is_undef(),
+            "{name} should return undef when per-case is missing required field \
+             '{expected_field_name}' (case only carried '{present_field_name}')",
+        );
     }
 
     #[test]

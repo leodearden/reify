@@ -3337,24 +3337,27 @@ async fn on_sidecar_exit_emits_crashed_event_when_state_was_ready() {
     );
 
     // (b) Event sink must have exactly one claude-sidecar-crashed entry with non-empty reason
-    let emitted = events.lock().unwrap();
-    let crashed: Vec<_> = emitted
-        .iter()
-        .filter(|(name, _)| name == "claude-sidecar-crashed")
-        .collect();
-    assert_eq!(
-        crashed.len(),
-        1,
-        "Expected exactly one claude-sidecar-crashed event, got: {:?}",
-        emitted.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>()
-    );
-    let payload = &crashed[0].1;
-    assert!(
-        payload["reason"].is_string() && !payload["reason"].as_str().unwrap().is_empty(),
-        "Expected non-empty string 'reason' in payload, got: {:?}",
-        payload
-    );
-    drop(emitted);
+    // Block-scope the std::sync::Mutex guard so it cannot live across the await below
+    // (clippy::await_holding_lock does not honour explicit `drop`).
+    {
+        let emitted = events.lock().unwrap();
+        let crashed: Vec<_> = emitted
+            .iter()
+            .filter(|(name, _)| name == "claude-sidecar-crashed")
+            .collect();
+        assert_eq!(
+            crashed.len(),
+            1,
+            "Expected exactly one claude-sidecar-crashed event, got: {:?}",
+            emitted.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>()
+        );
+        let payload = &crashed[0].1;
+        assert!(
+            payload["reason"].is_string() && !payload["reason"].as_str().unwrap().is_empty(),
+            "Expected non-empty string 'reason' in payload, got: {:?}",
+            payload
+        );
+    }
 
     // (c) notify.notified() must resolve within 50 ms (notify_waiters was called inside helper)
     tokio::time::timeout(Duration::from_millis(50), notified)
@@ -3394,13 +3397,15 @@ async fn on_sidecar_exit_does_not_emit_when_state_was_not_started() {
     );
 
     // (b) Event sink must be empty — no claude-sidecar-crashed emitted for a killed sidecar.
-    let emitted = events.lock().unwrap();
-    assert!(
-        emitted.is_empty(),
-        "Expected no events emitted for NotStarted input, got: {:?}",
-        emitted.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>()
-    );
-    drop(emitted);
+    // Block-scope so the std::sync::Mutex guard cannot live across the await below.
+    {
+        let emitted = events.lock().unwrap();
+        assert!(
+            emitted.is_empty(),
+            "Expected no events emitted for NotStarted input, got: {:?}",
+            emitted.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>()
+        );
+    }
 
     // (c) notify_waiters must still fire so wait_ready callers wake up even on kill.
     tokio::time::timeout(Duration::from_millis(50), notified)
