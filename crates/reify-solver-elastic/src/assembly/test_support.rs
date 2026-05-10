@@ -114,6 +114,13 @@ pub(crate) fn run_element_stiffness_tests(
     let vol_swapped = spec.vol_swapped;
     let mat = dimensionless_steel_like();
     let phys1 = make_phys(1.0);
+    assert_eq!(
+        phys1.len(),
+        n_nodes,
+        "phys1.len() must equal n_nodes (got phys1.len()={}, n_nodes={})",
+        phys1.len(),
+        n_nodes,
+    );
     let k = compute_k(&phys1, &mat);
 
     // (b) Symmetry
