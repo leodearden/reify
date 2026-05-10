@@ -77,6 +77,9 @@ impl Default for MidSurfaceOptions {
 
 /// Errors returned by [`extract_mid_surface`].
 ///
+/// `#[non_exhaustive]` lets future variants be added or removed without
+/// breaking external exhaustive-match consumers.
+///
 /// ```compile_fail
 /// use reify_shell_extract::MidSurfaceError;
 /// fn _check(e: MidSurfaceError) {
@@ -93,6 +96,7 @@ impl Default for MidSurfaceOptions {
 ///     }
 /// }
 /// ```
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub enum MidSurfaceError {
     /// A structural validation error produced by the shared
