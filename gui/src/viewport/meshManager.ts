@@ -245,7 +245,7 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
       applyWarpToMesh(mesh, entityPath, currentDeformation.warpFactor);
       // Warp runs for all meshes so the position buffer is correct if visibility
       // changes later. Overlay only for 'show' entities — hidden/ghost get none.
-      if ((visibilityMap.get(entityPath) ?? 'show') === 'show') {
+      if (isShown(entityPath)) {
         addUndeformedOverlay(entityPath, mesh);
       }
     }
@@ -339,7 +339,7 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
         // Remove stale overlay unconditionally (idempotent), then re-add only
         // for 'show' entities — hidden/ghost must not get an overlay.
         removeUndeformedOverlay(mesh.name);
-        if ((visibilityMap.get(mesh.name) ?? 'show') === 'show') {
+        if (isShown(mesh.name)) {
           addUndeformedOverlay(mesh.name, mesh);
         }
       } else {
@@ -374,6 +374,16 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     if (!ghostClone) return;
     ghostGroup.remove(ghostClone);
     ghostMeshMap.delete(entityPath);
+  }
+
+  /**
+   * Returns true iff `entityPath` is in the 'show' visibility state (the default when
+   * absent from visibilityMap). Only 'show' entities receive an undeformed overlay;
+   * 'hidden' and 'ghost' do not. Centralises the gate predicate used in
+   * createMeshFromData, updateMeshGeometry, and setDeformation.
+   */
+  function isShown(entityPath: string): boolean {
+    return (visibilityMap.get(entityPath) ?? 'show') === 'show';
   }
 
   /**
@@ -503,7 +513,7 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
       // Only 'show' state gets an overlay; hidden/ghost intentionally skipped.
       // See design decision: ghost is already a translucent deformed rendering;
       // hidden means the user wants no visual for this entity at all.
-      if ((visibilityMap.get(entityPath) ?? 'show') === 'show') {
+      if (isShown(entityPath)) {
         addUndeformedOverlay(entityPath, mesh);
       }
     }

@@ -2085,21 +2085,21 @@ describe('meshManager', () => {
       expect(mockGroupRemove).toHaveBeenCalledWith(overlay);
     });
 
-    it('(j) setVisibility("A","ghost") before setDeformation — overlay is NOT added for ghost entity', () => {
-      // Locks in the UX decision: ghost is a translucent deformed rendering; a
-      // separate undeformed overlay would be redundant and visually noisy.
+    it('(i) setVisibility("A","hidden") before setDeformation — overlay is NOT added for hidden entity', () => {
+      // Pins the setDeformation visibility gate at meshManager.ts (isShown helper) —
+      // hidden entities must not gain an overlay.
       const { manager } = setupWithOverlay();
-      manager.setVisibility('A', 'ghost');
+      manager.setVisibility('A', 'hidden');
       manager.setDeformation({ warpFactor: 5 });
       expect(manager.getDeformedOverlays().size).toBe(0);
       expect(manager.getDeformedOverlays().has('A')).toBe(false);
     });
 
-    it('(i) setVisibility("A","hidden") before setDeformation — overlay is NOT added for hidden entity', () => {
-      // Regression gate: setDeformation must skip addUndeformedOverlay for hidden entities.
-      // The current implementation iterates meshMap unconditionally, so this fails today.
+    it('(j) setVisibility("A","ghost") before setDeformation — overlay is NOT added for ghost entity', () => {
+      // Locks in the UX decision: ghost is a translucent deformed rendering; a
+      // separate undeformed overlay would be redundant and visually noisy.
       const { manager } = setupWithOverlay();
-      manager.setVisibility('A', 'hidden');
+      manager.setVisibility('A', 'ghost');
       manager.setDeformation({ warpFactor: 5 });
       expect(manager.getDeformedOverlays().size).toBe(0);
       expect(manager.getDeformedOverlays().has('A')).toBe(false);
@@ -2271,6 +2271,64 @@ describe('meshManager', () => {
       const overlay = manager.getDeformedOverlays().get('A')!;
       const posAttr = (overlay.geometry as any).attributes.position;
       expect(Array.from(posAttr.array as Float32Array)).toEqual(Array.from(vertices));
+    });
+
+    // --- hidden↔ghost no-op cases (overlay is absent in both states) ---
+
+    it('(g) hidden→ghost while deformation active — overlay remains absent throughout', () => {
+      // Both hidden and ghost states have no overlay. Transitioning between them is a
+      // no-op for overlay machinery and must not produce or remove anything.
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+      manager.setVisibility('A', 'hidden');
+      manager.sync({ A: makeDisplacedMesh('A') });
+      manager.setDeformation({ warpFactor: 5 });
+      // A is hidden — no overlay.
+      expect(manager.getDeformedOverlays().size).toBe(0);
+      manager.setVisibility('A', 'ghost');
+      // A is now ghost — still no overlay.
+      expect(manager.getDeformedOverlays().size).toBe(0);
+      expect(manager.getDeformedOverlays().has('A')).toBe(false);
+    });
+
+    it('(h) ghost→hidden while deformation active — overlay remains absent throughout', () => {
+      // Symmetric of (g): going ghost→hidden must not add an overlay.
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+      manager.sync({ A: makeDisplacedMesh('A') });
+      manager.setDeformation({ warpFactor: 5 });
+      // A starts show — overlay present.
+      expect(manager.getDeformedOverlays().has('A')).toBe(true);
+      manager.setVisibility('A', 'ghost');
+      // overlay gone after show→ghost.
+      expect(manager.getDeformedOverlays().size).toBe(0);
+      manager.setVisibility('A', 'hidden');
+      // overlay still absent after ghost→hidden.
+      expect(manager.getDeformedOverlays().size).toBe(0);
+      expect(manager.getDeformedOverlays().has('A')).toBe(false);
+    });
+
+    // --- deformation toggled off mid-transition ---
+
+    it('(i2) hidden→show when deformation is OFF — overlay must NOT be added', () => {
+      // Gate (a): currentDeformation === null → addUndeformedOverlay must not be called.
+      // Even if the entity has displaced_positions, no overlay is created without an active
+      // deformation config (there is nothing meaningful to show as the undeformed shape).
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+      manager.setVisibility('A', 'hidden');
+      manager.sync({ A: makeDisplacedMesh('A') });
+      // Turn deformation ON then OFF so currentDeformation returns to null.
+      manager.setDeformation({ warpFactor: 5 });
+      manager.setDeformation(null);
+      expect(manager.getDeformedOverlays().size).toBe(0);
+      // Now unhide — deformation is off, so no overlay should appear.
+      manager.setVisibility('A', 'show');
+      expect(manager.getDeformedOverlays().size).toBe(0);
+      expect(manager.getDeformedOverlays().has('A')).toBe(false);
     });
   });
 
