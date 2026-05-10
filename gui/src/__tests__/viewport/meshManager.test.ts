@@ -2085,6 +2085,16 @@ describe('meshManager', () => {
       expect(mockGroupRemove).toHaveBeenCalledWith(overlay);
     });
 
+    it('(i) setVisibility("A","hidden") before setDeformation — overlay is NOT added for hidden entity', () => {
+      // Regression gate: setDeformation must skip addUndeformedOverlay for hidden entities.
+      // The current implementation iterates meshMap unconditionally, so this fails today.
+      const { manager } = setupWithOverlay();
+      manager.setVisibility('A', 'hidden');
+      manager.setDeformation({ warpFactor: 5 });
+      expect(manager.getDeformedOverlays().size).toBe(0);
+      expect(manager.getDeformedOverlays().has('A')).toBe(false);
+    });
+
     it('(h) overlay owns clones of index/normal — deformed mesh references are not aliased and survive overlay teardown', () => {
       const { manager } = setupWithOverlay();
 
