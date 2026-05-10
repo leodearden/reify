@@ -6526,3 +6526,66 @@ fn build_gui_state_surfaces_live_compile_failure_after_failed_update_source_mult
             .collect::<Vec<_>>()
     );
 }
+
+/// After a session already has a successful compile via `load_file` (`compiled` is
+/// `Some`), a subsequent failed `load_file` (overwritten with broken source) must
+/// surface the live compile failure in `build_gui_state`'s `compile_diagnostics`.
+///
+/// Exercises `load_file`'s failure path (`compile_entry_with_imports`).
+/// Under current code (after step-2/step-4/step-6/step-8), this test will fail
+/// because the `load_file` branch still gates on `self.compiled.is_none()`.
+#[test]
+fn build_gui_state_surfaces_live_compile_failure_after_failed_load_file_with_prior_compile() {
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+    let file_path = dir.path().join("main.ri");
+    // Write valid source and load it to establish compiled = Some.
+    std::fs::write(&file_path, bracket_source()).expect("write should succeed");
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_file(&file_path)
+        .expect("valid source should load successfully");
+
+    // Overwrite the file with broken source, then load_file again (compiled is Some).
+    std::fs::write(&file_path, "broken {{{}}}\n").expect("overwrite should succeed");
+
+    let err = session
+        .load_file(&file_path)
+        .expect_err("invalid source should return Err");
+    assert!(
+        err.contains("Parse errors") || err.contains("Compile errors"),
+        "error string should mention parse/compile errors; got: {err}"
+    );
+
+    // live_compile_diagnostics must have been populated by the failure.
+    assert!(
+        !session.live_compile_diagnostics_for_test().is_empty(),
+        "live_compile_diagnostics should be non-empty after a failed load_file with prior compile"
+    );
+
+    // build_gui_state must surface the live failure diagnostics.
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state should return Ok with the prior good state plus live errors");
+
+    assert!(
+        !state.compile_diagnostics.is_empty(),
+        "compile_diagnostics must be non-empty — live compile failure must be surfaced"
+    );
+    let has_error = state
+        .compile_diagnostics
+        .iter()
+        .any(|d| d.severity == "Error");
+    assert!(
+        has_error,
+        "at least one diagnostic must have severity Error; got: {:?}",
+        state
+            .compile_diagnostics
+            .iter()
+            .map(|d| &d.severity)
+            .collect::<Vec<_>>()
+    );
+}
