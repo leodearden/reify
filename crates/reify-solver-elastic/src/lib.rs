@@ -262,4 +262,5 @@ pub use interpolation::{
     LocatableTet, barycentric_p1, interpolate_p1_at_point, locate_element_p1, point_in_tet_p1,
 };
 pub use result::{StressElement, element_stress_p1, recover_nodal_stress_p1, tet_volume_p1};
-pub use solver::{CgResult, CgSolverOptions, SolverMode, solve_cg};
+pub use solver::{CgResult, CgSolverOptions, SolverMode, solve_cg, solve_cg_warm};
+pub use warm_state::{CgWarmState, solve_cg_with_warm_state};
