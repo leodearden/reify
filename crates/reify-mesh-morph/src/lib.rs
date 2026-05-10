@@ -26,6 +26,7 @@
 //! Engine wiring (PRD task #10) maps hard/soft fail to remesh fallback.
 
 pub mod boundary;
+pub mod elasticity;
 pub mod eligibility;
 pub mod laplacian;
 pub mod options;
