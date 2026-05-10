@@ -3057,6 +3057,36 @@ describe('App tessellation diagnostics end-to-end wiring', () => {
     });
   });
 
+  it('clicking the tessellation-errors badge twice closes the panel', async () => {
+    render(() => <App />);
+    await waitFor(() => expect(tessellationDiagnosticsCallback).toBeDefined());
+
+    tessellationDiagnosticsCallback!([
+      {
+        file_path: '<unknown>',
+        line: 1, column: 1, end_line: 1, end_column: 1,
+        severity: 'Error',
+        message: 'tess toggle close test',
+        code: null,
+      },
+    ]);
+
+    // Wait for the badge to appear
+    await waitFor(() => {
+      expect(screen.getByTestId('tessellation-errors')).toBeTruthy();
+    });
+
+    // First click: open the panel
+    fireEvent.click(screen.getByTestId('tessellation-errors'));
+    await waitFor(() => expect(screen.getByTestId('diagnostics-panel')).toBeTruthy());
+
+    // Second click: close the panel
+    fireEvent.click(screen.getByTestId('tessellation-errors'));
+    await waitFor(() =>
+      expect(document.querySelector('[data-testid="diagnostics-panel"]')).toBeNull()
+    );
+  });
+
   it('clicking a tessellation diagnostic row in the panel triggers setScrollToLocation', async () => {
     render(() => <App />);
     await waitFor(() => expect(tessellationDiagnosticsCallback).toBeDefined());
