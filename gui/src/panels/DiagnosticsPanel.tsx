@@ -1,9 +1,11 @@
-import { type Component, Show, For, createSignal, createEffect, onCleanup } from 'solid-js';
+import { type Component, Show, For, createSignal, createMemo, createEffect, onCleanup } from 'solid-js';
 import type { DiagnosticInfo } from '../types';
 import styles from './DiagnosticsPanel.module.css';
 import {
   loadDiagnosticsLineWrap,
   saveDiagnosticsLineWrap,
+  loadDiagnosticsPanelSize,
+  computeDefaultDialogSize,
 } from '../hooks/useDiagnosticsPanelPersistence';
 
 /** Panel-facing wrapper that extends the wire-format DiagnosticInfo with a
@@ -23,6 +25,20 @@ export interface DiagnosticsPanelProps {
 
 export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
   const [lineWrap, setLineWrap] = createSignal(loadDiagnosticsLineWrap() ?? false);
+
+  const dialogSize = createMemo(() => {
+    const persisted = loadDiagnosticsPanelSize();
+    if (persisted) return persisted;
+    const longestChars = props.diagnostics.reduce(
+      (max, d) => Math.max(max, d.message?.length ?? 0),
+      0
+    );
+    return computeDefaultDialogSize({
+      longestMessageChars: longestChars,
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+    });
+  });
 
   // Attach Escape handler at document level so it fires regardless of which
   // element has focus (the overlay div is unfocused on open, so an
@@ -79,6 +95,12 @@ export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
           aria-modal="true"
           aria-labelledby="diagnostics-panel-title"
           onClick={(e) => e.stopPropagation()}
+          style={{
+            width: `${dialogSize().width}px`,
+            height: `${dialogSize().height}px`,
+            resize: 'both',
+            overflow: 'auto',
+          }}
         >
           <h2
             id="diagnostics-panel-title"

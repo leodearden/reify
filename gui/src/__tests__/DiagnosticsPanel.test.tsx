@@ -5,6 +5,7 @@ import type { DiagnosticInfo } from '../types';
 import type { DiagnosticEntry } from '../panels/DiagnosticsPanel';
 import {
   loadDiagnosticsLineWrap,
+  saveDiagnosticsPanelSize,
 } from '../hooks/useDiagnosticsPanelPersistence';
 
 // Stub ResizeObserver for jsdom (which doesn't support it)
@@ -224,5 +225,54 @@ describe('DiagnosticsPanel', () => {
     fireEvent.click(checkbox);
     expect(dialog.className).not.toContain('lineWrapOn');
     expect(loadDiagnosticsLineWrap()).toBe(false);
+  });
+
+  it('applies persisted size as inline style on mount', () => {
+    saveDiagnosticsPanelSize({ width: 1100, height: 640 });
+    render(() => (
+      <DiagnosticsPanel
+        open={true}
+        diagnostics={[]}
+        onClose={vi.fn()}
+        onNavigate={vi.fn()}
+      />
+    ));
+    const dialog = screen.getByTestId('diagnostics-dialog') as HTMLElement;
+    expect(dialog.style.width).toBe('1100px');
+    expect(dialog.style.height).toBe('640px');
+  });
+
+  it('uses computeDefaultDialogSize when no persisted size and longest message is wide', () => {
+    // jsdom default innerWidth is 1024; set it to 1400
+    Object.defineProperty(window, 'innerWidth', { value: 1400, writable: true, configurable: true });
+    const longMessage = 'x'.repeat(500);
+    const diags: DiagnosticEntry[] = [
+      { ...makeDiag('Error', { message: longMessage }), source: 'compile' },
+    ];
+    render(() => (
+      <DiagnosticsPanel
+        open={true}
+        diagnostics={diags}
+        onClose={vi.fn()}
+        onNavigate={vi.fn()}
+      />
+    ));
+    const dialog = screen.getByTestId('diagnostics-dialog') as HTMLElement;
+    const width = parseInt(dialog.style.width);
+    expect(width).toBeGreaterThan(720);
+    expect(width).toBeLessThanOrEqual(0.9 * 1400); // 1260
+  });
+
+  it('dialog has inline resize: both', () => {
+    render(() => (
+      <DiagnosticsPanel
+        open={true}
+        diagnostics={[]}
+        onClose={vi.fn()}
+        onNavigate={vi.fn()}
+      />
+    ));
+    const dialog = screen.getByTestId('diagnostics-dialog') as HTMLElement;
+    expect(dialog.style.resize).toBe('both');
   });
 });
