@@ -1571,13 +1571,9 @@ describe('SidecarSession destroy() lifecycle', () => {
     expect(onRequestMock.mock.calls[1][0]).toBeNull();
   });
 
-  // Pins the destroyed-guard in the constructor's onRequest handler.
-  // We cannot use triggerRequest() here because destroy() calls onRequest(null), which sets
-  // capturedHandler = null inside the mock, so triggerRequest() would throw before the
-  // production callback runs. Instead we grab the original handler closure from mock.calls[0][0]
-  // (captured before destroy()) and invoke it directly — the closure still reads `this.destroyed`.
+  // Pins the destroyed-guard branch: after destroy(), the production handler must short-circuit.
   it('destroyed-guard short-circuits the constructor onRequest handler', () => {
-    const { server } = makeMockPermissionServer();
+    const { server, triggerLatchedHandler } = makeMockPermissionServer();
     const permUrl = 'http://127.0.0.1:29999/mcp';
 
     const session = new SidecarSession({
@@ -1588,15 +1584,10 @@ describe('SidecarSession destroy() lifecycle', () => {
     } as any);
     session.onOutput = (msg) => outputs.push(msg);
 
-    // Grab the constructor-registered handler BEFORE destroy() nulls it out
-    const originalHandler = (server.onRequest as ReturnType<typeof vi.fn>).mock.calls[0][0] as (
-      req: any,
-    ) => void;
-
     session.destroy();
 
-    // Invoke the captured handler directly — the destroyed-guard must fire
-    originalHandler({ request_id: 'req-after-destroy', tool_name: 'Write', tool_input: { path: '/tmp/x' } });
+    // Invoke via the latched handler — the destroyed-guard must fire
+    triggerLatchedHandler({ request_id: 'req-after-destroy', tool_name: 'Write', tool_input: { path: '/tmp/x' } });
 
     // Guard short-circuited: no output was emitted (neither permission_request nor notice)
     expect(outputs).toHaveLength(0);
