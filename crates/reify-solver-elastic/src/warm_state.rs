@@ -51,6 +51,31 @@ impl CgWarmState {
     }
 }
 
+/// High-level Jacobi-CG producer wrapper for engine wiring (PRD task #14).
+///
+/// Solves `K·u = f` with optional prior warm state, and emits both the
+/// `CgResult` and a fresh `CgWarmState` containing the new solution `u`.
+/// This is the producer-side template that ComputeNode wiring (PRD task
+/// #16, `solve_elastic_static @optimized`) will call: it returns BOTH
+/// the result and the next-call warm state, so the engine never has to
+/// peek inside `CgResult` to wrap `u`.
+///
+/// Returning `CgWarmState` (not `OpaqueState`) lets callers inspect the
+/// result before deciding whether to donate; conversion to `OpaqueState`
+/// is one further `into_opaque_state()` call away.
+pub fn solve_cg_with_warm_state(
+    k: &faer::sparse::SparseRowMat<usize, f64>,
+    f: &[f64],
+    prior: Option<&CgWarmState>,
+    opts: crate::solver::CgSolverOptions,
+    mode: crate::solver::SolverMode,
+) -> (crate::solver::CgResult, CgWarmState) {
+    let prior_slice = prior.map(|p| p.u.as_slice());
+    let result = crate::solver::solve_cg_warm(k, f, prior_slice, opts, mode);
+    let fresh = CgWarmState::from_displacement(result.u.clone());
+    (result, fresh)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
