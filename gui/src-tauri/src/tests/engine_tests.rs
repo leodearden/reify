@@ -6145,3 +6145,55 @@ fn build_gui_state_surfaces_parse_error_after_failed_load_from_source() {
         "tessellation_diagnostics should be empty"
     );
 }
+
+/// After a failed `load_file` (parse error in the file-on-disk), `build_gui_state`
+/// must surface the failure in `compile_diagnostics`.
+///
+/// Pins step-5/step-6 of the task-3351 plan: `load_file` routes through
+/// `compile_entry_with_imports`, which must also populate
+/// `last_compile_diagnostics` on failure once refactored in step-6.
+#[test]
+fn build_gui_state_surfaces_parse_error_after_failed_load_file() {
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+    // Write an invalid .ri file — `{{{` is unparseable syntax.
+    let file_path = dir.path().join("main.ri");
+    std::fs::write(&file_path, "structure {{{}}}}\n").expect("write should succeed");
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let err = session
+        .load_file(&file_path)
+        .expect_err("load_file with invalid source should return Err");
+    assert!(
+        err.contains("Parse errors") || err.contains("Compile errors"),
+        "error string should mention parse/compile errors; got: {err}"
+    );
+
+    // build_gui_state must surface the stored failure diagnostics.
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state should return Ok even after a failed load_file");
+
+    assert!(
+        !state.compile_diagnostics.is_empty(),
+        "compile_diagnostics should be non-empty after a failed load_file"
+    );
+    let first = &state.compile_diagnostics[0];
+    assert_eq!(
+        first.severity, "Error",
+        "first diagnostic should have severity Error; got: {}",
+        first.severity
+    );
+
+    // Remaining fields should still be empty.
+    assert!(state.meshes.is_empty(), "meshes should be empty");
+    assert!(state.values.is_empty(), "values should be empty");
+    assert!(state.constraints.is_empty(), "constraints should be empty");
+    assert!(state.files.is_empty(), "files should be empty");
+    assert!(
+        state.tessellation_diagnostics.is_empty(),
+        "tessellation_diagnostics should be empty"
+    );
+}
