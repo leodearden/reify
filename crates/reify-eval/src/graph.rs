@@ -1197,6 +1197,38 @@ mod tests {
     }
 
     #[test]
+    fn evaluation_graph_compute_nodes_iter_yields_all_inserted() {
+        use reify_types::ComputeNodeId;
+        use std::collections::HashSet;
+        let mut graph = EvaluationGraph::default();
+
+        for (idx, tgt) in [("solver::a", 0u32), ("solver::b", 1), ("solver::c", 2)] {
+            graph.insert_compute_node(ComputeNodeData {
+                computation_id: ComputeNodeId::new("Bracket", tgt),
+                target: idx.to_string(),
+                value_inputs: vec![],
+                realization_inputs: vec![],
+                options_hash: ContentHash::of_str(idx),
+                cache_key: ContentHash::of_str(idx),
+                cached_result: None,
+                result_content_hash: None,
+                opaque_state: None,
+                running: None,
+                output_value_cells: vec![],
+            });
+        }
+
+        let targets: HashSet<String> = graph.compute_nodes().map(|n| n.target.clone()).collect();
+        assert_eq!(
+            targets,
+            ["solver::a", "solver::b", "solver::c"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<HashSet<_>>()
+        );
+    }
+
+    #[test]
     fn evaluation_graph_empty() {
         let graph = EvaluationGraph::default();
         assert!(graph.value_cells.is_empty());
