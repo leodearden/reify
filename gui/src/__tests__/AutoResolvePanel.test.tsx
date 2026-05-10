@@ -33,6 +33,64 @@ afterEach(() => {
   cleanup();
 });
 
+// ── Test group (b): constraint rows with status marker ───────────────────────
+
+describe('AutoResolvePanel (b) constraint rows with status marker', () => {
+  it('(b.1) renders metric name, value+unit, target bound, and ok status marker', () => {
+    const iterations = [
+      makeIteration(1, {
+        constraints: {
+          max_von_mises: {
+            name: 'max_von_mises',
+            value: 180,
+            unit: 'MPa',
+            target_upper: 200,
+            satisfied: true,
+          },
+        },
+      }),
+    ];
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+    // Metric name
+    expect(screen.getByText('max_von_mises')).toBeTruthy();
+    // Value with unit
+    expect(screen.getByText('180MPa')).toBeTruthy();
+    // Target bound text (≤ 200MPa)
+    expect(screen.getByText(/≤\s*200MPa/)).toBeTruthy();
+    // Status marker with data-status="ok"
+    const marker = document.querySelector('[data-status="ok"]');
+    expect(marker).toBeTruthy();
+  });
+
+  it('(b.2) violated constraint renders data-status="violation"', () => {
+    const iterations = [
+      makeIteration(1, {
+        constraints: {
+          max_von_mises: {
+            name: 'max_von_mises',
+            value: 220,
+            unit: 'MPa',
+            target_upper: 200,
+            satisfied: false,
+          },
+        },
+      }),
+    ];
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+    const marker = document.querySelector('[data-status="violation"]');
+    expect(marker).toBeTruthy();
+  });
+
+  it('(b.3) no constraint rows when iterations is empty', () => {
+    const state: AutoResolveLoopState = { active: true, iterations: [] };
+    render(() => <AutoResolvePanel state={state} />);
+    // No data-status markers should be present
+    expect(document.querySelector('[data-status]')).toBeNull();
+  });
+});
+
 // ── Test group (a): header and parameter rows ────────────────────────────────
 
 describe('AutoResolvePanel (a) header and parameter rows', () => {
