@@ -5,6 +5,7 @@ import {
   loadDiagnosticsLineWrap,
   saveDiagnosticsLineWrap,
   loadDiagnosticsPanelSize,
+  saveDiagnosticsPanelSize,
   computeDefaultDialogSize,
 } from '../hooks/useDiagnosticsPanelPersistence';
 
@@ -25,6 +26,8 @@ export interface DiagnosticsPanelProps {
 
 export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
   const [lineWrap, setLineWrap] = createSignal(loadDiagnosticsLineWrap() ?? false);
+
+  let dialogRef: HTMLDivElement | undefined;
 
   const dialogSize = createMemo(() => {
     const persisted = loadDiagnosticsPanelSize();
@@ -53,6 +56,19 @@ export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
     }
     document.addEventListener('keydown', handleDocumentKeyDown);
     onCleanup(() => document.removeEventListener('keydown', handleDocumentKeyDown));
+  });
+
+  // Observe resize events and persist the new size to localStorage.
+  createEffect(() => {
+    if (!props.open) return;
+    if (typeof ResizeObserver === 'undefined') return;
+    if (!dialogRef) return;
+    const el = dialogRef;
+    const observer = new ResizeObserver(() => {
+      saveDiagnosticsPanelSize({ width: el.offsetWidth, height: el.offsetHeight });
+    });
+    observer.observe(el);
+    onCleanup(() => observer.disconnect());
   });
 
   function handleOverlayClick(e: MouseEvent) {
@@ -89,6 +105,7 @@ export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
         onClick={handleOverlayClick}
       >
         <div
+          ref={dialogRef}
           data-testid="diagnostics-dialog"
           class={`${styles.dialog}${lineWrap() ? ` ${styles.lineWrapOn}` : ''}`}
           role="dialog"

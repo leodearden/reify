@@ -5,15 +5,21 @@ import type { DiagnosticInfo } from '../types';
 import type { DiagnosticEntry } from '../panels/DiagnosticsPanel';
 import {
   loadDiagnosticsLineWrap,
+  loadDiagnosticsPanelSize,
   saveDiagnosticsPanelSize,
 } from '../hooks/useDiagnosticsPanelPersistence';
 
-// Stub ResizeObserver for jsdom (which doesn't support it)
+// Stub ResizeObserver for jsdom (which doesn't support it).
+// The global stub captures the last callback so per-test cases can
+// invoke it directly to simulate a resize event.
+let capturedResizeCallback: ResizeObserverCallback | null = null;
 globalThis.ResizeObserver = class ResizeObserver {
   observe = vi.fn();
   unobserve = vi.fn();
   disconnect = vi.fn();
-  constructor(_cb: ResizeObserverCallback) {}
+  constructor(cb: ResizeObserverCallback) {
+    capturedResizeCallback = cb;
+  }
 };
 
 function makeDiag(severity: 'Error' | 'Warning' | 'Info', overrides: Partial<DiagnosticInfo> = {}): DiagnosticInfo {
@@ -274,5 +280,25 @@ describe('DiagnosticsPanel', () => {
     ));
     const dialog = screen.getByTestId('diagnostics-dialog') as HTMLElement;
     expect(dialog.style.resize).toBe('both');
+  });
+
+  it('ResizeObserver callback persists current size to localStorage', () => {
+    capturedResizeCallback = null;
+    render(() => (
+      <DiagnosticsPanel
+        open={true}
+        diagnostics={[]}
+        onClose={vi.fn()}
+        onNavigate={vi.fn()}
+      />
+    ));
+    const dialog = screen.getByTestId('diagnostics-dialog') as HTMLElement;
+    // Stub offsetWidth/offsetHeight (JSDOM always reports 0 for layout)
+    Object.defineProperty(dialog, 'offsetWidth', { value: 950, configurable: true });
+    Object.defineProperty(dialog, 'offsetHeight', { value: 580, configurable: true });
+    // Invoke the captured callback to simulate a resize event
+    expect(capturedResizeCallback).not.toBeNull();
+    capturedResizeCallback!([], {} as ResizeObserver);
+    expect(loadDiagnosticsPanelSize()).toEqual({ width: 950, height: 580 });
   });
 });
