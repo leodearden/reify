@@ -510,6 +510,37 @@ mod tests {
         // tautological. Pinned by step-11.
     }
 
+    // ── Step-15: exhaustive variant fence for ElasticityFailure ──────────────
+
+    /// No-wildcard match guarantees that adding/removing/renaming a variant
+    /// breaks compilation immediately — same discipline as
+    /// `laplacian_failure_variants_construct_and_pattern_match_exhaustively`
+    /// (laplacian.rs:725-739) and
+    /// `morph_failure_four_variants_construct_and_pattern_match_exhaustively`
+    /// (options.rs:148-188). Each arm probes the carried payload via field
+    /// accessors so a constructor that drops or swaps a field is caught
+    /// (not merely PartialEq reflexivity).
+    #[test]
+    fn elasticity_failure_variants_construct_and_pattern_match_exhaustively() {
+        let invalid = ElasticityFailure::InvalidNodeIndex(5);
+        let unsupported = ElasticityFailure::UnsupportedElementOrder(ElementOrderTag::P2);
+        let not_converged = ElasticityFailure::SolverNotConverged { iterations: 1000 };
+
+        for failure in [&invalid, &unsupported, &not_converged] {
+            match failure {
+                ElasticityFailure::InvalidNodeIndex(idx) => {
+                    assert_eq!(*idx, 5);
+                }
+                ElasticityFailure::UnsupportedElementOrder(order) => {
+                    assert_eq!(*order, ElementOrderTag::P2);
+                }
+                ElasticityFailure::SolverNotConverged { iterations } => {
+                    assert_eq!(*iterations, 1000);
+                }
+            }
+        }
+    }
+
     // ── Step-3: P2 element order rejection ────────────────────────────────────
 
     /// P2 element order must be rejected with
