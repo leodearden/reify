@@ -601,9 +601,10 @@ mod tests {
     /// blending factor; this test fails if that factor is removed.
     #[test]
     fn jacobian_zeta_varying_for_non_affine_top_scale() {
-        // Top layer (v[2] > 0 ⇔ ζ = +1) scaled 2× in xy; bottom unchanged.
+        // Top layer (v[2] > 0.5 ⇔ ζ = +1) scaled 2× in xy; bottom unchanged.
+        // Threshold 0.5 (not 0.0) guards against accidental midplane nodes at ζ=0.
         let phys = prism_phys_nodes(|v| {
-            if v[2] > 0.0 {
+            if v[2] > 0.5 {
                 [2.0 * v[0], 2.0 * v[1], v[2]]
             } else {
                 v
@@ -624,15 +625,29 @@ mod tests {
             j_pos.det,
         );
 
-        // J[0][0] = (3+ζ)/2 analytically: differs by 0.7 between ζ=+0.7 and ζ=−0.7.
-        // A threshold of 0.1 is far above noise but far below the analytical gap.
-        let delta = (j_pos.matrix[0][0] - j_neg.matrix[0][0]).abs();
+        // Tight oracle assertions: exact analytical values at the two probes.
+        // J[0][0](ζ) = (3+ζ)/2  ⟹  J[0][0](−0.7)=1.15, J[0][0](+0.7)=1.85.
+        // det J(ζ) = ((3+ζ)/2)²  ⟹  det(−0.7)=1.3225, det(+0.7)=3.4225.
+        // These subsume the ζ-variation check: the two J[0][0] values differ by 0.7.
         assert!(
-            delta > 0.1,
-            "J[0][0] must vary with ζ (at ζ=+0.7: {}, at ζ=−0.7: {}, |Δ|={})",
-            j_pos.matrix[0][0],
+            (j_neg.matrix[0][0] - 1.15).abs() < JAC_TOL,
+            "J[0][0] at ζ=−0.7: expected 1.15, got {}",
             j_neg.matrix[0][0],
-            delta,
+        );
+        assert!(
+            (j_pos.matrix[0][0] - 1.85).abs() < JAC_TOL,
+            "J[0][0] at ζ=+0.7: expected 1.85, got {}",
+            j_pos.matrix[0][0],
+        );
+        assert!(
+            (j_neg.det - 1.3225).abs() < JAC_TOL,
+            "det J at ζ=−0.7: expected 1.3225, got {}",
+            j_neg.det,
+        );
+        assert!(
+            (j_pos.det - 3.4225).abs() < JAC_TOL,
+            "det J at ζ=+0.7: expected 3.4225, got {}",
+            j_pos.det,
         );
     }
 
