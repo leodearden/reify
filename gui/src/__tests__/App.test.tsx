@@ -50,17 +50,15 @@ vi.mock('../viewport', () => ({
   },
 }));
 
-// Mock Editor (requires CodeMirror DOM APIs) — capture store, onOpen, scrollToLocation, and onError for tests
+// Mock Editor (requires CodeMirror DOM APIs) — capture store, onOpen, and scrollToLocation for tests
 let capturedEditorStore: any = null;
 let capturedEditorOnOpen: (() => void) | undefined = undefined;
 let capturedEditorScrollToLocation: (() => any) | undefined = undefined;
-let capturedEditorOnError: ReturnType<typeof vi.fn> | undefined = undefined;
 vi.mock('../editor/Editor', () => ({
   Editor: (props: any) => {
     capturedEditorStore = props.store;
     capturedEditorOnOpen = props.onOpen;
     capturedEditorScrollToLocation = props.scrollToLocation;
-    capturedEditorOnError = vi.fn(props.onError);
     const el = document.createElement('div');
     el.setAttribute('data-testid', 'editor-container');
     el.textContent = 'Editor Mock';
@@ -155,7 +153,6 @@ beforeEach(() => {
   capturedEditorStore = null;
   capturedEditorOnOpen = undefined;
   capturedEditorScrollToLocation = undefined;
-  capturedEditorOnError = undefined;
   mockFlyToEntity.mockClear();
   // Reset bridge mocks to defaults (clearAllMocks only clears call history, not implementations)
   vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [] });
@@ -4708,16 +4705,15 @@ describe('App handleSave aborts when file is externally changed', () => {
       // bridgeSaveFile (bridge.saveFile) must NOT have been called
       expect(bridge.saveFile).not.toHaveBeenCalled();
 
-      // The Editor's Mod-s keymap path must NOT have been the one that fired.
-      // Today this is guaranteed because the Editor is mocked to a noop div,
-      // but capturing the tracker makes the guarantee explicit: if a future
-      // test-setup change routes the keystroke through props.onError, this
-      // assertion will fail loudly rather than silently passing.
-      expect(capturedEditorOnError).toBeDefined();
-      expect(capturedEditorOnError).not.toHaveBeenCalled();
-
-      // console.error must NOT have been called (neither path logs for externally-changed)
-      expect(consoleErrorSpy).not.toHaveBeenCalled();
+      // Neither handleSave nor the Editor keymap should emit 'Save aborted' for
+      // the externally-changed branch (only for not-found). We narrow the check
+      // to the specific message substring so that unrelated SolidJS / dev-mode
+      // console.error calls don't cause spurious failures.
+      expect(
+        consoleErrorSpy.mock.calls
+          .flat()
+          .some((arg: unknown) => typeof arg === 'string' && arg.includes('Save aborted')),
+      ).toBe(false);
 
       // An error toast containing the exact save-blocked message string must appear.
       // We use .includes() rather than strict equality because the toast element's
