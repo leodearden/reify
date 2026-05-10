@@ -221,9 +221,11 @@ pub fn should_refine(
     if current_level >= opts.max_refinements {
         return Terminate(BudgetExhausted);
     }
-    // Remaining branches will be filled in step-16.
-    let _ = (last_result, demand);
-    unreachable!("should_refine: non-budget branches not yet implemented (step-16)")
+    if matches!(demand, RefinementDemand::More) || near_constraint_boundary(last_result, opts) {
+        Continue(refinement_pass_tuning(opts, current_level + 1))
+    } else {
+        Terminate(NoRefinementRequested)
+    }
 }
 
 impl Default for ProgressiveOptions {
