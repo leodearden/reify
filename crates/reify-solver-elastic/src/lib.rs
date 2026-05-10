@@ -199,6 +199,30 @@
 //!     Some(0),
 //!     "single-element locate must return Some(0) at the centroid",
 //! );
+//!
+//! // Task 2923: progressive-solve framework smoke test — exercises every
+//! // re-exported symbol from the progressive module once. A regression that
+//! // renames or removes any of the public items will fail this doctest at
+//! // the compile step.
+//! let prog_opts = ProgressiveOptions::default();
+//! let coarse = coarse_pass_tuning(&prog_opts);
+//! assert_eq!(coarse.cg_tol, 1e-3, "coarse CG tol must be 1e-3");
+//! assert!((coarse.mesh_tol - prog_opts.target_tolerance * 4.0).abs() < 1e-15,
+//!     "coarse mesh_tol = target_tol × 4");
+//! let pr = PartialElasticResult {
+//!     displacement: vec![],
+//!     stress: vec![],
+//!     max_von_mises: 0.0,
+//!     converged: false,
+//!     iterations: 0,
+//! };
+//! assert!(!near_constraint_boundary(&pr, &prog_opts),
+//!     "yield_stress=None → near_constraint_boundary must be false");
+//! assert_eq!(
+//!     should_refine(&prog_opts, prog_opts.max_refinements, &pr, RefinementDemand::More),
+//!     AdvanceDecision::Terminate(TerminationReason::BudgetExhausted),
+//!     "current_level == max_refinements + More demand → BudgetExhausted",
+//! );
 //! ```
 
 pub mod assembly;
