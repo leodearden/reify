@@ -163,8 +163,12 @@ describe('AutoResolvePanel (a) header and parameter rows', () => {
     ];
     const state: AutoResolveLoopState = { active: true, iterations };
     render(() => <AutoResolvePanel state={state} />);
-    // 'thickness' appears in both the Parameters row and the sparkline label
-    expect(screen.getAllByText('thickness')).toHaveLength(2);
+    // 'thickness' appears in both the Parameters row and the sparkline label.
+    // Scope the sparkline-label check via within() so future additions of the
+    // text elsewhere in the panel don't break this assertion.
+    const sparklineSvg = screen.getByTestId('auto-resolve-sparkline');
+    const sparklineRow = sparklineSvg.closest('div')!;
+    expect(within(sparklineRow).getByText('thickness')).toBeTruthy();
     expect(screen.getByText('4.2mm')).toBeTruthy();
   });
 });
