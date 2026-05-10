@@ -63,7 +63,7 @@ pub struct ResolutionNodeData {
 /// has a stable field shape; P3.5 replaces it with the real cooperative-
 /// cancellation type (likely `Arc<AtomicBool>` per PRD §"Lifecycle: pending
 /// + cancellation"). Kept module-private (not re-exported) so the eventual
-/// real type can land without an API break.
+///   real type can land without an API break.
 #[derive(Debug, Clone, Default)]
 pub struct CancellationHandle;
 
