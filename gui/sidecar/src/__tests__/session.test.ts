@@ -3863,6 +3863,11 @@ describe('session.test.ts /tmp leak guard (task 3283)', () => {
     // shrink `after` relative to `before`, but the filter still yields [] (correct).
     const leaked = [...after].filter((d) => !before.has(d));
     expect(leaked, 'leaked /tmp/reify-mcp-* dirs: ' + leaked.join(', ')).toHaveLength(0);
+    // The session must be torn down so its abortController, currentStdin, and
+    // pendingPermissionRequests don't linger across tests in the same worker.
+    // Other tests in this file (e.g. lines 1414, 1487, 1511) consistently call
+    // session.destroy() after asserting; this test should follow that convention.
+    expect((session as any).destroyed, 'leak-guard test must call session.destroy()').toBe(true);
   });
 
   it('leak guard ignores sibling reify-* prefixes (e.g. reify-tools-) that other tests create concurrently', async () => {
