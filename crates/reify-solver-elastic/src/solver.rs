@@ -189,6 +189,45 @@ pub fn solve_cg(
     opts: CgSolverOptions,
     mode: SolverMode,
 ) -> CgResult {
+    // Backward-compatible cold-start entry: delegates to `solve_cg_warm` with
+    // `initial_guess = None`, which initializes `u₀ = 0` and `r₀ = f` exactly
+    // as the original code did. Every existing caller and test (including the
+    // determinism-contract regression tests) continues to produce bit-for-bit
+    // identical output. Pinned by `solve_cg_warm_with_none_matches_solve_cg_bit_for_bit`.
+    solve_cg_warm(k, f, None, opts, mode)
+}
+
+/// Solve the SPD linear system `K u = f` with Jacobi-preconditioned CG, with
+/// an optional initial guess for warm-starting the iteration (PRD task #14).
+///
+/// When `initial_guess` is `None`, behaves identically to [`solve_cg`]:
+/// `u₀ = 0`, `r₀ = f`, no SpMV is performed for residual seeding, and the
+/// deterministic-mode bit-equality contract is preserved.
+///
+/// When `initial_guess` is `Some(u₀)`, the CG iteration starts from
+/// `u = u₀` and `r = f − K·u₀` (one extra SpMV at the start). If `‖r₀‖²`
+/// already meets the convergence threshold, returns immediately with
+/// `iterations = 0, converged = true` — symmetric with the existing zero-RHS
+/// short-circuit and avoiding the `0/0` from `α = rz / pkp` when `rz ≈ 0`.
+///
+/// # Iteration-reduction contract
+///
+/// For warm starts where `u₀ ≈ u_exact`, CG converges in fewer iterations
+/// than the cold start. Pinned by
+/// `warm_start_with_perturbed_rhs_reduces_iteration_count`.
+///
+/// # Panics
+///
+/// All `solve_cg` panic conditions plus:
+/// - `initial_guess.is_some() && initial_guess.unwrap().len() != k.nrows()`
+///   — the initial guess must be sized to the system.
+pub fn solve_cg_warm(
+    k: &SparseRowMat<usize, f64>,
+    f: &[f64],
+    initial_guess: Option<&[f64]>,
+    opts: CgSolverOptions,
+    mode: SolverMode,
+) -> CgResult {
     // --- Contract checks (per Task-2544 contract-explicitness convention) ---
     //
     // Zero-threads check first (before dim checks): a Parallel { threads: 0 }
@@ -228,6 +267,16 @@ pub fn solve_cg(
         k.nrows(),
         k.ncols(),
     );
+    if let Some(u_0) = initial_guess {
+        assert_eq!(
+            u_0.len(),
+            k.nrows(),
+            "initial_guess.len() = {} but k.nrows() = {}; \
+             initial_guess must be sized to the system (initial_guess.len() == k.nrows())",
+            u_0.len(),
+            k.nrows(),
+        );
+    }
 
     let n = f.len();
 
@@ -235,8 +284,11 @@ pub fn solve_cg(
     let inv_diag = extract_diag_jacobi(k);
 
     // --- Special case: zero RHS ---
-    // ‖f‖² == 0.0 ⟹ u = 0 is the exact solution. Return immediately to
-    // avoid 0/0 in the relative tolerance check. (Unconditional == 0.0 is
+    // ‖f‖² == 0.0 ⟹ u = 0 is the exact solution to K·u = 0 (K SPD ⟹ trivial
+    // nullspace). Return u = 0 immediately regardless of any initial guess —
+    // honouring the initial guess and iterating would still converge to u = 0,
+    // but the relative-tolerance check uses tol² · ‖f‖² = 0 which would never
+    // trip and the solver would cap out at max_iter. (Unconditional == 0.0 is
     // safe here: f is the caller's vector and pairwise_tree_sum of zeros
     // is deterministically 0.0.)
     //
@@ -255,30 +307,74 @@ pub fn solve_cg(
     }
     let tol_sq = opts.tolerance * opts.tolerance * f_norm_sq;
 
+    // --- Build initial (u, r) pair ---
+    //
+    // None branch: u = 0, r = f (no SpMV, no FP reordering). Bit-identical to
+    // the pre-warm-start code path — preserves the deterministic-mode
+    // bit-equality contract.
+    //
+    // Some branch: u = u₀.to_vec(), r = f − K·u₀ via one extra mode-appropriate
+    // SpMV. The mode-appropriate primitive is selected at the dispatch site
+    // below to keep determinism-comment ownership with the primitive functions.
+    //
     // --- Dispatch to unified CG loop with mode-appropriate primitives ---
     //
     // The Deterministic and Parallel paths share a single CG loop implementation
     // (`cg_loop`); the difference is purely which SpMV/dot/norm² closures are
     // passed in. Determinism-comment ownership stays with the primitive functions.
     match mode {
-        SolverMode::Deterministic => cg_loop(
-            f,
-            &inv_diag,
-            tol_sq,
-            opts.max_iter,
-            |p, out| spmv_seq(k, p, out),
-            dot,
-            norm2_squared,
-        ),
-        SolverMode::Parallel { threads } => cg_loop(
-            f,
-            &inv_diag,
-            tol_sq,
-            opts.max_iter,
-            |p, out| spmv_parallel(k, p, out, threads),
-            |a, b| dot_parallel(a, b, threads),
-            |v| norm2_squared_parallel(v, threads),
-        ),
+        SolverMode::Deterministic => {
+            let (u, r) = build_initial_u_r(f, initial_guess, |p, out| spmv_seq(k, p, out));
+            cg_loop(
+                u,
+                r,
+                &inv_diag,
+                tol_sq,
+                opts.max_iter,
+                |p, out| spmv_seq(k, p, out),
+                dot,
+                norm2_squared,
+            )
+        }
+        SolverMode::Parallel { threads } => {
+            let (u, r) =
+                build_initial_u_r(f, initial_guess, |p, out| spmv_parallel(k, p, out, threads));
+            cg_loop(
+                u,
+                r,
+                &inv_diag,
+                tol_sq,
+                opts.max_iter,
+                |p, out| spmv_parallel(k, p, out, threads),
+                |a, b| dot_parallel(a, b, threads),
+                |v| norm2_squared_parallel(v, threads),
+            )
+        }
+    }
+}
+
+/// Build the initial `(u, r)` pair for the CG iteration based on the
+/// optional initial guess.
+///
+/// - `None` branch: `u = vec![0.0; n]`, `r = f.to_vec()` — bit-identical to
+///   the pre-warm-start code path (no SpMV, no FP reordering).
+/// - `Some(u₀)` branch: `u = u₀.to_vec()`, `r = f − K·u₀` via one
+///   mode-appropriate SpMV.
+fn build_initial_u_r<S>(f: &[f64], initial_guess: Option<&[f64]>, spmv: S) -> (Vec<f64>, Vec<f64>)
+where
+    S: FnOnce(&[f64], &mut [f64]),
+{
+    let n = f.len();
+    match initial_guess {
+        None => (vec![0.0_f64; n], f.to_vec()),
+        Some(u_0) => {
+            let u = u_0.to_vec();
+            // r = f − K·u₀
+            let mut ku = vec![0.0_f64; n];
+            spmv(&u, &mut ku);
+            let r: Vec<f64> = f.iter().zip(ku.iter()).map(|(fi, kui)| fi - kui).collect();
+            (u, r)
+        }
     }
 }
 
@@ -617,12 +713,25 @@ fn norm2_squared_parallel(v: &[f64], threads: usize) -> f64 {
 ///
 /// # Arguments
 ///
-/// - `f` — the RHS vector; `n = f.len()` determines the problem dimension.
+/// - `u` — initial iterate (consumed and returned in `CgResult.u`); cold
+///   start passes `vec![0.0; n]`, warm start passes `u₀.to_vec()`.
+/// - `r` — initial residual `f − K·u`; cold start passes `f.to_vec()`,
+///   warm start passes `f − K·u₀` (one extra SpMV at the dispatch site).
+/// - `inv_diag` — `1/K[i][i]` Jacobi preconditioner.
 /// - `spmv(p, out)` — compute `out = K · p` for the current search direction.
 /// - `dot_fn(a, b)` — dot product `a · b` with mode-appropriate reduction.
 /// - `norm2sq_fn(v)` — squared norm `‖v‖²` with mode-appropriate reduction.
+///
+/// # Early-exit (warm-start `u₀ ≈ u_exact`)
+///
+/// Before the main iteration loop, checks if `‖r‖² < tol_sq`. If so, returns
+/// `iterations = 0, converged = true` immediately — symmetric with the
+/// `f_norm_sq == 0.0` short-circuit at the dispatch site, and avoids the
+/// `0/0` from `α = rz / pkp` when `rz ≈ 0, pkp ≈ 0`. Pinned by
+/// `warm_start_at_exact_solution_returns_in_zero_iterations`.
 fn cg_loop<S, D, N>(
-    f: &[f64],
+    mut u: Vec<f64>,
+    mut r: Vec<f64>,
     inv_diag: &[f64],
     tol_sq: f64,
     max_iter: usize,
@@ -635,11 +744,20 @@ where
     D: Fn(&[f64], &[f64]) -> f64,
     N: Fn(&[f64]) -> f64,
 {
-    let n = f.len();
+    let n = u.len();
+    // Early-exit (warm-start `u₀ ≈ u_exact`): if the seeded residual already
+    // meets the convergence threshold, return without iterating. Symmetric
+    // with the f_norm_sq == 0.0 short-circuit at the dispatch site; avoids
+    // 0/0 in α = rz / pkp when rz ≈ 0.
+    if norm2sq_fn(&r) < tol_sq {
+        return CgResult {
+            u,
+            iterations: 0,
+            converged: true,
+        };
+    }
+
     // Allocate scratch vectors. All axpy ops iterate slot 0 → n−1 in slice order.
-    let mut u = vec![0.0_f64; n];
-    // r₀ = f − K·u₀ = f (since u₀ = 0)
-    let mut r: Vec<f64> = f.to_vec();
     // z₀ = M⁻¹ r₀
     let mut z: Vec<f64> = r.iter().zip(inv_diag.iter()).map(|(ri, di)| ri * di).collect();
     // p₀ = z₀
