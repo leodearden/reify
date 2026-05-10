@@ -1595,10 +1595,59 @@ describe('meshManager', () => {
       expect(colorAttr.itemSize).toBe(3);
       expect(Array.from(colorAttr.array as Float32Array)).toEqual([10, 0, 0, 20, 0, 0, 30, 0, 0]);
 
-      // displaced_positions field is preserved in converted MeshData but NOT applied
-      // to the position buffer (that is task G3 work).
+      // displaced_positions is preserved in the converted MeshData but only applied to the
+      // position buffer when `setDeformation` is active (see deformation E2E below).
+      // Before setDeformation is called, the position buffer must equal the original vertices.
       const posAttr = (mesh.geometry as any).attributes.position;
       expect(Array.from(posAttr.array as Float32Array)).toEqual([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+    });
+  });
+
+  describe('end-to-end pipeline: setDeformation full-pipeline pin (E2E-02)', () => {
+    it('before setDeformation: position = original; after W=10: blended + overlay; after null: restored', () => {
+      const raw: RawMeshData = {
+        entity_path: 'B',
+        vertices: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+        indices: [0, 1, 2],
+        normals: null,
+        displaced_positions: [0.1, 0, 0, 1.1, 0, 0, 0.1, 1, 0],
+      };
+
+      const converted = convertRawMesh(raw);
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+      manager.sync({ B: converted });
+
+      const mesh = manager.getSceneMeshes().get('B')!;
+      expect(mesh).toBeDefined();
+
+      // (a) Before setDeformation: position equals original vertices.
+      const posAttr = (mesh.geometry as any).attributes.position;
+      expect(Array.from(posAttr.array as Float32Array)).toEqual([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+
+      // (b) After setDeformation({warpFactor:10}): position is W=10 blend.
+      // Compute expected using the CONVERTED Float32Array values (matches f32 rounding in applyWarpToMesh).
+      const origF32 = converted.vertices;
+      const dispF32 = converted.displaced_positions!;
+      const expectedW10 = new Float32Array(origF32.length);
+      for (let i = 0; i < origF32.length; i++) {
+        expectedW10[i] = origF32[i] + 10 * (dispF32[i] - origF32[i]);
+      }
+      manager.setDeformation({ warpFactor: 10 });
+      expect(Array.from(posAttr.array as Float32Array)).toEqual(Array.from(expectedW10));
+
+      // Overlay exists and holds the original vertices.
+      const overlays = manager.getDeformedOverlays();
+      expect(overlays.size).toBe(1);
+      expect(overlays.has('B')).toBe(true);
+      const overlayPosAttr = (overlays.get('B')!.geometry as any).attributes.position;
+      expect(Array.from(overlayPosAttr.array as Float32Array)).toEqual([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+
+      // (c) After setDeformation(null): position restored to original; no overlays.
+      manager.setDeformation(null);
+      expect(Array.from(posAttr.array as Float32Array)).toEqual([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+      expect(manager.getDeformedOverlays().size).toBe(0);
     });
   });
 
