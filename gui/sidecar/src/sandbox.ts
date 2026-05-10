@@ -16,6 +16,9 @@ import * as os from 'node:os';
  * - `'error'` event → `false`
  * - 2000ms timeout → `false` (watchdog sends SIGTERM before resolving)
  *
+ * Kill calls (SIGTERM and SIGKILL) are guarded with try/catch: Node's ChildProcess.kill
+ * can throw synchronously (e.g. EPERM, ESRCH) if libuv has already reaped the pid.
+ *
  * Invariant: this Promise never rejects; all error paths resolve to `false`.
  */
 export async function probeLandlockAsync(landlockHelperPath?: string): Promise<boolean> {
@@ -46,7 +49,7 @@ export async function probeLandlockAsync(landlockHelperPath?: string): Promise<b
 
     // Watchdog: if python3 hangs beyond 2000ms, kill it and resolve false.
     const watchdog = setTimeout(() => {
-      proc.kill('SIGTERM');
+      try { proc.kill('SIGTERM'); } catch { /* proc may have been reaped already; ignore. */ }
       settle(false);
     }, 2000);
 
