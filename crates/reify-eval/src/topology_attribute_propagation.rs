@@ -43,9 +43,9 @@
 use std::collections::HashMap;
 
 use reify_types::{
-    BooleanOpHistoryRecords, BooleanOpParents, CapKind, FeatureId, GeometryHandleId, HistoryRecord,
-    LoftOpHistoryRecords, ModEntry, QueryError, Role, SweepOpHistoryRecords, TopologyAttribute,
-    TopologyAttributeTable,
+    BooleanOpHistoryRecords, BooleanOpParents, CapKind, Diagnostic, DiagnosticCode,
+    DiagnosticLabel, FeatureId, GeometryHandleId, HistoryRecord, LoftOpHistoryRecords, ModEntry,
+    QueryError, Role, SourceSpan, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable,
 };
 
 /// Propagate parent topology attributes onto the result of a `BRepAlgoAPI`
@@ -865,6 +865,80 @@ fn write_loft_face_generated_attributes(
         );
     }
     Ok(())
+}
+
+/// Emit `TopologyAttributeLocalIndexReassigned` Warnings for groups of
+/// topology-attribute entries whose centroids are geometrically tied within
+/// `tol_m`, signalling that the kernel's enumeration order — and therefore
+/// the `local_index` assignment — would arbitrarily shuffle under a future
+/// edit (PRD `docs/prds/v0_2/persistent-naming-v2.md` line 72).
+///
+/// # Inputs
+///
+/// - `handles_with_attrs`: per-realization slice of `(GeometryHandleId,
+///   &TopologyAttribute)` pairs. The caller (engine_build.rs::execute_realization_ops)
+///   is responsible for scoping this to one realization at a time — typically
+///   by filtering `topology_attribute_table.iter()` on
+///   `attr.feature_id == realization_feature_id`. Passing the full table
+///   would re-emit on every successive realization for prior-realization
+///   entries that persist for the duration of `build()`.
+/// - `centroids`: pre-queried centroid map (`HashMap<GeometryHandleId, [f64; 3]>`).
+///   Computed at the call site via `kernel.query(GeometryQuery::Centroid(handle))`
+///   so this helper stays pure-Rust (no `&mut dyn GeometryKernel` borrow).
+///   Handles absent from this map are silently skipped — kernel-query failures
+///   at the call site emit a Warning there and skip the handle, mirroring the
+///   auxiliary-metadata-failure-must-not-regress-to-Failed convention used by
+///   `seed_primitive_attributes_for_handle` and `populate_attribute_history`.
+/// - `tol_m`: tolerance in meters. Pairs whose squared centroid distance
+///   `<= tol_m * tol_m` are considered geometrically tied. Engine call site
+///   uses a kernel-epsilon-tight `1e-9` (1 nm) sentinel; per-realization
+///   tolerance threading is deferred to a follow-up task.
+/// - `selector_span`: span attached to the primary diagnostic label.
+///   Engine call site uses the realization's source span.
+/// - `diagnostics`: appended in place; the helper never clears or reorders
+///   pre-existing entries.
+///
+/// # Output
+///
+/// At most one diagnostic per `(feature_id, role)` group, carrying
+/// `DiagnosticCode::TopologyAttributeLocalIndexReassigned`, severity Warning,
+/// and naming the smallest pair of tied `local_index` values for
+/// reproducible message wording.
+///
+/// # Filter rules
+///
+/// - Entries with non-empty `mod_history` are skipped — post-split clusters
+///   are tracked through `ModEntry` and surfaced via
+///   `TopologyAttributeAmbiguousAfterSplit` at resolve time per PRD line 72
+///   ("not because of a split — splits are handled by mod_history"). Re-firing
+///   here would double-warn the user about the same fragility.
+/// - Singleton groups (one entry per `(feature_id, role)`) have no pairwise
+///   comparison and are skipped.
+///
+/// # Tolerance semantics
+///
+/// Squared-distance comparison vs `tol_m * tol_m` to avoid an `sqrt` per pair
+/// (mirroring the squared-distance idiom from
+/// `selector_vocabulary_v2::extremal_by_centroid`). NaN / infinite centroid
+/// components — should they ever arise from a degenerate kernel query — would
+/// fail the squared-distance comparison naturally (NaN comparisons are false),
+/// so no extra guard is needed.
+///
+/// # Single-source rule
+///
+/// This helper does NOT regress the realization to Failed under any condition:
+/// it only appends Warnings. Auxiliary metadata MUST NOT regress to Failed —
+/// the realization is primary, attribute fragility detection is supplementary.
+pub fn detect_local_index_reassignment_diagnostics(
+    handles_with_attrs: &[(GeometryHandleId, &TopologyAttribute)],
+    centroids: &HashMap<GeometryHandleId, [f64; 3]>,
+    tol_m: f64,
+    selector_span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    // Step-8 skeleton: empty input + early returns yield no diagnostics.
+    // Subsequent steps add the grouping + pairwise distance check.
+    let _ = (handles_with_attrs, centroids, tol_m, selector_span, diagnostics);
 }
 
 #[cfg(test)]
