@@ -11,6 +11,8 @@
 //!   cross-thread combine in fixed handle order. Bit-stable per fixed thread count;
 //!   tolerance-equivalent across thread counts.
 
+use std::sync::Arc;
+
 use faer::sparse::SparseRowMat;
 
 /// How [`solve_cg`] parallelises the SpMV and dot-product reductions.
@@ -116,7 +118,16 @@ impl Default for CgSolverOptions {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CgResult {
     /// Solution vector `u` of length `k.nrows()`.
-    pub u: Vec<f64>,
+    ///
+    /// Wrapped in `Arc<Vec<f64>>` so [`solve_cg_with_warm_state`] (PRD task
+    /// #14) can share this allocation with the [`crate::CgWarmState`] it
+    /// emits — avoiding a 10⁴–10⁶-DOF `Vec<f64>` copy on every solve. All
+    /// read paths work transparently through `Deref`: `result.u[i]`,
+    /// `result.u.len()`, `result.u.iter()`, `&result.u[..]`. Cloning a
+    /// `CgResult` now bumps the refcount instead of deep-copying `u`,
+    /// which is the desired behaviour given `u` is logically immutable
+    /// after the solve completes.
+    pub u: Arc<Vec<f64>>,
     /// Number of CG iterations executed.
     pub iterations: usize,
     /// `true` if the residual met the tolerance criterion before `max_iter`.
@@ -305,7 +316,7 @@ pub fn solve_cg_warm(
     let f_norm_sq = norm2_squared(f);
     if f_norm_sq == 0.0 {
         return CgResult {
-            u: vec![0.0; n],
+            u: Arc::new(vec![0.0; n]),
             iterations: 0,
             converged: true,
         };
@@ -771,7 +782,7 @@ where
     // numerical state of the system at u₀, not a bug.
     if norm2sq_fn(&r) < tol_sq {
         return CgResult {
-            u,
+            u: Arc::new(u),
             iterations: 0,
             converged: true,
         };
@@ -813,7 +824,7 @@ where
         let r_norm_sq = norm2sq_fn(&r);
         if r_norm_sq < tol_sq {
             return CgResult {
-                u,
+                u: Arc::new(u),
                 iterations: iter + 1,
                 converged: true,
             };
@@ -837,7 +848,7 @@ where
 
     // Cap-out without convergence.
     CgResult {
-        u,
+        u: Arc::new(u),
         iterations: max_iter,
         converged: false,
     }
@@ -1717,7 +1728,7 @@ mod tests {
             result.converged,
             "zero-RHS short-circuit must report converged",
         );
-        assert_eq!(result.u, vec![0.0_f64; 2], "u must be the zero vector");
+        assert_eq!(*result.u, vec![0.0_f64; 2], "u must be the zero vector");
     }
 
     // -----------------------------------------------------------------------

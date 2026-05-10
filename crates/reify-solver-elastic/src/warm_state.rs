@@ -7,30 +7,53 @@
 //! integration surface (`OpaqueState` conversion) so the pure-numerics
 //! `solver.rs` stays free of `reify-types` dependency surface.
 
+use std::sync::Arc;
+
 /// Warm-start state for the Jacobi-preconditioned CG solver.
 ///
 /// Carries the displacement vector `u` from a previous solve so it can be
 /// passed as the CG initial guess `u_0` on the next solve. The Jacobi
 /// preconditioner itself is trivially recomputed from `K`, so it is not
 /// part of the state.
+///
+/// `u` is wrapped in `Arc<Vec<f64>>` so [`solve_cg_with_warm_state`] can
+/// share the single allocation produced by the solver between the
+/// returned [`crate::CgResult`] and this warm state — avoiding a
+/// 10⁴–10⁶-DOF `Vec<f64>` copy on every solve. All read paths work
+/// through `Deref`: `state.u[i]`, `state.u.len()`, `state.u.iter()`,
+/// `&state.u[..]`. Cloning a `CgWarmState` bumps the refcount instead
+/// of deep-copying `u`, which is the desired behaviour for the
+/// `WarmStatePool` donate→checkout cycle (logically immutable state
+/// that may be observed by multiple consumers concurrently).
 #[derive(Debug, Clone, PartialEq)]
 pub struct CgWarmState {
     /// Displacement vector from the previous solve, used as `u_0` on the
-    /// next call.
-    pub u: Vec<f64>,
+    /// next call. Shared via `Arc` with the originating
+    /// [`crate::CgResult`] when constructed by [`solve_cg_with_warm_state`].
+    pub u: Arc<Vec<f64>>,
 }
 
 impl CgWarmState {
-    /// Construct a warm state from a displacement vector.
+    /// Construct a warm state from an owned displacement vector. Wraps
+    /// `u` in a fresh `Arc<Vec<f64>>`. Use [`Self::from_arc`] if the
+    /// caller already holds an `Arc` (e.g. shared with a `CgResult`).
     pub fn from_displacement(u: Vec<f64>) -> Self {
+        Self { u: Arc::new(u) }
+    }
+
+    /// Construct a warm state from an `Arc<Vec<f64>>` directly, sharing
+    /// the existing allocation. This is the zero-copy path used by
+    /// [`solve_cg_with_warm_state`] to share `u` with the originating
+    /// [`crate::CgResult`] (refcount bump only — no `Vec` copy).
+    pub fn from_arc(u: Arc<Vec<f64>>) -> Self {
         Self { u }
     }
 
     /// Estimated heap-payload size in bytes for `WarmStatePool` budget
     /// enforcement. Counts only the `Vec<f64>` payload (`u.len() *
-    /// size_of::<f64>()`); the constant ~24-byte `Vec` heap header and the
-    /// struct's own stack overhead are negligible relative to typical FEA
-    /// solution vectors (10⁴ – 10⁶ DOFs).
+    /// size_of::<f64>()`); the constant ~24-byte `Vec` heap header, the
+    /// `Arc` heap node, and the struct's own stack overhead are
+    /// negligible relative to typical FEA solution vectors (10⁴ – 10⁶ DOFs).
     pub fn estimated_size_bytes(&self) -> usize {
         self.u.len() * std::mem::size_of::<f64>()
     }
@@ -63,6 +86,16 @@ impl CgWarmState {
 /// Returning `CgWarmState` (not `OpaqueState`) lets callers inspect the
 /// result before deciding whether to donate; conversion to `OpaqueState`
 /// is one further `into_opaque_state()` call away.
+///
+/// # Allocation sharing
+///
+/// `CgResult.u` and `CgWarmState.u` are both `Arc<Vec<f64>>`. This
+/// function shares the single allocation produced by the underlying
+/// `solve_cg_warm` call between the two — `Arc::clone` bumps the
+/// refcount only (no `Vec` copy), so a single 10⁴–10⁶-DOF solve
+/// produces exactly one displacement-vector allocation regardless of
+/// whether the caller keeps the `CgResult`, the `CgWarmState`, or
+/// both.
 pub fn solve_cg_with_warm_state(
     k: &faer::sparse::SparseRowMat<usize, f64>,
     f: &[f64],
@@ -72,7 +105,10 @@ pub fn solve_cg_with_warm_state(
 ) -> (crate::solver::CgResult, CgWarmState) {
     let prior_slice = prior.map(|p| p.u.as_slice());
     let result = crate::solver::solve_cg_warm(k, f, prior_slice, opts, mode);
-    let fresh = CgWarmState::from_displacement(result.u.clone());
+    // Share `u` between the result and the warm state via Arc::clone —
+    // refcount bump only, no Vec copy. Both pointers refer to the same
+    // 10⁴–10⁶-DOF `Vec<f64>` allocation.
+    let fresh = CgWarmState::from_arc(Arc::clone(&result.u));
     (result, fresh)
 }
 
@@ -108,7 +144,9 @@ mod tests {
         let ws = CgWarmState::from_displacement(u.clone());
         let opaque = ws.into_opaque_state();
         let restored = CgWarmState::from_opaque_state(opaque).expect("downcast");
-        assert_eq!(restored.u, u);
+        // restored.u is Arc<Vec<f64>>; compare its dereferenced contents
+        // to the original Vec<f64>.
+        assert_eq!(*restored.u, u);
 
         assert_eq!(
             CgWarmState::from_displacement(vec![0.0_f64; 5]).estimated_size_bytes(),
