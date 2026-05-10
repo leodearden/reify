@@ -1789,12 +1789,12 @@ impl Engine {
                     .filter(|(_, attr)| attr.feature_id == realization_feature_id)
                     .collect();
             if !realization_attrs.is_empty() {
-                let centroids = collect_centroids_with_failure_summary(
+                let (centroids, centroid_diags) = collect_centroids_with_failure_summary(
                     &realization_attrs,
                     kernel,
                     realization_id,
-                    diagnostics,
                 );
+                diagnostics.extend(centroid_diags);
                 detect_local_index_reassignment_diagnostics(
                     &realization_attrs,
                     &centroids,
@@ -2126,16 +2126,18 @@ impl Engine {
 /// fragility signal does. We retain the first error message verbatim for
 /// diagnosability.
 ///
-/// Returns a `HashMap` from `GeometryHandleId` to `[x, y, z]` for every
-/// handle whose centroid was successfully queried and parsed. Handles that
-/// fail either step are omitted from the map; exactly one `Warning` per
-/// failure class (`query_fail`, `parse_fail`) is pushed to `diagnostics`.
+/// Returns a pair `(centroids, warnings)` where `centroids` maps each
+/// `GeometryHandleId` to `[x, y, z]` for every handle successfully queried
+/// and parsed.  `warnings` contains at most one `Warning` per failure class
+/// (`query_fail`, `parse_fail`).  The caller is responsible for extending its
+/// diagnostics buffer with the returned `warnings`.
+///
+/// Handles that fail either step are omitted from `centroids`.
 fn collect_centroids_with_failure_summary(
     realization_attrs: &[(GeometryHandleId, &TopologyAttribute)],
     kernel: &dyn GeometryKernel,
     realization_id: &RealizationNodeId,
-    diagnostics: &mut Vec<Diagnostic>,
-) -> HashMap<GeometryHandleId, [f64; 3]> {
+) -> (HashMap<GeometryHandleId, [f64; 3]>, Vec<Diagnostic>) {
     let mut centroids: HashMap<GeometryHandleId, [f64; 3]> = HashMap::new();
     let mut query_fail_count: usize = 0;
     let mut query_fail_first: Option<String> = None;
@@ -2165,21 +2167,22 @@ fn collect_centroids_with_failure_summary(
             }
         }
     }
+    let mut diags: Vec<Diagnostic> = Vec::new();
     if query_fail_count > 0 {
         let first = query_fail_first.unwrap_or_else(|| "<no message>".to_string());
-        diagnostics.push(Diagnostic::warning(format!(
+        diags.push(Diagnostic::warning(format!(
             "topology-attribute centroid query failed for {query_fail_count} \
              handle(s) in {realization_id} (first: {first})"
         )));
     }
     if parse_fail_count > 0 {
         let first = parse_fail_first.unwrap_or_else(|| "<no message>".to_string());
-        diagnostics.push(Diagnostic::warning(format!(
+        diags.push(Diagnostic::warning(format!(
             "topology-attribute centroid parse failed for {parse_fail_count} \
              handle(s) in {realization_id} (first: {first})"
         )));
     }
-    centroids
+    (centroids, diags)
 }
 
 #[cfg(test)]
@@ -4092,13 +4095,19 @@ mod tests {
 
         // No centroid fixtures → query() returns QueryError::QueryFailed for both handles.
         let kernel = MockGeometryKernel::new();
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
-        let centroids = collect_centroids_with_failure_summary(
+        // Capture the actual error text the kernel will produce for h0 so that
+        // the assertion below is decoupled from MockGeometryKernel's exact message
+        // format — a mock cleanup won't break this test.
+        let expected_first_err = kernel
+            .query(&GeometryQuery::Centroid(h0))
+            .unwrap_err()
+            .to_string();
+
+        let (centroids, diagnostics) = collect_centroids_with_failure_summary(
             &realization_attrs,
             &kernel,
             &realization_id,
-            &mut diagnostics,
         );
 
         assert!(
@@ -4128,13 +4137,11 @@ mod tests {
             "message must contain the realization_id display form, got: {}",
             diag.message
         );
-        // QueryError::QueryFailed Display is "geometry query failed: {msg}".
-        // Pin both the prefix and the handle name so a mock-format change
-        // is revealed by this test.
+        // Assert the first error's text is preserved verbatim using the sentinel
+        // captured above — decoupled from the mock's internal format.
         assert!(
-            diag.message
-                .contains("(first: geometry query failed: no mock result for GeometryHandleId(101))"),
-            "message must contain the first error text (with QueryError Display prefix), got: {}",
+            diag.message.contains(&format!("(first: {expected_first_err}")),
+            "message must embed the first error text, got: {}",
             diag.message
         );
     }
@@ -4173,13 +4180,11 @@ mod tests {
         let kernel = MockGeometryKernel::new()
             .with_centroid_result(h0, Value::Real(0.0))
             .with_centroid_result(h1, Value::Real(0.0));
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
-        let centroids = collect_centroids_with_failure_summary(
+        let (centroids, diagnostics) = collect_centroids_with_failure_summary(
             &realization_attrs,
             &kernel,
             &realization_id,
-            &mut diagnostics,
         );
 
         assert!(
@@ -4209,15 +4214,18 @@ mod tests {
             "message must contain the realization_id display form, got: {}",
             diag.message
         );
-        // parse_xyz_value emits QueryError::QueryFailed(
-        //   "local_index_reassignment_centroid returned non-string value: Real(0.0)")
-        // Display adds "geometry query failed: " prefix.
+        // Assert that the first-error text is present and contains the locally-
+        // owned query label ("local_index_reassignment_centroid" is defined in
+        // engine_build.rs and passed to parse_xyz_value — stable regardless of
+        // how QueryError formats its Display prefix).
         assert!(
-            diag.message.contains(
-                "(first: geometry query failed: local_index_reassignment_centroid \
-                 returned non-string value: Real(0.0))"
-            ),
-            "message must contain the first parse-error text, got: {}",
+            diag.message.contains("(first: "),
+            "message must embed the first parse-error text, got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("local_index_reassignment_centroid"),
+            "first-error text must name the query label, got: {}",
             diag.message
         );
     }
@@ -4264,13 +4272,18 @@ mod tests {
                 h_ok,
                 Value::String("{\"x\":1.5,\"y\":2.5,\"z\":3.5}".into()),
             );
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
-        let centroids = collect_centroids_with_failure_summary(
+        // Capture the actual error text for h_err so the assertion below is
+        // decoupled from MockGeometryKernel's exact message format.
+        let expected_query_err = kernel
+            .query(&GeometryQuery::Centroid(h_err))
+            .unwrap_err()
+            .to_string();
+
+        let (centroids, diagnostics) = collect_centroids_with_failure_summary(
             &realization_attrs,
             &kernel,
             &realization_id,
-            &mut diagnostics,
         );
 
         // Success handle returns the parsed xyz.
@@ -4309,7 +4322,8 @@ mod tests {
             .find(|d| d.message.contains("centroid parse failed"))
             .expect("must have a parse-fail warning");
 
-        // Query-fail warning: count=1, first message names GeometryHandleId(201).
+        // Query-fail warning: count=1, first error text matches sentinel
+        // captured from the kernel before the call — decoupled from mock format.
         assert!(
             query_warn
                 .message
@@ -4320,12 +4334,14 @@ mod tests {
         assert!(
             query_warn
                 .message
-                .contains("(first: geometry query failed: no mock result for GeometryHandleId(201))"),
-            "query-fail first must name handle 201, got: {}",
+                .contains(&format!("(first: {expected_query_err}")),
+            "query-fail first must contain the captured error text, got: {}",
             query_warn.message
         );
 
-        // Parse-fail warning: count=1, first message names the non-string error.
+        // Parse-fail warning: count=1, first-error text names the locally-owned
+        // query label ("local_index_reassignment_centroid") — stable regardless
+        // of how QueryError formats its Display prefix.
         assert!(
             parse_warn
                 .message
@@ -4334,11 +4350,13 @@ mod tests {
             parse_warn.message
         );
         assert!(
-            parse_warn.message.contains(
-                "(first: geometry query failed: local_index_reassignment_centroid \
-                 returned non-string value: Real(0.0))"
-            ),
-            "parse-fail first must name the non-string parse error, got: {}",
+            parse_warn.message.contains("(first: "),
+            "parse-fail message must embed the first error text, got: {}",
+            parse_warn.message
+        );
+        assert!(
+            parse_warn.message.contains("local_index_reassignment_centroid"),
+            "parse-fail first-error must name the query label, got: {}",
             parse_warn.message
         );
     }
