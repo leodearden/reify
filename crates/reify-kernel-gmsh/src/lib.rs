@@ -70,14 +70,19 @@ pub use kernel_real::GmshKernel;
 pub use kernel::GmshKernel;
 
 pub use cache_key::volume_mesh_cache_key;
-pub use mesh_volume::{
-    apply_repair_if_requested, compute_thickness_warnings, resolve_mesh_size,
-    MeshSurfaceToVolumeReport,
-};
+// MeshSurfaceToVolumeReport is the return type of the cfg(has_gmsh)-gated
+// orchestrator; gating the re-export to match keeps the type and its sole
+// constructor reachable from the same import path in real builds, and avoids
+// exposing a non-constructible type at the crate root in stub builds.
+//
+// The pure helpers (apply_repair_if_requested, compute_thickness_warnings,
+// resolve_mesh_size) are intentionally NOT re-exported at the crate root —
+// callers should reach them via `reify_kernel_gmsh::mesh_volume::*`.
+//
 // mesh_surface_to_volume_with_diagnostics depends on GmshKernel::mesh_to_volume
 // which only exists in the real FFI build (kernel_real.rs, cfg(has_gmsh)).
 #[cfg(has_gmsh)]
-pub use mesh_volume::mesh_surface_to_volume_with_diagnostics;
+pub use mesh_volume::{mesh_surface_to_volume_with_diagnostics, MeshSurfaceToVolumeReport};
 pub use options::MeshingOptions;
 
 /// `true` when this crate was compiled with libgmsh detected at build time
