@@ -695,6 +695,43 @@ fn optimized_annotation_on_function_is_accepted() {
     );
 }
 
+// ── Step 9 (task 3377): compile→clone round-trip ────────────────────────────
+
+/// Pins that `CompiledFunction::optimized_target` survives the full compile
+/// pipeline AND a `Clone` round-trip. This is the surrogate for the task's
+/// "serde round-trip" requirement: `CompiledFunction` has no Serde derives, so
+/// we verify the value is intact through (a) annotation parsing, (b) the
+/// validator allow-list, (c) `compile_function`'s extraction, (d) the
+/// `CompiledFunction { … }` literal, and (e) the `Clone` impl.
+///
+/// After step-4 this test should be green on the first run — it acts as a
+/// regression-guard if any of those five layers stops propagating the field.
+#[test]
+fn compiled_function_optimized_target_compile_round_trip() {
+    let source =
+        r#"@optimized("kernel::foo::bar") fn solve_elastic_static(x: Real) -> Real { x }"#;
+    let module = compile_source(source);
+
+    let errors = error_diags(&module.diagnostics);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    let f: &CompiledFunction = module
+        .functions
+        .iter()
+        .find(|f| f.name == "solve_elastic_static")
+        .expect("function 'solve_elastic_static' not found in compiled module");
+
+    // Clone the CompiledFunction — exercises the Clone impl and ensures the
+    // field isn't accidentally dropped by a future #[derive] removal.
+    let cloned = f.clone();
+    assert_eq!(
+        cloned.optimized_target,
+        Some("kernel::foo::bar".to_string()),
+        "optimized_target must survive Clone; got: {:?}",
+        cloned.optimized_target
+    );
+}
+
 // ── Step 7 (task 3377): duplicate-@optimized warning on function context ─────
 
 /// Multiple `@optimized` annotations stacked on the same `fn` must emit exactly
