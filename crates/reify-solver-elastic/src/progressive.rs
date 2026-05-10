@@ -60,6 +60,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn partial_elastic_result_round_trips_through_clone_and_eq() {
+        let original = PartialElasticResult {
+            displacement: vec![1.0, -2.0],
+            stress: vec![100e6, -50e6],
+            max_von_mises: 100e6,
+            converged: true,
+            iterations: 7,
+        };
+        let cloned = original.clone();
+        assert_eq!(original, cloned, "PartialElasticResult must round-trip through Clone+PartialEq");
+        assert_eq!(cloned.displacement, vec![1.0, -2.0]);
+        assert_eq!(cloned.stress, vec![100e6, -50e6]);
+        assert_eq!(cloned.max_von_mises, 100e6);
+        assert!(cloned.converged);
+        assert_eq!(cloned.iterations, 7);
+    }
+
+    #[test]
     fn progressive_options_default_has_sane_values() {
         let opts = ProgressiveOptions::default();
         assert!(opts.target_tolerance > 0.0, "target_tolerance must be positive");
