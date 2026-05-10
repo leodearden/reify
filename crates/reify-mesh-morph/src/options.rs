@@ -7,6 +7,62 @@
 use crate::eligibility::Reason;
 use crate::types::{InversionDetails, SoftFailDetails, SolverErrorPayload};
 
+// ── StiffnessRule ─────────────────────────────────────────────────────────────
+
+/// Per-element stiffness scaling rule for the fictitious-elastic morph.
+///
+/// Controls how the element-local Young's modulus `E_e` is derived from the
+/// base value [`MorphOptions::fictitious_youngs_modulus_base`] during the FEA
+/// solve in PRD `docs/prds/v0_3/mesh-morphing.md` §"Spatially-varying
+/// fictitious stiffness". Small elements (near features) receive higher `E_e`
+/// and thus absorb less displacement; large bulk-region elements receive lower
+/// `E_e` and absorb most of the displacement — preserving mesh gradation.
+///
+/// The homogeneous BVP `K · u = 0` is invariant under uniform E rescaling
+/// (only ratios E_i/E_j matter), so the absolute scale of `E_base` does not
+/// affect the solution when `Uniform` is selected. For the spatially-varying
+/// rules the ratios between element stiffnesses do affect the solution.
+///
+/// The exhaustive variant fence test `stiffness_rule_variants_construct_and_pattern_match_exhaustively`
+/// in `options::tests` acts as a compile-fence: adding, removing, or renaming
+/// a variant breaks the test immediately.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StiffnessRule {
+    /// `E_e = E_base` — uniform stiffness for every element.
+    ///
+    /// Bit-identical to the task #7 baseline. Use when comparing against the
+    /// uniform-stiffness result or when mesh gradation is not a concern.
+    ///
+    /// PRD §"Spatially-varying fictitious stiffness": Uniform is the baseline;
+    /// `InverseVolume` is the prescribed default for task #8.
+    Uniform,
+
+    /// `E_e = E_base / max(V_e, ε)` — stiffness inversely proportional to
+    /// element volume.
+    ///
+    /// Small-volume elements (near features) become stiffer; large-volume
+    /// bulk elements become softer and absorb most of the displacement.
+    /// This is the **default** rule, prescribed by PRD task #8 for
+    /// mesh-gradation preservation.
+    ///
+    /// `ε = 1e-30` guards against degenerate (zero-volume) tets producing
+    /// infinite stiffness. Mirrors the `MIN_JACOBIAN_DET` precedent in
+    /// `reify-solver-elastic`.
+    InverseVolume,
+
+    /// `E_e = E_base / max(mean_L²_e, ε)` — stiffness inversely proportional
+    /// to the mean squared edge length.
+    ///
+    /// `mean_L²_e` averages `|v_i - v_j|²` over the 6 edges of the tet
+    /// (pairs 0-1, 0-2, 0-3, 1-2, 1-3, 2-3) — robust to sliver tets with one
+    /// extreme edge. This rule is behaviourally distinct from `InverseVolume`
+    /// on irregular tets because it uses actual edge lengths rather than a
+    /// V-derived proxy.
+    ///
+    /// `ε = 1e-30` guards against degenerate tets (all vertices coincident).
+    InverseEdgeLengthSquared,
+}
+
 // ── MorphFailure ──────────────────────────────────────────────────────────────
 
 /// Structured failure result from [`crate::morph`].

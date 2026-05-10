@@ -51,7 +51,7 @@ pub use boundary::{
 pub use elasticity::{ElasticityFailure, elasticity_morph};
 pub use eligibility::{Eligibility, MorphSnapshot, Reason, morph_eligible};
 pub use laplacian::{LaplacianFailure, laplacian_smooth};
-pub use options::{MorphFailure, MorphOptions};
+pub use options::{MorphFailure, MorphOptions, StiffnessRule};
 pub use quality::{QualityVerdict, quality_check};
 pub use types::{BRep, InversionDetails, SoftFailDetails, SolverErrorPayload};
 
@@ -372,6 +372,18 @@ mod tests {
                 max_aspect_ratio_factor: None,
                 degenerate_morphed_element: None,
             });
+    };
+
+    // ── task 2945: lib re-export + variant fence for StiffnessRule ───────────
+
+    // Compile fence: verifies StiffnessRule and all three variants are accessible
+    // from the crate root. Adding, removing, or renaming a variant or dropping the
+    // re-export breaks compilation immediately.
+    const _: fn() = || {
+        use crate::StiffnessRule;
+        let _: StiffnessRule = StiffnessRule::Uniform;
+        let _: StiffnessRule = StiffnessRule::InverseVolume;
+        let _: StiffnessRule = StiffnessRule::InverseEdgeLengthSquared;
     };
 
     // ── Step 1 (task 3153): pin the by-value `eligible` signature ────────────
