@@ -1979,4 +1979,78 @@ mod tests {
             );
         }
     }
+
+    // --- Conditional branch geometry recognition (task 3395) ---
+
+    /// Helper: build a `Conditional` Expr from three child Exprs.
+    fn make_conditional(
+        cond: reify_syntax::Expr,
+        then_branch: reify_syntax::Expr,
+        else_branch: reify_syntax::Expr,
+    ) -> reify_syntax::Expr {
+        reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::Conditional {
+                condition: Box::new(cond),
+                then_branch: Box::new(then_branch),
+                else_branch: Box::new(else_branch),
+            },
+            span: reify_types::SourceSpan::new(0, 1),
+        }
+    }
+
+    /// `is_geometry_let` must classify an `if-then-else` expression as a
+    /// geometry let when EITHER branch is a geometry call, so the expression
+    /// is routed to `compile_geometry_call` where a clean compile-time Error
+    /// is emitted (rather than silently falling through to the Step(0) crash).
+    ///
+    /// Task 3395 — this test MUST FAIL before the Conditional arm is added to
+    /// `is_geometry_let` (the wildcard `_ => false` arm catches Conditional
+    /// today).
+    #[test]
+    fn is_geometry_let_recognizes_conditional_with_geometry_branches() {
+        let functions: Vec<CompiledFunction> = vec![];
+        let known: HashSet<&str> = HashSet::new();
+
+        let bool_cond = reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::BoolLiteral(true),
+            span: reify_types::SourceSpan::new(0, 1),
+        };
+        let num_literal = reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::NumberLiteral { value: 1.0, is_real: false },
+            span: reify_types::SourceSpan::new(0, 1),
+        };
+
+        // (a) Both branches geometry → true
+        let box_box = make_conditional(
+            bool_cond.clone(),
+            make_call_with_arity("box", 3),
+            make_call_with_arity("box", 3),
+        );
+        assert!(
+            is_geometry_let(&box_box, &functions, &known),
+            "Conditional with two geometry branches must classify as a geometry let"
+        );
+
+        // (b) Neither branch geometry → false
+        let num_num = make_conditional(
+            bool_cond.clone(),
+            num_literal.clone(),
+            num_literal.clone(),
+        );
+        assert!(
+            !is_geometry_let(&num_num, &functions, &known),
+            "Conditional with no geometry branches must NOT classify as a geometry let"
+        );
+
+        // (c) Only then-branch geometry → true (either branch suffices)
+        let box_num = make_conditional(
+            bool_cond.clone(),
+            make_call_with_arity("box", 3),
+            num_literal.clone(),
+        );
+        assert!(
+            is_geometry_let(&box_num, &functions, &known),
+            "Conditional with one geometry branch must classify as a geometry let"
+        );
+    }
 }
