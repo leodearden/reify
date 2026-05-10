@@ -322,6 +322,47 @@ mod with_libgmsh {
         );
     }
 
+    /// Caller's explicit `mesh_size` wins over the auto-derived value, observable
+    /// via tet count: a finer mesh_size (0.25) produces more tets than auto (≈1.0).
+    /// Pins: (i) caller-wins policy at the wrapper level; (ii) auto fires when
+    /// caller's `mesh_size` is None.
+    #[test]
+    fn caller_mesh_size_wins_over_auto_size_observable_in_tet_count() {
+        let cube = unit_cube_mesh();
+
+        // Run A: no explicit mesh_size — auto fires, derives ≈ 1.0 → coarse mesh.
+        let report_a = mesh_surface_to_volume_with_diagnostics(
+            &cube,
+            &MeshingOptions { mesh_size: None, ..Default::default() },
+            ElementOrderTag::P1,
+            None,
+            Some(AutoSizeConfig::default()),
+            None,
+        )
+        .expect("run A (auto-size) must succeed for a closed unit cube");
+
+        // Run B: explicit mesh_size=0.25 wins over auto → fine mesh.
+        let report_b = mesh_surface_to_volume_with_diagnostics(
+            &cube,
+            &MeshingOptions { mesh_size: Some(0.25), ..Default::default() },
+            ElementOrderTag::P1,
+            None,
+            Some(AutoSizeConfig::default()),
+            None,
+        )
+        .expect("run B (caller-wins) must succeed for a closed unit cube");
+
+        let tets_a = report_a.volume.tet_indices.len() / 4;
+        let tets_b = report_b.volume.tet_indices.len() / 4;
+        assert!(
+            tets_b > tets_a,
+            "finer mesh_size=0.25 (run B, {} tets) must produce more tets than \
+             auto-derived ≈1.0 (run A, {} tets); caller-wins policy not observed",
+            tets_b,
+            tets_a
+        );
+    }
+
     /// All three diagnostic stages active on a coarsely-meshed thin slab (0.5 m
     /// thick, mesh_size=5.0) must produce at least one through-thickness warning.
     /// Pins: post-stage fires when Some(cfg) supplied; detected thickness ≈ 0.5.
