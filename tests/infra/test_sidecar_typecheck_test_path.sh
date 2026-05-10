@@ -97,4 +97,22 @@ else
     echo "  WARNING: gui/sidecar/node_modules/.bin/tsc not found — skipping behavioral fixture test"
 fi
 
+# -- Group (d): orchestrator.yaml lint_command sidecar block pins -------------
+echo ""
+echo "--- Group (d): orchestrator.yaml lint_command sidecar block pins ---"
+
+ORCH="$REPO_ROOT/orchestrator.yaml"
+
+assert "orchestrator.yaml lint_command sidecar block invokes npm run typecheck:test" \
+    bash -c "grep 'lint_command:' '$ORCH' | grep -q 'npm run typecheck:test'"
+
+assert "orchestrator.yaml lint_command sidecar block invokes npm run typecheck" \
+    bash -c "grep 'lint_command:' '$ORCH' | grep -oE 'if test -f gui/sidecar[^;]+;[^f]+fi' | grep -q 'npm run typecheck'"
+
+assert "orchestrator.yaml lint_command sidecar block uses bash -c chaining" \
+    bash -c "grep 'lint_command:' '$ORCH' | grep -oE 'if test -f gui/sidecar[^;]+;[^f]+fi' | grep -q \"bash -c\""
+
+assert "orchestrator.yaml lint_command sidecar block is NOT just 'npm ci' standalone" \
+    bash -c "! grep 'lint_command:' '$ORCH' | grep -qE 'gui/sidecar && timeout[^)]+npm ci\\); fi'"
+
 test_summary
