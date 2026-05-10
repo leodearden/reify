@@ -1518,6 +1518,37 @@ A parent scope accesses a child's declarations via dot notation: `motor.shaft_di
 
 **Visibility boundary:** Only **parameters** and **named sub-entities** (ports, sub-structures) are accessible from outside a scope. **`let` bindings** and **constraints** are private (unless marked `pub`).
 
+**v0.1 limitation — geometry-typed members are not cross-sub-accessible:**
+Geometry-producing members — whether declared as `param body : Solid = box(...)` or as `let body = box(...)` — are **not** accessible via cross-sub dot notation (e.g. `self.inner.body`) in v0.1. Both forms lower to internal realization declarations that the compiler does not expose through the parent scope's value-cell map.
+
+If you attempt cross-sub geometry access, the compiler emits an actionable diagnostic:
+```
+cross-sub access to geometry-typed member 'body' on sub 'inner'
+is not yet supported in v0.1; compose geometry inside 'Inner'
+or pass scalar parameters to its primitives
+```
+
+**Workaround:** Compose all geometry operations *inside* the child structure; pass scalar position or orientation parameters downward to individual leaf primitives rather than referencing a child's geometry handle from the parent:
+
+```reify
+// ✗ Not supported in v0.1
+pub structure Outer {
+    sub inner = Inner()
+    let placed = translate(self.inner.body, 10mm, 0mm, 0mm)  // error
+}
+
+// ✓ Compose inside the child instead
+pub structure Inner {
+    param offset_x : Length = 0mm
+    let body = translate(box(10mm, 20mm, 30mm), offset_x, 0mm, 0mm)
+}
+pub structure Outer {
+    sub inner = Inner(offset_x: 10mm)
+}
+```
+
+Full cross-sub geometry composition is planned for a future release.
+
 ### 8.4 Upward Visibility
 
 A lexical scope has access to the bound names in the parent lexical scope, transitively. Children see parents implicitly; parents see children explicitly (via dot notation).
