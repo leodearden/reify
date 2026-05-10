@@ -230,6 +230,11 @@ pub struct StressElement<'a> {
 /// (`recover_nodal_stress_volume_weighted_average_two_unequal_volume_elements`)
 /// pins the weighting: σ_A=diag(100,0,0)·V=1 and σ_B=diag(0,200,0)·V=3
 /// at a shared node round-trip to (1·σ_A + 3·σ_B)/4 = diag(25,150,0).
+/// The canonical FE patch test
+/// (`recover_nodal_stress_uniform_strain_patch_test_yields_constant_field_across_two_element_fan`)
+/// verifies the full pipeline (`element_stress_p1` → recovery →
+/// uniform σ at every node) preserves uniform strain across element
+/// boundaries.
 ///
 /// # Engine wrapping
 ///
