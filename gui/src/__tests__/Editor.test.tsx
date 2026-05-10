@@ -1153,81 +1153,21 @@ describe('Editor theme integration', () => {
 });
 
 describe('Editor Mod-s exhaustiveness for SaveBlockedReason', () => {
-  it('default arm fires a clear runtime Error (and does NOT fall through to saveFile) when canSave returns an unhandled reason', () => {
+  it('default arm logs to console.error (and does NOT fall through to saveFile) when canSave returns an unhandled reason', () => {
     const store = setupStore();
-    // Simulate the future state where a new SaveBlockedReason member exists
-    // but Editor.tsx's switch hasn't been updated.  The `as any` cast bypasses
-    // the type system for the express purpose of testing the runtime-safety
-    // net (the `: never` exhaustiveness check is a compile-time concern that
-    // vitest cannot exercise directly).
-    vi.spyOn(store, 'canSave').mockReturnValue({
-      ok: false,
-      reason: 'phantom-future-reason',
-    } as any);
-
+    vi.spyOn(store, 'canSave').mockReturnValue({ ok: false, reason: 'phantom-future-reason' } as any);
     const saveSpy = vi.spyOn(bridge, 'saveFile').mockResolvedValue(undefined);
-
-    // CM6 may route errors thrown in keybinding handlers through any of three
-    // paths depending on JSDOM version and CodeMirror build:
-    //   (a) window.onerror — per WHATWG spec, unhandled exceptions in event
-    //       listeners reach this hook after dispatch machinery catches them.
-    //   (b) window.addEventListener('error') — fired by the same spec path but
-    //       as a DOM event; some JSDOM versions only fire one of (a) or (b).
-    //   (c) console.error — CM6's logException() falls back to console.error
-    //       when no exceptionSink facet is installed, passing the Error object
-    //       as the second argument.
-    // Capturing all three and unioning them makes the test robust across
-    // JSDOM and CM6 version changes without special-casing any one path.
-    const capturedErrors: Error[] = [];
-
-    const prevOnerror = window.onerror;
-    window.onerror = (_msg, _src, _line, _col, err) => {
-      if (err) capturedErrors.push(err);
-      return true; // suppress virtualConsole noise for this expected error
-    };
-
-    const domErrorHandler = (e: ErrorEvent) => {
-      if (e.error) capturedErrors.push(e.error as Error);
-      e.preventDefault();
-    };
-    window.addEventListener('error', domErrorHandler);
-
-    // CM6's logException calls console.error(view, error) — extract Error args.
-    const consoleSpy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
-      for (const arg of args) {
-        if (arg instanceof Error) capturedErrors.push(arg);
-      }
-    });
-
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       render(() => <Editor store={store} />);
-      const container = screen.getByTestId('editor-container');
-      const view = getEditorView(container);
-
-      const event = new KeyboardEvent('keydown', {
-        key: 's',
-        code: 'KeyS',
-        ctrlKey: true,
-        bubbles: true,
-      });
-      view.contentDOM.dispatchEvent(event);
-
-      // (1) saveFile must NOT be called — covers the "fall-through with undefined file" hazard.
+      const view = getEditorView(screen.getByTestId('editor-container'));
+      view.contentDOM.dispatchEvent(new KeyboardEvent('keydown', { key: 's', code: 'KeyS', ctrlKey: true, bubbles: true }));
       expect(saveSpy).not.toHaveBeenCalled();
-
-      // (2) The thrown error must clearly identify the unhandled reason.
-      //     Without the default arm, the runtime error is a generic
-      //     `TypeError: Cannot read properties of undefined (reading 'path')`
-      //     — useless for diagnosing the missing-case bug.  With the fix,
-      //     the message names the offending reason verbatim.
-      const matchingErrors = capturedErrors.filter((e) =>
-        e.message?.includes('unhandled save-blocked reason'),
+      expect(consoleSpy).toHaveBeenCalledWith(
+        expect.stringContaining('unhandled save-blocked reason'),
+        'phantom-future-reason',
       );
-      expect(matchingErrors.length).toBeGreaterThan(0);
-      expect(matchingErrors[0].message).toContain('phantom-future-reason');
     } finally {
-      window.onerror = prevOnerror;
-      window.removeEventListener('error', domErrorHandler);
       consoleSpy.mockRestore();
     }
   });
