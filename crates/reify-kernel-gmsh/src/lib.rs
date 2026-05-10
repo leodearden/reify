@@ -36,6 +36,7 @@
 
 pub mod auto_size;
 pub mod cache_key;
+pub mod mesh_profile_2d;
 pub mod mesh_volume;
 pub mod options;
 pub mod register;
