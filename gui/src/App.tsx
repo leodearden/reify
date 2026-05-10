@@ -66,6 +66,7 @@ import {
 import type { ExportFormat, FileData, SourceLocation, ConstraintData, ToastMessage, ToastAction, EntityTreeNode } from './types';
 import { applyTheme } from './theme';
 import { errorMessage } from './utils/errorClassifier';
+import { messageForSaveBlocked } from './editor/messages';
 import { loadPanelLayout, savePanelLayout, clampPanelHeightsToFit } from './hooks/useLayoutPersistence';
 import { createSerializationErrorCoalescer } from './hooks/useSerializationErrorCoalescer';
 import { loadSidecar, saveSidecar } from './stores/sidecarPersistence';
@@ -462,15 +463,14 @@ const App: Component = () => {
   async function handleSave() {
     const activeFile = editorStore.state.activeFile;
     if (!activeFile) return;
-    const file = editorStore.state.openFiles.find((f) => f.path === activeFile);
-    if (!file) return;
-    if (editorStore.state.externallyChanged.includes(activeFile)) {
-      showToast('File changed externally — reload or dismiss the prompt before saving', 'error');
+    const result = editorStore.canSave(activeFile);
+    if (!result.ok) {
+      showToast(messageForSaveBlocked(result.reason), 'error');
       return;
     }
     try {
-      await bridgeSaveFile(file.path, file.content);
-      editorStore.markClean(file.path);
+      await bridgeSaveFile(result.file.path, result.file.content);
+      editorStore.markClean(result.file.path);
     } catch (err) {
       showToast(`Save failed: ${errorMessage(err)}`, 'error');
     }
