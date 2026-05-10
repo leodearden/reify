@@ -136,6 +136,10 @@ use faer::sparse::SparseRowMat;
 /// - Any redistribution target `K[j][dofs[i]]` or pivot-row target
 ///   `K[p][dofs[i]]` has no stored entry in K — sparsity precondition
 ///   violated (see above).
+/// - `K` has unsorted column indices within any row — `col_idx[start..end]`
+///   must be sorted in increasing order (faer `try_new_from_triplets`
+///   guarantees this; matrices built via `new_unsorted_checked` are not
+///   supported).
 pub fn apply_mpc_row_elimination(
     k: &mut SparseRowMat<usize, f64>,
     f: &mut [f64],
@@ -260,13 +264,13 @@ pub fn apply_mpc_row_elimination(
         let start_p = row_ptr[p];
         let end_p = row_ptr[p + 1];
         // Set diagonal K[p][p] = 1.
-        let rel = col_idx[start_p..end_p].binary_search(&p).unwrap_or_else(|_| {
-            panic!(
+        match col_idx[start_p..end_p].binary_search(&p) {
+            Ok(rel) => vals[start_p + rel] = 1.0,
+            Err(_) => panic!(
                 "MpcRow apply: missing K[{p}][{p}] diagonal entry — required to set pivot \
                  equation K[p][p] = 1; ensure assembly pre-allocates the diagonal",
-            )
-        });
-        vals[start_p + rel] = 1.0;
+            ),
+        }
         // Set K[p][dofs[i]] = -αᵢ.
         for (i, (&di, &ai)) in other_dofs.iter().zip(alphas.iter()).enumerate() {
             match col_idx[start_p..end_p].binary_search(&di) {

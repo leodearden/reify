@@ -132,6 +132,10 @@ pub struct DirichletBc {
 /// - No explicit diagonal entry `K[bc.dof][bc.dof]` stored — all
 ///   FEA-assembled K matrices satisfy this (per Task 2916); a missing diagonal
 ///   indicates a non-FEA-assembled input.
+/// - `K` has unsorted column indices within any row — `col_idx[start..end]`
+///   must be sorted in increasing order (faer `try_new_from_triplets`
+///   guarantees this; matrices built via `new_unsorted_checked` are not
+///   supported).
 pub fn apply_dirichlet_row_elimination(
     k: &mut SparseRowMat<usize, f64>,
     f: &mut [f64],
