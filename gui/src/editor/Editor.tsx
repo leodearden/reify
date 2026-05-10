@@ -17,6 +17,7 @@ import { reifyGotoDefinition } from './gotoDefinition';
 import type { createEditorStore } from '../stores/editorStore';
 import type { SourceLocation } from '../types';
 import { errorMessage } from '../utils/errorClassifier';
+import { messageForSaveBlocked } from './messages';
 import { isSameFile, normalizePath } from '../utils/pathUtils';
 import styles from './Editor.module.css';
 
@@ -127,24 +128,27 @@ export function Editor(props: EditorProps) {
           key: 'Mod-s',
           run: () => {
             const path = props.store.state.activeFile;
-            if (path) {
-              const file = props.store.state.openFiles.find((f) => f.path === path);
-              if (!file) {
-                console.error('Save aborted: file not in store', path);
-                return true;
+            if (!path) return true;
+            const result = props.store.canSave(path);
+            if (!result.ok) {
+              switch (result.reason) {
+                case 'not-found':
+                  // Invariant breach — activeFile/path should always be in openFiles.
+                  // Do not surface a toast since this is not an actionable user condition.
+                  // Mirrors App.tsx#handleSave so both Ctrl+S call sites have identical
+                  // user-visible policy.
+                  console.error('Save aborted: file not in store', path);
+                  return true;
+                case 'externally-changed':
+                  props.onError?.(messageForSaveBlocked(result.reason));
+                  return true;
               }
-              if (props.store.state.externallyChanged.includes(path)) {
-                props.onError?.(
-                  'File changed externally — reload or dismiss the prompt before saving',
-                );
-                return true;
-              }
-              saveFile(path, file.content)
-                .then(() => props.store.markClean(path))
-                .catch((err: unknown) =>
-                  props.onError?.(`Failed to save file: ${errorMessage(err)}`),
-                );
             }
+            saveFile(result.file.path, result.file.content)
+              .then(() => props.store.markClean(result.file.path))
+              .catch((err: unknown) =>
+                props.onError?.(`Failed to save file: ${errorMessage(err)}`),
+              );
             return true;
           },
           preventDefault: true,

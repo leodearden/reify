@@ -1,6 +1,20 @@
 import { createStore } from 'solid-js/store';
 import type { FileData } from '../types';
 
+/**
+ * Reason codes for a blocked save attempt.
+ *
+ * Defined here (in the data layer) so that `editorStore` is self-contained and
+ * does not depend on the UI-message module.  `messages.ts` re-exports this type
+ * so consumers can import it from either location.
+ */
+export type SaveBlockedReason = 'externally-changed' | 'not-found';
+
+/** Discriminated result from {@link createEditorStore}'s `canSave`. */
+export type CanSaveResult =
+  | { ok: true; file: FileData }
+  | { ok: false; reason: SaveBlockedReason };
+
 export interface EditorState {
   openFiles: FileData[];
   activeFile: string | null;
@@ -86,6 +100,26 @@ export function createEditorStore() {
     setState('externallyChanged', []);
   }
 
+  /**
+   * Read-only policy helper: determines whether a save attempt for `path`
+   * should proceed.
+   *
+   * - If the path is not in `openFiles`, returns `{ ok: false, reason: 'not-found' }`.
+   * - If the path is externally changed, returns `{ ok: false, reason: 'externally-changed' }`.
+   * - Otherwise returns `{ ok: true, file }` with the resolved FileData so
+   *   callers don't need a redundant `find` + non-null assertion.
+   *
+   * `not-found` takes precedence over `externally-changed`: a path absent from
+   * openFiles cannot meaningfully be "externally changed" from the editor's
+   * perspective.
+   */
+  function canSave(path: string): CanSaveResult {
+    const file = state.openFiles.find((f) => f.path === path);
+    if (!file) return { ok: false, reason: 'not-found' };
+    if (state.externallyChanged.includes(path)) return { ok: false, reason: 'externally-changed' };
+    return { ok: true, file };
+  }
+
   function setCursorPosition(lineOrNull: number | null, column?: number) {
     if (lineOrNull === null) {
       setState('cursorPosition', null);
@@ -94,5 +128,5 @@ export function createEditorStore() {
     }
   }
 
-  return { state, openFile, updateFileContent, closeFile, setActiveFile, markDirty, markClean, markExternallyChanged, clearExternallyChanged, clearAllExternallyChanged, setCursorPosition };
+  return { state, openFile, updateFileContent, closeFile, setActiveFile, markDirty, markClean, markExternallyChanged, clearExternallyChanged, clearAllExternallyChanged, setCursorPosition, canSave };
 }
