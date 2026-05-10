@@ -852,6 +852,116 @@ mod tests {
     }
 
     #[test]
+    fn cancellation_handle_placeholder_is_clone_debug_default() {
+        let handle = CancellationHandle::default();
+        let cloned = handle.clone();
+        let debug = format!("{:?}", cloned);
+        assert!(debug.contains("CancellationHandle"));
+    }
+
+    #[test]
+    fn compute_node_data_construction() {
+        use reify_types::{ComputeNodeId, OpaqueState, RealizationNodeId as RnId};
+
+        let computation_id = ComputeNodeId::new("Bracket", 0);
+        let data = ComputeNodeData {
+            computation_id: computation_id.clone(),
+            target: "solver::elastic_static".to_string(),
+            value_inputs: vec![ValueCellId::new("Bracket", "load")],
+            realization_inputs: vec![RnId::new("Bracket", 0)],
+            options_hash: ContentHash::of_str("opts"),
+            cache_key: ContentHash::of_str("ck"),
+            cached_result: Some(Value::Real(0.0)),
+            result_content_hash: Some(ContentHash::of_str("rh")),
+            opaque_state: None,
+            running: None,
+            output_value_cells: vec![ValueCellId::new("Bracket", "stress")],
+        };
+
+        assert_eq!(data.computation_id, computation_id);
+        assert_eq!(data.target, "solver::elastic_static");
+        assert_eq!(data.value_inputs.len(), 1);
+        assert_eq!(data.value_inputs[0], ValueCellId::new("Bracket", "load"));
+        assert_eq!(data.realization_inputs.len(), 1);
+        assert_eq!(data.options_hash, ContentHash::of_str("opts"));
+        assert_eq!(data.cache_key, ContentHash::of_str("ck"));
+        assert!(data.cached_result.is_some());
+        assert!(data.result_content_hash.is_some());
+        assert!(data.opaque_state.is_none());
+        assert!(data.running.is_none());
+        assert_eq!(data.output_value_cells.len(), 1);
+        assert_eq!(data.output_value_cells[0], ValueCellId::new("Bracket", "stress"));
+
+        let debug = format!("{:?}", data);
+        assert!(debug.contains("ComputeNodeData"));
+    }
+
+    #[test]
+    fn compute_node_data_clone_drops_opaque_state() {
+        use reify_types::{ComputeNodeId, OpaqueState, RealizationNodeId as RnId};
+
+        let data = ComputeNodeData {
+            computation_id: ComputeNodeId::new("Bracket", 0),
+            target: "solver::elastic_static".to_string(),
+            value_inputs: vec![ValueCellId::new("Bracket", "load")],
+            realization_inputs: vec![RnId::new("Bracket", 0)],
+            options_hash: ContentHash::of_str("opts"),
+            cache_key: ContentHash::of_str("ck"),
+            cached_result: Some(Value::Real(1.5)),
+            result_content_hash: Some(ContentHash::of_str("rh")),
+            opaque_state: Some(OpaqueState::new(42i32, 4)),
+            running: Some(CancellationHandle::default()),
+            output_value_cells: vec![ValueCellId::new("Bracket", "stress")],
+        };
+
+        let cloned = data.clone();
+
+        // Manual-Clone contract: opaque_state is transient, dropped to None
+        assert!(cloned.opaque_state.is_none());
+        // CancellationHandle placeholder IS Clone, so running is preserved
+        assert!(cloned.running.is_some());
+        // Other fields are preserved
+        assert_eq!(cloned.computation_id, ComputeNodeId::new("Bracket", 0));
+        assert_eq!(cloned.target, "solver::elastic_static");
+        assert_eq!(cloned.value_inputs, vec![ValueCellId::new("Bracket", "load")]);
+        assert_eq!(cloned.options_hash, ContentHash::of_str("opts"));
+        assert_eq!(cloned.cache_key, ContentHash::of_str("ck"));
+    }
+
+    #[test]
+    fn compute_node_data_fields_match_prd_spec() {
+        use reify_types::{ComputeNodeId, OpaqueState, RealizationNodeId as RnId};
+
+        let data = ComputeNodeData {
+            computation_id: ComputeNodeId::new("Bracket", 0),
+            target: "solver::elastic_static".to_string(),
+            value_inputs: vec![],
+            realization_inputs: vec![],
+            options_hash: ContentHash::of_str("opts"),
+            cache_key: ContentHash::of_str("ck"),
+            cached_result: None,
+            result_content_hash: None,
+            opaque_state: None,
+            running: None,
+            output_value_cells: vec![],
+        };
+        // Exhaustive destructure: adding/renaming/removing any field breaks compilation
+        let ComputeNodeData {
+            computation_id: _,
+            target: _,
+            value_inputs: _,
+            realization_inputs: _,
+            options_hash: _,
+            cache_key: _,
+            cached_result: _,
+            result_content_hash: _,
+            opaque_state: _,
+            running: _,
+            output_value_cells: _,
+        } = data;
+    }
+
+    #[test]
     fn evaluation_graph_has_resolutions_map() {
         let graph = EvaluationGraph::default();
         assert!(graph.resolutions.is_empty());
