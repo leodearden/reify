@@ -894,8 +894,10 @@ fn write_loft_face_generated_attributes(
 ///   uses [`LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M`] (a kernel-epsilon-tight
 ///   1 nm / 1e-9 m sentinel); per-realization tolerance threading is
 ///   deferred to a follow-up task.
-/// - `selector_span`: span attached to the primary diagnostic label.
-///   Engine call site uses the realization's source span.
+/// - `realization_span`: span attached to the primary diagnostic label —
+///   the source span of the realization being constructed. Detection runs at
+///   realization-construction time, before any selector resolution, so the
+///   label always points at the realization, not at a selector call site.
 /// - `diagnostics`: appended in place; the helper never clears or reorders
 ///   pre-existing entries.
 ///
@@ -975,7 +977,7 @@ pub fn detect_local_index_reassignment_diagnostics(
     handles_with_attrs: &[(GeometryHandleId, &TopologyAttribute)],
     centroids: &HashMap<GeometryHandleId, [f64; 3]>,
     tol_m: f64,
-    selector_span: SourceSpan,
+    realization_span: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     // Group entries by (feature_id, role). Skip post-split clusters
@@ -1047,7 +1049,7 @@ pub fn detect_local_index_reassignment_diagnostics(
                             feature_id, role, idx_i, idx_j,
                         ))
                         .with_code(DiagnosticCode::TopologyAttributeLocalIndexReassigned)
-                        .with_label(DiagnosticLabel::new(selector_span, "realization producing geometrically tied attributes")),
+                        .with_label(DiagnosticLabel::new(realization_span, "realization producing geometrically tied attributes")),
                     );
                     break 'outer;
                 }

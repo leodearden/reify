@@ -1021,13 +1021,13 @@ fn local_index_reassignment_diagnostic_fires_for_geometrically_tied_faces() {
     centroids.insert(h1, [0.0, 0.0, 0.0]);
 
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
-    let selector_span = SourceSpan::new(10, 20);
+    let realization_span = SourceSpan::new(10, 20);
 
     detect_local_index_reassignment_diagnostics(
         &[(h0, &attr0), (h1, &attr1)],
         &centroids,
         LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M,
-        selector_span,
+        realization_span,
         &mut diagnostics,
     );
 

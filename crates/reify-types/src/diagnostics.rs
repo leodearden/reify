@@ -464,7 +464,9 @@ pub enum DiagnosticCode {
     /// fillet of a full circular edge) accept arbitrary tiebreak with this
     /// diagnostic per PRD line 66.
     ///
-    /// A primary label is emitted at the selector call site (`"selector call"`).
+    /// A primary label is emitted at the realization's source span
+    /// (`"realization producing geometrically tied attributes"`); detection
+    /// runs at realization-construction time, before any selector resolution.
     ///
     /// Distinct from [`TopologyAttributeAmbiguousAfterSplit`] (which covers
     /// post-split clusters where `mod_history` lengthens) and from
