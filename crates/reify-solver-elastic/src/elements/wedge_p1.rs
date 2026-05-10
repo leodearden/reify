@@ -137,4 +137,125 @@ mod tests {
             );
         }
     }
+
+    // ── shape_grad_at tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn shape_grad_at_returns_six_rows_each_with_three_components() {
+        let probe = ReferenceCoord::new(0.2, 0.3, 0.5);
+        let g = WedgeP1.shape_grad_at(probe);
+        assert_eq!(g.len(), 6, "shape_grad_at must return N_NODES=6 rows");
+        for row in &g {
+            assert_eq!(row.len(), 3, "each gradient row must have 3 components");
+        }
+    }
+
+    #[test]
+    fn shape_grad_at_partition_of_unity_consequence() {
+        // Σ_i ∇N_i = (0, 0, 0) — consequence of Σ N_i ≡ 1.
+        let probes = [
+            ReferenceCoord::new(1.0 / 3.0, 1.0 / 3.0, 0.0),
+            ReferenceCoord::new(0.2, 0.3, 0.5),
+            ReferenceCoord::new(0.4, 0.2, -0.6),
+        ];
+        for p in &probes {
+            let g = WedgeP1.shape_grad_at(*p);
+            let mut sum = [0.0_f64; 3];
+            for row in &g {
+                for k in 0..3 {
+                    sum[k] += row[k];
+                }
+            }
+            for k in 0..3 {
+                assert!(
+                    sum[k].abs() < TOL,
+                    "Σ_i ∇N_i({:?})[{k}] = {}, expected 0",
+                    p,
+                    sum[k],
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn shape_grad_at_matches_simple_analytic_form_at_centroid() {
+        // At centroid (1/3, 1/3, 0):
+        //   λ = [1/3, 1/3, 1/3], (1 + s*0)/2 = 1/2 for all nodes.
+        //   ∇L₀ = (-1,-1, 0), ∇L₁ = (1,0,0), ∇L₂ = (0,1,0).
+        //   ∂N_i/∂ξ = ∇L_{a_i}[0] * 1/2
+        //   ∂N_i/∂η = ∇L_{a_i}[1] * 1/2
+        //   ∂N_i/∂ζ = λ[a_i] * s_i / 2  = (1/3) * s_i / 2
+        //
+        // Node ordering: (a, s) = (0,-1),(1,-1),(2,-1),(0,+1),(1,+1),(2,+1)
+        // Expected [∂N/∂ξ, ∂N/∂η, ∂N/∂ζ] for each node:
+        #[rustfmt::skip]
+        let expected: [[f64; 3]; 6] = [
+            [-0.5, -0.5, -1.0 / 6.0], // node 0: a=0,s=-1
+            [ 0.5,  0.0, -1.0 / 6.0], // node 1: a=1,s=-1
+            [ 0.0,  0.5, -1.0 / 6.0], // node 2: a=2,s=-1
+            [-0.5, -0.5,  1.0 / 6.0], // node 3: a=0,s=+1
+            [ 0.5,  0.0,  1.0 / 6.0], // node 4: a=1,s=+1
+            [ 0.0,  0.5,  1.0 / 6.0], // node 5: a=2,s=+1
+        ];
+        let centroid = ReferenceCoord::new(1.0 / 3.0, 1.0 / 3.0, 0.0);
+        let g = WedgeP1.shape_grad_at(centroid);
+        for (i, (grad, exp)) in g.iter().zip(expected.iter()).enumerate() {
+            for k in 0..3 {
+                assert!(
+                    (grad[k] - exp[k]).abs() < TOL,
+                    "∇N_{i}(centroid)[{k}] = {}, expected {}",
+                    grad[k],
+                    exp[k],
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn shape_grad_at_matches_finite_difference_oracle_at_off_centroid_probes() {
+        // FD oracle: central-difference truncation O(h²) ≈ 1e-12 + roundoff
+        // O(ε·|f|/h) ≈ 1e-10; 1e-9 comfortably above.
+        //
+        // Probes stay strictly inside the reference prism:
+        //   ξ,η ≥ 0.1, ξ+η ≤ 0.7, |ζ| ≤ 0.7 — so coord ± h·ê_k
+        //   stays inside the domain for h = 1e-6.
+        const FD_H: f64 = 1e-6;
+        const FD_TOL: f64 = 1e-9;
+
+        let probes = [
+            ReferenceCoord::new(0.2, 0.3, 0.5),
+            ReferenceCoord::new(0.4, 0.2, -0.6),
+            ReferenceCoord::new(0.1, 0.1, 0.7),
+        ];
+
+        for probe in &probes {
+            let grad = WedgeP1.shape_grad_at(*probe);
+            for k in 0..3 {
+                let coord_plus = match k {
+                    0 => ReferenceCoord::new(probe.xi + FD_H, probe.eta, probe.zeta),
+                    1 => ReferenceCoord::new(probe.xi, probe.eta + FD_H, probe.zeta),
+                    2 => ReferenceCoord::new(probe.xi, probe.eta, probe.zeta + FD_H),
+                    _ => unreachable!(),
+                };
+                let coord_minus = match k {
+                    0 => ReferenceCoord::new(probe.xi - FD_H, probe.eta, probe.zeta),
+                    1 => ReferenceCoord::new(probe.xi, probe.eta - FD_H, probe.zeta),
+                    2 => ReferenceCoord::new(probe.xi, probe.eta, probe.zeta - FD_H),
+                    _ => unreachable!(),
+                };
+                let n_plus = WedgeP1.shape_at(coord_plus);
+                let n_minus = WedgeP1.shape_at(coord_minus);
+                for i in 0..6 {
+                    let fd_approx = (n_plus[i] - n_minus[i]) / (2.0 * FD_H);
+                    assert!(
+                        (fd_approx - grad[i][k]).abs() < FD_TOL,
+                        "FD∇N_{i}({:?})[{k}]: fd={fd_approx}, analytic={}, diff={}",
+                        probe,
+                        grad[i][k],
+                        (fd_approx - grad[i][k]).abs(),
+                    );
+                }
+            }
+        }
+    }
 }
