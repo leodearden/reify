@@ -1100,15 +1100,6 @@ mod tests {
     /// Derived from `n * n / 2` for the 16×16 centerline plane: the medial
     /// algorithm is expected to flag at least half the voxels on that plane
     /// (lower bound, not exact count). For `n = 16`: `16 * 16 / 2 = 128`.
-    ///
-    /// **Load-bearing call sites** (update all three when changing this value):
-    /// - [`slab_sdf_3d_n16_yields_at_least_min_medial_voxels`] — the dedicated
-    ///   contract test that *owns* this assertion.
-    /// - [`compute_medial_mask_flags_slab_centerline_voxels`] — uses it as the
-    ///   floor in part (c) of its centerline-plane assertion.
-    /// - [`compute_medial_mask_voxels_are_sorted_in_lex_order_on_slab`] — uses
-    ///   it as a load-bearing precondition: the `windows(2)` ordering check
-    ///   requires at least this many voxels to be meaningful.
     const SLAB_16_MIN_MEDIAL_VOXELS: usize = 128;
 
     /// Build an analytic-slab Regular3D `SampledField` representing
@@ -1159,10 +1150,7 @@ mod tests {
     /// (b) every voxel in the mask is on or adjacent to the
     ///     centerline z-plane (`|k − center_k| ≤ 1`);
     /// (c) the centerline plane is mostly populated
-    ///     (`mask.voxels.len() ≥ SLAB_16_MIN_MEDIAL_VOXELS`; the owning
-    ///     contract is in [`slab_sdf_3d_n16_yields_at_least_min_medial_voxels`];
-    ///     [`compute_medial_mask_voxels_are_sorted_in_lex_order_on_slab`] is
-    ///     the other consumer of the same floor).
+    ///     (`mask.voxels.len() ≥ SLAB_16_MIN_MEDIAL_VOXELS`).
     #[test]
     fn compute_medial_mask_flags_slab_centerline_voxels() {
         let n = 16usize;
@@ -1188,37 +1176,11 @@ mod tests {
         }
 
         // (c) at least half the centerline plane is medial
-        // `SLAB_16_MIN_MEDIAL_VOXELS` is the shared floor; the owning contract
-        // test is `slab_sdf_3d_n16_yields_at_least_min_medial_voxels`, and
-        // `compute_medial_mask_voxels_are_sorted_in_lex_order_on_slab` is the
-        // other consumer.
         let min_expected = SLAB_16_MIN_MEDIAL_VOXELS;
         assert!(
             mask.voxels.len() >= min_expected,
             "slab medial mask has {} voxels; expected ≥ {min_expected} \
              on a 16×16 centerline plane",
-            mask.voxels.len()
-        );
-    }
-
-    /// Contract test: `slab_sdf_3d(3.0, 16)` must produce at least
-    /// [`SLAB_16_MIN_MEDIAL_VOXELS`] medial voxels.
-    ///
-    /// This is the *owning* assertion for the floor constant.
-    /// [`compute_medial_mask_flags_slab_centerline_voxels`] and
-    /// [`compute_medial_mask_voxels_are_sorted_in_lex_order_on_slab`] both
-    /// use the same floor as a precondition; this dedicated test is the
-    /// single canonical place where the contract is *asserted*, so a future
-    /// change to the constant value has exactly one test to update.
-    #[test]
-    fn slab_sdf_3d_n16_yields_at_least_min_medial_voxels() {
-        let sdf = slab_sdf_3d(3.0, 16);
-        let mask = compute_medial_mask(&sdf, &MedialOptions::default())
-            .expect("slab compute succeeds");
-        assert!(
-            mask.voxels.len() >= SLAB_16_MIN_MEDIAL_VOXELS,
-            "slab_sdf_3d(3.0, 16) produced {} medial voxels; \
-             expected ≥ {SLAB_16_MIN_MEDIAL_VOXELS}",
             mask.voxels.len()
         );
     }
@@ -1879,8 +1841,7 @@ mod tests {
             .expect("slab compute succeeds");
 
         // The slab fixture produces at least `SLAB_16_MIN_MEDIAL_VOXELS` medial
-        // voxels (contract owned by `slab_sdf_3d_n16_yields_at_least_min_medial_voxels`;
-        // also consumed by `compute_medial_mask_flags_slab_centerline_voxels`),
+        // voxels (see `compute_medial_mask_flags_slab_centerline_voxels` part (c)),
         // so the windows(2) ordering check is load-bearing.
         assert!(
             mask.voxels.len() >= SLAB_16_MIN_MEDIAL_VOXELS,
