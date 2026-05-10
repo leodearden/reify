@@ -267,6 +267,7 @@ pub fn solve_cg_warm(
         k.nrows(),
         k.ncols(),
     );
+    // Pinned by `initial_guess_length_mismatch_panics`.
     if let Some(u_0) = initial_guess {
         assert_eq!(
             u_0.len(),
