@@ -438,19 +438,25 @@ pub enum DiagnosticCode {
     ///
     /// The PRD-prose mnemonic for this code is `W_TOPOLOGY_ATTRIBUTE_AMBIGUOUS_AFTER_SPLIT`.
     TopologyAttributeAmbiguousAfterSplit,
-    /// Origin: `crates/reify-eval/src/topology_attribute_propagation.rs`
-    /// (emitter wired in a follow-up step of task #2654).
+    /// Origin: `crates/reify-eval/src/topology_attribute_propagation.rs::detect_local_index_reassignment_diagnostics`.
     ///
-    /// Emitted as a `Warning` when an existing selector's resolved sub-shape
-    /// changes after an edit purely because the deterministic local-index
-    /// ordering (centroid / normal / principal axis with construction-order
-    /// tiebreak) shuffled — i.e. no split occurred (which would be reported
-    /// via [`TopologyAttributeAmbiguousAfterSplit`] / `mod_history`) and
-    /// `(feature_id, role, user_label)` are unchanged, but the resolved
-    /// `local_index` differs from the prior evaluation.
+    /// **Construction-time fragility detection (interim implementation).** The
+    /// PRD-prose intent (line 72) is "emit when an existing selector's resolved
+    /// topology changes after an edit purely due to ordering shuffle". A strict
+    /// reading of that prose requires a *prior-vs-current* comparison across two
+    /// builds. The current emitter is a forward-looking *risk* detector:
+    /// constructed at populator time, it fires when two `(feature_id, role)`-
+    /// peer entries have geometrically tied centroids within a kernel-epsilon
+    /// tolerance — meaning the kernel's enumeration order is the only thing
+    /// disambiguating their `local_index` assignment, and a future edit could
+    /// shuffle them. So the variant currently warns that resolution **may**
+    /// shuffle under a future edit, not that it **did** shuffle since a prior
+    /// build. Cross-build delta comparison is recorded as a deferred follow-up
+    /// (see task #2654 design decisions); this variant doc-comment will be
+    /// updated when that lands.
     ///
-    /// Canonical message form:
-    ///   `"topology-attribute selector resolved to a different sub-shape after local-index reassignment (no split occurred; geometric ordering shuffled after edit)"`
+    /// Canonical message form (current construction-time emitter):
+    ///   `"topology-attribute selector for (feature '<feature_id>', role '<role>') has geometrically tied local_index assignments at indices <i> and <j>; selector resolution may shuffle after edits"`
     ///
     /// Per PRD `docs/prds/v0_2/persistent-naming-v2.md` line 72 ("Diagnostic
     /// on local_index reassignment"), the system surfaces ordering-shuffle
