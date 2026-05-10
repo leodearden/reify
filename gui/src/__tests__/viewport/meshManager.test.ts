@@ -1849,6 +1849,73 @@ describe('meshManager', () => {
     });
   });
 
+  describe('setDeformation — mixed mesh (with and without displaced_positions)', () => {
+    const vertA = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+    const dispA = new Float32Array([0.1, 0, 0, 1.1, 0, 0, 0.1, 1, 0]);
+    const vertB = new Float32Array([2, 0, 0, 3, 0, 0, 2, 1, 0]);
+
+    function setupMixedMeshes() {
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+      const meshA: MeshData = {
+        entity_path: 'A',
+        vertices: vertA.slice(),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        displaced_positions: dispA.slice(),
+      };
+      const meshB: MeshData = {
+        entity_path: 'B',
+        vertices: vertB.slice(),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        // no displaced_positions
+      };
+      manager.sync({ A: meshA, B: meshB });
+      vi.clearAllMocks();
+      return { scene, manager };
+    }
+
+    it('setDeformation({warpFactor:5}): mesh A warped, mesh B unchanged; both still in getSceneMeshes', () => {
+      const { manager } = setupMixedMeshes();
+      manager.setDeformation({ warpFactor: 5 });
+
+      const meshA = manager.getSceneMeshes().get('A')!;
+      const meshB = manager.getSceneMeshes().get('B')!;
+
+      // Mesh A: position should be warped
+      const posA = (meshA.geometry as any).attributes.position;
+      const expectedA = new Float32Array(vertA.length);
+      for (let i = 0; i < vertA.length; i++) {
+        expectedA[i] = vertA[i] + 5 * (dispA[i] - vertA[i]);
+      }
+      expect(Array.from(posA.array as Float32Array)).toEqual(Array.from(expectedA));
+
+      // Mesh B: position should be unchanged (deep-equals its original vertices)
+      const posB = (meshB.geometry as any).attributes.position;
+      expect(Array.from(posB.array as Float32Array)).toEqual(Array.from(vertB));
+
+      // Both still in scene
+      expect(manager.getSceneMeshes().size).toBe(2);
+    });
+
+    it('setDeformation(null) after mixed: mesh A restored, mesh B still unchanged', () => {
+      const { manager } = setupMixedMeshes();
+      manager.setDeformation({ warpFactor: 5 });
+      manager.setDeformation(null);
+
+      const meshA = manager.getSceneMeshes().get('A')!;
+      const meshB = manager.getSceneMeshes().get('B')!;
+
+      const posA = (meshA.geometry as any).attributes.position;
+      expect(Array.from(posA.array as Float32Array)).toEqual(Array.from(vertA));
+
+      const posB = (meshB.geometry as any).attributes.position;
+      expect(Array.from(posB.array as Float32Array)).toEqual(Array.from(vertB));
+    });
+  });
+
   describe('setDeformation — linear blend', () => {
     const vertices = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
     const displaced = new Float32Array([0.1, 0, 0, 1.1, 0, 0, 0.1, 1, 0]);
