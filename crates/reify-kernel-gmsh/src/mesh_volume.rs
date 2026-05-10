@@ -25,7 +25,7 @@ use reify_types::Mesh;
 use crate::auto_size::{auto_mesh_size_from_features, AutoSizeConfig};
 use crate::options::MeshingOptions;
 use crate::repair::{repair_surface_mesh, RepairConfig};
-use crate::through_thickness::ThroughThicknessWarning;
+use crate::through_thickness::{through_thickness_check, ThroughThicknessConfig, ThroughThicknessWarning};
 
 // ---------------------------------------------------------------------------
 // Output type
@@ -97,5 +97,20 @@ pub fn resolve_mesh_size(
                 "auto_mesh_size_from_features failed: {e}"
             ))),
         },
+    }
+}
+
+/// Run the through-thickness post-stage if requested.
+///
+/// - `None` — returns an empty `Vec` immediately (stage skipped).
+/// - `Some(cfg)` — delegates to `through_thickness_check(volume, surface, cfg)`.
+pub fn compute_thickness_warnings(
+    volume: &reify_types::VolumeMesh,
+    surface: &Mesh,
+    cfg: Option<ThroughThicknessConfig>,
+) -> Vec<ThroughThicknessWarning> {
+    match cfg {
+        Some(c) => through_thickness_check(volume, surface, c),
+        None => Vec::new(),
     }
 }
