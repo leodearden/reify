@@ -1023,17 +1023,11 @@ pub fn detect_local_index_reassignment_diagnostics(
     let tol_sq = tol_m * tol_m;
 
     // Iterate groups in deterministic (feature_id, role) order. HashMap
-    // iteration order is unspecified — collect keys, sort, then walk. This
-    // keeps emission order stable across runs for downstream test assertions
-    // and human-readable diagnostic output. Sort key uses Display for
-    // FeatureId (its canonical string form) and an explicit discriminant
-    // function for Role to avoid coupling the sort to `Debug` output.
+    // iteration order is unspecified — collect keys, sort, then walk.
+    // sort_by_cached_key materializes (feature_id_string, role_discriminant)
+    // once per key so to_string() is not called on every comparison.
     let mut group_keys: Vec<&(&FeatureId, Role)> = groups.keys().collect();
-    group_keys.sort_by(|a, b| {
-        a.0.to_string()
-            .cmp(&b.0.to_string())
-            .then_with(|| role_sort_discriminant(&a.1).cmp(&role_sort_discriminant(&b.1)))
-    });
+    group_keys.sort_by_cached_key(|k| (k.0.to_string(), role_sort_discriminant(&k.1)));
 
     for key in group_keys {
         let entries = &groups[key];
