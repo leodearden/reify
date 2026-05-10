@@ -352,50 +352,6 @@ fn worst_case_tied_max_returns_lex_smaller_case_name() {
     );
 }
 
-/// Reify source: a `WorstCaseNegativesFixture` structure that exercises the
-/// silent-Undef discipline of `worst_case` across every shape-failure path.
-///
-/// Each binding is engineered to trip a specific guard in
-/// `eval_worst_case_dispatch` (or its fall-through to the `eval_fea`
-/// `worst_case` Undef stub), and is asserted to evaluate to
-/// `Value::Undef` by `worst_case_argument_shape_negatives_return_undef`.
-///
-/// Pinned guards (per [`eval_worst_case_dispatch`] and the fall-through to
-/// the `worst_case` arm in `crates/reify-stdlib/src/fea.rs::eval_fea`):
-///
-/// - **wrong arity (1, 3)** — the `evaluated_args.len() == 2` guard in the
-///   inline dispatch arm declines, falling through to
-///   `reify_stdlib::eval_builtin` → `eval_fea` → permanent Undef stub.
-/// - **non-Map first arg** — `match &args[0] { Value::Map(m) => m, _ =>
-///   return Value::Undef }` in `eval_worst_case_dispatch`. Pinned by
-///   `non_map_first`.
-/// - **non-Lambda second arg** — `match &args[1] { Value::Lambda { .. } =>
-///   …, _ => return Value::Undef }`. Pinned by `non_lambda_second`.
-/// - **Map without `"cases"` key** — `outer.get(&Value::String("cases"))`
-///   yields `None`, hits `_ => return Value::Undef`.
-/// - **`"cases"` value not a Map** — same `outer.get` match arm requires
-///   `Some(Value::Map(c))`; non-Map returns Undef.
-/// - **lambda returns non-Field** — `field_reductions::compute_max` returns
-///   Undef on non-Field input; `as_f64()` returns None; the case is skipped
-///   via `_ => continue`. With ALL cases skipped, `best` is None and the
-///   dispatch arm returns `Value::Undef`.
-const WORST_CASE_NEGATIVES_SOURCE: &str = r#"
-field def disp_neg : Length -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [10.0, 20.0, 50.0] } }
-
-structure def WorstCaseNegativesFixture {
-    let cases = map{"a" => disp_neg}
-    let mcr = map{"cases" => cases}
-
-    let arity_one         = worst_case(mcr)
-    let arity_three       = worst_case(mcr, |f| f, |f| f)
-    let non_map_first     = worst_case(42, |f| f)
-    let non_lambda_second = worst_case(mcr, 42)
-    let no_cases_key      = worst_case(map{"foo" => 1}, |f| f)
-    let cases_not_map     = worst_case(map{"cases" => 42}, |f| f)
-    let lambda_non_field  = worst_case(mcr, |f| 42)
-}
-"#;
-
 /// Look up a `WorstCaseNegativesFixture` binding from an eval result map by
 /// member name.
 fn get_worst_case_negative_value<'a>(values: &'a ValueMap, name: &str) -> &'a Value {
@@ -405,41 +361,173 @@ fn get_worst_case_negative_value<'a>(values: &'a ValueMap, name: &str) -> &'a Va
         .unwrap_or_else(|| panic!("WorstCaseNegativesFixture.{name} not found in eval result"))
 }
 
-/// Negative-path smoke test: every `worst_case` shape-failure path collapses
-/// to `Value::Undef` per the silent-Undef discipline shared with
-/// `envelope_reduce` / `case_names` / `result_for`.
+/// Compile `source`, eval it, assert no Error-severity diagnostics, and assert
+/// that the named `WorstCaseNegativesFixture` binding evaluates to
+/// `Value::Undef`.
 ///
-/// Pins the guards in `eval_worst_case_dispatch` (and its fall-through to the
-/// `eval_fea` Undef stub for wrong-arity calls). See the
-/// `WORST_CASE_NEGATIVES_SOURCE` docstring for the per-binding rationale.
-#[test]
-fn worst_case_argument_shape_negatives_return_undef() {
-    let compiled = parse_and_compile_with_stdlib(WORST_CASE_NEGATIVES_SOURCE);
+/// `call_ctx` is a short description of the `worst_case(...)` call under test
+/// (e.g. `"worst_case(mcr)"`) used in assertion failure messages.
+///
+/// Shared by all 7 per-guard negative tests below; each test supplies only its
+/// own SOURCE constant and binding name, keeping the tests to one-liner calls.
+fn check_worst_case_negative(source: &str, binding: &str, call_ctx: &str) {
+    let compiled = parse_and_compile_with_stdlib(source);
     let mut engine = make_simple_engine();
     let result = engine.eval(&compiled);
 
     let eval_errors = collect_errors(&result.diagnostics);
     assert!(
         eval_errors.is_empty(),
-        "eval should produce no Error-severity diagnostics, got: {eval_errors:?}"
+        "{call_ctx}: eval should produce no Error-severity diagnostics, got: {eval_errors:?}"
     );
 
-    for binding in [
-        "arity_one",
-        "arity_three",
-        "non_map_first",
-        "non_lambda_second",
-        "no_cases_key",
-        "cases_not_map",
-        "lambda_non_field",
-    ] {
-        let v = get_worst_case_negative_value(&result.values, binding);
-        assert!(
-            v.is_undef(),
-            "WorstCaseNegativesFixture.{binding} should be Undef per worst_case silent-Undef discipline, \
-             got: {v:?}"
-        );
-    }
+    let v = get_worst_case_negative_value(&result.values, binding);
+    assert!(
+        v.is_undef(),
+        "{call_ctx}: expected Value::Undef from guard fall-through, got: {v:?}"
+    );
+}
+
+/// Reify source for the `arity_one` negative: `worst_case(mcr)` has only one
+/// argument. The inline dispatch arm in `eval_expr` guards
+/// `evaluated_args.len() == 2`, so 1-arg calls fall through to
+/// `reify_stdlib::eval_builtin` → `eval_fea` → the permanent `worst_case`
+/// Undef stub.
+const WORST_CASE_ARITY_ONE_SOURCE: &str = r#"
+field def disp_neg : Length -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [10.0, 20.0, 50.0] } }
+
+structure def WorstCaseNegativesFixture {
+    let cases = map{"a" => disp_neg}
+    let mcr = map{"cases" => cases}
+    let arity_one = worst_case(mcr)
+}
+"#;
+
+/// Pins the wrong-arity (1 arg) fall-through: `worst_case(mcr)` must return
+/// `Value::Undef` because the inline dispatch arm only fires for
+/// `evaluated_args.len() == 2`; 1-arg calls fall through to the `eval_fea`
+/// permanent Undef stub.
+#[test]
+fn worst_case_arity_one_returns_undef() {
+    check_worst_case_negative(WORST_CASE_ARITY_ONE_SOURCE, "arity_one", "worst_case(mcr) — 1 arg");
+}
+
+/// Reify source for the `arity_three` negative: `worst_case(mcr, |f| f, |f| f)`
+/// has three arguments. The same wrong-arity fall-through as `arity_one` applies.
+const WORST_CASE_ARITY_THREE_SOURCE: &str = r#"
+field def disp_neg : Length -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [10.0, 20.0, 50.0] } }
+
+structure def WorstCaseNegativesFixture {
+    let cases = map{"a" => disp_neg}
+    let mcr = map{"cases" => cases}
+    let arity_three = worst_case(mcr, |f| f, |f| f)
+}
+"#;
+
+/// Pins the wrong-arity (3 args) fall-through: `worst_case(mcr, |f| f, |f| f)`
+/// must return `Value::Undef` for the same reason as the 1-arg case — the inline
+/// dispatch arm requires exactly 2 evaluated args.
+#[test]
+fn worst_case_arity_three_returns_undef() {
+    check_worst_case_negative(WORST_CASE_ARITY_THREE_SOURCE, "arity_three", "worst_case(mcr, |f| f, |f| f) — 3 args");
+}
+
+/// Reify source for the `non_map_first` negative: `worst_case(42, |f| f)` passes
+/// a scalar as the first arg. Pins the `match &args[0] { Value::Map(m) => m, _ =>
+/// return Value::Undef }` guard in `eval_worst_case_dispatch`.
+const WORST_CASE_NON_MAP_FIRST_SOURCE: &str = r#"
+structure def WorstCaseNegativesFixture {
+    let non_map_first = worst_case(42, |f| f)
+}
+"#;
+
+/// Pins the non-Map first-arg guard in `eval_worst_case_dispatch`:
+/// `worst_case(42, |f| f)` must return `Value::Undef` because the first-arg
+/// pattern match requires `Value::Map`.
+#[test]
+fn worst_case_non_map_first_arg_returns_undef() {
+    check_worst_case_negative(WORST_CASE_NON_MAP_FIRST_SOURCE, "non_map_first", "worst_case(42, |f| f) — non-Map first arg");
+}
+
+/// Reify source for the `non_lambda_second` negative: `worst_case(mcr, 42)` passes
+/// a scalar as the second arg. Pins the `matches!(&args[1], Value::Lambda { .. })`
+/// guard in `eval_worst_case_dispatch`.
+const WORST_CASE_NON_LAMBDA_SECOND_SOURCE: &str = r#"
+field def disp_neg : Length -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [10.0, 20.0, 50.0] } }
+
+structure def WorstCaseNegativesFixture {
+    let cases = map{"a" => disp_neg}
+    let mcr = map{"cases" => cases}
+    let non_lambda_second = worst_case(mcr, 42)
+}
+"#;
+
+/// Pins the non-Lambda second-arg guard in `eval_worst_case_dispatch`:
+/// `worst_case(mcr, 42)` must return `Value::Undef` because the `matches!`
+/// check requires `Value::Lambda { .. }`.
+#[test]
+fn worst_case_non_lambda_second_arg_returns_undef() {
+    check_worst_case_negative(WORST_CASE_NON_LAMBDA_SECOND_SOURCE, "non_lambda_second", "worst_case(mcr, 42) — non-Lambda second arg");
+}
+
+/// Reify source for the `no_cases_key` negative: `worst_case(map{"foo" => 1}, |f| f)`
+/// passes a Map without a `"cases"` key. Pins `outer.get(&Value::String("cases"))`
+/// returning `None` → `_ => return Value::Undef` in `eval_worst_case_dispatch`.
+const WORST_CASE_MISSING_CASES_KEY_SOURCE: &str = r#"
+structure def WorstCaseNegativesFixture {
+    let no_cases_key = worst_case(map{"foo" => 1}, |f| f)
+}
+"#;
+
+/// Pins the missing-`"cases"`-key guard in `eval_worst_case_dispatch`:
+/// `worst_case(map{"foo" => 1}, |f| f)` must return `Value::Undef` because
+/// `outer.get(&Value::String("cases"))` returns `None`.
+#[test]
+fn worst_case_missing_cases_key_returns_undef() {
+    check_worst_case_negative(WORST_CASE_MISSING_CASES_KEY_SOURCE, "no_cases_key", "worst_case(map{\"foo\" => 1}, |f| f) — missing \"cases\" key");
+}
+
+/// Reify source for the `cases_not_map` negative:
+/// `worst_case(map{"cases" => 42}, |f| f)` passes a Map whose `"cases"` key holds
+/// a scalar. Pins the `Some(Value::Map(c))` arm: non-Map `"cases"` value hits
+/// `_ => return Value::Undef` in `eval_worst_case_dispatch`.
+const WORST_CASE_CASES_VALUE_NOT_MAP_SOURCE: &str = r#"
+structure def WorstCaseNegativesFixture {
+    let cases_not_map = worst_case(map{"cases" => 42}, |f| f)
+}
+"#;
+
+/// Pins the non-Map `"cases"`-value guard in `eval_worst_case_dispatch`:
+/// `worst_case(map{"cases" => 42}, |f| f)` must return `Value::Undef` because
+/// the `cases` match arm requires `Some(Value::Map(c))` and `42` is not a Map.
+#[test]
+fn worst_case_cases_value_not_map_returns_undef() {
+    check_worst_case_negative(WORST_CASE_CASES_VALUE_NOT_MAP_SOURCE, "cases_not_map", "worst_case(map{\"cases\" => 42}, |f| f) — cases not a Map");
+}
+
+/// Reify source for the `lambda_non_field` negative: `worst_case(mcr, |f| 42)`
+/// uses a lambda that returns a scalar. Pins `field_reductions::compute_max`
+/// returning Undef on non-Field input → `as_f64()` returns None → case skipped
+/// via `_ => continue`. With all cases skipped, `best` stays None and the
+/// dispatch arm returns `Value::Undef`.
+const WORST_CASE_LAMBDA_NON_FIELD_SOURCE: &str = r#"
+field def disp_neg : Length -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [10.0, 20.0, 50.0] } }
+
+structure def WorstCaseNegativesFixture {
+    let cases = map{"a" => disp_neg}
+    let mcr = map{"cases" => cases}
+    let lambda_non_field = worst_case(mcr, |f| 42)
+}
+"#;
+
+/// Pins the non-Field lambda-return guard in `eval_worst_case_dispatch`:
+/// `worst_case(mcr, |f| 42)` must return `Value::Undef` because `compute_max`
+/// returns Undef on the scalar `42`, `as_f64()` returns None, the single case
+/// is skipped, and with no case yielding a finite max the function returns
+/// `Value::Undef`.
+#[test]
+fn worst_case_lambda_returns_non_field_returns_undef() {
+    check_worst_case_negative(WORST_CASE_LAMBDA_NON_FIELD_SOURCE, "lambda_non_field", "worst_case(mcr, |f| 42) — lambda returns non-Field");
 }
 
 /// Stage-2 readiness probe: verify that the `MultiCaseResult(...)` and
