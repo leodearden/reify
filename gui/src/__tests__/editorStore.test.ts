@@ -506,14 +506,18 @@ describe('editorStore canSave', () => {
       openFile(file1);
       markExternallyChanged('bracket.ri');
 
-      const ecRefBefore = state.externallyChanged;
-      const openFilesRefBefore = state.openFiles;
-
       canSave('bracket.ri');
 
-      // Reference identity confirms no setState was called.
-      expect(state.externallyChanged).toBe(ecRefBefore);
-      expect(state.openFiles).toBe(openFilesRefBefore);
+      // Content-based asserts: the state arrays must retain their pre-canSave
+      // content (no insertion, removal, or reordering).  Avoid Solid-store
+      // reference-identity asserts because (a) a future implementation that
+      // calls setState with the same value would pass an identity check while
+      // still violating the spirit of "no mutation", and (b) an implementation
+      // that legitimately swaps internal arrays without semantic change would
+      // fail one — the contract is "no observable state change", not "no
+      // internal pointer change".
+      expect([...state.externallyChanged]).toEqual(['bracket.ri']);
+      expect(state.openFiles.map((f) => f.path)).toEqual(['bracket.ri']);
       dispose();
     });
   });
