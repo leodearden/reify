@@ -228,9 +228,8 @@ pub fn apply_mpc_row_elimination(
             }
             let start = row_ptr[j];
             let end = row_ptr[j + 1];
-            // Find K[j][p].  Err → no stored entry → skip entirely.
-            let Ok(rel) = col_idx[start..end].binary_search(&p) else { continue };
-            let kjp_store_idx = start + rel;
+            // Find K[j][p].  None → no stored entry → skip entirely.
+            let Some(kjp_store_idx) = find_in_row(col_idx, start, end, p) else { continue };
             let kjp = vals[kjp_store_idx];
             // K[j][p] IS stored (possibly as a structural zero).  Run the
             // redistribution-target lookup regardless of kjp's value so that
@@ -241,14 +240,13 @@ pub fn apply_mpc_row_elimination(
             }
             // For each i > 0: K[j][dofs[i]] += K[j][p] · αᵢ (assert target exists)
             for (i, (&di, &ai)) in other_dofs.iter().zip(alphas.iter()).enumerate() {
-                match col_idx[start..end].binary_search(&di) {
-                    Ok(rel) => {
-                        let idx = start + rel;
+                match find_in_row(col_idx, start, end, di) {
+                    Some(idx) => {
                         if kjp != 0.0 {
                             vals[idx] += kjp * ai;
                         }
                     }
-                    Err(_) => panic!(
+                    None => panic!(
                         "MpcRow apply: missing K[{}][{}] entry — required for redistribution \
                          K[j][dofs[{}]] += K[j][p]·α; ensure assembly pre-allocates this entry",
                         j, di, i + 1,
@@ -264,20 +262,18 @@ pub fn apply_mpc_row_elimination(
         let start_p = row_ptr[p];
         let end_p = row_ptr[p + 1];
         // Set diagonal K[p][p] = 1.
-        match col_idx[start_p..end_p].binary_search(&p) {
-            Ok(rel) => vals[start_p + rel] = 1.0,
-            Err(_) => panic!(
+        match find_in_row(col_idx, start_p, end_p, p) {
+            Some(idx) => vals[idx] = 1.0,
+            None => panic!(
                 "MpcRow apply: missing K[{p}][{p}] diagonal entry — required to set pivot \
                  equation K[p][p] = 1; ensure assembly pre-allocates the diagonal",
             ),
         }
         // Set K[p][dofs[i]] = -αᵢ.
         for (i, (&di, &ai)) in other_dofs.iter().zip(alphas.iter()).enumerate() {
-            match col_idx[start_p..end_p].binary_search(&di) {
-                Ok(rel) => {
-                    vals[start_p + rel] = -ai;
-                }
-                Err(_) => panic!(
+            match find_in_row(col_idx, start_p, end_p, di) {
+                Some(idx) => vals[idx] = -ai,
+                None => panic!(
                     "MpcRow apply: missing K[{p}][{}] entry — required to set pivot equation \
                      K[p][dofs[{}]] = -αᵢ; ensure assembly pre-allocates this entry",
                     di, i + 1,
@@ -288,6 +284,15 @@ pub fn apply_mpc_row_elimination(
         // Step 4: pin RHS.
         f[p] = beta;
     }
+}
+
+/// Returns the absolute slot index in `col_idx` (and the matching `vals` slot)
+/// for the stored entry at column `target` within CSR row `[start, end)`, or
+/// `None` if the column is not stored.  Requires sorted column indices within
+/// the row (faer `SymbolicSparseRowMat` soft invariant).
+#[inline]
+fn find_in_row(col_idx: &[usize], start: usize, end: usize, target: usize) -> Option<usize> {
+    col_idx[start..end].binary_search(&target).ok().map(|rel| start + rel)
 }
 
 /// One linear multi-point constraint row of the form
