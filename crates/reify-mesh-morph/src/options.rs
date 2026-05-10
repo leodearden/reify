@@ -144,6 +144,25 @@ mod tests {
         assert_eq!(opts.laplacian_iterations, 8);
     }
 
+    /// Compile-fence: exhaustive no-wildcard match over all three [`StiffnessRule`]
+    /// variants. Adding, removing, or renaming a variant breaks compilation
+    /// immediately — mirrors `elasticity_failure_variants_construct_and_pattern_match_exhaustively`
+    /// (elasticity.rs:537-556) and `morph_failure_four_variants_*` below.
+    #[test]
+    fn stiffness_rule_variants_construct_and_pattern_match_exhaustively() {
+        let uniform = StiffnessRule::Uniform;
+        let inv_vol = StiffnessRule::InverseVolume;
+        let inv_edge_l_sq = StiffnessRule::InverseEdgeLengthSquared;
+
+        for rule in [&uniform, &inv_vol, &inv_edge_l_sq] {
+            match rule {
+                StiffnessRule::Uniform => {}
+                StiffnessRule::InverseVolume => {}
+                StiffnessRule::InverseEdgeLengthSquared => {}
+            }
+        }
+    }
+
     #[test]
     fn morph_failure_four_variants_construct_and_pattern_match_exhaustively() {
         let ineligible = MorphFailure::Ineligible(Reason::StructuralChange);
