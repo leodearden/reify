@@ -239,7 +239,7 @@ describe('StatusBar tessellation diagnostics', () => {
     expect(badge.getAttribute('type')).toBe('button');
   });
 
-  it('tessellation badge aria-label shows merged total of compile + tessellation counts', () => {
+  it('tessellation badge aria-label identifies pipeline and count (not merged total)', () => {
     render(() => (
       <StatusBar
         evalStatus={{ phase: 'idle' }}
@@ -251,9 +251,8 @@ describe('StatusBar tessellation diagnostics', () => {
     ));
     const badge = screen.getByTestId('tessellation-errors');
     const label = badge.getAttribute('aria-label') ?? '';
-    expect(label).toMatch(/^Show diagnostics \(\d+ total\)$/);
-    // Total is 1 + 2 = 3
-    expect(label).toBe('Show diagnostics (3 total)');
+    // Shows only tessellation count so SR users can distinguish it from the compile button
+    expect(label).toBe('Show 1 tessellation diagnostics');
   });
 });
 
@@ -362,7 +361,7 @@ describe('StatusBar compile diagnostics', () => {
     expect(badge.getAttribute('type')).toBe('button');
   });
 
-  it('compile badge aria-label shows merged total of compile + tessellation counts', () => {
+  it('compile badge aria-label identifies pipeline and count (not merged total)', () => {
     render(() => (
       <StatusBar
         evalStatus={{ phase: 'idle' }}
@@ -374,9 +373,8 @@ describe('StatusBar compile diagnostics', () => {
     ));
     const badge = screen.getByTestId('diagnostics-count');
     const label = badge.getAttribute('aria-label') ?? '';
-    expect(label).toMatch(/^Show diagnostics \(\d+ total\)$/);
-    // Total is 2 + 1 = 3
-    expect(label).toBe('Show diagnostics (3 total)');
+    // Shows only compile count so SR users can distinguish it from the tessellation button
+    expect(label).toBe('Show 2 compile diagnostics');
   });
 });
 
