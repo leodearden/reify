@@ -20,11 +20,77 @@
 use reify_solver_elastic::{
     AssemblyElement, AssemblyMode, CgSolverOptions, DirichletBc, ElementOrder, ElementStiffness,
     IsotropicElastic, SolverMode, apply_dirichlet_row_elimination, assemble_global_stiffness,
-    element_stiffness, solve_cg,
+    element_stiffness, solve_cg, tet_volume_p1,
 };
 use reify_types::{ElementOrderTag, VolumeMesh};
 
+use crate::options::StiffnessRule;
 use crate::MorphOptions;
+
+// ── Spatially-varying stiffness helpers ───────────────────────────────────────
+
+/// ε guard for degenerate tets: divisor is clamped to at least this value so
+/// that E_e stays finite even when V_e = 0 or all edges coincide. Mirrors the
+/// `MIN_JACOBIAN_DET = 1.0e-30` precedent in
+/// `reify-solver-elastic/src/result.rs:39`. PRD task #21 will replace this
+/// placeholder with a mesh-scale-aware degeneracy detector and structured
+/// error variant; until then we fail-finite-but-garbage on degenerate input.
+const MIN_VOLUME: f64 = 1.0e-30;
+
+/// Analogous ε guard for the `InverseEdgeLengthSquared` rule.
+const MIN_LENGTH_SQ: f64 = 1.0e-30;
+
+/// Average of the 6 squared edge lengths of a P1 tet.
+///
+/// Edges: (0,1), (0,2), (0,3), (1,2), (1,3), (2,3) — all 6 pairs of the 4
+/// vertices. Using the **mean** (not max) keeps sliver tets with one extreme
+/// edge from dominating; it is also invariant to vertex ordering.
+///
+/// The result is guaranteed ≥ 0. It equals 0.0 only when all four vertices
+/// are coincident (a fully degenerate tet). Callers clamp with `MIN_LENGTH_SQ`
+/// before using as a divisor.
+#[inline]
+fn mean_squared_edge_length(phys: &[[f64; 3]; 4]) -> f64 {
+    let edges: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
+    let sum: f64 = edges
+        .iter()
+        .map(|&(i, j)| {
+            let dx = phys[i][0] - phys[j][0];
+            let dy = phys[i][1] - phys[j][1];
+            let dz = phys[i][2] - phys[j][2];
+            dx * dx + dy * dy + dz * dz
+        })
+        .sum();
+    sum / 6.0
+}
+
+/// Compute the element-local Young's modulus for the given `rule`.
+///
+/// - `Uniform`: returns `e_base` unchanged — bit-identical to the task #7
+///   baseline.
+/// - `InverseVolume`: returns `e_base / max(V_e, MIN_VOLUME)` where
+///   `V_e = tet_volume_p1(phys)`.
+/// - `InverseEdgeLengthSquared`: returns `e_base /
+///   max(mean_squared_edge_length(phys), MIN_LENGTH_SQ)`.
+///
+/// Because the homogeneous BVP `K · u = 0` is invariant under uniform E
+/// rescaling, only the **ratios** E_i/E_j across elements affect the solution.
+/// The absolute base value `e_base` cancels; it is preserved here so that
+/// `Uniform` remains a no-op alias for the shared material in task #7.
+#[inline]
+fn per_element_youngs_modulus(rule: StiffnessRule, phys: &[[f64; 3]; 4], e_base: f64) -> f64 {
+    match rule {
+        StiffnessRule::Uniform => e_base,
+        StiffnessRule::InverseVolume => {
+            let v = tet_volume_p1(phys).max(MIN_VOLUME);
+            e_base / v
+        }
+        StiffnessRule::InverseEdgeLengthSquared => {
+            let l_sq = mean_squared_edge_length(phys).max(MIN_LENGTH_SQ);
+            e_base / l_sq
+        }
+    }
+}
 
 // ── ElasticityFailure ────────────────────────────────────────────────────────
 
@@ -139,11 +205,6 @@ pub fn elasticity_morph(
     let n_nodes = old_mesh.vertices.len() / 3;
     let n_elements = old_mesh.tet_indices.len() / 4;
 
-    let material = IsotropicElastic {
-        youngs_modulus: options.fictitious_youngs_modulus_base,
-        poisson_ratio: options.fictitious_poisson_ratio,
-    };
-
     // Per-element data — Vec storage keeps `ElementStiffness` and
     // connectivity buffers alive for the `AssemblyElement` borrows.
     let mut k_elements: Vec<ElementStiffness> = Vec::with_capacity(n_elements);
@@ -161,7 +222,22 @@ pub fn elasticity_morph(
             old_mesh.vertex_f64(tet[2]).unwrap_or([0.0; 3]),
             old_mesh.vertex_f64(tet[3]).unwrap_or([0.0; 3]),
         ];
-        let k_e = element_stiffness(ElementOrder::P1, &phys, &material);
+        // Per-element Young's modulus: the stiffness_rule controls how E_e is
+        // derived from e_base. K_e = ∫ BᵀDB dV is linear in E (D is linear in
+        // E), so scaling E elementwise is exactly equivalent to scaling K_e
+        // elementwise — the existing element_stiffness API is reused unchanged.
+        // The single shared IsotropicElastic from task #7 is replaced by a
+        // per-tet construct; only E changes per element, ν stays uniform.
+        let e_e = per_element_youngs_modulus(
+            options.stiffness_rule,
+            &phys,
+            options.fictitious_youngs_modulus_base,
+        );
+        let material_e = IsotropicElastic {
+            youngs_modulus: e_e,
+            poisson_ratio: options.fictitious_poisson_ratio,
+        };
+        let k_e = element_stiffness(ElementOrder::P1, &phys, &material_e);
         k_elements.push(k_e);
         connectivities.push([
             tet[0] as usize,
