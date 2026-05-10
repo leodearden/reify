@@ -113,6 +113,17 @@
   overflow: visible;
 }
 
+.chartAxisLabel {
+  font-size: 10px;
+  fill: var(--text-muted, #888);
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+}
+
+.chartLine {
+  stroke: var(--accent, #4a9eff);
+  stroke-width: 1.5;
+}
+
 /* ── Sparkline rows ─────────────────────────────────────────────────── */
 
 .sparklineRow {
