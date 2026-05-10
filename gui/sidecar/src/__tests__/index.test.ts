@@ -519,7 +519,7 @@ describe('main() startup landlock probe (task 3281)', () => {
       const input = new PassThrough();
       const output = new PassThrough();
       const mainPromise = main(input, output);
-      // ready is emitted by session.init(), which runs AFTER Promise.all([start, probe]) resolves.
+      // ready is emitted by session.init(), which runs AFTER Promise.allSettled([start, probe]) resolves.
       // By the time ready is observed, probe must have been called and its result resolved.
       await waitForMessage(output, (m) => m.type === 'ready');
       expect(vi.mocked(probeLandlockAsync)).toHaveBeenCalledOnce();
@@ -594,24 +594,37 @@ describe('main() startup landlock probe (task 3281)', () => {
     }
   });
 
-  // (f) probeLandlockAsync rejects (unexpected) → structured error emitted and main() returns
-  // probeLandlockAsync should never reject in production (all errors resolve to false),
-  // but the contract for what happens if it does is locked here: an 'error' outbound is
-  // emitted and main() exits — analogous to permission-server start failure handling.
-  it('(f) probeLandlockAsync rejects → structured error outbound is emitted and main() exits', async () => {
+  // (f) probeLandlockAsync rejection (impossible per contract) → main() resolves normally with
+  // landlockAvailable=false (regression guard for dead-branch removal).
+  // probeLandlockAsync's contract (sandbox.ts) guarantees no rejection — every error path resolves
+  // to false. If the contract is ever violated by a future regression, main() must fall back to
+  // landlockAvailable=false (not emit an error). This test pins that invariant.
+  it('(f) probeLandlockAsync rejects (contract violation) → main() emits ready with landlockAvailable=false', async () => {
     const origLe = process.env.REIFY_LANDLOCK_EXEC;
     process.env.REIFY_LANDLOCK_EXEC = '/sb/le.py';
     vi.mocked(probeLandlockAsync).mockRejectedValue(new Error('unexpected probe failure'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
       const input = new PassThrough();
       const output = new PassThrough();
-      // Run main() and waitForMessage concurrently — main() emits an 'error' then returns.
-      const [errorMsg] = await Promise.all([
-        waitForMessage(output, (m) => m.type === 'error'),
-        main(input, output),
-      ]);
-      expect(errorMsg).toMatchObject({ type: 'error' });
+      const mainPromise = main(input, output);
+      // main() must emit 'ready' (not 'error') even when probe rejects
+      await waitForMessage(output, (m) => m.type === 'ready');
+      // Contract violation must be logged to stderr (console.warn) for observability
+      expect(warnSpy).toHaveBeenCalledWith(
+        'Landlock probe contract violation:',
+        expect.stringContaining('unexpected probe failure')
+      );
+      // Trigger an invokeSdk to inspect what wrapClaudeArgs received
+      await triggerInvokeSdk(input);
+      expect(vi.mocked(wrapClaudeArgs)).toHaveBeenCalled();
+      // Safe-default: landlockAvailable=false → landlockExec arg must be undefined
+      const leArg = vi.mocked(wrapClaudeArgs).mock.calls[0][2];
+      expect(leArg).toBeUndefined();
+      input.end();
+      await mainPromise;
     } finally {
+      warnSpy.mockRestore();
       if (origLe === undefined) delete process.env.REIFY_LANDLOCK_EXEC;
       else process.env.REIFY_LANDLOCK_EXEC = origLe;
     }
@@ -653,7 +666,7 @@ describe('main() startup landlock probe (task 3281)', () => {
 
       // Concurrency assertion: probe-begin appears BEFORE start-end.
       // Sequential order would be: [start-begin, start-end, probe-begin, probe-end].
-      // Concurrent (Promise.all) order: [start-begin, probe-begin, ..., start-end, probe-end].
+      // Concurrent (Promise.allSettled) order: [start-begin, probe-begin, ..., start-end, probe-end].
       const probeBeginIdx = callOrder.indexOf('probe-begin');
       const startEndIdx = callOrder.indexOf('start-end');
       expect(probeBeginIdx).toBeLessThan(startEndIdx);
