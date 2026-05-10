@@ -245,6 +245,7 @@ pub mod boundary;
 pub mod constitutive;
 pub mod elements;
 pub mod interpolation;
+pub mod mesher;
 pub mod mpc;
 pub mod progressive;
 pub mod result;
