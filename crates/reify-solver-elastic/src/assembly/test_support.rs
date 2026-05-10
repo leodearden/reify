@@ -99,6 +99,13 @@ pub(crate) fn run_element_stiffness_tests(
     make_phys: &dyn Fn(f64) -> Vec<[f64; 3]>,
     spec: ElementStiffnessTestSpec,
 ) {
+    assert_eq!(
+        spec.n_dofs,
+        3 * spec.n_nodes,
+        "n_dofs must equal 3 * n_nodes (got n_dofs={}, n_nodes={})",
+        spec.n_dofs,
+        spec.n_nodes,
+    );
     let n_dofs = spec.n_dofs;
     let n_nodes = spec.n_nodes;
     let vol_ref = spec.vol_ref;
