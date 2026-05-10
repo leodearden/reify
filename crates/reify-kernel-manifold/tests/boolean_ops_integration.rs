@@ -141,4 +141,13 @@ fn boolean_ops_round_trip_via_factory_and_geometry_kernel_trait_object() {
         "max x-coordinate of u ∩ d must be ≤ 0.5 (d's x-slab bound); got {max_x:.6} — \
          if this is ~1.5, Intersection returned u instead of d",
     );
+    // Lower-bound pin: result must actually fill d's full slab up to x=0.5,
+    // not collapse to a degenerate sliver near x=0. Catches a hypothetical
+    // regression where Intersection returns a near-empty result that still
+    // passes the nonempty-mesh and upper-bound checks.
+    assert!(
+        max_x >= 0.5 - 1e-4,
+        "max x-coordinate of u ∩ d must reach d's far face at 0.5; got {max_x:.6} — \
+         if max_x ≪ 0.5, Intersection produced a degenerate sliver",
+    );
 }

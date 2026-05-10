@@ -758,9 +758,11 @@ mod tests {
     /// `cfg(test)` — the gating predicate `cfg(any(test, feature =
     /// "test-fixtures"))` is satisfied by `cfg(test)` alone.
     ///
-    /// **RED state:** fails to compile against the current `store_mesh_for_test`
-    /// signature (which returns `GeometryHandleId`, not `Result`). Step-2
-    /// (GREEN) fixes the signature.
+    /// Pins the post-conversion `Result` contract: `store_mesh_for_test`
+    /// previously returned `GeometryHandleId` and panicked on bad input;
+    /// task 3186 step-2 (GREEN) converted the signature to
+    /// `Result<GeometryHandleId, GeometryError>`. This test is GREEN as
+    /// merged — see git history for the RED→GREEN transition.
     #[test]
     fn store_mesh_for_test_with_invalid_mesh_returns_err_operation_failed() {
         let mut kernel = ManifoldKernel::new();
