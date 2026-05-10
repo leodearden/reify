@@ -4460,6 +4460,7 @@ dependencies = [
  "serde",
  "tempfile",
  "tracing",
+ "xxhash-rust",
  "zstd",
 ]
 
