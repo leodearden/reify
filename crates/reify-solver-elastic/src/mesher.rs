@@ -149,6 +149,47 @@ impl Default for Mesh2dOptions {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Pure-Rust quality helpers
+// ---------------------------------------------------------------------------
+
+/// Compute the maximum per-corner skew of a 4-node quad.
+///
+/// Returns `max_i |angle_i - \u{3c0}/2|` over the four interior corners. For
+/// a perfect square this is 0.0; for a 30°-leaning parallelogram it is
+/// \u{3c0}/6; for a near-collapsed corner it approaches \u{3c0}/2.
+///
+/// Skew is sign-agnostic: the same value is returned regardless of whether
+/// the input quad is in CCW or CW order. Each corner is computed via the
+/// unsigned interior angle `atan2(|cross|, dot)` on the prev/next edge
+/// vectors emanating from that corner.
+///
+/// Pure function, no allocation, no Gmsh dependency — unit-testable in
+/// stub builds.
+pub fn compute_quad_skew(quad: &[[f64; 2]; 4]) -> f64 {
+    let half_pi = std::f64::consts::FRAC_PI_2;
+    let mut max_dev: f64 = 0.0;
+    for i in 0..4 {
+        let prev = quad[(i + 3) % 4];
+        let curr = quad[i];
+        let next = quad[(i + 1) % 4];
+        // Edge vectors from `curr` to its prev and next neighbours.
+        let e_prev = [prev[0] - curr[0], prev[1] - curr[1]];
+        let e_next = [next[0] - curr[0], next[1] - curr[1]];
+        let dot = e_prev[0] * e_next[0] + e_prev[1] * e_next[1];
+        let cross = e_prev[0] * e_next[1] - e_prev[1] * e_next[0];
+        // `atan2(|cross|, dot)` yields the unsigned interior angle in
+        // [0, \u{3c0}]; degenerate (zero-length edge) returns 0.0 which
+        // gives |0 - \u{3c0}/2| = \u{3c0}/2 — the correct "very bad" score.
+        let angle = cross.abs().atan2(dot);
+        let dev = (angle - half_pi).abs();
+        if dev > max_dev {
+            max_dev = dev;
+        }
+    }
+    max_dev
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
