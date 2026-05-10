@@ -867,6 +867,47 @@ fn write_loft_face_generated_attributes(
     Ok(())
 }
 
+/// Kernel-epsilon-tight tolerance (1 nm, 1e-9 m) for the construction-time
+/// local-index-reassignment fragility detector.
+///
+/// Squared-distance comparison vs `LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M *
+/// LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M`: pairs of `(feature_id, role)`-peer
+/// centroids closer than this are flagged as geometrically tied. Real CAD
+/// designs almost never have features tied to that precision, so false
+/// positives are minimal.
+///
+/// **Per-realization tolerance threading is deferred** to a follow-up task
+/// (see #2654 design decisions); when that lands, this constant becomes the
+/// default and the realization-specific tolerance overrides it at the call
+/// site. Keeping it as a single named constant means that threading change
+/// is one-line, not a 7-caller mechanical rewrite.
+pub const LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M: f64 = 1e-9;
+
+/// Stable sort key for `Role` that does NOT depend on `Debug` output.
+///
+/// The Rust API guidelines mark `Debug` as "not stable for serialization",
+/// and this module uses the sort key only to keep diagnostic emission order
+/// deterministic — a downstream rename / shape-change of `Role` must not
+/// silently reorder warnings. Each variant gets an explicit u32 here; new
+/// variants must be appended (assigning a fresh discriminant) rather than
+/// inserted between existing ones.
+fn role_sort_discriminant(role: &Role) -> u32 {
+    match role {
+        Role::Cap(CapKind::Top) => 0,
+        Role::Cap(CapKind::Bottom) => 1,
+        Role::Cap(CapKind::Start) => 2,
+        Role::Cap(CapKind::End) => 3,
+        Role::Side => 4,
+        Role::NewEdge => 5,
+        Role::RevolvedFace => 6,
+        Role::AxisFace => 7,
+        Role::SweptFace => 8,
+        Role::LoftedFace => 9,
+        Role::MidSurfaceFace => 10,
+        Role::MidSurfaceEdge => 11,
+    }
+}
+
 /// Emit `TopologyAttributeLocalIndexReassigned` Warnings for groups of
 /// topology-attribute entries whose centroids are geometrically tied within
 /// `tol_m`, signalling that the kernel's enumeration order — and therefore
@@ -932,47 +973,6 @@ fn write_loft_face_generated_attributes(
 /// This helper does NOT regress the realization to Failed under any condition:
 /// it only appends Warnings. Auxiliary metadata MUST NOT regress to Failed —
 /// the realization is primary, attribute fragility detection is supplementary.
-/// Kernel-epsilon-tight tolerance (1 nm, 1e-9 m) for the construction-time
-/// local-index-reassignment fragility detector.
-///
-/// Squared-distance comparison vs `LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M *
-/// LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M`: pairs of `(feature_id, role)`-peer
-/// centroids closer than this are flagged as geometrically tied. Real CAD
-/// designs almost never have features tied to that precision, so false
-/// positives are minimal.
-///
-/// **Per-realization tolerance threading is deferred** to a follow-up task
-/// (see #2654 design decisions); when that lands, this constant becomes the
-/// default and the realization-specific tolerance overrides it at the call
-/// site. Keeping it as a single named constant means that threading change
-/// is one-line, not a 7-caller mechanical rewrite.
-pub const LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M: f64 = 1e-9;
-
-/// Stable sort key for `Role` that does NOT depend on `Debug` output.
-///
-/// The Rust API guidelines mark `Debug` as "not stable for serialization",
-/// and this module uses the sort key only to keep diagnostic emission order
-/// deterministic — a downstream rename / shape-change of `Role` must not
-/// silently reorder warnings. Each variant gets an explicit u32 here; new
-/// variants must be appended (assigning a fresh discriminant) rather than
-/// inserted between existing ones.
-fn role_sort_discriminant(role: &Role) -> u32 {
-    match role {
-        Role::Cap(CapKind::Top) => 0,
-        Role::Cap(CapKind::Bottom) => 1,
-        Role::Cap(CapKind::Start) => 2,
-        Role::Cap(CapKind::End) => 3,
-        Role::Side => 4,
-        Role::NewEdge => 5,
-        Role::RevolvedFace => 6,
-        Role::AxisFace => 7,
-        Role::SweptFace => 8,
-        Role::LoftedFace => 9,
-        Role::MidSurfaceFace => 10,
-        Role::MidSurfaceEdge => 11,
-    }
-}
-
 pub fn detect_local_index_reassignment_diagnostics(
     handles_with_attrs: &[(GeometryHandleId, &TopologyAttribute)],
     centroids: &HashMap<GeometryHandleId, [f64; 3]>,
