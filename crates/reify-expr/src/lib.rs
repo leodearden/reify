@@ -4538,4 +4538,33 @@ mod tests {
         }
     }
 
+    /// `eval_worst_case_dispatch` must return `Value::Undef` for any call with
+    /// fewer or more than 2 arguments — the silent-Undef discipline.
+    ///
+    /// The inline dispatch arm (lib.rs line 444) already guards
+    /// `evaluated_args.len() == 2`, so normal call paths never hit this
+    /// branch. The test calls the private function directly to pin the
+    /// internal guard that protects against a future second call site that
+    /// forgets the arity check.
+    #[test]
+    fn eval_worst_case_dispatch_wrong_arity_returns_undef() {
+        let values = ValueMap::new();
+        let ctx = EvalContext::simple(&values);
+        let v = Value::Undef;
+
+        for (n, args) in [
+            (0usize, vec![]),
+            (1, vec![v.clone()]),
+            (3, vec![v.clone(), v.clone(), v.clone()]),
+        ] {
+            let result = eval_worst_case_dispatch(&args, &ctx);
+            assert!(
+                result.is_undef(),
+                "wrong-arity len {} must return Undef, got {:?}",
+                n,
+                result
+            );
+        }
+    }
+
 }
