@@ -89,3 +89,102 @@ fn box_mesh_fixture_returns_valid_p1_mesh_with_expected_counts_and_positive_volu
         );
     }
 }
+
+// ── Step-5: plate_with_hole fixture validity ──────────────────────────────────
+
+#[test]
+fn plate_with_hole_fixture_returns_valid_p1_mesh_with_hole_at_center_and_positive_volume_tets() {
+    use reify_mesh_morph::{MorphOptions, QualityVerdict, quality_check};
+    use reify_types::ElementOrderTag;
+
+    let side = 1.0;
+    let hole_diameter = 0.3;
+    let thickness = 0.1;
+    let (mesh, surface_indices) = fixtures::plate_with_hole(side, hole_diameter, thickness, 4, 2);
+
+    assert_eq!(
+        mesh.element_order,
+        ElementOrderTag::P1,
+        "plate_with_hole must return a P1 mesh"
+    );
+    assert_eq!(
+        mesh.vertices.len() % 3,
+        0,
+        "vertices must be a flat triple-stride buffer"
+    );
+    assert_eq!(
+        mesh.tet_indices.len() % 4,
+        0,
+        "tet_indices must be a flat 4-tuple-stride buffer (P1 tets)"
+    );
+    assert!(
+        !mesh.tet_indices.is_empty(),
+        "plate_with_hole must produce at least one tet"
+    );
+
+    // No tet may be inverted (right-handed connectivity contract).
+    let permissive = MorphOptions {
+        quality_floor_min_scaled_jacobian: 0.0,
+        quality_floor_pct_below_025: 1.01,
+        quality_aspect_ratio_factor_max: f64::INFINITY,
+        ..MorphOptions::default()
+    };
+    let verdict = quality_check(&mesh, &mesh, &permissive);
+    assert!(
+        !matches!(verdict, QualityVerdict::HardFail(_)),
+        "every tet must be right-handed (no inversions); got {verdict:?}"
+    );
+
+    // No vertex may lie inside the hole's radial cylinder. The plate is
+    // centered at (side/2, side/2) with the hole at the same xy center.
+    let hole_radius = hole_diameter / 2.0;
+    let cx = side / 2.0;
+    let cy = side / 2.0;
+    // Allow a small numerical slop because hole-boundary vertices sit at
+    // exactly r = hole_radius (subject to f32 rounding).
+    let tol = 1e-5_f32;
+    let n_vertices = mesh.vertices.len() / 3;
+    for v in 0..n_vertices {
+        let x = mesh.vertices[v * 3] as f64;
+        let y = mesh.vertices[v * 3 + 1] as f64;
+        let r2 = (x - cx).powi(2) + (y - cy).powi(2);
+        let r = r2.sqrt();
+        assert!(
+            r as f32 + tol >= hole_radius as f32,
+            "vertex {v} at ({x:.5},{y:.5}) is inside hole (r={r:.5} < hole_radius={hole_radius:.5})"
+        );
+    }
+
+    // Surface indices: must include nodes on the outer rim AND the inner
+    // (hole) rim. Outer-rim test: at least one surface index has x or y at
+    // the plate boundary. Inner-rim test: at least one surface index sits at
+    // r ≈ hole_radius from the plate center.
+    assert!(
+        !surface_indices.is_empty(),
+        "surface_node_indices must be non-empty"
+    );
+    let mut saw_outer_rim = false;
+    let mut saw_inner_rim = false;
+    let outer_tol = 1e-5_f32;
+    let inner_tol = 1e-3_f32;
+    for &idx in &surface_indices {
+        let v = idx as usize;
+        let x = mesh.vertices[v * 3];
+        let y = mesh.vertices[v * 3 + 1];
+        if x.abs() < outer_tol
+            || (x - side as f32).abs() < outer_tol
+            || y.abs() < outer_tol
+            || (y - side as f32).abs() < outer_tol
+        {
+            saw_outer_rim = true;
+        }
+        let dx = x as f64 - cx;
+        let dy = y as f64 - cy;
+        let r = (dx * dx + dy * dy).sqrt();
+        if (r - hole_radius).abs() < inner_tol as f64 {
+            saw_inner_rim = true;
+        }
+    }
+    assert!(saw_outer_rim, "surface_node_indices must include outer-rim nodes");
+    assert!(saw_inner_rim, "surface_node_indices must include inner-rim (hole) nodes");
+}
