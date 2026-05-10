@@ -27,6 +27,14 @@ impl<K: Clone + Hash + Eq, V: Clone> PersistentMap<K, V> {
         self.inner.get(key)
     }
 
+    /// Look up a mutable reference to a value by key. Uses `im::HashMap`'s
+    /// copy-on-write semantics: if the underlying trie node is shared with
+    /// another (cloned) map, it is cloned before the mutable borrow is
+    /// returned, preserving structural-sharing invariants for siblings.
+    pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
+        self.inner.get_mut(key)
+    }
+
     /// Insert a key-value pair, mutating in place (but sharing structure on clone).
     pub fn insert(&mut self, key: K, value: V) {
         self.inner.insert(key, value);
@@ -248,6 +256,23 @@ mod tests {
         let debug_str = format!("{:?}", map);
         assert!(debug_str.contains("key"));
         assert!(debug_str.contains("42"));
+    }
+
+    #[test]
+    fn get_mut_returns_mutable_reference() {
+        let mut map = PersistentMap::new();
+        map.insert("key".to_string(), 42);
+        {
+            let val = map.get_mut(&"key".to_string()).unwrap();
+            *val = 99;
+        }
+        assert_eq!(map.get(&"key".to_string()), Some(&99));
+    }
+
+    #[test]
+    fn get_mut_missing_key_returns_none() {
+        let mut map: PersistentMap<String, i32> = PersistentMap::new();
+        assert!(map.get_mut(&"missing".to_string()).is_none());
     }
 
     #[test]

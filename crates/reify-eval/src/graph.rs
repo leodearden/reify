@@ -154,6 +154,11 @@ pub struct EvaluationGraph {
     pub constraints: PersistentMap<ConstraintNodeId, ConstraintNodeData>,
     pub realizations: PersistentMap<RealizationNodeId, RealizationNodeData>,
     pub resolutions: PersistentMap<ResolutionNodeId, ResolutionNodeData>,
+    /// Compute nodes (P3.1+). Keyed by ComputeNodeId; the field name is
+    /// `computations` (not `compute_nodes`) to avoid colliding with the
+    /// PRD-mandated `compute_nodes()` iterator method name. See design
+    /// decision in `.task/plan.json`.
+    pub computations: PersistentMap<ComputeNodeId, ComputeNodeData>,
     /// Guarded groups with conditional membership.
     pub guarded_groups: Vec<GuardedGroupInfo>,
     /// ValueCellIds whose boolean value controls topology (guard cells).
@@ -500,6 +505,29 @@ impl EvaluationGraph {
         }
 
         graph
+    }
+
+    /// Insert a ComputeNode into the graph. Returns the node's `ComputeNodeId`
+    /// (a clone of `data.computation_id`) for caller convenience.
+    ///
+    /// **Note (P3.1 scope):** ComputeNodes are not produced by any builder in
+    /// P3.1 — `from_templates` does not construct them, and the
+    /// `topology_fingerprint` does NOT yet include a ComputeNode bucket. P3.2
+    /// composes `cache_key` and adds the fingerprint bucket; P3.4 wires
+    /// `@optimized` lowering to call this method. See
+    /// `docs/prds/v0_3/compute-node-infrastructure.md`.
+    pub fn insert_compute_node(&mut self, data: ComputeNodeData) -> ComputeNodeId {
+        let id = data.computation_id.clone();
+        self.computations.insert(id.clone(), data);
+        id
+    }
+
+    pub fn get_compute_node(&self, id: &ComputeNodeId) -> Option<&ComputeNodeData> {
+        self.computations.get(id)
+    }
+
+    pub fn get_compute_node_mut(&mut self, id: &ComputeNodeId) -> Option<&mut ComputeNodeData> {
+        self.computations.get_mut(id)
     }
 
     /// Returns `true` iff `id` refers to a value cell present in this graph
