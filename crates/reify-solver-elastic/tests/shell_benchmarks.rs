@@ -1129,8 +1129,6 @@ fn twisted_beam_tip_out_of_plane_load_smoke_test_displacement_is_finite_and_sign
 /// a necessary condition for the assumed-strain projection to be working."
 #[test]
 fn mitc3_thin_shell_pinched_cylinder_does_not_lock_under_decreasing_thickness() {
-    use std::f64::consts::FRAC_PI_2;
-
     // Dimensionless cylinder octant (R=1, L=2 → L/2=1 half-length).
     const R: f64 = 1.0;
     const L: f64 = 2.0;
@@ -1138,27 +1136,7 @@ fn mitc3_thin_shell_pinched_cylinder_does_not_lock_under_decreasing_thickness() 
     const NY: usize = 4; // z-direction divisions
     const P: f64 = 1.0; // total radial load
 
-    // Build the mesh (same topology as cylinder_octant_mesh but with R=1, L=2).
-    let mut nodes = Vec::with_capacity((NX + 1) * (NY + 1));
-    for i in 0..=NY {
-        let z = i as f64 * (L / 2.0) / NY as f64;
-        for j in 0..=NX {
-            let theta = j as f64 * FRAC_PI_2 / NX as f64;
-            nodes.push([R * theta.cos(), R * theta.sin(), z]);
-        }
-    }
-
-    let mut connectivity: Vec<[usize; 3]> = Vec::with_capacity(2 * NX * NY);
-    for i in 0..NY {
-        for j in 0..NX {
-            let a = i * (NX + 1) + j;
-            let b = i * (NX + 1) + (j + 1);
-            let c = (i + 1) * (NX + 1) + j;
-            let d = (i + 1) * (NX + 1) + (j + 1);
-            connectivity.push([a, b, d]);
-            connectivity.push([a, d, c]);
-        }
-    }
+    let (nodes, connectivity) = cylinder_octant_mesh(NX, NY, R, L);
     let n_nodes = nodes.len();
 
     // Build Dirichlet BCs (same logic as the pinched-cylinder test in step-4).
