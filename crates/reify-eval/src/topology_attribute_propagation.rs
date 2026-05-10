@@ -2656,4 +2656,71 @@ mod tests {
             );
         }
     }
+
+    // --- detect_local_index_reassignment_diagnostics (PRD task 4 / #2654) ---
+    //
+    // The helper is pure Rust over (handles_with_attrs, centroid_map): no
+    // OCCT kernel needed. Tests below construct synthetic input slices and
+    // centroid maps, call the helper, and assert on the emitted diagnostics.
+    mod detect_local_index_reassignment {
+        use std::collections::HashMap;
+
+        use reify_types::{
+            FeatureId, GeometryHandleId, ModEntry, Role, SourceSpan, TopologyAttribute,
+        };
+
+        use super::super::detect_local_index_reassignment_diagnostics;
+
+        /// Synthetic span used by every detect_* test — pinning a stable
+        /// (start, end) pair so message assertions can pattern-match against it.
+        fn synthetic_span() -> SourceSpan {
+            SourceSpan::new(10, 20)
+        }
+
+        /// Build a TopologyAttribute with the given (feature_id, role, local_index)
+        /// and an empty mod_history (the non-split case detection covers).
+        fn make_attr(feature: &str, role: Role, local_index: u32) -> TopologyAttribute {
+            TopologyAttribute {
+                feature_id: FeatureId::new(feature),
+                role,
+                local_index,
+                user_label: None,
+                mod_history: Vec::new(),
+            }
+        }
+
+        /// Build a TopologyAttribute with a single ModEntry in mod_history
+        /// (the post-split-cluster case detection must skip).
+        fn make_attr_with_split(
+            feature: &str,
+            role: Role,
+            local_index: u32,
+            split_index: u32,
+        ) -> TopologyAttribute {
+            TopologyAttribute {
+                feature_id: FeatureId::new(feature),
+                role,
+                local_index,
+                user_label: None,
+                mod_history: vec![ModEntry {
+                    splitting_feature_id: FeatureId::new("Cut#realization[1]"),
+                    split_index,
+                }],
+            }
+        }
+
+        #[test]
+        fn detect_local_index_reassignment_emits_no_diagnostic_on_empty_input() {
+            let centroids: HashMap<GeometryHandleId, [f64; 3]> = HashMap::new();
+            let mut diagnostics = Vec::new();
+            detect_local_index_reassignment_diagnostics(
+                &[],
+                &centroids,
+                1e-9,
+                synthetic_span(),
+                &mut diagnostics,
+            );
+            assert!(diagnostics.is_empty());
+        }
+    }
 }
