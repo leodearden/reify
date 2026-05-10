@@ -3281,6 +3281,65 @@ describe('App compile diagnostics end-to-end wiring', () => {
   });
 });
 
+describe('App merged diagnostics rendering', () => {
+  let tessellationDiagnosticsCallback: ((diags: any[]) => void) | undefined;
+  let compileDiagnosticsCallback: ((diags: any[]) => void) | undefined;
+
+  beforeEach(() => {
+    tessellationDiagnosticsCallback = undefined;
+    compileDiagnosticsCallback = undefined;
+    vi.mocked(bridge.onTessellationDiagnostics).mockImplementation(async (cb: any) => {
+      tessellationDiagnosticsCallback = cb;
+      return () => {};
+    });
+    vi.mocked((bridge as any).onCompileDiagnostics).mockImplementation(async (cb: any) => {
+      compileDiagnosticsCallback = cb;
+      return () => {};
+    });
+  });
+
+  it('panel shows both compile and tessellation diagnostic messages when seeded simultaneously', async () => {
+    render(() => <App />);
+    await waitFor(() => {
+      expect(tessellationDiagnosticsCallback).toBeDefined();
+      expect(compileDiagnosticsCallback).toBeDefined();
+    });
+
+    compileDiagnosticsCallback!([
+      {
+        file_path: 'main.ri',
+        line: 2, column: 1, end_line: 2, end_column: 5,
+        severity: 'Warning',
+        message: 'compile warn xyz',
+        code: null,
+      },
+    ]);
+    tessellationDiagnosticsCallback!([
+      {
+        file_path: '<unknown>',
+        line: 1, column: 1, end_line: 1, end_column: 1,
+        severity: 'Error',
+        message: 'tess boom abc',
+        code: null,
+      },
+    ]);
+
+    // Wait for tessellation badge to appear
+    await waitFor(() => {
+      expect(screen.getByTestId('tessellation-errors')).toBeTruthy();
+    });
+
+    // Open the panel via tessellation badge
+    fireEvent.click(screen.getByTestId('tessellation-errors'));
+
+    await waitFor(() => {
+      const panel = screen.getByTestId('diagnostics-panel');
+      expect(panel.textContent).toContain('compile warn xyz');
+      expect(panel.textContent).toContain('tess boom abc');
+    });
+  });
+});
+
 describe('App Escape clears multi-selection', () => {
   it('pressing Escape after multi-selection empties selectedEntities', async () => {
     await renderAndWaitForReady();
