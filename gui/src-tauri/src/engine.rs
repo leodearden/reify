@@ -481,17 +481,7 @@ impl EngineSession {
     ) -> Result<GuiState, String> {
         let (parsed, compiled) = compile_single_file_with_stdlib(source, module_name)
             .map_err(|(msg, diags)| {
-                // Route failure diagnostics to the correct field based on whether a
-                // prior successful compile exists:
-                //   • compiled is None  → cold-start path; store in last_compile_diagnostics
-                //     so build_gui_state's early-return branch surfaces them.
-                //   • compiled is Some  → live-edit path; store in live_compile_diagnostics
-                //     so build_gui_state's non-early-return branch appends them.
-                if self.compiled.is_none() {
-                    self.last_compile_diagnostics = diags;
-                } else {
-                    self.live_compile_diagnostics = diags;
-                }
+                self.record_compile_failure(diags);
                 msg
             })?;
 
@@ -562,11 +552,7 @@ impl EngineSession {
         // committed.  Atomic-commit invariant: see engine.rs:30-44 doc block.
         let (compiled, parsed) = compile_entry_with_imports(path, &source, module_name)
             .map_err(|(msg, diags)| {
-                if self.compiled.is_none() {
-                    self.last_compile_diagnostics = diags;
-                } else {
-                    self.live_compile_diagnostics = diags;
-                }
+                self.record_compile_failure(diags);
                 msg
             })?;
         let check_result = self.engine.check(&compiled);
@@ -613,11 +599,7 @@ impl EngineSession {
             let (compiled, parsed) =
                 compile_entry_with_imports(&entry_path, content, module_name)
                     .map_err(|(msg, diags)| {
-                        if self.compiled.is_none() {
-                            self.last_compile_diagnostics = diags;
-                        } else {
-                            self.live_compile_diagnostics = diags;
-                        }
+                        self.record_compile_failure(diags);
                         msg
                     })?;
             (parsed, compiled)
@@ -626,11 +608,7 @@ impl EngineSession {
             // delegate to compile_single_file_with_stdlib (shared with load_from_source).
             compile_single_file_with_stdlib(content, module_name)
                 .map_err(|(msg, diags)| {
-                    if self.compiled.is_none() {
-                        self.last_compile_diagnostics = diags;
-                    } else {
-                        self.live_compile_diagnostics = diags;
-                    }
+                    self.record_compile_failure(diags);
                     msg
                 })?
         };
@@ -643,6 +621,36 @@ impl EngineSession {
         self.commit_state(parsed, compiled, check_result, module_name, content);
 
         self.build_gui_state()
+    }
+
+    /// Route failure diagnostics to the appropriate stored field based on whether a prior
+    /// successful compile exists at the time of failure.
+    ///
+    /// - `compiled is None` → cold-start path; stores in `last_compile_diagnostics` so
+    ///   `build_gui_state`'s early-return branch can surface them.
+    /// - `compiled is Some` → live-edit path; stores in `live_compile_diagnostics` so
+    ///   `build_gui_state`'s non-early-return branch appends them alongside prior-good-state
+    ///   warnings.
+    ///
+    /// Enforces the at-most-one-non-empty invariant via debug-asserts: when populating
+    /// one field, the other must already be empty (ensured by `commit_state` clearing both
+    /// on every successful parse+compile+check cycle).
+    fn record_compile_failure(&mut self, diags: Vec<DiagnosticInfo>) {
+        if self.compiled.is_none() {
+            debug_assert!(
+                self.live_compile_diagnostics.is_empty(),
+                "live_compile_diagnostics must be empty on cold-start failure \
+                 (compiled is None means no successful compile ever ran)"
+            );
+            self.last_compile_diagnostics = diags;
+        } else {
+            debug_assert!(
+                self.last_compile_diagnostics.is_empty(),
+                "last_compile_diagnostics must be empty on live-edit failure \
+                 (commit_state clears it on every successful cycle)"
+            );
+            self.live_compile_diagnostics = diags;
+        }
     }
 
     /// Atomically commit all session state after a successful parse+compile+check cycle.

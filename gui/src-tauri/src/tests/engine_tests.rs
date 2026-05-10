@@ -6408,8 +6408,8 @@ fn build_gui_state_surfaces_live_compile_failure_after_failed_load_from_source_w
 /// `build_gui_state`'s `compile_diagnostics`.
 ///
 /// Exercises `update_source`'s single-file branch (`compile_single_file_with_stdlib`).
-/// Under current code (after step-2/step-4), this test will fail because the
-/// `update_source` single-file branch still gates on `self.compiled.is_none()`.
+/// Pins the invariant introduced in task 3386: live compile failures on the single-file
+/// path are routed to `live_compile_diagnostics` and surfaced via `build_gui_state`.
 #[test]
 fn build_gui_state_surfaces_live_compile_failure_after_failed_update_source_single_file_with_prior_compile(
 ) {
@@ -6469,8 +6469,8 @@ fn build_gui_state_surfaces_live_compile_failure_after_failed_update_source_sing
 /// `build_gui_state`'s `compile_diagnostics`.
 ///
 /// Exercises `update_source`'s multi-file branch (`compile_entry_with_imports`).
-/// Under current code (after step-2/step-4/step-6), this test will fail because the
-/// `update_source` multi-file branch still gates on `self.compiled.is_none()`.
+/// Pins the invariant introduced in task 3386: live compile failures on the multi-file
+/// path are routed to `live_compile_diagnostics` and surfaced via `build_gui_state`.
 #[test]
 fn build_gui_state_surfaces_live_compile_failure_after_failed_update_source_multi_file_with_prior_compile(
 ) {
@@ -6532,8 +6532,8 @@ fn build_gui_state_surfaces_live_compile_failure_after_failed_update_source_mult
 /// surface the live compile failure in `build_gui_state`'s `compile_diagnostics`.
 ///
 /// Exercises `load_file`'s failure path (`compile_entry_with_imports`).
-/// Under current code (after step-2/step-4/step-6/step-8), this test will fail
-/// because the `load_file` branch still gates on `self.compiled.is_none()`.
+/// Pins the invariant introduced in task 3386: live compile failures via `load_file`
+/// are routed to `live_compile_diagnostics` and surfaced via `build_gui_state`.
 #[test]
 fn build_gui_state_surfaces_live_compile_failure_after_failed_load_file_with_prior_compile() {
     let dir = tempfile::tempdir().expect("tempdir should be created");
@@ -6587,5 +6587,83 @@ fn build_gui_state_surfaces_live_compile_failure_after_failed_load_file_with_pri
             .iter()
             .map(|d| &d.severity)
             .collect::<Vec<_>>()
+    );
+}
+
+/// Pins the documented append-order guarantee: when a live-edit failure occurs while the
+/// prior good compile had warnings, `build_gui_state` surfaces both the prior warnings
+/// **and** the live error in `compile_diagnostics`, with warnings first (from
+/// `get_diagnostics()`) and the live error appended afterwards (from
+/// `live_compile_diagnostics`).
+///
+/// This test verifies the design decision recorded in task 3386: "appending rather than
+/// replacing preserves warnings/info from the last good state; Error entries from
+/// `live_compile_diagnostics` follow them, so frontends sorting by severity will surface
+/// errors first."
+///
+/// Uses `inject_diagnostic_for_test` to plant a synthetic Warning into the compiled module
+/// (without needing a real source that emits warnings) before triggering the live failure.
+#[test]
+fn build_gui_state_surfaces_prior_warning_and_live_error_together_in_append_order() {
+    use reify_types::Diagnostic;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // Establish a successful compiled state.
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("valid source should load successfully");
+
+    // Plant a synthetic Warning into the compiled module so get_diagnostics() returns it.
+    session.inject_diagnostic_for_test(Diagnostic::warning("pre-existing warning from good state"));
+
+    // Trigger a live-edit failure (compiled is Some, so live_compile_diagnostics gets the errors).
+    let _ = session.load_from_source("this is not valid reify syntax {{{}}}", "bad");
+
+    // live_compile_diagnostics must be non-empty from the failure.
+    assert!(
+        !session.live_compile_diagnostics_for_test().is_empty(),
+        "live_compile_diagnostics should be non-empty after failed live edit"
+    );
+
+    // build_gui_state must surface both the prior warning and the live error.
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state should return Ok with the prior good state plus live errors");
+
+    let severities: Vec<&str> = state
+        .compile_diagnostics
+        .iter()
+        .map(|d| d.severity.as_str())
+        .collect();
+
+    // Both Warning and Error must appear.
+    assert!(
+        severities.contains(&"Warning"),
+        "compile_diagnostics must contain the prior Warning; got: {:?}",
+        severities
+    );
+    assert!(
+        severities.contains(&"Error"),
+        "compile_diagnostics must contain the live-edit Error; got: {:?}",
+        severities
+    );
+
+    // Warning must precede Error — get_diagnostics() output is first, live errors appended.
+    let first_warning = state
+        .compile_diagnostics
+        .iter()
+        .position(|d| d.severity == "Warning");
+    let first_error = state
+        .compile_diagnostics
+        .iter()
+        .position(|d| d.severity == "Error");
+    assert!(
+        first_warning < first_error,
+        "Warning entries (from prior good compile) must precede Error entries \
+         (from live_compile_diagnostics append); got order: {:?}",
+        severities
     );
 }
