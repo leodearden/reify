@@ -459,7 +459,7 @@ fn get_mechanism_descriptors_impl_returns_err_on_poisoned_mutex() {
 
 fn make_sample_persistent_state() -> crate::types::PersistentViewState {
     crate::types::PersistentViewState {
-        version: "1".to_string(),
+        version: "2".to_string(),
         active_view_id: "auto:default".to_string(),
         user_views: vec![],
         explicit: std::collections::HashMap::new(),
@@ -564,7 +564,7 @@ fn view_sidecar_roundtrip() {
     explicit.insert("Bracket.body".to_string(), "ghost".to_string());
 
     let state = crate::types::PersistentViewState {
-        version: "1".to_string(),
+        version: "2".to_string(),
         active_view_id: "user:my-view".to_string(),
         user_views,
         explicit,

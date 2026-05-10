@@ -676,7 +676,7 @@ fn persistent_view_state_serde_roundtrip() {
     explicit.insert("Bracket.body".to_string(), "ghost".to_string());
 
     let state = PersistentViewState {
-        version: "1".to_string(),
+        version: "2".to_string(),
         active_view_id: "user:my-view".to_string(),
         user_views: vec![ViewDefinitionData {
             id: "user:my-view".to_string(),
@@ -703,7 +703,7 @@ fn persistent_view_state_json_uses_camel_case_keys() {
     use crate::types::PersistentViewState;
 
     let state = PersistentViewState {
-        version: "1".to_string(),
+        version: "2".to_string(),
         active_view_id: "auto:default".to_string(),
         user_views: vec![],
         explicit: std::collections::HashMap::new(),
