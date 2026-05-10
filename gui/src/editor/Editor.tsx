@@ -142,6 +142,19 @@ export function Editor(props: EditorProps) {
                 case 'externally-changed':
                   props.onError?.(messageForSaveBlocked(result.reason));
                   return true;
+                default: {
+                  // Exhaustiveness guard: TypeScript flags this assignment as a compile
+                  // error if a new SaveBlockedReason member is added without updating
+                  // this switch.  The runtime throw is a belt-and-braces fallback for
+                  // the (unlikely) case of an untyped reason value leaking from JS-land
+                  // — it surfaces a clear diagnostic instead of the generic "Cannot read
+                  // properties of undefined" TypeError that a fall-through into
+                  // `saveFile(result.file.path, ...)` would otherwise produce.
+                  const _exhaustive: never = result.reason;
+                  throw new Error(
+                    `unhandled save-blocked reason: ${_exhaustive as string}`,
+                  );
+                }
               }
             }
             saveFile(result.file.path, result.file.content)

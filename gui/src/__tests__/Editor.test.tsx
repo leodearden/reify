@@ -1167,14 +1167,16 @@ describe('Editor Mod-s exhaustiveness for SaveBlockedReason', () => {
 
     const saveSpy = vi.spyOn(bridge, 'saveFile').mockResolvedValue(undefined);
 
-    // DOM event-handler exceptions are reported via window's 'error' event,
-    // not propagated through dispatchEvent (per WHATWG spec, JSDOM-conformant).
-    const errorEvents: ErrorEvent[] = [];
-    const errorHandler = (e: ErrorEvent) => {
-      errorEvents.push(e);
-      e.preventDefault();
+    // In JSDOM (v25+), errors thrown inside CodeMirror's event handler reach
+    // `window.onerror` reliably; `window.addEventListener('error', ...)` is
+    // only triggered for errors dispatched on non-CM elements.  Both are
+    // valid per-spec entry points for unhandled errors.
+    const capturedErrors: Error[] = [];
+    const prevOnerror = window.onerror;
+    window.onerror = (_msg, _src, _line, _col, err) => {
+      if (err) capturedErrors.push(err);
+      return true; // suppress virtualConsole noise for this expected error
     };
-    window.addEventListener('error', errorHandler);
 
     try {
       render(() => <Editor store={store} />);
@@ -1197,13 +1199,13 @@ describe('Editor Mod-s exhaustiveness for SaveBlockedReason', () => {
       //     `TypeError: Cannot read properties of undefined (reading 'path')`
       //     — useless for diagnosing the missing-case bug.  With the fix,
       //     the message names the offending reason verbatim.
-      const matchingErrors = errorEvents.filter(
-        (e) => e.error?.message?.includes('unhandled save-blocked reason'),
+      const matchingErrors = capturedErrors.filter((e) =>
+        e.message?.includes('unhandled save-blocked reason'),
       );
       expect(matchingErrors.length).toBeGreaterThan(0);
-      expect(matchingErrors[0].error.message).toContain('phantom-future-reason');
+      expect(matchingErrors[0].message).toContain('phantom-future-reason');
     } finally {
-      window.removeEventListener('error', errorHandler);
+      window.onerror = prevOnerror;
     }
   });
 });
