@@ -341,6 +341,61 @@ mod tests {
     }
 
     #[test]
+    fn should_refine_continues_on_explicit_demand_when_budget_remains() {
+        // current_level=1, max_refinements=5, demand=More, yield_stress=None
+        // → auto-trigger cannot fire; demand alone must drive Continue.
+        let opts = ProgressiveOptions {
+            max_refinements: 5,
+            yield_stress: None,
+            target_tolerance: 0.05,
+            ..Default::default()
+        };
+        let result = make_result(0.0);
+        let expected = AdvanceDecision::Continue(refinement_pass_tuning(&opts, 2));
+        assert_eq!(
+            should_refine(&opts, 1, &result, RefinementDemand::More),
+            expected,
+            "demand=More within budget must yield Continue at next level"
+        );
+    }
+
+    #[test]
+    fn should_refine_continues_on_near_boundary_auto_trigger() {
+        // demand=None, but max_von_mises is above the near-boundary threshold.
+        let opts = ProgressiveOptions {
+            max_refinements: 5,
+            yield_stress: Some(200e6),
+            near_boundary_pct: 0.10,
+            target_tolerance: 0.05,
+        };
+        // 195 MPa >= (1 - 0.10) * 200 MPa = 180 MPa → near_constraint_boundary = true.
+        let result = make_result(195e6);
+        let current_level = 2;
+        let expected = AdvanceDecision::Continue(refinement_pass_tuning(&opts, current_level + 1));
+        assert_eq!(
+            should_refine(&opts, current_level, &result, RefinementDemand::None),
+            expected,
+            "near-boundary auto-trigger must cause Continue when demand=None"
+        );
+    }
+
+    #[test]
+    fn should_refine_terminates_with_no_request_when_neither_trigger_fires() {
+        // demand=None, yield_stress=None → neither trigger fires → NoRefinementRequested.
+        let opts = ProgressiveOptions {
+            max_refinements: 5,
+            yield_stress: None,
+            ..Default::default()
+        };
+        let result = make_result(0.0);
+        assert_eq!(
+            should_refine(&opts, 1, &result, RefinementDemand::None),
+            AdvanceDecision::Terminate(TerminationReason::NoRefinementRequested),
+            "no demand + no auto-trigger must yield NoRefinementRequested"
+        );
+    }
+
+    #[test]
     fn should_refine_terminates_when_budget_exhausted() {
         // max_refinements = 3, current_level = 3 → budget exhausted, even with More demand.
         let opts = ProgressiveOptions { max_refinements: 3, ..Default::default() };
