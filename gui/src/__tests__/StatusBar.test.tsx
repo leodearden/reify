@@ -226,6 +226,19 @@ describe('StatusBar tessellation diagnostics', () => {
     expect(onToggle).toHaveBeenCalledTimes(1);
   });
 
+  it('tessellation-errors button has type="button" to prevent accidental form submission', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        tessellationDiagnostics={[makeDiag('Error')]}
+      />
+    ));
+    const badge = screen.getByTestId('tessellation-errors');
+    expect(badge.getAttribute('type')).toBe('button');
+  });
+
   it('tessellation badge aria-label shows merged total of compile + tessellation counts', () => {
     render(() => (
       <StatusBar
