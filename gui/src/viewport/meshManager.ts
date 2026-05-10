@@ -415,19 +415,24 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     const orig = meshOriginalVertices.get(entityPath);
     if (!orig) return;
 
-    // Fresh BufferGeometry: shares index and normal from the deformed mesh's geometry,
-    // but owns a NEW position attribute pointing at the cached original vertices.
-    // This prevents warp writes (which go into the deformed mesh's position array)
-    // from overwriting the overlay's position array.
+    // Fresh BufferGeometry that is fully self-owned:
+    // - position points at the cached original vertices (warp writes go into the
+    //   deformed mesh's position array and therefore never touch the overlay).
+    // - index and normal are CLONED from the deformed mesh's geometry so that
+    //   overlay.geometry.dispose() only frees the overlay's own GPU buffers and
+    //   never invalidates the deformed mesh's VBOs. Without cloning, Three.js's
+    //   WebGLRenderer.onGeometryDispose would walk every attribute on the disposed
+    //   geometry and free its WebGLBuffer — including the index/normal buffers still
+    //   referenced by the deformed mesh, causing silent per-frame VBO re-uploads.
     const overlayGeom = new BufferGeometry();
     overlayGeom.setAttribute('position', new BufferAttribute(orig, 3));
     const sourceGeom = sourceMesh.geometry as BufferGeometry;
     if (sourceGeom.index) {
-      overlayGeom.setIndex(sourceGeom.index);
+      overlayGeom.setIndex(sourceGeom.index.clone());
     }
     const normalAttr = sourceGeom.getAttribute('normal');
     if (normalAttr) {
-      overlayGeom.setAttribute('normal', normalAttr);
+      overlayGeom.setAttribute('normal', (normalAttr as BufferAttribute).clone());
     }
 
     const overlay = new Mesh(overlayGeom, undeformedMaterial);
@@ -443,8 +448,9 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     const overlay = undeformedMeshMap.get(entityPath);
     if (!overlay) return;
     undeformedGroup.remove(overlay);
-    // Dispose the overlay's own BufferGeometry wrapper; the shared index/normal
-    // attributes are owned by the deformed mesh's geometry and must NOT be disposed here.
+    // Dispose the overlay's own BufferGeometry and its cloned index/normal attributes.
+    // Because the overlay owns clones (not aliases) of the deformed mesh's attrs,
+    // this frees only the overlay's GPU buffers and leaves the deformed mesh intact.
     overlay.geometry.dispose();
     undeformedMeshMap.delete(entityPath);
   }
@@ -505,9 +511,10 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
       scene.remove(mesh);
     }
 
-    // removeUndeformedOverlay MUST precede geometry disposal: the overlay borrows
-    // the deformed mesh's index and normal BufferAttribute references. Removing the
-    // overlay first ensures it is gone before the shared attributes are disposed.
+    // removeUndeformedOverlay before geometry disposal: the overlay now owns clones
+    // of the deformed mesh's index and normal attributes (so disposal order is no
+    // longer load-bearing for VBO safety), but we remove the overlay first as a
+    // defensive habit to keep teardown ordering deterministic.
     removeUndeformedOverlay(entityPath);
 
     // removeGhostClone MUST precede geometry disposal: the ghost clone shares
