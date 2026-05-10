@@ -107,6 +107,7 @@ export const StatusBar: Component<StatusBarProps> = (props) => {
       <Show when={(props.compileDiagnostics?.length ?? 0) > 0}>
         <span class={styles.divider} />
         <button
+          type="button"
           class={`${styles.section} ${styles.diagnosticsTrigger}`}
           data-testid="diagnostics-count"
           aria-label={`Show diagnostics (${(props.tessellationDiagnostics?.length ?? 0) + (props.compileDiagnostics?.length ?? 0)} total)`}
