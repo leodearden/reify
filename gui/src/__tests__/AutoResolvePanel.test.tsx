@@ -122,3 +122,58 @@ describe('AutoResolvePanel (a) header and parameter rows', () => {
     expect(screen.getByText('4.2mm')).toBeTruthy();
   });
 });
+
+// ── Test group (c): line chart ───────────────────────────────────────────────
+
+describe('AutoResolvePanel (c) line chart', () => {
+  it('(c.1) renders SVG chart with data-testid="auto-resolve-chart", width=300, height=200', () => {
+    const iterations = [220, 200, 185, 178].map((v, i) =>
+      makeIteration(i + 1, { driving_metric: 'max_von_mises', driving_metric_value: v }),
+    );
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+    const svg = screen.getByTestId('auto-resolve-chart') as SVGElement;
+    expect(svg).toBeTruthy();
+    expect(svg.getAttribute('width')).toBe('300');
+    expect(svg.getAttribute('height')).toBe('200');
+  });
+
+  it('(c.2) SVG contains one polyline whose points attribute has 4 coordinate pairs', () => {
+    const iterations = [220, 200, 185, 178].map((v, i) =>
+      makeIteration(i + 1, { driving_metric: 'max_von_mises', driving_metric_value: v }),
+    );
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+    const svg = screen.getByTestId('auto-resolve-chart');
+    const polyline = svg.querySelector('polyline');
+    expect(polyline).toBeTruthy();
+    // "x1,y1 x2,y2 x3,y3 x4,y4" — split on whitespace, expect 4 pairs
+    const points = (polyline!.getAttribute('points') ?? '').trim().split(/\s+/);
+    expect(points).toHaveLength(4);
+    // Each pair should be "number,number"
+    for (const pt of points) {
+      expect(pt).toMatch(/^[\d.]+,[\d.]+$/);
+    }
+  });
+
+  it('(c.3) SVG contains the driving metric name as a text/label element', () => {
+    const iterations = [220, 200, 185, 178].map((v, i) =>
+      makeIteration(i + 1, { driving_metric: 'max_von_mises', driving_metric_value: v }),
+    );
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+    // The metric name "max_von_mises" should appear somewhere in the chart region
+    expect(screen.getByText(/max_von_mises/)).toBeTruthy();
+  });
+
+  it('(c.4) no polyline rendered when fewer than 2 iterations carry driving_metric_value', () => {
+    const iterations = [
+      makeIteration(1, { driving_metric: 'max_von_mises', driving_metric_value: 180 }),
+    ];
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+    const svg = screen.getByTestId('auto-resolve-chart');
+    const polyline = svg.querySelector('polyline');
+    expect(polyline).toBeNull();
+  });
+});
