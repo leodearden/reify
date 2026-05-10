@@ -1047,7 +1047,7 @@ pub fn detect_local_index_reassignment_diagnostics(
                             feature_id, role, idx_i, idx_j,
                         ))
                         .with_code(DiagnosticCode::TopologyAttributeLocalIndexReassigned)
-                        .with_label(DiagnosticLabel::new(selector_span, "selector call")),
+                        .with_label(DiagnosticLabel::new(selector_span, "realization producing geometrically tied attributes")),
                     );
                     break 'outer;
                 }
