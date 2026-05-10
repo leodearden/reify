@@ -1990,6 +1990,41 @@ describe('meshManager', () => {
       // undeformedMaterial was disposed.
       expect(undeformedMaterial.dispose).toHaveBeenCalledOnce();
     });
+
+    // --- step-15: entity removal while deformation is active ---
+
+    it('(g) sync({}) while deformation active removes and disposes overlay for removed entity', () => {
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+
+      const meshA: MeshData = {
+        entity_path: 'A',
+        vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        displaced_positions: new Float32Array([0.1, 0, 0, 1.1, 0, 0, 0.1, 1, 0]),
+      };
+
+      manager.sync({ A: meshA });
+      manager.setDeformation({ warpFactor: 5 });
+
+      // Capture overlay reference for later disposal check.
+      const overlay = manager.getDeformedOverlays().get('A')!;
+      expect(overlay).toBeDefined();
+      const overlayGeom = overlay.geometry;
+
+      vi.clearAllMocks();
+      // Remove the entity.
+      manager.sync({});
+
+      // Overlay must be gone.
+      expect(manager.getDeformedOverlays().size).toBe(0);
+      // Overlay geometry must have been disposed.
+      expect(overlayGeom.dispose).toHaveBeenCalledOnce();
+      // Overlay mesh must have been removed from undeformedGroup.
+      expect(mockGroupRemove).toHaveBeenCalledWith(overlay);
+    });
   });
 
   describe('setDeformation — sync re-apply', () => {
