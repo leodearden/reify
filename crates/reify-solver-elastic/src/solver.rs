@@ -1499,6 +1499,79 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Task 2921: warm-state plumbing — early-exit at exact solution
+    // -----------------------------------------------------------------------
+
+    /// `solve_cg_warm` with `initial_guess = Some(&u_exact)` (the cold-solve
+    /// solution) must return `iterations = 0, converged = true`, with the
+    /// returned `u` bit-equal to `u_exact` (no axpy ran).
+    ///
+    /// Why this matters: without the pre-loop early-exit, the first CG
+    /// iteration would compute `α = rz / pkp` with both `rz ≈ 0` and
+    /// `pkp ≈ 0`, producing 0/0 NaN that propagates through the result.
+    /// The early-exit returns before the loop is entered — symmetric with
+    /// the existing zero-RHS short-circuit at the dispatch site.
+    #[test]
+    fn warm_start_at_exact_solution_returns_in_zero_iterations() {
+        // 2×2 SPD fixture: same as `hand_computed_2x2_spd_within_tolerance`.
+        let k = SparseRowMat::try_new_from_triplets(
+            2,
+            2,
+            &[
+                Triplet::new(0_usize, 0_usize, 4.0_f64),
+                Triplet::new(0_usize, 1_usize, 1.0_f64),
+                Triplet::new(1_usize, 0_usize, 1.0_f64),
+                Triplet::new(1_usize, 1_usize, 3.0_f64),
+            ],
+        )
+        .unwrap();
+        let f = [1.0_f64, 2.0];
+        let opts = CgSolverOptions {
+            tolerance: 1e-10,
+            max_iter: 100,
+        };
+
+        // Cold-solve to obtain u_exact.
+        let cold = solve_cg(&k, &f, opts.clone(), SolverMode::Deterministic);
+        assert!(cold.converged, "cold solve must converge to obtain u_exact");
+        let u_exact = cold.u.clone();
+
+        // Warm-start at u_exact.
+        let warm = solve_cg_warm(
+            &k,
+            &f,
+            Some(&u_exact),
+            opts,
+            SolverMode::Deterministic,
+        );
+
+        assert_eq!(
+            warm.iterations, 0,
+            "warm-start at exact solution must return in 0 iterations, got {}",
+            warm.iterations
+        );
+        assert!(
+            warm.converged,
+            "warm-start at exact solution must report converged"
+        );
+        assert_eq!(
+            warm.u.len(),
+            u_exact.len(),
+            "warm.u length must match u_exact"
+        );
+        for i in 0..u_exact.len() {
+            assert_eq!(
+                warm.u[i].to_bits(),
+                u_exact[i].to_bits(),
+                "warm.u[{i}] = {} must be bit-equal to u_exact[{i}] = {} \
+                 (no axpy should have run)",
+                warm.u[i],
+                u_exact[i],
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Task 2921: warm-state plumbing — `solve_cg_warm` None-shim equivalence
     // -----------------------------------------------------------------------
 
