@@ -4211,4 +4211,125 @@ mod tests {
             diag.message
         );
     }
+
+    /// Mixed failure classes: one query-error handle (201), one parse-error
+    /// handle (202), one success handle (203). Asserts:
+    ///   - centroids map has exactly the success handle's xyz
+    ///   - exactly two warnings: one per failure class
+    ///   - each warning names the FIRST handle of its class (201 / 202)
+    ///   - the parse-fail warning does NOT appear in the query-fail warning
+    ///     and vice-versa (classes are separated)
+    #[test]
+    fn collect_centroids_with_failure_summary_separates_failure_classes_and_preserves_first_message(
+    ) {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_types::{Role, Severity, Value};
+
+        let realization_id = RealizationNodeId::new("TestEntity", 0);
+        let feature_id = FeatureId::from(&realization_id);
+
+        let make_attr = |local_index: u32| TopologyAttribute {
+            feature_id: feature_id.clone(),
+            role: Role::Side,
+            local_index,
+            user_label: None,
+            mod_history: Vec::new(),
+        };
+        let attr0 = make_attr(0); // handle 201 — no kernel fixture → query Err
+        let attr1 = make_attr(1); // handle 202 — Real(0.0) → parse Err
+        let attr2 = make_attr(2); // handle 203 — valid xyz JSON → success
+
+        let h_err = GeometryHandleId(201);
+        let h_parse = GeometryHandleId(202);
+        let h_ok = GeometryHandleId(203);
+
+        // Construct in deterministic order so "first message" is well-defined.
+        let realization_attrs: Vec<(GeometryHandleId, &TopologyAttribute)> =
+            vec![(h_err, &attr0), (h_parse, &attr1), (h_ok, &attr2)];
+
+        let kernel = MockGeometryKernel::new()
+            // h_err: no fixture → returns QueryError::QueryFailed("no mock result …")
+            .with_centroid_result(h_parse, Value::Real(0.0))
+            .with_centroid_result(
+                h_ok,
+                Value::String("{\"x\":1.5,\"y\":2.5,\"z\":3.5}".into()),
+            );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let centroids = collect_centroids_with_failure_summary(
+            &realization_attrs,
+            &kernel,
+            &realization_id,
+            &mut diagnostics,
+        );
+
+        // Success handle returns the parsed xyz.
+        assert_eq!(
+            centroids.len(),
+            1,
+            "exactly one successful centroid expected, got: {centroids:?}"
+        );
+        assert_eq!(
+            centroids.get(&h_ok),
+            Some(&[1.5_f64, 2.5, 3.5]),
+            "centroids map must hold the success handle's xyz"
+        );
+
+        // Two warnings — one per failure class.
+        assert_eq!(
+            diagnostics.len(),
+            2,
+            "expected exactly 2 warnings (one per failure class), got {}: {diagnostics:?}",
+            diagnostics.len()
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.severity == Severity::Warning),
+            "all diagnostics must be Warnings, got: {diagnostics:?}"
+        );
+
+        // Find the query-fail warning and the parse-fail warning.
+        let query_warn = diagnostics
+            .iter()
+            .find(|d| d.message.contains("centroid query failed"))
+            .expect("must have a query-fail warning");
+        let parse_warn = diagnostics
+            .iter()
+            .find(|d| d.message.contains("centroid parse failed"))
+            .expect("must have a parse-fail warning");
+
+        // Query-fail warning: count=1, first message names GeometryHandleId(201).
+        assert!(
+            query_warn
+                .message
+                .contains("centroid query failed for 1 handle(s)"),
+            "query-fail count must be 1, got: {}",
+            query_warn.message
+        );
+        assert!(
+            query_warn
+                .message
+                .contains("(first: geometry query failed: no mock result for GeometryHandleId(201))"),
+            "query-fail first must name handle 201, got: {}",
+            query_warn.message
+        );
+
+        // Parse-fail warning: count=1, first message names the non-string error.
+        assert!(
+            parse_warn
+                .message
+                .contains("centroid parse failed for 1 handle(s)"),
+            "parse-fail count must be 1, got: {}",
+            parse_warn.message
+        );
+        assert!(
+            parse_warn.message.contains(
+                "(first: geometry query failed: local_index_reassignment_centroid \
+                 returned non-string value: Real(0.0))"
+            ),
+            "parse-fail first must name the non-string parse error, got: {}",
+            parse_warn.message
+        );
+    }
 }
