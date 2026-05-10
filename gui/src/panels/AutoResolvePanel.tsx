@@ -208,14 +208,7 @@ export const AutoResolvePanel: Component<AutoResolvePanelProps> = (props) => {
                 : '';
               return (
                 <div class={styles.sparklineRow}>
-                  {/*
-                   * Label only shown when ≥2 iterations are available (hasLine).
-                   * This prevents a duplicate text node when only 1 iteration is
-                   * present — keeping (a.3) getByText('…') single-match invariant.
-                   */}
-                  <Show when={hasLine}>
-                    <span class={styles.sparklineCellId}>{cellId}</span>
-                  </Show>
+                  <span class={styles.sparklineCellId}>{cellId}</span>
                   <svg
                     class={styles.sparkline}
                     width={SPARK_W}
