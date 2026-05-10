@@ -1840,6 +1840,12 @@ pub struct ModEntry {
 ///     generated between consecutive section profiles (loft convention;
 ///     distinct from `Side`, `RevolvedFace`, and `SweptFace` so selectors
 ///     can match per-op).
+///   - **Mid-surface (derived geometry)**: `MidSurfaceFace` for per-region
+///     mid-surface patches (`local_index = region.label`), `MidSurfaceEdge`
+///     for inter-region adjacency curves (`local_index` = canonical sort
+///     position of the `(min, max)` region pair). Emitted by
+///     `reify_shell_extract::populate_mid_surface_attributes`; PRD
+///     `docs/prds/v0_4/structural-analysis-shells.md` line 81 (T20).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Role {
     /// A cap face (`top`/`bottom` for extrude, `start`/`end` for revolve)
@@ -1872,6 +1878,19 @@ pub enum Role {
     /// per-op). Emitted by `populate_loft_attributes` for
     /// `GeometryOp::Loft` (task 5b, #2619).
     LoftedFace,
+    /// A mid-surface patch corresponding to one segmentation region of
+    /// a body's derived mid-surface (derived-geometry naming, PRD
+    /// `docs/prds/v0_4/structural-analysis-shells.md` line 81).
+    /// `local_index = region.label` (BFS-discovery order from
+    /// `reify_shell_extract::segmentation`). Emitted by
+    /// `reify_shell_extract::populate_mid_surface_attributes`.
+    MidSurfaceFace,
+    /// An inter-region adjacency edge of a body's derived mid-surface.
+    /// `local_index` is the canonical sort position of the `(min, max)`
+    /// region pair (ascending tuple order). Emitted by
+    /// `reify_shell_extract::populate_mid_surface_attributes` from PRD
+    /// `docs/prds/v0_4/structural-analysis-shells.md` line 81 (T20).
+    MidSurfaceEdge,
 }
 
 /// Per-topology-entity attribute record for v0.2 persistent naming.
