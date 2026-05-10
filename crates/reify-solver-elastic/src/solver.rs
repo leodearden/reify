@@ -291,29 +291,39 @@ const PAR_THRESHOLD: usize = 1024;
 ///
 /// # Performance
 ///
-/// The generator `get` is called directly during tree traversal. For len ≤ 8,
-/// the result is a fully inlined expression with no recursion. For larger len,
-/// `get` is called through `&dyn Fn`, adding one vtable dispatch per element
-/// per recursion level (O(log len) levels total). This is significantly cheaper
-/// than allocating a `Vec<f64>` of `len` products for each call in the hot path.
-fn pairwise_tree_sum_fn(len: usize, get: &dyn Fn(usize) -> f64) -> f64 {
+/// The generator `get` is called through `&dyn Fn` exactly once per element
+/// regardless of recursion depth — recursion only threads `(start, len)`
+/// parameters, the same `&dyn Fn` reference is forwarded unchanged through the
+/// tree. `get` receives absolute indices into the caller's data via
+/// `start + offset`. For len ≤ 8, the result is a fully inlined expression
+/// with no recursion. This is significantly cheaper than allocating a
+/// `Vec<f64>` of `len` products for each call in the hot path.
+fn pairwise_tree_sum_fn(start: usize, len: usize, get: &dyn Fn(usize) -> f64) -> f64 {
     match len {
         0 => 0.0,
-        1 => get(0),
-        2 => get(0) + get(1),
-        3 => get(0) + get(1) + get(2),
-        4 => (get(0) + get(1)) + (get(2) + get(3)),
-        5 => (get(0) + get(1)) + (get(2) + get(3)) + get(4),
-        6 => (get(0) + get(1) + get(2)) + (get(3) + get(4) + get(5)),
-        7 => (get(0) + get(1) + get(2) + get(3)) + (get(4) + get(5) + get(6)),
+        1 => get(start),
+        2 => get(start) + get(start + 1),
+        3 => get(start) + get(start + 1) + get(start + 2),
+        4 => (get(start) + get(start + 1)) + (get(start + 2) + get(start + 3)),
+        5 => {
+            (get(start) + get(start + 1)) + (get(start + 2) + get(start + 3)) + get(start + 4)
+        }
+        6 => {
+            (get(start) + get(start + 1) + get(start + 2))
+                + (get(start + 3) + get(start + 4) + get(start + 5))
+        }
+        7 => {
+            (get(start) + get(start + 1) + get(start + 2) + get(start + 3))
+                + (get(start + 4) + get(start + 5) + get(start + 6))
+        }
         8 => {
-            (get(0) + get(1) + get(2) + get(3))
-                + (get(4) + get(5) + get(6) + get(7))
+            (get(start) + get(start + 1) + get(start + 2) + get(start + 3))
+                + (get(start + 4) + get(start + 5) + get(start + 6) + get(start + 7))
         }
         _ => {
             let mid = len / 2;
-            pairwise_tree_sum_fn(mid, &|i| get(i))
-                + pairwise_tree_sum_fn(len - mid, &|i| get(mid + i))
+            pairwise_tree_sum_fn(start, mid, get)
+                + pairwise_tree_sum_fn(start + mid, len - mid, get)
         }
     }
 }
@@ -323,7 +333,7 @@ fn pairwise_tree_sum_fn(len: usize, get: &dyn Fn(usize) -> f64) -> f64 {
 /// Convenience wrapper around [`pairwise_tree_sum_fn`] for combining the
 /// small `partials` Vec produced by parallel workers (at most `threads` entries).
 fn pairwise_tree_sum(slice: &[f64]) -> f64 {
-    pairwise_tree_sum_fn(slice.len(), &|i| slice[i])
+    pairwise_tree_sum_fn(0, slice.len(), &|i| slice[i])
 }
 
 /// Dot product `a · b` using pairwise-tree summation, without allocation.
@@ -337,12 +347,12 @@ fn dot(a: &[f64], b: &[f64]) -> f64 {
         a.len(),
         b.len()
     );
-    pairwise_tree_sum_fn(a.len(), &|i| a[i] * b[i])
+    pairwise_tree_sum_fn(0, a.len(), &|i| a[i] * b[i])
 }
 
 /// Squared Euclidean norm `‖v‖²` using pairwise-tree summation, without allocation.
 fn norm2_squared(v: &[f64]) -> f64 {
-    pairwise_tree_sum_fn(v.len(), &|i| v[i] * v[i])
+    pairwise_tree_sum_fn(0, v.len(), &|i| v[i] * v[i])
 }
 
 /// Extract diagonal entries of `K` as a vector of inverse values `1/K[i][i]`.
@@ -402,7 +412,7 @@ fn spmv_seq(k: &SparseRowMat<usize, f64>, p: &[f64], out: &mut [f64]) {
         let start = row_ptr[i];
         let end = row_ptr[i + 1];
         // No Vec allocation — pairwise_tree_sum_fn calls the generator directly.
-        out[i] = pairwise_tree_sum_fn(end - start, &|k| vals[start + k] * p[col_idx[start + k]]);
+        out[i] = pairwise_tree_sum_fn(0, end - start, &|k| vals[start + k] * p[col_idx[start + k]]);
     }
 }
 
@@ -464,6 +474,7 @@ fn spmv_parallel(k: &SparseRowMat<usize, f64>, p: &[f64], out: &mut [f64], threa
                     let end_idx = row_ptr[global_row + 1];
                     // No Vec allocation — pairwise_tree_sum_fn calls the generator directly.
                     *out_elem = pairwise_tree_sum_fn(
+                        0,
                         end_idx - start_idx,
                         &|k| vals[start_idx + k] * p[col_idx[start_idx + k]],
                     );
@@ -518,7 +529,7 @@ fn dot_parallel(a: &[f64], b: &[f64], threads: usize) -> f64 {
 
             // No Vec allocation — pairwise_tree_sum_fn calls the generator directly.
             handles.push(s.spawn(move || {
-                pairwise_tree_sum_fn(a_chunk.len(), &|i| a_chunk[i] * b_chunk[i])
+                pairwise_tree_sum_fn(0, a_chunk.len(), &|i| a_chunk[i] * b_chunk[i])
             }));
 
             start = end;
@@ -560,7 +571,7 @@ fn norm2_squared_parallel(v: &[f64], threads: usize) -> f64 {
 
             // No Vec allocation — pairwise_tree_sum_fn calls the generator directly.
             handles.push(s.spawn(move || {
-                pairwise_tree_sum_fn(chunk.len(), &|i| chunk[i] * chunk[i])
+                pairwise_tree_sum_fn(0, chunk.len(), &|i| chunk[i] * chunk[i])
             }));
 
             start = end;
@@ -680,7 +691,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{CgResult, CgSolverOptions, SolverMode, norm2_squared, solve_cg, spmv_seq};
+    use super::{
+        CgResult, CgSolverOptions, SolverMode, norm2_squared, pairwise_tree_sum_fn, solve_cg,
+        spmv_seq,
+    };
     use faer::sparse::{SparseRowMat, Triplet};
 
     /// Build a tiny 1×1 identity sparse matrix for contract-panic tests.
@@ -1244,5 +1258,68 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Pins the `pairwise_tree_sum_fn(start, len, get)` signature contract:
+    /// exercises every base-case arm with start=0, the start>0 offset path,
+    /// and a recursion-triggering len>8 with both start=0 and start>0.
+    /// A tree-shape bit-pin asserts that len=12 (mid=6) produces bits matching
+    /// the explicit pairwise grouping `((xs[0..2])+(xs[3..5]))+((xs[6..8])+(xs[9..11]))`,
+    /// confirming the mid=6 split and base-case-6 arithmetic order.
+    #[test]
+    fn pairwise_tree_sum_fn_with_start_offset_pins_contract() {
+        // Empty case.
+        assert_eq!(pairwise_tree_sum_fn(0, 0, &|_| 0.0), 0.0);
+
+        // Singleton.
+        assert_eq!(pairwise_tree_sum_fn(0, 1, &|i| (i as f64) + 1.0), 1.0);
+
+        // Lengths 2..=8, start=0: get(i) = i+1, so sum = 1+2+…+n = n*(n+1)/2.
+        // Exercises every base-case arm (len 2, 3, 4, 5, 6, 7, 8).
+        for n in 2..=8_usize {
+            let expected = (n * (n + 1) / 2) as f64;
+            let actual = pairwise_tree_sum_fn(0, n, &|i| (i as f64) + 1.0);
+            assert_eq!(actual, expected, "start=0, len={n}: expected {expected}, got {actual}");
+        }
+
+        // start > 0: pairwise_tree_sum_fn(2, 3, get) gives get(2)+get(3)+get(4)
+        //            = 3.0 + 4.0 + 5.0 = 12.0 (using get(i) = i+1).
+        assert_eq!(pairwise_tree_sum_fn(2, 3, &|i| (i as f64) + 1.0), 12.0);
+
+        // len > 8, start=0: sum 1..=16 = 16*17/2 = 136.
+        assert_eq!(pairwise_tree_sum_fn(0, 16, &|i| (i + 1) as f64), 136.0);
+
+        // len > 8, start > 0: pairwise_tree_sum_fn(5, 16, get) gives sum 6..=21
+        //   = (6+21)*16/2 = 216.
+        assert_eq!(pairwise_tree_sum_fn(5, 16, &|i| (i + 1) as f64), 216.0);
+
+        // Tree-shape bit-pin: len=12 → mid=6, so two base-case-6 arms fire.
+        // Prime reciprocals are not exact in f64, so different addition groupings
+        // produce different bit patterns — a left-fold or a reordered split would
+        // fail this check. expected_bits mirrors the exact pairwise-tree expansion:
+        //   ((xs[0]+xs[1]+xs[2]) + (xs[3]+xs[4]+xs[5]))
+        //   + ((xs[6]+xs[7]+xs[8]) + (xs[9]+xs[10]+xs[11]))
+        let xs: [f64; 12] = [
+            1.0_f64 / 3.0,
+            1.0_f64 / 7.0,
+            1.0_f64 / 11.0,
+            1.0_f64 / 13.0,
+            1.0_f64 / 17.0,
+            1.0_f64 / 19.0,
+            1.0_f64 / 23.0,
+            1.0_f64 / 29.0,
+            1.0_f64 / 31.0,
+            1.0_f64 / 37.0,
+            1.0_f64 / 41.0,
+            1.0_f64 / 43.0,
+        ];
+        let expected_bits = (((xs[0] + xs[1] + xs[2]) + (xs[3] + xs[4] + xs[5]))
+            + ((xs[6] + xs[7] + xs[8]) + (xs[9] + xs[10] + xs[11])))
+            .to_bits();
+        assert_eq!(
+            pairwise_tree_sum_fn(0, 12, &|i| xs[i]).to_bits(),
+            expected_bits,
+            "tree-shape pin: mid=6 split must produce bits matching explicit pairwise grouping"
+        );
     }
 }
