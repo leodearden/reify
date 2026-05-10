@@ -174,11 +174,16 @@ const state: GuiState = {
   constraints: [constraint, constraintWithLabel],
   files: [file],
   tessellation_diagnostics: [diag],
+  compile_diagnostics: [diag],
 };
 
 // --- GuiState.tessellation_diagnostics type assertion ---
 // The field must be typed as DiagnosticInfo[], not unknown[] or any[].
 const _diagField: DiagnosticInfo[] = state.tessellation_diagnostics;
+
+// --- GuiState.compile_diagnostics type assertion ---
+// The field must be typed as DiagnosticInfo[], not unknown[] or any[].
+const _compileDiagField: DiagnosticInfo[] = state.compile_diagnostics;
 
 // --- EvaluationStatus ---
 const idle: EvaluationStatus = { phase: 'idle' };

@@ -491,6 +491,7 @@ describe('debug bridge open_file', () => {
       constraints: [],
       files: [],
       tessellation_diagnostics: [],
+      compile_diagnostics: [],
     };
 
     const result = await dispatch(capturedHandler!, 501, {
@@ -528,6 +529,7 @@ describe('debug bridge open_file', () => {
       constraints: [],
       files: [],
       tessellation_diagnostics: [],
+      compile_diagnostics: [],
     };
 
     await dispatch(capturedHandler!, 502, {

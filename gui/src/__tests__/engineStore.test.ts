@@ -98,6 +98,7 @@ describe('engineStore', () => {
         constraints: [sampleConstraint],
         files: [],
         tessellation_diagnostics: [],
+        compile_diagnostics: [],
       };
       initFromState(guiState);
 
@@ -501,6 +502,7 @@ describe('engineStore', () => {
         constraints: [sampleConstraint],
         files: [],
         tessellation_diagnostics: [],
+        compile_diagnostics: [],
       };
       initFromState(guiState);
       expect(spy).toHaveBeenCalledTimes(1);
@@ -518,6 +520,7 @@ describe('engineStore', () => {
         constraints: [],
         files: [],
         tessellation_diagnostics: [],
+        compile_diagnostics: [],
       };
       initFromState(guiState);
       initFromState(guiState);
@@ -536,6 +539,7 @@ describe('engineStore', () => {
         constraints: [],
         files: [],
         tessellation_diagnostics: [],
+        compile_diagnostics: [],
       };
       // Must not throw when the callback is omitted.
       expect(() => initFromState(guiState)).not.toThrow();
@@ -607,6 +611,7 @@ describe('engineStore tessellationDiagnostics', () => {
         constraints: [],
         files: [],
         tessellation_diagnostics: [diag],
+        compile_diagnostics: [],
       };
       initFromState(guiState);
       expect(state.tessellationDiagnostics).toEqual([diag]);
@@ -673,6 +678,7 @@ describe('engineStore freshness pass-through', () => {
         constraints: [],
         files: [],
         tessellation_diagnostics: [],
+        compile_diagnostics: [],
       };
       initFromState(guiState);
       expect(state.values['cell_failed'].freshness).toBe('failed');

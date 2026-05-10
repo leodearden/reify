@@ -135,6 +135,8 @@ export interface GuiState {
   constraints: ConstraintData[];
   files: FileData[];
   tessellation_diagnostics: DiagnosticInfo[];
+  /** Compile-time diagnostics (warnings, errors) from the Reify compiler. */
+  compile_diagnostics: DiagnosticInfo[];
 }
 
 /** Wire-format GUI state as received from Tauri IPC. */
@@ -144,6 +146,8 @@ export interface RawGuiState {
   constraints: ConstraintData[];
   files: FileData[];
   tessellation_diagnostics: DiagnosticInfo[];
+  /** Compile-time diagnostics (warnings, errors) from the Reify compiler. */
+  compile_diagnostics: DiagnosticInfo[];
 }
 
 /** Convert wire-format GUI state to typed arrays. */
@@ -154,6 +158,7 @@ export function convertRawGuiState(raw: RawGuiState): GuiState {
     constraints: raw.constraints,
     files: raw.files,
     tessellation_diagnostics: raw.tessellation_diagnostics,
+    compile_diagnostics: raw.compile_diagnostics,
   };
 }
 

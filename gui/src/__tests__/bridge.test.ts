@@ -59,6 +59,7 @@ describe('bridge commands', () => {
       constraints: [],
       files: [],
       tessellation_diagnostics: [],
+      compile_diagnostics: [],
     };
     mockInvoke.mockResolvedValue(mockState);
 
@@ -69,7 +70,7 @@ describe('bridge commands', () => {
   });
 
   it('setParameter calls invoke with cellId and value', async () => {
-    const rawState: RawGuiState = { meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [] };
+    const rawState: RawGuiState = { meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [] };
     mockInvoke.mockResolvedValue(rawState);
 
     await setParameter('cell_001', '42.0');
@@ -110,6 +111,7 @@ describe('bridge commands', () => {
       constraints: [],
       files: [],
       tessellation_diagnostics: [],
+      compile_diagnostics: [],
     };
     mockInvoke.mockResolvedValue(rawState);
 
@@ -131,6 +133,7 @@ describe('bridge commands', () => {
       constraints: [{ node_id: 'n1', expression: 'x > 0', status: 'satisfied', label: null, parameter_ids: [] }],
       files: [{ path: 'main.ri', content: 'updated' }],
       tessellation_diagnostics: [],
+      compile_diagnostics: [],
     };
     mockInvoke.mockResolvedValue(rawState);
 
@@ -169,6 +172,7 @@ describe('bridge commands', () => {
       constraints: [],
       files: [{ path: 'main.ri', content: 'content' }],
       tessellation_diagnostics: [],
+      compile_diagnostics: [],
     };
     mockInvoke.mockResolvedValue(rawState);
 
@@ -471,6 +475,7 @@ describe('bridge def-preview commands', () => {
       constraints: [],
       files: [],
       tessellation_diagnostics: [],
+      compile_diagnostics: [],
     };
     mockInvoke.mockResolvedValue(rawState);
 
