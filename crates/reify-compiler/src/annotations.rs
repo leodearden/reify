@@ -202,17 +202,18 @@ pub(crate) fn validate_annotations(
         }
     }
 
-    // Duplicate-annotation checks. These only apply in constraint_def context
-    // because `optimized_target` (the extractor that stamps
-    // `CompiledConstraint::optimized_target`) is only called by entity.rs when
-    // lowering constraint defs. On structure/occurrence contexts, multiple
-    // @optimized annotations have no consumer downstream, so warning that one
-    // "shadows" another would be misleading — there is nothing being shadowed.
+    // Duplicate-annotation checks. These apply in constraint_def and function
+    // contexts because both have downstream consumers of `optimized_target`
+    // (CompiledConstraint::optimized_target and CompiledFunction::optimized_target
+    // respectively). On structure/occurrence contexts, multiple @optimized
+    // annotations have no consumer downstream, so warning that one "shadows"
+    // another would be misleading — there is nothing being shadowed.
     //
-    // Within constraint_def, `optimized_target` uses first-valid-wins semantics:
-    // it skips malformed @optimized entries (those without a string-literal arg)
-    // and returns the first well-formed one. Warn on every *valid* @optimized
-    // past the first valid one so the user knows their shadowed entry is ignored:
+    // In both consuming contexts, `optimized_target` uses first-valid-wins
+    // semantics: it skips malformed @optimized entries (those without a
+    // string-literal arg) and returns the first well-formed one. Warn on every
+    // *valid* @optimized past the first valid one so the user knows their
+    // shadowed entry is ignored:
     //   @optimized("new_target")
     //   @optimized("legacy_target")   // ← valid but shadowed; warn here
     //
@@ -221,7 +222,7 @@ pub(crate) fn validate_annotations(
     // them here would produce contradictory diagnostics: e.g. warning that
     // annotation #1 is malformed and then warning that annotation #2 is
     // shadowed by annotation #1.
-    if context == "constraint_def" {
+    if matches!(context, "constraint_def" | "function") {
         let mut seen_valid_optimized = false;
         for ann in annotations {
             if is_valid_optimized(ann) {
