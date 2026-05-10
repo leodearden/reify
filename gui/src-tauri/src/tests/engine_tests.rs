@@ -6146,6 +6146,41 @@ fn build_gui_state_surfaces_parse_error_after_failed_load_from_source() {
     );
 }
 
+/// After a successful `load_from_source`, `commit_state` must clear
+/// `last_compile_diagnostics` so stale failure diagnostics are not surfaced
+/// after a recovery.
+///
+/// Pins step-7/step-8 of the task-3351 plan: `commit_state` must call
+/// `self.last_compile_diagnostics.clear()` and the `last_compile_diagnostics_for_test`
+/// accessor must expose the field for test introspection.
+#[test]
+fn commit_state_clears_last_compile_diagnostics_on_successful_load() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // First, induce a parse error so last_compile_diagnostics is populated.
+    let _ = session
+        .load_from_source("this is not valid reify syntax {{{}}}", "bad")
+        .expect_err("invalid source should return Err");
+
+    // The accessor must reflect the stored failure diagnostics.
+    assert!(
+        !session.last_compile_diagnostics_for_test().is_empty(),
+        "last_compile_diagnostics should be non-empty after a failed load"
+    );
+
+    // Now load a valid source — commit_state must clear the field.
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("valid source should succeed");
+
+    assert!(
+        session.last_compile_diagnostics_for_test().is_empty(),
+        "last_compile_diagnostics should be cleared after a successful load"
+    );
+}
+
 /// After a failed `load_file` (parse error in the file-on-disk), `build_gui_state`
 /// must surface the failure in `compile_diagnostics`.
 ///
