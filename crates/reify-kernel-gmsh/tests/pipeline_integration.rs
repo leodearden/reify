@@ -10,7 +10,6 @@
 use reify_kernel_gmsh::auto_size::AutoSizeConfig;
 use reify_kernel_gmsh::mesh_volume::{
     apply_repair_if_requested, compute_thickness_warnings, resolve_mesh_size,
-    MeshSurfaceToVolumeReport,
 };
 use reify_kernel_gmsh::repair::RepairConfig;
 use reify_kernel_gmsh::through_thickness::ThroughThicknessConfig;
@@ -295,11 +294,6 @@ mod with_libgmsh {
     use reify_kernel_gmsh::through_thickness::ThroughThicknessConfig;
     use reify_kernel_gmsh::MeshingOptions;
     use reify_types::ElementOrderTag;
-
-    // Re-export the slab fixture for use inside this module
-    fn slab_surface_mesh() -> reify_types::Mesh {
-        super::slab_surface_mesh()
-    }
 
     /// All diagnostic stages skipped (all `None` configs). Must produce a
     /// non-empty volume mesh and no through-thickness warnings.
