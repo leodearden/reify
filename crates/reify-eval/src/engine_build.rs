@@ -1298,15 +1298,14 @@ impl Engine {
                     // budget (precomputed by the caller via
                     // `Engine::compute_realization_tolerance_budget`) to the
                     // kernel instead of the unconditional module-pragma
-                    // default. Task 3227: positional lookup by [t_idx][r_idx]
-                    // — no String clones, no hashing. Missing entry (caller-
-                    // side bug — should not happen) falls back to the module
-                    // pragma so we still produce a mesh rather than panicking.
-                    let budget = tessellation_budgets
-                        .get(t_idx)
-                        .and_then(|v| v.get(r_idx))
-                        .copied()
-                        .unwrap_or_else(|| Self::effective_tessellation_tolerance(module));
+                    // default. Task 3227 / 3297: direct positional index —
+                    // no String clones, no hashing. The producer
+                    // (`compute_tessellation_budgets`) and this consumer iterate
+                    // the same `module.templates × realizations` product
+                    // unconditionally, so OOB is unambiguously an internal
+                    // bug; Rust's slice indexing panics with a precise OOB
+                    // message at runtime in both debug and release.
+                    let budget = tessellation_budgets[t_idx][r_idx];
                     match kernel.tessellate(last_handle, budget) {
                         Ok(mesh) => {
                             meshes.push((realization.id.to_string(), mesh));
