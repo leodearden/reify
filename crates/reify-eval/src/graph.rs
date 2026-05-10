@@ -1025,6 +1025,150 @@ mod tests {
     }
 
     #[test]
+    fn evaluation_graph_has_computations_map() {
+        use reify_types::ComputeNodeId;
+        let graph = EvaluationGraph::default();
+        assert!(graph.computations.is_empty());
+        assert_eq!(graph.computations.len(), 0);
+    }
+
+    #[test]
+    fn evaluation_graph_insert_compute_node_round_trip() {
+        use reify_types::{ComputeNodeId, RealizationNodeId as RnId};
+        let mut graph = EvaluationGraph::default();
+        let computation_id = ComputeNodeId::new("Bracket", 0);
+        let data = ComputeNodeData {
+            computation_id: computation_id.clone(),
+            target: "solver::elastic_static".to_string(),
+            value_inputs: vec![ValueCellId::new("Bracket", "load")],
+            realization_inputs: vec![RnId::new("Bracket", 0)],
+            options_hash: ContentHash::of_str("opts"),
+            cache_key: ContentHash::of_str("ck"),
+            cached_result: None,
+            result_content_hash: None,
+            opaque_state: None,
+            running: None,
+            output_value_cells: vec![],
+        };
+        let id = graph.insert_compute_node(data);
+        assert_eq!(id, computation_id);
+        let got = graph.get_compute_node(&id).unwrap();
+        assert_eq!(got.target, "solver::elastic_static");
+        assert_eq!(got.value_inputs, vec![ValueCellId::new("Bracket", "load")]);
+        assert_eq!(got.options_hash, ContentHash::of_str("opts"));
+    }
+
+    #[test]
+    fn evaluation_graph_get_compute_node_mut_returns_mutable_reference() {
+        use reify_types::{ComputeNodeId, RealizationNodeId as RnId};
+        let mut graph = EvaluationGraph::default();
+        let data = ComputeNodeData {
+            computation_id: ComputeNodeId::new("Bracket", 0),
+            target: "solver::elastic_static".to_string(),
+            value_inputs: vec![],
+            realization_inputs: vec![],
+            options_hash: ContentHash::of_str("opts"),
+            cache_key: ContentHash::of_str("ck"),
+            cached_result: None,
+            result_content_hash: None,
+            opaque_state: None,
+            running: None,
+            output_value_cells: vec![],
+        };
+        let id = graph.insert_compute_node(data);
+        graph.get_compute_node_mut(&id).unwrap().target = "other::target".to_string();
+        assert_eq!(graph.get_compute_node(&id).unwrap().target, "other::target");
+    }
+
+    #[test]
+    fn evaluation_graph_get_compute_node_missing_returns_none() {
+        use reify_types::ComputeNodeId;
+        let graph = EvaluationGraph::default();
+        assert!(graph.get_compute_node(&ComputeNodeId::new("Nope", 99)).is_none());
+    }
+
+    #[test]
+    fn evaluation_graph_multiple_compute_nodes_coexist() {
+        use reify_types::{ComputeNodeId, RealizationNodeId as RnId};
+        let mut graph = EvaluationGraph::default();
+
+        let id_a = graph.insert_compute_node(ComputeNodeData {
+            computation_id: ComputeNodeId::new("Bracket", 0),
+            target: "solver::elastic_static".to_string(),
+            value_inputs: vec![],
+            realization_inputs: vec![],
+            options_hash: ContentHash::of_str("opts_a"),
+            cache_key: ContentHash::of_str("ck_a"),
+            cached_result: None,
+            result_content_hash: None,
+            opaque_state: None,
+            running: None,
+            output_value_cells: vec![],
+        });
+        let id_b = graph.insert_compute_node(ComputeNodeData {
+            computation_id: ComputeNodeId::new("Bracket", 1),
+            target: "solver::modal".to_string(),
+            value_inputs: vec![],
+            realization_inputs: vec![],
+            options_hash: ContentHash::of_str("opts_b"),
+            cache_key: ContentHash::of_str("ck_b"),
+            cached_result: None,
+            result_content_hash: None,
+            opaque_state: None,
+            running: None,
+            output_value_cells: vec![],
+        });
+
+        assert_eq!(graph.computations.len(), 2);
+        assert_eq!(graph.get_compute_node(&id_a).unwrap().target, "solver::elastic_static");
+        assert_eq!(graph.get_compute_node(&id_b).unwrap().target, "solver::modal");
+    }
+
+    #[test]
+    fn evaluation_graph_clone_preserves_computations() {
+        use reify_types::{ComputeNodeId, OpaqueState, RealizationNodeId as RnId};
+        let mut graph = EvaluationGraph::default();
+
+        let id = graph.insert_compute_node(ComputeNodeData {
+            computation_id: ComputeNodeId::new("Bracket", 0),
+            target: "solver::elastic_static".to_string(),
+            value_inputs: vec![],
+            realization_inputs: vec![],
+            options_hash: ContentHash::of_str("opts"),
+            cache_key: ContentHash::of_str("ck"),
+            cached_result: None,
+            result_content_hash: None,
+            opaque_state: Some(OpaqueState::new(7i32, 4)),
+            running: None,
+            output_value_cells: vec![],
+        });
+
+        let mut cloned = graph.clone();
+        // Insert a second node only in clone
+        cloned.insert_compute_node(ComputeNodeData {
+            computation_id: ComputeNodeId::new("Bracket", 1),
+            target: "solver::modal".to_string(),
+            value_inputs: vec![],
+            realization_inputs: vec![],
+            options_hash: ContentHash::of_str("opts2"),
+            cache_key: ContentHash::of_str("ck2"),
+            cached_result: None,
+            result_content_hash: None,
+            opaque_state: None,
+            running: None,
+            output_value_cells: vec![],
+        });
+
+        // Original unchanged
+        assert_eq!(graph.computations.len(), 1);
+        // Clone has both
+        assert_eq!(cloned.computations.len(), 2);
+        assert!(cloned.get_compute_node(&id).is_some());
+        // Manual-Clone contract: opaque_state dropped to None on clone
+        assert!(cloned.get_compute_node(&id).unwrap().opaque_state.is_none());
+    }
+
+    #[test]
     fn evaluation_graph_empty() {
         let graph = EvaluationGraph::default();
         assert!(graph.value_cells.is_empty());
