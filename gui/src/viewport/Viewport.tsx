@@ -172,6 +172,21 @@ export function Viewport(props: ViewportProps) {
         }
         requestRender();
       });
+
+      // Bridge FEA deformed-shape view → meshManager geometry blend.
+      // Track-then-act: `warpFactor` is read ONLY inside the `if (showDeformed)` branch so that
+      // warpFactor changes do NOT re-run the effect (or call setDeformation redundantly) while
+      // the deformed view is off. Mirrors the channel/palette/range gating in the colorize effect.
+      createEffect(() => {
+        const showDeformed = feaStore.state.showDeformed;
+        if (showDeformed) {
+          const warpFactor = feaStore.state.warpFactor;
+          meshManager.setDeformation({ warpFactor });
+        } else {
+          meshManager.setDeformation(null);
+        }
+        requestRender();
+      });
     }
 
     // Sync grid/axes visibility
