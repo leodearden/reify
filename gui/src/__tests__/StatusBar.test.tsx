@@ -349,6 +349,19 @@ describe('StatusBar compile diagnostics', () => {
     expect(label).toMatch(/diagnostics/i);
   });
 
+  it('diagnostics-count button has type="button" to prevent accidental form submission', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        compileDiagnostics={[makeDiag('Warning')]}
+      />
+    ));
+    const badge = screen.getByTestId('diagnostics-count');
+    expect(badge.getAttribute('type')).toBe('button');
+  });
+
   it('compile badge aria-label shows merged total of compile + tessellation counts', () => {
     render(() => (
       <StatusBar
