@@ -20,6 +20,20 @@ export interface FeaModeState {
    * Once set, tryAutoEnable() is a no-op so user toggles are not overridden.
    */
   autoEnabledOnce: boolean;
+  /**
+   * Whether the deformed-shape view is active.
+   * When true, meshManager.setDeformation({ warpFactor }) is called by the
+   * Viewport bridge effect; when false, setDeformation(null) is called.
+   * Default: false.
+   */
+  showDeformed: boolean;
+  /**
+   * Scale factor applied to the displacement delta.
+   * position[i] = vertices[i] + warpFactor * (displaced[i] - vertices[i])
+   * 1.0 = true-scale deformation; 10.0 / 100.0 = amplified for small displacements.
+   * Default: 1.0. Non-finite values are rejected by setWarpFactor.
+   */
+  warpFactor: number;
 }
 
 /** Return type of createFeaModeStore(). */
@@ -37,6 +51,14 @@ export interface FeaModeStore {
    * and does nothing — ensures user disable is sticky.
    */
   tryAutoEnable(channel?: string): boolean;
+  /** Toggle the deformed-shape view on/off. */
+  setShowDeformed(b: boolean): void;
+  /**
+   * Set the warp factor for deformed-shape rendering.
+   * Returns false and is a no-op when `f` is NaN or ±Infinity.
+   * Mirrors the non-finite guard in setRange.
+   */
+  setWarpFactor(f: number): boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -58,6 +80,8 @@ export function createFeaModeStore(): FeaModeStore {
     palette: 'viridis',
     range: { ...DEFAULT_RANGE },
     autoEnabledOnce: false,
+    showDeformed: false,
+    warpFactor: 1.0,
   });
 
   function setEnabled(b: boolean): void {
@@ -88,6 +112,16 @@ export function createFeaModeStore(): FeaModeStore {
     return true;
   }
 
+  function setShowDeformed(b: boolean): void {
+    setState('showDeformed', b);
+  }
+
+  function setWarpFactor(f: number): boolean {
+    if (!Number.isFinite(f)) return false;
+    setState('warpFactor', f);
+    return true;
+  }
+
   function tryAutoEnable(channel?: string): boolean {
     if (state.autoEnabledOnce) {
       return false;
@@ -100,5 +134,5 @@ export function createFeaModeStore(): FeaModeStore {
     return true;
   }
 
-  return { state, setEnabled, setChannel, setPalette, setRange, lockCurrent, tryAutoEnable };
+  return { state, setEnabled, setChannel, setPalette, setRange, lockCurrent, tryAutoEnable, setShowDeformed, setWarpFactor };
 }
