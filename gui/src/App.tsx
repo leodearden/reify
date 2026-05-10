@@ -465,6 +465,12 @@ const App: Component = () => {
     if (!activeFile) return;
     const result = editorStore.canSave(activeFile);
     if (!result.ok) {
+      if (result.reason === 'not-found') {
+        // Invariant breach — activeFile should always be in openFiles.  Do not
+        // surface a toast since this is not an actionable user condition.
+        console.error('Save aborted: active file is not in openFiles', activeFile);
+        return;
+      }
       showToast(messageForSaveBlocked(result.reason), 'error');
       return;
     }

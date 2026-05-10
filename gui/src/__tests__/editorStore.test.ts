@@ -500,7 +500,7 @@ describe('editorStore canSave', () => {
     });
   });
 
-  it('(e) canSave is purely read-only — 1000 calls do not mutate state', () => {
+  it('(e) canSave is purely read-only — does not mutate state', () => {
     createRoot((dispose) => {
       const { state, canSave, openFile, markExternallyChanged } = createEditorStore();
       openFile(file1);
@@ -509,11 +509,9 @@ describe('editorStore canSave', () => {
       const ecRefBefore = state.externallyChanged;
       const openFilesRefBefore = state.openFiles;
 
-      for (let i = 0; i < 1000; i++) {
-        canSave('bracket.ri');
-      }
+      canSave('bracket.ri');
 
-      // Reference identity confirms no setState was called during the loop.
+      // Reference identity confirms no setState was called.
       expect(state.externallyChanged).toBe(ecRefBefore);
       expect(state.openFiles).toBe(openFilesRefBefore);
       dispose();

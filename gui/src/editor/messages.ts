@@ -8,8 +8,12 @@
  * this file rather than every call site in lockstep.
  */
 
-/** Reason codes for a blocked save attempt. */
-export type SaveBlockedReason = 'externally-changed' | 'not-found';
+/**
+ * Re-exported from `editorStore` (the data layer that owns the type) so that
+ * consumers can import it from either location.
+ */
+import type { SaveBlockedReason } from '../stores/editorStore';
+export type { SaveBlockedReason };
 
 /**
  * Shown when the user attempts to save a file that has been modified on disk

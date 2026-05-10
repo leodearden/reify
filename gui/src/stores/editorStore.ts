@@ -1,6 +1,14 @@
 import { createStore } from 'solid-js/store';
 import type { FileData } from '../types';
-import type { SaveBlockedReason } from '../editor/messages';
+
+/**
+ * Reason codes for a blocked save attempt.
+ *
+ * Defined here (in the data layer) so that `editorStore` is self-contained and
+ * does not depend on the UI-message module.  `messages.ts` re-exports this type
+ * so consumers can import it from either location.
+ */
+export type SaveBlockedReason = 'externally-changed' | 'not-found';
 
 /** Discriminated result from {@link createEditorStore}'s `canSave`. */
 export type CanSaveResult =

@@ -131,6 +131,10 @@ export function Editor(props: EditorProps) {
             if (!path) return true;
             const result = props.store.canSave(path);
             if (!result.ok) {
+              if (result.reason === 'not-found') {
+                // Invariant breach — preserve the diagnostic breadcrumb.
+                console.error('Save aborted: file not in store', path);
+              }
               props.onError?.(messageForSaveBlocked(result.reason));
               return true;
             }
