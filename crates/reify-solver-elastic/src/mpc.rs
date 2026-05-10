@@ -1269,6 +1269,203 @@ mod tests {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Step 1: binary_search regression — sparse CSR with non-trivial offsets
+    // -----------------------------------------------------------------------
+
+    /// Applies `apply_mpc_row_elimination` to a SPARSE 5×5 CSR where target
+    /// columns land at non-trivial positions within per-row stored-slot ranges.
+    ///
+    /// Fixture (MPC: pivot=0, dofs=[0,2,4], coeffs=[2.0,-1.0,1.0], rhs=0.0):
+    ///   Row 0 (pivot): cols [0,2,3,4] — diagonal at offset 0; K[0][2] at offset 1,
+    ///                  K[0][4] at offset 3. Extra col 3 ensures pivot row zeroing
+    ///                  and pivot-equation write happen at non-zero slice offsets.
+    ///   Row 1:         cols [0,1,2,4] — K[1][0] at offset 0; K[1][2] pre-allocated
+    ///                  (offset 2) so this row exercises redistribution normally.
+    ///   Row 2:         cols [2,4]     — K[2][0] absent → Err arm (skip entirely).
+    ///   Row 3:         cols [0,2,4]   — K[3][0] at offset 0, K[3][2] at offset 1,
+    ///                  K[3][4] at offset 2 (all redistribution targets present).
+    ///   Row 4:         cols [0,2,4]   — mirrors row 3.
+    ///
+    /// Pins:
+    /// - Absolute-index computation `start + rel`: for row 3, start=10, rel=1 → idx=11
+    ///   for K[3][2]. If `rel` is used alone (without adding `start`), the write hits
+    ///   vals[1] = K[0][2] — silently wrong but not caught by a fully-dense fixture.
+    /// - Err-arm skip at row 2: binary_search returns Err(0) for col 0 in [2,4];
+    ///   row 2 must remain bit-identical to its pre-call snapshot.
+    /// - Pivot-row writes at non-zero offsets within row 0's slot range [0..4].
+    #[test]
+    #[allow(clippy::needless_range_loop)]
+    fn apply_mpc_to_sparse_csr_with_target_at_row_range_boundaries_redistributes_correctly() {
+        use faer::sparse::{SparseRowMat, Triplet};
+
+        let n = 5usize;
+        // Build sparse K — rows store only a subset of columns.
+        // Column indices within each row are sorted (faer invariant).
+        let triplets: Vec<Triplet<usize, usize, f64>> = vec![
+            // Row 0 (pivot p=0): cols [0,2,3,4]
+            Triplet::new(0, 0, 5.0),
+            Triplet::new(0, 2, 0.5),
+            Triplet::new(0, 3, 0.3),
+            Triplet::new(0, 4, 0.7),
+            // Row 1: cols [0,1,2,4] — K[1][2] pre-allocated to avoid panic
+            Triplet::new(1, 0, 1.0),
+            Triplet::new(1, 1, 4.0),
+            Triplet::new(1, 2, 0.2),
+            Triplet::new(1, 4, 0.6),
+            // Row 2: cols [2,4] — K[2][0] absent → Err path
+            Triplet::new(2, 2, 3.0),
+            Triplet::new(2, 4, 0.4),
+            // Row 3: cols [0,2,4] — all redistribution targets present
+            Triplet::new(3, 0, 2.0),
+            Triplet::new(3, 2, 1.5),
+            Triplet::new(3, 4, 0.9),
+            // Row 4: cols [0,2,4]
+            Triplet::new(4, 0, 0.8),
+            Triplet::new(4, 2, 1.2),
+            Triplet::new(4, 4, 6.0),
+        ];
+        let mut k: SparseRowMat<usize, f64> =
+            SparseRowMat::try_new_from_triplets(n, n, &triplets).unwrap();
+        let mut f: Vec<f64> = (1..=5).map(|i| i as f64).collect();
+
+        // Snapshot K and f before applying the MPC.
+        let k_before: Vec<Vec<f64>> =
+            (0..n).map(|i| (0..n).map(|j| read_k(&k, i, j)).collect()).collect();
+        let f_before = f.clone();
+
+        // MPC: pivot p=0, other dofs d1=2, d2=4; coeffs=[2.0, -1.0, 1.0], rhs=0.0
+        // α_1 = -coeffs[1]/c0 = -(-1.0)/2.0 = 0.5
+        // α_2 = -coeffs[2]/c0 = -(1.0)/2.0  = -0.5
+        // β   = rhs/c0         = 0.0/2.0     = 0.0
+        let row = MpcRow::new(vec![0, 2, 4], vec![2.0, -1.0, 1.0], 0.0);
+        let alpha_1 = 0.5_f64;
+        let alpha_2 = -0.5_f64;
+        let beta = 0.0_f64;
+
+        apply_mpc_row_elimination(&mut k, &mut f, &[row]);
+
+        let p = 0usize;
+        let d1 = 2usize;
+        let d2 = 4usize;
+
+        // ── Pivot row assertions ─────────────────────────────────────────────
+        // Step 2 zeroes row 0; step 3 writes K[0][0]=1, K[0][2]=-α_1, K[0][4]=-α_2.
+        assert_eq!(
+            read_k(&k, 0, 0).to_bits(),
+            1.0_f64.to_bits(),
+            "K[0][0] must be 1.0 (pivot diagonal)"
+        );
+        assert_eq!(
+            read_k(&k, 0, d1).to_bits(),
+            (-alpha_1).to_bits(),
+            "K[0][2] must be -α_1 = {}", -alpha_1
+        );
+        assert_eq!(
+            read_k(&k, 0, d2).to_bits(),
+            (-alpha_2).to_bits(),
+            "K[0][4] must be -α_2 = {}", -alpha_2
+        );
+        // K[0][1] not stored; K[0][3] was 0.3 but step-2 zero clears it.
+        assert_eq!(read_k(&k, 0, 1), 0.0, "K[0][1] must be 0.0");
+        assert_eq!(read_k(&k, 0, 3), 0.0, "K[0][3] must be 0.0 (step-2 cleared)");
+
+        // ── Row 2: Err-arm skip (K[2][0] absent) ────────────────────────────
+        for col in 0..n {
+            assert_eq!(
+                read_k(&k, 2, col).to_bits(),
+                k_before[2][col].to_bits(),
+                "K[2][{col}] must be bit-identical (Err arm: K[2][0] absent)"
+            );
+        }
+        assert_eq!(
+            f[2].to_bits(),
+            f_before[2].to_bits(),
+            "f[2] must be bit-identical (no K[2][0] entry, no redistribution)"
+        );
+
+        // ── Row 3: redistribution at non-zero slot offsets ──────────────────
+        // CSR layout: row 3 starts at slot 10 (4+4+2=10), so col 0 → slot 10,
+        // col 2 → slot 11, col 4 → slot 12.  binary_search returns rel∈{0,1,2};
+        // absolute index = start(10) + rel.  Using `rel` alone would corrupt row 0.
+        assert_eq!(
+            read_k(&k, 3, p),
+            0.0,
+            "K[3][0] must be 0.0 (column p eliminated)"
+        );
+        let expected_32 = k_before[3][d1] + k_before[3][p] * alpha_1;
+        assert_eq!(
+            read_k(&k, 3, d1).to_bits(),
+            expected_32.to_bits(),
+            "K[3][2]: expected {expected_32} = {} + {} * {}",
+            k_before[3][d1], k_before[3][p], alpha_1,
+        );
+        let expected_34 = k_before[3][d2] + k_before[3][p] * alpha_2;
+        assert_eq!(
+            read_k(&k, 3, d2).to_bits(),
+            expected_34.to_bits(),
+            "K[3][4]: expected {expected_34} = {} + {} * {}",
+            k_before[3][d2], k_before[3][p], alpha_2,
+        );
+
+        // ── f unchanged (β = 0 → no subtract from f[j]) ─────────────────────
+        for j in 1..n {
+            assert_eq!(
+                f[j].to_bits(),
+                f_before[j].to_bits(),
+                "f[{j}] must be unchanged (β=0.0, homogeneous MPC)"
+            );
+        }
+        assert_eq!(f[p].to_bits(), beta.to_bits(), "f[0] must be β=0.0");
+    }
+
+    /// `apply_mpc_row_elimination` panics with "missing" when `K[j][p]` IS stored
+    /// but the redistribution target `K[j][dofs[1]]` is absent.
+    ///
+    /// Fixture: row 1 has cols [0,1,4] → K[1][0] is stored (at the first slot
+    /// of row 1's range, i.e. a non-zero buffer offset), but K[1][2] is absent.
+    /// The MPC's redistribution step for j=1 requires K[1][2] → panics with
+    /// the "missing" message whether the inner loop is linear or binary_search.
+    ///
+    /// Regression: a binary_search refactor that treated `Err` as "found but at
+    /// index 0" would silently corrupt K instead of panicking.
+    #[test]
+    #[should_panic(expected = "missing")]
+    fn apply_mpc_to_sparse_csr_panics_when_redistribution_target_at_non_zero_offset_is_absent() {
+        use faer::sparse::{SparseRowMat, Triplet};
+
+        let n = 5usize;
+        let triplets: Vec<Triplet<usize, usize, f64>> = vec![
+            // Row 0 (pivot p=0): all required entries present
+            Triplet::new(0, 0, 5.0),
+            Triplet::new(0, 2, 0.5),
+            Triplet::new(0, 4, 0.7),
+            // Row 1: K[1][0] stored at buffer offset 3 (after 3 row-0 entries),
+            // but K[1][2] intentionally absent → redistribution target missing.
+            Triplet::new(1, 0, 1.0),
+            Triplet::new(1, 1, 4.0),
+            Triplet::new(1, 4, 0.6),
+            // Remaining rows (never reached after row 1 panics).
+            Triplet::new(2, 2, 3.0),
+            Triplet::new(2, 4, 0.4),
+            Triplet::new(3, 0, 2.0),
+            Triplet::new(3, 2, 1.5),
+            Triplet::new(3, 4, 0.9),
+            Triplet::new(4, 0, 0.8),
+            Triplet::new(4, 4, 6.0),
+        ];
+        let mut k: SparseRowMat<usize, f64> =
+            SparseRowMat::try_new_from_triplets(n, n, &triplets).unwrap();
+        let mut f = vec![0.0_f64; n];
+        // K[1][0]=1.0 is stored → kjp_idx is found → redistribution attempts
+        // K[1][2] → absent → panic("MpcRow apply: missing K[1][2] entry …")
+        apply_mpc_row_elimination(
+            &mut k,
+            &mut f,
+            &[MpcRow::new(vec![0, 2, 4], vec![2.0, -1.0, 1.0], 0.0)],
+        );
+    }
+
     /// Read entry `(i, j)` of a `SparseRowMat<usize, f64>`, returning 0.0 if
     /// the entry is not explicitly stored.
     fn read_k(k: &faer::sparse::SparseRowMat<usize, f64>, i: usize, j: usize) -> f64 {
