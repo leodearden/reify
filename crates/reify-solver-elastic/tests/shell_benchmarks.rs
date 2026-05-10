@@ -338,12 +338,12 @@ fn pinched_cylinder_octant_symmetry_bcs(
 
 // ─── step-2: pinched cylinder (MacNeal-Harder §3.3) ─────────────────────────
 
-/// Pinched cylinder smoke test — geometry from MacNeal-Harder (1985) §3.3.
+/// Pinched cylinder benchmark — geometry from MacNeal-Harder (1985) §3.3.
 ///
-/// **NOT a validated benchmark** — see file-level docs. Asserts only that
-/// the response is finite, signed, and within a wide order-of-magnitude
-/// band; today's bare MITC3 element under-predicts the published reference
-/// by ~76× due to membrane locking on curved geometry.
+/// Validates that the MITC3+ implementation converges within ±20% of the
+/// published MacNeal-Harder reference at a 4×4 octant mesh. The cubic-bubble
+/// rotation enrichment in `shell_element_stiffness` (Bathe & Lee 2014) must
+/// close the membrane-locking gap that afflicted bare MITC3.
 ///
 /// A thin cylindrical shell (R=300, L=600, t=3, E=3×10⁶, ν=0.3) is
 /// loaded by two equal and opposite radial point loads P=1 at the midspan
@@ -359,22 +359,12 @@ fn pinched_cylinder_octant_symmetry_bcs(
 /// | x=0   | θ=π/2 symmetry (yz-plane) | u_x=0, θ_y=0, θ_z=0 |
 /// | z=0   | Mid-span symmetry | u_z=0, θ_x=0, θ_y=0 |
 ///
-/// # Smoke-test envelope
+/// # Convergence band
 ///
-/// Today's coarse-mesh MITC3 radial displacement at the load point is
-/// **~2.4×10⁻⁷** (bare MITC3, 4×4 octant). The published
-/// MacNeal-Harder (1985) reference is **1.8248×10⁻⁵** (a ~76× gap due to
-/// membrane locking of flat MITC3 on curved geometry; resolves with MITC3+
-/// bubble enrichment, deferred — see `shell_assembly.rs:25-34`).
-///
-/// This test asserts only:
-///   - radial displacement is **finite** (not NaN/inf),
-///   - radial displacement is **positive** (radially inward, matching the
-///     applied −F_y load direction at θ=π/2),
-///   - radial displacement is bounded inside a wide envelope spanning
-///     today's locked output and the published reference, which means a
-///     correctness fix that closes the locking gap will NOT regress this
-///     test, but a sign error / runaway / total collapse will.
+/// MacNeal-Harder (1985) reference: **1.8248×10⁻⁵**.
+/// Acceptance band: `[0.8 × ref, 1.2 × ref]` = `[1.4598e-5, 2.1898e-5]`.
+/// The MITC3+ cubic-bubble enrichment is required to land inside this ±20%
+/// band at this 4×4 octant mesh resolution.
 #[test]
 fn pinched_cylinder_octant_smoke_test_radial_displacement_is_finite_and_inward(
 ) {
@@ -385,6 +375,8 @@ fn pinched_cylinder_octant_smoke_test_radial_displacement_is_finite_and_inward(
     const NY: usize = 4; // z-direction divisions
     const P: f64 = 1.0; // total applied load
     const MACNEAL_HARDER_REF: f64 = 1.8248e-5;
+    const LOWER: f64 = 0.8 * MACNEAL_HARDER_REF; // ≈ 1.4598e-5
+    const UPPER: f64 = 1.2 * MACNEAL_HARDER_REF; // ≈ 2.1898e-5
 
     let mat = IsotropicElastic {
         youngs_modulus: 3e6,
@@ -421,31 +413,22 @@ fn pinched_cylinder_octant_smoke_test_radial_displacement_is_finite_and_inward(
     // Radial displacement = -u_y (inward = positive).
     let radial_disp = -u[load_node * 6 + 1];
 
-    // Smoke-test envelope: spans today's locked MITC3 output (~2.4e-7) and
-    // the published MacNeal-Harder reference (~1.8e-5). A correctness fix
-    // (e.g. MITC3+) will move radial_disp UPWARD inside this band; only
-    // sign errors, NaN, runaway, or total collapse will fail.
-    //   floor = 1e-9 → 240× margin below observed locked output
-    //   ceil  = 1e-3 → 55× margin above published reference
-    const SMOKE_FLOOR: f64 = 1.0e-9;
-    const SMOKE_CEIL: f64 = 1.0e-3;
     assert!(
         radial_disp.is_finite(),
-        "pinched cylinder smoke test: radial_disp = {radial_disp} is not finite"
+        "pinched cylinder: radial_disp = {radial_disp} is not finite"
     );
     assert!(
         radial_disp > 0.0,
-        "pinched cylinder smoke test: radial_disp = {radial_disp:.4e} \
+        "pinched cylinder: radial_disp = {radial_disp:.4e} \
          must be positive (inward) under inward radial load; sign reversal \
          indicates a BC or load-direction bug"
     );
     assert!(
-        radial_disp > SMOKE_FLOOR && radial_disp < SMOKE_CEIL,
-        "pinched cylinder smoke test: radial_disp = {radial_disp:.4e} \
-         outside order-of-magnitude envelope [{SMOKE_FLOOR:.0e}, {SMOKE_CEIL:.0e}]. \
-         Today's locked MITC3 4×4 output is ~2.4e-7; published \
-         MacNeal-Harder reference is {MACNEAL_HARDER_REF:.4e}. A correctness \
-         fix should land inside this band, not outside it."
+        radial_disp >= LOWER && radial_disp <= UPPER,
+        "pinched cylinder: radial_disp = {radial_disp:.6e} \
+         outside ±20% MacNeal-Harder band [{LOWER:.6e}, {UPPER:.6e}] \
+         (ref = {MACNEAL_HARDER_REF:.4e}). \
+         MITC3+ bubble enrichment must converge within ±20% at 4×4 octant mesh."
     );
 }
 
