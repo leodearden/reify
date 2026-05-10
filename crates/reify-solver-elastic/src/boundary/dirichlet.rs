@@ -211,24 +211,23 @@ pub fn apply_dirichlet_row_elimination(
         //   f[i] is overwritten unconditionally by step 5, so the
         //   column-into-RHS term is skipped for the diagonal row.
         let mut diag_found = false;
+        // CSR col_idx is sorted within each row (faer SymbolicSparseRowMat soft
+        // invariant); binary_search is O(log nnz_per_row).
         for j in 0..n {
             let start = row_ptr[j];
             let end = row_ptr[j + 1];
-            for idx in start..end {
-                if col_idx[idx] == i {
-                    if j == i {
-                        // Diagonal: was zeroed by step 2; set to 1.0 (step 4).
-                        vals[idx] = 1.0;
-                        diag_found = true;
-                    } else {
-                        // Off-diagonal column i entry:
-                        // step 1 — read K[j][i], subtract into f[j] before zeroing;
-                        // step 3 — zero the stored entry.
-                        f[j] -= vals[idx] * u;
-                        vals[idx] = 0.0;
-                    }
-                    // At most one entry per (row, col) pair in CSR: stop after first match.
-                    break;
+            if let Ok(rel) = col_idx[start..end].binary_search(&i) {
+                let idx = start + rel;
+                if j == i {
+                    // Diagonal: was zeroed by step 2; set to 1.0 (step 4).
+                    vals[idx] = 1.0;
+                    diag_found = true;
+                } else {
+                    // Off-diagonal column i entry:
+                    // step 1 — read K[j][i], subtract into f[j] before zeroing;
+                    // step 3 — zero the stored entry.
+                    f[j] -= vals[idx] * u;
+                    vals[idx] = 0.0;
                 }
             }
         }
@@ -793,16 +792,6 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Empty BC list: no-op contract
-    // -----------------------------------------------------------------------
-
-    /// Empty BC list → K and f are bit-identical to their pre-call snapshots.
-    ///
-    /// Pins the no-op contract: passing `bcs = &[]` must be a perfect
-    /// identity operation — no stored value in K is touched, no `f[j]`
-    /// changes.  Regression guard for future refactors that, for example,
-    /// allocate and write a scratch buffer unconditionally.
-    // -----------------------------------------------------------------------
     // Step 3: binary_search regression — sparse CSR with non-trivial offsets
     // -----------------------------------------------------------------------
 
@@ -926,6 +915,16 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------------
+    // Empty BC list: no-op contract
+    // -----------------------------------------------------------------------
+
+    /// Empty BC list → K and f are bit-identical to their pre-call snapshots.
+    ///
+    /// Pins the no-op contract: passing `bcs = &[]` must be a perfect
+    /// identity operation — no stored value in K is touched, no `f[j]`
+    /// changes.  Regression guard for future refactors that, for example,
+    /// allocate and write a scratch buffer unconditionally.
     #[test]
     fn apply_dirichlet_bcs_with_empty_slice_leaves_k_and_f_unchanged() {
         let mut k = single_p1_k();
