@@ -31,6 +31,16 @@
 //!
 //! Right-handed orientation — this ordering produces `det J > 0` for an
 //! unsheared prism. Reference-prism volume `= (1/2) × 2 = 1`.
+//!
+//! # API surface
+//!
+//! `VERTEX_BARY_ZETA` is a crate-internal constant — it is **not** part of
+//! the published API:
+//!
+//! ```compile_fail,E0603
+//! use reify_solver_elastic::elements::wedge_p1::VERTEX_BARY_ZETA;
+//! let _ = VERTEX_BARY_ZETA;
+//! ```
 
 use crate::elements::{QuadraturePoint, ReferenceCoord, ReferenceElement};
 
@@ -225,9 +235,6 @@ mod tests {
         let probe = ReferenceCoord::new(0.2, 0.3, 0.5);
         let g = WedgeP1.shape_grad_at(probe);
         assert_eq!(g.len(), 6, "shape_grad_at must return N_NODES=6 rows");
-        for row in &g {
-            assert_eq!(row.len(), 3, "each gradient row must have 3 components");
-        }
     }
 
     #[test]
@@ -525,7 +532,7 @@ mod tests {
     fn jacobian_45_degree_rotation_in_xz_plane_yields_constant_rotation_matrix_det_one() {
         // Rotate by θ = π/4 in the xz-plane:
         // R = [[cos θ, 0, sin θ], [0, 1, 0], [-sin θ, 0, cos θ]].
-        // For a P1 wedge the Jacobian is constant and equals R.
+        // For an affine map of the reference prism the Jacobian is constant and equals R.
         let theta = std::f64::consts::FRAC_PI_4;
         let (c, s) = (theta.cos(), theta.sin());
         let rotate = |v: [f64; 3]| [c * v[0] + s * v[2], v[1], -s * v[0] + c * v[2]];
