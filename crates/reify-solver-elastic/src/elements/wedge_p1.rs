@@ -431,6 +431,152 @@ mod tests {
         );
     }
 
+    // ── jacobian tests ───────────────────────────────────────────────────────
+
+    const JAC_TOL: f64 = 1e-10;
+
+    /// Build physical-node array by mapping each canonical reference-prism
+    /// vertex `(ξ, η, ζ)` through `transform`.  Matches REF_VERTICES order.
+    fn prism_phys_nodes(transform: impl Fn([f64; 3]) -> [f64; 3]) -> [[f64; 3]; 6] {
+        let mut nodes = [[0.0_f64; 3]; 6];
+        for (i, v) in REF_VERTICES.iter().enumerate() {
+            nodes[i] = transform([v.xi, v.eta, v.zeta]);
+        }
+        nodes
+    }
+
+    #[test]
+    fn jacobian_is_identity_for_reference_prism_phys_nodes() {
+        // Physical nodes = reference-prism vertices ⇒ J = I, det = 1.
+        let phys = prism_phys_nodes(|v| v);
+        for probe in [
+            ReferenceCoord::new(1.0 / 3.0, 1.0 / 3.0, 0.0),
+            ReferenceCoord::new(0.2, 0.3, 0.5),
+        ] {
+            let j = WedgeP1.jacobian(&phys, probe);
+            for row in 0..3 {
+                for col in 0..3 {
+                    let expected = if row == col { 1.0_f64 } else { 0.0_f64 };
+                    assert!(
+                        (j.matrix[row][col] - expected).abs() < JAC_TOL,
+                        "J[{row}][{col}] = {}, expected {expected}",
+                        j.matrix[row][col],
+                    );
+                }
+            }
+            assert!(
+                (j.det - 1.0).abs() < JAC_TOL,
+                "det J = {}, expected 1.0",
+                j.det,
+            );
+        }
+    }
+
+    #[test]
+    fn jacobian_uniform_scale_is_constant_with_correct_det() {
+        // Scale by s = 2: phys nodes = 2·ref ⇒ J = 2·I, det = 8.
+        let s = 2.0_f64;
+        let phys = prism_phys_nodes(|v| [s * v[0], s * v[1], s * v[2]]);
+        for probe in [
+            ReferenceCoord::new(1.0 / 3.0, 1.0 / 3.0, 0.0),
+            ReferenceCoord::new(0.2, 0.3, -0.4),
+        ] {
+            let j = WedgeP1.jacobian(&phys, probe);
+            for row in 0..3 {
+                for col in 0..3 {
+                    let expected = if row == col { s } else { 0.0_f64 };
+                    assert!(
+                        (j.matrix[row][col] - expected).abs() < JAC_TOL,
+                        "J[{row}][{col}] = {}, expected {expected}",
+                        j.matrix[row][col],
+                    );
+                }
+            }
+            assert!(
+                (j.det - s.powi(3)).abs() < JAC_TOL,
+                "det J = {}, expected {}",
+                j.det,
+                s.powi(3),
+            );
+        }
+    }
+
+    #[test]
+    fn jacobian_translation_only_yields_identity() {
+        // Translate by (a, b, c): Jacobian contribution from translation is zero,
+        // so J = I, det = 1.
+        let (a, b, c) = (1.5_f64, -0.7, 2.0);
+        let phys = prism_phys_nodes(|v| [v[0] + a, v[1] + b, v[2] + c]);
+        let j = WedgeP1.jacobian(&phys, ReferenceCoord::new(1.0 / 3.0, 1.0 / 3.0, 0.0));
+        for row in 0..3 {
+            for col in 0..3 {
+                let expected = if row == col { 1.0_f64 } else { 0.0_f64 };
+                assert!(
+                    (j.matrix[row][col] - expected).abs() < JAC_TOL,
+                    "translated J[{row}][{col}] = {}, expected {expected}",
+                    j.matrix[row][col],
+                );
+            }
+        }
+        assert!((j.det - 1.0).abs() < JAC_TOL, "det J of translation = {}", j.det);
+    }
+
+    #[test]
+    fn jacobian_45_degree_rotation_in_xz_plane_yields_constant_rotation_matrix_det_one() {
+        // Rotate by θ = π/4 in the xz-plane:
+        // R = [[cos θ, 0, sin θ], [0, 1, 0], [-sin θ, 0, cos θ]].
+        // For a P1 wedge the Jacobian is constant and equals R.
+        let theta = std::f64::consts::FRAC_PI_4;
+        let (c, s) = (theta.cos(), theta.sin());
+        let rotate = |v: [f64; 3]| [c * v[0] + s * v[2], v[1], -s * v[0] + c * v[2]];
+        let phys = prism_phys_nodes(rotate);
+
+        // Expected J = R (constant for all reference probes on a P1 prism).
+        let r = [[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]];
+
+        for probe in [
+            ReferenceCoord::new(1.0 / 3.0, 1.0 / 3.0, 0.0),
+            ReferenceCoord::new(0.2, 0.3, 0.5),
+            ReferenceCoord::new(0.4, 0.1, -0.6),
+        ] {
+            let j = WedgeP1.jacobian(&phys, probe);
+            for row in 0..3 {
+                for col in 0..3 {
+                    assert!(
+                        (j.matrix[row][col] - r[row][col]).abs() < JAC_TOL,
+                        "rotated J[{row}][{col}] = {}, expected {}",
+                        j.matrix[row][col],
+                        r[row][col],
+                    );
+                }
+            }
+            assert!(
+                (j.det - 1.0).abs() < JAC_TOL,
+                "det J of rotation = {}, expected 1.0",
+                j.det,
+            );
+        }
+    }
+
+    #[test]
+    fn jacobian_negative_det_for_swapped_bottom_face_nodes() {
+        // Swap bottom-face nodes 1 and 2 — both at ζ = −1.  This reverses the
+        // orientation of the bottom triangle, making det J < 0 in the bottom half
+        // of the element (ζ < 0).  Unlike a linear tet (where any 2-node swap
+        // gives a globally constant det = −1), the prism Jacobian varies with ζ
+        // (det J = ζ for the identity-map swap), so we probe at ζ = −1/√3 where
+        // det J ≈ −0.577 < 0.
+        let mut phys = prism_phys_nodes(|v| v);
+        phys.swap(1, 2);
+        let probe = ReferenceCoord::new(1.0 / 3.0, 1.0 / 3.0, -WEDGE_P1_LINE_GAUSS_PT);
+        let j = WedgeP1.jacobian(&phys, probe);
+        assert!(
+            j.det < 0.0,
+            "bottom-face swap (nodes 1↔2) must yield det J < 0 at ζ < 0 (got {})",
+            j.det,
+        );
+    }
+
     #[test]
     fn shape_grad_at_matches_finite_difference_oracle_at_off_centroid_probes() {
         // FD oracle: central-difference truncation O(h²) ≈ 1e-12 + roundoff
