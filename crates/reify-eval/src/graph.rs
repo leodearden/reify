@@ -530,6 +530,15 @@ impl EvaluationGraph {
         self.computations.get_mut(id)
     }
 
+    /// Iterate over all ComputeNodes in the graph. Iteration order is
+    /// PersistentMap-determined (not stable across runs); callers needing
+    /// deterministic ordering must sort by `computation_id`. Matches the
+    /// convention used by sibling node maps (`value_cells.values()` etc.
+    /// are accessed directly via the field).
+    pub fn compute_nodes(&self) -> impl Iterator<Item = &ComputeNodeData> {
+        self.computations.values()
+    }
+
     /// Returns `true` iff `id` refers to a value cell present in this graph
     /// whose `kind` is `Auto` (strict or free). Returns `false` for missing
     /// cells — callers relying on that "missing → false" branch (e.g. the
