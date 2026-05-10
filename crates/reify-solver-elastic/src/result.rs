@@ -189,6 +189,61 @@ mod tests {
     }
 
     #[test]
+    fn element_stress_p1_uniaxial_strain_patch_test_recovers_lame_diagonal() {
+        // Linear displacement u(x) = (a·x, 0, 0) ⇒ ε_xx = a, all other
+        // strain components 0. Expect σ_xx = (λ+2μ)·a, σ_yy = σ_zz = λ·a,
+        // off-diagonals 0. Pins the B-matrix orientation against
+        // assembly/tet.rs's convention.
+        let a = 0.01_f64;
+        let mat = dimensionless_steel_like();
+        let e = mat.youngs_modulus;
+        let nu = mat.poisson_ratio;
+        let factor = e / ((1.0 + nu) * (1.0 - 2.0 * nu));
+        let lambda = factor * nu;
+        let two_mu = factor * (1.0 - 2.0 * nu);
+        let lambda_plus_two_mu = lambda + two_mu;
+
+        let mut u_e = [0.0_f64; 12];
+        for (i, x) in UNIT_TET_P1.iter().enumerate() {
+            u_e[3 * i] = a * x[0];
+            // u_y, u_z stay 0
+        }
+
+        let stress = element_stress_p1(&UNIT_TET_P1, &mat, &u_e);
+
+        let exp_xx = lambda_plus_two_mu * a;
+        let exp_yy = lambda * a;
+        let exp_zz = lambda * a;
+
+        let scale_xx = exp_xx.abs().max(1.0);
+        let scale_yy = exp_yy.abs().max(1.0);
+        assert!(
+            (stress[0][0] - exp_xx).abs() < 1e-9 * scale_xx,
+            "σ_xx = {} expected (λ+2μ)·a = {exp_xx}",
+            stress[0][0],
+        );
+        assert!(
+            (stress[1][1] - exp_yy).abs() < 1e-9 * scale_yy,
+            "σ_yy = {} expected λ·a = {exp_yy}",
+            stress[1][1],
+        );
+        assert!(
+            (stress[2][2] - exp_zz).abs() < 1e-9 * scale_yy,
+            "σ_zz = {} expected λ·a = {exp_zz}",
+            stress[2][2],
+        );
+        // Off-diagonals must vanish (within 1e-9 of the largest σ entry).
+        let scale_off = exp_xx.abs().max(1.0);
+        for (i, j) in [(0, 1), (0, 2), (1, 2)] {
+            assert!(
+                stress[i][j].abs() < 1e-9 * scale_off,
+                "σ[{i}][{j}] = {} expected 0",
+                stress[i][j],
+            );
+        }
+    }
+
+    #[test]
     fn element_stress_p1_zero_displacement_yields_zero_stress() {
         // Regression guard: an off-by-one that leaks the D-matrix
         // diagonal into the result for ε = 0 would surface here.
