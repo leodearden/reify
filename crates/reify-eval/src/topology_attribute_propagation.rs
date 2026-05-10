@@ -2942,5 +2942,35 @@ mod tests {
             assert_eq!(label.span, synthetic_span());
             assert_eq!(label.message, "selector call");
         }
+
+        #[test]
+        fn detect_local_index_reassignment_skips_entries_with_non_empty_mod_history() {
+            // PRD line 72: "not because of a split — splits are handled by
+            // mod_history". Post-split clusters are surfaced via
+            // TopologyAttributeAmbiguousAfterSplit at resolve time; this helper
+            // must NOT double-warn the user about the same fragility under a
+            // different code.
+            let attr0 = make_attr_with_split("F#realization[0]", Role::Side, 0, 0);
+            let attr1 = make_attr_with_split("F#realization[0]", Role::Side, 1, 1);
+            let h0 = GeometryHandleId(1);
+            let h1 = GeometryHandleId(2);
+            let mut centroids: HashMap<GeometryHandleId, [f64; 3]> = HashMap::new();
+            // Identical centroids — would normally trip the helper, but
+            // mod_history non-empty must short-circuit the entry.
+            centroids.insert(h0, [1.0, 2.0, 3.0]);
+            centroids.insert(h1, [1.0, 2.0, 3.0]);
+            let mut diagnostics = Vec::new();
+            detect_local_index_reassignment_diagnostics(
+                &[(h0, &attr0), (h1, &attr1)],
+                &centroids,
+                1e-9,
+                synthetic_span(),
+                &mut diagnostics,
+            );
+            assert!(
+                diagnostics.is_empty(),
+                "expected no diagnostic — split-cluster entries must be skipped, got: {diagnostics:?}"
+            );
+        }
     }
 }
