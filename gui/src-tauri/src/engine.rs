@@ -641,6 +641,12 @@ impl EngineSession {
         // Invalidate the consumed-idents cache so get_mechanism_descriptors rebuilds
         // it on the next call for the new module.  Same lifecycle as parsed_cache.
         self.consumed_idents_cache = None;
+        // Clear stored failure diagnostics — the compile succeeded, so any stale
+        // failure diagnostics from a prior failed load must not appear in subsequent
+        // build_gui_state calls.  Both fields are cleared atomically here so the
+        // atomic-commit invariant ("all seven fields move together") remains intact.
+        self.last_compile_diagnostics.clear();
+        self.last_tessellation_diagnostics.clear();
     }
 
     /// Export geometry to a file.
@@ -2287,6 +2293,17 @@ impl EngineSession {
         cache: HashMap<String, HashSet<String>>,
     ) {
         self.consumed_idents_cache = Some(cache);
+    }
+
+    /// Return a slice of the stored compile failure diagnostics.
+    ///
+    /// Populated by `load_from_source`, `update_source`, and `load_file` on the
+    /// failure path and cleared by `commit_state` on a successful cycle.  Used by
+    /// tests that need to inspect field state without calling `build_gui_state`.
+    ///
+    /// Mirrors the style of `parsed_cache_for_test` (engine.rs).
+    pub(crate) fn last_compile_diagnostics_for_test(&self) -> &[DiagnosticInfo] {
+        &self.last_compile_diagnostics
     }
 
     /// Directly inject a `CompiledModule` as the session's current compiled state,
