@@ -139,6 +139,7 @@
 pub mod medial;
 pub mod mesher;
 pub mod mid_surface;
+pub mod mid_surface_naming;
 pub mod pruning;
 pub mod segmentation;
 pub(crate) mod grid_validation;
