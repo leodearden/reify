@@ -212,6 +212,99 @@ describe('StatusBar tessellation diagnostics', () => {
   });
 });
 
+describe('StatusBar compile diagnostics', () => {
+  function makeDiag(severity: 'Error' | 'Warning' | 'Info', message = 'test'): DiagnosticInfo {
+    return {
+      file_path: 'test.ri',
+      line: 1, column: 1, end_line: 1, end_column: 1,
+      severity,
+      message,
+      code: null,
+    };
+  }
+
+  it('absent compileDiagnostics prop: no diagnostics-count badge rendered', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+      />
+    ));
+    expect(screen.queryByTestId('diagnostics-count')).toBeNull();
+  });
+
+  it('empty compileDiagnostics array: no diagnostics-count badge rendered', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        compileDiagnostics={[]}
+      />
+    ));
+    expect(screen.queryByTestId('diagnostics-count')).toBeNull();
+  });
+
+  it('one Warning diagnostic: badge with "1 warning" is visible', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        compileDiagnostics={[makeDiag('Warning')]}
+      />
+    ));
+    const badge = screen.getByTestId('diagnostics-count');
+    expect(badge).toBeTruthy();
+    expect(badge.textContent).toMatch(/1 warning/i);
+  });
+
+  it('one Error and one Warning: both counts visible in the badge', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        compileDiagnostics={[makeDiag('Error'), makeDiag('Warning')]}
+      />
+    ));
+    const badge = screen.getByTestId('diagnostics-count');
+    expect(badge).toBeTruthy();
+    expect(badge.textContent).toMatch(/1 error/i);
+    expect(badge.textContent).toMatch(/1 warning/i);
+  });
+
+  it('clicking the badge invokes onToggleDiagnostics exactly once', () => {
+    const onToggle = vi.fn();
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        compileDiagnostics={[makeDiag('Warning')]}
+        onToggleDiagnostics={onToggle}
+      />
+    ));
+    fireEvent.click(screen.getByTestId('diagnostics-count'));
+    expect(onToggle).toHaveBeenCalledTimes(1);
+  });
+
+  it('badge has aria-label mentioning "diagnostics" for screen readers', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        compileDiagnostics={[makeDiag('Warning')]}
+      />
+    ));
+    const badge = screen.getByTestId('diagnostics-count');
+    const label = badge.getAttribute('aria-label') ?? '';
+    expect(label).toMatch(/diagnostics/i);
+  });
+});
+
 describe('StatusBar Claude status indicator', () => {
   it('when claudeStatus prop provided, renders section with data-testid="claude-status"', () => {
     render(() => (
