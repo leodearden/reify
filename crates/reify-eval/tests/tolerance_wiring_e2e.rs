@@ -1409,14 +1409,15 @@ fn edit_param_followed_by_build_snapshot_re_executes_kernel_so_geometry_handle_i
 ///
 /// **What this test pins:** after the second `build()` call is served from
 /// `RealizationCache` (the cache-hit short-circuit at
-/// `engine_build.rs::execute_realization_ops` fires), both
-/// `feature_tag_table` and `topology_attribute_table` are empty for the
-/// cached handle.  The root cause is documented in the "Known limitation"
-/// docstring on `execute_realization_ops`: the short-circuit returns early
-/// before the per-op `feature_tag_table.record(...)` call at line 1547, and
-/// both tables are reset to `default()` at the start of every `build()`.
-/// So the net effect is that a cache-served handle has zero attribute entries
-/// on the second build.
+/// `engine_build.rs::execute_realization_ops` fires), `feature_tag_table` is
+/// empty (no entry for the cached handle, table-wide empty).  The root cause
+/// is documented in the "Known limitation" docstring on
+/// `execute_realization_ops`: the short-circuit returns early before the
+/// per-op `feature_tag_table.record(...)` call at line 1547, and the table
+/// is reset to `default()` at the start of every `build()`.  The parallel
+/// `topology_attribute_table` claim is left to a separate OCCT-gated test
+/// because its population path requires real face/edge extraction (see "Why
+/// MockGeometryKernel" below).
 ///
 /// **Why MockGeometryKernel:** (1) The test runs unconditionally — no
 /// `OCCT_AVAILABLE` skip gate that could hide the regression in OCCT-less CI
@@ -1489,10 +1490,16 @@ fn cache_hit_short_circuit_leaves_feature_tag_table_empty_for_cached_handle() {
         cached_handle,
     );
 
-    // Re-activate purpose: build() above called check() which called eval()
-    // which cleared `active_purpose_bindings` (engine_eval.rs:1149-1150).
-    // Without re-activation the second build's demanded_tol would be None,
-    // suppressing the cache lookup and defeating the test premise.
+    // Defensive re-activation: `eval()` PRESERVES `active_purpose_bindings`
+    // by `mem::take`-ing them and re-applying via `activate_purpose()` after
+    // the snapshot is rebuilt (task 3103, see engine_eval.rs around the
+    // mem::take call). So this is a no-op against today's contract — the
+    // second `activate_purpose("manufacturing", "MyDesign")` hits the
+    // idempotent early-return in `activate_purpose_constraints` (see the
+    // docstring on `activate_purpose` in engine_purposes.rs). It is kept as
+    // belt-and-suspenders defense against a future regression in that
+    // preservation contract that would otherwise silently defeat the test
+    // premise (no demanded_tol → no cache lookup → no short-circuit).
     engine.activate_purpose("manufacturing", "MyDesign");
 
     // ── Build #2 ──────────────────────────────────────────────────────────────
@@ -1528,6 +1535,13 @@ fn cache_hit_short_circuit_leaves_feature_tag_table_empty_for_cached_handle() {
 
     // ── Regression PINs ───────────────────────────────────────────────────────
 
+    // PIN 1 (headline) + PIN 2 (stronger) layering rationale: PIN 2's
+    // table-wide emptiness strictly implies PIN 1's per-handle absence, so
+    // they overlap in truth condition.  Both are kept because PIN 1's failure
+    // message names `cached_handle` directly and is the more diagnostic signal
+    // for the canonical regression (population only of the cached handle),
+    // while PIN 2 generalises to catch any new population path.
+    //
     // PIN 1 (headline): the cache-hit short-circuit skips the per-op
     // `feature_tag_table.record(handle.id, tag)` call at engine_build.rs:1547,
     // and the per-build reset at the top of build() clears the table before the
@@ -1552,5 +1566,4 @@ fn cache_hit_short_circuit_leaves_feature_tag_table_empty_for_cached_handle() {
          entirely. If this fires, a new population path outside the op-loop \
          has been introduced.",
     );
-
 }
