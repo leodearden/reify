@@ -77,6 +77,14 @@
   white-space: nowrap;
 }
 
+/* ── Constraint target bound ────────────────────────────────────────── */
+
+.targetBound {
+  font-size: 10px;
+  color: var(--text-muted, #888);
+  white-space: nowrap;
+}
+
 /* ── Constraint status markers ──────────────────────────────────────── */
 
 .statusMarker {
