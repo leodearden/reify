@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, within } from '@solidjs/testing-library';
 import { createRoot } from 'solid-js';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { DesignTree } from '../panels/DesignTree';
 import { createViewStateStore } from '../stores/viewStateStore';
 import type { EntityTreeNode } from '../types';
@@ -1013,5 +1015,15 @@ describe('DesignTree — freshness badge', () => {
     // Click the row (not the badge itself) — onSelect should still fire
     fireEvent.click(screen.getByTestId('tree-row-Root.A'));
     expect(onSelect).toHaveBeenCalledWith('Root.A', expect.objectContaining({ ctrl: false, shift: false }));
+  });
+});
+
+describe('DesignTree — scrollbar gutter', () => {
+  it('reserves stable scrollbar gutter on .treeScroll so eye-icons sit left of the scrollbar', () => {
+    const css = readFileSync(join(__dirname, '../panels/DesignTree.module.css'), 'utf-8');
+    const match = css.match(/\.treeScroll\s*\{[^}]*\}/);
+    expect(match, '.treeScroll rule block not found in DesignTree.module.css').toBeTruthy();
+    const block = match![0];
+    expect(block).toMatch(/scrollbar-gutter:\s*stable\b/);
   });
 });
