@@ -775,6 +775,32 @@ mod tests {
         let _ = solve_cg(&k, &f, opts, SolverMode::Deterministic);
     }
 
+    /// `opts.tolerance == 0.0` must panic with a message naming `tolerance`.
+    #[test]
+    #[should_panic(expected = "tolerance")]
+    fn tolerance_zero_panics() {
+        let k = identity_1x1();
+        let f = [1.0_f64];
+        let opts = CgSolverOptions {
+            tolerance: 0.0,
+            max_iter: 100,
+        };
+        let _ = solve_cg(&k, &f, opts, SolverMode::Deterministic);
+    }
+
+    /// `opts.tolerance < 0.0` must panic with a message naming `tolerance`.
+    #[test]
+    #[should_panic(expected = "tolerance")]
+    fn tolerance_negative_panics() {
+        let k = identity_1x1();
+        let f = [1.0_f64];
+        let opts = CgSolverOptions {
+            tolerance: -1.0,
+            max_iter: 100,
+        };
+        let _ = solve_cg(&k, &f, opts, SolverMode::Deterministic);
+    }
+
     // -----------------------------------------------------------------------
     // Step-3: identity-K trivial convergence
     // -----------------------------------------------------------------------
