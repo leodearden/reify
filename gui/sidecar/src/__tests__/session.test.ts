@@ -3858,4 +3858,39 @@ describe('session.test.ts /tmp leak guard (task 3283)', () => {
     const leaked = [...after].filter((d) => !before.has(d));
     expect(leaked, 'leaked /tmp/reify-* dirs: ' + leaked.join(', ')).toHaveLength(0);
   });
+
+  it('leak guard ignores sibling reify-* prefixes (e.g. reify-tools-) that other tests create concurrently', async () => {
+    // Obtain handles to the REAL filesystem, os, and path — bypassing vi.mock('node:fs').
+    const realFs = await vi.importActual<typeof import('node:fs')>('node:fs');
+    const realOs = await vi.importActual<typeof import('node:os')>('node:os');
+    const realPath = await vi.importActual<typeof import('node:path')>('node:path');
+
+    const tmpdir = realOs.tmpdir();
+
+    // Snapshot /tmp BEFORE, using the SAME broad filter as the existing leak-guard test.
+    // This is intentionally the still-unfixed /^reify-/ regex — so this test FAILS
+    // under the current code (demonstrating the false-positive the review identified).
+    const before = new Set<string>(
+      realFs.readdirSync(tmpdir).filter((name: string) => /^reify-/.test(name))
+    );
+
+    // Simulate a concurrent sibling test (e.g. discover-mcp-tools.test.ts:11) creating
+    // a reify-tools-* directory between the before and after snapshots.
+    const siblingDir = realFs.mkdtempSync(realPath.join(tmpdir, 'reify-tools-'));
+
+    try {
+      // Snapshot /tmp AFTER the sibling dir appeared.
+      const after = new Set<string>(
+        realFs.readdirSync(tmpdir).filter((name: string) => /^reify-/.test(name))
+      );
+
+      // With /^reify-/, siblingDir matches and is in `after` but not `before`, so
+      // leaked.length === 1 — a spurious false-positive (it's not a real leak).
+      // This test asserts the guard must NOT report it as a leak: length must be 0.
+      const leaked = [...after].filter((d) => !before.has(d));
+      expect(leaked, 'leaked /tmp/reify-mcp-* dirs: ' + leaked.join(', ')).toHaveLength(0);
+    } finally {
+      realFs.rmSync(siblingDir, { recursive: true, force: true });
+    }
+  });
 });
