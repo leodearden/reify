@@ -667,12 +667,20 @@ impl EngineSession {
         let (compiled, check) = match (self.compiled.as_ref(), self.last_check.as_ref()) {
             (Some(c), Some(k)) => (c, k),
             _ => {
+                // NOTE: When `compiled` is `None` (fatal parse/compile failure),
+                // `compile_diagnostics` is empty in this stub — the hard failure
+                // is not yet surfaced here. A follow-up task should populate this
+                // field from the last `load_from_source` error so users see the
+                // failure in the diagnostics panel rather than a silent empty
+                // viewport. The `tessellation_diagnostics` field has the same
+                // limitation for the same reason.
                 return Ok(GuiState {
                     meshes: Vec::new(),
                     values: Vec::new(),
                     constraints: Vec::new(),
                     files: Vec::new(),
                     tessellation_diagnostics: Vec::new(),
+                    compile_diagnostics: Vec::new(),
                 });
             }
         };
@@ -742,12 +750,19 @@ impl EngineSession {
             })
             .collect();
 
+        // Collect compile diagnostics (errors, warnings, info) from the most
+        // recently compiled module. Called after tessellate_snapshot so the
+        // mutable engine borrow is already released.  Takes &self — coexists
+        // safely with the existing immutable borrows of compiled/check/files.
+        let compile_diagnostics = self.get_diagnostics();
+
         Ok(GuiState {
             meshes,
             values,
             constraints,
             files,
             tessellation_diagnostics,
+            compile_diagnostics,
         })
     }
 
@@ -1850,6 +1865,7 @@ fn build_preview_gui_state(
         constraints: build_constraints(compiled, check),
         files: Vec::new(),
         tessellation_diagnostics: Vec::new(),
+        compile_diagnostics: Vec::new(),
     }
 }
 

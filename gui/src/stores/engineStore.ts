@@ -17,6 +17,7 @@ import {
   onValueRemoved,
   onConstraintRemoved,
   onTessellationDiagnostics,
+  onCompileDiagnostics,
 } from '../bridge';
 import type { KernelStatus } from '../bridge';
 
@@ -26,6 +27,7 @@ export interface EngineState {
   constraints: Record<string, ConstraintData>;
   evalStatus: EvaluationStatus;
   tessellationDiagnostics: DiagnosticInfo[];
+  compileDiagnostics: DiagnosticInfo[];
   kernelStatus: KernelStatus | null;
 }
 
@@ -44,6 +46,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
     constraints: {},
     evalStatus: { phase: 'idle' },
     tessellationDiagnostics: [],
+    compileDiagnostics: [],
     kernelStatus: null,
   });
 
@@ -63,7 +66,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
       constraints[c.node_id] = c;
     }
 
-    setState({ meshes, values, constraints, tessellationDiagnostics: guiState.tessellation_diagnostics });
+    setState({ meshes, values, constraints, tessellationDiagnostics: guiState.tessellation_diagnostics, compileDiagnostics: guiState.compile_diagnostics });
     options?.onEngineReinitialized?.();
   }
 
@@ -110,6 +113,10 @@ export function createEngineStore(options?: EngineStoreOptions) {
     setState('tessellationDiagnostics', diags);
   }
 
+  function setCompileDiagnostics(diags: DiagnosticInfo[]) {
+    setState('compileDiagnostics', diags);
+  }
+
   function setKernelStatus(status: KernelStatus | null) {
     setState('kernelStatus', status);
   }
@@ -124,6 +131,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
       onValueRemoved(removeValue),
       onConstraintRemoved(removeConstraint),
       onTessellationDiagnostics(setTessellationDiagnostics),
+      onCompileDiagnostics(setCompileDiagnostics),
     ]);
 
     const unlisteners: (() => void)[] = [];
@@ -153,6 +161,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
     removeConstraint,
     setEvalStatus,
     setTessellationDiagnostics,
+    setCompileDiagnostics,
     setKernelStatus,
     subscribeToEvents,
   };

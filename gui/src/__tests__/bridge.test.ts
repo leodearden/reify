@@ -29,6 +29,7 @@ import {
   onEvaluationStatus,
   onSerializationError,
   onTessellationDiagnostics,
+  onCompileDiagnostics,
   pickOpenPath,
   onFocusEntity,
   onNavigateToSource,
@@ -59,6 +60,7 @@ describe('bridge commands', () => {
       constraints: [],
       files: [],
       tessellation_diagnostics: [],
+      compile_diagnostics: [],
     };
     mockInvoke.mockResolvedValue(mockState);
 
@@ -69,7 +71,7 @@ describe('bridge commands', () => {
   });
 
   it('setParameter calls invoke with cellId and value', async () => {
-    const rawState: RawGuiState = { meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [] };
+    const rawState: RawGuiState = { meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [] };
     mockInvoke.mockResolvedValue(rawState);
 
     await setParameter('cell_001', '42.0');
@@ -110,6 +112,7 @@ describe('bridge commands', () => {
       constraints: [],
       files: [],
       tessellation_diagnostics: [],
+      compile_diagnostics: [],
     };
     mockInvoke.mockResolvedValue(rawState);
 
@@ -131,6 +134,7 @@ describe('bridge commands', () => {
       constraints: [{ node_id: 'n1', expression: 'x > 0', status: 'satisfied', label: null, parameter_ids: [] }],
       files: [{ path: 'main.ri', content: 'updated' }],
       tessellation_diagnostics: [],
+      compile_diagnostics: [],
     };
     mockInvoke.mockResolvedValue(rawState);
 
@@ -169,6 +173,7 @@ describe('bridge commands', () => {
       constraints: [],
       files: [{ path: 'main.ri', content: 'content' }],
       tessellation_diagnostics: [],
+      compile_diagnostics: [],
     };
     mockInvoke.mockResolvedValue(rawState);
 
@@ -355,6 +360,38 @@ describe('bridge event listeners', () => {
     );
   });
 
+  it("onCompileDiagnostics subscribes to 'compile-diagnostics' event", async () => {
+    const unlisten = vi.fn();
+    mockListen.mockResolvedValue(unlisten);
+
+    const callback = vi.fn();
+    const result = await onCompileDiagnostics(callback);
+
+    expect(mockListen).toHaveBeenCalledWith('compile-diagnostics', expect.any(Function));
+    expect(result).toBe(unlisten);
+  });
+
+  it('onCompileDiagnostics passes DiagnosticInfo[] payload to callback', async () => {
+    const unlisten = vi.fn();
+    mockListen.mockImplementation(async (_event, handler) => {
+      const payload = [
+        { file_path: 'helper.ri', line: 3, column: 1, end_line: 3, end_column: 10,
+          severity: 'Warning', message: "unknown port type 'Foo'", code: null },
+      ];
+      (handler as (event: { payload: unknown }) => void)({ payload });
+      return unlisten;
+    });
+
+    const callback = vi.fn();
+    await onCompileDiagnostics(callback);
+
+    expect(callback).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ severity: 'Warning', message: "unknown port type 'Foo'" }),
+      ])
+    );
+  });
+
   it("onFocusEntity calls listen with 'focus-entity' event", async () => {
     const unlisten = vi.fn();
     mockListen.mockResolvedValue(unlisten);
@@ -471,6 +508,7 @@ describe('bridge def-preview commands', () => {
       constraints: [],
       files: [],
       tessellation_diagnostics: [],
+      compile_diagnostics: [],
     };
     mockInvoke.mockResolvedValue(rawState);
 

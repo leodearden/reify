@@ -4844,6 +4844,75 @@ fn build_gui_state_tessellation_unresolved_source_tags_diagnostics() {
     }
 }
 
+// --- compile_diagnostics wiring through build_gui_state (step-3 / step-4) ---
+
+/// Compile warnings (e.g. unknown port type) must appear in `compile_diagnostics`
+/// after `load_from_source` and must remain absent from `tessellation_diagnostics`.
+///
+/// Uses the same `warn_source_with_unknown_port_type` fixture already validated by
+/// `engine_get_diagnostics_returns_populated_warning`.
+#[test]
+fn build_gui_state_compile_diagnostics_populated_from_warning() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(warn_source_with_unknown_port_type(), "warn_test")
+        .expect("load_from_source should succeed with warn source");
+
+    // compile_diagnostics must be non-empty
+    assert!(
+        !state.compile_diagnostics.is_empty(),
+        "expected non-empty compile_diagnostics for warn_source_with_unknown_port_type, got empty"
+    );
+
+    // First entry must be a Warning with the expected message and a .ri file_path
+    let first = &state.compile_diagnostics[0];
+    assert_eq!(
+        first.severity, "Warning",
+        "expected severity 'Warning', got '{}'",
+        first.severity
+    );
+    assert!(
+        first.message.to_lowercase().contains("unknown port type"),
+        "expected message to contain 'unknown port type', got: {}",
+        first.message
+    );
+    assert!(
+        first.file_path.ends_with(".ri"),
+        "expected file_path to end with '.ri', got: {}",
+        first.file_path
+    );
+
+    // tessellation_diagnostics must remain empty (the two streams are disjoint)
+    assert!(
+        state.tessellation_diagnostics.is_empty(),
+        "expected empty tessellation_diagnostics when compile_diagnostics are present, got {:?}",
+        state.tessellation_diagnostics
+    );
+}
+
+/// compile_diagnostics must be empty for clean source with no warnings.
+#[test]
+fn build_gui_state_compile_diagnostics_empty_on_clean_source() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new()
+        .with_extracted_faces(reify_types::GeometryHandleId(1), vec![])
+        .with_extracted_edges(reify_types::GeometryHandleId(1), vec![]);
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed with valid bracket source");
+
+    assert!(
+        state.compile_diagnostics.is_empty(),
+        "expected empty compile_diagnostics for clean bracket source, got {:?}",
+        state.compile_diagnostics
+    );
+}
+
 // --- Freshness wiring through build_gui_state (step-7 / step-8) ---
 
 /// End-to-end freshness wiring test: forced panic on a `let` cell must surface
@@ -5274,6 +5343,86 @@ fn is_idle_returns_true_after_load_from_source() {
     assert!(
         session.is_idle(),
         "session should be idle after a successful load_from_source"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Step-19: Full backend pipeline regression test
+// (engine → build_gui_state → compute_delta → delta_to_events)
+// ---------------------------------------------------------------------------
+
+/// Pins the cross-cutting compile-diagnostics wire path so no later refactor
+/// breaks it silently.
+///
+/// Steps:
+/// 1. Load `warn_source_with_unknown_port_type` into an EngineSession.
+/// 2. The returned GuiState comes from `build_gui_state` (via `load_from_source`),
+///    which calls `get_diagnostics()` and populates `compile_diagnostics`.
+/// 3. Pass the GuiState through `compute_delta` with `last_state = None`.
+/// 4. Feed the resulting `StateDelta` into `delta_to_events`.
+/// 5. Assert exactly one `"compile-diagnostics"` event is emitted, whose JSON
+///    payload contains a Warning DiagnosticInfo with the unknown-port-type message.
+#[test]
+fn compile_diagnostics_full_pipeline_engine_to_event() {
+    use std::sync::Mutex;
+    use crate::diff::{compute_delta, delta_to_events};
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // 1 + 2: engine builds GuiState with compile_diagnostics populated
+    let gui_state = session
+        .load_from_source(warn_source_with_unknown_port_type(), "warn_pipeline")
+        .expect("load_from_source should succeed with warn source");
+
+    assert!(
+        !gui_state.compile_diagnostics.is_empty(),
+        "pre-condition: GuiState.compile_diagnostics must be non-empty for this test to be meaningful"
+    );
+
+    // 3: compute_delta with None last_state → full delta
+    let last_state: Mutex<Option<crate::types::GuiState>> = Mutex::new(None);
+    let delta = compute_delta(&last_state, &gui_state);
+
+    // The full delta must carry the compile diagnostics
+    assert!(
+        delta.changed_compile_diagnostics.is_some(),
+        "compute_delta must set changed_compile_diagnostics on a full (None last_state) delta"
+    );
+
+    // 4: feed into delta_to_events
+    let events = delta_to_events(&delta);
+
+    // 5a: exactly one "compile-diagnostics" event
+    let compile_events: Vec<_> = events
+        .iter()
+        .filter(|(name, _)| name == "compile-diagnostics")
+        .collect();
+    assert_eq!(
+        compile_events.len(),
+        1,
+        "expected exactly one compile-diagnostics event from the full pipeline; got events: {:?}",
+        events.iter().map(|(n, _)| n).collect::<Vec<_>>()
+    );
+
+    // 5b: payload contains at least one Warning with the expected message
+    let payload = &compile_events[0].1;
+    let diags: Vec<DiagnosticInfo> = serde_json::from_value(payload.clone())
+        .expect("compile-diagnostics event payload must deserialize as Vec<DiagnosticInfo>");
+
+    assert!(
+        !diags.is_empty(),
+        "compile-diagnostics event payload must be non-empty"
+    );
+
+    let warning = diags
+        .iter()
+        .find(|d| d.severity == "Warning" && d.message.to_lowercase().contains("unknown port type"));
+    assert!(
+        warning.is_some(),
+        "expected a Warning with 'unknown port type' in the compile-diagnostics event payload; got: {:?}",
+        diags
     );
 }
 

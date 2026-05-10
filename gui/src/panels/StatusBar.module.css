@@ -88,6 +88,23 @@
   background: rgba(250, 179, 135, 0.15);
 }
 
+.diagnosticsTrigger {
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 1px 4px;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.diagnosticsTrigger:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
 .claudeStatus {
   cursor: pointer;
   border-radius: 4px;

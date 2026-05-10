@@ -13,6 +13,7 @@ fn gui_state_empty_serializes_with_expected_keys() {
         constraints: vec![],
         files: vec![],
         tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(v.get("meshes").unwrap().is_array());
@@ -29,6 +30,7 @@ fn gui_state_serializes_tessellation_diagnostics_field() {
         constraints: vec![],
         files: vec![],
         tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(
@@ -1193,6 +1195,31 @@ fn meshdata_rejects_displaced_positions_with_wrong_length() {
     assert!(
         msg.contains("vertices"),
         "expected 'vertices' in error message: {msg}"
+    );
+}
+
+/// `GuiState` must carry a `compile_diagnostics` JSON field that serializes as
+/// an array. Mirrors `gui_state_serializes_tessellation_diagnostics_field`.
+/// Fails until `compile_diagnostics: Vec<DiagnosticInfo>` is added to `GuiState`.
+#[test]
+fn gui_state_serializes_compile_diagnostics_field() {
+    let state = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+    };
+    let v = serde_json::to_value(&state).unwrap();
+    assert!(
+        v.get("compile_diagnostics").unwrap().is_array(),
+        "compile_diagnostics must serialize as a JSON array"
+    );
+    assert_eq!(
+        v["compile_diagnostics"].as_array().unwrap().len(),
+        0,
+        "empty compile_diagnostics should serialize as an empty array"
     );
 }
 

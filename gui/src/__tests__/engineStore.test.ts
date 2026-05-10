@@ -20,6 +20,7 @@ vi.mock('../bridge', () => ({
   onValueRemoved: vi.fn(),
   onConstraintRemoved: vi.fn(),
   onTessellationDiagnostics: vi.fn(),
+  onCompileDiagnostics: vi.fn(),
   onKernelStatus: vi.fn(),
 }));
 
@@ -32,6 +33,7 @@ import {
   onValueRemoved,
   onConstraintRemoved,
   onTessellationDiagnostics,
+  onCompileDiagnostics,
 } from '../bridge';
 import { createEngineStore } from '../stores/engineStore';
 
@@ -43,12 +45,14 @@ const mockOnMeshRemoved = vi.mocked(onMeshRemoved);
 const mockOnValueRemoved = vi.mocked(onValueRemoved);
 const mockOnConstraintRemoved = vi.mocked(onConstraintRemoved);
 const mockOnTessellationDiagnostics = vi.mocked(onTessellationDiagnostics);
+const mockOnCompileDiagnostics = vi.mocked(onCompileDiagnostics);
 
 beforeEach(() => {
   vi.clearAllMocks();
   // Default: all subscriptions succeed with a no-op unlisten function.
   // Tests that need specific behaviour can override individual mocks.
   mockOnTessellationDiagnostics.mockResolvedValue(vi.fn());
+  mockOnCompileDiagnostics.mockResolvedValue(vi.fn());
 });
 
 const sampleMesh: MeshData = {
@@ -98,6 +102,7 @@ describe('engineStore', () => {
         constraints: [sampleConstraint],
         files: [],
         tessellation_diagnostics: [],
+        compile_diagnostics: [],
       };
       initFromState(guiState);
 
@@ -501,6 +506,7 @@ describe('engineStore', () => {
         constraints: [sampleConstraint],
         files: [],
         tessellation_diagnostics: [],
+        compile_diagnostics: [],
       };
       initFromState(guiState);
       expect(spy).toHaveBeenCalledTimes(1);
@@ -518,6 +524,7 @@ describe('engineStore', () => {
         constraints: [],
         files: [],
         tessellation_diagnostics: [],
+        compile_diagnostics: [],
       };
       initFromState(guiState);
       initFromState(guiState);
@@ -536,6 +543,7 @@ describe('engineStore', () => {
         constraints: [],
         files: [],
         tessellation_diagnostics: [],
+        compile_diagnostics: [],
       };
       // Must not throw when the callback is omitted.
       expect(() => initFromState(guiState)).not.toThrow();
@@ -607,6 +615,7 @@ describe('engineStore tessellationDiagnostics', () => {
         constraints: [],
         files: [],
         tessellation_diagnostics: [diag],
+        compile_diagnostics: [],
       };
       initFromState(guiState);
       expect(state.tessellationDiagnostics).toEqual([diag]);
@@ -653,6 +662,82 @@ describe('engineStore tessellationDiagnostics', () => {
   });
 });
 
+describe('engineStore compileDiagnostics', () => {
+  it('initial state.compileDiagnostics is []', () => {
+    createRoot((dispose) => {
+      const { state } = createEngineStore();
+      expect(state.compileDiagnostics).toEqual([]);
+      dispose();
+    });
+  });
+
+  it('initFromState populates compileDiagnostics from GuiState.compile_diagnostics', () => {
+    createRoot((dispose) => {
+      const { state, initFromState } = createEngineStore();
+      const diag: DiagnosticInfo = {
+        file_path: 'helper.ri',
+        line: 3,
+        column: 1,
+        end_line: 3,
+        end_column: 10,
+        severity: 'Warning',
+        message: "unknown port type 'Foo'",
+        code: null,
+      };
+      const guiState: GuiState = {
+        meshes: [],
+        values: [],
+        constraints: [],
+        files: [],
+        tessellation_diagnostics: [],
+        compile_diagnostics: [diag],
+      };
+      initFromState(guiState);
+      expect(state.compileDiagnostics).toEqual([diag]);
+      dispose();
+    });
+  });
+
+  it('subscribeToEvents wires compile-diagnostics event and updates state', async () => {
+    await createRoot(async (dispose) => {
+      let compileCb: ((diags: DiagnosticInfo[]) => void) | undefined;
+
+      mockOnMeshUpdate.mockResolvedValue(vi.fn());
+      mockOnValueUpdate.mockResolvedValue(vi.fn());
+      mockOnConstraintUpdate.mockResolvedValue(vi.fn());
+      mockOnEvaluationStatus.mockResolvedValue(vi.fn());
+      mockOnMeshRemoved.mockResolvedValue(vi.fn());
+      mockOnValueRemoved.mockResolvedValue(vi.fn());
+      mockOnConstraintRemoved.mockResolvedValue(vi.fn());
+      mockOnTessellationDiagnostics.mockResolvedValue(vi.fn());
+      mockOnCompileDiagnostics.mockImplementation(async (cb) => {
+        compileCb = cb as (diags: DiagnosticInfo[]) => void;
+        return vi.fn();
+      });
+
+      const store = createEngineStore();
+      await store.subscribeToEvents();
+
+      expect(mockOnCompileDiagnostics).toHaveBeenCalledWith(expect.any(Function));
+
+      const diag: DiagnosticInfo = {
+        file_path: 'helper.ri',
+        line: 3,
+        column: 1,
+        end_line: 3,
+        end_column: 10,
+        severity: 'Warning',
+        message: "unknown port type 'Foo'",
+        code: null,
+      };
+
+      compileCb!([diag]);
+      expect(store.state.compileDiagnostics).toEqual([diag]);
+      dispose();
+    });
+  });
+});
+
 describe('engineStore freshness pass-through', () => {
   it('initFromState preserves freshness=failed round-trip through state.values', () => {
     createRoot((dispose) => {
@@ -673,6 +758,7 @@ describe('engineStore freshness pass-through', () => {
         constraints: [],
         files: [],
         tessellation_diagnostics: [],
+        compile_diagnostics: [],
       };
       initFromState(guiState);
       expect(state.values['cell_failed'].freshness).toBe('failed');

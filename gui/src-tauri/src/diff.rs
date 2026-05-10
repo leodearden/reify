@@ -24,6 +24,8 @@ pub struct StateDelta {
     pub removed_constraint_ids: Vec<String>,
     /// Some(vec) when the tessellation diagnostics list changed; None when unchanged.
     pub changed_tessellation_diagnostics: Option<Vec<DiagnosticInfo>>,
+    /// Some(vec) when the compile diagnostics list changed; None when unchanged.
+    pub changed_compile_diagnostics: Option<Vec<DiagnosticInfo>>,
 }
 
 impl StateDelta {
@@ -45,6 +47,11 @@ impl StateDelta {
                 None
             } else {
                 Some(state.tessellation_diagnostics.clone())
+            },
+            changed_compile_diagnostics: if state.compile_diagnostics.is_empty() {
+                None
+            } else {
+                Some(state.compile_diagnostics.clone())
             },
         }
     }
@@ -148,6 +155,14 @@ pub fn diff_gui_state(old: &GuiState, new: &GuiState) -> StateDelta {
             None
         };
 
+    // --- Compile diagnostics: emit the new list when it differs ---
+    let changed_compile_diagnostics =
+        if old.compile_diagnostics != new.compile_diagnostics {
+            Some(new.compile_diagnostics.clone())
+        } else {
+            None
+        };
+
     StateDelta {
         changed_meshes,
         changed_values,
@@ -156,6 +171,7 @@ pub fn diff_gui_state(old: &GuiState, new: &GuiState) -> StateDelta {
         removed_value_ids,
         removed_constraint_ids,
         changed_tessellation_diagnostics,
+        changed_compile_diagnostics,
     }
 }
 
@@ -218,6 +234,17 @@ pub fn delta_to_events(delta: &StateDelta) -> Vec<(String, serde_json::Value)> {
             &mut events,
             "tessellation-diagnostics",
             "tessellation-diagnostics",
+            "diagnostics",
+            serde_json::to_value(diags),
+        );
+    }
+
+    // Compile diagnostics: emit full list when it changed.
+    if let Some(diags) = &delta.changed_compile_diagnostics {
+        push_serialized_event(
+            &mut events,
+            "compile-diagnostics",
+            "compile-diagnostics",
             "diagnostics",
             serde_json::to_value(diags),
         );

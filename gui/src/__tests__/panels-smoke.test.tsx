@@ -11,6 +11,7 @@ import {
   ReloadPrompt,
   ChatPanel,
   MenuBar,
+  DiagnosticsPanel,
 } from '../panels';
 import { createClaudeStore } from '../stores';
 
@@ -73,5 +74,18 @@ describe('panels smoke integration', () => {
   it('MenuBar mounts with data-testid="menu-bar"', () => {
     render(() => <MenuBar />);
     expect(screen.getByTestId('menu-bar')).toBeTruthy();
+  });
+
+  it('DiagnosticsPanel open=true renders diagnostics-panel and panel-title-diagnostics', () => {
+    render(() => (
+      <DiagnosticsPanel
+        open={true}
+        diagnostics={[]}
+        onClose={vi.fn()}
+        onNavigate={vi.fn()}
+      />
+    ));
+    expect(screen.getByTestId('diagnostics-panel')).toBeTruthy();
+    expect(screen.getByTestId('panel-title-diagnostics')).toBeTruthy();
   });
 });

@@ -1,11 +1,12 @@
 /**
- * Runtime tests for types.ts — specifically for convertRawMesh.
+ * Runtime tests for types.ts — specifically for convertRawMesh and convertRawGuiState.
  * Task 2959: verify the new optional scalar_channels and displaced_positions
  * fields are correctly converted from number[] → Float32Array.
+ * Task 3229: verify compile_diagnostics is copied by convertRawGuiState.
  */
 import { describe, it, expect } from 'vitest';
-import { convertRawMesh } from '../types';
-import type { RawMeshData } from '../types';
+import { convertRawMesh, convertRawGuiState } from '../types';
+import type { RawMeshData, RawGuiState, DiagnosticInfo } from '../types';
 
 describe('convertRawMesh', () => {
   it('converts scalar_channels number[] → Float32Array when present', () => {
@@ -90,5 +91,33 @@ describe('convertRawMesh', () => {
     expect(Array.from(mesh.scalar_channels!['vonMises'])).toEqual([10, 20, 30]);
     expect(mesh.displaced_positions).toBeInstanceOf(Float32Array);
     expect(Array.from(mesh.displaced_positions!)).toHaveLength(9);
+  });
+});
+
+describe('convertRawGuiState', () => {
+  it('copies compile_diagnostics from raw to converted state', () => {
+    const diag: DiagnosticInfo = {
+      file_path: 'test.ri',
+      line: 5,
+      column: 3,
+      end_line: 5,
+      end_column: 20,
+      severity: 'Warning',
+      message: "unknown port type 'Foo'",
+      code: null,
+    };
+    const raw: RawGuiState = {
+      meshes: [],
+      values: [],
+      constraints: [],
+      files: [],
+      tessellation_diagnostics: [],
+      compile_diagnostics: [diag],
+    };
+    const state = convertRawGuiState(raw);
+    expect(state.compile_diagnostics).toHaveLength(1);
+    expect(state.compile_diagnostics[0].severity).toBe('Warning');
+    expect(state.compile_diagnostics[0].message).toContain('unknown port type');
+    expect(state.compile_diagnostics[0].file_path).toBe('test.ri');
   });
 });

@@ -416,6 +416,15 @@ export async function onTessellationDiagnostics(
   });
 }
 
+/** Subscribe to compile diagnostic events. Carries the full current list. */
+export async function onCompileDiagnostics(
+  callback: (data: DiagnosticInfo[]) => void,
+): Promise<UnlistenFn> {
+  return listen<DiagnosticInfo[]>('compile-diagnostics', (event) => {
+    callback(event.payload);
+  });
+}
+
 /** Subscribe to diagnostic events. */
 export async function onDiagnostics(
   callback: (data: unknown) => void,

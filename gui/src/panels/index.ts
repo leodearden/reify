@@ -17,3 +17,5 @@ export { ViewManageModal } from './ViewManageModal';
 export type { ViewManageModalProps } from './ViewManageModal';
 export { MechanismPanel } from './MechanismPanel';
 export type { MechanismPanelProps } from './MechanismPanel';
+export { DiagnosticsPanel } from './DiagnosticsPanel';
+export type { DiagnosticsPanelProps } from './DiagnosticsPanel';

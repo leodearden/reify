@@ -16,6 +16,7 @@ import {
   DesignTree,
   ViewManageModal,
   MechanismPanel,
+  DiagnosticsPanel,
 } from './panels';
 import { Splitter } from './components/Splitter';
 import { KeyboardHelp } from './components/KeyboardHelp';
@@ -63,7 +64,7 @@ import {
   navigateToEntity,
   navigateFromConstraint,
 } from './navigation';
-import type { ExportFormat, FileData, SourceLocation, ConstraintData, ToastMessage, ToastAction, EntityTreeNode } from './types';
+import type { ExportFormat, FileData, SourceLocation, ConstraintData, ToastMessage, ToastAction, EntityTreeNode, DiagnosticInfo } from './types';
 import { applyTheme } from './theme';
 import { errorMessage } from './utils/errorClassifier';
 import { messageForSaveBlocked } from './editor/messages';
@@ -412,6 +413,9 @@ const App: Component = () => {
   // View manage modal state
   const [viewManageOpen, setViewManageOpen] = createSignal(false);
 
+  // Diagnostics panel state
+  const [diagnosticsOpen, setDiagnosticsOpen] = createSignal(false);
+
   // Keyboard help overlay state
   const [showHelp, setShowHelp] = createSignal(false);
   const [exporting, setExporting] = createSignal(false);
@@ -436,6 +440,15 @@ const App: Component = () => {
   const [scrollToLocation, setScrollToLocation] = createSignal<SourceLocation | null>(null);
   let flyToEntityFn: ((entityPath: string) => void) | undefined;
   let fitToViewFn: (() => void) | undefined;
+
+  function handleToggleDiagnostics() {
+    setDiagnosticsOpen((v) => !v);
+  }
+
+  function handleNavigateToDiagnostic(d: DiagnosticInfo) {
+    setScrollToLocation({ file_path: d.file_path, line: d.line, column: d.column, end_line: d.end_line, end_column: d.end_column });
+    setDiagnosticsOpen(false);
+  }
 
   // Refs for splitter max-width clamping
   let mainRef: HTMLDivElement | undefined;
@@ -1295,12 +1308,20 @@ const App: Component = () => {
             claudeStatus={claudeStore.state.sessionStatus}
             onToggleChat={handleToggleChat}
             tessellationDiagnostics={engineStore.state.tessellationDiagnostics}
+            compileDiagnostics={engineStore.state.compileDiagnostics}
+            onToggleDiagnostics={handleToggleDiagnostics}
           />
           <ExportDialog
             open={showExportDialog()}
             exporting={exporting()}
             onExport={handleDoExport}
             onClose={() => setShowExportDialog(false)}
+          />
+          <DiagnosticsPanel
+            open={diagnosticsOpen()}
+            diagnostics={engineStore.state.compileDiagnostics}
+            onClose={() => setDiagnosticsOpen(false)}
+            onNavigate={handleNavigateToDiagnostic}
           />
           <ViewManageModal
             open={viewManageOpen()}
