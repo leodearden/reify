@@ -30,6 +30,11 @@ export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
   let dialogRef: HTMLDivElement | undefined;
 
   const dialogSize = createMemo(() => {
+    // Track props.open so the memo re-runs each time the panel opens,
+    // ensuring any user-resized size persisted to localStorage is applied.
+    // Without this, the cached value from the first render would be reused
+    // on every subsequent open, silently discarding the user's manual resize.
+    const _open = props.open;
     const persisted = loadDiagnosticsPanelSize();
     if (persisted) return persisted;
     const longestChars = props.diagnostics.reduce(

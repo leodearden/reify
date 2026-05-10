@@ -8,6 +8,7 @@ import {
   loadDiagnosticsPanelSize,
   saveDiagnosticsPanelSize,
 } from '../hooks/useDiagnosticsPanelPersistence';
+import styles from '../panels/DiagnosticsPanel.module.css';
 
 // Stub ResizeObserver for jsdom (which doesn't support it).
 // The global stub captures the last callback so per-test cases can
@@ -249,24 +250,29 @@ describe('DiagnosticsPanel', () => {
   });
 
   it('uses computeDefaultDialogSize when no persisted size and longest message is wide', () => {
-    // jsdom default innerWidth is 1024; set it to 1400
+    const originalInnerWidth = window.innerWidth;
+    // jsdom default innerWidth is 1024; set it to 1400 for this test only
     Object.defineProperty(window, 'innerWidth', { value: 1400, writable: true, configurable: true });
-    const longMessage = 'x'.repeat(500);
-    const diags: DiagnosticEntry[] = [
-      { ...makeDiag('Error', { message: longMessage }), source: 'compile' },
-    ];
-    render(() => (
-      <DiagnosticsPanel
-        open={true}
-        diagnostics={diags}
-        onClose={vi.fn()}
-        onNavigate={vi.fn()}
-      />
-    ));
-    const dialog = screen.getByTestId('diagnostics-dialog') as HTMLElement;
-    const width = parseInt(dialog.style.width);
-    expect(width).toBeGreaterThan(720);
-    expect(width).toBeLessThanOrEqual(0.9 * 1400); // 1260
+    try {
+      const longMessage = 'x'.repeat(500);
+      const diags: DiagnosticEntry[] = [
+        { ...makeDiag('Error', { message: longMessage }), source: 'compile' },
+      ];
+      render(() => (
+        <DiagnosticsPanel
+          open={true}
+          diagnostics={diags}
+          onClose={vi.fn()}
+          onNavigate={vi.fn()}
+        />
+      ));
+      const dialog = screen.getByTestId('diagnostics-dialog') as HTMLElement;
+      const width = parseInt(dialog.style.width);
+      expect(width).toBeGreaterThan(720);
+      expect(width).toBeLessThanOrEqual(0.9 * 1400); // 1260
+    } finally {
+      Object.defineProperty(window, 'innerWidth', { value: originalInnerWidth, writable: true, configurable: true });
+    }
   });
 
   it('dialog has inline resize: both', () => {
@@ -295,9 +301,9 @@ describe('DiagnosticsPanel', () => {
     // The row's parent is the list container
     const row = screen.getByTestId('diagnostic-row');
     const list = row.parentElement as HTMLElement;
-    // The list element should have the 'list' class (CSS module mangling
-    // produces a hashed class in production but vitest inlines the name)
-    expect(list.className).toContain('list');
+    // Assert exact CSS-module class so substring matches on unrelated class
+    // names (e.g. 'playlist') cannot produce a false positive.
+    expect(list.classList.contains(styles.list)).toBe(true);
 
     // Without any click the dialog should NOT carry the lineWrapOn class
     const dialog = screen.getByTestId('diagnostics-dialog') as HTMLElement;
