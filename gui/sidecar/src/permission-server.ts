@@ -53,15 +53,17 @@ export interface PermissionServer {
    * Idempotent — safe to call when no requests are pending.
    */
   cancelAll(): void;
+}
+
+/**
+ * Test-only helpers — not part of the production PermissionServer contract.
+ * Accessed via the `__testHooks` property on the value returned by createPermissionServer().
+ * Production callers typed as PermissionServer cannot reach this property.
+ */
+export interface PermissionServerTestHooks {
   /**
-   * Return the number of approve_tool calls currently awaiting a decide() resolution.
-   * Exposes live pending-await depth for diagnostics and observability.
-   */
-  pendingCount(): number;
-  /**
-   * Resolve once the number of pending requests reaches at least `n`.
-   * Rejects after `timeoutMs` milliseconds (default 2000) if the condition is not met.
-   * Useful for deterministic synchronization — eliminates bounded polling on `pendingCount()`.
+   * Resolves once pendingPromises.size >= n; rejects after timeoutMs (default 2000).
+   * Event-driven: notified at the pendingPromises.set site, no polling loop.
    */
   awaitPending(n: number, timeoutMs?: number): Promise<void>;
 }
@@ -74,7 +76,7 @@ export interface PermissionServer {
  * pair (stateless pattern), but all share the closure-captured state:
  * `pendingPromises`, `rememberedTools`, and `onRequestHandler`.
  */
-export function createPermissionServer(): PermissionServer {
+export function createPermissionServer(): PermissionServer & { readonly __testHooks: PermissionServerTestHooks } {
   let port: number | null = null;
   let stopped = false;
   let onRequestHandler: ((req: PermissionRequestEvent) => void) | null = null;
@@ -88,6 +90,20 @@ export function createPermissionServer(): PermissionServer {
   }>();
   /** Tool names that are always approved without prompting */
   const rememberedTools = new Set<string>();
+
+  /** Pending awaitPending callers waiting for pendingPromises.size to reach their threshold. */
+  const waiters: Array<{ n: number; resolve: () => void; timer: ReturnType<typeof setTimeout> }> = [];
+
+  function notifyWaiters(): void {
+    for (let i = waiters.length - 1; i >= 0; i--) {
+      const w = waiters[i];
+      if (pendingPromises.size >= w.n) {
+        clearTimeout(w.timer);
+        waiters.splice(i, 1);
+        w.resolve();
+      }
+    }
+  }
 
   const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     // Parse the pathname from req.url so query strings and trailing slashes are
@@ -148,6 +164,7 @@ export function createPermissionServer(): PermissionServer {
         // can operate on in-flight entries without a separate lookup.
         const decision = await new Promise<PermissionDecisionResult>((resolve) => {
           pendingPromises.set(requestId, { resolve, toolName: tool_name });
+          notifyWaiters();
           // Notify the host via the registered onRequest handler.
           onRequestHandler?.({ request_id: requestId, tool_name, tool_input: input });
         });
@@ -248,26 +265,20 @@ export function createPermissionServer(): PermissionServer {
       }
     },
 
-    pendingCount(): number {
-      return pendingPromises.size;
-    },
-
-    awaitPending(n: number, timeoutMs = 2000): Promise<void> {
-      return new Promise<void>((resolve, reject) => {
-        const deadline = Date.now() + timeoutMs;
-        const poll = () => {
-          if (pendingPromises.size >= n) {
-            resolve();
-          } else if (Date.now() >= deadline) {
+    __testHooks: {
+      awaitPending(n: number, timeoutMs = 2000): Promise<void> {
+        if (pendingPromises.size >= n) return Promise.resolve();
+        return new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => {
+            const idx = waiters.findIndex((w) => w.resolve === resolve);
+            if (idx !== -1) waiters.splice(idx, 1);
             reject(new Error(
               `awaitPending(${n}): timed out after ${timeoutMs}ms (${pendingPromises.size} pending)`
             ));
-          } else {
-            setTimeout(poll, 10);
-          }
-        };
-        poll();
-      });
+          }, timeoutMs);
+          waiters.push({ n, resolve, timer });
+        });
+      },
     },
   };
 }
