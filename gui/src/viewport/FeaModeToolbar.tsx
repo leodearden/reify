@@ -204,6 +204,52 @@ export const FeaModeToolbar: Component<FeaModeToolbarProps> = (props) => {
           >
             Lock current
           </button>
+
+          {/* Deformed-shape view controls */}
+          <label style={{ display: 'flex', 'align-items': 'center', gap: '6px', 'margin-top': '6px' }}>
+            <input
+              type="checkbox"
+              data-testid="fea-mode-show-deformed-toggle"
+              checked={props.store.state.showDeformed}
+              onChange={(e) => props.store.setShowDeformed(e.currentTarget.checked)}
+            />
+            Show deformed
+          </label>
+
+          <Show when={props.store.state.showDeformed}>
+            <div style={{ display: 'flex', 'flex-direction': 'column', gap: '4px' }}>
+              <label style={{ display: 'flex', 'align-items': 'center', gap: '4px' }}>
+                <span>Warp</span>
+                <input
+                  type="range"
+                  data-testid="fea-mode-warp-slider"
+                  min="0"
+                  max="100"
+                  step="0.1"
+                  value={props.store.state.warpFactor}
+                  onInput={(e) => {
+                    const v = parseFloat(e.currentTarget.value);
+                    if (Number.isFinite(v)) props.store.setWarpFactor(v);
+                  }}
+                  style={{ flex: 1 }}
+                />
+                <span>{props.store.state.warpFactor.toFixed(1)}×</span>
+              </label>
+              <div style={{ display: 'flex', gap: '4px' }}>
+                <For each={[1, 10, 100] as const}>
+                  {(v) => (
+                    <button
+                      data-testid={`fea-mode-warp-preset-${v}`}
+                      onClick={() => props.store.setWarpFactor(v)}
+                      style={{ cursor: 'pointer', padding: '2px 6px', 'font-size': '11px' }}
+                    >
+                      {v}×
+                    </button>
+                  )}
+                </For>
+              </div>
+            </div>
+          </Show>
         </div>
       </Show>
     </div>

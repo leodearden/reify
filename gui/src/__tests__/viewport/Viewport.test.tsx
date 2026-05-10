@@ -58,6 +58,8 @@ const mockMeshGetGhostMeshes = vi.fn(() => new Map());
 const mockMeshSetVisibility = vi.fn();
 const mockMeshSetColorize = vi.fn();
 const mockMeshRebuildMaterials = vi.fn();
+const mockMeshSetDeformation = vi.fn();
+const mockMeshGetDeformedOverlays = vi.fn(() => new Map());
 
 const mockGrid = { type: 'GridHelper', visible: true };
 const mockAxes = { type: 'AxesHelper', visible: true };
@@ -122,6 +124,8 @@ vi.mock('../../viewport/meshManager', () => ({
     setVisibility: mockMeshSetVisibility,
     setColorize: mockMeshSetColorize,
     rebuildMaterials: mockMeshRebuildMaterials,
+    setDeformation: mockMeshSetDeformation,
+    getDeformedOverlays: mockMeshGetDeformedOverlays,
   })),
 }));
 
@@ -163,6 +167,8 @@ beforeEach(() => {
   // Reset FEA mock state
   mockMeshSetColorize.mockClear();
   mockMeshRebuildMaterials.mockClear();
+  mockMeshSetDeformation.mockClear();
+  mockMeshGetDeformedOverlays.mockClear();
   mockBakeColours.mockClear();
 });
 
@@ -853,5 +859,68 @@ describe('Viewport FEA auto-enable', () => {
 
     expect(store.state.enabled).toBe(false);
     expect(store.state.autoEnabledOnce).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Viewport deformation bridge (step-21 — RED)
+// Verifies that Viewport.tsx wires feaModeStore.showDeformed / warpFactor into
+// meshManager.setDeformation via a SolidJS createEffect.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('Viewport deformation bridge', () => {
+  it('(a) showDeformed=true + warpFactor=5 calls setDeformation({warpFactor:5})', () => {
+    const store = createFeaModeStore();
+    store.setEnabled(true);
+    store.setShowDeformed(true);
+    store.setWarpFactor(5);
+
+    render(() => <Viewport meshes={{}} viewportId="test-vp" feaModeStore={store as any} />);
+
+    // The mount effect should have fired setDeformation with current warp factor.
+    expect(mockMeshSetDeformation).toHaveBeenCalledWith({ warpFactor: 5 });
+  });
+
+  it('(b) setShowDeformed(false) after render calls setDeformation(null)', () => {
+    const store = createFeaModeStore();
+    store.setEnabled(true);
+    store.setShowDeformed(true);
+    store.setWarpFactor(5);
+
+    render(() => <Viewport meshes={{}} viewportId="test-vp" feaModeStore={store as any} />);
+    mockMeshSetDeformation.mockClear();
+
+    store.setShowDeformed(false);
+
+    expect(mockMeshSetDeformation).toHaveBeenCalledWith(null);
+  });
+
+  it('(c) changing warpFactor while showDeformed=true calls setDeformation({warpFactor:10})', () => {
+    const store = createFeaModeStore();
+    store.setEnabled(true);
+    store.setShowDeformed(true);
+    store.setWarpFactor(5);
+
+    render(() => <Viewport meshes={{}} viewportId="test-vp" feaModeStore={store as any} />);
+    mockMeshSetDeformation.mockClear();
+
+    store.setWarpFactor(10);
+
+    expect(mockMeshSetDeformation).toHaveBeenCalledWith({ warpFactor: 10 });
+  });
+
+  it('(d) changing warpFactor while showDeformed=false does NOT call setDeformation', () => {
+    const store = createFeaModeStore();
+    store.setEnabled(true);
+    // showDeformed remains false (default)
+
+    render(() => <Viewport meshes={{}} viewportId="test-vp" feaModeStore={store as any} />);
+    mockMeshSetDeformation.mockClear();
+
+    // Change warpFactor — should NOT re-run the effect since showDeformed is false.
+    store.setWarpFactor(99);
+
+    // No new setDeformation call should have been made.
+    expect(mockMeshSetDeformation).not.toHaveBeenCalledWith({ warpFactor: 99 });
+    expect(mockMeshSetDeformation).not.toHaveBeenCalledWith(expect.objectContaining({ warpFactor: 99 }));
   });
 });

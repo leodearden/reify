@@ -66,6 +66,23 @@ export interface MeshManagerContext {
   getGhostMeshes: () => Map<string, Mesh>;
   setColorize: (opts: MeshColorize | null) => void;
   /**
+   * Apply or remove a deformed-shape view.
+   *
+   * When `opts` is set: for each mesh that has `displaced_positions`, writes
+   * `position[i] = orig[i] + W * (disp[i] - orig[i])` into the position
+   * BufferAttribute in-place and sets `needsUpdate = true`.  Meshes without
+   * `displaced_positions` are untouched.
+   *
+   * When `opts` is null: restores every position buffer to the cached original
+   * vertices and sets `needsUpdate = true`.  No-op if deformation was already
+   * inactive.
+   *
+   * Also adds / removes a translucent undeformed-shape overlay per FEA mesh.
+   */
+  setDeformation: (opts: { warpFactor: number } | null) => void;
+  /** Returns a copy of the undeformed overlay mesh map (keyed by entity path). */
+  getDeformedOverlays: () => Map<string, Mesh>;
+  /**
    * Rebuild mesh materials in place based on the current colorize state.
    *
    * When colorize is null: replaces each mesh's material with a fresh
@@ -108,9 +125,18 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
   // Active colorize config — captured at creation time and updatable via setColorize.
   let colorize: MeshColorize | null = options?.colorize ?? null;
 
+  // Active deformation config — null means undeformed view.
+  let currentDeformation: { warpFactor: number } | null = null;
+
   // Side-table: for each entity, the scalar_channels map at creation time.
   // Kept so setColorize can re-bake without requiring a full geometry sync.
   const meshScalarChannels = new Map<string, Record<string, Float32Array>>();
+
+  // Side-tables for deformation: cached original vertex positions and displaced positions.
+  // Populated in createMeshFromData / updateMeshGeometry; deleted in removeMesh.
+  // These are COPIES so in-place writes to the position buffer never corrupt the originals.
+  const meshOriginalVertices = new Map<string, Float32Array>();
+  const meshDisplacedPositions = new Map<string, Float32Array>();
 
   const meshMap = new Map<string, Mesh>();
   const visibilityMap = new Map<string, VisibilityState>();
@@ -119,10 +145,26 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
   // Single shared ghost material — one material instance per manager, not per ghost clone.
   const ghostMaterial: MeshBasicMaterial = createGhostMaterial();
 
+  // Shared undeformed-overlay material: transparent, low opacity, rendered behind deformed mesh.
+  const undeformedMaterial = new MeshBasicMaterial({
+    transparent: true,
+    opacity: 0.25,
+    depthWrite: false,
+    side: DoubleSide,
+  });
+
   // Ghost Group: all ghost clones live here so they're separate from opaque meshes.
   const ghostGroup = new Group();
   ghostGroup.name = 'ghostGroup';
   scene.add(ghostGroup);
+
+  // Undeformed overlay Group: translucent original-position clones live here.
+  const undeformedGroup = new Group();
+  undeformedGroup.name = 'undeformedGroup';
+  scene.add(undeformedGroup);
+
+  // Map of active undeformed overlay meshes (one per entity with displaced_positions).
+  const undeformedMeshMap = new Map<string, Mesh>();
 
   // Cache for getSceneMeshes() — invalidated on any visibility or sync change.
   // This avoids a new Map allocation on every pointer-move raycast call.
@@ -184,8 +226,26 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
       meshScalarChannels.set(entityPath, data.scalar_channels);
     }
 
+    // Cache original vertices and displaced positions for deformation recompute.
+    // We store copies so in-place blending into the position buffer never corrupts
+    // the originals (needed for restore and re-apply at different warp factors).
+    meshOriginalVertices.set(entityPath, data.vertices.slice());
+    if (data.displaced_positions) {
+      meshDisplacedPositions.set(entityPath, data.displaced_positions.slice());
+    }
+
     const mesh = new Mesh(geometry, material);
     mesh.name = entityPath;
+
+    // If deformation is already active, apply the warp to this freshly-created mesh
+    // so a mid-stream backend sync doesn't snap the view back to undeformed.
+    // Also add the undeformed overlay so a mesh that joins after the user toggles
+    // 'Show deformed' is visually symmetric with meshes present at toggle time.
+    if (currentDeformation !== null && data.displaced_positions) {
+      applyWarpToMesh(mesh, entityPath, currentDeformation.warpFactor);
+      addUndeformedOverlay(entityPath, mesh);
+    }
+
     return mesh;
   }
 
@@ -238,6 +298,15 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     // Use mesh.name as the entity path (set to entityPath in createMeshFromData).
     meshScalarChannels.set(mesh.name, data.scalar_channels ?? {});
 
+    // Refresh deformation side-tables from the incoming data.
+    // Always update original vertices (vertices may change on a topology edit).
+    meshOriginalVertices.set(mesh.name, data.vertices.slice());
+    if (data.displaced_positions) {
+      meshDisplacedPositions.set(mesh.name, data.displaced_positions.slice());
+    } else {
+      meshDisplacedPositions.delete(mesh.name);
+    }
+
     // If colorize is active and this mesh already has a colour attribute, re-bake
     // the colours in place with the new scalars.  Mirrors the setColorize mutation
     // path; ensures that sync()→sync() updates (e.g. from G2 FEA sourcing) are
@@ -250,6 +319,25 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
         colorAttr.array = newColors;
         (colorAttr as { count: number }).count = newColors.length / 3;
         colorAttr.needsUpdate = true;
+      }
+    }
+
+    // If deformation is active, re-apply warp and rebuild the overlay as needed.
+    // The overlay's position BufferAttribute wraps the *previous* Float32Array from
+    // meshOriginalVertices; after a topology-changing sync those entries are refreshed
+    // above, but the overlay still points at the old array. Rebuilding it ensures the
+    // ghost shape always matches the current un-displaced geometry.
+    if (currentDeformation !== null) {
+      if (data.displaced_positions) {
+        applyWarpToMesh(mesh, mesh.name, currentDeformation.warpFactor);
+        // Rebuild overlay: remove the stale one (if any) and create a fresh one
+        // pointing at the just-updated meshOriginalVertices entry.
+        removeUndeformedOverlay(mesh.name);
+        addUndeformedOverlay(mesh.name, mesh);
+      } else {
+        // displaced_positions disappeared (e.g. backend turned off FEA solve):
+        // remove any lingering overlay so no ghost shape persists for this entity.
+        removeUndeformedOverlay(mesh.name);
       }
     }
 
@@ -280,6 +368,132 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     ghostMeshMap.delete(entityPath);
   }
 
+  /**
+   * Write the linear-blend deformation into the position attribute of `mesh` for a
+   * given `warpFactor`.  Reads from the cached original vertices and displaced_positions
+   * side-tables; modifies `position.array` in-place and sets `needsUpdate = true`.
+   *
+   * Formula: pos[i] = orig[i] + W * (disp[i] - orig[i])
+   * W=1 → exact displaced; W=0 → original; W>1 → amplified.
+   */
+  function applyWarpToMesh(mesh: Mesh, entityPath: string, warpFactor: number): void {
+    const orig = meshOriginalVertices.get(entityPath);
+    const disp = meshDisplacedPositions.get(entityPath);
+    if (!orig || !disp) return;
+
+    const geometry = mesh.geometry as BufferGeometry;
+    const posAttr = geometry.getAttribute('position') as BufferAttribute | null;
+    if (!posAttr) return;
+
+    const arr = posAttr.array as Float32Array;
+    for (let i = 0; i < arr.length; i++) {
+      arr[i] = orig[i] + warpFactor * (disp[i] - orig[i]);
+    }
+    posAttr.needsUpdate = true;
+  }
+
+  /**
+   * Restore the position attribute of `mesh` to the cached original vertices.
+   */
+  function restoreOriginalToMesh(mesh: Mesh, entityPath: string): void {
+    const orig = meshOriginalVertices.get(entityPath);
+    if (!orig) return;
+
+    const geometry = mesh.geometry as BufferGeometry;
+    const posAttr = geometry.getAttribute('position') as BufferAttribute | null;
+    if (!posAttr) return;
+
+    const arr = posAttr.array as Float32Array;
+    for (let i = 0; i < arr.length; i++) {
+      arr[i] = orig[i];
+    }
+    posAttr.needsUpdate = true;
+  }
+
+  /** Add a translucent undeformed overlay clone for the given entity. */
+  function addUndeformedOverlay(entityPath: string, sourceMesh: Mesh): void {
+    const orig = meshOriginalVertices.get(entityPath);
+    if (!orig) return;
+
+    // Fresh BufferGeometry: shares index and normal from the deformed mesh's geometry,
+    // but owns a NEW position attribute pointing at the cached original vertices.
+    // This prevents warp writes (which go into the deformed mesh's position array)
+    // from overwriting the overlay's position array.
+    const overlayGeom = new BufferGeometry();
+    overlayGeom.setAttribute('position', new BufferAttribute(orig, 3));
+    const sourceGeom = sourceMesh.geometry as BufferGeometry;
+    if (sourceGeom.index) {
+      overlayGeom.setIndex(sourceGeom.index);
+    }
+    const normalAttr = sourceGeom.getAttribute('normal');
+    if (normalAttr) {
+      overlayGeom.setAttribute('normal', normalAttr);
+    }
+
+    const overlay = new Mesh(overlayGeom, undeformedMaterial);
+    overlay.name = `undeformed:${entityPath}`;
+    overlay.renderOrder = -1; // draw behind the deformed mesh (renderOrder=0 default)
+
+    undeformedMeshMap.set(entityPath, overlay);
+    undeformedGroup.add(overlay);
+  }
+
+  /** Remove and dispose the undeformed overlay for the given entity (if any). */
+  function removeUndeformedOverlay(entityPath: string): void {
+    const overlay = undeformedMeshMap.get(entityPath);
+    if (!overlay) return;
+    undeformedGroup.remove(overlay);
+    // Dispose the overlay's own BufferGeometry wrapper; the shared index/normal
+    // attributes are owned by the deformed mesh's geometry and must NOT be disposed here.
+    overlay.geometry.dispose();
+    undeformedMeshMap.delete(entityPath);
+  }
+
+  /**
+   * Apply or remove a deformed-shape view across all managed meshes.
+   * See MeshManagerContext.setDeformation for the full contract.
+   */
+  function setDeformation(opts: { warpFactor: number } | null): void {
+    if (opts === null) {
+      // Disable: restore all position buffers and tear down overlays.
+      if (currentDeformation === null) return; // already inactive — no-op
+      for (const [entityPath, mesh] of meshMap) {
+        restoreOriginalToMesh(mesh, entityPath);
+        removeUndeformedOverlay(entityPath);
+      }
+      currentDeformation = null;
+      return;
+    }
+
+    // Early return when the same warpFactor is already active — avoids unnecessary
+    // GPU-buffer writes and overlay teardown/re-add on redundant calls.
+    // Note: the Viewport bridge effect is gated by track-then-act reactive tracking
+    // (warpFactor is only read inside the showDeformed branch), so duplicate calls
+    // with the same value are rare in practice, but the public API permits them.
+    if (currentDeformation && currentDeformation.warpFactor === opts.warpFactor) return;
+
+    // Enable (or re-apply with changed warpFactor): clear any existing overlays first
+    // so a transition from one warpFactor to another doesn't leave stale overlays.
+    for (const entityPath of [...undeformedMeshMap.keys()]) {
+      removeUndeformedOverlay(entityPath);
+    }
+
+    currentDeformation = opts;
+    const { warpFactor } = opts;
+
+    for (const [entityPath, mesh] of meshMap) {
+      const disp = meshDisplacedPositions.get(entityPath);
+      if (!disp) continue; // no displaced_positions — skip (geometry untouched)
+
+      applyWarpToMesh(mesh, entityPath, warpFactor);
+      addUndeformedOverlay(entityPath, mesh);
+    }
+  }
+
+  function getDeformedOverlays(): Map<string, Mesh> {
+    return new Map(undeformedMeshMap);
+  }
+
   function removeMesh(entityPath: string): void {
     const mesh = meshMap.get(entityPath);
     if (!mesh) return;
@@ -291,6 +505,11 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
       scene.remove(mesh);
     }
 
+    // removeUndeformedOverlay MUST precede geometry disposal: the overlay borrows
+    // the deformed mesh's index and normal BufferAttribute references. Removing the
+    // overlay first ensures it is gone before the shared attributes are disposed.
+    removeUndeformedOverlay(entityPath);
+
     // removeGhostClone MUST precede geometry disposal: the ghost clone shares
     // the original mesh's BufferGeometry reference. Disposing the geometry first
     // would leave the ghost clone referencing invalid GPU buffers.
@@ -301,6 +520,8 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     (mesh.material as { dispose: () => void }).dispose();
     meshMap.delete(entityPath);
     meshScalarChannels.delete(entityPath);
+    meshOriginalVertices.delete(entityPath);
+    meshDisplacedPositions.delete(entityPath);
     visibilityMap.delete(entityPath);
   }
 
@@ -494,6 +715,15 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     // so it doesn't linger as an empty Group in scene.children after dispose.
     scene.remove(ghostGroup);
     ghostMaterial.dispose();
+    // undeformedGroup and its shared material also need explicit scene removal.
+    // Individual overlay meshes were already torn down by removeMesh above;
+    // any remaining entries (edge case: overlays added without a matching meshMap entry)
+    // are cleaned up here as a safety net.
+    for (const entityPath of [...undeformedMeshMap.keys()]) {
+      removeUndeformedOverlay(entityPath);
+    }
+    scene.remove(undeformedGroup);
+    undeformedMaterial.dispose();
     sceneMeshCache = null;
   }
 
@@ -521,5 +751,5 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     return new Map(ghostMeshMap);
   }
 
-  return { sync, dispose, getSceneMeshes, setVisibility, getGhostMeshes, setColorize, rebuildMaterials };
+  return { sync, dispose, getSceneMeshes, setVisibility, getGhostMeshes, setColorize, rebuildMaterials, setDeformation, getDeformedOverlays };
 }

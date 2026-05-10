@@ -206,6 +206,94 @@ describe('FeaModeToolbar — range-mode suite', () => {
   });
 });
 
+describe('FeaModeToolbar — deformation controls', () => {
+  it('(a) show-deformed toggle exists, is a checkbox, unchecked by default', () => {
+    const store = renderEnabled();
+    const toggle = screen.getByTestId('fea-mode-show-deformed-toggle') as HTMLInputElement;
+    expect(toggle).toBeTruthy();
+    expect(toggle.type).toBe('checkbox');
+    expect(toggle.checked).toBe(false);
+    expect(store.state.showDeformed).toBe(false);
+  });
+
+  it('(b) clicking show-deformed toggle sets store.state.showDeformed to true', () => {
+    const store = renderEnabled();
+    const toggle = screen.getByTestId('fea-mode-show-deformed-toggle');
+    fireEvent.click(toggle);
+    expect(store.state.showDeformed).toBe(true);
+  });
+
+  it('(c) warp slider is NOT rendered when showDeformed is false', () => {
+    renderEnabled();
+    expect(screen.queryByTestId('fea-mode-warp-slider')).toBeNull();
+  });
+
+  it('(c) warp slider IS rendered after store.setShowDeformed(true), value reflects warpFactor', () => {
+    const store = renderEnabled();
+    store.setShowDeformed(true);
+
+    const slider = screen.getByTestId('fea-mode-warp-slider') as HTMLInputElement;
+    expect(slider).toBeTruthy();
+    // Default warpFactor is 1.0
+    expect(parseFloat(slider.value)).toBe(store.state.warpFactor);
+    expect(parseFloat(slider.value)).toBeCloseTo(1.0, 5);
+  });
+
+  it('(d) sliding warp slider updates store.state.warpFactor', () => {
+    const store = renderEnabled();
+    store.setShowDeformed(true);
+
+    const slider = screen.getByTestId('fea-mode-warp-slider');
+    fireEvent.input(slider, { target: { value: '25' } });
+
+    expect(store.state.warpFactor).toBe(25);
+  });
+
+  // --- step-19: preset buttons ---
+
+  it('(e) three preset buttons are rendered when showDeformed is true', () => {
+    const store = renderEnabled();
+    store.setShowDeformed(true);
+
+    const btn1 = screen.getByTestId('fea-mode-warp-preset-1');
+    const btn10 = screen.getByTestId('fea-mode-warp-preset-10');
+    const btn100 = screen.getByTestId('fea-mode-warp-preset-100');
+
+    expect(btn1.tagName.toLowerCase()).toBe('button');
+    expect(btn10.tagName.toLowerCase()).toBe('button');
+    expect(btn100.tagName.toLowerCase()).toBe('button');
+  });
+
+  it('(e) preset buttons are NOT rendered when showDeformed is false', () => {
+    renderEnabled();
+    expect(screen.queryByTestId('fea-mode-warp-preset-1')).toBeNull();
+    expect(screen.queryByTestId('fea-mode-warp-preset-10')).toBeNull();
+    expect(screen.queryByTestId('fea-mode-warp-preset-100')).toBeNull();
+  });
+
+  it('(e) clicking preset-10 sets store.state.warpFactor to 10', () => {
+    const store = renderEnabled();
+    store.setShowDeformed(true);
+    fireEvent.click(screen.getByTestId('fea-mode-warp-preset-10'));
+    expect(store.state.warpFactor).toBe(10);
+  });
+
+  it('(e) clicking preset-100 sets store.state.warpFactor to 100', () => {
+    const store = renderEnabled();
+    store.setShowDeformed(true);
+    fireEvent.click(screen.getByTestId('fea-mode-warp-preset-100'));
+    expect(store.state.warpFactor).toBe(100);
+  });
+
+  it('(e) clicking preset-1 resets store.state.warpFactor to 1', () => {
+    const store = renderEnabled();
+    store.setShowDeformed(true);
+    store.setWarpFactor(50);
+    fireEvent.click(screen.getByTestId('fea-mode-warp-preset-1'));
+    expect(store.state.warpFactor).toBe(1);
+  });
+});
+
 describe('FeaModeToolbar — collapsible suite', () => {
   it('(a) collapse toggle button is always rendered', () => {
     const store = createFeaModeStore();

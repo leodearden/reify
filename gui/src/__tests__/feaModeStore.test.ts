@@ -132,6 +132,100 @@ describe('feaModeStore', () => {
     });
   });
 
+  describe('deformation state', () => {
+    it('(a) state.showDeformed defaults to false after createFeaModeStore()', () => {
+      withRoot(() => {
+        const store = createFeaModeStore();
+        expect(store.state.showDeformed).toBe(false);
+      });
+    });
+
+    it('(a) state.warpFactor defaults to 1.0 after createFeaModeStore()', () => {
+      withRoot(() => {
+        const store = createFeaModeStore();
+        expect(store.state.warpFactor).toBe(1.0);
+      });
+    });
+
+    it('(b) setShowDeformed(true) updates state.showDeformed to true', () => {
+      withRoot(() => {
+        const store = createFeaModeStore();
+        store.setShowDeformed(true);
+        expect(store.state.showDeformed).toBe(true);
+      });
+    });
+
+    it('(b) setShowDeformed(false) updates state.showDeformed back to false', () => {
+      withRoot(() => {
+        const store = createFeaModeStore();
+        store.setShowDeformed(true);
+        store.setShowDeformed(false);
+        expect(store.state.showDeformed).toBe(false);
+      });
+    });
+
+    it('(c) setWarpFactor(10) updates state.warpFactor to 10 and returns true', () => {
+      withRoot(() => {
+        const store = createFeaModeStore();
+        const result = store.setWarpFactor(10);
+        expect(result).toBe(true);
+        expect(store.state.warpFactor).toBe(10);
+      });
+    });
+
+    it('(d) setWarpFactor(NaN) returns false and leaves state.warpFactor unchanged', () => {
+      withRoot(() => {
+        const store = createFeaModeStore();
+        store.setWarpFactor(5);
+        const result = store.setWarpFactor(NaN);
+        expect(result).toBe(false);
+        expect(store.state.warpFactor).toBe(5);
+      });
+    });
+
+    it('(e) setWarpFactor(Infinity) returns false and leaves state.warpFactor unchanged', () => {
+      withRoot(() => {
+        const store = createFeaModeStore();
+        store.setWarpFactor(5);
+        const result = store.setWarpFactor(Infinity);
+        expect(result).toBe(false);
+        expect(store.state.warpFactor).toBe(5);
+      });
+    });
+
+    it('(e) setWarpFactor(-Infinity) returns false and leaves state.warpFactor unchanged', () => {
+      withRoot(() => {
+        const store = createFeaModeStore();
+        store.setWarpFactor(5);
+        const result = store.setWarpFactor(-Infinity);
+        expect(result).toBe(false);
+        expect(store.state.warpFactor).toBe(5);
+      });
+    });
+
+    it('(f) setWarpFactor(-1) returns false and leaves state.warpFactor unchanged (negative values rejected)', () => {
+      // The warp slider is bounded to [0, 100]. Accepting negative values would create
+      // a UI/store split: the slider clamps to 0 visually while the label shows a
+      // negative. Rejecting negatives keeps the slider and store in sync.
+      withRoot(() => {
+        const store = createFeaModeStore();
+        store.setWarpFactor(5);
+        const result = store.setWarpFactor(-1);
+        expect(result).toBe(false);
+        expect(store.state.warpFactor).toBe(5);
+      });
+    });
+
+    it('(f) setWarpFactor(0) returns true (zero is valid — shows undeformed shape)', () => {
+      withRoot(() => {
+        const store = createFeaModeStore();
+        const result = store.setWarpFactor(0);
+        expect(result).toBe(true);
+        expect(store.state.warpFactor).toBe(0);
+      });
+    });
+  });
+
   describe('simple setters', () => {
     it('setEnabled toggles state.enabled', () => {
       withRoot(() => {

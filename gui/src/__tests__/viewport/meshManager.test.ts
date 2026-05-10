@@ -1595,10 +1595,59 @@ describe('meshManager', () => {
       expect(colorAttr.itemSize).toBe(3);
       expect(Array.from(colorAttr.array as Float32Array)).toEqual([10, 0, 0, 20, 0, 0, 30, 0, 0]);
 
-      // displaced_positions field is preserved in converted MeshData but NOT applied
-      // to the position buffer (that is task G3 work).
+      // displaced_positions is preserved in the converted MeshData but only applied to the
+      // position buffer when `setDeformation` is active (see deformation E2E below).
+      // Before setDeformation is called, the position buffer must equal the original vertices.
       const posAttr = (mesh.geometry as any).attributes.position;
       expect(Array.from(posAttr.array as Float32Array)).toEqual([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+    });
+  });
+
+  describe('end-to-end pipeline: setDeformation full-pipeline pin (E2E-02)', () => {
+    it('before setDeformation: position = original; after W=10: blended + overlay; after null: restored', () => {
+      const raw: RawMeshData = {
+        entity_path: 'B',
+        vertices: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+        indices: [0, 1, 2],
+        normals: null,
+        displaced_positions: [0.1, 0, 0, 1.1, 0, 0, 0.1, 1, 0],
+      };
+
+      const converted = convertRawMesh(raw);
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+      manager.sync({ B: converted });
+
+      const mesh = manager.getSceneMeshes().get('B')!;
+      expect(mesh).toBeDefined();
+
+      // (a) Before setDeformation: position equals original vertices.
+      const posAttr = (mesh.geometry as any).attributes.position;
+      expect(Array.from(posAttr.array as Float32Array)).toEqual([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+
+      // (b) After setDeformation({warpFactor:10}): position is W=10 blend.
+      // Compute expected using the CONVERTED Float32Array values (matches f32 rounding in applyWarpToMesh).
+      const origF32 = converted.vertices;
+      const dispF32 = converted.displaced_positions!;
+      const expectedW10 = new Float32Array(origF32.length);
+      for (let i = 0; i < origF32.length; i++) {
+        expectedW10[i] = origF32[i] + 10 * (dispF32[i] - origF32[i]);
+      }
+      manager.setDeformation({ warpFactor: 10 });
+      expect(Array.from(posAttr.array as Float32Array)).toEqual(Array.from(expectedW10));
+
+      // Overlay exists and holds the original vertices.
+      const overlays = manager.getDeformedOverlays();
+      expect(overlays.size).toBe(1);
+      expect(overlays.has('B')).toBe(true);
+      const overlayPosAttr = (overlays.get('B')!.geometry as any).attributes.position;
+      expect(Array.from(overlayPosAttr.array as Float32Array)).toEqual([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+
+      // (c) After setDeformation(null): position restored to original; no overlays.
+      manager.setDeformation(null);
+      expect(Array.from(posAttr.array as Float32Array)).toEqual([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+      expect(manager.getDeformedOverlays().size).toBe(0);
     });
   });
 
@@ -1786,6 +1835,495 @@ describe('meshManager', () => {
       manager.rebuildMaterials();
 
       expect(mockComputeBoundsTree).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('setDeformation — null / idempotent / double-call', () => {
+    const vertices = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+    const displaced = new Float32Array([0.1, 0, 0, 1.1, 0, 0, 0.1, 1, 0]);
+
+    function setupDeformableMesh() {
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+      const meshData: MeshData = {
+        entity_path: 'A',
+        vertices: vertices.slice(),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        displaced_positions: displaced.slice(),
+      };
+      manager.sync({ A: meshData });
+      vi.clearAllMocks();
+      return { scene, manager };
+    }
+
+    it('(a) setDeformation(null) after setDeformation({warpFactor:1}) restores position.array to original vertices', () => {
+      const { manager } = setupDeformableMesh();
+      manager.setDeformation({ warpFactor: 1 });
+      manager.setDeformation(null);
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const posAttr = (mesh.geometry as any).attributes.position;
+      expect(Array.from(posAttr.array as Float32Array)).toEqual(Array.from(vertices));
+      expect(posAttr.needsUpdate).toBe(true);
+    });
+
+    it('(b) setDeformation(null) when no prior deformation is a no-op (no error, position unchanged)', () => {
+      const { manager } = setupDeformableMesh();
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const posAttr = (mesh.geometry as any).attributes.position;
+      const originalValues = Array.from(posAttr.array as Float32Array);
+
+      // Should not throw; position should remain as original
+      expect(() => manager.setDeformation(null)).not.toThrow();
+      expect(Array.from(posAttr.array as Float32Array)).toEqual(originalValues);
+    });
+
+    it('(c) calling setDeformation twice with different warps replaces cleanly (W=1 then W=10 → W=10 positions)', () => {
+      const { manager } = setupDeformableMesh();
+      manager.setDeformation({ warpFactor: 1 });
+
+      const expectedW10 = new Float32Array(vertices.length);
+      for (let i = 0; i < vertices.length; i++) {
+        expectedW10[i] = vertices[i] + 10 * (displaced[i] - vertices[i]);
+      }
+
+      manager.setDeformation({ warpFactor: 10 });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const posAttr = (mesh.geometry as any).attributes.position;
+      // Must reflect W=10, not accumulated or stuck at W=1.
+      expect(Array.from(posAttr.array as Float32Array)).toEqual(Array.from(expectedW10));
+    });
+  });
+
+  describe('undeformed overlay', () => {
+    const vertices = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+    const displaced = new Float32Array([0.1, 0, 0, 1.1, 0, 0, 0.1, 1, 0]);
+
+    function setupWithOverlay() {
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+      const meshA: MeshData = {
+        entity_path: 'A',
+        vertices: vertices.slice(),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        displaced_positions: displaced.slice(),
+      };
+      const meshB: MeshData = {
+        entity_path: 'B',
+        vertices: new Float32Array([2, 0, 0, 3, 0, 0, 2, 1, 0]),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        // no displaced_positions
+      };
+      manager.sync({ A: meshA, B: meshB });
+      vi.clearAllMocks();
+      return { scene, manager };
+    }
+
+    it('(a) getDeformedOverlays() returns empty Map before setDeformation', () => {
+      const { manager } = setupWithOverlay();
+      expect(manager.getDeformedOverlays().size).toBe(0);
+    });
+
+    it('(b) after setDeformation({warpFactor:5}), getDeformedOverlays() has size 1 with key "A"', () => {
+      const { manager } = setupWithOverlay();
+      manager.setDeformation({ warpFactor: 5 });
+
+      const overlays = manager.getDeformedOverlays();
+      expect(overlays.size).toBe(1);
+      expect(overlays.has('A')).toBe(true);
+    });
+
+    it('(b) overlay material is transparent with opacity 0.25 and depthWrite false', () => {
+      const { manager } = setupWithOverlay();
+      manager.setDeformation({ warpFactor: 5 });
+
+      const overlay = manager.getDeformedOverlays().get('A')!;
+      expect(overlay.material).toBeDefined();
+      const mat = overlay.material as any;
+      expect(mat.transparent).toBe(true);
+      expect(mat.opacity).toBe(0.25);
+      expect(mat.depthWrite).toBe(false);
+    });
+
+    it('(b) overlay renderOrder is less than deformed mesh renderOrder (overlay behind)', () => {
+      const { manager } = setupWithOverlay();
+      manager.setDeformation({ warpFactor: 5 });
+
+      const deformedMesh = manager.getSceneMeshes().get('A')!;
+      const overlay = manager.getDeformedOverlays().get('A')!;
+      expect(overlay.renderOrder).toBeLessThan(deformedMesh.renderOrder === undefined ? 0 : deformedMesh.renderOrder + 1);
+      expect(overlay.renderOrder).toBe(-1);
+    });
+
+    it('(b) overlay position.array equals original vertices (NOT warped)', () => {
+      const { manager } = setupWithOverlay();
+      manager.setDeformation({ warpFactor: 5 });
+
+      const overlay = manager.getDeformedOverlays().get('A')!;
+      const posAttr = (overlay.geometry as any).attributes.position;
+      expect(Array.from(posAttr.array as Float32Array)).toEqual(Array.from(vertices));
+    });
+
+    it('(c) mesh B (no displaced_positions) gets no overlay — size remains 1', () => {
+      const { manager } = setupWithOverlay();
+      manager.setDeformation({ warpFactor: 5 });
+
+      expect(manager.getDeformedOverlays().size).toBe(1);
+      expect(manager.getDeformedOverlays().has('B')).toBe(false);
+    });
+
+    // --- step-13 teardown tests ---
+
+    it('(d) setDeformation(null) removes overlay from undeformedGroup and disposes its geometry', () => {
+      const { manager } = setupWithOverlay();
+      manager.setDeformation({ warpFactor: 5 });
+
+      const overlay = manager.getDeformedOverlays().get('A')!;
+      const overlayGeom = overlay.geometry;
+
+      vi.clearAllMocks();
+      manager.setDeformation(null);
+
+      // The overlay mesh must have been removed from the group.
+      expect(mockGroupRemove).toHaveBeenCalledWith(overlay);
+      // The overlay's own BufferGeometry must have been disposed.
+      expect(overlayGeom.dispose).toHaveBeenCalledOnce();
+      // The overlays map is now empty.
+      expect(manager.getDeformedOverlays().size).toBe(0);
+    });
+
+    it('(e) calling setDeformation({warpFactor:5}) twice with the same warpFactor is a no-op — overlay unchanged', () => {
+      // setDeformation detects same warpFactor and returns early, avoiding unnecessary
+      // GPU-buffer writes and overlay teardown/re-add on redundant calls.
+      // The Viewport bridge effect guards against this via track-then-act reactive
+      // tracking, but the public API must be stable on its own.
+      const { manager } = setupWithOverlay();
+      manager.setDeformation({ warpFactor: 5 });
+
+      // Capture first overlay's geometry before the second call.
+      const firstOverlay = manager.getDeformedOverlays().get('A')!;
+      const firstGeom = firstOverlay.geometry;
+
+      vi.clearAllMocks();
+      manager.setDeformation({ warpFactor: 5 });
+
+      // Still exactly one overlay.
+      expect(manager.getDeformedOverlays().size).toBe(1);
+      // Early return: the prior overlay's geometry must NOT have been disposed.
+      expect(firstGeom.dispose).not.toHaveBeenCalled();
+      // The overlay object is the same instance (no teardown/re-create).
+      expect(manager.getDeformedOverlays().get('A')).toBe(firstOverlay);
+    });
+
+    it('(f) dispose() removes undeformedGroup from scene and disposes undeformedMaterial', () => {
+      const { manager } = setupWithOverlay();
+      manager.setDeformation({ warpFactor: 5 });
+
+      const overlay = manager.getDeformedOverlays().get('A')!;
+      const overlayGeom = overlay.geometry;
+
+      // mockGroups[1] == undeformedGroup; mockBasicMaterials[1] == undeformedMaterial.
+      // Both are created inside createMeshManager (after ghostGroup/ghostMaterial).
+      const undeformedGroup = mockGroups[1];
+      const undeformedMaterial = mockBasicMaterials[1];
+
+      vi.clearAllMocks();
+      manager.dispose();
+
+      // All overlays cleaned up.
+      expect(manager.getDeformedOverlays().size).toBe(0);
+      // Overlay geometry was disposed.
+      expect(overlayGeom.dispose).toHaveBeenCalledOnce();
+      // undeformedGroup was removed from the scene.
+      expect(mockSceneRemove).toHaveBeenCalledWith(undeformedGroup);
+      // undeformedMaterial was disposed.
+      expect(undeformedMaterial.dispose).toHaveBeenCalledOnce();
+    });
+
+    // --- step-15: entity removal while deformation is active ---
+
+    it('(g) sync({}) while deformation active removes and disposes overlay for removed entity', () => {
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+
+      const meshA: MeshData = {
+        entity_path: 'A',
+        vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        displaced_positions: new Float32Array([0.1, 0, 0, 1.1, 0, 0, 0.1, 1, 0]),
+      };
+
+      manager.sync({ A: meshA });
+      manager.setDeformation({ warpFactor: 5 });
+
+      // Capture overlay reference for later disposal check.
+      const overlay = manager.getDeformedOverlays().get('A')!;
+      expect(overlay).toBeDefined();
+      const overlayGeom = overlay.geometry;
+
+      vi.clearAllMocks();
+      // Remove the entity.
+      manager.sync({});
+
+      // Overlay must be gone.
+      expect(manager.getDeformedOverlays().size).toBe(0);
+      // Overlay geometry must have been disposed.
+      expect(overlayGeom.dispose).toHaveBeenCalledOnce();
+      // Overlay mesh must have been removed from undeformedGroup.
+      expect(mockGroupRemove).toHaveBeenCalledWith(overlay);
+    });
+  });
+
+  describe('setDeformation — sync re-apply', () => {
+    const vertA1 = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+    const dispA1 = new Float32Array([0.1, 0, 0, 1.1, 0, 0, 0.1, 1, 0]);
+    // New data with different vertices/displaced
+    const vertA2 = new Float32Array([0, 0, 0, 2, 0, 0, 0, 2, 0]);
+    const dispA2 = new Float32Array([0.5, 0, 0, 2.5, 0, 0, 0.5, 2, 0]);
+
+    it('(a) setDeformation({warpFactor:5}) then sync with new data → positions reflect new data blended at W=5', () => {
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+      manager.sync({ A: { entity_path: 'A', vertices: vertA1.slice(), indices: new Uint32Array([0, 1, 2]), normals: null, displaced_positions: dispA1.slice() } });
+      manager.setDeformation({ warpFactor: 5 });
+      vi.clearAllMocks();
+
+      // Sync with new data for same entity
+      manager.sync({ A: { entity_path: 'A', vertices: vertA2.slice(), indices: new Uint32Array([0, 1, 2]), normals: null, displaced_positions: dispA2.slice() } });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const posAttr = (mesh.geometry as any).attributes.position;
+      const expectedA2W5 = new Float32Array(vertA2.length);
+      for (let i = 0; i < vertA2.length; i++) {
+        expectedA2W5[i] = vertA2[i] + 5 * (dispA2[i] - vertA2[i]);
+      }
+      expect(Array.from(posAttr.array as Float32Array)).toEqual(Array.from(expectedA2W5));
+    });
+
+    it('(b) sync mesh before setDeformation, then setDeformation applies to existing mesh', () => {
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+      manager.sync({ A: { entity_path: 'A', vertices: vertA1.slice(), indices: new Uint32Array([0, 1, 2]), normals: null, displaced_positions: dispA1.slice() } });
+      vi.clearAllMocks();
+
+      // Call setDeformation AFTER sync — must apply to existing mesh
+      manager.setDeformation({ warpFactor: 3 });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const posAttr = (mesh.geometry as any).attributes.position;
+      const expectedA1W3 = new Float32Array(vertA1.length);
+      for (let i = 0; i < vertA1.length; i++) {
+        expectedA1W3[i] = vertA1[i] + 3 * (dispA1[i] - vertA1[i]);
+      }
+      expect(Array.from(posAttr.array as Float32Array)).toEqual(Array.from(expectedA1W3));
+    });
+
+    // --- Amendment: suggestion 1 ---
+    it('(c) mesh synced AFTER setDeformation({warpFactor:5}) immediately gets an undeformed overlay', () => {
+      // Set deformation first, then introduce a brand-new entity via sync.
+      // The new mesh should receive both the warp AND an undeformed overlay —
+      // visually symmetric with meshes that were present at toggle time.
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      manager.setDeformation({ warpFactor: 5 });
+      vi.clearAllMocks();
+
+      // Sync a new entity with displaced_positions AFTER setDeformation.
+      manager.sync({ C: { entity_path: 'C', vertices: vertA1.slice(), indices: new Uint32Array([0, 1, 2]), normals: null, displaced_positions: dispA1.slice() } });
+
+      // The new entity must have an overlay.
+      expect(manager.getDeformedOverlays().has('C')).toBe(true);
+      expect(manager.getDeformedOverlays().size).toBe(1);
+
+      // The overlay's position attribute must equal the original (un-warped) vertices.
+      const overlay = manager.getDeformedOverlays().get('C')!;
+      const posAttr = (overlay.geometry as any).attributes.position;
+      expect(Array.from(posAttr.array as Float32Array)).toEqual(Array.from(vertA1));
+    });
+
+    // --- Amendment: suggestion 2a ---
+    it('(d) sync with new vertices while deformation active rebuilds overlay with fresh original vertices', () => {
+      // When a mesh's vertices change while deformation is active, the existing overlay
+      // still holds the OLD Float32Array. The implementation must rebuild the overlay
+      // pointing at the freshly-cached meshOriginalVertices entry.
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+      manager.sync({ A: { entity_path: 'A', vertices: vertA1.slice(), indices: new Uint32Array([0, 1, 2]), normals: null, displaced_positions: dispA1.slice() } });
+      manager.setDeformation({ warpFactor: 5 });
+      vi.clearAllMocks();
+
+      // Re-sync with brand-new vertices and displaced_positions.
+      manager.sync({ A: { entity_path: 'A', vertices: vertA2.slice(), indices: new Uint32Array([0, 1, 2]), normals: null, displaced_positions: dispA2.slice() } });
+
+      // Overlay must still exist.
+      expect(manager.getDeformedOverlays().has('A')).toBe(true);
+
+      // The overlay's position.array must equal the NEW original vertices (vertA2), not vertA1.
+      const overlay = manager.getDeformedOverlays().get('A')!;
+      const posAttr = (overlay.geometry as any).attributes.position;
+      expect(Array.from(posAttr.array as Float32Array)).toEqual(Array.from(vertA2));
+    });
+
+    // --- Amendment: suggestion 2b ---
+    it('(e) sync removes displaced_positions while deformation active → overlay torn down', () => {
+      // If a backend re-sync drops displaced_positions (e.g. FEA solve was removed),
+      // the existing overlay must be removed so no ghost shape lingers.
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+      manager.sync({ A: { entity_path: 'A', vertices: vertA1.slice(), indices: new Uint32Array([0, 1, 2]), normals: null, displaced_positions: dispA1.slice() } });
+      manager.setDeformation({ warpFactor: 5 });
+
+      const overlayBefore = manager.getDeformedOverlays().get('A')!;
+      const overlayGeom = overlayBefore.geometry;
+      vi.clearAllMocks();
+
+      // Re-sync WITHOUT displaced_positions.
+      manager.sync({ A: { entity_path: 'A', vertices: vertA2.slice(), indices: new Uint32Array([0, 1, 2]), normals: null } });
+
+      // Overlay must have been removed.
+      expect(manager.getDeformedOverlays().has('A')).toBe(false);
+      expect(manager.getDeformedOverlays().size).toBe(0);
+      // Overlay geometry must have been disposed.
+      expect(overlayGeom.dispose).toHaveBeenCalledOnce();
+    });
+  });
+
+  describe('setDeformation — mixed mesh (with and without displaced_positions)', () => {
+    const vertA = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+    const dispA = new Float32Array([0.1, 0, 0, 1.1, 0, 0, 0.1, 1, 0]);
+    const vertB = new Float32Array([2, 0, 0, 3, 0, 0, 2, 1, 0]);
+
+    function setupMixedMeshes() {
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+      const meshA: MeshData = {
+        entity_path: 'A',
+        vertices: vertA.slice(),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        displaced_positions: dispA.slice(),
+      };
+      const meshB: MeshData = {
+        entity_path: 'B',
+        vertices: vertB.slice(),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        // no displaced_positions
+      };
+      manager.sync({ A: meshA, B: meshB });
+      vi.clearAllMocks();
+      return { scene, manager };
+    }
+
+    it('setDeformation({warpFactor:5}): mesh A warped, mesh B unchanged; both still in getSceneMeshes', () => {
+      const { manager } = setupMixedMeshes();
+      manager.setDeformation({ warpFactor: 5 });
+
+      const meshA = manager.getSceneMeshes().get('A')!;
+      const meshB = manager.getSceneMeshes().get('B')!;
+
+      // Mesh A: position should be warped
+      const posA = (meshA.geometry as any).attributes.position;
+      const expectedA = new Float32Array(vertA.length);
+      for (let i = 0; i < vertA.length; i++) {
+        expectedA[i] = vertA[i] + 5 * (dispA[i] - vertA[i]);
+      }
+      expect(Array.from(posA.array as Float32Array)).toEqual(Array.from(expectedA));
+
+      // Mesh B: position should be unchanged (deep-equals its original vertices)
+      const posB = (meshB.geometry as any).attributes.position;
+      expect(Array.from(posB.array as Float32Array)).toEqual(Array.from(vertB));
+
+      // Both still in scene
+      expect(manager.getSceneMeshes().size).toBe(2);
+    });
+
+    it('setDeformation(null) after mixed: mesh A restored, mesh B still unchanged', () => {
+      const { manager } = setupMixedMeshes();
+      manager.setDeformation({ warpFactor: 5 });
+      manager.setDeformation(null);
+
+      const meshA = manager.getSceneMeshes().get('A')!;
+      const meshB = manager.getSceneMeshes().get('B')!;
+
+      const posA = (meshA.geometry as any).attributes.position;
+      expect(Array.from(posA.array as Float32Array)).toEqual(Array.from(vertA));
+
+      const posB = (meshB.geometry as any).attributes.position;
+      expect(Array.from(posB.array as Float32Array)).toEqual(Array.from(vertB));
+    });
+  });
+
+  describe('setDeformation — linear blend', () => {
+    const vertices = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+    const displaced = new Float32Array([0.1, 0, 0, 1.1, 0, 0, 0.1, 1, 0]);
+
+    function setupDeformableMesh() {
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+      const meshData: MeshData = {
+        entity_path: 'A',
+        vertices: vertices.slice(), // copy so mutations don't corrupt the test constant
+        indices: new Uint32Array([0, 1, 2]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        displaced_positions: displaced.slice(),
+      };
+      manager.sync({ A: meshData });
+      vi.clearAllMocks();
+      return { scene, manager };
+    }
+
+    it('(a) setDeformation({warpFactor:1}) sets position.array to displaced_positions and needsUpdate=true', () => {
+      const { manager } = setupDeformableMesh();
+      manager.setDeformation({ warpFactor: 1 });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const posAttr = (mesh.geometry as any).attributes.position;
+      expect(Array.from(posAttr.array as Float32Array)).toEqual(Array.from(displaced));
+      expect(posAttr.needsUpdate).toBe(true);
+    });
+
+    it('(b) setDeformation({warpFactor:10}) extrapolates position.array', () => {
+      const { manager } = setupDeformableMesh();
+      manager.setDeformation({ warpFactor: 10 });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const posAttr = (mesh.geometry as any).attributes.position;
+      // Compute expected via the same float32 reference formula so float32 rounding
+      // is accounted for (e.g. 1 + 10*(1.1_f32 - 1) may not be exactly 2.0 in float64).
+      const expectedW10 = new Float32Array(vertices.length);
+      for (let i = 0; i < vertices.length; i++) {
+        expectedW10[i] = vertices[i] + 10 * (displaced[i] - vertices[i]);
+      }
+      expect(Array.from(posAttr.array as Float32Array)).toEqual(Array.from(expectedW10));
+      // Spot-check the algebraic values are correct (~1.0 and ~2.0 as expected).
+      expect(posAttr.array[0]).toBeCloseTo(1.0, 3); // 0 + 10*(0.1-0)
+      expect(posAttr.array[3]).toBeCloseTo(2.0, 3); // 1 + 10*(1.1-1)
+      expect(posAttr.needsUpdate).toBe(true);
+    });
+
+    it('(c) setDeformation({warpFactor:0}) restores position.array to original vertices', () => {
+      const { manager } = setupDeformableMesh();
+      manager.setDeformation({ warpFactor: 0 });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const posAttr = (mesh.geometry as any).attributes.position;
+      expect(Array.from(posAttr.array as Float32Array)).toEqual(Array.from(vertices));
+      expect(posAttr.needsUpdate).toBe(true);
     });
   });
 });
