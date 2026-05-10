@@ -136,6 +136,16 @@ pub mod ffi {
         fn shape_vec_len(vec: &OcctShapeVec) -> usize;
         fn shape_vec_at(vec: &OcctShapeVec, idx: usize) -> Result<UniquePtr<OcctShape>>;
 
+        // --- Foundation constants ---
+
+        /// Return OCCT's `Precision::Confusion()` value (~1e-7).
+        ///
+        /// Used in the crate-private test module to pin
+        /// `reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` against the
+        /// authoritative OCCT value at runtime.  `Precision::Confusion()` is a
+        /// `constexpr` literal in OCCT — cannot throw, no `Result` wrapper needed.
+        fn precision_confusion() -> f64;
+
         // --- Primitive construction ---
         fn make_box(width: f64, height: f64, depth: f64) -> Result<UniquePtr<OcctShape>>;
         fn make_cylinder(radius: f64, height: f64) -> Result<UniquePtr<OcctShape>>;

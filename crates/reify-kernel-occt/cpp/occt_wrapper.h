@@ -1,5 +1,6 @@
 #pragma once
 #include "rust/cxx.h"
+#include <Precision.hxx>
 #include <TopoDS_Shape.hxx>
 #include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
@@ -82,6 +83,15 @@ struct TopologyCacheBuildCounts;
 struct InertiaTensor3x3;
 /// Returned by `revolve_synthesis_post_sort_for_test`; defined by cxx bridge.
 struct RevolveSynthesisPostSortResult;
+
+// --- Foundation constants ---
+
+/// Return OCCT's `Precision::Confusion()` value (~1e-7).
+///
+/// Used to pin `reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` against the
+/// authoritative OCCT constant at test time. Not exposed as a public API
+/// symbol — called only from the crate-private test module in lib.rs.
+double precision_confusion();
 
 // --- Primitive construction ---
 

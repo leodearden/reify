@@ -162,6 +162,19 @@ auto wrap_occt_call(const char* name, F&& fn) -> decltype(fn()) {
 
 } // anonymous namespace
 
+// --- Foundation constants ---
+
+/// Return OCCT's `Precision::Confusion()` value.
+///
+/// Provides the authoritative runtime value for pinning
+/// `reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` in the crate-private
+/// test module.  `Precision::Confusion()` is defined in OCCT as the
+/// `constexpr` literal `1.0e-7`; this wrapper crosses the cxx FFI boundary so
+/// the Rust test can compare against it.
+double precision_confusion() {
+    return Precision::Confusion();
+}
+
 // --- Validation thresholds ---
 //
 // DEFENSE-IN-DEPTH: The Rust layer validates first with stricter thresholds

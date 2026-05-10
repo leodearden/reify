@@ -32,7 +32,10 @@
 #![cfg(has_occt)]
 
 use reify_kernel_occt::OcctKernel;
-use reify_types::{GeometryHandleId, GeometryOp, GeometryQuery, QueryError, Value};
+use reify_types::{
+    GeometryHandleId, GeometryOp, GeometryQuery, QueryError, Value,
+    DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
+};
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -65,7 +68,7 @@ fn box_kernel() -> (OcctKernel, GeometryHandleId) {
 #[test]
 fn point_on_shape_face_center_returns_true() {
     let (kernel, box_id) = box_kernel();
-    match kernel.point_on_shape(box_id, 5.0, 0.0, 0.0, reify_kernel_occt::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M) {
+    match kernel.point_on_shape(box_id, 5.0, 0.0, 0.0, DEFAULT_POINT_ON_SHAPE_TOLERANCE_M) {
         Ok(true) => {}
         Ok(false) => panic!("expected true for face-center point (5,0,0), got false"),
         Err(e) => panic!("expected Ok(true), got Err({e:?})"),
@@ -77,7 +80,7 @@ fn point_on_shape_face_center_returns_true() {
 #[test]
 fn point_on_shape_edge_midpoint_returns_true() {
     let (kernel, box_id) = box_kernel();
-    match kernel.point_on_shape(box_id, 5.0, 5.0, 0.0, reify_kernel_occt::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M) {
+    match kernel.point_on_shape(box_id, 5.0, 5.0, 0.0, DEFAULT_POINT_ON_SHAPE_TOLERANCE_M) {
         Ok(true) => {}
         Ok(false) => panic!("expected true for edge-midpoint (5,5,0), got false"),
         Err(e) => panic!("expected Ok(true), got Err({e:?})"),
@@ -89,7 +92,7 @@ fn point_on_shape_edge_midpoint_returns_true() {
 #[test]
 fn point_on_shape_corner_returns_true() {
     let (kernel, box_id) = box_kernel();
-    match kernel.point_on_shape(box_id, 5.0, 5.0, 5.0, reify_kernel_occt::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M) {
+    match kernel.point_on_shape(box_id, 5.0, 5.0, 5.0, DEFAULT_POINT_ON_SHAPE_TOLERANCE_M) {
         Ok(true) => {}
         Ok(false) => panic!("expected true for corner vertex (5,5,5), got false"),
         Err(e) => panic!("expected Ok(true), got Err({e:?})"),
@@ -105,7 +108,7 @@ fn point_on_shape_corner_returns_true() {
 #[test]
 fn point_on_shape_external_point_returns_false() {
     let (kernel, box_id) = box_kernel();
-    match kernel.point_on_shape(box_id, 10.0, 0.0, 0.0, reify_kernel_occt::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M) {
+    match kernel.point_on_shape(box_id, 10.0, 0.0, 0.0, DEFAULT_POINT_ON_SHAPE_TOLERANCE_M) {
         Ok(false) => {}
         Ok(true) => panic!("expected false for external point (10,0,0), got true"),
         Err(e) => panic!("expected Ok(false), got Err({e:?})"),
@@ -190,7 +193,7 @@ fn point_on_shape_outside_tolerance_returns_false() {
 fn point_on_shape_unknown_handle_returns_invalid_handle() {
     let (kernel, _box_id) = box_kernel();
     let unknown = GeometryHandleId(999);
-    match kernel.point_on_shape(unknown, 0.0, 0.0, 0.0, reify_kernel_occt::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M) {
+    match kernel.point_on_shape(unknown, 0.0, 0.0, 0.0, DEFAULT_POINT_ON_SHAPE_TOLERANCE_M) {
         Err(QueryError::InvalidHandle(id)) if id == unknown => {}
         Err(QueryError::InvalidHandle(id)) => panic!(
             "expected InvalidHandle({:?}), got InvalidHandle({:?})",
@@ -240,7 +243,7 @@ fn point_on_shape_zero_tolerance_exact_face_point_returns_true() {
 #[test]
 fn point_on_shape_off_face_coplanar_point_returns_false() {
     let (kernel, box_id) = box_kernel();
-    match kernel.point_on_shape(box_id, 5.0, 100.0, 100.0, reify_kernel_occt::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M) {
+    match kernel.point_on_shape(box_id, 5.0, 100.0, 100.0, DEFAULT_POINT_ON_SHAPE_TOLERANCE_M) {
         Ok(false) => {}
         Ok(true) => panic!(
             "expected false for coplanar-but-off-face point (5,100,100) with tol=DEFAULT_POINT_ON_SHAPE_TOLERANCE_M, got true"
@@ -379,7 +382,7 @@ fn point_on_shape_infinite_tolerance_returns_error() {
 fn point_on_shape_non_solid_off_wire_returns_false() {
     let (kernel, wire_id) = wire_kernel();
     // (0, 1, 0): distance to the X-axis wire is 1.0 unit, far above DEFAULT_POINT_ON_SHAPE_TOLERANCE_M.
-    match kernel.point_on_shape(wire_id, 0.0, 1.0, 0.0, reify_kernel_occt::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M) {
+    match kernel.point_on_shape(wire_id, 0.0, 1.0, 0.0, DEFAULT_POINT_ON_SHAPE_TOLERANCE_M) {
         Ok(false) => {}
         Ok(true) => panic!(
             "expected false for point (0,1,0) 1.0 unit from wire with tol=DEFAULT_POINT_ON_SHAPE_TOLERANCE_M, got true"
@@ -405,7 +408,7 @@ fn query_point_on_shape_returns_true_for_face_center_point() {
             px: 5.0,
             py: 0.0,
             pz: 0.0,
-            tolerance: reify_kernel_occt::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
+            tolerance: DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
         })
         .expect("query(PointOnShape) should succeed for valid box handle");
     assert_eq!(
@@ -425,7 +428,7 @@ fn query_point_on_shape_returns_false_for_external_point() {
             px: 10.0,
             py: 0.0,
             pz: 0.0,
-            tolerance: reify_kernel_occt::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
+            tolerance: DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
         })
         .expect("query(PointOnShape) should succeed for valid box handle");
     assert_eq!(

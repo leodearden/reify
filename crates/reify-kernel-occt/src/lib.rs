@@ -19,16 +19,6 @@
 /// at runtime.
 pub const OCCT_AVAILABLE: bool = cfg!(has_occt);
 
-/// Re-export the shared point-on-shape tolerance constant from `reify-types`.
-///
-/// The constant is defined in `reify_types::geometry` (the single source of
-/// truth) because `reify-eval` cannot import `reify-kernel-occt` as a normal
-/// dependency (only as a dev-dependency, to keep OCCT off the transitive
-/// compile graph for regular builds).  This re-export gives kernel-side callers
-/// a stable `reify_kernel_occt::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` import path
-/// without duplicating the numeric literal.
-pub use reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M;
-
 #[cfg(has_occt)]
 #[allow(dead_code)]
 mod ffi;
@@ -928,7 +918,7 @@ impl OcctKernel {
     /// this contract in. See parent task 2324 for stdlib-level wiring decisions.
     ///
     /// Callers commonly pass `Precision::Confusion()` (~1e-7), exposed as
-    /// [`DEFAULT_POINT_ON_SHAPE_TOLERANCE_M`], for `tolerance` to match OCCT's
+    /// [`reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M`], for `tolerance` to match OCCT's
     /// default confusion threshold. Pass 0.0 for exact-coincidence queries
     /// (returns `true` only when `dist.Value()` is exactly 0).
     ///
@@ -7556,6 +7546,25 @@ mod tests {
         assert_eq!(
             entries[1][2], entries[2][1],
             "m23 vs m32 must be bit-equal after averaging fix"
+        );
+    }
+
+    /// Pin `DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` against OCCT's authoritative
+    /// `Precision::Confusion()` value at runtime.
+    ///
+    /// `Precision::Confusion()` is defined in OCCT as the `constexpr` literal
+    /// `1.0e-7`, identical to the Rust constant.  This test would fail if a
+    /// future OCCT release changed `Precision::Confusion()` away from 1e-7,
+    /// giving genuine drift-detection that the deleted tautological test in
+    /// `reify-types` only pretended to provide (that test compared the constant
+    /// against the literal it was defined as — always true by construction).
+    #[test]
+    fn default_point_on_shape_tolerance_m_pins_occt_precision_confusion() {
+        // Bit-exact comparison: any change in Precision::Confusion() should fail this test.
+        assert_eq!(
+            ffi::ffi::precision_confusion(),
+            reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
+            "DEFAULT_POINT_ON_SHAPE_TOLERANCE_M must match OCCT Precision::Confusion()"
         );
     }
 

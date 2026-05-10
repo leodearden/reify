@@ -709,10 +709,11 @@ impl GeometryOp {
 /// - `try_eval_topology_selector` IsOn arm (`reify-eval/src/geometry_ops.rs`)
 ///   — the dispatcher that passes this constant as the `tolerance` field.
 ///
-/// Re-exported as `reify_kernel_occt::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` for
-/// kernel-side callers (stubs, integration tests) that already import from that
-/// crate. The dispatcher must use `reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M`
-/// because `reify-kernel-occt` is a dev-dependency only of `reify-eval`.
+/// All consumers (dispatcher, stubs, integration tests) import this constant
+/// directly from `reify_types`.  Drift-against-OCCT pinning lives in
+/// `reify-kernel-occt`'s private test module
+/// (`default_point_on_shape_tolerance_m_pins_occt_precision_confusion`), which
+/// calls `Precision::Confusion()` via FFI and asserts equality at runtime.
 ///
 /// A future `is_on(point, geometry, tol: Length)` 3-arg overload (PRD §3.9)
 /// will allow callers to pass a custom tolerance; this constant remains the
@@ -2412,16 +2413,6 @@ impl<'a> BooleanOpParents<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn default_point_on_shape_tolerance_constant_pins_occt_precision_confusion() {
-        // (a) exact value matches OCCT Precision::Confusion() empirically
-        assert_eq!(super::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M, 1e-7);
-        // (b) must be a valid finite number
-        assert!(super::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M.is_finite());
-        // (c) must be strictly positive (tolerance of 0 is degenerate)
-        const { assert!(super::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M > 0.0) };
-    }
 
     #[test]
     fn geometry_handle_id_content_hash_deterministic() {
