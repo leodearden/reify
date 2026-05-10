@@ -186,3 +186,92 @@ fn mesh_swept_profile_2d_hex_preferred_unit_square_recombines_cleanly() {
         }
     }
 }
+
+fn assert_triangle_fallback(report: reify_solver_elastic::mesher::Mesh2dReport, label: &str) {
+    assert!(
+        report.recombine_attempted,
+        "{label}: HexPreferred must record recombine_attempted=true even after fall-back",
+    );
+    assert!(
+        !report.recombine_quality_ok,
+        "{label}: fall-back must record recombine_quality_ok=false",
+    );
+    match report.mesh {
+        Mesh2d::Triangle { vertices, indices } => {
+            assert!(!indices.is_empty(), "{label}: triangle indices must be non-empty");
+            assert_eq!(
+                indices.len() % 3,
+                0,
+                "{label}: triangle indices must be stride-3",
+            );
+            let n_verts = vertices.len() / 2;
+            for &idx in &indices {
+                assert!(
+                    (idx as usize) < n_verts,
+                    "{label}: triangle index {idx} out of bounds (n_verts={n_verts})",
+                );
+            }
+        }
+        Mesh2d::Quad { .. } => {
+            panic!("{label}: HexPreferred fall-back must return Triangle, not Quad")
+        }
+    }
+}
+
+/// HexPreferred fall-back: a pointy triangular profile cannot be
+/// recombined into a clean quad mesh, so the orchestrator returns
+/// triangles with `recombine_attempted=true` + `recombine_quality_ok=false`.
+#[test]
+fn mesh_swept_profile_2d_hex_preferred_pointy_triangle_falls_back_to_triangles() {
+    let boundary = ProfileBoundary {
+        outer: vec![[0.0, 0.0], [1.0, 0.0], [0.5, 1.0]],
+        holes: vec![],
+    };
+    let mut options = Mesh2dOptions::default();
+    options.mesh_size = Some(0.5);
+    options.deterministic = true;
+
+    let result = mesh_swept_profile_2d(&boundary, SweepElementTarget::HexPreferred, &options);
+
+    if !GMSH_AVAILABLE {
+        match result {
+            Err(Mesh2dError::GmshUnavailable) => {}
+            other => panic!(
+                "stub build: expected Err(GmshUnavailable), got {other:?}",
+            ),
+        }
+        return;
+    }
+
+    let report = result.expect("HexPreferred mesh_swept_profile_2d should fall back, not error");
+    assert_triangle_fallback(report, "pointy triangle");
+}
+
+/// HexPreferred fall-back via threshold: a regular profile with an
+/// impossibly tight skew threshold (0.01 rad) forces the quality
+/// predicate to reject every quad gmsh recombination can produce,
+/// triggering the triangle fall-back path even for a unit square.
+#[test]
+fn mesh_swept_profile_2d_hex_preferred_tight_threshold_falls_back_to_triangles() {
+    let boundary = unit_square_boundary();
+    let mut options = Mesh2dOptions::default();
+    options.mesh_size = Some(0.5);
+    options.deterministic = true;
+    options.recombine_skew_threshold = 0.01;
+
+    let result = mesh_swept_profile_2d(&boundary, SweepElementTarget::HexPreferred, &options);
+
+    if !GMSH_AVAILABLE {
+        match result {
+            Err(Mesh2dError::GmshUnavailable) => {}
+            other => panic!(
+                "stub build: expected Err(GmshUnavailable), got {other:?}",
+            ),
+        }
+        return;
+    }
+
+    let report =
+        result.expect("HexPreferred mesh_swept_profile_2d should fall back, not error");
+    assert_triangle_fallback(report, "tight threshold");
+}
