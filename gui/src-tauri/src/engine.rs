@@ -622,6 +622,8 @@ impl EngineSession {
                 .map_err(|(msg, diags)| {
                     if self.compiled.is_none() {
                         self.last_compile_diagnostics = diags;
+                    } else {
+                        self.live_compile_diagnostics = diags;
                     }
                     msg
                 })?
