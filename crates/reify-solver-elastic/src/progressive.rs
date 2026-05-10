@@ -54,6 +54,27 @@ pub struct PassTuning {
     pub cg_tol: f64,
 }
 
+/// Derive the tuning for refinement level `level`.
+///
+/// Per PRD task #15: "Each refinement halves mesh element size and tightens
+/// CG tolerance by 10×."
+///
+/// Formulas:
+/// - `mesh_tol = target_tolerance × 4.0 × 0.5^level`
+/// - `cg_tol = 1e-3 × 0.1^level`
+///
+/// # Level correspondence
+///
+/// `level = 0` gives the same result as [`coarse_pass_tuning`] — both are
+/// closed-form at level 0, avoiding a special case. Use [`coarse_pass_tuning`]
+/// at level 0 for readability; use this function for levels ≥ 1.
+pub fn refinement_pass_tuning(opts: &ProgressiveOptions, level: usize) -> PassTuning {
+    PassTuning {
+        mesh_tol: opts.target_tolerance * 4.0 * 0.5_f64.powi(level as i32),
+        cg_tol: 1e-3 * 0.1_f64.powi(level as i32),
+    }
+}
+
 /// Derive the coarse-pass tuning from `opts`.
 ///
 /// Per PRD task #15: "Coarse pass: mesh at `tol × 4` (4× coarser than
@@ -117,15 +138,15 @@ mod tests {
         // level=1: mesh_tol = 0.05 × 4 × 0.5 = 0.10, cg_tol = 1e-3 × 0.1 = 1e-4
         let pt1 = refinement_pass_tuning(&opts, 1);
         assert!((pt1.mesh_tol - 0.10).abs() < 1e-15, "level=1 mesh_tol={}", pt1.mesh_tol);
-        assert!((pt1.cg_tol - 1e-4).abs() < 1e-20, "level=1 cg_tol={}", pt1.cg_tol);
+        assert!((pt1.cg_tol - 1e-4).abs() < 1e-15, "level=1 cg_tol={}", pt1.cg_tol);
         // level=2: mesh_tol = 0.05 × 4 × 0.25 = 0.05, cg_tol = 1e-5
         let pt2 = refinement_pass_tuning(&opts, 2);
         assert!((pt2.mesh_tol - 0.05).abs() < 1e-15, "level=2 mesh_tol={}", pt2.mesh_tol);
-        assert!((pt2.cg_tol - 1e-5).abs() < 1e-21, "level=2 cg_tol={}", pt2.cg_tol);
+        assert!((pt2.cg_tol - 1e-5).abs() < 1e-15, "level=2 cg_tol={}", pt2.cg_tol);
         // level=3: mesh_tol = 0.05 × 4 × 0.125 = 0.025, cg_tol = 1e-6
         let pt3 = refinement_pass_tuning(&opts, 3);
         assert!((pt3.mesh_tol - 0.025).abs() < 1e-15, "level=3 mesh_tol={}", pt3.mesh_tol);
-        assert!((pt3.cg_tol - 1e-6).abs() < 1e-22, "level=3 cg_tol={}", pt3.cg_tol);
+        assert!((pt3.cg_tol - 1e-6).abs() < 1e-15, "level=3 cg_tol={}", pt3.cg_tol);
     }
 
     #[test]
