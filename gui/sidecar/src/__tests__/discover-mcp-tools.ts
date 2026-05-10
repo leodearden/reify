@@ -49,8 +49,8 @@
  *      as a comment start, silently truncating the rest of that line.  A
  *      `registry.register(NAME, ...)` call on the same line as such a literal
  *      could be incorrectly dropped from `registeredIdents`.
- *   2. They do not handle nested block comments: `/* outer /* inner */ still outer */`
- *      is closed at the first `*/`, leaving ` still outer */` in the stripped
+ *   2. They do not handle nested block comments: `\/* outer \/* inner *\/ still outer *\/`
+ *      is closed at the first `*\/`, leaving ` still outer *\/` in the stripped
  *      source as unexpected plain text.
  * Neither condition arises in the current source tree, so discovery is unaffected
  * today.  Future contributors: avoid placing `registry.register(NAME, ...)` calls
