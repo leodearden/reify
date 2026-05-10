@@ -3901,7 +3901,7 @@ mod tests {
     /// silently with `budget = effective_tessellation_tolerance(module)` via the
     /// `unwrap_or_else` fallback.
     #[test]
-    #[should_panic(expected = "index out of bounds")]
+    #[should_panic(expected = "index out of bounds: the len is 0 but the index is 0")]
     fn tessellate_from_values_panics_on_oob_tessellation_budgets_lookup() {
         use reify_test_support::mocks::MockGeometryKernel;
 
