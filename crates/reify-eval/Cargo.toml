@@ -17,6 +17,9 @@ serde = { workspace = true, features = ["derive"] }
 tracing.workspace = true
 zstd.workspace = true
 
+[build-dependencies]
+xxhash-rust = { workspace = true }
+
 [features]
 test-instrumentation = []
 
