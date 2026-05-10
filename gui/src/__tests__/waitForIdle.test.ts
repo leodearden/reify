@@ -38,6 +38,7 @@ function makeStores(phase: 'idle' | 'evaluating' | 'error' = 'idle'): DebugStore
         openFiles: [],
         activeFile: null,
         dirtyFiles: [],
+        externallyChanged: [],
         cursorPosition: null,
       },
       openFile: vi.fn(),
