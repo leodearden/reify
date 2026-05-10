@@ -280,3 +280,46 @@ fn compute_thickness_warnings_some_delegates_to_through_thickness_check() {
         warnings[0].element_count
     );
 }
+
+// ---------------------------------------------------------------------------
+// mesh_surface_to_volume_with_diagnostics — cfg(has_gmsh) wrapper tests
+// ---------------------------------------------------------------------------
+
+#[cfg(has_gmsh)]
+mod with_libgmsh {
+    use super::{slab_surface_mesh, unit_cube_mesh};
+
+    use reify_kernel_gmsh::auto_size::AutoSizeConfig;
+    use reify_kernel_gmsh::mesh_volume::mesh_surface_to_volume_with_diagnostics;
+    use reify_kernel_gmsh::repair::RepairConfig;
+    use reify_kernel_gmsh::through_thickness::ThroughThicknessConfig;
+    use reify_kernel_gmsh::MeshingOptions;
+    use reify_types::ElementOrderTag;
+
+    /// All diagnostic stages skipped (all `None` configs). Must produce a
+    /// non-empty volume mesh and no through-thickness warnings.
+    #[test]
+    fn mesh_surface_to_volume_with_diagnostics_all_none_round_trips_unit_cube() {
+        let cube = unit_cube_mesh();
+        let report = mesh_surface_to_volume_with_diagnostics(
+            &cube,
+            &MeshingOptions::default(),
+            ElementOrderTag::P1,
+            None,
+            None,
+            None,
+        )
+        .expect("all-None wrapper must succeed for a closed unit cube");
+
+        assert!(
+            report.volume.tet_indices.len() / 4 > 0,
+            "all-None wrapper must produce at least one tet; tet count = {}",
+            report.volume.tet_indices.len() / 4
+        );
+        assert!(
+            report.through_thickness_warnings.is_empty(),
+            "all-None wrapper must produce no through-thickness warnings; got {:?}",
+            report.through_thickness_warnings.iter().map(|w| &w.message).collect::<Vec<_>>()
+        );
+    }
+}
