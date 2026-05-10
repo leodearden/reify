@@ -279,17 +279,15 @@ fn compile_entry_with_imports(
                 if template.visibility != Visibility::Public {
                     continue;
                 }
-                if compiled
-                    .templates
-                    .iter()
-                    .any(|t| t.name == template.name)
-                {
-                    // Emit a warning naming both the prior declarer and the
+                if let Some(prior_origin) = templates_origin.get(&template.name) {
+                    // Collision: emit a warning naming both the prior declarer and the
                     // colliding import, mirroring lib.rs:283-291 wording.
-                    let prior_origin = templates_origin
-                        .get(&template.name)
-                        .cloned()
-                        .unwrap_or_else(|| "<unknown>".to_string());
+                    //
+                    // The `templates_origin` invariant guarantees every name present in
+                    // `compiled.templates` is also present in the map (seeded from entry
+                    // templates before the loop, updated on every successful merge), so
+                    // `if let Some(...)` is both the O(1) membership test and the origin
+                    // lookup — no separate `iter().any(...)` scan or fallback needed.
                     compiled.diagnostics.push(
                         Diagnostic::warning(format!(
                             "imported pub structure '{}' declared in both '{}' and '{}'; first-wins",
