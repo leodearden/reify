@@ -296,6 +296,11 @@ mod with_libgmsh {
     use reify_kernel_gmsh::MeshingOptions;
     use reify_types::ElementOrderTag;
 
+    // Re-export the slab fixture for use inside this module
+    fn slab_surface_mesh() -> reify_types::Mesh {
+        super::slab_surface_mesh()
+    }
+
     /// All diagnostic stages skipped (all `None` configs). Must produce a
     /// non-empty volume mesh and no through-thickness warnings.
     #[test]
@@ -320,6 +325,51 @@ mod with_libgmsh {
             report.through_thickness_warnings.is_empty(),
             "all-None wrapper must produce no through-thickness warnings; got {:?}",
             report.through_thickness_warnings.iter().map(|w| &w.message).collect::<Vec<_>>()
+        );
+    }
+
+    /// All three diagnostic stages active on a coarsely-meshed thin slab (0.5 m
+    /// thick, mesh_size=5.0) must produce at least one through-thickness warning.
+    /// Pins: post-stage fires when Some(cfg) supplied; detected thickness ≈ 0.5.
+    #[test]
+    fn pipeline_all_stages_active_emits_through_thickness_warning_on_under_resolved_slab() {
+        let slab = slab_surface_mesh();
+        // Large mesh_size ensures HXT produces very few layers through 0.5 m slab.
+        let options = MeshingOptions {
+            mesh_size: Some(5.0),
+            deterministic: true,
+            ..Default::default()
+        };
+        let report = mesh_surface_to_volume_with_diagnostics(
+            &slab,
+            &options,
+            ElementOrderTag::P1,
+            Some(RepairConfig::default()),
+            Some(AutoSizeConfig::default()),
+            Some(ThroughThicknessConfig::default()),
+        )
+        .expect("all-active pipeline must succeed for a closed slab");
+
+        assert!(
+            report.volume.tet_indices.len() / 4 > 0,
+            "all-active pipeline must produce at least one tet"
+        );
+        assert!(
+            !report.through_thickness_warnings.is_empty(),
+            "coarse slab (mesh_size=5.0, thickness=0.5) must produce at least one \
+             through-thickness warning; got none"
+        );
+        // Under-resolution: element count below 2 (the min_elements default)
+        assert!(
+            report.through_thickness_warnings[0].element_count < 2,
+            "under-resolved slab must be detected; element_count={}, expected <2",
+            report.through_thickness_warnings[0].element_count
+        );
+        // Thickness detection: approximately 0.5 m (within ±1e-3)
+        let detected_thickness = report.through_thickness_warnings[0].thickness;
+        assert!(
+            (detected_thickness - 0.5).abs() < 1e-3,
+            "detected thickness must be ≈ 0.5 m (within ±1e-3); got {detected_thickness}"
         );
     }
 }
