@@ -375,7 +375,10 @@ pub fn solve_cg_warm(
 /// - `None` branch: `u = vec![0.0; n]`, `r = f.to_vec()` — bit-identical to
 ///   the pre-warm-start code path (no SpMV, no FP reordering).
 /// - `Some(u₀)` branch: `u = u₀.to_vec()`, `r = f − K·u₀` via one
-///   mode-appropriate SpMV.
+///   mode-appropriate SpMV. Residual is computed via slot-order in-place
+///   subtraction (`r[i] -= ku[i]`) matching `cg_loop`'s r-update
+///   convention; pinned bit-exact by
+///   `build_initial_u_r_some_branch_residual_is_bit_exact_slot_order_f_minus_ku`.
 fn build_initial_u_r<S>(f: &[f64], initial_guess: Option<&[f64]>, spmv: S) -> (Vec<f64>, Vec<f64>)
 where
     S: FnOnce(&[f64], &mut [f64]),
@@ -385,10 +388,15 @@ where
         None => (vec![0.0_f64; n], f.to_vec()),
         Some(u_0) => {
             let u = u_0.to_vec();
-            // r = f − K·u₀
+            // r = f − K·u₀ via slot-order in-place subtraction (matches cg_loop's
+            // r-update convention; preserves bit-equality with the prior collect form
+            // since each slot computes the same f[i] - ku[i] f64 op).
             let mut ku = vec![0.0_f64; n];
             spmv(&u, &mut ku);
-            let r: Vec<f64> = f.iter().zip(ku.iter()).map(|(fi, kui)| fi - kui).collect();
+            let mut r = f.to_vec();
+            for i in 0..n {
+                r[i] -= ku[i];
+            }
             (u, r)
         }
     }
