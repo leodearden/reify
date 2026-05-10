@@ -88,7 +88,7 @@ pub struct CgSolverOptions {
     /// Must be `> 0`. Default: `1e-8`.
     pub tolerance: f64,
     /// Maximum number of CG iterations before giving up.
-    /// Default: `1000`.
+    /// Must be `>= 1`. Default: `1000`.
     pub max_iter: usize,
 }
 
@@ -174,6 +174,9 @@ pub struct CgResult {
 ///   (Jacobi preconditioner is undefined without a non-zero diagonal).
 /// - `opts.tolerance <= 0.0` — convergence check `‖r‖² < tol² · ‖f‖²` is
 ///   unreachable, masking solution quality.
+/// - `opts.max_iter == 0` — the iteration loop runs zero times and would
+///   return `iterations == 0, converged == false`, colliding with the
+///   `CgResult` zero-RHS guarantee that `iterations == 0 ⟹ converged: true`.
 ///
 /// Per the Task-2544 contract-explicitness convention: all panics use
 /// unconditional `assert!` (not `debug_assert!`) with descriptive messages
@@ -203,6 +206,10 @@ pub fn solve_cg(
         opts.tolerance > 0.0,
         "CgSolverOptions.tolerance = {} must be > 0",
         opts.tolerance,
+    );
+    assert!(
+        opts.max_iter > 0,
+        "CgSolverOptions.max_iter = 0 is invalid; must be >= 1",
     );
     assert_eq!(
         f.len(),
