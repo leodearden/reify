@@ -15,6 +15,8 @@ import * as os from 'node:os';
  * - `'close'` with any other code/signal → `false`
  * - `'error'` event → `false`
  * - 2000ms timeout → `false` (watchdog sends SIGTERM before resolving)
+ *
+ * Invariant: this Promise never rejects; all error paths resolve to `false`.
  */
 export async function probeLandlockAsync(landlockHelperPath?: string): Promise<boolean> {
   if (!landlockHelperPath) {
