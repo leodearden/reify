@@ -2003,6 +2003,75 @@ mod tests {
         }
     }
 
+    // --- compile_geometry_call: Conditional emits Error (task 3395) ---
+
+    /// `compile_geometry_call` must emit a clean Error diagnostic (and return
+    /// `None`) when given a `Conditional` expression rather than silently
+    /// falling through to `_ => return None` with no message.
+    ///
+    /// This test MUST FAIL before the Conditional arm is added to
+    /// `compile_geometry_call` (the `_ => return None` arm at line ~286 today
+    /// silently drops the expression with no diagnostic).
+    #[test]
+    fn compile_geometry_call_conditional_returning_solid_emits_error_and_returns_none() {
+        // Build: if true then box(1, 1, 1) else box(1, 1, 1)
+        let bool_cond = reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::BoolLiteral(true),
+            span: reify_types::SourceSpan::new(0, 4),
+        };
+        let box_expr = make_call_with_arity("box", 3);
+        let cond_expr = make_conditional(bool_cond, box_expr.clone(), box_expr);
+
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_types::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_syntax::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &cond_expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        // (a) Must return None — no ops produced.
+        assert!(
+            result.is_none(),
+            "compile_geometry_call must return None for a Conditional expression"
+        );
+
+        // (b) Must emit exactly one Error-severity diagnostic.
+        let error_diags: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.severity == reify_types::Severity::Error)
+            .collect();
+        assert_eq!(
+            error_diags.len(),
+            1,
+            "expected exactly one Error diagnostic, got: {:?}",
+            error_diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+
+        // (c) The Error message must mention "if-then-else" and "geometry".
+        let msg = &error_diags[0].message;
+        assert!(
+            msg.contains("if-then-else") && msg.contains("geometry"),
+            "Error message must contain 'if-then-else' and 'geometry', got: {:?}",
+            msg
+        );
+
+        // (d) The Error must have at least one DiagnosticLabel attached.
+        assert!(
+            !error_diags[0].labels.is_empty(),
+            "Error diagnostic must have at least one label, got none"
+        );
+    }
+
     // --- Conditional branch geometry recognition (task 3395) ---
 
     /// Helper: build a `Conditional` Expr from three child Exprs.
