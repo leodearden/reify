@@ -87,7 +87,11 @@ fn inverse_transpose_3x3(m: &[[f64; 3]; 3], det: f64) -> [[f64; 3]; 3] {
 /// shear (`γ = 2ε`). Stress order: `[σ_xx, σ_yy, σ_zz, σ_xy, σ_yz,
 /// σ_xz]`. Drift from this convention would break the patch test in
 /// `step-11`; see `crate::constitutive::IsotropicElastic` and
-/// `crate::assembly::tet` for the full convention rationale.
+/// `crate::assembly::tet` for the full convention rationale. The
+/// uniaxial-strain patch test
+/// (`element_stress_p1_uniaxial_strain_patch_test_recovers_lame_diagonal`)
+/// pins the layout: a `u(x) = (a·x, 0, 0)` field round-trips to
+/// `σ = diag((λ+2μ)·a, λ·a, λ·a)` exactly.
 ///
 /// # Preconditions
 ///
