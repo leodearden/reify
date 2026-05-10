@@ -367,14 +367,66 @@ fn validate_boundary(boundary: &ProfileBoundary) -> Result<(), Mesh2dError> {
 /// - [`Mesh2dError::GmshFailed`] — Gmsh returned an error during meshing.
 pub fn mesh_swept_profile_2d(
     boundary: &ProfileBoundary,
-    _target: SweepElementTarget,
-    _options: &Mesh2dOptions,
+    target: SweepElementTarget,
+    options: &Mesh2dOptions,
 ) -> Result<Mesh2dReport, Mesh2dError> {
     validate_boundary(boundary)?;
-    // Placeholder body — later TDD steps replace this with the real
-    // wedge / hex-preferred arms that call into
-    // reify_kernel_gmsh::mesh_profile_2d::mesh_plane_2d.
-    Err(Mesh2dError::GmshUnavailable)
+
+    // Resolve mesh size: caller override wins, else auto-derive. The
+    // `auto_mesh_size_from_boundary(_, 1.0)` returns 0.0 when the outer
+    // ring is empty (already rejected) or when no usable segments are
+    // present — collapse to `None` so the kernel default applies.
+    let resolved_size = match options.mesh_size {
+        Some(s) => Some(s),
+        None => {
+            let auto = auto_mesh_size_from_boundary(boundary, 1.0);
+            if auto > 0.0 { Some(auto) } else { None }
+        }
+    };
+
+    match target {
+        SweepElementTarget::WedgeOnly => {
+            let result = reify_kernel_gmsh::mesh_profile_2d::mesh_plane_2d(
+                &boundary.outer,
+                &boundary.holes,
+                resolved_size,
+                false,
+                options.deterministic,
+            )
+            .map_err(map_geometry_error)?;
+
+            let vertices: Vec<f32> =
+                result.vertices_xy.iter().map(|&v| v as f32).collect();
+            Ok(Mesh2dReport {
+                mesh: Mesh2d::Triangle {
+                    vertices,
+                    indices: result.triangle_indices,
+                },
+                recombine_attempted: false,
+                // Vacuous: no quads were attempted, so no quad failed
+                // the skew threshold.
+                recombine_quality_ok: true,
+            })
+        }
+        SweepElementTarget::HexPreferred => {
+            // Hex-preferred arm lands in a later TDD pair.
+            Err(Mesh2dError::GmshUnavailable)
+        }
+    }
+}
+
+/// Map a `GeometryError` from `mesh_plane_2d` to the orchestrator's
+/// `Mesh2dError`. The stub arm of `mesh_plane_2d` returns a
+/// `GeometryError::OperationFailed` with "Gmsh not available" in the
+/// message; route that to `GmshUnavailable` so callers can distinguish
+/// "no libgmsh in this build" from "libgmsh failed at runtime".
+fn map_geometry_error(err: GeometryError) -> Mesh2dError {
+    match &err {
+        GeometryError::OperationFailed(msg) if msg.contains("Gmsh not available") => {
+            Mesh2dError::GmshUnavailable
+        }
+        _ => Mesh2dError::GmshFailed(err),
+    }
 }
 
 #[cfg(test)]
