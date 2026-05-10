@@ -8,10 +8,14 @@
 //! inside the `with_libgmsh` module, gated with `#[cfg(has_gmsh)]`.
 
 use reify_kernel_gmsh::auto_size::AutoSizeConfig;
-use reify_kernel_gmsh::mesh_volume::{apply_repair_if_requested, resolve_mesh_size, MeshSurfaceToVolumeReport};
+use reify_kernel_gmsh::mesh_volume::{
+    apply_repair_if_requested, compute_thickness_warnings, resolve_mesh_size,
+    MeshSurfaceToVolumeReport,
+};
 use reify_kernel_gmsh::repair::RepairConfig;
+use reify_kernel_gmsh::through_thickness::ThroughThicknessConfig;
 use reify_kernel_gmsh::MeshingOptions;
-use reify_types::Mesh;
+use reify_types::{ElementOrderTag, Mesh, VolumeMesh};
 
 // ---------------------------------------------------------------------------
 // Helpers shared across multiple tests in this file
@@ -194,5 +198,85 @@ fn resolve_mesh_size_empty_indices_collapses_to_none() {
         size,
         None,
         "auto returns 0.0 for empty-indices mesh; wrapper must collapse to Ok(None)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// compute_thickness_warnings — None skips, Some delegates
+// ---------------------------------------------------------------------------
+
+/// Surface mesh of an axis-aligned 10×10×0.5 slab.
+/// Inline duplicate of `through_thickness_tests.rs::slab_surface_mesh`.
+fn slab_surface_mesh() -> Mesh {
+    let v = vec![
+        0.0, 0.0, 0.0,
+        10.0, 0.0, 0.0,
+        10.0, 10.0, 0.0,
+        0.0, 10.0, 0.0,
+        0.0, 0.0, 0.5,
+        10.0, 0.0, 0.5,
+        10.0, 10.0, 0.5,
+        0.0, 10.0, 0.5,
+    ];
+    let i = vec![
+        0, 2, 1, 0, 3, 2,
+        4, 5, 6, 4, 6, 7,
+        0, 1, 5, 0, 5, 4,
+        1, 2, 6, 1, 6, 5,
+        2, 3, 7, 2, 7, 6,
+        3, 0, 4, 3, 4, 7,
+    ];
+    Mesh { vertices: v, indices: i, normals: None }
+}
+
+/// Single-tet volume mesh that spans the slab thickness (mirrors the
+/// fixture in `through_thickness_tests.rs::single_layer_tet_through_thin_region_emits_warning`).
+fn single_tet_slab_volume() -> VolumeMesh {
+    VolumeMesh {
+        vertices: vec![
+            0.0, 0.0, 0.0,   // 0
+            10.0, 0.0, 0.0,  // 1
+            10.0, 10.0, 0.5, // 2
+            0.0, 10.0, 0.5,  // 3
+        ],
+        tet_indices: vec![0, 1, 2, 3],
+        element_order: ElementOrderTag::P1,
+        normals: None,
+    }
+}
+
+/// `compute_thickness_warnings` with `None` must return an empty Vec
+/// regardless of how thin the slab is — the stage is skipped entirely.
+#[test]
+fn compute_thickness_warnings_none_returns_empty() {
+    let surface = slab_surface_mesh();
+    let volume = single_tet_slab_volume();
+    let warnings = compute_thickness_warnings(&volume, &surface, None);
+    assert!(
+        warnings.is_empty(),
+        "None cfg must skip the through-thickness stage; got {} warning(s)",
+        warnings.len()
+    );
+}
+
+/// `compute_thickness_warnings` with `Some(cfg)` must delegate to
+/// `through_thickness_check` and return warnings. For a single-tet slab the
+/// layer count is 1, which is below the min_elements_through_thickness=2
+/// default, so at least one warning is expected.
+#[test]
+fn compute_thickness_warnings_some_delegates_to_through_thickness_check() {
+    let surface = slab_surface_mesh();
+    let volume = single_tet_slab_volume();
+    let warnings = compute_thickness_warnings(&volume, &surface, Some(ThroughThicknessConfig::default()));
+    assert!(
+        !warnings.is_empty(),
+        "Some(cfg) must delegate to through_thickness_check; \
+         single-tet slab should produce at least one warning"
+    );
+    assert_eq!(
+        warnings[0].element_count,
+        1,
+        "single-tet slab must be detected as 1-element-thick; got {}",
+        warnings[0].element_count
     );
 }
