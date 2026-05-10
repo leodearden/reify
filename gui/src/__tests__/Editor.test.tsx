@@ -1151,3 +1151,59 @@ describe('Editor theme integration', () => {
     expect(editorSrc.default).not.toContain('defaultHighlightStyle');
   });
 });
+
+describe('Editor Mod-s exhaustiveness for SaveBlockedReason', () => {
+  it('default arm fires a clear runtime Error (and does NOT fall through to saveFile) when canSave returns an unhandled reason', () => {
+    const store = setupStore();
+    // Simulate the future state where a new SaveBlockedReason member exists
+    // but Editor.tsx's switch hasn't been updated.  The `as any` cast bypasses
+    // the type system for the express purpose of testing the runtime-safety
+    // net (the `: never` exhaustiveness check is a compile-time concern that
+    // vitest cannot exercise directly).
+    vi.spyOn(store, 'canSave').mockReturnValue({
+      ok: false,
+      reason: 'phantom-future-reason',
+    } as any);
+
+    const saveSpy = vi.spyOn(bridge, 'saveFile').mockResolvedValue(undefined);
+
+    // DOM event-handler exceptions are reported via window's 'error' event,
+    // not propagated through dispatchEvent (per WHATWG spec, JSDOM-conformant).
+    const errorEvents: ErrorEvent[] = [];
+    const errorHandler = (e: ErrorEvent) => {
+      errorEvents.push(e);
+      e.preventDefault();
+    };
+    window.addEventListener('error', errorHandler);
+
+    try {
+      render(() => <Editor store={store} />);
+      const container = screen.getByTestId('editor-container');
+      const view = getEditorView(container);
+
+      const event = new KeyboardEvent('keydown', {
+        key: 's',
+        code: 'KeyS',
+        ctrlKey: true,
+        bubbles: true,
+      });
+      view.contentDOM.dispatchEvent(event);
+
+      // (1) saveFile must NOT be called — covers the "fall-through with undefined file" hazard.
+      expect(saveSpy).not.toHaveBeenCalled();
+
+      // (2) The thrown error must clearly identify the unhandled reason.
+      //     Without the default arm, the runtime error is a generic
+      //     `TypeError: Cannot read properties of undefined (reading 'path')`
+      //     — useless for diagnosing the missing-case bug.  With the fix,
+      //     the message names the offending reason verbatim.
+      const matchingErrors = errorEvents.filter(
+        (e) => e.error?.message?.includes('unhandled save-blocked reason'),
+      );
+      expect(matchingErrors.length).toBeGreaterThan(0);
+      expect(matchingErrors[0].error.message).toContain('phantom-future-reason');
+    } finally {
+      window.removeEventListener('error', errorHandler);
+    }
+  });
+});
