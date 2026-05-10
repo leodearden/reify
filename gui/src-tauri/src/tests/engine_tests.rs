@@ -5662,6 +5662,65 @@ fn update_source_after_load_file_preserves_multi_file_imports() {
     );
 }
 
+/// Dirty-buffer edit: after `load_file` resolves a multi-file project,
+/// `update_source` with *modified* content (adding a new top-level param while
+/// keeping the existing `import helper`) must see both the imported `Helper.x`
+/// value cell and the newly-added param — the import graph survives an actual
+/// edit, not just a round-trip of identical content.
+///
+/// This is the core dirty-buffer regression scenario for task 3318: pre-fix
+/// `update_source` silently dropped all imports on every keystroke because it
+/// called `compile_with_stdlib` (single-file) instead of
+/// `compile_entry_with_imports` (multi-file).
+#[test]
+fn update_source_after_load_file_dirty_buffer_edit_preserves_imports() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+
+    std::fs::write(
+        dir.path().join("helper.ri"),
+        "pub structure Helper { param x: Scalar = 10mm }\n",
+    )
+    .expect("write helper.ri");
+
+    let main_content_v1 = "import helper\nstructure Top { sub h = Helper() }\n";
+    std::fs::write(dir.path().join("main.ri"), main_content_v1).expect("write main.ri");
+
+    session
+        .load_file(&dir.path().join("main.ri"))
+        .expect("load_file should succeed");
+
+    // v2: keep the import, add a new top-level param — simulates a real keystroke edit
+    let main_content_v2 =
+        "import helper\nstructure Top { sub h = Helper()\nparam top_size: Scalar = 20mm }\n";
+
+    let main_path = dir.path().join("main.ri");
+    let state = session
+        .update_source(main_path.to_str().unwrap(), main_content_v2)
+        .expect("update_source with dirty-buffer edit should return Ok");
+
+    // Imported Helper.x must still be present
+    let helper_x = state
+        .values
+        .iter()
+        .find(|v| v.name == "x" && v.entity_path == "Helper")
+        .expect("Helper.x should be present after dirty-buffer edit");
+    assert_eq!(helper_x.unit, "mm");
+    assert_eq!(helper_x.value, "10");
+
+    // The newly-added top-level param must also appear
+    assert!(
+        state
+            .values
+            .iter()
+            .any(|v| v.name == "top_size" && v.unit == "mm"),
+        "top_size param added in dirty-buffer edit should appear in state.values"
+    );
+}
+
 /// Regression-pin: after `load_file` succeeds, calling `update_source` with
 /// content that adds an unresolvable `import nonexistent` must return `Err`
 /// mentioning the module name — the multi-file path must NOT silently swallow
