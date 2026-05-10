@@ -88,10 +88,12 @@ export const StatusBar: Component<StatusBarProps> = (props) => {
       </span>
       <Show when={(props.tessellationDiagnostics?.length ?? 0) > 0}>
         <span class={styles.divider} />
-        <span
-          class={styles.section}
+        <button
+          class={`${styles.section} ${styles.diagnosticsTrigger}`}
           data-testid="tessellation-errors"
           data-has-errors={diagnosticSummary().errorCount > 0 ? 'true' : 'false'}
+          aria-label={`Show tessellation diagnostics (${props.tessellationDiagnostics?.length ?? 0})`}
+          onClick={() => props.onToggleDiagnostics?.()}
         >
           <Show when={diagnosticSummary().errorCount > 0}>
             <span class={styles.errorBadge}>{diagnosticSummary().errorCount} error{diagnosticSummary().errorCount > 1 ? 's' : ''}</span>
@@ -99,7 +101,7 @@ export const StatusBar: Component<StatusBarProps> = (props) => {
           <Show when={diagnosticSummary().warningCount > 0}>
             <span class={styles.warningBadge}>{diagnosticSummary().warningCount} warning{diagnosticSummary().warningCount > 1 ? 's' : ''}</span>
           </Show>
-        </span>
+        </button>
       </Show>
       <Show when={(props.compileDiagnostics?.length ?? 0) > 0}>
         <span class={styles.divider} />
