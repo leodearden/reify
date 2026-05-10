@@ -858,8 +858,8 @@ where
 mod tests {
     #![allow(clippy::needless_range_loop)] // index-parallel loops in test asserts
     use super::{
-        CgSolverOptions, SolverMode, norm2_squared, pairwise_tree_sum_fn, solve_cg, solve_cg_warm,
-        spmv_seq,
+        build_initial_u_r, CgSolverOptions, SolverMode, norm2_squared, pairwise_tree_sum_fn,
+        solve_cg, solve_cg_warm, spmv_seq,
     };
     use faer::sparse::{SparseRowMat, Triplet};
 
@@ -1800,6 +1800,70 @@ mod tests {
                 "Parallel: solve_cg_warm(None) u[{i}] = {} ≠ solve_cg u[{i}] = {}",
                 par_warm_none.u[i],
                 par_cold.u[i],
+            );
+        }
+    }
+
+    /// Pins the `build_initial_u_r` `Some` branch: asserts that the returned
+    /// residual `r` is bit-exact equal to `f[i] - ku[i]` slot-by-slot, where
+    /// `ku = K·u₀` is computed via `spmv_seq`.  This guards the slot-order
+    /// subtraction convention against future refactors.
+    #[test]
+    fn build_initial_u_r_some_branch_residual_is_bit_exact_slot_order_f_minus_ku() {
+        // 2×2 SPD fixture: K = [[4.0, 1.0], [1.0, 3.0]].
+        let k = SparseRowMat::try_new_from_triplets(
+            2,
+            2,
+            &[
+                Triplet::new(0_usize, 0_usize, 4.0_f64),
+                Triplet::new(0_usize, 1_usize, 1.0_f64),
+                Triplet::new(1_usize, 0_usize, 1.0_f64),
+                Triplet::new(1_usize, 1_usize, 3.0_f64),
+            ],
+        )
+        .unwrap();
+        let u_0 = [0.5_f64, 0.25];
+        let f = [1.0_f64, 2.0];
+        let n = f.len();
+
+        // Compute expected ku = K·u₀ via spmv_seq (same closure body the
+        // helper uses internally).
+        let mut expected_ku = vec![0.0_f64; n];
+        spmv_seq(&k, &u_0, &mut expected_ku);
+
+        // Compute expected residual via slot-order subtraction — the proposed
+        // in-place form: r[i] = f[i] - ku[i].
+        let mut expected_r = vec![0.0_f64; n];
+        for i in 0..n {
+            expected_r[i] = f[i] - expected_ku[i];
+        }
+
+        // Call the helper under test.
+        let (u, r) = build_initial_u_r(&f, Some(&u_0), |p, out| spmv_seq(&k, p, out));
+
+        // u must be a copy of u₀.
+        assert_eq!(u.len(), 2, "u.len() must equal 2");
+        for i in 0..n {
+            assert_eq!(
+                u[i].to_bits(),
+                u_0[i].to_bits(),
+                "u[{i}] = {} ≠ u_0[{i}] = {}",
+                u[i],
+                u_0[i],
+            );
+        }
+
+        // r must be f - K·u₀ to bit precision, slot-by-slot.
+        assert_eq!(r.len(), 2, "r.len() must equal 2");
+        for i in 0..n {
+            assert_eq!(
+                r[i].to_bits(),
+                expected_r[i].to_bits(),
+                "r[{i}] = {} ≠ expected_r[{i}] = {} (f[{i}]={} - ku[{i}]={})",
+                r[i],
+                expected_r[i],
+                f[i],
+                expected_ku[i],
             );
         }
     }
