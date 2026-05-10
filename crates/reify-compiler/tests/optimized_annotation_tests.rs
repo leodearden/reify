@@ -204,12 +204,22 @@ occurrence def Outer {
     );
 }
 
-/// `@optimized` on a function (an unsupported context) should still emit a
-/// warning — the broadening should have added `constraint_def`, not silenced
-/// the entire context check.
+/// `@optimized` on a truly-unsupported context (`trait`) should still emit a
+/// warning — the broadening should not silently accept all contexts.
+///
+/// Migrated from `fn` to `trait` in task 3377 because `function` is now in
+/// the allow-list; `trait` is still excluded and calls the same diagnostic
+/// path via `validate_annotations(_, "trait", _)` in traits.rs.
 #[test]
 fn optimized_on_unsupported_context_still_warns() {
-    let module = compile_source(r#"@optimized("x") fn f(x: Real) -> Real { x }"#);
+    let module = compile_source(
+        r#"
+@optimized("x")
+trait T {
+    param x: Real
+}
+"#,
+    );
 
     let errors = error_diags(&module.diagnostics);
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
@@ -220,7 +230,7 @@ fn optimized_on_unsupported_context_still_warns() {
         .collect();
     assert!(
         !warnings.is_empty(),
-        "expected a warning about @optimized on function, got none; all diags: {:?}",
+        "expected a warning about @optimized on trait (unsupported context), got none; all diags: {:?}",
         module.diagnostics
     );
 }

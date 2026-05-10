@@ -90,13 +90,18 @@ pub(crate) fn validate_annotations(
                 }
             }
             reify_types::OPTIMIZED_ANNOTATION => {
-                // @optimized is accepted on structure and occurrence even though
-                // optimized_target is only consumed in constraint_def context
-                // (entity.rs reads it when lowering a ConstraintDef to a
-                // CompiledConstraint). Those two contexts remain in the allow-list
-                // to avoid a breaking change; a follow-up may add a distinct
+                // @optimized is accepted on structure, occurrence, constraint_def,
+                // and function contexts. The optimized_target string is consumed
+                // in two contexts:
+                //   - constraint_def: entity.rs reads it when lowering a
+                //     ConstraintDef to a CompiledConstraint (via
+                //     CompiledConstraint::optimized_target).
+                //   - function: compile_function reads it into
+                //     CompiledFunction::optimized_target (task 3377).
+                // Structure/occurrence remain in the allow-list to avoid a
+                // breaking change; a follow-up may add a distinct
                 // 'annotation has no effect here' warning or remove them entirely.
-                if !matches!(context, "structure" | "occurrence" | "constraint_def") {
+                if !matches!(context, "structure" | "occurrence" | "constraint_def" | "function") {
                     diagnostics.push(
                         Diagnostic::warning(format!(
                             "annotation @optimized is not valid on {context} declarations"
