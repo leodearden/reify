@@ -304,6 +304,67 @@ mod tests {
     }
 
     #[test]
+    fn recover_nodal_stress_volume_weighted_average_two_unequal_volume_elements() {
+        // Two elements share node 0; element A also touches [1,2,3],
+        // element B also touches [4,5,6]. Pin the volume-weighted-average
+        // behaviour against unequal volumes:
+        //   σ_A = diag(100, 0, 0), V_A = 1.0
+        //   σ_B = diag(0, 200, 0), V_B = 3.0
+        // ⇒ recovered σ_0 = (1·σ_A + 3·σ_B) / 4 = diag(25, 150, 0).
+        let stress_a = [[100.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]];
+        let stress_b = [[0.0, 0.0, 0.0], [0.0, 200.0, 0.0], [0.0, 0.0, 0.0]];
+        let conn_a = [0_usize, 1, 2, 3];
+        let conn_b = [0_usize, 4, 5, 6];
+        let element_a = StressElement {
+            connectivity: &conn_a,
+            stress: stress_a,
+            volume: 1.0,
+        };
+        let element_b = StressElement {
+            connectivity: &conn_b,
+            stress: stress_b,
+            volume: 3.0,
+        };
+
+        let nodal = recover_nodal_stress_p1(7, &[element_a, element_b]);
+
+        // Shared node 0: weighted average.
+        let expected_0 = [[25.0, 0.0, 0.0], [0.0, 150.0, 0.0], [0.0, 0.0, 0.0]];
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!(
+                    (nodal[0][i][j] - expected_0[i][j]).abs() < 1e-12,
+                    "node 0 σ[{i}][{j}] = {} expected {}",
+                    nodal[0][i][j],
+                    expected_0[i][j],
+                );
+            }
+        }
+        // Node 1 is only in A → recovers σ_A.
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!(
+                    (nodal[1][i][j] - stress_a[i][j]).abs() < 1e-12,
+                    "node 1 (only in A) σ[{i}][{j}] = {} expected σ_A = {}",
+                    nodal[1][i][j],
+                    stress_a[i][j],
+                );
+            }
+        }
+        // Node 4 is only in B → recovers σ_B.
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!(
+                    (nodal[4][i][j] - stress_b[i][j]).abs() < 1e-12,
+                    "node 4 (only in B) σ[{i}][{j}] = {} expected σ_B = {}",
+                    nodal[4][i][j],
+                    stress_b[i][j],
+                );
+            }
+        }
+    }
+
+    #[test]
     fn recover_nodal_stress_single_element_returns_element_stress_at_each_node() {
         // One element with a non-trivial diagonal stress and unit volume.
         // The volume-weighted average across one incident element is
