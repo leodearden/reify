@@ -2144,6 +2144,136 @@ describe('meshManager', () => {
     });
   });
 
+  describe('setVisibility — overlay visibility gating', () => {
+    const vertices = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+    const displaced = new Float32Array([0.1, 0, 0, 1.1, 0, 0, 0.1, 1, 0]);
+
+    function makeDisplacedMesh(entityPath: string): MeshData {
+      return {
+        entity_path: entityPath,
+        vertices: vertices.slice(),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        displaced_positions: displaced.slice(),
+      };
+    }
+
+    // --- step-05: createMeshFromData mid-stream path ---
+
+    it('(a) mid-stream sync of hidden entity after setDeformation — no overlay added', () => {
+      // Pins the createMeshFromData add-path gate (line ~244-247).
+      // Entity C is pre-set hidden, then deformation is enabled, then C arrives via sync.
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+      manager.setDeformation({ warpFactor: 5 });
+      manager.setVisibility('C', 'hidden');
+      manager.sync({ C: makeDisplacedMesh('C') });
+      expect(manager.getDeformedOverlays().has('C')).toBe(false);
+      expect(manager.getDeformedOverlays().size).toBe(0);
+    });
+
+    // --- step-07: updateMeshGeometry re-sync path ---
+
+    it('(b) re-sync of hidden entity while deformation active — overlay stays absent', () => {
+      // Pins the updateMeshGeometry gate (line ~330-342).
+      // A is pre-set hidden, synced (no overlay added), deformation enabled (still no overlay),
+      // then A is re-synced with new vertices — removeUndeformedOverlay is a no-op but
+      // addUndeformedOverlay must still be suppressed.
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+      manager.setVisibility('A', 'hidden');
+      manager.sync({ A: makeDisplacedMesh('A') });
+      manager.setDeformation({ warpFactor: 5 });
+      // Confirm no overlay yet.
+      expect(manager.getDeformedOverlays().has('A')).toBe(false);
+      // Re-sync with new displaced data.
+      manager.sync({ A: { ...makeDisplacedMesh('A'), vertices: new Float32Array([0, 0, 0, 2, 0, 0, 0, 2, 0]), displaced_positions: new Float32Array([0.5, 0, 0, 2.5, 0, 0, 0.5, 2, 0]) } });
+      expect(manager.getDeformedOverlays().has('A')).toBe(false);
+      expect(manager.getDeformedOverlays().size).toBe(0);
+    });
+
+    // --- step-09: show→hidden removes overlay ---
+
+    it('(c) show→hidden while deformation active — overlay removed and disposed', () => {
+      // Pins the setVisibility show→hidden branch: must call removeUndeformedOverlay.
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+      manager.sync({ A: makeDisplacedMesh('A') });
+      manager.setDeformation({ warpFactor: 5 });
+      const overlay = manager.getDeformedOverlays().get('A')!;
+      expect(overlay).toBeDefined();
+      const overlayGeom = overlay.geometry;
+      vi.clearAllMocks();
+      manager.setVisibility('A', 'hidden');
+      expect(manager.getDeformedOverlays().size).toBe(0);
+      expect(mockGroupRemove).toHaveBeenCalledWith(overlay);
+      expect(overlayGeom.dispose).toHaveBeenCalledOnce();
+    });
+
+    // --- step-11: show→ghost removes overlay ---
+
+    it('(d) show→ghost while deformation active — overlay removed, ghost clone added', () => {
+      // Pins the setVisibility show→ghost branch: must call removeUndeformedOverlay.
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+      manager.sync({ A: makeDisplacedMesh('A') });
+      manager.setDeformation({ warpFactor: 5 });
+      const overlay = manager.getDeformedOverlays().get('A')!;
+      const overlayGeom = overlay.geometry;
+      vi.clearAllMocks();
+      manager.setVisibility('A', 'ghost');
+      expect(manager.getDeformedOverlays().size).toBe(0);
+      expect(mockGroupRemove).toHaveBeenCalledWith(overlay);
+      expect(overlayGeom.dispose).toHaveBeenCalledOnce();
+    });
+
+    // --- step-13: hidden→show adds overlay ---
+
+    it('(e) hidden→show while deformation active — overlay is created with original vertices', () => {
+      // Pins the setVisibility hidden→show branch: must call addUndeformedOverlay.
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+      manager.setVisibility('A', 'hidden');
+      manager.sync({ A: makeDisplacedMesh('A') });
+      manager.setDeformation({ warpFactor: 5 });
+      // Confirm no overlay yet (A is hidden).
+      expect(manager.getDeformedOverlays().has('A')).toBe(false);
+      manager.setVisibility('A', 'show');
+      expect(manager.getDeformedOverlays().has('A')).toBe(true);
+      const overlay = manager.getDeformedOverlays().get('A')!;
+      const posAttr = (overlay.geometry as any).attributes.position;
+      expect(Array.from(posAttr.array as Float32Array)).toEqual(Array.from(vertices));
+      expect(overlay.renderOrder).toBe(-1);
+    });
+
+    // --- step-15: ghost→show adds overlay ---
+
+    it('(f) ghost→show while deformation active — overlay is created with original vertices', () => {
+      // Pins the setVisibility ghost→show branch: must call addUndeformedOverlay.
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+      manager.sync({ A: makeDisplacedMesh('A') });
+      manager.setDeformation({ warpFactor: 5 });
+      // overlay present while show
+      expect(manager.getDeformedOverlays().has('A')).toBe(true);
+      manager.setVisibility('A', 'ghost');
+      // overlay gone while ghost
+      expect(manager.getDeformedOverlays().has('A')).toBe(false);
+      manager.setVisibility('A', 'show');
+      // overlay restored
+      expect(manager.getDeformedOverlays().has('A')).toBe(true);
+      const overlay = manager.getDeformedOverlays().get('A')!;
+      const posAttr = (overlay.geometry as any).attributes.position;
+      expect(Array.from(posAttr.array as Float32Array)).toEqual(Array.from(vertices));
+    });
+  });
+
   describe('setDeformation — sync re-apply', () => {
     const vertA1 = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
     const dispA1 = new Float32Array([0.1, 0, 0, 1.1, 0, 0, 0.1, 1, 0]);
