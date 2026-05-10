@@ -936,9 +936,24 @@ pub fn detect_local_index_reassignment_diagnostics(
     selector_span: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    // Step-8 skeleton: empty input + early returns yield no diagnostics.
-    // Subsequent steps add the grouping + pairwise distance check.
-    let _ = (handles_with_attrs, centroids, tol_m, selector_span, diagnostics);
+    // Group entries by (feature_id, role). Skip post-split clusters
+    // (mod_history non-empty) per PRD line 72 — those are tracked by
+    // TopologyAttributeAmbiguousAfterSplit.
+    let mut groups: HashMap<(FeatureId, Role), Vec<(GeometryHandleId, u32)>> = HashMap::new();
+    for (handle_id, attr) in handles_with_attrs.iter() {
+        if !attr.mod_history.is_empty() {
+            continue;
+        }
+        groups
+            .entry((attr.feature_id.clone(), attr.role))
+            .or_default()
+            .push((*handle_id, attr.local_index));
+    }
+
+    // Step-10: group construction is in place; pairwise distance check + emission
+    // are added in step-12. Singleton groups (and the empty-group set) trivially
+    // yield no diagnostics today, satisfying step-9's contract.
+    let _ = (groups, centroids, tol_m, selector_span, diagnostics);
 }
 
 #[cfg(test)]
