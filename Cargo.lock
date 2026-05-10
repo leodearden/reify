@@ -4646,6 +4646,7 @@ name = "reify-solver-elastic"
 version = "0.1.0"
 dependencies = [
  "faer",
+ "reify-kernel-gmsh",
  "reify-types",
 ]
 

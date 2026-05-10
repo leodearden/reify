@@ -179,6 +179,49 @@ unsafe extern "C" {
         dim: c_int,
         ierr: *mut c_int,
     );
+
+    /// `int gmshModelGeoAddPoint(double x, double y, double z, double meshSize, int tag, int* ierr)`
+    pub fn gmshModelGeoAddPoint(
+        x: f64,
+        y: f64,
+        z: f64,
+        meshSize: f64,
+        tag: c_int,
+        ierr: *mut c_int,
+    ) -> c_int;
+
+    /// `int gmshModelGeoAddLine(int startTag, int endTag, int tag, int* ierr)`
+    pub fn gmshModelGeoAddLine(
+        startTag: c_int,
+        endTag: c_int,
+        tag: c_int,
+        ierr: *mut c_int,
+    ) -> c_int;
+
+    /// `int gmshModelGeoAddCurveLoop(const int* curveTags, size_t curveTags_n, int tag, int reorient, int* ierr)`
+    pub fn gmshModelGeoAddCurveLoop(
+        curveTags: *const c_int,
+        curveTags_n: usize,
+        tag: c_int,
+        reorient: c_int,
+        ierr: *mut c_int,
+    ) -> c_int;
+
+    /// `int gmshModelGeoAddPlaneSurface(const int* wireTags, size_t wireTags_n, int tag, int* ierr)`
+    pub fn gmshModelGeoAddPlaneSurface(
+        wireTags: *const c_int,
+        wireTags_n: usize,
+        tag: c_int,
+        ierr: *mut c_int,
+    ) -> c_int;
+
+    /// `void gmshModelMeshSetRecombine(int dim, int tag, double angle, int* ierr)`
+    pub fn gmshModelMeshSetRecombine(
+        dim: c_int,
+        tag: c_int,
+        angle: f64,
+        ierr: *mut c_int,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -652,4 +695,79 @@ pub fn get_elements_by_type(element_type: i32) -> Result<(Vec<u64>, Vec<u64>), G
     }
     check_ierr("gmshModelMeshGetElementsByType", ierr)?;
     Ok((elem_tags, node_tags))
+}
+
+/// Add a built-in-CAD point at `(x, y, z)`. Returns the gmsh-assigned tag.
+///
+/// `mesh_size_hint` is the target element-size at this point; pass `0.0` to
+/// let gmsh choose (the global `Mesh.MeshSizeFactor` / `MeshSizeMin/Max`
+/// options still apply). The internal `tag` argument is wired to `-1` so
+/// gmsh picks the next free positive integer.
+pub fn geo_add_point(x: f64, y: f64, z: f64, mesh_size_hint: f64) -> Result<i32, GeometryError> {
+    let mut ierr: c_int = 0;
+    let tag = unsafe { gmshModelGeoAddPoint(x, y, z, mesh_size_hint, -1, &mut ierr) };
+    check_ierr("gmshModelGeoAddPoint", ierr)?;
+    Ok(tag)
+}
+
+/// Add a built-in-CAD straight line from `start_tag` to `end_tag`. Returns
+/// the gmsh-assigned line tag.
+///
+/// The internal `tag` argument is wired to `-1` so gmsh picks the next free
+/// positive integer.
+pub fn geo_add_line(start_tag: i32, end_tag: i32) -> Result<i32, GeometryError> {
+    let mut ierr: c_int = 0;
+    let tag = unsafe { gmshModelGeoAddLine(start_tag, end_tag, -1, &mut ierr) };
+    check_ierr("gmshModelGeoAddLine", ierr)?;
+    Ok(tag)
+}
+
+/// Add a built-in-CAD curve loop from the given curve (line/arc/…) tags.
+/// Returns the gmsh-assigned loop tag.
+///
+/// The internal `tag` is `-1` (gmsh chooses); `reorient` is `0` (caller is
+/// responsible for ordering the curves head-to-tail). Gmsh accepts either
+/// CCW or CW ordering — orientation determines the loop's normal but is not
+/// a validity constraint.
+pub fn geo_add_curve_loop(curve_tags: &[i32]) -> Result<i32, GeometryError> {
+    let mut ierr: c_int = 0;
+    let tag = unsafe {
+        gmshModelGeoAddCurveLoop(curve_tags.as_ptr(), curve_tags.len(), -1, 0, &mut ierr)
+    };
+    check_ierr("gmshModelGeoAddCurveLoop", ierr)?;
+    Ok(tag)
+}
+
+/// Add a built-in-CAD plane surface bounded by the supplied curve-loop tags.
+/// The first slot is the outer boundary; remaining slots are interpreted as
+/// holes. Returns the gmsh-assigned surface tag.
+///
+/// The internal `tag` is `-1` (gmsh chooses the next free positive integer).
+pub fn geo_add_plane_surface(curve_loop_tags: &[i32]) -> Result<i32, GeometryError> {
+    let mut ierr: c_int = 0;
+    let tag = unsafe {
+        gmshModelGeoAddPlaneSurface(
+            curve_loop_tags.as_ptr(),
+            curve_loop_tags.len(),
+            -1,
+            &mut ierr,
+        )
+    };
+    check_ierr("gmshModelGeoAddPlaneSurface", ierr)?;
+    Ok(tag)
+}
+
+/// Scope recombination to a specific entity (`dim=2` + surface tag for a
+/// plane surface). `angle` is the per-corner deviation tolerance (degrees)
+/// gmsh uses to decide whether two triangles can be merged into a quad.
+///
+/// Preferred over the global `Mesh.RecombineAll` option because it scopes
+/// recombination to the specific surface — important once a single gmsh
+/// model holds multiple bodies (task 2989's batched-eval path).
+pub fn mesh_set_recombine(dim: i32, tag: i32, angle: f64) -> Result<(), GeometryError> {
+    gmsh_call!(
+        "gmshModelMeshSetRecombine",
+        ierr,
+        gmshModelMeshSetRecombine(dim, tag, angle, &mut ierr)
+    )
 }

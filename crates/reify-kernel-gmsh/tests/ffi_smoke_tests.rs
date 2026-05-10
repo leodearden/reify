@@ -176,6 +176,12 @@ fn geo_add_point_line_curve_loop_plane_surface_and_set_recombine_round_trip() {
         .expect("ffi::geo_add_plane_surface failed");
     assert!(surf_tag > 0, "geo_add_plane_surface returned non-positive tag {surf_tag}");
 
+    // Synchronise the built-in CAD into the gmsh model so the surface
+    // becomes a real model entity. Without this, the next call hits
+    // "Surface N does not exist" — `gmshModelMeshSetRecombine` resolves
+    // its (dim, tag) against the synchronised model, not the built-in CAD.
+    ffi::geo_synchronize().expect("ffi::geo_synchronize failed");
+
     // (e) mesh_set_recombine — scopes recombination to this surface. The
     // 45.0 angle is the per-corner deviation tolerance Gmsh uses to decide
     // whether two triangles can be merged into a quad.
