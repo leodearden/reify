@@ -23,12 +23,7 @@ use std::borrow::Cow;
 use reify_types::Mesh;
 
 use crate::repair::{repair_surface_mesh, RepairConfig};
-use crate::through_thickness::{through_thickness_check, ThroughThicknessConfig, ThroughThicknessWarning};
-use crate::auto_size::{auto_mesh_size_from_features, AutoSizeConfig};
-use crate::options::MeshingOptions;
-
-#[cfg(has_gmsh)]
-use reify_types::{GeometryError, VolumeMesh, ElementOrderTag};
+use crate::through_thickness::ThroughThicknessWarning;
 
 // ---------------------------------------------------------------------------
 // Output type
@@ -73,99 +68,4 @@ pub fn apply_repair_if_requested(input: &Mesh, cfg: Option<RepairConfig>) -> Cow
             Cow::Owned(repair_surface_mesh(input, c))
         }
     }
-}
-
-/// Resolve the effective `mesh_size` to pass to `mesh_to_volume`.
-///
-/// Priority (highest first):
-/// 1. **Caller-explicit** — `options.mesh_size` is `Some(s)`: returns `Ok(Some(s))`.
-/// 2. **Auto-derived** — `auto_cfg` is `Some(cfg)`: calls
-///    `auto_mesh_size_from_features(surface, cfg)`. A zero result is collapsed
-///    to `Ok(None)` (auto returned "unavailable"; defer to the kernel default).
-///    An `AutoSizeError` is surfaced as `GeometryError::OperationFailed`.
-/// 3. **Kernel default** — both are `None`: returns `Ok(None)` and lets
-///    `mesh_to_volume`'s internal logic decide.
-pub fn resolve_mesh_size(
-    surface: &Mesh,
-    options: &MeshingOptions,
-    auto_cfg: Option<AutoSizeConfig>,
-) -> Result<Option<f64>, reify_types::GeometryError> {
-    match (options.mesh_size, auto_cfg) {
-        (Some(s), _) => Ok(Some(s)),
-        (None, None) => Ok(None),
-        (None, Some(cfg)) => match auto_mesh_size_from_features(surface, cfg) {
-            Ok(0.0) => Ok(None),
-            Ok(v) => Ok(Some(v)),
-            Err(e) => Err(reify_types::GeometryError::OperationFailed(format!(
-                "auto_mesh_size_from_features failed: {e}"
-            ))),
-        },
-    }
-}
-
-/// Run the through-thickness post-stage if requested.
-///
-/// - `None` — returns an empty `Vec` immediately (stage skipped).
-/// - `Some(cfg)` — delegates to `through_thickness_check(volume, surface, cfg)`.
-pub fn compute_thickness_warnings(
-    volume: &reify_types::VolumeMesh,
-    surface: &Mesh,
-    cfg: Option<ThroughThicknessConfig>,
-) -> Vec<ThroughThicknessWarning> {
-    match cfg {
-        Some(c) => through_thickness_check(volume, surface, c),
-        None => Vec::new(),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// FFI-backed orchestrating wrapper (cfg(has_gmsh) only)
-// ---------------------------------------------------------------------------
-
-/// Compose repair, auto-size, volume meshing, and through-thickness diagnostics
-/// into a single call.
-///
-/// Gated on `cfg(has_gmsh)` because it calls `GmshKernel::mesh_to_volume`,
-/// which is only available in the real FFI build. For stub builds the three
-/// pure helpers above remain testable.
-///
-/// # Stage order
-///
-/// 1. Repair (if `repair_cfg = Some(cfg)`) — modifies the surface mesh before
-///    it is handed to gmsh.
-/// 2. Size resolution — determines the effective `mesh_size` to use.
-/// 3. `GmshKernel::mesh_to_volume` — produce the volume mesh.
-/// 4. Through-thickness check (if `thickness_cfg = Some(cfg)`) — post-process
-///    the produced volume mesh.
-#[cfg(has_gmsh)]
-pub fn mesh_surface_to_volume_with_diagnostics(
-    surface: &Mesh,
-    options: &MeshingOptions,
-    order: ElementOrderTag,
-    repair_cfg: Option<RepairConfig>,
-    auto_size_cfg: Option<AutoSizeConfig>,
-    thickness_cfg: Option<ThroughThicknessConfig>,
-) -> Result<MeshSurfaceToVolumeReport, GeometryError> {
-    // Stage 1: repair pre-stage (Cow avoids clone when skipped)
-    let repaired = apply_repair_if_requested(surface, repair_cfg);
-
-    // Stage 2: resolve effective mesh size
-    let resolved = resolve_mesh_size(repaired.as_ref(), options, auto_size_cfg)?;
-    let inner_options = MeshingOptions {
-        mesh_size: resolved,
-        ..options.clone()
-    };
-
-    // Stage 3: volume meshing (FFI-backed)
-    let kernel = crate::GmshKernel::new();
-    let volume = kernel.mesh_to_volume(repaired.as_ref(), &inner_options, order)?;
-
-    // Stage 4: through-thickness post-stage
-    let through_thickness_warnings =
-        compute_thickness_warnings(&volume, repaired.as_ref(), thickness_cfg);
-
-    Ok(MeshSurfaceToVolumeReport {
-        volume,
-        through_thickness_warnings,
-    })
 }
