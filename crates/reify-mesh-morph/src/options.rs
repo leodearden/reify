@@ -198,6 +198,9 @@ mod tests {
         assert!((opts.fictitious_poisson_ratio - 0.3).abs() < 1e-12);
         // PRD task #6 (Laplacian quick-pass): 5–10 typical, default 8.
         assert_eq!(opts.laplacian_iterations, 8);
+        // PRD task #8 (spatially-varying fictitious stiffness): InverseVolume is the
+        // prescribed default for mesh-gradation preservation.
+        assert_eq!(opts.stiffness_rule, StiffnessRule::InverseVolume);
     }
 
     /// Compile-fence: exhaustive no-wildcard match over all three [`StiffnessRule`]
