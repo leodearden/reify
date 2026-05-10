@@ -76,6 +76,23 @@ impl Default for MidSurfaceOptions {
 }
 
 /// Errors returned by [`extract_mid_surface`].
+///
+/// ```compile_fail
+/// use reify_shell_extract::MidSurfaceError;
+/// fn _check(e: MidSurfaceError) {
+///     match e {
+///         MidSurfaceError::GridValidation(_) => {}
+///         MidSurfaceError::MaskVoxelOutOfBounds { voxel, grid_extent } => {}
+///         MidSurfaceError::MaskGridMismatch {
+///             sdf_spacing,
+///             mask_spacing,
+///             sdf_origin,
+///             mask_origin,
+///             tolerance,
+///         } => {}
+///     }
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub enum MidSurfaceError {
     /// A structural validation error produced by the shared
