@@ -7,6 +7,7 @@ import {
   saveDiagnosticsLineWrap,
   loadDiagnosticsPanelSize,
   saveDiagnosticsPanelSize,
+  computeDefaultDialogSize,
 } from '../hooks/useDiagnosticsPanelPersistence';
 
 describe('useDiagnosticsPanelPersistence', () => {
@@ -93,5 +94,62 @@ describe('useDiagnosticsPanelPersistence', () => {
       saveDiagnosticsPanelSize({ width: 900, height: 500 });
       expect(loadDiagnosticsPanelSize()).toEqual({ width: 900, height: 500 });
     });
+  });
+});
+
+describe('computeDefaultDialogSize', () => {
+  it('returns at least minWidth for empty input (longestMessageChars: 0)', () => {
+    const result = computeDefaultDialogSize({
+      longestMessageChars: 0,
+      viewportWidth: 1000,
+      viewportHeight: 800,
+    });
+    expect(result.width).toBeGreaterThanOrEqual(480); // default minWidth
+  });
+
+  it('caps width at viewportWidth * maxFractionOfViewport for very long messages', () => {
+    // 5000 chars × 8px + 80px chrome = 40080px, way more than 0.9 × 1000 = 900px
+    const result = computeDefaultDialogSize({
+      longestMessageChars: 5000,
+      viewportWidth: 1000,
+      viewportHeight: 800,
+      monoCharPx: 8,
+      chromePx: 80,
+      maxFractionOfViewport: 0.9,
+    });
+    expect(result.width).toBe(900);
+  });
+
+  it('returns content-based width between min and cap for moderate message', () => {
+    // 200 chars × 8px + 80px chrome = 1680px, viewport = 2000, cap = 0.9 × 2000 = 1800
+    // 1680 is between minWidth (480) and 1800, so width = 1680
+    const result = computeDefaultDialogSize({
+      longestMessageChars: 200,
+      viewportWidth: 2000,
+      viewportHeight: 800,
+      monoCharPx: 8,
+      chromePx: 80,
+      minWidth: 480,
+      maxFractionOfViewport: 0.9,
+    });
+    expect(result.width).toBe(1680);
+  });
+
+  it('returns sensible default height capped at min(viewportHeight * 0.8, 600)', () => {
+    // Large viewport: viewportHeight × 0.8 = 1200, but cap is 600 → height = 600
+    const large = computeDefaultDialogSize({
+      longestMessageChars: 0,
+      viewportWidth: 1000,
+      viewportHeight: 1000,
+    });
+    expect(large.height).toBe(600);
+
+    // Small viewport: viewportHeight × 0.8 = 320, which is < 600 → height = 320
+    const small = computeDefaultDialogSize({
+      longestMessageChars: 0,
+      viewportWidth: 1000,
+      viewportHeight: 400,
+    });
+    expect(small.height).toBe(320);
   });
 });

@@ -60,3 +60,43 @@ export function saveDiagnosticsPanelSize(size: { width: number; height: number }
     // Silently ignore — localStorage may be full or unavailable
   }
 }
+
+export interface ComputeDefaultDialogSizeParams {
+  /** Number of characters in the longest diagnostic message. */
+  longestMessageChars: number;
+  /** Browser viewport width in pixels. */
+  viewportWidth: number;
+  /** Browser viewport height in pixels. */
+  viewportHeight: number;
+  /** Approximate pixel width of one monospace character. Default: 8. */
+  monoCharPx?: number;
+  /** Extra horizontal chrome (padding, badges, etc.) in pixels. Default: 80. */
+  chromePx?: number;
+  /** Minimum dialog width in pixels. Default: 480. */
+  minWidth?: number;
+  /** Maximum dialog width as a fraction of viewport width. Default: 0.9. */
+  maxFractionOfViewport?: number;
+}
+
+/**
+ * Compute a sensible default dialog size based on viewport dimensions and
+ * the longest message in the diagnostics list.
+ *
+ * Width: clamp(longestMessageChars * monoCharPx + chromePx, minWidth, viewportWidth * maxFraction)
+ * Height: min(viewportHeight * 0.8, 600)
+ */
+export function computeDefaultDialogSize({
+  longestMessageChars,
+  viewportWidth,
+  viewportHeight,
+  monoCharPx = 8,
+  chromePx = 80,
+  minWidth = 480,
+  maxFractionOfViewport = 0.9,
+}: ComputeDefaultDialogSizeParams): { width: number; height: number } {
+  const contentWidth = longestMessageChars * monoCharPx + chromePx;
+  const maxWidth = viewportWidth * maxFractionOfViewport;
+  const width = Math.max(minWidth, Math.min(contentWidth, maxWidth));
+  const height = Math.min(viewportHeight * 0.8, 600);
+  return { width, height };
+}
