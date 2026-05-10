@@ -5780,22 +5780,64 @@ fn setup_collision_session() -> EngineSession {
     EngineSession::new(Box::new(checker), Some(Box::new(kernel)))
 }
 
+/// Return the first Warning diagnostic whose `message` mentions both `name` and
+/// `"first-wins"`, or `None` if no such diagnostic exists. Centralises the
+/// predicate so `assert_first_wins_warning` and `assert_collision_warning_mentions`
+/// share a single definition rather than copy-pasting the filter closure.
+fn find_collision_warning<'a>(
+    state: &'a crate::types::GuiState,
+    name: &str,
+) -> Option<&'a DiagnosticInfo> {
+    state.compile_diagnostics.iter().find(|d| {
+        d.severity == "Warning"
+            && d.message.contains(name)
+            && d.message.contains("first-wins")
+    })
+}
+
 /// Assert that `state.compile_diagnostics` contains at least one Warning whose
 /// `message` mentions both `name` and the substring `"first-wins"`, mirroring
 /// the compiler's cross-prelude alias collision policy wording.
 fn assert_first_wins_warning(state: &crate::types::GuiState, name: &str) {
-    let diag = state.compile_diagnostics.iter().find(|d| {
-        d.severity == "Warning"
-            && d.message.contains(name)
-            && d.message.contains("first-wins")
-    });
     assert!(
-        diag.is_some(),
+        find_collision_warning(state, name).is_some(),
         "expected a Warning diagnostic mentioning '{}' and 'first-wins', \
          but state.compile_diagnostics = {:?}",
         name,
         state.compile_diagnostics
     );
+}
+
+/// Assert that the collision Warning for structure `name` exists AND that each
+/// string in `origins` appears in the message in its **quoted form** (e.g.
+/// `"'helper1'"` rather than `"helper1"`).  Using the quoted form ties the
+/// assertion to the actual module-name slot in the format string:
+///
+/// ```text
+/// imported pub structure 'Foo' declared in both 'helper1' and 'helper2'; first-wins
+/// ```
+///
+/// so that an incidental occurrence of a common fragment (e.g. `"main"` inside
+/// `"domain"` or `"remain"`) cannot produce a false-positive match.
+fn assert_collision_warning_mentions(
+    state: &crate::types::GuiState,
+    name: &str,
+    origins: &[&str],
+) {
+    // Soft check first — panics with a descriptive message if the warning is missing.
+    assert_first_wins_warning(state, name);
+    let w = find_collision_warning(state, name)
+        .expect("collision warning must exist (already verified by assert_first_wins_warning)");
+    for origin in origins {
+        let quoted = format!("'{}'", origin);
+        assert!(
+            w.message.contains(&quoted),
+            "collision warning should name module '{}' as {} in the message; got: {}",
+            origin,
+            quoted,
+            w.message
+        );
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -5837,7 +5879,9 @@ fn load_file_two_imports_with_same_pub_structure_emits_collision_diagnostic() {
         .load_file(&dir.path().join("main.ri"))
         .expect("load_file should succeed despite collision (first-wins, not error)");
 
-    assert_first_wins_warning(&state, "Foo");
+    // Assert the warning exists and names both module origins using the quoted form
+    // that appears in the format string: 'helper1' (first-wins) and 'helper2' (collider).
+    assert_collision_warning_mentions(&state, "Foo", &["helper1", "helper2"]);
 }
 
 /// Regression: when the entry module itself declares a structure `Foo` and an
@@ -5866,7 +5910,11 @@ fn load_file_entry_redeclares_imported_pub_structure_emits_collision_diagnostic(
         .load_file(&dir.path().join("main.ri"))
         .expect("load_file should succeed despite collision (first-wins, not error)");
 
-    assert_first_wins_warning(&state, "Foo");
+    // Assert the warning exists and names both module origins using the quoted form:
+    // 'main' (entry module = first-wins origin, pre-seeded in templates_origin) and
+    // 'helper' (colliding import path). Quoted form avoids false matches on common
+    // English fragments (e.g. "remain", "domain") that contain the bare substring.
+    assert_collision_warning_mentions(&state, "Foo", &["main", "helper"]);
 }
 
 /// Regression: three imports all declaring the same `pub structure Foo` must
@@ -5910,22 +5958,22 @@ fn load_file_three_imports_same_pub_structure_emits_two_collision_diagnostics() 
         "expected exactly 2 collision warnings for 3-import case, got: {:?}",
         state.compile_diagnostics
     );
-    // Both warnings should name the original declarer (helper1).
+    // Both warnings should name the original declarer as 'helper1' (quoted form).
     for w in &warnings {
         assert!(
-            w.message.contains("helper1"),
+            w.message.contains("'helper1'"),
             "warning should name the first-wins origin 'helper1'; got: {}",
             w.message
         );
     }
-    // The two colliding imports should be named individually.
+    // The two colliding imports should be named individually (quoted form).
     assert!(
-        warnings.iter().any(|w| w.message.contains("helper2")),
+        warnings.iter().any(|w| w.message.contains("'helper2'")),
         "expected one warning naming 'helper2'; got: {:?}",
         warnings
     );
     assert!(
-        warnings.iter().any(|w| w.message.contains("helper3")),
+        warnings.iter().any(|w| w.message.contains("'helper3'")),
         "expected one warning naming 'helper3'; got: {:?}",
         warnings
     );
