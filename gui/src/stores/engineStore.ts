@@ -19,6 +19,9 @@ import {
   onConstraintRemoved,
   onTessellationDiagnostics,
   onCompileDiagnostics,
+  onAutoResolveStart,
+  onAutoResolveIteration,
+  onAutoResolveComplete,
 } from '../bridge';
 import type { KernelStatus } from '../bridge';
 
@@ -156,6 +159,9 @@ export function createEngineStore(options?: EngineStoreOptions) {
       onConstraintRemoved(removeConstraint),
       onTessellationDiagnostics(setTessellationDiagnostics),
       onCompileDiagnostics(setCompileDiagnostics),
+      onAutoResolveStart(beginAutoResolveLoop),
+      onAutoResolveIteration(applyAutoResolveIteration),
+      onAutoResolveComplete(endAutoResolveLoop),
     ]);
 
     const unlisteners: (() => void)[] = [];

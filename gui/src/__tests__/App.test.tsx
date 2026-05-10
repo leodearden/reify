@@ -117,6 +117,9 @@ vi.mock('../bridge', () => ({
   writeViewSidecar: vi.fn().mockResolvedValue(undefined),
   getMechanismDescriptors: vi.fn().mockResolvedValue([]),
   subscribeToSidecarCrashed: vi.fn().mockResolvedValue(() => {}),
+  onAutoResolveStart: vi.fn().mockResolvedValue(() => {}),
+  onAutoResolveIteration: vi.fn().mockResolvedValue(() => {}),
+  onAutoResolveComplete: vi.fn().mockResolvedValue(() => {}),
 }));
 
 // Mock persistence modules so App.tsx's persistence calls can be intercepted.
