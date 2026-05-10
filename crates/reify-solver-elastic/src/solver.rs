@@ -172,6 +172,8 @@ pub struct CgResult {
 /// - `k.nrows() != k.ncols()` — `K` must be square.
 /// - Any row `i` of `K` has no stored diagonal entry or has `K[i][i] == 0.0`
 ///   (Jacobi preconditioner is undefined without a non-zero diagonal).
+/// - `opts.tolerance <= 0.0` — convergence check `‖r‖² < tol² · ‖f‖²` is
+///   unreachable, masking solution quality.
 ///
 /// Per the Task-2544 contract-explicitness convention: all panics use
 /// unconditional `assert!` (not `debug_assert!`) with descriptive messages
@@ -197,6 +199,11 @@ pub fn solve_cg(
              single-threaded pairwise-tree reductions.",
         );
     }
+    assert!(
+        opts.tolerance > 0.0,
+        "CgSolverOptions.tolerance = {} must be > 0",
+        opts.tolerance,
+    );
     assert_eq!(
         f.len(),
         k.nrows(),
