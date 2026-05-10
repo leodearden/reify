@@ -40,6 +40,9 @@
 //!     SupportKind, SupportBodyKind, SupportCompatibility, build_support_bcs,
 //!     MpcRow, apply_mpc_row_elimination,
 //!     solve_cg, CgSolverOptions, CgResult, SolverMode,
+//!     barycentric_p1, point_in_tet_p1, interpolate_p1_at_point,
+//!     locate_element_p1, LocatableTet,
+//!     StressElement, element_stress_p1, recover_nodal_stress_p1, tet_volume_p1,
 //! };
 //!
 //! let _: TetP1 = TetP1;
@@ -157,6 +160,38 @@
 //! assert!(cg_result.converged, "1×1 identity CG must converge");
 //! assert_eq!(cg_result.u.len(), 1, "CgResult.u must have length 1");
 //! assert!((cg_result.u[0] - 3.0).abs() < 1e-9, "u[0] = {}", cg_result.u[0]);
+//!
+//! // Task 2920: result-interpolation smoke tests — exercise tet_volume_p1,
+//! // element_stress_p1, point_in_tet_p1, and locate_element_p1 from the
+//! // crate root. A regression that breaks any of the four re-exports would
+//! // fail at the doctest compile step.
+//! let unit_tet: [[f64; 3]; 4] = [
+//!     [0.0, 0.0, 0.0],
+//!     [1.0, 0.0, 0.0],
+//!     [0.0, 1.0, 0.0],
+//!     [0.0, 0.0, 1.0],
+//! ];
+//! let v = tet_volume_p1(&unit_tet);
+//! assert!((v - 1.0 / 6.0).abs() < 1e-12, "tet_volume_p1 unit = {v}");
+//!
+//! let mat_2920 = IsotropicElastic { youngs_modulus: 1.0, poisson_ratio: 0.3 };
+//! let sigma = element_stress_p1(&unit_tet, &mat_2920, &[0.0_f64; 12]);
+//! for i in 0..3 {
+//!     for j in 0..3 {
+//!         assert_eq!(sigma[i][j], 0.0, "zero-u σ[{i}][{j}] must be 0.0");
+//!     }
+//! }
+//!
+//! assert!(
+//!     point_in_tet_p1(&unit_tet, [0.25, 0.25, 0.25], 1e-9),
+//!     "centroid must be inside the unit tet",
+//! );
+//! let elements = [LocatableTet { phys_nodes: &unit_tet }];
+//! assert_eq!(
+//!     locate_element_p1(&elements, [0.25, 0.25, 0.25], 1e-9),
+//!     Some(0),
+//!     "single-element locate must return Some(0) at the centroid",
+//! );
 //! ```
 
 pub mod assembly;
@@ -196,4 +231,8 @@ pub use shell_boundary::{
 pub use shell_result::{
     ShellElementStress, ShellStress, shell_element_frame, shell_element_stress,
 };
+pub use interpolation::{
+    LocatableTet, barycentric_p1, interpolate_p1_at_point, locate_element_p1, point_in_tet_p1,
+};
+pub use result::{StressElement, element_stress_p1, recover_nodal_stress_p1, tet_volume_p1};
 pub use solver::{CgResult, CgSolverOptions, SolverMode, solve_cg};
