@@ -27,7 +27,40 @@
 
 use std::io::{self, Read, Write};
 
+use reify_types::ContentHash;
 use serde::{Deserialize, Serialize};
+
+/// Compute the canonical engine-version hash for a set of contributor byte slices.
+///
+/// Each contributor is framed with a `u64` LE length prefix before concatenation
+/// into the hash buffer. This prevents the trivial concat-collision class where
+/// `[b"ab", b"c"]` and `[b"a", b"bc"]` would otherwise produce identical hashes
+/// (see `compose_engine_version_hash_length_prefix_prevents_concat_collision`).
+///
+/// The hash primitive is `xxh3_128` via [`ContentHash`] — the same algorithm used
+/// for content-addressed hashing across the codebase. Cache-key invalidation does
+/// not require cryptographic collision resistance; xxh3 is appropriate and
+/// consistent with existing conventions.
+///
+/// Returns a 32-character lowercase hexadecimal string (matching
+/// [`ContentHash`]'s `Display` format).
+///
+/// The only production caller is `build.rs`, which computes the contributor bytes
+/// from the source files listed in `CONTRIBUTORS_RELATIVE`. The function is `pub`
+/// so build.rs documentation can reference it by name and so the
+/// algorithm-drift sentinel test (`compose_engine_version_hash_pins_fixed_input_to_exact_hex_literal`)
+/// pins the library output against the build-script's duplicated logic.
+///
+/// PRD: `docs/prds/v0_3/persistent-fea-cache.md` §"Cache invalidation on engine version".
+pub fn compose_engine_version_hash(parts: &[&[u8]]) -> String {
+    let total_len: usize = parts.iter().map(|p| 8 + p.len()).sum();
+    let mut buf = Vec::with_capacity(total_len);
+    for part in parts {
+        buf.extend_from_slice(&(part.len() as u64).to_le_bytes());
+        buf.extend_from_slice(part);
+    }
+    format!("{}", ContentHash::of(&buf))
+}
 
 /// On-disk-layout version for [`ElasticResult`]. Bump when the encoding
 /// format changes (separate from `engine_version_hash`, which invalidates
@@ -1148,7 +1181,7 @@ mod tests {
         let h = compose_engine_version_hash(&[b"reify", b"engine"]);
         assert_eq!(
             h,
-            "PLACEHOLDER_FILL_IN_DURING_STEP2",
+            "30b30882195f8e834bdbd936fa5324e0",
             "algorithm drift detected — update this literal in the same commit"
         );
     }
