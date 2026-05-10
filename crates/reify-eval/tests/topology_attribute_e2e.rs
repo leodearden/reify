@@ -32,14 +32,14 @@
 use std::collections::{HashMap, HashSet};
 
 use reify_eval::{
-    AttributeQuery, AttributeResolution, propagate_attributes_via_brepalgoapi_history,
-    resolve_unique_by_attribute,
+    AttributeQuery, AttributeResolution, detect_local_index_reassignment_diagnostics,
+    propagate_attributes_via_brepalgoapi_history, resolve_unique_by_attribute,
 };
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
 use reify_types::{
-    BooleanOpHistoryRecords, BooleanOpParents, DiagnosticCode, FeatureId, GeometryHandleId,
-    GeometryOp, ModEntry, RealizationNodeId, Role, SourceSpan, TopologyAttribute,
-    TopologyAttributeTable, Value,
+    BooleanOpHistoryRecords, BooleanOpParents, Diagnostic, DiagnosticCode, FeatureId,
+    GeometryHandleId, GeometryOp, ModEntry, RealizationNodeId, Role, Severity, SourceSpan,
+    TopologyAttribute, TopologyAttributeTable, Value,
 };
 
 /// 10×10×10 mm box, expressed in SI metres at the kernel boundary.
@@ -965,4 +965,85 @@ fn assert_mod_history_propagation_and_clustering(
 struct ClusteringCoverage {
     split_exercised: bool,
     pass_through_assertions: usize,
+}
+
+/// PRD task-4 / #2654 e2e check.
+///
+/// Exercises [`detect_local_index_reassignment_diagnostics`] via the public
+/// `reify_eval` re-export with synthetic input — no OCCT kernel needed
+/// because the helper is pure Rust over (handles_with_attrs, centroid_map).
+/// The OCCT-driven full-realization scenario is exercised by the engine
+/// wiring (step-21) and the existing fillet-of-cylinder e2e tests.
+///
+/// PRD line 72: "Emit when an existing selector's resolved topology
+/// changes after an edit purely due to ordering shuffle (i.e. not because
+/// of a split — splits are handled by mod_history)." This test pins the
+/// canonical "two same-(feature_id, role) entries with empty mod_history
+/// and tied centroids → one Warning diagnostic" contract end-to-end through
+/// the re-exported public surface.
+#[test]
+fn local_index_reassignment_diagnostic_fires_for_geometrically_tied_faces() {
+    // Two synthetic TopologyAttribute records in the same
+    // (feature_id, role=Role::Side) group with empty mod_history and
+    // local_index ∈ {0, 1}. Identical centroids place them strictly
+    // inside the 1e-9 m squared-distance threshold.
+    let feature_id = FeatureId::new("F#realization[0]");
+    let attr0 = TopologyAttribute {
+        feature_id: feature_id.clone(),
+        role: Role::Side,
+        local_index: 0,
+        user_label: None,
+        mod_history: Vec::new(),
+    };
+    let attr1 = TopologyAttribute {
+        feature_id: feature_id.clone(),
+        role: Role::Side,
+        local_index: 1,
+        user_label: None,
+        mod_history: Vec::new(),
+    };
+    let h0 = GeometryHandleId(1);
+    let h1 = GeometryHandleId(2);
+    let mut centroids: HashMap<GeometryHandleId, [f64; 3]> = HashMap::new();
+    centroids.insert(h0, [0.0, 0.0, 0.0]);
+    centroids.insert(h1, [0.0, 0.0, 0.0]);
+
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+    let selector_span = SourceSpan::new(10, 20);
+
+    detect_local_index_reassignment_diagnostics(
+        &[(h0, &attr0), (h1, &attr1)],
+        &centroids,
+        1e-9,
+        selector_span,
+        &mut diagnostics,
+    );
+
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "expected exactly one diagnostic, got: {diagnostics:?}"
+    );
+    let diag = &diagnostics[0];
+    assert_eq!(diag.severity, Severity::Warning);
+    assert_eq!(
+        diag.code,
+        Some(DiagnosticCode::TopologyAttributeLocalIndexReassigned)
+    );
+    assert!(
+        diag.message.contains("F#realization[0]"),
+        "message must name the feature_id: {}",
+        diag.message
+    );
+    assert!(
+        diag.message.contains("Side"),
+        "message must name the role: {}",
+        diag.message
+    );
+    assert!(
+        diag.message
+            .contains("local_index assignments at indices 0 and 1"),
+        "message must name the tied indices: {}",
+        diag.message
+    );
 }
