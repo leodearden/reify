@@ -101,9 +101,26 @@ fn solve_shell_system(
     // Deduplicate BCs: apply_dirichlet_row_elimination panics on duplicate DOF
     // indices in debug builds. Corner nodes that lie on multiple symmetry planes
     // may appear in more than one BC group; we sort and dedup, keeping the first
-    // occurrence (all our symmetry BCs are homogeneous, so value=0.0 always).
+    // occurrence. All our symmetry BCs are homogeneous (value=0.0), so collapsing
+    // identical entries is safe — but a future test that prescribes a non-zero
+    // displacement at a corner that also lands on a homogeneous symmetry plane
+    // would have one of its values silently dropped here. Debug-assert that any
+    // duplicate DOFs share the same value so the footgun surfaces in test runs.
     let mut bcs: Vec<DirichletBc> = dirichlet_bcs.to_vec();
     bcs.sort_by_key(|bc| bc.dof);
+    if cfg!(debug_assertions) {
+        for window in bcs.windows(2) {
+            if window[0].dof == window[1].dof {
+                assert_eq!(
+                    window[0].value, window[1].value,
+                    "duplicate Dirichlet BC at DOF {} with conflicting values \
+                     ({} vs {}); solve_shell_system would silently drop one of them. \
+                     Supply a single combined entry instead.",
+                    window[0].dof, window[0].value, window[1].value,
+                );
+            }
+        }
+    }
     bcs.dedup_by_key(|bc| bc.dof);
 
     // Apply Dirichlet BCs via symmetric row elimination.
