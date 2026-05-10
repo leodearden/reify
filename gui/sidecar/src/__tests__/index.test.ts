@@ -603,12 +603,18 @@ describe('main() startup landlock probe (task 3281)', () => {
     const origLe = process.env.REIFY_LANDLOCK_EXEC;
     process.env.REIFY_LANDLOCK_EXEC = '/sb/le.py';
     vi.mocked(probeLandlockAsync).mockRejectedValue(new Error('unexpected probe failure'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
       const input = new PassThrough();
       const output = new PassThrough();
       const mainPromise = main(input, output);
       // main() must emit 'ready' (not 'error') even when probe rejects
       await waitForMessage(output, (m) => m.type === 'ready');
+      // Contract violation must be logged to stderr (console.warn) for observability
+      expect(warnSpy).toHaveBeenCalledWith(
+        'Landlock probe contract violation:',
+        expect.stringContaining('unexpected probe failure')
+      );
       // Trigger an invokeSdk to inspect what wrapClaudeArgs received
       await triggerInvokeSdk(input);
       expect(vi.mocked(wrapClaudeArgs)).toHaveBeenCalled();
@@ -618,6 +624,7 @@ describe('main() startup landlock probe (task 3281)', () => {
       input.end();
       await mainPromise;
     } finally {
+      warnSpy.mockRestore();
       if (origLe === undefined) delete process.env.REIFY_LANDLOCK_EXEC;
       else process.env.REIFY_LANDLOCK_EXEC = origLe;
     }
