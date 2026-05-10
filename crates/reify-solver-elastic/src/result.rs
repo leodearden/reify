@@ -222,6 +222,36 @@ mod tests {
     }
 
     #[test]
+    fn recover_nodal_stress_single_element_returns_element_stress_at_each_node() {
+        // One element with a non-trivial diagonal stress and unit volume.
+        // The volume-weighted average across one incident element is
+        // just that element's own stress at every node it touches.
+        let stress = [[100.0, 0.0, 0.0], [0.0, 50.0, 0.0], [0.0, 0.0, 25.0]];
+        let connectivity = [0_usize, 1, 2, 3];
+        let element = StressElement {
+            connectivity: &connectivity,
+            stress,
+            volume: 1.0 / 6.0,
+        };
+
+        let nodal = recover_nodal_stress_p1(4, &[element]);
+
+        assert_eq!(nodal.len(), 4, "n_nodes=4 ⇒ output length 4");
+        for (n, t) in nodal.iter().enumerate() {
+            for i in 0..3 {
+                for j in 0..3 {
+                    assert!(
+                        (t[i][j] - stress[i][j]).abs() < 1e-12,
+                        "node {n} σ[{i}][{j}] = {} expected {}",
+                        t[i][j],
+                        stress[i][j],
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn tet_volume_p1_unit_tet_returns_one_sixth_and_scales_cubically_under_uniform_doubling() {
         // Unit tet: V = 1/6.
         let v_unit = tet_volume_p1(&UNIT_TET_P1);
