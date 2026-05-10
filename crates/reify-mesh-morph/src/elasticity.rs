@@ -137,4 +137,30 @@ mod tests {
         assert_eq!(mesh.element_order, ElementOrderTag::P1);
         assert!(mesh.normals.is_none());
     }
+
+    // ── Step-3: P2 element order rejection ────────────────────────────────────
+
+    /// P2 element order must be rejected with
+    /// `ElasticityFailure::UnsupportedElementOrder(P2)`. The fixture has a
+    /// non-empty `vertices` buffer so the empty-mesh short-circuit doesn't
+    /// fire first (which would mask a missing P1 guard). Mirrors
+    /// `laplacian_smooth_rejects_p2_element_order_*`.
+    #[test]
+    fn elasticity_morph_rejects_p2_element_order_with_unsupported_element_order_failure() {
+        let mesh = VolumeMesh {
+            // 1 vertex so vertices.is_empty() == false — the P1 guard must
+            // fire before any short-circuit.
+            vertices: vec![0.0_f32, 0.0, 0.0],
+            tet_indices: Vec::new(),
+            element_order: ElementOrderTag::P2,
+            normals: None,
+        };
+        let result = elasticity_morph(&mesh, &[], &crate::MorphOptions::default());
+        match result {
+            Err(ElasticityFailure::UnsupportedElementOrder(order)) => {
+                assert_eq!(order, ElementOrderTag::P2);
+            }
+            other => panic!("expected UnsupportedElementOrder(P2), got: {other:?}"),
+        }
+    }
 }
