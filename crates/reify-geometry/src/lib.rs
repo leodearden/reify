@@ -148,7 +148,7 @@ mod tests {
         };
         let handle = planner.execute(&op).expect("execute should succeed");
         assert_eq!(handle.id, GeometryHandleId(1));
-        assert_eq!(handle.repr, BRepKind::Solid);
+        assert_eq!(handle.repr, Some(BRepKind::Solid));
     }
 
     #[test]
@@ -327,6 +327,6 @@ mod tests {
             .execute(&op)
             .expect("execute through trait object should succeed");
         assert_eq!(handle.id, GeometryHandleId(1));
-        assert_eq!(handle.repr, BRepKind::Solid);
+        assert_eq!(handle.repr, Some(BRepKind::Solid));
     }
 }

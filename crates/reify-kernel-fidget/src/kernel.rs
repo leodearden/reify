@@ -85,15 +85,18 @@ impl FidgetKernel {
     }
 
     /// Insert a Tree against a fresh id and return the corresponding
-    /// [`GeometryHandle`] with `BRepKind::Solid` repr (the closest
-    /// fine-grained classifier for "implicit-surface-defined solid";
-    /// see plan.json design decisions).
+    /// [`GeometryHandle`].
+    ///
+    /// Temporarily retains `Some(BRepKind::Solid)` as a wave-1 intermediate
+    /// state (task 3179 step-2). Wave 2 (step-4) will flip this to `None`
+    /// once the RED test `fidget_kernel_handle_repr_is_none_for_non_brep_kernel`
+    /// is in place to drive the flip.
     fn insert_tree(&mut self, tree: Tree) -> GeometryHandle {
         let id = self.allocate_id();
         self.trees.insert(id, tree);
         GeometryHandle {
             id,
-            repr: BRepKind::Solid,
+            repr: Some(BRepKind::Solid),
         }
     }
 
@@ -371,9 +374,9 @@ mod tests {
     }
 
     /// Pins the contract that `execute(GeometryOp::Sphere { radius })`
-    /// returns a fresh handle with `BRepKind::Solid` (the closest
-    /// fine-grained classifier for "implicit-surface-defined solid"; see
-    /// design decision in plan).
+    /// returns a fresh handle with `Some(BRepKind::Solid)` (wave-1
+    /// intermediate; task 3179 step-4 will update this to `None` once the
+    /// wave-2 RED test drives the Fidget flip).
     #[test]
     fn fidget_kernel_execute_sphere_returns_handle_with_solid_repr() {
         let mut kernel = FidgetKernel::new();
@@ -381,7 +384,7 @@ mod tests {
             radius: Value::Real(1.0),
         });
         let handle = result.expect("Sphere execution must succeed on FidgetKernel");
-        assert_eq!(handle.repr, BRepKind::Solid);
+        assert_eq!(handle.repr, Some(BRepKind::Solid));
         assert_ne!(
             handle.id,
             GeometryHandleId::INVALID,
@@ -401,7 +404,7 @@ mod tests {
             depth: Value::Real(2.0),
         });
         let handle = result.expect("Box execution must succeed on FidgetKernel");
-        assert_eq!(handle.repr, BRepKind::Solid);
+        assert_eq!(handle.repr, Some(BRepKind::Solid));
         assert_ne!(handle.id, GeometryHandleId::INVALID);
     }
 
@@ -427,7 +430,7 @@ mod tests {
         let union = kernel
             .execute(&GeometryOp::Union { left, right })
             .expect("Union must succeed on FidgetKernel");
-        assert_eq!(union.repr, BRepKind::Solid);
+        assert_eq!(union.repr, Some(BRepKind::Solid));
         assert_ne!(union.id, GeometryHandleId::INVALID);
         assert_ne!(union.id, left);
         assert_ne!(union.id, right);
@@ -440,7 +443,7 @@ mod tests {
         let diff = kernel
             .execute(&GeometryOp::Difference { left, right })
             .expect("Difference must succeed on FidgetKernel");
-        assert_eq!(diff.repr, BRepKind::Solid);
+        assert_eq!(diff.repr, Some(BRepKind::Solid));
         assert_ne!(diff.id, GeometryHandleId::INVALID);
         assert_ne!(diff.id, left);
         assert_ne!(diff.id, right);
@@ -453,7 +456,7 @@ mod tests {
         let inter = kernel
             .execute(&GeometryOp::Intersection { left, right })
             .expect("Intersection must succeed on FidgetKernel");
-        assert_eq!(inter.repr, BRepKind::Solid);
+        assert_eq!(inter.repr, Some(BRepKind::Solid));
         assert_ne!(inter.id, GeometryHandleId::INVALID);
         assert_ne!(inter.id, left);
         assert_ne!(inter.id, right);

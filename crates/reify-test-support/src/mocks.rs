@@ -1231,8 +1231,8 @@ impl GeometryKernel for MockGeometryKernel {
             | GeometryOp::Helix { .. }
             | GeometryOp::InterpCurve { .. }
             | GeometryOp::BezierCurve { .. }
-            | GeometryOp::NurbsCurve { .. } => BRepKind::Wire,
-            _ => BRepKind::Solid,
+            | GeometryOp::NurbsCurve { .. } => Some(BRepKind::Wire),
+            _ => Some(BRepKind::Solid),
         };
 
         Ok(GeometryHandle { id, repr })

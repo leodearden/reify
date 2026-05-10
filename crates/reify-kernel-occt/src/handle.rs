@@ -1315,7 +1315,7 @@ mod tests {
         };
         let result = handle.execute(&op).unwrap();
         assert_eq!(result.id, GeometryHandleId(1));
-        assert_eq!(result.repr, BRepKind::Solid);
+        assert_eq!(result.repr, Some(BRepKind::Solid));
     }
 
     #[test]
@@ -1667,7 +1667,7 @@ mod tests {
         };
         let result = handle.execute_async(&op).await.unwrap();
         assert_eq!(result.id, GeometryHandleId(1));
-        assert_eq!(result.repr, BRepKind::Solid);
+        assert_eq!(result.repr, Some(BRepKind::Solid));
     }
 
     #[tokio::test]

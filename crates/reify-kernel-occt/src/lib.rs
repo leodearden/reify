@@ -559,6 +559,11 @@ impl OcctKernel {
     }
 
     /// Store a shape with an explicit `BRepKind`.
+    ///
+    /// `repr` is wrapped in `Some(...)` on the returned [`GeometryHandle`] —
+    /// OCCT is a genuine B-rep kernel so sub-shape classification is always
+    /// meaningful. The persistent `reprs` map stores the bare [`BRepKind`]
+    /// for `repr_of(id)` lookups (warm-state round-trips).
     fn store_with_repr(
         &mut self,
         shape: cxx::UniquePtr<ffi::ffi::OcctShape>,
@@ -570,7 +575,7 @@ impl OcctKernel {
         self.reprs.insert(id, repr);
         GeometryHandle {
             id: GeometryHandleId(id),
-            repr,
+            repr: Some(repr),
         }
     }
 

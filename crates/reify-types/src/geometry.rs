@@ -34,7 +34,16 @@ impl GeometryHandleId {
 #[derive(Debug, Clone)]
 pub struct GeometryHandle {
     pub id: GeometryHandleId,
-    pub repr: BRepKind,
+    /// B-rep sub-shape classification for this handle.
+    ///
+    /// `Some(BRepKind::*)` for B-rep kernels (OCCT / OpenCASCADE) where
+    /// sub-shape classification is meaningful (Solid, Shell, Wire, Compound,
+    /// Edge, Face). `None` for non-B-rep kernels (Mesh/Sdf/Voxel/VolumeMesh
+    /// families per [`ReprKind`]) where no B-rep sub-shape exists.
+    ///
+    /// Use [`ReprKind`] for the coarse kernel-family classifier; `repr` is
+    /// only populated when the kernel is a genuine B-rep kernel (OCCT).
+    pub repr: Option<BRepKind>,
 }
 
 /// B-rep sub-shape classifier for geometry handles managed by the OCCT kernel.
@@ -3460,7 +3469,7 @@ mod tests {
                 self.next_id += 1;
                 Ok(GeometryHandle {
                     id: GeometryHandleId(id),
-                    repr: BRepKind::Solid,
+                    repr: Some(BRepKind::Solid),
                 })
             }
 
@@ -3873,7 +3882,7 @@ mod tests {
                 self.next_id += 1;
                 Ok(GeometryHandle {
                     id: GeometryHandleId(id),
-                    repr: BRepKind::Solid,
+                    repr: Some(BRepKind::Solid),
                 })
             }
 

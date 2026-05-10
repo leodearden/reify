@@ -38,7 +38,7 @@ use std::collections::HashMap;
 
 use manifold3d::Manifold;
 use reify_types::{
-    BRepKind, ExportError, ExportFormat, FeatureId, GeometryError, GeometryHandle,
+    ExportError, ExportFormat, FeatureId, GeometryError, GeometryHandle,
     GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook,
     KernelAttributeOutcome, Mesh, QueryError, TessError, TopologyAttributeTable, Value,
 };
@@ -80,18 +80,18 @@ impl ManifoldKernel {
 
     /// Store a `Manifold` and return its newly-allocated handle.
     ///
-    /// `repr` is fixed to [`BRepKind::Solid`] because manifold3d's
-    /// `Manifold` represents a coherent solid mesh (the type is named after
-    /// the manifold property — closed orientable surfaces). There is no
-    /// `BRepKind::Mesh` variant; `Solid` is the closest semantic match for
-    /// what manifold owns.
+    /// `repr` is `None`: Manifold's `Manifold` belongs to the
+    /// [`ReprKind::Mesh`] family — there is no meaningful B-rep sub-shape
+    /// classification for a mesh kernel, so `repr` carries `None` per task
+    /// 3179's architectural decision (option (b)). See also task 3093 review
+    /// esc-3093-33, which first identified the semantic abuse.
     fn store(&mut self, manifold: Manifold) -> GeometryHandle {
         let id = self.next_id;
         self.next_id += 1;
         self.shapes.insert(id, manifold);
         GeometryHandle {
             id: GeometryHandleId(id),
-            repr: BRepKind::Solid,
+            repr: None,
         }
     }
 
@@ -393,10 +393,9 @@ mod tests {
     /// error. Step-2 makes both true.
     ///
     /// Match-on-Ok-with-id rather than `assert_eq!` because `GeometryError`
-    /// does not derive `PartialEq`. We don't pin the `repr` field literal
-    /// (the field type is `BRepKind`, which has no `Mesh` variant — manifold
-    /// meshes are stored under whichever `BRepKind` the impl assigns; the
-    /// structural shape `Ok(GeometryHandle { .. })` is what this test pins).
+    /// does not derive `PartialEq`. The `repr: None` contract is pinned
+    /// separately by `manifold_kernel_handle_repr_is_none_for_non_brep_kernel`;
+    /// this test only pins the structural `Ok(GeometryHandle { .. })` shape.
     #[cfg(feature = "test-fixtures")]
     #[test]
     fn union_of_two_stored_cubes_returns_ok_handle() {
