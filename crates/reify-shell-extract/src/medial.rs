@@ -362,7 +362,7 @@ pub fn compute_medial_mask(
 
     // Parallel outer (i-axis) loop.
     //
-    // Determinism contract (mirrors global.rs:191-228):
+    // Determinism contract (mirrors crates/reify-solver-elastic/src/assembly/global.rs:191-228):
     // (a) `i_indices.chunks(chunk_size)` partitions indices in stable
     //     ascending order (chunks() is a stable slice partition);
     // (b) threads spawn in chunk-iteration order, so handle slot `t`
