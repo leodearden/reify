@@ -21,8 +21,9 @@ use crate::primitive_attribute_seed::seed_primitive_attributes_for_handle;
 use crate::realization_cache::RealizationCache;
 use crate::sweep_classifier::{SweptKindTable, classify_swept_body};
 use crate::topology_attribute_propagation::{
-    detect_local_index_reassignment_diagnostics, populate_extrude_attributes,
-    populate_loft_attributes, populate_revolve_attributes, populate_sweep_attributes,
+    LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M, detect_local_index_reassignment_diagnostics,
+    populate_extrude_attributes, populate_loft_attributes, populate_revolve_attributes,
+    populate_sweep_attributes,
 };
 use crate::{BuildResult, Engine, TessellateResult};
 
@@ -1779,6 +1780,17 @@ impl Engine {
                     .collect();
             if !realization_attrs.is_empty() {
                 let mut centroids: HashMap<GeometryHandleId, [f64; 3]> = HashMap::new();
+                // Accumulate centroid-query / parse failures and emit ONE
+                // summary warning per (realization, error-class) pair. A
+                // wedged kernel can otherwise dump dozens of identical
+                // diagnostics into the user-facing stream — auxiliary
+                // metadata storms degrade UX more than missing fragility
+                // signal does. We retain the first error message verbatim
+                // for diagnosability.
+                let mut query_fail_count: usize = 0;
+                let mut query_fail_first: Option<String> = None;
+                let mut parse_fail_count: usize = 0;
+                let mut parse_fail_first: Option<String> = None;
                 for (handle_id, _) in &realization_attrs {
                     match kernel.query(&GeometryQuery::Centroid(*handle_id)) {
                         Ok(value) => match crate::topology_selectors::parse_xyz_value(
@@ -1788,19 +1800,41 @@ impl Engine {
                             Ok(xyz) => {
                                 centroids.insert(*handle_id, xyz);
                             }
-                            Err(e) => diagnostics.push(Diagnostic::warning(format!(
-                                "topology-attribute centroid parse failed for {realization_id}: {e}"
-                            ))),
+                            Err(e) => {
+                                parse_fail_count += 1;
+                                if parse_fail_first.is_none() {
+                                    parse_fail_first = Some(e.to_string());
+                                }
+                            }
                         },
-                        Err(e) => diagnostics.push(Diagnostic::warning(format!(
-                            "topology-attribute centroid query failed for {realization_id}: {e}"
-                        ))),
+                        Err(e) => {
+                            query_fail_count += 1;
+                            if query_fail_first.is_none() {
+                                query_fail_first = Some(e.to_string());
+                            }
+                        }
                     }
+                }
+                if query_fail_count > 0 {
+                    let first =
+                        query_fail_first.unwrap_or_else(|| "<no message>".to_string());
+                    diagnostics.push(Diagnostic::warning(format!(
+                        "topology-attribute centroid query failed for {query_fail_count} \
+                         handle(s) in {realization_id} (first: {first})"
+                    )));
+                }
+                if parse_fail_count > 0 {
+                    let first =
+                        parse_fail_first.unwrap_or_else(|| "<no message>".to_string());
+                    diagnostics.push(Diagnostic::warning(format!(
+                        "topology-attribute centroid parse failed for {parse_fail_count} \
+                         handle(s) in {realization_id} (first: {first})"
+                    )));
                 }
                 detect_local_index_reassignment_diagnostics(
                     &realization_attrs,
                     &centroids,
-                    1e-9,
+                    LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M,
                     realization_span,
                     diagnostics,
                 );

@@ -32,8 +32,9 @@
 use std::collections::{HashMap, HashSet};
 
 use reify_eval::{
-    AttributeQuery, AttributeResolution, detect_local_index_reassignment_diagnostics,
-    propagate_attributes_via_brepalgoapi_history, resolve_unique_by_attribute,
+    AttributeQuery, AttributeResolution, LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M,
+    detect_local_index_reassignment_diagnostics, propagate_attributes_via_brepalgoapi_history,
+    resolve_unique_by_attribute,
 };
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
 use reify_types::{
@@ -1014,7 +1015,7 @@ fn local_index_reassignment_diagnostic_fires_for_geometrically_tied_faces() {
     detect_local_index_reassignment_diagnostics(
         &[(h0, &attr0), (h1, &attr1)],
         &centroids,
-        1e-9,
+        LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M,
         selector_span,
         &mut diagnostics,
     );

@@ -891,8 +891,9 @@ fn write_loft_face_generated_attributes(
 ///   `seed_primitive_attributes_for_handle` and `populate_attribute_history`.
 /// - `tol_m`: tolerance in meters. Pairs whose squared centroid distance
 ///   `<= tol_m * tol_m` are considered geometrically tied. Engine call site
-///   uses a kernel-epsilon-tight `1e-9` (1 nm) sentinel; per-realization
-///   tolerance threading is deferred to a follow-up task.
+///   uses [`LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M`] (a kernel-epsilon-tight
+///   1 nm / 1e-9 m sentinel); per-realization tolerance threading is
+///   deferred to a follow-up task.
 /// - `selector_span`: span attached to the primary diagnostic label.
 ///   Engine call site uses the realization's source span.
 /// - `diagnostics`: appended in place; the helper never clears or reorders
@@ -929,6 +930,47 @@ fn write_loft_face_generated_attributes(
 /// This helper does NOT regress the realization to Failed under any condition:
 /// it only appends Warnings. Auxiliary metadata MUST NOT regress to Failed —
 /// the realization is primary, attribute fragility detection is supplementary.
+/// Kernel-epsilon-tight tolerance (1 nm, 1e-9 m) for the construction-time
+/// local-index-reassignment fragility detector.
+///
+/// Squared-distance comparison vs `LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M *
+/// LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M`: pairs of `(feature_id, role)`-peer
+/// centroids closer than this are flagged as geometrically tied. Real CAD
+/// designs almost never have features tied to that precision, so false
+/// positives are minimal.
+///
+/// **Per-realization tolerance threading is deferred** to a follow-up task
+/// (see #2654 design decisions); when that lands, this constant becomes the
+/// default and the realization-specific tolerance overrides it at the call
+/// site. Keeping it as a single named constant means that threading change
+/// is one-line, not a 7-caller mechanical rewrite.
+pub const LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M: f64 = 1e-9;
+
+/// Stable sort key for `Role` that does NOT depend on `Debug` output.
+///
+/// The Rust API guidelines mark `Debug` as "not stable for serialization",
+/// and this module uses the sort key only to keep diagnostic emission order
+/// deterministic — a downstream rename / shape-change of `Role` must not
+/// silently reorder warnings. Each variant gets an explicit u32 here; new
+/// variants must be appended (assigning a fresh discriminant) rather than
+/// inserted between existing ones.
+fn role_sort_discriminant(role: &Role) -> u32 {
+    match role {
+        Role::Cap(CapKind::Top) => 0,
+        Role::Cap(CapKind::Bottom) => 1,
+        Role::Cap(CapKind::Start) => 2,
+        Role::Cap(CapKind::End) => 3,
+        Role::Side => 4,
+        Role::NewEdge => 5,
+        Role::RevolvedFace => 6,
+        Role::AxisFace => 7,
+        Role::SweptFace => 8,
+        Role::LoftedFace => 9,
+        Role::MidSurfaceFace => 10,
+        Role::MidSurfaceEdge => 11,
+    }
+}
+
 pub fn detect_local_index_reassignment_diagnostics(
     handles_with_attrs: &[(GeometryHandleId, &TopologyAttribute)],
     centroids: &HashMap<GeometryHandleId, [f64; 3]>,
@@ -938,14 +980,16 @@ pub fn detect_local_index_reassignment_diagnostics(
 ) {
     // Group entries by (feature_id, role). Skip post-split clusters
     // (mod_history non-empty) per PRD line 72 — those are tracked by
-    // TopologyAttributeAmbiguousAfterSplit.
-    let mut groups: HashMap<(FeatureId, Role), Vec<(GeometryHandleId, u32)>> = HashMap::new();
+    // TopologyAttributeAmbiguousAfterSplit. Keys borrow `feature_id` from
+    // the input slice (whose lifetime outlives this function) to avoid a
+    // FeatureId clone per entry.
+    let mut groups: HashMap<(&FeatureId, Role), Vec<(GeometryHandleId, u32)>> = HashMap::new();
     for (handle_id, attr) in handles_with_attrs.iter() {
         if !attr.mod_history.is_empty() {
             continue;
         }
         groups
-            .entry((attr.feature_id.clone(), attr.role))
+            .entry((&attr.feature_id, attr.role))
             .or_default()
             .push((*handle_id, attr.local_index));
     }
@@ -956,13 +1000,13 @@ pub fn detect_local_index_reassignment_diagnostics(
     // iteration order is unspecified — collect keys, sort, then walk. This
     // keeps emission order stable across runs for downstream test assertions
     // and human-readable diagnostic output. Sort key uses Display for
-    // FeatureId (its only string accessor) and Debug for Role (which has no
-    // canonical string form).
-    let mut group_keys: Vec<&(FeatureId, Role)> = groups.keys().collect();
+    // FeatureId (its canonical string form) and an explicit discriminant
+    // function for Role to avoid coupling the sort to `Debug` output.
+    let mut group_keys: Vec<&(&FeatureId, Role)> = groups.keys().collect();
     group_keys.sort_by(|a, b| {
         a.0.to_string()
             .cmp(&b.0.to_string())
-            .then_with(|| format!("{:?}", a.1).cmp(&format!("{:?}", b.1)))
+            .then_with(|| role_sort_discriminant(&a.1).cmp(&role_sort_discriminant(&b.1)))
     });
 
     for key in group_keys {
@@ -980,7 +1024,6 @@ pub fn detect_local_index_reassignment_diagnostics(
         // per group). Handles absent from the centroid map are silently
         // skipped — kernel-query failure at the call site is reported there
         // and the helper just lacks data for that handle.
-        let mut emitted = false;
         'outer: for i in 0..sorted.len() {
             let (h_i, idx_i) = sorted[i];
             let Some(c_i) = centroids.get(&h_i) else {
@@ -1006,12 +1049,10 @@ pub fn detect_local_index_reassignment_diagnostics(
                         .with_code(DiagnosticCode::TopologyAttributeLocalIndexReassigned)
                         .with_label(DiagnosticLabel::new(selector_span, "selector call")),
                     );
-                    emitted = true;
                     break 'outer;
                 }
             }
         }
-        let _ = emitted; // kept for future verbose-trace hooks
     }
 }
 
@@ -2817,7 +2858,9 @@ mod tests {
             FeatureId, GeometryHandleId, ModEntry, Role, SourceSpan, TopologyAttribute,
         };
 
-        use super::super::detect_local_index_reassignment_diagnostics;
+        use super::super::{
+            LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M, detect_local_index_reassignment_diagnostics,
+        };
 
         /// Synthetic span used by every detect_* test — pinning a stable
         /// (start, end) pair so message assertions can pattern-match against it.
@@ -2864,7 +2907,7 @@ mod tests {
             detect_local_index_reassignment_diagnostics(
                 &[],
                 &centroids,
-                1e-9,
+                LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M,
                 synthetic_span(),
                 &mut diagnostics,
             );
@@ -2881,7 +2924,7 @@ mod tests {
             detect_local_index_reassignment_diagnostics(
                 &[(h, &attr)],
                 &centroids,
-                1e-9,
+                LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M,
                 synthetic_span(),
                 &mut diagnostics,
             );
@@ -2904,7 +2947,7 @@ mod tests {
             detect_local_index_reassignment_diagnostics(
                 &[(h0, &attr0), (h1, &attr1)],
                 &centroids,
-                1e-9,
+                LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M,
                 synthetic_span(),
                 &mut diagnostics,
             );
@@ -2962,7 +3005,7 @@ mod tests {
             detect_local_index_reassignment_diagnostics(
                 &[(h0, &attr0), (h1, &attr1)],
                 &centroids,
-                1e-9,
+                LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M,
                 synthetic_span(),
                 &mut diagnostics,
             );
@@ -2992,7 +3035,7 @@ mod tests {
             detect_local_index_reassignment_diagnostics(
                 &[(h0, &attr0), (h1, &attr1)],
                 &centroids,
-                1e-9,
+                LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M,
                 synthetic_span(),
                 &mut diagnostics,
             );
@@ -3023,7 +3066,7 @@ mod tests {
             detect_local_index_reassignment_diagnostics(
                 &[(h0, &attr0), (h1, &attr1), (h2, &attr2)],
                 &centroids,
-                1e-9,
+                LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M,
                 synthetic_span(),
                 &mut diagnostics,
             );
