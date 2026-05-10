@@ -59,9 +59,9 @@ pub fn populate_mid_surface_attributes(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::geometry::FeatureId;
+    use reify_types::geometry::{FeatureId, Role};
     use crate::mid_surface::MidSurfaceMesh;
-    use crate::segmentation::SegmentationResult;
+    use crate::segmentation::{RegionClassification, RegionInfo, SegmentationResult};
 
     #[test]
     fn populate_mid_surface_attributes_returns_empty_records_when_segmentation_has_no_regions() {
@@ -86,5 +86,59 @@ mod tests {
                 && attrs.edge_region_pairs.is_empty(),
             "empty segmentation must yield empty face/edge records"
         );
+    }
+
+    #[test]
+    fn populate_emits_one_face_record_per_region_with_derived_feature_id_role_and_local_index_eq_region_label(
+    ) {
+        let mesh = MidSurfaceMesh {
+            vertices: vec![],
+            triangles: vec![],
+            thickness: vec![],
+        };
+        let segmentation = SegmentationResult {
+            regions: vec![
+                RegionInfo {
+                    label: 0,
+                    voxels: vec![],
+                    mean_thickness: 1.0,
+                    extent: 10.0,
+                    thickness_extent_ratio: 0.1,
+                    classification: RegionClassification::ShellEligible,
+                },
+                RegionInfo {
+                    label: 1,
+                    voxels: vec![],
+                    mean_thickness: 0.5,
+                    extent: 4.0,
+                    thickness_extent_ratio: 0.125,
+                    classification: RegionClassification::ShellEligible,
+                },
+            ],
+            vertex_labels: vec![],
+            triangle_labels: vec![],
+        };
+        let parent = FeatureId::new("Bracket#realization[0]");
+        let attrs = populate_mid_surface_attributes(&parent, &mesh, &segmentation);
+
+        let derived = FeatureId::new("Bracket#realization[0]/mid_surface");
+        assert_eq!(attrs.face_records.len(), 2);
+        for i in 0..2 {
+            let rec = &attrs.face_records[i];
+            assert_eq!(rec.feature_id, derived, "face_records[{i}].feature_id");
+            assert_eq!(rec.role, Role::MidSurfaceFace, "face_records[{i}].role");
+            assert_eq!(
+                rec.local_index, segmentation.regions[i].label,
+                "face_records[{i}].local_index must equal region.label"
+            );
+            assert!(
+                rec.user_label.is_none(),
+                "face_records[{i}].user_label must be None"
+            );
+            assert!(
+                rec.mod_history.is_empty(),
+                "face_records[{i}].mod_history must be empty"
+            );
+        }
     }
 }
