@@ -610,6 +610,33 @@ structure S {
     );
 }
 
+// ── Step 1 (task 3377): function context allow-list ─────────────────────────
+
+/// `@optimized("kernel::foo")` on a function declaration must be accepted by
+/// the validator — no "@optimized is not valid on function" warning.
+///
+/// RED: fails before `"function"` is added to the OPTIMIZED allow-list in
+/// `annotations.rs` because `validate_annotations` currently emits exactly that
+/// warning for `context == "function"`.
+#[test]
+fn optimized_annotation_on_function_is_accepted() {
+    let source = r#"@optimized("kernel::foo") fn f(x: Real) -> Real { x }"#;
+    let module = compile_source(source);
+
+    let errors = error_diags(&module.diagnostics);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    let bad_optimized_warnings: Vec<_> = warning_diags(&module.diagnostics)
+        .into_iter()
+        .filter(|d| d.message.contains("@optimized is not valid"))
+        .collect();
+    assert!(
+        bad_optimized_warnings.is_empty(),
+        "@optimized on function should not warn; got: {:?}",
+        bad_optimized_warnings
+    );
+}
+
 /// A valid single `@optimized("target")` must NOT trip any of the new
 /// malformed-annotation warnings.
 #[test]
