@@ -3002,5 +3002,43 @@ mod tests {
                 "expected no diagnostic — well-separated centroids pose no fragility, got: {diagnostics:?}"
             );
         }
+
+        #[test]
+        fn detect_local_index_reassignment_emits_at_most_one_diagnostic_per_role_group() {
+            // Three entries in the same (feature_id, role) group with
+            // local_index ∈ {0, 1, 2}, all sharing the SAME centroid. All
+            // three pairs (0,1), (0,2), (1,2) would trigger detection — but
+            // the helper must emit exactly ONE diagnostic per group, naming
+            // the smallest tied pair (indices 0 and 1).
+            let attr0 = make_attr("F#realization[0]", Role::Side, 0);
+            let attr1 = make_attr("F#realization[0]", Role::Side, 1);
+            let attr2 = make_attr("F#realization[0]", Role::Side, 2);
+            let h0 = GeometryHandleId(1);
+            let h1 = GeometryHandleId(2);
+            let h2 = GeometryHandleId(3);
+            let mut centroids: HashMap<GeometryHandleId, [f64; 3]> = HashMap::new();
+            centroids.insert(h0, [0.0, 0.0, 0.0]);
+            centroids.insert(h1, [0.0, 0.0, 0.0]);
+            centroids.insert(h2, [0.0, 0.0, 0.0]);
+            let mut diagnostics = Vec::new();
+            detect_local_index_reassignment_diagnostics(
+                &[(h0, &attr0), (h1, &attr1), (h2, &attr2)],
+                &centroids,
+                1e-9,
+                synthetic_span(),
+                &mut diagnostics,
+            );
+            assert_eq!(
+                diagnostics.len(),
+                1,
+                "expected exactly one diagnostic per role group, got: {diagnostics:?}"
+            );
+            let diag = &diagnostics[0];
+            assert!(
+                diag.message.contains("local_index assignments at indices 0 and 1"),
+                "expected the smallest tied pair (0 and 1) to be named, got: {}",
+                diag.message
+            );
+        }
     }
 }
