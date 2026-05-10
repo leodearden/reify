@@ -11,7 +11,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import type { PermissionServer } from '../permission-server.js';
+import type { PermissionServer, PermissionServerTestHooks } from '../permission-server.js';
 
 // --- Module mocks (hoisted by vitest) ---
 
@@ -53,6 +53,7 @@ function makePermissionServerMock(): PermissionServer & {
   decide: ReturnType<typeof vi.fn>;
   setRemembered: ReturnType<typeof vi.fn>;
   cancelAll: ReturnType<typeof vi.fn>;
+  readonly __testHooks: PermissionServerTestHooks;
 } {
   return {
     start: vi.fn().mockResolvedValue(undefined),
@@ -62,6 +63,9 @@ function makePermissionServerMock(): PermissionServer & {
     decide: vi.fn(),
     setRemembered: vi.fn(),
     cancelAll: vi.fn(),
+    __testHooks: {
+      awaitPending: vi.fn().mockResolvedValue(undefined),
+    },
   };
 }
 

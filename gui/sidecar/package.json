@@ -10,7 +10,8 @@
     "build:sidecar": "bash build-sidecar.sh",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "typecheck:test": "tsc --noEmit -p tsconfig.test.json"
   },
   "dependencies": {
     "@anthropic-ai/claude-code": "^2.1.0",
