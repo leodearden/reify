@@ -4171,6 +4171,29 @@ mod tests {
     }
 
     #[test]
+    fn topology_attribute_table_iter_yields_all_recorded_entries() {
+        let mut table = TopologyAttributeTable::default();
+        let attr0 = make_attr("F#realization[0]", 0);
+        let attr1 = make_attr("F#realization[0]", 1);
+        let attr2 = make_attr("G#realization[0]", 0);
+        table.record(GeometryHandleId(1), attr0.clone());
+        table.record(GeometryHandleId(2), attr1.clone());
+        table.record(GeometryHandleId(3), attr2.clone());
+
+        // iter() must yield exactly len() entries.
+        assert_eq!(table.iter().count(), 3);
+
+        // Collect into a HashMap so membership is order-agnostic
+        // (TopologyAttributeTable iteration order is unspecified — HashMap-backed).
+        let collected: std::collections::HashMap<GeometryHandleId, &TopologyAttribute> =
+            table.iter().collect();
+        assert_eq!(collected.len(), 3);
+        assert_eq!(collected.get(&GeometryHandleId(1)), Some(&&attr0));
+        assert_eq!(collected.get(&GeometryHandleId(2)), Some(&&attr1));
+        assert_eq!(collected.get(&GeometryHandleId(3)), Some(&&attr2));
+    }
+
+    #[test]
     fn boolean_op_parents_binary_constructor_and_accessors() {
         let lf: Vec<GeometryHandleId> = vec![GeometryHandleId(1), GeometryHandleId(2)];
         let rf: Vec<GeometryHandleId> = vec![GeometryHandleId(3), GeometryHandleId(4)];
