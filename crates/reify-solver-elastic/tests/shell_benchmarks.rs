@@ -1142,29 +1142,27 @@ fn twisted_beam_tip_out_of_plane_load_smoke_test_displacement_is_finite_and_sign
 ///
 /// A naive Reissner-Mindlin element would show ratio → 0 (collapsed), not 4.73.
 ///
-/// # What regressions this test catches
+/// # Regression bounds (pure, ~1.5× safety) — esc-3034-168
 ///
-/// Any change to `shell_element_stiffness` that removes or degrades the MITC
-/// assumed-strain projection (e.g., accidentally using Kirchhoff-Love strains,
-/// dropping the tying-point interpolation, or reverting to full-integration
-/// RM) would be caught here because n(t=0.01) would collapse below 1.0.
-/// Floor=1.0 provides a 4× safety margin below the observed minimum (4.00).
-/// Ceiling=60.0 provides a 3.2× margin above the observed maximum (18.91) and
-/// catches NaN/runaway regressions. Ratio floor=1.0 requires the thin-to-thick
-/// normalized response ratio to remain positive (observed 4.73).
+/// The bounds below are **pure regression constants** calibrated against
+/// today's observed n(t) values (see table above), not against any analytical
+/// reference. Each bound provides a ~1.5× safety margin: tight enough to catch
+/// a ≥1.5× regression while tolerating minor mesh/solver drift.
+///
+/// | Bound        | Value | Observed    | Margin |
+/// |--------------|-------|-------------|--------|
+/// | n floor      |  2.5  | min =  4.00 | 1.6×   |
+/// | n ceiling    | 30.0  | max = 18.91 | 1.59×  |
+/// | ratio floor  |  3.0  | 4.73        | 1.58×  |
+///
+/// The membrane-limit framing (floor = lower bound of membrane-only response)
+/// is dropped: the observed minimum (4.00) is well above any membrane-only
+/// response, so that physical interpretation never matched the assertion. The
+/// old floor=1.0 allowed a 3× regression to slip through undetected; floor=2.5
+/// closes that gap. Cross-reference: reviewer escalation `esc-3034-168`.
 ///
 /// If a future MITC3+ bubble enrichment is added, n(t) values will INCREASE
 /// toward the analytical reference — these bounds can then be tightened.
-///
-/// # Membrane-limit floor's physical meaning
-///
-/// In the pure-membrane limit (no bending stiffness), the pinched cylinder
-/// responds with u_r ~ P/(E·t) → n(t) ≈ 1 (constant). The floor of 1.0
-/// corresponds to the lower bound expected from a membrane-only shell that
-/// is NOT locking. A locking element suppresses even this membrane response,
-/// producing n < 1.0 (and eventually n → 0 for severe locking). The floor
-/// is a proxy for "the element is at least as stiff as a membrane, which is
-/// a necessary condition for the assumed-strain projection to be working."
 #[test]
 fn mitc3_thin_shell_pinched_cylinder_does_not_lock_under_decreasing_thickness() {
     // Dimensionless cylinder octant (R=1, L=2 → L/2=1 half-length).
@@ -1206,48 +1204,45 @@ fn mitc3_thin_shell_pinched_cylinder_does_not_lock_under_decreasing_thickness() 
         n_vals[idx] = u_r * mat_e * t / P; // normalized dimensionless response
     }
 
-    // ── Assertions (step-12 refined constants, 2-3× safety margin) ──────────────
+    // ── Assertions (pure regression bounds, ~1.5× safety margin) ────────────────
     //
-    // Observed values (4×4 octant mesh, R=1, L=2, E=1, ν=0.3, P=1):
-    //   n(t=1.0)  = 4.00   →  floor=1.0  gives 4×  margin below observed min
+    // Bounds calibrated against observed values (4×4 octant, R=1, L=2, E=1, ν=0.3, P=1):
+    //   n(t=1.0)  = 4.00   →  floor=2.5  gives 1.6× margin below observed min
     //   n(t=0.1)  = 14.68
-    //   n(t=0.01) = 18.91  →  ceiling=60 gives 3.2× margin above observed max
-    //   ratio     = 4.73   →  ratio_floor=1.0 gives 4.7× margin
+    //   n(t=0.01) = 18.91  →  ceiling=30 gives 1.59× margin above observed max
+    //   ratio     = 4.73   →  ratio_floor=3.0 gives 1.58× margin
     //
-    // Floor=1.0 corresponds to the membrane-limit lower bound: see doc-comment
-    // for the physical interpretation of n < 1.0 as evidence of locking.
-    //
-    // A naive Reissner-Mindlin regression would collapse n(t=0.01) by 10+
-    // orders of magnitude below 1.0; the 4× margin leaves ample room for
-    // minor mesh/solver variations without false positives.
+    // These are pure regression pins (not derived from any analytical reference).
+    // See doc-comment section "Regression bounds (pure, ~1.5× safety)" for rationale.
     for (idx, &t) in thicknesses.iter().enumerate() {
         let n = n_vals[idx];
         assert!(
-            n > 1.0,
-            "locking floor violated at t={t}: n(t)={n:.4e} < floor=1.0 \
-             (observed MITC3 minimum is 4.00 at t=1.0; floor gives 4× margin). \
-             A naive Reissner-Mindlin element collapses n→0 at thin t."
+            n > 2.5,
+            "locking floor violated at t={t}: n(t)={n:.4e} < floor=2.5 \
+             (regression bound: 1.6× below observed MITC3 minimum 4.00 at t=1.0; \
+             esc-3034-168). A naive Reissner-Mindlin element collapses n→0 at thin t."
         );
         assert!(
-            n < 60.0,
-            "locking ceiling violated at t={t}: n(t)={n:.4e} > ceiling=60.0 \
-             (observed MITC3 maximum is 18.91 at t=0.01; ceiling gives 3.2× margin). \
-             Indicates NaN, runaway, or a sign error in the assembly."
+            n < 30.0,
+            "locking ceiling violated at t={t}: n(t)={n:.4e} > ceiling=30.0 \
+             (regression bound: 1.59× above observed MITC3 maximum 18.91 at t=0.01; \
+             esc-3034-168). Indicates NaN, runaway, or a sign error in the assembly."
         );
     }
-    // Ratio assertion: n(thin)/n(thick) must stay above 1.0.
+    // Ratio assertion: n(thin)/n(thick) must stay above 3.0.
     //
     // Physically: MITC3 transitions from membrane-dominated (n≈4 at t=1.0) to
     // bending-dominated (n≈18.9 at t=0.01) response — n INCREASES with thinner
     // shells. A locking element produces n(thin) < n(thick), making ratio < 1.
-    // The observed ratio is 4.73; floor=1.0 gives a 4.7× safety margin.
+    // Observed ratio = 4.73; floor=3.0 is a 1.58× regression bound (esc-3034-168).
     let ratio = n_vals[2] / n_vals[0]; // n(t=0.01) / n(t=1.0)
     assert!(
-        ratio > 1.0,
-        "locking detected: n(0.01)/n(1.0) = {ratio:.4e} < 1.0 \
-         (MITC3 should increase n as shell thins; a ratio < 1 indicates \
-         spurious stiffness blocking the bending-dominated response). \
-         Observed: t=1.0→{:.4e}, t=0.1→{:.4e}, t=0.01→{:.4e} (expected ratio≈4.73)",
+        ratio > 3.0,
+        "locking detected: n(0.01)/n(1.0) = {ratio:.4e} < floor=3.0 \
+         (regression bound: 1.58× below observed ratio 4.73; esc-3034-168). \
+         MITC3 should increase n as shell thins; ratio < 1 indicates spurious \
+         stiffness blocking the bending-dominated response. \
+         Observed: t=1.0→{:.4e}, t=0.1→{:.4e}, t=0.01→{:.4e}",
         n_vals[0], n_vals[1], n_vals[2],
     );
 }
