@@ -213,8 +213,12 @@ pub fn solve_cg(
 /// # Iteration-reduction contract
 ///
 /// For warm starts where `u₀ ≈ u_exact`, CG converges in fewer iterations
-/// than the cold start. Pinned by
-/// `warm_start_with_perturbed_rhs_reduces_iteration_count`.
+/// than the cold start. CG with a near-correct initial guess naturally
+/// converges faster because the seeded residual `r₀ = f − K·u₀` is smaller
+/// than the cold `r₀ = f`, so the convergence threshold is reached sooner.
+/// No additional code is needed beyond the warm-start initialization.
+/// Pinned by `warm_start_with_perturbed_rhs_reduces_iteration_count` as
+/// the regression guard.
 ///
 /// # Panics
 ///
