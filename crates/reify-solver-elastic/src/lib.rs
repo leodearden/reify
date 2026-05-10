@@ -246,5 +246,6 @@ pub use result::{StressElement, element_stress_p1, recover_nodal_stress_p1, tet_
 pub use solver::{CgResult, CgSolverOptions, SolverMode, solve_cg};
 pub use progressive::{
     ProgressiveOptions, PartialElasticResult, PassTuning,
-    coarse_pass_tuning, refinement_pass_tuning, near_constraint_boundary,
+    RefinementDemand, TerminationReason, AdvanceDecision,
+    coarse_pass_tuning, refinement_pass_tuning, near_constraint_boundary, should_refine,
 };

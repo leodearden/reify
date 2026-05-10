@@ -157,6 +157,75 @@ pub fn near_constraint_boundary(
     }
 }
 
+/// Demand signal passed by a downstream consumer to [`should_refine`].
+///
+/// Distinguishes "caller wants more accuracy" from "no explicit request".
+/// The auto-refine trigger ([`near_constraint_boundary`]) is checked
+/// independently — both triggers are evaluated in [`should_refine`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RefinementDemand {
+    /// No explicit accuracy request from the caller; only the auto-trigger
+    /// may initiate a further refinement pass.
+    None,
+    /// Caller explicitly requests a more-accurate pass (e.g., user drags
+    /// an accuracy slider or the downstream engine asks for a re-solve).
+    More,
+}
+
+/// Reason why [`should_refine`] terminated the refinement schedule.
+///
+/// Surfaced in `AdvanceDecision::Terminate` so engine integration
+/// (PRD task #16) can emit informative diagnostics without re-deriving
+/// the cause from state.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TerminationReason {
+    /// `current_level >= opts.max_refinements`: refinement budget exhausted.
+    BudgetExhausted,
+    /// Neither [`RefinementDemand::More`] nor the [`near_constraint_boundary`]
+    /// auto-trigger fired; no reason to refine further.
+    NoRefinementRequested,
+}
+
+/// Decision returned by [`should_refine`].
+///
+/// `Continue` carries the [`PassTuning`] for the next refinement level;
+/// `Terminate` carries the [`TerminationReason`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AdvanceDecision {
+    /// Proceed with the next refinement pass at the given tuning.
+    Continue(PassTuning),
+    /// Stop refinement for the given reason.
+    Terminate(TerminationReason),
+}
+
+/// Decide whether to issue another refinement pass.
+///
+/// Decision rule (checked in order):
+/// 1. If `current_level >= opts.max_refinements` → `Terminate(BudgetExhausted)`.
+/// 2. If `demand == More` OR [`near_constraint_boundary`] fires →
+///    `Continue(refinement_pass_tuning(opts, current_level + 1))`.
+/// 3. Otherwise → `Terminate(NoRefinementRequested)`.
+///
+/// The budget check takes priority so callers with `demand == More` cannot
+/// exceed the configured refinement budget.
+///
+/// PRD reference: `docs/prds/v0_3/structural-analysis-fea.md` task #15.
+pub fn should_refine(
+    opts: &ProgressiveOptions,
+    current_level: usize,
+    last_result: &PartialElasticResult,
+    demand: RefinementDemand,
+) -> AdvanceDecision {
+    use AdvanceDecision::*;
+    use TerminationReason::*;
+    if current_level >= opts.max_refinements {
+        return Terminate(BudgetExhausted);
+    }
+    // Remaining branches will be filled in step-16.
+    let _ = (last_result, demand);
+    unreachable!("should_refine: non-budget branches not yet implemented (step-16)")
+}
+
 impl Default for ProgressiveOptions {
     /// Returns a sensible engineering default:
     /// - `target_tolerance`: `1e-3` (representative engineering tolerance in metres)
