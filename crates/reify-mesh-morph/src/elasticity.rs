@@ -143,6 +143,30 @@ mod tests {
         assert!(mesh.normals.is_none());
     }
 
+    // ── Step-5: out-of-range prescribed-position node index ──────────────────
+
+    /// Mirrors `laplacian_smooth_with_node_index_out_of_mesh_vertices_range_*`
+    /// (laplacian.rs:263-278) — same overflow-safe index validation, same
+    /// structured failure shape. The 2-vertex P1 fixture means
+    /// `vertices.len() == 6`; node index 5 → base = 15 ≥ 6 so the bounds
+    /// check fires before any allocation.
+    #[test]
+    fn elasticity_morph_with_node_index_out_of_mesh_vertices_range_returns_invalid_node_index() {
+        let mesh = VolumeMesh {
+            vertices: vec![0.0_f32, 0.0, 0.0, 1.0, 1.0, 1.0],
+            tet_indices: Vec::new(),
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+        let result = elasticity_morph(&mesh, &[(5, [9.0, 9.0, 9.0])], &crate::MorphOptions::default());
+        match result {
+            Err(ElasticityFailure::InvalidNodeIndex(idx)) => {
+                assert_eq!(idx, 5);
+            }
+            other => panic!("expected InvalidNodeIndex(5), got: {other:?}"),
+        }
+    }
+
     // ── Step-3: P2 element order rejection ────────────────────────────────────
 
     /// P2 element order must be rejected with
