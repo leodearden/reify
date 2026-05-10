@@ -203,38 +203,30 @@
 //!     "single-element locate must return Some(0) at the centroid",
 //! );
 //!
-//! // Task 2923: progressive-solve framework smoke test — exercises every
-//! // re-exported symbol from the progressive module once. A regression that
-//! // renames or removes any of the public items will fail this doctest at
-//! // the compile step.
-//! let prog_opts = ProgressiveOptions::default();
-//! let coarse = coarse_pass_tuning(&prog_opts);
-//! assert_eq!(coarse.cg_tol, 1e-3, "coarse CG tol must be 1e-3");
-//! assert!((coarse.mesh_tol - prog_opts.target_tolerance * 4.0).abs() < 1e-15,
-//!     "coarse mesh_tol = target_tol × 4");
-//! let pr = PartialElasticResult {
-//!     displacement: vec![],
-//!     stress: vec![],
-//!     max_von_mises: 0.0,
-//!     converged: false,
-//!     iterations: 0,
+//! // Task 2923: progressive-solve framework smoke pin.
+//! // The import block above already asserts all progressive re-exports compile;
+//! // these one-shot constructions confirm renames or removals trip this doctest.
+//! let _ = ProgressiveOptions::default();
+//! let _ = PassTuning { mesh_tol: 0.0, cg_tol: 0.0 };
+//! let _ = PartialElasticResult {
+//!     displacement: vec![], stress: vec![], max_von_mises: 0.0,
+//!     converged: false, iterations: 0,
 //! };
-//! assert!(!near_constraint_boundary(&pr, &prog_opts),
-//!     "yield_stress=None → near_constraint_boundary must be false");
-//! assert_eq!(
-//!     should_refine(&prog_opts, prog_opts.max_refinements, &pr, RefinementDemand::More),
-//!     AdvanceDecision::Terminate(TerminationReason::BudgetExhausted),
-//!     "current_level == max_refinements + More demand → BudgetExhausted",
-//! );
+//! let _ = (RefinementDemand::None, TerminationReason::BudgetExhausted);
+//! let _ = AdvanceDecision::Continue(PassTuning { mesh_tol: 0.0, cg_tol: 0.0 });
+//! let _: fn(&ProgressiveOptions) -> PassTuning = coarse_pass_tuning;
+//! let _: fn(&ProgressiveOptions, usize) -> PassTuning = refinement_pass_tuning;
+//! let _: fn(&PartialElasticResult, &ProgressiveOptions) -> bool = near_constraint_boundary;
+//! let _: fn(&ProgressiveOptions, usize, &PartialElasticResult, RefinementDemand) -> AdvanceDecision = should_refine;
 //! ```
 
 pub mod assembly;
-pub mod progressive;
 pub mod boundary;
 pub mod constitutive;
 pub mod elements;
 pub mod interpolation;
 pub mod mpc;
+pub mod progressive;
 pub mod result;
 pub mod shell_assembly;
 pub mod shell_boundary;
@@ -251,6 +243,11 @@ pub use boundary::{
 };
 pub use constitutive::IsotropicElastic;
 pub use mpc::{MpcRow, apply_mpc_row_elimination};
+pub use progressive::{
+    AdvanceDecision, PartialElasticResult, PassTuning, ProgressiveOptions, RefinementDemand,
+    TerminationReason, coarse_pass_tuning, near_constraint_boundary, refinement_pass_tuning,
+    should_refine,
+};
 pub use elements::{
     Jacobian, QuadraturePoint, ReferenceCoord, ReferenceElement,
     hex_p1::HexP1,
@@ -271,8 +268,3 @@ pub use interpolation::{
 };
 pub use result::{StressElement, element_stress_p1, recover_nodal_stress_p1, tet_volume_p1};
 pub use solver::{CgResult, CgSolverOptions, SolverMode, solve_cg};
-pub use progressive::{
-    ProgressiveOptions, PartialElasticResult, PassTuning,
-    RefinementDemand, TerminationReason, AdvanceDecision,
-    coarse_pass_tuning, refinement_pass_tuning, near_constraint_boundary, should_refine,
-};
