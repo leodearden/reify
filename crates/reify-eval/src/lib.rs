@@ -80,6 +80,7 @@ pub use primitive_attribute_seed::seed_primitive_attributes;
 pub use realization_cache::RealizationCache;
 pub use test_runner::{TestResult, TestStatus, run_tests};
 pub use topology_attribute_propagation::{
+    LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M, detect_local_index_reassignment_diagnostics,
     populate_extrude_attributes, populate_loft_attributes, populate_revolve_attributes,
     populate_sweep_attributes, propagate_attributes_via_brepalgoapi_history,
 };

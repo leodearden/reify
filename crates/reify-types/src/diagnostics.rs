@@ -411,7 +411,9 @@ pub enum DiagnosticCode {
     /// from a v0.2 attribute-resolver failure during the migration window.
     ///
     /// The split-cluster sub-form (post-split-cluster outcome) has its own typed
-    /// variant: see [`TopologyAttributeAmbiguousAfterSplit`].
+    /// variant: see [`TopologyAttributeAmbiguousAfterSplit`]. The local-index
+    /// reassignment sub-form (ordering-shuffle rebind, no split) likewise has
+    /// its own typed variant: see [`TopologyAttributeLocalIndexReassigned`].
     ///
     /// The PRD-prose mnemonic for this code is `W_TOPOLOGY_ATTRIBUTE_STALE`.
     TopologyAttributeStale,
@@ -436,6 +438,40 @@ pub enum DiagnosticCode {
     ///
     /// The PRD-prose mnemonic for this code is `W_TOPOLOGY_ATTRIBUTE_AMBIGUOUS_AFTER_SPLIT`.
     TopologyAttributeAmbiguousAfterSplit,
+    /// Origin: `crates/reify-eval/src/topology_attribute_propagation.rs::detect_local_index_reassignment_diagnostics`.
+    ///
+    /// **Construction-time fragility detection (interim implementation).** The
+    /// PRD-prose intent (line 72) is "emit when an existing selector's resolved
+    /// topology changes after an edit purely due to ordering shuffle". A strict
+    /// reading of that prose requires a *prior-vs-current* comparison across two
+    /// builds. The current emitter is a forward-looking *risk* detector:
+    /// constructed at populator time, it fires when two `(feature_id, role)`-
+    /// peer entries have geometrically tied centroids within a kernel-epsilon
+    /// tolerance — meaning the kernel's enumeration order is the only thing
+    /// disambiguating their `local_index` assignment, and a future edit could
+    /// shuffle them. So the variant currently warns that resolution **may**
+    /// shuffle under a future edit, not that it **did** shuffle since a prior
+    /// build. Cross-build delta comparison is recorded as a deferred follow-up
+    /// (see task #2654 design decisions); this variant doc-comment will be
+    /// updated when that lands.
+    ///
+    /// Canonical message form (current construction-time emitter):
+    ///   `"topology-attribute selector for (feature '<feature_id>', role '<role>') has geometrically tied local_index assignments at indices <i> and <j>; selector resolution may shuffle after edits"`
+    ///
+    /// Per PRD `docs/prds/v0_2/persistent-naming-v2.md` line 72 ("Diagnostic
+    /// on local_index reassignment"), the system surfaces ordering-shuffle
+    /// rebinds rather than silently re-resolving. Symmetric splits (e.g.
+    /// fillet of a full circular edge) accept arbitrary tiebreak with this
+    /// diagnostic per PRD line 66.
+    ///
+    /// A primary label is emitted at the selector call site (`"selector call"`).
+    ///
+    /// Distinct from [`TopologyAttributeAmbiguousAfterSplit`] (which covers
+    /// post-split clusters where `mod_history` lengthens) and from
+    /// [`TopologyAttributeStale`] (which covers genuine ambiguity / zero-match).
+    ///
+    /// The PRD-prose mnemonic for this code is `W_TOPOLOGY_ATTRIBUTE_LOCAL_INDEX_REASSIGNED`.
+    TopologyAttributeLocalIndexReassigned,
     /// Origin: `crates/reify-compiler/src/compile_builder/specialization_scope_check.rs`.
     ///
     /// Emitted as an `Error` when a `param`, `port`, or `sub` declaration appears
@@ -1426,6 +1462,42 @@ mod tests {
         let s =
             serde_json::to_string(&DiagnosticCode::TopologyAttributeAmbiguousAfterSplit).unwrap();
         assert_eq!(s, "\"TopologyAttributeAmbiguousAfterSplit\"");
+    }
+
+    // --- TopologyAttributeLocalIndexReassigned tests (task 2654 — W_TOPOLOGY_ATTRIBUTE_LOCAL_INDEX_REASSIGNED) ---
+    // Pairs with the local-index reassignment detector to be wired in
+    // `crates/reify-eval/src/topology_attribute_propagation.rs` in a follow-up
+    // step of task #2654. Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug
+    // derives are already covered by `diagnostic_code_derives` above; only the
+    // variant-specific round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::TopologyAttributeLocalIndexReassigned` round-trips through
+    /// `Diagnostic::warning(...).with_code(...)` carrying both the expected
+    /// `Severity::Warning` and `Some(DiagnosticCode::TopologyAttributeLocalIndexReassigned)`.
+    /// Pins the warning-severity contract and variant existence for the typed
+    /// disambiguation of the ordering-shuffle rebind outcome (no split, same
+    /// `(feature_id, role, user_label)`, different resolved `local_index`).
+    #[test]
+    fn diagnostic_code_topology_attribute_local_index_reassigned_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::warning("x")
+            .with_code(DiagnosticCode::TopologyAttributeLocalIndexReassigned);
+        assert_eq!(d.severity, Severity::Warning);
+        assert_eq!(
+            d.code,
+            Some(DiagnosticCode::TopologyAttributeLocalIndexReassigned)
+        );
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::TopologyAttributeLocalIndexReassigned`
+    /// serializes as `"TopologyAttributeLocalIndexReassigned"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_topology_attribute_local_index_reassigned_serde_pascal_case() {
+        let s =
+            serde_json::to_string(&DiagnosticCode::TopologyAttributeLocalIndexReassigned).unwrap();
+        assert_eq!(s, "\"TopologyAttributeLocalIndexReassigned\"");
     }
 
     // --- ImportedTolerancePromiseInsufficient tests (task 2651 — W_IMPORTED_TOLERANCE_INSUFFICIENT) ---
