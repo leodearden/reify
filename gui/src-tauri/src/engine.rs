@@ -79,6 +79,26 @@ pub struct EngineSession {
     /// share the same lifecycle.  Left `None` when `parsed_cache` is `None` at population time
     /// — preserves the per-template WARN so fallback regressions remain visible.
     consumed_idents_cache: Option<HashMap<String, HashSet<String>>>,
+    /// Structured diagnostics from the most recent failed parse/compile attempt.
+    ///
+    /// Populated on `Err` by `load_from_source`, `update_source`, and `load_file` when
+    /// the compile helpers return structured error payloads alongside the human-readable
+    /// error string.  Cleared atomically in `commit_state` when a successful
+    /// parse+compile+check cycle commits — ensuring stale failure diagnostics are never
+    /// surfaced after a recovery.
+    ///
+    /// `build_gui_state` emits this field into `GuiState::compile_diagnostics` when
+    /// `compiled` is `None` (i.e. the session has never completed a successful load),
+    /// replacing the former stub that always returned `Vec::new()`.
+    last_compile_diagnostics: Vec<DiagnosticInfo>,
+    /// Structured diagnostics from the most recent tessellation failure.
+    ///
+    /// Populated via `#[cfg(test)] inject_last_tessellation_diagnostics_for_test` today;
+    /// no production path populates it yet because tessellation only runs when `compiled`
+    /// is `Some`.  Cleared atomically in `commit_state` alongside `last_compile_diagnostics`.
+    /// `build_gui_state` emits this field into `GuiState::tessellation_diagnostics` when
+    /// `compiled` is `None`, preserving structural symmetry for forward compatibility.
+    last_tessellation_diagnostics: Vec<DiagnosticInfo>,
 }
 
 /// Build the normalized source-map key for a module name: `"{name}.ri"`.
@@ -102,8 +122,13 @@ fn is_stdlib_path(p: &str) -> bool {
 
 /// Parse and compile a single-file source string using the stdlib prelude.
 ///
-/// Returns `(ParsedModule, CompiledModule)` on success, or an `Err` containing a
-/// human-readable description of the first error encountered.
+/// Returns `(ParsedModule, CompiledModule)` on success, or an `Err` containing
+/// a human-readable error string (preserving the existing `"Parse errors: …"` /
+/// `"Compile errors: …"` format so existing substring assertions remain valid)
+/// **and** a `Vec<DiagnosticInfo>` with the same errors in structured form.
+/// The structured payload is used by callers to populate
+/// `EngineSession::last_compile_diagnostics` so `build_gui_state` can surface
+/// the failure in the diagnostics panel.
 ///
 /// This is the single-file counterpart to `compile_entry_with_imports`.  It is
 /// called by both `load_from_source` (which always uses the single-file path) and
@@ -111,14 +136,24 @@ fn is_stdlib_path(p: &str) -> bool {
 fn compile_single_file_with_stdlib(
     content: &str,
     module_name: &str,
-) -> Result<(reify_syntax::ParsedModule, CompiledModule), String> {
+) -> Result<(reify_syntax::ParsedModule, CompiledModule), (String, Vec<DiagnosticInfo>)> {
     // Prelude-aware parse so stdlib enum references like `CorrosionClass.C5`
     // disambiguate to `EnumAccess` rather than `MemberAccess`.  See task 2525.
     let parsed =
         reify_compiler::parse_with_stdlib(content, ModulePath::single(module_name));
     if !parsed.errors.is_empty() {
         let msgs: Vec<String> = parsed.errors.iter().map(|e| e.message.clone()).collect();
-        return Err(format!("Parse errors: {}", msgs.join("; ")));
+        let error_string = format!("Parse errors: {}", msgs.join("; "));
+        // Synthesize Diagnostic values from ParseError so diagnostics_to_info can
+        // resolve spans to line/column using the source text.
+        let synthetic_diags: Vec<Diagnostic> = parsed
+            .errors
+            .iter()
+            .map(|e| Diagnostic::error(e.message.clone()).with_label(DiagnosticLabel::new(e.span, "")))
+            .collect();
+        let file_path = module_key(module_name);
+        let diag_infos = diagnostics_to_info(&synthetic_diags, &file_path, content);
+        return Err((error_string, diag_infos));
     }
     let compiled = reify_compiler::compile_with_stdlib(&parsed);
     let has_errors = compiled
@@ -126,13 +161,17 @@ fn compile_single_file_with_stdlib(
         .iter()
         .any(|d| d.severity == Severity::Error);
     if has_errors {
-        let msgs: Vec<String> = compiled
+        let error_diags: Vec<&Diagnostic> = compiled
             .diagnostics
             .iter()
             .filter(|d| d.severity == Severity::Error)
-            .map(|d| d.message.clone())
             .collect();
-        return Err(format!("Compile errors: {}", msgs.join("; ")));
+        let msgs: Vec<String> = error_diags.iter().map(|d| d.message.clone()).collect();
+        let error_string = format!("Compile errors: {}", msgs.join("; "));
+        let owned_diags: Vec<Diagnostic> = error_diags.into_iter().cloned().collect();
+        let file_path = module_key(module_name);
+        let diag_infos = diagnostics_to_info(&owned_diags, &file_path, content);
+        return Err((error_string, diag_infos));
     }
     Ok((parsed, compiled))
 }
@@ -199,12 +238,20 @@ fn compile_entry_with_imports(
     entry_path: &Path,
     source: &str,
     module_name: &str,
-) -> Result<(CompiledModule, reify_syntax::ParsedModule), String> {
+) -> Result<(CompiledModule, reify_syntax::ParsedModule), (String, Vec<DiagnosticInfo>)> {
     // Parse with stdlib enum pre-seeding (same as load_from_source / update_source).
     let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(module_name));
     if !parsed.errors.is_empty() {
         let msgs: Vec<String> = parsed.errors.iter().map(|e| e.message.clone()).collect();
-        return Err(format!("Parse errors: {}", msgs.join("; ")));
+        let error_string = format!("Parse errors: {}", msgs.join("; "));
+        let synthetic_diags: Vec<Diagnostic> = parsed
+            .errors
+            .iter()
+            .map(|e| Diagnostic::error(e.message.clone()).with_label(DiagnosticLabel::new(e.span, "")))
+            .collect();
+        let file_path = module_key(module_name);
+        let diag_infos = diagnostics_to_info(&synthetic_diags, &file_path, source);
+        return Err((error_string, diag_infos));
     }
 
     // project_root = directory of the entry file; stdlib_root matches LSP heuristic.
@@ -238,7 +285,19 @@ fn compile_entry_with_imports(
         }
         dag.compile_module(import_path, &resolver).map_err(|diags| {
             let msgs: Vec<String> = diags.iter().map(|d| d.message.clone()).collect();
-            format!("Compile errors in import '{}': {}", import_path, msgs.join("; "))
+            let error_string =
+                format!("Compile errors in import '{}': {}", import_path, msgs.join("; "));
+            let file_path = format!("{}.ri", import_path);
+            // Resolve the import's source via the resolver for accurate span resolution
+            // so line/column numbers in the diagnostics panel point to real locations.
+            // Falls back to "" (spans collapse to 1:1) if resolution or I/O fails.
+            let import_source = resolver
+                .resolve_import_path(import_path)
+                .ok()
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .unwrap_or_default();
+            let diag_infos = diagnostics_to_info(&diags, &file_path, &import_source);
+            (error_string, diag_infos)
         })?;
     }
 
@@ -266,13 +325,17 @@ fn compile_entry_with_imports(
         .iter()
         .any(|d| d.severity == Severity::Error);
     if has_errors {
-        let msgs: Vec<String> = compiled
+        let error_diags: Vec<&Diagnostic> = compiled
             .diagnostics
             .iter()
             .filter(|d| d.severity == Severity::Error)
-            .map(|d| d.message.clone())
             .collect();
-        return Err(format!("Compile errors: {}", msgs.join("; ")));
+        let msgs: Vec<String> = error_diags.iter().map(|d| d.message.clone()).collect();
+        let error_string = format!("Compile errors: {}", msgs.join("; "));
+        let owned_diags: Vec<Diagnostic> = error_diags.into_iter().cloned().collect();
+        let file_path = module_key(module_name);
+        let diag_infos = diagnostics_to_info(&owned_diags, &file_path, source);
+        return Err((error_string, diag_infos));
     }
 
     // Merge pub templates from direct (1-hop) non-stdlib imports into the entry's
@@ -363,6 +426,8 @@ impl EngineSession {
             parsed_cache: None,
             line_offsets_cache: None,
             consumed_idents_cache: None,
+            last_compile_diagnostics: Vec::new(),
+            last_tessellation_diagnostics: Vec::new(),
         }
     }
 
@@ -399,7 +464,18 @@ impl EngineSession {
         source: &str,
         module_name: &str,
     ) -> Result<GuiState, String> {
-        let (parsed, compiled) = compile_single_file_with_stdlib(source, module_name)?;
+        let (parsed, compiled) = compile_single_file_with_stdlib(source, module_name)
+            .map_err(|(msg, diags)| {
+                // Only store failure diagnostics on the cold-start path (no prior
+                // successful compile).  If compiled is already Some the user still
+                // sees the previous good state; build_gui_state does not take the
+                // early-return branch in that case, so storing diags here would be
+                // silently stale rather than surfaced.
+                if self.compiled.is_none() {
+                    self.last_compile_diagnostics = diags;
+                }
+                msg
+            })?;
 
         // Evaluate + check constraints (borrows compiled by shared ref, so all
         // field mutations can safely be deferred until after check() returns).
@@ -466,7 +542,13 @@ impl EngineSession {
         // Err from `compile_entry_with_imports` doesn't leave file_path pointing
         // at a file whose compiled / module_name / source_map state hasn't been
         // committed.  Atomic-commit invariant: see engine.rs:30-44 doc block.
-        let (compiled, parsed) = compile_entry_with_imports(path, &source, module_name)?;
+        let (compiled, parsed) = compile_entry_with_imports(path, &source, module_name)
+            .map_err(|(msg, diags)| {
+                if self.compiled.is_none() {
+                    self.last_compile_diagnostics = diags;
+                }
+                msg
+            })?;
         let check_result = self.engine.check(&compiled);
         self.commit_state(parsed, compiled, check_result, module_name, &source);
         self.file_path = Some(path.to_path_buf());
@@ -509,12 +591,24 @@ impl EngineSession {
             // regardless of how the GUI serialised `path`.  See design decision in
             // task 3318 for rationale.
             let (compiled, parsed) =
-                compile_entry_with_imports(&entry_path, content, module_name)?;
+                compile_entry_with_imports(&entry_path, content, module_name)
+                    .map_err(|(msg, diags)| {
+                        if self.compiled.is_none() {
+                            self.last_compile_diagnostics = diags;
+                        }
+                        msg
+                    })?;
             (parsed, compiled)
         } else {
             // Single-file flow — no prior load_file means no project_root anchor;
             // delegate to compile_single_file_with_stdlib (shared with load_from_source).
-            compile_single_file_with_stdlib(content, module_name)?
+            compile_single_file_with_stdlib(content, module_name)
+                .map_err(|(msg, diags)| {
+                    if self.compiled.is_none() {
+                        self.last_compile_diagnostics = diags;
+                    }
+                    msg
+                })?
         };
 
         // Parse+compile succeeded — run check() before mutating any state, so
@@ -529,13 +623,14 @@ impl EngineSession {
 
     /// Atomically commit all session state after a successful parse+compile+check cycle.
     ///
-    /// This helper enforces the invariant that `compiled`, `module_name`, and
-    /// `source_map` always change together: either all five fields are updated or
-    /// none are.  Callers **must** only invoke this after both compilation and
-    /// `check()` have succeeded — invoking it on a partially-valid state would
-    /// violate the invariant.
+    /// This helper enforces the invariant that the seven core session fields always
+    /// change together: either all seven are updated or none are.  The seven fields
+    /// are: `source_map`, `module_name`, `compiled`, `last_check`, `parsed_cache`,
+    /// `last_compile_diagnostics`, and `last_tessellation_diagnostics`.
+    /// Callers **must** only invoke this after both compilation and `check()` have
+    /// succeeded — invoking it on a partially-valid state would violate the invariant.
     ///
-    /// The five-field assignment was previously duplicated in `load_from_source`
+    /// The field assignment was previously duplicated in `load_from_source`
     /// and `update_source`; centralising it here prevents the two sites from
     /// drifting apart.
     fn commit_state(
@@ -564,6 +659,12 @@ impl EngineSession {
         // Invalidate the consumed-idents cache so get_mechanism_descriptors rebuilds
         // it on the next call for the new module.  Same lifecycle as parsed_cache.
         self.consumed_idents_cache = None;
+        // Clear stored failure diagnostics — the compile succeeded, so any stale
+        // failure diagnostics from a prior failed load must not appear in subsequent
+        // build_gui_state calls.  Both fields are cleared atomically here so the
+        // atomic-commit invariant ("all seven fields move together") remains intact.
+        self.last_compile_diagnostics.clear();
+        self.last_tessellation_diagnostics.clear();
     }
 
     /// Export geometry to a file.
@@ -698,20 +799,28 @@ impl EngineSession {
         let (compiled, check) = match (self.compiled.as_ref(), self.last_check.as_ref()) {
             (Some(c), Some(k)) => (c, k),
             _ => {
-                // NOTE: When `compiled` is `None` (fatal parse/compile failure),
-                // `compile_diagnostics` is empty in this stub — the hard failure
-                // is not yet surfaced here. A follow-up task should populate this
-                // field from the last `load_from_source` error so users see the
-                // failure in the diagnostics panel rather than a silent empty
-                // viewport. The `tessellation_diagnostics` field has the same
-                // limitation for the same reason.
+                // When `compiled` is `None` (the session has never completed a successful
+                // parse+compile+check cycle), surface the most recent failure diagnostics
+                // so users see the error in the diagnostics panel rather than a silent
+                // empty viewport.
+                //
+                // `last_compile_diagnostics` is populated by `load_from_source`,
+                // `update_source`, and `load_file` on the failure path and cleared by
+                // `commit_state` on every successful cycle — so here it always reflects
+                // exactly the most-recent failed-load error (or is empty when no load has
+                // been attempted yet).
+                //
+                // `last_check is None` while `compiled is Some` cannot occur with the
+                // current `commit_state` atomic-commit (both fields are assigned together),
+                // so this branch is reached only when `compiled` has never been set —
+                // `last_compile_diagnostics` is therefore the correct payload to surface.
                 return Ok(GuiState {
                     meshes: Vec::new(),
                     values: Vec::new(),
                     constraints: Vec::new(),
                     files: Vec::new(),
-                    tessellation_diagnostics: Vec::new(),
-                    compile_diagnostics: Vec::new(),
+                    tessellation_diagnostics: self.last_tessellation_diagnostics.clone(),
+                    compile_diagnostics: self.last_compile_diagnostics.clone(),
                 });
             }
         };
@@ -2202,6 +2311,32 @@ impl EngineSession {
         cache: HashMap<String, HashSet<String>>,
     ) {
         self.consumed_idents_cache = Some(cache);
+    }
+
+    /// Return a slice of the stored compile failure diagnostics.
+    ///
+    /// Populated by `load_from_source`, `update_source`, and `load_file` on the
+    /// failure path and cleared by `commit_state` on a successful cycle.  Used by
+    /// tests that need to inspect field state without calling `build_gui_state`.
+    ///
+    /// Mirrors the style of `parsed_cache_for_test` (engine.rs).
+    pub(crate) fn last_compile_diagnostics_for_test(&self) -> &[DiagnosticInfo] {
+        &self.last_compile_diagnostics
+    }
+
+    /// Inject synthetic diagnostics into `last_tessellation_diagnostics` for testing.
+    ///
+    /// Allows tests to exercise the `build_gui_state` early-return tessellation
+    /// wiring without requiring a production population path (which does not exist
+    /// yet — tessellation only runs when `compiled is Some`).  Mirrors the style of
+    /// `inject_diagnostic_for_test` (engine.rs:2091).
+    ///
+    /// Replaces any previously-stored diagnostics; call with an empty vec to clear.
+    pub(crate) fn inject_last_tessellation_diagnostics_for_test(
+        &mut self,
+        diags: Vec<DiagnosticInfo>,
+    ) {
+        self.last_tessellation_diagnostics = diags;
     }
 
     /// Directly inject a `CompiledModule` as the session's current compiled state,

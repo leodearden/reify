@@ -6037,3 +6037,309 @@ fn load_file_with_std_import_does_not_double_seed_stdlib() {
     assert_eq!(w_val.unit, "mm", "Top.w unit should be mm; got '{}'", w_val.unit);
     assert_eq!(w_val.value, "5", "Top.w value should be 5; got '{}'", w_val.value);
 }
+
+// ---- fatal parse/compile diagnostics surfacing tests (task 3351) -----------
+
+/// After a failed `update_source` (parse error on a fresh session with no
+/// `file_path` set), `build_gui_state` must surface the failure in
+/// `compile_diagnostics`.
+///
+/// Pins step-3/step-4 of the task-3351 plan: `update_source`'s single-file
+/// branch (when `self.file_path` is `None`) must populate
+/// `last_compile_diagnostics` on failure, just like `load_from_source`.
+#[test]
+fn build_gui_state_surfaces_parse_error_after_failed_update_source_on_fresh_session() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // Fresh session — no load_file or load_from_source, so self.file_path is None.
+    // update_source takes the single-file branch (compile_single_file_with_stdlib).
+    let err = session
+        .update_source("foo.ri", "this is not valid {{{}}}")
+        .expect_err("invalid source should return Err");
+    assert!(
+        err.contains("Parse errors"),
+        "error string should mention Parse errors; got: {err}"
+    );
+
+    // build_gui_state must surface the stored failure diagnostics.
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state should return Ok even after a failed update_source");
+
+    assert!(
+        !state.compile_diagnostics.is_empty(),
+        "compile_diagnostics should be non-empty after a failed update_source on a fresh session"
+    );
+    let first = &state.compile_diagnostics[0];
+    assert_eq!(
+        first.severity, "Error",
+        "first diagnostic should have severity Error; got: {}",
+        first.severity
+    );
+
+    // Remaining fields should still be empty.
+    assert!(state.meshes.is_empty(), "meshes should be empty");
+    assert!(state.values.is_empty(), "values should be empty");
+    assert!(state.constraints.is_empty(), "constraints should be empty");
+    assert!(state.files.is_empty(), "files should be empty");
+    assert!(
+        state.tessellation_diagnostics.is_empty(),
+        "tessellation_diagnostics should be empty"
+    );
+}
+
+/// After a failed `load_from_source` (parse error on a fresh session),
+/// `build_gui_state` must surface the failure in `compile_diagnostics` rather
+/// than returning a silent empty viewport.
+///
+/// Pins step-1 of the task-3351 plan: the early-return branch of
+/// `build_gui_state` (when `compiled` is `None`) must emit the stored
+/// `last_compile_diagnostics` rather than `Vec::new()`.
+#[test]
+fn build_gui_state_surfaces_parse_error_after_failed_load_from_source() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // A parse-error source — `{{{` is invalid reify syntax so `parsed.errors` is non-empty.
+    let err = session
+        .load_from_source("this is not valid reify syntax {{{}}}", "bad")
+        .expect_err("invalid source should return Err");
+    assert!(
+        err.contains("Parse errors"),
+        "error string should mention Parse errors; got: {err}"
+    );
+
+    // build_gui_state should surface the stored diagnostics rather than returning empty.
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state should return Ok even after a failed load");
+
+    // compile_diagnostics must be non-empty and contain an Error-severity entry.
+    assert!(
+        !state.compile_diagnostics.is_empty(),
+        "compile_diagnostics should be non-empty after a failed load_from_source"
+    );
+    let first = &state.compile_diagnostics[0];
+    assert_eq!(
+        first.severity, "Error",
+        "first diagnostic should have severity Error; got: {}",
+        first.severity
+    );
+    // file_path should follow the module_key convention ({module_name}.ri).
+    assert!(
+        first.file_path.ends_with(".ri"),
+        "first diagnostic file_path should end with .ri; got: {}",
+        first.file_path
+    );
+
+    // The rest of the GuiState should remain empty (early-return semantics preserved).
+    assert!(state.meshes.is_empty(), "meshes should be empty");
+    assert!(state.values.is_empty(), "values should be empty");
+    assert!(state.constraints.is_empty(), "constraints should be empty");
+    assert!(state.files.is_empty(), "files should be empty");
+    assert!(
+        state.tessellation_diagnostics.is_empty(),
+        "tessellation_diagnostics should be empty"
+    );
+}
+
+/// After a successful `load_from_source`, `commit_state` must clear
+/// `last_compile_diagnostics` so stale failure diagnostics are not surfaced
+/// after a recovery.
+///
+/// Pins step-7/step-8 of the task-3351 plan: `commit_state` must call
+/// `self.last_compile_diagnostics.clear()` and the `last_compile_diagnostics_for_test`
+/// accessor must expose the field for test introspection.
+#[test]
+fn commit_state_clears_last_compile_diagnostics_on_successful_load() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // First, induce a parse error so last_compile_diagnostics is populated.
+    let _ = session
+        .load_from_source("this is not valid reify syntax {{{}}}", "bad")
+        .expect_err("invalid source should return Err");
+
+    // The accessor must reflect the stored failure diagnostics.
+    assert!(
+        !session.last_compile_diagnostics_for_test().is_empty(),
+        "last_compile_diagnostics should be non-empty after a failed load"
+    );
+
+    // Now load a valid source — commit_state must clear the field.
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("valid source should succeed");
+
+    assert!(
+        session.last_compile_diagnostics_for_test().is_empty(),
+        "last_compile_diagnostics should be cleared after a successful load"
+    );
+}
+
+/// When `last_tessellation_diagnostics` is populated (via the test injector) and
+/// `compiled` is `None`, `build_gui_state` must surface those diagnostics through
+/// `state.tessellation_diagnostics`.
+///
+/// Pins step-9/step-10 of the task-3351 plan: the early-return branch of
+/// `build_gui_state` must emit `self.last_tessellation_diagnostics.clone()` into
+/// `GuiState::tessellation_diagnostics`, and `compile_diagnostics` must remain
+/// separate (empty in this case, since no load was attempted).
+#[test]
+fn build_gui_state_surfaces_stored_tessellation_diagnostics_when_no_module_loaded() {
+    use reify_types::DiagnosticInfo;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // Inject two synthetic tessellation DiagnosticInfo entries.
+    let injected = vec![
+        DiagnosticInfo {
+            file_path: "main.ri".to_string(),
+            line: 3,
+            column: 1,
+            end_line: 3,
+            end_column: 10,
+            severity: "Error".to_string(),
+            message: "tessellation failure alpha".to_string(),
+            code: None,
+        },
+        DiagnosticInfo {
+            file_path: "main.ri".to_string(),
+            line: 7,
+            column: 5,
+            end_line: 7,
+            end_column: 20,
+            severity: "Error".to_string(),
+            message: "tessellation failure beta".to_string(),
+            code: None,
+        },
+    ];
+    session.inject_last_tessellation_diagnostics_for_test(injected.clone());
+
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state should return Ok when compiled is None");
+
+    // tessellation_diagnostics must match the injected entries (same length, same values).
+    assert_eq!(
+        state.tessellation_diagnostics.len(),
+        injected.len(),
+        "tessellation_diagnostics length should match injected count"
+    );
+    for (got, want) in state.tessellation_diagnostics.iter().zip(injected.iter()) {
+        assert_eq!(got.severity, want.severity, "severity mismatch");
+        assert_eq!(got.message, want.message, "message mismatch");
+    }
+
+    // compile_diagnostics must remain empty — the two streams are independent.
+    assert!(
+        state.compile_diagnostics.is_empty(),
+        "compile_diagnostics should be empty when no load was attempted"
+    );
+}
+
+/// After a failed `load_file` (parse error in the file-on-disk), `build_gui_state`
+/// must surface the failure in `compile_diagnostics`.
+///
+/// Pins step-5/step-6 of the task-3351 plan: `load_file` routes through
+/// `compile_entry_with_imports`, which must also populate
+/// `last_compile_diagnostics` on failure once refactored in step-6.
+#[test]
+fn build_gui_state_surfaces_parse_error_after_failed_load_file() {
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+    // Write an invalid .ri file — `{{{` is unparseable syntax.
+    let file_path = dir.path().join("main.ri");
+    std::fs::write(&file_path, "structure {{{}}}}\n").expect("write should succeed");
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let err = session
+        .load_file(&file_path)
+        .expect_err("load_file with invalid source should return Err");
+    assert!(
+        err.contains("Parse errors") || err.contains("Compile errors"),
+        "error string should mention parse/compile errors; got: {err}"
+    );
+
+    // build_gui_state must surface the stored failure diagnostics.
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state should return Ok even after a failed load_file");
+
+    assert!(
+        !state.compile_diagnostics.is_empty(),
+        "compile_diagnostics should be non-empty after a failed load_file"
+    );
+    let first = &state.compile_diagnostics[0];
+    assert_eq!(
+        first.severity, "Error",
+        "first diagnostic should have severity Error; got: {}",
+        first.severity
+    );
+
+    // Remaining fields should still be empty.
+    assert!(state.meshes.is_empty(), "meshes should be empty");
+    assert!(state.values.is_empty(), "values should be empty");
+    assert!(state.constraints.is_empty(), "constraints should be empty");
+    assert!(state.files.is_empty(), "files should be empty");
+    assert!(
+        state.tessellation_diagnostics.is_empty(),
+        "tessellation_diagnostics should be empty"
+    );
+}
+
+/// After a session already has a successful compile (`compiled` is `Some`), a
+/// subsequent failed `load_from_source` must NOT overwrite `last_compile_diagnostics`.
+///
+/// Pins the `if self.compiled.is_none()` gate added by the amendment pass (task
+/// 3351, reviewer suggestion "stale_state_after_recovered_failure").
+///
+/// Rationale: when `compiled` is `Some`, `build_gui_state` does NOT take the
+/// early-return branch, so any failure diagnostics stored in
+/// `last_compile_diagnostics` would be silently stale — stored but never
+/// surfaced — rather than shown to the user.  The gate keeps the field
+/// semantically tied to the cold-start path where it is actually consulted.
+#[test]
+fn last_compile_diagnostics_not_overwritten_when_prior_compile_exists() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // Establish a successful compiled state (Ok return guarantees compiled is Some).
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("valid source should load successfully");
+
+    assert!(
+        session.last_compile_diagnostics_for_test().is_empty(),
+        "last_compile_diagnostics should be empty after a successful load"
+    );
+
+    // Now fail a subsequent load — compiled is Some, so the gate should prevent
+    // the field from being overwritten with the failure diagnostics.
+    let _ = session.load_from_source("this is not valid reify syntax {{{}}}", "bad");
+
+    assert!(
+        session.last_compile_diagnostics_for_test().is_empty(),
+        "last_compile_diagnostics must not be overwritten when compiled is already Some; \
+         the field is only consulted on the cold-start early-return path"
+    );
+
+    // build_gui_state should still return the previously-compiled good state
+    // (compile_diagnostics empty, not the failure).
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state should return Ok with the prior good state");
+    assert!(
+        state.compile_diagnostics.is_empty(),
+        "compile_diagnostics should be empty — stale failure diagnostics must not be surfaced"
+    );
+}
