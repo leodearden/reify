@@ -216,25 +216,18 @@ pub fn apply_mpc_row_elimination(
         // For j == p: the row was already zeroed in step 2; step 3 fills it after
         // this loop.  We skip the column-p scan for j == p since step 2 zeroed
         // K[p][p] already.
+        // CSR col_idx is sorted within each row (faer SymbolicSparseRowMat soft
+        // invariant); binary_search is O(log nnz_per_row).
         for j in 0..n {
             if j == p {
                 continue;
             }
             let start = row_ptr[j];
             let end = row_ptr[j + 1];
-            // Find K[j][p].
-            let mut kjp = 0.0_f64;
-            let mut kjp_idx: Option<usize> = None;
-            for idx in start..end {
-                if col_idx[idx] == p {
-                    kjp = vals[idx];
-                    kjp_idx = Some(idx);
-                    break;
-                }
-            }
-            // If K[j][p] has no stored entry at all, no redistribution write
-            // ever targets this row — skip entirely.
-            let Some(kjp_store_idx) = kjp_idx else { continue };
+            // Find K[j][p].  Err → no stored entry → skip entirely.
+            let Ok(rel) = col_idx[start..end].binary_search(&p) else { continue };
+            let kjp_store_idx = start + rel;
+            let kjp = vals[kjp_store_idx];
             // K[j][p] IS stored (possibly as a structural zero).  Run the
             // redistribution-target lookup regardless of kjp's value so that
             // missing sparsity entries are caught eagerly.
@@ -244,22 +237,19 @@ pub fn apply_mpc_row_elimination(
             }
             // For each i > 0: K[j][dofs[i]] += K[j][p] · αᵢ (assert target exists)
             for (i, (&di, &ai)) in other_dofs.iter().zip(alphas.iter()).enumerate() {
-                let mut found = false;
-                for idx in start..end {
-                    if col_idx[idx] == di {
+                match col_idx[start..end].binary_search(&di) {
+                    Ok(rel) => {
+                        let idx = start + rel;
                         if kjp != 0.0 {
                             vals[idx] += kjp * ai;
                         }
-                        found = true;
-                        break;
                     }
+                    Err(_) => panic!(
+                        "MpcRow apply: missing K[{}][{}] entry — required for redistribution \
+                         K[j][dofs[{}]] += K[j][p]·α; ensure assembly pre-allocates this entry",
+                        j, di, i + 1,
+                    ),
                 }
-                assert!(
-                    found,
-                    "MpcRow apply: missing K[{}][{}] entry — required for redistribution \
-                     K[j][dofs[{}]] += K[j][p]·α; ensure assembly pre-allocates this entry",
-                    j, di, i + 1,
-                );
             }
             // Zero K[j][p] (column p eliminated for this row).
             vals[kjp_store_idx] = 0.0;
@@ -270,35 +260,25 @@ pub fn apply_mpc_row_elimination(
         let start_p = row_ptr[p];
         let end_p = row_ptr[p + 1];
         // Set diagonal K[p][p] = 1.
-        let mut diag_found = false;
-        for idx in start_p..end_p {
-            if col_idx[idx] == p {
-                vals[idx] = 1.0;
-                diag_found = true;
-                break;
-            }
-        }
-        assert!(
-            diag_found,
-            "MpcRow apply: missing K[{p}][{p}] diagonal entry — required to set pivot \
-             equation K[p][p] = 1; ensure assembly pre-allocates the diagonal",
-        );
+        let rel = col_idx[start_p..end_p].binary_search(&p).unwrap_or_else(|_| {
+            panic!(
+                "MpcRow apply: missing K[{p}][{p}] diagonal entry — required to set pivot \
+                 equation K[p][p] = 1; ensure assembly pre-allocates the diagonal",
+            )
+        });
+        vals[start_p + rel] = 1.0;
         // Set K[p][dofs[i]] = -αᵢ.
         for (i, (&di, &ai)) in other_dofs.iter().zip(alphas.iter()).enumerate() {
-            let mut found = false;
-            for idx in start_p..end_p {
-                if col_idx[idx] == di {
-                    vals[idx] = -ai;
-                    found = true;
-                    break;
+            match col_idx[start_p..end_p].binary_search(&di) {
+                Ok(rel) => {
+                    vals[start_p + rel] = -ai;
                 }
+                Err(_) => panic!(
+                    "MpcRow apply: missing K[{p}][{}] entry — required to set pivot equation \
+                     K[p][dofs[{}]] = -αᵢ; ensure assembly pre-allocates this entry",
+                    di, i + 1,
+                ),
             }
-            assert!(
-                found,
-                "MpcRow apply: missing K[{p}][{}] entry — required to set pivot equation \
-                 K[p][dofs[{}]] = -αᵢ; ensure assembly pre-allocates this entry",
-                di, i + 1,
-            );
         }
 
         // Step 4: pin RHS.
@@ -1137,6 +1117,7 @@ mod tests {
     /// sign ∈ {+1.0, −1.0}, h = 1.0, and normal[c] = inv_sqrt3 = 1.0/√3,
     /// IEEE 754 gives exact bit-identical values, so `.to_bits()` equality holds.
     #[test]
+    #[allow(clippy::needless_range_loop)] // `a` used both as index and in assertion messages
     fn shell_tet_tying_with_oblique_normal_produces_three_four_term_rotation_rows() {
         let inv_sqrt3 = 1.0_f64 / 3.0_f64.sqrt();
         let rows = MpcRow::shell_tet_tying(
