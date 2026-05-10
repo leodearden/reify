@@ -1158,15 +1158,19 @@ describe('Editor Mod-s exhaustiveness for SaveBlockedReason', () => {
     vi.spyOn(store, 'canSave').mockReturnValue({ ok: false, reason: 'phantom-future-reason' } as any);
     const saveSpy = vi.spyOn(bridge, 'saveFile').mockResolvedValue(undefined);
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const onError = vi.fn();
     try {
-      render(() => <Editor store={store} />);
+      render(() => <Editor store={store} onError={onError} />);
       const view = getEditorView(screen.getByTestId('editor-container'));
       view.contentDOM.dispatchEvent(new KeyboardEvent('keydown', { key: 's', code: 'KeyS', ctrlKey: true, bubbles: true }));
+      // Defense-in-depth: saveSpy is never called regardless (no `file` property on the mock result),
+      // but it catches future regressions where the default arm falls through to saveFile.
       expect(saveSpy).not.toHaveBeenCalled();
       expect(consoleSpy).toHaveBeenCalledWith(
         expect.stringContaining('unhandled save-blocked reason'),
         'phantom-future-reason',
       );
+      expect(onError).toHaveBeenCalledWith(expect.stringContaining('Save failed'));
     } finally {
       consoleSpy.mockRestore();
     }

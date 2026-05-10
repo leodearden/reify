@@ -151,6 +151,7 @@ export function Editor(props: EditorProps) {
                   // Mod-s save dialog does not leak through.
                   const _exhaustive: never = result.reason;
                   console.error('unhandled save-blocked reason:', _exhaustive);
+                  props.onError?.('Save failed: internal error');
                   return true;
                 }
               }
