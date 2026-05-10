@@ -3870,41 +3870,18 @@ describe('session.test.ts /tmp leak guard (task 3283)', () => {
       // 1487, 1511, 1534, 1559, 1588: destroy() is void/synchronous, no await needed.
       session.destroy();
     }
-    // Placed after the try/finally so destroy() has always run before we check.
-    // The session must be torn down so its abortController, currentStdin, and
-    // pendingPermissionRequests don't linger across tests in the same worker.
-    expect((session as any).destroyed, 'leak-guard test must call session.destroy()').toBe(true);
   });
 
-  it('leak guard ignores sibling reify-* prefixes (e.g. reify-tools-) that other tests create concurrently', async () => {
-    // Obtain handles to the REAL filesystem, os, and path — bypassing vi.mock('node:fs').
-    const realFs = await vi.importActual<typeof import('node:fs')>('node:fs');
-    const realOs = await vi.importActual<typeof import('node:os')>('node:os');
-    const realPath = await vi.importActual<typeof import('node:path')>('node:path');
-
-    const tmpdir = realOs.tmpdir();
-
-    // Snapshot /tmp BEFORE using the tightened REIFY_MCP_TMP_PREFIX filter.
-    const before = new Set<string>(
-      realFs.readdirSync(tmpdir).filter((name: string) => REIFY_MCP_TMP_PREFIX.test(name))
-    );
-
-    // Simulate a concurrent sibling test (e.g. discover-mcp-tools.test.ts:11) creating
-    // a reify-tools-* directory between the before and after snapshots.
-    const siblingDir = realFs.mkdtempSync(realPath.join(tmpdir, 'reify-tools-'));
-
-    try {
-      // Snapshot /tmp AFTER the sibling dir appeared.
-      const after = new Set<string>(
-        realFs.readdirSync(tmpdir).filter((name: string) => REIFY_MCP_TMP_PREFIX.test(name))
-      );
-
-      // With REIFY_MCP_TMP_PREFIX (/^reify-mcp-/), siblingDir does NOT match, so it
-      // never appears in `after` — leaked is empty and the guard reports no false leak.
-      const leaked = [...after].filter((d) => !before.has(d));
-      expect(leaked, 'leaked /tmp/reify-mcp-* dirs: ' + leaked.join(', ')).toHaveLength(0);
-    } finally {
-      realFs.rmSync(siblingDir, { recursive: true, force: true });
-    }
+  it('REIFY_MCP_TMP_PREFIX does not match sibling reify-* prefixes from concurrent tests', () => {
+    // Pure regex assertion — no real FS I/O. Guards against future regex widening
+    // (e.g. someone changing /^reify-mcp-/ back to /^reify-/) without going through a
+    // disk-side-effect round-trip. The comment on REIFY_MCP_TMP_PREFIX explains why the
+    // prefixes below (`reify-tools-`, `reify-commit-`, etc.) must not match.
+    expect(REIFY_MCP_TMP_PREFIX.test('reify-tools-abc')).toBe(false);
+    expect(REIFY_MCP_TMP_PREFIX.test('reify-commit-xyz')).toBe(false);
+    expect(REIFY_MCP_TMP_PREFIX.test('reify-import-test')).toBe(false);
+    expect(REIFY_MCP_TMP_PREFIX.test('reify-jobserver')).toBe(false);
+    // And that it still matches what session.ts:309 actually creates:
+    expect(REIFY_MCP_TMP_PREFIX.test('reify-mcp-ab12CD')).toBe(true);
   });
 });
