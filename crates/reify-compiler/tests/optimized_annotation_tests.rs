@@ -624,7 +624,9 @@ structure S {
 
 /// `@optimized("kernel::foo")` on an annotated function must populate
 /// `CompiledFunction::optimized_target` with `Some("kernel::foo")`, and an
-/// un-annotated function yields `None`.
+/// un-annotated function yields `None`.  A `Clone` of the annotated function
+/// must carry the same value (exercises the `#[derive(Clone)]` on
+/// `CompiledFunction` for the new field).
 ///
 /// RED (step-3): fails to compile because `CompiledFunction` has no
 /// `optimized_target` field yet. The compile error is the regression-guard.
@@ -647,6 +649,13 @@ fn optimized_target_field_on_compiled_function() {
         annotated_fn.optimized_target,
         Some("kernel::foo".to_string()),
         "expected optimized_target = Some(\"kernel::foo\") on annotated function"
+    );
+    // Clone round-trip: the field must survive Clone.
+    let cloned = annotated_fn.clone();
+    assert_eq!(
+        cloned.optimized_target,
+        annotated_fn.optimized_target,
+        "optimized_target must survive Clone"
     );
 
     // (b) plain function
@@ -692,43 +701,6 @@ fn optimized_annotation_on_function_is_accepted() {
         bad_optimized_warnings.is_empty(),
         "@optimized on function should not warn; got: {:?}",
         bad_optimized_warnings
-    );
-}
-
-// ── Step 9 (task 3377): compile→clone round-trip ────────────────────────────
-
-/// Pins that `CompiledFunction::optimized_target` survives the full compile
-/// pipeline AND a `Clone` round-trip. This is the surrogate for the task's
-/// "serde round-trip" requirement: `CompiledFunction` has no Serde derives, so
-/// we verify the value is intact through (a) annotation parsing, (b) the
-/// validator allow-list, (c) `compile_function`'s extraction, (d) the
-/// `CompiledFunction { … }` literal, and (e) the `Clone` impl.
-///
-/// After step-4 this test should be green on the first run — it acts as a
-/// regression-guard if any of those five layers stops propagating the field.
-#[test]
-fn compiled_function_optimized_target_compile_round_trip() {
-    let source =
-        r#"@optimized("kernel::foo::bar") fn solve_elastic_static(x: Real) -> Real { x }"#;
-    let module = compile_source(source);
-
-    let errors = error_diags(&module.diagnostics);
-    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
-
-    let f: &CompiledFunction = module
-        .functions
-        .iter()
-        .find(|f| f.name == "solve_elastic_static")
-        .expect("function 'solve_elastic_static' not found in compiled module");
-
-    // Clone the CompiledFunction — exercises the Clone impl and ensures the
-    // field isn't accidentally dropped by a future #[derive] removal.
-    let cloned = f.clone();
-    assert_eq!(
-        cloned.optimized_target,
-        Some("kernel::foo::bar".to_string()),
-        "optimized_target must survive Clone; got: {:?}",
-        cloned.optimized_target
     );
 }
 
