@@ -10,6 +10,8 @@ export interface StatusBarProps {
   claudeStatus?: SessionStatus;
   onToggleChat?: () => void;
   tessellationDiagnostics?: DiagnosticInfo[];
+  compileDiagnostics?: DiagnosticInfo[];
+  onToggleDiagnostics?: () => void;
 }
 
 export const StatusBar: Component<StatusBarProps> = (props) => {
@@ -33,6 +35,17 @@ export const StatusBar: Component<StatusBarProps> = (props) => {
 
   const diagnosticSummary = createMemo(() => {
     const diags = props.tessellationDiagnostics ?? [];
+    let errorCount = 0;
+    let warningCount = 0;
+    for (const d of diags) {
+      if (d.severity === 'Error') errorCount++;
+      else if (d.severity === 'Warning') warningCount++;
+    }
+    return { errorCount, warningCount };
+  });
+
+  const compileSummary = createMemo(() => {
+    const diags = props.compileDiagnostics ?? [];
     let errorCount = 0;
     let warningCount = 0;
     for (const d of diags) {
@@ -87,6 +100,22 @@ export const StatusBar: Component<StatusBarProps> = (props) => {
             <span class={styles.warningBadge}>{diagnosticSummary().warningCount} warning{diagnosticSummary().warningCount > 1 ? 's' : ''}</span>
           </Show>
         </span>
+      </Show>
+      <Show when={(props.compileDiagnostics?.length ?? 0) > 0}>
+        <span class={styles.divider} />
+        <button
+          class={`${styles.section} ${styles.diagnosticsTrigger}`}
+          data-testid="diagnostics-count"
+          aria-label={`Show compile diagnostics (${props.compileDiagnostics?.length ?? 0})`}
+          onClick={() => props.onToggleDiagnostics?.()}
+        >
+          <Show when={compileSummary().errorCount > 0}>
+            <span class={styles.errorBadge}>{compileSummary().errorCount} error{compileSummary().errorCount > 1 ? 's' : ''}</span>
+          </Show>
+          <Show when={compileSummary().warningCount > 0}>
+            <span class={styles.warningBadge}>{compileSummary().warningCount} warning{compileSummary().warningCount > 1 ? 's' : ''}</span>
+          </Show>
+        </button>
       </Show>
       <span class={styles.divider} />
       <span class={styles.section}>
