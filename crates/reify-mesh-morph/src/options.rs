@@ -165,6 +165,15 @@ pub struct MorphOptions {
     /// (PRD task #10) reads this value and forwards it to
     /// [`crate::laplacian::laplacian_smooth`].
     pub laplacian_iterations: u32,
+
+    /// Per-element stiffness scaling rule for the fictitious-elastic morph.
+    ///
+    /// PRD `docs/prds/v0_3/mesh-morphing.md` §"Spatially-varying fictitious
+    /// stiffness" (task #8): [`StiffnessRule::InverseVolume`] is the
+    /// prescribed default — small-volume elements (near features) become
+    /// stiffer, preserving mesh gradation. Use [`StiffnessRule::Uniform`] to
+    /// reproduce the task #7 baseline bit-for-bit.
+    pub stiffness_rule: StiffnessRule,
 }
 
 impl Default for MorphOptions {
@@ -177,6 +186,9 @@ impl Default for MorphOptions {
             fictitious_youngs_modulus_base: 1.0,
             fictitious_poisson_ratio: 0.3,
             laplacian_iterations: 8,
+            // PRD task #8: InverseVolume is the prescribed default for
+            // mesh-gradation preservation (small elements stay stiff).
+            stiffness_rule: StiffnessRule::InverseVolume,
         }
     }
 }
