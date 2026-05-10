@@ -206,8 +206,13 @@ fn assembly_elements_for<'a>(
 ///
 /// * `nodes` — node coordinates (`nodes[k]` is the 3-D position of node `k`)
 /// * `l` — total cylinder length; the diaphragm plane is at `z = l/2`
-/// * `tol` — node-on-boundary detection tolerance; should be well within the
-///   smallest mesh spacing (e.g. `1.0` for R=300, L=600; `0.1` for R=1, L=2)
+/// * `tol` — node-on-boundary detection tolerance.  **Must be strictly less
+///   than half the smallest inter-node spacing** in the mesh; exceeding this
+///   bound silently over-constrains interior nodes and produces a spuriously
+///   stiff solution that may still satisfy loose smoke-test bounds.  In
+///   debug builds, a `debug_assert` checks this invariant by computing the
+///   minimum pairwise node distance (O(n²), negligible for small test meshes).
+///   Typical values: `1.0` for R=300, L=600; `0.1` for R=1, L=2.
 ///
 /// # BC groups
 ///
@@ -264,6 +269,36 @@ fn pinched_cylinder_octant_symmetry_bcs(
     l: f64,
     tol: f64,
 ) -> Vec<DirichletBc> {
+    // Guard: tol must be < 0.5 * min_spacing so no interior node is
+    // accidentally captured as a boundary node.  Only active in debug builds;
+    // O(n²) over the node count (negligible for small test meshes).
+    if cfg!(debug_assertions) {
+        let mut min_sq = f64::INFINITY;
+        for i in 0..nodes.len() {
+            for j in (i + 1)..nodes.len() {
+                let dx = nodes[i][0] - nodes[j][0];
+                let dy = nodes[i][1] - nodes[j][1];
+                let dz = nodes[i][2] - nodes[j][2];
+                let sq = dx * dx + dy * dy + dz * dz;
+                if sq < min_sq {
+                    min_sq = sq;
+                }
+            }
+        }
+        debug_assert!(
+            min_sq > 0.0,
+            "pinched_cylinder_octant_symmetry_bcs: mesh contains coincident nodes"
+        );
+        debug_assert!(
+            tol * tol < 0.25 * min_sq,
+            "pinched_cylinder_octant_symmetry_bcs: tol={:.4e} >= 0.5*min_spacing={:.4e}; \
+             tol must be < half the smallest inter-node distance to avoid \
+             pinning interior nodes as boundary nodes",
+            tol,
+            min_sq.sqrt() * 0.5,
+        );
+    }
+
     let mut bcs = Vec::new();
     for (node, n) in nodes.iter().enumerate() {
         let is_diaphragm = (n[2] - l / 2.0).abs() < tol; // z=L/2 end ring
@@ -1340,3 +1375,87 @@ fn flat_plate_cantilever_under_tip_load_displaces_in_load_direction() {
 // configurations. If a future test exercises a configuration where a
 // drilling kernel survives (e.g. a flat patch loaded with no θ_z BCs),
 // it will fail with NaN — that natural failure mode is the canary.
+
+// ─── unit test: pinched_cylinder_octant_symmetry_bcs helper ─────────────────
+
+/// Unit test for `pinched_cylinder_octant_symmetry_bcs` on a 1×1 mesh.
+///
+/// Uses a hand-crafted 4-node mesh (the four corner nodes of a 1/8 octant
+/// with R=1, L=2) to verify the **exact** set of (node, DOF) pairs returned,
+/// independent of `cylinder_octant_mesh`.  This gives the helper its own
+/// coverage so that a future edit cannot silently inflate `n(t)` in the
+/// locking test by dropping a BC.
+///
+/// # Node layout
+///
+/// ```text
+///   node  position        planes
+///   ────  ─────────────   ─────────────────────
+///     0   (1, 0, 0)       y=0  z=0
+///     1   (0, 1, 0)       x=0  z=0
+///     2   (1, 0, 1)       y=0  diaphragm (z=L/2=1)
+///     3   (0, 1, 1)       x=0  diaphragm (z=L/2=1)
+/// ```
+///
+/// # Expected pinned DOFs (after sort+dedup, all value=0)
+///
+/// | Node | Planes       | DOFs pinned (offset = node×6)             |
+/// |------|--------------|-------------------------------------------|
+/// |  0   | y=0, z=0     | 1(u_y) 2(u_z) 3(θ_x) 4(θ_y) 5(θ_z)     |
+/// |  1   | x=0, z=0     | 6(u_x) 8(u_z) 9(θ_x) 10(θ_y) 11(θ_z)   |
+/// |  2   | diaphragm,y=0| 13(u_y) 14(u_z) 15(θ_x) 17(θ_z)         |
+/// |  3   | diaphragm,x=0| 18(u_x) 20(u_z) 22(θ_y) 23(θ_z)         |
+///
+/// Node 2 gets `dof(5)=θ_z` from both the diaphragm group and the y=0 group
+/// — a duplicate that `solve_shell_system` deduplicates.  The unit test
+/// deduplicates before asserting so the result is canonical.
+///
+/// Node 0 does NOT get u_x pinned (DOF 0 is free): the x=0 plane does not
+/// cover node 0, which sits at x=1 (the y=0 arc endpoint).
+#[test]
+fn pinched_cylinder_octant_symmetry_bcs_pins_exact_dofs_on_1x1_mesh() {
+    // Four corner nodes of the 1/8 octant (R=1, L=2).
+    // Constructed manually so this test is independent of `cylinder_octant_mesh`.
+    let nodes: Vec<[f64; 3]> = vec![
+        [1.0, 0.0, 0.0], // node 0: y=0, z=0
+        [0.0, 1.0, 0.0], // node 1: x=0, z=0
+        [1.0, 0.0, 1.0], // node 2: y=0, diaphragm (z=L/2)
+        [0.0, 1.0, 1.0], // node 3: x=0, diaphragm (z=L/2)
+    ];
+    let l = 2.0_f64;
+    let tol = 0.01_f64; // well below min spacing = 1.0
+
+    let mut bcs = pinched_cylinder_octant_symmetry_bcs(&nodes, l, tol);
+    // Sort + dedup: corner nodes appear in multiple BC groups; canonical form
+    // matches what `solve_shell_system` produces before calling
+    // `apply_dirichlet_row_elimination`.
+    bcs.sort_by_key(|bc| bc.dof);
+    bcs.dedup_by_key(|bc| bc.dof);
+
+    // All BCs must be homogeneous.
+    for bc in &bcs {
+        assert_eq!(
+            bc.value, 0.0,
+            "BC at DOF {} must be homogeneous (value=0); got {}",
+            bc.dof, bc.value
+        );
+    }
+
+    let dofs: Vec<usize> = bcs.iter().map(|bc| bc.dof).collect();
+
+    // Expected DOF indices (see table in doc-comment above).
+    let expected: Vec<usize> = vec![
+        1, 2, 3, 4, 5,      // node 0: y=0 + z=0 (u_y, u_z, θ_x, θ_y, θ_z)
+        6, 8, 9, 10, 11,    // node 1: x=0 + z=0 (u_x, u_z, θ_x, θ_y, θ_z)
+        13, 14, 15, 17,     // node 2: diaphragm + y=0 (u_y, u_z, θ_x, θ_z)
+        18, 20, 22, 23,     // node 3: diaphragm + x=0 (u_x, u_z, θ_y, θ_z)
+    ];
+
+    assert_eq!(
+        dofs, expected,
+        "pinched_cylinder_octant_symmetry_bcs pinned unexpected DOFs.\n\
+         got:      {dofs:?}\n\
+         expected: {expected:?}\n\
+         (sorted, deduplicated, value=0 for all)"
+    );
+}
