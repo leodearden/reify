@@ -314,8 +314,9 @@ pub fn element_stiffness_p2(
 #[allow(clippy::needless_range_loop)]
 mod tests {
     use super::*;
-    use crate::assembly::test_support::scaled_p2_phys_nodes;
-    use crate::constitutive::IsotropicElastic;
+    use crate::assembly::test_support::{
+        dimensionless_steel_like, linf, matvec, scaled_p2_phys_nodes, strain_energies,
+    };
 
     /// Canonical unit reference tet: vertices `(0,0,0), (1,0,0), (0,1,0),
     /// (0,0,1)` with reference-tet volume 1/6.
@@ -325,31 +326,6 @@ mod tests {
         [0.0, 1.0, 0.0],
         [0.0, 0.0, 1.0],
     ];
-
-    fn dimensionless_steel_like() -> IsotropicElastic {
-        IsotropicElastic {
-            youngs_modulus: 1.0,
-            poisson_ratio: 0.3,
-        }
-    }
-
-    /// Compute K · u for a flat-row-major K of size `n × n`.
-    fn matvec(k: &crate::assembly::ElementStiffness, u: &[f64]) -> Vec<f64> {
-        assert_eq!(k.n_dofs, u.len());
-        let n = k.n_dofs;
-        let mut out = vec![0.0; n];
-        for i in 0..n {
-            for j in 0..n {
-                out[i] += k.get(i, j) * u[j];
-            }
-        }
-        out
-    }
-
-    /// L∞ norm of a slice.
-    fn linf(v: &[f64]) -> f64 {
-        v.iter().fold(0.0_f64, |acc, x| acc.max(x.abs()))
-    }
 
     #[test]
     fn p1_returns_12_by_12_stiffness() {
@@ -416,40 +392,6 @@ mod tests {
                 linf(&ku),
             );
         }
-    }
-
-    /// Shared patch-test helper.
-    ///
-    /// Computes U_K = 0.5 · uᵀ · K · u (treating K as flat row-major) and
-    /// U_analytical = 0.5 · εᵀ · D · ε · V, returning `(U_K, U_analytical)`.
-    fn strain_energies(
-        k: &crate::assembly::ElementStiffness,
-        u: &[f64],
-        eps_voigt: &[f64; 6],
-        d: &[[f64; 6]; 6],
-        volume: f64,
-    ) -> (f64, f64) {
-        // U_K = 0.5 · uᵀ K u
-        let ku = matvec(k, u);
-        let mut u_dot_ku = 0.0;
-        for i in 0..u.len() {
-            u_dot_ku += u[i] * ku[i];
-        }
-        let u_k = 0.5 * u_dot_ku;
-
-        // U_analytical = 0.5 · εᵀ D ε V
-        let mut d_eps = [0.0_f64; 6];
-        for i in 0..6 {
-            for j in 0..6 {
-                d_eps[i] += d[i][j] * eps_voigt[j];
-            }
-        }
-        let mut eps_dot_d_eps = 0.0;
-        for i in 0..6 {
-            eps_dot_d_eps += eps_voigt[i] * d_eps[i];
-        }
-        let u_analytical = 0.5 * eps_dot_d_eps * volume;
-        (u_k, u_analytical)
     }
 
     #[test]

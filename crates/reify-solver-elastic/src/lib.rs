@@ -29,6 +29,7 @@
 //!
 //! ```
 //! use reify_solver_elastic::{
+//!     element_stiffness_hex_p1, element_stiffness_wedge_p1,
 //!     Jacobian, QuadraturePoint, ReferenceCoord, ReferenceElement, TetP1, TetP2, HexP1, WedgeP1,
 //!     Mitc3Plus, ShellReferenceCoord, TyingPoint,
 //!     ShellFrame, build_shell_frame, plane_stress_d, shell_element_stiffness,
@@ -256,6 +257,8 @@ pub mod warm_state;
 pub use assembly::{
     AssemblyElement, AssemblyMode, ElementOrder, ElementStiffness, assemble_global_stiffness,
     element_stiffness,
+    hex::element_stiffness_hex_p1,
+    wedge::element_stiffness_wedge_p1,
 };
 pub use boundary::{
     DirichletBc, FaceOrder, apply_body_force, apply_dirichlet_row_elimination, apply_point_load,

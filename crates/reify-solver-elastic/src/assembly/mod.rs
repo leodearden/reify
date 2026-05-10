@@ -12,7 +12,9 @@
 //! element's `dofs_per_node` from `k_e.n_dofs / connectivity.len()`.
 
 pub mod global;
+pub mod hex;
 pub mod tet;
+pub mod wedge;
 
 pub use global::{AssemblyElement, AssemblyMode, assemble_global_stiffness};
 
