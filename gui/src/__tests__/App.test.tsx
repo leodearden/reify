@@ -3025,6 +3025,37 @@ describe('App tessellation diagnostics end-to-end wiring', () => {
       expect(statusBar.textContent).toMatch(/compile error/i);
     });
   });
+
+  it('clicking tessellation-errors badge opens the diagnostics-panel containing the tessellation diagnostic', async () => {
+    render(() => <App />);
+    await waitFor(() => expect(tessellationDiagnosticsCallback).toBeDefined());
+
+    tessellationDiagnosticsCallback!([
+      {
+        file_path: 'helper.ri',
+        line: 5, column: 3, end_line: 5, end_column: 10,
+        severity: 'Error',
+        message: 'tess kernel boom',
+        code: null,
+      },
+    ]);
+
+    // Wait for the badge to appear
+    await waitFor(() => {
+      const statusBar = screen.getByTestId('status-bar');
+      expect(statusBar.querySelector('[data-testid="tessellation-errors"]')).toBeTruthy();
+    });
+
+    // Click the tessellation-errors badge
+    fireEvent.click(screen.getByTestId('tessellation-errors'));
+
+    // Panel should open and display the tessellation diagnostic message
+    await waitFor(() => {
+      const panel = screen.getByTestId('diagnostics-panel');
+      expect(panel).toBeTruthy();
+      expect(panel.textContent).toContain('tess kernel boom');
+    });
+  });
 });
 
 describe('App compile diagnostics end-to-end wiring', () => {
