@@ -146,3 +146,8 @@
   display: block;
   flex-shrink: 0;
 }
+
+.sparklineLine {
+  stroke: var(--accent, #4a9eff);
+  stroke-width: 1.5;
+}

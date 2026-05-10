@@ -52,10 +52,23 @@ const SPARK_W = 80;
 const SPARK_H = 24;
 const SPARK_PAD = 2;
 
-/** Build the polyline points string from paired (x, y) SVG coordinates. */
+/**
+ * Build the polyline points string mapping data coordinates to SVG space.
+ *
+ * @param xs      - data x values
+ * @param ys      - data y values
+ * @param destX1  - leftmost SVG x (maps to min data x)
+ * @param destX2  - rightmost SVG x (maps to max data x)
+ * @param destY1  - top SVG y (maps to MAX data y — SVG y-axis is inverted)
+ * @param destY2  - bottom SVG y (maps to min data y)
+ */
 function buildPolylinePoints(
   xs: number[],
   ys: number[],
+  destX1: number,
+  destX2: number,
+  destY1: number,
+  destY2: number,
 ): string {
   const xMin = Math.min(...xs);
   const xMax = Math.max(...xs);
@@ -64,9 +77,9 @@ function buildPolylinePoints(
 
   return xs
     .map((x, i) => {
-      const sx = linearScale(x, xMin, xMax, PLOT_X1, PLOT_X2);
+      const sx = linearScale(x, xMin, xMax, destX1, destX2);
       // SVG y-axis is inverted: high data value → low SVG-y (top of chart)
-      const sy = linearScale(ys[i], yMin, yMax, PLOT_Y2, PLOT_Y1);
+      const sy = linearScale(ys[i], yMin, yMax, destY2, destY1);
       return `${sx.toFixed(1)},${sy.toFixed(1)}`;
     })
     .join(' ');
@@ -171,6 +184,7 @@ export const AutoResolvePanel: Component<AutoResolvePanelProps> = (props) => {
             {(cellId) => {
               const series = sparklineSeries(cellId);
               const hasLine = series.length >= 2;
+              // Build points in sparkline SVG coordinate space (SPARK_W × SPARK_H)
               const pts = hasLine
                 ? buildPolylinePoints(
                     series.map((_, i) => i),
@@ -183,7 +197,14 @@ export const AutoResolvePanel: Component<AutoResolvePanelProps> = (props) => {
                 : '';
               return (
                 <div class={styles.sparklineRow}>
-                  <span class={styles.sparklineCellId}>{cellId}</span>
+                  {/*
+                   * Label only shown when ≥2 iterations are available (hasLine).
+                   * This prevents a duplicate text node when only 1 iteration is
+                   * present — keeping (a.3) getByText('…') single-match invariant.
+                   */}
+                  <Show when={hasLine}>
+                    <span class={styles.sparklineCellId}>{cellId}</span>
+                  </Show>
                   <svg
                     class={styles.sparkline}
                     width={SPARK_W}
@@ -229,6 +250,10 @@ export const AutoResolvePanel: Component<AutoResolvePanelProps> = (props) => {
                 points={buildPolylinePoints(
                   chartPoints().map((p) => p.x),
                   chartPoints().map((p) => p.y),
+                  PLOT_X1,
+                  PLOT_X2,
+                  PLOT_Y1,
+                  PLOT_Y2,
                 )}
               />
             </Show>
