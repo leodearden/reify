@@ -7559,4 +7559,22 @@ mod tests {
         );
     }
 
+    /// Pin `DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` against OCCT's authoritative
+    /// `Precision::Confusion()` value at runtime.
+    ///
+    /// `Precision::Confusion()` is defined in OCCT as the `constexpr` literal
+    /// `1.0e-7`, identical to the Rust constant.  This test would fail if a
+    /// future OCCT release changed `Precision::Confusion()` away from 1e-7,
+    /// giving genuine drift-detection that the deleted tautological test in
+    /// `reify-types` only pretended to provide (that test compared the constant
+    /// against the literal it was defined as — always true by construction).
+    #[test]
+    fn default_point_on_shape_tolerance_m_pins_occt_precision_confusion() {
+        assert_eq!(
+            ffi::ffi::precision_confusion(),
+            reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
+            "DEFAULT_POINT_ON_SHAPE_TOLERANCE_M must match OCCT Precision::Confusion()"
+        );
+    }
+
 }
