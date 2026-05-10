@@ -17,6 +17,11 @@
 //! [`crate::laplacian::laplacian_smooth`] based on the magnitude of the
 //! parameter change and the laplacian-quickpass-threshold.
 
+use reify_solver_elastic::{
+    AssemblyElement, AssemblyMode, CgSolverOptions, DirichletBc, ElementOrder, ElementStiffness,
+    IsotropicElastic, SolverMode, apply_dirichlet_row_elimination, assemble_global_stiffness,
+    element_stiffness, solve_cg,
+};
 use reify_types::{ElementOrderTag, VolumeMesh};
 
 use crate::MorphOptions;
@@ -91,7 +96,7 @@ pub enum ElasticityFailure {
 pub fn elasticity_morph(
     old_mesh: &VolumeMesh,
     prescribed_positions: &[(u32, [f64; 3])],
-    _options: &MorphOptions,
+    options: &MorphOptions,
 ) -> Result<VolumeMesh, ElasticityFailure> {
     if old_mesh.element_order != ElementOrderTag::P1 {
         return Err(ElasticityFailure::UnsupportedElementOrder(
@@ -116,7 +121,110 @@ pub fn elasticity_morph(
             normals: None,
         });
     }
-    unimplemented!("step-8: full elasticity pipeline lands here")
+
+    // ── Pipeline ─────────────────────────────────────────────────────────────
+    let n_nodes = old_mesh.vertices.len() / 3;
+    let n_elements = old_mesh.tet_indices.len() / 4;
+
+    let material = IsotropicElastic {
+        youngs_modulus: options.fictitious_youngs_modulus_base,
+        poisson_ratio: options.fictitious_poisson_ratio,
+    };
+
+    // Per-element data — Vec storage keeps `ElementStiffness` and
+    // connectivity buffers alive for the `AssemblyElement` borrows.
+    let mut k_elements: Vec<ElementStiffness> = Vec::with_capacity(n_elements);
+    let mut connectivities: Vec<[usize; 4]> = Vec::with_capacity(n_elements);
+    for tet in old_mesh.tet_indices.chunks_exact(4) {
+        // Per-tet physical-node coordinates. Out-of-range tet indices
+        // (precondition violation per the doc-comment on tet_indices) get
+        // silently substituted with [0; 3] — same defensive stance
+        // laplacian_smooth takes (laplacian.rs:144-153).
+        let phys: [[f64; 3]; 4] = [
+            old_mesh.vertex_f64(tet[0]).unwrap_or([0.0; 3]),
+            old_mesh.vertex_f64(tet[1]).unwrap_or([0.0; 3]),
+            old_mesh.vertex_f64(tet[2]).unwrap_or([0.0; 3]),
+            old_mesh.vertex_f64(tet[3]).unwrap_or([0.0; 3]),
+        ];
+        let k_e = element_stiffness(ElementOrder::P1, &phys, &material);
+        k_elements.push(k_e);
+        connectivities.push([
+            tet[0] as usize,
+            tet[1] as usize,
+            tet[2] as usize,
+            tet[3] as usize,
+        ]);
+    }
+
+    let elements: Vec<AssemblyElement<'_>> = (0..n_elements)
+        .map(|i| AssemblyElement {
+            id: i,
+            connectivity: &connectivities[i],
+            k_e: &k_elements[i],
+        })
+        .collect();
+
+    // AssemblyMode::Deterministic — bit-stable across runs and machines (load-
+    // bearing for the FEA warm-start cache, PRD task #15). Parallel-mode
+    // policy lives in PRD task #16's ElasticOptions resolution layer, not in
+    // this primitive.
+    let mut k_global = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
+
+    // f = 0 — the morph BVP has no body forces or surface tractions; surface
+    // motion is prescribed entirely via Dirichlet BCs.
+    let mut f = vec![0.0_f64; 3 * n_nodes];
+
+    // Build per-axis Dirichlet BCs: displacement = new_position - old_position.
+    // DOF index 3*node_idx + axis matches AssemblyElement's node-major,
+    // axis-minor layout (assembly/global.rs:23-26).
+    let mut bcs: Vec<DirichletBc> = Vec::with_capacity(prescribed_positions.len() * 3);
+    for (node_idx, new_position) in prescribed_positions {
+        // Bounds check above ensures vertex_f64 returns Some.
+        let old_position = old_mesh
+            .vertex_f64(*node_idx)
+            .expect("node index validated by up-front bounds check");
+        for axis in 0..3 {
+            bcs.push(DirichletBc {
+                dof: 3 * (*node_idx as usize) + axis,
+                value: new_position[axis] - old_position[axis],
+            });
+        }
+    }
+    apply_dirichlet_row_elimination(&mut k_global, &mut f, &bcs);
+
+    // SolverMode::Deterministic — same rationale as AssemblyMode::Deterministic
+    // above. CgSolverOptions::default() (tolerance 1e-8, max_iter 1000) is
+    // calibrated for general FEA workloads; CG-tuning surface stays internal
+    // (PRD task #16's ElasticOptions resolution layer can swap in custom opts).
+    let cg_result = solve_cg(
+        &k_global,
+        &f,
+        CgSolverOptions::default(),
+        SolverMode::Deterministic,
+    );
+    if !cg_result.converged {
+        return Err(ElasticityFailure::SolverNotConverged {
+            iterations: cg_result.iterations,
+        });
+    }
+
+    // Apply displacement: new_vertex = old_vertex + u (f64 arithmetic at the
+    // read/write boundary, narrowed back to f32 for the output VolumeMesh).
+    let mut out_vertices = Vec::with_capacity(old_mesh.vertices.len());
+    for i in 0..n_nodes {
+        for axis in 0..3 {
+            let old_v = old_mesh.vertices[3 * i + axis] as f64;
+            let new_v = old_v + cg_result.u[3 * i + axis];
+            out_vertices.push(new_v as f32);
+        }
+    }
+
+    Ok(VolumeMesh {
+        vertices: out_vertices,
+        tet_indices: old_mesh.tet_indices.clone(),
+        element_order: old_mesh.element_order,
+        normals: None,
+    })
 }
 
 #[cfg(test)]
