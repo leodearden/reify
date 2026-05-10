@@ -236,6 +236,9 @@ mod tests {
         let probe = ReferenceCoord::new(0.2, 0.3, 0.5);
         let g = WedgeP1.shape_grad_at(probe);
         assert_eq!(g.len(), 6, "shape_grad_at must return N_NODES=6 rows");
+        for row in &g {
+            assert_eq!(row.len(), 3, "each gradient row must have 3 components");
+        }
     }
 
     #[test]
