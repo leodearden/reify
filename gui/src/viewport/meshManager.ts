@@ -492,7 +492,12 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
       if (!disp) continue; // no displaced_positions — skip (geometry untouched)
 
       applyWarpToMesh(mesh, entityPath, warpFactor);
-      addUndeformedOverlay(entityPath, mesh);
+      // Only 'show' state gets an overlay; hidden/ghost intentionally skipped.
+      // See design decision: ghost is already a translucent deformed rendering;
+      // hidden means the user wants no visual for this entity at all.
+      if ((visibilityMap.get(entityPath) ?? 'show') === 'show') {
+        addUndeformedOverlay(entityPath, mesh);
+      }
     }
   }
 
