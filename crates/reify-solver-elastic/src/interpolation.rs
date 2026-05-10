@@ -125,6 +125,33 @@ mod tests {
     ];
 
     #[test]
+    fn point_in_tet_p1_includes_interior_excludes_exterior_within_tolerance() {
+        // Centroid is inside.
+        assert!(
+            point_in_tet_p1(&UNIT_TET_P1, [0.25, 0.25, 0.25], 1e-9),
+            "centroid must be inside",
+        );
+        // Vertex (0,0,0) is on the boundary; with positive tolerance, it
+        // must be classified as inside (boundary points pass).
+        assert!(
+            point_in_tet_p1(&UNIT_TET_P1, [0.0, 0.0, 0.0], 1e-9),
+            "vertex (0,0,0) must be inside (boundary, with tolerance)",
+        );
+        // (0.5, 0.5, 0.5): barycentric ξ = (0.5, 0.5, 0.5), N₀ = -0.5 < 0
+        // ⇒ outside (well beyond the 1e-9 tolerance).
+        assert!(
+            !point_in_tet_p1(&UNIT_TET_P1, [0.5, 0.5, 0.5], 1e-9),
+            "(0.5,0.5,0.5) must be outside",
+        );
+        // Just-outside-vertex: barycentric N₁ = -1e-12 (within 1e-9 tol),
+        // so this passes as inside.
+        assert!(
+            point_in_tet_p1(&UNIT_TET_P1, [-1e-12, 0.0, 0.0], 1e-9),
+            "(-1e-12, 0, 0) must be inside (within tolerance)",
+        );
+    }
+
+    #[test]
     fn barycentric_p1_returns_kronecker_at_vertices_and_partition_at_centroid() {
         // At each vertex v_i, the P1 shape function N_i = 1 and N_j = 0
         // for j ≠ i (Kronecker delta). At the centroid, all four shape
