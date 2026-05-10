@@ -1409,6 +1409,58 @@ mod tests {
         assert_eq!(f[p].to_bits(), beta.to_bits(), "f[0] must be β=0.0");
     }
 
+    // -----------------------------------------------------------------------
+    // Debug-only: sorted col_idx assertion
+    // -----------------------------------------------------------------------
+
+    /// Debug-only: `apply_mpc_row_elimination` panics in debug builds when
+    /// any row of `K` has unsorted column indices.
+    ///
+    /// Fixture: 3×3 sparse K where row 0 has col_idx `[2, 0]` — out of
+    /// order.  Bypasses `try_new_from_triplets` (which sorts on construction)
+    /// by using `SymbolicSparseRowMat::new_unsorted_checked` +
+    /// `SparseRowMat::new`, so the deliberate sort violation reaches
+    /// `apply_mpc_row_elimination` intact.
+    ///
+    /// The new `#[cfg(debug_assertions)]` sorted-col_idx walk at function
+    /// entry must fire before any `binary_search` work, producing a panic
+    /// message that contains "unsorted".
+    ///
+    /// Gated by `#[cfg(debug_assertions)]` so `cargo test --release` does
+    /// not false-fail — same pattern as
+    /// `crates/reify-solver-elastic/src/shell_boundary.rs:542-548`.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "unsorted")]
+    fn apply_mpc_panics_in_debug_when_col_idx_unsorted_within_row() {
+        use faer::sparse::SymbolicSparseRowMat;
+
+        // Build a 3×3 CSR with row 0 having col_idx [2, 0] — unsorted.
+        //   row_ptr = [0, 2, 3, 4]:
+        //     row 0 → slots 0..2  (col_idx = [2, 0], out of order)
+        //     row 1 → slots 2..3  (col_idx = [1])
+        //     row 2 → slots 3..4  (col_idx = [2])
+        //   vals = [1.0, 2.0, 3.0, 4.0]
+        // The debug walk fires on row 0 (adjacent entries 2 ≥ 0) at function
+        // entry, before any per-MpcRow work begins.
+        let symbolic = SymbolicSparseRowMat::<usize>::new_unsorted_checked(
+            3_usize,
+            3_usize,
+            vec![0_usize, 2, 3, 4],
+            None,
+            vec![2_usize, 0, 1, 2],
+        );
+        let mut k = SparseRowMat::<usize, f64>::new(symbolic, vec![1.0, 2.0, 3.0, 4.0]);
+        let mut f = vec![0.0_f64; 3];
+        // MpcRow: pivot dof=0, other dof=1; the debug check fires at entry
+        // before binary_search is ever called.
+        apply_mpc_row_elimination(
+            &mut k,
+            &mut f,
+            &[MpcRow::new(vec![0, 1], vec![1.0, -1.0], 0.0)],
+        );
+    }
+
     /// `apply_mpc_row_elimination` panics with "missing" when `K[j][p]` IS stored
     /// but the redistribution target `K[j][dofs[1]]` is absent.
     ///
