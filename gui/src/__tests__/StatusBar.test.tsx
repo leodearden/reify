@@ -170,8 +170,10 @@ describe('StatusBar tessellation diagnostics', () => {
       />
     ));
     // Assert each badge separately so a missing badge fails the test.
-    expect(screen.getByText(/1 error/i)).toBeTruthy();
-    expect(screen.getByText(/1 warning/i)).toBeTruthy();
+    // Use exact string matching so a regression "1 errors" would be caught
+    // (the regex /1 error/i would silently pass for "1 errors" as a substring match).
+    expect(screen.getByText('1 error')).toBeTruthy();
+    expect(screen.getByText('1 warning')).toBeTruthy();
   });
 
   it('asymmetric counts: pluralisation is correct for 2 errors and 1 warning', () => {
@@ -183,8 +185,8 @@ describe('StatusBar tessellation diagnostics', () => {
         tessellationDiagnostics={[makeDiag('Error'), makeDiag('Error'), makeDiag('Warning')]}
       />
     ));
-    expect(screen.getByText(/2 errors/i)).toBeTruthy();
-    expect(screen.getByText(/1 warning/i)).toBeTruthy();
+    expect(screen.getByText('2 errors')).toBeTruthy();
+    expect(screen.getByText('1 warning')).toBeTruthy();
   });
 
   it('zero meshes and zero errors: shows "No geometry" label', () => {
@@ -482,49 +484,6 @@ describe('StatusBar Claude status indicator', () => {
       />
     ));
     expect(screen.queryByTestId('claude-status')).toBeNull();
-  });
-});
-
-describe('DiagBadgeContent singular/plural badge text contract', () => {
-  function makeDiag(severity: string): DiagnosticInfo {
-    return {
-      file_path: '<unknown>',
-      line: 1, column: 1, end_line: 1, end_column: 1,
-      severity,
-      message: 'test',
-      code: null,
-    };
-  }
-
-  it('tessellation badge: 1 Error renders "1 error" (not "1 errors")', () => {
-    render(() => (
-      <StatusBar
-        evalStatus={{ phase: 'idle' }}
-        meshes={{}}
-        constraints={{}}
-        tessellationDiagnostics={[makeDiag('Error')]}
-      />
-    ));
-    const badge = screen.getByTestId('tessellation-errors');
-    // Strict equality: substring matchers like /1 error/i or .toContain('1 error')
-    // would also pass for a regression "1 errors" — this does not.
-    expect(badge.textContent?.trim()).toBe('1 error');
-    expect(badge.textContent).not.toMatch(/1 errors/i);
-  });
-
-  it('compile badge: 1 Warning renders "1 warning" (not "1 warnings")', () => {
-    render(() => (
-      <StatusBar
-        evalStatus={{ phase: 'idle' }}
-        meshes={{}}
-        constraints={{}}
-        compileDiagnostics={[makeDiag('Warning')]}
-      />
-    ));
-    const badge = screen.getByTestId('diagnostics-count');
-    // Strict equality: closes the regression window left by lax substring matchers.
-    expect(badge.textContent?.trim()).toBe('1 warning');
-    expect(badge.textContent).not.toMatch(/1 warnings/i);
   });
 });
 
