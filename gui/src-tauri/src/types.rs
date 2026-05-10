@@ -104,6 +104,12 @@ pub struct GuiState {
     ///
     /// Non-empty when `tessellate_snapshot` encounters geometry errors (e.g.
     /// OCCT kernel failures). Empty on preview snapshots and after a clean eval.
+    ///
+    /// Also used to surface the most recent fatal tessellation failure on a fresh
+    /// session (when no module has yet been successfully loaded), via the
+    /// `EngineSession::last_tessellation_diagnostics` stored field.  In that case,
+    /// the entry originates from a prior failed load rather than a live tessellation
+    /// pass.  Distinct from `compile_diagnostics` — both streams are disjoint.
     pub tessellation_diagnostics: Vec<DiagnosticInfo>,
     /// Compile diagnostics (errors, warnings, info) from the most recently compiled module.
     ///
@@ -112,6 +118,13 @@ pub struct GuiState {
     /// unknown port types), or info messages. Empty after a clean compile with
     /// no diagnostics. Distinct from `tessellation_diagnostics` — compile
     /// diagnostics are produced before tessellation runs.
+    ///
+    /// Also used to surface the most recent fatal parse/compile failure on a fresh
+    /// session (when no module has yet been successfully loaded), via the
+    /// `EngineSession::last_compile_diagnostics` stored field.  In that case, the
+    /// entry originates from a prior failed load rather than a successful compile
+    /// pass.  Frontends should show these diagnostics in the diagnostics panel
+    /// even when the viewport is empty (i.e. `meshes`, `values`, etc. are empty).
     pub compile_diagnostics: Vec<DiagnosticInfo>,
 }
 
