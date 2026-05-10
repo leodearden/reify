@@ -1260,23 +1260,12 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Step-1 (TDD red): pairwise_tree_sum_fn with start offset — pins the new
-    // (start, len, get) signature contract and tree-shape invariant.
-    //
-    // This test CANNOT COMPILE against the current 2-arg signature
-    // `pairwise_tree_sum_fn(len, get)` — it is the TDD red step.
-    // After step-2 refactors the function it must compile and pass.
-    // -----------------------------------------------------------------------
-
     /// Pins the `pairwise_tree_sum_fn(start, len, get)` signature contract:
-    ///
-    /// - All base-case arms (len 0–8) are exercised with start=0.
-    /// - The start > 0 path is exercised to confirm the offset is applied.
-    /// - A recursion-triggering len > 8 is checked with both start=0 and start>0.
-    /// - A tree-shape bit-pin asserts that len=12 (mid=6) produces bits matching
-    ///   an explicit `(left_half_sum) + (right_half_sum)` grouping, confirming
-    ///   that the mid=6 split and base-case-6 arithmetic order are preserved.
+    /// exercises every base-case arm with start=0, the start>0 offset path,
+    /// and a recursion-triggering len>8 with both start=0 and start>0.
+    /// A tree-shape bit-pin asserts that len=12 (mid=6) produces bits matching
+    /// the explicit pairwise grouping `((xs[0..2])+(xs[3..5]))+((xs[6..8])+(xs[9..11]))`,
+    /// confirming the mid=6 split and base-case-6 arithmetic order.
     #[test]
     fn pairwise_tree_sum_fn_with_start_offset_pins_contract() {
         // Empty case.
@@ -1305,19 +1294,32 @@ mod tests {
         assert_eq!(pairwise_tree_sum_fn(5, 16, &|i| (i + 1) as f64), 216.0);
 
         // Tree-shape bit-pin: len=12 → mid=6, so two base-case-6 arms fire.
-        // Values are powers of 2 (all sums exact in f64) so any grouping gives
-        // the same bits — but this asserts the overall reduction is correct and
-        // the function compiles with the new signature.
+        // Prime reciprocals are not exact in f64, so different addition groupings
+        // produce different bit patterns — a left-fold or a reordered split would
+        // fail this check. expected_bits mirrors the exact pairwise-tree expansion:
+        //   ((xs[0]+xs[1]+xs[2]) + (xs[3]+xs[4]+xs[5]))
+        //   + ((xs[6]+xs[7]+xs[8]) + (xs[9]+xs[10]+xs[11]))
         let xs: [f64; 12] = [
-            1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 256.0, 512.0, 1024.0, 2048.0,
+            1.0_f64 / 3.0,
+            1.0_f64 / 7.0,
+            1.0_f64 / 11.0,
+            1.0_f64 / 13.0,
+            1.0_f64 / 17.0,
+            1.0_f64 / 19.0,
+            1.0_f64 / 23.0,
+            1.0_f64 / 29.0,
+            1.0_f64 / 31.0,
+            1.0_f64 / 37.0,
+            1.0_f64 / 41.0,
+            1.0_f64 / 43.0,
         ];
-        let expected_bits = ((xs[0] + xs[1] + xs[2] + xs[3] + xs[4] + xs[5])
-            + (xs[6] + xs[7] + xs[8] + xs[9] + xs[10] + xs[11]))
+        let expected_bits = (((xs[0] + xs[1] + xs[2]) + (xs[3] + xs[4] + xs[5]))
+            + ((xs[6] + xs[7] + xs[8]) + (xs[9] + xs[10] + xs[11])))
             .to_bits();
         assert_eq!(
             pairwise_tree_sum_fn(0, 12, &|i| xs[i]).to_bits(),
             expected_bits,
-            "tree-shape pin: mid=6 split must produce bits matching [0..5]+[6..11] grouping"
+            "tree-shape pin: mid=6 split must produce bits matching explicit pairwise grouping"
         );
     }
 }
