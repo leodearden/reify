@@ -7,7 +7,7 @@ import {
   loadDiagnosticsPanelSize,
   saveDiagnosticsPanelSize,
   computeDefaultDialogSize,
-} from '../hooks/useDiagnosticsPanelPersistence';
+} from '../hooks/diagnosticsPanelPersistence';
 
 /** Panel-facing wrapper that extends the wire-format DiagnosticInfo with a
  *  frontend-only source tag. The `source` field is never sent by the Rust

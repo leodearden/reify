@@ -7,7 +7,7 @@ import {
   loadDiagnosticsLineWrap,
   loadDiagnosticsPanelSize,
   saveDiagnosticsPanelSize,
-} from '../hooks/useDiagnosticsPanelPersistence';
+} from '../hooks/diagnosticsPanelPersistence';
 import styles from '../panels/DiagnosticsPanel.module.css';
 
 // Stub ResizeObserver for jsdom (which doesn't support it).

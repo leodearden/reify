@@ -8,9 +8,9 @@ import {
   loadDiagnosticsPanelSize,
   saveDiagnosticsPanelSize,
   computeDefaultDialogSize,
-} from '../hooks/useDiagnosticsPanelPersistence';
+} from '../hooks/diagnosticsPanelPersistence';
 
-describe('useDiagnosticsPanelPersistence', () => {
+describe('diagnosticsPanelPersistence', () => {
   beforeEach(() => {
     localStorage.clear();
   });
