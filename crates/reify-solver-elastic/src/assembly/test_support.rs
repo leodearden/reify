@@ -10,6 +10,23 @@
 
 use crate::elements::tet_p2::EDGES;
 
+/// Build the 6 physical nodes of a scaled unit wedge in canonical Gmsh PRI6 order:
+/// bottom triangle (ζ = −s) first, then top triangle (ζ = +s) in the same barycentric
+/// order (`L₀, L₁, L₂`).
+///
+/// `s = 1.0` recovers the canonical reference prism (unit triangle × [−1, +1]);
+/// other scales are used by the volume-scaling tests.
+pub(crate) fn scaled_unit_wedge_phys_nodes(s: f64) -> [[f64; 3]; 6] {
+    [
+        [0.0, 0.0, -s], // node 0: L₀, ζ = −1  → (0, 0, −s)
+        [s, 0.0, -s],   // node 1: L₁, ζ = −1  → (s, 0, −s)
+        [0.0, s, -s],   // node 2: L₂, ζ = −1  → (0, s, −s)
+        [0.0, 0.0, s],  // node 3: L₀, ζ = +1  → (0, 0, +s)
+        [s, 0.0, s],    // node 4: L₁, ζ = +1  → (s, 0, +s)
+        [0.0, s, s],    // node 5: L₂, ζ = +1  → (0, s, +s)
+    ]
+}
+
 /// Build the 8 physical nodes of a scaled unit hex in canonical Hughes/Gmsh hex8
 /// order: bottom face (ζ = −s) counter-clockwise when viewed from +ζ, then
 /// top face (ζ = +s) in the same cyclic order.
