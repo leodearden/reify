@@ -6,6 +6,7 @@
 
 use reify_types::{ElementOrderTag, VolumeMesh};
 use std::collections::HashMap;
+use std::f64::consts::TAU;
 
 /// Sentinel pin used by `tests/calibration.rs`'s smoke test to verify the
 /// helper module is wired in before the procedural generators land.
@@ -173,6 +174,142 @@ pub fn box_mesh(outer: f64, wall_thickness: f64, n: usize) -> (VolumeMesh, Vec<u
                     tet_indices.extend_from_slice(&[
                         c[tet[0]], c[tet[1]], c[tet[2]], c[tet[3]],
                     ]);
+                }
+            }
+        }
+    }
+
+    let mesh = VolumeMesh {
+        vertices,
+        tet_indices,
+        element_order: ElementOrderTag::P1,
+        normals: None,
+    };
+    (mesh, surface_indices)
+}
+
+// ── plate_with_hole ──────────────────────────────────────────────────────────
+
+/// Number of angular subdivisions used by [`plate_with_hole`]. Held constant
+/// across the calibration sweep so connectivity is parameter-invariant.
+const PLATE_N_THETA: usize = 8;
+
+/// Outer plate boundary: half-edge length divided by `max(|cos θ|, |sin θ|)`
+/// gives the distance from the centre to the square boundary in direction θ.
+fn square_radius(side: f64, theta: f64) -> f64 {
+    let half = side / 2.0;
+    let c = theta.cos().abs();
+    let s = theta.sin().abs();
+    half / c.max(s)
+}
+
+/// Square plate `[0, side]^2` × `[0, thickness]` with a circular hole of
+/// diameter `hole_diameter` centred at `(side/2, side/2)`. The xy mesh is a
+/// polar-radial structured grid: `n_radial` radial cells, `PLATE_N_THETA`
+/// angular cells (held constant — connectivity invariance under
+/// `hole_diameter` sweeps requires a fixed angular count). The 2D grid is
+/// extruded through-thickness with `n_through` layers; each hex is decomposed
+/// into 6 right-handed tets via [`HEX_TO_6TETS`].
+///
+/// Each radial position r ∈ {0, …, n_radial} has parameter `t = r / n_radial`
+/// and a vertex at angle θ sitting at
+/// `centre + ((1-t)*hole_radius + t*square_radius(θ)) * (cos θ, sin θ)`.
+/// As `hole_diameter` is varied, only the inner-ring vertices (`r == 0`)
+/// move; the outer-ring vertices stay pinned to the square boundary, so the
+/// connectivity is fully preserved across the calibration sweep.
+///
+/// Surface nodes include every vertex on the bottom face (z = 0), the top
+/// face (z = thickness), the outer rim (`r == n_radial`), and the inner
+/// (hole) rim (`r == 0`).
+pub fn plate_with_hole(
+    side: f64,
+    hole_diameter: f64,
+    thickness: f64,
+    n_radial: usize,
+    n_through: usize,
+) -> (VolumeMesh, Vec<u32>) {
+    assert!(n_radial >= 1, "plate_with_hole requires n_radial ≥ 1");
+    assert!(n_through >= 1, "plate_with_hole requires n_through ≥ 1");
+    let hole_radius = hole_diameter / 2.0;
+    assert!(hole_radius > 0.0, "hole_diameter must be > 0");
+    // Inner ring must fit inside the plate. Use the smallest square radius
+    // (at θ = π/4) as the conservative bound.
+    let r_sq_min = square_radius(side, TAU / 8.0);
+    assert!(
+        hole_radius < r_sq_min,
+        "hole_radius {hole_radius:.5} ≥ min(square_radius) {r_sq_min:.5} — hole would punch through plate boundary"
+    );
+
+    let cx = side / 2.0;
+    let cy = side / 2.0;
+    let n_theta = PLATE_N_THETA;
+
+    // Vertex layout: (layer_k, ring_r, angle_t) ↦ (k * (n_radial+1) + r) * n_theta + t.
+    let nr_pts = n_radial + 1;
+    let nz_pts = n_through + 1;
+
+    let vertex_idx = |r: usize, t: usize, k: usize| -> u32 {
+        ((k * nr_pts + r) * n_theta + (t % n_theta)) as u32
+    };
+
+    // Pre-compute angles + per-angle outer square radii.
+    let theta: Vec<f64> = (0..n_theta).map(|t| t as f64 * TAU / n_theta as f64).collect();
+    let r_sq: Vec<f64> = theta.iter().map(|&th| square_radius(side, th)).collect();
+
+    // Emit vertices in (k, r, t) order to match vertex_idx.
+    let mut vertices: Vec<f32> = Vec::with_capacity(3 * nz_pts * nr_pts * n_theta);
+    for k in 0..nz_pts {
+        let z = thickness * (k as f64 / n_through as f64);
+        for r in 0..nr_pts {
+            let trad = r as f64 / n_radial as f64;
+            for t in 0..n_theta {
+                let radius = (1.0 - trad) * hole_radius + trad * r_sq[t];
+                let x = cx + radius * theta[t].cos();
+                let y = cy + radius * theta[t].sin();
+                vertices.push(x as f32);
+                vertices.push(y as f32);
+                vertices.push(z as f32);
+            }
+        }
+    }
+
+    // Tet decomposition: every (r, t, k) hex cell, 6 tets each.
+    let mut tet_indices: Vec<u32> = Vec::with_capacity(4 * 6 * n_radial * n_theta * n_through);
+    for k in 0..n_through {
+        for r in 0..n_radial {
+            for t in 0..n_theta {
+                let t_next = (t + 1) % n_theta;
+                // Hex corner ordering (CCW from above on bottom face, then top
+                // face directly above — matches HEX_TO_6TETS's right-handed
+                // canonical layout).
+                let c = [
+                    vertex_idx(r,     t,      k),     // 0
+                    vertex_idx(r + 1, t,      k),     // 1
+                    vertex_idx(r + 1, t_next, k),     // 2
+                    vertex_idx(r,     t_next, k),     // 3
+                    vertex_idx(r,     t,      k + 1), // 4
+                    vertex_idx(r + 1, t,      k + 1), // 5
+                    vertex_idx(r + 1, t_next, k + 1), // 6
+                    vertex_idx(r,     t_next, k + 1), // 7
+                ];
+                for tet in &HEX_TO_6TETS {
+                    tet_indices.extend_from_slice(&[
+                        c[tet[0]], c[tet[1]], c[tet[2]], c[tet[3]],
+                    ]);
+                }
+            }
+        }
+    }
+
+    // Surface = {z=0 face} ∪ {z=thickness face} ∪ {outer rim} ∪ {inner rim}.
+    // A vertex (r, t, k) is on the surface iff r ∈ {0, n_radial} OR
+    // k ∈ {0, n_through}.
+    let mut surface_indices: Vec<u32> = Vec::new();
+    for k in 0..nz_pts {
+        for r in 0..nr_pts {
+            for t in 0..n_theta {
+                if r == 0 || r == n_radial || k == 0 || k == n_through {
+                    surface_indices.push(vertex_idx(r, t, k));
                 }
             }
         }
