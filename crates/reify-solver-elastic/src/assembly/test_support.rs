@@ -10,6 +10,25 @@
 
 use crate::elements::tet_p2::EDGES;
 
+/// Build the 8 physical nodes of a scaled unit hex in canonical Hughes/Gmsh hex8
+/// order: bottom face (ζ = −s) counter-clockwise when viewed from +ζ, then
+/// top face (ζ = +s) in the same cyclic order.
+///
+/// `s = 1.0` recovers the canonical reference cube `[−1, 1]³`; other scales are
+/// used by the volume-scaling tests.
+pub(crate) fn scaled_unit_hex_phys_nodes(s: f64) -> [[f64; 3]; 8] {
+    [
+        [-s, -s, -s], // node 0: (ξ,η,ζ) = (−1,−1,−1)
+        [s, -s, -s],  // node 1: (+1,−1,−1)
+        [s, s, -s],   // node 2: (+1,+1,−1)
+        [-s, s, -s],  // node 3: (−1,+1,−1)
+        [-s, -s, s],  // node 4: (−1,−1,+1)
+        [s, -s, s],   // node 5: (+1,−1,+1)
+        [s, s, s],    // node 6: (+1,+1,+1)
+        [-s, s, s],   // node 7: (−1,+1,+1)
+    ]
+}
+
 /// Build the canonical 10-node P2 phys-node layout for a uniformly scaled
 /// reference tet: 4 vertices at `(0,0,0), (s,0,0), (0,s,0), (0,0,s)`
 /// followed by the 6 edge-midpoint nodes in the production

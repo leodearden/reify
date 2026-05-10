@@ -29,6 +29,7 @@
 //!
 //! ```
 //! use reify_solver_elastic::{
+//!     element_stiffness_hex_p1,
 //!     Jacobian, QuadraturePoint, ReferenceCoord, ReferenceElement, TetP1, TetP2, HexP1, WedgeP1,
 //!     Mitc3Plus, ShellReferenceCoord, TyingPoint,
 //!     ShellFrame, build_shell_frame, plane_stress_d, shell_element_stiffness,
@@ -53,6 +54,7 @@
 //! let _: TetP2 = TetP2;
 //! let _: HexP1 = HexP1;
 //! let _: WedgeP1 = WedgeP1;
+//! let _ = element_stiffness_hex_p1; // re-export smoke: hex stiffness entry point
 //! assert_eq!(<TetP1 as ReferenceElement>::N_NODES, 4);
 //! assert_eq!(<TetP2 as ReferenceElement>::N_NODES, 10);
 //! assert_eq!(<HexP1 as ReferenceElement>::N_NODES, 8);
@@ -256,6 +258,7 @@ pub mod warm_state;
 pub use assembly::{
     AssemblyElement, AssemblyMode, ElementOrder, ElementStiffness, assemble_global_stiffness,
     element_stiffness,
+    hex_wedge::element_stiffness_hex_p1,
 };
 pub use boundary::{
     DirichletBc, FaceOrder, apply_body_force, apply_dirichlet_row_elimination, apply_point_load,
