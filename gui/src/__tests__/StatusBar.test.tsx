@@ -170,8 +170,10 @@ describe('StatusBar tessellation diagnostics', () => {
       />
     ));
     // Assert each badge separately so a missing badge fails the test.
-    expect(screen.getByText(/1 error/i)).toBeTruthy();
-    expect(screen.getByText(/1 warning/i)).toBeTruthy();
+    // Use exact string matching so a regression "1 errors" would be caught
+    // (the regex /1 error/i would silently pass for "1 errors" as a substring match).
+    expect(screen.getByText('1 error')).toBeTruthy();
+    expect(screen.getByText('1 warning')).toBeTruthy();
   });
 
   it('asymmetric counts: pluralisation is correct for 2 errors and 1 warning', () => {
@@ -183,8 +185,8 @@ describe('StatusBar tessellation diagnostics', () => {
         tessellationDiagnostics={[makeDiag('Error'), makeDiag('Error'), makeDiag('Warning')]}
       />
     ));
-    expect(screen.getByText(/2 errors/i)).toBeTruthy();
-    expect(screen.getByText(/1 warning/i)).toBeTruthy();
+    expect(screen.getByText('2 errors')).toBeTruthy();
+    expect(screen.getByText('1 warning')).toBeTruthy();
   });
 
   it('zero meshes and zero errors: shows "No geometry" label', () => {
