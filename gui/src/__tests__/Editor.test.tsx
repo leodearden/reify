@@ -8,6 +8,7 @@ import { diagnosticCount } from '@codemirror/lint';
 import { createEditorStore } from '../stores/editorStore';
 import * as bridge from '../bridge';
 import type { FileData, SourceLocation } from '../types';
+import { EXTERNALLY_CHANGED_SAVE_BLOCKED_MSG } from '../editor/messages';
 
 // Mock Tauri API modules before importing Editor
 vi.mock('@tauri-apps/api/core', () => ({
@@ -1069,8 +1070,8 @@ describe('Editor Mod-s aborts when file is externally changed', () => {
 
     // saveFile must NOT be called
     expect(saveSpy).not.toHaveBeenCalled();
-    // onError must be called with a message mentioning external change
-    expect(onError).toHaveBeenCalledWith(expect.stringMatching(/externally/i));
+    // onError must be called with the exact save-blocked message constant
+    expect(onError).toHaveBeenCalledWith(EXTERNALLY_CHANGED_SAVE_BLOCKED_MSG);
   });
 
   it('(b) after clearExternallyChanged, Mod-s DOES call saveFile', async () => {
