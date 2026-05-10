@@ -1253,4 +1253,190 @@ mod tests {
             "algorithm drift detected — update this literal in the same commit"
         );
     }
+
+    // ── walk_contributor tests ────────────────────────────────────────────────
+    //
+    // These tests verify `crate::engine_hash_algo::walk_contributor`, which is
+    // the SINGLE source of truth for both the library (via engine_hash_algo.rs)
+    // and build.rs (via `include!()` of the same file). Tests fail to compile
+    // until step-6 creates `src/engine_hash_algo.rs` and declares
+    // `pub(crate) mod engine_hash_algo;` in `lib.rs`.
+
+    #[test]
+    fn walk_contributor_for_a_single_file_root_emits_rerun_path_for_the_file_and_two_framed_parts() {
+        use std::io::Write as _;
+
+        let mut tmpfile = tempfile::NamedTempFile::new().expect("must create tempfile");
+        tmpfile.write_all(b"hello").expect("must write to tempfile");
+        tmpfile.flush().expect("must flush tempfile");
+        let path = tmpfile.path().to_path_buf();
+
+        let walk = crate::engine_hash_algo::walk_contributor("label", &path);
+
+        assert_eq!(
+            walk.rerun_paths,
+            vec![path.clone()],
+            "single-file root: rerun_paths must be [the file itself]"
+        );
+        assert_eq!(
+            walk.parts,
+            vec![b"label".to_vec(), b"hello".to_vec()],
+            "single-file root: parts must be [label_bytes, file_bytes]"
+        );
+    }
+
+    /// PRIMARY regression guard for review issue #1: the build script must emit
+    /// a `cargo:rerun-if-changed` directive for the directory itself — not just
+    /// the files inside it — so that adding a brand-new file to a contributor
+    /// directory triggers a rebuild and includes the new file's bytes in
+    /// ENGINE_VERSION_HASH. Without the directory-level directive, cargo only
+    /// re-runs when an already-listed file changes; a new file is silently
+    /// excluded from the hash. DO NOT REMOVE this test without understanding
+    /// that consequence.
+    #[test]
+    fn walk_contributor_for_a_directory_root_emits_rerun_path_for_the_directory_itself_so_added_files_trigger_rebuild() {
+        let tmpdir = tempfile::TempDir::new().expect("must create tempdir");
+        let dir_path = tmpdir.path().to_path_buf();
+        let file_path = dir_path.join("foo.rs");
+        std::fs::write(&file_path, b"// content").expect("must write file");
+
+        let walk = crate::engine_hash_algo::walk_contributor("root", &dir_path);
+
+        assert!(
+            walk.rerun_paths.contains(&dir_path),
+            "directory walk must emit rerun_path for the directory itself (issue #1 fix): \
+             adding a new file to a contributor dir must trigger a rebuild; \
+             got: {:?}",
+            walk.rerun_paths
+        );
+        assert!(
+            walk.rerun_paths.contains(&file_path),
+            "directory walk must emit rerun_path for each file inside; got: {:?}",
+            walk.rerun_paths
+        );
+    }
+
+    #[test]
+    fn walk_contributor_for_nested_subdirectories_emits_rerun_paths_for_every_intermediate_directory() {
+        let tmpdir = tempfile::TempDir::new().expect("must create tempdir");
+        let root = tmpdir.path().to_path_buf();
+        let a = root.join("a");
+        let b = a.join("b");
+        std::fs::create_dir_all(&b).expect("must create nested dirs");
+        let file = b.join("c.rs");
+        std::fs::write(&file, b"// content").expect("must write file");
+
+        let walk = crate::engine_hash_algo::walk_contributor("root", &root);
+
+        assert!(
+            walk.rerun_paths.contains(&root),
+            "must emit rerun_path for the root dir; got: {:?}",
+            walk.rerun_paths
+        );
+        assert!(
+            walk.rerun_paths.contains(&a),
+            "must emit rerun_path for intermediate dir 'a'; got: {:?}",
+            walk.rerun_paths
+        );
+        assert!(
+            walk.rerun_paths.contains(&b),
+            "must emit rerun_path for intermediate dir 'a/b'; got: {:?}",
+            walk.rerun_paths
+        );
+        assert!(
+            walk.rerun_paths.contains(&file),
+            "must emit rerun_path for 'a/b/c.rs'; got: {:?}",
+            walk.rerun_paths
+        );
+    }
+
+    #[test]
+    fn walk_contributor_sorts_directory_entries_by_name_for_byte_determinism_across_platforms() {
+        let tmpdir = tempfile::TempDir::new().expect("must create tempdir");
+        let root = tmpdir.path().to_path_buf();
+        // Write files out of alphabetical order to expose sort regressions.
+        std::fs::write(root.join("b.rs"), b"// b").expect("must write b.rs");
+        std::fs::write(root.join("a.rs"), b"// a").expect("must write a.rs");
+        std::fs::write(root.join("c.rs"), b"// c").expect("must write c.rs");
+
+        let walk = crate::engine_hash_algo::walk_contributor("root", &root);
+
+        // Parts alternate: [path0_bytes, file0_bytes, path1_bytes, file1_bytes, ...].
+        // step_by(2) starting at index 0 extracts path bytes for all entries.
+        let path_strs: Vec<String> = walk
+            .parts
+            .iter()
+            .step_by(2)
+            .map(|p| String::from_utf8_lossy(p).into_owned())
+            .collect();
+
+        let a_pos = path_strs
+            .iter()
+            .position(|p| p.contains("a.rs"))
+            .expect("a.rs must appear in path parts");
+        let b_pos = path_strs
+            .iter()
+            .position(|p| p.contains("b.rs"))
+            .expect("b.rs must appear in path parts");
+        let c_pos = path_strs
+            .iter()
+            .position(|p| p.contains("c.rs"))
+            .expect("c.rs must appear in path parts");
+
+        assert!(
+            a_pos < b_pos,
+            "a.rs must come before b.rs in sorted order; got positions a={a_pos}, b={b_pos}"
+        );
+        assert!(
+            b_pos < c_pos,
+            "b.rs must come before c.rs in sorted order; got positions b={b_pos}, c={c_pos}"
+        );
+    }
+
+    /// Equivalence proof that directly addresses review issue #2: since build.rs
+    /// uses the EXACT same source for both `walk_contributor` and
+    /// `compose_engine_version_hash` via `include!()`, any algorithm drift in
+    /// either function breaks this test. The pinned hex literal (filled in during
+    /// step-6 GREEN) provides a standalone algorithm-drift sentinel.
+    #[test]
+    fn walk_contributor_drives_compose_engine_version_hash_end_to_end_for_a_synthetic_two_file_contributor_set() {
+        let tmpdir = tempfile::TempDir::new().expect("must create tempdir");
+        let root = tmpdir.path().to_path_buf();
+        // Files created in reverse alphabetical order to confirm sorting:
+        std::fs::write(root.join("beta.rs"), b"// beta content").expect("must write beta.rs");
+        std::fs::write(root.join("alpha.rs"), b"// alpha content")
+            .expect("must write alpha.rs");
+
+        let walk = crate::engine_hash_algo::walk_contributor("mydir", &root);
+        let walk_refs: Vec<&[u8]> = walk.parts.iter().map(|v| v.as_slice()).collect();
+        let hash_from_walk = compose_engine_version_hash(&walk_refs);
+
+        // Manually construct the expected parts in sorted order to prove
+        // `walk_contributor` matches the hand-crafted list.
+        // For directory walk, path_bytes = "{label}/{relative_path}".
+        let expected_parts: &[&[u8]] = &[
+            b"mydir/alpha.rs",
+            b"// alpha content",
+            b"mydir/beta.rs",
+            b"// beta content",
+        ];
+        let hash_from_manual = compose_engine_version_hash(expected_parts);
+
+        assert_eq!(
+            hash_from_walk,
+            hash_from_manual,
+            "walk_contributor output must match manually constructed parts \
+             when fed through compose_engine_version_hash"
+        );
+
+        // Pinned hex literal — filled in during step-6 GREEN. Any change to the
+        // length-prefix scheme, hash primitive, path format, or sort order must
+        // update this literal deliberately in the same commit.
+        assert_eq!(
+            hash_from_manual,
+            "FILL_IN_DURING_STEP_6",
+            "algorithm drift sentinel — update this literal when the \
+             implementation changes"
+        );
+    }
 }
