@@ -22,6 +22,9 @@ vi.mock('../bridge', () => ({
   onTessellationDiagnostics: vi.fn(),
   onCompileDiagnostics: vi.fn(),
   onKernelStatus: vi.fn(),
+  onAutoResolveStart: vi.fn(),
+  onAutoResolveIteration: vi.fn(),
+  onAutoResolveComplete: vi.fn(),
 }));
 
 import {
@@ -34,6 +37,9 @@ import {
   onConstraintRemoved,
   onTessellationDiagnostics,
   onCompileDiagnostics,
+  onAutoResolveStart,
+  onAutoResolveIteration,
+  onAutoResolveComplete,
 } from '../bridge';
 import { createEngineStore } from '../stores/engineStore';
 
@@ -46,6 +52,9 @@ const mockOnValueRemoved = vi.mocked(onValueRemoved);
 const mockOnConstraintRemoved = vi.mocked(onConstraintRemoved);
 const mockOnTessellationDiagnostics = vi.mocked(onTessellationDiagnostics);
 const mockOnCompileDiagnostics = vi.mocked(onCompileDiagnostics);
+const mockOnAutoResolveStart = vi.mocked(onAutoResolveStart);
+const mockOnAutoResolveIteration = vi.mocked(onAutoResolveIteration);
+const mockOnAutoResolveComplete = vi.mocked(onAutoResolveComplete);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -53,6 +62,9 @@ beforeEach(() => {
   // Tests that need specific behaviour can override individual mocks.
   mockOnTessellationDiagnostics.mockResolvedValue(vi.fn());
   mockOnCompileDiagnostics.mockResolvedValue(vi.fn());
+  mockOnAutoResolveStart.mockResolvedValue(vi.fn());
+  mockOnAutoResolveIteration.mockResolvedValue(vi.fn());
+  mockOnAutoResolveComplete.mockResolvedValue(vi.fn());
 });
 
 const sampleMesh: MeshData = {
@@ -860,6 +872,139 @@ describe('engineStore autoResolve loop state', () => {
       expect(state.autoResolve.active).toBe(false);
       // iterations are preserved for inspection
       expect(state.autoResolve.iterations).toHaveLength(2);
+      dispose();
+    });
+  });
+});
+
+describe('engineStore autoResolve subscribeToEvents wiring', () => {
+  const sampleIteration = {
+    iteration: 1,
+    parameters: { 'Bracket.thickness': { value: 4.2, unit: 'mm', display: '4.2mm' } },
+    constraints: {
+      max_von_mises: { name: 'max_von_mises', value: 180, unit: 'MPa', target_upper: 200, satisfied: true },
+    },
+    driving_metric: 'max_von_mises',
+    driving_metric_value: 180,
+  };
+
+  it('(a) subscribeToEvents calls onAutoResolveStart, onAutoResolveIteration, onAutoResolveComplete', async () => {
+    await createRoot(async (dispose) => {
+      mockOnMeshUpdate.mockResolvedValue(vi.fn());
+      mockOnValueUpdate.mockResolvedValue(vi.fn());
+      mockOnConstraintUpdate.mockResolvedValue(vi.fn());
+      mockOnEvaluationStatus.mockResolvedValue(vi.fn());
+      mockOnMeshRemoved.mockResolvedValue(vi.fn());
+      mockOnValueRemoved.mockResolvedValue(vi.fn());
+      mockOnConstraintRemoved.mockResolvedValue(vi.fn());
+
+      const store = createEngineStore();
+      await store.subscribeToEvents();
+
+      expect(mockOnAutoResolveStart).toHaveBeenCalledWith(expect.any(Function));
+      expect(mockOnAutoResolveIteration).toHaveBeenCalledWith(expect.any(Function));
+      expect(mockOnAutoResolveComplete).toHaveBeenCalledWith(expect.any(Function));
+      dispose();
+    });
+  });
+
+  it('(b) auto-resolve-start callback flips active=true and clears iterations', async () => {
+    await createRoot(async (dispose) => {
+      let startCb: (() => void) | undefined;
+      mockOnMeshUpdate.mockResolvedValue(vi.fn());
+      mockOnValueUpdate.mockResolvedValue(vi.fn());
+      mockOnConstraintUpdate.mockResolvedValue(vi.fn());
+      mockOnEvaluationStatus.mockResolvedValue(vi.fn());
+      mockOnMeshRemoved.mockResolvedValue(vi.fn());
+      mockOnValueRemoved.mockResolvedValue(vi.fn());
+      mockOnConstraintRemoved.mockResolvedValue(vi.fn());
+      mockOnAutoResolveStart.mockImplementation(async (cb) => { startCb = cb; return vi.fn(); });
+
+      const store = createEngineStore();
+      store.applyAutoResolveIteration(sampleIteration);
+      await store.subscribeToEvents();
+
+      startCb!();
+      expect(store.state.autoResolve.active).toBe(true);
+      expect(store.state.autoResolve.iterations).toHaveLength(0);
+      dispose();
+    });
+  });
+
+  it('(c) auto-resolve-iteration callback appends to iterations', async () => {
+    await createRoot(async (dispose) => {
+      let iterCb: ((iter: typeof sampleIteration) => void) | undefined;
+      mockOnMeshUpdate.mockResolvedValue(vi.fn());
+      mockOnValueUpdate.mockResolvedValue(vi.fn());
+      mockOnConstraintUpdate.mockResolvedValue(vi.fn());
+      mockOnEvaluationStatus.mockResolvedValue(vi.fn());
+      mockOnMeshRemoved.mockResolvedValue(vi.fn());
+      mockOnValueRemoved.mockResolvedValue(vi.fn());
+      mockOnConstraintRemoved.mockResolvedValue(vi.fn());
+      mockOnAutoResolveIteration.mockImplementation(async (cb) => { iterCb = cb as typeof iterCb; return vi.fn(); });
+
+      const store = createEngineStore();
+      await store.subscribeToEvents();
+
+      iterCb!(sampleIteration);
+      expect(store.state.autoResolve.iterations).toHaveLength(1);
+      expect(store.state.autoResolve.iterations[0]).toEqual(sampleIteration);
+      dispose();
+    });
+  });
+
+  it('(d) auto-resolve-complete callback sets active=false and preserves iterations', async () => {
+    await createRoot(async (dispose) => {
+      let startCb: (() => void) | undefined;
+      let iterCb: ((iter: typeof sampleIteration) => void) | undefined;
+      let completeCb: (() => void) | undefined;
+      mockOnMeshUpdate.mockResolvedValue(vi.fn());
+      mockOnValueUpdate.mockResolvedValue(vi.fn());
+      mockOnConstraintUpdate.mockResolvedValue(vi.fn());
+      mockOnEvaluationStatus.mockResolvedValue(vi.fn());
+      mockOnMeshRemoved.mockResolvedValue(vi.fn());
+      mockOnValueRemoved.mockResolvedValue(vi.fn());
+      mockOnConstraintRemoved.mockResolvedValue(vi.fn());
+      mockOnAutoResolveStart.mockImplementation(async (cb) => { startCb = cb; return vi.fn(); });
+      mockOnAutoResolveIteration.mockImplementation(async (cb) => { iterCb = cb as typeof iterCb; return vi.fn(); });
+      mockOnAutoResolveComplete.mockImplementation(async (cb) => { completeCb = cb; return vi.fn(); });
+
+      const store = createEngineStore();
+      await store.subscribeToEvents();
+
+      startCb!();
+      iterCb!(sampleIteration);
+      completeCb!();
+
+      expect(store.state.autoResolve.active).toBe(false);
+      expect(store.state.autoResolve.iterations).toHaveLength(1);
+      dispose();
+    });
+  });
+
+  it('(e) cleanup() invokes the three new unlisten fns', async () => {
+    await createRoot(async (dispose) => {
+      const unlistenStart = vi.fn();
+      const unlistenIteration = vi.fn();
+      const unlistenComplete = vi.fn();
+      mockOnMeshUpdate.mockResolvedValue(vi.fn());
+      mockOnValueUpdate.mockResolvedValue(vi.fn());
+      mockOnConstraintUpdate.mockResolvedValue(vi.fn());
+      mockOnEvaluationStatus.mockResolvedValue(vi.fn());
+      mockOnMeshRemoved.mockResolvedValue(vi.fn());
+      mockOnValueRemoved.mockResolvedValue(vi.fn());
+      mockOnConstraintRemoved.mockResolvedValue(vi.fn());
+      mockOnAutoResolveStart.mockResolvedValue(unlistenStart);
+      mockOnAutoResolveIteration.mockResolvedValue(unlistenIteration);
+      mockOnAutoResolveComplete.mockResolvedValue(unlistenComplete);
+
+      const store = createEngineStore();
+      const cleanup = await store.subscribeToEvents();
+
+      cleanup();
+      expect(unlistenStart).toHaveBeenCalled();
+      expect(unlistenIteration).toHaveBeenCalled();
+      expect(unlistenComplete).toHaveBeenCalled();
       dispose();
     });
   });
