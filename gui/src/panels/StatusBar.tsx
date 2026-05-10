@@ -89,6 +89,7 @@ export const StatusBar: Component<StatusBarProps> = (props) => {
       <Show when={(props.tessellationDiagnostics?.length ?? 0) > 0}>
         <span class={styles.divider} />
         <button
+          type="button"
           class={`${styles.section} ${styles.diagnosticsTrigger}`}
           data-testid="tessellation-errors"
           data-has-errors={diagnosticSummary().errorCount > 0 ? 'true' : 'false'}
