@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import type { OutboundMessage, InboundMessage } from '../types.js';
+import type { OutboundMessage, InboundMessage, NoticeMessage } from '../types.js';
 
 // Mock the claude CLI subprocess spawning
 vi.mock('node:child_process', () => ({
@@ -3812,7 +3812,9 @@ describe('SidecarSession sandbox wrap (task 3210)', () => {
     await session.handleMessage({ type: 'send_message', id: 'msg-notice-d2', text: 'World' });
 
     // notice emitted exactly once (not twice)
-    const notices = outputs.filter((o) => o.type === 'notice' && (o as any).code === 'sandbox_unavailable');
+    const notices = outputs.filter(
+      (o): o is NoticeMessage => o.type === 'notice' && (o as NoticeMessage).code === 'sandbox_unavailable'
+    );
     expect(notices).toHaveLength(1);
     expect(notices[0].id).toBe('msg-notice-d1');
     expect(warnSpy).toHaveBeenCalledTimes(1);

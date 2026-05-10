@@ -53,6 +53,7 @@ function makePermissionServerMock(): PermissionServer & {
   decide: ReturnType<typeof vi.fn>;
   setRemembered: ReturnType<typeof vi.fn>;
   cancelAll: ReturnType<typeof vi.fn>;
+  readonly __testHooks: { awaitPending: ReturnType<typeof vi.fn> };
 } {
   return {
     start: vi.fn().mockResolvedValue(undefined),
@@ -62,6 +63,7 @@ function makePermissionServerMock(): PermissionServer & {
     decide: vi.fn(),
     setRemembered: vi.fn(),
     cancelAll: vi.fn(),
+    __testHooks: { awaitPending: vi.fn().mockResolvedValue(undefined) },
   };
 }
 

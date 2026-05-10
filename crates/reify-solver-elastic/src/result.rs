@@ -625,12 +625,11 @@ mod tests {
         // diagonal into the result for ε = 0 would surface here.
         let mat = dimensionless_steel_like();
         let stress = element_stress_p1(&UNIT_TET_P1, &mat, &[0.0_f64; 12]);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in stress.iter().enumerate() {
+            for (j, &sij) in row.iter().enumerate() {
                 assert_eq!(
-                    stress[i][j], 0.0,
-                    "zero-displacement σ[{i}][{j}] = {} expected 0.0",
-                    stress[i][j],
+                    sij, 0.0,
+                    "zero-displacement σ[{i}][{j}] = {sij} expected 0.0",
                 );
             }
         }
