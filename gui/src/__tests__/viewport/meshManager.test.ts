@@ -1928,6 +1928,68 @@ describe('meshManager', () => {
       expect(manager.getDeformedOverlays().size).toBe(1);
       expect(manager.getDeformedOverlays().has('B')).toBe(false);
     });
+
+    // --- step-13 teardown tests ---
+
+    it('(d) setDeformation(null) removes overlay from undeformedGroup and disposes its geometry', () => {
+      const { manager } = setupWithOverlay();
+      manager.setDeformation({ warpFactor: 5 });
+
+      const overlay = manager.getDeformedOverlays().get('A')!;
+      const overlayGeom = overlay.geometry;
+
+      vi.clearAllMocks();
+      manager.setDeformation(null);
+
+      // The overlay mesh must have been removed from the group.
+      expect(mockGroupRemove).toHaveBeenCalledWith(overlay);
+      // The overlay's own BufferGeometry must have been disposed.
+      expect(overlayGeom.dispose).toHaveBeenCalledOnce();
+      // The overlays map is now empty.
+      expect(manager.getDeformedOverlays().size).toBe(0);
+    });
+
+    it('(e) calling setDeformation({warpFactor:5}) twice does not duplicate overlays — size stays 1', () => {
+      const { manager } = setupWithOverlay();
+      manager.setDeformation({ warpFactor: 5 });
+
+      // Capture first overlay's geometry before the second call.
+      const firstOverlay = manager.getDeformedOverlays().get('A')!;
+      const firstGeom = firstOverlay.geometry;
+
+      vi.clearAllMocks();
+      manager.setDeformation({ warpFactor: 5 });
+
+      // Still exactly one overlay.
+      expect(manager.getDeformedOverlays().size).toBe(1);
+      // The prior overlay's geometry was disposed (idempotent re-enable path).
+      expect(firstGeom.dispose).toHaveBeenCalledOnce();
+    });
+
+    it('(f) dispose() removes undeformedGroup from scene and disposes undeformedMaterial', () => {
+      const { manager } = setupWithOverlay();
+      manager.setDeformation({ warpFactor: 5 });
+
+      const overlay = manager.getDeformedOverlays().get('A')!;
+      const overlayGeom = overlay.geometry;
+
+      // mockGroups[1] == undeformedGroup; mockBasicMaterials[1] == undeformedMaterial.
+      // Both are created inside createMeshManager (after ghostGroup/ghostMaterial).
+      const undeformedGroup = mockGroups[1];
+      const undeformedMaterial = mockBasicMaterials[1];
+
+      vi.clearAllMocks();
+      manager.dispose();
+
+      // All overlays cleaned up.
+      expect(manager.getDeformedOverlays().size).toBe(0);
+      // Overlay geometry was disposed.
+      expect(overlayGeom.dispose).toHaveBeenCalledOnce();
+      // undeformedGroup was removed from the scene.
+      expect(mockSceneRemove).toHaveBeenCalledWith(undeformedGroup);
+      // undeformedMaterial was disposed.
+      expect(undeformedMaterial.dispose).toHaveBeenCalledOnce();
+    });
   });
 
   describe('setDeformation — sync re-apply', () => {
