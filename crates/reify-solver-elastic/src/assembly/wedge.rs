@@ -58,8 +58,12 @@ mod tests {
         // Tests (b)–(h): symmetry, rigid-body null spaces, patch tests (normal
         // strain + full 6-component), volume scaling, and left-handed orientation.
         // Centroid of the unit reference prism is (1/3, 1/3, 0); swap nodes 1↔2
-        // (bottom-face pair) to flip orientation; the swapped element's effective
-        // quadrature volume = 1/√3 (see left-handed wedge comment in hex_wedge.rs).
+        // (bottom-face pair) to flip orientation. For the bottom-face swap of an
+        // identity-mapped reference prism, det J(ζ) = ζ (see the production test
+        // `wedge_p1::tests::jacobian_negative_det_for_swapped_bottom_face_nodes`
+        // for the J derivation), so the 2-point Gauss-Legendre line rule integrates
+        // |ζ| to 2·(1/√3), giving an effective quadrature volume of
+        // (1/2)·(2/√3) = 1/√3.
         test_support::run_element_stiffness_tests(
             &|nodes, mat| {
                 let arr: &[[f64; 3]; 6] = nodes.try_into().unwrap();
