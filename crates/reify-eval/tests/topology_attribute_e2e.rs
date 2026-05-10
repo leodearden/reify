@@ -32,14 +32,15 @@
 use std::collections::{HashMap, HashSet};
 
 use reify_eval::{
-    AttributeQuery, AttributeResolution, propagate_attributes_via_brepalgoapi_history,
+    AttributeQuery, AttributeResolution, LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M,
+    detect_local_index_reassignment_diagnostics, propagate_attributes_via_brepalgoapi_history,
     resolve_unique_by_attribute,
 };
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
 use reify_types::{
-    BooleanOpHistoryRecords, BooleanOpParents, DiagnosticCode, FeatureId, GeometryHandleId,
-    GeometryOp, ModEntry, RealizationNodeId, Role, SourceSpan, TopologyAttribute,
-    TopologyAttributeTable, Value,
+    BooleanOpHistoryRecords, BooleanOpParents, Diagnostic, DiagnosticCode, FeatureId,
+    GeometryHandleId, GeometryOp, ModEntry, RealizationNodeId, Role, Severity, SourceSpan,
+    TopologyAttribute, TopologyAttributeTable, Value,
 };
 
 /// 10×10×10 mm box, expressed in SI metres at the kernel boundary.
@@ -965,4 +966,222 @@ fn assert_mod_history_propagation_and_clustering(
 struct ClusteringCoverage {
     split_exercised: bool,
     pass_through_assertions: usize,
+}
+
+/// PRD task-4 / #2654 — public-API surface check for
+/// [`detect_local_index_reassignment_diagnostics`].
+///
+/// Why a separate integration test (despite a structurally similar in-module
+/// unit test in `topology_attribute_propagation.rs::detect_local_index_reassignment`)?
+/// **It pins the public re-export.** A future refactor that downgrades the
+/// helper from `pub` to `pub(crate)` (or removes the `lib.rs` re-export at
+/// `crates/reify-eval/src/lib.rs:82-86`) would silently break LSP/MCP /
+/// downstream-crate callers — the unit test, living inside the helper's
+/// own module, would still pass and miss the regression. This test fails
+/// to compile if the symbol is no longer reachable through `reify_eval::*`.
+///
+/// PRD line 72: "Emit when an existing selector's resolved topology
+/// changes after an edit purely due to ordering shuffle (i.e. not because
+/// of a split — splits are handled by mod_history)."
+///
+/// **TODO (deferred follow-up to task #2654):** add an OCCT-gated test that
+/// drives `Engine::build` with a fillet-of-full-circle (or other symmetric-
+/// tiebreak primitive) so the engine-wiring branch in
+/// `engine_build.rs::execute_realization_ops` (per-realization filter,
+/// kernel.query loop, centroid-failure summary warning) is exercised
+/// end-to-end. Today the helper's contract is covered, the engine-wiring
+/// is uncovered. The follow-up requires identifying a stable OCCT op that
+/// reliably produces tied centroids in the v0.2 selector vocabulary; the
+/// existing e2e fixtures all produce well-separated centroids.
+#[test]
+fn local_index_reassignment_diagnostic_fires_for_geometrically_tied_faces() {
+    // Two synthetic TopologyAttribute records in the same
+    // (feature_id, role=Role::Side) group with empty mod_history and
+    // local_index ∈ {0, 1}. Identical centroids place them strictly
+    // inside the 1e-9 m squared-distance threshold.
+    let feature_id = FeatureId::new("F#realization[0]");
+    let attr0 = TopologyAttribute {
+        feature_id: feature_id.clone(),
+        role: Role::Side,
+        local_index: 0,
+        user_label: None,
+        mod_history: Vec::new(),
+    };
+    let attr1 = TopologyAttribute {
+        feature_id: feature_id.clone(),
+        role: Role::Side,
+        local_index: 1,
+        user_label: None,
+        mod_history: Vec::new(),
+    };
+    let h0 = GeometryHandleId(1);
+    let h1 = GeometryHandleId(2);
+    let mut centroids: HashMap<GeometryHandleId, [f64; 3]> = HashMap::new();
+    centroids.insert(h0, [0.0, 0.0, 0.0]);
+    centroids.insert(h1, [0.0, 0.0, 0.0]);
+
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+    let selector_span = SourceSpan::new(10, 20);
+
+    detect_local_index_reassignment_diagnostics(
+        &[(h0, &attr0), (h1, &attr1)],
+        &centroids,
+        LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M,
+        selector_span,
+        &mut diagnostics,
+    );
+
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "expected exactly one diagnostic, got: {diagnostics:?}"
+    );
+    let diag = &diagnostics[0];
+    assert_eq!(diag.severity, Severity::Warning);
+    assert_eq!(
+        diag.code,
+        Some(DiagnosticCode::TopologyAttributeLocalIndexReassigned)
+    );
+    assert!(
+        diag.message.contains("F#realization[0]"),
+        "message must name the feature_id: {}",
+        diag.message
+    );
+    assert!(
+        diag.message.contains("Side"),
+        "message must name the role: {}",
+        diag.message
+    );
+    assert!(
+        diag.message
+            .contains("local_index assignments at indices 0 and 1"),
+        "message must name the tied indices: {}",
+        diag.message
+    );
+}
+
+/// PRD task-4 / #2654 — pin the helper's `(feature_id, role)` grouping so
+/// it does NOT cross-pollute entries from different realizations even when
+/// a single call passes a slice mixing them.
+///
+/// The engine-side filter at `engine_build.rs::execute_realization_ops`
+/// trims the input slice to one realization's entries, so this scenario
+/// shouldn't arise in production. But the helper's grouping contract
+/// (`HashMap<(&FeatureId, Role), …>`) is what makes the engine filter
+/// optional from a *correctness* standpoint — without independent
+/// per-feature-id grouping, the engine filter would be the only thing
+/// preventing cross-realization spurious diagnostics.
+///
+/// Pins: passing a 4-entry slice with TWO feature_ids (each with two
+/// `(role=Side, local_index=0|1)` peers and identical centroids within
+/// their own group, but different centroids across feature_ids) yields
+/// EXACTLY TWO diagnostics — one per `(feature_id, role)` group — and
+/// each diagnostic names only its own feature_id, not the other one.
+///
+/// **TODO (deferred follow-up to task #2654):** add an engine-driven
+/// OCCT test that exercises the engine_build.rs filter directly — i.e.
+/// build two realizations whose attributes share the realization-prefix
+/// pattern but with different feature_ids, then assert that the warning
+/// emitted during realization 1 doesn't reference handles from
+/// realization 0. That requires either an OCCT fixture that produces
+/// reliably tied centroids in two consecutive realizations, or a stub
+/// kernel injection — both larger than this amendment pass's scope.
+#[test]
+fn local_index_reassignment_groups_independently_per_feature_id() {
+    let f0 = FeatureId::new("Foo#realization[0]");
+    let f1 = FeatureId::new("Foo#realization[1]");
+
+    let attr_f0_a = TopologyAttribute {
+        feature_id: f0.clone(),
+        role: Role::Side,
+        local_index: 0,
+        user_label: None,
+        mod_history: Vec::new(),
+    };
+    let attr_f0_b = TopologyAttribute {
+        feature_id: f0.clone(),
+        role: Role::Side,
+        local_index: 1,
+        user_label: None,
+        mod_history: Vec::new(),
+    };
+    let attr_f1_a = TopologyAttribute {
+        feature_id: f1.clone(),
+        role: Role::Side,
+        local_index: 0,
+        user_label: None,
+        mod_history: Vec::new(),
+    };
+    let attr_f1_b = TopologyAttribute {
+        feature_id: f1.clone(),
+        role: Role::Side,
+        local_index: 1,
+        user_label: None,
+        mod_history: Vec::new(),
+    };
+
+    let h_f0_a = GeometryHandleId(10);
+    let h_f0_b = GeometryHandleId(11);
+    let h_f1_a = GeometryHandleId(20);
+    let h_f1_b = GeometryHandleId(21);
+
+    // Each feature_id's pair shares one centroid (so each group ties
+    // internally), but the two feature_ids' centroids are placed 100 m
+    // apart so a hypothetical cross-feature-id grouping would NOT tie.
+    let mut centroids: HashMap<GeometryHandleId, [f64; 3]> = HashMap::new();
+    centroids.insert(h_f0_a, [0.0, 0.0, 0.0]);
+    centroids.insert(h_f0_b, [0.0, 0.0, 0.0]);
+    centroids.insert(h_f1_a, [100.0, 0.0, 0.0]);
+    centroids.insert(h_f1_b, [100.0, 0.0, 0.0]);
+
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+    detect_local_index_reassignment_diagnostics(
+        &[
+            (h_f0_a, &attr_f0_a),
+            (h_f0_b, &attr_f0_b),
+            (h_f1_a, &attr_f1_a),
+            (h_f1_b, &attr_f1_b),
+        ],
+        &centroids,
+        LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M,
+        SourceSpan::new(10, 20),
+        &mut diagnostics,
+    );
+
+    assert_eq!(
+        diagnostics.len(),
+        2,
+        "expected one diagnostic per (feature_id, role) group, got: {diagnostics:?}"
+    );
+
+    // One diagnostic per feature_id, and each names only its own.
+    let messages: Vec<&str> = diagnostics.iter().map(|d| d.message.as_str()).collect();
+    let f0_match = messages.iter().filter(|m| m.contains("Foo#realization[0]")).count();
+    let f1_match = messages.iter().filter(|m| m.contains("Foo#realization[1]")).count();
+    assert_eq!(
+        f0_match, 1,
+        "expected exactly one diagnostic naming Foo#realization[0], got messages: {messages:?}"
+    );
+    assert_eq!(
+        f1_match, 1,
+        "expected exactly one diagnostic naming Foo#realization[1], got messages: {messages:?}"
+    );
+
+    // Cross-pollution check: each diagnostic must NOT name the other feature_id.
+    let f0_msg = messages
+        .iter()
+        .find(|m| m.contains("Foo#realization[0]"))
+        .expect("must find a Foo#realization[0] diagnostic");
+    let f1_msg = messages
+        .iter()
+        .find(|m| m.contains("Foo#realization[1]"))
+        .expect("must find a Foo#realization[1] diagnostic");
+    assert!(
+        !f0_msg.contains("Foo#realization[1]"),
+        "Foo#realization[0]'s diagnostic must not name Foo#realization[1]: {f0_msg}"
+    );
+    assert!(
+        !f1_msg.contains("Foo#realization[0]"),
+        "Foo#realization[1]'s diagnostic must not name Foo#realization[0]: {f1_msg}"
+    );
 }

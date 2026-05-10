@@ -113,17 +113,20 @@ fn make_displacement_extractor_lambda() -> Value {
     let body = CompiledExpr::index_access(
         CompiledExpr::value_ref(
             e_id.clone(),
-            // Documentary type: Map<String, Field<Real, Length>> approximated
-            // as plain Type::Real since the runtime IndexAccess arm does not
-            // type-check. The reify parser would assign a precise type here
-            // once lambda-param-type annotation supports `ElasticResult`.
-            Type::Real,
+            // Documentary Map<String, Real> approximating the runtime shape
+            // Map<String, Field<Real, Length>> (the value-side Field codomain
+            // is dropped because IndexAccess does not consult `result_type` at
+            // runtime; the precise per-case shape is noted in the IndexAccess
+            // result_type comment below).
+            Type::Map(Box::new(Type::String), Box::new(Type::Real)),
         ),
         CompiledExpr::literal(
             Value::String("displacement".to_string()),
             Type::String,
         ),
-        // Result type — same documentary caveat as above.
+        // Documentary result type: actual runtime shape is Field<Real, Length>
+        // (the displacement Field codomain). IndexAccess does not consult
+        // `result_type` at runtime, so this is a documentary annotation only.
         Type::Real,
     );
     Value::Lambda {

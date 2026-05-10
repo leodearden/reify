@@ -170,8 +170,10 @@ describe('StatusBar tessellation diagnostics', () => {
       />
     ));
     // Assert each badge separately so a missing badge fails the test.
-    expect(screen.getByText(/1 error/i)).toBeTruthy();
-    expect(screen.getByText(/1 warning/i)).toBeTruthy();
+    // Use exact string matching so a regression "1 errors" would be caught
+    // (the regex /1 error/i would silently pass for "1 errors" as a substring match).
+    expect(screen.getByText('1 error')).toBeTruthy();
+    expect(screen.getByText('1 warning')).toBeTruthy();
   });
 
   it('asymmetric counts: pluralisation is correct for 2 errors and 1 warning', () => {
@@ -183,8 +185,8 @@ describe('StatusBar tessellation diagnostics', () => {
         tessellationDiagnostics={[makeDiag('Error'), makeDiag('Error'), makeDiag('Warning')]}
       />
     ));
-    expect(screen.getByText(/2 errors/i)).toBeTruthy();
-    expect(screen.getByText(/1 warning/i)).toBeTruthy();
+    expect(screen.getByText('2 errors')).toBeTruthy();
+    expect(screen.getByText('1 warning')).toBeTruthy();
   });
 
   it('zero meshes and zero errors: shows "No geometry" label', () => {
@@ -199,7 +201,7 @@ describe('StatusBar tessellation diagnostics', () => {
     expect(screen.getByText(/no geometry/i)).toBeTruthy();
   });
 
-  it('zero meshes and at least one error: shows "Compile error" label', () => {
+  it('zero meshes and at least one error: shows "Tessellation error" label', () => {
     render(() => (
       <StatusBar
         evalStatus={{ phase: 'idle' }}
@@ -208,7 +210,7 @@ describe('StatusBar tessellation diagnostics', () => {
         tessellationDiagnostics={[makeDiag('Error')]}
       />
     ));
-    expect(screen.getByText(/compile error/i)).toBeTruthy();
+    expect(screen.getByText(/tessellation error/i)).toBeTruthy();
   });
 
   it('clicking the tessellation-errors badge invokes onToggleDiagnostics exactly once', () => {
@@ -252,7 +254,7 @@ describe('StatusBar tessellation diagnostics', () => {
     const badge = screen.getByTestId('tessellation-errors');
     const label = badge.getAttribute('aria-label') ?? '';
     // Shows only tessellation count so SR users can distinguish it from the compile button
-    expect(label).toBe('Show 1 tessellation diagnostics');
+    expect(label).toBe('Show 1 tessellation diagnostic');
   });
 });
 
@@ -345,7 +347,7 @@ describe('StatusBar compile diagnostics', () => {
     ));
     const badge = screen.getByTestId('diagnostics-count');
     const label = badge.getAttribute('aria-label') ?? '';
-    expect(label).toMatch(/diagnostics/i);
+    expect(label).toMatch(/diagnostic/i);
   });
 
   it('diagnostics-count button has type="button" to prevent accidental form submission', () => {
@@ -359,6 +361,20 @@ describe('StatusBar compile diagnostics', () => {
     ));
     const badge = screen.getByTestId('diagnostics-count');
     expect(badge.getAttribute('type')).toBe('button');
+  });
+
+  it('compile badge aria-label uses singular when count is 1', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        compileDiagnostics={[makeDiag('Warning')]}
+      />
+    ));
+    const badge = screen.getByTestId('diagnostics-count');
+    const label = badge.getAttribute('aria-label') ?? '';
+    expect(label).toBe('Show 1 compile diagnostic');
   });
 
   it('compile badge aria-label identifies pipeline and count (not merged total)', () => {
@@ -468,5 +484,39 @@ describe('StatusBar Claude status indicator', () => {
       />
     ));
     expect(screen.queryByTestId('claude-status')).toBeNull();
+  });
+});
+
+describe('StatusBar merged diagnostics rendering', () => {
+  function makeDiag(severity: string, message = 'test error'): DiagnosticInfo {
+    return {
+      file_path: '<unknown>',
+      line: 1, column: 1, end_line: 1, end_column: 1,
+      severity,
+      message,
+      code: null,
+    };
+  }
+
+  it('when both compile and tessellation diagnostics arrays are non-empty, both badges render', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        tessellationDiagnostics={[makeDiag('Error', 'tess boom')]}
+        compileDiagnostics={[makeDiag('Warning', 'compile warn')]}
+      />
+    ));
+    const tessBadge = screen.getByTestId('tessellation-errors');
+    const compileBadge = screen.getByTestId('diagnostics-count');
+    expect(tessBadge).toBeTruthy();
+    expect(compileBadge).toBeTruthy();
+    // Each badge must carry the right summary — a regression that swaps the two
+    // badge summaries would still render both elements but fail here.
+    expect(tessBadge.textContent).toContain('1 error');
+    expect(compileBadge.textContent).toContain('1 warning');
+    expect(tessBadge.getAttribute('aria-label')).toContain('tessellation');
+    expect(compileBadge.getAttribute('aria-label')).toContain('compile');
   });
 });

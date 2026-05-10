@@ -7,8 +7,9 @@ use reify_compiler::CompiledModule;
 use reify_types::{
     AttributeHistory, CapabilityDescriptor, CompiledFunction, Diagnostic, DiagnosticLabel,
     ErrorRef, ExportFormat, FeatureId, FeatureTag, FeatureTagTable, Freshness, GeometryHandleId,
-    GeometryKernel, GeometryOp, LoftOpHistoryRecords, Mesh, Operation, RealizationNodeId, ReprKind,
-    SourceSpan, SweepOpHistoryRecords, TopologyAttributeTable, ValueMap, VersionId,
+    GeometryKernel, GeometryOp, GeometryQuery, LoftOpHistoryRecords, Mesh, Operation,
+    RealizationNodeId, ReprKind, SourceSpan, SweepOpHistoryRecords, TopologyAttribute,
+    TopologyAttributeTable, ValueMap, VersionId,
 };
 
 use crate::cache::{CacheStore, CachedResult, FAILED_REALIZATION_STUB_HANDLE, NodeCache, NodeId};
@@ -20,6 +21,7 @@ use crate::primitive_attribute_seed::seed_primitive_attributes_for_handle;
 use crate::realization_cache::RealizationCache;
 use crate::sweep_classifier::{SweptKindTable, classify_swept_body};
 use crate::topology_attribute_propagation::{
+    LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M, detect_local_index_reassignment_diagnostics,
     populate_extrude_attributes, populate_loft_attributes, populate_revolve_attributes,
     populate_sweep_attributes,
 };
@@ -1745,6 +1747,97 @@ impl Engine {
                 && let Some(&last) = step_handles[handle_start..].last()
             {
                 swept_kind_table.record(last, kind);
+            }
+            // v0.2 persistent-naming-v2 (PRD task 4 / #2654): construction-time
+            // fragility detection for local_index reassignment. The
+            // topology_attribute_table is fully populated for this realization
+            // at this point — every per-op `seed_primitive_attributes_for_handle`,
+            // `populate_attribute_history`, and `propagate_via_kernel_attribute_hook`
+            // call has already run on the success branch above. We filter the
+            // table to entries scoped to THIS realization's `feature_id`,
+            // query each face's centroid via the kernel, and warn the user
+            // about (feature_id, role) groups that have geometrically tied
+            // local_index assignments. The kernel's enumeration order is what
+            // breaks the tie today, and a future edit could shuffle it.
+            //
+            // PRD line 72: emitted alongside but disjoint from the post-split
+            // `TopologyAttributeAmbiguousAfterSplit` diagnostic (the helper's
+            // `mod_history.is_empty()` filter cleanly separates the two
+            // codes). Centroid-query failures emit a Warning and skip the
+            // affected handle — auxiliary metadata MUST NOT regress the
+            // realization to Failed, mirroring the
+            // `seed_primitive_attributes_for_handle` and
+            // `populate_attribute_history` warning idioms above.
+            //
+            // Per-realization tolerance threading is deferred — we use a
+            // fixed `1e-9 m` (kernel-epsilon-tight) sentinel here per the
+            // task-4 design decision recorded in `.task/plan.json`.
+            let realization_feature_id = FeatureId::from(realization_id);
+            let realization_attrs: Vec<(GeometryHandleId, &TopologyAttribute)> =
+                topology_attribute_table
+                    .iter()
+                    .filter(|(_, attr)| attr.feature_id == realization_feature_id)
+                    .collect();
+            if !realization_attrs.is_empty() {
+                let mut centroids: HashMap<GeometryHandleId, [f64; 3]> = HashMap::new();
+                // Accumulate centroid-query / parse failures and emit ONE
+                // summary warning per (realization, error-class) pair. A
+                // wedged kernel can otherwise dump dozens of identical
+                // diagnostics into the user-facing stream — auxiliary
+                // metadata storms degrade UX more than missing fragility
+                // signal does. We retain the first error message verbatim
+                // for diagnosability.
+                let mut query_fail_count: usize = 0;
+                let mut query_fail_first: Option<String> = None;
+                let mut parse_fail_count: usize = 0;
+                let mut parse_fail_first: Option<String> = None;
+                for (handle_id, _) in &realization_attrs {
+                    match kernel.query(&GeometryQuery::Centroid(*handle_id)) {
+                        Ok(value) => match crate::topology_selectors::parse_xyz_value(
+                            &value,
+                            "local_index_reassignment_centroid",
+                        ) {
+                            Ok(xyz) => {
+                                centroids.insert(*handle_id, xyz);
+                            }
+                            Err(e) => {
+                                parse_fail_count += 1;
+                                if parse_fail_first.is_none() {
+                                    parse_fail_first = Some(e.to_string());
+                                }
+                            }
+                        },
+                        Err(e) => {
+                            query_fail_count += 1;
+                            if query_fail_first.is_none() {
+                                query_fail_first = Some(e.to_string());
+                            }
+                        }
+                    }
+                }
+                if query_fail_count > 0 {
+                    let first =
+                        query_fail_first.unwrap_or_else(|| "<no message>".to_string());
+                    diagnostics.push(Diagnostic::warning(format!(
+                        "topology-attribute centroid query failed for {query_fail_count} \
+                         handle(s) in {realization_id} (first: {first})"
+                    )));
+                }
+                if parse_fail_count > 0 {
+                    let first =
+                        parse_fail_first.unwrap_or_else(|| "<no message>".to_string());
+                    diagnostics.push(Diagnostic::warning(format!(
+                        "topology-attribute centroid parse failed for {parse_fail_count} \
+                         handle(s) in {realization_id} (first: {first})"
+                    )));
+                }
+                detect_local_index_reassignment_diagnostics(
+                    &realization_attrs,
+                    &centroids,
+                    LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M,
+                    realization_span,
+                    diagnostics,
+                );
             }
             if let Some(&last) = step_handles[handle_start..].last() {
                 if let Some(name) = realization_name {

@@ -16,6 +16,17 @@ import * as os from 'node:os';
  * - `'error'` event → `false`
  * - 2000ms timeout → `false` (watchdog sends SIGTERM before resolving)
  *
+ * Kill calls (SIGTERM and SIGKILL) are guarded with try/catch: Node's ChildProcess.kill
+ * can throw synchronously (e.g. EPERM, ESRCH) if libuv has already reaped the pid.
+ * If SIGTERM throws with ESRCH the process is already gone; the SIGKILL escalation is
+ * skipped in that case since there is nothing left to kill.
+ *
+ * SIGKILL escalation: if the proc ignores SIGTERM, a second timer fires 500ms later
+ * and sends SIGKILL. The escalation timer is .unref()'d so it does not keep the event
+ * loop alive after the promise resolves. The escalation timer is cleared if 'close' or
+ * 'error' fires first. The promise resolves `false` at the 2000ms watchdog — escalation
+ * is best-effort cleanup that happens after the promise has already settled.
+ *
  * Invariant: this Promise never rejects; all error paths resolve to `false`.
  */
 export async function probeLandlockAsync(landlockHelperPath?: string): Promise<boolean> {
@@ -33,6 +44,7 @@ export async function probeLandlockAsync(landlockHelperPath?: string): Promise<b
 
   return new Promise<boolean>((resolve) => {
     let settled = false;
+    let killEscalation: ReturnType<typeof setTimeout> | null = null;
 
     const settle = (result: boolean): void => {
       if (!settled) {
@@ -46,15 +58,32 @@ export async function probeLandlockAsync(landlockHelperPath?: string): Promise<b
 
     // Watchdog: if python3 hangs beyond 2000ms, kill it and resolve false.
     const watchdog = setTimeout(() => {
-      proc.kill('SIGTERM');
+      let reaped = false;
+      try {
+        proc.kill('SIGTERM');
+      } catch (e) {
+        // ESRCH means the pid is already gone — nothing to escalate to SIGKILL.
+        if ((e as { code?: string }).code === 'ESRCH') reaped = true;
+      }
       settle(false);
+      // Escalation: if proc ignored SIGTERM (and wasn't already reaped), send SIGKILL
+      // after 500ms. .unref() keeps the event loop from lingering once the promise
+      // has already resolved.
+      if (!reaped) {
+        killEscalation = setTimeout(() => {
+          try { proc.kill('SIGKILL'); } catch { /* proc may have been reaped already; ignore. */ }
+        }, 500);
+        killEscalation.unref?.();
+      }
     }, 2000);
 
     proc.on('close', (code: number | null, signal: string | null) => {
+      if (killEscalation !== null) clearTimeout(killEscalation);
       settle(code === 0 && signal === null);
     });
 
     proc.on('error', (_err: Error) => {
+      if (killEscalation !== null) clearTimeout(killEscalation);
       settle(false);
     });
   });

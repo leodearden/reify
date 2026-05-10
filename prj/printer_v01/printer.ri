@@ -60,11 +60,39 @@ pub structure Envelope {
     // ── Cross-cutting motion-system layout params ───────────────────────
     /// Y-rail clearance from the build envelope. Drives the Y-rail X
     /// position (B), the gantry total length (C), and the frame outer
-    /// footprint (A).
-    param rail_outboard_clearance : Length = 30mm
+    /// footprint (A). Sized so the X-toolhead carriage can reach the
+    /// X = 0 / X = build_x edges of the build volume without colliding
+    /// with the Y-rail air-bearing carriages: the constraint
+    ///   rail_outboard_clearance ≥ toolhead_carriage_w/2
+    ///                           + bearing_x_clearance
+    ///                           + y_bearing_od/2
+    /// is asserted in BYAxis.
+    param rail_outboard_clearance : Length = 110mm
 
     /// Single Vectran tendon diameter (Y and X share this spec).
     param tendon_dia : Length = 6mm
+
+    /// Vertical clearance between top of build volume (z = build_z) and
+    /// the bottom face of the lower X rail. The X gantry sits above the
+    /// build volume so the toolhead carriage / nozzle can trace the top
+    /// of the build envelope.
+    param gantry_clearance : Length = 10mm
+
+    /// Horizontal gap (X) between the outer face of the toolhead carriage
+    /// at extreme X reach (x = 0 or x = build_x) and the inner face of
+    /// the Y-rail air-bearing carriage on that side.
+    param bearing_x_clearance : Length = 10mm
+
+    /// Horizontal gap (X) between the outer face of the Y-rail air-bearing
+    /// carriage and the nearest Y tendon. Y tendons run outboard of the
+    /// Y rails so the rails + bearings sit in clean air.
+    param tendon_outboard_clearance : Length = 10mm
+
+    /// Toolhead-carriage envelope (X width × Y depth). Declared on Envelope
+    /// because BOTH axes need to size against it: B for the Y-rail outboard
+    /// clearance, C as the carriage's own geometry.
+    param toolhead_carriage_w : Length = 100mm
+    param toolhead_carriage_d : Length = 110mm
 
     /// Snapshot pose of the gantry along Y for visualisation (off-home so
     /// tendon paths read clearly rather than collapsing through centre).
@@ -120,12 +148,15 @@ pub structure BYAxis {
     // Envelope-derived parameters. Defaults mirror Envelope so that
     // BYAxis renders standalone in the GUI; Printer overrides them all
     // from `env.<...>` so the wired model stays single-source.
-    param build_x                 : Length = 500mm
-    param build_y                 : Length = 800mm
-    param build_z                 : Length = 600mm
-    param rail_outboard_clearance : Length = 30mm
-    param gantry_y_position       : Length = 200mm
-    param tendon_dia              : Length = 6mm
+    param build_x                   : Length = 500mm
+    param build_y                   : Length = 800mm
+    param build_z                   : Length = 600mm
+    param rail_outboard_clearance   : Length = 110mm
+    param gantry_y_position         : Length = 200mm
+    param tendon_dia                : Length = 6mm
+    param toolhead_carriage_w       : Length = 100mm
+    param bearing_x_clearance       : Length = 10mm
+    param tendon_outboard_clearance : Length = 10mm
 
     /// Round rail diameter — 60 mm precision-ground stainless rod, 1 per
     /// side. Designed to accept either a profile-rail-style cassette or a
@@ -139,12 +170,17 @@ pub structure BYAxis {
     param y_bearing_length : Length = 150mm
 
     /// Vertical separation of paired tendons above/below the rod axis,
-    /// for moment cancellation around the rod.
+    /// for moment cancellation around the rod (rotation about Y).
     param tendon_pair_offset : Length = 12mm
 
     // Y-rail X-positions (outboard of the build envelope).
     let y_rail_x_left  = 0mm - rail_outboard_clearance
     let y_rail_x_right = build_x + rail_outboard_clearance
+
+    // Y-tendon X-positions (further outboard, past the Y-bearing housing).
+    let y_tendon_outboard_offset = y_bearing_od / 2 + tendon_dia / 2 + tendon_outboard_clearance
+    let y_tendon_x_left          = y_rail_x_left  - y_tendon_outboard_offset
+    let y_tendon_x_right         = y_rail_x_right + y_tendon_outboard_offset
 
     // ── Y-axis linear guides: 60 mm "round" rods ────────────────────────
     // NOTE: square-cross-section box stand-ins for the round rods. The
@@ -172,31 +208,38 @@ pub structure BYAxis {
         y_rail_x_right, gantry_y_position, build_z
     )
 
-    // ── Paired in-plane Y tendons (6 mm Vectran) ────────────────────────
-    // Each Y rail gets 2 tendons (above + below the rod axis) for moment
-    // cancellation. Lengths span the full rail; the closed-loop path
-    // continues off-axis through capstans + motors (next iteration).
+    // ── Paired Y tendons (6 mm Vectran), routed outboard of Y rails ─────
+    // Each Y rail gets 2 tendons paired above + below the rod axis (moment
+    // cancellation about Y), running in a vertical plane outboard of the
+    // Y bearing housing so they clear both rail and carriage. Lengths span
+    // the full rail; the closed-loop path continues off-axis through
+    // capstans + motors (next iteration).
     let y_tendon_left_upper = translate(
         box(tendon_dia, build_y, tendon_dia),
-        y_rail_x_left, build_y / 2, build_z + tendon_pair_offset
+        y_tendon_x_left, build_y / 2, build_z + tendon_pair_offset
     )
     let y_tendon_left_lower = translate(
         box(tendon_dia, build_y, tendon_dia),
-        y_rail_x_left, build_y / 2, build_z - tendon_pair_offset
+        y_tendon_x_left, build_y / 2, build_z - tendon_pair_offset
     )
     let y_tendon_right_upper = translate(
         box(tendon_dia, build_y, tendon_dia),
-        y_rail_x_right, build_y / 2, build_z + tendon_pair_offset
+        y_tendon_x_right, build_y / 2, build_z + tendon_pair_offset
     )
     let y_tendon_right_lower = translate(
         box(tendon_dia, build_y, tendon_dia),
-        y_rail_x_right, build_y / 2, build_z - tendon_pair_offset
+        y_tendon_x_right, build_y / 2, build_z - tendon_pair_offset
     )
 
     constraint y_rail_dia > 0mm
     constraint y_bearing_od >= y_rail_dia
     constraint y_bearing_length > 0mm
     constraint tendon_pair_offset > tendon_dia
+
+    // Y-bearing inner edges must clear the toolhead carriage at extreme
+    // X reach (carriage outer X = ±toolhead_carriage_w/2 when nozzle at
+    // x = 0 / x = build_x).
+    constraint rail_outboard_clearance >= toolhead_carriage_w / 2 + bearing_x_clearance + y_bearing_od / 2
 }
 
 /// Assembly C — Gantry + X-axis: gantry beam carrying 2 stacked 60 mm
@@ -209,36 +252,42 @@ pub structure CGantryX {
     // from `env.<...>` so the wired model stays single-source.
     param build_x                 : Length = 500mm
     param build_z                 : Length = 600mm
-    param rail_outboard_clearance : Length = 30mm
+    param rail_outboard_clearance : Length = 110mm
     param gantry_y_position       : Length = 200mm
     param toolhead_x_position     : Length = 100mm
     param tendon_dia              : Length = 6mm
+    param gantry_clearance        : Length = 10mm
+    param toolhead_carriage_w     : Length = 100mm
+    param toolhead_carriage_d     : Length = 110mm
 
     /// 60 mm precision-ground stainless rod, 2 stacked rails on the gantry.
     param x_rail_dia : Length = 60mm
 
-    /// Vertical centre-to-centre spacing of the stacked X rails, straddling
-    /// the Y-rail plane (Z = build_z) so the gantry is symmetric about it.
+    /// Vertical centre-to-centre spacing of the stacked X rails. Must
+    /// fit the rod diameters and leave room for both X tendons routed
+    /// between the rails (constraint below).
     param x_rail_pair_spacing : Length = 100mm
 
     /// Cylindrical-air-bearing envelope.
     param x_bearing_od     : Length = 90mm
     param x_bearing_length : Length = 120mm
 
-    /// Toolhead carriage envelope — embraces both X-rail air bearings.
-    param toolhead_carriage_w : Length = 100mm
-    param toolhead_carriage_d : Length = 110mm
-
-    /// In-plane offset of the single X tendon (visual separation from rod).
+    /// Vertical separation of the paired X tendons about the rail-pair
+    /// midplane (moment cancellation about X). Must be small enough that
+    /// the tendons clear the rails (constraint below).
     param tendon_pair_offset : Length = 12mm
 
     // The gantry rails span the full frame width including the Y-rail
     // outboard clearance on both sides.
     let gantry_full_length = build_x + 2 * rail_outboard_clearance
 
-    // X-rail Z-positions (paired symmetrically around Y-rail plane Z=build_z).
-    let x_rail_z_upper = build_z + x_rail_pair_spacing / 2
-    let x_rail_z_lower = build_z - x_rail_pair_spacing / 2
+    // X-rail Z-positions: lower rail sits above the build volume by
+    // `gantry_clearance + x_rail_dia/2` so the rod's bottom face clears
+    // build_z by gantry_clearance. Upper rail is x_rail_pair_spacing
+    // above. The toolhead carriage centres on the rail-pair midplane.
+    let x_rail_z_lower    = build_z + gantry_clearance + x_rail_dia / 2
+    let x_rail_z_upper    = x_rail_z_lower + x_rail_pair_spacing
+    let x_rail_z_midplane = (x_rail_z_lower + x_rail_z_upper) / 2
 
     // ── X-axis (gantry): 2 stacked round rails ──────────────────────────
     let x_rod_upper = translate(
@@ -261,22 +310,25 @@ pub structure CGantryX {
     )
 
     // X-toolhead carriage body — embraces both X-rail air bearings.
+    // Centred on the rail-pair midplane (above build volume), not on
+    // build_z any more.
     let toolhead_carriage = translate(
         box(toolhead_carriage_w, toolhead_carriage_d, x_rail_pair_spacing + x_rail_dia),
-        toolhead_x_position, gantry_y_position, build_z
+        toolhead_x_position, gantry_y_position, x_rail_z_midplane
     )
 
-    // ── On-axis X tendons (1 per rail) ──────────────────────────────────
-    // The 2-rail vertical stack itself substitutes for tendon-pair moment
-    // cancellation around Y, so each X tendon runs alongside its rail
-    // (offset slightly in -Y for visual separation from the rod).
+    // ── X tendons (CoreXY pair), routed BETWEEN the X rails ─────────────
+    // Two tendons (one per CoreXY motor) paired symmetrically about the
+    // rail-pair midplane in Z, running between the upper and lower X
+    // rails. Both at gantry_y_position so they sit in the gantry-beam
+    // central plane, alongside the rails.
     let x_tendon_upper = translate(
         box(gantry_full_length, tendon_dia, tendon_dia),
-        build_x / 2, gantry_y_position - tendon_pair_offset, x_rail_z_upper
+        build_x / 2, gantry_y_position, x_rail_z_midplane + tendon_pair_offset
     )
     let x_tendon_lower = translate(
         box(gantry_full_length, tendon_dia, tendon_dia),
-        build_x / 2, gantry_y_position - tendon_pair_offset, x_rail_z_lower
+        build_x / 2, gantry_y_position, x_rail_z_midplane - tendon_pair_offset
     )
 
     constraint x_rail_dia > 0mm
@@ -286,6 +338,12 @@ pub structure CGantryX {
     constraint toolhead_carriage_w > 0mm
     constraint toolhead_carriage_d > 0mm
     constraint tendon_pair_offset > tendon_dia
+
+    // Tendons must fit in the rail-to-rail gap (face-to-face spacing
+    // = x_rail_pair_spacing - x_rail_dia). The outermost tendon edge sits
+    // at midplane ± (tendon_pair_offset + tendon_dia/2); the rail inner
+    // face sits at midplane ± (x_rail_pair_spacing - x_rail_dia)/2.
+    constraint x_rail_pair_spacing - x_rail_dia >= 2 * tendon_pair_offset + tendon_dia
 }
 
 /// Assembly D — Toolhead: carriage on the X-rail + 4-tool kinematic dock on
@@ -357,12 +415,15 @@ pub structure Printer {
     sub a_frame = AFrame()
 
     sub b_y_axis = BYAxis(
-        build_x:                 self.env.build_x,
-        build_y:                 self.env.build_y,
-        build_z:                 self.env.build_z,
-        rail_outboard_clearance: self.env.rail_outboard_clearance,
-        gantry_y_position:       self.env.gantry_y_position,
-        tendon_dia:              self.env.tendon_dia
+        build_x:                   self.env.build_x,
+        build_y:                   self.env.build_y,
+        build_z:                   self.env.build_z,
+        rail_outboard_clearance:   self.env.rail_outboard_clearance,
+        gantry_y_position:         self.env.gantry_y_position,
+        tendon_dia:                self.env.tendon_dia,
+        toolhead_carriage_w:       self.env.toolhead_carriage_w,
+        bearing_x_clearance:       self.env.bearing_x_clearance,
+        tendon_outboard_clearance: self.env.tendon_outboard_clearance
     )
 
     sub c_gantry_x = CGantryX(
@@ -371,7 +432,10 @@ pub structure Printer {
         rail_outboard_clearance: self.env.rail_outboard_clearance,
         gantry_y_position:       self.env.gantry_y_position,
         toolhead_x_position:     self.env.toolhead_x_position,
-        tendon_dia:              self.env.tendon_dia
+        tendon_dia:              self.env.tendon_dia,
+        gantry_clearance:        self.env.gantry_clearance,
+        toolhead_carriage_w:     self.env.toolhead_carriage_w,
+        toolhead_carriage_d:     self.env.toolhead_carriage_d
     )
 
     sub d_toolhead = DToolhead()

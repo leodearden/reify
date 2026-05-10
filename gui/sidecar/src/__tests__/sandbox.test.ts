@@ -119,4 +119,64 @@ describe('probeLandlockAsync (task 3281)', () => {
     fakeProc.emit('close', 0, null);
     expect(await promise).toBe(false);
   });
+
+  it("(vii) does not crash when proc.kill('SIGTERM') throws (e.g. ESRCH for already-reaped pid); promise still resolves false", async () => {
+    vi.useFakeTimers();
+    fakeProc.kill.mockImplementation((sig: string) => {
+      if (sig === 'SIGTERM') throw Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' });
+    });
+    const promise = probeLandlockAsync('/path/to/landlock_exec.py');
+    vi.advanceTimersByTime(2001);
+    expect(await promise).toBe(false);
+    // The watchdog reached the kill site and the throw was swallowed
+    expect(fakeProc.kill).toHaveBeenCalledWith('SIGTERM');
+  });
+
+  it("(viii) escalates to SIGKILL ~500ms after watchdog SIGTERM if proc has not closed", async () => {
+    vi.useFakeTimers();
+    const promise = probeLandlockAsync('/path/to/landlock_exec.py');
+    // Fire the 2000ms watchdog
+    vi.advanceTimersByTime(2001);
+    expect(await promise).toBe(false);
+    // SIGTERM sent, but SIGKILL not yet
+    expect(fakeProc.kill).toHaveBeenCalledWith('SIGTERM');
+    expect(fakeProc.kill).not.toHaveBeenCalledWith('SIGKILL');
+    // Advance the 500ms escalation window
+    vi.advanceTimersByTime(500);
+    // Now SIGKILL must have been sent
+    expect(fakeProc.kill).toHaveBeenCalledWith('SIGKILL');
+  });
+
+  it("(ix) cancels SIGKILL escalation when 'close' fires after SIGTERM but before the 500ms grace expires", async () => {
+    vi.useFakeTimers();
+    const promise = probeLandlockAsync('/path/to/landlock_exec.py');
+    // Fire the 2000ms watchdog
+    vi.advanceTimersByTime(2001);
+    expect(await promise).toBe(false);
+    // SIGTERM sent; escalation timer is now pending
+    expect(fakeProc.kill).toHaveBeenCalledWith('SIGTERM');
+    // Process responded to SIGTERM — emit 'close' within the grace period
+    fakeProc.emit('close', null, 'SIGTERM');
+    // Advance past the 500ms escalation window
+    vi.advanceTimersByTime(500);
+    // SIGKILL must NOT have been sent — escalation was cancelled
+    expect(fakeProc.kill).not.toHaveBeenCalledWith('SIGKILL');
+  });
+
+  it("(x) cancels SIGKILL escalation when 'error' fires after SIGTERM but before the 500ms grace expires", async () => {
+    vi.useFakeTimers();
+    const promise = probeLandlockAsync('/path/to/landlock_exec.py');
+    // Fire the 2000ms watchdog
+    vi.advanceTimersByTime(2001);
+    expect(await promise).toBe(false);
+    // SIGTERM sent; escalation timer is now pending
+    expect(fakeProc.kill).toHaveBeenCalledWith('SIGTERM');
+    // Asynchronous error surfaces after the watchdog (e.g. spawn failure post-watchdog)
+    const err = Object.assign(new Error('spawn python3 ENOENT'), { code: 'ENOENT' });
+    fakeProc.emit('error', err);
+    // Advance past the 500ms escalation window
+    vi.advanceTimersByTime(500);
+    // SIGKILL must NOT have been sent — escalation was cancelled by the error handler
+    expect(fakeProc.kill).not.toHaveBeenCalledWith('SIGKILL');
+  });
 });

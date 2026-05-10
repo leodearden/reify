@@ -13,7 +13,7 @@ use reify_types::{
     ModulePath, Satisfaction, Severity, Value, ValueCellId,
 };
 
-use reify_types::{Diagnostic, DiagnosticInfo, SourceLocationInfo};
+use reify_types::{Diagnostic, DiagnosticInfo, DiagnosticLabel, SourceLocationInfo, SourceSpan};
 
 use crate::types::{
     ConstraintData, DefInfo, EntityIdentity, EntityTreeNode, FileData, GuiState, JointDescriptor,
@@ -98,6 +98,43 @@ pub(crate) fn module_key(name: &str) -> String {
 /// stdlib path convention ever changes.
 fn is_stdlib_path(p: &str) -> bool {
     p == "std" || p.starts_with("std.")
+}
+
+/// Parse and compile a single-file source string using the stdlib prelude.
+///
+/// Returns `(ParsedModule, CompiledModule)` on success, or an `Err` containing a
+/// human-readable description of the first error encountered.
+///
+/// This is the single-file counterpart to `compile_entry_with_imports`.  It is
+/// called by both `load_from_source` (which always uses the single-file path) and
+/// the `self.file_path == None` branch of `update_source` (no project-root anchor).
+fn compile_single_file_with_stdlib(
+    content: &str,
+    module_name: &str,
+) -> Result<(reify_syntax::ParsedModule, CompiledModule), String> {
+    // Prelude-aware parse so stdlib enum references like `CorrosionClass.C5`
+    // disambiguate to `EnumAccess` rather than `MemberAccess`.  See task 2525.
+    let parsed =
+        reify_compiler::parse_with_stdlib(content, ModulePath::single(module_name));
+    if !parsed.errors.is_empty() {
+        let msgs: Vec<String> = parsed.errors.iter().map(|e| e.message.clone()).collect();
+        return Err(format!("Parse errors: {}", msgs.join("; ")));
+    }
+    let compiled = reify_compiler::compile_with_stdlib(&parsed);
+    let has_errors = compiled
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Error);
+    if has_errors {
+        let msgs: Vec<String> = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .map(|d| d.message.clone())
+            .collect();
+        return Err(format!("Compile errors: {}", msgs.join("; ")));
+    }
+    Ok((parsed, compiled))
 }
 
 /// Parse and compile `source` with multi-file import resolution.
@@ -249,16 +286,27 @@ fn compile_entry_with_imports(
     // Std.* modules are excluded: stdlib structures are not expected to appear as
     // top-level GUI entities.
     //
-    // De-duplication: skip any imported template whose name already exists in
-    // `compiled.templates` (either declared by the entry or merged from an
-    // earlier import).  `find_template` is a linear first-match scan, so duplicates
-    // would silently shadow.  First-wins matches the compiler's cross-prelude
-    // collision policy in compile_with_prelude_refs.
+    // De-duplication: first-wins/warns — skip any imported template whose name
+    // already exists in `compiled.templates` (either declared by the entry or
+    // merged from an earlier import), and emit a Diagnostic::warning so the user
+    // sees the shadowing instead of a silent skip.  Mirrors the compiler's
+    // cross-prelude alias collision policy at reify-compiler/src/lib.rs:281-292.
+    //
+    // `templates_origin` maps each template name to the module path that first
+    // declared it.  It is pre-seeded with the entry's already-compiled templates
+    // (origin = module_name) before the import loop runs, so entry-vs-import
+    // collisions also emit a Warning naming both sides.
     //
     // v1 limitation: only DIRECT imports are merged.  If helper.ri itself imports
     // util.ri, Util's template will be absent from this list and find_template will
     // fail at eval for any sub referencing Util.  A future fix should iterate all
     // dag.modules entries instead of just import_paths.
+    let mut templates_origin: HashMap<String, String> = HashMap::new();
+    // Pre-seed with entry-declared templates so entry-vs-import collisions are
+    // detected and warned, mirroring the import-vs-import path below.
+    for tmpl in &compiled.templates {
+        templates_origin.insert(tmpl.name.clone(), module_name.to_string());
+    }
     for import_path in &import_paths {
         if is_stdlib_path(import_path) {
             continue;
@@ -268,14 +316,29 @@ fn compile_entry_with_imports(
                 if template.visibility != Visibility::Public {
                     continue;
                 }
-                if compiled
-                    .templates
-                    .iter()
-                    .any(|t| t.name == template.name)
-                {
+                if let Some(prior_origin) = templates_origin.get(&template.name) {
+                    // Collision: emit a warning naming both the prior declarer and the
+                    // colliding import, mirroring lib.rs:283-291 wording.
+                    //
+                    // The `templates_origin` invariant guarantees every name present in
+                    // `compiled.templates` is also present in the map (seeded from entry
+                    // templates before the loop, updated on every successful merge), so
+                    // `if let Some(...)` is both the O(1) membership test and the origin
+                    // lookup — no separate `iter().any(...)` scan or fallback needed.
+                    compiled.diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "imported pub structure '{}' declared in both '{}' and '{}'; first-wins",
+                            template.name, prior_origin, import_path
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            SourceSpan::prelude(),
+                            "cross-import collision",
+                        )),
+                    );
                     continue;
                 }
                 compiled.templates.push(template.clone());
+                templates_origin.insert(template.name.clone(), import_path.clone());
             }
         }
     }
@@ -336,33 +399,7 @@ impl EngineSession {
         source: &str,
         module_name: &str,
     ) -> Result<GuiState, String> {
-        // Parse (prelude-aware so stdlib enum references like `CorrosionClass.C5`
-        // disambiguate to `EnumAccess` rather than `MemberAccess`; pairs with
-        // `compile_with_stdlib` below). See task 2525.
-        let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(module_name));
-
-        if !parsed.errors.is_empty() {
-            let msgs: Vec<String> = parsed.errors.iter().map(|e| e.message.clone()).collect();
-            return Err(format!("Parse errors: {}", msgs.join("; ")));
-        }
-
-        // Compile
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
-
-        // Check for compile errors
-        let has_errors = compiled
-            .diagnostics
-            .iter()
-            .any(|d| d.severity == Severity::Error);
-        if has_errors {
-            let msgs: Vec<String> = compiled
-                .diagnostics
-                .iter()
-                .filter(|d| d.severity == Severity::Error)
-                .map(|d| d.message.clone())
-                .collect();
-            return Err(format!("Compile errors: {}", msgs.join("; ")));
-        }
+        let (parsed, compiled) = compile_single_file_with_stdlib(source, module_name)?;
 
         // Evaluate + check constraints (borrows compiled by shared ref, so all
         // field mutations can safely be deferred until after check() returns).
@@ -445,46 +482,40 @@ impl EngineSession {
     /// completely unchanged — source_map, module_name, compiled, and last_check all
     /// retain their previous values. All mutations are deferred until after check() returns.
     ///
-    /// # v1 limitation (task 3228)
+    /// When `self.file_path` is set (i.e. after a prior `load_file`), this method
+    /// routes through `compile_entry_with_imports` to preserve the multi-file import
+    /// graph resolved at `load_file` time — dirty-buffer edits no longer silently
+    /// drop imports.  See task 3318 (item 3).
     ///
-    /// `update_source` deliberately uses `compile_with_stdlib` (single-file compile, no
-    /// `ModuleResolver`).  Editing a file in the GUI buffer after `load_file` opened it
-    /// temporarily reverts to single-file behavior — `import` declarations are wired at
-    /// `load_file` time but not on subsequent dirty-buffer edits.  Routing this method
-    /// through the multi-file flow is the deferred half of task 3228 and is filed as
-    /// a separate follow-up.
+    /// When `self.file_path` is `None` (i.e. `load_from_source`-only sessions with
+    /// no project-root anchor), the original single-file `parse_with_stdlib +
+    /// compile_with_stdlib` path is preserved unchanged.
     pub fn update_source(&mut self, path: &str, content: &str) -> Result<GuiState, String> {
         let module_name = Path::new(path)
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("unnamed");
 
-        // Re-parse and re-compile from scratch (topology may have changed)
-        // All state mutation is deferred until after successful parse+compile.
-        // Prelude-aware parse so stdlib enum references disambiguate correctly;
-        // pairs with `compile_with_stdlib` below. See task 2525.
-        let parsed = reify_compiler::parse_with_stdlib(content, ModulePath::single(module_name));
-
-        if !parsed.errors.is_empty() {
-            let msgs: Vec<String> = parsed.errors.iter().map(|e| e.message.clone()).collect();
-            return Err(format!("Parse errors: {}", msgs.join("; ")));
-        }
-
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
-
-        let has_errors = compiled
-            .diagnostics
-            .iter()
-            .any(|d| d.severity == Severity::Error);
-        if has_errors {
-            let msgs: Vec<String> = compiled
-                .diagnostics
-                .iter()
-                .filter(|d| d.severity == Severity::Error)
-                .map(|d| d.message.clone())
-                .collect();
-            return Err(format!("Compile errors: {}", msgs.join("; ")));
-        }
+        let (parsed, compiled) = if let Some(entry_path) = self.file_path.clone() {
+            // Multi-file flow — same as load_file. Preserves the import graph
+            // resolved at load_file time so dirty-buffer edits don't silently drop
+            // imports.  See task 3318 (item 3) and task 3228 follow-up note.
+            //
+            // Caller contract: `path` is expected to name the same file that was
+            // originally passed to `load_file` (so that `module_name` derived from
+            // `path` matches the entry module).  `self.file_path` (not `path`) is
+            // used as the project-root anchor so `ModuleResolver` always resolves
+            // siblings relative to the directory of the originally-loaded file,
+            // regardless of how the GUI serialised `path`.  See design decision in
+            // task 3318 for rationale.
+            let (compiled, parsed) =
+                compile_entry_with_imports(&entry_path, content, module_name)?;
+            (parsed, compiled)
+        } else {
+            // Single-file flow — no prior load_file means no project_root anchor;
+            // delegate to compile_single_file_with_stdlib (shared with load_from_source).
+            compile_single_file_with_stdlib(content, module_name)?
+        };
 
         // Parse+compile succeeded — run check() before mutating any state, so
         // that a panic in check() leaves the session completely unchanged.

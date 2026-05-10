@@ -968,20 +968,24 @@ fn eval_quantifier(
 /// the silent-Undef discipline of `envelope_reduce` / `case_names` /
 /// `result_for`.
 ///
-/// Pinned per guard by the
-/// `worst_case_argument_shape_negatives_return_undef` E2E smoke test
-/// (`crates/reify-eval/tests/multi_load_case_stdlib_smoke.rs`):
+/// Pinned per guard by per-case E2E smoke tests in
+/// `crates/reify-eval/tests/multi_load_case_stdlib_smoke.rs`:
 /// - `wrong_arity` — `args.len() != 2` returns `Value::Undef` immediately
 ///   (internal guard; pinned by `eval_worst_case_dispatch_wrong_arity_returns_undef`
 ///   in mod tests). At the E2E level, `arity_one` / `arity_three` fall through
 ///   the inline dispatch arm (which only fires for `args.len() == 2`) to
-///   `eval_fea`'s permanent `worst_case` Undef stub.
+///   `eval_fea`'s permanent `worst_case` Undef stub. Pinned by
+///   `worst_case_arity_one_returns_undef` and
+///   `worst_case_arity_three_returns_undef`.
 /// - `no_cases_key` / `cases_not_map` — outer `Map.get("cases")` match
-///   below: missing key or non-Map value returns `Value::Undef`.
+///   below: missing key or non-Map value returns `Value::Undef`. Pinned by
+///   `worst_case_missing_cases_key_returns_undef` and
+///   `worst_case_cases_value_not_map_returns_undef`.
 /// - `lambda_non_field` — non-Field lambda result: `compute_max` returns
 ///   `Value::Undef`, `as_f64()` returns `None`, the case is skipped via
 ///   `_ => continue`; if no case yields a finite max, the function
-///   returns `Value::Undef`.
+///   returns `Value::Undef`. Pinned by
+///   `worst_case_lambda_returns_non_field_returns_undef`.
 fn eval_worst_case_dispatch(args: &[Value], ctx: &EvalContext) -> Value {
     // Silent-Undef discipline: wrong arity returns Undef instead of panicking.
     // The inline `worst_case` dispatch arm in `eval_expr` already guards
@@ -992,13 +996,13 @@ fn eval_worst_case_dispatch(args: &[Value], ctx: &EvalContext) -> Value {
     // `eval_worst_case_dispatch_wrong_arity_returns_undef` in mod tests.
     let [first, second] = args else { return Value::Undef; };
     // Guard: first arg must be a Map (the MultiCaseResult shape). Pinned by
-    // `worst_case_argument_shape_negatives_return_undef`'s `non_map_first`.
+    // `worst_case_non_map_first_arg_returns_undef`.
     let outer = match first {
         Value::Map(m) => m,
         _ => return Value::Undef,
     };
     // Guard: second arg must be a Lambda. Pinned by
-    // `worst_case_argument_shape_negatives_return_undef`'s `non_lambda_second`.
+    // `worst_case_non_lambda_second_arg_returns_undef`.
     //
     // `matches!` rather than a match-rebinds form: the rebinding shape has
     // bitten similar dispatch sites where the matched binding sits unused,
@@ -1011,7 +1015,8 @@ fn eval_worst_case_dispatch(args: &[Value], ctx: &EvalContext) -> Value {
     }
     let lambda = second;
     // Guard: outer Map must carry a `"cases"` key bound to a Map. Pinned by
-    // the `no_cases_key` and `cases_not_map` negatives.
+    // `worst_case_missing_cases_key_returns_undef` and
+    // `worst_case_cases_value_not_map_returns_undef`.
     let cases = match outer.get(&Value::String("cases".to_string())) {
         Some(Value::Map(c)) => c,
         _ => return Value::Undef,
@@ -1029,7 +1034,8 @@ fn eval_worst_case_dispatch(args: &[Value], ctx: &EvalContext) -> Value {
         // numeric max). `compute_max` returns Undef on non-Field / non-Sampled
         // / empty-data inputs; `as_f64` then returns None and the case is
         // skipped. With no case yielding a finite max, `best` stays None and
-        // the function returns Undef below. Pinned by `lambda_non_field`.
+        // the function returns Undef below. Pinned by
+        // `worst_case_lambda_returns_non_field_returns_undef`.
         let max_val = field_reductions::compute_max(&field_val);
         let max_f = match max_val.as_f64() {
             Some(f) if f.is_finite() => f,

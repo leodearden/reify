@@ -39,7 +39,8 @@
 //!     FaceOrder, apply_body_force, apply_point_load, apply_traction_load,
 //!     SupportKind, SupportBodyKind, SupportCompatibility, build_support_bcs,
 //!     MpcRow, apply_mpc_row_elimination,
-//!     solve_cg, CgSolverOptions, CgResult, SolverMode,
+//!     solve_cg, solve_cg_warm, CgSolverOptions, CgResult, SolverMode,
+//!     CgWarmState, solve_cg_with_warm_state,
 //!     barycentric_p1, point_in_tet_p1, interpolate_p1_at_point,
 //!     locate_element_p1, LocatableTet,
 //!     StressElement, element_stress_p1, recover_nodal_stress_p1, tet_volume_p1,
@@ -164,6 +165,24 @@
 //! assert_eq!(cg_result.u.len(), 1, "CgResult.u must have length 1");
 //! assert!((cg_result.u[0] - 3.0).abs() < 1e-9, "u[0] = {}", cg_result.u[0]);
 //!
+//! // Task 2921: warm-state plumbing smoke test — exercises solve_cg_warm
+//! // (None-shim equivalence vs solve_cg), solve_cg_with_warm_state (producer
+//! // wrapper), and CgWarmState OpaqueState round-trip on the 1×1 identity.
+//! let cg_opts_2921 = CgSolverOptions::default();
+//! let cold_via_solve_cg = solve_cg(&k_cg, &f_cg, cg_opts_2921.clone(), SolverMode::Deterministic);
+//! let cold_via_warm = solve_cg_warm(&k_cg, &f_cg, None, cg_opts_2921.clone(), SolverMode::Deterministic);
+//! assert_eq!(
+//!     cold_via_solve_cg.u, cold_via_warm.u,
+//!     "solve_cg_warm(None) must match solve_cg on 1×1 identity"
+//! );
+//! let (_r, fresh) = solve_cg_with_warm_state(
+//!     &k_cg, &f_cg, None, cg_opts_2921, SolverMode::Deterministic,
+//! );
+//! assert_eq!(fresh.u.len(), 1, "fresh warm state u must have length 1");
+//! let opaque = fresh.into_opaque_state();
+//! let restored = CgWarmState::from_opaque_state(opaque).expect("downcast");
+//! assert_eq!(restored.u.len(), 1, "OpaqueState round-trip must preserve u length");
+//!
 //! // Task 2920: result-interpolation smoke tests — exercise tet_volume_p1,
 //! // element_stress_p1, point_in_tet_p1, and locate_element_p1 from the
 //! // crate root. A regression that breaks any of the four re-exports would
@@ -232,6 +251,7 @@ pub mod shell_assembly;
 pub mod shell_boundary;
 pub mod shell_result;
 pub mod solver;
+pub mod warm_state;
 
 pub use assembly::{
     AssemblyElement, AssemblyMode, ElementOrder, ElementStiffness, assemble_global_stiffness,
@@ -267,4 +287,5 @@ pub use interpolation::{
     LocatableTet, barycentric_p1, interpolate_p1_at_point, locate_element_p1, point_in_tet_p1,
 };
 pub use result::{StressElement, element_stress_p1, recover_nodal_stress_p1, tet_volume_p1};
-pub use solver::{CgResult, CgSolverOptions, SolverMode, solve_cg};
+pub use solver::{CgResult, CgSolverOptions, SolverMode, solve_cg, solve_cg_warm};
+pub use warm_state::{CgWarmState, solve_cg_with_warm_state};

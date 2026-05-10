@@ -43,9 +43,9 @@
 use std::collections::HashMap;
 
 use reify_types::{
-    BooleanOpHistoryRecords, BooleanOpParents, CapKind, FeatureId, GeometryHandleId, HistoryRecord,
-    LoftOpHistoryRecords, ModEntry, QueryError, Role, SweepOpHistoryRecords, TopologyAttribute,
-    TopologyAttributeTable,
+    BooleanOpHistoryRecords, BooleanOpParents, CapKind, Diagnostic, DiagnosticCode,
+    DiagnosticLabel, FeatureId, GeometryHandleId, HistoryRecord, LoftOpHistoryRecords, ModEntry,
+    QueryError, Role, SourceSpan, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable,
 };
 
 /// Propagate parent topology attributes onto the result of a `BRepAlgoAPI`
@@ -865,6 +865,195 @@ fn write_loft_face_generated_attributes(
         );
     }
     Ok(())
+}
+
+/// Emit `TopologyAttributeLocalIndexReassigned` Warnings for groups of
+/// topology-attribute entries whose centroids are geometrically tied within
+/// `tol_m`, signalling that the kernel's enumeration order — and therefore
+/// the `local_index` assignment — would arbitrarily shuffle under a future
+/// edit (PRD `docs/prds/v0_2/persistent-naming-v2.md` line 72).
+///
+/// # Inputs
+///
+/// - `handles_with_attrs`: per-realization slice of `(GeometryHandleId,
+///   &TopologyAttribute)` pairs. The caller (engine_build.rs::execute_realization_ops)
+///   is responsible for scoping this to one realization at a time — typically
+///   by filtering `topology_attribute_table.iter()` on
+///   `attr.feature_id == realization_feature_id`. Passing the full table
+///   would re-emit on every successive realization for prior-realization
+///   entries that persist for the duration of `build()`.
+/// - `centroids`: pre-queried centroid map (`HashMap<GeometryHandleId, [f64; 3]>`).
+///   Computed at the call site via `kernel.query(GeometryQuery::Centroid(handle))`
+///   so this helper stays pure-Rust (no `&mut dyn GeometryKernel` borrow).
+///   Handles absent from this map are silently skipped — kernel-query failures
+///   at the call site emit a Warning there and skip the handle, mirroring the
+///   auxiliary-metadata-failure-must-not-regress-to-Failed convention used by
+///   `seed_primitive_attributes_for_handle` and `populate_attribute_history`.
+/// - `tol_m`: tolerance in meters. Pairs whose squared centroid distance
+///   `<= tol_m * tol_m` are considered geometrically tied. Engine call site
+///   uses [`LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M`] (a kernel-epsilon-tight
+///   1 nm / 1e-9 m sentinel); per-realization tolerance threading is
+///   deferred to a follow-up task.
+/// - `selector_span`: span attached to the primary diagnostic label.
+///   Engine call site uses the realization's source span.
+/// - `diagnostics`: appended in place; the helper never clears or reorders
+///   pre-existing entries.
+///
+/// # Output
+///
+/// At most one diagnostic per `(feature_id, role)` group, carrying
+/// `DiagnosticCode::TopologyAttributeLocalIndexReassigned`, severity Warning,
+/// and naming the smallest pair of tied `local_index` values for
+/// reproducible message wording.
+///
+/// # Filter rules
+///
+/// - Entries with non-empty `mod_history` are skipped — post-split clusters
+///   are tracked through `ModEntry` and surfaced via
+///   `TopologyAttributeAmbiguousAfterSplit` at resolve time per PRD line 72
+///   ("not because of a split — splits are handled by mod_history"). Re-firing
+///   here would double-warn the user about the same fragility.
+/// - Singleton groups (one entry per `(feature_id, role)`) have no pairwise
+///   comparison and are skipped.
+///
+/// # Tolerance semantics
+///
+/// Squared-distance comparison vs `tol_m * tol_m` to avoid an `sqrt` per pair
+/// (mirroring the squared-distance idiom from
+/// `selector_vocabulary_v2::extremal_by_centroid`). NaN / infinite centroid
+/// components — should they ever arise from a degenerate kernel query — would
+/// fail the squared-distance comparison naturally (NaN comparisons are false),
+/// so no extra guard is needed.
+///
+/// # Single-source rule
+///
+/// This helper does NOT regress the realization to Failed under any condition:
+/// it only appends Warnings. Auxiliary metadata MUST NOT regress to Failed —
+/// the realization is primary, attribute fragility detection is supplementary.
+/// Kernel-epsilon-tight tolerance (1 nm, 1e-9 m) for the construction-time
+/// local-index-reassignment fragility detector.
+///
+/// Squared-distance comparison vs `LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M *
+/// LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M`: pairs of `(feature_id, role)`-peer
+/// centroids closer than this are flagged as geometrically tied. Real CAD
+/// designs almost never have features tied to that precision, so false
+/// positives are minimal.
+///
+/// **Per-realization tolerance threading is deferred** to a follow-up task
+/// (see #2654 design decisions); when that lands, this constant becomes the
+/// default and the realization-specific tolerance overrides it at the call
+/// site. Keeping it as a single named constant means that threading change
+/// is one-line, not a 7-caller mechanical rewrite.
+pub const LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M: f64 = 1e-9;
+
+/// Stable sort key for `Role` that does NOT depend on `Debug` output.
+///
+/// The Rust API guidelines mark `Debug` as "not stable for serialization",
+/// and this module uses the sort key only to keep diagnostic emission order
+/// deterministic — a downstream rename / shape-change of `Role` must not
+/// silently reorder warnings. Each variant gets an explicit u32 here; new
+/// variants must be appended (assigning a fresh discriminant) rather than
+/// inserted between existing ones.
+fn role_sort_discriminant(role: &Role) -> u32 {
+    match role {
+        Role::Cap(CapKind::Top) => 0,
+        Role::Cap(CapKind::Bottom) => 1,
+        Role::Cap(CapKind::Start) => 2,
+        Role::Cap(CapKind::End) => 3,
+        Role::Side => 4,
+        Role::NewEdge => 5,
+        Role::RevolvedFace => 6,
+        Role::AxisFace => 7,
+        Role::SweptFace => 8,
+        Role::LoftedFace => 9,
+        Role::MidSurfaceFace => 10,
+        Role::MidSurfaceEdge => 11,
+    }
+}
+
+pub fn detect_local_index_reassignment_diagnostics(
+    handles_with_attrs: &[(GeometryHandleId, &TopologyAttribute)],
+    centroids: &HashMap<GeometryHandleId, [f64; 3]>,
+    tol_m: f64,
+    selector_span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    // Group entries by (feature_id, role). Skip post-split clusters
+    // (mod_history non-empty) per PRD line 72 — those are tracked by
+    // TopologyAttributeAmbiguousAfterSplit. Keys borrow `feature_id` from
+    // the input slice (whose lifetime outlives this function) to avoid a
+    // FeatureId clone per entry.
+    let mut groups: HashMap<(&FeatureId, Role), Vec<(GeometryHandleId, u32)>> = HashMap::new();
+    for (handle_id, attr) in handles_with_attrs.iter() {
+        if !attr.mod_history.is_empty() {
+            continue;
+        }
+        groups
+            .entry((&attr.feature_id, attr.role))
+            .or_default()
+            .push((*handle_id, attr.local_index));
+    }
+
+    let tol_sq = tol_m * tol_m;
+
+    // Iterate groups in deterministic (feature_id, role) order. HashMap
+    // iteration order is unspecified — collect keys, sort, then walk. This
+    // keeps emission order stable across runs for downstream test assertions
+    // and human-readable diagnostic output. Sort key uses Display for
+    // FeatureId (its canonical string form) and an explicit discriminant
+    // function for Role to avoid coupling the sort to `Debug` output.
+    let mut group_keys: Vec<&(&FeatureId, Role)> = groups.keys().collect();
+    group_keys.sort_by(|a, b| {
+        a.0.to_string()
+            .cmp(&b.0.to_string())
+            .then_with(|| role_sort_discriminant(&a.1).cmp(&role_sort_discriminant(&b.1)))
+    });
+
+    for key in group_keys {
+        let entries = &groups[key];
+        if entries.len() < 2 {
+            continue;
+        }
+        // Sort entries by local_index ascending so the smallest tied pair is
+        // emitted first (deterministic message wording: "indices i and j" with
+        // i < j and i is the smallest tied index in the group).
+        let mut sorted = entries.clone();
+        sorted.sort_by_key(|(_, local_index)| *local_index);
+
+        // Pairwise comparison; stop after first tie (at most one diagnostic
+        // per group). Handles absent from the centroid map are silently
+        // skipped — kernel-query failure at the call site is reported there
+        // and the helper just lacks data for that handle.
+        'outer: for i in 0..sorted.len() {
+            let (h_i, idx_i) = sorted[i];
+            let Some(c_i) = centroids.get(&h_i) else {
+                continue;
+            };
+            for &(h_j, idx_j) in sorted.iter().skip(i + 1) {
+                let Some(c_j) = centroids.get(&h_j) else {
+                    continue;
+                };
+                let dx = c_i[0] - c_j[0];
+                let dy = c_i[1] - c_j[1];
+                let dz = c_i[2] - c_j[2];
+                let dist_sq = dx * dx + dy * dy + dz * dz;
+                if dist_sq <= tol_sq {
+                    let (feature_id, role) = key;
+                    diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "topology-attribute selector for (feature '{}', role '{:?}') has \
+                             geometrically tied local_index assignments at indices {} and {}; \
+                             selector resolution may shuffle after edits",
+                            feature_id, role, idx_i, idx_j,
+                        ))
+                        .with_code(DiagnosticCode::TopologyAttributeLocalIndexReassigned)
+                        .with_label(DiagnosticLabel::new(selector_span, "selector call")),
+                    );
+                    break 'outer;
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2653,6 +2842,244 @@ mod tests {
             assert!(
                 msg.contains("loft section face/edge slice families must be built in lockstep"),
                 "wrong panic for (faces={nfaces}, edges={nedges}): {msg:?}"
+            );
+        }
+    }
+
+    // --- detect_local_index_reassignment_diagnostics (PRD task 4 / #2654) ---
+    //
+    // The helper is pure Rust over (handles_with_attrs, centroid_map): no
+    // OCCT kernel needed. Tests below construct synthetic input slices and
+    // centroid maps, call the helper, and assert on the emitted diagnostics.
+    mod detect_local_index_reassignment {
+        use std::collections::HashMap;
+
+        use reify_types::{
+            FeatureId, GeometryHandleId, ModEntry, Role, SourceSpan, TopologyAttribute,
+        };
+
+        use super::super::{
+            LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M, detect_local_index_reassignment_diagnostics,
+        };
+
+        /// Synthetic span used by every detect_* test — pinning a stable
+        /// (start, end) pair so message assertions can pattern-match against it.
+        fn synthetic_span() -> SourceSpan {
+            SourceSpan::new(10, 20)
+        }
+
+        /// Build a TopologyAttribute with the given (feature_id, role, local_index)
+        /// and an empty mod_history (the non-split case detection covers).
+        fn make_attr(feature: &str, role: Role, local_index: u32) -> TopologyAttribute {
+            TopologyAttribute {
+                feature_id: FeatureId::new(feature),
+                role,
+                local_index,
+                user_label: None,
+                mod_history: Vec::new(),
+            }
+        }
+
+        /// Build a TopologyAttribute with a single ModEntry in mod_history
+        /// (the post-split-cluster case detection must skip).
+        fn make_attr_with_split(
+            feature: &str,
+            role: Role,
+            local_index: u32,
+            split_index: u32,
+        ) -> TopologyAttribute {
+            TopologyAttribute {
+                feature_id: FeatureId::new(feature),
+                role,
+                local_index,
+                user_label: None,
+                mod_history: vec![ModEntry {
+                    splitting_feature_id: FeatureId::new("Cut#realization[1]"),
+                    split_index,
+                }],
+            }
+        }
+
+        #[test]
+        fn detect_local_index_reassignment_emits_no_diagnostic_on_empty_input() {
+            let centroids: HashMap<GeometryHandleId, [f64; 3]> = HashMap::new();
+            let mut diagnostics = Vec::new();
+            detect_local_index_reassignment_diagnostics(
+                &[],
+                &centroids,
+                LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M,
+                synthetic_span(),
+                &mut diagnostics,
+            );
+            assert!(diagnostics.is_empty());
+        }
+
+        #[test]
+        fn detect_local_index_reassignment_emits_no_diagnostic_for_singleton_role_group() {
+            let attr = make_attr("F#realization[0]", Role::Side, 0);
+            let h = GeometryHandleId(1);
+            let mut centroids: HashMap<GeometryHandleId, [f64; 3]> = HashMap::new();
+            centroids.insert(h, [1.0, 2.0, 3.0]);
+            let mut diagnostics = Vec::new();
+            detect_local_index_reassignment_diagnostics(
+                &[(h, &attr)],
+                &centroids,
+                LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M,
+                synthetic_span(),
+                &mut diagnostics,
+            );
+            // Singleton group: no pairwise comparison to do → no diagnostic.
+            assert!(diagnostics.is_empty());
+        }
+
+        #[test]
+        fn detect_local_index_reassignment_emits_diagnostic_when_two_entries_have_tied_centroids() {
+            use reify_types::Severity;
+            let attr0 = make_attr("F#realization[0]", Role::Side, 0);
+            let attr1 = make_attr("F#realization[0]", Role::Side, 1);
+            let h0 = GeometryHandleId(1);
+            let h1 = GeometryHandleId(2);
+            let mut centroids: HashMap<GeometryHandleId, [f64; 3]> = HashMap::new();
+            // Identical centroids → squared distance == 0 ≤ tol_m^2.
+            centroids.insert(h0, [1.0, 2.0, 3.0]);
+            centroids.insert(h1, [1.0, 2.0, 3.0]);
+            let mut diagnostics = Vec::new();
+            detect_local_index_reassignment_diagnostics(
+                &[(h0, &attr0), (h1, &attr1)],
+                &centroids,
+                LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M,
+                synthetic_span(),
+                &mut diagnostics,
+            );
+            assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
+            let diag = &diagnostics[0];
+            assert_eq!(diag.severity, Severity::Warning);
+            assert_eq!(
+                diag.code,
+                Some(reify_types::DiagnosticCode::TopologyAttributeLocalIndexReassigned)
+            );
+            assert!(
+                diag.message.contains("topology-attribute selector for"),
+                "missing canonical prefix in message: {}",
+                diag.message
+            );
+            assert!(
+                diag.message.contains("F#realization[0]"),
+                "missing feature_id in message: {}",
+                diag.message
+            );
+            assert!(
+                diag.message.contains("Side"),
+                "missing role in message: {}",
+                diag.message
+            );
+            assert!(
+                diag.message.contains("local_index assignments at indices 0 and 1"),
+                "missing tied indices in message: {}",
+                diag.message
+            );
+            // Label should span selector_span with text "selector call".
+            assert_eq!(diag.labels.len(), 1, "expected exactly one label");
+            let label = &diag.labels[0];
+            assert_eq!(label.span, synthetic_span());
+            assert_eq!(label.message, "selector call");
+        }
+
+        #[test]
+        fn detect_local_index_reassignment_skips_entries_with_non_empty_mod_history() {
+            // PRD line 72: "not because of a split — splits are handled by
+            // mod_history". Post-split clusters are surfaced via
+            // TopologyAttributeAmbiguousAfterSplit at resolve time; this helper
+            // must NOT double-warn the user about the same fragility under a
+            // different code.
+            let attr0 = make_attr_with_split("F#realization[0]", Role::Side, 0, 0);
+            let attr1 = make_attr_with_split("F#realization[0]", Role::Side, 1, 1);
+            let h0 = GeometryHandleId(1);
+            let h1 = GeometryHandleId(2);
+            let mut centroids: HashMap<GeometryHandleId, [f64; 3]> = HashMap::new();
+            // Identical centroids — would normally trip the helper, but
+            // mod_history non-empty must short-circuit the entry.
+            centroids.insert(h0, [1.0, 2.0, 3.0]);
+            centroids.insert(h1, [1.0, 2.0, 3.0]);
+            let mut diagnostics = Vec::new();
+            detect_local_index_reassignment_diagnostics(
+                &[(h0, &attr0), (h1, &attr1)],
+                &centroids,
+                LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M,
+                synthetic_span(),
+                &mut diagnostics,
+            );
+            assert!(
+                diagnostics.is_empty(),
+                "expected no diagnostic — split-cluster entries must be skipped, got: {diagnostics:?}"
+            );
+        }
+
+        #[test]
+        fn detect_local_index_reassignment_does_not_emit_when_centroids_are_well_separated() {
+            // Same two-entry (feature_id, role) group as the tied-centroids
+            // test, but centroids differ by [10.0, 0.0, 0.0] — Euclidean
+            // distance 10 m, vastly above any reasonable tolerance. Kernel
+            // enumeration order ties to their geometric distinctness, so
+            // local_index assignment is stable across edits and there is
+            // nothing to warn about. Regression guard for the squared-distance
+            // threshold check.
+            let attr0 = make_attr("F#realization[0]", Role::Side, 0);
+            let attr1 = make_attr("F#realization[0]", Role::Side, 1);
+            let h0 = GeometryHandleId(1);
+            let h1 = GeometryHandleId(2);
+            let mut centroids: HashMap<GeometryHandleId, [f64; 3]> = HashMap::new();
+            centroids.insert(h0, [0.0, 0.0, 0.0]);
+            centroids.insert(h1, [10.0, 0.0, 0.0]);
+            let mut diagnostics = Vec::new();
+            detect_local_index_reassignment_diagnostics(
+                &[(h0, &attr0), (h1, &attr1)],
+                &centroids,
+                LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M,
+                synthetic_span(),
+                &mut diagnostics,
+            );
+            assert!(
+                diagnostics.is_empty(),
+                "expected no diagnostic — well-separated centroids pose no fragility, got: {diagnostics:?}"
+            );
+        }
+
+        #[test]
+        fn detect_local_index_reassignment_emits_at_most_one_diagnostic_per_role_group() {
+            // Three entries in the same (feature_id, role) group with
+            // local_index ∈ {0, 1, 2}, all sharing the SAME centroid. All
+            // three pairs (0,1), (0,2), (1,2) would trigger detection — but
+            // the helper must emit exactly ONE diagnostic per group, naming
+            // the smallest tied pair (indices 0 and 1).
+            let attr0 = make_attr("F#realization[0]", Role::Side, 0);
+            let attr1 = make_attr("F#realization[0]", Role::Side, 1);
+            let attr2 = make_attr("F#realization[0]", Role::Side, 2);
+            let h0 = GeometryHandleId(1);
+            let h1 = GeometryHandleId(2);
+            let h2 = GeometryHandleId(3);
+            let mut centroids: HashMap<GeometryHandleId, [f64; 3]> = HashMap::new();
+            centroids.insert(h0, [0.0, 0.0, 0.0]);
+            centroids.insert(h1, [0.0, 0.0, 0.0]);
+            centroids.insert(h2, [0.0, 0.0, 0.0]);
+            let mut diagnostics = Vec::new();
+            detect_local_index_reassignment_diagnostics(
+                &[(h0, &attr0), (h1, &attr1), (h2, &attr2)],
+                &centroids,
+                LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M,
+                synthetic_span(),
+                &mut diagnostics,
+            );
+            assert_eq!(
+                diagnostics.len(),
+                1,
+                "expected exactly one diagnostic per role group, got: {diagnostics:?}"
+            );
+            let diag = &diagnostics[0];
+            assert!(
+                diag.message.contains("local_index assignments at indices 0 and 1"),
+                "expected the smallest tied pair (0 and 1) to be named, got: {}",
+                diag.message
             );
         }
     }

@@ -11,16 +11,30 @@ const DiagBadgeContent: Component<{ getSummary: () => DiagnosticSummary }> = (pr
   <>
     <Show when={props.getSummary().errorCount > 0}>
       <span class={styles.errorBadge}>
-        {props.getSummary().errorCount} error{props.getSummary().errorCount > 1 ? 's' : ''}
+        {pluralize(props.getSummary().errorCount, 'error')}
       </span>
     </Show>
     <Show when={props.getSummary().warningCount > 0}>
       <span class={styles.warningBadge}>
-        {props.getSummary().warningCount} warning{props.getSummary().warningCount > 1 ? 's' : ''}
+        {pluralize(props.getSummary().warningCount, 'warning')}
       </span>
     </Show>
   </>
 );
+
+function summarize(diags: DiagnosticInfo[] | undefined): DiagnosticSummary {
+  let errorCount = 0;
+  let warningCount = 0;
+  for (const d of diags ?? []) {
+    if (d.severity === 'Error') errorCount++;
+    else if (d.severity === 'Warning') warningCount++;
+  }
+  return { errorCount, warningCount };
+}
+
+function pluralize(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? '' : 's'}`;
+}
 
 export interface StatusBarProps {
   evalStatus: EvaluationStatus;
@@ -52,27 +66,9 @@ export const StatusBar: Component<StatusBarProps> = (props) => {
     return counts;
   });
 
-  const diagnosticSummary = createMemo(() => {
-    const diags = props.tessellationDiagnostics ?? [];
-    let errorCount = 0;
-    let warningCount = 0;
-    for (const d of diags) {
-      if (d.severity === 'Error') errorCount++;
-      else if (d.severity === 'Warning') warningCount++;
-    }
-    return { errorCount, warningCount };
-  });
+  const diagnosticSummary = createMemo(() => summarize(props.tessellationDiagnostics));
 
-  const compileSummary = createMemo(() => {
-    const diags = props.compileDiagnostics ?? [];
-    let errorCount = 0;
-    let warningCount = 0;
-    for (const d of diags) {
-      if (d.severity === 'Error') errorCount++;
-      else if (d.severity === 'Warning') warningCount++;
-    }
-    return { errorCount, warningCount };
-  });
+  const compileSummary = createMemo(() => summarize(props.compileDiagnostics));
 
   function claudeStatusText(status: SessionStatus): string {
     switch (status) {
@@ -98,7 +94,7 @@ export const StatusBar: Component<StatusBarProps> = (props) => {
           when={triangleCount() > 0}
           fallback={
             <span class={styles.value}>
-              {diagnosticSummary().errorCount > 0 ? 'Compile error' : 'No geometry'}
+              {diagnosticSummary().errorCount > 0 ? 'Tessellation error' : 'No geometry'}
             </span>
           }
         >
@@ -112,7 +108,7 @@ export const StatusBar: Component<StatusBarProps> = (props) => {
           class={`${styles.section} ${styles.diagnosticsTrigger}`}
           data-testid="tessellation-errors"
           data-has-errors={diagnosticSummary().errorCount > 0 ? 'true' : 'false'}
-          aria-label={`Show ${props.tessellationDiagnostics?.length ?? 0} tessellation diagnostics`}
+          aria-label={`Show ${pluralize(props.tessellationDiagnostics?.length ?? 0, 'tessellation diagnostic')}`}
           onClick={() => props.onToggleDiagnostics?.()}
         >
           <DiagBadgeContent getSummary={diagnosticSummary} />
@@ -124,7 +120,7 @@ export const StatusBar: Component<StatusBarProps> = (props) => {
           type="button"
           class={`${styles.section} ${styles.diagnosticsTrigger}`}
           data-testid="diagnostics-count"
-          aria-label={`Show ${props.compileDiagnostics?.length ?? 0} compile diagnostics`}
+          aria-label={`Show ${pluralize(props.compileDiagnostics?.length ?? 0, 'compile diagnostic')}`}
           onClick={() => props.onToggleDiagnostics?.()}
         >
           <DiagBadgeContent getSummary={compileSummary} />

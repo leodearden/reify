@@ -65,7 +65,7 @@ import {
   navigateToEntity,
   navigateFromConstraint,
 } from './navigation';
-import type { ExportFormat, FileData, SourceLocation, ConstraintData, ToastMessage, ToastAction, EntityTreeNode, DiagnosticInfo } from './types';
+import type { ExportFormat, FileData, SourceLocation, ConstraintData, ToastMessage, ToastAction, EntityTreeNode } from './types';
 import { applyTheme } from './theme';
 import { errorMessage } from './utils/errorClassifier';
 import { messageForSaveBlocked } from './editor/messages';

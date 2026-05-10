@@ -4611,8 +4611,10 @@ dependencies = [
 name = "reify-mesh-morph"
 version = "0.1.0"
 dependencies = [
+ "faer",
  "reify-compiler",
  "reify-eval",
+ "reify-solver-elastic",
  "reify-types",
 ]
 

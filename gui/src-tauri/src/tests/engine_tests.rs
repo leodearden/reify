@@ -5589,6 +5589,348 @@ fn load_file_unresolved_import_returns_clear_err() {
     );
 }
 
+// ── update_source multi-file regression (task 3318) ──────────────────────────
+
+/// Driver (RED → GREEN): after `load_file` resolves a multi-file project,
+/// calling `update_source` with the same content must continue to produce the
+/// imported structure's value cells — the import graph must survive a
+/// dirty-buffer edit.
+///
+/// Pre-fix: `update_source` uses `compile_with_stdlib` (single-file, ignores
+/// `import helper`) → compile-error for unknown `Helper` template → returns
+/// `Err`.
+/// Post-fix: branches on `self.file_path.is_some()`, routes through
+/// `compile_entry_with_imports` → import resolved → returns `Ok` with
+/// `Helper.x = 10mm` still present.
+#[test]
+fn update_source_after_load_file_preserves_multi_file_imports() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+
+    // helper.ri: a public structure with one param
+    std::fs::write(
+        dir.path().join("helper.ri"),
+        "pub structure Helper { param x: Scalar = 10mm }\n",
+    )
+    .expect("write helper.ri");
+
+    let main_content = "import helper\nstructure Top { sub h = Helper() }\n";
+
+    // main.ri: imports helper and instantiates it as a sub-component.
+    std::fs::write(dir.path().join("main.ri"), main_content).expect("write main.ri");
+
+    // load_file must succeed and produce Helper.x = 10mm
+    let load_state = session
+        .load_file(&dir.path().join("main.ri"))
+        .expect("load_file should succeed with resolved import");
+    assert!(
+        load_state.values.iter().any(|v| v.name == "x" && v.entity_path == "Helper"),
+        "load_file should produce Helper.x value cell"
+    );
+
+    // update_source with the same content — import graph must be preserved
+    let main_path = dir.path().join("main.ri");
+    let main_path_str = main_path.to_str().unwrap();
+    let update_result = session.update_source(main_path_str, main_content);
+
+    let state = update_result.expect("update_source after load_file should return Ok (import resolved)");
+
+    assert!(
+        !state.values.is_empty(),
+        "state.values should be non-empty after update_source preserves import (got {} values)",
+        state.values.len()
+    );
+
+    let x_val = state
+        .values
+        .iter()
+        .find(|v| v.name == "x" && v.entity_path == "Helper")
+        .expect("should find parameter 'x' on entity 'Helper' after update_source");
+
+    assert_eq!(
+        x_val.unit, "mm",
+        "Helper.x should have unit 'mm', got '{}'",
+        x_val.unit
+    );
+    assert_eq!(
+        x_val.value, "10",
+        "Helper.x default is 10mm; got '{}' (unit: '{}')",
+        x_val.value, x_val.unit
+    );
+}
+
+/// Dirty-buffer edit: after `load_file` resolves a multi-file project,
+/// `update_source` with *modified* content (adding a new top-level param while
+/// keeping the existing `import helper`) must see both the imported `Helper.x`
+/// value cell and the newly-added param — the import graph survives an actual
+/// edit, not just a round-trip of identical content.
+///
+/// This is the core dirty-buffer regression scenario for task 3318: pre-fix
+/// `update_source` silently dropped all imports on every keystroke because it
+/// called `compile_with_stdlib` (single-file) instead of
+/// `compile_entry_with_imports` (multi-file).
+#[test]
+fn update_source_after_load_file_dirty_buffer_edit_preserves_imports() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+
+    std::fs::write(
+        dir.path().join("helper.ri"),
+        "pub structure Helper { param x: Scalar = 10mm }\n",
+    )
+    .expect("write helper.ri");
+
+    let main_content_v1 = "import helper\nstructure Top { sub h = Helper() }\n";
+    std::fs::write(dir.path().join("main.ri"), main_content_v1).expect("write main.ri");
+
+    session
+        .load_file(&dir.path().join("main.ri"))
+        .expect("load_file should succeed");
+
+    // v2: keep the import, add a new top-level param — simulates a real keystroke edit
+    let main_content_v2 =
+        "import helper\nstructure Top { sub h = Helper()\nparam top_size: Scalar = 20mm }\n";
+
+    let main_path = dir.path().join("main.ri");
+    let state = session
+        .update_source(main_path.to_str().unwrap(), main_content_v2)
+        .expect("update_source with dirty-buffer edit should return Ok");
+
+    // Imported Helper.x must still be present
+    let helper_x = state
+        .values
+        .iter()
+        .find(|v| v.name == "x" && v.entity_path == "Helper")
+        .expect("Helper.x should be present after dirty-buffer edit");
+    assert_eq!(helper_x.unit, "mm");
+    assert_eq!(helper_x.value, "10");
+
+    // The newly-added top-level param must also appear
+    assert!(
+        state
+            .values
+            .iter()
+            .any(|v| v.name == "top_size" && v.unit == "mm"),
+        "top_size param added in dirty-buffer edit should appear in state.values"
+    );
+}
+
+/// Regression-pin: after `load_file` succeeds, calling `update_source` with
+/// content that adds an unresolvable `import nonexistent` must return `Err`
+/// mentioning the module name — the multi-file path must NOT silently swallow
+/// resolver errors.
+///
+/// Mirrors `load_file_unresolved_import_returns_clear_err` for the dirty-buffer
+/// code path (task 3318 follow-up).
+#[test]
+fn update_source_after_load_file_with_unresolved_import_returns_err() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+
+    // main.ri: no imports — load succeeds
+    std::fs::write(
+        dir.path().join("main.ri"),
+        "structure Top { param w: Scalar = 5mm }\n",
+    )
+    .expect("write main.ri");
+
+    session
+        .load_file(&dir.path().join("main.ri"))
+        .expect("initial load_file should succeed");
+
+    // dirty buffer: add an import that cannot be resolved
+    let main_path = dir.path().join("main.ri");
+    let result = session.update_source(
+        main_path.to_str().unwrap(),
+        "import nonexistent\nstructure Top { param w: Scalar = 5mm }\n",
+    );
+
+    assert!(
+        result.is_err(),
+        "update_source with unresolved import should return Err, got Ok"
+    );
+
+    let err_msg = result.unwrap_err();
+    assert!(
+        err_msg.contains("nonexistent"),
+        "error message should mention module name 'nonexistent'; got: {err_msg}"
+    );
+    assert!(
+        err_msg.contains("not found") || err_msg.contains("failed to read"),
+        "error message should mention 'not found' or 'failed to read'; got: {err_msg}"
+    );
+}
+
+// ── Collision-diagnostic test helpers ────────────────────────────────────────
+
+/// Create an `EngineSession` configured with the standard mock checker/kernel,
+/// used by the cross-import and entry-vs-import collision regression tests.
+fn setup_collision_session() -> EngineSession {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    EngineSession::new(Box::new(checker), Some(Box::new(kernel)))
+}
+
+/// Assert that `state.compile_diagnostics` contains at least one Warning whose
+/// `message` mentions both `name` and the substring `"first-wins"`, mirroring
+/// the compiler's cross-prelude alias collision policy wording.
+fn assert_first_wins_warning(state: &crate::types::GuiState, name: &str) {
+    let diag = state.compile_diagnostics.iter().find(|d| {
+        d.severity == "Warning"
+            && d.message.contains(name)
+            && d.message.contains("first-wins")
+    });
+    assert!(
+        diag.is_some(),
+        "expected a Warning diagnostic mentioning '{}' and 'first-wins', \
+         but state.compile_diagnostics = {:?}",
+        name,
+        state.compile_diagnostics
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Regression: importing two helper modules that both declare `pub structure Foo`
+/// must emit a Warning diagnostic for the collision (first-wins is preserved, but
+/// the user must be told about the shadowing).
+///
+/// Mirrors the compiler's cross-prelude alias collision policy
+/// (reify-compiler/src/lib.rs:281-292): same `Diagnostic::warning`, same
+/// "first-wins" trailer in the message, same `SourceSpan::prelude()` label.
+#[test]
+fn load_file_two_imports_with_same_pub_structure_emits_collision_diagnostic() {
+    let mut session = setup_collision_session();
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+
+    // helper1.ri: declares pub structure Foo with x = 1mm
+    std::fs::write(
+        dir.path().join("helper1.ri"),
+        "pub structure Foo { param x: Scalar = 1mm }\n",
+    )
+    .expect("write helper1.ri");
+
+    // helper2.ri: also declares pub structure Foo (collision with helper1)
+    std::fs::write(
+        dir.path().join("helper2.ri"),
+        "pub structure Foo { param x: Scalar = 2mm }\n",
+    )
+    .expect("write helper2.ri");
+
+    // main.ri: imports both helpers, causing a cross-import collision on Foo
+    std::fs::write(
+        dir.path().join("main.ri"),
+        "import helper1\nimport helper2\nstructure Top { sub f = Foo() }\n",
+    )
+    .expect("write main.ri");
+
+    let state = session
+        .load_file(&dir.path().join("main.ri"))
+        .expect("load_file should succeed despite collision (first-wins, not error)");
+
+    assert_first_wins_warning(&state, "Foo");
+}
+
+/// Regression: when the entry module itself declares a structure `Foo` and an
+/// import also provides `pub structure Foo`, the collision must emit a Warning
+/// diagnostic (first-wins is the entry's declaration, but the user must be told).
+#[test]
+fn load_file_entry_redeclares_imported_pub_structure_emits_collision_diagnostic() {
+    let mut session = setup_collision_session();
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+
+    // helper.ri: declares pub structure Foo
+    std::fs::write(
+        dir.path().join("helper.ri"),
+        "pub structure Foo { param x: Scalar = 1mm }\n",
+    )
+    .expect("write helper.ri");
+
+    // main.ri: also declares structure Foo (shadows the import)
+    std::fs::write(
+        dir.path().join("main.ri"),
+        "import helper\nstructure Foo { param y: Scalar = 5mm }\n",
+    )
+    .expect("write main.ri");
+
+    let state = session
+        .load_file(&dir.path().join("main.ri"))
+        .expect("load_file should succeed despite collision (first-wins, not error)");
+
+    assert_first_wins_warning(&state, "Foo");
+}
+
+/// Regression: three imports all declaring the same `pub structure Foo` must
+/// emit N-1 = 2 warnings, each naming the original first-wins declarer (helper1)
+/// and the i-th colliding import (helper2, then helper3).  Locks the per-collision
+/// warning count so a future change that emits only one summary or deduplicates
+/// pairs is caught by a test failure rather than silent behaviour drift.
+#[test]
+fn load_file_three_imports_same_pub_structure_emits_two_collision_diagnostics() {
+    let mut session = setup_collision_session();
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+
+    for (name, val) in [("helper1", "1mm"), ("helper2", "2mm"), ("helper3", "3mm")] {
+        std::fs::write(
+            dir.path().join(format!("{name}.ri")),
+            format!("pub structure Foo {{ param x: Scalar = {val} }}\n"),
+        )
+        .unwrap_or_else(|_| panic!("write {name}.ri"));
+    }
+
+    std::fs::write(
+        dir.path().join("main.ri"),
+        "import helper1\nimport helper2\nimport helper3\nstructure Top { sub f = Foo() }\n",
+    )
+    .expect("write main.ri");
+
+    let state = session
+        .load_file(&dir.path().join("main.ri"))
+        .expect("load_file should succeed (first-wins, not error)");
+
+    // Each of the two colliding imports (helper2, helper3) produces exactly one
+    // warning that names the original declarer (helper1) and the collider.
+    let warnings: Vec<_> = state
+        .compile_diagnostics
+        .iter()
+        .filter(|d| d.severity == "Warning" && d.message.contains("Foo") && d.message.contains("first-wins"))
+        .collect();
+    assert_eq!(
+        warnings.len(),
+        2,
+        "expected exactly 2 collision warnings for 3-import case, got: {:?}",
+        state.compile_diagnostics
+    );
+    // Both warnings should name the original declarer (helper1).
+    for w in &warnings {
+        assert!(
+            w.message.contains("helper1"),
+            "warning should name the first-wins origin 'helper1'; got: {}",
+            w.message
+        );
+    }
+    // The two colliding imports should be named individually.
+    assert!(
+        warnings.iter().any(|w| w.message.contains("helper2")),
+        "expected one warning naming 'helper2'; got: {:?}",
+        warnings
+    );
+    assert!(
+        warnings.iter().any(|w| w.message.contains("helper3")),
+        "expected one warning naming 'helper3'; got: {:?}",
+        warnings
+    );
+}
+
 /// Guard against double-seeding stdlib when a .ri file explicitly `import std.*`.
 ///
 /// When an entry imports `std.units`, the new flow adds it to the DAG and also

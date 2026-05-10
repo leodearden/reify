@@ -236,6 +236,7 @@ mod tests {
         let probe = ReferenceCoord::new(0.2, 0.3, 0.5);
         let g = WedgeP1.shape_grad_at(probe);
         assert_eq!(g.len(), 6, "shape_grad_at must return N_NODES=6 rows");
+        // Row length is enforced by the `[f64; 3]` return type; no runtime check needed.
     }
 
     #[test]

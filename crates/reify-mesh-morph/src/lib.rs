@@ -17,6 +17,17 @@
 //! their topological neighbours via Jacobi iteration. Engine wiring (PRD
 //! task #10) selects between this smoother and the elasticity morph.
 //!
+//! ## PRD task #7 — linear-elasticity morph — elasticity module
+//!
+//! The [`elasticity`] module implements the primary morph algorithm: treat
+//! the source mesh as a fictitious-elastic continuum, prescribe surface-
+//! node displacements as Dirichlet BCs, and solve the linear-elastostatic
+//! BVP `K · u = 0` for interior-node displacements. Composes four
+//! `reify-solver-elastic` primitives (`element_stiffness`,
+//! `assemble_global_stiffness`, `apply_dirichlet_row_elimination`,
+//! `solve_cg`); the output mesh is `vertices_old + u`. Engine wiring (PRD
+//! task #10) selects between this morph and the Laplacian quick-pass.
+//!
 //! ## PRD task #9 — quality check — quality module
 //!
 //! The [`quality`] module implements the two-tier quality-check pass that
@@ -26,6 +37,7 @@
 //! Engine wiring (PRD task #10) maps hard/soft fail to remesh fallback.
 
 pub mod boundary;
+pub mod elasticity;
 pub mod eligibility;
 pub mod laplacian;
 pub mod options;
@@ -36,6 +48,7 @@ pub use boundary::{
     BoundaryAssociation, NodeAttachment, ProjectionFailure, ProjectorPayload, Projector,
     compute_dirichlet_bcs,
 };
+pub use elasticity::{ElasticityFailure, elasticity_morph};
 pub use eligibility::{Eligibility, MorphSnapshot, Reason, morph_eligible};
 pub use laplacian::{LaplacianFailure, laplacian_smooth};
 pub use options::{MorphFailure, MorphOptions};
@@ -306,6 +319,30 @@ mod tests {
         let _: LaplacianFailure = LaplacianFailure::InvalidNodeIndex(0u32);
         let _: LaplacianFailure =
             LaplacianFailure::UnsupportedElementOrder(reify_types::ElementOrderTag::P2);
+    };
+
+    // ── Step-17: lib re-exports make elasticity module public surface accessible ─
+
+    // Compile fence: verifies ElasticityFailure variants and elasticity_morph
+    // are accessible from the crate root, and pins the elasticity_morph
+    // signature. Same discipline as the boundary, laplacian, and quality
+    // fences above — fails to compile if a re-export drops, the public
+    // signature drifts, or a variant is renamed.
+    const _: fn() = || {
+        use crate::{ElasticityFailure, elasticity_morph};
+        #[allow(clippy::type_complexity)] // pinning the full public signature is the point of the fence
+        let _fn_ref: fn(
+            &reify_types::VolumeMesh,
+            &[(u32, [f64; 3])],
+            &MorphOptions,
+        ) -> Result<reify_types::VolumeMesh, ElasticityFailure> = elasticity_morph;
+        // Variant mentions force the enum's variant set into the fence —
+        // adding or removing a variant under the same names elsewhere would
+        // still require these constructors to compile.
+        let _: ElasticityFailure = ElasticityFailure::InvalidNodeIndex(0u32);
+        let _: ElasticityFailure =
+            ElasticityFailure::UnsupportedElementOrder(reify_types::ElementOrderTag::P2);
+        let _: ElasticityFailure = ElasticityFailure::SolverNotConverged { iterations: 0 };
     };
 
     // ── Step-12: lib re-exports make quality module public surface accessible ──
