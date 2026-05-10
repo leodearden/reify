@@ -242,6 +242,61 @@ pub fn recombine_quality_ok(vertices: &[f32], quad_indices: &[u32], threshold: f
     true
 }
 
+/// Derive a target mesh-edge length from a [`ProfileBoundary`]: smallest
+/// closed-ring segment length × `multiplier`.
+///
+/// Iterates the outer ring and every hole ring as closed polylines
+/// (`windows(2)` + the wrap-around segment from last point back to first),
+/// computes each segment's Euclidean length, and returns the running
+/// minimum times `multiplier`.
+///
+/// Returns `0.0` when `boundary.outer.is_empty()` — mirrors the
+/// "unavailable" convention used by
+/// [`reify_kernel_gmsh::auto_size::auto_mesh_size_from_features`], letting
+/// the caller fall back to the kernel default.
+///
+/// Pure scalar derivation; no `Result` return.
+pub fn auto_mesh_size_from_boundary(boundary: &ProfileBoundary, multiplier: f64) -> f64 {
+    if boundary.outer.is_empty() {
+        return 0.0;
+    }
+    let mut min_len = f64::INFINITY;
+    let update = |min_len: &mut f64, ring: &[[f64; 2]]| {
+        if ring.len() < 2 {
+            return;
+        }
+        // Adjacent segments via windows(2)…
+        for w in ring.windows(2) {
+            let dx = w[1][0] - w[0][0];
+            let dy = w[1][1] - w[0][1];
+            let len = (dx * dx + dy * dy).sqrt();
+            if len < *min_len {
+                *min_len = len;
+            }
+        }
+        // …plus the wrap-around segment from last point back to first to
+        // close the ring.
+        let last = ring[ring.len() - 1];
+        let first = ring[0];
+        let dx = first[0] - last[0];
+        let dy = first[1] - last[1];
+        let len = (dx * dx + dy * dy).sqrt();
+        if len < *min_len {
+            *min_len = len;
+        }
+    };
+    update(&mut min_len, &boundary.outer);
+    for hole in &boundary.holes {
+        update(&mut min_len, hole);
+    }
+    if min_len.is_infinite() {
+        // Outer ring had <2 distinct points (post-validation will reject)
+        // — fall through to the unavailable sentinel.
+        return 0.0;
+    }
+    min_len * multiplier
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
