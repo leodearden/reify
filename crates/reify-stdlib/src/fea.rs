@@ -3901,4 +3901,17 @@ mod tests {
             4,
         );
     }
+
+    // ── TensorProjection::Magnitude precondition ─────────────────────────────
+
+    /// In dev (debug_assertions on), calling Magnitude.apply on a window
+    /// shorter than the stride-3 contract must panic with diagnostic
+    /// context — mirrors the >= 9 asserts on compute_von_mises_3x3 /
+    /// compute_eigenvalues_3x3 elsewhere in the file.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "at least 3 elements")]
+    fn tensor_projection_magnitude_window_too_short_panics_in_dev() {
+        let _ = TensorProjection::Magnitude.apply(&[1.0, 2.0]); // length 2 < 3
+    }
 }
