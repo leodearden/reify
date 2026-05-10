@@ -210,6 +210,21 @@ describe('StatusBar tessellation diagnostics', () => {
     ));
     expect(screen.getByText(/compile error/i)).toBeTruthy();
   });
+
+  it('clicking the tessellation-errors badge invokes onToggleDiagnostics exactly once', () => {
+    const onToggle = vi.fn();
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        tessellationDiagnostics={[makeDiag('Error')]}
+        onToggleDiagnostics={onToggle}
+      />
+    ));
+    fireEvent.click(screen.getByTestId('tessellation-errors'));
+    expect(onToggle).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('StatusBar compile diagnostics', () => {
