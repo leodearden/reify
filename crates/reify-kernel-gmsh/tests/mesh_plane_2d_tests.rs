@@ -14,19 +14,16 @@
 //! in both build modes; the cfg gates pick the right arm.
 
 use reify_kernel_gmsh::mesh_profile_2d::mesh_plane_2d;
-#[cfg(has_gmsh)]
-use reify_kernel_gmsh::init;
 
 /// Triangle path: `recombine=false` on a unit square produces a triangle
 /// mesh with a non-empty, stride-3 index buffer, an even-length flat XY
 /// vertex buffer, and every index in-bounds.
+///
+/// `mesh_plane_2d` acquires `init::GMSH_LOCK` internally — tests must NOT
+/// hold the lock externally or the inner acquisition would deadlock.
 #[cfg(has_gmsh)]
 #[test]
 fn mesh_plane_2d_triangle_path_unit_square_round_trip() {
-    let _guard = init::GMSH_LOCK
-        .lock()
-        .expect("GMSH_LOCK poisoned — a prior test panicked while holding it");
-
     let outer: Vec<[f64; 2]> = vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
     let holes: Vec<Vec<[f64; 2]>> = vec![];
 
