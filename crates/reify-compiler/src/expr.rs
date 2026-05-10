@@ -121,6 +121,38 @@ fn propagate_poison() -> CompiledExpr {
     CompiledExpr::literal(Value::Undef, Type::Error)
 }
 
+/// Emit the cross-sub geometry-access diagnostic via `make_poison_literal` (task-3397).
+///
+/// Used at all three sub-member-access sites (non-collection sub, bare collection
+/// sub, indexed collection sub) when the missing member is found in
+/// `scope.sub_realization_names` — i.e. it exists as a `RealizationDecl` on the
+/// child template, but cross-sub geometry access is not yet supported in v0.1.
+///
+/// Centralising the wording here prevents drift across the three call sites and
+/// makes the keyword "geometry"+"not yet supported in v0.1" grep-findable in one
+/// place.  The anti-cascade contract is preserved: `make_poison_literal` returns
+/// `Type::Error`, so downstream type-checks short-circuit and no cascade
+/// diagnostics fire.
+#[track_caller]
+fn make_cross_sub_geometry_error(
+    diagnostics: &mut Vec<Diagnostic>,
+    member: &str,
+    sub_name: &str,
+    child_struct: &str,
+    span: reify_types::SourceSpan,
+) -> CompiledExpr {
+    make_poison_literal(
+        diagnostics,
+        Diagnostic::error(format!(
+            "cross-sub access to geometry-typed member '{}' on sub '{}' \
+             is not yet supported in v0.1; compose geometry inside '{}' \
+             or pass scalar parameters to its primitives",
+            member, sub_name, child_struct
+        ))
+        .with_label(DiagnosticLabel::new(span, "cross-sub geometry access")),
+    )
+}
+
 /// Resolve `<scope>.<cluster>.<inner>` against a per-arm member-type map for a
 /// match-arm decl group (task 2373).
 ///
@@ -1153,6 +1185,26 @@ pub(crate) fn compile_expr_guarded(
                                     "collection sub member requires indexing",
                                 )),
                             );
+                        } else if scope
+                            .sub_realization_names
+                            .get(sub_name.as_str())
+                            .is_some_and(|s| s.contains(member.as_str()))
+                        {
+                            // Member is a geometry realization — emit specific cross-sub
+                            // diagnostic (task-3397). Early-return with Type::Error to
+                            // prevent cascade errors from the surrounding expression context.
+                            let child_struct = scope
+                                .sub_component_types
+                                .get(sub_name.as_str())
+                                .map(|s| s.as_str())
+                                .unwrap_or(sub_name.as_str());
+                            return make_cross_sub_geometry_error(
+                                diagnostics,
+                                member,
+                                sub_name,
+                                child_struct,
+                                expr.span,
+                            );
                         } else {
                             // Member doesn't exist on the element type at all — don't suggest
                             // indexing a field that isn't there.
@@ -1203,20 +1255,12 @@ pub(crate) fn compile_expr_guarded(
                                     .get(sub_name.as_str())
                                     .map(|s| s.as_str())
                                     .unwrap_or(sub_name.as_str());
-                                // Anti-cascade: make_poison_literal returns Type::Error so
-                                // downstream expressions do not emit cascade diagnostics.
-                                return make_poison_literal(
+                                return make_cross_sub_geometry_error(
                                     diagnostics,
-                                    Diagnostic::error(format!(
-                                        "cross-sub access to geometry-typed member '{}' on sub '{}' \
-                                         is not yet supported in v0.1; compose geometry inside '{}' \
-                                         or pass scalar parameters to its primitives",
-                                        member, sub_name, child_struct
-                                    ))
-                                    .with_label(DiagnosticLabel::new(
-                                        expr.span,
-                                        "cross-sub geometry access",
-                                    )),
+                                    member,
+                                    sub_name,
+                                    child_struct,
+                                    expr.span,
                                 );
                             }
                             // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
@@ -1388,6 +1432,25 @@ pub(crate) fn compile_expr_guarded(
                 {
                     Some(ty) => ty,
                     None => {
+                        // Check for geometry realization member (task-3397).
+                        let is_geometry_realization = scope
+                            .sub_realization_names
+                            .get(name.as_str())
+                            .is_some_and(|s| s.contains(member.as_str()));
+                        if is_geometry_realization {
+                            let child_struct = scope
+                                .sub_component_types
+                                .get(name.as_str())
+                                .map(|s| s.as_str())
+                                .unwrap_or(name.as_str());
+                            return make_cross_sub_geometry_error(
+                                diagnostics,
+                                member,
+                                name,
+                                child_struct,
+                                expr.span,
+                            );
+                        }
                         // Anti-cascade (task-448/task-1921): return poison early rather than
                         // synthesising a dangling ValueRef to a non-existent cell.
                         return make_poison_literal(
