@@ -91,9 +91,9 @@ reify --help                             Show this list
 ## Repository layout
 
 ```
-crates/                 14 Rust crates (kernel, eval, constraints, LSP, CLI…)
+crates/                 24 Rust crates (kernel, eval, constraints, LSP, CLI…)
 gui/                    Tauri 2 + SolidJS + Three.js frontend
-examples/               50 .ri sample files
+examples/               50+ .ri sample files
 docs/                   Language spec, stdlib reference, design notes
 tree-sitter-reify/      Tree-sitter grammar (regenerated on build)
 scripts/                setup-dev.sh, run-gui.sh, run-gui-dev.sh
