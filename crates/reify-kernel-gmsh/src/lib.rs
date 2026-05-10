@@ -70,7 +70,10 @@ pub use kernel_real::GmshKernel;
 pub use kernel::GmshKernel;
 
 pub use cache_key::volume_mesh_cache_key;
-pub use mesh_volume::{compute_thickness_warnings, resolve_mesh_size, MeshSurfaceToVolumeReport};
+pub use mesh_volume::{
+    apply_repair_if_requested, compute_thickness_warnings, resolve_mesh_size,
+    MeshSurfaceToVolumeReport,
+};
 // mesh_surface_to_volume_with_diagnostics depends on GmshKernel::mesh_to_volume
 // which only exists in the real FFI build (kernel_real.rs, cfg(has_gmsh)).
 #[cfg(has_gmsh)]

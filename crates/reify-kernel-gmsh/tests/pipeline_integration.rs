@@ -346,6 +346,80 @@ fn repair_pre_stage_emits_debug_event_when_some_supplied() {
 }
 
 // ---------------------------------------------------------------------------
+// resolve_mesh_size debug event observability
+// ---------------------------------------------------------------------------
+
+/// `resolve_mesh_size` must emit exactly one DEBUG event at the
+/// `reify_kernel_gmsh::mesh_volume` target on each successful call,
+/// regardless of which resolution branch fires (caller / auto / kernel_default).
+///
+/// Pins the structured diagnostic introduced by suggestion-3 ("mesh_size resolved"
+/// event with `source` and `mesh_size` fields).
+#[test]
+fn resolve_mesh_size_emits_debug_event_recording_source_and_value() {
+    use std::sync::Arc;
+
+    reify_test_support::prime_tracing_callsite_cache();
+
+    let cube = unit_cube_mesh();
+
+    // --- (a) caller branch: mesh_size=Some(0.42) → 1 DEBUG event ---
+    let (sub, counters) = reify_test_support::CountingSubscriberBuilder::new()
+        .count_level(tracing::Level::DEBUG)
+        .target_prefix("reify_kernel_gmsh::mesh_volume")
+        .build();
+    let debug_arc = Arc::clone(&counters[&tracing::Level::DEBUG]);
+
+    let result = tracing::subscriber::with_default(sub, || {
+        resolve_mesh_size(
+            &cube,
+            &MeshingOptions { mesh_size: Some(0.42), ..Default::default() },
+            None,
+        )
+    });
+    assert!(result.is_ok(), "caller branch must succeed");
+    let count = debug_arc.load(std::sync::atomic::Ordering::Acquire);
+    assert_eq!(
+        count, 1,
+        "caller branch must emit exactly 1 DEBUG event; got {count}"
+    );
+
+    // --- (b) kernel_default branch: mesh_size=None, auto_cfg=None → 1 DEBUG event ---
+    let (sub2, counters2) = reify_test_support::CountingSubscriberBuilder::new()
+        .count_level(tracing::Level::DEBUG)
+        .target_prefix("reify_kernel_gmsh::mesh_volume")
+        .build();
+    let debug_arc2 = Arc::clone(&counters2[&tracing::Level::DEBUG]);
+
+    let result2 = tracing::subscriber::with_default(sub2, || {
+        resolve_mesh_size(&cube, &MeshingOptions::default(), None)
+    });
+    assert!(result2.is_ok(), "kernel_default branch must succeed");
+    let count2 = debug_arc2.load(std::sync::atomic::Ordering::Acquire);
+    assert_eq!(
+        count2, 1,
+        "kernel_default branch must emit exactly 1 DEBUG event; got {count2}"
+    );
+
+    // --- (c) auto branch: mesh_size=None, auto_cfg=Some → 1 DEBUG event ---
+    let (sub3, counters3) = reify_test_support::CountingSubscriberBuilder::new()
+        .count_level(tracing::Level::DEBUG)
+        .target_prefix("reify_kernel_gmsh::mesh_volume")
+        .build();
+    let debug_arc3 = Arc::clone(&counters3[&tracing::Level::DEBUG]);
+
+    let result3 = tracing::subscriber::with_default(sub3, || {
+        resolve_mesh_size(&cube, &MeshingOptions::default(), Some(AutoSizeConfig::default()))
+    });
+    assert!(result3.is_ok(), "auto branch must succeed");
+    let count3 = debug_arc3.load(std::sync::atomic::Ordering::Acquire);
+    assert_eq!(
+        count3, 1,
+        "auto branch must emit exactly 1 DEBUG event; got {count3}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // mesh_surface_to_volume_with_diagnostics — cfg(has_gmsh) wrapper tests
 // ---------------------------------------------------------------------------
 
@@ -389,8 +463,15 @@ mod with_libgmsh {
 
     /// Caller's explicit `mesh_size` wins over the auto-derived value, observable
     /// via tet count: a finer mesh_size (0.25) produces more tets than auto (≈1.0).
-    /// Pins: (i) caller-wins policy at the wrapper level; (ii) auto fires when
-    /// caller's `mesh_size` is None.
+    ///
+    /// Three runs:
+    /// - A: `mesh_size=None` + `auto_size_cfg=Some(...)` → auto fires, coarse mesh.
+    /// - B: `mesh_size=Some(0.25)` + `auto_size_cfg=Some(...)` → caller wins, fine mesh.
+    /// - C: `mesh_size=Some(0.25)` + `auto_size_cfg=None` → caller wins (no auto), fine mesh.
+    ///
+    /// `tets_b > tets_a` pins relative density; `tets_b == tets_c` pins caller-wins
+    /// independently of HXT refinement monotonicity — C isolates the policy without
+    /// relying on auto_size being a different value than the caller's size.
     #[test]
     fn caller_mesh_size_wins_over_auto_size_observable_in_tet_count() {
         let cube = unit_cube_mesh();
@@ -407,9 +488,11 @@ mod with_libgmsh {
         .expect("run A (auto-size) must succeed for a closed unit cube");
 
         // Run B: explicit mesh_size=0.25 wins over auto → fine mesh.
+        // deterministic=true ensures HXT produces a reproducible tet count so that
+        // the tets_b == tets_c comparison below is not fragile across runs.
         let report_b = mesh_surface_to_volume_with_diagnostics(
             &cube,
-            &MeshingOptions { mesh_size: Some(0.25), ..Default::default() },
+            &MeshingOptions { mesh_size: Some(0.25), deterministic: true, ..Default::default() },
             ElementOrderTag::P1,
             None,
             Some(AutoSizeConfig::default()),
@@ -417,14 +500,38 @@ mod with_libgmsh {
         )
         .expect("run B (caller-wins) must succeed for a closed unit cube");
 
+        // Run C: same mesh_size=0.25 but auto_size_cfg=None → auto is not supplied.
+        // tets_b == tets_c proves the caller-wins policy independently: supplying
+        // auto_size_cfg=Some(...) alongside mesh_size=Some(0.25) must produce the
+        // same mesh as not supplying auto at all.
+        // deterministic=true must match run B's options so the gmsh state is identical.
+        let report_c = mesh_surface_to_volume_with_diagnostics(
+            &cube,
+            &MeshingOptions { mesh_size: Some(0.25), deterministic: true, ..Default::default() },
+            ElementOrderTag::P1,
+            None,
+            None, // no auto_size_cfg — pure caller-explicit path
+            None,
+        )
+        .expect("run C (caller-explicit, no auto) must succeed for a closed unit cube");
+
         let tets_a = report_a.volume.tet_indices.len() / 4;
         let tets_b = report_b.volume.tet_indices.len() / 4;
+        let tets_c = report_c.volume.tet_indices.len() / 4;
+
         assert!(
             tets_b > tets_a,
             "finer mesh_size=0.25 (run B, {} tets) must produce more tets than \
              auto-derived ≈1.0 (run A, {} tets); caller-wins policy not observed",
             tets_b,
             tets_a
+        );
+        assert_eq!(
+            tets_b, tets_c,
+            "run B (caller=0.25, auto=Some) and run C (caller=0.25, auto=None) must \
+             produce identical tet counts ({} vs {}); auto_size_cfg must be ignored \
+             when caller's mesh_size is set",
+            tets_b, tets_c
         );
     }
 

@@ -82,12 +82,17 @@ pub fn apply_repair_if_requested(input: &Mesh, cfg: Option<RepairConfig>) -> Cow
 ///    An `AutoSizeError` is surfaced as `GeometryError::OperationFailed`.
 /// 3. **Kernel default** — both are `None`: returns `Ok(None)` and lets
 ///    `mesh_to_volume`'s internal logic decide.
+///
+/// Emits a single `tracing::debug!` event at the `reify_kernel_gmsh::mesh_volume`
+/// target recording which branch fired (`source`) and the resolved value. The
+/// event is suppressed on the error path (auto-size derivation failure).
 pub fn resolve_mesh_size(
     surface: &Mesh,
     options: &MeshingOptions,
     auto_cfg: Option<AutoSizeConfig>,
 ) -> Result<Option<f64>, reify_types::GeometryError> {
-    match (options.mesh_size, auto_cfg) {
+    // AutoSizeConfig: Copy — auto_cfg is not consumed by the match below.
+    let result = match (options.mesh_size, auto_cfg) {
         (Some(s), _) => Ok(Some(s)),
         (None, None) => Ok(None),
         (None, Some(cfg)) => match auto_mesh_size_from_features(surface, cfg) {
@@ -97,7 +102,23 @@ pub fn resolve_mesh_size(
                 "auto_mesh_size_from_features failed: {e}"
             ))),
         },
+    };
+    if let Ok(resolved) = result.as_ref() {
+        // Determine which branch fired for structured diagnostics.
+        let source = match (options.mesh_size, auto_cfg.is_some(), *resolved) {
+            (Some(_), _, _) => "caller",
+            (None, true, Some(_)) => "auto",
+            (None, true, None) => "auto_collapsed_to_kernel_default",
+            (None, false, _) => "kernel_default",
+        };
+        tracing::debug!(
+            target: "reify_kernel_gmsh::mesh_volume",
+            source = source,
+            mesh_size = ?resolved,
+            "mesh_size resolved"
+        );
     }
+    result
 }
 
 /// Run the through-thickness post-stage if requested.
