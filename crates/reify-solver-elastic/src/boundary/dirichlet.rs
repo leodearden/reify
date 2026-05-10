@@ -132,10 +132,10 @@ pub struct DirichletBc {
 /// - No explicit diagonal entry `K[bc.dof][bc.dof]` stored — all
 ///   FEA-assembled K matrices satisfy this (per Task 2916); a missing diagonal
 ///   indicates a non-FEA-assembled input.
-/// - `K` has unsorted column indices within any row — `col_idx[start..end]`
-///   must be sorted in increasing order (faer `try_new_from_triplets`
-///   guarantees this; matrices built via `new_unsorted_checked` are not
-///   supported).
+/// - In debug builds, panics if `K` has unsorted (or duplicate) column
+///   indices within any row — `col_idx[start..end]` must be strictly
+///   increasing (faer `try_new_from_triplets` guarantees this; matrices
+///   built via `new_unsorted_checked` are caller-checked here).
 pub fn apply_dirichlet_row_elimination(
     k: &mut SparseRowMat<usize, f64>,
     f: &mut [f64],
@@ -181,6 +181,38 @@ pub fn apply_dirichlet_row_elimination(
                  apply_dirichlet_row_elimination",
                 w[0],
             );
+        }
+    }
+
+    // Debug-only: walk all rows and assert strictly-increasing col_idx.
+    // binary_search on an unsorted slice returns an unspecified result
+    // (Rust std: "If the slice is not sorted, the returned result is
+    // unspecified and meaningless") — the diag_found assert below only
+    // catches the diagonal-row miss; off-diagonal corruption (wrong K[j][i]
+    // zeroed or wrong f[j] subtracted) is silent. Surface it eagerly here.
+    // O(nnz) total per call, paid only in debug builds. Asserting strictly
+    // increasing (`<`) also catches duplicate (row, col) entries, which
+    // break find_in_row's binary_search uniqueness assumption.
+    #[cfg(debug_assertions)]
+    {
+        let sym = k.symbolic();
+        let row_ptr = sym.row_ptr();
+        let col_idx = sym.col_idx();
+        let n = sym.nrows();
+        for j in 0..n {
+            let start = row_ptr[j];
+            let end = row_ptr[j + 1];
+            for w in col_idx[start..end].windows(2) {
+                assert!(
+                    w[0] < w[1],
+                    "apply_dirichlet_row_elimination: col_idx is unsorted within row {j}: \
+                     adjacent entries {w0} >= {w1}; col_idx[start..end] must be strictly \
+                     increasing (faer try_new_from_triplets guarantees this; ensure \
+                     col_idx is sorted before calling apply_dirichlet_row_elimination)",
+                    w0 = w[0],
+                    w1 = w[1],
+                );
+            }
         }
     }
 
