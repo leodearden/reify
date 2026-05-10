@@ -199,7 +199,7 @@ describe('StatusBar tessellation diagnostics', () => {
     expect(screen.getByText(/no geometry/i)).toBeTruthy();
   });
 
-  it('zero meshes and at least one error: shows "Compile error" label', () => {
+  it('zero meshes and at least one error: shows "Tessellation error" label', () => {
     render(() => (
       <StatusBar
         evalStatus={{ phase: 'idle' }}
@@ -208,7 +208,7 @@ describe('StatusBar tessellation diagnostics', () => {
         tessellationDiagnostics={[makeDiag('Error')]}
       />
     ));
-    expect(screen.getByText(/compile error/i)).toBeTruthy();
+    expect(screen.getByText(/tessellation error/i)).toBeTruthy();
   });
 
   it('clicking the tessellation-errors badge invokes onToggleDiagnostics exactly once', () => {

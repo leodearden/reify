@@ -3000,7 +3000,7 @@ describe('App tessellation diagnostics end-to-end wiring', () => {
     });
   });
 
-  it('tessellation-diagnostics event with one Error: StatusBar shows data-has-errors="true" and "Compile error"', async () => {
+  it('tessellation-diagnostics event with one Error: StatusBar shows data-has-errors="true" and "Tessellation error"', async () => {
     render(() => <App />);
     // Wait until the app is ready and the callback has been registered
     await waitFor(() => expect(tessellationDiagnosticsCallback).toBeDefined());
@@ -3022,7 +3022,7 @@ describe('App tessellation diagnostics end-to-end wiring', () => {
       const badge = statusBar.querySelector('[data-testid="tessellation-errors"]');
       expect(badge).toBeTruthy();
       expect(badge?.getAttribute('data-has-errors')).toBe('true');
-      expect(statusBar.textContent).toMatch(/compile error/i);
+      expect(statusBar.textContent).toMatch(/tessellation error/i);
     });
   });
 
