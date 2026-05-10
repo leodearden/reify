@@ -3056,6 +3056,47 @@ describe('App tessellation diagnostics end-to-end wiring', () => {
       expect(panel.textContent).toContain('tess kernel boom');
     });
   });
+
+  it('clicking a tessellation diagnostic row in the panel triggers setScrollToLocation', async () => {
+    render(() => <App />);
+    await waitFor(() => expect(tessellationDiagnosticsCallback).toBeDefined());
+
+    tessellationDiagnosticsCallback!([
+      {
+        file_path: 'main.ri',
+        line: 7, column: 4, end_line: 7, end_column: 9,
+        severity: 'Error',
+        message: 'tess nav test',
+        code: null,
+      },
+    ]);
+
+    // Wait for badge to appear then open the panel
+    await waitFor(() => {
+      expect(screen.getByTestId('tessellation-errors')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('tessellation-errors'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('diagnostics-panel')).toBeTruthy();
+    });
+
+    // Click the diagnostic row
+    const row = document.querySelector('[data-testid="diagnostic-row"]') as HTMLElement;
+    expect(row).toBeTruthy();
+    fireEvent.click(row!);
+
+    // scrollToLocation should be set to the tessellation diagnostic's location
+    await waitFor(() => {
+      const loc = capturedEditorScrollToLocation?.();
+      expect(loc).toMatchObject({
+        file_path: 'main.ri',
+        line: 7,
+        column: 4,
+      });
+    });
+  });
 });
 
 describe('App compile diagnostics end-to-end wiring', () => {
