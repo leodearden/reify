@@ -99,6 +99,18 @@ pub struct EngineSession {
     /// `build_gui_state` emits this field into `GuiState::tessellation_diagnostics` when
     /// `compiled` is `None`, preserving structural symmetry for forward compatibility.
     last_tessellation_diagnostics: Vec<DiagnosticInfo>,
+    /// Structured diagnostics from a failed live edit when a prior successful compile exists.
+    ///
+    /// Populated on `Err` by `load_from_source`, `update_source`, and `load_file` when
+    /// `self.compiled` is `Some` at the time of failure (live-edit path).  The distinction
+    /// from `last_compile_diagnostics` is intentional: this field is consulted by the
+    /// **non-early-return** branch of `build_gui_state` (when `compiled is Some`), while
+    /// `last_compile_diagnostics` is consulted only by the early-return branch (cold-start,
+    /// `compiled is None`).  The two fields are semantically disjoint.
+    ///
+    /// Cleared atomically in `commit_state` on a successful parse+compile+check cycle so
+    /// stale live-failure diagnostics are never surfaced after a recovery.
+    live_compile_diagnostics: Vec<DiagnosticInfo>,
 }
 
 /// Build the normalized source-map key for a module name: `"{name}.ri"`.
@@ -428,6 +440,7 @@ impl EngineSession {
             consumed_idents_cache: None,
             last_compile_diagnostics: Vec::new(),
             last_tessellation_diagnostics: Vec::new(),
+            live_compile_diagnostics: Vec::new(),
         }
     }
 
@@ -466,13 +479,16 @@ impl EngineSession {
     ) -> Result<GuiState, String> {
         let (parsed, compiled) = compile_single_file_with_stdlib(source, module_name)
             .map_err(|(msg, diags)| {
-                // Only store failure diagnostics on the cold-start path (no prior
-                // successful compile).  If compiled is already Some the user still
-                // sees the previous good state; build_gui_state does not take the
-                // early-return branch in that case, so storing diags here would be
-                // silently stale rather than surfaced.
+                // Route failure diagnostics to the correct field based on whether a
+                // prior successful compile exists:
+                //   • compiled is None  → cold-start path; store in last_compile_diagnostics
+                //     so build_gui_state's early-return branch surfaces them.
+                //   • compiled is Some  → live-edit path; store in live_compile_diagnostics
+                //     so build_gui_state's non-early-return branch appends them.
                 if self.compiled.is_none() {
                     self.last_compile_diagnostics = diags;
+                } else {
+                    self.live_compile_diagnostics = diags;
                 }
                 msg
             })?;
@@ -623,10 +639,11 @@ impl EngineSession {
 
     /// Atomically commit all session state after a successful parse+compile+check cycle.
     ///
-    /// This helper enforces the invariant that the seven core session fields always
-    /// change together: either all seven are updated or none are.  The seven fields
+    /// This helper enforces the invariant that the eight core session fields always
+    /// change together: either all eight are updated or none are.  The eight fields
     /// are: `source_map`, `module_name`, `compiled`, `last_check`, `parsed_cache`,
-    /// `last_compile_diagnostics`, and `last_tessellation_diagnostics`.
+    /// `last_compile_diagnostics`, `last_tessellation_diagnostics`, and
+    /// `live_compile_diagnostics`.
     /// Callers **must** only invoke this after both compilation and `check()` have
     /// succeeded — invoking it on a partially-valid state would violate the invariant.
     ///
@@ -661,10 +678,11 @@ impl EngineSession {
         self.consumed_idents_cache = None;
         // Clear stored failure diagnostics — the compile succeeded, so any stale
         // failure diagnostics from a prior failed load must not appear in subsequent
-        // build_gui_state calls.  Both fields are cleared atomically here so the
-        // atomic-commit invariant ("all seven fields move together") remains intact.
+        // build_gui_state calls.  All three fields are cleared atomically here so the
+        // atomic-commit invariant ("all eight fields move together") remains intact.
         self.last_compile_diagnostics.clear();
         self.last_tessellation_diagnostics.clear();
+        self.live_compile_diagnostics.clear();
     }
 
     /// Export geometry to a file.
@@ -894,7 +912,14 @@ impl EngineSession {
         // recently compiled module. Called after tessellate_snapshot so the
         // mutable engine borrow is already released.  Takes &self — coexists
         // safely with the existing immutable borrows of compiled/check/files.
-        let compile_diagnostics = self.get_diagnostics();
+        //
+        // Also append any live compile failures (from a failed live edit while a
+        // prior good compile was still in `self.compiled`).  Appending rather than
+        // replacing preserves warnings/info from the last good state; Error entries
+        // from `live_compile_diagnostics` follow them, so frontends sorting by
+        // severity will surface errors first.
+        let mut compile_diagnostics = self.get_diagnostics();
+        compile_diagnostics.extend(self.live_compile_diagnostics.iter().cloned());
 
         Ok(GuiState {
             meshes,
@@ -2322,6 +2347,18 @@ impl EngineSession {
     /// Mirrors the style of `parsed_cache_for_test` (engine.rs).
     pub(crate) fn last_compile_diagnostics_for_test(&self) -> &[DiagnosticInfo] {
         &self.last_compile_diagnostics
+    }
+
+    /// Return a slice of the stored live-edit compile failure diagnostics.
+    ///
+    /// Populated by `load_from_source`, `update_source`, and `load_file` on the
+    /// failure path when `compiled is Some` (live-edit failure after a prior good
+    /// compile).  Cleared by `commit_state` on a successful cycle.  Used by tests
+    /// that need to inspect field state without calling `build_gui_state`.
+    ///
+    /// Mirrors the style of `last_compile_diagnostics_for_test`.
+    pub(crate) fn live_compile_diagnostics_for_test(&self) -> &[DiagnosticInfo] {
+        &self.live_compile_diagnostics
     }
 
     /// Inject synthetic diagnostics into `last_tessellation_diagnostics` for testing.
