@@ -802,6 +802,130 @@ mod tests {
     /// identity operation — no stored value in K is touched, no `f[j]`
     /// changes.  Regression guard for future refactors that, for example,
     /// allocate and write a scratch buffer unconditionally.
+    // -----------------------------------------------------------------------
+    // Step 3: binary_search regression — sparse CSR with non-trivial offsets
+    // -----------------------------------------------------------------------
+
+    /// Applies `apply_dirichlet_row_elimination` to a SPARSE 4×4 CSR where
+    /// the BC column `i=2` lands at non-trivial positions in per-row ranges.
+    ///
+    /// Fixture (BC: dof=2, value=0.5):
+    ///   Row 0: cols [0,2] — K[0][2] at offset 1 (end of row-0 range).
+    ///   Row 1: cols [1,3] — K[1][2] absent → Err arm → row 1 is bit-identical.
+    ///   Row 2: cols [0,2,3] — K[2][2] diagonal at offset 1 (middle of range).
+    ///   Row 3: cols [2,3] — K[3][2] at offset 0 (start of row-3 range).
+    ///
+    /// CSR slot layout (try_new_from_triplets with sorted cols):
+    ///   Row 0: slots [0..2]  → col_idx=[0,2]
+    ///   Row 1: slots [2..4]  → col_idx=[1,3]
+    ///   Row 2: slots [4..7]  → col_idx=[0,2,3]
+    ///   Row 3: slots [7..9]  → col_idx=[2,3]
+    ///
+    /// Pins:
+    /// - `start + rel` at offset 1 (row 0: start=0, rel=1 → slot 1 for K[0][2]).
+    /// - `start + rel` at offset 0 (row 3: start=7, rel=0 → slot 7 for K[3][2]).
+    ///   Using `rel` alone would give slot 0 — corrupting K[0][0] silently.
+    /// - Err-arm skip (row 1: binary_search([1,3], 2) → Err(1) → no change).
+    /// - Diagonal at non-boundary offset (row 2: start=4, rel=1 → slot 5).
+    #[test]
+    fn apply_dirichlet_to_sparse_csr_with_target_at_row_range_boundaries_eliminates_column_correctly()
+    {
+        use faer::sparse::{SparseRowMat, Triplet};
+
+        let n = 4usize;
+        // Build sparse K — only a subset of columns stored per row.
+        // Sorted column indices within each row (faer invariant).
+        let triplets: Vec<Triplet<usize, usize, f64>> = vec![
+            // Row 0: cols [0,2]   — K[0][2] at offset 1 within row-0 range
+            Triplet::new(0, 0, 1.0),
+            Triplet::new(0, 2, 2.0),
+            // Row 1: cols [1,3]   — K[1][2] intentionally absent
+            Triplet::new(1, 1, 3.0),
+            Triplet::new(1, 3, 4.0),
+            // Row 2: cols [0,2,3] — K[2][2] diagonal at offset 1 within row-2 range
+            Triplet::new(2, 0, 5.0),
+            Triplet::new(2, 2, 6.0),
+            Triplet::new(2, 3, 7.0),
+            // Row 3: cols [2,3]   — K[3][2] at offset 0 within row-3 range
+            Triplet::new(3, 2, 8.0),
+            Triplet::new(3, 3, 9.0),
+        ];
+        let mut k: SparseRowMat<usize, f64> =
+            SparseRowMat::try_new_from_triplets(n, n, &triplets).unwrap();
+        let mut f: Vec<f64> = vec![1.0, 2.0, 3.0, 4.0];
+
+        // Snapshot K and f before the BC call.
+        let k_before: Vec<Vec<f64>> =
+            (0..n).map(|i| (0..n).map(|j| read(&k, i, j)).collect()).collect();
+        let f_before = f.clone();
+
+        // Apply inhomogeneous BC at dof=2, value=0.5.
+        apply_dirichlet_row_elimination(&mut k, &mut f, &[DirichletBc { dof: 2, value: 0.5 }]);
+        let u = 0.5_f64;
+
+        // ── Row 0: K[0][2] zeroed; f[0] adjusted ─────────────────────────────
+        // K[0][2] was at slot offset 1 in row 0's range (start=0, rel=1 → idx=1).
+        // Using `rel` alone (=1) would correctly index idx=1 here, but for row 3
+        // (start=7, rel=0) bare `rel` gives idx=0, corrupting K[0][0].
+        assert_eq!(read(&k, 0, 2), 0.0, "K[0][2] must be 0.0 (column i=2 eliminated)");
+        assert_eq!(
+            read(&k, 0, 0).to_bits(),
+            k_before[0][0].to_bits(),
+            "K[0][0] must be bit-identical (not in BC column or row)"
+        );
+        let expected_f0 = f_before[0] - k_before[0][2] * u;
+        assert_eq!(
+            f[0].to_bits(),
+            expected_f0.to_bits(),
+            "f[0]: expected {expected_f0} = {} - {} * {u}",
+            f_before[0], k_before[0][2],
+        );
+
+        // ── Row 1: bit-identical to pre-call snapshot (Err arm, K[1][2] absent) ─
+        for col in 0..n {
+            assert_eq!(
+                read(&k, 1, col).to_bits(),
+                k_before[1][col].to_bits(),
+                "K[1][{col}] must be bit-identical (K[1][2] absent → Err arm)"
+            );
+        }
+        assert_eq!(
+            f[1].to_bits(),
+            f_before[1].to_bits(),
+            "f[1] must be bit-identical (no K[1][2] entry)"
+        );
+
+        // ── Row 2: diagonal set; row zeroed by step-2 ────────────────────────
+        // Step-2 zeros all of row 2 before the per-row scan; the diagonal arm
+        // then writes K[2][2]=1.0 at offset 1 of row-2's stored range (slot 5).
+        assert_eq!(
+            read(&k, 2, 2).to_bits(),
+            1.0_f64.to_bits(),
+            "K[2][2] must be 1.0 (BC diagonal)"
+        );
+        assert_eq!(read(&k, 2, 0), 0.0, "K[2][0] must be 0.0 (zeroed by step-2)");
+        assert_eq!(read(&k, 2, 3), 0.0, "K[2][3] must be 0.0 (zeroed by step-2)");
+        assert_eq!(f[2].to_bits(), u.to_bits(), "f[2] must be u=0.5 (pinned)");
+
+        // ── Row 3: K[3][2] zeroed; f[3] adjusted ────────────────────────────
+        // K[3][2] is at slot offset 0 in row 3's range (start=7, rel=0 → idx=7).
+        // A buggy impl using `rel` (=0) instead of `start + rel` (=7) would
+        // silently write to vals[0] = K[0][0] and leave K[3][2] intact.
+        assert_eq!(read(&k, 3, 2), 0.0, "K[3][2] must be 0.0 (column i=2 eliminated)");
+        assert_eq!(
+            read(&k, 3, 3).to_bits(),
+            k_before[3][3].to_bits(),
+            "K[3][3] must be bit-identical (not in BC column)"
+        );
+        let expected_f3 = f_before[3] - k_before[3][2] * u;
+        assert_eq!(
+            f[3].to_bits(),
+            expected_f3.to_bits(),
+            "f[3]: expected {expected_f3} = {} - {} * {u}",
+            f_before[3], k_before[3][2],
+        );
+    }
+
     #[test]
     fn apply_dirichlet_bcs_with_empty_slice_leaves_k_and_f_unchanged() {
         let mut k = single_p1_k();
