@@ -1749,6 +1749,20 @@ impl FeatureId {
     pub fn new(path: impl Into<String>) -> Self {
         Self(path.into())
     }
+
+    /// Derive the `FeatureId` for the mid-surface of `parent`.
+    ///
+    /// Returns `<parent>/mid_surface` (composed via the [`fmt::Display`]
+    /// impl), e.g. `Bracket#realization[0]` → `Bracket#realization[0]/mid_surface`.
+    /// Composition is well-defined: nesting yields `<parent>/mid_surface/mid_surface`.
+    ///
+    /// Implements the derived-geometry naming sub-vocabulary from PRD
+    /// `docs/prds/v0_4/structural-analysis-shells.md` line 81 (T20), built
+    /// on top of the path-based feature identity established by PRD
+    /// `docs/prds/v0_2/persistent-naming-v2.md` line 33.
+    pub fn derived_mid_surface(parent: &FeatureId) -> FeatureId {
+        FeatureId::new(format!("{parent}/mid_surface"))
+    }
 }
 
 impl fmt::Display for FeatureId {
