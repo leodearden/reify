@@ -238,8 +238,13 @@ pub fn shell_element_stiffness(
         [(y[0] - y[1]) / two_a, (x[1] - x[0]) / two_a],
     ];
 
-    // --- 18×18 K_local (assembled in local frame) ---
-    let mut k_loc = [[0.0_f64; NDOF]; NDOF];
+    // --- 20×20 K_full (18 nodal + 2 bubble DOFs, assembled in local frame) ---
+    // Bubble DOF layout: index NDOF = 18 → Δθ_x (internal rotation enrichment)
+    //                    index NDOF+1 = 19 → Δθ_y (internal rotation enrichment)
+    // Static condensation at the end of this function collapses these back to
+    // the public 18-DOF interface.
+    const NDOF_FULL: usize = NDOF + 2; // 20
+    let mut k_full = [[0.0_f64; NDOF_FULL]; NDOF_FULL];
 
     // ---- Membrane K (step 8) ----
     // B_m is 3×9 (rows: ε_xx, ε_yy, γ_xy; cols: u_x_0,u_y_0, u_x_1,u_y_1, u_x_2,u_y_2)
@@ -280,7 +285,7 @@ pub fn shell_element_stiffness(
                             v += bmi[r][a] * t_dpl[r][s] * bmj[s][b];
                         }
                     }
-                    k_loc[doi[a]][doj[b]] += v * area;
+                    k_full[doi[a]][doj[b]] += v * area;
                 }
             }
         }
@@ -320,7 +325,7 @@ pub fn shell_element_stiffness(
                             v += bbi[r][a] * t3_12_dpl[r][s] * bbj[s][b];
                         }
                     }
-                    k_loc[doi[a]][doj[b]] += v * area;
+                    k_full[doi[a]][doj[b]] += v * area;
                 }
             }
         }
@@ -443,8 +448,108 @@ pub fn shell_element_stiffness(
         for a in 0..NDOF {
             for b in 0..NDOF {
                 let v = (b_s_phys[0][a] * b_s_phys[0][b] + b_s_phys[1][a] * b_s_phys[1][b]) * scale;
-                k_loc[a][b] += v;
+                k_full[a][b] += v;
             }
+        }
+    }
+
+    // ---- MITC3+ cubic-bubble bending enrichment ----
+    // The rotation field enrichment θ_x += f_b·Δθ_x, θ_y += f_b·Δθ_y adds two
+    // internal DOFs (indices NDOF=18 and NDOF+1=19 in k_full).
+    //
+    // The bubble contributes to BENDING only (at the tying points, f_b = 0, so
+    // the direct shear contribution of the bubble vanishes there).  Its gradient
+    // ∂f_b/∂(x,y) = J2⁻ᵀ · ∂f_b/∂(ξ,η) is non-zero at A, B, C, yielding
+    // non-zero bending cross-blocks K_NB and K_BB that are then condensed away.
+    //
+    // Bending bubble columns (3×2) at a point with local gradients (dfb_dx, dfb_dy):
+    //   column DOF18 (Δθ_x): [κ_xx, κ_yy, 2κ_xy] = [ 0,        +dfb_dy, +dfb_dx ]
+    //   column DOF19 (Δθ_y): [κ_xx, κ_yy, 2κ_xy] = [ -dfb_dx,  0,       -dfb_dy ]
+    //
+    // Integration: 3-point tying quadrature (A,B,C), weight = det2/6 each.
+    // For constant integrands (nodal×nodal) this gives the same result as
+    // 1-point centroid (both sum to det2/2 = area), so the nodal bending block
+    // is self-consistent with its 1-point integration above.
+    for tp in tying_pts.iter() {
+        // Bubble gradient in reference coords: [∂f_b/∂ξ, ∂f_b/∂η]
+        let dfb_ref = Mitc3Plus.bubble_grad_at(tp.coord);
+        // Transform to local (x,y) via J2⁻ᵀ (same transform used for shear):
+        // [∂f_b/∂x, ∂f_b/∂y]ᵀ = J2⁻ᵀ · [∂f_b/∂ξ, ∂f_b/∂η]ᵀ
+        let dfb_dx = inv_t[0][0] * dfb_ref[0] + inv_t[0][1] * dfb_ref[1];
+        let dfb_dy = inv_t[1][0] * dfb_ref[0] + inv_t[1][1] * dfb_ref[1];
+        // Bubble bending B-matrix (3×2): column b_idx selects Δθ_x (0) or Δθ_y (1).
+        //   bb_b[r][0] = contribution of Δθ_x to κ-row r
+        //   bb_b[r][1] = contribution of Δθ_y to κ-row r
+        let bb_b = [[0.0_f64, -dfb_dx], [dfb_dy, 0.0], [dfb_dx, -dfb_dy]];
+        let bub_scale = det2 * qp_weight; // = det2 / 6
+
+        // K_NB: cross terms between nodal rotation DOFs and bubble DOFs.
+        for node in 0..NN {
+            let doi_rot = [NDP * node + 3, NDP * node + 4]; // θ_x, θ_y of this node
+            let bbi_node = [
+                [0.0_f64, -dn[node][0]],
+                [dn[node][1], 0.0],
+                [dn[node][0], -dn[node][1]],
+            ];
+            for a in 0..2 {
+                for b_bub in 0..2 {
+                    let mut v = 0.0;
+                    for r in 0..3 {
+                        for s in 0..3 {
+                            v += bbi_node[r][a] * t3_12_dpl[r][s] * bb_b[s][b_bub];
+                        }
+                    }
+                    let val = v * bub_scale;
+                    k_full[doi_rot[a]][NDOF + b_bub] += val;
+                    k_full[NDOF + b_bub][doi_rot[a]] += val; // symmetry K_BN = K_NBᵀ
+                }
+            }
+        }
+
+        // K_BB: bubble–bubble bending block (2×2).
+        for a_bub in 0..2 {
+            for b_bub in 0..2 {
+                let mut v = 0.0;
+                for r in 0..3 {
+                    for s in 0..3 {
+                        v += bb_b[r][a_bub] * t3_12_dpl[r][s] * bb_b[s][b_bub];
+                    }
+                }
+                k_full[NDOF + a_bub][NDOF + b_bub] += v * bub_scale;
+            }
+        }
+    }
+
+    // ---- Static condensation: K_eff = K_NN − K_NB · K_BB⁻¹ · K_BN ----
+    // K_BB is 2×2; invert analytically (det / cofactor) per design decision.
+    // K_BB is positive-definite for any non-degenerate triangle (the deviatoric
+    // bubble ∇f_b spans both local directions everywhere on the interior).
+    let kbb_a = k_full[NDOF][NDOF];
+    let kbb_b = k_full[NDOF][NDOF + 1];
+    let kbb_c = k_full[NDOF + 1][NDOF];
+    let kbb_d = k_full[NDOF + 1][NDOF + 1];
+    let det_kbb = kbb_a * kbb_d - kbb_b * kbb_c;
+    debug_assert!(
+        det_kbb.abs() > 1e-40,
+        "K_BB is singular (det = {det_kbb:.3e}); degenerate element?"
+    );
+    // K_BB⁻¹ = [[d, -b], [-c, a]] / det
+    let inv_kbb = [
+        [kbb_d / det_kbb, -kbb_b / det_kbb],
+        [-kbb_c / det_kbb, kbb_a / det_kbb],
+    ];
+    // K_eff[i][j] = K_NN[i][j] − Σ_{p,q} K_NB[i][p] · K_BB⁻¹[p][q] · K_BN[q][j]
+    let mut k_loc = [[0.0_f64; NDOF]; NDOF];
+    for i in 0..NDOF {
+        for j in 0..NDOF {
+            let mut correction = 0.0;
+            for p in 0..2 {
+                for q in 0..2 {
+                    correction +=
+                        k_full[i][NDOF + p] * inv_kbb[p][q] * k_full[NDOF + q][j];
+                }
+            }
+            k_loc[i][j] = k_full[i][j] - correction;
         }
     }
 
