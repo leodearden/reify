@@ -1218,8 +1218,11 @@ impl Engine {
     /// allocation primitive, with fallback to
     /// [`Self::effective_tessellation_tolerance`] when no per-output demand
     /// exists — that this helper hands to `kernel.tessellate(handle, budget)`.
-    /// Missing entries (caller-side bug — should not happen) fall back to the
-    /// module-pragma default.
+    /// Both slices are indexed directly by `[t_idx][r_idx]` (task 3297):
+    /// the producers (`compute_demanded_tols`, `compute_tessellation_budgets`)
+    /// and this consumer iterate the same `module.templates × realizations`
+    /// product unconditionally, so OOB is an internal bug and panics at
+    /// runtime rather than silently returning a fallback value.
     #[allow(clippy::too_many_arguments)]
     fn tessellate_from_values(
         geometry_kernel: &mut Option<Box<dyn GeometryKernel>>,
@@ -1258,13 +1261,13 @@ impl Engine {
                 // Pass `&mut None` so `execute_realization_ops` collects the
                 // diagnostic but no caller acts on the kernel error here.
                 let mut kernel_error: Option<ErrorRef> = None;
-                // Task 3227: positional lookup by [t_idx][r_idx] — no String
-                // clones, no hashing. Missing entry (caller-side bug) → None.
-                let demanded_tol = demanded_tols
-                    .get(t_idx)
-                    .and_then(|v| v.get(r_idx))
-                    .copied()
-                    .unwrap_or(None);
+                // Task 3227 / 3297: direct positional index — no String clones,
+                // no hashing. The producer (`compute_demanded_tols`) and this
+                // consumer iterate the same `module.templates × realizations`
+                // product unconditionally, so OOB is unambiguously an internal
+                // bug; Rust's slice indexing panics with a precise OOB message
+                // at runtime in both debug and release.
+                let demanded_tol = demanded_tols[t_idx][r_idx];
                 Engine::execute_realization_ops(
                     kernel.as_mut(),
                     &realization.operations,
