@@ -68,13 +68,27 @@ pub struct MidSurfaceAttributes {
 /// [`BTreeSet`] (auto-sorts). The set is then drained into both
 /// `edge_records` and the parallel `edge_region_pairs` sidecar.
 ///
-/// Sentinel triangles (`segmentation.triangle_labels[t] == u32::MAX`)
-/// are excluded from edge derivation — see
-/// `reify_shell_extract::segmentation` lines 188-191 for the sentinel
-/// definition. A pair `(u32::MAX, region_x)` would be a spurious
-/// "boundary" between an unknown-region and a known-region; skipping
-/// sentinel triangles means well-formed inputs produce zero spurious
-/// edges.
+/// # Sentinel-triangle exclusion contract
+///
+/// Triangles with `segmentation.triangle_labels[t] == u32::MAX` are
+/// excluded from edge derivation. Per the
+/// [`crate::segmentation::SegmentationResult::triangle_labels`] doc
+/// (segmentation.rs lines 188-191), `u32::MAX` is the sentinel for a
+/// triangle whose three vertices have no associated mask voxel — such a
+/// triangle has no well-defined region identity. The exclusion is
+/// applied in two places:
+///
+/// 1. The mesh-edge adjacency map skips sentinel triangles entirely,
+///    so they do not even appear in the per-edge incident-triangle list.
+/// 2. The pairwise label scan rejects any pair touching `u32::MAX`,
+///    defending against the case where an upstream change feeds a
+///    sentinel through the adjacency map.
+///
+/// The double-defense matters because a `(u32::MAX, region_x)` pair
+/// would always sort to the top of the canonical-pair set and pollute
+/// every other edge's `local_index`. The
+/// `populate_skips_inter_region_edges_when_triangle_label_is_u32_max_sentinel`
+/// test pins this contract behaviorally.
 pub fn populate_mid_surface_attributes(
     parent: &FeatureId,
     mesh: &MidSurfaceMesh,
