@@ -342,6 +342,82 @@ mod tests {
         assert!(out.normals.is_none());
     }
 
+    // ── Step-9: rigid-translation propagates to interior node ────────────────
+
+    /// 4-tet "cone" fixture: 5 vertices, 4 tets all sharing the interior
+    /// node `p`. Pinning `a, b, c, d` to translated positions and leaving
+    /// `p` free: rigid-body translation lies in the kernel of any continuum
+    /// stiffness operator, so the unique elastic-equilibrium solution under
+    /// uniform-displacement Dirichlet on the boundary IS the rigid
+    /// translation of the entire mesh — `p_new = p_old + delta`.
+    ///
+    /// Closed-form expected value gives a strong regression guard for
+    /// pipeline-correctness bugs:
+    /// - DOF mapping (e.g. `dof = node_idx + 3*axis` instead of
+    ///   `3*node_idx + axis`) would make the K → f column-into-RHS step
+    ///   write to the wrong global rows; the interior-node displacement
+    ///   would diverge from the boundary translation.
+    /// - Sign error in `value = new_position - old_position` would invert
+    ///   the propagated displacement.
+    ///
+    /// Adapts the `laplacian_smooth_with_one_iteration_*` cone fixture
+    /// (laplacian.rs:336-397).
+    #[test]
+    fn elasticity_morph_with_rigid_translation_on_cone_propagates_translation_to_interior_node_within_fp_tolerance()
+     {
+        // Layout: nodes 0..3 = a, b, c, d (surface); node 4 = p (interior).
+        let mesh = VolumeMesh {
+            vertices: vec![
+                0.0_f32, 0.0, 0.0, // 0: a
+                1.0, 0.0, 0.0, // 1: b
+                0.0, 1.0, 0.0, // 2: c
+                0.0, 0.0, 1.0, // 3: d
+                0.25, 0.25, 0.25, // 4: p
+            ],
+            // Four tets all sharing p (node 4).
+            tet_indices: vec![
+                0, 1, 2, 4, // a, b, c, p
+                0, 1, 3, 4, // a, b, d, p
+                0, 2, 3, 4, // a, c, d, p
+                1, 2, 3, 4, // b, c, d, p
+            ],
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+
+        // Pin a, b, c, d to translated positions; leave p free.
+        let delta = [0.5_f64, 0.7, -0.3];
+        let prescribed = vec![
+            (0_u32, [0.0 + delta[0], 0.0 + delta[1], 0.0 + delta[2]]),
+            (1, [1.0 + delta[0], 0.0 + delta[1], 0.0 + delta[2]]),
+            (2, [0.0 + delta[0], 1.0 + delta[1], 0.0 + delta[2]]),
+            (3, [0.0 + delta[0], 0.0 + delta[1], 1.0 + delta[2]]),
+        ];
+
+        let out =
+            elasticity_morph(&mesh, &prescribed, &crate::MorphOptions::default()).unwrap();
+
+        // p_new = p_old + delta (rigid-body translation is in the kernel of
+        // K, so the elastic-equilibrium displacement field IS the rigid
+        // translation of every node).
+        let p_old = [0.25_f64, 0.25, 0.25];
+        let expected_p = [
+            p_old[0] + delta[0],
+            p_old[1] + delta[1],
+            p_old[2] + delta[2],
+        ];
+        let p_base = 4 * 3;
+        let tol = 1e-6_f32;
+        for axis in 0..3 {
+            let got = out.vertices[p_base + axis];
+            let want = expected_p[axis] as f32;
+            assert!(
+                (got - want).abs() <= tol,
+                "p[{axis}]: got={got} expected={want} (delta={tol})",
+            );
+        }
+    }
+
     // ── Step-3: P2 element order rejection ────────────────────────────────────
 
     /// P2 element order must be rejected with
