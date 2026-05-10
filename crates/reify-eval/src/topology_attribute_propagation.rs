@@ -908,6 +908,30 @@ fn role_sort_discriminant(role: &Role) -> u32 {
     }
 }
 
+/// Stable wording for diagnostic messages, decoupled from `Debug`.
+///
+/// The Rust API guidelines mark `Debug` as "not stable for serialization";
+/// keeping the human-visible role name in its own function means a future
+/// `Debug` rename cannot silently alter emitted warning text. Match arms are
+/// in the same order as `role_sort_discriminant` so variant additions force
+/// both functions to be updated together (compiler-enforced exhaustiveness).
+fn role_human_name(role: &Role) -> &'static str {
+    match role {
+        Role::Cap(CapKind::Top) => "Cap(Top)",
+        Role::Cap(CapKind::Bottom) => "Cap(Bottom)",
+        Role::Cap(CapKind::Start) => "Cap(Start)",
+        Role::Cap(CapKind::End) => "Cap(End)",
+        Role::Side => "Side",
+        Role::NewEdge => "NewEdge",
+        Role::RevolvedFace => "RevolvedFace",
+        Role::AxisFace => "AxisFace",
+        Role::SweptFace => "SweptFace",
+        Role::LoftedFace => "LoftedFace",
+        Role::MidSurfaceFace => "MidSurfaceFace",
+        Role::MidSurfaceEdge => "MidSurfaceEdge",
+    }
+}
+
 /// Emit `TopologyAttributeLocalIndexReassigned` Warnings for groups of
 /// topology-attribute entries whose centroids are geometrically tied within
 /// `tol_m`, signalling that the kernel's enumeration order — and therefore
@@ -1043,10 +1067,10 @@ pub fn detect_local_index_reassignment_diagnostics(
                     let (feature_id, role) = key;
                     diagnostics.push(
                         Diagnostic::warning(format!(
-                            "topology-attribute selector for (feature '{}', role '{:?}') has \
+                            "topology-attribute selector for (feature '{}', role '{}') has \
                              geometrically tied local_index assignments at indices {} and {}; \
                              selector resolution may shuffle after edits",
-                            feature_id, role, idx_i, idx_j,
+                            feature_id, role_human_name(role), idx_i, idx_j,
                         ))
                         .with_code(DiagnosticCode::TopologyAttributeLocalIndexReassigned)
                         .with_label(DiagnosticLabel::new(realization_span, "realization producing geometrically tied attributes")),
