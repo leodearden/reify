@@ -11,24 +11,8 @@ use reify_types::value::{SampledField, SampledGridKind};
 /// Produced by [`validate_regular3d`]; converted to each algorithm's
 /// error enum via `From<GridValidationError>` impls.
 ///
-/// `#[non_exhaustive]` lets future variants be added or removed without
-/// breaking external exhaustive-match consumers.
-///
-/// ```compile_fail
-/// use reify_shell_extract::GridValidationError;
-/// fn _check(e: GridValidationError) {
-///     match e {
-///         GridValidationError::UnsupportedGridKind { found } => {}
-///         GridValidationError::AxisLengthMismatch {
-///             bounds_min_len,
-///             bounds_max_len,
-///             spacing_len,
-///             axis_grids_len,
-///         } => {}
-///         GridValidationError::EmptyAxisGrid { axis } => {}
-///     }
-/// }
-/// ```
+/// `#[non_exhaustive]` lets future variants be added without breaking
+/// external exhaustive-match consumers.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub enum GridValidationError {

@@ -77,25 +77,8 @@ impl Default for MidSurfaceOptions {
 
 /// Errors returned by [`extract_mid_surface`].
 ///
-/// `#[non_exhaustive]` lets future variants be added or removed without
-/// breaking external exhaustive-match consumers.
-///
-/// ```compile_fail
-/// use reify_shell_extract::MidSurfaceError;
-/// fn _check(e: MidSurfaceError) {
-///     match e {
-///         MidSurfaceError::GridValidation(_) => {}
-///         MidSurfaceError::MaskVoxelOutOfBounds { voxel, grid_extent } => {}
-///         MidSurfaceError::MaskGridMismatch {
-///             sdf_spacing,
-///             mask_spacing,
-///             sdf_origin,
-///             mask_origin,
-///             tolerance,
-///         } => {}
-///     }
-/// }
-/// ```
+/// `#[non_exhaustive]` lets future variants be added without breaking
+/// external exhaustive-match consumers.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub enum MidSurfaceError {

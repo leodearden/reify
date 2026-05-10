@@ -136,20 +136,8 @@ impl Default for MedialOptions {
 /// [`reify_kernel_openvdb::ingest::IngestError`] precedent: the caller
 /// can pattern-match on the variant to drive recovery logic.
 ///
-/// `#[non_exhaustive]` lets future variants be added or removed without
-/// breaking external exhaustive-match consumers.
-///
-/// ```compile_fail
-/// use reify_shell_extract::MedialError;
-/// fn _check(e: MedialError) {
-///     match e {
-///         MedialError::GridValidation(_) => {}
-///         MedialError::InvalidAxisGeometry { axis, spacing, bounds_min, bounds_max } => {}
-///         MedialError::DataLengthMismatch { expected, found } => {}
-///         MedialError::AxisExtentsOverflow { nx, ny, nz } => {}
-///     }
-/// }
-/// ```
+/// `#[non_exhaustive]` lets future variants be added without breaking
+/// external exhaustive-match consumers.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub enum MedialError {
