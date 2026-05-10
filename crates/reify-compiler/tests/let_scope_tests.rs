@@ -1991,3 +1991,73 @@ fn realization_span_populated_from_let_decl_span() {
         slice
     );
 }
+
+// ─── task-3395 regression: if-then-else returning Solid emits clean Error ─────
+
+/// Regression pin: a geometry let whose initializer is a geometry-typed
+/// if-then-else must produce a clean compile-time Error mentioning
+/// "if-then-else" and "geometry" rather than crashing at eval time with the
+/// cryptic "unresolvable GeomRef::Step(0)" message.
+///
+/// Mirrors the user's AirBearing repro:
+///   `let body = if axis == 0 then box(length, od, od) else box(od, od, length)`
+///
+/// The test exercises the path: `is_geometry_let(Conditional)` → `true`
+/// (routes to compile_geometry_call) → new Error arm fires → diagnostic.
+#[test]
+fn conditional_returning_solid_in_let_emits_compile_error() {
+    let source = r#"structure AirBearing {
+    param length: Scalar = 100mm
+    param od: Scalar = 50mm
+    param axis: Scalar = 0
+    let body = if axis == 0 then box(length, od, od) else box(od, od, length)
+}"#;
+
+    let compiled = compile_with_diagnostics(source);
+    let errors = error_diagnostics(&compiled);
+
+    // At least one Error must mention "if-then-else" and "geometry".
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("if-then-else") && d.message.contains("geometry")),
+        "expected a compile-time Error containing 'if-then-else' and 'geometry', \
+         got: {:?}",
+        errors
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    // The Error must have at least one DiagnosticLabel — pointing at the
+    // conditional expression in the source.
+    let target_error = errors
+        .iter()
+        .find(|d| d.message.contains("if-then-else") && d.message.contains("geometry"))
+        .unwrap();
+    assert!(
+        !target_error.labels.is_empty(),
+        "the if-then-else Error must have at least one DiagnosticLabel"
+    );
+
+    // The label's span must overlap the `if` keyword in the source.
+    // Source layout: the `let body = if ...` starts after the params, so the
+    // `if` offset is somewhere in the middle of the source string.
+    let if_offset = source.find(" if ").expect("source must contain ' if '") + 1;
+    assert!(
+        target_error.labels.iter().any(|l| {
+            let start = l.span.start as usize;
+            let end = l.span.end as usize;
+            // Label must overlap [if_offset, if_offset+2]
+            start <= if_offset + 2 && end >= if_offset
+        }),
+        "at least one label must overlap the 'if' keyword at offset {}, \
+         got labels: {:?}",
+        if_offset,
+        target_error
+            .labels
+            .iter()
+            .map(|l| (l.span.start, l.span.end, &l.message))
+            .collect::<Vec<_>>()
+    );
+}
