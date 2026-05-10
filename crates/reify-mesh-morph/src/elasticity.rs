@@ -341,12 +341,11 @@ mod tests {
             0.0, 0.0, 1.0, // node 3
         ];
         assert_eq!(out.vertices.len(), expected.len());
-        for axis in 0..expected.len() {
+        for (axis, want) in expected.iter().enumerate() {
+            let got = out.vertices[axis];
             assert!(
-                (out.vertices[axis] - expected[axis]).abs() <= tol,
-                "vertices[{axis}]: out={} expected={}",
-                out.vertices[axis],
-                expected[axis],
+                (got - want).abs() <= tol,
+                "vertices[{axis}]: out={got} expected={want}",
             );
         }
 
@@ -422,9 +421,9 @@ mod tests {
         ];
         let p_base = 4 * 3;
         let tol = 1e-6_f32;
-        for axis in 0..3 {
+        for (axis, want) in expected_p.iter().enumerate() {
             let got = out.vertices[p_base + axis];
-            let want = expected_p[axis] as f32;
+            let want = *want as f32;
             assert!(
                 (got - want).abs() <= tol,
                 "p[{axis}]: got={got} expected={want} (delta={tol})",
