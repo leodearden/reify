@@ -186,6 +186,88 @@ pub fn element_stress_p1(
 /// The tet must be non-degenerate. A degenerate (zero-volume) tet
 /// returns exactly `0.0`; diagnosing that condition is PRD task #21's
 /// job.
+/// Per-element stress contribution for [`recover_nodal_stress_p1`].
+///
+/// Borrows the connectivity slice from the parent mesh; carries the
+/// element's constant Cauchy stress and volume by value. Mirrors the
+/// lifetime-borrowed-slice layout of
+/// [`crate::assembly::AssemblyElement`] and
+/// [`crate::interpolation::LocatableTet`].
+#[derive(Debug, Clone, Copy)]
+pub struct StressElement<'a> {
+    /// Global node indices, in element-local order. For P1 tets, this
+    /// has length 4 — but the recovery algorithm is connectivity-shape
+    /// agnostic and accepts any length (e.g. 10 for P2 in a future
+    /// extension).
+    pub connectivity: &'a [usize],
+    /// Constant per-element Cauchy stress tensor (from
+    /// [`element_stress_p1`]).
+    pub stress: [[f64; 3]; 3],
+    /// Element volume (from [`tet_volume_p1`]).
+    pub volume: f64,
+}
+
+/// Recover a continuous nodal stress field from per-element constant
+/// stresses via volume-weighted simple averaging.
+///
+/// For each node `n`, the recovered stress is
+///
+/// ```text
+/// σ_n = (Σ_{e incident to n} V_e · σ_e) / (Σ_{e incident to n} V_e)
+/// ```
+///
+/// where the sum runs over every element whose connectivity includes
+/// `n`. Nodes incident to no element yield the zero tensor (the only
+/// reasonable default; flagging this as an error is PRD task #21's job).
+///
+/// # Algorithm choice
+///
+/// PRD §13 allows either Zienkiewicz–Zhu patch recovery or simple
+/// averaging; volume-weighted simple averaging is bit-deterministic, has
+/// no per-patch least-squares system, and is trivially parallelisable.
+/// Z-Z is deferred to a v0.4+ task (design decision recorded in
+/// `.task/plan.json`).
+///
+/// # Engine wrapping
+///
+/// The engine integration layer (PRD §16) wraps this output as a
+/// `Field<Point3<Length>, Tensor<2,3,Pressure>>` by composing it with
+/// [`crate::interpolation::interpolate_p1_at_point`] (component-wise on
+/// the tensor): given a query point, locate the containing element via
+/// [`crate::interpolation::locate_element_p1`], pull out the four
+/// recovered nodal tensors, and linearly interpolate.
+pub fn recover_nodal_stress_p1(
+    n_nodes: usize,
+    elements: &[StressElement<'_>],
+) -> Vec<[[f64; 3]; 3]> {
+    let mut accum = vec![[[0.0_f64; 3]; 3]; n_nodes];
+    let mut weights = vec![0.0_f64; n_nodes];
+
+    for el in elements {
+        for &node in el.connectivity {
+            for i in 0..3 {
+                for j in 0..3 {
+                    accum[node][i][j] += el.volume * el.stress[i][j];
+                }
+            }
+            weights[node] += el.volume;
+        }
+    }
+
+    for node in 0..n_nodes {
+        if weights[node] > 0.0 {
+            for i in 0..3 {
+                for j in 0..3 {
+                    accum[node][i][j] /= weights[node];
+                }
+            }
+        }
+        // else: leave as zero (no incident elements).
+    }
+
+    accum
+}
+
 pub fn tet_volume_p1(phys_nodes: &[[f64; 3]; 4]) -> f64 {
     let v0 = phys_nodes[0];
     let mut m = [[0.0_f64; 3]; 3];
