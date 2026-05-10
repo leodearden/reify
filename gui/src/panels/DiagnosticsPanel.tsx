@@ -1,6 +1,10 @@
-import { type Component, Show, For, createEffect, onCleanup } from 'solid-js';
+import { type Component, Show, For, createSignal, createEffect, onCleanup } from 'solid-js';
 import type { DiagnosticInfo } from '../types';
 import styles from './DiagnosticsPanel.module.css';
+import {
+  loadDiagnosticsLineWrap,
+  saveDiagnosticsLineWrap,
+} from '../hooks/useDiagnosticsPanelPersistence';
 
 /** Panel-facing wrapper that extends the wire-format DiagnosticInfo with a
  *  frontend-only source tag. The `source` field is never sent by the Rust
@@ -18,6 +22,8 @@ export interface DiagnosticsPanelProps {
 }
 
 export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
+  const [lineWrap, setLineWrap] = createSignal(loadDiagnosticsLineWrap() ?? false);
+
   // Attach Escape handler at document level so it fires regardless of which
   // element has focus (the overlay div is unfocused on open, so an
   // element-local onKeyDown would silently no-op for users who press Escape
@@ -67,7 +73,8 @@ export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
         onClick={handleOverlayClick}
       >
         <div
-          class={styles.dialog}
+          data-testid="diagnostics-dialog"
+          class={`${styles.dialog}${lineWrap() ? ` ${styles.lineWrapOn}` : ''}`}
           role="dialog"
           aria-modal="true"
           aria-labelledby="diagnostics-panel-title"
@@ -121,6 +128,19 @@ export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
           </Show>
 
           <div class={styles.actions}>
+            <label class={styles.wrapLabel}>
+              <input
+                type="checkbox"
+                data-testid="diagnostics-line-wrap-toggle"
+                checked={lineWrap()}
+                onChange={(e) => {
+                  const checked = e.currentTarget.checked;
+                  setLineWrap(checked);
+                  saveDiagnosticsLineWrap(checked);
+                }}
+              />
+              {' '}Wrap lines
+            </label>
             <button class={styles.closeButton} onClick={() => props.onClose()}>
               Close
             </button>

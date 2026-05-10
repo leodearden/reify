@@ -113,7 +113,25 @@
 
 .actions {
   display: flex;
+  align-items: center;
+  gap: 12px;
   justify-content: flex-end;
+}
+
+.wrapLabel {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--reify-text-muted, #6c7086);
+  cursor: pointer;
+  user-select: none;
+}
+
+.lineWrapOn .message {
+  white-space: pre-wrap;
+  overflow: visible;
+  text-overflow: clip;
 }
 
 .closeButton {

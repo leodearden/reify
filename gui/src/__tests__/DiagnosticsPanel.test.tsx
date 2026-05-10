@@ -1,8 +1,19 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@solidjs/testing-library';
 import { DiagnosticsPanel } from '../panels/DiagnosticsPanel';
 import type { DiagnosticInfo } from '../types';
 import type { DiagnosticEntry } from '../panels/DiagnosticsPanel';
+import {
+  loadDiagnosticsLineWrap,
+} from '../hooks/useDiagnosticsPanelPersistence';
+
+// Stub ResizeObserver for jsdom (which doesn't support it)
+globalThis.ResizeObserver = class ResizeObserver {
+  observe = vi.fn();
+  unobserve = vi.fn();
+  disconnect = vi.fn();
+  constructor(_cb: ResizeObserverCallback) {}
+};
 
 function makeDiag(severity: 'Error' | 'Warning' | 'Info', overrides: Partial<DiagnosticInfo> = {}): DiagnosticInfo {
   return {
@@ -19,6 +30,10 @@ function makeDiag(severity: 'Error' | 'Warning' | 'Info', overrides: Partial<Dia
 }
 
 describe('DiagnosticsPanel', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
   it('renders nothing when open=false', () => {
     render(() => (
       <DiagnosticsPanel
@@ -168,5 +183,46 @@ describe('DiagnosticsPanel', () => {
     const chipTexts = Array.from(chips).map((c) => c.textContent);
     expect(chipTexts).toContain('compile');
     expect(chipTexts).toContain('tessellation');
+  });
+
+  it('renders a line-wrap checkbox by default', () => {
+    render(() => (
+      <DiagnosticsPanel
+        open={true}
+        diagnostics={[]}
+        onClose={vi.fn()}
+        onNavigate={vi.fn()}
+      />
+    ));
+    const checkbox = screen.getByTestId('diagnostics-line-wrap-toggle') as HTMLInputElement;
+    expect(checkbox).toBeTruthy();
+    expect(checkbox.checked).toBe(false);
+  });
+
+  it('toggling the line-wrap checkbox adds lineWrapOn class to the dialog and persists to localStorage', () => {
+    render(() => (
+      <DiagnosticsPanel
+        open={true}
+        diagnostics={[]}
+        onClose={vi.fn()}
+        onNavigate={vi.fn()}
+      />
+    ));
+    const checkbox = screen.getByTestId('diagnostics-line-wrap-toggle') as HTMLInputElement;
+    const dialog = screen.getByTestId('diagnostics-dialog') as HTMLElement;
+
+    // Initially no lineWrapOn class
+    expect(dialog.className).not.toContain('lineWrapOn');
+    expect(loadDiagnosticsLineWrap()).toBeNull();
+
+    // Click to enable wrap
+    fireEvent.click(checkbox);
+    expect(dialog.className).toContain('lineWrapOn');
+    expect(loadDiagnosticsLineWrap()).toBe(true);
+
+    // Click again to disable
+    fireEvent.click(checkbox);
+    expect(dialog.className).not.toContain('lineWrapOn');
+    expect(loadDiagnosticsLineWrap()).toBe(false);
   });
 });
