@@ -4844,6 +4844,75 @@ fn build_gui_state_tessellation_unresolved_source_tags_diagnostics() {
     }
 }
 
+// --- compile_diagnostics wiring through build_gui_state (step-3 / step-4) ---
+
+/// Compile warnings (e.g. unknown port type) must appear in `compile_diagnostics`
+/// after `load_from_source` and must remain absent from `tessellation_diagnostics`.
+///
+/// Uses the same `warn_source_with_unknown_port_type` fixture already validated by
+/// `engine_get_diagnostics_returns_populated_warning`.
+#[test]
+fn build_gui_state_compile_diagnostics_populated_from_warning() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(warn_source_with_unknown_port_type(), "warn_test")
+        .expect("load_from_source should succeed with warn source");
+
+    // compile_diagnostics must be non-empty
+    assert!(
+        !state.compile_diagnostics.is_empty(),
+        "expected non-empty compile_diagnostics for warn_source_with_unknown_port_type, got empty"
+    );
+
+    // First entry must be a Warning with the expected message and a .ri file_path
+    let first = &state.compile_diagnostics[0];
+    assert_eq!(
+        first.severity, "Warning",
+        "expected severity 'Warning', got '{}'",
+        first.severity
+    );
+    assert!(
+        first.message.to_lowercase().contains("unknown port type"),
+        "expected message to contain 'unknown port type', got: {}",
+        first.message
+    );
+    assert!(
+        first.file_path.ends_with(".ri"),
+        "expected file_path to end with '.ri', got: {}",
+        first.file_path
+    );
+
+    // tessellation_diagnostics must remain empty (the two streams are disjoint)
+    assert!(
+        state.tessellation_diagnostics.is_empty(),
+        "expected empty tessellation_diagnostics when compile_diagnostics are present, got {:?}",
+        state.tessellation_diagnostics
+    );
+}
+
+/// compile_diagnostics must be empty for clean source with no warnings.
+#[test]
+fn build_gui_state_compile_diagnostics_empty_on_clean_source() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new()
+        .with_extracted_faces(reify_types::GeometryHandleId(1), vec![])
+        .with_extracted_edges(reify_types::GeometryHandleId(1), vec![]);
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed with valid bracket source");
+
+    assert!(
+        state.compile_diagnostics.is_empty(),
+        "expected empty compile_diagnostics for clean bracket source, got {:?}",
+        state.compile_diagnostics
+    );
+}
+
 // --- Freshness wiring through build_gui_state (step-7 / step-8) ---
 
 /// End-to-end freshness wiring test: forced panic on a `let` cell must surface
