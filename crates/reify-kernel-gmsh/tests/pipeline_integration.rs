@@ -216,8 +216,6 @@ fn resolve_mesh_size_empty_indices_collapses_to_none() {
 /// (b) DEBUG event count == 0 on the error path.
 #[test]
 fn resolve_mesh_size_propagates_auto_size_error_and_suppresses_debug_event() {
-    use std::sync::Arc;
-
     reify_test_support::prime_tracing_callsite_cache();
 
     // 3 vertices (9 floats) → n_vertices = 3. Index 99 is out of range;
@@ -362,8 +360,6 @@ fn compute_thickness_warnings_some_delegates_to_through_thickness_check() {
 /// Pins the task description's "emit a debug log when applied" requirement.
 #[test]
 fn repair_pre_stage_emits_debug_event_when_some_supplied() {
-    use std::sync::Arc;
-
     // Prime the callsite cache so per-test with_default subscribers see events
     // even if a prior test thread hit the callsite with no subscriber active.
     reify_test_support::prime_tracing_callsite_cache();
@@ -566,6 +562,47 @@ fn resolve_mesh_size_emits_debug_event_recording_source_and_value() {
             Some("auto"),
             "auto branch: source field must be \"auto\"; fields={:?}",
             events_c[0]
+        );
+    }
+
+    // --- (d) auto_collapsed_to_kernel_default branch ---
+    // mesh_size=None, auto_cfg=Some, but mesh has no indices → auto_mesh_size_from_features
+    // returns Ok(0.0) → wrapper collapses to None → source="auto_collapsed_to_kernel_default".
+    // Closes the coverage gap on the fourth source-taxonomy label (mesh_volume.rs match arm:
+    // `(None, true, None) => "auto_collapsed_to_kernel_default"`).
+    let empty_indices_mesh = Mesh {
+        vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+        indices: vec![], // no triangles → auto_mesh_size_from_features returns Ok(0.0)
+        normals: None,
+    };
+    let fields_d: Arc<Mutex<Vec<HashMap<String, String>>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let sub_d = DebugFieldCapturingSubscriber {
+        fields: Arc::clone(&fields_d),
+        target_prefix: "reify_kernel_gmsh::mesh_volume",
+        span_counter: AtomicU64::new(1),
+    };
+    let result_d = tracing::subscriber::with_default(sub_d, || {
+        resolve_mesh_size(
+            &empty_indices_mesh,
+            &MeshingOptions::default(),
+            Some(AutoSizeConfig::default()),
+        )
+    });
+    assert!(result_d.is_ok(), "auto_collapsed_to_kernel_default branch must succeed");
+    {
+        let events_d = fields_d.lock().unwrap();
+        assert_eq!(
+            events_d.len(), 1,
+            "auto_collapsed_to_kernel_default branch must emit exactly 1 DEBUG event; \
+             got {}", events_d.len()
+        );
+        assert_eq!(
+            events_d[0].get("source").map(|s| s.as_str()),
+            Some("auto_collapsed_to_kernel_default"),
+            "auto_collapsed_to_kernel_default branch: source field must be \
+             \"auto_collapsed_to_kernel_default\"; fields={:?}",
+            events_d[0]
         );
     }
 }
