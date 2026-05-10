@@ -453,8 +453,10 @@ describe('createPermissionServer', () => {
 
     // At this point pendingPromises.size === 1 >= 1: the synchronous short-
     // circuit must kick in and return Promise.resolve() with no waiter queued.
-    // timeoutMs=0 is deliberate: any waiter path would never fire before the
-    // Promise resolves, proving we took the synchronous branch.
+    // timeoutMs=0 is deliberate: if the async branch were taken, the 0ms timer
+    // would fire on the next tick and reject before any notifyWaiters call could
+    // resolve it. A successful await therefore proves we took the synchronous
+    // Promise.resolve() branch.
     await server.__testHooks.awaitPending(1, 0);
 
     // Drain the in-flight request so afterEach can stop the server cleanly.
