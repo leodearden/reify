@@ -749,7 +749,8 @@ where
     // Early-exit (warm-start `u₀ ≈ u_exact`): if the seeded residual already
     // meets the convergence threshold, return without iterating. Symmetric
     // with the f_norm_sq == 0.0 short-circuit at the dispatch site; avoids
-    // 0/0 in α = rz / pkp when rz ≈ 0.
+    // 0/0 in α = rz / pkp when rz ≈ 0. Pinned by
+    // `warm_start_at_exact_solution_returns_in_zero_iterations`.
     if norm2sq_fn(&r) < tol_sq {
         return CgResult {
             u,
