@@ -238,12 +238,20 @@ fn compile_entry_with_imports(
     entry_path: &Path,
     source: &str,
     module_name: &str,
-) -> Result<(CompiledModule, reify_syntax::ParsedModule), String> {
+) -> Result<(CompiledModule, reify_syntax::ParsedModule), (String, Vec<DiagnosticInfo>)> {
     // Parse with stdlib enum pre-seeding (same as load_from_source / update_source).
     let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(module_name));
     if !parsed.errors.is_empty() {
         let msgs: Vec<String> = parsed.errors.iter().map(|e| e.message.clone()).collect();
-        return Err(format!("Parse errors: {}", msgs.join("; ")));
+        let error_string = format!("Parse errors: {}", msgs.join("; "));
+        let synthetic_diags: Vec<Diagnostic> = parsed
+            .errors
+            .iter()
+            .map(|e| Diagnostic::error(e.message.clone()).with_label(DiagnosticLabel::new(e.span, "")))
+            .collect();
+        let file_path = module_key(module_name);
+        let diag_infos = diagnostics_to_info(&synthetic_diags, &file_path, source);
+        return Err((error_string, diag_infos));
     }
 
     // project_root = directory of the entry file; stdlib_root matches LSP heuristic.
@@ -277,7 +285,15 @@ fn compile_entry_with_imports(
         }
         dag.compile_module(import_path, &resolver).map_err(|diags| {
             let msgs: Vec<String> = diags.iter().map(|d| d.message.clone()).collect();
-            format!("Compile errors in import '{}': {}", import_path, msgs.join("; "))
+            let error_string =
+                format!("Compile errors in import '{}': {}", import_path, msgs.join("; "));
+            // Diagnostics from the import's compile originate in the imported file.
+            // We don't have the imported source text in memory, so pass "" as source —
+            // spans will resolve to (1,1,1,1) but the error message still appears in
+            // the diagnostics panel.
+            let file_path = format!("{}.ri", import_path);
+            let diag_infos = diagnostics_to_info(&diags, &file_path, "");
+            (error_string, diag_infos)
         })?;
     }
 
@@ -305,13 +321,17 @@ fn compile_entry_with_imports(
         .iter()
         .any(|d| d.severity == Severity::Error);
     if has_errors {
-        let msgs: Vec<String> = compiled
+        let error_diags: Vec<&Diagnostic> = compiled
             .diagnostics
             .iter()
             .filter(|d| d.severity == Severity::Error)
-            .map(|d| d.message.clone())
             .collect();
-        return Err(format!("Compile errors: {}", msgs.join("; ")));
+        let msgs: Vec<String> = error_diags.iter().map(|d| d.message.clone()).collect();
+        let error_string = format!("Compile errors: {}", msgs.join("; "));
+        let owned_diags: Vec<Diagnostic> = error_diags.into_iter().cloned().collect();
+        let file_path = module_key(module_name);
+        let diag_infos = diagnostics_to_info(&owned_diags, &file_path, source);
+        return Err((error_string, diag_infos));
     }
 
     // Merge pub templates from direct (1-hop) non-stdlib imports into the entry's
@@ -511,7 +531,11 @@ impl EngineSession {
         // Err from `compile_entry_with_imports` doesn't leave file_path pointing
         // at a file whose compiled / module_name / source_map state hasn't been
         // committed.  Atomic-commit invariant: see engine.rs:30-44 doc block.
-        let (compiled, parsed) = compile_entry_with_imports(path, &source, module_name)?;
+        let (compiled, parsed) = compile_entry_with_imports(path, &source, module_name)
+            .map_err(|(msg, diags)| {
+                self.last_compile_diagnostics = diags;
+                msg
+            })?;
         let check_result = self.engine.check(&compiled);
         self.commit_state(parsed, compiled, check_result, module_name, &source);
         self.file_path = Some(path.to_path_buf());
@@ -554,7 +578,11 @@ impl EngineSession {
             // regardless of how the GUI serialised `path`.  See design decision in
             // task 3318 for rationale.
             let (compiled, parsed) =
-                compile_entry_with_imports(&entry_path, content, module_name)?;
+                compile_entry_with_imports(&entry_path, content, module_name)
+                    .map_err(|(msg, diags)| {
+                        self.last_compile_diagnostics = diags;
+                        msg
+                    })?;
             (parsed, compiled)
         } else {
             // Single-file flow — no prior load_file means no project_root anchor;
