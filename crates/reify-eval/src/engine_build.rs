@@ -3846,4 +3846,111 @@ mod tests {
             tolerances[0]
         );
     }
+
+    // ── tessellate_from_values fail-fast indexing tests ───────────────────────
+
+    /// Pins that an out-of-bounds `demanded_tols` lookup in
+    /// `tessellate_from_values` is a panic, not a silent `None` fallback.
+    ///
+    /// Passes `demanded_tols = &[]` (empty slice) with a 1-template /
+    /// 1-realization module.  After step 6 replaces the defensive
+    /// `.get(t_idx).and_then(...).unwrap_or(None)` with direct slice indexing
+    /// `demanded_tols[t_idx][r_idx]`, the first realization triggers an OOB
+    /// panic.  Currently RED: the call returns silently because
+    /// `demanded_tols.get(0)` returns `None` and `.unwrap_or(None)` swallows
+    /// the missing entry.
+    #[test]
+    #[should_panic(expected = "index out of bounds")]
+    fn tessellate_from_values_panics_on_oob_demanded_tols_lookup() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_test_support::MockConstraintChecker;
+
+        let module = module_with_one_box_realization();
+        let checker = MockConstraintChecker::new();
+        // Engine is only used to provide the kernel; we call the free fn directly.
+        let _ = crate::Engine::new(Box::new(checker), None);
+
+        let mut kernel: Option<Box<dyn GeometryKernel>> =
+            Some(Box::new(MockGeometryKernel::new()));
+        let mut values = ValueMap::new();
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let mut feature_tag_table = FeatureTagTable::default();
+        let mut topology_attribute_table = TopologyAttributeTable::default();
+        let mut swept_kind_table = SweptKindTable::default();
+        let mut realization_cache: RealizationCache<GeometryHandleId> = RealizationCache::new();
+
+        // `demanded_tols = &[]` is the OOB trigger: the producer would have
+        // generated `&[vec![None]]` for a 1-template/1-realization module, but
+        // passing an empty slice causes `demanded_tols[0][...]` to panic.
+        // `tessellation_budgets` is correctly shaped so we can confirm the
+        // panic originates at the demanded_tol lookup, not the budget lookup.
+        Engine::tessellate_from_values(
+            &mut kernel,
+            &module,
+            &mut values,
+            &functions,
+            &mut diagnostics,
+            &meta_map,
+            &mut feature_tag_table,
+            &mut topology_attribute_table,
+            &mut swept_kind_table,
+            &mut realization_cache,
+            &[],                    // ← OOB: empty demanded_tols
+            &[vec![1e-4_f64]],     // correctly shaped tessellation_budgets
+        );
+    }
+
+    /// Pins that an out-of-bounds `tessellation_budgets` lookup in
+    /// `tessellate_from_values` is a panic, not a silent module-pragma fallback.
+    ///
+    /// Passes `tessellation_budgets = &[]` (empty slice) with a 1-template /
+    /// 1-realization module and correctly-shaped `demanded_tols = &[vec![None]]`.
+    /// After step 8 replaces the defensive `.get(t_idx).and_then(...).unwrap_or_else(...)`
+    /// with direct slice indexing `tessellation_budgets[t_idx][r_idx]`, control
+    /// reaches the budget lookup and panics.  Currently RED: the call returns
+    /// silently with `budget = effective_tessellation_tolerance(module)` via the
+    /// `unwrap_or_else` fallback.
+    #[test]
+    #[should_panic(expected = "index out of bounds")]
+    fn tessellate_from_values_panics_on_oob_tessellation_budgets_lookup() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_test_support::MockConstraintChecker;
+
+        let module = module_with_one_box_realization();
+        let checker = MockConstraintChecker::new();
+        let _ = crate::Engine::new(Box::new(checker), None);
+
+        let mut kernel: Option<Box<dyn GeometryKernel>> =
+            Some(Box::new(MockGeometryKernel::new()));
+        let mut values = ValueMap::new();
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let mut feature_tag_table = FeatureTagTable::default();
+        let mut topology_attribute_table = TopologyAttributeTable::default();
+        let mut swept_kind_table = SweptKindTable::default();
+        let mut realization_cache: RealizationCache<GeometryHandleId> = RealizationCache::new();
+
+        // `demanded_tols` is correctly shaped; `tessellation_budgets = &[]` is
+        // the OOB trigger.  The Box primitive in module_with_one_box_realization
+        // produces at least one handle after `execute_realization_ops`, so
+        // the `if step_handles.len() > handle_start` guard at line 1276 is true
+        // and execution reaches the budget lookup.
+        Engine::tessellate_from_values(
+            &mut kernel,
+            &module,
+            &mut values,
+            &functions,
+            &mut diagnostics,
+            &meta_map,
+            &mut feature_tag_table,
+            &mut topology_attribute_table,
+            &mut swept_kind_table,
+            &mut realization_cache,
+            &[vec![None]],      // correctly shaped demanded_tols
+            &[],                // ← OOB: empty tessellation_budgets
+        );
+    }
 }
