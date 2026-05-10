@@ -152,6 +152,7 @@ pub use mesher::{
 pub use mid_surface::{
     MidSurfaceError, MidSurfaceMesh, MidSurfaceOptions, extract_mid_surface,
 };
+pub use mid_surface_naming::{populate_mid_surface_attributes, MidSurfaceAttributes};
 pub use pruning::{prune_branches, PruneError, PruneMetrics, PruneOptions, PruneResult};
 pub use segmentation::{
     segment_regions, RegionClassification, RegionInfo, SegmentationError, SegmentationOptions,
