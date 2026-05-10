@@ -145,10 +145,15 @@ export function Editor(props: EditorProps) {
                 default: {
                   // Exhaustiveness guard: TypeScript flags this `: never` assignment
                   // as a compile error if a new SaveBlockedReason member is added
-                  // without updating this switch.  Runtime behavior mirrors the
-                  // 'not-found' arm twelve lines above — quiet log + return true
-                  // (no throw) so CM6 receives a clean true and the browser's native
-                  // Mod-s save dialog does not leak through.
+                  // without updating this switch.  Runtime path: emits a console.error
+                  // breadcrumb, surfaces a props.onError toast ("Save failed: internal
+                  // error"), then returns true so CM6 swallows the keystroke and the
+                  // browser's native Mod-s dialog does not leak through.
+                  // Intentionally diverges from the 'not-found' arm, which suppresses
+                  // the toast: reaching this arm implies a contract violation — a new
+                  // SaveBlockedReason added without updating this switch — that a
+                  // maintainer should learn about, whereas 'not-found' is a
+                  // known-transient invariant breach with no actionable user message.
                   const _exhaustive: never = result.reason;
                   console.error('unhandled save-blocked reason:', _exhaustive);
                   props.onError?.('Save failed: internal error');
