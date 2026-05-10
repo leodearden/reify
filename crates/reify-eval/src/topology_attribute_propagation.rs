@@ -2796,5 +2796,23 @@ mod tests {
             );
             assert!(diagnostics.is_empty());
         }
+
+        #[test]
+        fn detect_local_index_reassignment_emits_no_diagnostic_for_singleton_role_group() {
+            let attr = make_attr("F#realization[0]", Role::Side, 0);
+            let h = GeometryHandleId(1);
+            let mut centroids: HashMap<GeometryHandleId, [f64; 3]> = HashMap::new();
+            centroids.insert(h, [1.0, 2.0, 3.0]);
+            let mut diagnostics = Vec::new();
+            detect_local_index_reassignment_diagnostics(
+                &[(h, &attr)],
+                &centroids,
+                1e-9,
+                synthetic_span(),
+                &mut diagnostics,
+            );
+            // Singleton group: no pairwise comparison to do → no diagnostic.
+            assert!(diagnostics.is_empty());
+        }
     }
 }
