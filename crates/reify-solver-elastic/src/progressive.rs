@@ -39,6 +39,34 @@ pub struct ProgressiveOptions {
     pub max_refinements: usize,
 }
 
+/// Mesh and CG tolerance pair for a single solve pass.
+///
+/// PRD task #15: "Coarse pass: mesh at `tol × 4`, CG tolerance `1e-3`.
+/// Each refinement halves mesh element size and tightens CG tolerance by 10×."
+///
+/// `mesh_tol` feeds directly into the Gmsh mesh-from-B-rep pipeline (PRD
+/// task #17) and `cg_tol` maps to [`crate::CgSolverOptions::tolerance`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PassTuning {
+    /// Target mesh element size tolerance (same units as geometry, typically metres).
+    pub mesh_tol: f64,
+    /// CG solver convergence tolerance (relative residual).
+    pub cg_tol: f64,
+}
+
+/// Derive the coarse-pass tuning from `opts`.
+///
+/// Per PRD task #15: "Coarse pass: mesh at `tol × 4` (4× coarser than
+/// requested), CG tolerance `1e-3` (loose)."
+///
+/// Equivalent to [`refinement_pass_tuning`]`(opts, 0)`.
+pub fn coarse_pass_tuning(opts: &ProgressiveOptions) -> PassTuning {
+    PassTuning {
+        mesh_tol: opts.target_tolerance * 4.0,
+        cg_tol: 1e-3,
+    }
+}
+
 /// A snapshot of a single FEA solve at a given refinement level.
 ///
 /// Field names mirror `reify_eval::ElasticResult` (minus `solve_time_ms`,
