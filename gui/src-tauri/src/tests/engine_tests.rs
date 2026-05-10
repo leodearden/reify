@@ -5888,6 +5888,28 @@ fn load_file_entry_redeclares_imported_pub_structure_emits_collision_diagnostic(
         .expect("load_file should succeed despite collision (first-wins, not error)");
 
     assert_first_wins_warning(&state, "Foo");
+    // Additionally assert that the collision warning names both module origins:
+    // "main" (entry module = first-wins origin, pre-seeded in templates_origin by
+    // engine.rs before imports are processed) and "helper" (colliding import path).
+    let w = state
+        .compile_diagnostics
+        .iter()
+        .find(|d| {
+            d.severity == "Warning"
+                && d.message.contains("Foo")
+                && d.message.contains("first-wins")
+        })
+        .expect("collision warning must exist (already verified by assert_first_wins_warning above)");
+    assert!(
+        w.message.contains("main"),
+        "collision warning should name the first-wins origin 'main' (entry module); got: {}",
+        w.message
+    );
+    assert!(
+        w.message.contains("helper"),
+        "collision warning should name the colliding import 'helper'; got: {}",
+        w.message
+    );
 }
 
 /// Regression: three imports all declaring the same `pub structure Foo` must
