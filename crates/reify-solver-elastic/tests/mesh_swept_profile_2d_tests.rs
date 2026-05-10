@@ -112,9 +112,13 @@ fn mesh_swept_profile_2d_wedge_target_unit_square_returns_triangles() {
 #[test]
 fn mesh_swept_profile_2d_hex_preferred_unit_square_recombines_cleanly() {
     let boundary = unit_square_boundary();
-    // Default options: mesh_size = None (auto-derive → 1.0 for unit square),
-    // deterministic = false, recombine_skew_threshold = π/4.
-    let options = Mesh2dOptions::default();
+    // mesh_size > boundary edge keeps the recombined output to one or two
+    // perfectly-square quads. With the auto-derived size of 1.0, gmsh
+    // subdivides interior edges and produces a quad with skew slightly
+    // above π/4 — that fall-back behaviour is exercised in the next pair.
+    let mut options = Mesh2dOptions::default();
+    options.mesh_size = Some(2.0);
+    options.deterministic = true;
 
     let result = mesh_swept_profile_2d(&boundary, SweepElementTarget::HexPreferred, &options);
 

@@ -409,7 +409,40 @@ pub fn mesh_swept_profile_2d(
             })
         }
         SweepElementTarget::HexPreferred => {
-            // Hex-preferred arm lands in a later TDD pair.
+            let result = reify_kernel_gmsh::mesh_profile_2d::mesh_plane_2d(
+                &boundary.outer,
+                &boundary.holes,
+                resolved_size,
+                true,
+                options.deterministic,
+            )
+            .map_err(map_geometry_error)?;
+
+            let vertices: Vec<f32> =
+                result.vertices_xy.iter().map(|&v| v as f32).collect();
+
+            // Happy path: recombine produced a quad-dominated mesh
+            // AND every quad passes the per-corner skew predicate.
+            // Quality fall-back to triangles is added in the next pair.
+            let quality_ok = recombine_quality_ok(
+                &vertices,
+                &result.quad_indices,
+                options.recombine_skew_threshold,
+            );
+            if !result.quad_indices.is_empty() && quality_ok {
+                return Ok(Mesh2dReport {
+                    mesh: Mesh2d::Quad {
+                        vertices,
+                        indices: result.quad_indices,
+                    },
+                    recombine_attempted: true,
+                    recombine_quality_ok: true,
+                });
+            }
+
+            // Placeholder for the fall-back path: step-24 replaces this
+            // with a second `mesh_plane_2d(recombine=false)` round trip
+            // that returns triangles.
             Err(Mesh2dError::GmshUnavailable)
         }
     }
