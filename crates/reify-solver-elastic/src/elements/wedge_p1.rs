@@ -73,8 +73,35 @@ impl ReferenceElement for WedgeP1 {
         n
     }
 
-    fn shape_grad_at(&self, _coord: ReferenceCoord) -> Vec<[f64; 3]> {
-        vec![] // STUB — will be filled in step-4
+    /// Shape-function gradients in reference coordinates.
+    ///
+    /// Returns `[∇N_0, …, ∇N_5]` where each row is
+    /// `[∂N_i/∂ξ, ∂N_i/∂η, ∂N_i/∂ζ]`.  Derived via the product rule:
+    ///
+    /// ```text
+    /// ∂N_i/∂ξ = (∂L_{a_i}/∂ξ) · (1 + s_i ζ) / 2
+    /// ∂N_i/∂η = (∂L_{a_i}/∂η) · (1 + s_i ζ) / 2
+    /// ∂N_i/∂ζ = L_{a_i} · s_i / 2
+    /// ```
+    ///
+    /// where `∇L_0 = (−1, −1, 0)`, `∇L_1 = (1, 0, 0)`, `∇L_2 = (0, 1, 0)`
+    /// in `(ξ, η, ζ)` (barycentric functions are ζ-independent).
+    fn shape_grad_at(&self, coord: ReferenceCoord) -> Vec<[f64; 3]> {
+        let ReferenceCoord { xi, eta, zeta } = coord;
+        let lambda = [1.0 - xi - eta, xi, eta];
+        // Gradients of barycentric coordinates in (ξ, η, ζ):
+        //   ∇L_0 = (-1, -1, 0),  ∇L_1 = (1, 0, 0),  ∇L_2 = (0, 1, 0)
+        const GRAD_LAMBDA: [[f64; 3]; 3] = [[-1.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let mut g = Vec::with_capacity(6);
+        for &(a, s) in &VERTEX_BARY_ZETA {
+            let half_layer = (1.0 + s * zeta) / 2.0;
+            g.push([
+                GRAD_LAMBDA[a][0] * half_layer,       // ∂N_i/∂ξ
+                GRAD_LAMBDA[a][1] * half_layer,       // ∂N_i/∂η
+                lambda[a] * s / 2.0,                  // ∂N_i/∂ζ
+            ]);
+        }
+        g
     }
 
     fn quad_points(&self) -> &'static [QuadraturePoint] {
