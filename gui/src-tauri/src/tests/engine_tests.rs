@@ -6040,6 +6040,56 @@ fn load_file_with_std_import_does_not_double_seed_stdlib() {
 
 // ---- fatal parse/compile diagnostics surfacing tests (task 3351) -----------
 
+/// After a failed `update_source` (parse error on a fresh session with no
+/// `file_path` set), `build_gui_state` must surface the failure in
+/// `compile_diagnostics`.
+///
+/// Pins step-3/step-4 of the task-3351 plan: `update_source`'s single-file
+/// branch (when `self.file_path` is `None`) must populate
+/// `last_compile_diagnostics` on failure, just like `load_from_source`.
+#[test]
+fn build_gui_state_surfaces_parse_error_after_failed_update_source_on_fresh_session() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // Fresh session — no load_file or load_from_source, so self.file_path is None.
+    // update_source takes the single-file branch (compile_single_file_with_stdlib).
+    let err = session
+        .update_source("foo.ri", "this is not valid {{{}}}")
+        .expect_err("invalid source should return Err");
+    assert!(
+        err.contains("Parse errors"),
+        "error string should mention Parse errors; got: {err}"
+    );
+
+    // build_gui_state must surface the stored failure diagnostics.
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state should return Ok even after a failed update_source");
+
+    assert!(
+        !state.compile_diagnostics.is_empty(),
+        "compile_diagnostics should be non-empty after a failed update_source on a fresh session"
+    );
+    let first = &state.compile_diagnostics[0];
+    assert_eq!(
+        first.severity, "Error",
+        "first diagnostic should have severity Error; got: {}",
+        first.severity
+    );
+
+    // Remaining fields should still be empty.
+    assert!(state.meshes.is_empty(), "meshes should be empty");
+    assert!(state.values.is_empty(), "values should be empty");
+    assert!(state.constraints.is_empty(), "constraints should be empty");
+    assert!(state.files.is_empty(), "files should be empty");
+    assert!(
+        state.tessellation_diagnostics.is_empty(),
+        "tessellation_diagnostics should be empty"
+    );
+}
+
 /// After a failed `load_from_source` (parse error on a fresh session),
 /// `build_gui_state` must surface the failure in `compile_diagnostics` rather
 /// than returning a silent empty viewport.
