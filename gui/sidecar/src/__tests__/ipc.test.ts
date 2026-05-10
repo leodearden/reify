@@ -155,7 +155,7 @@ describe('formatOutboundMessage', () => {
     const msg: OutboundMessage = {
       type: 'tool_call',
       id: 'msg-1',
-      tool_use_id: 'toolu_01abc',
+      tool_use_id: 'toolu_abc123',
       tool_name: 'reify_get_source',
       tool_input: { file: 'main.ri' },
     };
@@ -164,7 +164,7 @@ describe('formatOutboundMessage', () => {
     expect(parsed).toEqual({
       type: 'tool_call',
       id: 'msg-1',
-      tool_use_id: 'toolu_01abc',
+      tool_use_id: 'toolu_abc123',
       tool_name: 'reify_get_source',
       tool_input: { file: 'main.ri' },
     });

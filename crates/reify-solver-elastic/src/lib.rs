@@ -44,6 +44,9 @@
 //!     barycentric_p1, point_in_tet_p1, interpolate_p1_at_point,
 //!     locate_element_p1, LocatableTet,
 //!     StressElement, element_stress_p1, recover_nodal_stress_p1, tet_volume_p1,
+//!     ProgressiveOptions, PartialElasticResult, PassTuning,
+//!     RefinementDemand, TerminationReason, AdvanceDecision,
+//!     coarse_pass_tuning, refinement_pass_tuning, near_constraint_boundary, should_refine,
 //! };
 //!
 //! let _: TetP1 = TetP1;
@@ -218,6 +221,22 @@
 //!     Some(0),
 //!     "single-element locate must return Some(0) at the centroid",
 //! );
+//!
+//! // Task 2923: progressive-solve framework smoke pin.
+//! // The import block above already asserts all progressive re-exports compile;
+//! // these one-shot constructions confirm renames or removals trip this doctest.
+//! let _ = ProgressiveOptions::default();
+//! let _ = PassTuning { mesh_tol: 0.0, cg_tol: 0.0 };
+//! let _ = PartialElasticResult {
+//!     displacement: vec![], stress: vec![], max_von_mises: 0.0,
+//!     converged: false, iterations: 0,
+//! };
+//! let _ = (RefinementDemand::None, TerminationReason::BudgetExhausted);
+//! let _ = AdvanceDecision::Continue(PassTuning { mesh_tol: 0.0, cg_tol: 0.0 });
+//! let _: fn(&ProgressiveOptions) -> PassTuning = coarse_pass_tuning;
+//! let _: fn(&ProgressiveOptions, usize) -> PassTuning = refinement_pass_tuning;
+//! let _: fn(&PartialElasticResult, &ProgressiveOptions) -> bool = near_constraint_boundary;
+//! let _: fn(&ProgressiveOptions, usize, &PartialElasticResult, RefinementDemand) -> AdvanceDecision = should_refine;
 //! ```
 
 pub mod assembly;
@@ -226,6 +245,7 @@ pub mod constitutive;
 pub mod elements;
 pub mod interpolation;
 pub mod mpc;
+pub mod progressive;
 pub mod result;
 pub mod shell_assembly;
 pub mod shell_boundary;
@@ -243,6 +263,11 @@ pub use boundary::{
 };
 pub use constitutive::IsotropicElastic;
 pub use mpc::{MpcRow, apply_mpc_row_elimination};
+pub use progressive::{
+    AdvanceDecision, PartialElasticResult, PassTuning, ProgressiveOptions, RefinementDemand,
+    TerminationReason, coarse_pass_tuning, near_constraint_boundary, refinement_pass_tuning,
+    should_refine,
+};
 pub use elements::{
     Jacobian, QuadraturePoint, ReferenceCoord, ReferenceElement,
     hex_p1::HexP1,

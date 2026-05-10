@@ -3816,7 +3816,7 @@ describe('SidecarSession sandbox wrap (task 3210)', () => {
       (o): o is NoticeMessage => o.type === 'notice' && (o as NoticeMessage).code === 'sandbox_unavailable'
     );
     expect(notices).toHaveLength(1);
-    expect(notices[0].id).toBe('msg-notice-d1');
+    expect((notices[0] as NoticeMessage).id).toBe('msg-notice-d1');
     expect(warnSpy).toHaveBeenCalledTimes(1);
 
     warnSpy.mockRestore();
