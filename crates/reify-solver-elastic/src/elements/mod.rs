@@ -27,6 +27,7 @@ pub mod hex_p1;
 pub mod mitc3_plus;
 pub mod tet_p1;
 pub mod tet_p2;
+pub mod wedge_p1;
 
 /// A 3D reference-element coordinate triple `(ξ, η, ζ)`.
 ///
