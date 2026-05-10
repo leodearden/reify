@@ -1779,58 +1779,12 @@ impl Engine {
                     .filter(|(_, attr)| attr.feature_id == realization_feature_id)
                     .collect();
             if !realization_attrs.is_empty() {
-                let mut centroids: HashMap<GeometryHandleId, [f64; 3]> = HashMap::new();
-                // Accumulate centroid-query / parse failures and emit ONE
-                // summary warning per (realization, error-class) pair. A
-                // wedged kernel can otherwise dump dozens of identical
-                // diagnostics into the user-facing stream — auxiliary
-                // metadata storms degrade UX more than missing fragility
-                // signal does. We retain the first error message verbatim
-                // for diagnosability.
-                let mut query_fail_count: usize = 0;
-                let mut query_fail_first: Option<String> = None;
-                let mut parse_fail_count: usize = 0;
-                let mut parse_fail_first: Option<String> = None;
-                for (handle_id, _) in &realization_attrs {
-                    match kernel.query(&GeometryQuery::Centroid(*handle_id)) {
-                        Ok(value) => match crate::topology_selectors::parse_xyz_value(
-                            &value,
-                            "local_index_reassignment_centroid",
-                        ) {
-                            Ok(xyz) => {
-                                centroids.insert(*handle_id, xyz);
-                            }
-                            Err(e) => {
-                                parse_fail_count += 1;
-                                if parse_fail_first.is_none() {
-                                    parse_fail_first = Some(e.to_string());
-                                }
-                            }
-                        },
-                        Err(e) => {
-                            query_fail_count += 1;
-                            if query_fail_first.is_none() {
-                                query_fail_first = Some(e.to_string());
-                            }
-                        }
-                    }
-                }
-                if query_fail_count > 0 {
-                    let first =
-                        query_fail_first.unwrap_or_else(|| "<no message>".to_string());
-                    diagnostics.push(Diagnostic::warning(format!(
-                        "topology-attribute centroid query failed for {query_fail_count} \
-                         handle(s) in {realization_id} (first: {first})"
-                    )));
-                }
-                if parse_fail_count > 0 {
-                    let first =
-                        parse_fail_first.unwrap_or_else(|| "<no message>".to_string());
-                    diagnostics.push(Diagnostic::warning(format!(
-                        "topology-attribute centroid parse failed for {parse_fail_count} \
-                         handle(s) in {realization_id} (first: {first})"
-                    )));
-                }
+                let centroids = collect_centroids_with_failure_summary(
+                    &realization_attrs,
+                    kernel,
+                    realization_id,
+                    diagnostics,
+                );
                 detect_local_index_reassignment_diagnostics(
                     &realization_attrs,
                     &centroids,
@@ -2152,6 +2106,70 @@ impl Engine {
             resolved_params: HashMap::new(),
         })
     }
+}
+
+/// Collect centroid values for each topology-attribute handle, coalescing
+/// kernel query errors and parse errors into at most one summary warning each.
+///
+/// A wedged kernel can otherwise dump dozens of identical diagnostics into the
+/// user-facing stream — auxiliary metadata storms degrade UX more than missing
+/// fragility signal does. We retain the first error message verbatim for
+/// diagnosability.
+///
+/// Returns a `HashMap` from `GeometryHandleId` to `[x, y, z]` for every
+/// handle whose centroid was successfully queried and parsed. Handles that
+/// fail either step are omitted from the map; exactly one `Warning` per
+/// failure class (`query_fail`, `parse_fail`) is pushed to `diagnostics`.
+fn collect_centroids_with_failure_summary(
+    realization_attrs: &[(GeometryHandleId, &TopologyAttribute)],
+    kernel: &dyn GeometryKernel,
+    realization_id: &RealizationNodeId,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> HashMap<GeometryHandleId, [f64; 3]> {
+    let mut centroids: HashMap<GeometryHandleId, [f64; 3]> = HashMap::new();
+    let mut query_fail_count: usize = 0;
+    let mut query_fail_first: Option<String> = None;
+    let mut parse_fail_count: usize = 0;
+    let mut parse_fail_first: Option<String> = None;
+    for (handle_id, _) in realization_attrs {
+        match kernel.query(&GeometryQuery::Centroid(*handle_id)) {
+            Ok(value) => match crate::topology_selectors::parse_xyz_value(
+                &value,
+                "local_index_reassignment_centroid",
+            ) {
+                Ok(xyz) => {
+                    centroids.insert(*handle_id, xyz);
+                }
+                Err(e) => {
+                    parse_fail_count += 1;
+                    if parse_fail_first.is_none() {
+                        parse_fail_first = Some(e.to_string());
+                    }
+                }
+            },
+            Err(e) => {
+                query_fail_count += 1;
+                if query_fail_first.is_none() {
+                    query_fail_first = Some(e.to_string());
+                }
+            }
+        }
+    }
+    if query_fail_count > 0 {
+        let first = query_fail_first.unwrap_or_else(|| "<no message>".to_string());
+        diagnostics.push(Diagnostic::warning(format!(
+            "topology-attribute centroid query failed for {query_fail_count} \
+             handle(s) in {realization_id} (first: {first})"
+        )));
+    }
+    if parse_fail_count > 0 {
+        let first = parse_fail_first.unwrap_or_else(|| "<no message>".to_string());
+        diagnostics.push(Diagnostic::warning(format!(
+            "topology-attribute centroid parse failed for {parse_fail_count} \
+             handle(s) in {realization_id} (first: {first})"
+        )));
+    }
+    centroids
 }
 
 #[cfg(test)]
@@ -4100,9 +4118,13 @@ mod tests {
             "message must contain the realization_id display form, got: {}",
             diag.message
         );
+        // QueryError::QueryFailed Display is "geometry query failed: {msg}".
+        // Pin both the prefix and the handle name so a mock-format change
+        // is revealed by this test.
         assert!(
-            diag.message.contains("(first: no mock result for"),
-            "message must contain the first error text, got: {}",
+            diag.message
+                .contains("(first: geometry query failed: no mock result for GeometryHandleId(101))"),
+            "message must contain the first error text (with QueryError Display prefix), got: {}",
             diag.message
         );
     }
