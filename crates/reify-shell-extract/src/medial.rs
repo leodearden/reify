@@ -1159,7 +1159,10 @@ mod tests {
     /// (b) every voxel in the mask is on or adjacent to the
     ///     centerline z-plane (`|k − center_k| ≤ 1`);
     /// (c) the centerline plane is mostly populated
-    ///     (`mask.voxels.len() ≥ 16*16/2 = 128`).
+    ///     (`mask.voxels.len() ≥ SLAB_16_MIN_MEDIAL_VOXELS`; the owning
+    ///     contract is in [`slab_sdf_3d_n16_yields_at_least_min_medial_voxels`];
+    ///     [`compute_medial_mask_voxels_are_sorted_in_lex_order_on_slab`] is
+    ///     the other consumer of the same floor).
     #[test]
     fn compute_medial_mask_flags_slab_centerline_voxels() {
         let n = 16usize;
@@ -1185,7 +1188,11 @@ mod tests {
         }
 
         // (c) at least half the centerline plane is medial
-        let min_expected = n * n / 2;
+        // `SLAB_16_MIN_MEDIAL_VOXELS` is the shared floor; the owning contract
+        // test is `slab_sdf_3d_n16_yields_at_least_min_medial_voxels`, and
+        // `compute_medial_mask_voxels_are_sorted_in_lex_order_on_slab` is the
+        // other consumer.
+        let min_expected = SLAB_16_MIN_MEDIAL_VOXELS;
         assert!(
             mask.voxels.len() >= min_expected,
             "slab medial mask has {} voxels; expected ≥ {min_expected} \
@@ -1871,11 +1878,13 @@ mod tests {
         let mask = compute_medial_mask(&sdf, &MedialOptions::default())
             .expect("slab compute succeeds");
 
-        // The slab fixture produces at least 128 medial voxels (asserted by
-        // the existing slab test), so the windows(2) check is load-bearing.
+        // The slab fixture produces at least `SLAB_16_MIN_MEDIAL_VOXELS` medial
+        // voxels (contract owned by `slab_sdf_3d_n16_yields_at_least_min_medial_voxels`;
+        // also consumed by `compute_medial_mask_flags_slab_centerline_voxels`),
+        // so the windows(2) ordering check is load-bearing.
         assert!(
-            mask.voxels.len() >= 128,
-            "need ≥ 128 voxels for ordering check; got {}",
+            mask.voxels.len() >= SLAB_16_MIN_MEDIAL_VOXELS,
+            "need ≥ {SLAB_16_MIN_MEDIAL_VOXELS} voxels for ordering check; got {}",
             mask.voxels.len()
         );
 
