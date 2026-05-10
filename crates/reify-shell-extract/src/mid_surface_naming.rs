@@ -594,4 +594,43 @@ mod tests {
             );
         }
     }
+
+    // Pins the silent-truncation failure mode: when
+    // `triangle_labels.len() > mesh.triangles.len()`, a `debug_assert_eq!`
+    // is a no-op in release builds, so the populator silently iterates
+    // `mesh.triangles.len()` times without panicking, discarding the
+    // surplus labels. The impl change replaces `debug_assert_eq!` with
+    // `assert_eq!` so both directions of the length mismatch panic with
+    // the contract message in all builds.
+    //
+    // Note: the OTHER direction (`triangle_labels.len() < mesh.triangles.len()`)
+    // already panicked pre-fix via index-OOB in the loop body, so it is not
+    // separately tested here.
+    #[test]
+    #[should_panic(expected = "triangle_labels must be parallel")]
+    fn populate_panics_when_triangle_labels_longer_than_mesh_triangles_silent_truncation_case() {
+        // Standard 4-vertex / 2-triangle mesh (triangles.len() == 2).
+        let mesh = MidSurfaceMesh {
+            vertices: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            triangles: vec![[0, 1, 2], [0, 2, 3]],
+            thickness: vec![1.0, 1.0, 1.0, 1.0],
+        };
+        // triangle_labels has length 3 — ONE more than mesh.triangles.len() (2).
+        // This is the silent-truncation case that the assert_eq! must catch.
+        let segmentation = SegmentationResult {
+            regions: vec![region(0), region(1), region(2)],
+            vertex_labels: vec![],
+            triangle_labels: vec![0, 1, 2],
+        };
+        populate_mid_surface_attributes(
+            &FeatureId::new("Body#realization[0]"),
+            &mesh,
+            &segmentation,
+        );
+    }
 }
