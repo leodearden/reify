@@ -69,6 +69,8 @@ vi.mock('node:fs', () => {
     // options-object semantics matters because `{}.encoding === undefined`, so a
     // future caller passing `readFileSync(p, opts)` with opts lacking an `encoding`
     // would silently get a string here but a Buffer in production.
+    // Note: `{ encoding: '' }` is not fully modeled — real Node throws
+    // ERR_UNKNOWN_ENCODING for an empty-string encoding; this mock returns Buffer.
     readFileSync: vi.fn((filePath: string, enc?: unknown): string | Buffer => {
       if (!virtualFiles.has(filePath)) {
         const err = Object.assign(
@@ -79,7 +81,7 @@ vi.mock('node:fs', () => {
       }
       const content = virtualFiles.get(filePath)!;
       const encoding = typeof enc === 'string' ? enc : (enc as { encoding?: unknown } | null | undefined)?.encoding;
-      return encoding ? content : Buffer.from(content);
+      return typeof encoding === 'string' && encoding.length > 0 ? content : Buffer.from(content);
     }),
     unlinkSync: vi.fn((filePath: string): void => {
       virtualFiles.delete(filePath);
@@ -3907,8 +3909,7 @@ describe('virtual node:fs mock readFileSync semantics (task 3306)', () => {
     expect(typeof str).toBe('string');
     expect(str).toBe('hello');
 
-    // Case 3: empty options object → Buffer (load-bearing — currently FAILS because
-    // mock returns a string for any non-nullish second arg via `enc != null` check)
+    // Case 3: empty options object → Buffer (regression guard for options-object handling)
     const bufFromOpts = mockFs.readFileSync(p, {});
     expect(Buffer.isBuffer(bufFromOpts)).toBe(true);
 
