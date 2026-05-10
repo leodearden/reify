@@ -17,6 +17,7 @@ import {
   ViewManageModal,
   MechanismPanel,
   DiagnosticsPanel,
+  AutoResolvePanel,
 } from './panels';
 import type { DiagnosticEntry } from './panels';
 import { Splitter } from './components/Splitter';
@@ -1259,17 +1260,28 @@ const App: Component = () => {
               ref={sidePanelRef}
               data-testid="side-panel"
               class={styles.sidePanel}
-              style={{ 'grid-template-rows': chatOpen()
-                ? (mechanismStore.state.descriptors.length > 0
-                  // 8 tracks for 8 children: dt, splitter-dt, prop, splitter-side, cons, mech,
-                  // splitter-constraint, chat. There is no splitter between cons and mech in
-                  // the DOM, so no track between them either — adding one shifts every later
-                  // child up a track, which collapses the chat-panel into a 4px splitter slot.
-                  ? `${designTreeHeight()}px 4px ${propertyHeight()}px 4px ${constraintHeight()}px auto 4px minmax(${CHAT_MIN_HEIGHT}px, 1fr)`
-                  : `${designTreeHeight()}px 4px ${propertyHeight()}px 4px ${constraintHeight()}px 4px minmax(${CHAT_MIN_HEIGHT}px, 1fr)`)
-                : (mechanismStore.state.descriptors.length > 0
-                  ? `${designTreeHeight()}px 4px ${propertyHeight()}px 4px ${constraintHeight()}px auto`
-                  : `${designTreeHeight()}px 4px ${propertyHeight()}px 4px 1fr`) }}
+              style={{ 'grid-template-rows': (() => {
+                const hasMech = mechanismStore.state.descriptors.length > 0;
+                const hasAR = engineStore.state.autoResolve.active;
+                const hasChat = chatOpen();
+                const base = `${designTreeHeight()}px 4px ${propertyHeight()}px 4px`;
+                // Middle tracks: one `auto` per optional panel present (autoResolve then
+                // mechanism). No splitter between cons and the first optional panel — adding
+                // one would shift subsequent children up a track and collapse chat into 4px.
+                const midTracks = [
+                  ...(hasAR ? ['auto'] : []),
+                  ...(hasMech ? ['auto'] : []),
+                ];
+                const midStr = midTracks.length > 0
+                  ? `${constraintHeight()}px ${midTracks.join(' ')}`
+                  : null;
+                if (hasChat) {
+                  return `${base} ${midStr ?? `${constraintHeight()}px`} 4px minmax(${CHAT_MIN_HEIGHT}px, 1fr)`;
+                }
+                return midStr
+                  ? `${base} ${midStr}`
+                  : `${base} 1fr`;
+              })() }}
             >
               <DesignTree
                 tree={entityTree()}
@@ -1298,6 +1310,11 @@ const App: Component = () => {
                 onConstraintSelect={handleConstraintSelect}
                 onAskClaude={handleAskClaude}
               />
+              {/* AutoResolvePanel: auto-promotes when a param=auto loop is active,
+                  auto-restores (unmounts) when complete — no bookkeeping needed. */}
+              <Show when={engineStore.state.autoResolve.active}>
+                <AutoResolvePanel state={engineStore.state.autoResolve} />
+              </Show>
               <Show when={mechanismStore.state.descriptors.length > 0}>
                 <MechanismPanel
                   descriptors={mechanismStore.state.descriptors}
