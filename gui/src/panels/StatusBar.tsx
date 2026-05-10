@@ -92,7 +92,7 @@ export const StatusBar: Component<StatusBarProps> = (props) => {
           class={`${styles.section} ${styles.diagnosticsTrigger}`}
           data-testid="tessellation-errors"
           data-has-errors={diagnosticSummary().errorCount > 0 ? 'true' : 'false'}
-          aria-label={`Show tessellation diagnostics (${props.tessellationDiagnostics?.length ?? 0})`}
+          aria-label={`Show diagnostics (${(props.tessellationDiagnostics?.length ?? 0) + (props.compileDiagnostics?.length ?? 0)} total)`}
           onClick={() => props.onToggleDiagnostics?.()}
         >
           <Show when={diagnosticSummary().errorCount > 0}>
