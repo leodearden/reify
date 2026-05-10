@@ -238,6 +238,146 @@ mod tests {
         }
     }
 
+    // ── quad_points tests ────────────────────────────────────────────────────
+
+    const QUAD_TOL: f64 = 1e-10;
+
+    #[test]
+    fn quad_points_is_three_by_two_gauss_rule() {
+        let qps = WedgeP1.quad_points();
+        assert_eq!(qps.len(), 6, "3×2 Gauss rule must have 6 points");
+
+        // All weights must be 1/6.
+        let expected_weight = 1.0_f64 / 6.0;
+        for (i, qp) in qps.iter().enumerate() {
+            assert!(
+                (qp.weight - expected_weight).abs() < QUAD_TOL,
+                "qp[{i}].weight = {}, expected {expected_weight}",
+                qp.weight,
+            );
+        }
+
+        // Triangle base: 3 Gauss points at (ξ, η) ∈ {(2/3,1/6),(1/6,2/3),(1/6,1/6)}.
+        // Line sweep: 2 points at ζ = ±1/√3.
+        // All 6 combinations (tri_idx, line_idx) must appear exactly once.
+        let g = 1.0_f64 / 3.0_f64.sqrt();
+        let tri_pts: [(f64, f64); 3] = [(2.0 / 3.0, 1.0 / 6.0), (1.0 / 6.0, 2.0 / 3.0), (1.0 / 6.0, 1.0 / 6.0)];
+        let zeta_pts: [f64; 2] = [g, -g];
+
+        let mut seen = [[false; 2]; 3];
+        for (qp_i, qp) in qps.iter().enumerate() {
+            let c = qp.coord;
+            // Find which triangle-point this (ξ,η) matches.
+            let ti = tri_pts
+                .iter()
+                .position(|&(xi, eta)| {
+                    (c.xi - xi).abs() < QUAD_TOL && (c.eta - eta).abs() < QUAD_TOL
+                })
+                .unwrap_or_else(|| {
+                    panic!(
+                        "qp[{qp_i}] = (ξ={}, η={}) does not match any triangle Gauss point",
+                        c.xi, c.eta,
+                    )
+                });
+            // Find which line-point this ζ matches.
+            let li = zeta_pts
+                .iter()
+                .position(|&z| (c.zeta - z).abs() < QUAD_TOL)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "qp[{qp_i}] ζ={} does not match ±1/√3",
+                        c.zeta,
+                    )
+                });
+            assert!(
+                !seen[ti][li],
+                "(tri={ti}, line={li}) pair matched more than once; second match at qp[{qp_i}]",
+            );
+            seen[ti][li] = true;
+        }
+        assert!(
+            seen.iter().all(|row| row.iter().all(|&x| x)),
+            "not all 6 (tri, line) combinations were covered by the quadrature rule",
+        );
+    }
+
+    #[test]
+    fn quad_points_total_weight_is_prism_volume_one() {
+        let total: f64 = WedgeP1.quad_points().iter().map(|q| q.weight).sum();
+        assert!(
+            (total - 1.0).abs() < QUAD_TOL,
+            "Σ weights = {total}, expected 1.0 (reference-prism volume)",
+        );
+    }
+
+    #[test]
+    fn quad_rule_integrates_constant_to_prism_volume() {
+        // ∫_{prism} 1 dV = 1 (reference-prism volume = (1/2)·2 = 1).
+        let i: f64 = WedgeP1.quad_points().iter().map(|q| q.weight * 1.0).sum();
+        assert!((i - 1.0).abs() < QUAD_TOL, "∫ 1 dV = {i}, expected 1.0");
+    }
+
+    #[test]
+    fn quad_rule_integrates_linear_zeta_to_zero() {
+        // ∫ ζ dV = 0 (odd integrand on symmetric ζ ∈ [-1, +1]).
+        let i: f64 = WedgeP1
+            .quad_points()
+            .iter()
+            .map(|q| q.weight * q.coord.zeta)
+            .sum();
+        assert!(i.abs() < QUAD_TOL, "∫ ζ dV = {i}, expected 0.0");
+    }
+
+    #[test]
+    fn quad_rule_integrates_zeta_squared_to_one_third() {
+        // ∫_{prism} ζ² dV = (area of unit triangle) · ∫_{-1}^{1} ζ² dζ
+        //                 = (1/2) · (2/3) = 1/3.
+        let i: f64 = WedgeP1
+            .quad_points()
+            .iter()
+            .map(|q| q.weight * q.coord.zeta.powi(2))
+            .sum();
+        assert!(
+            (i - 1.0 / 3.0).abs() < QUAD_TOL,
+            "∫ ζ² dV = {i}, expected {}",
+            1.0 / 3.0,
+        );
+    }
+
+    #[test]
+    fn quad_rule_integrates_xi_to_one_third() {
+        // ∫_{prism} ξ dV = ∫_T ξ dA · ∫_{-1}^{1} 1 dζ
+        //                = (1/6) · 2 = 1/3.
+        // (∫_T ξ dA over the unit triangle = 1/6.)
+        let i: f64 = WedgeP1
+            .quad_points()
+            .iter()
+            .map(|q| q.weight * q.coord.xi)
+            .sum();
+        assert!(
+            (i - 1.0 / 3.0).abs() < QUAD_TOL,
+            "∫ ξ dV = {i}, expected {}",
+            1.0 / 3.0,
+        );
+    }
+
+    #[test]
+    fn quad_rule_integrates_xi_squared_zeta_squared_exactly() {
+        // ∫_{prism} ξ²ζ² dV = ∫_T ξ² dA · ∫_{-1}^{1} ζ² dζ
+        //                    = (1/12) · (2/3) = 1/18.
+        // This is at the exactness limit (degree-2 in triangle, degree-3 in line).
+        let i: f64 = WedgeP1
+            .quad_points()
+            .iter()
+            .map(|q| q.weight * q.coord.xi.powi(2) * q.coord.zeta.powi(2))
+            .sum();
+        assert!(
+            (i - 1.0 / 18.0).abs() < QUAD_TOL,
+            "∫ ξ²ζ² dV = {i}, expected {}",
+            1.0 / 18.0,
+        );
+    }
+
     #[test]
     fn shape_grad_at_matches_finite_difference_oracle_at_off_centroid_probes() {
         // FD oracle: central-difference truncation O(h²) ≈ 1e-12 + roundoff
