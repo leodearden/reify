@@ -550,4 +550,76 @@ mod tests {
         let h = auto_mesh_size_from_boundary(&pb, 1.0);
         assert_eq!(h, 0.0);
     }
+
+    // ---- step-9: mesh_swept_profile_2d input validation ----
+    //
+    // Pinned BEFORE any Gmsh call so these run in both stub and real
+    // builds. The actual mesh-producing arms are tested under
+    // cfg(has_gmsh) in steps 19+.
+
+    #[test]
+    fn mesh_swept_profile_2d_rejects_empty_outer() {
+        let pb = ProfileBoundary {
+            outer: vec![],
+            holes: vec![],
+        };
+        let r = mesh_swept_profile_2d(
+            &pb,
+            SweepElementTarget::WedgeOnly,
+            &Mesh2dOptions::default(),
+        );
+        assert!(matches!(r, Err(Mesh2dError::EmptyBoundary)));
+    }
+
+    #[test]
+    fn mesh_swept_profile_2d_rejects_outer_under_three_points() {
+        let pb = ProfileBoundary {
+            outer: vec![[0.0, 0.0], [1.0, 0.0]],
+            holes: vec![],
+        };
+        let r = mesh_swept_profile_2d(
+            &pb,
+            SweepElementTarget::WedgeOnly,
+            &Mesh2dOptions::default(),
+        );
+        assert!(
+            matches!(r, Err(Mesh2dError::DegenerateBoundary)),
+            "expected DegenerateBoundary, got {r:?}"
+        );
+    }
+
+    #[test]
+    fn mesh_swept_profile_2d_rejects_hole_under_three_points() {
+        let pb = ProfileBoundary {
+            outer: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
+            holes: vec![vec![[4.0, 4.0], [5.0, 5.0]]],
+        };
+        let r = mesh_swept_profile_2d(
+            &pb,
+            SweepElementTarget::WedgeOnly,
+            &Mesh2dOptions::default(),
+        );
+        assert!(
+            matches!(r, Err(Mesh2dError::DegenerateBoundary)),
+            "expected DegenerateBoundary, got {r:?}"
+        );
+    }
+
+    #[test]
+    fn mesh_swept_profile_2d_rejects_collinear_outer() {
+        // Signed area = 0 — three colinear points on the x-axis.
+        let pb = ProfileBoundary {
+            outer: vec![[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]],
+            holes: vec![],
+        };
+        let r = mesh_swept_profile_2d(
+            &pb,
+            SweepElementTarget::WedgeOnly,
+            &Mesh2dOptions::default(),
+        );
+        assert!(
+            matches!(r, Err(Mesh2dError::DegenerateBoundary)),
+            "expected DegenerateBoundary, got {r:?}"
+        );
+    }
 }
