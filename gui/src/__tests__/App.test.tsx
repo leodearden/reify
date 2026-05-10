@@ -4681,37 +4681,58 @@ describe('App handleSave aborts when file is externally changed', () => {
   it('(a) handleSave does NOT call bridgeSaveFile and shows error toast when active file is externally changed', async () => {
     vi.mocked(bridge.saveFile).mockResolvedValue(undefined);
 
-    render(() => <App />);
-    await waitFor(() => expect(fileChangedCallback).toBeDefined());
-    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+    // Regression guard: neither handleSave nor the Editor keymap should emit
+    // console.error for the externally-changed branch (only for not-found).
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-    // Set active file
-    capturedEditorStore.setActiveFile('/project/bracket.ri');
+    try {
+      render(() => <App />);
+      await waitFor(() => expect(fileChangedCallback).toBeDefined());
+      await waitFor(() => expect(capturedEditorStore).toBeTruthy());
 
-    // Mark the file as externally changed
-    capturedEditorStore.markExternallyChanged('/project/bracket.ri');
+      // Set active file
+      capturedEditorStore.setActiveFile('/project/bracket.ri');
 
-    // Trigger handleSave via Ctrl+S
-    fireEvent.keyDown(document, { key: 's', ctrlKey: true });
+      // Mark the file as externally changed
+      capturedEditorStore.markExternallyChanged('/project/bracket.ri');
 
-    // Wait a beat for any async effects
-    await new Promise((r) => setTimeout(r, 20));
+      // Trigger handleSave via Ctrl+S
+      fireEvent.keyDown(document, { key: 's', ctrlKey: true });
 
-    // bridgeSaveFile (bridge.saveFile) must NOT have been called
-    expect(bridge.saveFile).not.toHaveBeenCalled();
+      // Wait a beat for any async effects
+      await new Promise((r) => setTimeout(r, 20));
 
-    // An error toast containing the exact save-blocked message string must appear.
-    // We use .includes() rather than strict equality because the toast element's
-    // textContent also contains the dismiss-button "×" character appended after
-    // the message span.  Using the full constant (not a loose keyword regex)
-    // still enforces lockstep: a wording drift in messages.ts would break this test.
-    await waitFor(() => {
-      const toasts = screen.getAllByTestId('toast');
-      const errorToast = toasts.find((t) =>
-        t.textContent?.includes(EXTERNALLY_CHANGED_SAVE_BLOCKED_MSG),
-      );
-      expect(errorToast).toBeTruthy();
-    });
+      // bridgeSaveFile (bridge.saveFile) must NOT have been called
+      expect(bridge.saveFile).not.toHaveBeenCalled();
+
+      // The Editor's Mod-s keymap path must NOT have been the one that fired.
+      // Today this is guaranteed because the Editor is mocked to a noop div,
+      // but capturing the tracker makes the guarantee explicit: if a future
+      // test-setup change routes the keystroke through props.onError, this
+      // assertion will fail loudly rather than silently passing.
+      expect(capturedEditorOnError).toBeDefined();
+      expect(capturedEditorOnError).not.toHaveBeenCalled();
+
+      // console.error must NOT have been called (neither path logs for externally-changed)
+      expect(consoleErrorSpy).not.toHaveBeenCalled();
+
+      // An error toast containing the exact save-blocked message string must appear.
+      // We use .includes() rather than strict equality because the toast element's
+      // textContent also contains the dismiss-button "×" character appended after
+      // the message span.  Using the full constant (not a loose keyword regex)
+      // still enforces lockstep: a wording drift in messages.ts would break this test.
+      await waitFor(() => {
+        const toasts = screen.getAllByTestId('toast');
+        const errorToast = toasts.find((t) =>
+          t.textContent?.includes(EXTERNALLY_CHANGED_SAVE_BLOCKED_MSG),
+        );
+        expect(errorToast).toBeTruthy();
+        // Pin the toast variant — must be 'error', not 'warning' or 'info'
+        expect(errorToast?.dataset.type).toBe('error');
+      });
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
   });
 
   it('(b) after clearExternallyChanged, handleSave DOES call bridgeSaveFile', async () => {
