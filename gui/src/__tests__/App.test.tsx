@@ -3000,7 +3000,7 @@ describe('App tessellation diagnostics end-to-end wiring', () => {
     });
   });
 
-  it('tessellation-diagnostics event with one Error: StatusBar shows data-has-errors="true" and "Compile error"', async () => {
+  it('tessellation-diagnostics event with one Error: StatusBar shows data-has-errors="true" and "Tessellation error"', async () => {
     render(() => <App />);
     // Wait until the app is ready and the callback has been registered
     await waitFor(() => expect(tessellationDiagnosticsCallback).toBeDefined());
@@ -3022,7 +3022,7 @@ describe('App tessellation diagnostics end-to-end wiring', () => {
       const badge = statusBar.querySelector('[data-testid="tessellation-errors"]');
       expect(badge).toBeTruthy();
       expect(badge?.getAttribute('data-has-errors')).toBe('true');
-      expect(statusBar.textContent).toMatch(/compile error/i);
+      expect(statusBar.textContent).toMatch(/tessellation error/i);
     });
   });
 
@@ -3055,6 +3055,41 @@ describe('App tessellation diagnostics end-to-end wiring', () => {
       expect(panel).toBeTruthy();
       expect(panel.textContent).toContain('tess kernel boom');
     });
+  });
+
+  it('clicking the tessellation-errors badge twice closes the panel', async () => {
+    render(() => <App />);
+    await waitFor(() => expect(tessellationDiagnosticsCallback).toBeDefined());
+
+    tessellationDiagnosticsCallback!([
+      {
+        file_path: '<unknown>',
+        line: 1, column: 1, end_line: 1, end_column: 1,
+        severity: 'Error',
+        message: 'tess toggle close test',
+        code: null,
+      },
+    ]);
+
+    // Wait for the badge to appear
+    await waitFor(() => {
+      expect(screen.getByTestId('tessellation-errors')).toBeTruthy();
+    });
+
+    // First click: open the panel
+    fireEvent.click(screen.getByTestId('tessellation-errors'));
+    await waitFor(() => expect(screen.getByTestId('diagnostics-panel')).toBeTruthy());
+
+    // Second click: close the panel.
+    // DiagnosticsPanel wraps its overlay in <Show when={props.open}>, so the
+    // element is fully removed from the DOM (not just hidden) when closed.
+    // This is the intentional contract: toBeNull() is the right assertion here;
+    // a querySelector returning null proves the panel is unmounted, not merely
+    // invisible — and would FAIL if the handler were flipped to setDiagnosticsOpen(true).
+    fireEvent.click(screen.getByTestId('tessellation-errors'));
+    await waitFor(() =>
+      expect(document.querySelector('[data-testid="diagnostics-panel"]')).toBeNull()
+    );
   });
 
   it('clicking a tessellation diagnostic row in the panel triggers setScrollToLocation', async () => {
@@ -3247,6 +3282,65 @@ describe('App compile diagnostics end-to-end wiring', () => {
       const badge = statusBar.querySelector('[data-testid="diagnostics-count"]');
       expect(badge).toBeTruthy();
       expect(badge!.textContent).toMatch(/1 error/i);
+    });
+  });
+});
+
+describe('App merged diagnostics rendering', () => {
+  let tessellationDiagnosticsCallback: ((diags: any[]) => void) | undefined;
+  let compileDiagnosticsCallback: ((diags: any[]) => void) | undefined;
+
+  beforeEach(() => {
+    tessellationDiagnosticsCallback = undefined;
+    compileDiagnosticsCallback = undefined;
+    vi.mocked(bridge.onTessellationDiagnostics).mockImplementation(async (cb: any) => {
+      tessellationDiagnosticsCallback = cb;
+      return () => {};
+    });
+    vi.mocked((bridge as any).onCompileDiagnostics).mockImplementation(async (cb: any) => {
+      compileDiagnosticsCallback = cb;
+      return () => {};
+    });
+  });
+
+  it('panel shows both compile and tessellation diagnostic messages when seeded simultaneously', async () => {
+    render(() => <App />);
+    await waitFor(() => {
+      expect(tessellationDiagnosticsCallback).toBeDefined();
+      expect(compileDiagnosticsCallback).toBeDefined();
+    });
+
+    compileDiagnosticsCallback!([
+      {
+        file_path: 'main.ri',
+        line: 2, column: 1, end_line: 2, end_column: 5,
+        severity: 'Warning',
+        message: 'compile warn xyz',
+        code: null,
+      },
+    ]);
+    tessellationDiagnosticsCallback!([
+      {
+        file_path: '<unknown>',
+        line: 1, column: 1, end_line: 1, end_column: 1,
+        severity: 'Error',
+        message: 'tess boom abc',
+        code: null,
+      },
+    ]);
+
+    // Wait for tessellation badge to appear
+    await waitFor(() => {
+      expect(screen.getByTestId('tessellation-errors')).toBeTruthy();
+    });
+
+    // Open the panel via tessellation badge
+    fireEvent.click(screen.getByTestId('tessellation-errors'));
+
+    await waitFor(() => {
+      const panel = screen.getByTestId('diagnostics-panel');
+      expect(panel.textContent).toContain('compile warn xyz');
+      expect(panel.textContent).toContain('tess boom abc');
     });
   });
 });

@@ -98,7 +98,7 @@ export const StatusBar: Component<StatusBarProps> = (props) => {
           when={triangleCount() > 0}
           fallback={
             <span class={styles.value}>
-              {diagnosticSummary().errorCount > 0 ? 'Compile error' : 'No geometry'}
+              {diagnosticSummary().errorCount > 0 ? 'Tessellation error' : 'No geometry'}
             </span>
           }
         >
