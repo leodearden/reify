@@ -190,6 +190,58 @@ pub fn compute_quad_skew(quad: &[[f64; 2]; 4]) -> f64 {
     max_dev
 }
 
+/// Check that every quad in a stride-4 index buffer has a maximum per-corner
+/// skew under `threshold` radians.
+///
+/// `vertices` is the flat XY buffer (`stride 2`, f32) feeding both
+/// [`Mesh2d::Quad`] and its diagnostic check. `quad_indices` is the
+/// stride-4 connectivity into `vertices`; each `chunks_exact(4)` window
+/// names one quad's four CCW corners.
+///
+/// Returns `false` defensively on:
+/// - `quad_indices.len() % 4 != 0` (caller bug — quad stride violation).
+/// - Any index `>= vertices.len() / 2` (out-of-bounds — connectivity bug).
+/// - Any quad whose [`compute_quad_skew`] exceeds `threshold`.
+///
+/// Returns `true` when `quad_indices.is_empty()` (vacuous — no bad quad).
+pub fn recombine_quality_ok(vertices: &[f32], quad_indices: &[u32], threshold: f64) -> bool {
+    if !quad_indices.len().is_multiple_of(4) {
+        return false;
+    }
+    let n_verts = vertices.len() / 2;
+    for chunk in quad_indices.chunks_exact(4) {
+        // Bounds-check each index before indexing — out-of-bounds is a
+        // defensive failure (caller corrupted the connectivity buffer).
+        for &i in chunk {
+            if (i as usize) >= n_verts {
+                return false;
+            }
+        }
+        let q: [[f64; 2]; 4] = [
+            [
+                vertices[(chunk[0] as usize) * 2] as f64,
+                vertices[(chunk[0] as usize) * 2 + 1] as f64,
+            ],
+            [
+                vertices[(chunk[1] as usize) * 2] as f64,
+                vertices[(chunk[1] as usize) * 2 + 1] as f64,
+            ],
+            [
+                vertices[(chunk[2] as usize) * 2] as f64,
+                vertices[(chunk[2] as usize) * 2 + 1] as f64,
+            ],
+            [
+                vertices[(chunk[3] as usize) * 2] as f64,
+                vertices[(chunk[3] as usize) * 2 + 1] as f64,
+            ],
+        ];
+        if compute_quad_skew(&q) > threshold {
+            return false;
+        }
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
