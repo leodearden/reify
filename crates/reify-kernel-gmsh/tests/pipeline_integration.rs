@@ -7,7 +7,10 @@
 //! Integration tests that call `mesh_surface_to_volume_with_diagnostics` are
 //! inside the `with_libgmsh` module, gated with `#[cfg(has_gmsh)]`.
 
-use std::sync::atomic::Ordering;
+use std::collections::HashMap;
+use std::fmt;
+use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use reify_kernel_gmsh::auto_size::AutoSizeConfig;
 use reify_kernel_gmsh::mesh_volume::{
@@ -411,77 +414,160 @@ fn repair_pre_stage_emits_debug_event_when_some_supplied() {
 }
 
 // ---------------------------------------------------------------------------
+// Inline DEBUG field-capturing subscriber (used by resolve_mesh_size tests)
+// ---------------------------------------------------------------------------
+// Mirrors the WarnCapturingSubscriber pattern from
+// crates/reify-test-support/src/tracing_support.rs:603-689, narrowed to
+// DEBUG level + a caller-supplied target prefix. Kept inline (not added to
+// reify-test-support) because only one test in the workspace currently needs
+// DEBUG-level field capture — see design decision (1) in the plan.
+
+struct DebugFieldCapturingSubscriber {
+    fields: Arc<Mutex<Vec<HashMap<String, String>>>>,
+    target_prefix: &'static str,
+    span_counter: AtomicU64,
+}
+
+struct DebugFieldVisitor {
+    fields: HashMap<String, String>,
+}
+
+impl tracing::field::Visit for DebugFieldVisitor {
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        if field.name() != "message" {
+            self.fields.insert(field.name().to_owned(), value.to_owned());
+        }
+    }
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn fmt::Debug) {
+        if field.name() != "message" {
+            self.fields
+                .insert(field.name().to_owned(), format!("{value:?}"));
+        }
+    }
+}
+
+impl tracing::Subscriber for DebugFieldCapturingSubscriber {
+    fn enabled(&self, m: &tracing::Metadata<'_>) -> bool {
+        m.level() == &tracing::Level::DEBUG && m.target().starts_with(self.target_prefix)
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        // Initial value 1 ensures from_u64 never receives 0 (which panics).
+        tracing::span::Id::from_u64(self.span_counter.fetch_add(1, Ordering::Relaxed))
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        let mut v = DebugFieldVisitor { fields: HashMap::new() };
+        event.record(&mut v);
+        self.fields.lock().unwrap().push(v.fields);
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+// ---------------------------------------------------------------------------
 // resolve_mesh_size debug event observability
 // ---------------------------------------------------------------------------
 
 /// `resolve_mesh_size` must emit exactly one DEBUG event at the
 /// `reify_kernel_gmsh::mesh_volume` target on each successful call,
-/// regardless of which resolution branch fires (caller / auto / kernel_default).
+/// asserting both the event count and the structured `source` field value per
+/// branch (caller / kernel_default / auto).
 ///
 /// Pins the structured diagnostic introduced by suggestion-3 ("mesh_size resolved"
-/// event with `source` and `mesh_size` fields).
+/// event with `source` and `mesh_size` fields). The `source` field is the
+/// critical regression detector: a bug that hard-codes `source="caller"` for
+/// all branches would pass a count-only test but fail here.
+///
+/// `mesh_size` is intentionally NOT pinned — see design decision (2).
 #[test]
 fn resolve_mesh_size_emits_debug_event_recording_source_and_value() {
-    use std::sync::Arc;
-
     reify_test_support::prime_tracing_callsite_cache();
 
     let cube = unit_cube_mesh();
 
-    // --- (a) caller branch: mesh_size=Some(0.42) → 1 DEBUG event ---
-    let (sub, counters) = reify_test_support::CountingSubscriberBuilder::new()
-        .count_level(tracing::Level::DEBUG)
-        .target_prefix("reify_kernel_gmsh::mesh_volume")
-        .build();
-    let debug_arc = Arc::clone(&counters[&tracing::Level::DEBUG]);
-
-    let result = tracing::subscriber::with_default(sub, || {
+    // --- (a) caller branch: mesh_size=Some(0.42) → source="caller" ---
+    let fields_a: Arc<Mutex<Vec<HashMap<String, String>>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let sub_a = DebugFieldCapturingSubscriber {
+        fields: Arc::clone(&fields_a),
+        target_prefix: "reify_kernel_gmsh::mesh_volume",
+        span_counter: AtomicU64::new(1),
+    };
+    let result_a = tracing::subscriber::with_default(sub_a, || {
         resolve_mesh_size(
             &cube,
             &MeshingOptions { mesh_size: Some(0.42), ..Default::default() },
             None,
         )
     });
-    assert!(result.is_ok(), "caller branch must succeed");
-    let count = debug_arc.load(std::sync::atomic::Ordering::Acquire);
-    assert_eq!(
-        count, 1,
-        "caller branch must emit exactly 1 DEBUG event; got {count}"
-    );
+    assert!(result_a.is_ok(), "caller branch must succeed");
+    {
+        let events_a = fields_a.lock().unwrap();
+        assert_eq!(
+            events_a.len(), 1,
+            "caller branch must emit exactly 1 DEBUG event; got {}", events_a.len()
+        );
+        assert_eq!(
+            events_a[0].get("source").map(|s| s.as_str()),
+            Some("caller"),
+            "caller branch: source field must be \"caller\"; fields={:?}",
+            events_a[0]
+        );
+    }
 
-    // --- (b) kernel_default branch: mesh_size=None, auto_cfg=None → 1 DEBUG event ---
-    let (sub2, counters2) = reify_test_support::CountingSubscriberBuilder::new()
-        .count_level(tracing::Level::DEBUG)
-        .target_prefix("reify_kernel_gmsh::mesh_volume")
-        .build();
-    let debug_arc2 = Arc::clone(&counters2[&tracing::Level::DEBUG]);
-
-    let result2 = tracing::subscriber::with_default(sub2, || {
+    // --- (b) kernel_default branch: mesh_size=None, auto_cfg=None → source="kernel_default" ---
+    let fields_b: Arc<Mutex<Vec<HashMap<String, String>>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let sub_b = DebugFieldCapturingSubscriber {
+        fields: Arc::clone(&fields_b),
+        target_prefix: "reify_kernel_gmsh::mesh_volume",
+        span_counter: AtomicU64::new(1),
+    };
+    let result_b = tracing::subscriber::with_default(sub_b, || {
         resolve_mesh_size(&cube, &MeshingOptions::default(), None)
     });
-    assert!(result2.is_ok(), "kernel_default branch must succeed");
-    let count2 = debug_arc2.load(std::sync::atomic::Ordering::Acquire);
-    assert_eq!(
-        count2, 1,
-        "kernel_default branch must emit exactly 1 DEBUG event; got {count2}"
-    );
+    assert!(result_b.is_ok(), "kernel_default branch must succeed");
+    {
+        let events_b = fields_b.lock().unwrap();
+        assert_eq!(
+            events_b.len(), 1,
+            "kernel_default branch must emit exactly 1 DEBUG event; got {}", events_b.len()
+        );
+        assert_eq!(
+            events_b[0].get("source").map(|s| s.as_str()),
+            Some("kernel_default"),
+            "kernel_default branch: source field must be \"kernel_default\"; fields={:?}",
+            events_b[0]
+        );
+    }
 
-    // --- (c) auto branch: mesh_size=None, auto_cfg=Some → 1 DEBUG event ---
-    let (sub3, counters3) = reify_test_support::CountingSubscriberBuilder::new()
-        .count_level(tracing::Level::DEBUG)
-        .target_prefix("reify_kernel_gmsh::mesh_volume")
-        .build();
-    let debug_arc3 = Arc::clone(&counters3[&tracing::Level::DEBUG]);
-
-    let result3 = tracing::subscriber::with_default(sub3, || {
+    // --- (c) auto branch: mesh_size=None, auto_cfg=Some → source="auto" ---
+    // unit_cube_mesh() has non-zero auto-derived size → "auto" (not "auto_collapsed_to_kernel_default").
+    let fields_c: Arc<Mutex<Vec<HashMap<String, String>>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let sub_c = DebugFieldCapturingSubscriber {
+        fields: Arc::clone(&fields_c),
+        target_prefix: "reify_kernel_gmsh::mesh_volume",
+        span_counter: AtomicU64::new(1),
+    };
+    let result_c = tracing::subscriber::with_default(sub_c, || {
         resolve_mesh_size(&cube, &MeshingOptions::default(), Some(AutoSizeConfig::default()))
     });
-    assert!(result3.is_ok(), "auto branch must succeed");
-    let count3 = debug_arc3.load(std::sync::atomic::Ordering::Acquire);
-    assert_eq!(
-        count3, 1,
-        "auto branch must emit exactly 1 DEBUG event; got {count3}"
-    );
+    assert!(result_c.is_ok(), "auto branch must succeed");
+    {
+        let events_c = fields_c.lock().unwrap();
+        assert_eq!(
+            events_c.len(), 1,
+            "auto branch must emit exactly 1 DEBUG event; got {}", events_c.len()
+        );
+        assert_eq!(
+            events_c[0].get("source").map(|s| s.as_str()),
+            Some("auto"),
+            "auto branch: source field must be \"auto\"; fields={:?}",
+            events_c[0]
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
