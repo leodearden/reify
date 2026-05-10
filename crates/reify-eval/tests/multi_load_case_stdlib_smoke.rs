@@ -361,6 +361,33 @@ fn get_worst_case_negative_value<'a>(values: &'a ValueMap, name: &str) -> &'a Va
         .unwrap_or_else(|| panic!("WorstCaseNegativesFixture.{name} not found in eval result"))
 }
 
+/// Compile `source`, eval it, assert no Error-severity diagnostics, and assert
+/// that the named `WorstCaseNegativesFixture` binding evaluates to
+/// `Value::Undef`.
+///
+/// `call_ctx` is a short description of the `worst_case(...)` call under test
+/// (e.g. `"worst_case(mcr)"`) used in assertion failure messages.
+///
+/// Shared by all 7 per-guard negative tests below; each test supplies only its
+/// own SOURCE constant and binding name, keeping the tests to one-liner calls.
+fn check_worst_case_negative(source: &str, binding: &str, call_ctx: &str) {
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let eval_errors = collect_errors(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "{call_ctx}: eval should produce no Error-severity diagnostics, got: {eval_errors:?}"
+    );
+
+    let v = get_worst_case_negative_value(&result.values, binding);
+    assert!(
+        v.is_undef(),
+        "{call_ctx}: expected Value::Undef from guard fall-through, got: {v:?}"
+    );
+}
+
 /// Reify source for the `arity_one` negative: `worst_case(mcr)` has only one
 /// argument. The inline dispatch arm in `eval_expr` guards
 /// `evaluated_args.len() == 2`, so 1-arg calls fall through to
@@ -382,21 +409,7 @@ structure def WorstCaseNegativesFixture {
 /// permanent Undef stub.
 #[test]
 fn worst_case_arity_one_returns_undef() {
-    let compiled = parse_and_compile_with_stdlib(WORST_CASE_ARITY_ONE_SOURCE);
-    let mut engine = make_simple_engine();
-    let result = engine.eval(&compiled);
-
-    let eval_errors = collect_errors(&result.diagnostics);
-    assert!(
-        eval_errors.is_empty(),
-        "eval should produce no Error-severity diagnostics, got: {eval_errors:?}"
-    );
-
-    let v = get_worst_case_negative_value(&result.values, "arity_one");
-    assert!(
-        v.is_undef(),
-        "worst_case(mcr) with 1 arg should return Undef (wrong-arity fall-through), got: {v:?}"
-    );
+    check_worst_case_negative(WORST_CASE_ARITY_ONE_SOURCE, "arity_one", "worst_case(mcr) — 1 arg");
 }
 
 /// Reify source for the `arity_three` negative: `worst_case(mcr, |f| f, |f| f)`
@@ -416,21 +429,7 @@ structure def WorstCaseNegativesFixture {
 /// dispatch arm requires exactly 2 evaluated args.
 #[test]
 fn worst_case_arity_three_returns_undef() {
-    let compiled = parse_and_compile_with_stdlib(WORST_CASE_ARITY_THREE_SOURCE);
-    let mut engine = make_simple_engine();
-    let result = engine.eval(&compiled);
-
-    let eval_errors = collect_errors(&result.diagnostics);
-    assert!(
-        eval_errors.is_empty(),
-        "eval should produce no Error-severity diagnostics, got: {eval_errors:?}"
-    );
-
-    let v = get_worst_case_negative_value(&result.values, "arity_three");
-    assert!(
-        v.is_undef(),
-        "worst_case(mcr, |f| f, |f| f) with 3 args should return Undef (wrong-arity fall-through), got: {v:?}"
-    );
+    check_worst_case_negative(WORST_CASE_ARITY_THREE_SOURCE, "arity_three", "worst_case(mcr, |f| f, |f| f) — 3 args");
 }
 
 /// Reify source for the `non_map_first` negative: `worst_case(42, |f| f)` passes
@@ -447,21 +446,7 @@ structure def WorstCaseNegativesFixture {
 /// pattern match requires `Value::Map`.
 #[test]
 fn worst_case_non_map_first_arg_returns_undef() {
-    let compiled = parse_and_compile_with_stdlib(WORST_CASE_NON_MAP_FIRST_SOURCE);
-    let mut engine = make_simple_engine();
-    let result = engine.eval(&compiled);
-
-    let eval_errors = collect_errors(&result.diagnostics);
-    assert!(
-        eval_errors.is_empty(),
-        "eval should produce no Error-severity diagnostics, got: {eval_errors:?}"
-    );
-
-    let v = get_worst_case_negative_value(&result.values, "non_map_first");
-    assert!(
-        v.is_undef(),
-        "worst_case(42, |f| f) with non-Map first arg should return Undef, got: {v:?}"
-    );
+    check_worst_case_negative(WORST_CASE_NON_MAP_FIRST_SOURCE, "non_map_first", "worst_case(42, |f| f) — non-Map first arg");
 }
 
 /// Reify source for the `non_lambda_second` negative: `worst_case(mcr, 42)` passes
@@ -482,21 +467,7 @@ structure def WorstCaseNegativesFixture {
 /// check requires `Value::Lambda { .. }`.
 #[test]
 fn worst_case_non_lambda_second_arg_returns_undef() {
-    let compiled = parse_and_compile_with_stdlib(WORST_CASE_NON_LAMBDA_SECOND_SOURCE);
-    let mut engine = make_simple_engine();
-    let result = engine.eval(&compiled);
-
-    let eval_errors = collect_errors(&result.diagnostics);
-    assert!(
-        eval_errors.is_empty(),
-        "eval should produce no Error-severity diagnostics, got: {eval_errors:?}"
-    );
-
-    let v = get_worst_case_negative_value(&result.values, "non_lambda_second");
-    assert!(
-        v.is_undef(),
-        "worst_case(mcr, 42) with non-Lambda second arg should return Undef, got: {v:?}"
-    );
+    check_worst_case_negative(WORST_CASE_NON_LAMBDA_SECOND_SOURCE, "non_lambda_second", "worst_case(mcr, 42) — non-Lambda second arg");
 }
 
 /// Reify source for the `no_cases_key` negative: `worst_case(map{"foo" => 1}, |f| f)`
@@ -513,21 +484,7 @@ structure def WorstCaseNegativesFixture {
 /// `outer.get(&Value::String("cases"))` returns `None`.
 #[test]
 fn worst_case_missing_cases_key_returns_undef() {
-    let compiled = parse_and_compile_with_stdlib(WORST_CASE_MISSING_CASES_KEY_SOURCE);
-    let mut engine = make_simple_engine();
-    let result = engine.eval(&compiled);
-
-    let eval_errors = collect_errors(&result.diagnostics);
-    assert!(
-        eval_errors.is_empty(),
-        "eval should produce no Error-severity diagnostics, got: {eval_errors:?}"
-    );
-
-    let v = get_worst_case_negative_value(&result.values, "no_cases_key");
-    assert!(
-        v.is_undef(),
-        "worst_case(map{{\"foo\" => 1}}, |f| f) with missing \"cases\" key should return Undef, got: {v:?}"
-    );
+    check_worst_case_negative(WORST_CASE_MISSING_CASES_KEY_SOURCE, "no_cases_key", "worst_case(map{\"foo\" => 1}, |f| f) — missing \"cases\" key");
 }
 
 /// Reify source for the `cases_not_map` negative:
@@ -545,21 +502,7 @@ structure def WorstCaseNegativesFixture {
 /// the `cases` match arm requires `Some(Value::Map(c))` and `42` is not a Map.
 #[test]
 fn worst_case_cases_value_not_map_returns_undef() {
-    let compiled = parse_and_compile_with_stdlib(WORST_CASE_CASES_VALUE_NOT_MAP_SOURCE);
-    let mut engine = make_simple_engine();
-    let result = engine.eval(&compiled);
-
-    let eval_errors = collect_errors(&result.diagnostics);
-    assert!(
-        eval_errors.is_empty(),
-        "eval should produce no Error-severity diagnostics, got: {eval_errors:?}"
-    );
-
-    let v = get_worst_case_negative_value(&result.values, "cases_not_map");
-    assert!(
-        v.is_undef(),
-        "worst_case(map{{\"cases\" => 42}}, |f| f) with non-Map cases value should return Undef, got: {v:?}"
-    );
+    check_worst_case_negative(WORST_CASE_CASES_VALUE_NOT_MAP_SOURCE, "cases_not_map", "worst_case(map{\"cases\" => 42}, |f| f) — cases not a Map");
 }
 
 /// Reify source for the `lambda_non_field` negative: `worst_case(mcr, |f| 42)`
@@ -584,21 +527,7 @@ structure def WorstCaseNegativesFixture {
 /// `Value::Undef`.
 #[test]
 fn worst_case_lambda_returns_non_field_returns_undef() {
-    let compiled = parse_and_compile_with_stdlib(WORST_CASE_LAMBDA_NON_FIELD_SOURCE);
-    let mut engine = make_simple_engine();
-    let result = engine.eval(&compiled);
-
-    let eval_errors = collect_errors(&result.diagnostics);
-    assert!(
-        eval_errors.is_empty(),
-        "eval should produce no Error-severity diagnostics, got: {eval_errors:?}"
-    );
-
-    let v = get_worst_case_negative_value(&result.values, "lambda_non_field");
-    assert!(
-        v.is_undef(),
-        "worst_case(mcr, |f| 42) with non-Field lambda result should return Undef, got: {v:?}"
-    );
+    check_worst_case_negative(WORST_CASE_LAMBDA_NON_FIELD_SOURCE, "lambda_non_field", "worst_case(mcr, |f| 42) — lambda returns non-Field");
 }
 
 /// Stage-2 readiness probe: verify that the `MultiCaseResult(...)` and
