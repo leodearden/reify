@@ -3652,12 +3652,13 @@ mod tests {
     // --- task 3033 (T20): MidSurfaceFace + MidSurfaceEdge Role variants ---
 
     #[test]
-    #[allow(clippy::clone_on_copy)] // intentional: exercises Clone + Copy + Hash + Debug bounds
     fn role_mid_surface_face_and_edge_variants_are_distinct_from_each_other_and_existing_variants(
     ) {
         // Pairwise distinctness: the two new variants must differ from
         // each other AND from every existing Role variant. Mirrors the
         // discipline of the SweptFace/LoftedFace distinctness suite.
+        // (Hash/Copy/Debug bounds are guaranteed by the `#[derive(...)]`
+        // attribute on `Role` and don't need behavioral assertions here.)
         assert_ne!(Role::MidSurfaceFace, Role::MidSurfaceEdge);
         for existing in [
             Role::Cap(CapKind::Top),
@@ -3674,30 +3675,6 @@ mod tests {
             assert_ne!(Role::MidSurfaceFace, existing);
             assert_ne!(Role::MidSurfaceEdge, existing);
         }
-
-        // Copy: assignment without move.
-        let r = Role::MidSurfaceFace;
-        let _ = r; // r is still usable post-`let _ =`
-        let _ = r;
-
-        // Hash: must hash without compile error.
-        use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        Role::MidSurfaceFace.hash(&mut h);
-        let _: u64 = h.finish();
-        let mut h2 = std::collections::hash_map::DefaultHasher::new();
-        Role::MidSurfaceEdge.hash(&mut h2);
-        let _: u64 = h2.finish();
-
-        // Debug: format string must contain the variant name verbatim.
-        assert!(
-            format!("{:?}", Role::MidSurfaceFace).contains("MidSurfaceFace"),
-            "Debug for MidSurfaceFace must contain variant name"
-        );
-        assert!(
-            format!("{:?}", Role::MidSurfaceEdge).contains("MidSurfaceEdge"),
-            "Debug for MidSurfaceEdge must contain variant name"
-        );
     }
 
     // --- task 5b (#2619): LoftOpHistoryRecords (multi-parent loft op) ---
