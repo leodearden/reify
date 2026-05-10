@@ -756,6 +756,19 @@ where
     // with the f_norm_sq == 0.0 short-circuit at the dispatch site; avoids
     // 0/0 in α = rz / pkp when rz ≈ 0. Pinned by
     // `warm_start_at_exact_solution_returns_in_zero_iterations`.
+    //
+    // Two residual notions: this check uses the *recomputed true residual*
+    // `r₀ = f − K·u₀` from the dispatch site, while the in-loop convergence
+    // check at the bottom of the iteration uses the *maintained residual*
+    // (updated incrementally as `r ← r − α·Kp` each iteration). The two
+    // drift apart over many iterations due to floating-point round-off.
+    // Consequence: a warm-start where `u₀` came from a long cold solve on
+    // a large/ill-conditioned system may have `‖f − K·u₀‖² > tol_sq` even
+    // though the cold-solve maintained residual was below tol_sq at
+    // convergence. That is acceptable — the loop simply does a few more
+    // iterations to re-tighten the maintained residual. Future readers
+    // should NOT "fix" this apparent inconsistency: it reflects the real
+    // numerical state of the system at u₀, not a bug.
     if norm2sq_fn(&r) < tol_sq {
         return CgResult {
             u,
@@ -1648,6 +1661,63 @@ mod tests {
                 u_exact[i],
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 2921: warm-state plumbing — zero-RHS + non-zero initial guess
+    // -----------------------------------------------------------------------
+
+    /// Pin the dispatch-site contract that the zero-RHS short-circuit
+    /// (`f_norm_sq == 0.0`) takes precedence over the caller-supplied
+    /// `initial_guess`: the unique solution to `K·u = 0` for SPD `K` is
+    /// `u = 0`, so honouring a non-zero guess and iterating would still
+    /// converge to `u = 0`. Returning `vec![0.0; n]` directly avoids
+    /// `0/0` in the relative-tolerance check `tol² · ‖f‖² == 0`.
+    ///
+    /// Without this pin a future refactor could plausibly choose to
+    /// honour the guess (e.g. seed `u = u₀`, iterate until `‖r‖² < tol_sq`
+    /// which is also 0 for any non-trivial guess) and silently change the
+    /// short-circuit behaviour.
+    #[test]
+    fn zero_rhs_with_nonzero_initial_guess_still_returns_zero_u() {
+        // 2×2 SPD fixture (same as `hand_computed_2x2_spd_within_tolerance`).
+        let k = SparseRowMat::try_new_from_triplets(
+            2,
+            2,
+            &[
+                Triplet::new(0_usize, 0_usize, 4.0_f64),
+                Triplet::new(0_usize, 1_usize, 1.0_f64),
+                Triplet::new(1_usize, 0_usize, 1.0_f64),
+                Triplet::new(1_usize, 1_usize, 3.0_f64),
+            ],
+        )
+        .unwrap();
+        let f = [0.0_f64, 0.0]; // zero RHS
+        let initial_guess = [1.0_f64, 1.0]; // non-zero guess
+        let opts = CgSolverOptions {
+            tolerance: 1e-10,
+            max_iter: 100,
+        };
+
+        let result = solve_cg_warm(
+            &k,
+            &f,
+            Some(&initial_guess),
+            opts,
+            SolverMode::Deterministic,
+        );
+
+        assert_eq!(
+            result.iterations, 0,
+            "zero-RHS short-circuit must return in 0 iterations regardless of \
+             initial_guess; got {}",
+            result.iterations,
+        );
+        assert!(
+            result.converged,
+            "zero-RHS short-circuit must report converged",
+        );
+        assert_eq!(result.u, vec![0.0_f64; 2], "u must be the zero vector");
     }
 
     // -----------------------------------------------------------------------

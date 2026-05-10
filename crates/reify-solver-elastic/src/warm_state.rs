@@ -82,6 +82,22 @@ mod tests {
     use crate::solver::{CgSolverOptions, SolverMode};
     use faer::sparse::{SparseRowMat, Triplet};
 
+    /// `CgWarmState::from_opaque_state` returns `None` (rather than
+    /// panicking) when the inner `OpaqueState` value is not a
+    /// `CgWarmState`. Pins the `WarmStartable` best-effort contract
+    /// referenced in the doc comment of `from_opaque_state`: a caller
+    /// that gets `None` should silently treat the state as a cold start.
+    #[test]
+    fn cg_warm_state_from_opaque_state_returns_none_on_type_mismatch() {
+        // OpaqueState wrapping an i32 — clearly not a CgWarmState.
+        let opaque = reify_types::OpaqueState::new(42_i32, std::mem::size_of::<i32>());
+        let restored = CgWarmState::from_opaque_state(opaque);
+        assert!(
+            restored.is_none(),
+            "from_opaque_state must return None on type mismatch (got Some)"
+        );
+    }
+
     /// `CgWarmState::from_displacement(u)` → `into_opaque_state()` →
     /// `from_opaque_state()` round-trips the displacement vector unchanged.
     /// Also pins the `estimated_size_bytes` formula
