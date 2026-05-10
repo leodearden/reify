@@ -465,8 +465,15 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
       return;
     }
 
-    // Enable (or re-apply with new warpFactor): clear any existing overlays first
-    // so a double-call doesn't duplicate them.
+    // Early return when the same warpFactor is already active — avoids unnecessary
+    // GPU-buffer writes and overlay teardown/re-add on redundant calls.
+    // Note: the Viewport bridge effect is gated by track-then-act reactive tracking
+    // (warpFactor is only read inside the showDeformed branch), so duplicate calls
+    // with the same value are rare in practice, but the public API permits them.
+    if (currentDeformation && currentDeformation.warpFactor === opts.warpFactor) return;
+
+    // Enable (or re-apply with changed warpFactor): clear any existing overlays first
+    // so a transition from one warpFactor to another doesn't leave stale overlays.
     for (const entityPath of [...undeformedMeshMap.keys()]) {
       removeUndeformedOverlay(entityPath);
     }

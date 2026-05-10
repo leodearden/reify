@@ -1998,7 +1998,11 @@ describe('meshManager', () => {
       expect(manager.getDeformedOverlays().size).toBe(0);
     });
 
-    it('(e) calling setDeformation({warpFactor:5}) twice does not duplicate overlays — size stays 1', () => {
+    it('(e) calling setDeformation({warpFactor:5}) twice with the same warpFactor is a no-op — overlay unchanged', () => {
+      // setDeformation detects same warpFactor and returns early, avoiding unnecessary
+      // GPU-buffer writes and overlay teardown/re-add on redundant calls.
+      // The Viewport bridge effect guards against this via track-then-act reactive
+      // tracking, but the public API must be stable on its own.
       const { manager } = setupWithOverlay();
       manager.setDeformation({ warpFactor: 5 });
 
@@ -2011,8 +2015,10 @@ describe('meshManager', () => {
 
       // Still exactly one overlay.
       expect(manager.getDeformedOverlays().size).toBe(1);
-      // The prior overlay's geometry was disposed (idempotent re-enable path).
-      expect(firstGeom.dispose).toHaveBeenCalledOnce();
+      // Early return: the prior overlay's geometry must NOT have been disposed.
+      expect(firstGeom.dispose).not.toHaveBeenCalled();
+      // The overlay object is the same instance (no teardown/re-create).
+      expect(manager.getDeformedOverlays().get('A')).toBe(firstOverlay);
     });
 
     it('(f) dispose() removes undeformedGroup from scene and disposes undeformedMaterial', () => {
