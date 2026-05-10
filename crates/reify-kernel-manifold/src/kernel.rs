@@ -742,6 +742,51 @@ mod tests {
         );
     }
 
+    /// Pins the architectural rule that [`ManifoldKernel`] must not misclassify
+    /// its handles as `Some(BRepKind::Solid)` — a Manifold mesh belongs to the
+    /// [`ReprKind::Mesh`] family, not the B-rep family, so there is no
+    /// meaningful B-rep sub-shape classification and `repr` must be `None`.
+    ///
+    /// # Context
+    ///
+    /// - **Task 3179**: Resolves the BRepKind semantic abuse for non-B-rep
+    ///   kernels (architectural decision to widen
+    ///   `GeometryHandle.repr: BRepKind` → `Option<BRepKind>`).
+    /// - **Task 3093 review esc-3093-33**: The original acknowledgement of the
+    ///   semantic abuse — Manifold's `store` carried an inline comment "There
+    ///   is no `BRepKind::Mesh` variant; `Solid` is the closest semantic
+    ///   match", explicitly noting the misclassification.
+    /// - **Architectural rule**: `BRepKind` is documented as a *B-rep
+    ///   sub-shape classifier for geometry handles managed by the OCCT
+    ///   kernel*. Non-B-rep kernels (Mesh/Sdf/Voxel/VolumeMesh families per
+    ///   [`ReprKind`]) genuinely have no B-rep sub-shape. `None` is
+    ///   structurally honest; `Some(BRepKind::Solid)` was a forced lie.
+    ///   The coarse kernel-family classifier lives in [`ReprKind`], not in
+    ///   `BRepKind`.
+    #[cfg(feature = "test-fixtures")]
+    #[test]
+    fn manifold_kernel_handle_repr_is_none_for_non_brep_kernel() {
+        let mut kernel = ManifoldKernel::new();
+        let l = kernel
+            .store_mesh_for_test(&unit_cube_mesh([0.0, 0.0, 0.0]))
+            .expect("unit_cube_mesh fixture must be a valid manifold");
+        let r = kernel
+            .store_mesh_for_test(&unit_cube_mesh([0.5, 0.0, 0.0]))
+            .expect("unit_cube_mesh fixture must be a valid manifold");
+
+        let handle = kernel
+            .execute(&GeometryOp::Union { left: l, right: r })
+            .expect("Union of two valid stored cubes must return Ok(GeometryHandle)");
+
+        assert!(
+            handle.repr.is_none(),
+            "ManifoldKernel handles must carry `repr: None` — Manifold meshes \
+             belong to ReprKind::Mesh and have no meaningful B-rep sub-shape \
+             classification. See task 3179 option (b) and task 3093 review \
+             esc-3093-33.",
+        );
+    }
+
     /// RED for item 4 of task 3186: pins that `store_mesh_for_test` returns
     /// `Err(GeometryError::OperationFailed(_))` when given an invalid
     /// (non-manifold) mesh.
