@@ -34,10 +34,11 @@ pub fn element_stiffness_hex_p1(
     phys_nodes: &[[f64; 3]; 8],
     material: &IsotropicElastic,
 ) -> ElementStiffness {
-    // STUB — GREEN step replaces this with the one-line delegation to
-    // element_stiffness_generic(&HexP1, &phys_nodes[..], material).
-    let _ = (phys_nodes, material);
-    ElementStiffness::zeros(24)
+    crate::assembly::tet::element_stiffness_generic(
+        &crate::elements::hex_p1::HexP1,
+        &phys_nodes[..],
+        material,
+    )
 }
 
 #[cfg(test)]
@@ -287,10 +288,17 @@ mod tests {
     #[test]
     fn hex_p1_strain_energy_patch_test_holds_on_left_handed_fixture() {
         // Swap nodes 0 ↔ 6 (opposite-corner pair: both signs differ in all three
-        // coordinates) to produce a left-handed hex with det J < 0 at the centroid.
-        // The generic integrator uses det.abs() so the energy must still equal
-        // U_analytical. Mirrors p1_strain_energy_patch_test_holds_on_left_handed_fixture
+        // coordinates) to produce a left-handed hex with det J < 0 at all 8
+        // Gauss points. The generic integrator uses det.abs() so the energy must
+        // still equal U_analytical. Mirrors p1_strain_energy_patch_test_holds_on_left_handed_fixture
         // in tet.rs.
+        //
+        // Physical volume of the swapped element: for the canonical hex on [−1,1]³
+        // with nodes 0↔6 swapped, det J = −(1 + ηζ + ξζ + ξη)/2 (derived via the
+        // matrix-determinant lemma).  At the 8 Gauss points ±1/√3 this is either
+        // −1 (at (g,g,g) and (−g,−g,−g)) or −1/3 (at the other 6), so
+        // ∫|det J| dV = 2·1 + 6·(1/3) = 4.  The 2×2×2 rule integrates this
+        // degree-2 polynomial exactly, confirming V_physical = 4 (not 8).
         let (a, b, c) = (0.01, -0.005, 0.003);
         let mat = dimensionless_steel_like();
         let d = mat.d_matrix();
@@ -306,7 +314,8 @@ mod tests {
             u[3 * node_idx + 2] = c * x[2];
         }
         let eps_voigt = [a, b, c, 0.0, 0.0, 0.0];
-        let volume = 8.0;
+        // Physical volume of the swapped element = 4 (see comment above).
+        let volume = 4.0;
 
         let (u_k, u_a) = strain_energies(&k, &u, &eps_voigt, &d, volume);
         let scale = u_a.abs().max(1e-300);
