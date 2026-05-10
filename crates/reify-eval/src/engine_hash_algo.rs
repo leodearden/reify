@@ -75,6 +75,10 @@ pub fn compose_engine_version_hash(parts: &[&[u8]]) -> String {
 /// Returned by [`walk_contributor`]. Fields are populated in sorted
 /// (deterministic) order, ready for direct use by `build.rs` and the
 /// equivalence tests.
+// Used by `build.rs` (via `include!()`) and by `#[cfg(test)]` blocks in
+// `persistent_cache.rs`. Neither site is visible to the non-test lib
+// compiler, so we suppress the dead_code lint here.
+#[allow(dead_code)]
 pub struct ContributorWalk {
     /// Interleaved `(path_bytes, file_bytes)` pairs, each stored as a `Vec<u8>`.
     ///
@@ -126,6 +130,10 @@ pub struct ContributorWalk {
 /// Panics with an `ENGINE_VERSION_HASH:` prefix on any I/O error. Silent
 /// skips would let the cache key drift unnoticed if a contributor source
 /// becomes unreadable.
+// Used by `build.rs` (via `include!()`) and by `#[cfg(test)]` blocks in
+// `persistent_cache.rs`. Neither site is visible to the non-test lib
+// compiler, so we suppress the dead_code lint here.
+#[allow(dead_code)]
 pub fn walk_contributor(label: &str, root: &Path) -> ContributorWalk {
     let mut walk = ContributorWalk {
         parts: Vec::new(),
@@ -135,6 +143,10 @@ pub fn walk_contributor(label: &str, root: &Path) -> ContributorWalk {
     walk
 }
 
+// Called only from `walk_contributor` which is itself `#[allow(dead_code)]`;
+// suppress the lint here too so the compiler doesn't complain about the
+// transitively unreachable private function in the non-test lib build.
+#[allow(dead_code)]
 fn walk_recursive(label: &str, root: &Path, path: &Path, walk: &mut ContributorWalk) {
     if path.is_file() {
         walk.rerun_paths.push(path.to_path_buf());
