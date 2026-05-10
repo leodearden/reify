@@ -143,9 +143,16 @@ export function createEngineStore(options?: EngineStoreOptions) {
     setState(produce((s) => { s.autoResolve.iterations.push(iter); }));
   }
 
-  /** Mark the loop as finished; preserve iterations for post-run inspection. */
+  /**
+   * Mark the loop as finished and reset iteration history.
+   *
+   * The panel unmounts when `active` flips to false (App.tsx uses
+   * `<Show when={autoResolve.active}>`), so any preserved iterations would be
+   * unreachable until the next `beginAutoResolveLoop` clears them anyway.
+   * Clearing eagerly avoids holding dead state between runs.
+   */
   function endAutoResolveLoop() {
-    setState('autoResolve', 'active', false);
+    setState('autoResolve', { active: false, iterations: [] });
   }
 
   async function subscribeToEvents(): Promise<() => void> {

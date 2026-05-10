@@ -860,7 +860,7 @@ describe('engineStore autoResolve loop state', () => {
     });
   });
 
-  it('(d) endAutoResolveLoop sets active=false and preserves accumulated iterations', () => {
+  it('(d) endAutoResolveLoop sets active=false and clears iterations', () => {
     createRoot((dispose) => {
       const { state, beginAutoResolveLoop, applyAutoResolveIteration, endAutoResolveLoop } = createEngineStore();
       beginAutoResolveLoop();
@@ -870,8 +870,9 @@ describe('engineStore autoResolve loop state', () => {
 
       endAutoResolveLoop();
       expect(state.autoResolve.active).toBe(false);
-      // iterations are preserved for inspection
-      expect(state.autoResolve.iterations).toHaveLength(2);
+      // iterations are cleared — the panel unmounts on active=false so
+      // preserved data would be unreachable until the next beginAutoResolveLoop
+      expect(state.autoResolve.iterations).toHaveLength(0);
       dispose();
     });
   });
@@ -953,7 +954,7 @@ describe('engineStore autoResolve subscribeToEvents wiring', () => {
     });
   });
 
-  it('(d) auto-resolve-complete callback sets active=false and preserves iterations', async () => {
+  it('(d) auto-resolve-complete callback sets active=false and clears iterations', async () => {
     await createRoot(async (dispose) => {
       let startCb: (() => void) | undefined;
       let iterCb: ((iter: typeof sampleIteration) => void) | undefined;
@@ -977,7 +978,8 @@ describe('engineStore autoResolve subscribeToEvents wiring', () => {
       completeCb!();
 
       expect(store.state.autoResolve.active).toBe(false);
-      expect(store.state.autoResolve.iterations).toHaveLength(1);
+      // iterations cleared — panel unmounts on active=false so data would be unreachable
+      expect(store.state.autoResolve.iterations).toHaveLength(0);
       dispose();
     });
   });

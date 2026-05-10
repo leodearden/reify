@@ -1,4 +1,4 @@
-import { type Component, For, Show } from 'solid-js';
+import { type Component, createMemo, For, Show } from 'solid-js';
 import type { AutoResolveLoopState } from '../stores/engineStore';
 import type { AutoResolveConstraintProgress } from '../types';
 import styles from './AutoResolvePanel.module.css';
@@ -70,10 +70,12 @@ function buildPolylinePoints(
   destY1: number,
   destY2: number,
 ): string {
-  const xMin = Math.min(...xs);
-  const xMax = Math.max(...xs);
-  const yMin = Math.min(...ys);
-  const yMax = Math.max(...ys);
+  // Use reduce instead of spread-into-Math.min/max to avoid the V8 argument-count
+  // limit (~65k entries) that would silently crash for very long auto-resolve loops.
+  const xMin = xs.reduce((m, v) => (v < m ? v : m), Infinity);
+  const xMax = xs.reduce((m, v) => (v > m ? v : m), -Infinity);
+  const yMin = ys.reduce((m, v) => (v < m ? v : m), Infinity);
+  const yMax = ys.reduce((m, v) => (v > m ? v : m), -Infinity);
 
   return xs
     .map((x, i) => {
@@ -104,23 +106,33 @@ export const AutoResolvePanel: Component<AutoResolvePanelProps> = (props) => {
   const chartMetricName = () =>
     props.state.iterations.find((it) => it.driving_metric)?.driving_metric ?? null;
 
-  /** (iteration_number, driving_metric_value) pairs with finite values only. */
-  const chartPoints = (): { x: number; y: number }[] =>
+  /**
+   * (iteration_number, driving_metric_value) pairs with finite values only.
+   * Memoised so that multi-read per render (Show predicate + polyline points)
+   * drives a single filter+map rather than one per read.
+   */
+  const chartPoints = createMemo(() =>
     props.state.iterations
       .filter((it) => it.driving_metric_value !== undefined && Number.isFinite(it.driving_metric_value))
-      .map((it) => ({ x: it.iteration, y: it.driving_metric_value! }));
+      .map((it) => ({ x: it.iteration, y: it.driving_metric_value! }))
+  );
 
-  /** Union of all parameter cell-ids seen across every iteration. */
-  const sparklineCellIds = (): string[] =>
-    Array.from(
+  /**
+   * Per-parameter sparkline data: { cellId, series } memoised across all
+   * iterations. Merges what were previously separate sparklineCellIds() and
+   * sparklineSeries(cellId) calls into a single O(params × iters) sweep.
+   */
+  const sparklineData = createMemo(() => {
+    const cellIds = Array.from(
       new Set(props.state.iterations.flatMap((it) => Object.keys(it.parameters))),
     );
-
-  /** Value series for a single parameter across iterations (skipping missing). */
-  const sparklineSeries = (cellId: string): number[] =>
-    props.state.iterations
-      .filter((it) => cellId in it.parameters)
-      .map((it) => it.parameters[cellId].value);
+    return cellIds.map((cellId) => ({
+      cellId,
+      series: props.state.iterations
+        .filter((it) => cellId in it.parameters)
+        .map((it) => it.parameters[cellId].value),
+    }));
+  });
 
   return (
     <div class={styles.panel} data-testid="auto-resolve-panel">
@@ -180,9 +192,8 @@ export const AutoResolvePanel: Component<AutoResolvePanelProps> = (props) => {
         {/* ── Per-parameter sparklines ────────────────────────────────── */}
         <section class={styles.section}>
           <div class={styles.sectionLabel}>Parameters over time</div>
-          <For each={sparklineCellIds()}>
-            {(cellId) => {
-              const series = sparklineSeries(cellId);
+          <For each={sparklineData()}>
+            {({ cellId, series }) => {
               const hasLine = series.length >= 2;
               // Build points in sparkline SVG coordinate space (SPARK_W × SPARK_H)
               const pts = hasLine

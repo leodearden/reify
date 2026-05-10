@@ -90,6 +90,51 @@ describe('AutoResolvePanel (b) constraint rows with status marker', () => {
     // No data-status markers should be present
     expect(document.querySelector('[data-status]')).toBeNull();
   });
+
+  it('(b.4) target_lower only renders ≥ X unit', () => {
+    // formatTarget branch: only target_lower is set
+    const iterations = [
+      makeIteration(1, {
+        constraints: {
+          min_thickness: {
+            name: 'min_thickness',
+            value: 3.8,
+            unit: 'mm',
+            target_lower: 3.0,
+            satisfied: true,
+          },
+        },
+      }),
+    ];
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+    // Should render ≥ 3mm (lower-bound only branch)
+    expect(screen.getByText(/≥\s*3mm/)).toBeTruthy();
+    // Should NOT render ≤ anywhere for this constraint
+    expect(screen.queryByText(/≤/)).toBeNull();
+  });
+
+  it('(b.5) both bounds present renders X – Y unit', () => {
+    // formatTarget branch: both target_lower and target_upper are set
+    const iterations = [
+      makeIteration(1, {
+        constraints: {
+          displacement: {
+            name: 'displacement',
+            value: 1.2,
+            unit: 'mm',
+            target_lower: 0.5,
+            target_upper: 2.0,
+            satisfied: true,
+          },
+        },
+      }),
+    ];
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+    // Should render the dual-bound format "0.5mm – 2mm"
+    expect(screen.getByText(/0\.5mm\s*–\s*2mm/)).toBeTruthy();
+  });
 });
 
 // ── Test group (a): header and parameter rows ────────────────────────────────

@@ -586,8 +586,25 @@ export async function onAutoResolveStart(
 export async function onAutoResolveIteration(
   callback: (iter: AutoResolveIteration) => void,
 ): Promise<UnlistenFn> {
-  return listen<AutoResolveIteration>('auto-resolve-iteration', (event) => {
-    callback(event.payload);
+  // The backend wire format is defined in a later task. Guard against malformed
+  // payloads so a field mismatch (missing `parameters`, `constraints`, etc.)
+  // logs a warning and drops the event rather than letting a downstream NPE
+  // crash the panel renderer.
+  return listen<unknown>('auto-resolve-iteration', (event) => {
+    const p = event.payload as Record<string, unknown>;
+    if (
+      typeof p !== 'object' ||
+      p === null ||
+      typeof p['iteration'] !== 'number' ||
+      typeof p['parameters'] !== 'object' ||
+      p['parameters'] === null ||
+      typeof p['constraints'] !== 'object' ||
+      p['constraints'] === null
+    ) {
+      console.warn('[auto-resolve-iteration] malformed payload; dropping event', p);
+      return;
+    }
+    callback(p as unknown as AutoResolveIteration);
   });
 }
 
