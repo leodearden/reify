@@ -1788,4 +1788,64 @@ describe('meshManager', () => {
       expect(mockComputeBoundsTree).not.toHaveBeenCalled();
     });
   });
+
+  describe('setDeformation — linear blend', () => {
+    const vertices = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+    const displaced = new Float32Array([0.1, 0, 0, 1.1, 0, 0, 0.1, 1, 0]);
+
+    function setupDeformableMesh() {
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+      const meshData: MeshData = {
+        entity_path: 'A',
+        vertices: vertices.slice(), // copy so mutations don't corrupt the test constant
+        indices: new Uint32Array([0, 1, 2]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        displaced_positions: displaced.slice(),
+      };
+      manager.sync({ A: meshData });
+      vi.clearAllMocks();
+      return { scene, manager };
+    }
+
+    it('(a) setDeformation({warpFactor:1}) sets position.array to displaced_positions and needsUpdate=true', () => {
+      const { manager } = setupDeformableMesh();
+      manager.setDeformation({ warpFactor: 1 });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const posAttr = (mesh.geometry as any).attributes.position;
+      expect(Array.from(posAttr.array as Float32Array)).toEqual(Array.from(displaced));
+      expect(posAttr.needsUpdate).toBe(true);
+    });
+
+    it('(b) setDeformation({warpFactor:10}) extrapolates position.array', () => {
+      const { manager } = setupDeformableMesh();
+      manager.setDeformation({ warpFactor: 10 });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const posAttr = (mesh.geometry as any).attributes.position;
+      // Compute expected via the same float32 reference formula so float32 rounding
+      // is accounted for (e.g. 1 + 10*(1.1_f32 - 1) may not be exactly 2.0 in float64).
+      const expectedW10 = new Float32Array(vertices.length);
+      for (let i = 0; i < vertices.length; i++) {
+        expectedW10[i] = vertices[i] + 10 * (displaced[i] - vertices[i]);
+      }
+      expect(Array.from(posAttr.array as Float32Array)).toEqual(Array.from(expectedW10));
+      // Spot-check the algebraic values are correct (~1.0 and ~2.0 as expected).
+      expect(posAttr.array[0]).toBeCloseTo(1.0, 3); // 0 + 10*(0.1-0)
+      expect(posAttr.array[3]).toBeCloseTo(2.0, 3); // 1 + 10*(1.1-1)
+      expect(posAttr.needsUpdate).toBe(true);
+    });
+
+    it('(c) setDeformation({warpFactor:0}) restores position.array to original vertices', () => {
+      const { manager } = setupDeformableMesh();
+      manager.setDeformation({ warpFactor: 0 });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const posAttr = (mesh.geometry as any).attributes.position;
+      expect(Array.from(posAttr.array as Float32Array)).toEqual(Array.from(vertices));
+      expect(posAttr.needsUpdate).toBe(true);
+    });
+  });
 });
