@@ -416,6 +416,34 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                         _ => Value::Undef,
                     }
                 }
+                // worst_case(mcr, lambda): dispatched here (not in
+                // `reify_stdlib::eval_builtin` → `eval_fea`) because applying
+                // the lambda requires `EvalContext`, mirroring `flat_map` /
+                // `flat_map_pairs` above.
+                //
+                // Tie-break invariant: strict `>` ensures the first-seen
+                // case wins on ties; combined with `BTreeMap` lexicographic
+                // iteration over `Value::String` keys, this delivers
+                // deterministic lex-min tie-break for free — no separate
+                // sort. Mirrors the first-occurrence-wins discipline of
+                // `envelope_reduce` (`crates/reify-stdlib/src/fea.rs`) and
+                // `argmax_argmin_index` (`field_reductions.rs`). Pinned by
+                // the `worst_case_tied_max_returns_lex_smaller_case_name`
+                // smoke test.
+                //
+                // Body extracted into `eval_worst_case_dispatch` to keep
+                // this recursive frame small in debug builds — the
+                // per-iteration `String` and `Option<(String, f64)>` locals
+                // would otherwise sit on every `eval_expr` frame and risk
+                // overflowing the 2 MiB test-thread stack at
+                // `MAX_RECURSION_DEPTH` (cf. the existing
+                // `eval_user_fn_recursion_depth_exceeded` test and the
+                // matching extraction of `eval_quantifier`). See
+                // `eval_worst_case_dispatch` for the full dispatch contract
+                // and silent-Undef discipline.
+                "worst_case" if evaluated_args.len() == 2 => {
+                    eval_worst_case_dispatch(&evaluated_args, ctx)
+                }
                 _ => {
                     // Composed-field call dispatch: a name in a composed lambda
                     // body (e.g. `base(p)` inside `composed { |p| base(p) * 30 }`)
@@ -904,6 +932,111 @@ fn eval_quantifier(
                 Value::Bool(false)
             }
         }
+    }
+}
+
+/// Dispatch `worst_case(mcr, lambda)` — apply `lambda` to each per-case
+/// `ElasticResult` in `mcr.cases`, expect each call to return a `Field`,
+/// collapse via `field_reductions::compute_max`, and return the case name
+/// with the largest scalar.
+///
+/// Extracted from `eval_expr` to keep that recursive function's stack frame
+/// small (the per-iteration `String` and running-best `Option<(String, f64)>`
+/// locals would otherwise sit on every `eval_expr` frame and blow the 2 MiB
+/// test-thread stack at `MAX_RECURSION_DEPTH` levels of recursive user-fn
+/// evaluation — see the `eval_user_fn_recursion_depth_exceeded` test).
+/// Mirrors the same extraction of `eval_quantifier`.
+///
+/// Intercepted in `eval_expr` (rather than in `reify_stdlib::eval_builtin`
+/// → `eval_fea`) because applying the lambda requires `EvalContext` — the
+/// same constraint that places `flat_map` in `eval_expr`. The `eval_fea`
+/// arm for `"worst_case"` is a permanent `Value::Undef` stub that fires
+/// when this dispatch declines (wrong arg shape), preserving the
+/// "recognised name" contract.
+///
+/// Tie-break invariant: strict `>` on the running best ensures the
+/// first-seen finite-max wins on ties. Combined with `BTreeMap`'s
+/// lexicographic iteration over `Value::String` keys, this delivers
+/// deterministic lex-min tie-break for free — no separate sort. Mirrors
+/// the first-occurrence-wins discipline of `argmax_argmin_index` in
+/// `field_reductions.rs` (around line 198) and `envelope_reduce` in
+/// `crates/reify-stdlib/src/fea.rs`.
+///
+/// Convention: silent `Value::Undef` on any shape failure (non-Map first
+/// arg, non-Lambda second arg, missing `"cases"` key, non-Map `cases`
+/// value, non-String case key, lambda result with no finite max). Matches
+/// the silent-Undef discipline of `envelope_reduce` / `case_names` /
+/// `result_for`.
+///
+/// Pinned per guard by the
+/// `worst_case_argument_shape_negatives_return_undef` E2E smoke test
+/// (`crates/reify-eval/tests/multi_load_case_stdlib_smoke.rs`):
+/// - `arity_one` / `arity_three` — wrong-arity calls fall through the
+///   inline dispatch arm (which only fires for `args.len() == 2`) to
+///   `eval_fea`'s permanent `worst_case` Undef stub.
+/// - `no_cases_key` / `cases_not_map` — outer `Map.get("cases")` match
+///   below: missing key or non-Map value returns `Value::Undef`.
+/// - `lambda_non_field` — non-Field lambda result: `compute_max` returns
+///   `Value::Undef`, `as_f64()` returns `None`, the case is skipped via
+///   `_ => continue`; if no case yields a finite max, the function
+///   returns `Value::Undef`.
+fn eval_worst_case_dispatch(args: &[Value], ctx: &EvalContext) -> Value {
+    // Guard: first arg must be a Map (the MultiCaseResult shape). Pinned by
+    // `worst_case_argument_shape_negatives_return_undef`'s `non_map_first`.
+    let outer = match &args[0] {
+        Value::Map(m) => m,
+        _ => return Value::Undef,
+    };
+    // Guard: second arg must be a Lambda. Pinned by
+    // `worst_case_argument_shape_negatives_return_undef`'s `non_lambda_second`.
+    //
+    // `matches!` rather than a `match`-rebinds-`&args[1]` form: the
+    // rebinding shape has bitten similar dispatch sites where the matched
+    // binding sits unused, weakening the type-driven check (adding fields
+    // to `Value::Lambda` would not fail-compile a discard-bind guard). The
+    // explicit `matches!` precondition keeps the intent legible and the
+    // `lambda` borrow appearing only after the guard succeeds.
+    if !matches!(&args[1], Value::Lambda { .. }) {
+        return Value::Undef;
+    }
+    let lambda = &args[1];
+    // Guard: outer Map must carry a `"cases"` key bound to a Map. Pinned by
+    // the `no_cases_key` and `cases_not_map` negatives.
+    let cases = match outer.get(&Value::String("cases".to_string())) {
+        Some(Value::Map(c)) => c,
+        _ => return Value::Undef,
+    };
+    let mut best: Option<(String, f64)> = None;
+    for (case_key, elastic_result) in cases {
+        // Guard: every case key must be a String (BTreeMap iteration is then
+        // lexicographic on the UTF-8 bytes, giving the tie-break invariant).
+        let name = match case_key {
+            Value::String(s) => s.clone(),
+            _ => return Value::Undef,
+        };
+        let field_val = apply_lambda(lambda, std::slice::from_ref(elastic_result), ctx);
+        // Guard: lambda must return a Sampled Field (or a value with a finite
+        // numeric max). `compute_max` returns Undef on non-Field / non-Sampled
+        // / empty-data inputs; `as_f64` then returns None and the case is
+        // skipped. With no case yielding a finite max, `best` stays None and
+        // the function returns Undef below. Pinned by `lambda_non_field`.
+        let max_val = field_reductions::compute_max(&field_val);
+        let max_f = match max_val.as_f64() {
+            Some(f) if f.is_finite() => f,
+            _ => continue,
+        };
+        match &best {
+            None => best = Some((name, max_f)),
+            Some((_, b)) => {
+                if max_f.total_cmp(b).is_gt() {
+                    best = Some((name, max_f));
+                }
+            }
+        }
+    }
+    match best {
+        Some((name, _)) => Value::String(name),
+        None => Value::Undef,
     }
 }
 

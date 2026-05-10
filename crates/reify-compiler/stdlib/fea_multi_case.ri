@@ -164,6 +164,79 @@ structure def LoadCase {
 //     emission is deferred to PRD task #10 (Diagnostic mapping for
 //     multi-case-specific failure modes).
 //
+//   - `envelope_von_mises(mcr : MultiCaseResult) -> Field<Point3, Pressure>`:
+//     per-grid-point envelope of the per-case `stress`-derived von-Mises
+//     stress.  At each grid point P, projects each case's 3×3 stress tensor
+//     `mcr.cases[name].stress` to the scalar von-Mises stress (closed-form
+//     formula in `crates/reify-stdlib/src/analysis.rs`), then takes the max
+//     over cases.  Round-trip property: `envelope_von_mises(mcr)` at P
+//     equals `max over cases of von_mises(mcr.cases[name].stress at P)`.
+//     Per-case stress fields must share identical Sampled grid metadata
+//     (mirrors `linear_combine`'s grid-equality discipline via
+//     `envelope_reduce`).  All shape failures (wrong arity, non-Map first
+//     arg, missing `cases` key, non-Sampled per-case stress field, codomain
+//     not a 3×3 stress tensor, mismatched stride) collapse to `Undef`
+//     (silent-Undef per PRD task #10 deferral).
+//
+//   - `envelope_max_principal(mcr : MultiCaseResult) -> Field<Point3, Pressure>`:
+//     per-grid-point envelope of the largest principal stress of each case's
+//     `stress` field.  At each grid point P, computes the eigenvalues of
+//     each case's symmetric 3×3 stress tensor via the closed-form solver in
+//     `crates/reify-stdlib/src/analysis.rs::compute_eigenvalues_3x3`,
+//     selects the largest (sorted ascending — `eigs[2]`), then takes the
+//     max over cases.  Round-trip property: `envelope_max_principal(mcr)`
+//     at P equals `max over cases of max_eigenvalue(mcr.cases[name].stress
+//     at P)`.  Same Sampled-grid-metadata discipline and silent-Undef
+//     contract as `envelope_von_mises`.
+//
+//   - `envelope_displacement_magnitude(mcr : MultiCaseResult) -> Field<Point3, Length>`:
+//     per-grid-point envelope of the per-case `displacement` vector
+//     magnitude.  At each grid point P, projects each case's 3-vector
+//     `mcr.cases[name].displacement` to the scalar magnitude
+//     `sqrt(d.x² + d.y² + d.z²)`, then takes the max over cases.
+//     Round-trip property: `envelope_displacement_magnitude(mcr)` at P
+//     equals `max over cases of |mcr.cases[name].displacement at P|`.
+//     Per-case displacement fields must share identical Sampled grid
+//     metadata; codomain must be a 3-vector with `Length` quantity.
+//     Silent-Undef on shape failures.
+//
+//   - `worst_case(mcr : MultiCaseResult, scalar_fn : (ElasticResult) -> Field<Point3, T>) -> String`:
+//     returns the case name whose `scalar_fn`-derived field has the
+//     largest max value.  Lambda-aware accessor: `scalar_fn` is applied
+//     per case, the resulting Field is collapsed via `compute_max`, and
+//     the case with the largest scalar wins.  Tie-break invariant: strict
+//     `>` on the running best ensures the first-seen finite-max wins on
+//     ties; combined with `BTreeMap`'s lexicographic iteration over
+//     `Value::String` keys, this delivers deterministic lex-min tie-break
+//     for free — no separate sort.  Mirrors the first-occurrence-wins
+//     discipline of `argmax_argmin_index` and `envelope_reduce`.
+//
+//     Dispatch site differs from the deterministic accessors above:
+//     `worst_case` is intercepted in
+//     `crates/reify-expr/src/lib.rs::eval_expr` (alongside `flat_map`)
+//     because applying the user-supplied `Value::Lambda` requires
+//     `EvalContext`, which `eval_fea` does not have.  The `eval_fea`
+//     `worst_case` arm is a permanent `Value::Undef` stub that fires
+//     when the inline-arm declines (wrong arity), preserving the
+//     "recognised name" contract.  All shape failures (non-Map first
+//     arg, non-Lambda second arg, missing `cases` key, non-Map cases
+//     value, lambda result with no finite max) collapse to `Undef`
+//     (silent-Undef per PRD task #10 deferral).
+//
+//     Lambda-syntax caveat (task #3007): the documented signature accepts
+//     a lambda whose parameter is `ElasticResult` (a Map-shaped struct),
+//     but the current Reify lambda parameter-type syntax only accepts
+//     bare named types resolvable by `resolve_type_name` (Bool / Int /
+//     Real / String / named dimensions), and untyped lambda params
+//     default to `Type::Real` — so `|e| e["displacement"]` is rejected by
+//     the type checker ("cannot index into non-collection type 'Real'").
+//     Until richer lambda parameter-type syntax lands (orthogonal work),
+//     callers must bind each per-case value directly to the desired
+//     scalar Field and pass the identity lambda `|f| f`.  See the
+//     `WORST_CASE_SOURCE` docstring in
+//     `crates/reify-eval/tests/multi_load_case_stdlib_smoke.rs` for the
+//     full rationale and the worked-example identity-lambda fixture.
+//
 // Field rationale:
 //   `cases` — Map from case name to `ElasticResult`. Keys match the
 //             `LoadCase.name` values passed to `solve_load_cases`.

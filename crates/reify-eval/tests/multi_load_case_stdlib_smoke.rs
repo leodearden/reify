@@ -189,6 +189,259 @@ fn multi_load_case_stdlib_smoke_e2e() {
     );
 }
 
+/// Reify source: a `WorstCaseFixture` structure that exercises `worst_case`
+/// (Lambda-aware accessor) through the full compile+eval pipeline.
+///
+/// Each per-case value is bound directly to a Sampled `Length -> Real` field
+/// (per the field-def pattern in `field_eval_tests.rs`). The lambda body is
+/// the identity (`|f| f`) — at runtime the dispatch arm passes each per-case
+/// `Value::Field` to the lambda, which returns it unchanged; the dispatch arm
+/// then collapses each Field via `field_reductions::compute_max` and returns
+/// the case name with the largest scalar.
+///
+/// # Why identity-lambda (and not `|e| e["displacement"]`)?
+///
+/// The natural shape for a real worst_case call is
+/// `worst_case(mcr, |e| e["displacement"])` where each case is an
+/// `ElasticResult`-shaped Map. However, untyped lambda params default to
+/// `Type::Real` (per `compile_expr_guarded`'s Lambda arm at expr.rs:2092),
+/// and `IndexAccess` on `Real` is rejected by the type checker
+/// ("cannot index into non-collection type 'Real'"). The Reify lambda
+/// param-type syntax accepts only bare named types resolvable by
+/// `resolve_type_name` (Bool / Int / Real / String / named dimensions),
+/// so `|e: Map<String, Field<...>>|` cannot currently be expressed.
+///
+/// The identity-lambda variant pins the dispatch-arm contract end-to-end
+/// (lambda application → `compute_max` per case → strict `>` running-best
+/// → BTreeMap-lex iteration order) without requiring a richer lambda
+/// param-type syntax. The full `e["displacement"]` form will become
+/// expressible when richer lambda parameter types land (orthogonal work).
+///
+/// Engineered max values: operating→50, overload→200, transport→100.
+/// Expected winner: `"overload"`.
+///
+/// Bindings:
+///   `cases`  = `map{"operating" => disp_op, "overload" => disp_ov, "transport" => disp_tr}`
+///   `mcr`    = `map{"cases" => cases}`
+///   `worst`  = `worst_case(mcr, |f| f)` → `"overload"`
+const WORST_CASE_SOURCE: &str = r#"
+field def disp_op : Length -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [10.0, 20.0, 50.0] } }
+field def disp_ov : Length -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [100.0, 50.0, 200.0] } }
+field def disp_tr : Length -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [30.0, 100.0, 60.0] } }
+
+structure def WorstCaseFixture {
+    let cases = map{"operating" => disp_op, "overload" => disp_ov, "transport" => disp_tr}
+    let mcr = map{"cases" => cases}
+    let worst = worst_case(mcr, |f| f)
+}
+"#;
+
+/// Look up a `WorstCaseFixture` binding from an eval result map by member name.
+fn get_worst_case_value<'a>(values: &'a ValueMap, name: &str) -> &'a Value {
+    let id = ValueCellId::new("WorstCaseFixture", name);
+    values
+        .get(&id)
+        .unwrap_or_else(|| panic!("WorstCaseFixture.{name} not found in eval result"))
+}
+
+/// Smoke test: `worst_case(mcr, |f| f)` returns the case name with the
+/// largest per-case displacement-field max (engineered: operating=50,
+/// overload=200, transport=100 → winner = "overload").
+///
+/// The fixture binds each per-case value directly to a Sampled Field
+/// (rather than to an `ElasticResult`-shaped Map), so the identity lambda
+/// `|f| f` exercises the full dispatch contract — see
+/// `WORST_CASE_SOURCE`'s docstring for why the natural shape
+/// `worst_case(mcr, |e| e["displacement"])` is not yet expressible from
+/// Reify source.
+///
+/// Pins the v0.3.x `worst_case` Lambda dispatch arm (in `reify-expr/src/lib.rs`,
+/// modeled on `flat_map`) end-to-end through compile + eval. This test fails
+/// until the dispatch arm is added — the call falls through `eval_builtin` →
+/// `eval_fea` → the `worst_case` Undef stub.
+#[test]
+fn worst_case_three_case_returns_dominant_case_name() {
+    let compiled = parse_and_compile_with_stdlib(WORST_CASE_SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let eval_errors = collect_errors(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "eval should produce no Error-severity diagnostics, got: {eval_errors:?}"
+    );
+
+    let worst = get_worst_case_value(&result.values, "worst");
+    assert_eq!(
+        worst,
+        &Value::String("overload".to_string()),
+        "worst_case should return \"overload\" (max=200, dominant over operating=50 and transport=100), \
+         got: {worst:?}"
+    );
+}
+
+/// Reify source: a `WorstCaseTieFixture` structure that exercises the
+/// tie-break invariant of `worst_case` — when two or more cases share the
+/// largest max, the lexicographically smallest case name must win.
+///
+/// Engineered: alpha and beta both have max 100; gamma has max 50.
+/// Expected winner: `"alpha"` (lex-smaller of the two tied maxes).
+///
+/// Pins the strict-`>` running-best comparator combined with `BTreeMap`'s
+/// lexicographic iteration over `Value::String` keys. A regression to `>=`
+/// (or to a non-deterministic iteration order) would let `"beta"` win
+/// instead. Mirrors the first-occurrence-wins discipline of
+/// `argmax_argmin_index` (`field_reductions.rs:198`) and `envelope_reduce`
+/// (`fea.rs`). See `eval_worst_case_dispatch` for the dispatch contract.
+///
+/// Uses the identity-lambda variant (`|f| f`) for the same reason as
+/// `worst_case_three_case_returns_dominant_case_name` — see that test's
+/// docstring.
+///
+/// Bindings:
+///   `cases`  = `map{"alpha" => disp_alpha, "beta" => disp_beta, "gamma" => disp_gamma}`
+///   `mcr`    = `map{"cases" => cases}`
+///   `winner` = `worst_case(mcr, |f| f)` → `"alpha"`
+const WORST_CASE_TIE_SOURCE: &str = r#"
+field def disp_alpha : Length -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [10.0, 20.0, 100.0] } }
+field def disp_beta  : Length -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [50.0, 100.0, 80.0] } }
+field def disp_gamma : Length -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [10.0, 30.0, 50.0] } }
+
+structure def WorstCaseTieFixture {
+    let cases = map{"alpha" => disp_alpha, "beta" => disp_beta, "gamma" => disp_gamma}
+    let mcr = map{"cases" => cases}
+    let winner = worst_case(mcr, |f| f)
+}
+"#;
+
+/// Look up a `WorstCaseTieFixture` binding from an eval result map by member
+/// name.
+fn get_worst_case_tie_value<'a>(values: &'a ValueMap, name: &str) -> &'a Value {
+    let id = ValueCellId::new("WorstCaseTieFixture", name);
+    values
+        .get(&id)
+        .unwrap_or_else(|| panic!("WorstCaseTieFixture.{name} not found in eval result"))
+}
+
+/// Smoke test: when two or more cases share the largest per-case max,
+/// `worst_case` returns the lexicographically smallest case name (engineered:
+/// alpha=100, beta=100, gamma=50 → winner = "alpha").
+///
+/// Pins the strict-`>` + BTreeMap-lex iteration tie-break invariant of
+/// `eval_worst_case_dispatch` end-to-end through compile + eval. A regression
+/// to `>=` (or to a non-deterministic iteration order) would let `"beta"` win
+/// instead.
+#[test]
+fn worst_case_tied_max_returns_lex_smaller_case_name() {
+    let compiled = parse_and_compile_with_stdlib(WORST_CASE_TIE_SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let eval_errors = collect_errors(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "eval should produce no Error-severity diagnostics, got: {eval_errors:?}"
+    );
+
+    let winner = get_worst_case_tie_value(&result.values, "winner");
+    assert_eq!(
+        winner,
+        &Value::String("alpha".to_string()),
+        "worst_case should return \"alpha\" (lex-min of the two tied maxes; alpha and beta both have max=100, gamma=50), \
+         got: {winner:?}"
+    );
+}
+
+/// Reify source: a `WorstCaseNegativesFixture` structure that exercises the
+/// silent-Undef discipline of `worst_case` across every shape-failure path.
+///
+/// Each binding is engineered to trip a specific guard in
+/// `eval_worst_case_dispatch` (or its fall-through to the `eval_fea`
+/// `worst_case` Undef stub), and is asserted to evaluate to
+/// `Value::Undef` by `worst_case_argument_shape_negatives_return_undef`.
+///
+/// Pinned guards (per [`eval_worst_case_dispatch`] and the fall-through to
+/// the `worst_case` arm in `crates/reify-stdlib/src/fea.rs::eval_fea`):
+///
+/// - **wrong arity (1, 3)** — the `evaluated_args.len() == 2` guard in the
+///   inline dispatch arm declines, falling through to
+///   `reify_stdlib::eval_builtin` → `eval_fea` → permanent Undef stub.
+/// - **non-Map first arg** — `match &args[0] { Value::Map(m) => m, _ =>
+///   return Value::Undef }` in `eval_worst_case_dispatch`. Pinned by
+///   `non_map_first`.
+/// - **non-Lambda second arg** — `match &args[1] { Value::Lambda { .. } =>
+///   …, _ => return Value::Undef }`. Pinned by `non_lambda_second`.
+/// - **Map without `"cases"` key** — `outer.get(&Value::String("cases"))`
+///   yields `None`, hits `_ => return Value::Undef`.
+/// - **`"cases"` value not a Map** — same `outer.get` match arm requires
+///   `Some(Value::Map(c))`; non-Map returns Undef.
+/// - **lambda returns non-Field** — `field_reductions::compute_max` returns
+///   Undef on non-Field input; `as_f64()` returns None; the case is skipped
+///   via `_ => continue`. With ALL cases skipped, `best` is None and the
+///   dispatch arm returns `Value::Undef`.
+const WORST_CASE_NEGATIVES_SOURCE: &str = r#"
+field def disp_neg : Length -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [10.0, 20.0, 50.0] } }
+
+structure def WorstCaseNegativesFixture {
+    let cases = map{"a" => disp_neg}
+    let mcr = map{"cases" => cases}
+
+    let arity_one         = worst_case(mcr)
+    let arity_three       = worst_case(mcr, |f| f, |f| f)
+    let non_map_first     = worst_case(42, |f| f)
+    let non_lambda_second = worst_case(mcr, 42)
+    let no_cases_key      = worst_case(map{"foo" => 1}, |f| f)
+    let cases_not_map     = worst_case(map{"cases" => 42}, |f| f)
+    let lambda_non_field  = worst_case(mcr, |f| 42)
+}
+"#;
+
+/// Look up a `WorstCaseNegativesFixture` binding from an eval result map by
+/// member name.
+fn get_worst_case_negative_value<'a>(values: &'a ValueMap, name: &str) -> &'a Value {
+    let id = ValueCellId::new("WorstCaseNegativesFixture", name);
+    values
+        .get(&id)
+        .unwrap_or_else(|| panic!("WorstCaseNegativesFixture.{name} not found in eval result"))
+}
+
+/// Negative-path smoke test: every `worst_case` shape-failure path collapses
+/// to `Value::Undef` per the silent-Undef discipline shared with
+/// `envelope_reduce` / `case_names` / `result_for`.
+///
+/// Pins the guards in `eval_worst_case_dispatch` (and its fall-through to the
+/// `eval_fea` Undef stub for wrong-arity calls). See the
+/// `WORST_CASE_NEGATIVES_SOURCE` docstring for the per-binding rationale.
+#[test]
+fn worst_case_argument_shape_negatives_return_undef() {
+    let compiled = parse_and_compile_with_stdlib(WORST_CASE_NEGATIVES_SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let eval_errors = collect_errors(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "eval should produce no Error-severity diagnostics, got: {eval_errors:?}"
+    );
+
+    for binding in [
+        "arity_one",
+        "arity_three",
+        "non_map_first",
+        "non_lambda_second",
+        "no_cases_key",
+        "cases_not_map",
+        "lambda_non_field",
+    ] {
+        let v = get_worst_case_negative_value(&result.values, binding);
+        assert!(
+            v.is_undef(),
+            "WorstCaseNegativesFixture.{binding} should be Undef per worst_case silent-Undef discipline, \
+             got: {v:?}"
+        );
+    }
+}
+
 /// Stage-2 readiness probe: verify that the `MultiCaseResult(...)` and
 /// `LoadCase(...)` struct constructors produce the correct `Value::Map` shape,
 /// and that the accessors flowing from `MultiCaseResult` work end-to-end, once

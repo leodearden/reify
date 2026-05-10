@@ -19,7 +19,7 @@ pub(crate) fn eval_analysis(name: &str, args: &[Value]) -> Option<Value> {
     })
 }
 
-/// Compute von Mises equivalent stress from a 3×3 stress tensor.
+/// Compute von Mises equivalent stress for a 3×3 row-major stress window.
 ///
 /// Formula: σ_vm = √(0.5·((σ_xx−σ_yy)²+(σ_yy−σ_zz)²+(σ_zz−σ_xx)²+6·(σ_xy²+σ_yz²+σ_xz²)))
 ///
@@ -27,6 +27,47 @@ pub(crate) fn eval_analysis(name: &str, args: &[Value]) -> Option<Value> {
 /// Row-major flat layout: d[0]=σ_xx, d[1]=σ_xy, d[2]=σ_xz,
 ///                         d[3]=σ_yx, d[4]=σ_yy, d[5]=σ_yz,
 ///                         d[6]=σ_zx, d[7]=σ_zy, d[8]=σ_zz
+///
+/// `pub(crate)` so the formula has a single home — both the
+/// `Value::Tensor`-shaped `von_mises` builtin (below) and the SampledField
+/// hot-path projection in `crates/reify-stdlib/src/fea.rs` route through
+/// this kernel. Mirrors the `pub(crate)` promotion of
+/// `compute_eigenvalues_3x3` for the same cross-module reuse pattern.
+///
+/// Window must be at least 9 floats long; only `d[0..9]` is read.
+pub(crate) fn compute_von_mises_3x3(d: &[f64]) -> f64 {
+    debug_assert!(
+        d.len() >= 9,
+        "compute_von_mises_3x3 requires at least 9 elements, got {}",
+        d.len()
+    );
+    debug_assert!(
+        {
+            let tol = |a: f64, b: f64| (a - b).abs() <= 1e-10 * (1.0 + a.abs().max(b.abs()));
+            tol(d[1], d[3]) && tol(d[2], d[6]) && tol(d[5], d[7])
+        },
+        "compute_von_mises_3x3: input matrix is not symmetric"
+    );
+
+    let sxx = d[0];
+    let syy = d[4];
+    let szz = d[8];
+    let sxy = d[1];
+    let syz = d[5];
+    let sxz = d[2];
+
+    (0.5
+        * ((sxx - syy).powi(2)
+            + (syy - szz).powi(2)
+            + (szz - sxx).powi(2)
+            + 6.0 * (sxy.powi(2) + syz.powi(2) + sxz.powi(2))))
+    .sqrt()
+}
+
+/// Compute von Mises equivalent stress from a 3×3 stress tensor `Value::Tensor`.
+///
+/// Wraps `compute_von_mises_3x3` for the dynamic-Value entry point used by
+/// the `eval_builtin("von_mises", ...)` dispatch path.
 fn von_mises(args: &[Value]) -> Value {
     unary(args, |tensor| {
         let (nrows, ncols, d, dim) = match matrix_components_f64(tensor) {
@@ -35,27 +76,7 @@ fn von_mises(args: &[Value]) -> Value {
         };
         let _ = (nrows, ncols); // used only for the 3×3 guard above
 
-        debug_assert!(
-            {
-                let tol = |a: f64, b: f64| (a - b).abs() <= 1e-10 * (1.0 + a.abs().max(b.abs()));
-                tol(d[1], d[3]) && tol(d[2], d[6]) && tol(d[5], d[7])
-            },
-            "von_mises: input matrix is not symmetric"
-        );
-
-        let sxx = d[0];
-        let syy = d[4];
-        let szz = d[8];
-        let sxy = d[1];
-        let syz = d[5];
-        let sxz = d[2];
-
-        let vm = (0.5
-            * ((sxx - syy).powi(2)
-                + (syy - szz).powi(2)
-                + (szz - sxx).powi(2)
-                + 6.0 * (sxy.powi(2) + syz.powi(2) + sxz.powi(2))))
-        .sqrt();
+        let vm = compute_von_mises_3x3(&d);
 
         sanitize_value(Value::from_real_scalar(vm, dim))
     })
@@ -68,7 +89,12 @@ fn von_mises(args: &[Value]) -> Value {
 /// constraint (trace = λ₁ + λ₂ + λ₃), which avoids precision loss at repeated roots.
 ///
 /// Returns `Some([λ₁, λ₂, λ₃])` sorted ascending.
-fn compute_eigenvalues_3x3(d: &[f64]) -> Option<[f64; 3]> {
+///
+/// `pub(crate)` for cross-module reuse from
+/// `crates/reify-stdlib/src/fea.rs::envelope_max_principal` — the
+/// per-grid-point projection inlines this call on each 9-float row-major
+/// stress window and selects `eigs[2]` (the largest principal stress).
+pub(crate) fn compute_eigenvalues_3x3(d: &[f64]) -> Option<[f64; 3]> {
     debug_assert!(
         d.len() >= 9,
         "compute_eigenvalues_3x3 requires at least 9 elements, got {}",

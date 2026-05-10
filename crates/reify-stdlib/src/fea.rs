@@ -43,6 +43,17 @@ pub(crate) fn eval_fea(name: &str, args: &[Value]) -> Option<Value> {
         "case_names" => case_names(args),
         "result_for" => result_for(args),
         "linear_combine" => linear_combine(args),
+        "envelope_von_mises" => envelope_von_mises(args),
+        "envelope_max_principal" => envelope_max_principal(args),
+        "envelope_displacement_magnitude" => envelope_displacement_magnitude(args),
+        // `worst_case` real implementation lives in
+        // `crates/reify-expr/src/lib.rs` (Lambda-aware, requires `EvalContext`).
+        // The arm here is a permanent stub returning `Value::Undef` — fired
+        // only when the lib.rs dispatch declines (e.g., wrong arg shape).
+        // Preserves the "recognised name" contract for direct `eval_builtin`
+        // callers; mirrors the dual-arm pattern of `von_mises`'s lib.rs
+        // Field-arg arm coexisting with `eval_analysis`'s tensor-arg arm.
+        "worst_case" => Value::Undef,
         _ => return None,
     })
 }
@@ -292,6 +303,361 @@ fn linear_combine(args: &[Value]) -> Value {
     result_map.insert(Value::String("iterations".to_string()), Value::Undef);
 
     Value::Map(result_map)
+}
+
+/// Compute von Mises equivalent stress per grid point for a 3×3 row-major
+/// stress window. Thin wrapper around
+/// `crate::analysis::compute_von_mises_3x3` — kept as a local symbol so the
+/// call sites in `TensorProjection::apply` stay self-documenting (they
+/// project a stress window per grid point on the hot path) without
+/// duplicating the closed-form formula.
+///
+/// `compute_von_mises_3x3` is the single source of truth for the von Mises
+/// closed-form formula; routing through it (rather than the eager
+/// `eval_builtin("von_mises", ...)` dispatch path that wraps `Value::Tensor`)
+/// avoids the per-grid-point Value wrap/unwrap cost on the SampledField.data
+/// hot path.
+///
+/// Input layout: d[0]=σ_xx, d[1]=σ_xy, d[2]=σ_xz,
+///               d[3]=σ_yx, d[4]=σ_yy, d[5]=σ_yz,
+///               d[6]=σ_zx, d[7]=σ_zy, d[8]=σ_zz
+fn apply_von_mises_to_3x3_window(d: &[f64]) -> f64 {
+    crate::analysis::compute_von_mises_3x3(d)
+}
+
+/// Per-grid envelope of von Mises stress across cases.
+///
+/// # Input shape
+///
+/// `args == [MultiCaseResult-shaped Map]` — `Value::Map { "cases" ->
+/// Value::Map<Value::String, ElasticResult-Map> }`. Each per-case
+/// ElasticResult Map must have a `stress` field bound to a Sampled
+/// `Value::Field` whose codomain is a 3×3 tensor (`Type::Matrix { m: 3, n: 3, .. }`
+/// or `Type::Tensor { rank: 2, n: 3, .. }`). The codomain quantity (e.g.
+/// `Pressure`) is propagated unchanged to the result's scalar codomain.
+///
+/// # Output
+///
+/// `Value::Field { source: Sampled, codomain_type: <quantity>, .. }` whose
+/// `data[i]` equals `max over cases of vm(stress[case].data[i*9..i*9+9])`.
+/// Domain and grid metadata propagate unchanged from the per-case Sampled
+/// fields (which `envelope_reduce` validates for equality).
+///
+/// # Failure modes (silent-Undef per PRD task #10 deferral)
+///
+/// - arity != 1
+/// - `args[0]` is not a valid `MultiCaseResult` shape
+/// - empty cases Map (delegated to `envelope_reduce`'s empty guard)
+/// - any case ElasticResult is not `Value::Map`
+/// - any case ElasticResult is missing the `stress` key
+/// - any case stress field is not Sampled (Analytical / Composed / derived)
+/// - any case stress field's codomain is not 3×3 tensor-shaped
+/// - any case stress field's `data.len()` != grid_count * 9 (stride violation)
+/// - per-case grid mismatch (delegated to `envelope_reduce`'s
+///   `metadata_matches` enforcement)
+fn envelope_von_mises(args: &[Value]) -> Value {
+    envelope_tensor_projection(args, "stress", TensorProjection::VonMises)
+}
+
+/// Per-grid envelope of the largest principal stress across cases.
+///
+/// Same input/output shape as `envelope_von_mises`, but the per-grid scalar
+/// projection is the largest eigenvalue of the 3×3 symmetric stress tensor
+/// (computed via the closed-form `analysis::compute_eigenvalues_3x3`, which
+/// returns eigenvalues sorted ascending — `eigs[2]` is the maximum).
+///
+/// Same failure modes as `envelope_von_mises`: silent-Undef on any shape
+/// mismatch, missing field, wrong codomain, stride violation, or per-case
+/// grid mismatch (delegated to `envelope_reduce`'s `metadata_matches`).
+fn envelope_max_principal(args: &[Value]) -> Value {
+    envelope_tensor_projection(args, "stress", TensorProjection::MaxPrincipal)
+}
+
+/// Per-grid envelope of the Euclidean magnitude of the displacement vector
+/// across cases.
+///
+/// # Input shape
+///
+/// `args == [MultiCaseResult-shaped Map]` — `Value::Map { "cases" ->
+/// Value::Map<Value::String, ElasticResult-Map> }`. Each per-case
+/// ElasticResult Map must have a `displacement` field bound to a Sampled
+/// `Value::Field` whose codomain is a 3-vector (`Type::Vector { n: 3, .. }`
+/// or `Type::Tensor { rank: 1, n: 3, .. }`). The codomain quantity (e.g.
+/// `Length`) is propagated unchanged to the result's scalar codomain —
+/// magnitude does not introduce or strip dimensions.
+///
+/// # Output
+///
+/// `Value::Field { source: Sampled, codomain_type: <quantity>, .. }` whose
+/// `data[i]` equals `max over cases of |displacement[case].data[i*3..i*3+3]|`,
+/// where `|·|` is the Euclidean norm `sqrt(x² + y² + z²)`. Domain and grid
+/// metadata propagate unchanged from the per-case Sampled fields (which
+/// `envelope_reduce` validates for equality).
+///
+/// # Failure modes (silent-Undef per PRD task #10 deferral)
+///
+/// - arity != 1
+/// - `args[0]` is not a valid `MultiCaseResult` shape
+/// - empty cases Map (delegated to `envelope_reduce`'s empty guard)
+/// - any case ElasticResult is not `Value::Map`
+/// - any case ElasticResult is missing the `displacement` key
+/// - any case displacement field is not Sampled (Analytical / Composed / derived)
+/// - any case displacement field's codomain is not 3-vector-shaped
+/// - any case displacement field's `data.len()` != grid_count * 3 (stride violation)
+/// - per-case grid mismatch (delegated to `envelope_reduce`'s
+///   `metadata_matches` enforcement)
+fn envelope_displacement_magnitude(args: &[Value]) -> Value {
+    envelope_tensor_projection(args, "displacement", TensorProjection::Magnitude)
+}
+
+/// Codomain shape for per-case Field validation in `envelope_tensor_projection`.
+#[derive(Clone, Copy)]
+enum TensorShape {
+    /// 3×3 row-major tensor: `Type::Matrix { m: 3, n: 3, .. }` or
+    /// `Type::Tensor { rank: 2, n: 3, .. }`. Stride 9 on the data buffer.
+    Matrix3x3,
+    /// 3-component vector: `Type::Vector { n: 3, .. }` or
+    /// `Type::Tensor { rank: 1, n: 3, .. }`. Stride 3 on the data buffer.
+    /// Used by `envelope_displacement_magnitude`.
+    Vector3,
+}
+
+impl TensorShape {
+    fn stride(self) -> usize {
+        match self {
+            TensorShape::Matrix3x3 => 9,
+            TensorShape::Vector3 => 3,
+        }
+    }
+
+    /// Returns `Some(quantity)` when `codomain` matches this tensor shape
+    /// (extracts the scalar quantity for the result codomain), `None`
+    /// otherwise. The result scalar codomain inherits the quantity (e.g.
+    /// `Pressure` from a `Matrix<3,3,Pressure>` becomes the result's
+    /// `Type::Scalar { dimension: PRESSURE }`; `Length` from a
+    /// `Vector<3,Length>` becomes the result's
+    /// `Type::Scalar { dimension: LENGTH }`).
+    fn extract_quantity(self, codomain: &Type) -> Option<Type> {
+        match (self, codomain) {
+            (TensorShape::Matrix3x3, Type::Matrix { m: 3, n: 3, quantity }) => {
+                Some((**quantity).clone())
+            }
+            (TensorShape::Matrix3x3, Type::Tensor { rank: 2, n: 3, quantity }) => {
+                Some((**quantity).clone())
+            }
+            (TensorShape::Vector3, Type::Vector { n: 3, quantity }) => {
+                Some((**quantity).clone())
+            }
+            (TensorShape::Vector3, Type::Tensor { rank: 1, n: 3, quantity }) => {
+                Some((**quantity).clone())
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Per-grid scalar projection applied per-case before envelope_reduce.
+#[derive(Clone, Copy)]
+enum TensorProjection {
+    /// von Mises equivalent stress on a 3×3 row-major window.
+    VonMises,
+    /// Largest principal stress (`eigs[2]` of the 3×3 symmetric tensor,
+    /// where eigenvalues are sorted ascending). Routes through
+    /// `crate::analysis::compute_eigenvalues_3x3` (`pub(crate)`-promoted
+    /// for this cross-module reuse).
+    MaxPrincipal,
+    /// Euclidean magnitude of a 3-vector window: `sqrt(x² + y² + z²)`.
+    /// Used by `envelope_displacement_magnitude`. The output preserves
+    /// the input quantity unchanged (Length → Length); magnitude does
+    /// not introduce or strip dimensions.
+    Magnitude,
+}
+
+impl TensorProjection {
+    fn shape(self) -> TensorShape {
+        match self {
+            TensorProjection::VonMises | TensorProjection::MaxPrincipal => TensorShape::Matrix3x3,
+            TensorProjection::Magnitude => TensorShape::Vector3,
+        }
+    }
+
+    /// Apply the per-window scalar projection. Window must be at least
+    /// `self.shape().stride()` floats long; only the first stride elements
+    /// are read.
+    fn apply(self, window: &[f64]) -> f64 {
+        match self {
+            TensorProjection::VonMises => apply_von_mises_to_3x3_window(window),
+            TensorProjection::MaxPrincipal => {
+                match crate::analysis::compute_eigenvalues_3x3(window) {
+                    // eigs sorted ascending; eigs[2] is the largest.
+                    Some(eigs) => eigs[2],
+                    None => f64::NAN,
+                }
+            }
+            TensorProjection::Magnitude => {
+                // Stride-3 Vector3 magnitude. Closed-form sqrt of squared
+                // components — independent of the analysis module since
+                // there's no shared scalar formula to factor through.
+                (window[0] * window[0] + window[1] * window[1] + window[2] * window[2]).sqrt()
+            }
+        }
+    }
+}
+
+/// Shared body for `envelope_von_mises` / `envelope_max_principal` /
+/// `envelope_displacement_magnitude`: validate the MultiCaseResult shape,
+/// extract the per-case Sampled tensor/vector field, apply a per-grid-point
+/// scalar projection, then dispatch to `envelope_reduce` for the across-case
+/// max reduction.
+///
+/// `field_name` is the per-case ElasticResult key to read (`"stress"` or
+/// `"displacement"`). `projection` controls the codomain shape (matrix vs
+/// vector), the data stride, and the per-window scalar projection function.
+///
+/// # Two-pass layout
+///
+/// Per-case scalar projection is materialised into a fresh `Vec<f64>` of
+/// length `grid_count` and wrapped in a per-case Sampled `Value::Field`
+/// before `envelope_reduce` runs the across-case max. This is two passes
+/// over the data and N intermediate `Vec<f64>` allocations for an N-case
+/// fixture — chosen deliberately over a streaming reduction so:
+/// - `envelope_reduce`'s grid-equality check (`metadata_matches`) runs on
+///   already-projected scalar fields with stride-1 codomain, matching the
+///   pre-existing reduction's invariants without bespoke argument shapes;
+/// - the per-grid `total_cmp` + first-finite-init + NaN-skip discipline
+///   lives in exactly one place (`envelope_reduce`) rather than being
+///   reimplemented per projection;
+/// - failure modes (grid mismatch, missing axis, etc.) report through the
+///   shared `envelope_reduce` path with consistent silent-Undef semantics.
+///
+/// If/when FEA grids reach sizes where the intermediate allocations matter
+/// (\~1e6 grid points · \~10 cases · \~1 float = \~80 MB), folding the
+/// projection into `envelope_reduce`'s per-index loop via a closure becomes
+/// the right trade-off; until then, the two-pass shape keeps the reduction
+/// invariants centralised.
+fn envelope_tensor_projection(
+    args: &[Value],
+    field_name: &str,
+    projection: TensorProjection,
+) -> Value {
+    if args.len() != 1 {
+        return Value::Undef;
+    }
+    let cases_map = match extract_cases_map(&args[0]) {
+        Some(m) => m,
+        None => return Value::Undef,
+    };
+    if cases_map.is_empty() {
+        return Value::Undef;
+    }
+
+    let shape = projection.shape();
+    let stride = shape.stride();
+
+    // Build per-case Map<String, Value::Field> of projected scalar fields.
+    let mut projected_map: BTreeMap<Value, Value> = BTreeMap::new();
+    for (case_name, case_val) in cases_map {
+        // Per-case Sampled-field extraction: validates ElasticResult Map
+        // shape, field-name lookup, Sampled-source contract, SampledField-
+        // lambda invariant, and the stride contract (data.len() == grid_count
+        // * expected_stride). Codomain shape is intentionally NOT checked
+        // here — the projection-specific extract_quantity check (`Matrix3x3`
+        // vs `Vector3`) lives below so this helper stays projection-agnostic
+        // and can serve future per-case-Sampled-field accessors.
+        let (dom, cod, sf) = match extract_per_case_sampled_field(case_val, field_name, stride) {
+            Some(t) => t,
+            None => return Value::Undef,
+        };
+        // Codomain must match the projection's expected tensor shape.
+        let scalar_quantity = match shape.extract_quantity(cod) {
+            Some(q) => q,
+            None => return Value::Undef,
+        };
+        let grid_count: usize = sf.axis_grids.iter().map(|g| g.len()).product();
+
+        // Apply the per-grid-point projection to produce a scalar buffer.
+        let mut scalar_data: Vec<f64> = Vec::with_capacity(grid_count);
+        for i in 0..grid_count {
+            let window = &sf.data[i * stride..i * stride + stride];
+            scalar_data.push(projection.apply(window));
+        }
+
+        // Construct a per-case projected SampledField with stride-1 scalar
+        // codomain. Grid metadata propagates unchanged from the input — only
+        // the data buffer length changes (grid_count * stride → grid_count).
+        //
+        // `oob_emitted: AtomicBool::new(false)` is a fresh diagnostic flag,
+        // not inherited from the source `sf`: the projected field is an
+        // internal-only intermediary handed straight to `envelope_reduce`
+        // and never directly OOB-queried by user code, so there is no
+        // user-visible duplicate-warning surface to suppress. Keeping the
+        // flag fresh preserves the simple "one diagnostic per
+        // distinctly-instantiated SampledField" mental model.
+        let projected_sf = SampledField {
+            name: sf.name.clone(),
+            kind: sf.kind,
+            bounds_min: sf.bounds_min.clone(),
+            bounds_max: sf.bounds_max.clone(),
+            spacing: sf.spacing.clone(),
+            axis_grids: sf.axis_grids.clone(),
+            interpolation: sf.interpolation,
+            data: scalar_data,
+            oob_emitted: AtomicBool::new(false),
+        };
+        let projected_field = Value::Field {
+            domain_type: dom.clone(),
+            codomain_type: scalar_quantity,
+            source: FieldSourceKind::Sampled,
+            lambda: Arc::new(Value::SampledField(projected_sf)),
+        };
+        projected_map.insert(case_name.clone(), projected_field);
+    }
+
+    // Dispatch to envelope_reduce for the per-grid-point max across cases.
+    // envelope_reduce enforces grid-equality (`metadata_matches`) and the
+    // NaN-skip + total_cmp + first-occurrence-wins reduction discipline.
+    envelope_reduce(&[Value::Map(projected_map)], false)
+}
+
+/// Extract a per-case Sampled `Field` from an `ElasticResult` instance,
+/// validating the full silent-Undef contract for the three envelope helpers
+/// (`envelope_von_mises`, `envelope_max_principal`,
+/// `envelope_displacement_magnitude`).
+///
+/// Returns `Some((domain, codomain, sf))` when ALL of the following hold:
+///   - `elastic_result` is `Value::Map` (the ElasticResult struct shape)
+///   - the Map has the `field_name` key
+///   - the value at that key is `Value::Field { source: Sampled, .. }`
+///   - the Sampled lambda slot carries `Value::SampledField`
+///   - `sf.data.len() == axis_grids product * expected_stride`
+///     (the stride contract: stride 9 for 3×3 tensor codomain, stride 3
+///     for 3-vector codomain — see `TensorShape::stride()`)
+///
+/// Returns `None` on any failure. Codomain shape (e.g. `Matrix3x3` vs
+/// `Vector3`) is intentionally NOT checked here so the helper is reusable
+/// across projections; the projection-specific `TensorShape::extract_quantity`
+/// check happens at the call site.
+///
+/// The return tuple ordering `(dom, cod, sf)` matches `as_sampled_field`'s
+/// `(&Type, &Type, &SampledField)` ordering, so callers that touch both
+/// helpers can use the same destructuring shape and avoid foot-gun
+/// reorderings.
+fn extract_per_case_sampled_field<'a>(
+    elastic_result: &'a Value,
+    field_name: &str,
+    expected_stride: usize,
+) -> Option<(&'a Type, &'a Type, &'a SampledField)> {
+    let case_map = match elastic_result {
+        Value::Map(m) => m,
+        _ => return None,
+    };
+    let field_val = case_map.get(&Value::String(field_name.to_string()))?;
+    let (dom, cod, sf) = as_sampled_field(field_val)?;
+    let grid_count: usize = sf.axis_grids.iter().map(|g| g.len()).product();
+    if sf.data.len() != grid_count * expected_stride {
+        return None;
+    }
+    Some((dom, cod, sf))
 }
 
 /// Extract the inner `cases` `BTreeMap` from a `MultiCaseResult` struct
@@ -804,6 +1170,55 @@ mod tests {
         }
     }
 
+    /// Construct a 1-D `SampledField` carrying a 3×3 tensor codomain.
+    /// `tensors` is a list of per-grid-point row-major 9-float windows
+    /// (one window per axis grid point; `tensors.len() == axis.len()`).
+    /// The resulting `SampledField.data` has length `axis.len() * 9` —
+    /// the stride-9 layout established locally for envelope_von_mises /
+    /// envelope_max_principal in step-4 / step-6.
+    fn make_sampled_tensor_3x3_1d(
+        name: &str,
+        axis: Vec<f64>,
+        tensors: Vec<[f64; 9]>,
+    ) -> SampledField {
+        assert_eq!(
+            tensors.len(),
+            axis.len(),
+            "tensor count must match axis grid point count"
+        );
+        let mut data: Vec<f64> = Vec::with_capacity(axis.len() * 9);
+        for t in &tensors {
+            data.extend_from_slice(t);
+        }
+        // Reuse make_sampled_1d's grid-metadata derivation so the bounds /
+        // spacing handling stays single-sourced. The only difference is the
+        // data length — make_sampled_1d does not enforce data.len() ==
+        // axis.len(), so it accepts our stride-9 buffer unchanged.
+        make_sampled_1d(name, axis, data)
+    }
+
+    /// Construct a 1-D `SampledField` carrying a Vector3 codomain.
+    /// `vectors` is a list of per-grid-point [x, y, z] triples (one per
+    /// axis grid point). The resulting `SampledField.data` has length
+    /// `axis.len() * 3` — the stride-3 layout established locally for
+    /// envelope_displacement_magnitude in step-8.
+    fn make_sampled_vector3_1d(
+        name: &str,
+        axis: Vec<f64>,
+        vectors: Vec<[f64; 3]>,
+    ) -> SampledField {
+        assert_eq!(
+            vectors.len(),
+            axis.len(),
+            "vector count must match axis grid point count"
+        );
+        let mut data: Vec<f64> = Vec::with_capacity(axis.len() * 3);
+        for v in &vectors {
+            data.extend_from_slice(v);
+        }
+        make_sampled_1d(name, axis, data)
+    }
+
     /// Wrap a `SampledField` in a `Value::Field { source: Sampled, .. }`.
     fn wrap_sampled_field(sf: SampledField, domain: Type, codomain: Type) -> Value {
         Value::Field {
@@ -838,6 +1253,38 @@ mod tests {
     #[test]
     fn eval_fea_envelope_min_returns_some() {
         assert!(eval_fea("envelope_min", &[]).is_some());
+    }
+
+    #[test]
+    fn eval_fea_envelope_von_mises_returns_some() {
+        // Recognised name — `eval_fea` must return `Some(_)`. The actual
+        // value is `Value::Undef` on empty args (arity validation rejects),
+        // but the dispatch slot is reserved so the dispatch chain in
+        // `lib.rs` does not fall through to the unknown-builtin path.
+        assert!(eval_fea("envelope_von_mises", &[]).is_some());
+    }
+
+    #[test]
+    fn eval_fea_envelope_max_principal_returns_some() {
+        assert!(eval_fea("envelope_max_principal", &[]).is_some());
+    }
+
+    #[test]
+    fn eval_fea_envelope_displacement_magnitude_returns_some() {
+        assert!(eval_fea("envelope_displacement_magnitude", &[]).is_some());
+    }
+
+    #[test]
+    fn eval_fea_worst_case_returns_some() {
+        // `worst_case` is dispatched in two locations: the real (Lambda-aware)
+        // implementation lives in `crates/reify-expr/src/lib.rs` (because
+        // invoking a `Value::Lambda` requires `EvalContext`, which `eval_fea`
+        // cannot supply), but the name is also reserved here as a stub
+        // returning `Value::Undef`. The stub preserves the "recognised name"
+        // contract for callers that route through `eval_builtin` directly,
+        // matching the dual-arm pattern of `von_mises`'s lib.rs Field-arg
+        // arm coexisting with `eval_analysis`'s tensor-arg arm.
+        assert!(eval_fea("worst_case", &[]).is_some());
     }
 
     // ── single-case behaviour ───────────────────────────────────────────────
@@ -2831,5 +3278,623 @@ mod tests {
         wm.insert(Value::String("A".to_string()), Value::Real(1.0));
         wm.insert(Value::String("B".to_string()), Value::Real(1.0));
         assert!(eval_fea("linear_combine", &[mcr, Value::Map(wm)]).unwrap().is_undef());
+    }
+
+    // ── envelope_von_mises round-trip ───────────────────────────────────────
+
+    /// Hand-rolled 3×3 tensor row-major windows used by the round-trip tests.
+    /// Tensor data layout: d[0]=σ_xx, d[1]=σ_xy, d[2]=σ_xz,
+    ///                     d[3]=σ_yx, d[4]=σ_yy, d[5]=σ_yz,
+    ///                     d[6]=σ_zx, d[7]=σ_zy, d[8]=σ_zz
+    /// (matches the layout `analysis.rs::von_mises` expects.)
+
+    #[test]
+    fn envelope_von_mises_two_case_round_trip_returns_per_grid_max_of_per_case_von_mises() {
+        // 1-D 3-grid-point fixture exercising the round-trip property:
+        //   envelope_von_mises(mcr).data[i] == max over cases of vm(case[i])
+        //
+        // Hand-crafted tensors at each point with known closed-form von_mises
+        // (computed off-line — the test pins explicit numeric literals rather
+        // than re-implementing the closed-form formula in a duplicate
+        // `von_mises_window` helper, so a regression in either side surfaces
+        // as a literal-mismatch instead of two coupled implementations
+        // drifting in lockstep):
+        //   Case A:
+        //     P0 = uniaxial 100 MPa σ_xx               → vm = 100
+        //     P1 = pure shear 50 MPa σ_xy = σ_yx       → vm = 50·√3
+        //     P2 = hydrostatic 200 MPa diagonal        → vm = 0
+        //   Case B:
+        //     P0 = hydrostatic 50 MPa diagonal         → vm = 0
+        //     P1 = uniaxial 200 MPa σ_xx               → vm = 200
+        //     P2 = pure shear 100 MPa σ_xy = σ_yx      → vm = 100·√3
+        //
+        // Per-grid envelope (max over cases of per-case vm):
+        //   data[0] = max(100, 0)             = 100.0
+        //   data[1] = max(50·√3 ≈ 86.6, 200)  = 200.0
+        //   data[2] = max(0, 100·√3 ≈ 173.2)  = 100·√3
+        let axis = vec![0.0, 1.0, 2.0];
+        let pressure = Type::Scalar { dimension: DimensionVector::PRESSURE };
+        let tensor_codomain = Type::Matrix { m: 3, n: 3, quantity: Box::new(pressure.clone()) };
+        let domain = Type::Real;
+
+        let a_tensors: Vec<[f64; 9]> = vec![
+            [100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // P0 uniaxial σ_xx=100
+            [0.0, 50.0, 0.0, 50.0, 0.0, 0.0, 0.0, 0.0, 0.0], // P1 pure shear σ_xy=50
+            [200.0, 0.0, 0.0, 0.0, 200.0, 0.0, 0.0, 0.0, 200.0], // P2 hydrostatic 200
+        ];
+        let b_tensors: Vec<[f64; 9]> = vec![
+            [50.0, 0.0, 0.0, 0.0, 50.0, 0.0, 0.0, 0.0, 50.0], // P0 hydrostatic 50
+            [200.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  // P1 uniaxial σ_xx=200
+            [0.0, 100.0, 0.0, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0], // P2 pure shear σ_xy=100
+        ];
+
+        let a_stress = wrap_sampled_field(
+            make_sampled_tensor_3x3_1d("a_stress", axis.clone(), a_tensors.clone()),
+            domain.clone(),
+            tensor_codomain.clone(),
+        );
+        let b_stress = wrap_sampled_field(
+            make_sampled_tensor_3x3_1d("b_stress", axis.clone(), b_tensors.clone()),
+            domain.clone(),
+            tensor_codomain.clone(),
+        );
+
+        // Per-case ElasticResult with displacement = Real placeholder (not read).
+        // envelope_von_mises only inspects `stress`, mirroring the per-helper
+        // field-extraction discipline documented in the plan analysis.
+        let disp_placeholder = wrap_sampled_field(
+            make_sampled_1d("disp", axis.clone(), vec![0.0, 0.0, 0.0]),
+            domain.clone(),
+            Type::Real,
+        );
+        let case_a = make_fixture_elastic_result_with_fields(disp_placeholder.clone(), a_stress);
+        let case_b = make_fixture_elastic_result_with_fields(disp_placeholder, b_stress);
+        let mcr = multi_case_result_value(&[("A", case_a), ("B", case_b)]);
+
+        let result = eval_fea("envelope_von_mises", &[mcr]).unwrap();
+        let result_sf = extract_sampled(&result);
+
+        // Hand-computed expected per-grid envelope (no duplicate helper —
+        // see comment block above for the per-case vm derivation). The
+        // `3.0_f64.sqrt()` literal is the closed-form √3; `f64::consts`
+        // does not yet stabilise `SQRT_3`.
+        let expected: [f64; 3] = [
+            100.0,                    // max(vm_A=100, vm_B=0)
+            200.0,                    // max(vm_A=50·√3, vm_B=200)
+            100.0 * 3.0_f64.sqrt(),   // max(vm_A=0, vm_B=100·√3)
+        ];
+
+        assert_eq!(result_sf.data.len(), axis.len(), "result must have one scalar per grid point");
+        for (i, (got, want)) in result_sf.data.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (got - want).abs() < 1e-6,
+                "grid point {i}: got {got}, want {want} (envelope of per-case vm)"
+            );
+        }
+
+        // Output codomain must be Pressure — the round-trip projection produces
+        // a scalar with the same Pressure dimension as the input tensor's quantity.
+        match &result {
+            Value::Field { codomain_type, .. } => assert_eq!(*codomain_type, pressure),
+            other => panic!("expected Value::Field, got {:?}", other),
+        }
+    }
+
+    // ── envelope_max_principal round-trip ───────────────────────────────────
+
+    /// Closed-form largest principal stress for a 3×3 symmetric stress
+    /// window — duplicates the analysis.rs `compute_eigenvalues_3x3`
+    /// computation independently so the round-trip test is independent
+    /// of the implementation under test.
+    ///
+    /// For diagonal tensors (off-diagonal = 0) eigenvalues are exactly the
+    /// diagonal entries — chosen on purpose to keep the expectation
+    /// closed-form simple. For block-diagonal 2×2 tensors we use the
+    /// quadratic-formula expression.
+    fn max_principal_diagonal(d: &[f64; 9]) -> f64 {
+        // Used by the test fixture below where every tensor is diagonal:
+        // eigenvalues = (d[0], d[4], d[8]); max = max of those three.
+        // (The general formula is not duplicated here — the test fixture
+        // sticks to diagonal tensors so the expected output stays trivial.)
+        let mut diag = [d[0], d[4], d[8]];
+        diag.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        diag[2]
+    }
+
+    #[test]
+    fn envelope_max_principal_two_case_round_trip_returns_per_grid_max_of_per_case_max_eigenvalue() {
+        // 1-D 3-grid-point fixture with diagonal stress tensors at every
+        // point — eigenvalues equal the diagonal entries exactly, so the
+        // expected per-grid max-principal is the max of (σ_xx, σ_yy, σ_zz)
+        // at each point. Round-trip: max over cases of max-principal[i].
+        //
+        //   Case A (diagonal):
+        //     P0 = diag(100, 50, 20)   → max_eig = 100
+        //     P1 = diag(-30, 80, 60)   → max_eig = 80
+        //     P2 = diag(10, 10, 10)    → max_eig = 10 (hydrostatic)
+        //   Case B (diagonal):
+        //     P0 = diag(40, 200, 60)   → max_eig = 200
+        //     P1 = diag(50, 50, 50)    → max_eig = 50
+        //     P2 = diag(0, -10, 150)   → max_eig = 150
+        //
+        // Per-grid envelope (max over cases of per-case max_principal):
+        //   data[0] = max(100, 200) = 200
+        //   data[1] = max(80, 50)   = 80
+        //   data[2] = max(10, 150)  = 150
+        let axis = vec![0.0, 1.0, 2.0];
+        let pressure = Type::Scalar { dimension: DimensionVector::PRESSURE };
+        let tensor_codomain = Type::Matrix { m: 3, n: 3, quantity: Box::new(pressure.clone()) };
+        let domain = Type::Real;
+
+        let a_tensors: Vec<[f64; 9]> = vec![
+            [100.0, 0.0, 0.0, 0.0, 50.0, 0.0, 0.0, 0.0, 20.0],
+            [-30.0, 0.0, 0.0, 0.0, 80.0, 0.0, 0.0, 0.0, 60.0],
+            [10.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 10.0],
+        ];
+        let b_tensors: Vec<[f64; 9]> = vec![
+            [40.0, 0.0, 0.0, 0.0, 200.0, 0.0, 0.0, 0.0, 60.0],
+            [50.0, 0.0, 0.0, 0.0, 50.0, 0.0, 0.0, 0.0, 50.0],
+            [0.0, 0.0, 0.0, 0.0, -10.0, 0.0, 0.0, 0.0, 150.0],
+        ];
+
+        let a_stress = wrap_sampled_field(
+            make_sampled_tensor_3x3_1d("a_stress", axis.clone(), a_tensors.clone()),
+            domain.clone(),
+            tensor_codomain.clone(),
+        );
+        let b_stress = wrap_sampled_field(
+            make_sampled_tensor_3x3_1d("b_stress", axis.clone(), b_tensors.clone()),
+            domain.clone(),
+            tensor_codomain.clone(),
+        );
+
+        let disp_placeholder = wrap_sampled_field(
+            make_sampled_1d("disp", axis.clone(), vec![0.0, 0.0, 0.0]),
+            domain.clone(),
+            Type::Real,
+        );
+        let case_a = make_fixture_elastic_result_with_fields(disp_placeholder.clone(), a_stress);
+        let case_b = make_fixture_elastic_result_with_fields(disp_placeholder, b_stress);
+        let mcr = multi_case_result_value(&[("A", case_a), ("B", case_b)]);
+
+        let result = eval_fea("envelope_max_principal", &[mcr]).unwrap();
+        let result_sf = extract_sampled(&result);
+
+        // Independently compute expected per-grid envelope.
+        let expected: Vec<f64> = (0..axis.len())
+            .map(|i| {
+                max_principal_diagonal(&a_tensors[i])
+                    .max(max_principal_diagonal(&b_tensors[i]))
+            })
+            .collect();
+
+        assert_eq!(result_sf.data.len(), axis.len(), "result must have one scalar per grid point");
+        for (i, (got, want)) in result_sf.data.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (got - want).abs() < 1e-6,
+                "grid point {i}: got {got}, want {want} (envelope of per-case max_principal)"
+            );
+        }
+
+        // Output codomain must be Pressure (preserved from input tensor's quantity).
+        match &result {
+            Value::Field { codomain_type, .. } => assert_eq!(*codomain_type, pressure),
+            other => panic!("expected Value::Field, got {:?}", other),
+        }
+    }
+
+    // ── envelope_displacement_magnitude round-trip ──────────────────────────
+
+    /// Closed-form Euclidean magnitude of a 3-vector window.
+    /// Independently duplicates the per-grid-point projection used by
+    /// `envelope_displacement_magnitude` so the round-trip test does not
+    /// rely on the implementation under test.
+    fn vector3_magnitude(v: &[f64; 3]) -> f64 {
+        (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
+    }
+
+    #[test]
+    fn envelope_displacement_magnitude_two_case_round_trip_returns_per_grid_max_of_per_case_norm() {
+        // 1-D 3-grid-point fixture exercising the round-trip property:
+        //   envelope_displacement_magnitude(mcr).data[i]
+        //     == max over cases of |displacement[case].data[i*3..i*3+3]|
+        //
+        // Hand-crafted vectors at each point with known closed-form magnitudes:
+        //   Case A:
+        //     P0 = [3, 4, 0]      → |·| = 5
+        //     P1 = [0, 0, 0]      → |·| = 0
+        //     P2 = [1, 1, 1]      → |·| = √3 ≈ 1.7320508
+        //   Case B:
+        //     P0 = [0, 0, 0]      → |·| = 0
+        //     P1 = [6, 8, 0]      → |·| = 10
+        //     P2 = [2, 0, 0]      → |·| = 2
+        //
+        // Per-grid envelope (max over cases of per-case magnitude):
+        //   data[0] = max(5,    0)     = 5
+        //   data[1] = max(0,    10)    = 10
+        //   data[2] = max(√3,   2)     = 2
+        let axis = vec![0.0, 1.0, 2.0];
+        let length = Type::Scalar { dimension: DimensionVector::LENGTH };
+        let vector_codomain = Type::Vector { n: 3, quantity: Box::new(length.clone()) };
+        let domain = Type::Real;
+
+        let a_vectors: Vec<[f64; 3]> = vec![
+            [3.0, 4.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+        ];
+        let b_vectors: Vec<[f64; 3]> = vec![
+            [0.0, 0.0, 0.0],
+            [6.0, 8.0, 0.0],
+            [2.0, 0.0, 0.0],
+        ];
+
+        let a_disp = wrap_sampled_field(
+            make_sampled_vector3_1d("a_disp", axis.clone(), a_vectors.clone()),
+            domain.clone(),
+            vector_codomain.clone(),
+        );
+        let b_disp = wrap_sampled_field(
+            make_sampled_vector3_1d("b_disp", axis.clone(), b_vectors.clone()),
+            domain.clone(),
+            vector_codomain.clone(),
+        );
+
+        // Per-case ElasticResult with stress = Real placeholder (not read).
+        // envelope_displacement_magnitude only inspects `displacement`,
+        // mirroring the per-helper field-extraction discipline.
+        let stress_placeholder = wrap_sampled_field(
+            make_sampled_1d("stress", axis.clone(), vec![0.0, 0.0, 0.0]),
+            domain.clone(),
+            Type::Real,
+        );
+        let case_a = make_fixture_elastic_result_with_fields(a_disp, stress_placeholder.clone());
+        let case_b = make_fixture_elastic_result_with_fields(b_disp, stress_placeholder);
+        let mcr = multi_case_result_value(&[("A", case_a), ("B", case_b)]);
+
+        let result = eval_fea("envelope_displacement_magnitude", &[mcr]).unwrap();
+        let result_sf = extract_sampled(&result);
+
+        // Independently compute expected per-grid envelope.
+        let expected: Vec<f64> = (0..axis.len())
+            .map(|i| vector3_magnitude(&a_vectors[i]).max(vector3_magnitude(&b_vectors[i])))
+            .collect();
+
+        assert_eq!(
+            result_sf.data.len(),
+            axis.len(),
+            "result must have one scalar per grid point"
+        );
+        for (i, (got, want)) in result_sf.data.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (got - want).abs() < 1e-6,
+                "grid point {i}: got {got}, want {want} (envelope of per-case magnitude)"
+            );
+        }
+
+        // Output codomain must be Length (preserved from input vector's quantity).
+        match &result {
+            Value::Field { codomain_type, .. } => assert_eq!(*codomain_type, length),
+            other => panic!("expected Value::Field, got {:?}", other),
+        }
+    }
+
+    // ── envelope_{von_mises,max_principal,displacement_magnitude} negatives ─
+    //
+    // Argument-shape negatives for the three Tensor/Vector → scalar envelope
+    // helpers. Each branch of the silent-Undef contract gets its own focused
+    // test so a regression bisects directly to the failing rejection path
+    // rather than reporting a generic bundled-test failure.
+    //
+    // Helpers below are parametric on:
+    //   - `name`: the eval_fea dispatch name ("envelope_von_mises", etc.)
+    //   - `field_name`: which per-case ElasticResult key to populate
+    //     ("stress" for von_mises / max_principal, "displacement" for magnitude)
+    //   - the expected codomain shape (3×3 matrix vs 3-vector) and stride (9 vs 3)
+    //
+    // Mirrors the existing `assert_zero_args_returns_undef` family at lines
+    // 1683-1810 that parameterises over envelope_max / envelope_min.
+
+    /// Build a 3x3 stress tensor field with the right codomain and a
+    /// stride-9 buffer matching the given grid count. Used as the "valid
+    /// other case" alongside an intentionally-bad case to exercise the
+    /// per-case validation paths.
+    fn make_valid_stress_field_3x3(grid: &[f64]) -> Value {
+        let pressure = Type::Scalar { dimension: DimensionVector::PRESSURE };
+        let tensor_codomain = Type::Matrix { m: 3, n: 3, quantity: Box::new(pressure) };
+        // Diagonal identity tensors at every grid point — eigenvalues = (1,1,1),
+        // vm = 0; arbitrary content since this case is the "valid other".
+        let tensors: Vec<[f64; 9]> = grid
+            .iter()
+            .map(|_| [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0])
+            .collect();
+        wrap_sampled_field(
+            make_sampled_tensor_3x3_1d("valid_stress", grid.to_vec(), tensors),
+            Type::Real,
+            tensor_codomain,
+        )
+    }
+
+    /// Build a 3-vector displacement field with the right codomain and
+    /// a stride-3 buffer matching the given grid count.
+    fn make_valid_displacement_field_v3(grid: &[f64]) -> Value {
+        let length = Type::Scalar { dimension: DimensionVector::LENGTH };
+        let vector_codomain = Type::Vector { n: 3, quantity: Box::new(length) };
+        let vectors: Vec<[f64; 3]> = grid.iter().map(|_| [1.0, 0.0, 0.0]).collect();
+        wrap_sampled_field(
+            make_sampled_vector3_1d("valid_disp", grid.to_vec(), vectors),
+            Type::Real,
+            vector_codomain,
+        )
+    }
+
+    /// Build a per-case ElasticResult Map populating only the requested
+    /// field; siblings get Undef placeholders. Used by negative tests
+    /// where we want to control exactly which field the validator sees.
+    fn make_elastic_result_with_only_field(field_name: &str, field_val: Value) -> Value {
+        let mut m = BTreeMap::new();
+        m.insert(Value::String(field_name.to_string()), field_val);
+        Value::Map(m)
+    }
+
+    fn assert_envelope_helper_zero_args_returns_undef(name: &str) {
+        // arity must be exactly 1 (MultiCaseResult-shaped Map).
+        assert!(eval_fea(name, &[]).unwrap().is_undef());
+    }
+
+    #[test]
+    fn envelope_von_mises_zero_args_returns_undef() {
+        assert_envelope_helper_zero_args_returns_undef("envelope_von_mises");
+    }
+
+    #[test]
+    fn envelope_max_principal_zero_args_returns_undef() {
+        assert_envelope_helper_zero_args_returns_undef("envelope_max_principal");
+    }
+
+    #[test]
+    fn envelope_displacement_magnitude_zero_args_returns_undef() {
+        assert_envelope_helper_zero_args_returns_undef("envelope_displacement_magnitude");
+    }
+
+    fn assert_envelope_helper_two_args_returns_undef(name: &str) {
+        // arity must be exactly 1; an extra positional argument rejects.
+        let mcr = multi_case_result_value(&[]);
+        let extra = Value::Real(1.0);
+        assert!(eval_fea(name, &[mcr, extra]).unwrap().is_undef());
+    }
+
+    #[test]
+    fn envelope_von_mises_two_args_returns_undef() {
+        assert_envelope_helper_two_args_returns_undef("envelope_von_mises");
+    }
+
+    #[test]
+    fn envelope_max_principal_two_args_returns_undef() {
+        assert_envelope_helper_two_args_returns_undef("envelope_max_principal");
+    }
+
+    #[test]
+    fn envelope_displacement_magnitude_two_args_returns_undef() {
+        assert_envelope_helper_two_args_returns_undef("envelope_displacement_magnitude");
+    }
+
+    fn assert_envelope_helper_non_map_arg_returns_undef(name: &str) {
+        // First argument must be a Value::Map (the MultiCaseResult struct).
+        assert!(eval_fea(name, &[Value::Real(1.0)]).unwrap().is_undef());
+    }
+
+    #[test]
+    fn envelope_von_mises_non_map_arg_returns_undef() {
+        assert_envelope_helper_non_map_arg_returns_undef("envelope_von_mises");
+    }
+
+    #[test]
+    fn envelope_max_principal_non_map_arg_returns_undef() {
+        assert_envelope_helper_non_map_arg_returns_undef("envelope_max_principal");
+    }
+
+    #[test]
+    fn envelope_displacement_magnitude_non_map_arg_returns_undef() {
+        assert_envelope_helper_non_map_arg_returns_undef("envelope_displacement_magnitude");
+    }
+
+    fn assert_envelope_helper_map_without_cases_field_returns_undef(name: &str) {
+        // Outer Map must have a "cases" key (extract_cases_map enforces).
+        let mut bad_outer = BTreeMap::new();
+        bad_outer.insert(Value::String("not_cases".to_string()), Value::Map(BTreeMap::new()));
+        assert!(eval_fea(name, &[Value::Map(bad_outer)]).unwrap().is_undef());
+    }
+
+    #[test]
+    fn envelope_von_mises_map_without_cases_field_returns_undef() {
+        assert_envelope_helper_map_without_cases_field_returns_undef("envelope_von_mises");
+    }
+
+    #[test]
+    fn envelope_max_principal_map_without_cases_field_returns_undef() {
+        assert_envelope_helper_map_without_cases_field_returns_undef("envelope_max_principal");
+    }
+
+    #[test]
+    fn envelope_displacement_magnitude_map_without_cases_field_returns_undef() {
+        assert_envelope_helper_map_without_cases_field_returns_undef("envelope_displacement_magnitude");
+    }
+
+    fn assert_envelope_helper_cases_field_non_map_returns_undef(name: &str) {
+        // "cases" key value must be a Value::Map (extract_cases_map enforces).
+        let mut bad_outer = BTreeMap::new();
+        bad_outer.insert(Value::String("cases".to_string()), Value::Real(7.0));
+        assert!(eval_fea(name, &[Value::Map(bad_outer)]).unwrap().is_undef());
+    }
+
+    #[test]
+    fn envelope_von_mises_cases_field_non_map_returns_undef() {
+        assert_envelope_helper_cases_field_non_map_returns_undef("envelope_von_mises");
+    }
+
+    #[test]
+    fn envelope_max_principal_cases_field_non_map_returns_undef() {
+        assert_envelope_helper_cases_field_non_map_returns_undef("envelope_max_principal");
+    }
+
+    #[test]
+    fn envelope_displacement_magnitude_cases_field_non_map_returns_undef() {
+        assert_envelope_helper_cases_field_non_map_returns_undef("envelope_displacement_magnitude");
+    }
+
+    /// Per-case ElasticResult is missing the field that the helper reads.
+    /// `present_field` is the unrelated field that exists on the case (so
+    /// the case is a non-empty Map but lacks `expected_field_name`).
+    fn assert_envelope_helper_per_case_missing_required_field_returns_undef(
+        name: &str,
+        expected_field_name: &str,
+        present_field_name: &str,
+        present_field_value: Value,
+    ) {
+        let bad_case = make_elastic_result_with_only_field(present_field_name, present_field_value);
+        let mcr = multi_case_result_value(&[("A", bad_case)]);
+        assert!(eval_fea(name, &[mcr]).unwrap().is_undef());
+    }
+
+    #[test]
+    fn envelope_von_mises_per_case_missing_stress_field_returns_undef() {
+        let grid = vec![0.0, 1.0, 2.0];
+        // ElasticResult with displacement only, no "stress" key.
+        let disp_only = make_valid_displacement_field_v3(&grid);
+        assert_envelope_helper_per_case_missing_required_field_returns_undef(
+            "envelope_von_mises",
+            "stress",
+            "displacement",
+            disp_only,
+        );
+    }
+
+    #[test]
+    fn envelope_max_principal_per_case_missing_stress_field_returns_undef() {
+        let grid = vec![0.0, 1.0, 2.0];
+        let disp_only = make_valid_displacement_field_v3(&grid);
+        assert_envelope_helper_per_case_missing_required_field_returns_undef(
+            "envelope_max_principal",
+            "stress",
+            "displacement",
+            disp_only,
+        );
+    }
+
+    #[test]
+    fn envelope_displacement_magnitude_per_case_missing_displacement_field_returns_undef() {
+        let grid = vec![0.0, 1.0, 2.0];
+        // ElasticResult with stress only, no "displacement" key.
+        let stress_only = make_valid_stress_field_3x3(&grid);
+        assert_envelope_helper_per_case_missing_required_field_returns_undef(
+            "envelope_displacement_magnitude",
+            "displacement",
+            "stress",
+            stress_only,
+        );
+    }
+
+    /// Per-case field has the right key but the wrong codomain shape — e.g.
+    /// scalar Real codomain instead of Matrix<3,3,Pressure> for von_mises.
+    fn assert_envelope_helper_per_case_field_wrong_codomain_returns_undef(
+        name: &str,
+        field_name: &str,
+    ) {
+        let grid = vec![0.0, 1.0, 2.0];
+        // Build a Sampled Real-codomain field — wrong shape for any of the
+        // three helpers (which need Matrix3x3 or Vector3 codomain).
+        let bad_field = wrap_sampled_field(
+            make_sampled_1d("bad", grid, vec![1.0, 2.0, 3.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let bad_case = make_elastic_result_with_only_field(field_name, bad_field);
+        let mcr = multi_case_result_value(&[("A", bad_case)]);
+        assert!(eval_fea(name, &[mcr]).unwrap().is_undef());
+    }
+
+    #[test]
+    fn envelope_von_mises_per_case_field_wrong_codomain_returns_undef() {
+        assert_envelope_helper_per_case_field_wrong_codomain_returns_undef(
+            "envelope_von_mises",
+            "stress",
+        );
+    }
+
+    #[test]
+    fn envelope_max_principal_per_case_field_wrong_codomain_returns_undef() {
+        assert_envelope_helper_per_case_field_wrong_codomain_returns_undef(
+            "envelope_max_principal",
+            "stress",
+        );
+    }
+
+    #[test]
+    fn envelope_displacement_magnitude_per_case_field_wrong_codomain_returns_undef() {
+        assert_envelope_helper_per_case_field_wrong_codomain_returns_undef(
+            "envelope_displacement_magnitude",
+            "displacement",
+        );
+    }
+
+    /// Per-case field has the right codomain but the data buffer length
+    /// violates the expected stride (data.len() != grid_count * stride).
+    fn assert_envelope_helper_per_case_field_wrong_stride_returns_undef(
+        name: &str,
+        field_name: &str,
+        expected_codomain: Type,
+        bad_data_len: usize,
+    ) {
+        let grid = vec![0.0, 1.0, 2.0];
+        // Construct a SampledField with the right codomain Type but a data
+        // buffer whose length is off by one — should reject at the stride
+        // check `data.len() != grid_count * stride`.
+        let bad_data: Vec<f64> = (0..bad_data_len).map(|i| i as f64).collect();
+        let bad_sf = make_sampled_1d("bad_stride", grid, bad_data);
+        let bad_field = wrap_sampled_field(bad_sf, Type::Real, expected_codomain);
+        let bad_case = make_elastic_result_with_only_field(field_name, bad_field);
+        let mcr = multi_case_result_value(&[("A", bad_case)]);
+        assert!(eval_fea(name, &[mcr]).unwrap().is_undef());
+    }
+
+    #[test]
+    fn envelope_von_mises_per_case_field_wrong_stride_returns_undef() {
+        // Matrix<3,3,Pressure> expects stride 9; supply a 10-float buffer
+        // (not a multiple of 9 for grid_count=3).
+        let pressure = Type::Scalar { dimension: DimensionVector::PRESSURE };
+        let codomain = Type::Matrix { m: 3, n: 3, quantity: Box::new(pressure) };
+        assert_envelope_helper_per_case_field_wrong_stride_returns_undef(
+            "envelope_von_mises",
+            "stress",
+            codomain,
+            10, // grid_count=3, stride=9 → expected len=27; 10 violates
+        );
+    }
+
+    #[test]
+    fn envelope_max_principal_per_case_field_wrong_stride_returns_undef() {
+        let pressure = Type::Scalar { dimension: DimensionVector::PRESSURE };
+        let codomain = Type::Matrix { m: 3, n: 3, quantity: Box::new(pressure) };
+        assert_envelope_helper_per_case_field_wrong_stride_returns_undef(
+            "envelope_max_principal",
+            "stress",
+            codomain,
+            10,
+        );
+    }
+
+    #[test]
+    fn envelope_displacement_magnitude_per_case_field_wrong_stride_returns_undef() {
+        // Vector<3,Length> expects stride 3; supply a 4-float buffer
+        // (not a multiple of 3 for grid_count=3 — expected len=9; 4 violates).
+        let length = Type::Scalar { dimension: DimensionVector::LENGTH };
+        let codomain = Type::Vector { n: 3, quantity: Box::new(length) };
+        assert_envelope_helper_per_case_field_wrong_stride_returns_undef(
+            "envelope_displacement_magnitude",
+            "displacement",
+            codomain,
+            4,
+        );
     }
 }
