@@ -54,6 +54,8 @@ impl CgWarmState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::solver::{CgSolverOptions, SolverMode};
+    use faer::sparse::{SparseRowMat, Triplet};
 
     /// `CgWarmState::from_displacement(u)` → `into_opaque_state()` →
     /// `from_opaque_state()` round-trips the displacement vector unchanged.
@@ -71,5 +73,62 @@ mod tests {
             CgWarmState::from_displacement(vec![0.0_f64; 5]).estimated_size_bytes(),
             5 * std::mem::size_of::<f64>(),
         );
+    }
+
+    /// `solve_cg_with_warm_state(k, f, None, opts, mode)` returns a
+    /// `(CgResult, CgWarmState)` pair where:
+    /// - the result converged,
+    /// - `fresh.u == result.u` (the producer wrapped the result's
+    ///   displacement),
+    /// - calling again with `Some(&fresh)` against the same `(k, f)`
+    ///   returns iterations == 0 (warm at the exact solution — pinned
+    ///   by `solver::tests::warm_start_at_exact_solution_returns_in_zero_iterations`,
+    ///   exercised here through the high-level wrapper).
+    #[test]
+    fn solve_cg_with_warm_state_returns_result_and_fresh_state() {
+        // 2×2 SPD fixture: same triplets as
+        // solver::tests::hand_computed_2x2_spd_within_tolerance — rebuilt
+        // here because that helper is private to solver.rs.
+        let k = SparseRowMat::try_new_from_triplets(
+            2,
+            2,
+            &[
+                Triplet::new(0_usize, 0_usize, 4.0_f64),
+                Triplet::new(0_usize, 1_usize, 1.0_f64),
+                Triplet::new(1_usize, 0_usize, 1.0_f64),
+                Triplet::new(1_usize, 1_usize, 3.0_f64),
+            ],
+        )
+        .unwrap();
+        let f = [1.0_f64, 2.0];
+        let opts = CgSolverOptions {
+            tolerance: 1e-10,
+            max_iter: 100,
+        };
+
+        // Cold call: prior = None.
+        let (result, fresh) =
+            solve_cg_with_warm_state(&k, &f, None, opts.clone(), SolverMode::Deterministic);
+        assert!(result.converged, "cold solve_cg_with_warm_state must converge");
+        assert_eq!(
+            fresh.u, result.u,
+            "fresh warm state must wrap the result's displacement"
+        );
+
+        // Re-solve with prior = Some(&fresh) on the same (k, f) — already at
+        // the exact solution, so the early-exit fires.
+        let (result_warm, _fresh2) = solve_cg_with_warm_state(
+            &k,
+            &f,
+            Some(&fresh),
+            opts,
+            SolverMode::Deterministic,
+        );
+        assert_eq!(
+            result_warm.iterations, 0,
+            "warm at exact solution must return 0 iterations, got {}",
+            result_warm.iterations
+        );
+        assert!(result_warm.converged, "warm at exact solution must report converged");
     }
 }
