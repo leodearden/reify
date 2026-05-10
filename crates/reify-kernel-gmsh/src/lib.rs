@@ -71,6 +71,7 @@ pub use kernel::GmshKernel;
 
 pub use cache_key::volume_mesh_cache_key;
 pub use mesh_volume::MeshSurfaceToVolumeReport;
+pub use mesh_volume::resolve_mesh_size;
 pub use options::MeshingOptions;
 
 /// `true` when this crate was compiled with libgmsh detected at build time

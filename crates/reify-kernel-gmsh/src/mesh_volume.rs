@@ -22,6 +22,8 @@ use std::borrow::Cow;
 
 use reify_types::Mesh;
 
+use crate::auto_size::{auto_mesh_size_from_features, AutoSizeConfig};
+use crate::options::MeshingOptions;
 use crate::repair::{repair_surface_mesh, RepairConfig};
 use crate::through_thickness::ThroughThicknessWarning;
 
@@ -67,5 +69,33 @@ pub fn apply_repair_if_requested(input: &Mesh, cfg: Option<RepairConfig>) -> Cow
             );
             Cow::Owned(repair_surface_mesh(input, c))
         }
+    }
+}
+
+/// Resolve the effective `mesh_size` to pass to `mesh_to_volume`.
+///
+/// Priority (highest first):
+/// 1. **Caller-explicit** — `options.mesh_size` is `Some(s)`: returns `Ok(Some(s))`.
+/// 2. **Auto-derived** — `auto_cfg` is `Some(cfg)`: calls
+///    `auto_mesh_size_from_features(surface, cfg)`. A zero result is collapsed
+///    to `Ok(None)` (auto returned "unavailable"; defer to the kernel default).
+///    An `AutoSizeError` is surfaced as `GeometryError::OperationFailed`.
+/// 3. **Kernel default** — both are `None`: returns `Ok(None)` and lets
+///    `mesh_to_volume`'s internal logic decide.
+pub fn resolve_mesh_size(
+    surface: &Mesh,
+    options: &MeshingOptions,
+    auto_cfg: Option<AutoSizeConfig>,
+) -> Result<Option<f64>, reify_types::GeometryError> {
+    match (options.mesh_size, auto_cfg) {
+        (Some(s), _) => Ok(Some(s)),
+        (None, None) => Ok(None),
+        (None, Some(cfg)) => match auto_mesh_size_from_features(surface, cfg) {
+            Ok(0.0) => Ok(None),
+            Ok(v) => Ok(Some(v)),
+            Err(e) => Err(reify_types::GeometryError::OperationFailed(format!(
+                "auto_mesh_size_from_features failed: {e}"
+            ))),
+        },
     }
 }

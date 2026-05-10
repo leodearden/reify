@@ -128,9 +128,10 @@ fn resolve_mesh_size_caller_value_wins_over_auto() {
         ..Default::default()
     };
     let result = resolve_mesh_size(&cube, &options, Some(AutoSizeConfig::default()));
+    let size = result.expect("caller-wins: must succeed");
     assert_eq!(
-        result,
-        Ok(Some(0.42)),
+        size,
+        Some(0.42),
         "caller's Some(0.42) must win over auto-size even when auto_size_cfg is Some"
     );
 }
@@ -142,9 +143,10 @@ fn resolve_mesh_size_no_caller_no_auto_returns_none() {
     let mesh = sliver_mesh();
     let options = MeshingOptions::default(); // mesh_size: None
     let result = resolve_mesh_size(&mesh, &options, None);
+    let size = result.expect("none/none: must succeed");
     assert_eq!(
-        result,
-        Ok(None),
+        size,
+        None,
         "no caller override + no auto_size_cfg must return Ok(None)"
     );
 }
@@ -187,9 +189,10 @@ fn resolve_mesh_size_empty_indices_collapses_to_none() {
     };
     let options = MeshingOptions::default();
     let result = resolve_mesh_size(&mesh, &options, Some(AutoSizeConfig::default()));
+    let size = result.expect("empty-indices collapse: must succeed");
     assert_eq!(
-        result,
-        Ok(None),
+        size,
+        None,
         "auto returns 0.0 for empty-indices mesh; wrapper must collapse to Ok(None)"
     );
 }
