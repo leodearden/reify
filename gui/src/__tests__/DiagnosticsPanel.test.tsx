@@ -117,7 +117,7 @@ describe('DiagnosticsPanel', () => {
     expect(onNavigate).toHaveBeenCalledWith(diag);
   });
 
-  it('Escape key invokes onClose', () => {
+  it('Escape key invokes onClose (fired on document.body, matching real user behavior)', () => {
     const onClose = vi.fn();
     render(() => (
       <DiagnosticsPanel
@@ -127,8 +127,10 @@ describe('DiagnosticsPanel', () => {
         onNavigate={vi.fn()}
       />
     ));
-    const panel = screen.getByTestId('diagnostics-panel');
-    fireEvent.keyDown(panel, { key: 'Escape' });
+    // Fire on document.body to exercise the document-level listener; this
+    // matches real user behavior where Escape is pressed without the overlay
+    // div having focus (which it never does on open).
+    fireEvent.keyDown(document.body, { key: 'Escape' });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 

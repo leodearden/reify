@@ -3142,11 +3142,37 @@ describe('App compile diagnostics end-to-end wiring', () => {
       expect(screen.getByTestId('diagnostics-panel')).toBeTruthy();
     });
 
-    // Press Escape on the panel
-    fireEvent.keyDown(screen.getByTestId('diagnostics-panel'), { key: 'Escape' });
+    // Fire Escape on document.body — matches user-observable behavior where
+    // the overlay div is unfocused on open (document-level listener in
+    // DiagnosticsPanel picks this up).
+    fireEvent.keyDown(document.body, { key: 'Escape' });
 
     await waitFor(() => {
       expect(document.querySelector('[data-testid="diagnostics-panel"]')).toBeNull();
+    });
+  });
+
+  it('compile-diagnostics event with Error severity: badge shows "1 error"', async () => {
+    render(() => <App />);
+    await waitFor(() => expect(compileDiagnosticsCallback).toBeDefined());
+
+    const errorDiag = {
+      file_path: 'main.ri',
+      line: 1,
+      column: 1,
+      end_line: 1,
+      end_column: 5,
+      severity: 'Error',
+      message: 'import failed',
+      code: null,
+    };
+    compileDiagnosticsCallback!([errorDiag]);
+
+    await waitFor(() => {
+      const statusBar = screen.getByTestId('status-bar');
+      const badge = statusBar.querySelector('[data-testid="diagnostics-count"]');
+      expect(badge).toBeTruthy();
+      expect(badge!.textContent).toMatch(/1 error/i);
     });
   });
 });

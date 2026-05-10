@@ -1,4 +1,4 @@
-import { type Component, Show, For } from 'solid-js';
+import { type Component, Show, For, createEffect, onCleanup } from 'solid-js';
 import type { DiagnosticInfo } from '../types';
 import styles from './DiagnosticsPanel.module.css';
 
@@ -10,11 +10,20 @@ export interface DiagnosticsPanelProps {
 }
 
 export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
-  function handleKeyDown(e: KeyboardEvent) {
-    if (e.key === 'Escape') {
-      props.onClose();
+  // Attach Escape handler at document level so it fires regardless of which
+  // element has focus (the overlay div is unfocused on open, so an
+  // element-local onKeyDown would silently no-op for users who press Escape
+  // immediately after the panel appears).
+  createEffect(() => {
+    if (!props.open) return;
+    function handleDocumentKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        props.onClose();
+      }
     }
-  }
+    document.addEventListener('keydown', handleDocumentKeyDown);
+    onCleanup(() => document.removeEventListener('keydown', handleDocumentKeyDown));
+  });
 
   function handleOverlayClick(e: MouseEvent) {
     // Only close if clicking the overlay itself, not a child
@@ -40,7 +49,6 @@ export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
       <div
         class={styles.overlay}
         data-testid="diagnostics-panel"
-        onKeyDown={handleKeyDown}
         onClick={handleOverlayClick}
       >
         <div
