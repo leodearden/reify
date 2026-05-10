@@ -138,8 +138,9 @@ use faer::sparse::SparseRowMat;
 ///   violated (see above).
 /// - In debug builds, panics if `K` has unsorted (or duplicate) column
 ///   indices within any row — `col_idx[start..end]` must be strictly
-///   increasing (faer `try_new_from_triplets` guarantees this; matrices
-///   built via `new_unsorted_checked` are caller-checked here).
+///   increasing. **Release builds silently produce wrong results** (binary
+///   search on unsorted data returns unspecified Ok/Err — sort col_idx, e.g.
+///   via `try_new_from_triplets`, before calling).
 pub fn apply_mpc_row_elimination(
     k: &mut SparseRowMat<usize, f64>,
     f: &mut [f64],
@@ -1456,8 +1457,8 @@ mod tests {
     /// message that contains "unsorted".
     ///
     /// Gated by `#[cfg(debug_assertions)]` so `cargo test --release` does
-    /// not false-fail — same pattern as
-    /// `crates/reify-solver-elastic/src/shell_boundary.rs:542-548`.
+    /// not false-fail — same pattern as the debug-gated `#[should_panic]`
+    /// tests in `shell_boundary.rs`.
     #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "unsorted")]
@@ -1483,6 +1484,71 @@ mod tests {
         let mut f = vec![0.0_f64; 3];
         // MpcRow: pivot dof=0, other dof=1; the debug check fires at entry
         // before binary_search is ever called.
+        apply_mpc_row_elimination(
+            &mut k,
+            &mut f,
+            &[MpcRow::new(vec![0, 1], vec![1.0, -1.0], 0.0)],
+        );
+    }
+
+    /// Debug-only: sorted col_idx assertion fires on a later row, not just
+    /// row 0 — verifies the walk covers all rows, not just the first.
+    ///
+    /// Fixture: 3×3 CSR where row 2 has col_idx `[2, 0]` (out of order).
+    /// Rows 0 and 1 are sorted, so only the walk reaching row 2 triggers
+    /// the assertion.  Regression guard for a hypothetical bug that only
+    /// checked windows on the first row.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "unsorted")]
+    fn apply_mpc_panics_in_debug_when_col_idx_unsorted_on_later_row() {
+        use faer::sparse::SymbolicSparseRowMat;
+
+        // row_ptr = [0, 1, 2, 4]:
+        //   row 0 → slot 0     (col_idx = [0])  — sorted
+        //   row 1 → slot 1     (col_idx = [1])  — sorted
+        //   row 2 → slots 2..4 (col_idx = [2, 0]) — UNSORTED
+        let symbolic = SymbolicSparseRowMat::<usize>::new_unsorted_checked(
+            3_usize,
+            3_usize,
+            vec![0_usize, 1, 2, 4],
+            None,
+            vec![0_usize, 1, 2, 0],
+        );
+        let mut k = SparseRowMat::<usize, f64>::new(symbolic, vec![1.0, 2.0, 3.0, 4.0]);
+        let mut f = vec![0.0_f64; 3];
+        apply_mpc_row_elimination(
+            &mut k,
+            &mut f,
+            &[MpcRow::new(vec![0, 1], vec![1.0, -1.0], 0.0)],
+        );
+    }
+
+    /// Debug-only: the strictly-increasing (`<`) assertion catches duplicate
+    /// column indices within a row, not merely out-of-order pairs.
+    ///
+    /// Fixture: 3×3 CSR where row 0 has col_idx `[0, 0]` — a duplicate
+    /// column, which breaks `find_in_row`'s binary_search uniqueness
+    /// assumption and is caught by `w[0] < w[1]` (0 < 0 is false).
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "unsorted")]
+    fn apply_mpc_panics_in_debug_when_col_idx_has_duplicate_in_row() {
+        use faer::sparse::SymbolicSparseRowMat;
+
+        // row_ptr = [0, 2, 3, 4]:
+        //   row 0 → slots 0..2 (col_idx = [0, 0]) — DUPLICATE column
+        //   row 1 → slot 2     (col_idx = [1])
+        //   row 2 → slot 3     (col_idx = [2])
+        let symbolic = SymbolicSparseRowMat::<usize>::new_unsorted_checked(
+            3_usize,
+            3_usize,
+            vec![0_usize, 2, 3, 4],
+            None,
+            vec![0_usize, 0, 1, 2],
+        );
+        let mut k = SparseRowMat::<usize, f64>::new(symbolic, vec![1.0, 2.0, 3.0, 4.0]);
+        let mut f = vec![0.0_f64; 3];
         apply_mpc_row_elimination(
             &mut k,
             &mut f,
