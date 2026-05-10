@@ -883,52 +883,30 @@ fn write_loft_face_generated_attributes(
 /// is one-line, not a 7-caller mechanical rewrite.
 pub const LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M: f64 = 1e-9;
 
-/// Stable sort key for `Role` that does NOT depend on `Debug` output.
+/// Stable sort key and human-readable name for `Role`, both decoupled from `Debug`.
 ///
-/// The Rust API guidelines mark `Debug` as "not stable for serialization",
-/// and this module uses the sort key only to keep diagnostic emission order
-/// deterministic — a downstream rename / shape-change of `Role` must not
-/// silently reorder warnings. Each variant gets an explicit u32 here; new
-/// variants must be appended (assigning a fresh discriminant) rather than
-/// inserted between existing ones.
-fn role_sort_discriminant(role: &Role) -> u32 {
+/// Returns `(discriminant, human_name)` where `discriminant` drives deterministic
+/// emission order and `human_name` is the stable wording used in diagnostic messages
+/// (the contract for downstream diagnostic consumers). The Rust API guidelines mark
+/// `Debug` as "not stable for serialization" — co-locating both values in one
+/// exhaustive match eliminates the drift risk of two parallel match functions, where
+/// a transposition (e.g. discriminant 4 assigned to `Side` while the name arm returns
+/// "NewEdge" for `Side`) would be invisible to the compiler. New variants must be
+/// appended (assigning the next discriminant) rather than inserted between existing ones.
+fn role_sort_key(role: &Role) -> (u32, &'static str) {
     match role {
-        Role::Cap(CapKind::Top) => 0,
-        Role::Cap(CapKind::Bottom) => 1,
-        Role::Cap(CapKind::Start) => 2,
-        Role::Cap(CapKind::End) => 3,
-        Role::Side => 4,
-        Role::NewEdge => 5,
-        Role::RevolvedFace => 6,
-        Role::AxisFace => 7,
-        Role::SweptFace => 8,
-        Role::LoftedFace => 9,
-        Role::MidSurfaceFace => 10,
-        Role::MidSurfaceEdge => 11,
-    }
-}
-
-/// Stable wording for diagnostic messages, decoupled from `Debug`.
-///
-/// The Rust API guidelines mark `Debug` as "not stable for serialization";
-/// keeping the human-visible role name in its own function means a future
-/// `Debug` rename cannot silently alter emitted warning text. Match arms are
-/// in the same order as `role_sort_discriminant` so variant additions force
-/// both functions to be updated together (compiler-enforced exhaustiveness).
-fn role_human_name(role: &Role) -> &'static str {
-    match role {
-        Role::Cap(CapKind::Top) => "Cap(Top)",
-        Role::Cap(CapKind::Bottom) => "Cap(Bottom)",
-        Role::Cap(CapKind::Start) => "Cap(Start)",
-        Role::Cap(CapKind::End) => "Cap(End)",
-        Role::Side => "Side",
-        Role::NewEdge => "NewEdge",
-        Role::RevolvedFace => "RevolvedFace",
-        Role::AxisFace => "AxisFace",
-        Role::SweptFace => "SweptFace",
-        Role::LoftedFace => "LoftedFace",
-        Role::MidSurfaceFace => "MidSurfaceFace",
-        Role::MidSurfaceEdge => "MidSurfaceEdge",
+        Role::Cap(CapKind::Top) => (0, "Cap(Top)"),
+        Role::Cap(CapKind::Bottom) => (1, "Cap(Bottom)"),
+        Role::Cap(CapKind::Start) => (2, "Cap(Start)"),
+        Role::Cap(CapKind::End) => (3, "Cap(End)"),
+        Role::Side => (4, "Side"),
+        Role::NewEdge => (5, "NewEdge"),
+        Role::RevolvedFace => (6, "RevolvedFace"),
+        Role::AxisFace => (7, "AxisFace"),
+        Role::SweptFace => (8, "SweptFace"),
+        Role::LoftedFace => (9, "LoftedFace"),
+        Role::MidSurfaceFace => (10, "MidSurfaceFace"),
+        Role::MidSurfaceEdge => (11, "MidSurfaceEdge"),
     }
 }
 
@@ -1027,7 +1005,7 @@ pub fn detect_local_index_reassignment_diagnostics(
     // sort_by_cached_key materializes (feature_id_string, role_discriminant)
     // once per key so to_string() is not called on every comparison.
     let mut group_keys: Vec<&(&FeatureId, Role)> = groups.keys().collect();
-    group_keys.sort_by_cached_key(|k| (k.0.to_string(), role_sort_discriminant(&k.1)));
+    group_keys.sort_by_cached_key(|k| (k.0.to_string(), role_sort_key(&k.1).0));
 
     for key in group_keys {
         let entries = &groups[key];
@@ -1064,7 +1042,7 @@ pub fn detect_local_index_reassignment_diagnostics(
                             "topology-attribute selector for (feature '{}', role '{}') has \
                              geometrically tied local_index assignments at indices {} and {}; \
                              selector resolution may shuffle after edits",
-                            feature_id, role_human_name(role), idx_i, idx_j,
+                            feature_id, role_sort_key(role).1, idx_i, idx_j,
                         ))
                         .with_code(DiagnosticCode::TopologyAttributeLocalIndexReassigned)
                         .with_label(DiagnosticLabel::new(realization_span, "realization producing geometrically tied attributes")),
@@ -2880,7 +2858,6 @@ mod tests {
 
         use super::super::{
             LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M, detect_local_index_reassignment_diagnostics,
-            role_human_name,
         };
 
         /// Synthetic span used by every detect_* test — pinning a stable
@@ -3183,22 +3160,6 @@ mod tests {
                 "second diagnostic should be Side (higher discriminant), got: {}",
                 diagnostics2[1].message
             );
-        }
-
-        #[test]
-        fn role_human_name_returns_stable_string_for_each_variant() {
-            assert_eq!(role_human_name(&Role::Cap(CapKind::Top)), "Cap(Top)");
-            assert_eq!(role_human_name(&Role::Cap(CapKind::Bottom)), "Cap(Bottom)");
-            assert_eq!(role_human_name(&Role::Cap(CapKind::Start)), "Cap(Start)");
-            assert_eq!(role_human_name(&Role::Cap(CapKind::End)), "Cap(End)");
-            assert_eq!(role_human_name(&Role::Side), "Side");
-            assert_eq!(role_human_name(&Role::NewEdge), "NewEdge");
-            assert_eq!(role_human_name(&Role::RevolvedFace), "RevolvedFace");
-            assert_eq!(role_human_name(&Role::AxisFace), "AxisFace");
-            assert_eq!(role_human_name(&Role::SweptFace), "SweptFace");
-            assert_eq!(role_human_name(&Role::LoftedFace), "LoftedFace");
-            assert_eq!(role_human_name(&Role::MidSurfaceFace), "MidSurfaceFace");
-            assert_eq!(role_human_name(&Role::MidSurfaceEdge), "MidSurfaceEdge");
         }
 
         #[test]
