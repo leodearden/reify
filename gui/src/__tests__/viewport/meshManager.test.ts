@@ -2121,6 +2121,77 @@ describe('meshManager', () => {
       }
       expect(Array.from(posAttr.array as Float32Array)).toEqual(Array.from(expectedA1W3));
     });
+
+    // --- Amendment: suggestion 1 ---
+    it('(c) mesh synced AFTER setDeformation({warpFactor:5}) immediately gets an undeformed overlay', () => {
+      // Set deformation first, then introduce a brand-new entity via sync.
+      // The new mesh should receive both the warp AND an undeformed overlay —
+      // visually symmetric with meshes that were present at toggle time.
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      manager.setDeformation({ warpFactor: 5 });
+      vi.clearAllMocks();
+
+      // Sync a new entity with displaced_positions AFTER setDeformation.
+      manager.sync({ C: { entity_path: 'C', vertices: vertA1.slice(), indices: new Uint32Array([0, 1, 2]), normals: null, displaced_positions: dispA1.slice() } });
+
+      // The new entity must have an overlay.
+      expect(manager.getDeformedOverlays().has('C')).toBe(true);
+      expect(manager.getDeformedOverlays().size).toBe(1);
+
+      // The overlay's position attribute must equal the original (un-warped) vertices.
+      const overlay = manager.getDeformedOverlays().get('C')!;
+      const posAttr = (overlay.geometry as any).attributes.position;
+      expect(Array.from(posAttr.array as Float32Array)).toEqual(Array.from(vertA1));
+    });
+
+    // --- Amendment: suggestion 2a ---
+    it('(d) sync with new vertices while deformation active rebuilds overlay with fresh original vertices', () => {
+      // When a mesh's vertices change while deformation is active, the existing overlay
+      // still holds the OLD Float32Array. The implementation must rebuild the overlay
+      // pointing at the freshly-cached meshOriginalVertices entry.
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+      manager.sync({ A: { entity_path: 'A', vertices: vertA1.slice(), indices: new Uint32Array([0, 1, 2]), normals: null, displaced_positions: dispA1.slice() } });
+      manager.setDeformation({ warpFactor: 5 });
+      vi.clearAllMocks();
+
+      // Re-sync with brand-new vertices and displaced_positions.
+      manager.sync({ A: { entity_path: 'A', vertices: vertA2.slice(), indices: new Uint32Array([0, 1, 2]), normals: null, displaced_positions: dispA2.slice() } });
+
+      // Overlay must still exist.
+      expect(manager.getDeformedOverlays().has('A')).toBe(true);
+
+      // The overlay's position.array must equal the NEW original vertices (vertA2), not vertA1.
+      const overlay = manager.getDeformedOverlays().get('A')!;
+      const posAttr = (overlay.geometry as any).attributes.position;
+      expect(Array.from(posAttr.array as Float32Array)).toEqual(Array.from(vertA2));
+    });
+
+    // --- Amendment: suggestion 2b ---
+    it('(e) sync removes displaced_positions while deformation active → overlay torn down', () => {
+      // If a backend re-sync drops displaced_positions (e.g. FEA solve was removed),
+      // the existing overlay must be removed so no ghost shape lingers.
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+      manager.sync({ A: { entity_path: 'A', vertices: vertA1.slice(), indices: new Uint32Array([0, 1, 2]), normals: null, displaced_positions: dispA1.slice() } });
+      manager.setDeformation({ warpFactor: 5 });
+
+      const overlayBefore = manager.getDeformedOverlays().get('A')!;
+      const overlayGeom = overlayBefore.geometry;
+      vi.clearAllMocks();
+
+      // Re-sync WITHOUT displaced_positions.
+      manager.sync({ A: { entity_path: 'A', vertices: vertA2.slice(), indices: new Uint32Array([0, 1, 2]), normals: null } });
+
+      // Overlay must have been removed.
+      expect(manager.getDeformedOverlays().has('A')).toBe(false);
+      expect(manager.getDeformedOverlays().size).toBe(0);
+      // Overlay geometry must have been disposed.
+      expect(overlayGeom.dispose).toHaveBeenCalledOnce();
+    });
   });
 
   describe('setDeformation — mixed mesh (with and without displaced_positions)', () => {

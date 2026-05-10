@@ -239,8 +239,11 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
 
     // If deformation is already active, apply the warp to this freshly-created mesh
     // so a mid-stream backend sync doesn't snap the view back to undeformed.
+    // Also add the undeformed overlay so a mesh that joins after the user toggles
+    // 'Show deformed' is visually symmetric with meshes present at toggle time.
     if (currentDeformation !== null && data.displaced_positions) {
       applyWarpToMesh(mesh, entityPath, currentDeformation.warpFactor);
+      addUndeformedOverlay(entityPath, mesh);
     }
 
     return mesh;
@@ -319,11 +322,23 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
       }
     }
 
-    // If deformation is active and this mesh has displaced_positions, re-apply the warp
-    // to the freshly-updated position buffer so a mid-stream sync doesn't snap the view
-    // back to undeformed. Mirrors the colorize re-bake block above.
-    if (currentDeformation !== null && data.displaced_positions) {
-      applyWarpToMesh(mesh, mesh.name, currentDeformation.warpFactor);
+    // If deformation is active, re-apply warp and rebuild the overlay as needed.
+    // The overlay's position BufferAttribute wraps the *previous* Float32Array from
+    // meshOriginalVertices; after a topology-changing sync those entries are refreshed
+    // above, but the overlay still points at the old array. Rebuilding it ensures the
+    // ghost shape always matches the current un-displaced geometry.
+    if (currentDeformation !== null) {
+      if (data.displaced_positions) {
+        applyWarpToMesh(mesh, mesh.name, currentDeformation.warpFactor);
+        // Rebuild overlay: remove the stale one (if any) and create a fresh one
+        // pointing at the just-updated meshOriginalVertices entry.
+        removeUndeformedOverlay(mesh.name);
+        addUndeformedOverlay(mesh.name, mesh);
+      } else {
+        // displaced_positions disappeared (e.g. backend turned off FEA solve):
+        // remove any lingering overlay so no ghost shape persists for this entity.
+        removeUndeformedOverlay(mesh.name);
+      }
     }
 
     // Rebuild BVH for the updated geometry
