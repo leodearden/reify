@@ -1500,6 +1500,79 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Task 2921: warm-state plumbing — iteration-reduction contract
+    // -----------------------------------------------------------------------
+
+    /// Warm-start with `u₁` (the cold solution to K·u = f₁) reduces the
+    /// CG iteration count when re-solving K·u = f₂ for a perturbed
+    /// `f₂ = f₁ + δ` with small δ — this is the iteration-reduction
+    /// contract from PRD task #14.
+    ///
+    /// Procedure:
+    /// 1. Solve K·u = f₁ cold → record `iter_cold_baseline` and `u₁`.
+    /// 2. Solve K·u = f₂ cold → record `iter_cold_perturbed`.
+    /// 3. Solve K·u = f₂ warm with `Some(&u₁)` → record `iter_warm_perturbed`.
+    ///
+    /// Asserts:
+    /// - `iter_warm_perturbed < iter_cold_perturbed` (the contract).
+    /// - `result_warm.converged == true`.
+    /// - Tolerance-equivalence: warm and cold solutions of f₂ differ by
+    ///   at most `1e-9 · max(1, |u_cold[i]|)` per component (both
+    ///   converged to the same SPD system within tolerance).
+    ///
+    /// Uses `Deterministic` mode for bit-stability of intermediate solves.
+    #[test]
+    fn warm_start_with_perturbed_rhs_reduces_iteration_count() {
+        let (k, f1) = fan_mesh_k_spd_and_f();
+        let opts = CgSolverOptions {
+            tolerance: 1e-10,
+            max_iter: 1000,
+        };
+
+        // Cold solve K·u = f1.
+        let cold_baseline = solve_cg(&k, &f1, opts.clone(), SolverMode::Deterministic);
+        assert!(cold_baseline.converged, "cold baseline must converge");
+        let u1 = cold_baseline.u.clone();
+
+        // Build perturbed RHS f2 = f1 + δ. Pick a free DOF (DOF 7 — DOFs 0..6
+        // are Dirichlet-pinned in this fixture) and add a small perturbation.
+        let mut f2 = f1.clone();
+        f2[7] += 1e-3;
+
+        // Cold solve K·u = f2.
+        let cold_perturbed = solve_cg(&k, &f2, opts.clone(), SolverMode::Deterministic);
+        assert!(cold_perturbed.converged, "cold perturbed must converge");
+
+        // Warm solve K·u = f2 with u1 as initial guess.
+        let warm_perturbed =
+            solve_cg_warm(&k, &f2, Some(&u1), opts, SolverMode::Deterministic);
+        assert!(warm_perturbed.converged, "warm perturbed must converge");
+
+        // Iteration-reduction contract.
+        assert!(
+            warm_perturbed.iterations < cold_perturbed.iterations,
+            "warm ({}) must use fewer iterations than cold ({}) on perturbed RHS",
+            warm_perturbed.iterations,
+            cold_perturbed.iterations,
+        );
+
+        // Tolerance-equivalence: both solutions converged to the same SPD
+        // system within tolerance, so they must agree component-wise to
+        // within 1e-9 · max(1, |u_cold|).
+        for i in 0..f2.len() {
+            let tol = 1e-9 * cold_perturbed.u[i].abs().max(1.0);
+            let diff = (warm_perturbed.u[i] - cold_perturbed.u[i]).abs();
+            assert!(
+                diff < tol,
+                "tolerance-equivalence failure at i={i}: \
+                 u_warm={}, u_cold={}, |diff|={diff} ≥ tol={tol}",
+                warm_perturbed.u[i],
+                cold_perturbed.u[i],
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Task 2921: warm-state plumbing — early-exit at exact solution
     // -----------------------------------------------------------------------
 
