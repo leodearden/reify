@@ -7,8 +7,8 @@ use reify_compiler::{
     ValueCellKind, find_template,
 };
 use reify_types::{
-    CompiledExpr, ConstraintNodeId, ContentHash, PersistentMap, RealizationNodeId,
-    ResolutionNodeId, Type, Value, ValueCellId, ValueMap,
+    CompiledExpr, ComputeNodeId, ConstraintNodeId, ContentHash, OpaqueState, PersistentMap,
+    RealizationNodeId, ResolutionNodeId, Type, Value, ValueCellId, ValueMap,
 };
 
 /// A value cell node in the evaluation graph.
@@ -56,6 +56,62 @@ pub struct ResolutionNodeData {
     pub auto_params: Vec<ValueCellId>,
     pub constraint_deps: Vec<ConstraintNodeId>,
     pub content_hash: ContentHash,
+}
+
+/// Placeholder for the in-flight cancellation handle carried by a running
+/// ComputeNode. P3.1 only ships this unit-type stand-in so `ComputeNodeData`
+/// has a stable field shape; P3.5 replaces it with the real cooperative-
+/// cancellation type (likely `Arc<AtomicBool>` per PRD §"Lifecycle: pending
+/// + cancellation"). Kept module-private (not re-exported) so the eventual
+/// real type can land without an API break.
+#[derive(Debug, Clone, Default)]
+pub struct CancellationHandle;
+
+/// A compute node in the evaluation graph.
+/// Parallel to RealizationNodeData / ResolutionNodeData. See
+/// `docs/prds/v0_3/compute-node-infrastructure.md` §"Struct shape" for
+/// the field-by-field PRD spec; the exhaustive-destructure test
+/// `compute_node_data_fields_match_prd_spec` pins this list at compile time.
+#[derive(Debug)]
+pub struct ComputeNodeData {
+    // Identity
+    pub computation_id: ComputeNodeId,
+    pub target: String,
+    // Inputs (drive cache key in P3.2)
+    pub value_inputs: Vec<ValueCellId>,
+    pub realization_inputs: Vec<RealizationNodeId>,
+    pub options_hash: ContentHash,
+    // Cache
+    pub cache_key: ContentHash,
+    pub cached_result: Option<Value>,
+    pub result_content_hash: Option<ContentHash>,
+    // Lifecycle
+    pub opaque_state: Option<OpaqueState>,
+    pub running: Option<CancellationHandle>,
+    // Output side
+    pub output_value_cells: Vec<ValueCellId>,
+}
+
+// Manual Clone mirroring `NodeCache::Clone` (cache.rs:171-183):
+// OpaqueState is !Clone (Box<dyn Any + Send>), so we drop the slot to
+// None on clone. Warm state is transient — best-effort recovery is the
+// existing WarmStatePool contract.
+impl Clone for ComputeNodeData {
+    fn clone(&self) -> Self {
+        Self {
+            computation_id: self.computation_id.clone(),
+            target: self.target.clone(),
+            value_inputs: self.value_inputs.clone(),
+            realization_inputs: self.realization_inputs.clone(),
+            options_hash: self.options_hash,
+            cache_key: self.cache_key,
+            cached_result: self.cached_result.clone(),
+            result_content_hash: self.result_content_hash,
+            opaque_state: None,
+            running: self.running.clone(),
+            output_value_cells: self.output_value_cells.clone(),
+        }
+    }
 }
 
 /// Metadata for a guarded group in the evaluation graph.
