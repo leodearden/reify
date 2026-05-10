@@ -3849,24 +3849,30 @@ describe('session.test.ts /tmp leak guard (task 3283)', () => {
     });
     session.onOutput = () => {};
 
-    await session.handleMessage({ type: 'send_message', id: 'msg-leak', text: 'Hello' });
+    try {
+      await session.handleMessage({ type: 'send_message', id: 'msg-leak', text: 'Hello' });
 
-    // Snapshot /tmp after — the delta (new entries not in `before`) must be empty.
-    // If node:fs is NOT mocked, session.ts calls real mkdtempSync and this fails.
-    // Once vi.mock('node:fs', factory) is active, no real dirs are created.
-    const after = new Set<string>(
-      realFs.readdirSync(tmpdir).filter((name: string) => REIFY_MCP_TMP_PREFIX.test(name))
-    );
-    // `leaked` = after \ before (set-difference): if empty, after ⊆ before and
-    // no new /tmp entries appeared. Using set-difference rather than set-equality
-    // is intentional: a concurrent process removing a pre-existing entry would
-    // shrink `after` relative to `before`, but the filter still yields [] (correct).
-    const leaked = [...after].filter((d) => !before.has(d));
-    expect(leaked, 'leaked /tmp/reify-mcp-* dirs: ' + leaked.join(', ')).toHaveLength(0);
+      // Snapshot /tmp after — the delta (new entries not in `before`) must be empty.
+      // If node:fs is NOT mocked, session.ts calls real mkdtempSync and this fails.
+      // Once vi.mock('node:fs', factory) is active, no real dirs are created.
+      const after = new Set<string>(
+        realFs.readdirSync(tmpdir).filter((name: string) => REIFY_MCP_TMP_PREFIX.test(name))
+      );
+      // `leaked` = after \ before (set-difference): if empty, after ⊆ before and
+      // no new /tmp entries appeared. Using set-difference rather than set-equality
+      // is intentional: a concurrent process removing a pre-existing entry would
+      // shrink `after` relative to `before`, but the filter still yields [] (correct).
+      const leaked = [...after].filter((d) => !before.has(d));
+      expect(leaked, 'leaked /tmp/reify-mcp-* dirs: ' + leaked.join(', ')).toHaveLength(0);
+    } finally {
+      // Destroy runs even if the leak assertion throws, so session state doesn't
+      // linger across tests in the same worker. Matches the convention at lines 1414,
+      // 1487, 1511, 1534, 1559, 1588: destroy() is void/synchronous, no await needed.
+      session.destroy();
+    }
+    // Placed after the try/finally so destroy() has always run before we check.
     // The session must be torn down so its abortController, currentStdin, and
     // pendingPermissionRequests don't linger across tests in the same worker.
-    // Other tests in this file (e.g. lines 1414, 1487, 1511) consistently call
-    // session.destroy() after asserting; this test should follow that convention.
     expect((session as any).destroyed, 'leak-guard test must call session.destroy()').toBe(true);
   });
 
