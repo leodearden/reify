@@ -99,6 +99,7 @@ vi.mock('../bridge', () => ({
   onValueRemoved: vi.fn().mockResolvedValue(() => {}),
   onConstraintRemoved: vi.fn().mockResolvedValue(() => {}),
   onTessellationDiagnostics: vi.fn().mockResolvedValue(() => {}),
+  onCompileDiagnostics: vi.fn().mockResolvedValue(() => {}),
   onFileChanged: vi.fn().mockResolvedValue(() => {}),
   onSerializationError: vi.fn().mockResolvedValue(() => {}),
   onFocusEntity: vi.fn().mockResolvedValue(() => {}),
@@ -164,6 +165,7 @@ beforeEach(() => {
   vi.mocked(bridge.onValueRemoved).mockResolvedValue(() => {});
   vi.mocked(bridge.onConstraintRemoved).mockResolvedValue(() => {});
   vi.mocked(bridge.onTessellationDiagnostics).mockResolvedValue(() => {});
+  vi.mocked((bridge as any).onCompileDiagnostics).mockResolvedValue(() => {});
   vi.mocked(bridge.onFileChanged).mockResolvedValue(() => {});
   vi.mocked(bridge.onSerializationError).mockResolvedValue(() => {});
   vi.mocked(bridge.onFocusEntity).mockResolvedValue(() => {});
@@ -3021,6 +3023,130 @@ describe('App tessellation diagnostics end-to-end wiring', () => {
       expect(badge).toBeTruthy();
       expect(badge?.getAttribute('data-has-errors')).toBe('true');
       expect(statusBar.textContent).toMatch(/compile error/i);
+    });
+  });
+});
+
+describe('App compile diagnostics end-to-end wiring', () => {
+  let compileDiagnosticsCallback: ((diags: any[]) => void) | undefined;
+
+  beforeEach(() => {
+    compileDiagnosticsCallback = undefined;
+    vi.mocked((bridge as any).onCompileDiagnostics).mockImplementation(async (cb: any) => {
+      compileDiagnosticsCallback = cb;
+      return () => {};
+    });
+  });
+
+  const warningDiag = {
+    file_path: 'helper.ri',
+    line: 3,
+    column: 1,
+    end_line: 3,
+    end_column: 10,
+    severity: 'Warning',
+    message: "unknown port type 'Foo'",
+    code: null,
+  };
+
+  it('compile-diagnostics event: diagnostics-count badge appears in StatusBar with "1 warning"', async () => {
+    render(() => <App />);
+    await waitFor(() => expect(compileDiagnosticsCallback).toBeDefined());
+
+    compileDiagnosticsCallback!([warningDiag]);
+
+    await waitFor(() => {
+      const statusBar = screen.getByTestId('status-bar');
+      const badge = statusBar.querySelector('[data-testid="diagnostics-count"]');
+      expect(badge).toBeTruthy();
+      expect(badge!.textContent).toMatch(/1 warning/i);
+    });
+  });
+
+  it('diagnostics-panel is NOT visible before clicking the badge', async () => {
+    render(() => <App />);
+    await waitFor(() => expect(compileDiagnosticsCallback).toBeDefined());
+
+    compileDiagnosticsCallback!([warningDiag]);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('diagnostics-count')).toBeTruthy();
+    });
+
+    expect(document.querySelector('[data-testid="diagnostics-panel"]')).toBeNull();
+  });
+
+  it('clicking diagnostics-count badge opens the diagnostics-panel', async () => {
+    render(() => <App />);
+    await waitFor(() => expect(compileDiagnosticsCallback).toBeDefined());
+
+    compileDiagnosticsCallback!([warningDiag]);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('diagnostics-count')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('diagnostics-count'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('diagnostics-panel')).toBeTruthy();
+    });
+  });
+
+  it('clicking a diagnostic row triggers navigation via setScrollToLocation', async () => {
+    render(() => <App />);
+    await waitFor(() => expect(compileDiagnosticsCallback).toBeDefined());
+
+    compileDiagnosticsCallback!([warningDiag]);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('diagnostics-count')).toBeTruthy();
+    });
+
+    // Open the panel
+    fireEvent.click(screen.getByTestId('diagnostics-count'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('diagnostics-panel')).toBeTruthy();
+    });
+
+    // Click the diagnostic row
+    const row = document.querySelector('[data-testid="diagnostic-row"]') as HTMLElement;
+    expect(row).toBeTruthy();
+    fireEvent.click(row!);
+
+    // Editor scrollToLocation should update with the diagnostic's location
+    await waitFor(() => {
+      const loc = capturedEditorScrollToLocation?.();
+      expect(loc).toMatchObject({
+        file_path: 'helper.ri',
+        line: 3,
+        column: 1,
+      });
+    });
+  });
+
+  it('pressing Escape inside the panel closes it', async () => {
+    render(() => <App />);
+    await waitFor(() => expect(compileDiagnosticsCallback).toBeDefined());
+
+    compileDiagnosticsCallback!([warningDiag]);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('diagnostics-count')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('diagnostics-count'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('diagnostics-panel')).toBeTruthy();
+    });
+
+    // Press Escape on the panel
+    fireEvent.keyDown(screen.getByTestId('diagnostics-panel'), { key: 'Escape' });
+
+    await waitFor(() => {
+      expect(document.querySelector('[data-testid="diagnostics-panel"]')).toBeNull();
     });
   });
 });
