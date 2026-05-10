@@ -3032,8 +3032,10 @@ import type { PermissionServer } from '../permission-server.js';
 function makeMockPermissionServer(): {
   server: PermissionServer;
   triggerRequest: (req: { request_id: string; tool_name: string; tool_input: Record<string, unknown> }) => void;
+  triggerLatchedHandler: (req: { request_id: string; tool_name: string; tool_input: Record<string, unknown> }) => void;
 } {
   let capturedHandler: ((req: any) => void) | null = null;
+  let latchedHandler: ((req: any) => void) | null = null;
 
   const server: PermissionServer = {
     start: vi.fn().mockResolvedValue(undefined),
@@ -3041,6 +3043,7 @@ function makeMockPermissionServer(): {
     url: vi.fn().mockReturnValue('http://127.0.0.1:29999/mcp'),
     onRequest: vi.fn((handler: ((req: any) => void) | null) => {
       capturedHandler = handler;
+      if (handler !== null) { latchedHandler = handler; }
     }),
     decide: vi.fn(),
     setRemembered: vi.fn(),
@@ -3052,6 +3055,10 @@ function makeMockPermissionServer(): {
     triggerRequest: (req) => {
       if (!capturedHandler) throw new Error('onRequest handler was never registered by the session');
       capturedHandler(req);
+    },
+    triggerLatchedHandler: (req) => {
+      if (!latchedHandler) throw new Error('no non-null onRequest handler has ever been registered on this mock');
+      latchedHandler(req);
     },
   };
 }
