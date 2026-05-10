@@ -84,6 +84,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn coarse_pass_tuning_returns_4x_mesh_and_loose_cg() {
+        let opts = ProgressiveOptions { target_tolerance: 0.05, ..Default::default() };
+        let pt = coarse_pass_tuning(&opts);
+        assert_eq!(pt.mesh_tol, 0.20, "mesh_tol must be target_tolerance × 4");
+        assert_eq!(pt.cg_tol, 1e-3, "cg_tol must be 1e-3 for coarse pass");
+
+        // Different tolerance — defeats hardcoded-constant returns.
+        let opts2 = ProgressiveOptions { target_tolerance: 0.01, ..Default::default() };
+        let pt2 = coarse_pass_tuning(&opts2);
+        assert!((pt2.mesh_tol - 0.04).abs() < 1e-15, "mesh_tol for 0.01 must be 0.04, got {}", pt2.mesh_tol);
+        assert_eq!(pt2.cg_tol, 1e-3);
+    }
+
+    #[test]
     fn partial_elastic_result_round_trips_through_clone_and_eq() {
         let original = PartialElasticResult {
             displacement: vec![1.0, -2.0],
