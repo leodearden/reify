@@ -5276,3 +5276,225 @@ fn is_idle_returns_true_after_load_from_source() {
         "session should be idle after a successful load_from_source"
     );
 }
+
+// ── Multi-file import resolution (task 3228) ─────────────────────────────────
+
+/// Pin the live MCP repro: loading a .ri file that imports another user module
+/// must resolve the import, merge the imported template, and produce non-empty
+/// GUI values.
+///
+/// Pre-fix (compile_with_stdlib path): `load_file` ignores the import entirely.
+/// `structure Top` has no direct params, so compiled.templates = [Top] with
+/// value_cells = [] → state.values is empty.
+///
+/// Post-fix (compile_entry_with_imports): `ModuleResolver` resolves `helper`,
+/// Helper's template is merged into compiled.templates, phase-1 eval produces
+/// `Helper.x = 10mm`, and build_values surfaces it as a ValueData entry.
+///
+/// The checked value ("10", unit "mm") is the DEFAULT from Helper.x's
+/// declaration — `build_values` iterates template.value_cells (statics), not
+/// per-instance scoped overrides.  Surfacing per-instance overrides is a
+/// separate concern; the present assertion (non-empty `state.values` with
+/// `Helper.x = 10mm`) is the correct proxy for confirming the import resolved
+/// and the template was merged.
+#[test]
+fn load_file_with_user_import_resolves_imported_structure() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+
+    // helper.ri: a public structure with one param
+    std::fs::write(
+        dir.path().join("helper.ri"),
+        "pub structure Helper { param x: Scalar = 10mm }\n",
+    )
+    .expect("write helper.ri");
+
+    // main.ri: imports helper and instantiates it as a sub-component.
+    // Use the default `Helper()` so the source matches what the assertions
+    // verify — `build_values` only surfaces template-level value_cells, so a
+    // per-instance override here would be dead weight.
+    std::fs::write(
+        dir.path().join("main.ri"),
+        "import helper\nstructure Top { sub h = Helper() }\n",
+    )
+    .expect("write main.ri");
+
+    let state = session
+        .load_file(&dir.path().join("main.ri"))
+        .expect("load_file should succeed with resolved import");
+
+    // Post-fix: Helper's template is merged into compiled.templates, so phase-1
+    // eval produces Helper.x = 10mm and build_values surfaces it.
+    // Pre-fix: compiled.templates = [Top] only, Top has no value_cells → empty.
+    assert!(
+        !state.values.is_empty(),
+        "state.values should be non-empty after import is resolved (got {} values)",
+        state.values.len()
+    );
+
+    // Filter by both name and entity_path so the assertion is unambiguous when
+    // multiple structures in the module happen to share a parameter name.
+    let x_val = state
+        .values
+        .iter()
+        .find(|v| v.name == "x" && v.entity_path == "Helper")
+        .expect("should find parameter 'x' on entity 'Helper' from the imported structure");
+
+    assert_eq!(
+        x_val.unit, "mm",
+        "Helper.x should have unit 'mm', got '{}'",
+        x_val.unit
+    );
+    assert_eq!(
+        x_val.value, "10",
+        "Helper.x default is 10mm; got '{}' (unit: '{}')",
+        x_val.value, x_val.unit
+    );
+}
+
+/// Regression: loading a standalone .ri file with no imports via the new
+/// compile_entry_with_imports path must work correctly — same as before.
+///
+/// Guards against the new code path mishandling the no-imports case
+/// (e.g. wrong project_root resolution, double-counting stdlib, or the
+/// templates-merge logic producing duplicates when there's nothing to merge).
+/// Should pass immediately after step-2 (regression pin, not a driver of
+/// new code).
+#[test]
+fn load_file_solo_helper_no_imports_works() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+
+    std::fs::write(
+        dir.path().join("helper.ri"),
+        "pub structure Helper { param x: Scalar = 10mm }\n",
+    )
+    .expect("write helper.ri");
+
+    let state = session
+        .load_file(&dir.path().join("helper.ri"))
+        .expect("load_file of solo file should succeed");
+
+    assert!(
+        !state.values.is_empty(),
+        "solo load_file should produce non-empty values; got {} values",
+        state.values.len()
+    );
+
+    // Filter by both name and entity_path to avoid false matches if additional
+    // structures with a parameter named "x" are present.
+    let x_val = state
+        .values
+        .iter()
+        .find(|v| v.name == "x" && v.entity_path == "Helper")
+        .expect("should find parameter 'x' on entity 'Helper'");
+
+    assert_eq!(x_val.unit, "mm", "Helper.x unit should be mm; got '{}'", x_val.unit);
+    assert_eq!(x_val.value, "10", "Helper.x value should be 10; got '{}'", x_val.value);
+}
+
+/// Regression: loading a .ri file whose import cannot be resolved must return
+/// a clear Err — not silently succeed with an empty/broken engine state.
+///
+/// Pre-fix (compile_with_stdlib path): the import is ignored, compile succeeds,
+/// load_file returns Ok with empty or useless engine state.
+/// Post-fix (compile_entry_with_imports): dag.compile_module returns an Err
+/// containing the resolver's "module 'nonexistent' not found: tried '...' and
+/// '...'" message, which load_file surfaces as Err.
+#[test]
+fn load_file_unresolved_import_returns_clear_err() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+
+    // main.ri imports a module that doesn't exist on disk
+    std::fs::write(
+        dir.path().join("main.ri"),
+        "import nonexistent\nstructure Top { let x = 1 }\n",
+    )
+    .expect("write main.ri");
+
+    let result = session.load_file(&dir.path().join("main.ri"));
+
+    assert!(
+        result.is_err(),
+        "load_file with unresolved import should return Err, got Ok"
+    );
+
+    let err_msg = result.unwrap_err();
+    assert!(
+        err_msg.contains("nonexistent"),
+        "error message should mention the module name 'nonexistent'; got: {err_msg}"
+    );
+    assert!(
+        err_msg.contains("not found") || err_msg.contains("failed to read"),
+        "error message should mention 'not found' or 'failed to read'; got: {err_msg}"
+    );
+}
+
+/// Guard against double-seeding stdlib when a .ri file explicitly `import std.*`.
+///
+/// When an entry imports `std.units`, the new flow adds it to the DAG and also
+/// has the full stdlib via `load_stdlib()`.  This test verifies that:
+/// (a) load_file returns Ok (no partial-overlay error),
+/// (b) state.values is non-empty (compilation and eval succeeded), and
+/// (c) state.diagnostics (or the error path) does NOT contain a partial stdlib
+///     overlay diagnostic.
+///
+/// The test is typically green immediately after step-2 because `dag.compile_module`
+/// for `std.units` falls back to Embedded mode (no stdlib dir exists in the
+/// tempdir), same mode as load_stdlib()'s slice — no conflict.
+#[test]
+fn load_file_with_std_import_does_not_double_seed_stdlib() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+
+    // main.ri uses std.units implicitly via Length and mm
+    std::fs::write(
+        dir.path().join("main.ri"),
+        "import std.units\nstructure Top { param w: Length = 5mm }\n",
+    )
+    .expect("write main.ri");
+
+    let result = session.load_file(&dir.path().join("main.ri"));
+
+    assert!(
+        result.is_ok(),
+        "load_file with explicit std.units import should succeed; got Err: {}",
+        result.as_ref().unwrap_err()
+    );
+
+    let state = result.unwrap();
+
+    assert!(
+        !state.values.is_empty(),
+        "state.values should be non-empty (Top.w = 5mm); got {} values",
+        state.values.len()
+    );
+
+    // No partial-stdlib-overlay diagnostic should appear in the GUI state.
+    // Diagnostics from the engine session appear in state.diagnostics (if any).
+    // The overlay diagnostic is an Error — if it appeared, load_file would have
+    // returned Err already, so we only need to confirm the result was Ok above.
+    // Filter by both name and entity_path to guard against false positives when
+    // multiple structures define a parameter named "w".
+    let w_val = state
+        .values
+        .iter()
+        .find(|v| v.name == "w" && v.entity_path == "Top")
+        .expect("should find parameter 'w' on entity 'Top'");
+
+    assert_eq!(w_val.unit, "mm", "Top.w unit should be mm; got '{}'", w_val.unit);
+    assert_eq!(w_val.value, "5", "Top.w value should be 5; got '{}'", w_val.value);
+}

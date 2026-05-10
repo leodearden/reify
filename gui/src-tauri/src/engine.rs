@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use tracing::warn;
 
-use reify_compiler::{CompiledModule, ValueCellKind};
+use reify_compiler::{CompiledModule, ValueCellKind, Visibility};
 use reify_eval::{CheckResult, Engine};
 use reify_eval::cache::NodeId;
 use reify_types::{
@@ -89,6 +89,198 @@ pub struct EngineSession {
 pub(crate) fn module_key(name: &str) -> String {
     debug_assert!(!name.is_empty(), "module_key called with empty name");
     format!("{}.ri", name)
+}
+
+/// Returns `true` for any `std` or `std.*` import path.
+///
+/// Used by `compile_entry_with_imports` at two filter sites (prelude-ref
+/// de-duplication and template merge) so both stay in lockstep if the
+/// stdlib path convention ever changes.
+fn is_stdlib_path(p: &str) -> bool {
+    p == "std" || p.starts_with("std.")
+}
+
+/// Parse and compile `source` with multi-file import resolution.
+///
+/// This is the compile-side of `load_file`'s multi-file flow (task 3228 v1).
+///
+/// `reify_compiler::module_dag::compile_project_with_entry_source` (at
+/// module_dag.rs:607) covers most of the same scaffolding — parse,
+/// `ModuleDag::new`, recursive `compile_module` per import, prelude
+/// collection, final entry compile.  This GUI helper exists because that
+/// compiler function does **not** yet do two things load_file needs:
+///
+///   1. **Stdlib in prelude** — the compiler function uses
+///      `compile_with_prelude_refs` with user imports only.  load_file needs
+///      stdlib enum disambiguation (e.g. `CorrosionClass.C5` → `EnumAccess`)
+///      and stdlib functions like `box(...)` to resolve, which require the
+///      stdlib slice in the prelude.
+///   2. **Template merge for eval** — `find_template` is called against the
+///      entry module only (engine_eval.rs:1629; unfold.rs:418, :466), so
+///      imported pub structures must be merged into `entry.templates` before
+///      eval; the compiler function's return value doesn't do that merge.
+///
+/// Replacing this helper with a call into the compiler API is filed as a
+/// follow-up — extend `compile_project_with_entry_source` to seed stdlib
+/// and return entry-with-merged-templates, then this becomes a one-liner.
+///
+/// # Flow
+///
+/// 1. Parse `source` with `parse_with_stdlib` (preserves stdlib enum
+///    disambiguation, e.g. `CorrosionClass.C5` → `EnumAccess`).
+/// 2. Build `ModuleResolver::new(project_root, stdlib_root)` where
+///    `project_root` is the directory containing `entry_path` and
+///    `stdlib_root = project_root.join("crates/reify-compiler/stdlib")`.
+///    Matching the LSP heuristic: for user projects the stdlib dir usually
+///    doesn't exist on disk, so `ModuleDag` falls back to the embedded stdlib.
+/// 3. For each `import` declaration in the parsed module, call
+///    `dag.compile_module(&import.path, &resolver)`.  Errors are surfaced as
+///    `"Compile errors: ..."` strings.
+/// 4. Build prelude refs: stdlib modules (from `load_stdlib()`) + user imports
+///    from `dag.modules` (in declaration order, skipping `std.*` keys which are
+///    already present via the stdlib slice).
+/// 5. Compile the entry with `compile_with_prelude_context(&parsed, &ctx)`.
+/// 6. Merge non-stdlib imported templates into `compiled.templates` so that
+///    `find_template` during eval finds imported pub structures.
+///
+/// # v1 transitive-import limitation
+///
+/// Only **direct** (1-hop) imports of the entry file have their templates merged
+/// into `compiled.templates`.  If `helper.ri` itself imports `util.ri`, `Util`'s
+/// `TopologyTemplate` will not be present at eval time, and `find_template` will
+/// fail with "unknown structure" for any `sub` referencing `Util`.  Iterating
+/// all entries in `dag.modules` and merging each would fix this; deferred to a
+/// follow-up task.
+///
+/// # v1 source-map limitation
+///
+/// Only the entry's source is stored in `source_map` (under the entry module
+/// key). Imported file contents are not added to `source_map`; the GUI's
+/// "files" panel will show only the entry file.  See task 3228 for the
+/// planned follow-up.
+fn compile_entry_with_imports(
+    entry_path: &Path,
+    source: &str,
+    module_name: &str,
+) -> Result<(CompiledModule, reify_syntax::ParsedModule), String> {
+    // Parse with stdlib enum pre-seeding (same as load_from_source / update_source).
+    let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(module_name));
+    if !parsed.errors.is_empty() {
+        let msgs: Vec<String> = parsed.errors.iter().map(|e| e.message.clone()).collect();
+        return Err(format!("Parse errors: {}", msgs.join("; ")));
+    }
+
+    // project_root = directory of the entry file; stdlib_root matches LSP heuristic.
+    let project_root = entry_path.parent().unwrap_or(Path::new("."));
+    let stdlib_root = project_root.join("crates/reify-compiler/stdlib");
+
+    let resolver = reify_compiler::module_dag::ModuleResolver::new(project_root, &stdlib_root);
+    let mut dag = reify_compiler::module_dag::ModuleDag::new();
+
+    // Collect import paths from the parsed module (top-level Import declarations only).
+    let import_paths: Vec<String> = parsed
+        .declarations
+        .iter()
+        .filter_map(|decl| {
+            if let reify_syntax::Declaration::Import(imp) = decl {
+                Some(imp.path.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Compile each non-stdlib import.  Std.* paths are skipped: the full
+    // stdlib is seeded into the prelude below via `load_stdlib()`, and the
+    // user_import_refs / template-merge loops both filter std.* out, so a
+    // `dag.compile_module("std.units", ...)` call would be wasted work
+    // (one extra parse+compile per std import in the typical case).
+    for import_path in &import_paths {
+        if is_stdlib_path(import_path) {
+            continue;
+        }
+        dag.compile_module(import_path, &resolver).map_err(|diags| {
+            let msgs: Vec<String> = diags.iter().map(|d| d.message.clone()).collect();
+            format!("Compile errors in import '{}': {}", import_path, msgs.join("; "))
+        })?;
+    }
+
+    // Build prelude refs: stdlib (static) + user imports from dag.modules.
+    // Skipping std.* keys from the import list because the full stdlib is already
+    // present via the load_stdlib() slice — adding them again would be redundant.
+    let stdlib_modules = reify_compiler::stdlib_loader::load_stdlib();
+    let user_import_refs: Vec<&CompiledModule> = import_paths
+        .iter()
+        .filter(|p| !is_stdlib_path(p))
+        .filter_map(|p| dag.modules.get(p))
+        .collect();
+
+    let prelude_refs: Vec<&CompiledModule> = stdlib_modules
+        .iter()
+        .chain(user_import_refs.iter().copied())
+        .collect();
+
+    let ctx = reify_compiler::PreludeContext::new(&prelude_refs);
+    let mut compiled = reify_compiler::compile_with_prelude_context(&parsed, &ctx);
+
+    // Surface compile errors.
+    let has_errors = compiled
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Error);
+    if has_errors {
+        let msgs: Vec<String> = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .map(|d| d.message.clone())
+            .collect();
+        return Err(format!("Compile errors: {}", msgs.join("; ")));
+    }
+
+    // Merge pub templates from direct (1-hop) non-stdlib imports into the entry's
+    // compiled.templates so that reify_eval::Engine::eval / unfold can find them
+    // via find_template(&module.templates, name).
+    //
+    // Visibility filter: only Visibility::Public templates are merged.  Private
+    // structures from imported modules must not be reachable to the eval engine,
+    // mirroring compile-time import semantics.
+    //
+    // Std.* modules are excluded: stdlib structures are not expected to appear as
+    // top-level GUI entities.
+    //
+    // De-duplication: skip any imported template whose name already exists in
+    // `compiled.templates` (either declared by the entry or merged from an
+    // earlier import).  `find_template` is a linear first-match scan, so duplicates
+    // would silently shadow.  First-wins matches the compiler's cross-prelude
+    // collision policy in compile_with_prelude_refs.
+    //
+    // v1 limitation: only DIRECT imports are merged.  If helper.ri itself imports
+    // util.ri, Util's template will be absent from this list and find_template will
+    // fail at eval for any sub referencing Util.  A future fix should iterate all
+    // dag.modules entries instead of just import_paths.
+    for import_path in &import_paths {
+        if is_stdlib_path(import_path) {
+            continue;
+        }
+        if let Some(imported_module) = dag.modules.get(import_path) {
+            for template in &imported_module.templates {
+                if template.visibility != Visibility::Public {
+                    continue;
+                }
+                if compiled
+                    .templates
+                    .iter()
+                    .any(|t| t.name == template.name)
+                {
+                    continue;
+                }
+                compiled.templates.push(template.clone());
+            }
+        }
+    }
+
+    Ok((compiled, parsed))
 }
 
 impl EngineSession {
@@ -217,6 +409,13 @@ impl EngineSession {
     }
 
     /// Load a .ri file from disk.
+    ///
+    /// Unlike `load_from_source`, this method wires multi-file import resolution:
+    /// it builds a `ModuleResolver` rooted at the file's parent directory and
+    /// compiles each `import` declaration via `ModuleDag` before composing the
+    /// entry's prelude.  See `compile_entry_with_imports` for the full flow and
+    /// for the rationale on why it's GUI-side rather than a direct call into
+    /// `reify_compiler::module_dag::compile_project_with_entry_source`.
     pub fn load_file(&mut self, path: &Path) -> Result<GuiState, String> {
         let source = std::fs::read_to_string(path)
             .map_err(|e| format!("Error reading {}: {}", path.display(), e))?;
@@ -226,8 +425,15 @@ impl EngineSession {
             .and_then(|s| s.to_str())
             .unwrap_or("unnamed");
 
+        // Defer `self.file_path = ...` until after `commit_state` succeeds so an
+        // Err from `compile_entry_with_imports` doesn't leave file_path pointing
+        // at a file whose compiled / module_name / source_map state hasn't been
+        // committed.  Atomic-commit invariant: see engine.rs:30-44 doc block.
+        let (compiled, parsed) = compile_entry_with_imports(path, &source, module_name)?;
+        let check_result = self.engine.check(&compiled);
+        self.commit_state(parsed, compiled, check_result, module_name, &source);
         self.file_path = Some(path.to_path_buf());
-        self.load_from_source(&source, module_name)
+        self.build_gui_state()
     }
 
     /// Update source code and re-evaluate from scratch.
@@ -238,6 +444,15 @@ impl EngineSession {
     /// On any error (parse, compile, or a panic in check()), the session state is left
     /// completely unchanged — source_map, module_name, compiled, and last_check all
     /// retain their previous values. All mutations are deferred until after check() returns.
+    ///
+    /// # v1 limitation (task 3228)
+    ///
+    /// `update_source` deliberately uses `compile_with_stdlib` (single-file compile, no
+    /// `ModuleResolver`).  Editing a file in the GUI buffer after `load_file` opened it
+    /// temporarily reverts to single-file behavior — `import` declarations are wired at
+    /// `load_file` time but not on subsequent dirty-buffer edits.  Routing this method
+    /// through the multi-file flow is the deferred half of task 3228 and is filed as
+    /// a separate follow-up.
     pub fn update_source(&mut self, path: &str, content: &str) -> Result<GuiState, String> {
         let module_name = Path::new(path)
             .file_stem()
