@@ -780,9 +780,8 @@ pub(crate) fn precompute_gradient_grid(sdf: &SampledField, band_width: f64) -> V
             .chunks(chunk_size)
             .zip(grid.chunks_mut(chunk_size * ny * nz))
         {
-            let chunk_owned: Vec<usize> = chunk.to_vec();
             handles.push(s.spawn(move || {
-                for (idx, &i) in chunk_owned.iter().enumerate() {
+                for (idx, &i) in chunk.iter().enumerate() {
                     for j in 0..ny {
                         for k in 0..nz {
                             if sample_at_index(sdf, [i, j, k]).abs() <= band_width {
