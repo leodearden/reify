@@ -3094,6 +3094,8 @@ describe('App tessellation diagnostics end-to-end wiring', () => {
         file_path: 'main.ri',
         line: 7,
         column: 4,
+        end_line: 7,
+        end_column: 9,
       });
     });
   });

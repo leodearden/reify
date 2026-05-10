@@ -417,6 +417,9 @@ const App: Component = () => {
   const [diagnosticsOpen, setDiagnosticsOpen] = createSignal(false);
   // Both compile and tessellation diagnostics share the DiagnosticInfo schema, so the
   // panel renders them as a single merged list — no schema change or extra state needed.
+  // The two pipelines are disjoint by construction: compile errors come from the static
+  // analysis pass, tessellation errors from the mesh-generation stage, so no diagnostic
+  // can appear in both lists and no deduplication is required.
   const allDiagnostics = createMemo(() => [
     ...engineStore.state.compileDiagnostics,
     ...engineStore.state.tessellationDiagnostics,
@@ -447,6 +450,11 @@ const App: Component = () => {
   let flyToEntityFn: ((entityPath: string) => void) | undefined;
   let fitToViewFn: (() => void) | undefined;
 
+  // Both the compile badge and the tessellation badge call this handler — both are
+  // toggles. Clicking either badge while the panel is already open will close it rather
+  // than forcing it open. This matches the "one shared overlay" design; if a force-open
+  // affordance is wanted in the future, split into onShowDiagnostics (setDiagnosticsOpen(true))
+  // vs a dedicated keyboard-shortcut toggle.
   function handleToggleDiagnostics() {
     setDiagnosticsOpen((v) => !v);
   }
