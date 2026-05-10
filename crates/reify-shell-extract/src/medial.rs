@@ -395,15 +395,14 @@ pub fn compute_medial_mask(
     let mut voxels: Vec<[i32; 3]> = std::thread::scope(|s| {
         let mut handles = Vec::with_capacity(threads);
         for chunk in i_indices.chunks(chunk_size) {
-            let chunk_owned: Vec<usize> = chunk.to_vec();
             handles.push(s.spawn(move || {
                 // Pre-size to ~1/32 of the chunk's voxel count; the narrow-band
                 // filter rejects ≥95% of voxels in typical slab/sphere fixtures,
                 // so this starting capacity avoids most reallocations without
                 // over-allocating.
                 let mut local: Vec<[i32; 3]> =
-                    Vec::with_capacity(chunk_owned.len() * ny * nz / 32);
-                for &i in &chunk_owned {
+                    Vec::with_capacity(chunk.len() * ny * nz / 32);
+                for &i in chunk {
                     for j in 0..ny {
                         for k in 0..nz {
                             let phi = sample_at_index(sdf, [i, j, k]);
