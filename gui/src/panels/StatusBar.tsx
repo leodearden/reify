@@ -11,12 +11,12 @@ const DiagBadgeContent: Component<{ getSummary: () => DiagnosticSummary }> = (pr
   <>
     <Show when={props.getSummary().errorCount > 0}>
       <span class={styles.errorBadge}>
-        {props.getSummary().errorCount} error{props.getSummary().errorCount > 1 ? 's' : ''}
+        {pluralize(props.getSummary().errorCount, 'error')}
       </span>
     </Show>
     <Show when={props.getSummary().warningCount > 0}>
       <span class={styles.warningBadge}>
-        {props.getSummary().warningCount} warning{props.getSummary().warningCount > 1 ? 's' : ''}
+        {pluralize(props.getSummary().warningCount, 'warning')}
       </span>
     </Show>
   </>
