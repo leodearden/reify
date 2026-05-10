@@ -193,6 +193,43 @@ mod tests {
     }
 
     #[test]
+    fn tet_volume_p1_unit_tet_returns_one_sixth_and_scales_cubically_under_uniform_doubling() {
+        // Unit tet: V = 1/6.
+        let v_unit = tet_volume_p1(&UNIT_TET_P1);
+        assert!(
+            (v_unit - 1.0 / 6.0).abs() < 1e-12,
+            "V(unit_tet) = {v_unit} expected 1/6",
+        );
+
+        // Edge-doubled tet: V = 8/6 (V scales as L³).
+        let scaled: [[f64; 3]; 4] = [
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [0.0, 2.0, 0.0],
+            [0.0, 0.0, 2.0],
+        ];
+        let v_scaled = tet_volume_p1(&scaled);
+        assert!(
+            (v_scaled - 8.0 / 6.0).abs() < 1e-12,
+            "V(scaled_tet) = {v_scaled} expected 8/6",
+        );
+
+        // Left-handed ordering (swap nodes 1 and 2): det J flips sign,
+        // but |det J|/6 is unchanged. Pin that .abs() is taken.
+        let flipped: [[f64; 3]; 4] = [
+            UNIT_TET_P1[0],
+            UNIT_TET_P1[2],
+            UNIT_TET_P1[1],
+            UNIT_TET_P1[3],
+        ];
+        let v_flipped = tet_volume_p1(&flipped);
+        assert!(
+            (v_flipped - 1.0 / 6.0).abs() < 1e-12,
+            "V(flipped_tet) = {v_flipped} expected 1/6 (|.| takes care of left-handed)",
+        );
+    }
+
+    #[test]
     fn element_stress_p1_uniaxial_strain_patch_test_recovers_lame_diagonal() {
         // Linear displacement u(x) = (a·x, 0, 0) ⇒ ε_xx = a, all other
         // strain components 0. Expect σ_xx = (λ+2μ)·a, σ_yy = σ_zz = λ·a,
