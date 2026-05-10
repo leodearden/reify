@@ -253,21 +253,21 @@ pub fn recover_nodal_stress_p1(
 
     for el in elements {
         for &node in el.connectivity {
-            for i in 0..3 {
-                for j in 0..3 {
-                    accum[node][i][j] += el.volume * el.stress[i][j];
-                }
+            for (acc_cell, &stress_cell) in accum[node]
+                .iter_mut()
+                .flatten()
+                .zip(el.stress.iter().flatten())
+            {
+                *acc_cell += el.volume * stress_cell;
             }
             weights[node] += el.volume;
         }
     }
 
-    for node in 0..n_nodes {
-        if weights[node] > 0.0 {
-            for i in 0..3 {
-                for j in 0..3 {
-                    accum[node][i][j] /= weights[node];
-                }
+    for (node_accum, &weight) in accum.iter_mut().zip(weights.iter()) {
+        if weight > 0.0 {
+            for cell in node_accum.iter_mut().flatten() {
+                *cell /= weight;
             }
         }
         // else: leave as zero (no incident elements).
