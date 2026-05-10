@@ -5589,6 +5589,112 @@ fn load_file_unresolved_import_returns_clear_err() {
     );
 }
 
+/// Regression: importing two helper modules that both declare `pub structure Foo`
+/// must emit a Warning diagnostic for the collision (first-wins is preserved, but
+/// the user must be told about the shadowing).
+///
+/// Mirrors the compiler's cross-prelude alias collision policy
+/// (reify-compiler/src/lib.rs:281-292): same `Diagnostic::warning`, same
+/// "first-wins" trailer in the message, same `SourceSpan::prelude()` label.
+///
+/// RED phase: the current dedup loop (engine.rs:262-281) silently skips the
+/// colliding template with `continue` — no diagnostic is emitted, so
+/// `state.compile_diagnostics` is empty and this test fails.
+#[test]
+fn load_file_two_imports_with_same_pub_structure_emits_collision_diagnostic() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+
+    // helper1.ri: declares pub structure Foo with x = 1mm
+    std::fs::write(
+        dir.path().join("helper1.ri"),
+        "pub structure Foo { param x: Scalar = 1mm }\n",
+    )
+    .expect("write helper1.ri");
+
+    // helper2.ri: also declares pub structure Foo (collision with helper1)
+    std::fs::write(
+        dir.path().join("helper2.ri"),
+        "pub structure Foo { param x: Scalar = 2mm }\n",
+    )
+    .expect("write helper2.ri");
+
+    // main.ri: imports both helpers, causing a cross-import collision on Foo
+    std::fs::write(
+        dir.path().join("main.ri"),
+        "import helper1\nimport helper2\nstructure Top { sub f = Foo() }\n",
+    )
+    .expect("write main.ri");
+
+    let state = session
+        .load_file(&dir.path().join("main.ri"))
+        .expect("load_file should succeed despite collision (first-wins, not error)");
+
+    // Must emit at least one Warning mentioning the colliding name and "first-wins"
+    let collision_diag = state.compile_diagnostics.iter().find(|d| {
+        d.severity == "Warning"
+            && d.message.contains("Foo")
+            && d.message.contains("first-wins")
+    });
+    assert!(
+        collision_diag.is_some(),
+        "expected a Warning diagnostic mentioning 'Foo' and 'first-wins' for the cross-import \
+         collision, but state.compile_diagnostics = {:?}",
+        state.compile_diagnostics
+    );
+}
+
+/// Regression: when the entry module itself declares a structure `Foo` and an
+/// import also provides `pub structure Foo`, the collision must emit a Warning
+/// diagnostic (first-wins is the entry's declaration, but the user must be told).
+///
+/// RED phase after step-2: step-2's origin map is only updated as imports add
+/// templates — entry-declared templates are not pre-seeded, so the import-vs-entry
+/// collision falls through the silent-skip branch.  This test stays RED until
+/// step-4 seeds the map from the entry's compiled.templates.
+#[test]
+fn load_file_entry_redeclares_imported_pub_structure_emits_collision_diagnostic() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+
+    // helper.ri: declares pub structure Foo
+    std::fs::write(
+        dir.path().join("helper.ri"),
+        "pub structure Foo { param x: Scalar = 1mm }\n",
+    )
+    .expect("write helper.ri");
+
+    // main.ri: also declares structure Foo (shadows the import)
+    std::fs::write(
+        dir.path().join("main.ri"),
+        "import helper\nstructure Foo { param y: Scalar = 5mm }\n",
+    )
+    .expect("write main.ri");
+
+    let state = session
+        .load_file(&dir.path().join("main.ri"))
+        .expect("load_file should succeed despite collision (first-wins, not error)");
+
+    // Must emit at least one Warning mentioning the colliding name and "first-wins"
+    let collision_diag = state.compile_diagnostics.iter().find(|d| {
+        d.severity == "Warning"
+            && d.message.contains("Foo")
+            && d.message.contains("first-wins")
+    });
+    assert!(
+        collision_diag.is_some(),
+        "expected a Warning diagnostic mentioning 'Foo' and 'first-wins' for the entry-vs-import \
+         collision, but state.compile_diagnostics = {:?}",
+        state.compile_diagnostics
+    );
+}
+
 /// Guard against double-seeding stdlib when a .ri file explicitly `import std.*`.
 ///
 /// When an entry imports `std.units`, the new flow adds it to the DAG and also
