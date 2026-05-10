@@ -134,13 +134,13 @@ pub fn populate_mid_surface_attributes(
         if triangles.len() < 2 {
             continue;
         }
-        for i in 0..triangles.len() {
-            let label_a = segmentation.triangle_labels[triangles[i]];
+        for (i, &t_a) in triangles.iter().enumerate() {
+            let label_a = segmentation.triangle_labels[t_a];
             if label_a == u32::MAX {
                 continue;
             }
-            for j in (i + 1)..triangles.len() {
-                let label_b = segmentation.triangle_labels[triangles[j]];
+            for &t_b in triangles.iter().skip(i + 1) {
+                let label_b = segmentation.triangle_labels[t_b];
                 if label_b == u32::MAX || label_a == label_b {
                     continue;
                 }
