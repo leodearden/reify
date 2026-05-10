@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup, within } from '@solidjs/testing-library';
 import type { GuiState } from '../types';
+import { EXTERNALLY_CHANGED_SAVE_BLOCKED_MSG } from '../editor/messages';
 import { flushMacrotasks, deferred, withSuppressedRejections, withSuppressedRejectionsAndErrorSpy } from './test-utils';
 
 // Mock Tauri APIs before any component imports
@@ -4448,10 +4449,16 @@ describe('App handleSave aborts when file is externally changed', () => {
     // bridgeSaveFile (bridge.saveFile) must NOT have been called
     expect(bridge.saveFile).not.toHaveBeenCalled();
 
-    // An error toast mentioning "externally" must appear
+    // An error toast containing the exact save-blocked message string must appear.
+    // We use .includes() rather than strict equality because the toast element's
+    // textContent also contains the dismiss-button "×" character appended after
+    // the message span.  Using the full constant (not a loose keyword regex)
+    // still enforces lockstep: a wording drift in messages.ts would break this test.
     await waitFor(() => {
       const toasts = screen.getAllByTestId('toast');
-      const errorToast = toasts.find((t) => t.textContent?.toLowerCase().includes('externally'));
+      const errorToast = toasts.find((t) =>
+        t.textContent?.includes(EXTERNALLY_CHANGED_SAVE_BLOCKED_MSG),
+      );
       expect(errorToast).toBeTruthy();
     });
   });
