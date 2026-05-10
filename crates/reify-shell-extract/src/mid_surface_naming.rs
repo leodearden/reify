@@ -10,7 +10,7 @@
 //! - `docs/prds/v0_2/persistent-naming-v2.md` lines 52-66
 //!   (TopologyAttribute shape / per-op populator pattern).
 
-use reify_types::geometry::{FeatureId, TopologyAttribute};
+use reify_types::geometry::{FeatureId, Role, TopologyAttribute};
 
 use crate::mid_surface::MidSurfaceMesh;
 use crate::segmentation::SegmentationResult;
@@ -41,19 +41,44 @@ pub struct MidSurfaceAttributes {
 /// for the derived mid-surface of `parent`.
 ///
 /// All emitted records carry the derived `FeatureId`
-/// `<parent>/mid_surface` (see [`FeatureId::derived_mid_surface`]). Step
-/// 6 implements only the empty-input contract; later steps in plan 3033
-/// add face and edge population.
+/// `<parent>/mid_surface` (see [`FeatureId::derived_mid_surface`]).
+///
+/// # Face records
+///
+/// One [`TopologyAttribute`] is emitted per
+/// [`crate::segmentation::RegionInfo`], in segmentation-supplied order:
+/// `role = Role::MidSurfaceFace`, `local_index = region.label`,
+/// `user_label = None`, `mod_history = vec![]`. Region label is the
+/// BFS-discovery order assigned by `reify_shell_extract::segmentation`
+/// (deterministic for a given mask).
+///
+/// # Edge records
+///
+/// Inter-region adjacency edge derivation is added by later plan steps.
 pub fn populate_mid_surface_attributes(
     parent: &FeatureId,
     _mesh: &MidSurfaceMesh,
-    _segmentation: &SegmentationResult,
+    segmentation: &SegmentationResult,
 ) -> MidSurfaceAttributes {
-    // Reserved for use by later steps; cite usage so the unused-binding
-    // lint stays quiet without `_` prefixing the parameter — it IS used,
-    // just not in this placeholder body.
-    let _ = FeatureId::derived_mid_surface(parent);
-    MidSurfaceAttributes::default()
+    let derived_feature_id = FeatureId::derived_mid_surface(parent);
+
+    let face_records: Vec<TopologyAttribute> = segmentation
+        .regions
+        .iter()
+        .map(|region| TopologyAttribute {
+            feature_id: derived_feature_id.clone(),
+            role: Role::MidSurfaceFace,
+            local_index: region.label,
+            user_label: None,
+            mod_history: Vec::new(),
+        })
+        .collect();
+
+    MidSurfaceAttributes {
+        face_records,
+        edge_records: Vec::new(),
+        edge_region_pairs: Vec::new(),
+    }
 }
 
 #[cfg(test)]
