@@ -418,6 +418,48 @@ mod tests {
         }
     }
 
+    // ── Step-11: drops normals on output ─────────────────────────────────────
+
+    /// Vertex motion under the elasticity solve makes any pre-existing
+    /// per-vertex normals geometrically stale; the output mesh must have
+    /// `normals: None` regardless of input. Mirrors
+    /// `laplacian_smooth_drops_normals_on_output_even_when_input_has_some_normals`
+    /// (laplacian.rs:671-685).
+    #[test]
+    fn elasticity_morph_drops_normals_on_output_even_when_input_has_some_normals() {
+        // Single-tet mesh with 4 per-vertex normals (12 floats).
+        let mesh = VolumeMesh {
+            vertices: vec![
+                0.0_f32, 0.0, 0.0, // 0
+                1.0, 0.0, 0.0, // 1
+                0.0, 1.0, 0.0, // 2
+                0.0, 0.0, 1.0, // 3
+            ],
+            tet_indices: vec![0, 1, 2, 3],
+            element_order: ElementOrderTag::P1,
+            normals: Some(vec![
+                1.0_f32, 0.0, 0.0, // normal for node 0
+                0.0, 1.0, 0.0, // normal for node 1
+                0.0, 0.0, 1.0, // normal for node 2
+                1.0, 1.0, 0.0, // normal for node 3
+            ]),
+        };
+        // Pin every node to itself so the solve is well-conditioned.
+        let prescribed = vec![
+            (0_u32, [0.0_f64, 0.0, 0.0]),
+            (1, [1.0, 0.0, 0.0]),
+            (2, [0.0, 1.0, 0.0]),
+            (3, [0.0, 0.0, 1.0]),
+        ];
+        let out =
+            elasticity_morph(&mesh, &prescribed, &crate::MorphOptions::default()).unwrap();
+        assert!(
+            out.normals.is_none(),
+            "expected normals: None, got: {:?}",
+            out.normals
+        );
+    }
+
     // ── Step-3: P2 element order rejection ────────────────────────────────────
 
     /// P2 element order must be rejected with
