@@ -377,8 +377,7 @@ pub fn solve_cg_warm(
 /// - `Some(u₀)` branch: `u = u₀.to_vec()`, `r = f − K·u₀` via one
 ///   mode-appropriate SpMV. Residual is computed via slot-order in-place
 ///   subtraction (`r[i] -= ku[i]`) matching `cg_loop`'s r-update
-///   convention; pinned bit-exact by
-///   `build_initial_u_r_some_branch_residual_is_bit_exact_slot_order_f_minus_ku`.
+///   convention; residual is bit-exact to `f[i] - (K·u₀)[i]` per slot.
 fn build_initial_u_r<S>(f: &[f64], initial_guess: Option<&[f64]>, spmv: S) -> (Vec<f64>, Vec<f64>)
 where
     S: FnOnce(&[f64], &mut [f64]),
@@ -1813,11 +1812,13 @@ mod tests {
     }
 
     /// Pins the `build_initial_u_r` `Some` branch: asserts that the returned
-    /// residual `r` is bit-exact equal to `f[i] - ku[i]` slot-by-slot, where
-    /// `ku = K·u₀` is computed via `spmv_seq`.  This guards the slot-order
-    /// subtraction convention against future refactors.
+    /// residual `r` equals `f − K·u₀` to bit precision, verified against a
+    /// hand-computed oracle.  K = [[4,1],[1,3]], u₀ = [0.5, 0.25],
+    /// f = [1.0, 2.0] → K·u₀ = [2.25, 1.25] → r = [−1.25, 0.75].
+    /// Using literal expected values (not spmv_seq-derived) makes this a true
+    /// contract pin rather than a self-equality check.
     #[test]
-    fn build_initial_u_r_some_branch_residual_is_bit_exact_slot_order_f_minus_ku() {
+    fn build_initial_u_r_some_branch_residual_equals_f_minus_k_u0() {
         // 2×2 SPD fixture: K = [[4.0, 1.0], [1.0, 3.0]].
         let k = SparseRowMat::try_new_from_triplets(
             2,
@@ -1832,26 +1833,17 @@ mod tests {
         .unwrap();
         let u_0 = [0.5_f64, 0.25];
         let f = [1.0_f64, 2.0];
-        let n = f.len();
 
-        // Compute expected ku = K·u₀ via spmv_seq (same closure body the
-        // helper uses internally).
-        let mut expected_ku = vec![0.0_f64; n];
-        spmv_seq(&k, &u_0, &mut expected_ku);
-
-        // Compute expected residual via slot-order subtraction — the proposed
-        // in-place form: r[i] = f[i] - ku[i].
-        let mut expected_r = vec![0.0_f64; n];
-        for i in 0..n {
-            expected_r[i] = f[i] - expected_ku[i];
-        }
+        // K·u₀ = [4·0.5+1·0.25, 1·0.5+3·0.25] = [2.25, 1.25]
+        // r = f − K·u₀ = [1.0−2.25, 2.0−1.25] = [−1.25, 0.75]
+        let expected_r = [-1.25_f64, 0.75_f64];
 
         // Call the helper under test.
         let (u, r) = build_initial_u_r(&f, Some(&u_0), |p, out| spmv_seq(&k, p, out));
 
         // u must be a copy of u₀.
         assert_eq!(u.len(), 2, "u.len() must equal 2");
-        for i in 0..n {
+        for i in 0..2 {
             assert_eq!(
                 u[i].to_bits(),
                 u_0[i].to_bits(),
@@ -1861,17 +1853,15 @@ mod tests {
             );
         }
 
-        // r must be f - K·u₀ to bit precision, slot-by-slot.
+        // r must equal f − K·u₀ to bit precision, verified against literal oracle.
         assert_eq!(r.len(), 2, "r.len() must equal 2");
-        for i in 0..n {
+        for i in 0..2 {
             assert_eq!(
                 r[i].to_bits(),
                 expected_r[i].to_bits(),
-                "r[{i}] = {} ≠ expected_r[{i}] = {} (f[{i}]={} - ku[{i}]={})",
+                "r[{i}] = {} ≠ expected_r[{i}] = {}",
                 r[i],
                 expected_r[i],
-                f[i],
-                expected_ku[i],
             );
         }
     }
