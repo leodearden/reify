@@ -55,21 +55,30 @@ pub(crate) const VERTEX_BARY_ZETA: [(usize, f64); 6] = [
     (2, 1.0),  // node 5: L₂, ζ = +1  → (0, 1, +1)
 ];
 
-/// Stub: placeholder implementation — `N_NODES`, `shape_at`,
-/// `shape_grad_at`, and `quad_points` will be filled in step-2/4/6.
 impl ReferenceElement for WedgeP1 {
-    const N_NODES: usize = 0; // STUB — will become 6 in step-2
+    const N_NODES: usize = 6;
 
-    fn shape_at(&self, _coord: ReferenceCoord) -> Vec<f64> {
-        vec![] // STUB
+    /// Shape functions at `coord`.
+    ///
+    /// Returns `[N_0, …, N_5]` where
+    /// `N_i(ξ, η, ζ) = L_{a_i}(ξ, η) · (1 + s_i · ζ) / 2`
+    /// and `L_0 = 1−ξ−η`, `L_1 = ξ`, `L_2 = η`.
+    fn shape_at(&self, coord: ReferenceCoord) -> Vec<f64> {
+        let ReferenceCoord { xi, eta, zeta } = coord;
+        let lambda = [1.0 - xi - eta, xi, eta];
+        let mut n = Vec::with_capacity(6);
+        for &(a, s) in &VERTEX_BARY_ZETA {
+            n.push(lambda[a] * (1.0 + s * zeta) / 2.0);
+        }
+        n
     }
 
     fn shape_grad_at(&self, _coord: ReferenceCoord) -> Vec<[f64; 3]> {
-        vec![] // STUB
+        vec![] // STUB — will be filled in step-4
     }
 
     fn quad_points(&self) -> &'static [QuadraturePoint] {
-        &[] // STUB
+        &[] // STUB — will be filled in step-6
     }
 }
 
