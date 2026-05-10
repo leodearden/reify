@@ -585,6 +585,57 @@ mod tests {
         );
     }
 
+    /// Non-affine regression: top triangle scaled 2× in xy, bottom canonical.
+    ///
+    /// The physical map sends:
+    ///   bottom (ζ = −1): (0,0,−1), (1,0,−1), (0,1,−1)   ← canonical
+    ///   top    (ζ = +1): (0,0,+1), (2,0,+1), (0,2,+1)   ← 2× in xy
+    ///
+    /// At centroid probe (ξ=1/3, η=1/3, ζ), the layer-blending in
+    /// `shape_grad_at` gives J[0][0] = ∂x/∂ξ = (3+ζ)/2, which varies
+    /// linearly with ζ.  At ζ = ±0.7 the analytical values are:
+    ///   J[0][0](−0.7) = 1.15,  det J = 1.3225
+    ///   J[0][0](+0.7) = 1.85,  det J = 3.4225
+    ///
+    /// Affine-map tests (constant J) cannot detect a bug in the `(1+s·ζ)/2`
+    /// blending factor; this test fails if that factor is removed.
+    #[test]
+    fn jacobian_zeta_varying_for_non_affine_top_scale() {
+        // Top layer (v[2] > 0 ⇔ ζ = +1) scaled 2× in xy; bottom unchanged.
+        let phys = prism_phys_nodes(|v| {
+            if v[2] > 0.0 {
+                [2.0 * v[0], 2.0 * v[1], v[2]]
+            } else {
+                v
+            }
+        });
+
+        let j_neg = WedgeP1.jacobian(&phys, ReferenceCoord::new(1.0 / 3.0, 1.0 / 3.0, -0.7));
+        let j_pos = WedgeP1.jacobian(&phys, ReferenceCoord::new(1.0 / 3.0, 1.0 / 3.0, 0.7));
+
+        assert!(
+            j_neg.det > JAC_TOL,
+            "det J at ζ=−0.7 must be positive (got {})",
+            j_neg.det,
+        );
+        assert!(
+            j_pos.det > JAC_TOL,
+            "det J at ζ=+0.7 must be positive (got {})",
+            j_pos.det,
+        );
+
+        // J[0][0] = (3+ζ)/2 analytically: differs by 0.7 between ζ=+0.7 and ζ=−0.7.
+        // A threshold of 0.1 is far above noise but far below the analytical gap.
+        let delta = (j_pos.matrix[0][0] - j_neg.matrix[0][0]).abs();
+        assert!(
+            delta > 0.1,
+            "J[0][0] must vary with ζ (at ζ=+0.7: {}, at ζ=−0.7: {}, |Δ|={})",
+            j_pos.matrix[0][0],
+            j_neg.matrix[0][0],
+            delta,
+        );
+    }
+
     #[test]
     fn shape_grad_at_matches_finite_difference_oracle_at_off_centroid_probes() {
         // FD oracle: central-difference truncation O(h²) ≈ 1e-12 + roundoff
