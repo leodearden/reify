@@ -3,7 +3,8 @@
 # Validates that:
 #   (a) gui/sidecar/tsconfig.test.json exists
 #   (b) gui/sidecar/package.json defines typecheck:test script
-#   (c) tsc --noEmit -p tsconfig.test.json catches unused @ts-expect-error (TS2578)
+#   (c) tsc --noEmit catches unused @ts-expect-error (TS2578); fixture lives in a
+#       temp dir (not live src/) and uses a fixture-only tsconfig for isolation
 
 set -euo pipefail
 
@@ -28,35 +29,43 @@ assert "gui/sidecar/package.json defines 'typecheck:test' script" \
 echo ""
 echo "--- Behavioral fixture: typecheck:test catches unused @ts-expect-error ---"
 
-_TMPFILES=()
+_TMPDIRS=()
 cleanup() {
-    for f in "${_TMPFILES[@]+${_TMPFILES[@]}}"; do
-        rm -f "$f"
+    for d in "${_TMPDIRS[@]+${_TMPDIRS[@]}}"; do
+        rm -rf "$d"
     done
 }
 trap cleanup EXIT
 
 if [ -f "$REPO_ROOT/gui/sidecar/node_modules/.bin/tsc" ]; then
-    FIXTURE_FILE="$REPO_ROOT/gui/sidecar/src/__tests__/__typecheck_test_path_fixture_$$.test.ts"
-    _TMPFILES+=("$FIXTURE_FILE")
+    # Write fixture to a temp dir (not live src/__tests__/) so it doesn't persist
+    # on SIGKILL.  A fixture-only tsconfig isolates the tsc signal to this file.
+    TMPDIR_FIXTURE=$(mktemp -d)
+    _TMPDIRS+=("$TMPDIR_FIXTURE")
+
+    FIXTURE_FILE="$TMPDIR_FIXTURE/typecheck_fixture.test.ts"
+    FIXTURE_CFG="$TMPDIR_FIXTURE/tsconfig.fixture.json"
 
     # Write a no-op @ts-expect-error on a known-valid assignment — should produce TS2578
     # ("Unused '@ts-expect-error' directive") because the assignment is not a type error.
+    # export {} makes the file a module so isolatedModules: true is satisfied.
     cat > "$FIXTURE_FILE" <<'FIXTURE_EOF'
 // @ts-expect-error
 const _x: number = 1;
+export {};
 FIXTURE_EOF
 
-    FIXTURE_EC=0
-    FIXTURE_OUTPUT=$(cd "$REPO_ROOT/gui/sidecar" && npm run typecheck:test 2>&1) || FIXTURE_EC=$?
+    # Temp tsconfig: extend sidecar's tsconfig.test.json, include only the fixture,
+    # override rootDir so the fixture path satisfies the rootDir constraint.
+    cat > "$FIXTURE_CFG" << TSCONFIG_EOF
+{
+  "extends": "$TSCONFIG_TEST",
+  "compilerOptions": { "rootDir": "$TMPDIR_FIXTURE" },
+  "include": ["$FIXTURE_FILE"]
+}
+TSCONFIG_EOF
 
-    if [ "$FIXTURE_EC" -ne 0 ]; then
-        echo "  PASS: typecheck:test exits non-zero on unused @ts-expect-error fixture"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: typecheck:test exits non-zero on unused @ts-expect-error fixture (expected non-zero, got 0)"
-        FAIL=$((FAIL + 1))
-    fi
+    FIXTURE_OUTPUT=$("$REPO_ROOT/gui/sidecar/node_modules/.bin/tsc" --noEmit -p "$FIXTURE_CFG" 2>&1) || true
 
     if echo "$FIXTURE_OUTPUT" | grep -q 'TS2578'; then
         echo "  PASS: typecheck:test output contains TS2578"

@@ -69,6 +69,9 @@ if [ -f "$ROOT/gui/sidecar/package-lock.json" ]; then
         exit 1
     fi
 
+    # Both typecheck (prod-only tsconfig) and typecheck:test (superset tsconfig)
+    # run intentionally: together they give per-scope error attribution and mirror
+    # the orchestrator.yaml lint_command, matching the gui/ precedent.
     echo "  typecheck: gui/sidecar"
     if ! (cd "$ROOT/gui/sidecar" && npm run typecheck); then
         echo "pre-commit: npm run typecheck failed in gui/sidecar/. Fix type errors before committing to main."
