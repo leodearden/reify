@@ -460,6 +460,56 @@ mod tests {
         );
     }
 
+    // ── Step-13: determinism across runs with same input ────────────────────
+
+    /// Two `elasticity_morph` calls on the same input must produce
+    /// bit-equal `vertices`. Pins the contract that the FEA warm-start
+    /// cache (PRD task #15) and reproducible morphed-mesh caching rely on.
+    /// Defends against a future refactor swapping `AssemblyMode::Deterministic`
+    /// or `SolverMode::Deterministic` for their `Parallel` counterparts —
+    /// those produce tolerance-equivalent but not bit-equal results across
+    /// thread counts (per solver.rs:33-50). Reuses the cone fixture from
+    /// step-9. Mirrors `laplacian_smooth_is_deterministic_across_runs_with_same_input`
+    /// (laplacian.rs:619-658).
+    #[test]
+    fn elasticity_morph_is_deterministic_across_runs_with_same_input() {
+        let mesh = VolumeMesh {
+            vertices: vec![
+                0.0_f32, 0.0, 0.0, // 0: a
+                1.0, 0.0, 0.0, // 1: b
+                0.0, 1.0, 0.0, // 2: c
+                0.0, 0.0, 1.0, // 3: d
+                0.25, 0.25, 0.25, // 4: p
+            ],
+            tet_indices: vec![
+                0, 1, 2, 4, // a, b, c, p
+                0, 1, 3, 4, // a, b, d, p
+                0, 2, 3, 4, // a, c, d, p
+                1, 2, 3, 4, // b, c, d, p
+            ],
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+        let delta = [0.5_f64, 0.7, -0.3];
+        let prescribed = vec![
+            (0_u32, [0.0 + delta[0], 0.0 + delta[1], 0.0 + delta[2]]),
+            (1, [1.0 + delta[0], 0.0 + delta[1], 0.0 + delta[2]]),
+            (2, [0.0 + delta[0], 1.0 + delta[1], 0.0 + delta[2]]),
+            (3, [0.0 + delta[0], 0.0 + delta[1], 1.0 + delta[2]]),
+        ];
+
+        let out_a =
+            elasticity_morph(&mesh, &prescribed, &crate::MorphOptions::default()).unwrap();
+        let out_b =
+            elasticity_morph(&mesh, &prescribed, &crate::MorphOptions::default()).unwrap();
+
+        assert_eq!(out_a.vertices, out_b.vertices);
+        assert_eq!(out_a.tet_indices, out_b.tet_indices);
+        assert_eq!(out_a.element_order, out_b.element_order);
+        // `normals` is unconditionally None — asserting equality would be
+        // tautological. Pinned by step-11.
+    }
+
     // ── Step-3: P2 element order rejection ────────────────────────────────────
 
     /// P2 element order must be rejected with
