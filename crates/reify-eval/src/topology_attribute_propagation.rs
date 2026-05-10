@@ -3115,6 +3115,83 @@ mod tests {
         }
 
         #[test]
+        fn detect_local_index_reassignment_emits_diagnostics_in_deterministic_order_across_groups()
+        {
+            // Sub-case 1: two groups with different feature_ids — "A" < "B"
+            // alphabetically, so group A's diagnostic must be emitted first.
+            let attr_b0 = make_attr("B#realization[0]", Role::Side, 0);
+            let attr_b1 = make_attr("B#realization[0]", Role::Side, 1);
+            let attr_a0 = make_attr("A#realization[0]", Role::Side, 0);
+            let attr_a1 = make_attr("A#realization[0]", Role::Side, 1);
+            let hb0 = GeometryHandleId(20);
+            let hb1 = GeometryHandleId(21);
+            let ha0 = GeometryHandleId(22);
+            let ha1 = GeometryHandleId(23);
+            let mut centroids: HashMap<GeometryHandleId, [f64; 3]> = HashMap::new();
+            // Give B-group a different centroid so the two groups are distinct.
+            centroids.insert(hb0, [5.0, 0.0, 0.0]);
+            centroids.insert(hb1, [5.0, 0.0, 0.0]);
+            centroids.insert(ha0, [0.0, 0.0, 0.0]);
+            centroids.insert(ha1, [0.0, 0.0, 0.0]);
+            let mut diagnostics = Vec::new();
+            // Supply inputs in B, A order (reversed) to exercise the sort.
+            detect_local_index_reassignment_diagnostics(
+                &[(hb0, &attr_b0), (hb1, &attr_b1), (ha0, &attr_a0), (ha1, &attr_a1)],
+                &centroids,
+                LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M,
+                synthetic_span(),
+                &mut diagnostics,
+            );
+            assert_eq!(diagnostics.len(), 2, "expected two diagnostics, got: {diagnostics:?}");
+            assert!(
+                diagnostics[0].message.contains("A#realization[0]"),
+                "first diagnostic should be for A (sorted first), got: {}",
+                diagnostics[0].message
+            );
+            assert!(
+                diagnostics[1].message.contains("B#realization[0]"),
+                "second diagnostic should be for B (sorted second), got: {}",
+                diagnostics[1].message
+            );
+
+            // Sub-case 2: same feature_id, two roles — Cap(Top) has discriminant
+            // 0, Side has discriminant 4, so Cap diagnostic must come first.
+            let attr_s0 = make_attr("F#realization[0]", Role::Side, 0);
+            let attr_s1 = make_attr("F#realization[0]", Role::Side, 1);
+            let attr_c0 = make_attr("F#realization[0]", Role::Cap(CapKind::Top), 0);
+            let attr_c1 = make_attr("F#realization[0]", Role::Cap(CapKind::Top), 1);
+            let hs0 = GeometryHandleId(30);
+            let hs1 = GeometryHandleId(31);
+            let hc0 = GeometryHandleId(32);
+            let hc1 = GeometryHandleId(33);
+            let mut centroids2: HashMap<GeometryHandleId, [f64; 3]> = HashMap::new();
+            centroids2.insert(hs0, [0.0, 0.0, 0.0]);
+            centroids2.insert(hs1, [0.0, 0.0, 0.0]);
+            centroids2.insert(hc0, [0.0, 0.0, 0.0]);
+            centroids2.insert(hc1, [0.0, 0.0, 0.0]);
+            let mut diagnostics2 = Vec::new();
+            // Supply Side entries before Cap entries to exercise role sort.
+            detect_local_index_reassignment_diagnostics(
+                &[(hs0, &attr_s0), (hs1, &attr_s1), (hc0, &attr_c0), (hc1, &attr_c1)],
+                &centroids2,
+                LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M,
+                synthetic_span(),
+                &mut diagnostics2,
+            );
+            assert_eq!(diagnostics2.len(), 2, "expected two diagnostics, got: {diagnostics2:?}");
+            assert!(
+                diagnostics2[0].message.contains("Cap(Top)"),
+                "first diagnostic should be Cap(Top) (lower discriminant), got: {}",
+                diagnostics2[0].message
+            );
+            assert!(
+                diagnostics2[1].message.contains("Side"),
+                "second diagnostic should be Side (higher discriminant), got: {}",
+                diagnostics2[1].message
+            );
+        }
+
+        #[test]
         fn role_human_name_returns_stable_string_for_each_variant() {
             assert_eq!(role_human_name(&Role::Cap(CapKind::Top)), "Cap(Top)");
             assert_eq!(role_human_name(&Role::Cap(CapKind::Bottom)), "Cap(Bottom)");
