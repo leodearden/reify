@@ -495,6 +495,11 @@ impl TensorProjection {
                 }
             }
             TensorProjection::Magnitude => {
+                debug_assert!(
+                    window.len() >= 3,
+                    "TensorProjection::Magnitude requires window of at least 3 elements (got {})",
+                    window.len()
+                );
                 // Stride-3 Vector3 magnitude. Closed-form sqrt of squared
                 // components — independent of the analysis module since
                 // there's no shared scalar formula to factor through.
