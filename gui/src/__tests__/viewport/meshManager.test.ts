@@ -70,6 +70,9 @@ vi.mock('three', async () => {
       this.itemSize = itemSize;
       this.count = array.length / itemSize;
     }
+    clone() {
+      return new MockBufferAttribute(this.array.slice(), this.itemSize);
+    }
   }
 
   class MockMeshStandardMaterial {
