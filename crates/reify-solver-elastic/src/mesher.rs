@@ -322,4 +322,79 @@ mod tests {
             "skew is sign-dependent: CCW={s_ccw} CW={s_cw}"
         );
     }
+
+    // ---- step-5: recombine_quality_ok ----
+    //
+    // Wraps compute_quad_skew over a buffer of stride-4 quads,
+    // short-circuiting on the first quad whose skew exceeds the threshold.
+
+    #[test]
+    fn recombine_quality_ok_two_unit_squares_passes() {
+        // Two side-by-side unit squares sharing an edge: vertices index
+        // 1 and 2 are shared. Both quads are perfect — skew = 0.
+        let vertices: Vec<f32> = vec![
+            0.0, 0.0, // 0
+            1.0, 0.0, // 1
+            1.0, 1.0, // 2
+            0.0, 1.0, // 3
+            2.0, 0.0, // 4
+            2.0, 1.0, // 5
+        ];
+        let quad_indices: Vec<u32> = vec![0, 1, 2, 3, 1, 4, 5, 2];
+        assert!(recombine_quality_ok(
+            &vertices,
+            &quad_indices,
+            std::f64::consts::FRAC_PI_4
+        ));
+    }
+
+    #[test]
+    fn recombine_quality_ok_one_skewed_quad_fails() {
+        // One quad with a corner at \u{3c0}/2 + \u{3c0}/3 = 5\u{3c0}/6, so
+        // skew = \u{3c0}/3 > \u{3c0}/4. Build geometrically: a degenerate
+        // kite where one corner subtends 30° (\u{3c0}/6) — exactly the
+        // opposite mis-design where the deviation is \u{3c0}/2 - \u{3c0}/6
+        // = \u{3c0}/3.
+        //
+        // Corner at the origin between e_prev=(1,0) and e_next=(cos30°,
+        // sin30°) gives angle = 30° = \u{3c0}/6, deviation \u{3c0}/3.
+        let cos30 = (30.0_f64).to_radians().cos();
+        let sin30 = (30.0_f64).to_radians().sin();
+        let vertices: Vec<f32> = vec![
+            0.0, 0.0,                       // 0 — sharp corner
+            1.0, 0.0,                       // 1
+            (1.0 + cos30) as f32, sin30 as f32, // 2
+            cos30 as f32, sin30 as f32,     // 3
+        ];
+        let quad_indices: Vec<u32> = vec![0, 1, 2, 3];
+        assert!(!recombine_quality_ok(
+            &vertices,
+            &quad_indices,
+            std::f64::consts::FRAC_PI_4
+        ));
+    }
+
+    #[test]
+    fn recombine_quality_ok_empty_indices_is_vacuously_true() {
+        // No quads to evaluate -> nothing to fail.
+        let vertices: Vec<f32> = vec![0.0; 8];
+        let quad_indices: Vec<u32> = vec![];
+        assert!(recombine_quality_ok(
+            &vertices,
+            &quad_indices,
+            std::f64::consts::FRAC_PI_4
+        ));
+    }
+
+    #[test]
+    fn recombine_quality_ok_misaligned_stride_returns_false() {
+        // quad_indices.len() % 4 != 0 — defensive caller-bug detection.
+        let vertices: Vec<f32> = vec![0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0];
+        let quad_indices: Vec<u32> = vec![0, 1, 2]; // missing one
+        assert!(!recombine_quality_ok(
+            &vertices,
+            &quad_indices,
+            std::f64::consts::FRAC_PI_4
+        ));
+    }
 }
