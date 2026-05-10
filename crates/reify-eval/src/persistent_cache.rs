@@ -1052,4 +1052,104 @@ mod tests {
         assert_eq!(decoded.displacement_len, header.displacement_len);
         assert_eq!(decoded.stress_len, header.stress_len);
     }
+
+    // ── compose_engine_version_hash tests ────────────────────────────────────
+
+    #[test]
+    fn compose_engine_version_hash_returns_32char_lowercase_hex() {
+        let h = compose_engine_version_hash(&[b"hello", b"world"]);
+        assert_eq!(h.len(), 32, "expected 32 hex chars, got {:?}", h);
+        assert!(
+            h.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')),
+            "expected all lowercase hex chars, got {:?}",
+            h
+        );
+    }
+
+    #[test]
+    fn compose_engine_version_hash_is_deterministic_for_same_input() {
+        let parts: &[&[u8]] = &[b"reify", b"engine", b"version"];
+        let h1 = compose_engine_version_hash(parts);
+        let h2 = compose_engine_version_hash(parts);
+        assert_eq!(h1, h2);
+    }
+
+    /// PRD-required sentinel (docs/prds/v0_3/persistent-fea-cache.md §"Cache
+    /// invalidation on engine version"): any single-byte flip in any contributor
+    /// must change the hash. DO NOT REMOVE without revisiting the PRD section.
+    #[test]
+    fn compose_engine_version_hash_flipping_one_contributor_changes_hash_prd_sentinel() {
+        let contributors: &[&[u8]] = &[b"alpha", b"beta", b"gamma"];
+        let baseline = compose_engine_version_hash(contributors);
+
+        for (ci, contributor) in contributors.iter().enumerate() {
+            for bi in 0..contributor.len() {
+                let mut perturbed: Vec<Vec<u8>> = contributors
+                    .iter()
+                    .map(|c| c.to_vec())
+                    .collect();
+                perturbed[ci][bi] ^= 0xFF;
+                let perturbed_refs: Vec<&[u8]> =
+                    perturbed.iter().map(|v| v.as_slice()).collect();
+                let h = compose_engine_version_hash(&perturbed_refs);
+                assert_ne!(
+                    h,
+                    baseline,
+                    "hash unchanged after flipping byte {} of contributor {}",
+                    bi,
+                    ci
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn compose_engine_version_hash_is_order_sensitive() {
+        let a: &[&[u8]] = &[b"first", b"second"];
+        let b: &[&[u8]] = &[b"second", b"first"];
+        assert_ne!(
+            compose_engine_version_hash(a),
+            compose_engine_version_hash(b),
+            "hash must differ when contributor order changes"
+        );
+    }
+
+    #[test]
+    fn compose_engine_version_hash_length_prefix_prevents_concat_collision() {
+        // Without length-prefix framing, [b"ab", b"c"] and [b"a", b"bc"]
+        // would concatenate to the same bytes "abc" and hash identically.
+        let a: &[&[u8]] = &[b"ab", b"c"];
+        let b: &[&[u8]] = &[b"a", b"bc"];
+        assert_ne!(
+            compose_engine_version_hash(a),
+            compose_engine_version_hash(b),
+            "length-prefix framing must prevent concat collision"
+        );
+    }
+
+    #[test]
+    fn compose_engine_version_hash_drop_one_contributor_changes_hash() {
+        let full: &[&[u8]] = &[b"foo", b"bar", b"baz"];
+        let dropped: &[&[u8]] = &[b"foo", b"bar"];
+        assert_ne!(
+            compose_engine_version_hash(full),
+            compose_engine_version_hash(dropped),
+            "dropping a contributor must change the hash"
+        );
+    }
+
+    #[test]
+    fn compose_engine_version_hash_pins_fixed_input_to_exact_hex_literal() {
+        // Pins the algorithm against drift. If the length-prefix scheme,
+        // hash primitive, or hex formatting changes, this literal must be
+        // updated deliberately in the same commit.
+        // Literal filled in during step-2 once the implementation produces a
+        // concrete value.
+        let h = compose_engine_version_hash(&[b"reify", b"engine"]);
+        assert_eq!(
+            h,
+            "PLACEHOLDER_FILL_IN_DURING_STEP2",
+            "algorithm drift detected — update this literal in the same commit"
+        );
+    }
 }
