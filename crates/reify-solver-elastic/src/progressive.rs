@@ -124,10 +124,26 @@ pub struct PartialElasticResult {
 ///
 /// ```
 /// use reify_solver_elastic::progressive::{near_constraint_boundary, PartialElasticResult, ProgressiveOptions};
-/// // No yield stress → always false
-/// let opts = ProgressiveOptions { yield_stress: None, ..Default::default() };
-/// let r = PartialElasticResult { displacement: vec![], stress: vec![], max_von_mises: 1e30, converged: false, iterations: 0 };
-/// assert!(!near_constraint_boundary(&r, &opts));
+///
+/// fn make_r(max_von_mises: f64) -> PartialElasticResult {
+///     PartialElasticResult { displacement: vec![], stress: vec![], max_von_mises, converged: false, iterations: 0 }
+/// }
+///
+/// // No yield stress → always false regardless of von Mises value.
+/// let opts_none = ProgressiveOptions { yield_stress: None, ..Default::default() };
+/// assert!(!near_constraint_boundary(&make_r(1e30), &opts_none));
+///
+/// // yield_stress = 200 MPa, near_boundary_pct = 0.10 → threshold = 180 MPa.
+/// let opts = ProgressiveOptions { yield_stress: Some(200e6), near_boundary_pct: 0.10, ..Default::default() };
+///
+/// // Well below threshold (100 MPa < 180 MPa) → false.
+/// assert!(!near_constraint_boundary(&make_r(100e6), &opts));
+///
+/// // Exactly at threshold (180 MPa >= 180 MPa) → true (`>=` semantics).
+/// assert!(near_constraint_boundary(&make_r(180e6), &opts));
+///
+/// // Above threshold (195 MPa >= 180 MPa) → true.
+/// assert!(near_constraint_boundary(&make_r(195e6), &opts));
 /// ```
 pub fn near_constraint_boundary(
     result: &PartialElasticResult,
