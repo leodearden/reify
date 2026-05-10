@@ -171,6 +171,35 @@ pub fn element_stress_p1(
     ]
 }
 
+/// Compute the volume of a P1 tetrahedron from its physical vertex
+/// positions: `V = |det M| / 6`, where
+/// `M = [v_1 − v_0 | v_2 − v_0 | v_3 − v_0]` is the 3×3 Jacobian of the
+/// reference→physical affine map.
+///
+/// The `.abs()` choice mirrors `crate::assembly::tet`'s `det.abs()`
+/// usage (see `assembly/tet.rs:244`): a left-handed (mirror-flipped)
+/// node ordering yields `det J < 0` but the same physical volume, so
+/// taking `|det J|` keeps `V > 0` for any valid (non-degenerate) tet.
+///
+/// # Preconditions
+///
+/// The tet must be non-degenerate. A degenerate (zero-volume) tet
+/// returns exactly `0.0`; diagnosing that condition is PRD task #21's
+/// job.
+pub fn tet_volume_p1(phys_nodes: &[[f64; 3]; 4]) -> f64 {
+    let v0 = phys_nodes[0];
+    let mut m = [[0.0_f64; 3]; 3];
+    for i in 0..3 {
+        m[i][0] = phys_nodes[1][i] - v0[i];
+        m[i][1] = phys_nodes[2][i] - v0[i];
+        m[i][2] = phys_nodes[3][i] - v0[i];
+    }
+    let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+        - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+        + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+    det.abs() / 6.0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
