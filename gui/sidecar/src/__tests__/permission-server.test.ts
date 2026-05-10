@@ -17,7 +17,7 @@ async function connectClient(serverUrl: string): Promise<Client> {
 }
 
 describe('createPermissionServer', () => {
-  let server: PermissionServer;
+  let server: ReturnType<typeof createPermissionServer>;
 
   afterEach(async () => {
     await server.stop().catch(() => {});
@@ -276,10 +276,10 @@ describe('createPermissionServer', () => {
     });
 
     // Wait deterministically for the request to reach pending-await state.
-    // awaitPending(1) resolves as soon as pendingPromises.size >= 1, polling
-    // internally at 10ms intervals and rejecting after 2s on timeout — no
-    // fixed-delay assumptions.
-    await server.awaitPending(1, 2000);
+    // __testHooks.awaitPending(1) resolves as soon as pendingPromises.size >= 1
+    // via an event-driven waiter list notified at the pendingPromises.set site;
+    // setTimeout-based timeout rejects after 2 s — no polling, no Date.now().
+    await server.__testHooks.awaitPending(1, 2000);
 
     // The cleared handler must not have been invoked during the blocking wait.
     expect(handlerCalls).toBe(0);
@@ -360,6 +360,19 @@ describe('createPermissionServer', () => {
       // Drain pending permission requests so the server can shut down cleanly in afterEach.
       server.cancelAll();
     }
+  });
+
+  // Type-level contract: the production PermissionServer interface must not expose
+  // pendingCount or awaitPending. The @ts-expect-error directives below fail tsc
+  // when the methods are present (unused directive → TS2578) and pass when they are
+  // removed (directive suppresses the property-does-not-exist error).
+  it('production PermissionServer interface excludes pendingCount and awaitPending', () => {
+    server = createPermissionServer();
+    const prod: PermissionServer = server;
+    // @ts-expect-error — pendingCount must not be on the production PermissionServer interface
+    prod.pendingCount;
+    // @ts-expect-error — awaitPending must not be on the production PermissionServer interface
+    prod.awaitPending;
   });
 
   // success-path cleanup: each completed approve_tool call must close its per-request
