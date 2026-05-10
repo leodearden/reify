@@ -345,4 +345,24 @@ mod tests {
             spec,
         );
     }
+
+    #[test]
+    #[should_panic(expected = "phys1.len() must equal n_nodes")]
+    fn run_element_stiffness_tests_panics_on_phys_length_mismatch() {
+        // spec is internally consistent (n_dofs = 3*n_nodes) so the first guard
+        // passes, but make_phys returns 5 nodes instead of 6.
+        let spec = ElementStiffnessTestSpec {
+            n_dofs: 18,
+            n_nodes: 6,
+            vol_ref: 1.0,
+            centroid: [0.0; 3],
+            swap_pair: (0, 1),
+            vol_swapped: 1.0,
+        };
+        run_element_stiffness_tests(
+            &|_, _| unreachable!("compute_k must not be called when phys1.len() is wrong"),
+            &|_| vec![[0.0_f64; 3]; 5], // wrong: 5 nodes instead of 6
+            spec,
+        );
+    }
 }
