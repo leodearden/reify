@@ -314,3 +314,28 @@ pub(crate) fn scaled_p2_phys_nodes(s: f64) -> [[f64; 3]; 10] {
     }
     nodes
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[should_panic(expected = "n_dofs must equal 3 * n_nodes")]
+    fn run_element_stiffness_tests_panics_on_dof_node_mismatch() {
+        // n_dofs = 24 but n_nodes = 6 → 24 != 3*6=18; helper must fail fast
+        // before touching the closures.
+        let spec = ElementStiffnessTestSpec {
+            n_dofs: 24,
+            n_nodes: 6,
+            vol_ref: 1.0,
+            centroid: [0.0; 3],
+            swap_pair: (0, 1),
+            vol_swapped: 1.0,
+        };
+        run_element_stiffness_tests(
+            &|_, _| unreachable!("compute_k must not be called when spec is invalid"),
+            &|_| unreachable!("make_phys must not be called when spec is invalid"),
+            spec,
+        );
+    }
+}
