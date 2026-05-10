@@ -252,7 +252,7 @@ describe('StatusBar tessellation diagnostics', () => {
     const badge = screen.getByTestId('tessellation-errors');
     const label = badge.getAttribute('aria-label') ?? '';
     // Shows only tessellation count so SR users can distinguish it from the compile button
-    expect(label).toBe('Show 1 tessellation diagnostics');
+    expect(label).toBe('Show 1 tessellation diagnostic');
   });
 });
 
@@ -345,7 +345,7 @@ describe('StatusBar compile diagnostics', () => {
     ));
     const badge = screen.getByTestId('diagnostics-count');
     const label = badge.getAttribute('aria-label') ?? '';
-    expect(label).toMatch(/diagnostics/i);
+    expect(label).toMatch(/diagnostic/i);
   });
 
   it('diagnostics-count button has type="button" to prevent accidental form submission', () => {
@@ -359,6 +359,20 @@ describe('StatusBar compile diagnostics', () => {
     ));
     const badge = screen.getByTestId('diagnostics-count');
     expect(badge.getAttribute('type')).toBe('button');
+  });
+
+  it('compile badge aria-label uses singular when count is 1', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        compileDiagnostics={[makeDiag('Warning')]}
+      />
+    ));
+    const badge = screen.getByTestId('diagnostics-count');
+    const label = badge.getAttribute('aria-label') ?? '';
+    expect(label).toBe('Show 1 compile diagnostic');
   });
 
   it('compile badge aria-label identifies pipeline and count (not merged total)', () => {
