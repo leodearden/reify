@@ -30,7 +30,7 @@ use super::*;
 /// `GeomRef` or equivalent solid-geometry node) rather than as a plain value
 /// cell.
 ///
-/// Two expression forms are recognised:
+/// Three expression forms are recognised:
 ///
 /// - **`FunctionCall`** — `true` when the callee name is a built-in geometry
 ///   function (`is_geometry_function`) *and* no user function with the same name
@@ -44,6 +44,16 @@ use super::*;
 ///   `known_geometry_lets`. No `functions` shadow check is needed: an identifier
 ///   is syntactically distinct from a function call, so a user-defined function
 ///   cannot collide with a geometry let via this branch.
+///
+/// - **`Conditional`** — `true` when EITHER branch (recursively) classifies as
+///   a geometry expression. The let is then routed to `compile_geometry_call`
+///   where it surfaces a clean compile-time Error explaining that
+///   geometry-typed if-then-else is not yet supported (see task 3395).
+///   Returning `false` here would leave the let as a plain value cell and
+///   silently produce the cryptic "unresolvable GeomRef::Step(0)" crash.
+///   "Either branch" is sufficient because mixed-type Conditionals are caught
+///   by the type system elsewhere; we just need any geometry-branch path to
+///   route through `compile_geometry_call`'s new Error arm.
 ///
 /// # Ordering invariant for `known_geometry_lets`
 ///
@@ -100,6 +110,19 @@ pub(crate) fn is_geometry_let(
         // expression is syntactically distinct from FunctionCall, so a user-defined
         // function cannot collide with a geometry let via this branch.
         reify_syntax::ExprKind::Ident(name) => known_geometry_lets.contains(name.as_str()),
+        // **`Conditional`** — `true` when EITHER branch (recursively) classifies as
+        // a geometry expression. The let is then routed to `compile_geometry_call`
+        // where it surfaces a clean compile-time Error explaining that
+        // geometry-typed if-then-else is not yet supported (see task 3395).
+        // Returning `false` here would leave the let as a plain value cell and
+        // silently produce the cryptic "unresolvable GeomRef::Step(0)" crash.
+        // "Either branch" is the right policy: mixed-type Conditionals are caught
+        // by the type system elsewhere; we just need any geometry-branch path to
+        // route through compile_geometry_call's new Error arm.
+        reify_syntax::ExprKind::Conditional { then_branch, else_branch, .. } => {
+            is_geometry_let(then_branch, functions, known_geometry_lets)
+                || is_geometry_let(else_branch, functions, known_geometry_lets)
+        }
         _ => false,
     }
 }
