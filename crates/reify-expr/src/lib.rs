@@ -971,8 +971,10 @@ fn eval_quantifier(
 /// Pinned per guard by the
 /// `worst_case_argument_shape_negatives_return_undef` E2E smoke test
 /// (`crates/reify-eval/tests/multi_load_case_stdlib_smoke.rs`):
-/// - `arity_one` / `arity_three` — wrong-arity calls fall through the
-///   inline dispatch arm (which only fires for `args.len() == 2`) to
+/// - `wrong_arity` — `args.len() != 2` returns `Value::Undef` immediately
+///   (internal guard; pinned by `eval_worst_case_dispatch_wrong_arity_returns_undef`
+///   in mod tests). At the E2E level, `arity_one` / `arity_three` fall through
+///   the inline dispatch arm (which only fires for `args.len() == 2`) to
 ///   `eval_fea`'s permanent `worst_case` Undef stub.
 /// - `no_cases_key` / `cases_not_map` — outer `Map.get("cases")` match
 ///   below: missing key or non-Map value returns `Value::Undef`.
@@ -981,6 +983,15 @@ fn eval_quantifier(
 ///   `_ => continue`; if no case yields a finite max, the function
 ///   returns `Value::Undef`.
 fn eval_worst_case_dispatch(args: &[Value], ctx: &EvalContext) -> Value {
+    // Silent-Undef discipline: wrong arity returns Undef instead of panicking.
+    // The inline dispatch arm (lib.rs:444) already guards `evaluated_args.len() == 2`,
+    // so normal call paths never reach this branch — but a future second call site
+    // that forgets that guard would otherwise index-out-of-bounds on `args[0]`/`args[1]`.
+    // Mirrors the `apply_lambda` pattern at line 1061. Pinned by
+    // `eval_worst_case_dispatch_wrong_arity_returns_undef` in mod tests.
+    if args.len() != 2 {
+        return Value::Undef;
+    }
     // Guard: first arg must be a Map (the MultiCaseResult shape). Pinned by
     // `worst_case_argument_shape_negatives_return_undef`'s `non_map_first`.
     let outer = match &args[0] {
