@@ -1095,6 +1095,47 @@ describe('Editor Mod-s aborts when file is externally changed', () => {
   });
 });
 
+describe('Editor Mod-s when file is not in store', () => {
+  let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    consoleErrorSpy.mockRestore();
+  });
+
+  it('does NOT call saveFile, does NOT call onError, but DOES emit console.error when activeFile is not in openFiles', () => {
+    const store = setupStore([file1]);
+    // Set activeFile to a path that is NOT in openFiles
+    store.setActiveFile('/project/src/missing.ri');
+    const onError = vi.fn();
+    const saveSpy = vi.spyOn(bridge, 'saveFile').mockResolvedValue(undefined);
+    render(() => <Editor store={store} onError={onError} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    const event = new KeyboardEvent('keydown', {
+      key: 's',
+      code: 'KeyS',
+      ctrlKey: true,
+      bubbles: true,
+    });
+    view.contentDOM.dispatchEvent(event);
+
+    // saveFile should NOT be called — the file isn't in the store
+    expect(saveSpy).not.toHaveBeenCalled();
+    // onError must NOT be called — not-found is a silent invariant breach, not user-actionable
+    expect(onError).not.toHaveBeenCalled();
+    // The diagnostic breadcrumb must still be emitted for debugging
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      'Save aborted: file not in store',
+      '/project/src/missing.ri',
+    );
+  });
+});
+
 describe('Editor theme integration', () => {
   it('mounts .cm-editor element successfully with reify theme', () => {
     const store = setupStore();
