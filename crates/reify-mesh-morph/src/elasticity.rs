@@ -523,6 +523,83 @@ mod tests {
         // tautological. Pinned by step-11.
     }
 
+    // ── task 2945 step-5: InverseVolume vs Uniform on graded mesh ────────────
+
+    /// Asymmetric cone fixture: 5 nodes, 4 tets all sharing interior node `p`.
+    /// Node `p` is placed near vertex `a` (at 0.05, 0.05, 0.05), so three
+    /// tets touching `a` have small volume and the fourth (`b, c, d, p`) has
+    /// large volume — a deliberately graded mesh.
+    ///
+    /// Non-rigid pinning (a, c, d fixed; b stretched to (2, 0, 0)) forces a
+    /// non-rigid deformation mode, which exposes the effect of per-element E
+    /// scaling: under `InverseVolume` the small-V tets are stiffer and the
+    /// interior node `p` moves differently than under `Uniform`.
+    ///
+    /// Asserts that the two rules produce demonstrably different interior-node
+    /// positions (L_∞ norm > 1e-3). No directional bias is asserted — the sign
+    /// depends on a non-trivial energy balance and would create fragility.
+    #[test]
+    fn elasticity_morph_inverse_volume_rule_produces_different_interior_node_position_than_uniform()
+    {
+        // Layout: 0=a, 1=b, 2=c, 3=d, 4=p (interior, near a)
+        let mesh = reify_types::VolumeMesh {
+            vertices: vec![
+                0.0_f32, 0.0, 0.0,  // 0: a
+                1.0, 0.0, 0.0,       // 1: b
+                0.0, 1.0, 0.0,       // 2: c
+                0.0, 0.0, 1.0,       // 3: d
+                0.05, 0.05, 0.05,    // 4: p (near a → three small tets, one large)
+            ],
+            tet_indices: vec![
+                0, 1, 2, 4, // a, b, c, p  — small vol
+                0, 1, 3, 4, // a, b, d, p  — small vol
+                0, 2, 3, 4, // a, c, d, p  — small vol
+                1, 2, 3, 4, // b, c, d, p  — large vol
+            ],
+            element_order: reify_types::ElementOrderTag::P1,
+            normals: None,
+        };
+
+        // Non-rigid BCs: a, c, d pinned to their original positions; b
+        // stretched to (2, 0, 0). This imposes a stretching mode — NOT a
+        // rigid-body translation, so the per-element E scaling has an effect
+        // on the interior-node equilibrium position.
+        let prescribed = vec![
+            (0_u32, [0.0_f64, 0.0, 0.0]), // a fixed
+            (2, [0.0_f64, 1.0, 0.0]),      // c fixed
+            (3, [0.0_f64, 0.0, 1.0]),      // d fixed
+            (1, [2.0_f64, 0.0, 0.0]),      // b stretched
+        ];
+
+        let opts_uniform = crate::MorphOptions {
+            stiffness_rule: crate::options::StiffnessRule::Uniform,
+            ..crate::MorphOptions::default()
+        };
+        let opts_inv_vol = crate::MorphOptions {
+            stiffness_rule: crate::options::StiffnessRule::InverseVolume,
+            ..crate::MorphOptions::default()
+        };
+
+        let out_uniform = elasticity_morph(&mesh, &prescribed, &opts_uniform)
+            .expect("Uniform elasticity_morph should succeed");
+        let out_inv_vol = elasticity_morph(&mesh, &prescribed, &opts_inv_vol)
+            .expect("InverseVolume elasticity_morph should succeed");
+
+        // Interior node 4 = p is at vertex positions [12, 13, 14] (0-indexed).
+        let p_base = 4 * 3;
+        let linf_norm = (0..3)
+            .map(|axis| {
+                (out_uniform.vertices[p_base + axis] - out_inv_vol.vertices[p_base + axis]).abs()
+            })
+            .fold(0.0_f32, f32::max);
+
+        assert!(
+            linf_norm > 1e-3,
+            "InverseVolume and Uniform rules should produce different interior-node \
+             positions on a graded mesh under a non-rigid BVP, but L_inf difference = {linf_norm}"
+        );
+    }
+
     // ── Step-15: exhaustive variant fence for ElasticityFailure ──────────────
 
     /// No-wildcard match guarantees that adding/removing/renaming a variant
