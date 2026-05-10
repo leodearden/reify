@@ -7558,20 +7558,23 @@ mod tests {
     /// giving genuine drift-detection that the deleted tautological test in
     /// `reify-types` only pretended to provide (that test compared the constant
     /// against the literal it was defined as — always true by construction).
-    /// The comparison uses `f64::EPSILON` slack so a future OCCT switch from
-    /// a literal to an arithmetically equivalent computed `constexpr` (same
-    /// nominal value, possible 1-ulp difference) does not cause a spurious
-    /// failure — the intent is to catch numerical drift, not bit drift.
+    /// The comparison uses a relative tolerance of ~4 ULPs so a future OCCT
+    /// switch from a literal to an arithmetically equivalent computed
+    /// `constexpr` (same nominal value, possible 1-ulp rounding difference)
+    /// does not cause a spurious failure — the intent is to catch numerical
+    /// drift (a genuine change in the nominal value), not bit drift (a sub-ULP
+    /// rounding artefact at the same nominal scale).
     #[test]
     fn default_point_on_shape_tolerance_m_pins_occt_precision_confusion() {
         let occt = ffi::ffi::precision_confusion();
         let rust = reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M;
-        // Catch numerical drift (any real change in OCCT's nominal value), not bit drift
-        // (a 1-ulp difference from OCCT switching to an arithmetically equivalent constexpr).
+        // ~4 ULPs relative tolerance: permits arithmetic rounding if OCCT ever
+        // computes `Precision::Confusion()` rather than returning a bare literal,
+        // while still loudly catching any genuine change to its nominal value.
         assert!(
-            (occt - rust).abs() < f64::EPSILON,
+            (occt - rust).abs() <= 4.0 * f64::EPSILON * occt.abs(),
             "DEFAULT_POINT_ON_SHAPE_TOLERANCE_M ({rust}) must match OCCT \
-             Precision::Confusion() ({occt}) within f64::EPSILON"
+             Precision::Confusion() ({occt}) within 4 ULPs"
         );
     }
 
