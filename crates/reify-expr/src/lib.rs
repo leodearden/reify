@@ -984,33 +984,32 @@ fn eval_quantifier(
 ///   returns `Value::Undef`.
 fn eval_worst_case_dispatch(args: &[Value], ctx: &EvalContext) -> Value {
     // Silent-Undef discipline: wrong arity returns Undef instead of panicking.
-    // The inline dispatch arm (lib.rs:444) already guards `evaluated_args.len() == 2`,
-    // so normal call paths never reach this branch — but a future second call site
-    // that forgets that guard would otherwise index-out-of-bounds on `args[0]`/`args[1]`.
-    // Mirrors the `apply_lambda` pattern at line 1061. Pinned by
+    // The inline `worst_case` dispatch arm in `eval_expr` already guards
+    // `evaluated_args.len() == 2`, so normal call paths never reach this
+    // branch — but a future second call site that forgets that guard would
+    // otherwise index-out-of-bounds on the element access below. Mirrors
+    // the `apply_lambda` arity-guard pattern. Pinned by
     // `eval_worst_case_dispatch_wrong_arity_returns_undef` in mod tests.
-    if args.len() != 2 {
-        return Value::Undef;
-    }
+    let [first, second] = args else { return Value::Undef; };
     // Guard: first arg must be a Map (the MultiCaseResult shape). Pinned by
     // `worst_case_argument_shape_negatives_return_undef`'s `non_map_first`.
-    let outer = match &args[0] {
+    let outer = match first {
         Value::Map(m) => m,
         _ => return Value::Undef,
     };
     // Guard: second arg must be a Lambda. Pinned by
     // `worst_case_argument_shape_negatives_return_undef`'s `non_lambda_second`.
     //
-    // `matches!` rather than a `match`-rebinds-`&args[1]` form: the
-    // rebinding shape has bitten similar dispatch sites where the matched
-    // binding sits unused, weakening the type-driven check (adding fields
-    // to `Value::Lambda` would not fail-compile a discard-bind guard). The
-    // explicit `matches!` precondition keeps the intent legible and the
-    // `lambda` borrow appearing only after the guard succeeds.
-    if !matches!(&args[1], Value::Lambda { .. }) {
+    // `matches!` rather than a match-rebinds form: the rebinding shape has
+    // bitten similar dispatch sites where the matched binding sits unused,
+    // weakening the type-driven check (adding fields to `Value::Lambda` would
+    // not fail-compile a discard-bind guard). The explicit `matches!`
+    // precondition keeps the intent legible and the `lambda` borrow appearing
+    // only after the guard succeeds.
+    if !matches!(second, Value::Lambda { .. }) {
         return Value::Undef;
     }
-    let lambda = &args[1];
+    let lambda = second;
     // Guard: outer Map must carry a `"cases"` key bound to a Map. Pinned by
     // the `no_cases_key` and `cases_not_map` negatives.
     let cases = match outer.get(&Value::String("cases".to_string())) {
