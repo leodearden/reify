@@ -103,9 +103,12 @@ pub struct MidSurfaceAttributes {
 /// Per [`crate::segmentation::SegmentationResult::triangle_labels`]
 /// (segmentation.rs:186), `triangle_labels` must be parallel to
 /// `mesh.triangles` (same length, same indexing). This invariant is
-/// enforced in debug builds via `debug_assert_eq!`; release builds
-/// trust the upstream contract and will panic on out-of-bounds index
-/// rather than silently truncate.
+/// enforced in all builds via `assert_eq!` at function entry, so both
+/// directions of the length mismatch panic with the contract message
+/// rather than silently truncating (the release-build failure mode that
+/// previously occurred when `triangle_labels.len() > mesh.triangles.len()`).
+/// The cost is a single `usize` comparison per call at a derived-geometry
+/// boundary — negligible.
 ///
 /// # Sentinel-triangle exclusion contract
 ///
@@ -133,7 +136,7 @@ pub fn populate_mid_surface_attributes(
     mesh: &MidSurfaceMesh,
     segmentation: &SegmentationResult,
 ) -> MidSurfaceAttributes {
-    debug_assert_eq!(
+    assert_eq!(
         mesh.triangles.len(),
         segmentation.triangle_labels.len(),
         "triangle_labels must be parallel to mesh.triangles \
