@@ -523,7 +523,7 @@ pub struct ViewDefinitionData {
 /// `{filename}.ri.views.json` file.
 ///
 /// Only user views are persisted; auto views are regenerated from the entity
-/// tree on every file open.  Schema version is stamped at `"1"`.
+/// tree on every file open.  Schema version is stamped at `"2"`.
 ///
 /// Mirrors the TypeScript `PersistentViewState` interface in
 /// `gui/src/types.ts`.  JSON keys use camelCase to match the TypeScript
@@ -531,7 +531,7 @@ pub struct ViewDefinitionData {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PersistentViewState {
-    /// Schema version — always `"1"` in this generation.
+    /// Schema version — always `"2"` in this generation.
     pub version: String,
     /// Id of the active view at persist time.
     pub active_view_id: String,
