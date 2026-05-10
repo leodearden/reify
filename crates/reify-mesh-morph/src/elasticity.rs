@@ -94,6 +94,11 @@ pub fn elasticity_morph(
     _options: &MorphOptions,
 ) -> Result<VolumeMesh, ElasticityFailure> {
     let _ = prescribed_positions;
+    if old_mesh.element_order != ElementOrderTag::P1 {
+        return Err(ElasticityFailure::UnsupportedElementOrder(
+            old_mesh.element_order,
+        ));
+    }
     if old_mesh.vertices.is_empty() {
         return Ok(VolumeMesh {
             vertices: Vec::new(),
