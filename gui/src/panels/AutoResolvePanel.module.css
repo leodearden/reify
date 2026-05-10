@@ -1,0 +1,159 @@
+/* AutoResolvePanel – auto-resolve loop progress panel (Task 2967) */
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  overflow-y: auto;
+  min-height: 0;
+  color: var(--text-primary, #e0e0e0);
+  font-size: 12px;
+}
+
+/* ── Panel header ───────────────────────────────────────────────────── */
+
+.panelHeader {
+  display: flex;
+  align-items: center;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border-subtle, #333);
+}
+
+.panelTitle {
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--text-primary, #e0e0e0);
+  text-transform: uppercase;
+}
+
+/* ── Section ────────────────────────────────────────────────────────── */
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sectionLabel {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: var(--text-muted, #888);
+  text-transform: uppercase;
+  padding: 2px 0;
+}
+
+/* ── Parameter / constraint row ─────────────────────────────────────── */
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 4px;
+  border-radius: 3px;
+}
+
+.row:hover {
+  background: var(--hover-bg, rgba(255, 255, 255, 0.04));
+}
+
+.cellId {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 11px;
+  color: var(--text-secondary, #bbb);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.value {
+  font-size: 11px;
+  color: var(--text-primary, #e0e0e0);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+/* ── Constraint target bound ────────────────────────────────────────── */
+
+.targetBound {
+  font-size: 10px;
+  color: var(--text-muted, #888);
+  white-space: nowrap;
+}
+
+/* ── Constraint status markers ──────────────────────────────────────── */
+
+.statusMarker {
+  font-size: 11px;
+  margin-left: 4px;
+}
+
+.statusMarker[data-status="ok"] {
+  color: var(--status-ok, #4caf50);
+}
+
+.statusMarker[data-status="violation"] {
+  color: var(--status-violation, #ef5350);
+}
+
+/* ── Chart ──────────────────────────────────────────────────────────── */
+
+.chartSection {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.chart {
+  display: block;
+  overflow: visible;
+}
+
+.chartAxisLabel {
+  font-size: 10px;
+  fill: var(--text-muted, #888);
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+}
+
+.chartLine {
+  stroke: var(--accent, #4a9eff);
+  stroke-width: 1.5;
+}
+
+.chartMetricLabel {
+  font-size: 10px;
+  fill: var(--text-muted, #888);
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+}
+
+/* ── Sparkline rows ─────────────────────────────────────────────────── */
+
+.sparklineRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sparklineCellId {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 10px;
+  color: var(--text-muted, #888);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sparkline {
+  display: block;
+  flex-shrink: 0;
+}
+
+.sparklineLine {
+  stroke: var(--accent, #4a9eff);
+  stroke-width: 1.5;
+}

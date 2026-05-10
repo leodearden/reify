@@ -7,6 +7,7 @@ import type {
   EvaluationStatus,
   GuiState,
   DiagnosticInfo,
+  AutoResolveIteration,
 } from '../types';
 import {
   onMeshUpdate,
@@ -18,8 +19,17 @@ import {
   onConstraintRemoved,
   onTessellationDiagnostics,
   onCompileDiagnostics,
+  onAutoResolveStart,
+  onAutoResolveIteration,
+  onAutoResolveComplete,
 } from '../bridge';
 import type { KernelStatus } from '../bridge';
+
+/** State for an auto-resolve loop (param x = auto optimisation). */
+export interface AutoResolveLoopState {
+  active: boolean;
+  iterations: AutoResolveIteration[];
+}
 
 export interface EngineState {
   meshes: Record<string, MeshData>;
@@ -29,6 +39,7 @@ export interface EngineState {
   tessellationDiagnostics: DiagnosticInfo[];
   compileDiagnostics: DiagnosticInfo[];
   kernelStatus: KernelStatus | null;
+  autoResolve: AutoResolveLoopState;
 }
 
 export interface EngineStoreOptions {
@@ -48,6 +59,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
     tessellationDiagnostics: [],
     compileDiagnostics: [],
     kernelStatus: null,
+    autoResolve: { active: false, iterations: [] },
   });
 
   function initFromState(guiState: GuiState) {
@@ -121,6 +133,28 @@ export function createEngineStore(options?: EngineStoreOptions) {
     setState('kernelStatus', status);
   }
 
+  /** Start a new auto-resolve loop: flip active=true and clear previous iterations. */
+  function beginAutoResolveLoop() {
+    setState('autoResolve', { active: true, iterations: [] });
+  }
+
+  /** Append one iteration snapshot to the accumulating iterations array. */
+  function applyAutoResolveIteration(iter: AutoResolveIteration) {
+    setState(produce((s) => { s.autoResolve.iterations.push(iter); }));
+  }
+
+  /**
+   * Mark the loop as finished and reset iteration history.
+   *
+   * The panel unmounts when `active` flips to false (App.tsx uses
+   * `<Show when={autoResolve.active}>`), so any preserved iterations would be
+   * unreachable until the next `beginAutoResolveLoop` clears them anyway.
+   * Clearing eagerly avoids holding dead state between runs.
+   */
+  function endAutoResolveLoop() {
+    setState('autoResolve', { active: false, iterations: [] });
+  }
+
   async function subscribeToEvents(): Promise<() => void> {
     const results = await Promise.allSettled([
       onMeshUpdate(applyMeshUpdate),
@@ -132,6 +166,9 @@ export function createEngineStore(options?: EngineStoreOptions) {
       onConstraintRemoved(removeConstraint),
       onTessellationDiagnostics(setTessellationDiagnostics),
       onCompileDiagnostics(setCompileDiagnostics),
+      onAutoResolveStart(beginAutoResolveLoop),
+      onAutoResolveIteration(applyAutoResolveIteration),
+      onAutoResolveComplete(endAutoResolveLoop),
     ]);
 
     const unlisteners: (() => void)[] = [];
@@ -163,6 +200,9 @@ export function createEngineStore(options?: EngineStoreOptions) {
     setTessellationDiagnostics,
     setCompileDiagnostics,
     setKernelStatus,
+    beginAutoResolveLoop,
+    applyAutoResolveIteration,
+    endAutoResolveLoop,
     subscribeToEvents,
   };
 }

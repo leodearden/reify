@@ -117,6 +117,9 @@ vi.mock('../bridge', () => ({
   writeViewSidecar: vi.fn().mockResolvedValue(undefined),
   getMechanismDescriptors: vi.fn().mockResolvedValue([]),
   subscribeToSidecarCrashed: vi.fn().mockResolvedValue(() => {}),
+  onAutoResolveStart: vi.fn().mockResolvedValue(() => {}),
+  onAutoResolveIteration: vi.fn().mockResolvedValue(() => {}),
+  onAutoResolveComplete: vi.fn().mockResolvedValue(() => {}),
 }));
 
 // Mock persistence modules so App.tsx's persistence calls can be intercepted.
@@ -4871,3 +4874,42 @@ function countGridTracks(template: string): number {
   if (inTrack) count++;
   return count;
 }
+
+// ── AutoResolvePanel integration (step-13) ────────────────────────────────────
+
+describe('App AutoResolvePanel integration', () => {
+  it('AutoResolvePanel auto-promotes when state.autoResolve.active is true', async () => {
+    // Capture the auto-resolve bridge callbacks registered by engineStore.subscribeToEvents
+    let startCb: (() => void) | undefined;
+    let completeCb: (() => void) | undefined;
+    vi.mocked((bridge as any).onAutoResolveStart).mockImplementation(async (cb: () => void) => {
+      startCb = cb;
+      return () => {};
+    });
+    vi.mocked((bridge as any).onAutoResolveComplete).mockImplementation(async (cb: () => void) => {
+      completeCb = cb;
+      return () => {};
+    });
+
+    await renderAndWaitForReady();
+
+    // Wait for subscribeToEvents to register the callbacks
+    await waitFor(() => expect(startCb).toBeDefined());
+    await waitFor(() => expect(completeCb).toBeDefined());
+
+    // Panel should NOT be visible before any loop starts
+    expect(screen.queryByTestId('auto-resolve-panel')).toBeNull();
+
+    // Fire the auto-resolve-start event — panel should auto-promote
+    startCb!();
+    await waitFor(() => {
+      expect(screen.queryByTestId('auto-resolve-panel')).toBeTruthy();
+    });
+
+    // Fire the auto-resolve-complete event — panel should be hidden again
+    completeCb!();
+    await waitFor(() => {
+      expect(screen.queryByTestId('auto-resolve-panel')).toBeNull();
+    });
+  });
+});

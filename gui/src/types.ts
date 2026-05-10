@@ -354,3 +354,43 @@ export interface PersistentViewState {
   /** ISO 8601 timestamp of last write. */
   timestamp: string;
 }
+
+// ---------------------------------------------------------------------------
+// Auto-resolve loop progress types (Task 2967)
+// ---------------------------------------------------------------------------
+
+/**
+ * A single parameter value snapshot from one auto-resolve iteration.
+ * Mirrors the engine's wire type for `param x = auto` iteration progress.
+ */
+export interface AutoResolveParameterValue {
+  value: number;
+  unit: string;
+  display: string;
+}
+
+/**
+ * Progress for one FEA-derived constraint at a given iteration.
+ * `satisfied` is true when the constraint bound is met.
+ */
+export interface AutoResolveConstraintProgress {
+  name: string;
+  value: number;
+  unit?: string;
+  target_lower?: number;
+  target_upper?: number;
+  satisfied: boolean;
+}
+
+/**
+ * A single iteration snapshot emitted by the auto-resolve loop.
+ * `driving_metric` names the primary metric being optimised;
+ * `driving_metric_value` is its scalar value at this iteration.
+ */
+export interface AutoResolveIteration {
+  iteration: number;
+  parameters: Record<string, AutoResolveParameterValue>;
+  constraints: Record<string, AutoResolveConstraintProgress>;
+  driving_metric?: string;
+  driving_metric_value?: number;
+}

@@ -21,6 +21,7 @@ import type {
   DefInfo,
   PersistentViewState,
   MechanismDescriptor,
+  AutoResolveIteration,
 } from './types';
 import { convertRawMesh, convertRawGuiState } from './types';
 import type {
@@ -564,4 +565,54 @@ export async function readViewSidecar(riPath: string): Promise<PersistentViewSta
  */
 export async function writeViewSidecar(riPath: string, state: PersistentViewState): Promise<void> {
   await invoke<void>('write_view_sidecar', { riPath, state });
+}
+
+// ── Auto-resolve loop event listeners (Task 2967) ───────────────────
+// These listen for events emitted by the engine's param x = auto solver loop.
+// The backend event source is wired in a later task; the GUI side is ready ahead
+// of time. The engineStore.subscribeToEvents Promise.allSettled pattern means
+// unavailable events degrade to a console.warn rather than a startup crash.
+
+/** Subscribe to auto-resolve loop start events. Fires when a new solve loop begins. */
+export async function onAutoResolveStart(
+  callback: () => void,
+): Promise<UnlistenFn> {
+  return listen<void>('auto-resolve-start', () => {
+    callback();
+  });
+}
+
+/** Subscribe to auto-resolve iteration events. Fires after each solver iteration. */
+export async function onAutoResolveIteration(
+  callback: (iter: AutoResolveIteration) => void,
+): Promise<UnlistenFn> {
+  // The backend wire format is defined in a later task. Guard against malformed
+  // payloads so a field mismatch (missing `parameters`, `constraints`, etc.)
+  // logs a warning and drops the event rather than letting a downstream NPE
+  // crash the panel renderer.
+  return listen<unknown>('auto-resolve-iteration', (event) => {
+    const p = event.payload as Record<string, unknown>;
+    if (
+      typeof p !== 'object' ||
+      p === null ||
+      typeof p['iteration'] !== 'number' ||
+      typeof p['parameters'] !== 'object' ||
+      p['parameters'] === null ||
+      typeof p['constraints'] !== 'object' ||
+      p['constraints'] === null
+    ) {
+      console.warn('[auto-resolve-iteration] malformed payload; dropping event', p);
+      return;
+    }
+    callback(p as unknown as AutoResolveIteration);
+  });
+}
+
+/** Subscribe to auto-resolve loop completion events. Fires when the solve loop finishes. */
+export async function onAutoResolveComplete(
+  callback: () => void,
+): Promise<UnlistenFn> {
+  return listen<void>('auto-resolve-complete', () => {
+    callback();
+  });
 }

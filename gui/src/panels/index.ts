@@ -19,3 +19,5 @@ export { MechanismPanel } from './MechanismPanel';
 export type { MechanismPanelProps } from './MechanismPanel';
 export { DiagnosticsPanel } from './DiagnosticsPanel';
 export type { DiagnosticsPanelProps, DiagnosticEntry } from './DiagnosticsPanel';
+export { AutoResolvePanel } from './AutoResolvePanel';
+export type { AutoResolvePanelProps } from './AutoResolvePanel';
