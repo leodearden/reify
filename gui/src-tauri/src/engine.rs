@@ -559,9 +559,11 @@ impl EngineSession {
         } else {
             // Single-file flow — no prior load_file means no project_root anchor;
             // delegate to compile_single_file_with_stdlib (shared with load_from_source).
-            // NOTE(task-3351 step-2): diagnostics from the single-file failure path are
-            // discarded here (`.map_err(|(msg, _)| msg)`) and wired in step-4 of the plan.
-            compile_single_file_with_stdlib(content, module_name).map_err(|(msg, _)| msg)?
+            compile_single_file_with_stdlib(content, module_name)
+                .map_err(|(msg, diags)| {
+                    self.last_compile_diagnostics = diags;
+                    msg
+                })?
         };
 
         // Parse+compile succeeded — run check() before mutating any state, so
