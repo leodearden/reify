@@ -449,4 +449,50 @@ mod tests {
             std::f64::consts::FRAC_PI_4
         ));
     }
+
+    // ---- step-7: auto_mesh_size_from_boundary ----
+
+    #[test]
+    fn auto_mesh_size_unit_square_returns_one() {
+        // Smallest segment = 1.0 (every side), multiplier = 1.0 -> 1.0.
+        let pb = ProfileBoundary {
+            outer: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            holes: vec![],
+        };
+        let h = auto_mesh_size_from_boundary(&pb, 1.0);
+        assert!((h - 1.0).abs() < 1e-12, "h = {h}, expected 1.0");
+    }
+
+    #[test]
+    fn auto_mesh_size_thin_rectangle_picks_smallest_side() {
+        // 10 x 0.1 rectangle: smallest segment = 0.1, multiplier = 1.0.
+        let pb = ProfileBoundary {
+            outer: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 0.1], [0.0, 0.1]],
+            holes: vec![],
+        };
+        let h = auto_mesh_size_from_boundary(&pb, 1.0);
+        assert!((h - 0.1).abs() < 1e-12, "h = {h}, expected 0.1");
+    }
+
+    #[test]
+    fn auto_mesh_size_hole_can_drive_size_down() {
+        // Outer ring has side 10; hole has side 0.5. Smallest overall = 0.5.
+        let pb = ProfileBoundary {
+            outer: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
+            holes: vec![vec![[4.0, 4.0], [4.5, 4.0], [4.5, 4.5], [4.0, 4.5]]],
+        };
+        let h = auto_mesh_size_from_boundary(&pb, 1.0);
+        assert!((h - 0.5).abs() < 1e-12, "h = {h}, expected 0.5 (from hole)");
+    }
+
+    #[test]
+    fn auto_mesh_size_empty_outer_returns_zero() {
+        // Matches auto_mesh_size_from_features' "unavailable" convention.
+        let pb = ProfileBoundary {
+            outer: vec![],
+            holes: vec![],
+        };
+        let h = auto_mesh_size_from_boundary(&pb, 1.0);
+        assert_eq!(h, 0.0);
+    }
 }
