@@ -19,6 +19,8 @@ echo "=== sidecar typecheck test-path enforcement tests ==="
 
 TSCONFIG_TEST="$REPO_ROOT/gui/sidecar/tsconfig.test.json"
 SIDECAR_PKG="$REPO_ROOT/gui/sidecar/package.json"
+ORCH="$REPO_ROOT/orchestrator.yaml"
+HOOK="$REPO_ROOT/hooks/project-checks"
 
 # -- Group (a): tsconfig.test.json structural pins ---------------------------
 echo ""
@@ -101,8 +103,6 @@ fi
 echo ""
 echo "--- Group (d): orchestrator.yaml lint_command sidecar block pins ---"
 
-ORCH="$REPO_ROOT/orchestrator.yaml"
-
 assert "orchestrator.yaml lint_command sidecar block invokes npm run typecheck:test" \
     bash -c "grep 'lint_command:' '$ORCH' | grep -q 'npm run typecheck:test'"
 
@@ -114,5 +114,32 @@ assert "orchestrator.yaml lint_command sidecar block uses bash -c chaining" \
 
 assert "orchestrator.yaml lint_command sidecar block is NOT just 'npm ci' standalone" \
     bash -c "! grep 'lint_command:' '$ORCH' | grep -qE 'gui/sidecar && timeout[^)]+npm ci\\); fi'"
+
+# -- Group (e): hooks/project-checks sidecar block pins ----------------------
+echo ""
+echo "--- Group (e): hooks/project-checks sidecar block pins ---"
+
+assert "hooks/project-checks sidecar block invokes npm run typecheck" \
+    bash -c "grep -q 'gui/sidecar.*npm run typecheck' '$HOOK'"
+
+assert "hooks/project-checks sidecar block invokes npm run typecheck:test" \
+    bash -c "grep -q 'gui/sidecar.*npm run typecheck:test' '$HOOK'"
+
+assert "hooks/project-checks has error message referencing npm run typecheck in gui/sidecar" \
+    bash -c "grep -q 'npm run typecheck.*gui/sidecar' '$HOOK'"
+
+assert "hooks/project-checks has error message referencing npm run typecheck:test in gui/sidecar" \
+    bash -c "grep -q 'npm run typecheck:test.*gui/sidecar' '$HOOK'"
+
+# -- Ordering: typecheck blocks appear after npm ci block --------------------
+echo ""
+echo "--- Ordering: typecheck after npm ci ---"
+
+assert "hooks/project-checks typecheck:test invocation appears after install: gui/sidecar" \
+    bash -c "
+        ci_line=\$(grep -n 'install: gui/sidecar' '$HOOK' | cut -d: -f1)
+        tc_line=\$(grep -n 'gui/sidecar.*npm run typecheck:test' '$HOOK' | head -1 | cut -d: -f1)
+        [ -n \"\$ci_line\" ] && [ -n \"\$tc_line\" ] && [ \"\$ci_line\" -lt \"\$tc_line\" ]
+    "
 
 test_summary
