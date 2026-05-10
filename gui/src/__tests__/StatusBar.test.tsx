@@ -470,3 +470,29 @@ describe('StatusBar Claude status indicator', () => {
     expect(screen.queryByTestId('claude-status')).toBeNull();
   });
 });
+
+describe('StatusBar merged diagnostics rendering', () => {
+  function makeDiag(severity: string, message = 'test error'): DiagnosticInfo {
+    return {
+      file_path: '<unknown>',
+      line: 1, column: 1, end_line: 1, end_column: 1,
+      severity,
+      message,
+      code: null,
+    };
+  }
+
+  it('when both compile and tessellation diagnostics arrays are non-empty, both badges render', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        tessellationDiagnostics={[makeDiag('Error', 'tess boom')]}
+        compileDiagnostics={[makeDiag('Warning', 'compile warn')]}
+      />
+    ));
+    expect(screen.getByTestId('tessellation-errors')).toBeTruthy();
+    expect(screen.getByTestId('diagnostics-count')).toBeTruthy();
+  });
+});
