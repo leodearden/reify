@@ -93,12 +93,21 @@ pub fn elasticity_morph(
     prescribed_positions: &[(u32, [f64; 3])],
     _options: &MorphOptions,
 ) -> Result<VolumeMesh, ElasticityFailure> {
-    let _ = prescribed_positions;
     if old_mesh.element_order != ElementOrderTag::P1 {
         return Err(ElasticityFailure::UnsupportedElementOrder(
             old_mesh.element_order,
         ));
     }
+
+    // Validate every prescribed_positions index up front (before any
+    // allocation) — delegates to VolumeMesh::vertex for the overflow-safe
+    // bounds check. Same discipline as laplacian.rs:103-107.
+    for (node_idx, _) in prescribed_positions {
+        old_mesh
+            .vertex(*node_idx)
+            .ok_or(ElasticityFailure::InvalidNodeIndex(*node_idx))?;
+    }
+
     if old_mesh.vertices.is_empty() {
         return Ok(VolumeMesh {
             vertices: Vec::new(),
