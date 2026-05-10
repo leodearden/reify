@@ -155,6 +155,78 @@ fn mesh_plane_2d_quad_path_unit_square_recombines_cleanly() {
     }
 }
 
+/// Hole handling: a 10x10 outer square with a small 2x2 hole in the
+/// middle produces a mesh that avoids the hole interior — no element
+/// centroid and no vertex falls strictly inside the hole rect.
+#[cfg(has_gmsh)]
+#[test]
+fn mesh_plane_2d_with_hole_avoids_hole_interior() {
+    let outer: Vec<[f64; 2]> = vec![
+        [0.0, 0.0],
+        [10.0, 0.0],
+        [10.0, 10.0],
+        [0.0, 10.0],
+    ];
+    // CW order for the hole — gmsh accepts either winding.
+    let holes: Vec<Vec<[f64; 2]>> = vec![vec![
+        [4.0, 4.0],
+        [4.0, 6.0],
+        [6.0, 6.0],
+        [6.0, 4.0],
+    ]];
+
+    let result = mesh_plane_2d(&outer, &holes, Some(2.0), false, true)
+        .expect("mesh_plane_2d failed on outer+hole boundary");
+
+    let n_verts = result.vertices_xy.len() / 2;
+    assert!(n_verts > 0, "expected at least one vertex");
+
+    // (a) recombine=false → triangle path; non-empty stride-3 buffer.
+    assert!(
+        !result.triangle_indices.is_empty(),
+        "triangle_indices is empty — recombine=false should produce triangles",
+    );
+    assert_eq!(result.triangle_indices.len() % 3, 0);
+
+    // (c) no vertex lies strictly inside the hole rect (boundary OK).
+    // A small epsilon guards against floating-point boundary noise from
+    // gmsh's coordinate readback (gmsh stores f64 internally; the hole
+    // ring corners come back at machine precision).
+    let eps = 1e-9;
+    for (i, chunk) in result.vertices_xy.chunks_exact(2).enumerate() {
+        let (x, y) = (chunk[0], chunk[1]);
+        let strictly_inside_hole =
+            x > 4.0 + eps && x < 6.0 - eps && y > 4.0 + eps && y < 6.0 - eps;
+        assert!(
+            !strictly_inside_hole,
+            "vertex {i} at ({x}, {y}) lies strictly inside the hole rect [4,6]^2",
+        );
+    }
+
+    // (b) no triangle centroid falls strictly inside the hole rect.
+    for (t_idx, tri) in result.triangle_indices.chunks_exact(3).enumerate() {
+        let p0 = [
+            result.vertices_xy[tri[0] as usize * 2],
+            result.vertices_xy[tri[0] as usize * 2 + 1],
+        ];
+        let p1 = [
+            result.vertices_xy[tri[1] as usize * 2],
+            result.vertices_xy[tri[1] as usize * 2 + 1],
+        ];
+        let p2 = [
+            result.vertices_xy[tri[2] as usize * 2],
+            result.vertices_xy[tri[2] as usize * 2 + 1],
+        ];
+        let cx = (p0[0] + p1[0] + p2[0]) / 3.0;
+        let cy = (p0[1] + p1[1] + p2[1]) / 3.0;
+        let strictly_inside_hole = cx > 4.0 && cx < 6.0 && cy > 4.0 && cy < 6.0;
+        assert!(
+            !strictly_inside_hole,
+            "triangle {t_idx} centroid ({cx}, {cy}) lies strictly inside the hole rect",
+        );
+    }
+}
+
 /// Stub-build companion: the cfg(not(has_gmsh)) arm of `mesh_plane_2d`
 /// returns `GeometryError::OperationFailed("…Gmsh not available…")`
 /// regardless of input — pinning the documented stub-mode behaviour.
