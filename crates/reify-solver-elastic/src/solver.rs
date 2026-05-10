@@ -375,7 +375,9 @@ pub fn solve_cg_warm(
 /// - `None` branch: `u = vec![0.0; n]`, `r = f.to_vec()` — bit-identical to
 ///   the pre-warm-start code path (no SpMV, no FP reordering).
 /// - `Some(u₀)` branch: `u = u₀.to_vec()`, `r = f − K·u₀` via one
-///   mode-appropriate SpMV.
+///   mode-appropriate SpMV. Residual is computed via slot-order in-place
+///   subtraction (`r[i] -= ku[i]`) matching `cg_loop`'s r-update
+///   convention; residual is bit-exact to `f[i] - (K·u₀)[i]` per slot.
 fn build_initial_u_r<S>(f: &[f64], initial_guess: Option<&[f64]>, spmv: S) -> (Vec<f64>, Vec<f64>)
 where
     S: FnOnce(&[f64], &mut [f64]),
@@ -385,10 +387,15 @@ where
         None => (vec![0.0_f64; n], f.to_vec()),
         Some(u_0) => {
             let u = u_0.to_vec();
-            // r = f − K·u₀
+            // r = f − K·u₀ via slot-order in-place subtraction (matches cg_loop's
+            // r-update convention; preserves bit-equality with the prior collect form
+            // since each slot computes the same f[i] - ku[i] f64 op).
             let mut ku = vec![0.0_f64; n];
             spmv(&u, &mut ku);
-            let r: Vec<f64> = f.iter().zip(ku.iter()).map(|(fi, kui)| fi - kui).collect();
+            let mut r = f.to_vec();
+            for i in 0..n {
+                r[i] -= ku[i];
+            }
             (u, r)
         }
     }
@@ -858,8 +865,8 @@ where
 mod tests {
     #![allow(clippy::needless_range_loop)] // index-parallel loops in test asserts
     use super::{
-        CgSolverOptions, SolverMode, norm2_squared, pairwise_tree_sum_fn, solve_cg, solve_cg_warm,
-        spmv_seq,
+        build_initial_u_r, CgSolverOptions, SolverMode, norm2_squared, pairwise_tree_sum_fn,
+        solve_cg, solve_cg_warm, spmv_seq,
     };
     use faer::sparse::{SparseRowMat, Triplet};
 
@@ -1800,6 +1807,61 @@ mod tests {
                 "Parallel: solve_cg_warm(None) u[{i}] = {} ≠ solve_cg u[{i}] = {}",
                 par_warm_none.u[i],
                 par_cold.u[i],
+            );
+        }
+    }
+
+    /// Pins the `build_initial_u_r` `Some` branch: asserts that the returned
+    /// residual `r` equals `f − K·u₀` to bit precision, verified against a
+    /// hand-computed oracle.  K = [[4,1],[1,3]], u₀ = [0.5, 0.25],
+    /// f = [1.0, 2.0] → K·u₀ = [2.25, 1.25] → r = [−1.25, 0.75].
+    /// Using literal expected values (not spmv_seq-derived) makes this a true
+    /// contract pin rather than a self-equality check.
+    #[test]
+    fn build_initial_u_r_some_branch_residual_equals_f_minus_k_u0() {
+        // 2×2 SPD fixture: K = [[4.0, 1.0], [1.0, 3.0]].
+        let k = SparseRowMat::try_new_from_triplets(
+            2,
+            2,
+            &[
+                Triplet::new(0_usize, 0_usize, 4.0_f64),
+                Triplet::new(0_usize, 1_usize, 1.0_f64),
+                Triplet::new(1_usize, 0_usize, 1.0_f64),
+                Triplet::new(1_usize, 1_usize, 3.0_f64),
+            ],
+        )
+        .unwrap();
+        let u_0 = [0.5_f64, 0.25];
+        let f = [1.0_f64, 2.0];
+
+        // K·u₀ = [4·0.5+1·0.25, 1·0.5+3·0.25] = [2.25, 1.25]
+        // r = f − K·u₀ = [1.0−2.25, 2.0−1.25] = [−1.25, 0.75]
+        let expected_r = [-1.25_f64, 0.75_f64];
+
+        // Call the helper under test.
+        let (u, r) = build_initial_u_r(&f, Some(&u_0), |p, out| spmv_seq(&k, p, out));
+
+        // u must be a copy of u₀.
+        assert_eq!(u.len(), 2, "u.len() must equal 2");
+        for i in 0..2 {
+            assert_eq!(
+                u[i].to_bits(),
+                u_0[i].to_bits(),
+                "u[{i}] = {} ≠ u_0[{i}] = {}",
+                u[i],
+                u_0[i],
+            );
+        }
+
+        // r must equal f − K·u₀ to bit precision, verified against literal oracle.
+        assert_eq!(r.len(), 2, "r.len() must equal 2");
+        for i in 0..2 {
+            assert_eq!(
+                r[i].to_bits(),
+                expected_r[i].to_bits(),
+                "r[{i}] = {} ≠ expected_r[{i}] = {}",
+                r[i],
+                expected_r[i],
             );
         }
     }
