@@ -163,8 +163,8 @@ describe('AutoResolvePanel (a) header and parameter rows', () => {
     ];
     const state: AutoResolveLoopState = { active: true, iterations };
     render(() => <AutoResolvePanel state={state} />);
-    // Should render the parameter key "thickness" and display "4.2mm"
-    expect(screen.getByText('thickness')).toBeTruthy();
+    // 'thickness' appears in both the Parameters row and the sparkline label
+    expect(screen.getAllByText('thickness')).toHaveLength(2);
     expect(screen.getByText('4.2mm')).toBeTruthy();
   });
 });
