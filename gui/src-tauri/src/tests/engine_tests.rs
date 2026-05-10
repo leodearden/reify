@@ -6295,3 +6295,51 @@ fn build_gui_state_surfaces_parse_error_after_failed_load_file() {
         "tessellation_diagnostics should be empty"
     );
 }
+
+/// After a session already has a successful compile (`compiled` is `Some`), a
+/// subsequent failed `load_from_source` must NOT overwrite `last_compile_diagnostics`.
+///
+/// Pins the `if self.compiled.is_none()` gate added by the amendment pass (task
+/// 3351, reviewer suggestion "stale_state_after_recovered_failure").
+///
+/// Rationale: when `compiled` is `Some`, `build_gui_state` does NOT take the
+/// early-return branch, so any failure diagnostics stored in
+/// `last_compile_diagnostics` would be silently stale — stored but never
+/// surfaced — rather than shown to the user.  The gate keeps the field
+/// semantically tied to the cold-start path where it is actually consulted.
+#[test]
+fn last_compile_diagnostics_not_overwritten_when_prior_compile_exists() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // Establish a successful compiled state (Ok return guarantees compiled is Some).
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("valid source should load successfully");
+
+    assert!(
+        session.last_compile_diagnostics_for_test().is_empty(),
+        "last_compile_diagnostics should be empty after a successful load"
+    );
+
+    // Now fail a subsequent load — compiled is Some, so the gate should prevent
+    // the field from being overwritten with the failure diagnostics.
+    let _ = session.load_from_source("this is not valid reify syntax {{{}}}", "bad");
+
+    assert!(
+        session.last_compile_diagnostics_for_test().is_empty(),
+        "last_compile_diagnostics must not be overwritten when compiled is already Some; \
+         the field is only consulted on the cold-start early-return path"
+    );
+
+    // build_gui_state should still return the previously-compiled good state
+    // (compile_diagnostics empty, not the failure).
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state should return Ok with the prior good state");
+    assert!(
+        state.compile_diagnostics.is_empty(),
+        "compile_diagnostics should be empty — stale failure diagnostics must not be surfaced"
+    );
+}

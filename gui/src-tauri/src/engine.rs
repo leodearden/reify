@@ -287,12 +287,16 @@ fn compile_entry_with_imports(
             let msgs: Vec<String> = diags.iter().map(|d| d.message.clone()).collect();
             let error_string =
                 format!("Compile errors in import '{}': {}", import_path, msgs.join("; "));
-            // Diagnostics from the import's compile originate in the imported file.
-            // We don't have the imported source text in memory, so pass "" as source —
-            // spans will resolve to (1,1,1,1) but the error message still appears in
-            // the diagnostics panel.
             let file_path = format!("{}.ri", import_path);
-            let diag_infos = diagnostics_to_info(&diags, &file_path, "");
+            // Resolve the import's source via the resolver for accurate span resolution
+            // so line/column numbers in the diagnostics panel point to real locations.
+            // Falls back to "" (spans collapse to 1:1) if resolution or I/O fails.
+            let import_source = resolver
+                .resolve_import_path(import_path)
+                .ok()
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .unwrap_or_default();
+            let diag_infos = diagnostics_to_info(&diags, &file_path, &import_source);
             (error_string, diag_infos)
         })?;
     }
@@ -462,7 +466,14 @@ impl EngineSession {
     ) -> Result<GuiState, String> {
         let (parsed, compiled) = compile_single_file_with_stdlib(source, module_name)
             .map_err(|(msg, diags)| {
-                self.last_compile_diagnostics = diags;
+                // Only store failure diagnostics on the cold-start path (no prior
+                // successful compile).  If compiled is already Some the user still
+                // sees the previous good state; build_gui_state does not take the
+                // early-return branch in that case, so storing diags here would be
+                // silently stale rather than surfaced.
+                if self.compiled.is_none() {
+                    self.last_compile_diagnostics = diags;
+                }
                 msg
             })?;
 
@@ -533,7 +544,9 @@ impl EngineSession {
         // committed.  Atomic-commit invariant: see engine.rs:30-44 doc block.
         let (compiled, parsed) = compile_entry_with_imports(path, &source, module_name)
             .map_err(|(msg, diags)| {
-                self.last_compile_diagnostics = diags;
+                if self.compiled.is_none() {
+                    self.last_compile_diagnostics = diags;
+                }
                 msg
             })?;
         let check_result = self.engine.check(&compiled);
@@ -580,7 +593,9 @@ impl EngineSession {
             let (compiled, parsed) =
                 compile_entry_with_imports(&entry_path, content, module_name)
                     .map_err(|(msg, diags)| {
-                        self.last_compile_diagnostics = diags;
+                        if self.compiled.is_none() {
+                            self.last_compile_diagnostics = diags;
+                        }
                         msg
                     })?;
             (parsed, compiled)
@@ -589,7 +604,9 @@ impl EngineSession {
             // delegate to compile_single_file_with_stdlib (shared with load_from_source).
             compile_single_file_with_stdlib(content, module_name)
                 .map_err(|(msg, diags)| {
-                    self.last_compile_diagnostics = diags;
+                    if self.compiled.is_none() {
+                        self.last_compile_diagnostics = diags;
+                    }
                     msg
                 })?
         };
@@ -606,13 +623,14 @@ impl EngineSession {
 
     /// Atomically commit all session state after a successful parse+compile+check cycle.
     ///
-    /// This helper enforces the invariant that `compiled`, `module_name`, and
-    /// `source_map` always change together: either all five fields are updated or
-    /// none are.  Callers **must** only invoke this after both compilation and
-    /// `check()` have succeeded — invoking it on a partially-valid state would
-    /// violate the invariant.
+    /// This helper enforces the invariant that the seven core session fields always
+    /// change together: either all seven are updated or none are.  The seven fields
+    /// are: `source_map`, `module_name`, `compiled`, `last_check`, `parsed_cache`,
+    /// `last_compile_diagnostics`, and `last_tessellation_diagnostics`.
+    /// Callers **must** only invoke this after both compilation and `check()` have
+    /// succeeded — invoking it on a partially-valid state would violate the invariant.
     ///
-    /// The five-field assignment was previously duplicated in `load_from_source`
+    /// The field assignment was previously duplicated in `load_from_source`
     /// and `update_source`; centralising it here prevents the two sites from
     /// drifting apart.
     fn commit_state(
