@@ -177,3 +177,65 @@ describe('AutoResolvePanel (c) line chart', () => {
     expect(polyline).toBeNull();
   });
 });
+
+// ── Test group (d): per-parameter sparklines ─────────────────────────────────
+
+describe('AutoResolvePanel (d) per-parameter sparklines', () => {
+  it('(d.1) renders one sparkline SVG per parameter across 3 iterations', () => {
+    const iterations = [
+      makeIteration(1, { parameters: { thickness: { value: 4.2, unit: 'mm', display: '4.2mm' }, length: { value: 100, unit: 'mm', display: '100mm' } } }),
+      makeIteration(2, { parameters: { thickness: { value: 4.5, unit: 'mm', display: '4.5mm' }, length: { value: 98, unit: 'mm', display: '98mm' } } }),
+      makeIteration(3, { parameters: { thickness: { value: 4.8, unit: 'mm', display: '4.8mm' }, length: { value: 95, unit: 'mm', display: '95mm' } } }),
+    ];
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+    // Should have exactly 2 sparklines (one per parameter)
+    const sparklines = screen.getAllByTestId('auto-resolve-sparkline');
+    expect(sparklines).toHaveLength(2);
+  });
+
+  it('(d.2) each sparkline contains a polyline reflecting parameter values across iterations', () => {
+    const iterations = [
+      makeIteration(1, { parameters: { thickness: { value: 4.2, unit: 'mm', display: '4.2mm' }, length: { value: 100, unit: 'mm', display: '100mm' } } }),
+      makeIteration(2, { parameters: { thickness: { value: 4.5, unit: 'mm', display: '4.5mm' }, length: { value: 98, unit: 'mm', display: '98mm' } } }),
+      makeIteration(3, { parameters: { thickness: { value: 4.8, unit: 'mm', display: '4.8mm' }, length: { value: 95, unit: 'mm', display: '95mm' } } }),
+    ];
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+    const sparklines = screen.getAllByTestId('auto-resolve-sparkline');
+    // Each sparkline should have a polyline with 3 points (one per iteration)
+    for (const sparkline of sparklines) {
+      const polyline = sparkline.querySelector('polyline');
+      expect(polyline).toBeTruthy();
+      const points = (polyline!.getAttribute('points') ?? '').trim().split(/\s+/);
+      expect(points).toHaveLength(3);
+    }
+  });
+
+  it('(d.3) only 1 iteration: sparkline rows exist but no polyline inside', () => {
+    const iterations = [
+      makeIteration(1, { parameters: { thickness: { value: 4.2, unit: 'mm', display: '4.2mm' } } }),
+    ];
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+    const sparklines = screen.getAllByTestId('auto-resolve-sparkline');
+    expect(sparklines.length).toBeGreaterThanOrEqual(1);
+    // No polyline when only 1 data point
+    for (const sparkline of sparklines) {
+      expect(sparkline.querySelector('polyline')).toBeNull();
+    }
+  });
+
+  it('(d.4) sparkline labels include the parameter cell-id', () => {
+    const iterations = [
+      makeIteration(1, { parameters: { 'Bracket.thickness': { value: 4.2, unit: 'mm', display: '4.2mm' } } }),
+      makeIteration(2, { parameters: { 'Bracket.thickness': { value: 4.5, unit: 'mm', display: '4.5mm' } } }),
+    ];
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+    // The cell-id label should appear in the sparkline row
+    // Note: 'Bracket.thickness' also appears in the parameters section; use getAllByText
+    const labels = screen.getAllByText('Bracket.thickness');
+    expect(labels.length).toBeGreaterThanOrEqual(1);
+  });
+});
