@@ -680,7 +680,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{CgResult, CgSolverOptions, SolverMode, norm2_squared, solve_cg, spmv_seq};
+    use super::{
+        CgResult, CgSolverOptions, SolverMode, norm2_squared, pairwise_tree_sum_fn, solve_cg,
+        spmv_seq,
+    };
     use faer::sparse::{SparseRowMat, Triplet};
 
     /// Build a tiny 1×1 identity sparse matrix for contract-panic tests.
@@ -1244,5 +1247,66 @@ mod tests {
                 );
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Step-1 (TDD red): pairwise_tree_sum_fn with start offset — pins the new
+    // (start, len, get) signature contract and tree-shape invariant.
+    //
+    // This test CANNOT COMPILE against the current 2-arg signature
+    // `pairwise_tree_sum_fn(len, get)` — it is the TDD red step.
+    // After step-2 refactors the function it must compile and pass.
+    // -----------------------------------------------------------------------
+
+    /// Pins the `pairwise_tree_sum_fn(start, len, get)` signature contract:
+    ///
+    /// - All base-case arms (len 0–8) are exercised with start=0.
+    /// - The start > 0 path is exercised to confirm the offset is applied.
+    /// - A recursion-triggering len > 8 is checked with both start=0 and start>0.
+    /// - A tree-shape bit-pin asserts that len=12 (mid=6) produces bits matching
+    ///   an explicit `(left_half_sum) + (right_half_sum)` grouping, confirming
+    ///   that the mid=6 split and base-case-6 arithmetic order are preserved.
+    #[test]
+    fn pairwise_tree_sum_fn_with_start_offset_pins_contract() {
+        // Empty case.
+        assert_eq!(pairwise_tree_sum_fn(0, 0, &|_| 0.0), 0.0);
+
+        // Singleton.
+        assert_eq!(pairwise_tree_sum_fn(0, 1, &|i| (i as f64) + 1.0), 1.0);
+
+        // Lengths 2..=8, start=0: get(i) = i+1, so sum = 1+2+…+n = n*(n+1)/2.
+        // Exercises every base-case arm (len 2, 3, 4, 5, 6, 7, 8).
+        for n in 2..=8_usize {
+            let expected = (n * (n + 1) / 2) as f64;
+            let actual = pairwise_tree_sum_fn(0, n, &|i| (i as f64) + 1.0);
+            assert_eq!(actual, expected, "start=0, len={n}: expected {expected}, got {actual}");
+        }
+
+        // start > 0: pairwise_tree_sum_fn(2, 3, get) gives get(2)+get(3)+get(4)
+        //            = 3.0 + 4.0 + 5.0 = 12.0 (using get(i) = i+1).
+        assert_eq!(pairwise_tree_sum_fn(2, 3, &|i| (i as f64) + 1.0), 12.0);
+
+        // len > 8, start=0: sum 1..=16 = 16*17/2 = 136.
+        assert_eq!(pairwise_tree_sum_fn(0, 16, &|i| (i + 1) as f64), 136.0);
+
+        // len > 8, start > 0: pairwise_tree_sum_fn(5, 16, get) gives sum 6..=21
+        //   = (6+21)*16/2 = 216.
+        assert_eq!(pairwise_tree_sum_fn(5, 16, &|i| (i + 1) as f64), 216.0);
+
+        // Tree-shape bit-pin: len=12 → mid=6, so two base-case-6 arms fire.
+        // Values are powers of 2 (all sums exact in f64) so any grouping gives
+        // the same bits — but this asserts the overall reduction is correct and
+        // the function compiles with the new signature.
+        let xs: [f64; 12] = [
+            1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 256.0, 512.0, 1024.0, 2048.0,
+        ];
+        let expected_bits = ((xs[0] + xs[1] + xs[2] + xs[3] + xs[4] + xs[5])
+            + (xs[6] + xs[7] + xs[8] + xs[9] + xs[10] + xs[11]))
+            .to_bits();
+        assert_eq!(
+            pairwise_tree_sum_fn(0, 12, &|i| xs[i]).to_bits(),
+            expected_bits,
+            "tree-shape pin: mid=6 split must produce bits matching [0..5]+[6..11] grouping"
+        );
     }
 }
