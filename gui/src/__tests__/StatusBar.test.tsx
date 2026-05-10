@@ -485,6 +485,49 @@ describe('StatusBar Claude status indicator', () => {
   });
 });
 
+describe('DiagBadgeContent singular/plural badge text contract', () => {
+  function makeDiag(severity: string): DiagnosticInfo {
+    return {
+      file_path: '<unknown>',
+      line: 1, column: 1, end_line: 1, end_column: 1,
+      severity,
+      message: 'test',
+      code: null,
+    };
+  }
+
+  it('tessellation badge: 1 Error renders "1 error" (not "1 errors")', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        tessellationDiagnostics={[makeDiag('Error')]}
+      />
+    ));
+    const badge = screen.getByTestId('tessellation-errors');
+    // Strict equality: substring matchers like /1 error/i or .toContain('1 error')
+    // would also pass for a regression "1 errors" — this does not.
+    expect(badge.textContent?.trim()).toBe('1 error');
+    expect(badge.textContent).not.toMatch(/1 errors/i);
+  });
+
+  it('compile badge: 1 Warning renders "1 warning" (not "1 warnings")', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        compileDiagnostics={[makeDiag('Warning')]}
+      />
+    ));
+    const badge = screen.getByTestId('diagnostics-count');
+    // Strict equality: closes the regression window left by lax substring matchers.
+    expect(badge.textContent?.trim()).toBe('1 warning');
+    expect(badge.textContent).not.toMatch(/1 warnings/i);
+  });
+});
+
 describe('StatusBar merged diagnostics rendering', () => {
   function makeDiag(severity: string, message = 'test error'): DiagnosticInfo {
     return {
