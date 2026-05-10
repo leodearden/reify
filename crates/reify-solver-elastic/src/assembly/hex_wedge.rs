@@ -8,6 +8,36 @@
 use crate::assembly::ElementStiffness;
 use crate::constitutive::IsotropicElastic;
 
+/// Compute the 18×18 element stiffness for a P1 (linear) wedge (prism).
+///
+/// `phys_nodes` are the 6 vertex positions in canonical Gmsh PRI6 order:
+/// bottom face (ζ = −1) first in barycentric order (L₀, L₁, L₂), then top
+/// face (ζ = +1) in the same cyclic order.
+///
+/// | node | bary | ζ  | ref coords    |
+/// |------|------|----|---------------|
+/// | 0    | L₀   | −1 | `(0, 0, −1)`  |
+/// | 1    | L₁   | −1 | `(1, 0, −1)`  |
+/// | 2    | L₂   | −1 | `(0, 1, −1)`  |
+/// | 3    | L₀   | +1 | `(0, 0, +1)`  |
+/// | 4    | L₁   | +1 | `(1, 0, +1)`  |
+/// | 5    | L₂   | +1 | `(0, 1, +1)`  |
+///
+/// **Quadrature**: 3×2 tensor-product rule (6 points) — 3-point triangle ×
+/// 2-point Gauss-Legendre on `[-1, +1]` — exact for degree-2-in-triangle ×
+/// degree-3-in-line integrands, sufficient for constant-strain modes on a
+/// constant-Jacobian wedge.
+///
+/// See [`crate::assembly::tet::element_stiffness_generic`] for the BᵀDB
+/// integrand and [`IsotropicElastic::d_matrix`] for the engineering-strain
+/// Voigt convention (shear-block diagonal = μ, not 2μ).
+pub fn element_stiffness_wedge_p1(
+    _phys_nodes: &[[f64; 3]; 6],
+    _material: &IsotropicElastic,
+) -> ElementStiffness {
+    ElementStiffness::zeros(18) // stub — RED step; replaced in GREEN step
+}
+
 /// Compute the 24×24 element stiffness for a P1 (trilinear) hexahedron.
 ///
 /// `phys_nodes` are the 8 vertex positions in canonical Hughes/Gmsh hex8 order
@@ -45,7 +75,7 @@ pub fn element_stiffness_hex_p1(
 #[allow(clippy::needless_range_loop)]
 mod tests {
     use super::*;
-    use crate::assembly::test_support::scaled_unit_hex_phys_nodes;
+    use crate::assembly::test_support::{scaled_unit_hex_phys_nodes, scaled_unit_wedge_phys_nodes};
     use crate::constitutive::IsotropicElastic;
 
     fn dimensionless_steel_like() -> IsotropicElastic {
@@ -316,6 +346,244 @@ mod tests {
         let eps_voigt = [a, b, c, 0.0, 0.0, 0.0];
         // Physical volume of the swapped element = 4 (see comment above).
         let volume = 4.0;
+
+        let (u_k, u_a) = strain_energies(&k, &u, &eps_voigt, &d, volume);
+        let scale = u_a.abs().max(1e-300);
+        assert!(
+            (u_k - u_a).abs() < 1e-9 * scale,
+            "U_K = {u_k}, U_analytical = {u_a} (rel err {})",
+            (u_k - u_a).abs() / scale,
+        );
+        assert!(u_k > 0.0, "expected U_K > 0 on physical strain, got {u_k}");
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // Wedge P1 tests
+    // ══════════════════════════════════════════════════════════════════════════
+
+    // ── (a) Output dimensions ────────────────────────────────────────────────
+
+    #[test]
+    fn wedge_p1_returns_18_by_18_stiffness() {
+        let mat = dimensionless_steel_like();
+        let phys = scaled_unit_wedge_phys_nodes(1.0);
+        let k = element_stiffness_wedge_p1(&phys, &mat);
+        assert_eq!(k.n_dofs, 18, "wedge K_e must be 18×18 (6 nodes × 3 axes)");
+        assert_eq!(k.data.len(), 324, "wedge K_e data must have 324 entries");
+    }
+
+    // ── (b) Symmetry ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn wedge_p1_is_symmetric() {
+        let mat = dimensionless_steel_like();
+        let phys = scaled_unit_wedge_phys_nodes(1.0);
+        let k = element_stiffness_wedge_p1(&phys, &mat);
+        for i in 0..18 {
+            for j in 0..18 {
+                let lhs = k.get(i, j);
+                let rhs = k.get(j, i);
+                let scale = lhs.abs().max(rhs.abs()).max(1.0);
+                assert!(
+                    (lhs - rhs).abs() < 1e-9 * scale,
+                    "asymmetry at ({i},{j}): K[i][j]={lhs} vs K[j][i]={rhs}",
+                );
+            }
+        }
+    }
+
+    // ── (c) Rigid-body translation null space ────────────────────────────────
+
+    #[test]
+    fn wedge_p1_has_rigid_body_translation_null_space() {
+        // u[3·k + axis] = 1 for all 6 nodes is a rigid-body translation;
+        // K·u must vanish for each axis.
+        let mat = dimensionless_steel_like();
+        let phys = scaled_unit_wedge_phys_nodes(1.0);
+        let k = element_stiffness_wedge_p1(&phys, &mat);
+        for axis in 0..3 {
+            let mut u = vec![0.0; 18];
+            for node in 0..6 {
+                u[3 * node + axis] = 1.0;
+            }
+            let ku = matvec(&k, &u);
+            assert!(
+                linf(&ku) < 1e-9,
+                "axis {axis}: ‖K·u‖_∞ = {} (expected <1e-9)",
+                linf(&ku),
+            );
+        }
+    }
+
+    // ── (d) Rigid-body rotation null space ──────────────────────────────────
+
+    #[test]
+    fn wedge_p1_has_rigid_body_rotation_null_space() {
+        // Centroid of the unit reference prism (s=1) is c = (1/3, 1/3, 0).
+        // For each ω ∈ {ê_x, ê_y, ê_z}, build u_i = ω × (x_i − c). This is a
+        // linear displacement field in the wedge6 basis, producing zero strain,
+        // so K·u must vanish.
+        let mat = dimensionless_steel_like();
+        let phys = scaled_unit_wedge_phys_nodes(1.0);
+        let k = element_stiffness_wedge_p1(&phys, &mat);
+        let centroid = [1.0_f64 / 3.0, 1.0 / 3.0, 0.0];
+        for axis in 0..3 {
+            let mut omega = [0.0_f64; 3];
+            omega[axis] = 1.0;
+            let mut u = vec![0.0; 18];
+            for (node, x) in phys.iter().enumerate() {
+                let dx = [x[0] - centroid[0], x[1] - centroid[1], x[2] - centroid[2]];
+                // u_i = ω × Δx
+                u[3 * node] = omega[1] * dx[2] - omega[2] * dx[1];
+                u[3 * node + 1] = omega[2] * dx[0] - omega[0] * dx[2];
+                u[3 * node + 2] = omega[0] * dx[1] - omega[1] * dx[0];
+            }
+            let ku = matvec(&k, &u);
+            assert!(
+                linf(&ku) < 1e-9,
+                "ω-axis {axis}: ‖K·u‖_∞ = {} (expected <1e-9)",
+                linf(&ku),
+            );
+        }
+    }
+
+    // ── (e) Strain-energy patch test — normal-strain mode ───────────────────
+    //   FAILS on the zeros stub (U_K = 0 vs U_analytical > 0).
+
+    #[test]
+    fn wedge_p1_strain_energy_patch_test_matches_normal_strain_mode() {
+        // u(x) = diag(a,b,c)·x ⇒ ε = [a,b,c,0,0,0] (constant).
+        // Shape functions reproduce linear fields exactly, so
+        // U_K = 0.5 uᵀKu must equal 0.5 εᵀDε·V with V = 1 (unit reference prism).
+        let (a, b, c) = (0.01, -0.005, 0.003);
+        let mat = dimensionless_steel_like();
+        let d = mat.d_matrix();
+        let phys = scaled_unit_wedge_phys_nodes(1.0);
+        let k = element_stiffness_wedge_p1(&phys, &mat);
+
+        let mut u = vec![0.0; 18];
+        for (node_idx, x) in phys.iter().enumerate() {
+            u[3 * node_idx] = a * x[0];
+            u[3 * node_idx + 1] = b * x[1];
+            u[3 * node_idx + 2] = c * x[2];
+        }
+        let eps_voigt = [a, b, c, 0.0, 0.0, 0.0];
+        let volume = 1.0; // reference prism volume = (1/2)·2 = 1 for s=1
+
+        let (u_k, u_a) = strain_energies(&k, &u, &eps_voigt, &d, volume);
+        let scale = u_a.abs().max(1e-300);
+        assert!(
+            (u_k - u_a).abs() < 1e-9 * scale,
+            "U_K = {u_k}, U_analytical = {u_a} (rel err {})",
+            (u_k - u_a).abs() / scale,
+        );
+    }
+
+    // ── (f) Strain-energy patch test — full 6-component mode ────────────────
+    //   FAILS on the zeros stub (U_K = 0 vs U_analytical > 0).
+
+    #[test]
+    fn wedge_p1_strain_energy_patch_test_matches_full_six_component_strain() {
+        // u(x) = A·x with A symmetric, all 6 Voigt entries distinct.
+        // A_xx=a, A_yy=b, A_zz=c, A_xy=A_yx=d/2, A_yz=A_zy=e/2, A_xz=A_zx=f/2.
+        // ε_voigt = [a, b, c, d, e, f].
+        let (a, b, c, d, e_v, f) = (0.01, -0.005, 0.003, 0.002, -0.001, 0.0007);
+        let big_a = [
+            [a, d / 2.0, f / 2.0],
+            [d / 2.0, b, e_v / 2.0],
+            [f / 2.0, e_v / 2.0, c],
+        ];
+        let mat = dimensionless_steel_like();
+        let d_mat = mat.d_matrix();
+        let phys = scaled_unit_wedge_phys_nodes(1.0);
+        let k = element_stiffness_wedge_p1(&phys, &mat);
+
+        let mut u = vec![0.0; 18];
+        for (node_idx, x) in phys.iter().enumerate() {
+            for i in 0..3 {
+                let mut s = 0.0;
+                for j in 0..3 {
+                    s += big_a[i][j] * x[j];
+                }
+                u[3 * node_idx + i] = s;
+            }
+        }
+        let eps_voigt = [a, b, c, d, e_v, f];
+        let volume = 1.0;
+
+        let (u_k, u_a) = strain_energies(&k, &u, &eps_voigt, &d_mat, volume);
+        let scale = u_a.abs().max(1e-300);
+        assert!(
+            (u_k - u_a).abs() < 1e-9 * scale,
+            "U_K = {u_k}, U_analytical = {u_a} (rel err {})",
+            (u_k - u_a).abs() / scale,
+        );
+    }
+
+    // ── (g) Volume scaling ───────────────────────────────────────────────────
+
+    #[test]
+    fn wedge_p1_volume_scaling_doubles_stiffness_when_edge_length_doubles() {
+        // K ∝ L: B ∝ 1/L, dV ∝ L³ ⇒ BᵀDB·dV ∝ L.
+        // Doubling all node coords (s=1 → s=2) must double every K_e entry.
+        let mat = dimensionless_steel_like();
+        let k_unit = element_stiffness_wedge_p1(&scaled_unit_wedge_phys_nodes(1.0), &mat);
+        let k_scaled = element_stiffness_wedge_p1(&scaled_unit_wedge_phys_nodes(2.0), &mat);
+
+        for i in 0..18 {
+            for j in 0..18 {
+                let unit = k_unit.get(i, j);
+                let got = k_scaled.get(i, j);
+                let expected = 2.0 * unit;
+                let scale = expected.abs().max(unit.abs()).max(1.0);
+                assert!(
+                    (got - expected).abs() < 1e-9 * scale,
+                    "K_scaled[{i}][{j}] = {got} (expected 2·K_unit = {expected})",
+                );
+            }
+        }
+    }
+
+    // ── (h) Left-handed orientation patch test ───────────────────────────────
+    //   FAILS on the zeros stub (U_K = 0 vs U_analytical > 0).
+
+    #[test]
+    fn wedge_p1_strain_energy_patch_test_holds_on_left_handed_fixture() {
+        // Swap bottom-face nodes 1 ↔ 2 to produce a left-handed wedge.
+        // The reference→physical Jacobian for this swap is:
+        //   J = [[(1+ζ)/2, (1-ζ)/2, (ξ-η)/2],
+        //        [(1-ζ)/2, (1+ζ)/2, (η-ξ)/2],
+        //        [0,        0,        1        ]]
+        //   det J = ζ  (changes sign at ζ = 0)
+        //
+        // The generic integrator uses det.abs(), so it contributes |ζ_q| at
+        // each Gauss point.  The 3×2 rule has weights w_q = 1/6 and ζ-coords
+        // ±1/√3, so Σ w_q |det J_q| = 6·(1/6)·(1/√3) = 1/√3.
+        //
+        // Shape functions reproduce linear u(x) = A·x exactly, so ε = sym(A)
+        // is constant and U_K = 0.5·εᵀDε·(1/√3) = U_analytical with V = 1/√3.
+        // This exercises the `det.abs()` branch: using `det` instead would give
+        // Σ w_q det J_q = 0 (equal positive and negative contributions), so U_K
+        // would collapse to 0 rather than the positive value below.
+        let (a, b, c) = (0.01, -0.005, 0.003);
+        let mat = dimensionless_steel_like();
+        let d = mat.d_matrix();
+
+        let mut phys = scaled_unit_wedge_phys_nodes(1.0);
+        phys.swap(1, 2); // flip bottom-face orientation
+        let k = element_stiffness_wedge_p1(&phys, &mat);
+
+        let mut u = vec![0.0; 18];
+        for (node_idx, x) in phys.iter().enumerate() {
+            u[3 * node_idx] = a * x[0];
+            u[3 * node_idx + 1] = b * x[1];
+            u[3 * node_idx + 2] = c * x[2];
+        }
+        let eps_voigt = [a, b, c, 0.0, 0.0, 0.0];
+        // Numerically integrated volume for swapped element = 1/√3.
+        // Note: |ζ| is not polynomial so the quadrature does not equal the
+        // physical volume (1/2); the patch test is self-consistent using V_quad.
+        let volume = 1.0_f64 / 3.0_f64.sqrt();
 
         let (u_k, u_a) = strain_energies(&k, &u, &eps_voigt, &d, volume);
         let scale = u_a.abs().max(1e-300);
