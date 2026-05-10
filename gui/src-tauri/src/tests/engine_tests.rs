@@ -5589,6 +5589,187 @@ fn load_file_unresolved_import_returns_clear_err() {
     );
 }
 
+// ── update_source multi-file regression (task 3318) ──────────────────────────
+
+/// Driver (RED → GREEN): after `load_file` resolves a multi-file project,
+/// calling `update_source` with the same content must continue to produce the
+/// imported structure's value cells — the import graph must survive a
+/// dirty-buffer edit.
+///
+/// Pre-fix: `update_source` uses `compile_with_stdlib` (single-file, ignores
+/// `import helper`) → compile-error for unknown `Helper` template → returns
+/// `Err`.
+/// Post-fix: branches on `self.file_path.is_some()`, routes through
+/// `compile_entry_with_imports` → import resolved → returns `Ok` with
+/// `Helper.x = 10mm` still present.
+#[test]
+fn update_source_after_load_file_preserves_multi_file_imports() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+
+    // helper.ri: a public structure with one param
+    std::fs::write(
+        dir.path().join("helper.ri"),
+        "pub structure Helper { param x: Scalar = 10mm }\n",
+    )
+    .expect("write helper.ri");
+
+    let main_content = "import helper\nstructure Top { sub h = Helper() }\n";
+
+    // main.ri: imports helper and instantiates it as a sub-component.
+    std::fs::write(dir.path().join("main.ri"), main_content).expect("write main.ri");
+
+    // load_file must succeed and produce Helper.x = 10mm
+    let load_state = session
+        .load_file(&dir.path().join("main.ri"))
+        .expect("load_file should succeed with resolved import");
+    assert!(
+        load_state.values.iter().any(|v| v.name == "x" && v.entity_path == "Helper"),
+        "load_file should produce Helper.x value cell"
+    );
+
+    // update_source with the same content — import graph must be preserved
+    let main_path = dir.path().join("main.ri");
+    let main_path_str = main_path.to_str().unwrap();
+    let update_result = session.update_source(main_path_str, main_content);
+
+    let state = update_result.expect("update_source after load_file should return Ok (import resolved)");
+
+    assert!(
+        !state.values.is_empty(),
+        "state.values should be non-empty after update_source preserves import (got {} values)",
+        state.values.len()
+    );
+
+    let x_val = state
+        .values
+        .iter()
+        .find(|v| v.name == "x" && v.entity_path == "Helper")
+        .expect("should find parameter 'x' on entity 'Helper' after update_source");
+
+    assert_eq!(
+        x_val.unit, "mm",
+        "Helper.x should have unit 'mm', got '{}'",
+        x_val.unit
+    );
+    assert_eq!(
+        x_val.value, "10",
+        "Helper.x default is 10mm; got '{}' (unit: '{}')",
+        x_val.value, x_val.unit
+    );
+}
+
+/// Dirty-buffer edit: after `load_file` resolves a multi-file project,
+/// `update_source` with *modified* content (adding a new top-level param while
+/// keeping the existing `import helper`) must see both the imported `Helper.x`
+/// value cell and the newly-added param — the import graph survives an actual
+/// edit, not just a round-trip of identical content.
+///
+/// This is the core dirty-buffer regression scenario for task 3318: pre-fix
+/// `update_source` silently dropped all imports on every keystroke because it
+/// called `compile_with_stdlib` (single-file) instead of
+/// `compile_entry_with_imports` (multi-file).
+#[test]
+fn update_source_after_load_file_dirty_buffer_edit_preserves_imports() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+
+    std::fs::write(
+        dir.path().join("helper.ri"),
+        "pub structure Helper { param x: Scalar = 10mm }\n",
+    )
+    .expect("write helper.ri");
+
+    let main_content_v1 = "import helper\nstructure Top { sub h = Helper() }\n";
+    std::fs::write(dir.path().join("main.ri"), main_content_v1).expect("write main.ri");
+
+    session
+        .load_file(&dir.path().join("main.ri"))
+        .expect("load_file should succeed");
+
+    // v2: keep the import, add a new top-level param — simulates a real keystroke edit
+    let main_content_v2 =
+        "import helper\nstructure Top { sub h = Helper()\nparam top_size: Scalar = 20mm }\n";
+
+    let main_path = dir.path().join("main.ri");
+    let state = session
+        .update_source(main_path.to_str().unwrap(), main_content_v2)
+        .expect("update_source with dirty-buffer edit should return Ok");
+
+    // Imported Helper.x must still be present
+    let helper_x = state
+        .values
+        .iter()
+        .find(|v| v.name == "x" && v.entity_path == "Helper")
+        .expect("Helper.x should be present after dirty-buffer edit");
+    assert_eq!(helper_x.unit, "mm");
+    assert_eq!(helper_x.value, "10");
+
+    // The newly-added top-level param must also appear
+    assert!(
+        state
+            .values
+            .iter()
+            .any(|v| v.name == "top_size" && v.unit == "mm"),
+        "top_size param added in dirty-buffer edit should appear in state.values"
+    );
+}
+
+/// Regression-pin: after `load_file` succeeds, calling `update_source` with
+/// content that adds an unresolvable `import nonexistent` must return `Err`
+/// mentioning the module name — the multi-file path must NOT silently swallow
+/// resolver errors.
+///
+/// Mirrors `load_file_unresolved_import_returns_clear_err` for the dirty-buffer
+/// code path (task 3318 follow-up).
+#[test]
+fn update_source_after_load_file_with_unresolved_import_returns_err() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+
+    // main.ri: no imports — load succeeds
+    std::fs::write(
+        dir.path().join("main.ri"),
+        "structure Top { param w: Scalar = 5mm }\n",
+    )
+    .expect("write main.ri");
+
+    session
+        .load_file(&dir.path().join("main.ri"))
+        .expect("initial load_file should succeed");
+
+    // dirty buffer: add an import that cannot be resolved
+    let main_path = dir.path().join("main.ri");
+    let result = session.update_source(
+        main_path.to_str().unwrap(),
+        "import nonexistent\nstructure Top { param w: Scalar = 5mm }\n",
+    );
+
+    assert!(
+        result.is_err(),
+        "update_source with unresolved import should return Err, got Ok"
+    );
+
+    let err_msg = result.unwrap_err();
+    assert!(
+        err_msg.contains("nonexistent"),
+        "error message should mention module name 'nonexistent'; got: {err_msg}"
+    );
+    assert!(
+        err_msg.contains("not found") || err_msg.contains("failed to read"),
+        "error message should mention 'not found' or 'failed to read'; got: {err_msg}"
+    );
+}
+
 // ── Collision-diagnostic test helpers ────────────────────────────────────────
 
 /// Create an `EngineSession` configured with the standard mock checker/kernel,
