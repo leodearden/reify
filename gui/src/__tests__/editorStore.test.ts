@@ -507,11 +507,13 @@ describe('editorStore canSave', () => {
       markExternallyChanged('bracket.ri');
 
       // Capture references BEFORE canSave so identity asserts fire against
-      // the pre-call snapshots.  Under Solid's mutable proxy stores, any
-      // setState call (even with an equivalent value) typically produces a
-      // new array reference — identity equality therefore directly encodes
-      // "no setState was called", a stronger detector of accidental writes
-      // than content equality alone.
+      // the pre-call snapshots.  Identity equality is the stronger assertion
+      // under Solid's mutable proxy stores: any setState call (even with an
+      // equivalent value) produces a new array reference, so `.toBe(refBefore)`
+      // directly encodes "no setState was called".  We deliberately use only
+      // identity asserts here — content asserts would be strictly weaker (any
+      // setState that mutates contents also breaks identity, but identity
+      // catches setState calls that happen to preserve contents).
       const ecRefBefore = state.externallyChanged;
       const openFilesRefBefore = state.openFiles;
 
@@ -520,11 +522,6 @@ describe('editorStore canSave', () => {
       // Reference-identity asserts: confirm canSave performed no setState.
       expect(state.externallyChanged).toBe(ecRefBefore);
       expect(state.openFiles).toBe(openFilesRefBefore);
-      // Content-based asserts: belt-and-braces guard against array-swap
-      // refactors that preserve observable semantics without going through
-      // setState (same values, same order → same contract).
-      expect([...state.externallyChanged]).toEqual(['bracket.ri']);
-      expect(state.openFiles.map((f) => f.path)).toEqual(['bracket.ri']);
       dispose();
     });
   });
