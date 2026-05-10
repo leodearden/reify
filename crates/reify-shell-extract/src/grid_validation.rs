@@ -10,6 +10,22 @@ use reify_types::value::{SampledField, SampledGridKind};
 ///
 /// Produced by [`validate_regular3d`]; converted to each algorithm's
 /// error enum via `From<GridValidationError>` impls.
+///
+/// ```compile_fail
+/// use reify_shell_extract::GridValidationError;
+/// fn _check(e: GridValidationError) {
+///     match e {
+///         GridValidationError::UnsupportedGridKind { found } => {}
+///         GridValidationError::AxisLengthMismatch {
+///             bounds_min_len,
+///             bounds_max_len,
+///             spacing_len,
+///             axis_grids_len,
+///         } => {}
+///         GridValidationError::EmptyAxisGrid { axis } => {}
+///     }
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub enum GridValidationError {
     /// The input [`SampledField`] is not 3D — only
