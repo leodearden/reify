@@ -7,6 +7,8 @@
 //! Integration tests that call `mesh_surface_to_volume_with_diagnostics` are
 //! inside the `with_libgmsh` module, gated with `#[cfg(has_gmsh)]`.
 
+use std::sync::atomic::Ordering;
+
 use reify_kernel_gmsh::auto_size::AutoSizeConfig;
 use reify_kernel_gmsh::mesh_volume::{
     apply_repair_if_requested, compute_thickness_warnings, resolve_mesh_size,
@@ -277,6 +279,69 @@ fn compute_thickness_warnings_some_delegates_to_through_thickness_check() {
         1,
         "single-tet slab must be detected as 1-element-thick; got {}",
         warnings[0].element_count
+    );
+}
+
+// ---------------------------------------------------------------------------
+// repair pre-stage debug event observability
+// ---------------------------------------------------------------------------
+
+/// When `apply_repair_if_requested` is called with `Some(cfg)`, it must emit
+/// exactly one DEBUG event at the `reify_kernel_gmsh::mesh_volume` target
+/// (the "repair pre-stage applied" tracing event).
+///
+/// When called with `None`, no DEBUG event must be emitted.
+/// Pins the task description's "emit a debug log when applied" requirement.
+#[test]
+fn repair_pre_stage_emits_debug_event_when_some_supplied() {
+    use std::sync::Arc;
+
+    // Prime the callsite cache so per-test with_default subscribers see events
+    // even if a prior test thread hit the callsite with no subscriber active.
+    reify_test_support::prime_tracing_callsite_cache();
+
+    let mesh = sliver_mesh();
+
+    // --- (a) Some(cfg): exactly 1 DEBUG event must be emitted ---
+    let (subscriber, counters) = reify_test_support::CountingSubscriberBuilder::new()
+        .count_level(tracing::Level::DEBUG)
+        .target_prefix("reify_kernel_gmsh::mesh_volume")
+        .build();
+    let debug_arc = Arc::clone(&counters[&tracing::Level::DEBUG]);
+
+    let _repaired = tracing::subscriber::with_default(subscriber, || {
+        apply_repair_if_requested(
+            &mesh,
+            Some(RepairConfig {
+                sliver_area_threshold: 1e-6,
+                vertex_merge_epsilon: 1e-9,
+            }),
+        )
+    });
+
+    let debug_count = debug_arc.load(Ordering::Acquire);
+    assert_eq!(
+        debug_count, 1,
+        "Some(cfg) must emit exactly 1 DEBUG event at \
+         reify_kernel_gmsh::mesh_volume; got {debug_count}"
+    );
+
+    // --- (b) None: zero DEBUG events must be emitted ---
+    let (subscriber_none, counters_none) = reify_test_support::CountingSubscriberBuilder::new()
+        .count_level(tracing::Level::DEBUG)
+        .target_prefix("reify_kernel_gmsh::mesh_volume")
+        .build();
+    let debug_arc_none = Arc::clone(&counters_none[&tracing::Level::DEBUG]);
+
+    let _unchanged = tracing::subscriber::with_default(subscriber_none, || {
+        apply_repair_if_requested(&mesh, None)
+    });
+
+    let debug_count_none = debug_arc_none.load(Ordering::Acquire);
+    assert_eq!(
+        debug_count_none, 0,
+        "None must emit 0 DEBUG events at \
+         reify_kernel_gmsh::mesh_volume; got {debug_count_none}"
     );
 }
 
