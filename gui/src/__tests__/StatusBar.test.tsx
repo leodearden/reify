@@ -225,6 +225,23 @@ describe('StatusBar tessellation diagnostics', () => {
     fireEvent.click(screen.getByTestId('tessellation-errors'));
     expect(onToggle).toHaveBeenCalledTimes(1);
   });
+
+  it('tessellation badge aria-label shows merged total of compile + tessellation counts', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        tessellationDiagnostics={[makeDiag('Error')]}
+        compileDiagnostics={[makeDiag('Warning'), makeDiag('Warning')]}
+      />
+    ));
+    const badge = screen.getByTestId('tessellation-errors');
+    const label = badge.getAttribute('aria-label') ?? '';
+    expect(label).toMatch(/^Show diagnostics \(\d+ total\)$/);
+    // Total is 1 + 2 = 3
+    expect(label).toBe('Show diagnostics (3 total)');
+  });
 });
 
 describe('StatusBar compile diagnostics', () => {
