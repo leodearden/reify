@@ -72,9 +72,9 @@ describe('DiagnosticsPanel', () => {
   });
 
   it('renders one row per diagnostic entry', () => {
-    const diags = [
-      makeDiag('Error', { file_path: 'main.ri', line: 10, message: 'import failed' }),
-      makeDiag('Warning', { file_path: 'helper.ri', line: 3, message: "unknown port type 'Foo'" }),
+    const diags: DiagnosticEntry[] = [
+      { ...makeDiag('Error', { file_path: 'main.ri', line: 10, message: 'import failed' }), source: 'compile' },
+      { ...makeDiag('Warning', { file_path: 'helper.ri', line: 3, message: "unknown port type 'Foo'" }), source: 'tessellation' },
     ];
     render(() => (
       <DiagnosticsPanel
@@ -100,7 +100,7 @@ describe('DiagnosticsPanel', () => {
   });
 
   it('clicking a diagnostic row invokes onNavigate with that diagnostic', () => {
-    const diag = makeDiag('Warning', { file_path: 'helper.ri', line: 3, message: "unknown port type 'Foo'" });
+    const diag: DiagnosticEntry = { ...makeDiag('Warning', { file_path: 'helper.ri', line: 3, message: "unknown port type 'Foo'" }), source: 'compile' };
     const onNavigate = vi.fn();
     render(() => (
       <DiagnosticsPanel

@@ -18,6 +18,7 @@ import {
   MechanismPanel,
   DiagnosticsPanel,
 } from './panels';
+import type { DiagnosticEntry } from './panels';
 import { Splitter } from './components/Splitter';
 import { KeyboardHelp } from './components/KeyboardHelp';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
@@ -420,9 +421,12 @@ const App: Component = () => {
   // The two pipelines are disjoint by construction: compile errors come from the static
   // analysis pass, tessellation errors from the mesh-generation stage, so no diagnostic
   // can appear in both lists and no deduplication is required.
-  const allDiagnostics = createMemo(() => [
-    ...engineStore.state.compileDiagnostics,
-    ...engineStore.state.tessellationDiagnostics,
+  // The `source` tag is a frontend-only field (never on the wire from the Rust backend);
+  // it is added here at the merge boundary so DiagnosticsPanel can render a per-row
+  // chip identifying which pipeline produced each entry.
+  const allDiagnostics = createMemo((): DiagnosticEntry[] => [
+    ...engineStore.state.compileDiagnostics.map(d => ({ ...d, source: 'compile' as const })),
+    ...engineStore.state.tessellationDiagnostics.map(d => ({ ...d, source: 'tessellation' as const })),
   ]);
 
   // Keyboard help overlay state
@@ -459,7 +463,7 @@ const App: Component = () => {
     setDiagnosticsOpen((v) => !v);
   }
 
-  function handleNavigateToDiagnostic(d: DiagnosticInfo) {
+  function handleNavigateToDiagnostic(d: DiagnosticEntry) {
     setScrollToLocation({ file_path: d.file_path, line: d.line, column: d.column, end_line: d.end_line, end_column: d.end_column });
     setDiagnosticsOpen(false);
   }
