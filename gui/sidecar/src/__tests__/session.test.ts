@@ -60,10 +60,15 @@ vi.mock('node:fs', () => {
       }
     }),
     // Honors the encoding argument to mirror real Node.js behavior:
-    //   readFileSync(path)          → Buffer
-    //   readFileSync(path, 'utf-8') → string
+    //   readFileSync(path)                        → Buffer
+    //   readFileSync(path, 'utf-8')               → string
+    //   readFileSync(path, {})                    → Buffer (options object, no encoding key)
+    //   readFileSync(path, { encoding: 'utf-8' }) → string
     // This surfaces a divergence loudly if a future caller omits the encoding and
-    // expects a Buffer but receives a string (or vice versa).
+    // expects a Buffer but receives a string (or vice versa). Matching Node's
+    // options-object semantics matters because `{}.encoding === undefined`, so a
+    // future caller passing `readFileSync(p, opts)` with opts lacking an `encoding`
+    // would silently get a string here but a Buffer in production.
     readFileSync: vi.fn((filePath: string, enc?: unknown): string | Buffer => {
       if (!virtualFiles.has(filePath)) {
         const err = Object.assign(
@@ -73,7 +78,8 @@ vi.mock('node:fs', () => {
         throw err;
       }
       const content = virtualFiles.get(filePath)!;
-      return enc != null ? content : Buffer.from(content);
+      const encoding = typeof enc === 'string' ? enc : (enc as { encoding?: unknown } | null | undefined)?.encoding;
+      return encoding ? content : Buffer.from(content);
     }),
     unlinkSync: vi.fn((filePath: string): void => {
       virtualFiles.delete(filePath);
