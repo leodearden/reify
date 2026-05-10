@@ -4030,4 +4030,80 @@ mod tests {
             &[],                // ← OOB: empty tessellation_budgets
         );
     }
+
+    // ── collect_centroids_with_failure_summary unit tests ─────────────────────
+
+    /// All handles produce kernel query errors → exactly one coalesced warning
+    /// naming the count, the realization_id, and the first error message.
+    #[test]
+    fn collect_centroids_with_failure_summary_coalesces_query_errors() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_types::{Role, Severity};
+
+        let realization_id = RealizationNodeId::new("TestEntity", 0);
+        let feature_id = FeatureId::from(&realization_id);
+
+        let attr0 = TopologyAttribute {
+            feature_id: feature_id.clone(),
+            role: Role::Side,
+            local_index: 0,
+            user_label: None,
+            mod_history: Vec::new(),
+        };
+        let attr1 = TopologyAttribute {
+            feature_id: feature_id.clone(),
+            role: Role::Side,
+            local_index: 1,
+            user_label: None,
+            mod_history: Vec::new(),
+        };
+        let h0 = GeometryHandleId(101);
+        let h1 = GeometryHandleId(102);
+        let realization_attrs: Vec<(GeometryHandleId, &TopologyAttribute)> =
+            vec![(h0, &attr0), (h1, &attr1)];
+
+        // No centroid fixtures → query() returns QueryError::QueryFailed for both handles.
+        let kernel = MockGeometryKernel::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let centroids = collect_centroids_with_failure_summary(
+            &realization_attrs,
+            &kernel,
+            &realization_id,
+            &mut diagnostics,
+        );
+
+        assert!(
+            centroids.is_empty(),
+            "expected no successful centroids when all queries fail, got: {centroids:?}"
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly 1 coalesced warning, got {}: {diagnostics:?}",
+            diagnostics.len()
+        );
+        let diag = &diagnostics[0];
+        assert_eq!(
+            diag.severity,
+            Severity::Warning,
+            "diagnostic must be a Warning, got: {diag:?}"
+        );
+        assert!(
+            diag.message
+                .contains("topology-attribute centroid query failed for 2 handle(s)"),
+            "message must contain the count phrase, got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("TestEntity#realization[0]"),
+            "message must contain the realization_id display form, got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("(first: no mock result for"),
+            "message must contain the first error text, got: {}",
+            diag.message
+        );
+    }
 }
