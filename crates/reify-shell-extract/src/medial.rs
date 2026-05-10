@@ -2235,10 +2235,6 @@ mod tests {
     /// constructing a full SampledField — keeping the test fast and avoiding
     /// the memory pressure needed to trigger a real overflow through the
     /// public API.
-    ///
-    /// Currently FAILS to compile (RED) because `validate_flat_data_length`
-    /// does not yet exist. After step-6 adds the helper, all three assertions
-    /// pass.
     #[test]
     fn validate_flat_data_length_routes_overflow_and_mismatch() {
         // (a) Ok on matching inputs: 2×3×4 = 24.
