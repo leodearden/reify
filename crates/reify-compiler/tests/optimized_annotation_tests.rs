@@ -695,6 +695,34 @@ fn optimized_annotation_on_function_is_accepted() {
     );
 }
 
+// ── Step 7 (task 3377): duplicate-@optimized warning on function context ─────
+
+/// Multiple `@optimized` annotations stacked on the same `fn` must emit exactly
+/// one duplicate warning — the second valid @optimized is shadowed by the first.
+///
+/// RED: fails before the duplicate-check gate at annotations.rs is widened from
+/// `context == "constraint_def"` to `matches!(context, "constraint_def" | "function")`.
+#[test]
+fn multiple_optimized_annotations_on_function_warns() {
+    let module = compile_source(
+        r#"@optimized("new_target") @optimized("legacy_target") fn f(x: Real) -> Real { x }"#,
+    );
+
+    let errors = error_diags(&module.diagnostics);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    let relevant: Vec<_> = warning_diags(&module.diagnostics)
+        .into_iter()
+        .filter(|d| d.message.contains("multiple @optimized annotations"))
+        .collect();
+    assert_eq!(
+        relevant.len(),
+        1,
+        "expected exactly one duplicate-@optimized warning on fn, got: {:?}",
+        relevant
+    );
+}
+
 // ── Step 5 (task 3377): missing-target warning on function context ───────────
 
 /// `@optimized` (no target) on a `fn` must emit the same missing-target warning
