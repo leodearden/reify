@@ -793,6 +793,78 @@ describe('engineStore freshness pass-through', () => {
   });
 });
 
+describe('engineStore autoResolve loop state', () => {
+  const sampleIteration = {
+    iteration: 1,
+    parameters: {
+      'Bracket.thickness': { value: 4.2, unit: 'mm', display: '4.2mm' },
+    },
+    constraints: {
+      max_von_mises: {
+        name: 'max_von_mises',
+        value: 180,
+        unit: 'MPa',
+        target_upper: 200,
+        satisfied: true,
+      },
+    },
+    driving_metric: 'max_von_mises',
+    driving_metric_value: 180,
+  };
+
+  it('(a) initial state.autoResolve equals { active: false, iterations: [] }', () => {
+    createRoot((dispose) => {
+      const { state } = createEngineStore();
+      expect(state.autoResolve).toEqual({ active: false, iterations: [] });
+      dispose();
+    });
+  });
+
+  it('(b) beginAutoResolveLoop sets active=true and clears iterations', () => {
+    createRoot((dispose) => {
+      const { state, beginAutoResolveLoop, applyAutoResolveIteration } = createEngineStore();
+      applyAutoResolveIteration(sampleIteration);
+      expect(state.autoResolve.iterations).toHaveLength(1);
+      beginAutoResolveLoop();
+      expect(state.autoResolve.active).toBe(true);
+      expect(state.autoResolve.iterations).toHaveLength(0);
+      dispose();
+    });
+  });
+
+  it('(c) applyAutoResolveIteration appends to iterations', () => {
+    createRoot((dispose) => {
+      const { state, beginAutoResolveLoop, applyAutoResolveIteration } = createEngineStore();
+      beginAutoResolveLoop();
+      applyAutoResolveIteration(sampleIteration);
+      expect(state.autoResolve.iterations).toHaveLength(1);
+      expect(state.autoResolve.iterations[0]).toEqual(sampleIteration);
+
+      const iter2 = { ...sampleIteration, iteration: 2, driving_metric_value: 165 };
+      applyAutoResolveIteration(iter2);
+      expect(state.autoResolve.iterations).toHaveLength(2);
+      expect(state.autoResolve.iterations[1].iteration).toBe(2);
+      dispose();
+    });
+  });
+
+  it('(d) endAutoResolveLoop sets active=false and preserves accumulated iterations', () => {
+    createRoot((dispose) => {
+      const { state, beginAutoResolveLoop, applyAutoResolveIteration, endAutoResolveLoop } = createEngineStore();
+      beginAutoResolveLoop();
+      applyAutoResolveIteration(sampleIteration);
+      applyAutoResolveIteration({ ...sampleIteration, iteration: 2 });
+      expect(state.autoResolve.iterations).toHaveLength(2);
+
+      endAutoResolveLoop();
+      expect(state.autoResolve.active).toBe(false);
+      // iterations are preserved for inspection
+      expect(state.autoResolve.iterations).toHaveLength(2);
+      dispose();
+    });
+  });
+});
+
 describe('engineStore kernelStatus', () => {
   it('initial state.kernelStatus is null', () => {
     createRoot((dispose) => {
