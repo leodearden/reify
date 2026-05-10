@@ -3816,6 +3816,13 @@ describe('SidecarSession sandbox wrap (task 3210)', () => {
 });
 
 describe('session.test.ts /tmp leak guard (task 3283)', () => {
+  // Match exactly the prefix session.ts:309 uses (`mkdtempSync(..., 'reify-mcp-')`).
+  // Narrower than /^reify-/ on purpose: parallel tests in this repo create sibling
+  // prefixes (`reify-tools-` from discover-mcp-tools.test.ts, `reify-commit-`,
+  // `reify-import-test`, `reify-jobserver`, …) whose appearance between snapshots
+  // would otherwise trigger a spurious false-positive leak report.
+  const REIFY_MCP_TMP_PREFIX = /^reify-mcp-/;
+
   it('does not create real /tmp/reify-mcp-* directories during session.handleMessage', async () => {
     // Obtain handles to the REAL filesystem and os, bypassing any vi.mock('node:fs')
     // that may be active. This lets the test observe actual on-disk state.
@@ -3823,12 +3830,11 @@ describe('session.test.ts /tmp leak guard (task 3283)', () => {
     const realOs = await vi.importActual<typeof import('node:os')>('node:os');
 
     // Snapshot /tmp before the test.
-    // Filter uses /^reify-/ rather than the specific 'reify-mcp-' prefix so that a
-    // future rename (e.g. CLAUDE.md's 'reify-agent-tmp-' suggestion) is also caught;
-    // the guard defends against /tmp leaks from this codebase regardless of prefix.
+    // Filter matches only the prefix session.ts:309 creates (`reify-mcp-`), not
+    // broader sibling prefixes that concurrent tests may produce between snapshots.
     const tmpdir = realOs.tmpdir();
     const before = new Set<string>(
-      realFs.readdirSync(tmpdir).filter((name: string) => /^reify-/.test(name))
+      realFs.readdirSync(tmpdir).filter((name: string) => REIFY_MCP_TMP_PREFIX.test(name))
     );
 
     vi.mocked(spawn).mockReset();
@@ -3843,19 +3849,39 @@ describe('session.test.ts /tmp leak guard (task 3283)', () => {
     });
     session.onOutput = () => {};
 
-    await session.handleMessage({ type: 'send_message', id: 'msg-leak', text: 'Hello' });
+    try {
+      await session.handleMessage({ type: 'send_message', id: 'msg-leak', text: 'Hello' });
 
-    // Snapshot /tmp after — the delta (new entries not in `before`) must be empty.
-    // If node:fs is NOT mocked, session.ts calls real mkdtempSync and this fails.
-    // Once vi.mock('node:fs', factory) is active, no real dirs are created.
-    const after = new Set<string>(
-      realFs.readdirSync(tmpdir).filter((name: string) => /^reify-/.test(name))
-    );
-    // `leaked` = after \ before (set-difference): if empty, after ⊆ before and
-    // no new /tmp entries appeared. Using set-difference rather than set-equality
-    // is intentional: a concurrent process removing a pre-existing entry would
-    // shrink `after` relative to `before`, but the filter still yields [] (correct).
-    const leaked = [...after].filter((d) => !before.has(d));
-    expect(leaked, 'leaked /tmp/reify-* dirs: ' + leaked.join(', ')).toHaveLength(0);
+      // Snapshot /tmp after — the delta (new entries not in `before`) must be empty.
+      // If node:fs is NOT mocked, session.ts calls real mkdtempSync and this fails.
+      // Once vi.mock('node:fs', factory) is active, no real dirs are created.
+      const after = new Set<string>(
+        realFs.readdirSync(tmpdir).filter((name: string) => REIFY_MCP_TMP_PREFIX.test(name))
+      );
+      // `leaked` = after \ before (set-difference): if empty, after ⊆ before and
+      // no new /tmp entries appeared. Using set-difference rather than set-equality
+      // is intentional: a concurrent process removing a pre-existing entry would
+      // shrink `after` relative to `before`, but the filter still yields [] (correct).
+      const leaked = [...after].filter((d) => !before.has(d));
+      expect(leaked, 'leaked /tmp/reify-mcp-* dirs: ' + leaked.join(', ')).toHaveLength(0);
+    } finally {
+      // Destroy runs even if the leak assertion throws, so session state doesn't
+      // linger across tests in the same worker. Matches the convention at lines 1414,
+      // 1487, 1511, 1534, 1559, 1588: destroy() is void/synchronous, no await needed.
+      session.destroy();
+    }
+  });
+
+  it('REIFY_MCP_TMP_PREFIX does not match sibling reify-* prefixes from concurrent tests', () => {
+    // Pure regex assertion — no real FS I/O. Guards against future regex widening
+    // (e.g. someone changing /^reify-mcp-/ back to /^reify-/) without going through a
+    // disk-side-effect round-trip. The comment on REIFY_MCP_TMP_PREFIX explains why the
+    // prefixes below (`reify-tools-`, `reify-commit-`, etc.) must not match.
+    expect(REIFY_MCP_TMP_PREFIX.test('reify-tools-abc')).toBe(false);
+    expect(REIFY_MCP_TMP_PREFIX.test('reify-commit-xyz')).toBe(false);
+    expect(REIFY_MCP_TMP_PREFIX.test('reify-import-test')).toBe(false);
+    expect(REIFY_MCP_TMP_PREFIX.test('reify-jobserver')).toBe(false);
+    // And that it still matches what session.ts:309 actually creates:
+    expect(REIFY_MCP_TMP_PREFIX.test('reify-mcp-ab12CD')).toBe(true);
   });
 });
