@@ -103,10 +103,26 @@ fn is_stdlib_path(p: &str) -> bool {
 /// Parse and compile `source` with multi-file import resolution.
 ///
 /// This is the compile-side of `load_file`'s multi-file flow (task 3228 v1).
-/// It composes existing public compiler APIs to wire `ModuleResolver` +
-/// `ModuleDag` + `parse_with_stdlib` + `compile_with_prelude_context` without
-/// adding any new functions to the compiler crate (deferred by steward,
-/// esc-3228-41).
+///
+/// `reify_compiler::module_dag::compile_project_with_entry_source` (at
+/// module_dag.rs:607) covers most of the same scaffolding — parse,
+/// `ModuleDag::new`, recursive `compile_module` per import, prelude
+/// collection, final entry compile.  This GUI helper exists because that
+/// compiler function does **not** yet do two things load_file needs:
+///
+///   1. **Stdlib in prelude** — the compiler function uses
+///      `compile_with_prelude_refs` with user imports only.  load_file needs
+///      stdlib enum disambiguation (e.g. `CorrosionClass.C5` → `EnumAccess`)
+///      and stdlib functions like `box(...)` to resolve, which require the
+///      stdlib slice in the prelude.
+///   2. **Template merge for eval** — `find_template` is called against the
+///      entry module only (engine_eval.rs:1629; unfold.rs:418, :466), so
+///      imported pub structures must be merged into `entry.templates` before
+///      eval; the compiler function's return value doesn't do that merge.
+///
+/// Replacing this helper with a call into the compiler API is filed as a
+/// follow-up — extend `compile_project_with_entry_source` to seed stdlib
+/// and return entry-with-merged-templates, then this becomes a one-liner.
 ///
 /// # Flow
 ///
@@ -174,8 +190,15 @@ fn compile_entry_with_imports(
         })
         .collect();
 
-    // Compile each import (including std.* — ModuleDag handles the embedded fallback).
+    // Compile each non-stdlib import.  Std.* paths are skipped: the full
+    // stdlib is seeded into the prelude below via `load_stdlib()`, and the
+    // user_import_refs / template-merge loops both filter std.* out, so a
+    // `dag.compile_module("std.units", ...)` call would be wasted work
+    // (one extra parse+compile per std import in the typical case).
     for import_path in &import_paths {
+        if is_stdlib_path(import_path) {
+            continue;
+        }
         dag.compile_module(import_path, &resolver).map_err(|diags| {
             let msgs: Vec<String> = diags.iter().map(|d| d.message.clone()).collect();
             format!("Compile errors in import '{}': {}", import_path, msgs.join("; "))
@@ -226,6 +249,12 @@ fn compile_entry_with_imports(
     // Std.* modules are excluded: stdlib structures are not expected to appear as
     // top-level GUI entities.
     //
+    // De-duplication: skip any imported template whose name already exists in
+    // `compiled.templates` (either declared by the entry or merged from an
+    // earlier import).  `find_template` is a linear first-match scan, so duplicates
+    // would silently shadow.  First-wins matches the compiler's cross-prelude
+    // collision policy in compile_with_prelude_refs.
+    //
     // v1 limitation: only DIRECT imports are merged.  If helper.ri itself imports
     // util.ri, Util's template will be absent from this list and find_template will
     // fail at eval for any sub referencing Util.  A future fix should iterate all
@@ -236,9 +265,17 @@ fn compile_entry_with_imports(
         }
         if let Some(imported_module) = dag.modules.get(import_path) {
             for template in &imported_module.templates {
-                if template.visibility == Visibility::Public {
-                    compiled.templates.push(template.clone());
+                if template.visibility != Visibility::Public {
+                    continue;
                 }
+                if compiled
+                    .templates
+                    .iter()
+                    .any(|t| t.name == template.name)
+                {
+                    continue;
+                }
+                compiled.templates.push(template.clone());
             }
         }
     }
@@ -376,12 +413,9 @@ impl EngineSession {
     /// Unlike `load_from_source`, this method wires multi-file import resolution:
     /// it builds a `ModuleResolver` rooted at the file's parent directory and
     /// compiles each `import` declaration via `ModuleDag` before composing the
-    /// entry's prelude.  See `compile_entry_with_imports` for the full flow.
-    ///
-    /// # v1 limitation
-    ///
-    /// Composed using existing public compiler APIs from within the GUI crate to
-    /// avoid adding cross-crate functions (deferred by steward in esc-3228-41).
+    /// entry's prelude.  See `compile_entry_with_imports` for the full flow and
+    /// for the rationale on why it's GUI-side rather than a direct call into
+    /// `reify_compiler::module_dag::compile_project_with_entry_source`.
     pub fn load_file(&mut self, path: &Path) -> Result<GuiState, String> {
         let source = std::fs::read_to_string(path)
             .map_err(|e| format!("Error reading {}: {}", path.display(), e))?;
@@ -391,11 +425,14 @@ impl EngineSession {
             .and_then(|s| s.to_str())
             .unwrap_or("unnamed");
 
-        self.file_path = Some(path.to_path_buf());
-
+        // Defer `self.file_path = ...` until after `commit_state` succeeds so an
+        // Err from `compile_entry_with_imports` doesn't leave file_path pointing
+        // at a file whose compiled / module_name / source_map state hasn't been
+        // committed.  Atomic-commit invariant: see engine.rs:30-44 doc block.
         let (compiled, parsed) = compile_entry_with_imports(path, &source, module_name)?;
         let check_result = self.engine.check(&compiled);
         self.commit_state(parsed, compiled, check_result, module_name, &source);
+        self.file_path = Some(path.to_path_buf());
         self.build_gui_state()
     }
 
@@ -413,9 +450,9 @@ impl EngineSession {
     /// `update_source` deliberately uses `compile_with_stdlib` (single-file compile, no
     /// `ModuleResolver`).  Editing a file in the GUI buffer after `load_file` opened it
     /// temporarily reverts to single-file behavior — `import` declarations are wired at
-    /// `load_file` time but not on subsequent dirty-buffer edits.  The cross-crate API
-    /// extension needed to pass an in-memory entry buffer to `compile_project` was
-    /// deferred by the steward (esc-3228-41); wire it here once that API exists.
+    /// `load_file` time but not on subsequent dirty-buffer edits.  Routing this method
+    /// through the multi-file flow is the deferred half of task 3228 and is filed as
+    /// a separate follow-up.
     pub fn update_source(&mut self, path: &str, content: &str) -> Result<GuiState, String> {
         let module_name = Path::new(path)
             .file_stem()

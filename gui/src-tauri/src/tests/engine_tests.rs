@@ -5292,14 +5292,10 @@ fn is_idle_returns_true_after_load_from_source() {
 /// `Helper.x = 10mm`, and build_values surfaces it as a ValueData entry.
 ///
 /// The checked value ("10", unit "mm") is the DEFAULT from Helper.x's
-/// declaration — the per-instance override (25mm from `sub h = Helper(x: 25mm)`)
-/// lives in the eval engine's value map under the scoped key `Top.h.x` but is
-/// NOT surfaced by `build_values`' static value_cell iteration (which iterates
-/// template.value_cells, not per-instance overrides).  Accessing the scoped
-/// 25mm value requires `EngineSession::last_check` which is a private field;
-/// extending `build_values` / `GuiState` to surface sub-component overrides is
-/// a follow-up task.  The present assertion — non-empty `state.values` with
-/// `Helper.x = 10mm` — is the correct proxy for confirming the import resolved
+/// declaration — `build_values` iterates template.value_cells (statics), not
+/// per-instance scoped overrides.  Surfacing per-instance overrides is a
+/// separate concern; the present assertion (non-empty `state.values` with
+/// `Helper.x = 10mm`) is the correct proxy for confirming the import resolved
 /// and the template was merged.
 #[test]
 fn load_file_with_user_import_resolves_imported_structure() {
@@ -5316,10 +5312,13 @@ fn load_file_with_user_import_resolves_imported_structure() {
     )
     .expect("write helper.ri");
 
-    // main.ri: imports helper and instantiates it as a sub-component
+    // main.ri: imports helper and instantiates it as a sub-component.
+    // Use the default `Helper()` so the source matches what the assertions
+    // verify — `build_values` only surfaces template-level value_cells, so a
+    // per-instance override here would be dead weight.
     std::fs::write(
         dir.path().join("main.ri"),
-        "import helper\nstructure Top { sub h = Helper(x: 25mm) }\n",
+        "import helper\nstructure Top { sub h = Helper() }\n",
     )
     .expect("write main.ri");
 
