@@ -145,6 +145,48 @@ mod tests {
     ];
 
     #[test]
+    fn interpolate_p1_at_point_recovers_nodal_values_at_vertices_and_is_linear() {
+        // Non-trivial nodal values: distinct triples per node so
+        // permutations would surface as a test failure.
+        let nodal_values: [[f64; 3]; 4] = [
+            [1.0, 2.0, 3.0],
+            [4.0, 5.0, 6.0],
+            [7.0, 8.0, 9.0],
+            [10.0, 11.0, 12.0],
+        ];
+
+        // (a) At each vertex v_i, the interpolant must recover nodal_values[i] exactly.
+        for (i, v) in UNIT_TET_P1.iter().enumerate() {
+            let interp = interpolate_p1_at_point(&UNIT_TET_P1, &nodal_values, *v);
+            for k in 0..3 {
+                assert!(
+                    (interp[k] - nodal_values[i][k]).abs() < TOL,
+                    "vertex {i} interp[{k}] = {} expected {}",
+                    interp[k],
+                    nodal_values[i][k],
+                );
+            }
+        }
+
+        // (b) At the centroid, the interpolant equals the arithmetic mean
+        //     of the four nodal values componentwise (partition-of-unity
+        //     consequence: each N_i = 1/4 ⇒ interp = mean).
+        let centroid = [0.25_f64, 0.25, 0.25];
+        let interp = interpolate_p1_at_point(&UNIT_TET_P1, &nodal_values, centroid);
+        for k in 0..3 {
+            let expected = 0.25 * (nodal_values[0][k]
+                + nodal_values[1][k]
+                + nodal_values[2][k]
+                + nodal_values[3][k]);
+            assert!(
+                (interp[k] - expected).abs() < TOL,
+                "centroid interp[{k}] = {} expected mean {expected}",
+                interp[k],
+            );
+        }
+    }
+
+    #[test]
     fn point_in_tet_p1_includes_interior_excludes_exterior_within_tolerance() {
         // Centroid is inside.
         assert!(
