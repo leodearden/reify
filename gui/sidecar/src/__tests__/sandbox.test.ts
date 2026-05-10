@@ -131,4 +131,19 @@ describe('probeLandlockAsync (task 3281)', () => {
     // The watchdog reached the kill site and the throw was swallowed
     expect(fakeProc.kill).toHaveBeenCalledWith('SIGTERM');
   });
+
+  it("(viii) escalates to SIGKILL ~500ms after watchdog SIGTERM if proc has not closed", async () => {
+    vi.useFakeTimers();
+    const promise = probeLandlockAsync('/path/to/landlock_exec.py');
+    // Fire the 2000ms watchdog
+    vi.advanceTimersByTime(2001);
+    expect(await promise).toBe(false);
+    // SIGTERM sent, but SIGKILL not yet
+    expect(fakeProc.kill).toHaveBeenCalledWith('SIGTERM');
+    expect(fakeProc.kill).not.toHaveBeenCalledWith('SIGKILL');
+    // Advance the 500ms escalation window
+    vi.advanceTimersByTime(500);
+    // Now SIGKILL must have been sent
+    expect(fakeProc.kill).toHaveBeenCalledWith('SIGKILL');
+  });
 });
