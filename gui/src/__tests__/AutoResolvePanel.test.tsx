@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { render, screen, cleanup } from '@solidjs/testing-library';
+import { render, screen, cleanup, within } from '@solidjs/testing-library';
 import type { AutoResolveIteration } from '../types';
 import type { AutoResolveLoopState } from '../stores/engineStore';
 import { AutoResolvePanel } from '../panels/AutoResolvePanel';
@@ -156,14 +156,43 @@ describe('AutoResolvePanel (c) line chart', () => {
     }
   });
 
-  it('(c.3) SVG contains the driving metric name as a text/label element', () => {
+  it('(c.3) SVG contains the driving metric name as a text/label element inside the chart SVG', () => {
     const iterations = [220, 200, 185, 178].map((v, i) =>
       makeIteration(i + 1, { driving_metric: 'max_von_mises', driving_metric_value: v }),
     );
     const state: AutoResolveLoopState = { active: true, iterations };
     render(() => <AutoResolvePanel state={state} />);
-    // The metric name "max_von_mises" should appear somewhere in the chart region
-    expect(screen.getByText(/max_von_mises/)).toBeTruthy();
+    // Must find the metric name INSIDE the chart SVG element, not just anywhere on the page
+    const svg = screen.getByTestId('auto-resolve-chart');
+    expect(within(svg).getByText(/max_von_mises/)).toBeTruthy();
+  });
+
+  it('(c.3.b) chart SVG renders the driving_metric label when name differs from constraint names', () => {
+    // driving_metric is 'driving_metric_z' but constraints are keyed by 'max_von_mises' only.
+    // This proves the chart-side label is genuinely inside the SVG (not accidentally matching
+    // the constraints section which only shows 'max_von_mises').
+    const iterations = [220, 200, 185, 178].map((v, i) =>
+      makeIteration(i + 1, {
+        driving_metric: 'driving_metric_z',
+        driving_metric_value: v,
+        constraints: {
+          max_von_mises: {
+            name: 'max_von_mises',
+            value: v,
+            unit: 'MPa',
+            target_upper: 200,
+            satisfied: v <= 200,
+          },
+        },
+      }),
+    );
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+    const svg = screen.getByTestId('auto-resolve-chart');
+    // 'driving_metric_z' must appear as a text element inside the chart SVG
+    expect(within(svg).getByText('driving_metric_z')).toBeTruthy();
+    // 'max_von_mises' should NOT appear inside the chart SVG (it's only in the constraints section)
+    expect(within(svg).queryByText('max_von_mises')).toBeNull();
   });
 
   it('(c.4) no polyline rendered when fewer than 2 iterations carry driving_metric_value', () => {
