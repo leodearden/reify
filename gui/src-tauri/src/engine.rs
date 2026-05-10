@@ -13,7 +13,7 @@ use reify_types::{
     ModulePath, Satisfaction, Severity, Value, ValueCellId,
 };
 
-use reify_types::{Diagnostic, DiagnosticInfo, SourceLocationInfo};
+use reify_types::{Diagnostic, DiagnosticInfo, DiagnosticLabel, SourceLocationInfo, SourceSpan};
 
 use crate::types::{
     ConstraintData, DefInfo, EntityIdentity, EntityTreeNode, FileData, GuiState, JointDescriptor,
@@ -249,16 +249,27 @@ fn compile_entry_with_imports(
     // Std.* modules are excluded: stdlib structures are not expected to appear as
     // top-level GUI entities.
     //
-    // De-duplication: skip any imported template whose name already exists in
-    // `compiled.templates` (either declared by the entry or merged from an
-    // earlier import).  `find_template` is a linear first-match scan, so duplicates
-    // would silently shadow.  First-wins matches the compiler's cross-prelude
-    // collision policy in compile_with_prelude_refs.
+    // De-duplication: first-wins/warns — skip any imported template whose name
+    // already exists in `compiled.templates` (either declared by the entry or
+    // merged from an earlier import), and emit a Diagnostic::warning so the user
+    // sees the shadowing instead of a silent skip.  Mirrors the compiler's
+    // cross-prelude alias collision policy at reify-compiler/src/lib.rs:281-292.
+    //
+    // `templates_origin` maps each template name to the module path that first
+    // declared it.  It is pre-seeded with the entry's already-compiled templates
+    // (origin = module_name) before the import loop runs, so entry-vs-import
+    // collisions also emit a Warning naming both sides.
     //
     // v1 limitation: only DIRECT imports are merged.  If helper.ri itself imports
     // util.ri, Util's template will be absent from this list and find_template will
     // fail at eval for any sub referencing Util.  A future fix should iterate all
     // dag.modules entries instead of just import_paths.
+    let mut templates_origin: HashMap<String, String> = HashMap::new();
+    // Pre-seed with entry-declared templates so entry-vs-import collisions are
+    // detected and warned, mirroring the import-vs-import path below.
+    for tmpl in &compiled.templates {
+        templates_origin.insert(tmpl.name.clone(), module_name.to_string());
+    }
     for import_path in &import_paths {
         if is_stdlib_path(import_path) {
             continue;
@@ -268,14 +279,29 @@ fn compile_entry_with_imports(
                 if template.visibility != Visibility::Public {
                     continue;
                 }
-                if compiled
-                    .templates
-                    .iter()
-                    .any(|t| t.name == template.name)
-                {
+                if let Some(prior_origin) = templates_origin.get(&template.name) {
+                    // Collision: emit a warning naming both the prior declarer and the
+                    // colliding import, mirroring lib.rs:283-291 wording.
+                    //
+                    // The `templates_origin` invariant guarantees every name present in
+                    // `compiled.templates` is also present in the map (seeded from entry
+                    // templates before the loop, updated on every successful merge), so
+                    // `if let Some(...)` is both the O(1) membership test and the origin
+                    // lookup — no separate `iter().any(...)` scan or fallback needed.
+                    compiled.diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "imported pub structure '{}' declared in both '{}' and '{}'; first-wins",
+                            template.name, prior_origin, import_path
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            SourceSpan::prelude(),
+                            "cross-import collision",
+                        )),
+                    );
                     continue;
                 }
                 compiled.templates.push(template.clone());
+                templates_origin.insert(template.name.clone(), import_path.clone());
             }
         }
     }
