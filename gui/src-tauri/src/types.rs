@@ -105,6 +105,13 @@ pub struct GuiState {
     /// Non-empty when `tessellate_snapshot` encounters geometry errors (e.g.
     /// OCCT kernel failures). Empty on preview snapshots and after a clean eval.
     pub tessellation_diagnostics: Vec<DiagnosticInfo>,
+    /// Diagnostics produced during the most recent compile pass (warnings, info).
+    ///
+    /// Non-empty when the compiler emits warnings (e.g. unresolved imports,
+    /// shadowing, unknown port types). Empty after a clean compile with no
+    /// diagnostics. Distinct from `tessellation_diagnostics` — compile
+    /// diagnostics are produced before tessellation runs.
+    pub compile_diagnostics: Vec<DiagnosticInfo>,
 }
 
 // ---------------------------------------------------------------------------

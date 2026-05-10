@@ -62,6 +62,7 @@ fn diff_identical_states_returns_empty_delta() {
         constraints: vec![sample_constraint("Bracket.0", "Satisfied")],
         files: vec![],
         tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
     };
 
     let delta = diff_gui_state(&state, &state);
@@ -88,6 +89,7 @@ fn diff_detects_changed_value() {
         constraints: vec![],
         files: vec![],
         tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
     };
     let new = GuiState {
         meshes: vec![],
@@ -95,6 +97,7 @@ fn diff_detects_changed_value() {
         constraints: vec![],
         files: vec![],
         tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
     };
 
     let delta = diff_gui_state(&old, &new);
@@ -113,6 +116,7 @@ fn diff_detects_changed_constraint() {
         constraints: vec![sample_constraint("Bracket.0", "Satisfied")],
         files: vec![],
         tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
     };
     let new = GuiState {
         meshes: vec![],
@@ -120,6 +124,7 @@ fn diff_detects_changed_constraint() {
         constraints: vec![sample_constraint("Bracket.0", "Violated")],
         files: vec![],
         tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
     };
 
     let delta = diff_gui_state(&old, &new);
@@ -141,6 +146,7 @@ fn diff_detects_changed_mesh_ignores_unchanged() {
         constraints: vec![],
         files: vec![],
         tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
     };
     let new = GuiState {
         meshes: vec![
@@ -151,6 +157,7 @@ fn diff_detects_changed_mesh_ignores_unchanged() {
         constraints: vec![],
         files: vec![],
         tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
     };
 
     let delta = diff_gui_state(&old, &new);
@@ -172,6 +179,7 @@ fn diff_handles_added_and_removed_entities() {
         constraints: vec![],
         files: vec![],
         tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
     };
     let new = GuiState {
         meshes: vec![],
@@ -182,6 +190,7 @@ fn diff_handles_added_and_removed_entities() {
         constraints: vec![],
         files: vec![],
         tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
     };
 
     let delta = diff_gui_state(&old, &new);
@@ -206,6 +215,7 @@ fn full_delta_contains_all_items_from_state() {
         constraints: vec![sample_constraint("Bracket.0", "Satisfied")],
         files: vec![],
         tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
     };
 
     let delta = StateDelta::full(&state);
@@ -231,6 +241,7 @@ fn compute_delta_none_last_state_returns_full_then_diff() {
         constraints: vec![],
         files: vec![],
         tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
     };
 
     // First call with None last_state → full delta
@@ -245,6 +256,7 @@ fn compute_delta_none_last_state_returns_full_then_diff() {
         constraints: vec![],
         files: vec![],
         tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
     };
     let delta = compute_delta(&last_state, &state2);
     assert!(delta.changed_meshes.is_empty(), "diff: mesh unchanged");
@@ -558,6 +570,7 @@ fn diff_identical_tessellation_diagnostics_returns_none() {
         constraints: vec![],
         files: vec![],
         tessellation_diagnostics: diags.clone(),
+        compile_diagnostics: vec![],
     };
     let new = GuiState {
         meshes: vec![],
@@ -565,6 +578,7 @@ fn diff_identical_tessellation_diagnostics_returns_none() {
         constraints: vec![],
         files: vec![],
         tessellation_diagnostics: diags.clone(),
+        compile_diagnostics: vec![],
     };
 
     let delta = diff_gui_state(&old, &new);
@@ -589,6 +603,7 @@ fn diff_changed_tessellation_diagnostics_returns_some() {
         constraints: vec![],
         files: vec![],
         tessellation_diagnostics: old_diags,
+        compile_diagnostics: vec![],
     };
     let new = GuiState {
         meshes: vec![],
@@ -596,6 +611,7 @@ fn diff_changed_tessellation_diagnostics_returns_some() {
         constraints: vec![],
         files: vec![],
         tessellation_diagnostics: new_diags.clone(),
+        compile_diagnostics: vec![],
     };
 
     let delta = diff_gui_state(&old, &new);
@@ -623,6 +639,7 @@ fn diff_clearing_tessellation_diagnostics_emits_some_empty() {
         constraints: vec![],
         files: vec![],
         tessellation_diagnostics: vec![sample_diagnostic("Error", "kernel failure")],
+        compile_diagnostics: vec![],
     };
     let new = crate::types::GuiState {
         meshes: vec![],
@@ -630,6 +647,7 @@ fn diff_clearing_tessellation_diagnostics_emits_some_empty() {
         constraints: vec![],
         files: vec![],
         tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
     };
 
     let delta = diff_gui_state(&old, &new);

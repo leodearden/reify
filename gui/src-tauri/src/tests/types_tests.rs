@@ -13,6 +13,7 @@ fn gui_state_empty_serializes_with_expected_keys() {
         constraints: vec![],
         files: vec![],
         tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(v.get("meshes").unwrap().is_array());
@@ -29,6 +30,7 @@ fn gui_state_serializes_tessellation_diagnostics_field() {
         constraints: vec![],
         files: vec![],
         tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(
