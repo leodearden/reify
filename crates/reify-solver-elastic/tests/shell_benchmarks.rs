@@ -140,6 +140,65 @@ fn solve_shell_system(
     rhs.col_as_slice(0_usize).to_vec()
 }
 
+/// Compute per-element shell stiffness matrices for every triangle in
+/// `connectivity`.
+///
+/// # Arguments
+///
+/// * `nodes` — node coordinates (`nodes[k]` is the 3-D position of node `k`)
+/// * `connectivity` — element node indices (`connectivity[e]` is `[n0, n1, n2]`)
+/// * `thickness` — shell thickness (uniform across all elements)
+/// * `mat` — isotropic elastic material properties
+///
+/// # Returns
+///
+/// `Vec<ElementStiffness>` with one entry per element, in the same order as
+/// `connectivity`. Each entry is the 18×18 element stiffness matrix in the
+/// element's local 6-DOF-per-node ordering.
+fn build_shell_stiffnesses(
+    nodes: &[[f64; 3]],
+    connectivity: &[[usize; 3]],
+    thickness: f64,
+    mat: &IsotropicElastic,
+) -> Vec<ElementStiffness> {
+    connectivity
+        .iter()
+        .map(|conn| {
+            let elem_nodes = [nodes[conn[0]], nodes[conn[1]], nodes[conn[2]]];
+            shell_element_stiffness(&elem_nodes, thickness, mat)
+        })
+        .collect()
+}
+
+/// Build the `AssemblyElement` handle slice for `assemble_global_stiffness`.
+///
+/// `AssemblyElement<'a>` borrows both `connectivity` and `stiffness` — so
+/// both must outlive the returned vec. This helper is intentionally kept
+/// separate from `build_shell_stiffnesses` to satisfy Rust's lifetime rules:
+/// the caller must own the `Vec<ElementStiffness>` on its stack before
+/// calling this helper.
+///
+/// # Arguments
+///
+/// * `connectivity` — element node indices (same slice used to build stiffness)
+/// * `stiffness` — per-element stiffness matrices (output of
+///   `build_shell_stiffnesses`)
+///
+/// # Returns
+///
+/// `Vec<AssemblyElement<'_>>` in the same order as `connectivity`.
+fn assembly_elements_for<'a>(
+    connectivity: &'a [[usize; 3]],
+    stiffness: &'a [ElementStiffness],
+) -> Vec<AssemblyElement<'a>> {
+    connectivity
+        .iter()
+        .zip(stiffness.iter())
+        .enumerate()
+        .map(|(i, (conn, k_e))| AssemblyElement { id: i, connectivity: conn, k_e })
+        .collect()
+}
+
 // ─── step-2: pinched cylinder (MacNeal-Harder §3.3) ─────────────────────────
 
 /// Pinched cylinder smoke test — geometry from MacNeal-Harder (1985) §3.3.
@@ -200,20 +259,8 @@ fn pinched_cylinder_octant_smoke_test_radial_displacement_is_finite_and_inward(
     let n_nodes = nodes.len();
 
     // Build per-element stiffness via the production code path.
-    let stiffness: Vec<ElementStiffness> = connectivity
-        .iter()
-        .map(|conn| {
-            let elem_nodes = [nodes[conn[0]], nodes[conn[1]], nodes[conn[2]]];
-            shell_element_stiffness(&elem_nodes, T, &mat)
-        })
-        .collect();
-
-    let elements: Vec<AssemblyElement<'_>> = connectivity
-        .iter()
-        .zip(stiffness.iter())
-        .enumerate()
-        .map(|(i, (conn, k_e))| AssemblyElement { id: i, connectivity: conn, k_e })
-        .collect();
+    let stiffness = build_shell_stiffnesses(&nodes, &connectivity, T, &mat);
+    let elements = assembly_elements_for(&connectivity, &stiffness);
 
     // Build Dirichlet BCs.
     // Tolerance 1.0 is well within each mesh spacing (~75 for z, ~115 arc-len
@@ -635,20 +682,8 @@ fn scordelis_lo_roof_quadrant_smoke_test_vertical_deflection_is_finite_and_downw
     let n_nodes = nodes.len();
 
     // Build per-element stiffness via the production code path.
-    let stiffness: Vec<ElementStiffness> = connectivity
-        .iter()
-        .map(|conn| {
-            let elem_nodes = [nodes[conn[0]], nodes[conn[1]], nodes[conn[2]]];
-            shell_element_stiffness(&elem_nodes, T, &mat)
-        })
-        .collect();
-
-    let elements: Vec<AssemblyElement<'_>> = connectivity
-        .iter()
-        .zip(stiffness.iter())
-        .enumerate()
-        .map(|(i, (conn, k_e))| AssemblyElement { id: i, connectivity: conn, k_e })
-        .collect();
+    let stiffness = build_shell_stiffnesses(&nodes, &connectivity, T, &mat);
+    let elements = assembly_elements_for(&connectivity, &stiffness);
 
     // Lumped gravity load: per-element area × G / 3 per node, in −z (DOF 2).
     let mut point_loads: Vec<(usize, f64)> = Vec::new();
@@ -829,20 +864,8 @@ fn hemisphere_with_point_loads_smoke_test_radial_displacement_is_finite_and_outw
     let n_nodes = nodes.len();
 
     // Build per-element stiffness via the production code path.
-    let stiffness: Vec<ElementStiffness> = connectivity
-        .iter()
-        .map(|conn| {
-            let elem_nodes = [nodes[conn[0]], nodes[conn[1]], nodes[conn[2]]];
-            shell_element_stiffness(&elem_nodes, T, &mat)
-        })
-        .collect();
-
-    let elements: Vec<AssemblyElement<'_>> = connectivity
-        .iter()
-        .zip(stiffness.iter())
-        .enumerate()
-        .map(|(i, (conn, k_e))| AssemblyElement { id: i, connectivity: conn, k_e })
-        .collect();
+    let stiffness = build_shell_stiffnesses(&nodes, &connectivity, T, &mat);
+    let elements = assembly_elements_for(&connectivity, &stiffness);
 
     // BCs: detect nodes by position.
     // Mesh spacing: arc-length ≈ R·72°·π/180 / NX ≈ 3.1 in φ-direction;
@@ -974,20 +997,8 @@ fn twisted_beam_tip_out_of_plane_load_smoke_test_displacement_is_finite_and_sign
     let n_nodes = nodes.len();
 
     // Build per-element stiffness via the production code path.
-    let stiffness: Vec<ElementStiffness> = connectivity
-        .iter()
-        .map(|conn| {
-            let elem_nodes = [nodes[conn[0]], nodes[conn[1]], nodes[conn[2]]];
-            shell_element_stiffness(&elem_nodes, thickness, &mat)
-        })
-        .collect();
-
-    let elements: Vec<AssemblyElement<'_>> = connectivity
-        .iter()
-        .zip(stiffness.iter())
-        .enumerate()
-        .map(|(i, (conn, k_e))| AssemblyElement { id: i, connectivity: conn, k_e })
-        .collect();
+    let stiffness = build_shell_stiffnesses(&nodes, &connectivity, thickness, &mat);
+    let elements = assembly_elements_for(&connectivity, &stiffness);
 
     // BCs: fully clamp every z=0 node (all 6 DOFs = 0).
     // z-spacing = L/NZ = 1.0; tol = 0.1 is safely inside the first strip.
@@ -1185,20 +1196,8 @@ fn mitc3_thin_shell_pinched_cylinder_does_not_lock_under_decreasing_thickness() 
     for (idx, &t) in thicknesses.iter().enumerate() {
         let mat = IsotropicElastic { youngs_modulus: mat_e, poisson_ratio: 0.3 };
 
-        let stiffness: Vec<ElementStiffness> = connectivity
-            .iter()
-            .map(|conn| {
-                let elem_nodes = [nodes[conn[0]], nodes[conn[1]], nodes[conn[2]]];
-                shell_element_stiffness(&elem_nodes, t, &mat)
-            })
-            .collect();
-
-        let elements: Vec<AssemblyElement<'_>> = connectivity
-            .iter()
-            .zip(stiffness.iter())
-            .enumerate()
-            .map(|(i, (conn, k_e))| AssemblyElement { id: i, connectivity: conn, k_e })
-            .collect();
+        let stiffness = build_shell_stiffnesses(&nodes, &connectivity, t, &mat);
+        let elements = assembly_elements_for(&connectivity, &stiffness);
 
         let u = solve_shell_system(&elements, n_nodes, &bcs, &point_loads);
         let u_r = -u[load_node * 6 + 1]; // radial inward displacement (positive)
@@ -1287,26 +1286,8 @@ fn flat_plate_cantilever_under_tip_load_displaces_in_load_direction() {
     let n_nodes = nodes.len();
 
     // Build per-element stiffness matrices via the production code path.
-    let stiffness: Vec<ElementStiffness> = connectivity
-        .iter()
-        .map(|conn| {
-            let elem_nodes = [nodes[conn[0]], nodes[conn[1]], nodes[conn[2]]];
-            shell_element_stiffness(&elem_nodes, thickness, &mat)
-        })
-        .collect();
-
-    // Build AssemblyElement slice — &[usize; 3] coerces to &[usize] at the
-    // struct literal (coercion site per the Rust Reference).
-    let elements: Vec<AssemblyElement<'_>> = connectivity
-        .iter()
-        .zip(stiffness.iter())
-        .enumerate()
-        .map(|(i, (conn, k_e))| AssemblyElement {
-            id: i,
-            connectivity: conn,
-            k_e,
-        })
-        .collect();
+    let stiffness = build_shell_stiffnesses(&nodes, &connectivity, thickness, &mat);
+    let elements = assembly_elements_for(&connectivity, &stiffness);
 
     // BCs: clamp nodes 0 and 2 (x=0 edge), all 6 DOFs = 0.
     let mut bcs: Vec<DirichletBc> = Vec::new();
