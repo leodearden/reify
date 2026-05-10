@@ -24,6 +24,20 @@
 use crate::constitutive::IsotropicElastic;
 use crate::elements::{ReferenceCoord, ReferenceElement, tet_p1::TetP1};
 
+/// Conservative lower bound on `|det J|` for the debug-mode
+/// degenerate-element check inside [`element_stress_p1`].
+///
+/// Mirrors `crates/reify-solver-elastic/src/assembly/tet.rs:75`'s
+/// `MIN_JACOBIAN_DET = 1e-30` — kept in sync by convention rather than a
+/// re-export, because that constant is private to the assembly module
+/// and its containing file is not in this task's lock set. Anything at
+/// or below this threshold is treated as a malformed element and trips
+/// a `debug_assert!` rather than silently dividing by it (which would
+/// propagate `±∞` / `NaN` through the inverse Jacobian into `σ_e`).
+/// PRD task #21 (diagnostics) will replace this placeholder with a
+/// proper mesh-scale-aware degeneracy detector.
+const MIN_JACOBIAN_DET: f64 = 1.0e-30;
+
 /// Return `(M⁻¹)ᵀ = M⁻ᵀ` for a 3×3 matrix via the standard cofactor /
 /// adjugate formula.
 ///
@@ -118,6 +132,18 @@ pub fn element_stress_p1(
     let det = j_mat[0][0] * (j_mat[1][1] * j_mat[2][2] - j_mat[1][2] * j_mat[2][1])
         - j_mat[0][1] * (j_mat[1][0] * j_mat[2][2] - j_mat[1][2] * j_mat[2][0])
         + j_mat[0][2] * (j_mat[1][0] * j_mat[2][1] - j_mat[1][1] * j_mat[2][0]);
+    // Degenerate-element guard (debug-only). Mirrors the convention used
+    // by `assembly/tet.rs:182` for the same primitive: `det.is_normal()`
+    // catches ±0, ±∞, NaN, and subnormals; the absolute-value floor
+    // catches the merely-tiny case where dividing by `det` in
+    // `inverse_transpose_3x3` would inflate FP error into `σ_e`.
+    debug_assert!(
+        det.is_normal() && det.abs() > MIN_JACOBIAN_DET,
+        "degenerate tet in element_stress_p1: |det J| = {} (must be > {} \
+         and finite — see PRD task #21 for the future diagnostic path)",
+        det.abs(),
+        MIN_JACOBIAN_DET,
+    );
     let j_inv_t = inverse_transpose_3x3(&j_mat, det);
 
     // Push to physical gradients: ∇x N_i = J⁻ᵀ · ∇ξ N_i.
@@ -267,6 +293,15 @@ pub fn recover_nodal_stress_p1(
 
     for el in elements {
         for &node in el.connectivity {
+            // Bounds guard (debug-only): turn a generic Rust slice OOB
+            // into a domain-specific panic message. Release builds rely
+            // on the `accum[node]` indexing below to enforce the same
+            // invariant; PRD task #21 (diagnostics) will own the
+            // production-ready validation path.
+            debug_assert!(
+                node < n_nodes,
+                "connectivity index {node} >= n_nodes {n_nodes} in recover_nodal_stress_p1",
+            );
             for (acc_cell, &stress_cell) in accum[node]
                 .iter_mut()
                 .flatten()

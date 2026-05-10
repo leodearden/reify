@@ -21,6 +21,20 @@
 //! - [`locate_element_p1`] + [`LocatableTet`] — linear-scan search for the
 //!   first P1 element containing a query point.
 
+/// Conservative lower bound on `|det J|` for the debug-mode
+/// degenerate-element check inside [`barycentric_p1`].
+///
+/// Mirrors `crates/reify-solver-elastic/src/assembly/tet.rs:75`'s
+/// `MIN_JACOBIAN_DET = 1e-30` — kept in sync by convention rather than a
+/// re-export, because that constant is private to the assembly module
+/// and its containing file is not in this task's lock set. Anything at
+/// or below this threshold is treated as a malformed element and trips
+/// a `debug_assert!` rather than silently dividing by it (which would
+/// propagate `±∞` / `NaN` through the inverse Jacobian into the
+/// barycentric coordinates). PRD task #21 (diagnostics) will replace
+/// this placeholder with a proper mesh-scale-aware degeneracy detector.
+const MIN_JACOBIAN_DET: f64 = 1.0e-30;
+
 /// Return `(M⁻¹)ᵀ = M⁻ᵀ` for a 3×3 matrix via the standard cofactor /
 /// adjugate formula.
 ///
@@ -90,6 +104,18 @@ pub fn barycentric_p1(phys_nodes: &[[f64; 3]; 4], p: [f64; 3]) -> [f64; 4] {
     let det = j_mat[0][0] * (j_mat[1][1] * j_mat[2][2] - j_mat[1][2] * j_mat[2][1])
         - j_mat[0][1] * (j_mat[1][0] * j_mat[2][2] - j_mat[1][2] * j_mat[2][0])
         + j_mat[0][2] * (j_mat[1][0] * j_mat[2][1] - j_mat[1][1] * j_mat[2][0]);
+    // Degenerate-element guard (debug-only). `det.is_normal()` catches
+    // ±0, ±∞, NaN, and subnormals; the absolute-value floor catches the
+    // merely-tiny case where division by `det` in `inverse_transpose_3x3`
+    // would inflate FP error to dominate the barycentric coords. Mirrors
+    // the convention used by `assembly/tet.rs:182` for the same primitive.
+    debug_assert!(
+        det.is_normal() && det.abs() > MIN_JACOBIAN_DET,
+        "degenerate tet in barycentric_p1: |det J| = {} (must be > {} \
+         and finite — see PRD task #21 for the future diagnostic path)",
+        det.abs(),
+        MIN_JACOBIAN_DET,
+    );
     // Solve J · ξ = (p − v0). With J⁻¹ from the cofactor formula,
     // ξ = J⁻¹ (p − v0). We use the same primitive as the
     // assembly path: `inverse_transpose_3x3` returns J⁻ᵀ; therefore
