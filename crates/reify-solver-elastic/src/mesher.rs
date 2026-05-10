@@ -10,6 +10,145 @@
 //! [`auto_mesh_size_from_boundary`]) live here so they remain unit-testable
 //! in stub builds without libgmsh present.
 
+use reify_types::GeometryError;
+
+// ---------------------------------------------------------------------------
+// Public types
+// ---------------------------------------------------------------------------
+
+/// Which 3D element a downstream swept-body sweep step targets.
+///
+/// `HexPreferred` requests Gmsh's blossom-recombination so 2D quads can be
+/// extruded into 3D hex elements; if recombine yields a low-quality quad
+/// mesh, [`mesh_swept_profile_2d`] falls back to triangles
+/// ([`Mesh2d::Triangle`]) and reports `recombine_attempted=true,
+/// recombine_quality_ok=false`. `WedgeOnly` skips recombine entirely and
+/// always returns triangles (which a subsequent sweep step turns into
+/// wedge elements).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SweepElementTarget {
+    /// Try to produce a quad mesh (\u{2192} hex extrusion). Falls back to
+    /// triangles if recombination fails the skew-quality threshold.
+    HexPreferred,
+    /// Always produce a triangle mesh (\u{2192} wedge extrusion).
+    WedgeOnly,
+}
+
+/// 2D mesh of a swept-body cross-section — either all triangles or all
+/// quads, never both.
+///
+/// Vertex coordinates are flat `[x0, y0, x1, y1, …]` with stride 2;
+/// connectivity is `[i0, i1, i2, …]` with stride 3 for triangles and 4 for
+/// quads. The discriminator carries the element shape implicitly so
+/// downstream consumers (`task 2988` sweep step) don't need a separate
+/// `ElementShape2d` tag field.
+#[derive(Debug, Clone)]
+pub enum Mesh2d {
+    /// All-triangle mesh. `indices.len() % 3 == 0`.
+    Triangle {
+        /// Flat `[x0,y0,x1,y1,...]` 2D vertex buffer, stride 2.
+        vertices: Vec<f32>,
+        /// Flat triangle connectivity, stride 3.
+        indices: Vec<u32>,
+    },
+    /// All-quad mesh. `indices.len() % 4 == 0`.
+    Quad {
+        /// Flat `[x0,y0,x1,y1,...]` 2D vertex buffer, stride 2.
+        vertices: Vec<f32>,
+        /// Flat quad connectivity, stride 4 (CCW corner order).
+        indices: Vec<u32>,
+    },
+}
+
+/// Output of [`mesh_swept_profile_2d`] — the produced 2D mesh bundled with
+/// recombine-quality diagnostics.
+///
+/// `recombine_attempted` + `recombine_quality_ok` together let task 2989's
+/// diagnostic code emit a "hex meshed" vs "wedge fallback" vs "wedge
+/// native" distinction without re-running quality checks downstream.
+#[derive(Debug, Clone)]
+pub struct Mesh2dReport {
+    /// Produced 2D mesh — triangles or quads depending on caller target and
+    /// recombine-quality outcome.
+    pub mesh: Mesh2d,
+    /// `true` iff [`mesh_swept_profile_2d`] asked Gmsh to recombine to
+    /// quads (i.e. caller target was [`SweepElementTarget::HexPreferred`]).
+    pub recombine_attempted: bool,
+    /// `true` iff every quad in the recombined output passed the
+    /// `recombine_skew_threshold` quality check, OR no recombine was
+    /// attempted (vacuous true). `false` only when recombine was attempted
+    /// and at least one quad exceeded the threshold (triggering fall-back
+    /// to triangles).
+    pub recombine_quality_ok: bool,
+}
+
+/// Polygonal description of a 2D cross-section: an outer ring and any
+/// number of holes.
+///
+/// Convention: outer ring CCW, hole rings CW (Gmsh accepts both
+/// orientations, but downstream code may use the sign of the shoelace area
+/// to disambiguate). All coordinates are 2D `[x, y]` in the profile's
+/// local plane. Curved boundaries (arcs, splines) are pre-sampled by the
+/// caller into polyline segments — this contract is closed against
+/// upstream discretisation strategy.
+#[derive(Debug, Clone)]
+pub struct ProfileBoundary {
+    /// Outer-boundary points (CCW for positive area).
+    pub outer: Vec<[f64; 2]>,
+    /// Zero or more hole rings (CW for positive holes-out-of-solid area).
+    pub holes: Vec<Vec<[f64; 2]>>,
+}
+
+/// Errors from [`mesh_swept_profile_2d`].
+#[derive(Debug)]
+pub enum Mesh2dError {
+    /// Outer ring is empty — caller passed nothing to mesh.
+    EmptyBoundary,
+    /// One of the rings (outer or a hole) has <3 distinct points, or the
+    /// outer ring is collinear (zero signed area). Geometrically a non-
+    /// surface; rejected before any Gmsh call.
+    DegenerateBoundary,
+    /// Underlying Gmsh call failed. Wraps the original `GeometryError` for
+    /// diagnostic chains.
+    GmshFailed(GeometryError),
+    /// Gmsh is not available in this build (stub build — libgmsh not
+    /// detected at compile time). Callers can choose to fall back to a
+    /// different mesher or surface this as a configuration error.
+    GmshUnavailable,
+}
+
+/// User-tunable knobs for one [`mesh_swept_profile_2d`] call.
+///
+/// Mirrors the [`reify_kernel_gmsh::MeshingOptions`] shape with one
+/// addition (`recombine_skew_threshold`) and one omission (no `threads` —
+/// 2D meshing is single-threaded in Gmsh's default algorithm regardless of
+/// `General.NumThreads`).
+#[derive(Debug, Clone)]
+pub struct Mesh2dOptions {
+    /// Target characteristic mesh edge length in profile-plane units.
+    /// `None` triggers auto-derivation via
+    /// [`auto_mesh_size_from_boundary`] with `multiplier=1.0`.
+    pub mesh_size: Option<f64>,
+    /// When `true`, force single-threaded 2D meshing for bit-deterministic
+    /// output. Mirrors `MeshingOptions.deterministic`.
+    pub deterministic: bool,
+    /// Maximum per-quad skew angle (radians, `|corner_angle - \u{3c0}/2|`)
+    /// tolerated before triangle fall-back. Default: \u{3c0}/4 (45° off
+    /// square). Pointy/triangular profiles cleanly exceed this; reasonable
+    /// rectangular profiles stay well under.
+    pub recombine_skew_threshold: f64,
+}
+
+impl Default for Mesh2dOptions {
+    fn default() -> Self {
+        Self {
+            mesh_size: None,
+            deterministic: false,
+            recombine_skew_threshold: std::f64::consts::FRAC_PI_4,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
