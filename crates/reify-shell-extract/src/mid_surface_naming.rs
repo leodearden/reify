@@ -300,6 +300,61 @@ mod tests {
     }
 
     #[test]
+    fn populate_skips_inter_region_edges_when_triangle_label_is_u32_max_sentinel() {
+        // Pins the segmentation.rs:188-191 sentinel contract:
+        // triangle_labels[t] == u32::MAX means "all three vertices are
+        // unlabeled / no associated mask voxel". Such triangles must
+        // NOT contribute to the inter-region edge set (otherwise we'd
+        // emit spurious (3, u32::MAX) edges, violating the canonical
+        // ordering invariant since u32::MAX always sorts to the top).
+        //
+        // This test passes today because step-10's impl includes the
+        // filter; it will fail (RED) only if a future refactor strips
+        // it, behaviorally locking in the contract.
+        let mesh = MidSurfaceMesh {
+            vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]],
+            triangles: vec![[0, 1, 2], [0, 2, 3]],
+            thickness: vec![1.0, 1.0, 1.0, 1.0],
+        };
+        let parent = FeatureId::new("Body#realization[0]");
+
+        // Sub-test A: one labeled triangle (label=3), one sentinel.
+        // Three regions [3, 8, 11] must all yield face_records, but
+        // edge_records must be empty — the (3, u32::MAX) "boundary"
+        // is suppressed.
+        let segmentation_a = SegmentationResult {
+            regions: vec![region(3), region(8), region(11)],
+            vertex_labels: vec![3, 3, u32::MAX, u32::MAX],
+            triangle_labels: vec![3, u32::MAX],
+        };
+        let attrs_a = populate_mid_surface_attributes(&parent, &mesh, &segmentation_a);
+        assert_eq!(
+            attrs_a.face_records.len(),
+            3,
+            "faces follow regions, not triangles"
+        );
+        assert!(
+            attrs_a.edge_records.is_empty(),
+            "(3, u32::MAX) sentinel boundary must NOT be emitted"
+        );
+        assert!(attrs_a.edge_region_pairs.is_empty());
+
+        // Sub-test B: BOTH triangles share the sentinel. No edges of
+        // any kind — no spurious (MAX, MAX) record.
+        let segmentation_b = SegmentationResult {
+            regions: vec![region(0)],
+            vertex_labels: vec![u32::MAX, u32::MAX, u32::MAX, u32::MAX],
+            triangle_labels: vec![u32::MAX, u32::MAX],
+        };
+        let attrs_b = populate_mid_surface_attributes(&parent, &mesh, &segmentation_b);
+        assert!(
+            attrs_b.edge_records.is_empty(),
+            "two sentinel triangles must yield no spurious (MAX, MAX) edge"
+        );
+        assert!(attrs_b.edge_region_pairs.is_empty());
+    }
+
+    #[test]
     fn populate_emits_one_face_record_per_region_with_derived_feature_id_role_and_local_index_eq_region_label(
     ) {
         let mesh = MidSurfaceMesh {
