@@ -114,3 +114,55 @@ pub fn compute_thickness_warnings(
         None => Vec::new(),
     }
 }
+
+// ---------------------------------------------------------------------------
+// FFI-backed orchestrating wrapper (cfg(has_gmsh) only)
+// ---------------------------------------------------------------------------
+
+/// Compose repair, auto-size, volume meshing, and through-thickness diagnostics
+/// into a single call.
+///
+/// Gated on `cfg(has_gmsh)` because it calls `GmshKernel::mesh_to_volume`,
+/// which is only available in the real FFI build. For stub builds the three
+/// pure helpers above remain testable.
+///
+/// # Stage order
+///
+/// 1. Repair (if `repair_cfg = Some(cfg)`) — modifies the surface mesh before
+///    it is handed to gmsh.
+/// 2. Size resolution — determines the effective `mesh_size` to use.
+/// 3. `GmshKernel::mesh_to_volume` — produce the volume mesh.
+/// 4. Through-thickness check (if `thickness_cfg = Some(cfg)`) — post-process
+///    the produced volume mesh.
+#[cfg(has_gmsh)]
+pub fn mesh_surface_to_volume_with_diagnostics(
+    surface: &Mesh,
+    options: &MeshingOptions,
+    order: reify_types::ElementOrderTag,
+    repair_cfg: Option<RepairConfig>,
+    auto_size_cfg: Option<AutoSizeConfig>,
+    thickness_cfg: Option<ThroughThicknessConfig>,
+) -> Result<MeshSurfaceToVolumeReport, reify_types::GeometryError> {
+    // Stage 1: repair pre-stage (Cow avoids clone when skipped)
+    let repaired = apply_repair_if_requested(surface, repair_cfg);
+
+    // Stage 2: resolve effective mesh size
+    let resolved = resolve_mesh_size(repaired.as_ref(), options, auto_size_cfg)?;
+    let inner_options = MeshingOptions {
+        mesh_size: resolved,
+        ..options.clone()
+    };
+
+    // Stage 3: volume meshing (FFI-backed)
+    let kernel = crate::GmshKernel::new();
+    let volume = kernel.mesh_to_volume(repaired.as_ref(), &inner_options, order)?;
+
+    // Stage 4: through-thickness post-stage
+    let through_thickness_warnings =
+        compute_thickness_warnings(&volume, repaired.as_ref(), thickness_cfg);
+
+    Ok(MeshSurfaceToVolumeReport {
+        volume,
+        through_thickness_warnings,
+    })
+}
