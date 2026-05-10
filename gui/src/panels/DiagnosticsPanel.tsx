@@ -69,7 +69,11 @@ export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
     if (typeof ResizeObserver === 'undefined') return;
     if (!dialogRef) return;
     const el = dialogRef;
+    // Skip the browser's synchronous initial fire on observe() so we don't
+    // persist the default-computed size and permanently bypass computeDefaultDialogSize.
+    let firstFire = true;
     const observer = new ResizeObserver(() => {
+      if (firstFire) { firstFire = false; return; }
       saveDiagnosticsPanelSize({ width: el.offsetWidth, height: el.offsetHeight });
     });
     observer.observe(el);
