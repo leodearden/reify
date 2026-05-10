@@ -112,6 +112,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn refinement_pass_tuning_halves_mesh_and_tenths_cg_per_level() {
+        let opts = ProgressiveOptions { target_tolerance: 0.05, ..Default::default() };
+        // level=1: mesh_tol = 0.05 × 4 × 0.5 = 0.10, cg_tol = 1e-3 × 0.1 = 1e-4
+        let pt1 = refinement_pass_tuning(&opts, 1);
+        assert!((pt1.mesh_tol - 0.10).abs() < 1e-15, "level=1 mesh_tol={}", pt1.mesh_tol);
+        assert!((pt1.cg_tol - 1e-4).abs() < 1e-20, "level=1 cg_tol={}", pt1.cg_tol);
+        // level=2: mesh_tol = 0.05 × 4 × 0.25 = 0.05, cg_tol = 1e-5
+        let pt2 = refinement_pass_tuning(&opts, 2);
+        assert!((pt2.mesh_tol - 0.05).abs() < 1e-15, "level=2 mesh_tol={}", pt2.mesh_tol);
+        assert!((pt2.cg_tol - 1e-5).abs() < 1e-21, "level=2 cg_tol={}", pt2.cg_tol);
+        // level=3: mesh_tol = 0.05 × 4 × 0.125 = 0.025, cg_tol = 1e-6
+        let pt3 = refinement_pass_tuning(&opts, 3);
+        assert!((pt3.mesh_tol - 0.025).abs() < 1e-15, "level=3 mesh_tol={}", pt3.mesh_tol);
+        assert!((pt3.cg_tol - 1e-6).abs() < 1e-22, "level=3 cg_tol={}", pt3.cg_tol);
+    }
+
+    #[test]
     fn coarse_pass_tuning_returns_4x_mesh_and_loose_cg() {
         let opts = ProgressiveOptions { target_tolerance: 0.05, ..Default::default() };
         let pt = coarse_pass_tuning(&opts);
