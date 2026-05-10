@@ -65,6 +65,7 @@ vi.mock('three', async () => {
     itemSize: number;
     needsUpdate: boolean = false;
     count: number;
+    dispose = vi.fn();
     constructor(array: any, itemSize: number) {
       this.array = array;
       this.itemSize = itemSize;
@@ -2115,6 +2116,11 @@ describe('meshManager', () => {
       // (i.e., overlay disposal did not free or replace the deformed mesh's VBOs).
       expect((deformedMesh.geometry as any).index).toBe(deformedIndexRef);
       expect((deformedMesh.geometry as any).attributes.normal).toBe(deformedNormalRef);
+
+      // Disposal-isolation contract: overlay teardown must never call .dispose() on
+      // the deformed mesh's index/normal attributes (they are independently owned clones).
+      expect(deformedIndexRef.dispose).not.toHaveBeenCalled();
+      expect(deformedNormalRef.dispose).not.toHaveBeenCalled();
     });
   });
 
