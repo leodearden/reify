@@ -1858,9 +1858,9 @@ mod tests {
     /// non-determinism bug (e.g., unsorted parallel-chunk merge, missing
     /// `sort_unstable`) can pass by luck when both runs happen to produce the
     /// same ordering. Three independent sequential runs make scheduler-state
-    /// coincidence significantly less likely: a merge-order bug that passes 2
-    /// runs with probability p passes 3 runs with probability p², and typical
-    /// ordering bugs have p ≈ 0.5 so p² ≈ 0.25 vs p = 0.5 for 2-run tests.
+    /// coincidence strictly less likely than two runs do; we choose 3 as a
+    /// small constant that meaningfully reduces the false-pass surface without
+    /// significantly inflating CI time.
     ///
     /// **Why both fixture sizes?** 16³ gives fast CI feedback; at this size
     /// with `available_parallelism() ≥ 4` each chunk covers only 4 i-rows —
