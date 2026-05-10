@@ -244,3 +244,4 @@ pub use interpolation::{
 };
 pub use result::{StressElement, element_stress_p1, recover_nodal_stress_p1, tet_volume_p1};
 pub use solver::{CgResult, CgSolverOptions, SolverMode, solve_cg};
+pub use progressive::ProgressiveOptions;

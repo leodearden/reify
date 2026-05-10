@@ -13,6 +13,48 @@
 /// - [`should_refine`] — decision oracle: returns [`AdvanceDecision::Continue`] or
 ///   [`AdvanceDecision::Terminate`] given budget, demand, and auto-detect signals.
 
+/// Configuration for the progressive-solve schedule.
+///
+/// Created with [`ProgressiveOptions::default()`] for typical engineering use
+/// or constructed field-by-field for custom tolerances and budgets.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProgressiveOptions {
+    /// Requested engineering accuracy (mesh tolerance). The coarse pass uses
+    /// `target_tolerance × 4`; each refinement halves the mesh element size.
+    pub target_tolerance: f64,
+
+    /// Material yield stress in Pa. When `Some`, the auto-refine trigger activates
+    /// if `max_von_mises` comes within `near_boundary_pct` of this value.
+    /// `None` disables yield-proximity auto-refinement.
+    pub yield_stress: Option<f64>,
+
+    /// Fraction of `yield_stress` defining the "near-boundary" zone.
+    /// Default 0.10 means "within 10% of yield stress triggers auto-refinement".
+    /// Must be in `(0.0, 1.0)`.
+    pub near_boundary_pct: f64,
+
+    /// Maximum number of refinement passes beyond the initial coarse pass.
+    /// When `current_level >= max_refinements`, [`should_refine`] returns
+    /// [`AdvanceDecision::Terminate(TerminationReason::BudgetExhausted)`].
+    pub max_refinements: usize,
+}
+
+impl Default for ProgressiveOptions {
+    /// Returns a sensible engineering default:
+    /// - `target_tolerance`: `1e-3` (representative engineering tolerance in metres)
+    /// - `yield_stress`: `None` (no yield-proximity auto-refinement)
+    /// - `near_boundary_pct`: `0.10` (10% of yield stress)
+    /// - `max_refinements`: `5` (up to 5 refinement passes)
+    fn default() -> Self {
+        Self {
+            target_tolerance: 1e-3,
+            yield_stress: None,
+            near_boundary_pct: 0.10,
+            max_refinements: 5,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
