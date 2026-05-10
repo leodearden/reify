@@ -20,3 +20,42 @@
 //! - [`recover_nodal_stress_p1`] + [`StressElement`] — volume-weighted
 //!   averaging across incident elements, producing a continuous nodal
 //!   stress field interpolatable via the same P1 shape functions.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::constitutive::IsotropicElastic;
+
+    /// Canonical unit reference tet: vertices `(0,0,0), (1,0,0), (0,1,0),
+    /// (0,0,1)` with reference-tet volume `1/6`.
+    const UNIT_TET_P1: [[f64; 3]; 4] = [
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+    ];
+
+    fn dimensionless_steel_like() -> IsotropicElastic {
+        IsotropicElastic {
+            youngs_modulus: 1.0,
+            poisson_ratio: 0.3,
+        }
+    }
+
+    #[test]
+    fn element_stress_p1_zero_displacement_yields_zero_stress() {
+        // Regression guard: an off-by-one that leaks the D-matrix
+        // diagonal into the result for ε = 0 would surface here.
+        let mat = dimensionless_steel_like();
+        let stress = element_stress_p1(&UNIT_TET_P1, &mat, &[0.0_f64; 12]);
+        for i in 0..3 {
+            for j in 0..3 {
+                assert_eq!(
+                    stress[i][j], 0.0,
+                    "zero-displacement σ[{i}][{j}] = {} expected 0.0",
+                    stress[i][j],
+                );
+            }
+        }
+    }
+}
