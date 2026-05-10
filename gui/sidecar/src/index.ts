@@ -42,12 +42,9 @@ export async function main(
     await sendMessage(output, { type: 'error', id: '', message });
     return;
   }
-  if (probeResult.status === 'rejected') {
-    const message = `Landlock probe failed unexpectedly: ${errorMessage(probeResult.reason as unknown)}`;
-    await sendMessage(output, { type: 'error', id: '', message });
-    return;
-  }
-  landlockAvailable = probeResult.value;
+  // probeLandlockAsync's contract (sandbox.ts) guarantees no rejection — every error path
+  // resolves to false. Fall back to false if the contract is ever violated by a future regression.
+  landlockAvailable = probeResult.status === 'fulfilled' ? probeResult.value : false;
 
   const systemPrompt = buildSystemPrompt({
     workingDirectory: process.cwd(),
