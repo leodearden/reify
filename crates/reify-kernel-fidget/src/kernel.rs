@@ -38,7 +38,7 @@ use fidget::context::Tree;
 use fidget::shape::EzShape;
 
 use reify_types::{
-    BRepKind, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId,
+    ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId,
     GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError,
     SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE, BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE,
     TessError, Value,
@@ -87,16 +87,18 @@ impl FidgetKernel {
     /// Insert a Tree against a fresh id and return the corresponding
     /// [`GeometryHandle`].
     ///
-    /// Temporarily retains `Some(BRepKind::Solid)` as a wave-1 intermediate
-    /// state (task 3179 step-2). Wave 2 (step-4) will flip this to `None`
-    /// once the RED test `fidget_kernel_handle_repr_is_none_for_non_brep_kernel`
-    /// is in place to drive the flip.
+    /// `repr` is `None`: Fidget's symbolic SDF [`Tree`] belongs to the
+    /// [`ReprKind::Sdf`] family — an SDF is `f(x,y,z) → distance`, not a
+    /// topology, so there is no meaningful B-rep sub-shape classification.
+    /// `repr` carries `None` per task 3179's architectural decision (option
+    /// (b)). See also task 3093 review esc-3093-33, which first identified
+    /// the semantic abuse.
     fn insert_tree(&mut self, tree: Tree) -> GeometryHandle {
         let id = self.allocate_id();
         self.trees.insert(id, tree);
         GeometryHandle {
             id,
-            repr: Some(BRepKind::Solid),
+            repr: None,
         }
     }
 
@@ -374,17 +376,17 @@ mod tests {
     }
 
     /// Pins the contract that `execute(GeometryOp::Sphere { radius })`
-    /// returns a fresh handle with `Some(BRepKind::Solid)` (wave-1
-    /// intermediate; task 3179 step-4 will update this to `None` once the
-    /// wave-2 RED test drives the Fidget flip).
+    /// returns a fresh handle with `repr: None` (ReprKind::Sdf family; see
+    /// `fidget_kernel_handle_repr_is_none_for_non_brep_kernel` for the full
+    /// architectural rationale).
     #[test]
-    fn fidget_kernel_execute_sphere_returns_handle_with_solid_repr() {
+    fn fidget_kernel_execute_sphere_returns_handle_with_unclassified_repr() {
         let mut kernel = FidgetKernel::new();
         let result = kernel.execute(&GeometryOp::Sphere {
             radius: Value::Real(1.0),
         });
         let handle = result.expect("Sphere execution must succeed on FidgetKernel");
-        assert_eq!(handle.repr, Some(BRepKind::Solid));
+        assert!(handle.repr.is_none());
         assert_ne!(
             handle.id,
             GeometryHandleId::INVALID,
@@ -404,7 +406,7 @@ mod tests {
             depth: Value::Real(2.0),
         });
         let handle = result.expect("Box execution must succeed on FidgetKernel");
-        assert_eq!(handle.repr, Some(BRepKind::Solid));
+        assert!(handle.repr.is_none());
         assert_ne!(handle.id, GeometryHandleId::INVALID);
     }
 
@@ -430,7 +432,7 @@ mod tests {
         let union = kernel
             .execute(&GeometryOp::Union { left, right })
             .expect("Union must succeed on FidgetKernel");
-        assert_eq!(union.repr, Some(BRepKind::Solid));
+        assert!(union.repr.is_none());
         assert_ne!(union.id, GeometryHandleId::INVALID);
         assert_ne!(union.id, left);
         assert_ne!(union.id, right);
@@ -443,7 +445,7 @@ mod tests {
         let diff = kernel
             .execute(&GeometryOp::Difference { left, right })
             .expect("Difference must succeed on FidgetKernel");
-        assert_eq!(diff.repr, Some(BRepKind::Solid));
+        assert!(diff.repr.is_none());
         assert_ne!(diff.id, GeometryHandleId::INVALID);
         assert_ne!(diff.id, left);
         assert_ne!(diff.id, right);
@@ -456,7 +458,7 @@ mod tests {
         let inter = kernel
             .execute(&GeometryOp::Intersection { left, right })
             .expect("Intersection must succeed on FidgetKernel");
-        assert_eq!(inter.repr, Some(BRepKind::Solid));
+        assert!(inter.repr.is_none());
         assert_ne!(inter.id, GeometryHandleId::INVALID);
         assert_ne!(inter.id, left);
         assert_ne!(inter.id, right);
