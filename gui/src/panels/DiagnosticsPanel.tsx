@@ -2,11 +2,19 @@ import { type Component, Show, For, createEffect, onCleanup } from 'solid-js';
 import type { DiagnosticInfo } from '../types';
 import styles from './DiagnosticsPanel.module.css';
 
+/** Panel-facing wrapper that extends the wire-format DiagnosticInfo with a
+ *  frontend-only source tag. The `source` field is never sent by the Rust
+ *  backend; it is added at the App.tsx merge boundary so each row can
+ *  display which pipeline produced the entry. */
+export interface DiagnosticEntry extends DiagnosticInfo {
+  source: 'compile' | 'tessellation';
+}
+
 export interface DiagnosticsPanelProps {
   open: boolean;
-  diagnostics: DiagnosticInfo[];
+  diagnostics: DiagnosticEntry[];
   onClose: () => void;
-  onNavigate: (d: DiagnosticInfo) => void;
+  onNavigate: (d: DiagnosticEntry) => void;
 }
 
 export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
@@ -41,6 +49,13 @@ export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
       case 'Error': return styles.errorBadge;
       case 'Warning': return styles.warningBadge;
       default: return styles.infoBadge;
+    }
+  }
+
+  function sourceChipClass(source: 'compile' | 'tessellation'): string {
+    switch (source) {
+      case 'compile': return styles.compileChip;
+      case 'tessellation': return styles.tessellationChip;
     }
   }
 
@@ -90,6 +105,12 @@ export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
                   >
                     <span class={severityClass(diag.severity)}>
                       {diag.severity}
+                    </span>
+                    <span
+                      data-testid="diagnostic-source-chip"
+                      class={sourceChipClass(diag.source)}
+                    >
+                      {diag.source}
                     </span>
                     <span class={styles.location}>{locationLabel(diag)}</span>
                     <span class={styles.message}>{diag.message}</span>
