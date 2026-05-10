@@ -12,6 +12,7 @@ import {
   ChatPanel,
   MenuBar,
   DiagnosticsPanel,
+  AutoResolvePanel,
 } from '../panels';
 import { createClaudeStore } from '../stores';
 
@@ -87,5 +88,12 @@ describe('panels smoke integration', () => {
     ));
     expect(screen.getByTestId('diagnostics-panel')).toBeTruthy();
     expect(screen.getByTestId('panel-title-diagnostics')).toBeTruthy();
+  });
+
+  it('AutoResolvePanel mounts via barrel import with data-testid="auto-resolve-panel"', () => {
+    render(() => (
+      <AutoResolvePanel state={{ active: false, iterations: [] }} />
+    ));
+    expect(screen.getByTestId('auto-resolve-panel')).toBeTruthy();
   });
 });
