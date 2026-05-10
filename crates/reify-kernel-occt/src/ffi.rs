@@ -140,10 +140,14 @@ pub mod ffi {
 
         /// Return OCCT's `Precision::Confusion()` value (~1e-7).
         ///
-        /// Used in the crate-private test module to pin
-        /// `reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` against the
-        /// authoritative OCCT value at runtime.  `Precision::Confusion()` is a
-        /// `constexpr` literal in OCCT — cannot throw, no `Result` wrapper needed.
+        /// Test-fixture-style helper intentionally compiled across the cxx bridge
+        /// in every build.  Cfg-gating cxx::bridge entries is awkward, so the
+        /// symbol is visible to all callers of `crate::ffi::ffi` even though the
+        /// only present-day call site is the crate-private test module in
+        /// `lib.rs`, which pins `reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M`
+        /// against the authoritative OCCT value at runtime.
+        /// `Precision::Confusion()` is a `constexpr` literal in OCCT — cannot
+        /// throw, no `Result` wrapper needed.
         fn precision_confusion() -> f64;
 
         // --- Primitive construction ---

@@ -88,9 +88,14 @@ struct RevolveSynthesisPostSortResult;
 
 /// Return OCCT's `Precision::Confusion()` value (~1e-7).
 ///
-/// Used to pin `reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` against the
-/// authoritative OCCT constant at test time. Not exposed as a public API
-/// symbol — called only from the crate-private test module in lib.rs.
+/// Test-fixture-style helper intentionally compiled into every build of the
+/// wrapper.  Cfg-gating cxx::bridge entries is awkward, and the cost of
+/// always shipping a tiny constant-returning function is lower than the
+/// friction of conditional bridge declarations.  The current sole call site
+/// is the `reify-kernel-occt` crate's private test module in `lib.rs`, which
+/// pins `reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` against the
+/// authoritative OCCT value at runtime.  The symbol is visible to all callers
+/// of the wrapper, not hidden by construction.
 double precision_confusion();
 
 // --- Primitive construction ---
