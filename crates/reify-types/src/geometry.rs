@@ -3056,6 +3056,28 @@ mod tests {
         assert_eq!(format!("{}", a), format!("{}", b));
     }
 
+    // --- task 3033 (T20): derived-geometry naming sub-vocabulary ---
+    // PRD `docs/prds/v0_4/structural-analysis-shells.md` line 81 pins the
+    // derived-geometry naming form `<parent>/mid_surface`.  This test
+    // covers both the single-step derivation and the nested case (the
+    // function must compose via Display rather than a one-off suffix).
+
+    #[test]
+    fn feature_id_derived_mid_surface_returns_parent_path_with_mid_surface_suffix() {
+        let parent = FeatureId::new("Bracket#realization[0]");
+        assert_eq!(
+            FeatureId::derived_mid_surface(&parent),
+            FeatureId::new("Bracket#realization[0]/mid_surface")
+        );
+        // Nested derivation must compose via Display, not a single-shot
+        // suffix; this pins the implementation to `format!("{parent}/mid_surface")`.
+        let nested = FeatureId::derived_mid_surface(&FeatureId::derived_mid_surface(&parent));
+        assert_eq!(
+            nested,
+            FeatureId::new("Bracket#realization[0]/mid_surface/mid_surface")
+        );
+    }
+
     #[test]
     fn role_cap_top_and_bottom_are_distinct() {
         assert_ne!(Role::Cap(CapKind::Top), Role::Cap(CapKind::Bottom));
