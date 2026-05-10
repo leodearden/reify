@@ -203,6 +203,25 @@ impl fmt::Display for ResolutionNodeId {
     }
 }
 
+/// Identifies a compute node (e.g. an @optimized FEA/solver computation) in the topology graph.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ComputeNodeId {
+    pub entity: String,
+    pub index: u32,
+}
+
+impl ComputeNodeId {
+    pub fn new(entity: impl Into<String>, index: u32) -> Self {
+        Self { entity: entity.into(), index }
+    }
+}
+
+impl fmt::Display for ComputeNodeId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}#computation[{}]", self.entity, self.index)
+    }
+}
+
 /// Identifies a source node (input from the parser/file).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SourceNodeId {
