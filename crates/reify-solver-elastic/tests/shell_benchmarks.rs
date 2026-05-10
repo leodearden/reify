@@ -1,3 +1,7 @@
+// `node * 6 + axis` is the dominant DOF-index idiom in this file; allowing
+// `+ 0` and `1 *` keeps the formula structure visible at every call site.
+#![allow(clippy::identity_op)]
+
 //! Integration tests for the shell FEA pipeline (PRD v0.4 task #21).
 //!
 //! # Scope: smoke tests, NOT validated benchmarks

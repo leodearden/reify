@@ -174,6 +174,7 @@ impl ReferenceElement for WedgeP1 {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::needless_range_loop)] // matrix and parallel-index loops in test asserts
     use super::*;
 
     const TOL: f64 = 1e-12;

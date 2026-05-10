@@ -2396,7 +2396,7 @@ mod tests {
         // (b) must be a valid finite number
         assert!(super::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M.is_finite());
         // (c) must be strictly positive (tolerance of 0 is degenerate)
-        assert!(super::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M > 0.0);
+        const { assert!(super::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M > 0.0) };
     }
 
     #[test]

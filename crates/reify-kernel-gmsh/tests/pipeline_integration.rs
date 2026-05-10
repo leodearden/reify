@@ -167,7 +167,7 @@ fn resolve_mesh_size_auto_fires_when_caller_unset() {
         vertices: vec![
             0.0, 0.0, 0.0, // v0
             0.5, 0.0, 0.0, // v1 — edge v0→v1 = 0.5
-            0.25, 0.433012702_f32, 0.0, // v2 — equilateral (approx)
+            0.25, 0.4330127_f32, 0.0, // v2 — equilateral (approx, f32-precision √3/4)
         ],
         indices: vec![0, 1, 2],
         normals: None,

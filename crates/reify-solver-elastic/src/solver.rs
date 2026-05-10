@@ -691,9 +691,9 @@ where
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::needless_range_loop)] // index-parallel loops in test asserts
     use super::{
-        CgResult, CgSolverOptions, SolverMode, norm2_squared, pairwise_tree_sum_fn, solve_cg,
-        spmv_seq,
+        CgSolverOptions, SolverMode, norm2_squared, pairwise_tree_sum_fn, solve_cg, spmv_seq,
     };
     use faer::sparse::{SparseRowMat, Triplet};
 
