@@ -3720,6 +3720,24 @@ mod tests {
         );
     }
 
+    /// Pins the contract of `Engine::budget_available_set()`: must return
+    /// `HashSet::from([ReprKind::BRep])` under the v0.2 single-kernel
+    /// registry.  When v0.3 multi-kernel adapters land and the set widens,
+    /// this test will fail, surfacing every consumer via a grep for
+    /// `budget_available_set`.
+    #[test]
+    fn budget_available_set_returns_brep_only() {
+        let available = Engine::budget_available_set();
+        let expected: HashSet<ReprKind> = HashSet::from([ReprKind::BRep]);
+        assert_eq!(
+            available,
+            expected,
+            "v0.2 available-repr set must be exactly {{BRep}}; \
+             if this assertion fails, update all `budget_available_set` consumers \
+             for the new kernel adapter",
+        );
+    }
+
     /// End-to-end fallback: when `module.default_tolerance == None`, the value
     /// passed to `kernel.tessellate(...)` must be exactly
     /// `Engine::DEFAULT_TESSELLATION_TOLERANCE`. Pins the same call site for
