@@ -3816,6 +3816,13 @@ describe('SidecarSession sandbox wrap (task 3210)', () => {
 });
 
 describe('session.test.ts /tmp leak guard (task 3283)', () => {
+  // Match exactly the prefix session.ts:309 uses (`mkdtempSync(..., 'reify-mcp-')`).
+  // Narrower than /^reify-/ on purpose: parallel tests in this repo create sibling
+  // prefixes (`reify-tools-` from discover-mcp-tools.test.ts, `reify-commit-`,
+  // `reify-import-test`, `reify-jobserver`, …) whose appearance between snapshots
+  // would otherwise trigger a spurious false-positive leak report.
+  const REIFY_MCP_TMP_PREFIX = /^reify-mcp-/;
+
   it('does not create real /tmp/reify-mcp-* directories during session.handleMessage', async () => {
     // Obtain handles to the REAL filesystem and os, bypassing any vi.mock('node:fs')
     // that may be active. This lets the test observe actual on-disk state.
@@ -3823,12 +3830,11 @@ describe('session.test.ts /tmp leak guard (task 3283)', () => {
     const realOs = await vi.importActual<typeof import('node:os')>('node:os');
 
     // Snapshot /tmp before the test.
-    // Filter uses /^reify-/ rather than the specific 'reify-mcp-' prefix so that a
-    // future rename (e.g. CLAUDE.md's 'reify-agent-tmp-' suggestion) is also caught;
-    // the guard defends against /tmp leaks from this codebase regardless of prefix.
+    // Filter matches only the prefix session.ts:309 creates (`reify-mcp-`), not
+    // broader sibling prefixes that concurrent tests may produce between snapshots.
     const tmpdir = realOs.tmpdir();
     const before = new Set<string>(
-      realFs.readdirSync(tmpdir).filter((name: string) => /^reify-/.test(name))
+      realFs.readdirSync(tmpdir).filter((name: string) => REIFY_MCP_TMP_PREFIX.test(name))
     );
 
     vi.mocked(spawn).mockReset();
@@ -3849,14 +3855,14 @@ describe('session.test.ts /tmp leak guard (task 3283)', () => {
     // If node:fs is NOT mocked, session.ts calls real mkdtempSync and this fails.
     // Once vi.mock('node:fs', factory) is active, no real dirs are created.
     const after = new Set<string>(
-      realFs.readdirSync(tmpdir).filter((name: string) => /^reify-/.test(name))
+      realFs.readdirSync(tmpdir).filter((name: string) => REIFY_MCP_TMP_PREFIX.test(name))
     );
     // `leaked` = after \ before (set-difference): if empty, after ⊆ before and
     // no new /tmp entries appeared. Using set-difference rather than set-equality
     // is intentional: a concurrent process removing a pre-existing entry would
     // shrink `after` relative to `before`, but the filter still yields [] (correct).
     const leaked = [...after].filter((d) => !before.has(d));
-    expect(leaked, 'leaked /tmp/reify-* dirs: ' + leaked.join(', ')).toHaveLength(0);
+    expect(leaked, 'leaked /tmp/reify-mcp-* dirs: ' + leaked.join(', ')).toHaveLength(0);
   });
 
   it('leak guard ignores sibling reify-* prefixes (e.g. reify-tools-) that other tests create concurrently', async () => {
@@ -3867,11 +3873,9 @@ describe('session.test.ts /tmp leak guard (task 3283)', () => {
 
     const tmpdir = realOs.tmpdir();
 
-    // Snapshot /tmp BEFORE, using the SAME broad filter as the existing leak-guard test.
-    // This is intentionally the still-unfixed /^reify-/ regex — so this test FAILS
-    // under the current code (demonstrating the false-positive the review identified).
+    // Snapshot /tmp BEFORE using the tightened REIFY_MCP_TMP_PREFIX filter.
     const before = new Set<string>(
-      realFs.readdirSync(tmpdir).filter((name: string) => /^reify-/.test(name))
+      realFs.readdirSync(tmpdir).filter((name: string) => REIFY_MCP_TMP_PREFIX.test(name))
     );
 
     // Simulate a concurrent sibling test (e.g. discover-mcp-tools.test.ts:11) creating
@@ -3881,12 +3885,11 @@ describe('session.test.ts /tmp leak guard (task 3283)', () => {
     try {
       // Snapshot /tmp AFTER the sibling dir appeared.
       const after = new Set<string>(
-        realFs.readdirSync(tmpdir).filter((name: string) => /^reify-/.test(name))
+        realFs.readdirSync(tmpdir).filter((name: string) => REIFY_MCP_TMP_PREFIX.test(name))
       );
 
-      // With /^reify-/, siblingDir matches and is in `after` but not `before`, so
-      // leaked.length === 1 — a spurious false-positive (it's not a real leak).
-      // This test asserts the guard must NOT report it as a leak: length must be 0.
+      // With REIFY_MCP_TMP_PREFIX (/^reify-mcp-/), siblingDir does NOT match, so it
+      // never appears in `after` — leaked is empty and the guard reports no false leak.
       const leaked = [...after].filter((d) => !before.has(d));
       expect(leaked, 'leaked /tmp/reify-mcp-* dirs: ' + leaked.join(', ')).toHaveLength(0);
     } finally {
