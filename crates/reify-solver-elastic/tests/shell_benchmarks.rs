@@ -195,8 +195,8 @@ fn pinched_cylinder_octant_smoke_test_radial_displacement_is_finite_and_inward(
         poisson_ratio: 0.3,
     };
 
-    // Mesh: nodes at (R·cos θ, R·sin θ, z); RED until cylinder_octant_mesh is defined.
-    let (nodes, connectivity) = cylinder_octant_mesh(NX, NY);
+    // Mesh: nodes at (R·cos θ, R·sin θ, z).
+    let (nodes, connectivity) = cylinder_octant_mesh(NX, NY, R, L);
     let n_nodes = nodes.len();
 
     // Build per-element stiffness via the production code path.
@@ -342,12 +342,20 @@ fn pinched_cylinder_octant_smoke_test_radial_displacement_is_finite_and_inward(
 
 // ─── mesh helpers ────────────────────────────────────────────────────────────
 
-/// Mesh the 1/8 octant of the MacNeal-Harder pinched cylinder.
+/// Mesh the 1/8 octant of a pinched cylinder.
 ///
 /// # Geometry
 ///
-/// Cylindrical mid-surface: θ ∈ [0, π/2], z ∈ [0, L/2], R=300, L=600.
-/// Node positions: `(R·cos θ, R·sin θ, z)` with θ and z uniformly spaced.
+/// Cylindrical mid-surface: θ ∈ [0, π/2], z ∈ [0, L/2], radius `r`, total
+/// length `l`. Node positions: `(r·cos θ, r·sin θ, z)` with θ and z
+/// uniformly spaced.
+///
+/// # Parameters
+///
+/// * `nx` — θ-direction divisions (columns); produces `nx+1` nodes per row
+/// * `ny` — z-direction divisions (rows); produces `ny+1` node rows
+/// * `r` — cylinder radius
+/// * `l` — total cylinder length (half-span in z is `l/2`)
 ///
 /// # Outputs
 ///
@@ -362,17 +370,15 @@ fn pinched_cylinder_octant_smoke_test_radial_displacement_is_finite_and_inward(
 /// # Element count
 ///
 /// `2·nx·ny` MITC3 triangles — each quad cell split along the A→D diagonal.
-fn cylinder_octant_mesh(nx: usize, ny: usize) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
+fn cylinder_octant_mesh(nx: usize, ny: usize, r: f64, l: f64) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
     use std::f64::consts::FRAC_PI_2;
-    const R: f64 = 300.0;
-    const L: f64 = 600.0;
 
     let mut nodes = Vec::with_capacity((nx + 1) * (ny + 1));
     for i in 0..=ny {
-        let z = i as f64 * (L / 2.0) / ny as f64;
+        let z = i as f64 * (l / 2.0) / ny as f64;
         for j in 0..=nx {
             let theta = j as f64 * FRAC_PI_2 / nx as f64;
-            nodes.push([R * theta.cos(), R * theta.sin(), z]);
+            nodes.push([r * theta.cos(), r * theta.sin(), z]);
         }
     }
 
