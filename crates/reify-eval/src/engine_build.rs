@@ -7,8 +7,9 @@ use reify_compiler::CompiledModule;
 use reify_types::{
     AttributeHistory, CapabilityDescriptor, CompiledFunction, Diagnostic, DiagnosticLabel,
     ErrorRef, ExportFormat, FeatureId, FeatureTag, FeatureTagTable, Freshness, GeometryHandleId,
-    GeometryKernel, GeometryOp, LoftOpHistoryRecords, Mesh, Operation, RealizationNodeId, ReprKind,
-    SourceSpan, SweepOpHistoryRecords, TopologyAttributeTable, ValueMap, VersionId,
+    GeometryKernel, GeometryOp, GeometryQuery, LoftOpHistoryRecords, Mesh, Operation,
+    RealizationNodeId, ReprKind, SourceSpan, SweepOpHistoryRecords, TopologyAttribute,
+    TopologyAttributeTable, ValueMap, VersionId,
 };
 
 use crate::cache::{CacheStore, CachedResult, FAILED_REALIZATION_STUB_HANDLE, NodeCache, NodeId};
@@ -20,8 +21,8 @@ use crate::primitive_attribute_seed::seed_primitive_attributes_for_handle;
 use crate::realization_cache::RealizationCache;
 use crate::sweep_classifier::{SweptKindTable, classify_swept_body};
 use crate::topology_attribute_propagation::{
-    populate_extrude_attributes, populate_loft_attributes, populate_revolve_attributes,
-    populate_sweep_attributes,
+    detect_local_index_reassignment_diagnostics, populate_extrude_attributes,
+    populate_loft_attributes, populate_revolve_attributes, populate_sweep_attributes,
 };
 use crate::{BuildResult, Engine, TessellateResult};
 
@@ -1745,6 +1746,64 @@ impl Engine {
                 && let Some(&last) = step_handles[handle_start..].last()
             {
                 swept_kind_table.record(last, kind);
+            }
+            // v0.2 persistent-naming-v2 (PRD task 4 / #2654): construction-time
+            // fragility detection for local_index reassignment. The
+            // topology_attribute_table is fully populated for this realization
+            // at this point — every per-op `seed_primitive_attributes_for_handle`,
+            // `populate_attribute_history`, and `propagate_via_kernel_attribute_hook`
+            // call has already run on the success branch above. We filter the
+            // table to entries scoped to THIS realization's `feature_id`,
+            // query each face's centroid via the kernel, and warn the user
+            // about (feature_id, role) groups that have geometrically tied
+            // local_index assignments. The kernel's enumeration order is what
+            // breaks the tie today, and a future edit could shuffle it.
+            //
+            // PRD line 72: emitted alongside but disjoint from the post-split
+            // `TopologyAttributeAmbiguousAfterSplit` diagnostic (the helper's
+            // `mod_history.is_empty()` filter cleanly separates the two
+            // codes). Centroid-query failures emit a Warning and skip the
+            // affected handle — auxiliary metadata MUST NOT regress the
+            // realization to Failed, mirroring the
+            // `seed_primitive_attributes_for_handle` and
+            // `populate_attribute_history` warning idioms above.
+            //
+            // Per-realization tolerance threading is deferred — we use a
+            // fixed `1e-9 m` (kernel-epsilon-tight) sentinel here per the
+            // task-4 design decision recorded in `.task/plan.json`.
+            let realization_feature_id = FeatureId::from(realization_id);
+            let realization_attrs: Vec<(GeometryHandleId, &TopologyAttribute)> =
+                topology_attribute_table
+                    .iter()
+                    .filter(|(_, attr)| attr.feature_id == realization_feature_id)
+                    .collect();
+            if !realization_attrs.is_empty() {
+                let mut centroids: HashMap<GeometryHandleId, [f64; 3]> = HashMap::new();
+                for (handle_id, _) in &realization_attrs {
+                    match kernel.query(&GeometryQuery::Centroid(*handle_id)) {
+                        Ok(value) => match crate::topology_selectors::parse_xyz_value(
+                            &value,
+                            "local_index_reassignment_centroid",
+                        ) {
+                            Ok(xyz) => {
+                                centroids.insert(*handle_id, xyz);
+                            }
+                            Err(e) => diagnostics.push(Diagnostic::warning(format!(
+                                "topology-attribute centroid parse failed for {realization_id}: {e}"
+                            ))),
+                        },
+                        Err(e) => diagnostics.push(Diagnostic::warning(format!(
+                            "topology-attribute centroid query failed for {realization_id}: {e}"
+                        ))),
+                    }
+                }
+                detect_local_index_reassignment_diagnostics(
+                    &realization_attrs,
+                    &centroids,
+                    1e-9,
+                    realization_span,
+                    diagnostics,
+                );
             }
             if let Some(&last) = step_handles[handle_start..].last() {
                 if let Some(name) = realization_name {
