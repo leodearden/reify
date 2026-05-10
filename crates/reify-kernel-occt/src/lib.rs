@@ -19,16 +19,6 @@
 /// at runtime.
 pub const OCCT_AVAILABLE: bool = cfg!(has_occt);
 
-/// Re-export the shared point-on-shape tolerance constant from `reify-types`.
-///
-/// The constant is defined in `reify_types::geometry` (the single source of
-/// truth) because `reify-eval` cannot import `reify-kernel-occt` as a normal
-/// dependency (only as a dev-dependency, to keep OCCT off the transitive
-/// compile graph for regular builds).  This re-export gives kernel-side callers
-/// a stable `reify_kernel_occt::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` import path
-/// without duplicating the numeric literal.
-pub use reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M;
-
 #[cfg(has_occt)]
 #[allow(dead_code)]
 mod ffi;
@@ -928,7 +918,7 @@ impl OcctKernel {
     /// this contract in. See parent task 2324 for stdlib-level wiring decisions.
     ///
     /// Callers commonly pass `Precision::Confusion()` (~1e-7), exposed as
-    /// [`DEFAULT_POINT_ON_SHAPE_TOLERANCE_M`], for `tolerance` to match OCCT's
+    /// [`reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M`], for `tolerance` to match OCCT's
     /// default confusion threshold. Pass 0.0 for exact-coincidence queries
     /// (returns `true` only when `dist.Value()` is exactly 0).
     ///
