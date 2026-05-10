@@ -11,6 +11,8 @@
 //!   cross-thread combine in fixed handle order. Bit-stable per fixed thread count;
 //!   tolerance-equivalent across thread counts.
 
+use std::sync::Arc;
+
 use faer::sparse::SparseRowMat;
 
 /// How [`solve_cg`] parallelises the SpMV and dot-product reductions.
@@ -116,7 +118,16 @@ impl Default for CgSolverOptions {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CgResult {
     /// Solution vector `u` of length `k.nrows()`.
-    pub u: Vec<f64>,
+    ///
+    /// Wrapped in `Arc<Vec<f64>>` so [`solve_cg_with_warm_state`] (PRD task
+    /// #14) can share this allocation with the [`crate::CgWarmState`] it
+    /// emits — avoiding a 10⁴–10⁶-DOF `Vec<f64>` copy on every solve. All
+    /// read paths work transparently through `Deref`: `result.u[i]`,
+    /// `result.u.len()`, `result.u.iter()`, `&result.u[..]`. Cloning a
+    /// `CgResult` now bumps the refcount instead of deep-copying `u`,
+    /// which is the desired behaviour given `u` is logically immutable
+    /// after the solve completes.
+    pub u: Arc<Vec<f64>>,
     /// Number of CG iterations executed.
     pub iterations: usize,
     /// `true` if the residual met the tolerance criterion before `max_iter`.
@@ -189,6 +200,49 @@ pub fn solve_cg(
     opts: CgSolverOptions,
     mode: SolverMode,
 ) -> CgResult {
+    // Backward-compatible cold-start entry: delegates to `solve_cg_warm` with
+    // `initial_guess = None`, which initializes `u₀ = 0` and `r₀ = f` exactly
+    // as the original code did. Every existing caller and test (including the
+    // determinism-contract regression tests) continues to produce bit-for-bit
+    // identical output. Pinned by `solve_cg_warm_with_none_matches_solve_cg_bit_for_bit`.
+    solve_cg_warm(k, f, None, opts, mode)
+}
+
+/// Solve the SPD linear system `K u = f` with Jacobi-preconditioned CG, with
+/// an optional initial guess for warm-starting the iteration (PRD task #14).
+///
+/// When `initial_guess` is `None`, behaves identically to [`solve_cg`]:
+/// `u₀ = 0`, `r₀ = f`, no SpMV is performed for residual seeding, and the
+/// deterministic-mode bit-equality contract is preserved.
+///
+/// When `initial_guess` is `Some(u₀)`, the CG iteration starts from
+/// `u = u₀` and `r = f − K·u₀` (one extra SpMV at the start). If `‖r₀‖²`
+/// already meets the convergence threshold, returns immediately with
+/// `iterations = 0, converged = true` — symmetric with the existing zero-RHS
+/// short-circuit and avoiding the `0/0` from `α = rz / pkp` when `rz ≈ 0`.
+///
+/// # Iteration-reduction contract
+///
+/// For warm starts where `u₀ ≈ u_exact`, CG converges in fewer iterations
+/// than the cold start. CG with a near-correct initial guess naturally
+/// converges faster because the seeded residual `r₀ = f − K·u₀` is smaller
+/// than the cold `r₀ = f`, so the convergence threshold is reached sooner.
+/// No additional code is needed beyond the warm-start initialization.
+/// Pinned by `warm_start_with_perturbed_rhs_reduces_iteration_count` as
+/// the regression guard.
+///
+/// # Panics
+///
+/// All `solve_cg` panic conditions plus:
+/// - `initial_guess.is_some() && initial_guess.unwrap().len() != k.nrows()`
+///   — the initial guess must be sized to the system.
+pub fn solve_cg_warm(
+    k: &SparseRowMat<usize, f64>,
+    f: &[f64],
+    initial_guess: Option<&[f64]>,
+    opts: CgSolverOptions,
+    mode: SolverMode,
+) -> CgResult {
     // --- Contract checks (per Task-2544 contract-explicitness convention) ---
     //
     // Zero-threads check first (before dim checks): a Parallel { threads: 0 }
@@ -228,6 +282,17 @@ pub fn solve_cg(
         k.nrows(),
         k.ncols(),
     );
+    // Pinned by `initial_guess_length_mismatch_panics`.
+    if let Some(u_0) = initial_guess {
+        assert_eq!(
+            u_0.len(),
+            k.nrows(),
+            "initial_guess.len() = {} but k.nrows() = {}; \
+             initial_guess must be sized to the system (initial_guess.len() == k.nrows())",
+            u_0.len(),
+            k.nrows(),
+        );
+    }
 
     let n = f.len();
 
@@ -235,8 +300,11 @@ pub fn solve_cg(
     let inv_diag = extract_diag_jacobi(k);
 
     // --- Special case: zero RHS ---
-    // ‖f‖² == 0.0 ⟹ u = 0 is the exact solution. Return immediately to
-    // avoid 0/0 in the relative tolerance check. (Unconditional == 0.0 is
+    // ‖f‖² == 0.0 ⟹ u = 0 is the exact solution to K·u = 0 (K SPD ⟹ trivial
+    // nullspace). Return u = 0 immediately regardless of any initial guess —
+    // honouring the initial guess and iterating would still converge to u = 0,
+    // but the relative-tolerance check uses tol² · ‖f‖² = 0 which would never
+    // trip and the solver would cap out at max_iter. (Unconditional == 0.0 is
     // safe here: f is the caller's vector and pairwise_tree_sum of zeros
     // is deterministically 0.0.)
     //
@@ -248,37 +316,81 @@ pub fn solve_cg(
     let f_norm_sq = norm2_squared(f);
     if f_norm_sq == 0.0 {
         return CgResult {
-            u: vec![0.0; n],
+            u: Arc::new(vec![0.0; n]),
             iterations: 0,
             converged: true,
         };
     }
     let tol_sq = opts.tolerance * opts.tolerance * f_norm_sq;
 
+    // --- Build initial (u, r) pair ---
+    //
+    // None branch: u = 0, r = f (no SpMV, no FP reordering). Bit-identical to
+    // the pre-warm-start code path — preserves the deterministic-mode
+    // bit-equality contract.
+    //
+    // Some branch: u = u₀.to_vec(), r = f − K·u₀ via one extra mode-appropriate
+    // SpMV. The mode-appropriate primitive is selected at the dispatch site
+    // below to keep determinism-comment ownership with the primitive functions.
+    //
     // --- Dispatch to unified CG loop with mode-appropriate primitives ---
     //
     // The Deterministic and Parallel paths share a single CG loop implementation
     // (`cg_loop`); the difference is purely which SpMV/dot/norm² closures are
     // passed in. Determinism-comment ownership stays with the primitive functions.
     match mode {
-        SolverMode::Deterministic => cg_loop(
-            f,
-            &inv_diag,
-            tol_sq,
-            opts.max_iter,
-            |p, out| spmv_seq(k, p, out),
-            dot,
-            norm2_squared,
-        ),
-        SolverMode::Parallel { threads } => cg_loop(
-            f,
-            &inv_diag,
-            tol_sq,
-            opts.max_iter,
-            |p, out| spmv_parallel(k, p, out, threads),
-            |a, b| dot_parallel(a, b, threads),
-            |v| norm2_squared_parallel(v, threads),
-        ),
+        SolverMode::Deterministic => {
+            let (u, r) = build_initial_u_r(f, initial_guess, |p, out| spmv_seq(k, p, out));
+            cg_loop(
+                u,
+                r,
+                &inv_diag,
+                tol_sq,
+                opts.max_iter,
+                |p, out| spmv_seq(k, p, out),
+                dot,
+                norm2_squared,
+            )
+        }
+        SolverMode::Parallel { threads } => {
+            let (u, r) =
+                build_initial_u_r(f, initial_guess, |p, out| spmv_parallel(k, p, out, threads));
+            cg_loop(
+                u,
+                r,
+                &inv_diag,
+                tol_sq,
+                opts.max_iter,
+                |p, out| spmv_parallel(k, p, out, threads),
+                |a, b| dot_parallel(a, b, threads),
+                |v| norm2_squared_parallel(v, threads),
+            )
+        }
+    }
+}
+
+/// Build the initial `(u, r)` pair for the CG iteration based on the
+/// optional initial guess.
+///
+/// - `None` branch: `u = vec![0.0; n]`, `r = f.to_vec()` — bit-identical to
+///   the pre-warm-start code path (no SpMV, no FP reordering).
+/// - `Some(u₀)` branch: `u = u₀.to_vec()`, `r = f − K·u₀` via one
+///   mode-appropriate SpMV.
+fn build_initial_u_r<S>(f: &[f64], initial_guess: Option<&[f64]>, spmv: S) -> (Vec<f64>, Vec<f64>)
+where
+    S: FnOnce(&[f64], &mut [f64]),
+{
+    let n = f.len();
+    match initial_guess {
+        None => (vec![0.0_f64; n], f.to_vec()),
+        Some(u_0) => {
+            let u = u_0.to_vec();
+            // r = f − K·u₀
+            let mut ku = vec![0.0_f64; n];
+            spmv(&u, &mut ku);
+            let r: Vec<f64> = f.iter().zip(ku.iter()).map(|(fi, kui)| fi - kui).collect();
+            (u, r)
+        }
     }
 }
 
@@ -617,12 +729,26 @@ fn norm2_squared_parallel(v: &[f64], threads: usize) -> f64 {
 ///
 /// # Arguments
 ///
-/// - `f` — the RHS vector; `n = f.len()` determines the problem dimension.
+/// - `u` — initial iterate (consumed and returned in `CgResult.u`); cold
+///   start passes `vec![0.0; n]`, warm start passes `u₀.to_vec()`.
+/// - `r` — initial residual `f − K·u`; cold start passes `f.to_vec()`,
+///   warm start passes `f − K·u₀` (one extra SpMV at the dispatch site).
+/// - `inv_diag` — `1/K[i][i]` Jacobi preconditioner.
 /// - `spmv(p, out)` — compute `out = K · p` for the current search direction.
 /// - `dot_fn(a, b)` — dot product `a · b` with mode-appropriate reduction.
 /// - `norm2sq_fn(v)` — squared norm `‖v‖²` with mode-appropriate reduction.
+///
+/// # Early-exit (warm-start `u₀ ≈ u_exact`)
+///
+/// Before the main iteration loop, checks if `‖r‖² < tol_sq`. If so, returns
+/// `iterations = 0, converged = true` immediately — symmetric with the
+/// `f_norm_sq == 0.0` short-circuit at the dispatch site, and avoids the
+/// `0/0` from `α = rz / pkp` when `rz ≈ 0, pkp ≈ 0`. Pinned by
+/// `warm_start_at_exact_solution_returns_in_zero_iterations`.
+#[allow(clippy::too_many_arguments)] // 8 args: state (5) + mode-injected closures (3).
 fn cg_loop<S, D, N>(
-    f: &[f64],
+    mut u: Vec<f64>,
+    mut r: Vec<f64>,
     inv_diag: &[f64],
     tol_sq: f64,
     max_iter: usize,
@@ -635,11 +761,34 @@ where
     D: Fn(&[f64], &[f64]) -> f64,
     N: Fn(&[f64]) -> f64,
 {
-    let n = f.len();
+    let n = u.len();
+    // Early-exit (warm-start `u₀ ≈ u_exact`): if the seeded residual already
+    // meets the convergence threshold, return without iterating. Symmetric
+    // with the f_norm_sq == 0.0 short-circuit at the dispatch site; avoids
+    // 0/0 in α = rz / pkp when rz ≈ 0. Pinned by
+    // `warm_start_at_exact_solution_returns_in_zero_iterations`.
+    //
+    // Two residual notions: this check uses the *recomputed true residual*
+    // `r₀ = f − K·u₀` from the dispatch site, while the in-loop convergence
+    // check at the bottom of the iteration uses the *maintained residual*
+    // (updated incrementally as `r ← r − α·Kp` each iteration). The two
+    // drift apart over many iterations due to floating-point round-off.
+    // Consequence: a warm-start where `u₀` came from a long cold solve on
+    // a large/ill-conditioned system may have `‖f − K·u₀‖² > tol_sq` even
+    // though the cold-solve maintained residual was below tol_sq at
+    // convergence. That is acceptable — the loop simply does a few more
+    // iterations to re-tighten the maintained residual. Future readers
+    // should NOT "fix" this apparent inconsistency: it reflects the real
+    // numerical state of the system at u₀, not a bug.
+    if norm2sq_fn(&r) < tol_sq {
+        return CgResult {
+            u: Arc::new(u),
+            iterations: 0,
+            converged: true,
+        };
+    }
+
     // Allocate scratch vectors. All axpy ops iterate slot 0 → n−1 in slice order.
-    let mut u = vec![0.0_f64; n];
-    // r₀ = f − K·u₀ = f (since u₀ = 0)
-    let mut r: Vec<f64> = f.to_vec();
     // z₀ = M⁻¹ r₀
     let mut z: Vec<f64> = r.iter().zip(inv_diag.iter()).map(|(ri, di)| ri * di).collect();
     // p₀ = z₀
@@ -675,7 +824,7 @@ where
         let r_norm_sq = norm2sq_fn(&r);
         if r_norm_sq < tol_sq {
             return CgResult {
-                u,
+                u: Arc::new(u),
                 iterations: iter + 1,
                 converged: true,
             };
@@ -699,7 +848,7 @@ where
 
     // Cap-out without convergence.
     CgResult {
-        u,
+        u: Arc::new(u),
         iterations: max_iter,
         converged: false,
     }
@@ -709,7 +858,8 @@ where
 mod tests {
     #![allow(clippy::needless_range_loop)] // index-parallel loops in test asserts
     use super::{
-        CgSolverOptions, SolverMode, norm2_squared, pairwise_tree_sum_fn, solve_cg, spmv_seq,
+        CgSolverOptions, SolverMode, norm2_squared, pairwise_tree_sum_fn, solve_cg, solve_cg_warm,
+        spmv_seq,
     };
     use faer::sparse::{SparseRowMat, Triplet};
 
@@ -1340,6 +1490,317 @@ mod tests {
                     det.u[i]
                 );
             }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 2921: warm-state plumbing — initial-guess contract panic
+    // -----------------------------------------------------------------------
+
+    /// `solve_cg_warm` with an `initial_guess` whose length does not match
+    /// `k.nrows()` must panic with a message naming `initial_guess`.
+    /// Mirrors the existing `dimension_mismatch_f_len_panics` pattern.
+    #[test]
+    #[should_panic(expected = "initial_guess")]
+    fn initial_guess_length_mismatch_panics() {
+        // 2×2 SPD fixture (same as `hand_computed_2x2_spd_within_tolerance`).
+        let k = SparseRowMat::try_new_from_triplets(
+            2,
+            2,
+            &[
+                Triplet::new(0_usize, 0_usize, 4.0_f64),
+                Triplet::new(0_usize, 1_usize, 1.0_f64),
+                Triplet::new(1_usize, 0_usize, 1.0_f64),
+                Triplet::new(1_usize, 1_usize, 3.0_f64),
+            ],
+        )
+        .unwrap();
+        let f = [1.0_f64, 2.0];
+        // initial_guess.len() = 3 but k.nrows() = 2 → must panic.
+        let initial_guess = [1.0_f64, 2.0, 3.0];
+        let opts = CgSolverOptions::default();
+        let _ = solve_cg_warm(
+            &k,
+            &f,
+            Some(&initial_guess),
+            opts,
+            SolverMode::Deterministic,
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 2921: warm-state plumbing — iteration-reduction contract
+    // -----------------------------------------------------------------------
+
+    /// Warm-start with `u₁` (the cold solution to K·u = f₁) reduces the
+    /// CG iteration count when re-solving K·u = f₂ for a perturbed
+    /// `f₂ = f₁ + δ` with small δ — this is the iteration-reduction
+    /// contract from PRD task #14.
+    ///
+    /// Procedure:
+    /// 1. Solve K·u = f₁ cold → record `iter_cold_baseline` and `u₁`.
+    /// 2. Solve K·u = f₂ cold → record `iter_cold_perturbed`.
+    /// 3. Solve K·u = f₂ warm with `Some(&u₁)` → record `iter_warm_perturbed`.
+    ///
+    /// Asserts:
+    /// - `iter_warm_perturbed < iter_cold_perturbed` (the contract).
+    /// - `result_warm.converged == true`.
+    /// - Tolerance-equivalence: warm and cold solutions of f₂ differ by
+    ///   at most `1e-9 · max(1, |u_cold[i]|)` per component (both
+    ///   converged to the same SPD system within tolerance).
+    ///
+    /// Uses `Deterministic` mode for bit-stability of intermediate solves.
+    #[test]
+    fn warm_start_with_perturbed_rhs_reduces_iteration_count() {
+        let (k, f1) = fan_mesh_k_spd_and_f();
+        let opts = CgSolverOptions {
+            tolerance: 1e-10,
+            max_iter: 1000,
+        };
+
+        // Cold solve K·u = f1.
+        let cold_baseline = solve_cg(&k, &f1, opts.clone(), SolverMode::Deterministic);
+        assert!(cold_baseline.converged, "cold baseline must converge");
+        let u1 = cold_baseline.u.clone();
+
+        // Build perturbed RHS f2 = f1 + δ. Pick a free DOF (DOF 7 — DOFs 0..6
+        // are Dirichlet-pinned in this fixture) and add a small perturbation.
+        let mut f2 = f1.clone();
+        f2[7] += 1e-3;
+
+        // Cold solve K·u = f2.
+        let cold_perturbed = solve_cg(&k, &f2, opts.clone(), SolverMode::Deterministic);
+        assert!(cold_perturbed.converged, "cold perturbed must converge");
+
+        // Warm solve K·u = f2 with u1 as initial guess.
+        let warm_perturbed =
+            solve_cg_warm(&k, &f2, Some(&u1), opts, SolverMode::Deterministic);
+        assert!(warm_perturbed.converged, "warm perturbed must converge");
+
+        // Iteration-reduction contract.
+        assert!(
+            warm_perturbed.iterations < cold_perturbed.iterations,
+            "warm ({}) must use fewer iterations than cold ({}) on perturbed RHS",
+            warm_perturbed.iterations,
+            cold_perturbed.iterations,
+        );
+
+        // Tolerance-equivalence: both solutions converged to the same SPD
+        // system within tolerance, so they must agree component-wise to
+        // within 1e-9 · max(1, |u_cold|).
+        for i in 0..f2.len() {
+            let tol = 1e-9 * cold_perturbed.u[i].abs().max(1.0);
+            let diff = (warm_perturbed.u[i] - cold_perturbed.u[i]).abs();
+            assert!(
+                diff < tol,
+                "tolerance-equivalence failure at i={i}: \
+                 u_warm={}, u_cold={}, |diff|={diff} ≥ tol={tol}",
+                warm_perturbed.u[i],
+                cold_perturbed.u[i],
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 2921: warm-state plumbing — early-exit at exact solution
+    // -----------------------------------------------------------------------
+
+    /// `solve_cg_warm` with `initial_guess = Some(&u_exact)` (the cold-solve
+    /// solution) must return `iterations = 0, converged = true`, with the
+    /// returned `u` bit-equal to `u_exact` (no axpy ran).
+    ///
+    /// Why this matters: without the pre-loop early-exit, the first CG
+    /// iteration would compute `α = rz / pkp` with both `rz ≈ 0` and
+    /// `pkp ≈ 0`, producing 0/0 NaN that propagates through the result.
+    /// The early-exit returns before the loop is entered — symmetric with
+    /// the existing zero-RHS short-circuit at the dispatch site.
+    #[test]
+    fn warm_start_at_exact_solution_returns_in_zero_iterations() {
+        // 2×2 SPD fixture: same as `hand_computed_2x2_spd_within_tolerance`.
+        let k = SparseRowMat::try_new_from_triplets(
+            2,
+            2,
+            &[
+                Triplet::new(0_usize, 0_usize, 4.0_f64),
+                Triplet::new(0_usize, 1_usize, 1.0_f64),
+                Triplet::new(1_usize, 0_usize, 1.0_f64),
+                Triplet::new(1_usize, 1_usize, 3.0_f64),
+            ],
+        )
+        .unwrap();
+        let f = [1.0_f64, 2.0];
+        let opts = CgSolverOptions {
+            tolerance: 1e-10,
+            max_iter: 100,
+        };
+
+        // Cold-solve to obtain u_exact.
+        let cold = solve_cg(&k, &f, opts.clone(), SolverMode::Deterministic);
+        assert!(cold.converged, "cold solve must converge to obtain u_exact");
+        let u_exact = cold.u.clone();
+
+        // Warm-start at u_exact.
+        let warm = solve_cg_warm(
+            &k,
+            &f,
+            Some(&u_exact),
+            opts,
+            SolverMode::Deterministic,
+        );
+
+        assert_eq!(
+            warm.iterations, 0,
+            "warm-start at exact solution must return in 0 iterations, got {}",
+            warm.iterations
+        );
+        assert!(
+            warm.converged,
+            "warm-start at exact solution must report converged"
+        );
+        assert_eq!(
+            warm.u.len(),
+            u_exact.len(),
+            "warm.u length must match u_exact"
+        );
+        for i in 0..u_exact.len() {
+            assert_eq!(
+                warm.u[i].to_bits(),
+                u_exact[i].to_bits(),
+                "warm.u[{i}] = {} must be bit-equal to u_exact[{i}] = {} \
+                 (no axpy should have run)",
+                warm.u[i],
+                u_exact[i],
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 2921: warm-state plumbing — zero-RHS + non-zero initial guess
+    // -----------------------------------------------------------------------
+
+    /// Pin the dispatch-site contract that the zero-RHS short-circuit
+    /// (`f_norm_sq == 0.0`) takes precedence over the caller-supplied
+    /// `initial_guess`: the unique solution to `K·u = 0` for SPD `K` is
+    /// `u = 0`, so honouring a non-zero guess and iterating would still
+    /// converge to `u = 0`. Returning `vec![0.0; n]` directly avoids
+    /// `0/0` in the relative-tolerance check `tol² · ‖f‖² == 0`.
+    ///
+    /// Without this pin a future refactor could plausibly choose to
+    /// honour the guess (e.g. seed `u = u₀`, iterate until `‖r‖² < tol_sq`
+    /// which is also 0 for any non-trivial guess) and silently change the
+    /// short-circuit behaviour.
+    #[test]
+    fn zero_rhs_with_nonzero_initial_guess_still_returns_zero_u() {
+        // 2×2 SPD fixture (same as `hand_computed_2x2_spd_within_tolerance`).
+        let k = SparseRowMat::try_new_from_triplets(
+            2,
+            2,
+            &[
+                Triplet::new(0_usize, 0_usize, 4.0_f64),
+                Triplet::new(0_usize, 1_usize, 1.0_f64),
+                Triplet::new(1_usize, 0_usize, 1.0_f64),
+                Triplet::new(1_usize, 1_usize, 3.0_f64),
+            ],
+        )
+        .unwrap();
+        let f = [0.0_f64, 0.0]; // zero RHS
+        let initial_guess = [1.0_f64, 1.0]; // non-zero guess
+        let opts = CgSolverOptions {
+            tolerance: 1e-10,
+            max_iter: 100,
+        };
+
+        let result = solve_cg_warm(
+            &k,
+            &f,
+            Some(&initial_guess),
+            opts,
+            SolverMode::Deterministic,
+        );
+
+        assert_eq!(
+            result.iterations, 0,
+            "zero-RHS short-circuit must return in 0 iterations regardless of \
+             initial_guess; got {}",
+            result.iterations,
+        );
+        assert!(
+            result.converged,
+            "zero-RHS short-circuit must report converged",
+        );
+        assert_eq!(*result.u, vec![0.0_f64; 2], "u must be the zero vector");
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 2921: warm-state plumbing — `solve_cg_warm` None-shim equivalence
+    // -----------------------------------------------------------------------
+
+    /// `solve_cg_warm(&k, &f, None, opts, mode)` must produce a `CgResult`
+    /// bit-equal to `solve_cg(&k, &f, opts, mode)` on the same input.
+    ///
+    /// This is the backward-compatibility contract: the `None` initial-guess
+    /// branch in `solve_cg_warm` must take the exact same code path as the
+    /// existing `solve_cg` (u₀ = 0, r₀ = f) so every existing caller and test
+    /// of `solve_cg` continues to produce bit-identical output. The
+    /// fan-mesh fixture exercises a non-trivial CG iteration count.
+    ///
+    /// Both `Deterministic` and `Parallel { threads: 4 }` modes are pinned —
+    /// the determinism contract is per-mode, so we verify the None-shim
+    /// preserves bit-equality in each.
+    #[test]
+    fn solve_cg_warm_with_none_matches_solve_cg_bit_for_bit() {
+        let (k, f) = fan_mesh_k_spd_and_f();
+        let opts = CgSolverOptions {
+            tolerance: 1e-10,
+            max_iter: 1000,
+        };
+
+        // Deterministic mode.
+        let det_cold = solve_cg(&k, &f, opts.clone(), SolverMode::Deterministic);
+        let det_warm_none = solve_cg_warm(&k, &f, None, opts.clone(), SolverMode::Deterministic);
+        assert_eq!(
+            det_cold.iterations, det_warm_none.iterations,
+            "Deterministic: solve_cg_warm(None) iterations must match solve_cg"
+        );
+        assert_eq!(
+            det_cold.converged, det_warm_none.converged,
+            "Deterministic: solve_cg_warm(None) converged must match solve_cg"
+        );
+        assert_eq!(
+            det_cold.u.len(),
+            det_warm_none.u.len(),
+            "Deterministic: u lengths must match"
+        );
+        for i in 0..det_cold.u.len() {
+            assert_eq!(
+                det_cold.u[i].to_bits(),
+                det_warm_none.u[i].to_bits(),
+                "Deterministic: solve_cg_warm(None) u[{i}] = {} ≠ solve_cg u[{i}] = {}",
+                det_warm_none.u[i],
+                det_cold.u[i],
+            );
+        }
+
+        // Parallel { threads: 4 } mode.
+        let par_cold = solve_cg(&k, &f, opts.clone(), SolverMode::Parallel { threads: 4 });
+        let par_warm_none =
+            solve_cg_warm(&k, &f, None, opts.clone(), SolverMode::Parallel { threads: 4 });
+        assert_eq!(
+            par_cold.iterations, par_warm_none.iterations,
+            "Parallel: solve_cg_warm(None) iterations must match solve_cg"
+        );
+        assert_eq!(
+            par_cold.converged, par_warm_none.converged,
+            "Parallel: solve_cg_warm(None) converged must match solve_cg"
+        );
+        for i in 0..par_cold.u.len() {
+            assert_eq!(
+                par_cold.u[i].to_bits(),
+                par_warm_none.u[i].to_bits(),
+                "Parallel: solve_cg_warm(None) u[{i}] = {} ≠ solve_cg u[{i}] = {}",
+                par_warm_none.u[i],
+                par_cold.u[i],
+            );
         }
     }
 
