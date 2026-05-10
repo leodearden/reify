@@ -1789,6 +1789,66 @@ describe('meshManager', () => {
     });
   });
 
+  describe('setDeformation — null / idempotent / double-call', () => {
+    const vertices = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+    const displaced = new Float32Array([0.1, 0, 0, 1.1, 0, 0, 0.1, 1, 0]);
+
+    function setupDeformableMesh() {
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+      const meshData: MeshData = {
+        entity_path: 'A',
+        vertices: vertices.slice(),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        displaced_positions: displaced.slice(),
+      };
+      manager.sync({ A: meshData });
+      vi.clearAllMocks();
+      return { scene, manager };
+    }
+
+    it('(a) setDeformation(null) after setDeformation({warpFactor:1}) restores position.array to original vertices', () => {
+      const { manager } = setupDeformableMesh();
+      manager.setDeformation({ warpFactor: 1 });
+      manager.setDeformation(null);
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const posAttr = (mesh.geometry as any).attributes.position;
+      expect(Array.from(posAttr.array as Float32Array)).toEqual(Array.from(vertices));
+      expect(posAttr.needsUpdate).toBe(true);
+    });
+
+    it('(b) setDeformation(null) when no prior deformation is a no-op (no error, position unchanged)', () => {
+      const { manager } = setupDeformableMesh();
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const posAttr = (mesh.geometry as any).attributes.position;
+      const originalValues = Array.from(posAttr.array as Float32Array);
+
+      // Should not throw; position should remain as original
+      expect(() => manager.setDeformation(null)).not.toThrow();
+      expect(Array.from(posAttr.array as Float32Array)).toEqual(originalValues);
+    });
+
+    it('(c) calling setDeformation twice with different warps replaces cleanly (W=1 then W=10 → W=10 positions)', () => {
+      const { manager } = setupDeformableMesh();
+      manager.setDeformation({ warpFactor: 1 });
+
+      const expectedW10 = new Float32Array(vertices.length);
+      for (let i = 0; i < vertices.length; i++) {
+        expectedW10[i] = vertices[i] + 10 * (displaced[i] - vertices[i]);
+      }
+
+      manager.setDeformation({ warpFactor: 10 });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const posAttr = (mesh.geometry as any).attributes.position;
+      // Must reflect W=10, not accumulated or stuck at W=1.
+      expect(Array.from(posAttr.array as Float32Array)).toEqual(Array.from(expectedW10));
+    });
+  });
+
   describe('setDeformation — linear blend', () => {
     const vertices = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
     const displaced = new Float32Array([0.1, 0, 0, 1.1, 0, 0, 0.1, 1, 0]);
