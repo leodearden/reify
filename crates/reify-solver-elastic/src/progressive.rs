@@ -90,9 +90,12 @@ pub fn coarse_pass_tuning(opts: &ProgressiveOptions) -> PassTuning {
 
 /// A snapshot of a single FEA solve at a given refinement level.
 ///
-/// Field names mirror `reify_eval::ElasticResult` (minus `solve_time_ms`,
-/// which is a cache-eviction metric rather than a solver output) so the
-/// cache layer (PRD task #16) can convert losslessly without an adapter.
+/// Field names are intended to mirror `reify_eval::ElasticResult` (minus
+/// `solve_time_ms`, which is a cache-eviction metric rather than a solver
+/// output) to simplify conversion in the cache layer when PRD task #16
+/// wires the engine integration.  No compile-time adapter or `From` impl
+/// exists yet — field correspondence is documented by convention until
+/// task #16 lands and can enforce the invariant with an explicit impl.
 ///
 /// Defined locally in this crate to avoid a `reify-solver-elastic →
 /// reify-eval` dependency edge (the reverse edge already exists per
@@ -119,6 +122,15 @@ pub struct PartialElasticResult {
 ///
 /// Returns `false` unconditionally when `opts.yield_stress` is `None`
 /// (yield-proximity auto-refinement is disabled).
+///
+/// # Non-finite `max_von_mises`
+///
+/// If `result.max_von_mises` is NaN or ±Inf (e.g. from a diverged solve),
+/// this function returns `false` — it treats a non-finite stress as "no
+/// refinement triggered" rather than silently propagating a NaN comparison.
+/// Callers should check `result.converged` before acting on the result; a
+/// `false` return here does **not** distinguish a healthy "below threshold"
+/// from a "solver produced garbage" case.
 ///
 /// # Examples
 ///
@@ -149,6 +161,21 @@ pub fn near_constraint_boundary(
     result: &PartialElasticResult,
     opts: &ProgressiveOptions,
 ) -> bool {
+    debug_assert!(
+        opts.target_tolerance > 0.0,
+        "target_tolerance must be positive, got {}",
+        opts.target_tolerance
+    );
+    debug_assert!(
+        opts.near_boundary_pct > 0.0 && opts.near_boundary_pct < 1.0,
+        "near_boundary_pct must be in (0, 1), got {}",
+        opts.near_boundary_pct
+    );
+    // Non-finite stress (NaN / ±Inf) is treated as "no refinement needed"
+    // rather than relying on the undefined behaviour of a NaN comparison.
+    if !result.max_von_mises.is_finite() {
+        return false;
+    }
     match opts.yield_stress {
         Some(yield_stress) => {
             result.max_von_mises >= (1.0 - opts.near_boundary_pct) * yield_stress
@@ -216,6 +243,16 @@ pub fn should_refine(
     last_result: &PartialElasticResult,
     demand: RefinementDemand,
 ) -> AdvanceDecision {
+    debug_assert!(
+        opts.max_refinements > 0,
+        "max_refinements must be > 0, got {}",
+        opts.max_refinements
+    );
+    debug_assert!(
+        opts.target_tolerance > 0.0,
+        "target_tolerance must be positive, got {}",
+        opts.target_tolerance
+    );
     use AdvanceDecision::*;
     use TerminationReason::*;
     if current_level >= opts.max_refinements {
@@ -280,6 +317,28 @@ mod tests {
         assert!(
             near_constraint_boundary(&make_result(195e6), &opts),
             "195 MPa is above threshold (180 MPa), must return true"
+        );
+    }
+
+    #[test]
+    fn near_constraint_boundary_non_finite_max_von_mises_returns_false() {
+        // NaN and ±Inf max_von_mises must return false (not trigger spurious refinement).
+        let opts = ProgressiveOptions {
+            yield_stress: Some(200e6),
+            near_boundary_pct: 0.10,
+            ..Default::default()
+        };
+        assert!(
+            !near_constraint_boundary(&make_result(f64::NAN), &opts),
+            "NaN max_von_mises must return false"
+        );
+        assert!(
+            !near_constraint_boundary(&make_result(f64::INFINITY), &opts),
+            "+Inf max_von_mises must return false"
+        );
+        assert!(
+            !near_constraint_boundary(&make_result(f64::NEG_INFINITY), &opts),
+            "-Inf max_von_mises must return false"
         );
     }
 
@@ -406,6 +465,27 @@ mod tests {
             should_refine(&opts, 3, &result, RefinementDemand::More),
             AdvanceDecision::Terminate(TerminationReason::BudgetExhausted),
             "current_level >= max_refinements must always yield BudgetExhausted"
+        );
+    }
+
+    #[test]
+    fn should_refine_budget_exhausted_overrides_auto_trigger() {
+        // The auto-trigger fires (max_von_mises above threshold), but the
+        // budget is already exhausted.  Budget check must take priority —
+        // neither demand nor auto-detect can exceed max_refinements.
+        let opts = ProgressiveOptions {
+            max_refinements: 3,
+            yield_stress: Some(200e6),
+            near_boundary_pct: 0.10, // threshold = 180 MPa
+            target_tolerance: 0.05,
+        };
+        // 195 MPa >= 180 MPa → near_constraint_boundary would return true if
+        // budget were not exhausted.
+        let result = make_result(195e6);
+        assert_eq!(
+            should_refine(&opts, 3, &result, RefinementDemand::None),
+            AdvanceDecision::Terminate(TerminationReason::BudgetExhausted),
+            "budget exhausted must override auto-trigger (near_constraint_boundary)"
         );
     }
 
