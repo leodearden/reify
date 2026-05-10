@@ -242,6 +242,18 @@ export const AutoResolvePanel: Component<AutoResolvePanelProps> = (props) => {
             >
               Iteration
             </text>
+            {/* Y-axis label — driving metric name, rotated 90° to sit alongside left edge */}
+            <Show when={chartMetricName() !== null}>
+              <text
+                x={4}
+                y={CHART_H / 2}
+                class={styles.chartMetricLabel}
+                text-anchor="middle"
+                transform={`rotate(-90, 4, ${CHART_H / 2})`}
+              >
+                {chartMetricName()}
+              </text>
+            </Show>
             {/* Polyline — only when 2+ data points */}
             <Show when={chartPoints().length >= 2}>
               <polyline

@@ -124,6 +124,12 @@
   stroke-width: 1.5;
 }
 
+.chartMetricLabel {
+  font-size: 10px;
+  fill: var(--text-muted, #888);
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+}
+
 /* ── Sparkline rows ─────────────────────────────────────────────────── */
 
 .sparklineRow {

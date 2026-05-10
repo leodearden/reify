@@ -52,8 +52,9 @@ describe('AutoResolvePanel (b) constraint rows with status marker', () => {
     ];
     const state: AutoResolveLoopState = { active: true, iterations };
     render(() => <AutoResolvePanel state={state} />);
-    // Metric name
-    expect(screen.getByText('max_von_mises')).toBeTruthy();
+    // Metric name appears in the constraint row (may also appear in the chart y-axis label
+    // when driving_metric matches the constraint name — use getAllByText to allow either case)
+    expect(screen.getAllByText('max_von_mises').length).toBeGreaterThanOrEqual(1);
     // Value with unit
     expect(screen.getByText('180MPa')).toBeTruthy();
     // Target bound text (≤ 200MPa)
