@@ -165,6 +165,13 @@
 //! // element_stress_p1, point_in_tet_p1, and locate_element_p1 from the
 //! // crate root. A regression that breaks any of the four re-exports would
 //! // fail at the doctest compile step.
+//! //
+//! // Role: API-surface check, NOT a behavioural test. Each call below
+//! // exists to pin one re-exported symbol's name + signature; the
+//! // behavioural assertions duplicate cases already tested in
+//! // `interpolation::tests` / `result::tests`. Future hands should not
+//! // grow this section with new behavioural assertions — add them as
+//! // unit tests in the owning module instead.
 //! let unit_tet: [[f64; 3]; 4] = [
 //!     [0.0, 0.0, 0.0],
 //!     [1.0, 0.0, 0.0],

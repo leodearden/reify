@@ -141,10 +141,14 @@ pub fn barycentric_p1(phys_nodes: &[[f64; 3]; 4], p: [f64; 3]) -> [f64; 4] {
 /// (a property of the affine map), so the four-bound check is sufficient
 /// — we don't also need to assert the sum.
 ///
-/// `tol` is a relative slack for points on the element boundary: a
-/// query point that is in the tet up to floating-point round-off (e.g.
-/// `−1e-12` along an edge) is classified as inside when `tol = 1e-9`.
-/// Use `tol = 0.0` for a strict inclusion test.
+/// `tol` is an **absolute slack on the barycentric coordinates** —
+/// barycentric coords live in `[0, 1]` for any non-degenerate tet
+/// regardless of physical scale, so `tol` is scale-invariant by
+/// construction (effectively a relative slack in tet-edge-length units;
+/// callers do **not** scale it by physical edge length). A query point
+/// that is in the tet up to floating-point round-off (e.g. a barycentric
+/// coord of `−1e-12` along an edge) is classified as inside when
+/// `tol = 1e-9`. Use `tol = 0.0` for a strict inclusion test.
 ///
 /// # Preconditions
 ///
@@ -364,6 +368,89 @@ mod tests {
             point_in_tet_p1(&UNIT_TET_P1, [-1e-12, 0.0, 0.0], 1e-9),
             "(-1e-12, 0, 0) must be inside (within tolerance)",
         );
+    }
+
+    #[test]
+    fn barycentric_and_interpolate_recover_affine_field_on_sheared_translated_tet() {
+        // Catches a J⁻ᵀ-vs-J⁻¹ index swap that the unit-tet (J = I) tests
+        // can't detect, because for J = I the swap is a no-op. Use a
+        // sheared, translated, scaled tet where J is non-symmetric and
+        // index transposes would surface as wrong barycentric weights /
+        // wrong interpolant values.
+        //
+        // Vertices chosen so J = [v1−v0 | v2−v0 | v3−v0] is diagonal but
+        // not identity (different scale per axis), with a translation:
+        //   v0 = (1, 0, 0)
+        //   v1 = (3, 0, 0) ⇒ v1−v0 = (2, 0, 0)
+        //   v2 = (1, 4, 0) ⇒ v2−v0 = (0, 4, 0)
+        //   v3 = (1, 0, 5) ⇒ v3−v0 = (0, 0, 5)
+        // To also detect a transpose, perturb v3 to add a non-zero off-axis:
+        //   v3 = (1, 0, 5) → keep v3−v0 axis-aligned but rotate the test
+        //   point through an off-diagonal direction; equivalently, add a
+        //   shear by setting v3 = (2, 0, 5) ⇒ v3−v0 = (1, 0, 5).
+        let phys_nodes: [[f64; 3]; 4] = [
+            [1.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+            [1.0, 4.0, 0.0],
+            [2.0, 0.0, 5.0],
+        ];
+
+        // (1) Partition of unity: at any interior point, the four
+        //     barycentric coords must sum to 1 within FP tolerance.
+        //     Pick a point inside the tet using known reference coords
+        //     ξ = (0.2, 0.3, 0.4) ⇒ p = v0 + 0.2·(v1−v0) + 0.3·(v2−v0)
+        //     + 0.4·(v3−v0) = (1, 0, 0) + (0.4, 0, 0) + (0, 1.2, 0) +
+        //     (0.4, 0, 2.0) = (1.8, 1.2, 2.0).
+        let p = [1.8_f64, 1.2, 2.0];
+        let bary = barycentric_p1(&phys_nodes, p);
+        let sum: f64 = bary.iter().sum();
+        assert!(
+            (sum - 1.0).abs() < TOL,
+            "sheared-tet bary sum = {sum}, expected 1.0 (partition of unity)",
+        );
+        // The expected weights are [1 − 0.9, 0.2, 0.3, 0.4] = [0.1, 0.2, 0.3, 0.4].
+        let expected = [0.1_f64, 0.2, 0.3, 0.4];
+        for (i, (&actual, &exp)) in bary.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (actual - exp).abs() < TOL,
+                "sheared-tet bary[{i}] = {actual}, expected {exp} \
+                 (catches J⁻ᵀ-vs-J⁻¹ index swap)",
+            );
+        }
+
+        // (2) Affine-field exactness: any P1 nodal field of the form
+        //     u(x) = (a·x + b·y + c·z + d, …) is interpolated exactly on
+        //     a P1 tet (the interpolant lives in the same polynomial
+        //     space as the field). Build the per-vertex nodal values
+        //     from a known affine field and verify the interpolant at
+        //     `p` equals the analytical evaluation at `p`.
+        //   u(x) = (2x + 3y + 5z + 7,
+        //           4x + 6y + 8z + 9,
+        //           x  +  y +  z + 1)
+        let f = |x: [f64; 3]| {
+            [
+                2.0 * x[0] + 3.0 * x[1] + 5.0 * x[2] + 7.0,
+                4.0 * x[0] + 6.0 * x[1] + 8.0 * x[2] + 9.0,
+                x[0] + x[1] + x[2] + 1.0,
+            ]
+        };
+        let nodal_values: [[f64; 3]; 4] = [
+            f(phys_nodes[0]),
+            f(phys_nodes[1]),
+            f(phys_nodes[2]),
+            f(phys_nodes[3]),
+        ];
+        let interp = interpolate_p1_at_point(&phys_nodes, &nodal_values, p);
+        let exact = f(p);
+        for k in 0..3 {
+            assert!(
+                (interp[k] - exact[k]).abs() < 1e-10,
+                "sheared-tet affine interp[{k}] = {} expected {} \
+                 (catches J/J⁻ᵀ index bug)",
+                interp[k],
+                exact[k],
+            );
+        }
     }
 
     #[test]
