@@ -335,6 +335,23 @@ describe('StatusBar compile diagnostics', () => {
     const label = badge.getAttribute('aria-label') ?? '';
     expect(label).toMatch(/diagnostics/i);
   });
+
+  it('compile badge aria-label shows merged total of compile + tessellation counts', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        compileDiagnostics={[makeDiag('Error'), makeDiag('Warning')]}
+        tessellationDiagnostics={[makeDiag('Warning')]}
+      />
+    ));
+    const badge = screen.getByTestId('diagnostics-count');
+    const label = badge.getAttribute('aria-label') ?? '';
+    expect(label).toMatch(/^Show diagnostics \(\d+ total\)$/);
+    // Total is 2 + 1 = 3
+    expect(label).toBe('Show diagnostics (3 total)');
+  });
 });
 
 describe('StatusBar Claude status indicator', () => {
