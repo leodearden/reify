@@ -297,6 +297,86 @@ pub fn auto_mesh_size_from_boundary(boundary: &ProfileBoundary, multiplier: f64)
     min_len * multiplier
 }
 
+// ---------------------------------------------------------------------------
+// Orchestrator
+// ---------------------------------------------------------------------------
+
+/// Shoelace-formula signed area of a closed 2D ring.
+///
+/// CCW ring -> positive; CW ring -> negative; collinear / zero-area ring -> 0.0
+/// (within float tolerance). Private to the module; used by the
+/// `mesh_swept_profile_2d` validation pre-pass to flag degenerate outer rings.
+fn ring_signed_area_2d(ring: &[[f64; 2]]) -> f64 {
+    if ring.len() < 3 {
+        return 0.0;
+    }
+    let n = ring.len();
+    let mut acc: f64 = 0.0;
+    for i in 0..n {
+        let p = ring[i];
+        let q = ring[(i + 1) % n];
+        acc += p[0] * q[1] - q[0] * p[1];
+    }
+    acc * 0.5
+}
+
+/// Validation pre-pass shared by every `mesh_swept_profile_2d` target arm.
+///
+/// Runs before lock acquisition / FFI so error diagnostics stay close to
+/// the real cause. Returns `Ok(())` only when the boundary is well-formed
+/// (outer ring non-empty, every ring has >=3 points, outer ring has
+/// non-zero signed area).
+fn validate_boundary(boundary: &ProfileBoundary) -> Result<(), Mesh2dError> {
+    if boundary.outer.is_empty() {
+        return Err(Mesh2dError::EmptyBoundary);
+    }
+    if boundary.outer.len() < 3 {
+        return Err(Mesh2dError::DegenerateBoundary);
+    }
+    for hole in &boundary.holes {
+        if hole.len() < 3 {
+            return Err(Mesh2dError::DegenerateBoundary);
+        }
+    }
+    // Collinear outer ring -> signed area ~ 0. The threshold mirrors
+    // `auto_size`'s "geometric tolerance" floor; anything below it is
+    // effectively a line segment, not a region.
+    if ring_signed_area_2d(&boundary.outer).abs() < 1e-14 {
+        return Err(Mesh2dError::DegenerateBoundary);
+    }
+    Ok(())
+}
+
+/// Mesh a 2D profile boundary into a triangle or quad surface mesh,
+/// targeting either a wedge-extrusion or hex-extrusion downstream sweep.
+///
+/// `boundary` — outer ring + holes; CCW outer, CW holes per the
+/// [`ProfileBoundary`] contract.
+/// `target` — [`SweepElementTarget::HexPreferred`] enables Gmsh's blossom
+/// recombination + skew-quality fall-back to triangles; `WedgeOnly` skips
+/// recombination entirely.
+/// `options` — mesh size, deterministic flag, recombine-quality threshold
+/// (see [`Mesh2dOptions::default`]).
+///
+/// # Errors
+/// - [`Mesh2dError::EmptyBoundary`] — outer ring is empty.
+/// - [`Mesh2dError::DegenerateBoundary`] — any ring has <3 points, or
+///   outer ring is collinear (zero signed area).
+/// - [`Mesh2dError::GmshUnavailable`] — this build was compiled without
+///   libgmsh (stub build).
+/// - [`Mesh2dError::GmshFailed`] — Gmsh returned an error during meshing.
+pub fn mesh_swept_profile_2d(
+    boundary: &ProfileBoundary,
+    _target: SweepElementTarget,
+    _options: &Mesh2dOptions,
+) -> Result<Mesh2dReport, Mesh2dError> {
+    validate_boundary(boundary)?;
+    // Placeholder body — later TDD steps replace this with the real
+    // wedge / hex-preferred arms that call into
+    // reify_kernel_gmsh::mesh_profile_2d::mesh_plane_2d.
+    Err(Mesh2dError::GmshUnavailable)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
