@@ -65,10 +65,14 @@ vi.mock('three', async () => {
     itemSize: number;
     needsUpdate: boolean = false;
     count: number;
+    dispose = vi.fn();
     constructor(array: any, itemSize: number) {
       this.array = array;
       this.itemSize = itemSize;
       this.count = array.length / itemSize;
+    }
+    clone() {
+      return new MockBufferAttribute(this.array.slice(), this.itemSize);
     }
   }
 
@@ -2079,6 +2083,44 @@ describe('meshManager', () => {
       expect(overlayGeom.dispose).toHaveBeenCalledOnce();
       // Overlay mesh must have been removed from undeformedGroup.
       expect(mockGroupRemove).toHaveBeenCalledWith(overlay);
+    });
+
+    it('(h) overlay owns clones of index/normal — deformed mesh references are not aliased and survive overlay teardown', () => {
+      const { manager } = setupWithOverlay();
+
+      // Snapshot deformed mesh's index and normal references BEFORE any deformation call.
+      const deformedMesh = manager.getSceneMeshes().get('A')!;
+      const deformedIndexRef = (deformedMesh.geometry as any).index;
+      const deformedNormalRef = (deformedMesh.geometry as any).attributes.normal;
+
+      manager.setDeformation({ warpFactor: 1 });
+
+      const overlay = manager.getDeformedOverlays().get('A')!;
+
+      // Overlay must NOT share BufferAttribute references with the deformed mesh (clone semantics).
+      expect((overlay.geometry as any).index).not.toBe(deformedIndexRef);
+      expect((overlay.geometry as any).attributes.normal).not.toBe(deformedNormalRef);
+
+      // Cloned arrays must carry the same content as the originals (data integrity).
+      expect(Array.from((overlay.geometry as any).index.array as Uint32Array)).toEqual(
+        Array.from(deformedIndexRef.array as Uint32Array)
+      );
+      expect(Array.from((overlay.geometry as any).attributes.normal.array as Float32Array)).toEqual(
+        Array.from(deformedNormalRef.array as Float32Array)
+      );
+
+      // Tear down the overlay.
+      manager.setDeformation(null);
+
+      // Deformed mesh's index and normal must still be the SAME objects as before
+      // (i.e., overlay disposal did not free or replace the deformed mesh's VBOs).
+      expect((deformedMesh.geometry as any).index).toBe(deformedIndexRef);
+      expect((deformedMesh.geometry as any).attributes.normal).toBe(deformedNormalRef);
+
+      // Disposal-isolation contract: overlay teardown must never call .dispose() on
+      // the deformed mesh's index/normal attributes (they are independently owned clones).
+      expect(deformedIndexRef.dispose).not.toHaveBeenCalled();
+      expect(deformedNormalRef.dispose).not.toHaveBeenCalled();
     });
   });
 
