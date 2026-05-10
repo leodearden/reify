@@ -32,6 +32,10 @@ function summarize(diags: DiagnosticInfo[] | undefined): DiagnosticSummary {
   return { errorCount, warningCount };
 }
 
+function pluralize(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? '' : 's'}`;
+}
+
 export interface StatusBarProps {
   evalStatus: EvaluationStatus;
   meshes: Record<string, MeshData>;
@@ -104,7 +108,7 @@ export const StatusBar: Component<StatusBarProps> = (props) => {
           class={`${styles.section} ${styles.diagnosticsTrigger}`}
           data-testid="tessellation-errors"
           data-has-errors={diagnosticSummary().errorCount > 0 ? 'true' : 'false'}
-          aria-label={`Show ${props.tessellationDiagnostics?.length ?? 0} tessellation diagnostic${(props.tessellationDiagnostics?.length ?? 0) === 1 ? '' : 's'}`}
+          aria-label={`Show ${pluralize(props.tessellationDiagnostics?.length ?? 0, 'tessellation diagnostic')}`}
           onClick={() => props.onToggleDiagnostics?.()}
         >
           <DiagBadgeContent getSummary={diagnosticSummary} />
@@ -116,7 +120,7 @@ export const StatusBar: Component<StatusBarProps> = (props) => {
           type="button"
           class={`${styles.section} ${styles.diagnosticsTrigger}`}
           data-testid="diagnostics-count"
-          aria-label={`Show ${props.compileDiagnostics?.length ?? 0} compile diagnostic${(props.compileDiagnostics?.length ?? 0) === 1 ? '' : 's'}`}
+          aria-label={`Show ${pluralize(props.compileDiagnostics?.length ?? 0, 'compile diagnostic')}`}
           onClick={() => props.onToggleDiagnostics?.()}
         >
           <DiagBadgeContent getSummary={compileSummary} />
