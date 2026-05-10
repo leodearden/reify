@@ -471,46 +471,55 @@ impl EngineSession {
     /// completely unchanged — source_map, module_name, compiled, and last_check all
     /// retain their previous values. All mutations are deferred until after check() returns.
     ///
-    /// # v1 limitation (task 3228)
+    /// When `self.file_path` is set (i.e. after a prior `load_file`), this method
+    /// routes through `compile_entry_with_imports` to preserve the multi-file import
+    /// graph resolved at `load_file` time — dirty-buffer edits no longer silently
+    /// drop imports.  See task 3318 (item 3).
     ///
-    /// `update_source` deliberately uses `compile_with_stdlib` (single-file compile, no
-    /// `ModuleResolver`).  Editing a file in the GUI buffer after `load_file` opened it
-    /// temporarily reverts to single-file behavior — `import` declarations are wired at
-    /// `load_file` time but not on subsequent dirty-buffer edits.  Routing this method
-    /// through the multi-file flow is the deferred half of task 3228 and is filed as
-    /// a separate follow-up.
+    /// When `self.file_path` is `None` (i.e. `load_from_source`-only sessions with
+    /// no project-root anchor), the original single-file `parse_with_stdlib +
+    /// compile_with_stdlib` path is preserved unchanged.
     pub fn update_source(&mut self, path: &str, content: &str) -> Result<GuiState, String> {
         let module_name = Path::new(path)
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("unnamed");
 
-        // Re-parse and re-compile from scratch (topology may have changed)
-        // All state mutation is deferred until after successful parse+compile.
-        // Prelude-aware parse so stdlib enum references disambiguate correctly;
-        // pairs with `compile_with_stdlib` below. See task 2525.
-        let parsed = reify_compiler::parse_with_stdlib(content, ModulePath::single(module_name));
-
-        if !parsed.errors.is_empty() {
-            let msgs: Vec<String> = parsed.errors.iter().map(|e| e.message.clone()).collect();
-            return Err(format!("Parse errors: {}", msgs.join("; ")));
-        }
-
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
-
-        let has_errors = compiled
-            .diagnostics
-            .iter()
-            .any(|d| d.severity == Severity::Error);
-        if has_errors {
-            let msgs: Vec<String> = compiled
+        let (parsed, compiled) = if let Some(entry_path) = self.file_path.clone() {
+            // Multi-file flow — same as load_file. Preserves the import graph
+            // resolved at load_file time so dirty-buffer edits don't silently drop
+            // imports.  See task 3318 (item 3) and task 3228 follow-up note.
+            let (compiled, parsed) =
+                compile_entry_with_imports(&entry_path, content, module_name)?;
+            (parsed, compiled)
+        } else {
+            // Single-file flow — no prior load_file means no project_root anchor;
+            // preserve the original parse_with_stdlib + compile_with_stdlib path.
+            // Prelude-aware parse so stdlib enum references disambiguate correctly;
+            // pairs with `compile_with_stdlib` below. See task 2525.
+            let parsed =
+                reify_compiler::parse_with_stdlib(content, ModulePath::single(module_name));
+            if !parsed.errors.is_empty() {
+                let msgs: Vec<String> =
+                    parsed.errors.iter().map(|e| e.message.clone()).collect();
+                return Err(format!("Parse errors: {}", msgs.join("; ")));
+            }
+            let compiled = reify_compiler::compile_with_stdlib(&parsed);
+            let has_errors = compiled
                 .diagnostics
                 .iter()
-                .filter(|d| d.severity == Severity::Error)
-                .map(|d| d.message.clone())
-                .collect();
-            return Err(format!("Compile errors: {}", msgs.join("; ")));
-        }
+                .any(|d| d.severity == Severity::Error);
+            if has_errors {
+                let msgs: Vec<String> = compiled
+                    .diagnostics
+                    .iter()
+                    .filter(|d| d.severity == Severity::Error)
+                    .map(|d| d.message.clone())
+                    .collect();
+                return Err(format!("Compile errors: {}", msgs.join("; ")));
+            }
+            (parsed, compiled)
+        };
 
         // Parse+compile succeeded — run check() before mutating any state, so
         // that a panic in check() leaves the session completely unchanged.
