@@ -7,4 +7,5 @@ description = "Linear-elastostatic FEA solver kernel for Reify (PRD docs/prds/v0
 
 [dependencies]
 reify-types = { workspace = true }
+reify-kernel-gmsh = { workspace = true }
 faer = { workspace = true }
