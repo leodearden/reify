@@ -8,7 +8,7 @@
 //!     resulting `CompiledConstraint::optimized_target`.
 //!   - An un-annotated constraint def yields `optimized_target = None`.
 
-use reify_compiler::{CompiledConstraint, CompiledModule, TopologyTemplate};
+use reify_compiler::{CompiledConstraint, CompiledFunction, CompiledModule, TopologyTemplate};
 use reify_test_support::compile_source;
 use reify_types::{Diagnostic, Severity};
 
@@ -617,6 +617,54 @@ structure S {
         duplicate_warnings.is_empty(),
         "multiple @optimized on structure must not warn about duplicates (target not consumed); got: {:?}",
         duplicate_warnings
+    );
+}
+
+// ── Step 3 (task 3377): CompiledFunction.optimized_target field existence ────
+
+/// `@optimized("kernel::foo")` on an annotated function must populate
+/// `CompiledFunction::optimized_target` with `Some("kernel::foo")`, and an
+/// un-annotated function yields `None`.
+///
+/// RED (step-3): fails to compile because `CompiledFunction` has no
+/// `optimized_target` field yet. The compile error is the regression-guard.
+#[test]
+fn optimized_target_field_on_compiled_function() {
+    // (a) annotated function
+    let source_annotated = r#"@optimized("kernel::foo") fn annotated(x: Real) -> Real { x }"#;
+    let module_a = compile_source(source_annotated);
+
+    let errors = error_diags(&module_a.diagnostics);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    let annotated_fn: &CompiledFunction = module_a
+        .functions
+        .iter()
+        .find(|f| f.name == "annotated")
+        .expect("function 'annotated' not found in compiled module");
+    // This read forces the field to exist — compile error if missing.
+    assert_eq!(
+        annotated_fn.optimized_target,
+        Some("kernel::foo".to_string()),
+        "expected optimized_target = Some(\"kernel::foo\") on annotated function"
+    );
+
+    // (b) plain function
+    let source_plain = r#"fn plain(x: Real) -> Real { x }"#;
+    let module_b = compile_source(source_plain);
+
+    let errors = error_diags(&module_b.diagnostics);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    let plain_fn: &CompiledFunction = module_b
+        .functions
+        .iter()
+        .find(|f| f.name == "plain")
+        .expect("function 'plain' not found in compiled module");
+    assert!(
+        plain_fn.optimized_target.is_none(),
+        "un-annotated function should yield optimized_target=None, got: {:?}",
+        plain_fn.optimized_target
     );
 }
 
