@@ -3566,13 +3566,17 @@ mod tests {
     ///     entities "EntityB_0" / "EntityB_1"), no tolerance contributors →
     ///     outer length == 2, inner lengths [1, 2], all cells `None`.
     ///
-    /// (b) **Positive-path / priority-chain**: same module, but
+    /// (b) **Positive-path / positional alignment**: same module, but
     ///     `active_tolerance_scope` is seeded so EntityA → `Some(1e-5)` and
     ///     EntityB_0 → `Some(2e-5)`, while EntityB_1 is left unset.
     ///     Asserts that `result[0][0] == Some(1e-5)`,
     ///     `result[1][0] == Some(2e-5)`, and `result[1][1] == None` —
-    ///     pinning both the `demanded_tolerance_for_output → active_tolerance_for`
-    ///     priority chain AND correct positional alignment.
+    ///     pinning correct positional alignment plus that an
+    ///     `active_tolerance_scope` entry surfaces through the chain as
+    ///     `Some(_)`.  Note: this does NOT pin the `or_else` fallback or
+    ///     branch ordering in the priority chain — see design decision in
+    ///     plan.json for the rationale (the `.or_else` branch is logically
+    ///     dead given current `demanded_tolerance_for_output` semantics).
     #[test]
     fn compute_demanded_tols_returns_positionally_indexed_vec_of_vec() {
         use reify_test_support::{CompiledModuleBuilder, MockConstraintChecker, TopologyTemplateBuilder};
@@ -3616,16 +3620,20 @@ mod tests {
             "no tolerance contributor → None for template B realization 1"
         );
 
-        // ── (b) positive-path: priority chain and positional alignment ───────
+        // ── (b) positive-path: active-tolerance contributor surfaces, positional alignment ──
         //
         // Seed `active_tolerance_scope` (crate-private field, directly
         // accessible from `mod tests` within the same crate) so that
         // `active_tolerance_for("EntityA")` and `active_tolerance_for("EntityB_0")`
-        // return `Some`.  `compute_demanded_tols` calls
-        // `demanded_tolerance_for_output(t.name, r.id.entity).or_else(|| active_tolerance_for(r.id.entity))`;
-        // since `demanded_tolerance_for_output` already incorporates
-        // `active_tolerance_for` internally (via the `purpose_bound` path), a
-        // non-None scope entry is sufficient to drive the chain to `Some`.
+        // return `Some`.  Because `demanded_tolerance_for_output` already
+        // incorporates `active_tolerance_for` internally (via
+        // `combine_demanded_tolerance(output_bound, purpose_bound)` where
+        // `purpose_bound = active_tolerance_for(subject_entity_ref)`), a
+        // seeded scope entry surfaces as `Some(_)` regardless of which
+        // branch `compute_demanded_tols` consults first.  This test pins
+        // (i) that the entry surfaces as `Some(_)` somewhere through the
+        // chain, and (ii) correct positional alignment — it does NOT pin
+        // the `or_else` fallback or the order of branches in the chain.
         engine.active_tolerance_scope.insert("EntityA".to_string(), 1e-5_f64);
         engine.active_tolerance_scope.insert("EntityB_0".to_string(), 2e-5_f64);
         // "EntityB_1" is intentionally left unset → result[1][1] stays None.
