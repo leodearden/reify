@@ -131,12 +131,18 @@ export function Editor(props: EditorProps) {
             if (!path) return true;
             const result = props.store.canSave(path);
             if (!result.ok) {
-              if (result.reason === 'not-found') {
-                // Invariant breach — preserve the diagnostic breadcrumb.
-                console.error('Save aborted: file not in store', path);
+              switch (result.reason) {
+                case 'not-found':
+                  // Invariant breach — activeFile/path should always be in openFiles.
+                  // Do not surface a toast since this is not an actionable user condition.
+                  // Mirrors App.tsx#handleSave so both Ctrl+S call sites have identical
+                  // user-visible policy.
+                  console.error('Save aborted: file not in store', path);
+                  return true;
+                case 'externally-changed':
+                  props.onError?.(messageForSaveBlocked(result.reason));
+                  return true;
               }
-              props.onError?.(messageForSaveBlocked(result.reason));
-              return true;
             }
             saveFile(result.file.path, result.file.content)
               .then(() => props.store.markClean(result.file.path))
