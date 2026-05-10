@@ -108,6 +108,26 @@ pub fn barycentric_p1(phys_nodes: &[[f64; 3]; 4], p: [f64; 3]) -> [f64; 4] {
     [1.0 - xi[0] - xi[1] - xi[2], xi[0], xi[1], xi[2]]
 }
 
+/// Tolerant point-in-tet inclusion test for a P1 tetrahedron.
+///
+/// Returns `true` iff every entry of [`barycentric_p1`]`(phys_nodes, p)`
+/// lies in `[−tol, 1 + tol]`. The partition-of-unity sum is `1` exactly
+/// (a property of the affine map), so the four-bound check is sufficient
+/// — we don't also need to assert the sum.
+///
+/// `tol` is a relative slack for points on the element boundary: a
+/// query point that is in the tet up to floating-point round-off (e.g.
+/// `−1e-12` along an edge) is classified as inside when `tol = 1e-9`.
+/// Use `tol = 0.0` for a strict inclusion test.
+///
+/// # Preconditions
+///
+/// The tet must be non-degenerate (`det J != 0`); see [`barycentric_p1`].
+pub fn point_in_tet_p1(phys_nodes: &[[f64; 3]; 4], p: [f64; 3], tol: f64) -> bool {
+    let bary = barycentric_p1(phys_nodes, p);
+    bary.iter().all(|&n| n >= -tol && n <= 1.0 + tol)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
