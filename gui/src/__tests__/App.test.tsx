@@ -3080,7 +3080,12 @@ describe('App tessellation diagnostics end-to-end wiring', () => {
     fireEvent.click(screen.getByTestId('tessellation-errors'));
     await waitFor(() => expect(screen.getByTestId('diagnostics-panel')).toBeTruthy());
 
-    // Second click: close the panel
+    // Second click: close the panel.
+    // DiagnosticsPanel wraps its overlay in <Show when={props.open}>, so the
+    // element is fully removed from the DOM (not just hidden) when closed.
+    // This is the intentional contract: toBeNull() is the right assertion here;
+    // a querySelector returning null proves the panel is unmounted, not merely
+    // invisible — and would FAIL if the handler were flipped to setDiagnosticsOpen(true).
     fireEvent.click(screen.getByTestId('tessellation-errors'));
     await waitFor(() =>
       expect(document.querySelector('[data-testid="diagnostics-panel"]')).toBeNull()

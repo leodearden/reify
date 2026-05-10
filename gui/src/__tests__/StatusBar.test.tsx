@@ -492,7 +492,15 @@ describe('StatusBar merged diagnostics rendering', () => {
         compileDiagnostics={[makeDiag('Warning', 'compile warn')]}
       />
     ));
-    expect(screen.getByTestId('tessellation-errors')).toBeTruthy();
-    expect(screen.getByTestId('diagnostics-count')).toBeTruthy();
+    const tessBadge = screen.getByTestId('tessellation-errors');
+    const compileBadge = screen.getByTestId('diagnostics-count');
+    expect(tessBadge).toBeTruthy();
+    expect(compileBadge).toBeTruthy();
+    // Each badge must carry the right summary — a regression that swaps the two
+    // badge summaries would still render both elements but fail here.
+    expect(tessBadge.textContent).toContain('1 error');
+    expect(compileBadge.textContent).toContain('1 warning');
+    expect(tessBadge.getAttribute('aria-label')).toContain('tessellation');
+    expect(compileBadge.getAttribute('aria-label')).toContain('compile');
   });
 });
