@@ -187,6 +187,48 @@ mod tests {
     ];
 
     #[test]
+    fn locate_element_p1_returns_first_containing_index_or_none_for_outside() {
+        // Two unit tets sharing the face on the plane y + z = 0 ... actually
+        // pick two disjoint-interior tets that tile a small region. The
+        // simplest fixture: take the canonical UNIT_TET_P1 and a translated
+        // copy that occupies (1..2)×(0..1)×(0..1)-style region.
+        //
+        // Element 0: canonical unit tet. Centroid = (0.25, 0.25, 0.25).
+        let tet0: [[f64; 3]; 4] = UNIT_TET_P1;
+        // Element 1: translated by (+1, 0, 0). Centroid = (1.25, 0.25, 0.25).
+        let tet1: [[f64; 3]; 4] = [
+            [1.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [1.0, 0.0, 1.0],
+        ];
+
+        let elements = [
+            LocatableTet { phys_nodes: &tet0 },
+            LocatableTet { phys_nodes: &tet1 },
+        ];
+
+        // Centroid of element 0 → Some(0).
+        assert_eq!(
+            locate_element_p1(&elements, [0.25, 0.25, 0.25], 1e-9),
+            Some(0),
+            "centroid of element 0 must locate Some(0)",
+        );
+        // Centroid of element 1 → Some(1).
+        assert_eq!(
+            locate_element_p1(&elements, [1.25, 0.25, 0.25], 1e-9),
+            Some(1),
+            "centroid of element 1 must locate Some(1)",
+        );
+        // Faraway point → None.
+        assert_eq!(
+            locate_element_p1(&elements, [10.0, 10.0, 10.0], 1e-9),
+            None,
+            "faraway point must locate None",
+        );
+    }
+
+    #[test]
     fn interpolate_p1_at_point_recovers_nodal_values_at_vertices_and_is_linear() {
         // Non-trivial nodal values: distinct triples per node so
         // permutations would surface as a test failure.
