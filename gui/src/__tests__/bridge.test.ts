@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { GuiState, RawGuiState, EvaluationStatus, MechanismDescriptor } from '../types';
 
 // Mock Tauri API modules
@@ -38,6 +38,7 @@ import {
   readViewSidecar,
   writeViewSidecar,
   getMechanismDescriptors,
+  onAutoResolveIteration,
 } from '../bridge';
 import type { PersistentViewState } from '../types';
 import type { KernelStatus } from '../bridge';
@@ -621,5 +622,88 @@ describe('bridge mechanism commands', () => {
 
     expect(mockInvoke).toHaveBeenCalledWith('get_mechanism_descriptors');
     expect(result).toEqual([]);
+  });
+});
+
+// --- onAutoResolveIteration malformed payload rejection (task-3407) ---
+
+describe('onAutoResolveIteration malformed payload', () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+
+  function makeHandler(payload: unknown) {
+    return async (_name: unknown, handler: unknown) => {
+      (handler as (event: { payload: unknown }) => void)({ payload });
+      return vi.fn();
+    };
+  }
+
+  it('drops null payload', async () => {
+    mockListen.mockImplementation(makeHandler(null) as any);
+    const cb = vi.fn();
+    await onAutoResolveIteration(cb);
+    expect(cb).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalled();
+    expect(warnSpy.mock.calls[0][0]).toContain('[auto-resolve-iteration]');
+  });
+
+  it('drops primitive (number) payload', async () => {
+    mockListen.mockImplementation(makeHandler(42) as any);
+    const cb = vi.fn();
+    await onAutoResolveIteration(cb);
+    expect(cb).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalled();
+    expect(warnSpy.mock.calls[0][0]).toContain('[auto-resolve-iteration]');
+  });
+
+  it('drops payload missing iteration field', async () => {
+    mockListen.mockImplementation(makeHandler({ parameters: {}, constraints: {} }) as any);
+    const cb = vi.fn();
+    await onAutoResolveIteration(cb);
+    expect(cb).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalled();
+    expect(warnSpy.mock.calls[0][0]).toContain('[auto-resolve-iteration]');
+  });
+
+  it('drops payload with array-shaped parameters', async () => {
+    mockListen.mockImplementation(
+      makeHandler({ iteration: 0, parameters: [], constraints: {} }) as any,
+    );
+    const cb = vi.fn();
+    await onAutoResolveIteration(cb);
+    expect(cb).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalled();
+    expect(warnSpy.mock.calls[0][0]).toContain('[auto-resolve-iteration]');
+  });
+
+  it('drops payload with array-shaped constraints', async () => {
+    mockListen.mockImplementation(
+      makeHandler({ iteration: 0, parameters: {}, constraints: [] }) as any,
+    );
+    const cb = vi.fn();
+    await onAutoResolveIteration(cb);
+    expect(cb).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalled();
+    expect(warnSpy.mock.calls[0][0]).toContain('[auto-resolve-iteration]');
+  });
+
+  it('does NOT warn and calls callback for a well-formed payload', async () => {
+    const wellFormed = {
+      iteration: 0,
+      parameters: { p1: { value: 1, unit: 'mm' } },
+      constraints: {},
+    };
+    mockListen.mockImplementation(makeHandler(wellFormed) as any);
+    const cb = vi.fn();
+    await onAutoResolveIteration(cb);
+    expect(cb).toHaveBeenCalledWith(wellFormed);
+    expect(warnSpy).not.toHaveBeenCalled();
   });
 });
