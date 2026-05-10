@@ -7560,6 +7560,7 @@ mod tests {
     /// against the literal it was defined as — always true by construction).
     #[test]
     fn default_point_on_shape_tolerance_m_pins_occt_precision_confusion() {
+        // Bit-exact comparison: any change in Precision::Confusion() should fail this test.
         assert_eq!(
             ffi::ffi::precision_confusion(),
             reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
