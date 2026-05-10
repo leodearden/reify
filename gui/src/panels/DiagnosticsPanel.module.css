@@ -129,3 +129,25 @@
 .closeButton:hover {
   background: var(--reify-surface2, #585b70);
 }
+
+.compileChip {
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 500;
+  font-family: var(--reify-font-mono, monospace);
+  color: var(--reify-blue, #89b4fa);
+  background: rgba(137, 180, 250, 0.15);
+  flex-shrink: 0;
+}
+
+.tessellationChip {
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 500;
+  font-family: var(--reify-font-mono, monospace);
+  color: var(--reify-green, #a6e3a1);
+  background: rgba(166, 227, 161, 0.15);
+  flex-shrink: 0;
+}

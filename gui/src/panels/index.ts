@@ -18,4 +18,4 @@ export type { ViewManageModalProps } from './ViewManageModal';
 export { MechanismPanel } from './MechanismPanel';
 export type { MechanismPanelProps } from './MechanismPanel';
 export { DiagnosticsPanel } from './DiagnosticsPanel';
-export type { DiagnosticsPanelProps } from './DiagnosticsPanel';
+export type { DiagnosticsPanelProps, DiagnosticEntry } from './DiagnosticsPanel';

@@ -225,6 +225,35 @@ describe('StatusBar tessellation diagnostics', () => {
     fireEvent.click(screen.getByTestId('tessellation-errors'));
     expect(onToggle).toHaveBeenCalledTimes(1);
   });
+
+  it('tessellation-errors button has type="button" to prevent accidental form submission', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        tessellationDiagnostics={[makeDiag('Error')]}
+      />
+    ));
+    const badge = screen.getByTestId('tessellation-errors');
+    expect(badge.getAttribute('type')).toBe('button');
+  });
+
+  it('tessellation badge aria-label identifies pipeline and count (not merged total)', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        tessellationDiagnostics={[makeDiag('Error')]}
+        compileDiagnostics={[makeDiag('Warning'), makeDiag('Warning')]}
+      />
+    ));
+    const badge = screen.getByTestId('tessellation-errors');
+    const label = badge.getAttribute('aria-label') ?? '';
+    // Shows only tessellation count so SR users can distinguish it from the compile button
+    expect(label).toBe('Show 1 tessellation diagnostics');
+  });
 });
 
 describe('StatusBar compile diagnostics', () => {
@@ -317,6 +346,35 @@ describe('StatusBar compile diagnostics', () => {
     const badge = screen.getByTestId('diagnostics-count');
     const label = badge.getAttribute('aria-label') ?? '';
     expect(label).toMatch(/diagnostics/i);
+  });
+
+  it('diagnostics-count button has type="button" to prevent accidental form submission', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        compileDiagnostics={[makeDiag('Warning')]}
+      />
+    ));
+    const badge = screen.getByTestId('diagnostics-count');
+    expect(badge.getAttribute('type')).toBe('button');
+  });
+
+  it('compile badge aria-label identifies pipeline and count (not merged total)', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        compileDiagnostics={[makeDiag('Error'), makeDiag('Warning')]}
+        tessellationDiagnostics={[makeDiag('Warning')]}
+      />
+    ));
+    const badge = screen.getByTestId('diagnostics-count');
+    const label = badge.getAttribute('aria-label') ?? '';
+    // Shows only compile count so SR users can distinguish it from the tessellation button
+    expect(label).toBe('Show 2 compile diagnostics');
   });
 });
 

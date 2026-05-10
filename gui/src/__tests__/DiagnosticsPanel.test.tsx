@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@solidjs/testing-library';
 import { DiagnosticsPanel } from '../panels/DiagnosticsPanel';
 import type { DiagnosticInfo } from '../types';
+import type { DiagnosticEntry } from '../panels/DiagnosticsPanel';
 
 function makeDiag(severity: 'Error' | 'Warning' | 'Info', overrides: Partial<DiagnosticInfo> = {}): DiagnosticInfo {
   return {
@@ -71,9 +72,9 @@ describe('DiagnosticsPanel', () => {
   });
 
   it('renders one row per diagnostic entry', () => {
-    const diags = [
-      makeDiag('Error', { file_path: 'main.ri', line: 10, message: 'import failed' }),
-      makeDiag('Warning', { file_path: 'helper.ri', line: 3, message: "unknown port type 'Foo'" }),
+    const diags: DiagnosticEntry[] = [
+      { ...makeDiag('Error', { file_path: 'main.ri', line: 10, message: 'import failed' }), source: 'compile' },
+      { ...makeDiag('Warning', { file_path: 'helper.ri', line: 3, message: "unknown port type 'Foo'" }), source: 'tessellation' },
     ];
     render(() => (
       <DiagnosticsPanel
@@ -99,7 +100,7 @@ describe('DiagnosticsPanel', () => {
   });
 
   it('clicking a diagnostic row invokes onNavigate with that diagnostic', () => {
-    const diag = makeDiag('Warning', { file_path: 'helper.ri', line: 3, message: "unknown port type 'Foo'" });
+    const diag: DiagnosticEntry = { ...makeDiag('Warning', { file_path: 'helper.ri', line: 3, message: "unknown port type 'Foo'" }), source: 'compile' };
     const onNavigate = vi.fn();
     render(() => (
       <DiagnosticsPanel
@@ -148,5 +149,24 @@ describe('DiagnosticsPanel', () => {
     // Click the overlay itself (the outermost element), not an inner element
     fireEvent.click(panel);
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders a source chip per row with correct source label', () => {
+    const compileEntry: DiagnosticEntry = { ...makeDiag('Error', { message: 'compile error' }), source: 'compile' };
+    const tessEntry: DiagnosticEntry = { ...makeDiag('Warning', { message: 'tess warning' }), source: 'tessellation' };
+    render(() => (
+      <DiagnosticsPanel
+        open={true}
+        diagnostics={[compileEntry, tessEntry]}
+        onClose={vi.fn()}
+        onNavigate={vi.fn()}
+      />
+    ));
+    // Find all source chips
+    const chips = document.querySelectorAll('[data-testid="diagnostic-source-chip"]');
+    expect(chips.length).toBe(2);
+    const chipTexts = Array.from(chips).map((c) => c.textContent);
+    expect(chipTexts).toContain('compile');
+    expect(chipTexts).toContain('tessellation');
   });
 });

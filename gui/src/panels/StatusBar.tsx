@@ -3,6 +3,25 @@ import type { EvaluationStatus, MeshData, ConstraintData, DiagnosticInfo } from 
 import type { SessionStatus } from '../stores/claudeStore';
 import styles from './StatusBar.module.css';
 
+interface DiagnosticSummary { errorCount: number; warningCount: number }
+
+/** Shared badge content for diagnostic trigger buttons.
+ *  Accepts a reactive accessor so SolidJS tracks each summary property fine-grained. */
+const DiagBadgeContent: Component<{ getSummary: () => DiagnosticSummary }> = (props) => (
+  <>
+    <Show when={props.getSummary().errorCount > 0}>
+      <span class={styles.errorBadge}>
+        {props.getSummary().errorCount} error{props.getSummary().errorCount > 1 ? 's' : ''}
+      </span>
+    </Show>
+    <Show when={props.getSummary().warningCount > 0}>
+      <span class={styles.warningBadge}>
+        {props.getSummary().warningCount} warning{props.getSummary().warningCount > 1 ? 's' : ''}
+      </span>
+    </Show>
+  </>
+);
+
 export interface StatusBarProps {
   evalStatus: EvaluationStatus;
   meshes: Record<string, MeshData>;
@@ -89,34 +108,26 @@ export const StatusBar: Component<StatusBarProps> = (props) => {
       <Show when={(props.tessellationDiagnostics?.length ?? 0) > 0}>
         <span class={styles.divider} />
         <button
+          type="button"
           class={`${styles.section} ${styles.diagnosticsTrigger}`}
           data-testid="tessellation-errors"
           data-has-errors={diagnosticSummary().errorCount > 0 ? 'true' : 'false'}
-          aria-label={`Show tessellation diagnostics (${props.tessellationDiagnostics?.length ?? 0})`}
+          aria-label={`Show ${props.tessellationDiagnostics?.length ?? 0} tessellation diagnostics`}
           onClick={() => props.onToggleDiagnostics?.()}
         >
-          <Show when={diagnosticSummary().errorCount > 0}>
-            <span class={styles.errorBadge}>{diagnosticSummary().errorCount} error{diagnosticSummary().errorCount > 1 ? 's' : ''}</span>
-          </Show>
-          <Show when={diagnosticSummary().warningCount > 0}>
-            <span class={styles.warningBadge}>{diagnosticSummary().warningCount} warning{diagnosticSummary().warningCount > 1 ? 's' : ''}</span>
-          </Show>
+          <DiagBadgeContent getSummary={diagnosticSummary} />
         </button>
       </Show>
       <Show when={(props.compileDiagnostics?.length ?? 0) > 0}>
         <span class={styles.divider} />
         <button
+          type="button"
           class={`${styles.section} ${styles.diagnosticsTrigger}`}
           data-testid="diagnostics-count"
-          aria-label={`Show compile diagnostics (${props.compileDiagnostics?.length ?? 0})`}
+          aria-label={`Show ${props.compileDiagnostics?.length ?? 0} compile diagnostics`}
           onClick={() => props.onToggleDiagnostics?.()}
         >
-          <Show when={compileSummary().errorCount > 0}>
-            <span class={styles.errorBadge}>{compileSummary().errorCount} error{compileSummary().errorCount > 1 ? 's' : ''}</span>
-          </Show>
-          <Show when={compileSummary().warningCount > 0}>
-            <span class={styles.warningBadge}>{compileSummary().warningCount} warning{compileSummary().warningCount > 1 ? 's' : ''}</span>
-          </Show>
+          <DiagBadgeContent getSummary={compileSummary} />
         </button>
       </Show>
       <span class={styles.divider} />
