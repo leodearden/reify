@@ -950,10 +950,70 @@ pub fn detect_local_index_reassignment_diagnostics(
             .push((*handle_id, attr.local_index));
     }
 
-    // Step-10: group construction is in place; pairwise distance check + emission
-    // are added in step-12. Singleton groups (and the empty-group set) trivially
-    // yield no diagnostics today, satisfying step-9's contract.
-    let _ = (groups, centroids, tol_m, selector_span, diagnostics);
+    let tol_sq = tol_m * tol_m;
+
+    // Iterate groups in deterministic (feature_id, role) order. HashMap
+    // iteration order is unspecified — collect keys, sort, then walk. This
+    // keeps emission order stable across runs for downstream test assertions
+    // and human-readable diagnostic output. Sort key uses Display for
+    // FeatureId (its only string accessor) and Debug for Role (which has no
+    // canonical string form).
+    let mut group_keys: Vec<&(FeatureId, Role)> = groups.keys().collect();
+    group_keys.sort_by(|a, b| {
+        a.0.to_string()
+            .cmp(&b.0.to_string())
+            .then_with(|| format!("{:?}", a.1).cmp(&format!("{:?}", b.1)))
+    });
+
+    for key in group_keys {
+        let entries = &groups[key];
+        if entries.len() < 2 {
+            continue;
+        }
+        // Sort entries by local_index ascending so the smallest tied pair is
+        // emitted first (deterministic message wording: "indices i and j" with
+        // i < j and i is the smallest tied index in the group).
+        let mut sorted = entries.clone();
+        sorted.sort_by_key(|(_, local_index)| *local_index);
+
+        // Pairwise comparison; stop after first tie (at most one diagnostic
+        // per group). Handles absent from the centroid map are silently
+        // skipped — kernel-query failure at the call site is reported there
+        // and the helper just lacks data for that handle.
+        let mut emitted = false;
+        'outer: for i in 0..sorted.len() {
+            let (h_i, idx_i) = sorted[i];
+            let Some(c_i) = centroids.get(&h_i) else {
+                continue;
+            };
+            for j in (i + 1)..sorted.len() {
+                let (h_j, idx_j) = sorted[j];
+                let Some(c_j) = centroids.get(&h_j) else {
+                    continue;
+                };
+                let dx = c_i[0] - c_j[0];
+                let dy = c_i[1] - c_j[1];
+                let dz = c_i[2] - c_j[2];
+                let dist_sq = dx * dx + dy * dy + dz * dz;
+                if dist_sq <= tol_sq {
+                    let (feature_id, role) = key;
+                    diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "topology-attribute selector for (feature '{}', role '{:?}') has \
+                             geometrically tied local_index assignments at indices {} and {}; \
+                             selector resolution may shuffle after edits",
+                            feature_id, role, idx_i, idx_j,
+                        ))
+                        .with_code(DiagnosticCode::TopologyAttributeLocalIndexReassigned)
+                        .with_label(DiagnosticLabel::new(selector_span, "selector call")),
+                    );
+                    emitted = true;
+                    break 'outer;
+                }
+            }
+        }
+        let _ = emitted; // kept for future verbose-trace hooks
+    }
 }
 
 #[cfg(test)]
