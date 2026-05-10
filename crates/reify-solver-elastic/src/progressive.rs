@@ -272,6 +272,18 @@ mod tests {
     }
 
     #[test]
+    fn should_refine_terminates_when_budget_exhausted() {
+        // max_refinements = 3, current_level = 3 → budget exhausted, even with More demand.
+        let opts = ProgressiveOptions { max_refinements: 3, ..Default::default() };
+        let result = make_result(0.0);
+        assert_eq!(
+            should_refine(&opts, 3, &result, RefinementDemand::More),
+            AdvanceDecision::Terminate(TerminationReason::BudgetExhausted),
+            "current_level >= max_refinements must always yield BudgetExhausted"
+        );
+    }
+
+    #[test]
     fn progressive_options_default_has_sane_values() {
         let opts = ProgressiveOptions::default();
         assert!(opts.target_tolerance > 0.0, "target_tolerance must be positive");
