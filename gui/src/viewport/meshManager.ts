@@ -295,6 +295,15 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     // Use mesh.name as the entity path (set to entityPath in createMeshFromData).
     meshScalarChannels.set(mesh.name, data.scalar_channels ?? {});
 
+    // Refresh deformation side-tables from the incoming data.
+    // Always update original vertices (vertices may change on a topology edit).
+    meshOriginalVertices.set(mesh.name, data.vertices.slice());
+    if (data.displaced_positions) {
+      meshDisplacedPositions.set(mesh.name, data.displaced_positions.slice());
+    } else {
+      meshDisplacedPositions.delete(mesh.name);
+    }
+
     // If colorize is active and this mesh already has a colour attribute, re-bake
     // the colours in place with the new scalars.  Mirrors the setColorize mutation
     // path; ensures that sync()→sync() updates (e.g. from G2 FEA sourcing) are
@@ -308,6 +317,13 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
         (colorAttr as { count: number }).count = newColors.length / 3;
         colorAttr.needsUpdate = true;
       }
+    }
+
+    // If deformation is active and this mesh has displaced_positions, re-apply the warp
+    // to the freshly-updated position buffer so a mid-stream sync doesn't snap the view
+    // back to undeformed. Mirrors the colorize re-bake block above.
+    if (currentDeformation !== null && data.displaced_positions) {
+      applyWarpToMesh(mesh, mesh.name, currentDeformation.warpFactor);
     }
 
     // Rebuild BVH for the updated geometry
