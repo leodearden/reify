@@ -170,6 +170,49 @@ pub fn interpolate_p1_at_point(
     out
 }
 
+/// Connectivity carrier for [`locate_element_p1`].
+///
+/// Borrows the per-element 4-vertex physical-node array from the parent
+/// mesh; lets the caller assemble a `Vec<LocatableTet>` for a search
+/// without cloning. Mirrors the lifetime-borrowed-slice layout used by
+/// [`crate::assembly::AssemblyElement`] and [`crate::result::StressElement`].
+#[derive(Debug, Clone, Copy)]
+pub struct LocatableTet<'a> {
+    /// 4 vertex positions in canonical reference order
+    /// `(0,0,0), (1,0,0), (0,1,0), (0,0,1)`.
+    pub phys_nodes: &'a [[f64; 3]; 4],
+}
+
+/// Linear-scan search for the first P1 element containing `p`.
+///
+/// Returns `Some(i)` for the lowest index `i` whose
+/// [`point_in_tet_p1`]`(elements[i].phys_nodes, p, tol)` is true; `None`
+/// if no element contains the point.
+///
+/// # Complexity
+///
+/// O(n_elements) per query. The PRD §13 contract does not pin a
+/// complexity bound; the engine integration layer (PRD §16) is the
+/// natural home for caching a BVH/octree across multiple
+/// field-evaluation queries on the same mesh — putting a spatial index
+/// in this primitive would couple solver internals to acceleration data
+/// structures with no clear ownership story. If GUI probe-point queries
+/// surface this as a bottleneck, a `LocatedTets` wrapper can be added at
+/// the engine layer (or as a separate helper here) without changing
+/// this primitive's signature.
+pub fn locate_element_p1(
+    elements: &[LocatableTet<'_>],
+    p: [f64; 3],
+    tol: f64,
+) -> Option<usize> {
+    for (i, el) in elements.iter().enumerate() {
+        if point_in_tet_p1(el.phys_nodes, p, tol) {
+            return Some(i);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
