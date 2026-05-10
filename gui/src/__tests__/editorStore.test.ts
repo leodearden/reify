@@ -441,3 +441,82 @@ describe('editorStore externallyChanged', () => {
     });
   });
 });
+
+// ─── editorStore canSave ──────────────────────────────────────────────────────
+
+describe('editorStore canSave', () => {
+  it('(a) returns { ok: true, file } when path is in openFiles and not externally changed', () => {
+    createRoot((dispose) => {
+      const { canSave, openFile } = createEditorStore();
+      openFile(file1);
+      const result = canSave('bracket.ri');
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.file.path).toBe('bracket.ri');
+        expect(result.file.content).toBe(file1.content);
+      }
+      dispose();
+    });
+  });
+
+  it('(b) returns { ok: false, reason: "externally-changed" } when path is in openFiles AND externally changed', () => {
+    createRoot((dispose) => {
+      const { canSave, openFile, markExternallyChanged } = createEditorStore();
+      openFile(file1);
+      markExternallyChanged('bracket.ri');
+      const result = canSave('bracket.ri');
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.reason).toBe('externally-changed');
+      }
+      dispose();
+    });
+  });
+
+  it('(c) returns { ok: false, reason: "not-found" } when path is not in openFiles', () => {
+    createRoot((dispose) => {
+      const { canSave } = createEditorStore();
+      const result = canSave('bracket.ri');
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.reason).toBe('not-found');
+      }
+      dispose();
+    });
+  });
+
+  it('(d) not-found takes precedence over externally-changed when path is absent from openFiles', () => {
+    createRoot((dispose) => {
+      const { canSave, markExternallyChanged } = createEditorStore();
+      // Simulate a pathological state: markExternallyChanged called for a path
+      // that is not in openFiles.
+      markExternallyChanged('bracket.ri');
+      const result = canSave('bracket.ri');
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.reason).toBe('not-found');
+      }
+      dispose();
+    });
+  });
+
+  it('(e) canSave is purely read-only — 1000 calls do not mutate state', () => {
+    createRoot((dispose) => {
+      const { state, canSave, openFile, markExternallyChanged } = createEditorStore();
+      openFile(file1);
+      markExternallyChanged('bracket.ri');
+
+      const ecRefBefore = state.externallyChanged;
+      const openFilesRefBefore = state.openFiles;
+
+      for (let i = 0; i < 1000; i++) {
+        canSave('bracket.ri');
+      }
+
+      // Reference identity confirms no setState was called during the loop.
+      expect(state.externallyChanged).toBe(ecRefBefore);
+      expect(state.openFiles).toBe(openFilesRefBefore);
+      dispose();
+    });
+  });
+});
