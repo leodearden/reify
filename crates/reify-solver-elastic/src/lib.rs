@@ -202,6 +202,7 @@
 //! ```
 
 pub mod assembly;
+pub mod progressive;
 pub mod boundary;
 pub mod constitutive;
 pub mod elements;
