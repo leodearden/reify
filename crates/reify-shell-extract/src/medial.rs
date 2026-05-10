@@ -1838,8 +1838,8 @@ mod tests {
         // The slab fixture produces at least 128 medial voxels (asserted by
         // the existing slab test), so the windows(2) check is load-bearing.
         assert!(
-            mask.voxels.len() >= 2,
-            "need ≥ 2 voxels for ordering check; got {}",
+            mask.voxels.len() >= 128,
+            "need ≥ 128 voxels for ordering check; got {}",
             mask.voxels.len()
         );
 
