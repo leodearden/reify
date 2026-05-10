@@ -32,10 +32,14 @@ use crate::constitutive::IsotropicElastic;
 /// integrand and [`IsotropicElastic::d_matrix`] for the engineering-strain
 /// Voigt convention (shear-block diagonal = μ, not 2μ).
 pub fn element_stiffness_wedge_p1(
-    _phys_nodes: &[[f64; 3]; 6],
-    _material: &IsotropicElastic,
+    phys_nodes: &[[f64; 3]; 6],
+    material: &IsotropicElastic,
 ) -> ElementStiffness {
-    ElementStiffness::zeros(18) // stub — RED step; replaced in GREEN step
+    crate::assembly::tet::element_stiffness_generic(
+        &crate::elements::wedge_p1::WedgeP1,
+        &phys_nodes[..],
+        material,
+    )
 }
 
 /// Compute the 24×24 element stiffness for a P1 (trilinear) hexahedron.
