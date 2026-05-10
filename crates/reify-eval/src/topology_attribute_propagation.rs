@@ -2972,5 +2972,35 @@ mod tests {
                 "expected no diagnostic — split-cluster entries must be skipped, got: {diagnostics:?}"
             );
         }
+
+        #[test]
+        fn detect_local_index_reassignment_does_not_emit_when_centroids_are_well_separated() {
+            // Same two-entry (feature_id, role) group as the tied-centroids
+            // test, but centroids differ by [10.0, 0.0, 0.0] — Euclidean
+            // distance 10 m, vastly above any reasonable tolerance. Kernel
+            // enumeration order ties to their geometric distinctness, so
+            // local_index assignment is stable across edits and there is
+            // nothing to warn about. Regression guard for the squared-distance
+            // threshold check.
+            let attr0 = make_attr("F#realization[0]", Role::Side, 0);
+            let attr1 = make_attr("F#realization[0]", Role::Side, 1);
+            let h0 = GeometryHandleId(1);
+            let h1 = GeometryHandleId(2);
+            let mut centroids: HashMap<GeometryHandleId, [f64; 3]> = HashMap::new();
+            centroids.insert(h0, [0.0, 0.0, 0.0]);
+            centroids.insert(h1, [10.0, 0.0, 0.0]);
+            let mut diagnostics = Vec::new();
+            detect_local_index_reassignment_diagnostics(
+                &[(h0, &attr0), (h1, &attr1)],
+                &centroids,
+                1e-9,
+                synthetic_span(),
+                &mut diagnostics,
+            );
+            assert!(
+                diagnostics.is_empty(),
+                "expected no diagnostic — well-separated centroids pose no fragility, got: {diagnostics:?}"
+            );
+        }
     }
 }
