@@ -188,3 +188,159 @@ fn plate_with_hole_fixture_returns_valid_p1_mesh_with_hole_at_center_and_positiv
     assert!(saw_outer_rim, "surface_node_indices must include outer-rim nodes");
     assert!(saw_inner_rim, "surface_node_indices must include inner-rim (hole) nodes");
 }
+
+// ── Step-7: bracket fixture validity ─────────────────────────────────────────
+
+#[test]
+fn bracket_fixture_returns_valid_p1_mesh_with_fillet_radius_respected_and_positive_volume_tets() {
+    use reify_mesh_morph::{MorphOptions, QualityVerdict, quality_check};
+    use reify_types::ElementOrderTag;
+
+    let arm_length = 1.0_f64;
+    let thickness = 0.2_f64;
+    let fillet_radius = 0.1_f64;
+    let (mesh, surface_indices) = fixtures::bracket(arm_length, thickness, fillet_radius, 4);
+
+    // P1 element order is required by quality_check + elasticity_morph.
+    assert_eq!(
+        mesh.element_order,
+        ElementOrderTag::P1,
+        "bracket must return a P1 mesh"
+    );
+
+    // Flat vertices and tet_indices buffers must be sized for their stride.
+    assert_eq!(
+        mesh.vertices.len() % 3,
+        0,
+        "vertices must be a flat triple-stride buffer"
+    );
+    assert_eq!(
+        mesh.tet_indices.len() % 4,
+        0,
+        "tet_indices must be a flat 4-tuple-stride buffer (P1 tets)"
+    );
+    assert!(
+        !mesh.tet_indices.is_empty(),
+        "bracket must produce at least one tet"
+    );
+
+    // Every tet must be right-handed (positive scaled Jacobian) — reuse
+    // quality_check with a permissive options profile so no soft floor trips.
+    // HardFail signals at least one inverted tet — that's the contract this
+    // assertion pins.
+    let permissive = MorphOptions {
+        quality_floor_min_scaled_jacobian: 0.0,
+        quality_floor_pct_below_025: 1.01,
+        quality_aspect_ratio_factor_max: f64::INFINITY,
+        ..MorphOptions::default()
+    };
+    let verdict = quality_check(&mesh, &mesh, &permissive);
+    assert!(
+        !matches!(verdict, QualityVerdict::HardFail(_)),
+        "every tet must be right-handed (no inversions); got {verdict:?}"
+    );
+
+    // Fillet exclusion zone: the L-bracket footprint subtracts a quarter
+    // disk of radius `fillet_radius` centered at the inner corner
+    // (thickness, thickness). Reify's CAD convention (matches OCCT
+    // BRepFilletAPI) is that fillets remove material — see
+    // `crates/reify-kernel-occt/tests/common/mod.rs:105`. Therefore no
+    // mesh vertex may lie inside the quarter disk:
+    //   {(x, y) : x ≤ thickness, y ≤ thickness,
+    //    (x - thickness)² + (y - thickness)² < fillet_radius² }.
+    //
+    // Tolerance: fillet-arc vertices sit at exactly r = fillet_radius
+    // (subject to f32 rounding); allow a small slop.
+    let cx = thickness;
+    let cy = thickness;
+    let tol = 1e-5_f32;
+    let n_vertices = mesh.vertices.len() / 3;
+    for v in 0..n_vertices {
+        let x = mesh.vertices[v * 3] as f64;
+        let y = mesh.vertices[v * 3 + 1] as f64;
+        let in_corner_block = x <= thickness + tol as f64 && y <= thickness + tol as f64;
+        if !in_corner_block {
+            continue;
+        }
+        let dx = x - cx;
+        let dy = y - cy;
+        let r = (dx * dx + dy * dy).sqrt();
+        assert!(
+            r as f32 + tol >= fillet_radius as f32,
+            "vertex {v} at ({x:.5},{y:.5}) is inside fillet exclusion zone \
+             (r={r:.5} < fillet_radius={fillet_radius:.5})"
+        );
+    }
+
+    // Surface coverage: surface_node_indices must span all six bounding
+    // faces of the L-bracket plus the curved fillet surface. The bracket
+    // is extruded through `thickness` in z, and the L footprint sits in
+    // [0, arm_length]² with arm widths `thickness`.
+    //
+    // Six bounding faces:
+    //   1. y=0           — bottom face of arm 1
+    //   2. y=arm_length  — top face of arm 2
+    //   3. x=0           — left face of arm 2
+    //   4. x=arm_length  — right face of arm 1
+    //   5. z=0           — bottom z face
+    //   6. z=thickness   — top z face
+    // Plus: the curved fillet surface — nodes at distance ≈ fillet_radius
+    // from the fillet center (thickness, thickness), lying inside the
+    // corner block.
+    assert!(
+        !surface_indices.is_empty(),
+        "surface_node_indices must be non-empty"
+    );
+    let outer_tol = 1e-5_f32;
+    let arc_tol = 1e-3_f32;
+    let mut saw_y0 = false;
+    let mut saw_ymax = false;
+    let mut saw_x0 = false;
+    let mut saw_xmax = false;
+    let mut saw_z0 = false;
+    let mut saw_zmax = false;
+    let mut saw_fillet_arc = false;
+    for &idx in &surface_indices {
+        let v = idx as usize;
+        let x = mesh.vertices[v * 3];
+        let y = mesh.vertices[v * 3 + 1];
+        let z = mesh.vertices[v * 3 + 2];
+        if y.abs() < outer_tol {
+            saw_y0 = true;
+        }
+        if (y - arm_length as f32).abs() < outer_tol {
+            saw_ymax = true;
+        }
+        if x.abs() < outer_tol {
+            saw_x0 = true;
+        }
+        if (x - arm_length as f32).abs() < outer_tol {
+            saw_xmax = true;
+        }
+        if z.abs() < outer_tol {
+            saw_z0 = true;
+        }
+        if (z - thickness as f32).abs() < outer_tol {
+            saw_zmax = true;
+        }
+        let dx = x as f64 - cx;
+        let dy = y as f64 - cy;
+        let r = (dx * dx + dy * dy).sqrt();
+        if (r - fillet_radius).abs() < arc_tol as f64
+            && x as f64 <= thickness + arc_tol as f64
+            && y as f64 <= thickness + arc_tol as f64
+        {
+            saw_fillet_arc = true;
+        }
+    }
+    assert!(saw_y0, "surface must include y=0 face nodes");
+    assert!(saw_ymax, "surface must include y=arm_length face nodes");
+    assert!(saw_x0, "surface must include x=0 face nodes");
+    assert!(saw_xmax, "surface must include x=arm_length face nodes");
+    assert!(saw_z0, "surface must include z=0 face nodes");
+    assert!(saw_zmax, "surface must include z=thickness face nodes");
+    assert!(
+        saw_fillet_arc,
+        "surface must include curved fillet-arc nodes (r≈fillet_radius from inner corner)"
+    );
+}
