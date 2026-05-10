@@ -4128,4 +4128,87 @@ mod tests {
             diag.message
         );
     }
+
+    /// Both handles produce `Ok(Value::Real(0.0))` from the kernel, which
+    /// `parse_xyz_value` rejects as a non-string value → exactly one coalesced
+    /// parse-fail warning, no query-fail warning.
+    #[test]
+    fn collect_centroids_with_failure_summary_coalesces_parse_errors() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_types::{Role, Severity, Value};
+
+        let realization_id = RealizationNodeId::new("TestEntity", 0);
+        let feature_id = FeatureId::from(&realization_id);
+
+        let attr0 = TopologyAttribute {
+            feature_id: feature_id.clone(),
+            role: Role::Side,
+            local_index: 0,
+            user_label: None,
+            mod_history: Vec::new(),
+        };
+        let attr1 = TopologyAttribute {
+            feature_id: feature_id.clone(),
+            role: Role::Side,
+            local_index: 1,
+            user_label: None,
+            mod_history: Vec::new(),
+        };
+        let h0 = GeometryHandleId(101);
+        let h1 = GeometryHandleId(102);
+        let realization_attrs: Vec<(GeometryHandleId, &TopologyAttribute)> =
+            vec![(h0, &attr0), (h1, &attr1)];
+
+        // Value::Real is not a string → parse_xyz_value returns Err for both.
+        let kernel = MockGeometryKernel::new()
+            .with_centroid_result(h0, Value::Real(0.0))
+            .with_centroid_result(h1, Value::Real(0.0));
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let centroids = collect_centroids_with_failure_summary(
+            &realization_attrs,
+            &kernel,
+            &realization_id,
+            &mut diagnostics,
+        );
+
+        assert!(
+            centroids.is_empty(),
+            "expected no successful centroids when all parses fail, got: {centroids:?}"
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly 1 coalesced parse-fail warning, got {}: {diagnostics:?}",
+            diagnostics.len()
+        );
+        let diag = &diagnostics[0];
+        assert_eq!(
+            diag.severity,
+            Severity::Warning,
+            "diagnostic must be a Warning, got: {diag:?}"
+        );
+        assert!(
+            diag.message
+                .contains("topology-attribute centroid parse failed for 2 handle(s)"),
+            "message must contain the parse-fail count phrase, got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("TestEntity#realization[0]"),
+            "message must contain the realization_id display form, got: {}",
+            diag.message
+        );
+        // parse_xyz_value emits QueryError::QueryFailed(
+        //   "local_index_reassignment_centroid returned non-string value: Real(0.0)")
+        // Display adds "geometry query failed: " prefix.
+        assert!(
+            diag.message.contains(
+                "(first: geometry query failed: local_index_reassignment_centroid \
+                 returned non-string value: Real(0.0))"
+            ),
+            "message must contain the first parse-error text, got: {}",
+            diag.message
+        );
+    }
 }
