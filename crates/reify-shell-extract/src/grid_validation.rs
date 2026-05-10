@@ -11,6 +11,9 @@ use reify_types::value::{SampledField, SampledGridKind};
 /// Produced by [`validate_regular3d`]; converted to each algorithm's
 /// error enum via `From<GridValidationError>` impls.
 ///
+/// `#[non_exhaustive]` lets future variants be added or removed without
+/// breaking external exhaustive-match consumers.
+///
 /// ```compile_fail
 /// use reify_shell_extract::GridValidationError;
 /// fn _check(e: GridValidationError) {
@@ -26,6 +29,7 @@ use reify_types::value::{SampledField, SampledGridKind};
 ///     }
 /// }
 /// ```
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub enum GridValidationError {
     /// The input [`SampledField`] is not 3D — only
