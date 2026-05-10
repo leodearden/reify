@@ -598,8 +598,10 @@ export async function onAutoResolveIteration(
       typeof p['iteration'] !== 'number' ||
       typeof p['parameters'] !== 'object' ||
       p['parameters'] === null ||
+      Array.isArray(p['parameters']) ||
       typeof p['constraints'] !== 'object' ||
-      p['constraints'] === null
+      p['constraints'] === null ||
+      Array.isArray(p['constraints'])
     ) {
       console.warn('[auto-resolve-iteration] malformed payload; dropping event', p);
       return;
