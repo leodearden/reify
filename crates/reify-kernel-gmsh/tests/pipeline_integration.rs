@@ -7,8 +7,10 @@
 //! Integration tests that call `mesh_surface_to_volume_with_diagnostics` are
 //! inside the `with_libgmsh` module, gated with `#[cfg(has_gmsh)]`.
 
-use reify_kernel_gmsh::mesh_volume::{apply_repair_if_requested, MeshSurfaceToVolumeReport};
+use reify_kernel_gmsh::auto_size::AutoSizeConfig;
+use reify_kernel_gmsh::mesh_volume::{apply_repair_if_requested, resolve_mesh_size, MeshSurfaceToVolumeReport};
 use reify_kernel_gmsh::repair::RepairConfig;
+use reify_kernel_gmsh::MeshingOptions;
 use reify_types::Mesh;
 
 // ---------------------------------------------------------------------------
@@ -82,5 +84,112 @@ fn apply_repair_if_requested_some_delegates_to_repair_surface_mesh() {
         3,
         "exactly one triangle should survive; got {} indices",
         result.indices.len()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// resolve_mesh_size — caller-wins, auto-fires, none-defers
+// ---------------------------------------------------------------------------
+
+/// A unit cube surface mesh — 8 vertices, 12 triangles (2 per face).
+/// Inline duplicate of `mesh_to_volume_tests.rs::unit_cube_mesh`.
+fn unit_cube_mesh() -> Mesh {
+    Mesh {
+        vertices: vec![
+            0.0, 0.0, 0.0, // 0
+            1.0, 0.0, 0.0, // 1
+            1.0, 1.0, 0.0, // 2
+            0.0, 1.0, 0.0, // 3
+            0.0, 0.0, 1.0, // 4
+            1.0, 0.0, 1.0, // 5
+            1.0, 1.0, 1.0, // 6
+            0.0, 1.0, 1.0, // 7
+        ],
+        #[rustfmt::skip]
+        indices: vec![
+            0, 2, 1,  0, 3, 2,
+            4, 5, 6,  4, 6, 7,
+            0, 1, 5,  0, 5, 4,
+            3, 7, 6,  3, 6, 2,
+            0, 4, 7,  0, 7, 3,
+            1, 2, 6,  1, 6, 5,
+        ],
+        normals: None,
+    }
+}
+
+/// Caller's explicit `mesh_size` must win over the auto-derived value, even
+/// when both are supplied. Pin: the caller-wins policy from the design decision.
+#[test]
+fn resolve_mesh_size_caller_value_wins_over_auto() {
+    let cube = unit_cube_mesh();
+    let options = MeshingOptions {
+        mesh_size: Some(0.42),
+        ..Default::default()
+    };
+    let result = resolve_mesh_size(&cube, &options, Some(AutoSizeConfig::default()));
+    assert_eq!(
+        result,
+        Ok(Some(0.42)),
+        "caller's Some(0.42) must win over auto-size even when auto_size_cfg is Some"
+    );
+}
+
+/// When both `mesh_size` and `auto_size_cfg` are `None`, the function must
+/// return `Ok(None)` — deferring to `mesh_to_volume`'s internal default.
+#[test]
+fn resolve_mesh_size_no_caller_no_auto_returns_none() {
+    let mesh = sliver_mesh();
+    let options = MeshingOptions::default(); // mesh_size: None
+    let result = resolve_mesh_size(&mesh, &options, None);
+    assert_eq!(
+        result,
+        Ok(None),
+        "no caller override + no auto_size_cfg must return Ok(None)"
+    );
+}
+
+/// When the caller's `mesh_size` is unset but `auto_size_cfg` is `Some`,
+/// the function must call `auto_mesh_size_from_features` and return its result.
+/// For a single triangle with all edges of length 0.5 and multiplier=1.0,
+/// the auto-derived size is ≈ 0.5.
+#[test]
+fn resolve_mesh_size_auto_fires_when_caller_unset() {
+    // Triangle with all edges exactly 0.5 m long.
+    let mesh = Mesh {
+        vertices: vec![
+            0.0, 0.0, 0.0, // v0
+            0.5, 0.0, 0.0, // v1 — edge v0→v1 = 0.5
+            0.25, 0.433012702_f32, 0.0, // v2 — equilateral (approx)
+        ],
+        indices: vec![0, 1, 2],
+        normals: None,
+    };
+    let options = MeshingOptions::default(); // mesh_size: None
+    let result = resolve_mesh_size(&mesh, &options, Some(AutoSizeConfig::default()));
+    let size = result.expect("auto_size must succeed for a well-formed triangle");
+    let size = size.expect("auto_size must return Some for a non-empty mesh");
+    assert!(
+        (size - 0.5).abs() < 0.01,
+        "auto-derived size should be ≈ 0.5 (smallest edge length × 1.0 multiplier); got {size}"
+    );
+}
+
+/// When `auto_size_cfg` fires but the mesh has no indices, `auto_mesh_size_from_features`
+/// returns `Ok(0.0)`. The wrapper must collapse `0.0` to `None` (per design
+/// decision: zero means "auto-size unavailable", defer to kernel default).
+#[test]
+fn resolve_mesh_size_empty_indices_collapses_to_none() {
+    let mesh = Mesh {
+        vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+        indices: vec![], // no triangles → auto returns 0.0
+        normals: None,
+    };
+    let options = MeshingOptions::default();
+    let result = resolve_mesh_size(&mesh, &options, Some(AutoSizeConfig::default()));
+    assert_eq!(
+        result,
+        Ok(None),
+        "auto returns 0.0 for empty-indices mesh; wrapper must collapse to Ok(None)"
     );
 }
