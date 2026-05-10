@@ -596,10 +596,11 @@ fn per_stage_tolerance_for_plan_governs_tolerance_budget_for_two_stage_dispatch_
     // `compute_tessellation_budgets`. Direct test-seam callers build it at
     // the call site, mirroring the borrowed-registry pattern.
     //
-    // Derive `available` from `BUDGET_QUERY_TRIPLE_V02.2` — the same source
-    // production code uses — so a future change to the slice is caught here.
-    let available: HashSet<ReprKind> =
-        reify_eval::Engine::BUDGET_QUERY_TRIPLE_V02.2.iter().copied().collect();
+    // Use `Engine::budget_available_set()` — the public helper that wraps
+    // `BUDGET_QUERY_TRIPLE_V02.2` — so a future change to the underlying
+    // slice is caught here automatically without requiring cross-crate access
+    // to the `pub(crate)` const.
+    let available: HashSet<ReprKind> = reify_eval::Engine::budget_available_set();
 
     let demand = 1e-6_f64;
     assert_eq!(

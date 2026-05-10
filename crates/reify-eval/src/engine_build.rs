@@ -1048,10 +1048,26 @@ impl Engine {
     /// construct a `HashSet<ReprKind>`, which is then passed by reference
     /// to every `compute_realization_tolerance_budget` call in the
     /// realization loop — rather than reconstructed per call inside the
-    /// helper. A single grep for `BUDGET_QUERY_TRIPLE_V02` still surfaces
-    /// every consumer.
-    pub const BUDGET_QUERY_TRIPLE_V02: (Operation, ReprKind, &'static [ReprKind]) =
+    /// helper. A single grep for `BUDGET_QUERY_TRIPLE_V02` or
+    /// [`Self::budget_available_set`] surfaces every consumer; the latter
+    /// is the supported external accessor for the available-repr set.
+    pub(crate) const BUDGET_QUERY_TRIPLE_V02: (Operation, ReprKind, &'static [ReprKind]) =
         (Operation::BooleanUnion, ReprKind::BRep, &[ReprKind::BRep]);
+
+    /// Returns the set of `ReprKind`s that the dispatcher considers
+    /// available for the v0.2 single-kernel budget query.
+    ///
+    /// This is the **supported external accessor** for the available-repr
+    /// set.  `BUDGET_QUERY_TRIPLE_V02` is `pub(crate)`-only and is not
+    /// part of the public API; external callers (e.g. integration tests)
+    /// should use this helper so that a future change to the underlying
+    /// slice (e.g. when v0.3 multi-kernel adapters land) is caught
+    /// automatically by any test that calls `budget_available_set`.  A
+    /// single grep for `budget_available_set` or `BUDGET_QUERY_TRIPLE_V02`
+    /// surfaces every consumer.
+    pub fn budget_available_set() -> HashSet<ReprKind> {
+        Self::BUDGET_QUERY_TRIPLE_V02.2.iter().copied().collect()
+    }
 
     /// Precompute per-realization demanded tolerance for the cache-key
     /// `(entity_id, ReprKind::BRep, demanded_tol)` triple, plus the
