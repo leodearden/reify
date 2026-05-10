@@ -3656,19 +3656,31 @@ mod tests {
     /// Pins the return type of `compute_tessellation_budgets`:
     /// `Vec<Vec<f64>>` indexed `[template_idx][realization_idx]`.
     ///
-    /// Fixture: module with one template `A` carrying one realization, a
-    /// single-kernel registry `{occt: [(BooleanUnion, BRep)]}`. Since
-    /// `demanded_tols[0][0]` is `None` (no tolerance contributor), the helper
-    /// falls back to `effective_tessellation_tolerance(module)` (default
-    /// `1e-4`) and routes it through the v0.2 single-kernel registry which
-    /// yields a 0-conversion plan → budget equals the fallback value.
+    /// Two sub-scenarios share the same module fixture (1 template `EntityA`,
+    /// 1 realization) and registry `{occt: [(BooleanUnion, BRep)]}`:
+    ///
+    /// (a) **No demanded tol / fallback path**: `demanded_tols[0][0]` is
+    ///     `None` (no tolerance contributor) → helper falls back to
+    ///     `effective_tessellation_tolerance(module)` (default `1e-4`) and
+    ///     routes it through the v0.2 single-kernel registry which yields a
+    ///     0-conversion plan → budget equals the fallback value.
+    ///
+    /// (b) **Seeded active-tolerance scope / Some-branch**: `EntityA` is
+    ///     inserted into `active_tolerance_scope` with value `5e-7`.
+    ///     Asserts (i) `demanded_b[0][0] == Some(5e-7)` — the scope entry
+    ///     surfaces through the chain — and (ii) `budgets_b[0][0] == 5e-7`
+    ///     bit-exactly — the v0.2 0-conversion DispatchPlan passes the
+    ///     demand through `compute_realization_tolerance_budget` unchanged.
     #[test]
     fn compute_tessellation_budgets_returns_positionally_indexed_vec_of_vec() {
         use reify_test_support::{CompiledModuleBuilder, MockConstraintChecker, TopologyTemplateBuilder};
         use reify_types::ModulePath;
 
         let checker = MockConstraintChecker::new();
-        let engine = crate::Engine::new(Box::new(checker), None);
+        // `mut` required for sub-scenario (b) where we seed
+        // `active_tolerance_scope` directly (crate-private field, accessible
+        // from `mod tests` within the same crate).
+        let mut engine = crate::Engine::new(Box::new(checker), None);
 
         let template_a = TopologyTemplateBuilder::new("EntityA")
             .realization("EntityA", 0, vec![])
@@ -3683,6 +3695,7 @@ mod tests {
         let mut registry: BTreeMap<String, CapabilityDescriptor> = BTreeMap::new();
         registry.insert("occt".to_string(), occt);
 
+        // ── (a) no demanded tol → fallback path ─────────────────────────────
         let demanded = engine.compute_demanded_tols(&module);
         let budgets: Vec<Vec<f64>> = engine.compute_tessellation_budgets(&module, &demanded, &registry);
 
@@ -3693,6 +3706,36 @@ mod tests {
             Engine::effective_tessellation_tolerance(&module),
             "no demanded tol → falls back to module default; 0-conversion DispatchPlan \
              passes it through bit-exactly",
+        );
+
+        // ── (b) seeded active-tolerance scope → Some-branch ─────────────────
+        //
+        // Seed `active_tolerance_scope` (crate-private field) so that
+        // `active_tolerance_for("EntityA")` returns `Some(5e-7)`.  This
+        // drives `compute_demanded_tols` into `Some(5e-7)`, which in turn
+        // drives `compute_tessellation_budgets` into the
+        // `compute_realization_tolerance_budget` Some-branch.  Under the v0.2
+        // single-kernel registry the dispatcher returns a 0-conversion
+        // DispatchPlan, so `per_stage_tolerance_for_plan` passes the demanded
+        // tolerance through unchanged — budget == demanded bit-exactly.
+        engine.active_tolerance_scope.insert("EntityA".to_string(), 5e-7_f64);
+
+        let demanded_b = engine.compute_demanded_tols(&module);
+        let budgets_b: Vec<Vec<f64>> =
+            engine.compute_tessellation_budgets(&module, &demanded_b, &registry);
+
+        assert_eq!(
+            demanded_b[0][0],
+            Some(5e-7),
+            "EntityA scope entry must surface as Some(5e-7) in demanded_tols[0][0] \
+             (precondition for the Some-branch budget assertion below)",
+        );
+        assert_eq!(
+            budgets_b[0][0],
+            5e-7,
+            "0-conversion DispatchPlan: compute_realization_tolerance_budget must \
+             pass the demanded tolerance through unchanged (bit-exact). \
+             Demand: 5e-7",
         );
     }
 
