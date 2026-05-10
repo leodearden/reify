@@ -1190,6 +1190,35 @@ pub(crate) fn compile_expr_guarded(
                     {
                         Some(ty) => ty,
                         None => {
+                            // Check whether the member is a geometry realization on the child
+                            // template (task-3397). If so, emit a specific, actionable diagnostic
+                            // rather than the generic "unknown member" fallback.
+                            let is_geometry_realization = scope
+                                .sub_realization_names
+                                .get(sub_name.as_str())
+                                .is_some_and(|s| s.contains(member.as_str()));
+                            if is_geometry_realization {
+                                let child_struct = scope
+                                    .sub_component_types
+                                    .get(sub_name.as_str())
+                                    .map(|s| s.as_str())
+                                    .unwrap_or(sub_name.as_str());
+                                // Anti-cascade: make_poison_literal returns Type::Error so
+                                // downstream expressions do not emit cascade diagnostics.
+                                return make_poison_literal(
+                                    diagnostics,
+                                    Diagnostic::error(format!(
+                                        "cross-sub access to geometry-typed member '{}' on sub '{}' \
+                                         is not yet supported in v0.1; compose geometry inside '{}' \
+                                         or pass scalar parameters to its primitives",
+                                        member, sub_name, child_struct
+                                    ))
+                                    .with_label(DiagnosticLabel::new(
+                                        expr.span,
+                                        "cross-sub geometry access",
+                                    )),
+                                );
+                            }
                             // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
                             return make_poison_literal(
                                 diagnostics,

@@ -672,6 +672,11 @@ pub(crate) fn compile_entity(
                                     sub.name.clone(),
                                     member_type_map_from_template(child_tmpl),
                                 );
+                                // Populate sub_realization_names for cross-sub geometry diagnostic.
+                                scope.sub_realization_names.insert(
+                                    sub.name.clone(),
+                                    realization_name_set_from_template(child_tmpl),
+                                );
                             }
                         }
                         other => {
@@ -786,6 +791,11 @@ pub(crate) fn compile_entity(
                     scope
                         .sub_member_types
                         .insert(sub.name.clone(), member_types);
+                    // Populate sub_realization_names for cross-sub geometry diagnostic.
+                    scope.sub_realization_names.insert(
+                        sub.name.clone(),
+                        realization_name_set_from_template(child_tmpl),
+                    );
                     // External-scope match-arm cluster pre-pass (task 2373):
                     // copy each cluster from the child template along with
                     // per-arm member maps so that `<sub>.<cluster>.<inner>`
@@ -2170,6 +2180,27 @@ fn member_type_map_from_template(tmpl: &TopologyTemplate) -> BTreeMap<String, Ty
     tmpl.value_cells
         .iter()
         .map(|vc| (vc.id.member.clone(), vc.cell_type.clone()))
+        .collect()
+}
+
+/// Collect the names of all named `RealizationDecl`s from a child `TopologyTemplate`.
+///
+/// Geometry-typed params (`param x : Solid = <geom>`) and geometry lets
+/// (`let x = box(...)`) are BOTH lowered as `RealizationDecl`s (never as
+/// `ValueCellDecl`s), so neither ever appears in `member_type_map_from_template`
+/// output.  This helper captures those names so that `expr.rs` can distinguish
+/// "genuinely missing member" from "member exists as a realization — cross-sub
+/// geometry access not yet supported in v0.1".
+///
+/// Called side-by-side with `member_type_map_from_template` in the two Sub
+/// pre-pass sites (regular Sub at entity.rs ~line 766; match-arm Sub at ~line
+/// 671), following the single-source-of-truth pattern of that helper.
+fn realization_name_set_from_template(
+    tmpl: &TopologyTemplate,
+) -> std::collections::BTreeSet<String> {
+    tmpl.realizations
+        .iter()
+        .filter_map(|r| r.name.clone())
         .collect()
 }
 

@@ -1,5 +1,5 @@
 use super::*;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 // --- Compilation context ---
 
@@ -54,6 +54,24 @@ pub(crate) struct CompilationScope<'u> {
     /// Inner map is BTreeMap so iteration order is lexicographic — this makes bare
     /// collection-sub identifier resolution (expr.rs: members.iter().next()) deterministic.
     pub(crate) sub_member_types: HashMap<String, BTreeMap<String, Type>>,
+    /// Named realizations (geometry-producing members lowered as `RealizationDecl`s)
+    /// per sub-component: sub_name → set of realization names.
+    ///
+    /// Geometry-typed params (`param x : Solid = <geom>`) and geometry lets
+    /// (`let x = box(...)`) are both lowered as `RealizationDecl`s and therefore
+    /// never appear in `value_cells` — so `sub_member_types[sub][member]` returns
+    /// `None` for them, triggering the "unknown member" fallback.
+    ///
+    /// This side-map lets `expr.rs` distinguish "the member genuinely does not
+    /// exist" from "the member is a realization on the child template, but
+    /// cross-sub geometry access is not yet supported in v0.1".  When the lookup
+    /// in `sub_member_types` misses but `sub_realization_names[sub]` contains the
+    /// member name, `expr.rs` emits the specific cross-sub geometry diagnostic via
+    /// `make_poison_literal` rather than the generic "unknown member" fallback.
+    ///
+    /// `BTreeSet` (not `HashSet`) for deterministic iteration, mirroring the
+    /// precedent of `sub_member_types`' inner `BTreeMap`.
+    pub(crate) sub_realization_names: HashMap<String, BTreeSet<String>>,
     /// Whether the current structure has at least one geometry-producing let binding
     /// (e.g., `let shape = box(...)`). Used to gate @face/@edge selectors at compile time.
     pub(crate) has_geometry: bool,
@@ -121,6 +139,7 @@ impl<'u> CompilationScope<'u> {
             template_registry: None,
             is_entity_scope: false,
             sub_member_types: HashMap::new(),
+            sub_realization_names: HashMap::new(),
             has_geometry: false,
             match_arm_groups: BTreeMap::new(),
             match_arm_group_arm_member_types: HashMap::new(),
