@@ -1082,12 +1082,13 @@ impl Engine {
     /// `[template_idx][realization_idx]` — zero String clones, zero hashing,
     /// O(1) lookup (task 3227).
     ///
-    /// Resolves each entry via the priority chain
-    /// [`Engine::demanded_tolerance_for_output`] →
-    /// [`Engine::active_tolerance_for`]; no contributor → `None`.
-    /// Callers that need the f64 fallback (typically the tessellation-budget
-    /// computation) chain through to `effective_tessellation_tolerance` at
-    /// the consumption site.
+    /// Resolves each entry via [`Engine::demanded_tolerance_for_output`],
+    /// which folds both an output-level `RepresentationWithin` constraint
+    /// (when `eval_state` is populated) and the active-tolerance contributor
+    /// for the subject entity into a single `Option<f64>` — returning `None`
+    /// only when neither contributor is present.  Callers that need the f64
+    /// fallback (typically the tessellation-budget computation) chain through
+    /// to `effective_tessellation_tolerance` at the consumption site.
     ///
     /// Extracted in the task 2874 amendment from inline blocks duplicated
     /// across `build` / `build_snapshot` / `tessellate_realizations` /
@@ -1102,7 +1103,6 @@ impl Engine {
                     .iter()
                     .map(|r| {
                         self.demanded_tolerance_for_output(&t.name, &r.id.entity)
-                            .or_else(|| self.active_tolerance_for(&r.id.entity))
                     })
                     .collect()
             })
@@ -1168,11 +1168,13 @@ impl Engine {
                     .iter()
                     .enumerate()
                     .map(|(r_idx, _r)| {
-                        let req_tol = demanded_tols
-                            .get(t_idx)
-                            .and_then(|v| v.get(r_idx))
-                            .copied()
-                            .flatten()
+                        // Task 3227 / 3297: direct positional index — the
+                        // producer (`compute_demanded_tols`) and consumer (this fn)
+                        // iterate the same `module.templates × realizations`
+                        // product unconditionally, so OOB is unambiguously an
+                        // internal bug; Rust's slice indexing panics with the
+                        // precise OOB message at runtime in both debug and release.
+                        let req_tol = demanded_tols[t_idx][r_idx]
                             .unwrap_or_else(|| Self::effective_tessellation_tolerance(module));
                         self.compute_realization_tolerance_budget(
                             &registry_borrowed,
@@ -3575,10 +3577,11 @@ mod tests {
     ///     `result[1][0] == Some(2e-5)`, and `result[1][1] == None` —
     ///     pinning correct positional alignment plus that an
     ///     `active_tolerance_scope` entry surfaces through the chain as
-    ///     `Some(_)`.  Note: this does NOT pin the `or_else` fallback or
-    ///     branch ordering in the priority chain — see design decision in
-    ///     plan.json for the rationale (the `.or_else` branch is logically
-    ///     dead given current `demanded_tolerance_for_output` semantics).
+    ///     `Some(_)`.  Note: `demanded_tolerance_for_output` already
+    ///     incorporates `active_tolerance_for` internally (the purpose_bound
+    ///     path in `combine_demanded_tolerance`), so the seeded scope entry
+    ///     surfaces via that function directly — no `.or_else` fallback is
+    ///     required or present in the production code.
     #[test]
     fn compute_demanded_tols_returns_positionally_indexed_vec_of_vec() {
         use reify_test_support::{CompiledModuleBuilder, MockConstraintChecker, TopologyTemplateBuilder};
@@ -3627,15 +3630,12 @@ mod tests {
         // Seed `active_tolerance_scope` (crate-private field, directly
         // accessible from `mod tests` within the same crate) so that
         // `active_tolerance_for("EntityA")` and `active_tolerance_for("EntityB_0")`
-        // return `Some`.  Because `demanded_tolerance_for_output` already
-        // incorporates `active_tolerance_for` internally (via
-        // `combine_demanded_tolerance(output_bound, purpose_bound)` where
-        // `purpose_bound = active_tolerance_for(subject_entity_ref)`), a
-        // seeded scope entry surfaces as `Some(_)` regardless of which
-        // branch `compute_demanded_tols` consults first.  This test pins
-        // (i) that the entry surfaces as `Some(_)` somewhere through the
-        // chain, and (ii) correct positional alignment — it does NOT pin
-        // the `or_else` fallback or the order of branches in the chain.
+        // return `Some`.  `demanded_tolerance_for_output` incorporates
+        // `active_tolerance_for` as its purpose_bound path inside
+        // `combine_demanded_tolerance`, so the seeded scope entries surface
+        // as `Some(_)` through that function directly.  This test pins
+        // (i) that the entry surfaces as `Some(_)` via the production path,
+        // and (ii) correct positional alignment.
         engine.active_tolerance_scope.insert("EntityA".to_string(), 1e-5_f64);
         engine.active_tolerance_scope.insert("EntityB_0".to_string(), 2e-5_f64);
         // "EntityB_1" is intentionally left unset → result[1][1] stays None.
@@ -3778,6 +3778,15 @@ mod tests {
         // future change to `BUDGET_QUERY_TRIPLE_V02.2` is caught here automatically.
         let available: HashSet<ReprKind> =
             Engine::BUDGET_QUERY_TRIPLE_V02.2.iter().copied().collect();
+        // Verify the public helper returns the identical set — every external
+        // consumer greps `budget_available_set`, so this folds the helper's
+        // coverage into the same test that pins the const's contents.
+        assert_eq!(
+            Engine::budget_available_set(),
+            available,
+            "budget_available_set() must match BUDGET_QUERY_TRIPLE_V02.2 exactly; \
+             if this fails, update all `budget_available_set` consumers",
+        );
         let demand = 1e-6_f64;
 
         assert_eq!(
@@ -3786,24 +3795,6 @@ mod tests {
             "single-kernel registry yields a 0-conversion DispatchPlan; \
              per_stage_tolerance_for_plan on an empty chain must return demanded_tol \
              bit-exactly. Demand: {demand}",
-        );
-    }
-
-    /// Pins the contract of `Engine::budget_available_set()`: must return
-    /// `HashSet::from([ReprKind::BRep])` under the v0.2 single-kernel
-    /// registry.  When v0.3 multi-kernel adapters land and the set widens,
-    /// this test will fail, surfacing every consumer via a grep for
-    /// `budget_available_set`.
-    #[test]
-    fn budget_available_set_returns_brep_only() {
-        let available = Engine::budget_available_set();
-        let expected: HashSet<ReprKind> = HashSet::from([ReprKind::BRep]);
-        assert_eq!(
-            available,
-            expected,
-            "v0.2 available-repr set must be exactly {{BRep}}; \
-             if this assertion fails, update all `budget_available_set` consumers \
-             for the new kernel adapter",
         );
     }
 
@@ -3865,13 +3856,8 @@ mod tests {
     #[should_panic(expected = "index out of bounds")]
     fn tessellate_from_values_panics_on_oob_demanded_tols_lookup() {
         use reify_test_support::mocks::MockGeometryKernel;
-        use reify_test_support::MockConstraintChecker;
 
         let module = module_with_one_box_realization();
-        let checker = MockConstraintChecker::new();
-        // Engine is only used to provide the kernel; we call the free fn directly.
-        let _ = crate::Engine::new(Box::new(checker), None);
-
         let mut kernel: Option<Box<dyn GeometryKernel>> =
             Some(Box::new(MockGeometryKernel::new()));
         let mut values = ValueMap::new();
@@ -3918,12 +3904,8 @@ mod tests {
     #[should_panic(expected = "index out of bounds")]
     fn tessellate_from_values_panics_on_oob_tessellation_budgets_lookup() {
         use reify_test_support::mocks::MockGeometryKernel;
-        use reify_test_support::MockConstraintChecker;
 
         let module = module_with_one_box_realization();
-        let checker = MockConstraintChecker::new();
-        let _ = crate::Engine::new(Box::new(checker), None);
-
         let mut kernel: Option<Box<dyn GeometryKernel>> =
             Some(Box::new(MockGeometryKernel::new()));
         let mut values = ValueMap::new();
