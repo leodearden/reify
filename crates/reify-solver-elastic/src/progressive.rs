@@ -112,6 +112,35 @@ pub struct PartialElasticResult {
     pub iterations: u32,
 }
 
+/// Returns `true` if `result.max_von_mises` is within `opts.near_boundary_pct`
+/// of `opts.yield_stress`, triggering auto-refinement.
+///
+/// Specifically: `result.max_von_mises >= (1.0 − opts.near_boundary_pct) × yield_stress`.
+///
+/// Returns `false` unconditionally when `opts.yield_stress` is `None`
+/// (yield-proximity auto-refinement is disabled).
+///
+/// # Examples
+///
+/// ```
+/// use reify_solver_elastic::progressive::{near_constraint_boundary, PartialElasticResult, ProgressiveOptions};
+/// // No yield stress → always false
+/// let opts = ProgressiveOptions { yield_stress: None, ..Default::default() };
+/// let r = PartialElasticResult { displacement: vec![], stress: vec![], max_von_mises: 1e30, converged: false, iterations: 0 };
+/// assert!(!near_constraint_boundary(&r, &opts));
+/// ```
+pub fn near_constraint_boundary(
+    result: &PartialElasticResult,
+    opts: &ProgressiveOptions,
+) -> bool {
+    match opts.yield_stress {
+        Some(yield_stress) => {
+            result.max_von_mises >= (1.0 - opts.near_boundary_pct) * yield_stress
+        }
+        None => false,
+    }
+}
+
 impl Default for ProgressiveOptions {
     /// Returns a sensible engineering default:
     /// - `target_tolerance`: `1e-3` (representative engineering tolerance in metres)
