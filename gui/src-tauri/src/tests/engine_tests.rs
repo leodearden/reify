@@ -6037,3 +6037,61 @@ fn load_file_with_std_import_does_not_double_seed_stdlib() {
     assert_eq!(w_val.unit, "mm", "Top.w unit should be mm; got '{}'", w_val.unit);
     assert_eq!(w_val.value, "5", "Top.w value should be 5; got '{}'", w_val.value);
 }
+
+// ---- fatal parse/compile diagnostics surfacing tests (task 3351) -----------
+
+/// After a failed `load_from_source` (parse error on a fresh session),
+/// `build_gui_state` must surface the failure in `compile_diagnostics` rather
+/// than returning a silent empty viewport.
+///
+/// Pins step-1 of the task-3351 plan: the early-return branch of
+/// `build_gui_state` (when `compiled` is `None`) must emit the stored
+/// `last_compile_diagnostics` rather than `Vec::new()`.
+#[test]
+fn build_gui_state_surfaces_parse_error_after_failed_load_from_source() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // A parse-error source — `{{{` is invalid reify syntax so `parsed.errors` is non-empty.
+    let err = session
+        .load_from_source("this is not valid reify syntax {{{}}}", "bad")
+        .expect_err("invalid source should return Err");
+    assert!(
+        err.contains("Parse errors"),
+        "error string should mention Parse errors; got: {err}"
+    );
+
+    // build_gui_state should surface the stored diagnostics rather than returning empty.
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state should return Ok even after a failed load");
+
+    // compile_diagnostics must be non-empty and contain an Error-severity entry.
+    assert!(
+        !state.compile_diagnostics.is_empty(),
+        "compile_diagnostics should be non-empty after a failed load_from_source"
+    );
+    let first = &state.compile_diagnostics[0];
+    assert_eq!(
+        first.severity, "Error",
+        "first diagnostic should have severity Error; got: {}",
+        first.severity
+    );
+    // file_path should follow the module_key convention ({module_name}.ri).
+    assert!(
+        first.file_path.ends_with(".ri"),
+        "first diagnostic file_path should end with .ri; got: {}",
+        first.file_path
+    );
+
+    // The rest of the GuiState should remain empty (early-return semantics preserved).
+    assert!(state.meshes.is_empty(), "meshes should be empty");
+    assert!(state.values.is_empty(), "values should be empty");
+    assert!(state.constraints.is_empty(), "constraints should be empty");
+    assert!(state.files.is_empty(), "files should be empty");
+    assert!(
+        state.tessellation_diagnostics.is_empty(),
+        "tessellation_diagnostics should be empty"
+    );
+}
