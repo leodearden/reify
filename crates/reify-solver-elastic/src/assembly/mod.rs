@@ -147,16 +147,7 @@ impl ElementStiffness {
 #[allow(clippy::needless_range_loop)]
 mod tests {
     use super::*;
-    use crate::assembly::test_support::scaled_p2_phys_nodes;
-    use crate::constitutive::IsotropicElastic;
-
-    /// Steel-like dimensionless material reused by the dispatch tests.
-    fn dimensionless_steel_like() -> IsotropicElastic {
-        IsotropicElastic {
-            youngs_modulus: 1.0,
-            poisson_ratio: 0.3,
-        }
-    }
+    use crate::assembly::test_support::{dimensionless_steel_like, scaled_p2_phys_nodes};
 
     /// Canonical 4-node P1 phys layout (unit reference tet).
     const UNIT_TET_P1_NODES: [[f64; 3]; 4] = [
