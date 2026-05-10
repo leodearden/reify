@@ -1178,6 +1178,28 @@ mod tests {
         );
     }
 
+    /// Contract test: `slab_sdf_3d(3.0, 16)` must produce at least
+    /// [`SLAB_16_MIN_MEDIAL_VOXELS`] medial voxels.
+    ///
+    /// This is the *owning* assertion for the floor constant.
+    /// [`compute_medial_mask_flags_slab_centerline_voxels`] and
+    /// [`compute_medial_mask_voxels_are_sorted_in_lex_order_on_slab`] both
+    /// use the same floor as a precondition; this dedicated test is the
+    /// single canonical place where the contract is *asserted*, so a future
+    /// change to the constant value has exactly one test to update.
+    #[test]
+    fn slab_sdf_3d_n16_yields_at_least_min_medial_voxels() {
+        let sdf = slab_sdf_3d(3.0, 16);
+        let mask = compute_medial_mask(&sdf, &MedialOptions::default())
+            .expect("slab compute succeeds");
+        assert!(
+            mask.voxels.len() >= SLAB_16_MIN_MEDIAL_VOXELS,
+            "slab_sdf_3d(3.0, 16) produced {} medial voxels; \
+             expected ≥ {SLAB_16_MIN_MEDIAL_VOXELS}",
+            mask.voxels.len()
+        );
+    }
+
     /// Build an analytic-slab Regular3D `SampledField` perpendicular to
     /// the x-axis: `φ(x, y, z) = |x| − half_thickness`. Identical
     /// construction to [`slab_sdf_3d`] except the active axis is x
