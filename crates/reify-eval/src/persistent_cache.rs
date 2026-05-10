@@ -27,40 +27,19 @@
 
 use std::io::{self, Read, Write};
 
-use reify_types::ContentHash;
 use serde::{Deserialize, Serialize};
 
 /// Compute the canonical engine-version hash for a set of contributor byte slices.
 ///
-/// Each contributor is framed with a `u64` LE length prefix before concatenation
-/// into the hash buffer. This prevents the trivial concat-collision class where
-/// `[b"ab", b"c"]` and `[b"a", b"bc"]` would otherwise produce identical hashes
-/// (see `compose_engine_version_hash_length_prefix_prevents_concat_collision`).
+/// Re-exported from [`crate::engine_hash_algo`], which is the single source of
+/// truth shared between the library crate and `build.rs` (included via
+/// `include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/engine_hash_algo.rs"))`).
+/// Any change to the algorithm in `src/engine_hash_algo.rs` affects both callers
+/// simultaneously — there is no duplicate copy.
 ///
-/// The hash primitive is `xxh3_128` via [`ContentHash`] — the same algorithm used
-/// for content-addressed hashing across the codebase. Cache-key invalidation does
-/// not require cryptographic collision resistance; xxh3 is appropriate and
-/// consistent with existing conventions.
-///
-/// Returns a 32-character lowercase hexadecimal string (matching
-/// [`ContentHash`]'s `Display` format).
-///
-/// The only production caller is `build.rs`, which computes the contributor bytes
-/// from the source files listed in `CONTRIBUTORS_RELATIVE`. The function is `pub`
-/// so build.rs documentation can reference it by name and so the
-/// algorithm-drift sentinel test (`compose_engine_version_hash_pins_fixed_input_to_exact_hex_literal`)
-/// pins the library output against the build-script's duplicated logic.
-///
-/// PRD: `docs/prds/v0_3/persistent-fea-cache.md` §"Cache invalidation on engine version".
-pub fn compose_engine_version_hash(parts: &[&[u8]]) -> String {
-    let total_len: usize = parts.iter().map(|p| 8 + p.len()).sum();
-    let mut buf = Vec::with_capacity(total_len);
-    for part in parts {
-        buf.extend_from_slice(&(part.len() as u64).to_le_bytes());
-        buf.extend_from_slice(part);
-    }
-    format!("{}", ContentHash::of(&buf))
-}
+/// See [`crate::engine_hash_algo::compose_engine_version_hash`] for the full
+/// documentation including framing rationale and PRD reference.
+pub use crate::engine_hash_algo::compose_engine_version_hash;
 
 /// On-disk-layout version for [`ElasticResult`]. Bump when the encoding
 /// format changes (separate from `engine_version_hash`, which invalidates
@@ -1241,11 +1220,13 @@ mod tests {
 
     #[test]
     fn compose_engine_version_hash_pins_fixed_input_to_exact_hex_literal() {
-        // Pins the algorithm against drift. If the length-prefix scheme,
-        // hash primitive, or hex formatting changes, this literal must be
-        // updated deliberately in the same commit.
-        // Literal filled in during step-2 once the implementation produces a
-        // concrete value.
+        // Pins the single canonical algorithm in `src/engine_hash_algo.rs`
+        // against drift. Because `build.rs` uses that SAME source via
+        // `include!()`, any change to the length-prefix scheme, hash
+        // primitive, or hex formatting simultaneously breaks this test AND
+        // changes the emitted ENGINE_VERSION_HASH — making the drift
+        // immediately visible in CI.
+        // Update this literal deliberately whenever the algorithm changes.
         let h = compose_engine_version_hash(&[b"reify", b"engine"]);
         assert_eq!(
             h,
@@ -1429,14 +1410,14 @@ mod tests {
              when fed through compose_engine_version_hash"
         );
 
-        // Pinned hex literal — filled in during step-6 GREEN. Any change to the
+        // Pinned hex literal — captured during step-6 GREEN. Any change to the
         // length-prefix scheme, hash primitive, path format, or sort order must
         // update this literal deliberately in the same commit.
         assert_eq!(
             hash_from_manual,
-            "FILL_IN_DURING_STEP_6",
+            "a2cfd904bb7edc68837b0069bafa3469",
             "algorithm drift sentinel — update this literal when the \
-             implementation changes"
+             length-prefix scheme, hash primitive, or path format changes"
         );
     }
 }

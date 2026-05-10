@@ -15,6 +15,7 @@ bytemuck.workspace = true
 inventory.workspace = true
 serde = { workspace = true, features = ["derive"] }
 tracing.workspace = true
+xxhash-rust = { workspace = true }
 zstd.workspace = true
 
 [build-dependencies]

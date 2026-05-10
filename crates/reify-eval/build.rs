@@ -5,6 +5,22 @@
 // entries to miss and be recomputed from scratch. Wire-format changes are
 // tracked separately by `ELASTIC_RESULT_FORMAT_VERSION` in `persistent_cache.rs`.
 //
+// # Algorithm and contributor-walk logic
+//
+//   The `compose_engine_version_hash` and `walk_contributor` functions are NOT
+//   duplicated here. They live in `src/engine_hash_algo.rs`, which is the single
+//   source of truth shared between the library crate (via
+//   `pub(crate) mod engine_hash_algo;` in `lib.rs`) and this build script (via
+//   `include!()` below). Any algorithm change automatically affects both callers.
+//
+//   `walk_contributor` emits `rerun_paths` entries for BOTH file paths AND
+//   directory paths (every directory visited, including the root and all
+//   sub-directories). This is the issue-#1 fix: with file-only directives, adding
+//   a brand-new source file to a contributor directory silently fails to trigger
+//   a rebuild and the new file's bytes are absent from ENGINE_VERSION_HASH.
+//   Directory-level directives cause cargo to re-run whenever the directory's
+//   child set changes (file added / renamed / removed).
+//
 // # Contributor categories (per PRD docs/prds/v0_3/persistent-fea-cache.md
 //   §"Cache invalidation on engine version")
 //
@@ -21,24 +37,19 @@
 //   CONTRIBUTORS_RELATIVE below. Adding it will naturally invalidate all existing
 //   cache entries (new hash ⇒ miss ⇒ recompute), which is the desired policy.
 //
-// # Algorithm (mirrors `compose_engine_version_hash` in persistent_cache.rs)
-//   For each contributor: emit `cargo:rerun-if-changed`, then collect bytes.
-//   Each (path_bytes, file_bytes) pair is framed with a u64 LE length prefix.
-//   Including path bytes means renames change the hash even when content is
-//   identical — the desired semantics.
-//   Single xxh3_128 call over the full buffer → 32-char lowercase hex.
-//
 // # Safety
 //   Missing contributor ⇒ hard panic. A silent skip would silently shrink the
 //   contributor set and produce a stale hash without anyone noticing.
 
-use std::path::{Path, PathBuf};
-
-use xxhash_rust::xxh3::xxh3_128;
+// Pull in compose_engine_version_hash, walk_contributor, ContributorWalk,
+// and their transitive use statements (std::path::{Path, PathBuf},
+// xxhash_rust::xxh3::xxh3_128) from the single shared source file.
+// There is NO duplicate algorithm here.
+include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/engine_hash_algo.rs"));
 
 /// Contributor paths relative to `CARGO_MANIFEST_DIR` (i.e. `crates/reify-eval/`).
 /// Each entry is either a single file or a directory to walk recursively.
-/// Directories are followed by their contained `.rs` files (sorted by file name
+/// Directories are walked by `walk_contributor` (entries sorted by file name
 /// for byte-determinism across platforms).
 const CONTRIBUTORS_RELATIVE: &[&str] = &[
     // 1. FEA solver
@@ -72,96 +83,28 @@ fn main() {
 
     // Re-run this build script whenever it changes itself.
     println!("cargo:rerun-if-changed=build.rs");
+    // Re-run when the shared algorithm source changes.
+    println!("cargo:rerun-if-changed=src/engine_hash_algo.rs");
 
-    let mut hash_buf: Vec<u8> = Vec::new();
+    let mut all_parts: Vec<Vec<u8>> = Vec::new();
 
     for rel in CONTRIBUTORS_RELATIVE {
         let path = manifest_path.join(rel);
-        if path.is_dir() {
-            collect_dir(&path, &path, &mut hash_buf);
-        } else if path.is_file() {
-            // Emit cargo rerun directive.
-            println!("cargo:rerun-if-changed={}", path.display());
-            // Frame: path bytes then file bytes, each with u64 LE length prefix.
-            let path_bytes = rel.as_bytes();
-            push_framed(&mut hash_buf, path_bytes);
-            let file_bytes = std::fs::read(&path).unwrap_or_else(|e| {
-                panic!(
-                    "ENGINE_VERSION_HASH contributor not found or unreadable: {} — {e}",
-                    path.display()
-                )
-            });
-            push_framed(&mut hash_buf, &file_bytes);
-        } else {
+        if !path.exists() {
             panic!(
                 "ENGINE_VERSION_HASH contributor not found: {} (resolved to {})",
                 rel,
                 path.display()
             );
         }
-    }
-
-    let hash = xxh3_128(&hash_buf);
-    println!(
-        "cargo:rustc-env=REIFY_ENGINE_VERSION_HASH={:032x}",
-        hash
-    );
-}
-
-/// Recursively walk `dir`, emitting `cargo:rerun-if-changed` for each file and
-/// appending (path_relative_to_base_bytes, file_bytes) pairs into `buf`.
-///
-/// Entries are sorted by name before recursion to ensure byte-determinism across
-/// platforms (filesystem iteration order is unspecified by std and varies between
-/// ext4, APFS, NTFS, etc.).
-fn collect_dir(base: &Path, dir: &Path, buf: &mut Vec<u8>) {
-    let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
-        .unwrap_or_else(|e| panic!("ENGINE_VERSION_HASH: cannot read dir {}: {e}", dir.display()))
-        .map(|e| {
-            e.unwrap_or_else(|e| {
-                panic!("ENGINE_VERSION_HASH: dir entry error in {}: {e}", dir.display())
-            })
-            .path()
-        })
-        .collect();
-
-    // Sort for determinism.
-    entries.sort_by(|a, b| {
-        a.file_name()
-            .unwrap_or_default()
-            .cmp(b.file_name().unwrap_or_default())
-    });
-
-    for entry_path in entries {
-        if entry_path.is_dir() {
-            collect_dir(base, &entry_path, buf);
-        } else if entry_path.is_file() {
-            println!("cargo:rerun-if-changed={}", entry_path.display());
-
-            // Use path relative to base for the path-frame, so the hash is
-            // independent of the absolute workspace location.
-            let rel = entry_path
-                .strip_prefix(base)
-                .unwrap_or(&entry_path)
-                .to_string_lossy();
-            push_framed(buf, rel.as_bytes());
-
-            let file_bytes = std::fs::read(&entry_path).unwrap_or_else(|e| {
-                panic!(
-                    "ENGINE_VERSION_HASH: cannot read {}: {e}",
-                    entry_path.display()
-                )
-            });
-            push_framed(buf, &file_bytes);
+        let walk = walk_contributor(rel, &path);
+        for p in &walk.rerun_paths {
+            println!("cargo:rerun-if-changed={}", p.display());
         }
-        // Symlinks and other non-file/dir entries are intentionally skipped.
+        all_parts.extend(walk.parts);
     }
-}
 
-/// Append `(len as u64 LE, data)` to `buf`. Mirrors the framing in
-/// `compose_engine_version_hash` in `persistent_cache.rs`.
-#[inline]
-fn push_framed(buf: &mut Vec<u8>, data: &[u8]) {
-    buf.extend_from_slice(&(data.len() as u64).to_le_bytes());
-    buf.extend_from_slice(data);
+    let all_refs: Vec<&[u8]> = all_parts.iter().map(|v| v.as_slice()).collect();
+    let hash = compose_engine_version_hash(&all_refs);
+    println!("cargo:rustc-env=REIFY_ENGINE_VERSION_HASH={hash}");
 }
