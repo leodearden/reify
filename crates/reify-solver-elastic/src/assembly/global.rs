@@ -479,21 +479,10 @@ fn emit_element_triplets(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::assembly::test_support::scaled_p2_phys_nodes;
+    use crate::assembly::test_support::{dimensionless_steel_like, scaled_p2_phys_nodes};
     use crate::assembly::tet::{element_stiffness_p1, element_stiffness_p2};
     use crate::constitutive::IsotropicElastic;
     use crate::shell_assembly::shell_element_stiffness;
-
-    /// Steel-like dimensionless material reused across the global-assembly
-    /// tests. Mirrors the convention from `assembly::tests::dimensionless_steel_like`
-    /// and `tet::tests::dimensionless_steel_like` so K_e numerics stay in
-    /// O(1) range for human-readable failure messages.
-    fn dimensionless_steel_like() -> IsotropicElastic {
-        IsotropicElastic {
-            youngs_modulus: 1.0,
-            poisson_ratio: 0.3,
-        }
-    }
 
     /// Canonical 4-node P1 phys layout (unit reference tet).
     const UNIT_TET_P1: [[f64; 3]; 4] = [

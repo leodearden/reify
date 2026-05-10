@@ -64,7 +64,6 @@ mod tests {
             },
             &|s| scaled_unit_wedge_phys_nodes(s).to_vec(),
             ElementStiffnessTestSpec {
-                n_dofs: 18,
                 n_nodes: 6,
                 vol_ref: 1.0,
                 // Centroid of the unit reference prism is (1/3, 1/3, 0).

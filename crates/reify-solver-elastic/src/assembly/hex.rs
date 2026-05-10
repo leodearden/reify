@@ -63,7 +63,6 @@ mod tests {
             },
             &|s| scaled_unit_hex_phys_nodes(s).to_vec(),
             ElementStiffnessTestSpec {
-                n_dofs: 24,
                 n_nodes: 8,
                 vol_ref: 8.0,
                 // Centroid of [−1,1]³ is the origin.

@@ -69,10 +69,13 @@ pub(crate) fn strain_energies(
 /// Shape parameters for the generic element-stiffness behavioral suite.
 ///
 /// Wrapped in a struct rather than passed positionally so call sites use
-/// field-labeled literals (8 unlabeled scalars conflate too easily).
+/// field-labeled literals (unlabeled scalars conflate too easily).
+///
+/// `n_dofs` is intentionally absent: it is always `3 * n_nodes` for a
+/// 3-axis displacement element, so it is derived inside the helper rather
+/// than repeated at every call site. This makes the invariant structurally
+/// unrepresentable rather than asserted.
 pub(crate) struct ElementStiffnessTestSpec {
-    /// Total DOFs (= 3 × n_nodes for a 3-axis displacement element).
-    pub n_dofs: usize,
     /// Number of nodes in the element (8 for hex P1, 6 for wedge P1).
     pub n_nodes: usize,
     /// Physical volume at scale s = 1 (8.0 for hex [−1,1]³, 1.0 for wedge reference prism).
@@ -99,15 +102,8 @@ pub(crate) fn run_element_stiffness_tests(
     make_phys: &dyn Fn(f64) -> Vec<[f64; 3]>,
     spec: ElementStiffnessTestSpec,
 ) {
-    assert_eq!(
-        spec.n_dofs,
-        3 * spec.n_nodes,
-        "n_dofs must equal 3 * n_nodes (got n_dofs={}, n_nodes={})",
-        spec.n_dofs,
-        spec.n_nodes,
-    );
-    let n_dofs = spec.n_dofs;
     let n_nodes = spec.n_nodes;
+    let n_dofs = 3 * n_nodes;
     let vol_ref = spec.vol_ref;
     let centroid = spec.centroid;
     let swap_pair = spec.swap_pair;
@@ -334,32 +330,10 @@ mod tests {
     use super::*;
 
     #[test]
-    #[should_panic(expected = "n_dofs must equal 3 * n_nodes")]
-    fn run_element_stiffness_tests_panics_on_dof_node_mismatch() {
-        // n_dofs = 24 but n_nodes = 6 → 24 != 3*6=18; helper must fail fast
-        // before touching the closures.
-        let spec = ElementStiffnessTestSpec {
-            n_dofs: 24,
-            n_nodes: 6,
-            vol_ref: 1.0,
-            centroid: [0.0; 3],
-            swap_pair: (0, 1),
-            vol_swapped: 1.0,
-        };
-        run_element_stiffness_tests(
-            &|_, _| unreachable!("compute_k must not be called when spec is invalid"),
-            &|_| unreachable!("make_phys must not be called when spec is invalid"),
-            spec,
-        );
-    }
-
-    #[test]
     #[should_panic(expected = "phys1.len() must equal n_nodes")]
     fn run_element_stiffness_tests_panics_on_phys_length_mismatch() {
-        // spec is internally consistent (n_dofs = 3*n_nodes) so the first guard
-        // passes, but make_phys returns 5 nodes instead of 6.
+        // spec is internally consistent; make_phys returns 5 nodes instead of 6.
         let spec = ElementStiffnessTestSpec {
-            n_dofs: 18,
             n_nodes: 6,
             vol_ref: 1.0,
             centroid: [0.0; 3],
