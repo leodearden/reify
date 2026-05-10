@@ -39,6 +39,30 @@ pub struct ProgressiveOptions {
     pub max_refinements: usize,
 }
 
+/// A snapshot of a single FEA solve at a given refinement level.
+///
+/// Field names mirror `reify_eval::ElasticResult` (minus `solve_time_ms`,
+/// which is a cache-eviction metric rather than a solver output) so the
+/// cache layer (PRD task #16) can convert losslessly without an adapter.
+///
+/// Defined locally in this crate to avoid a `reify-solver-elastic →
+/// reify-eval` dependency edge (the reverse edge already exists per
+/// `persistent_cache.rs`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PartialElasticResult {
+    /// Nodal displacement vector (3 DOFs per node, flat).
+    pub displacement: Vec<f64>,
+    /// Nodal or element stress components (flat, ordering determined by assembler).
+    pub stress: Vec<f64>,
+    /// Maximum von Mises stress across the mesh (Pa). Used by the
+    /// [`near_constraint_boundary`] auto-refine trigger.
+    pub max_von_mises: f64,
+    /// Whether the CG inner solve converged within its tolerance.
+    pub converged: bool,
+    /// Number of CG iterations taken to reach convergence (or hit the limit).
+    pub iterations: u32,
+}
+
 impl Default for ProgressiveOptions {
     /// Returns a sensible engineering default:
     /// - `target_tolerance`: `1e-3` (representative engineering tolerance in metres)
