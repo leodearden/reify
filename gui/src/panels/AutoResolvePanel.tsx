@@ -47,6 +47,11 @@ const PLOT_X2 = CHART_W - CHART_PAD_RIGHT;
 const PLOT_Y1 = CHART_PAD_TOP;          // top (high values)
 const PLOT_Y2 = CHART_H - CHART_PAD_BOTTOM; // bottom (low SVG-y = visual top)
 
+// Sparkline layout constants
+const SPARK_W = 80;
+const SPARK_H = 24;
+const SPARK_PAD = 2;
+
 /** Build the polyline points string from paired (x, y) SVG coordinates. */
 function buildPolylinePoints(
   xs: number[],
@@ -91,6 +96,18 @@ export const AutoResolvePanel: Component<AutoResolvePanelProps> = (props) => {
     props.state.iterations
       .filter((it) => it.driving_metric_value !== undefined && Number.isFinite(it.driving_metric_value))
       .map((it) => ({ x: it.iteration, y: it.driving_metric_value! }));
+
+  /** Union of all parameter cell-ids seen across every iteration. */
+  const sparklineCellIds = (): string[] =>
+    Array.from(
+      new Set(props.state.iterations.flatMap((it) => Object.keys(it.parameters))),
+    );
+
+  /** Value series for a single parameter across iterations (skipping missing). */
+  const sparklineSeries = (cellId: string): number[] =>
+    props.state.iterations
+      .filter((it) => cellId in it.parameters)
+      .map((it) => it.parameters[cellId].value);
 
   return (
     <div class={styles.panel} data-testid="auto-resolve-panel">
@@ -141,6 +158,46 @@ export const AutoResolvePanel: Component<AutoResolvePanelProps> = (props) => {
                   >
                     {constraint.satisfied ? '✓' : '✗'}
                   </span>
+                </div>
+              );
+            }}
+          </For>
+        </section>
+
+        {/* ── Per-parameter sparklines ────────────────────────────────── */}
+        <section class={styles.section}>
+          <div class={styles.sectionLabel}>Parameters over time</div>
+          <For each={sparklineCellIds()}>
+            {(cellId) => {
+              const series = sparklineSeries(cellId);
+              const hasLine = series.length >= 2;
+              const pts = hasLine
+                ? buildPolylinePoints(
+                    series.map((_, i) => i),
+                    series,
+                    SPARK_PAD,
+                    SPARK_W - SPARK_PAD,
+                    SPARK_PAD,
+                    SPARK_H - SPARK_PAD,
+                  )
+                : '';
+              return (
+                <div class={styles.sparklineRow}>
+                  <span class={styles.sparklineCellId}>{cellId}</span>
+                  <svg
+                    class={styles.sparkline}
+                    width={SPARK_W}
+                    height={SPARK_H}
+                    data-testid="auto-resolve-sparkline"
+                  >
+                    <Show when={hasLine}>
+                      <polyline
+                        class={styles.sparklineLine}
+                        fill="none"
+                        points={pts}
+                      />
+                    </Show>
+                  </svg>
                 </div>
               );
             }}
