@@ -276,6 +276,25 @@ mod tests {
     }
 
     #[test]
+    fn get_mut_cow_semantics_sibling_clone_unaffected() {
+        // Verify the copy-on-write property documented on `get_mut`:
+        // mutating the original through `get_mut` must not affect a sibling
+        // clone that was taken before the mutation.
+        let mut original = PersistentMap::new();
+        original.insert("key".to_string(), 10i32);
+
+        // Clone shares structure with original at this point.
+        let sibling = original.clone();
+
+        // Mutate original in-place — im::HashMap clones the shared trie node
+        // before returning the mutable borrow, so sibling is unaffected.
+        *original.get_mut(&"key".to_string()).unwrap() = 99;
+
+        assert_eq!(original.get(&"key".to_string()), Some(&99));
+        assert_eq!(sibling.get(&"key".to_string()), Some(&10));
+    }
+
+    #[test]
     fn partial_eq_impl() {
         let mut map1 = PersistentMap::new();
         map1.insert("a".to_string(), 1);

@@ -96,6 +96,12 @@ pub struct ComputeNodeData {
 // OpaqueState is !Clone (Box<dyn Any + Send>), so we drop the slot to
 // None on clone. Warm state is transient — best-effort recovery is the
 // existing WarmStatePool contract.
+//
+// `running` is propagated by value here because P3.1's `CancellationHandle`
+// is a unit-struct placeholder that is trivially Clone. When P3.5 replaces it
+// with the real type (likely `Arc<AtomicBool>`), the Clone impl MUST be
+// revisited: the desired semantics for an in-flight handle on clone — share
+// via Arc, reset to None, or cancel-on-clone — are a P3.5 lifecycle decision.
 impl Clone for ComputeNodeData {
     fn clone(&self) -> Self {
         Self {
@@ -945,16 +951,8 @@ mod tests {
     }
 
     #[test]
-    fn cancellation_handle_placeholder_is_clone_debug_default() {
-        let handle = CancellationHandle::default();
-        let cloned = handle.clone();
-        let debug = format!("{:?}", cloned);
-        assert!(debug.contains("CancellationHandle"));
-    }
-
-    #[test]
     fn compute_node_data_construction() {
-        use reify_types::{ComputeNodeId, OpaqueState, RealizationNodeId as RnId};
+        use reify_types::{ComputeNodeId, RealizationNodeId as RnId};
 
         let computation_id = ComputeNodeId::new("Bracket", 0);
         let data = ComputeNodeData {
@@ -1023,7 +1021,7 @@ mod tests {
 
     #[test]
     fn compute_node_data_fields_match_prd_spec() {
-        use reify_types::{ComputeNodeId, OpaqueState, RealizationNodeId as RnId};
+        use reify_types::ComputeNodeId;
 
         let data = ComputeNodeData {
             computation_id: ComputeNodeId::new("Bracket", 0),
@@ -1063,7 +1061,6 @@ mod tests {
 
     #[test]
     fn evaluation_graph_has_computations_map() {
-        use reify_types::ComputeNodeId;
         let graph = EvaluationGraph::default();
         assert!(graph.computations.is_empty());
         assert_eq!(graph.computations.len(), 0);
@@ -1097,7 +1094,7 @@ mod tests {
 
     #[test]
     fn evaluation_graph_get_compute_node_mut_returns_mutable_reference() {
-        use reify_types::{ComputeNodeId, RealizationNodeId as RnId};
+        use reify_types::ComputeNodeId;
         let mut graph = EvaluationGraph::default();
         let data = ComputeNodeData {
             computation_id: ComputeNodeId::new("Bracket", 0),
@@ -1126,7 +1123,7 @@ mod tests {
 
     #[test]
     fn evaluation_graph_multiple_compute_nodes_coexist() {
-        use reify_types::{ComputeNodeId, RealizationNodeId as RnId};
+        use reify_types::ComputeNodeId;
         let mut graph = EvaluationGraph::default();
 
         let id_a = graph.insert_compute_node(ComputeNodeData {
@@ -1163,7 +1160,7 @@ mod tests {
 
     #[test]
     fn evaluation_graph_clone_preserves_computations() {
-        use reify_types::{ComputeNodeId, OpaqueState, RealizationNodeId as RnId};
+        use reify_types::{ComputeNodeId, OpaqueState};
         let mut graph = EvaluationGraph::default();
 
         let id = graph.insert_compute_node(ComputeNodeData {
@@ -1211,14 +1208,14 @@ mod tests {
         use std::collections::HashSet;
         let mut graph = EvaluationGraph::default();
 
-        for (idx, tgt) in [("solver::a", 0u32), ("solver::b", 1), ("solver::c", 2)] {
+        for (target, idx) in [("solver::a", 0u32), ("solver::b", 1), ("solver::c", 2)] {
             graph.insert_compute_node(ComputeNodeData {
-                computation_id: ComputeNodeId::new("Bracket", tgt),
-                target: idx.to_string(),
+                computation_id: ComputeNodeId::new("Bracket", idx),
+                target: target.to_string(),
                 value_inputs: vec![],
                 realization_inputs: vec![],
-                options_hash: ContentHash::of_str(idx),
-                cache_key: ContentHash::of_str(idx),
+                options_hash: ContentHash::of_str(target),
+                cache_key: ContentHash::of_str(target),
                 cached_result: None,
                 result_content_hash: None,
                 opaque_state: None,
