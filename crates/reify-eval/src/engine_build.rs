@@ -1773,6 +1773,16 @@ impl Engine {
             // fixed `1e-9 m` (kernel-epsilon-tight) sentinel here per the
             // task-4 design decision recorded in `.task/plan.json`.
             let realization_feature_id = FeatureId::from(realization_id);
+            // Per-realization scan: re-walks the full `topology_attribute_table`
+            // to filter entries whose `feature_id` matches the current realization,
+            // giving O(R·N) total cost per build (R = realizations, N = total table
+            // entries). Acceptable today (R≈10, N≈100 → ≈1 000 filter ops per build,
+            // no profiler hits observed). If a profiler hits this site, two preferred
+            // fixes are: (i) thread a per-realization start-index into the table so we
+            // walk only newly added entries, or (ii) maintain a secondary
+            // `HashMap<FeatureId, Vec<GeometryHandleId>>` index inside
+            // `TopologyAttributeTable` so `entries_for_feature(feature_id)` is
+            // O(per-feature-entries). Per task #3369 review of #2654.
             let realization_attrs: Vec<(GeometryHandleId, &TopologyAttribute)> =
                 topology_attribute_table
                     .iter()
