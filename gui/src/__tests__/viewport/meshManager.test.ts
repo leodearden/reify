@@ -2085,6 +2085,16 @@ describe('meshManager', () => {
       expect(mockGroupRemove).toHaveBeenCalledWith(overlay);
     });
 
+    it('(j) setVisibility("A","ghost") before setDeformation — overlay is NOT added for ghost entity', () => {
+      // Locks in the UX decision: ghost is a translucent deformed rendering; a
+      // separate undeformed overlay would be redundant and visually noisy.
+      const { manager } = setupWithOverlay();
+      manager.setVisibility('A', 'ghost');
+      manager.setDeformation({ warpFactor: 5 });
+      expect(manager.getDeformedOverlays().size).toBe(0);
+      expect(manager.getDeformedOverlays().has('A')).toBe(false);
+    });
+
     it('(i) setVisibility("A","hidden") before setDeformation — overlay is NOT added for hidden entity', () => {
       // Regression gate: setDeformation must skip addUndeformedOverlay for hidden entities.
       // The current implementation iterates meshMap unconditionally, so this fails today.
