@@ -59,6 +59,14 @@ export interface PermissionServer {
  * Test-only helpers — not part of the production PermissionServer contract.
  * Accessed via the `__testHooks` property on the value returned by createPermissionServer().
  * Production callers typed as PermissionServer cannot reach this property.
+ *
+ * Implementation note: the waiters array, the `notifyWaiters()` call site inside the
+ * HTTP handler, and the `awaitPending` closure all ship in the production bundle.
+ * The footprint is zero-cost when unused: `notifyWaiters()` exits immediately when
+ * `waiters` is empty (one array-length check, no allocations), and `awaitPending` is
+ * never called by production code. Gating behind `process.env.NODE_ENV !== 'production'`
+ * is an option if bundle size becomes a concern; for now the trade-off favours
+ * simplicity over a build-time conditional.
  */
 export interface PermissionServerTestHooks {
   /**

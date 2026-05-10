@@ -366,6 +366,15 @@ describe('createPermissionServer', () => {
   // pendingCount or awaitPending. The @ts-expect-error directives below fail tsc
   // when the methods are present (unused directive → TS2578) and pass when they are
   // removed (directive suppresses the property-does-not-exist error).
+  //
+  // ENFORCEMENT REQUIREMENT: this test is only meaningful when tsc runs over test
+  // files. vitest's default pipeline uses esbuild (transpile-only), which strips
+  // type annotations without checking @ts-expect-error directives — so the test
+  // always passes at runtime regardless of the interface shape. To enforce this
+  // contract in CI, a separate `tsc --noEmit -p tsconfig.test.json` step (with a
+  // tsconfig that includes src/**/__tests__/**) must be added to the typecheck
+  // script and the lint pipeline. Until that step exists, this test documents the
+  // intended contract but does not automatically catch regressions.
   it('production PermissionServer interface excludes pendingCount and awaitPending', () => {
     server = createPermissionServer();
     const prod: PermissionServer = server;
