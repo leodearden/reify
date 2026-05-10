@@ -108,16 +108,16 @@ pub(crate) fn validate_annotations(
                         ))
                         .with_label(DiagnosticLabel::new(ann.span, "@optimized")),
                     );
-                } else if context == "constraint_def" && !is_valid_optimized(ann) {
-                    // @optimized without a string-literal target on a constraint_def
-                    // silently routes to the language-level checker, which confuses
-                    // users who think they wired up an optimized impl. Warn explicitly.
-                    //
-                    // The target is only consumed in constraint_def context: entity.rs
-                    // reads optimized_target when lowering a ConstraintDef to a
-                    // CompiledConstraint. On structure/occurrence contexts the annotation
-                    // is stored but nothing downstream reads the target string, so warning
-                    // there would tell the user to add a string that nothing uses.
+                } else if matches!(context, "constraint_def" | "function") && !is_valid_optimized(ann) {
+                    // @optimized without a string-literal target on a constraint_def or
+                    // function silently routes to the language-level checker, which
+                    // confuses users who think they wired up an optimized impl. Warn
+                    // explicitly in both contexts since the target is consumed by:
+                    //   - constraint_def: entity.rs → CompiledConstraint::optimized_target
+                    //   - function: compile_function → CompiledFunction::optimized_target
+                    // On structure/occurrence contexts the annotation is stored but nothing
+                    // downstream reads the target string, so warning there would tell the
+                    // user to add a string that nothing uses.
                     diagnostics.push(
                         Diagnostic::warning(
                             "annotation @optimized requires a string literal target, e.g. @optimized(\"kernel::foo\")"
