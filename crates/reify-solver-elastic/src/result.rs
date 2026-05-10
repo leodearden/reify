@@ -226,7 +226,10 @@ pub struct StressElement<'a> {
 /// averaging; volume-weighted simple averaging is bit-deterministic, has
 /// no per-patch least-squares system, and is trivially parallelisable.
 /// Z-Z is deferred to a v0.4+ task (design decision recorded in
-/// `.task/plan.json`).
+/// `.task/plan.json`). The unequal-volume two-element test
+/// (`recover_nodal_stress_volume_weighted_average_two_unequal_volume_elements`)
+/// pins the weighting: σ_A=diag(100,0,0)·V=1 and σ_B=diag(0,200,0)·V=3
+/// at a shared node round-trip to (1·σ_A + 3·σ_B)/4 = diag(25,150,0).
 ///
 /// # Engine wrapping
 ///
