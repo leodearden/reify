@@ -1347,7 +1347,7 @@ mod tests {
     /// exercises every base-case arm with start=0, the start>0 offset path,
     /// and a recursion-triggering len>8 with both start=0 and start>0.
     /// A tree-shape bit-pin asserts that len=12 (mid=6) produces bits matching
-    /// the explicit pairwise grouping `((xs[0..2])+(xs[3..5]))+((xs[6..8])+(xs[9..11]))`,
+    /// `((xs[0]+xs[1]+xs[2]) + (xs[3]+xs[4]+xs[5])) + ((xs[6]+xs[7]+xs[8]) + (xs[9]+xs[10]+xs[11]))`,
     /// confirming the mid=6 split and base-case-6 arithmetic order.
     #[test]
     fn pairwise_tree_sum_fn_with_start_offset_pins_contract() {
