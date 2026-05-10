@@ -410,4 +410,18 @@ describe('createPermissionServer', () => {
       await client.close();
     }
   });
+
+  // __testHooks.awaitPending — timeout branch
+  // When pendingPromises.size never reaches n within timeoutMs, the waiter is
+  // spliced out and the promise rejects with the expected message.
+  it('__testHooks.awaitPending rejects with timeout message when threshold is never reached', async () => {
+    server = createPermissionServer();
+    await server.start();
+
+    // No in-flight approve_tool calls, so pendingPromises.size === 0 < 1.
+    // 50 ms is short enough for a fast suite but > 0 to avoid degenerate races.
+    await expect(server.__testHooks.awaitPending(1, 50)).rejects.toThrow(
+      /timed out after 50ms/,
+    );
+  });
 });
