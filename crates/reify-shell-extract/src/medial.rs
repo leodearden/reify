@@ -135,6 +135,10 @@ impl Default for MedialOptions {
 /// stringly-typed messages, mirroring the
 /// [`reify_kernel_openvdb::ingest::IngestError`] precedent: the caller
 /// can pattern-match on the variant to drive recovery logic.
+///
+/// `#[non_exhaustive]` lets future variants be added without breaking
+/// external exhaustive-match consumers.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub enum MedialError {
     /// A structural validation error produced by the shared

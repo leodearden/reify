@@ -76,6 +76,10 @@ impl Default for MidSurfaceOptions {
 }
 
 /// Errors returned by [`extract_mid_surface`].
+///
+/// `#[non_exhaustive]` lets future variants be added without breaking
+/// external exhaustive-match consumers.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub enum MidSurfaceError {
     /// A structural validation error produced by the shared
