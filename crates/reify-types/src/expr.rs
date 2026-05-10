@@ -214,6 +214,16 @@ pub struct CompiledFunction {
     pub content_hash: ContentHash,
     /// Compiled annotations carried over from the parsed declaration.
     pub annotations: Vec<crate::annotation::Annotation>,
+    /// Target string from `@optimized("kernel::foo")` annotation, if present.
+    ///
+    /// Populated by `compile_function` in `reify-compiler/src/functions.rs`
+    /// using the `optimized_target` extractor (first-valid-wins semantics).
+    /// `None` when no well-formed `@optimized` annotation is present.
+    ///
+    /// Parallel to `CompiledConstraint::optimized_target`; downstream dispatch
+    /// (P3.4 ComputeNode) can probe the same field name regardless of whether
+    /// the node originated from a constraint or function definition.
+    pub optimized_target: Option<String>,
 }
 
 impl CompiledFunction {

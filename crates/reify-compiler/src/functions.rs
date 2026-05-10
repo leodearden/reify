@@ -103,6 +103,11 @@ pub(crate) fn compile_function(
         ContentHash::combine_all(all_hashes)
     };
 
+    // Extract the optimized target before lowering — the extractor requires the
+    // raw reify_syntax::ExprKind::StringLiteral trees, which are discarded by
+    // lower_annotations. Same call shape as compile_constraint_def in defs_phase.rs.
+    let opt_target = crate::annotations::optimized_target(&fn_def.annotations);
+
     let annotations = lower_annotations(&fn_def.annotations, diagnostics);
     validate_annotations(&annotations, "function", diagnostics);
 
@@ -117,6 +122,7 @@ pub(crate) fn compile_function(
         },
         content_hash,
         annotations,
+        optimized_target: opt_target,
     })
 }
 

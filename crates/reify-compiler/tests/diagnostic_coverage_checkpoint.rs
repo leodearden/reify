@@ -1277,19 +1277,26 @@ fn unknown_annotation_foobar_warning() {
 /// `@optimized` annotation on a `fn` declaration (invalid context) should produce
 /// a warning containing "@optimized is not valid on".
 ///
-/// `@optimized` is valid on structure/occurrence/constraint_def, NOT on fn.
-/// Exercises annotations.rs line 83–87.
+/// `@optimized` is valid on structure/occurrence/constraint_def/function.
+/// `trait` is NOT in the allow-list, so @optimized on a trait emits the warning.
+///
+/// Migrated from `fn` to `trait` in task 3377 because `function` is now an
+/// allow-listed context for `@optimized` (CompiledFunction::optimized_target).
+/// Exercises annotations.rs OPTIMIZED arm context check.
 #[test]
 fn optimized_on_function_warns() {
     let source = r#"
-@optimized fn f(x: Real) -> Real { x }
+@optimized("x")
+trait T {
+    param x: Real
+}
 "#;
     let module = compile_source(source);
     let warnings = warnings_only(&module);
 
     assert!(
         !warnings.is_empty(),
-        "expected at least one warning for @optimized on fn, got: {:?}",
+        "expected at least one warning for @optimized on trait (unsupported context), got: {:?}",
         module.diagnostics
     );
 

@@ -652,6 +652,7 @@ mod tests {
             },
             content_hash: reify_types::ContentHash::of_str("fn_collection_stub"),
             annotations: vec![],
+            optimized_target: None,
         };
         let functions = &[stub_fn];
         let mut diagnostics = Vec::new();

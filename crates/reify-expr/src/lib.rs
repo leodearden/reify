@@ -3648,6 +3648,7 @@ mod tests {
             },
             content_hash: ContentHash::of(b"double"),
             annotations: vec![],
+            optimized_target: None,
         }
     }
 
@@ -3677,6 +3678,7 @@ mod tests {
             },
             content_hash: ContentHash::of(b"f_with_let"),
             annotations: vec![],
+            optimized_target: None,
         }
     }
 
@@ -3746,6 +3748,7 @@ mod tests {
             },
             content_hash: ContentHash::of(b"factorial"),
             annotations: vec![],
+            optimized_target: None,
         }
     }
 
@@ -3769,6 +3772,7 @@ mod tests {
             },
             content_hash: ContentHash::of(b"infinite"),
             annotations: vec![],
+            optimized_target: None,
         }
     }
 
@@ -3889,6 +3893,7 @@ mod tests {
             },
             content_hash: ContentHash::of(b"area"),
             annotations: vec![],
+            optimized_target: None,
         };
         let call_expr = CompiledExpr {
             content_hash: ContentHash::of(b"call_area"),
@@ -3954,6 +3959,7 @@ mod tests {
             },
             content_hash: ContentHash::of(b"process1"),
             annotations: vec![],
+            optimized_target: None,
         };
         // fn process(x: Real, y: Real) -> Real { x + y }
         let process2 = CompiledFunction {
@@ -3972,6 +3978,7 @@ mod tests {
             },
             content_hash: ContentHash::of(b"process2"),
             annotations: vec![],
+            optimized_target: None,
         };
 
         let functions = [process1, process2];

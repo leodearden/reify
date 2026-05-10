@@ -451,6 +451,7 @@ fn apply_lambda_with_user_function_registry() {
         },
         content_hash: ContentHash::of(b"double_fn_step1"),
         annotations: vec![],
+        optimized_target: None,
     };
 
     // Lambda body: double(x) via UserFunctionCall
@@ -534,6 +535,7 @@ fn nested_lambda_calls_user_function() {
         },
         content_hash: ContentHash::of(b"double_fn_step11"),
         annotations: vec![],
+        optimized_target: None,
     };
 
     let x_id = ValueCellId::new("$lambda_outer.S", "x");
