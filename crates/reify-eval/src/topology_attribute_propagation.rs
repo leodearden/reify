@@ -2978,11 +2978,15 @@ mod tests {
                 "missing tied indices in message: {}",
                 diag.message
             );
-            // Label should span selector_span with text "selector call".
+            // Label should span the realization span with text
+            // "realization producing geometrically tied attributes".
             assert_eq!(diag.labels.len(), 1, "expected exactly one label");
             let label = &diag.labels[0];
             assert_eq!(label.span, synthetic_span());
-            assert_eq!(label.message, "selector call");
+            assert_eq!(
+                label.message,
+                "realization producing geometrically tied attributes"
+            );
         }
 
         #[test]
