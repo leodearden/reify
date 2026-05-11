@@ -335,7 +335,6 @@ pub fn swept_kind_to_sweep_params(
                 _ => None,
             }
         }
-        _ => None,
     }
 }
 

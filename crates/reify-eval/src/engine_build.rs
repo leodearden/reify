@@ -2194,6 +2194,7 @@ fn collect_centroids_with_failure_summary(
 /// Returned so the caller can choose downstream handling: FEA assembly for
 /// tets uses `tet_indices` with stride-4/10; hex/wedge assembly uses
 /// `connectivity` from [`SweptMesh3d`].
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) enum VolumeMeshOutcome {
     /// Tet mesh produced by the tet fall-back path
@@ -2238,6 +2239,7 @@ pub(crate) enum VolumeMeshOutcome {
 /// | `Some(_)`    | false       | false               | `Ok`      | `Err`        | `Tet` (fallback) |
 /// | `Some(_)`    | false       | true                | `Err`     | skip         | `Err("swept hex/wedge path failed: …")` |
 /// | `Some(_)`    | false       | true                | `Ok`      | `Err`        | `Err("swept hex/wedge path failed: …")` |
+#[allow(dead_code)]
 pub(crate) fn dispatch_volume_mesh<G, S, T>(
     swept_kind: Option<&SweptKind>,
     force_tet: bool,
@@ -2291,6 +2293,7 @@ where
 /// dispatcher is self-contained.  For `SweepLinear`, a zero-axis placeholder
 /// is emitted — the closure passed as `sweep_step` is expected to close over
 /// the real params built by the caller via `swept_kind_to_sweep_params`.
+#[allow(dead_code)]
 fn inline_sweep_params(kind: &SweptKind) -> SweepParams {
     match kind {
         SweptKind::Extrude { axis, length } => SweepParams::Extrude {
@@ -2307,10 +2310,6 @@ fn inline_sweep_params(kind: &SweptKind) -> SweepParams {
             angle: *angle_rad,
         },
         SweptKind::SweepLinear { .. } => SweepParams::SweepLinear {
-            axis: [0.0, 0.0, 0.0],
-            length: 0.0,
-        },
-        _ => SweepParams::SweepLinear {
             axis: [0.0, 0.0, 0.0],
             length: 0.0,
         },
