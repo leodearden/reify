@@ -1786,6 +1786,62 @@ mod tests {
     }
 
     #[test]
+    fn cache_entry_header_bincode_encoding_matches_pinned_hex_literal() {
+        // Fixture uses recognisable, distinct non-zero per-field values so the
+        // LE byte order is visually verifiable at the test site.
+        // Field values:
+        //   format_version       = 0xDEAD_BEEF  (u32 LE: EF BE AD DE)
+        //   engine_version_hash  = [0xA0..=0xBF] (32 ascending bytes)
+        //   input_hash           = [0xC0..=0xDF] (32 ascending bytes)
+        //   solve_time_ms        = 0xCAFE_BABE_DEAD_BEEF (u64 LE)
+        //   byte_size            = 0x1234_5678_9ABC_DEF0 (u64 LE)
+        //   written_at           = 0x7EDC_BA98_7654_3210 (i64 LE)
+        let mut engine_hash = [0u8; 32];
+        for (i, b) in engine_hash.iter_mut().enumerate() { *b = 0xA0u8 + i as u8; }
+        let mut input_hash = [0u8; 32];
+        for (i, b) in input_hash.iter_mut().enumerate() { *b = 0xC0u8 + i as u8; }
+        let fixture = CacheEntryHeader {
+            format_version:      0xDEAD_BEEFu32,
+            engine_version_hash: engine_hash,
+            input_hash,
+            solve_time_ms:       0xCAFE_BABE_DEAD_BEEFu64,
+            byte_size:           0x1234_5678_9ABC_DEF0u64,
+            written_at:          0x7EDC_BA98_7654_3210i64,
+        };
+        let mut encoded: Vec<u8> = Vec::new();
+        fixture.write_to(&mut encoded).expect("write_to must not fail");
+
+        // Pinned bincode 1.3 fixint-LE encoding of the fixture.
+        // Layout (struct-declaration order, LE encoding):
+        //   format_version (u32, 4 bytes):              EF BE AD DE
+        //   engine_version_hash ([u8;32], 32 bytes):    A0 A1 A2 ... BF
+        //   input_hash ([u8;32], 32 bytes):              C0 C1 C2 ... DF
+        //   solve_time_ms (u64, 8 bytes):                EF BE AD DE BE BA FE CA
+        //   byte_size (u64, 8 bytes):                    F0 DE BC 9A 78 56 34 12
+        //   written_at (i64, 8 bytes):                   10 32 54 76 98 BA DC 7E
+        // Total: 92 bytes.
+        // PLACEHOLDER — replaced with observed bytes in step-6 GREEN.
+        let expected: [u8; 92] = [0u8; 92];
+
+        assert_eq!(
+            encoded.len(),
+            ENTRY_HEADER_ENCODED_LEN,
+            "encoded length must be ENTRY_HEADER_ENCODED_LEN = {ENTRY_HEADER_ENCODED_LEN}"
+        );
+        assert_eq!(
+            encoded.as_slice(),
+            &expected[..],
+            "bincode 1.3 fixint-LE encoding of CacheEntryHeader has drifted from \
+             the pinned wire-format fixture; if intentional, bump ENTRY_FORMAT_VERSION \
+             in the SAME commit and update this literal"
+        );
+        // Round-trip: decode from the pinned literal back to the original struct.
+        let decoded = CacheEntryHeader::read_from(&mut &expected[..])
+            .expect("must decode pinned literal");
+        assert_eq!(decoded, fixture);
+    }
+
+    #[test]
     fn cache_entry_header_round_trips_all_six_fields() {
         // Forces `CacheEntryHeader` + `write_to`/`read_from` to exist and
         // validates that all six fields survive a bincode round-trip.
