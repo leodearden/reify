@@ -1,5 +1,6 @@
 use super::*;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::collections::HashSet;
 use crate::compile_builder::hash::hash_pragma;
 
@@ -2197,7 +2198,7 @@ fn member_type_map_from_template(tmpl: &TopologyTemplate) -> BTreeMap<String, Ty
 /// 671), following the single-source-of-truth pattern of that helper.
 fn realization_name_set_from_template(
     tmpl: &TopologyTemplate,
-) -> std::collections::BTreeSet<String> {
+) -> BTreeSet<String> {
     tmpl.realizations
         .iter()
         .filter_map(|r| r.name.clone())

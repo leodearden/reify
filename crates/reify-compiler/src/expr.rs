@@ -153,6 +153,47 @@ fn make_cross_sub_geometry_error(
     )
 }
 
+/// Check whether `member` is a geometry realization on the sub named `sub_name`,
+/// and if so emit the cross-sub geometry diagnostic via `make_cross_sub_geometry_error`
+/// (task-3397).
+///
+/// Returns `Some(poisoned_expr)` when the member is found in
+/// `scope.sub_realization_names[sub_name]`, so the caller can `return` early with
+/// `Type::Error` and skip the generic "unknown member" path.  Returns `None` when
+/// the member is not a realization, allowing the caller to fall through to its
+/// existing generic-error branch.
+///
+/// Used at all three sub-member-access sites (bare collection sub, non-collection
+/// sub, indexed collection sub) to avoid duplicating the lookup-and-dispatch logic.
+fn try_emit_cross_sub_geometry(
+    scope: &CompilationScope<'_>,
+    sub_name: &str,
+    member: &str,
+    span: reify_types::SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<CompiledExpr> {
+    if scope
+        .sub_realization_names
+        .get(sub_name)
+        .is_some_and(|s| s.contains(member))
+    {
+        let child_struct = scope
+            .sub_component_types
+            .get(sub_name)
+            .map(|s| s.as_str())
+            .unwrap_or(sub_name);
+        Some(make_cross_sub_geometry_error(
+            diagnostics,
+            member,
+            sub_name,
+            child_struct,
+            span,
+        ))
+    } else {
+        None
+    }
+}
+
 /// Resolve `<scope>.<cluster>.<inner>` against a per-arm member-type map for a
 /// match-arm decl group (task 2373).
 ///
@@ -1185,26 +1226,16 @@ pub(crate) fn compile_expr_guarded(
                                     "collection sub member requires indexing",
                                 )),
                             );
-                        } else if scope
-                            .sub_realization_names
-                            .get(sub_name.as_str())
-                            .is_some_and(|s| s.contains(member.as_str()))
-                        {
-                            // Member is a geometry realization — emit specific cross-sub
-                            // diagnostic (task-3397). Early-return with Type::Error to
-                            // prevent cascade errors from the surrounding expression context.
-                            let child_struct = scope
-                                .sub_component_types
-                                .get(sub_name.as_str())
-                                .map(|s| s.as_str())
-                                .unwrap_or(sub_name.as_str());
-                            return make_cross_sub_geometry_error(
-                                diagnostics,
-                                member,
-                                sub_name,
-                                child_struct,
-                                expr.span,
-                            );
+                        } else if let Some(e) = try_emit_cross_sub_geometry(
+                            scope,
+                            sub_name,
+                            member,
+                            expr.span,
+                            diagnostics,
+                        ) {
+                            // Member is a geometry realization — specific cross-sub
+                            // diagnostic emitted (task-3397). Type::Error prevents cascade.
+                            return e;
                         } else {
                             // Member doesn't exist on the element type at all — don't suggest
                             // indexing a field that isn't there.
@@ -1245,23 +1276,14 @@ pub(crate) fn compile_expr_guarded(
                             // Check whether the member is a geometry realization on the child
                             // template (task-3397). If so, emit a specific, actionable diagnostic
                             // rather than the generic "unknown member" fallback.
-                            let is_geometry_realization = scope
-                                .sub_realization_names
-                                .get(sub_name.as_str())
-                                .is_some_and(|s| s.contains(member.as_str()));
-                            if is_geometry_realization {
-                                let child_struct = scope
-                                    .sub_component_types
-                                    .get(sub_name.as_str())
-                                    .map(|s| s.as_str())
-                                    .unwrap_or(sub_name.as_str());
-                                return make_cross_sub_geometry_error(
-                                    diagnostics,
-                                    member,
-                                    sub_name,
-                                    child_struct,
-                                    expr.span,
-                                );
+                            if let Some(e) = try_emit_cross_sub_geometry(
+                                scope,
+                                sub_name,
+                                member,
+                                expr.span,
+                                diagnostics,
+                            ) {
+                                return e;
                             }
                             // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
                             return make_poison_literal(
@@ -1433,23 +1455,14 @@ pub(crate) fn compile_expr_guarded(
                     Some(ty) => ty,
                     None => {
                         // Check for geometry realization member (task-3397).
-                        let is_geometry_realization = scope
-                            .sub_realization_names
-                            .get(name.as_str())
-                            .is_some_and(|s| s.contains(member.as_str()));
-                        if is_geometry_realization {
-                            let child_struct = scope
-                                .sub_component_types
-                                .get(name.as_str())
-                                .map(|s| s.as_str())
-                                .unwrap_or(name.as_str());
-                            return make_cross_sub_geometry_error(
-                                diagnostics,
-                                member,
-                                name,
-                                child_struct,
-                                expr.span,
-                            );
+                        if let Some(e) = try_emit_cross_sub_geometry(
+                            scope,
+                            name,
+                            member,
+                            expr.span,
+                            diagnostics,
+                        ) {
+                            return e;
                         }
                         // Anti-cascade (task-448/task-1921): return poison early rather than
                         // synthesising a dangling ValueRef to a non-existent cell.

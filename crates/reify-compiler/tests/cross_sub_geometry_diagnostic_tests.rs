@@ -32,17 +32,12 @@ use reify_types::Severity;
 
 // ─── helper ───────────────────────────────────────────────────────────────────
 
-/// Returns true if the message contains the substring `needle` (case-sensitive).
-fn msg_contains(msg: &str, needle: &str) -> bool {
-    msg.contains(needle)
-}
-
 /// Returns true if the message contains at least one of the "not yet" / "v0.1" /
 /// "not supported" keywords indicating the geometry-specific diagnostic.
 fn has_deferred_keyword(msg: &str) -> bool {
-    msg_contains(msg, "not yet")
-        || msg_contains(msg, "v0.1")
-        || msg_contains(msg, "not supported")
+    msg.contains("not yet")
+        || msg.contains("v0.1")
+        || msg.contains("not supported")
 }
 
 // ─── step-1: param body : Solid cross-sub access ─────────────────────────────
@@ -82,7 +77,7 @@ pub structure Outer {
 
     // (b) The message should contain "geometry" AND a "not yet"/"v0.1"/"not supported" keyword.
     let has_geometry_diagnostic = errors.iter().any(|d| {
-        msg_contains(&d.message, "geometry") && has_deferred_keyword(&d.message)
+        d.message.contains("geometry") && has_deferred_keyword(&d.message)
     });
     assert!(
         has_geometry_diagnostic,
@@ -93,10 +88,10 @@ pub structure Outer {
 
     // (c) The geometry-specific diagnostic should name both the sub and the member.
     let names_sub_and_member = errors.iter().any(|d| {
-        msg_contains(&d.message, "geometry")
+        d.message.contains("geometry")
             && has_deferred_keyword(&d.message)
-            && msg_contains(&d.message, "inner")
-            && msg_contains(&d.message, "body")
+            && d.message.contains("inner")
+            && d.message.contains("body")
     });
     assert!(
         names_sub_and_member,
@@ -144,7 +139,7 @@ pub structure Outer {
     );
 
     let has_geometry_diagnostic = errors.iter().any(|d| {
-        msg_contains(&d.message, "geometry") && has_deferred_keyword(&d.message)
+        d.message.contains("geometry") && has_deferred_keyword(&d.message)
     });
     assert!(
         has_geometry_diagnostic,
@@ -154,10 +149,10 @@ pub structure Outer {
     );
 
     let names_sub_and_member = errors.iter().any(|d| {
-        msg_contains(&d.message, "geometry")
+        d.message.contains("geometry")
             && has_deferred_keyword(&d.message)
-            && msg_contains(&d.message, "inner")
-            && msg_contains(&d.message, "body")
+            && d.message.contains("inner")
+            && d.message.contains("body")
     });
     assert!(
         names_sub_and_member,
@@ -205,9 +200,9 @@ structure Outer {
 
     // (b) Must contain the generic "unknown member" text.
     let has_generic = errors.iter().any(|d| {
-        msg_contains(&d.message, "unknown member")
-            && msg_contains(&d.message, "nonexistent")
-            && msg_contains(&d.message, "inner")
+        d.message.contains("unknown member")
+            && d.message.contains("nonexistent")
+            && d.message.contains("inner")
     });
     assert!(
         has_generic,
@@ -218,7 +213,7 @@ structure Outer {
 
     // (c) Must NOT contain "geometry" or "v0.1" — this is not a geometry member.
     let has_geometry_path = errors.iter().any(|d| {
-        msg_contains(&d.message, "geometry") || msg_contains(&d.message, "v0.1")
+        d.message.contains("geometry") || d.message.contains("v0.1")
     });
     assert!(
         !has_geometry_path,
@@ -256,7 +251,7 @@ pub structure Rack {
     );
 
     let has_geometry_diagnostic = errors.iter().any(|d| {
-        msg_contains(&d.message, "geometry") && has_deferred_keyword(&d.message)
+        d.message.contains("geometry") && has_deferred_keyword(&d.message)
     });
     assert!(
         has_geometry_diagnostic,
@@ -265,10 +260,10 @@ pub structure Rack {
     );
 
     let names_sub_and_member = errors.iter().any(|d| {
-        msg_contains(&d.message, "geometry")
+        d.message.contains("geometry")
             && has_deferred_keyword(&d.message)
-            && msg_contains(&d.message, "bolts")
-            && msg_contains(&d.message, "body")
+            && d.message.contains("bolts")
+            && d.message.contains("body")
     });
     assert!(
         names_sub_and_member,
@@ -303,7 +298,7 @@ pub structure Rack {
     );
 
     let has_geometry_diagnostic = errors.iter().any(|d| {
-        msg_contains(&d.message, "geometry") && has_deferred_keyword(&d.message)
+        d.message.contains("geometry") && has_deferred_keyword(&d.message)
     });
     assert!(
         has_geometry_diagnostic,
@@ -312,10 +307,10 @@ pub structure Rack {
     );
 
     let names_sub_and_member = errors.iter().any(|d| {
-        msg_contains(&d.message, "geometry")
+        d.message.contains("geometry")
             && has_deferred_keyword(&d.message)
-            && msg_contains(&d.message, "bolts")
-            && msg_contains(&d.message, "body")
+            && d.message.contains("bolts")
+            && d.message.contains("body")
     });
     assert!(
         names_sub_and_member,
@@ -350,7 +345,7 @@ pub structure Outer {
 
     // (a) The geometry-cross-sub diagnostic must fire at least once.
     let has_geometry_diagnostic = errors.iter().any(|d| {
-        msg_contains(&d.message, "geometry") && has_deferred_keyword(&d.message)
+        d.message.contains("geometry") && has_deferred_keyword(&d.message)
     });
     assert!(
         has_geometry_diagnostic,
@@ -368,11 +363,13 @@ pub structure Outer {
     );
 
     // (c) No cascade "expected geometry expression" / "type mismatch" / "argument N" errors.
+    // Matches by distinguishing prefixes so cascade errors that happen to mention
+    // "geometry" (e.g. "argument 1 must be a geometry expression") are not
+    // inadvertently excluded by a content-based filter.
     let has_cascade = errors.iter().any(|d| {
-        (msg_contains(&d.message, "expected geometry expression")
-            || msg_contains(&d.message, "type mismatch")
-            || msg_contains(&d.message, "argument 1 must be"))
-            && !msg_contains(&d.message, "geometry")
+        d.message.starts_with("argument")
+            || d.message.starts_with("type mismatch")
+            || d.message == "expected geometry expression"
     });
     assert!(
         !has_cascade,
