@@ -35,9 +35,21 @@ use crate::MorphOptions;
 /// `reify-solver-elastic/src/result.rs:39`. PRD task #21 will replace this
 /// placeholder with a mesh-scale-aware degeneracy detector and structured
 /// error variant; until then we fail-finite-but-garbage on degenerate input.
+///
+/// Even when this clamp engages and produces ~1e30:1 K-conditioning across
+/// mixed degenerate/healthy tets, the engine pipeline (PRD task #10) catches
+/// the resulting degenerate or inverted morphed elements via the quality pass:
+/// `QualityVerdict::HardFail` on negative scaled-Jacobian and
+/// `QualityVerdict::SoftFail` with `degenerate_morphed_element = Some(_)` on
+/// `sj == 0.0` (both via `quality_check` in `quality.rs`), independently of
+/// the configured floor thresholds. PRD task #21 will replace this placeholder
+/// with a structured error variant; the quality pass acts as the safety net
+/// until then.
 const MIN_VOLUME: f64 = 1.0e-30;
 
-/// Analogous ε guard for the `InverseEdgeLengthSquared` rule.
+/// Analogous ε guard for the `InverseEdgeLengthSquared` rule. See `MIN_VOLUME`
+/// for the safety-net rationale (quality pass catches degenerate output even
+/// when this clamp produces extreme K-conditioning).
 const MIN_LENGTH_SQ: f64 = 1.0e-30;
 
 /// Average of the 6 squared edge lengths of a P1 tet.
@@ -288,18 +300,27 @@ pub fn elasticity_morph_with_cg_opts(
         // The single shared IsotropicElastic from task #7 is replaced by a
         // per-tet construct; only E changes per element, ν stays uniform.
         //
-        // For `Uniform`, bypass per-element geometry entirely — zero extra
-        // computation cost, bit-identical to the task-#7 baseline. For the
-        // spatially-varying rules, compute element-local E from tet geometry.
-        let e_e = if options.stiffness_rule == StiffnessRule::Uniform {
-            options.fictitious_youngs_modulus_base
-        } else {
-            per_element_youngs_modulus(
-                options.stiffness_rule,
-                &phys,
-                options.fictitious_youngs_modulus_base,
-            )
-        };
+        // The dispatch is unconditional: per_element_youngs_modulus (#[inline])
+        // handles all three rules including `Uniform → e_base` via its match
+        // arm (a single-instruction return, zero extra computation). The no-op-
+        // for-Uniform property is pinned by a unit test in the test module
+        // asserting Uniform returns e_base for both canonical and
+        // near-degenerate tets.
+        //
+        // NOTE — duplicate volume/geometry computation for `InverseVolume` and
+        // `InverseEdgeLengthSquared`: per_element_youngs_modulus calls
+        // `tet_volume_p1(&phys)` / `mean_squared_edge_length(&phys)` to derive
+        // E_e, while element_stiffness (below) independently re-computes the
+        // same Jacobian determinant for the same tet. Eliminating the duplicate
+        // would require extending `reify-solver-elastic`'s element_stiffness API
+        // to return the determinant/volume alongside K_e — a cross-crate API
+        // change out of scope for this task. Defer to a future profiler-driven
+        // optimisation once real multi-million-tet workloads motivate the change.
+        let e_e = per_element_youngs_modulus(
+            options.stiffness_rule,
+            &phys,
+            options.fictitious_youngs_modulus_base,
+        );
         let material_e = IsotropicElastic {
             youngs_modulus: e_e,
             poisson_ratio: options.fictitious_poisson_ratio,
@@ -680,6 +701,55 @@ mod tests {
         // tautological. Pinned by step-11.
     }
 
+    // ── task 3422 step-1: per_element_youngs_modulus Uniform invariant ──────────
+
+    /// Pins the load-bearing invariant for the step-2 dedup refactor: for
+    /// `StiffnessRule::Uniform`, `per_element_youngs_modulus` returns `e_base`
+    /// unchanged regardless of the tet geometry. Asserts exact equality
+    /// (`assert_eq!`, not approx) because `Uniform` matches the single-instruction
+    /// `StiffnessRule::Uniform => e_base` arm with no geometric computation.
+    ///
+    /// Two geometrically distinct tets are tested:
+    ///  1. The canonical unit tet (a, b, c, d at unit axes).
+    ///  2. A near-degenerate tet (all vertices near the origin) whose
+    ///     `InverseVolume` and `InverseEdgeLengthSquared` E_e values would differ
+    ///     dramatically from `e_base` — confirming the Uniform arm is untouched.
+    ///
+    /// Protects against future drift in `per_element_youngs_modulus` that might
+    /// accidentally introduce geometry-dependent side effects for the Uniform
+    /// variant (e.g. a mistaken match-arm reorder or an extra computation).
+    #[test]
+    fn uniform_rule_returns_e_base_for_any_geometry() {
+        let e_base = 42.0_f64;
+
+        // 1. Canonical unit tet.
+        let unit_tet: [[f64; 3]; 4] = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ];
+        assert_eq!(
+            per_element_youngs_modulus(StiffnessRule::Uniform, &unit_tet, e_base),
+            e_base,
+            "Uniform rule on unit tet must return e_base unchanged"
+        );
+
+        // 2. Near-degenerate tet (tiny volume) — InverseVolume would give
+        //    ~1e30×e_base but Uniform must still return e_base exactly.
+        let tiny_tet: [[f64; 3]; 4] = [
+            [0.0, 0.0, 0.0],
+            [1.0e-10, 0.0, 0.0],
+            [0.0, 1.0e-10, 0.0],
+            [0.0, 0.0, 1.0e-10],
+        ];
+        assert_eq!(
+            per_element_youngs_modulus(StiffnessRule::Uniform, &tiny_tet, e_base),
+            e_base,
+            "Uniform rule on near-degenerate tet must return e_base unchanged"
+        );
+    }
+
     // ── task 2945 step-5 + step-7: asymmetric-cone fixture + rule tests ─────────
 
     /// Helper that builds the asymmetric cone fixture (5 nodes, 4 tets, `p`
@@ -696,6 +766,10 @@ mod tests {
                 0.0, 0.0, 1.0,       // 3: d
                 0.05, 0.05, 0.05,    // 4: p (near a → three small tets, one large)
             ],
+            // NOTE: these tet orderings are NOT all consistently right-handed;
+            // some yield negative Jacobian determinants.  This is intentional —
+            // the fixture exercises element_stiffness's internal `det.abs()`
+            // handling for mixed-orientation tets.
             tet_indices: vec![
                 0, 1, 2, 4, // a, b, c, p  — small vol
                 0, 1, 3, 4, // a, b, d, p  — small vol
