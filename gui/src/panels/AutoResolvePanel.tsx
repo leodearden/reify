@@ -149,7 +149,7 @@ export const AutoResolvePanel: Component<AutoResolvePanelProps> = (props) => {
 
       {/* ── Parameters section ──────────────────────────────────────────── */}
       <Show when={latestIteration() !== null}>
-        <section class={styles.section}>
+        <section class={styles.section} data-testid="auto-resolve-parameters">
           <div class={styles.sectionLabel}>Parameters</div>
           <For each={Object.entries(latestIteration()!.parameters)}>
             {([cellId, paramValue]) => (
