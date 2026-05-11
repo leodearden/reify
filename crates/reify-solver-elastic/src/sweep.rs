@@ -196,6 +196,242 @@ pub struct ThroughThicknessSweepWarning {
     pub message: String,
 }
 
+// ---------------------------------------------------------------------------
+// Orchestrator
+// ---------------------------------------------------------------------------
+
+const DEGENERATE_TOL: f64 = 1e-12;
+
+/// Validate sweep inputs before any allocation.
+///
+/// Returns `Ok(unit_axis)` — the normalised axis vector — or a `SweepError`.
+fn validate_sweep_inputs(
+    mesh2d: &crate::Mesh2d,
+    params: &SweepParams,
+    layers: usize,
+) -> Result<[f64; 3], SweepError> {
+    // 1. Empty mesh check.
+    let (verts_empty, faces_empty) = match mesh2d {
+        crate::Mesh2d::Triangle { vertices, indices } => {
+            (vertices.is_empty(), indices.is_empty())
+        }
+        crate::Mesh2d::Quad { vertices, indices } => {
+            (vertices.is_empty(), indices.is_empty())
+        }
+    };
+    if verts_empty || faces_empty {
+        return Err(SweepError::EmptyMesh2d);
+    }
+
+    // 2. Layer count.
+    if layers == 0 {
+        return Err(SweepError::InvalidLayerCount);
+    }
+
+    // 3. Axis + magnitude per variant.
+    match params {
+        SweepParams::Extrude { axis, length } | SweepParams::SweepLinear { axis, length } => {
+            let norm = norm3(*axis);
+            if norm < DEGENERATE_TOL {
+                return Err(SweepError::DegenerateAxis);
+            }
+            if !length.is_finite() || *length <= 0.0 {
+                return Err(SweepError::DegenerateMagnitude);
+            }
+            Ok([axis[0] / norm, axis[1] / norm, axis[2] / norm])
+        }
+        SweepParams::Revolve { axis_dir, angle, .. } => {
+            let norm = norm3(*axis_dir);
+            if norm < DEGENERATE_TOL {
+                return Err(SweepError::DegenerateAxis);
+            }
+            if !angle.is_finite() || *angle <= 0.0 {
+                return Err(SweepError::DegenerateMagnitude);
+            }
+            Ok([axis_dir[0] / norm, axis_dir[1] / norm, axis_dir[2] / norm])
+        }
+    }
+}
+
+/// Euclidean norm of a 3-vector.
+#[inline]
+fn norm3(v: [f64; 3]) -> f64 {
+    (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
+}
+
+/// Sweep a 2D cross-section mesh into a 3D wedge/hex mesh.
+///
+/// # Arguments
+///
+/// * `mesh2d` — the 2D cross-section mesh (from `mesh_swept_profile_2d`).
+///   `Mesh2d::Triangle` produces wedge elements; `Mesh2d::Quad` produces hex.
+/// * `params` — sweep trajectory (extrude, revolve, or linear sweep).
+/// * `layers` — number of element layers K.  Use [`derive_layer_count`] to
+///   compute K from mesh size and sweep distance.
+///
+/// # Returns
+///
+/// `Ok(SweptMesh3d)` with `(K+1) * n_base` vertices (stride 3, `f32`) and
+/// `K * n_faces` elements.  Returns `Err(SweepError)` on degenerate inputs.
+///
+/// # Node layout
+///
+/// Node `(layer ℓ, base i)` → global index `ℓ * n_base + i`.
+/// Layer 0 is at the profile origin; layer K is at the sweep end.
+pub fn sweep_2d_mesh_to_3d(
+    mesh2d: &crate::Mesh2d,
+    params: &SweepParams,
+    layers: usize,
+) -> Result<SweptMesh3d, SweepError> {
+    let unit_axis = validate_sweep_inputs(mesh2d, params, layers)?;
+
+    match mesh2d {
+        crate::Mesh2d::Triangle { vertices, indices } => {
+            let verts3d = build_vertices(vertices, params, &unit_axis, layers);
+            let conn = build_wedge_connectivity(indices, vertices.len() / 2, layers);
+            Ok(SweptMesh3d {
+                vertices: verts3d,
+                connectivity: SweptConnectivity::Wedge { indices: conn },
+                layers,
+            })
+        }
+        crate::Mesh2d::Quad { vertices, indices } => {
+            let verts3d = build_vertices(vertices, params, &unit_axis, layers);
+            let conn = build_hex_connectivity(indices, vertices.len() / 2, layers);
+            Ok(SweptMesh3d {
+                vertices: verts3d,
+                connectivity: SweptConnectivity::Hex { indices: conn },
+                layers,
+            })
+        }
+    }
+}
+
+/// Build the 3D vertex buffer by replicating the 2D base layer K+1 times.
+///
+/// The 2D node `[x, y]` embeds at `z=0` in 3D; each layer adds the per-layer
+/// transform derived from `params`.
+fn build_vertices(
+    verts2d: &[f32],
+    params: &SweepParams,
+    unit_axis: &[f64; 3],
+    layers: usize,
+) -> Vec<f32> {
+    let n_base = verts2d.len() / 2;
+    let mut out = Vec::with_capacity(n_base * (layers + 1) * 3);
+
+    for layer in 0..=(layers as u32) {
+        let t = layer as f64 / layers as f64; // 0.0 .. 1.0
+        for i in 0..n_base {
+            let x2 = verts2d[i * 2] as f64;
+            let y2 = verts2d[i * 2 + 1] as f64;
+            let (x3, y3, z3) = apply_layer_transform(x2, y2, params, unit_axis, t);
+            out.push(x3 as f32);
+            out.push(y3 as f32);
+            out.push(z3 as f32);
+        }
+    }
+    out
+}
+
+/// Compute the 3D position of a 2D node `[x2, y2]` at parameter `t ∈ [0,1]`.
+///
+/// `t=0` returns the node at the profile origin; `t=1` returns the node at
+/// the sweep end.
+#[inline]
+fn apply_layer_transform(
+    x2: f64,
+    y2: f64,
+    params: &SweepParams,
+    unit_axis: &[f64; 3],
+    t: f64,
+) -> (f64, f64, f64) {
+    match params {
+        SweepParams::Extrude { length, .. } | SweepParams::SweepLinear { length, .. } => {
+            let d = t * length;
+            (
+                x2 + unit_axis[0] * d,
+                y2 + unit_axis[1] * d,
+                unit_axis[2] * d,
+            )
+        }
+        SweepParams::Revolve {
+            axis_origin,
+            angle,
+            ..
+        } => {
+            // The 2D node sits at (x2, y2, 0) in the profile frame.
+            // Translate so axis_origin is the origin, then apply Rodrigues.
+            let px = x2 - axis_origin[0];
+            let py = y2 - axis_origin[1];
+            let pz = 0.0_f64 - axis_origin[2];
+
+            let theta = t * angle;
+            let (sin_t, cos_t) = theta.sin_cos();
+
+            // k = unit_axis (already normalised)
+            let kx = unit_axis[0];
+            let ky = unit_axis[1];
+            let kz = unit_axis[2];
+
+            // k · p
+            let kdotp = kx * px + ky * py + kz * pz;
+
+            // Rodrigues: R(θ) p = p cosθ + (k × p) sinθ + k (k·p)(1 − cosθ)
+            let cx = px * cos_t + (ky * pz - kz * py) * sin_t + kx * kdotp * (1.0 - cos_t);
+            let cy = py * cos_t + (kz * px - kx * pz) * sin_t + ky * kdotp * (1.0 - cos_t);
+            let cz = pz * cos_t + (kx * py - ky * px) * sin_t + kz * kdotp * (1.0 - cos_t);
+
+            // Translate back.
+            (cx + axis_origin[0], cy + axis_origin[1], cz + axis_origin[2])
+        }
+    }
+}
+
+/// Build wedge connectivity: for each (layer k, triangle face f) → 6 indices.
+fn build_wedge_connectivity(indices: &[u32], n_base: usize, layers: usize) -> Vec<u32> {
+    let n_faces = indices.len() / 3;
+    let mut conn = Vec::with_capacity(layers * n_faces * 6);
+    for k in 0..layers {
+        let base_off = (k * n_base) as u32;
+        let top_off = ((k + 1) * n_base) as u32;
+        for tri in indices.chunks_exact(3) {
+            conn.extend_from_slice(&[
+                base_off + tri[0],
+                base_off + tri[1],
+                base_off + tri[2],
+                top_off + tri[0],
+                top_off + tri[1],
+                top_off + tri[2],
+            ]);
+        }
+    }
+    conn
+}
+
+/// Build hex connectivity: for each (layer k, quad face f) → 8 indices.
+fn build_hex_connectivity(indices: &[u32], n_base: usize, layers: usize) -> Vec<u32> {
+    let n_faces = indices.len() / 4;
+    let mut conn = Vec::with_capacity(layers * n_faces * 8);
+    for k in 0..layers {
+        let base_off = (k * n_base) as u32;
+        let top_off = ((k + 1) * n_base) as u32;
+        for quad in indices.chunks_exact(4) {
+            conn.extend_from_slice(&[
+                base_off + quad[0],
+                base_off + quad[1],
+                base_off + quad[2],
+                base_off + quad[3],
+                top_off + quad[0],
+                top_off + quad[1],
+                top_off + quad[2],
+                top_off + quad[3],
+            ]);
+        }
+    }
+    conn
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
