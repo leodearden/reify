@@ -292,15 +292,26 @@ pub(crate) fn try_resolve_cross_sub_geom_ref(
         && let reify_syntax::ExprKind::Ident(self_name) = &inner_obj.kind
         && self_name == "self"
         && !scope.collection_sub_names.contains(sub_name.as_str())
-        && scope
+    {
+        let has_realization = scope
             .sub_realization_names
             .get(sub_name.as_str())
-            .is_some_and(|s| s.contains(member.as_str()))
-    {
-        Some(GeomRef::Sub(format!("{}.{}", sub_name, member)))
-    } else {
-        None
+            .is_some_and(|s| s.contains(member.as_str()));
+        // Forward-declared sub (task 3441): parent compiled before child, so
+        // sub_member_types/sub_realization_names are unpopulated.  Emit the
+        // optimistic GeomRef::Sub anyway — the eval side will flag a missing
+        // handle via `unresolvable GeomRef::Sub('<sub>.<member>')` if the
+        // compound key never appears in named_steps.  Mirrors the same
+        // forward-declared optimism in `try_resolve_cross_sub_geometry_value_ref`
+        // (expr.rs) so the compile-side value-ref and the geometry-side
+        // GeomRef::Sub stay in lockstep.
+        let forward_declared = scope.sub_component_types.contains_key(sub_name.as_str())
+            && !scope.sub_member_types.contains_key(sub_name.as_str());
+        if has_realization || forward_declared {
+            return Some(GeomRef::Sub(format!("{}.{}", sub_name, member)));
+        }
     }
+    None
 }
 
 /// Compile a geometry function call expression into CompiledGeometryOps.

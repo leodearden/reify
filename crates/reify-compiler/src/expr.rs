@@ -235,16 +235,35 @@ fn try_emit_cross_sub_geometry(
 ///
 /// The collection-sub call sites continue to use [`try_emit_cross_sub_geometry`]
 /// to emit the v0.1 diagnostic until per-instance handles are implemented.
+///
+/// # Forward-declared sub (runtime fallback)
+///
+/// When the parent template is compiled before the child template (i.e., the sub's
+/// `structure_name` was not yet in `compiled_templates` at the time the parent's
+/// scope was built), `scope.sub_member_types` and `scope.sub_realization_names`
+/// are both empty for that sub.  In that case this helper still emits the
+/// working-path value-ref optimistically: the compile-side cannot distinguish a
+/// forward-declared geometry member from a forward-declared scalar member, so we
+/// trust the runtime to flag the missing handle via the
+/// `unresolvable GeomRef::Sub('<sub>.<member>')` diagnostic produced by
+/// `geometry_ops.rs::resolve_geom_ref`.  Pinned by
+/// `crates/reify-eval/tests/cross_sub_geometry_e2e.rs::cross_sub_forward_declared_sub_yields_unresolvable_geom_ref_error`.
 fn try_resolve_cross_sub_geometry_value_ref(
     scope: &CompilationScope<'_>,
     sub_name: &str,
     member: &str,
 ) -> Option<CompiledExpr> {
-    if scope
+    let has_realization = scope
         .sub_realization_names
         .get(sub_name)
-        .is_some_and(|s| s.contains(member))
-    {
+        .is_some_and(|s| s.contains(member));
+    // Forward-declared sub: parent compiled before child, so sub_member_types
+    // and sub_realization_names are unpopulated for this sub.  Emit the
+    // optimistic working path; runtime will flag a missing handle via
+    // `unresolvable GeomRef::Sub('<sub>.<member>')`.
+    let forward_declared = scope.sub_component_types.contains_key(sub_name)
+        && !scope.sub_member_types.contains_key(sub_name);
+    if has_realization || forward_declared {
         let scoped_entity = format!("{}.{}", scope.entity_name, sub_name);
         let scoped_id = ValueCellId::new(&scoped_entity, member);
         Some(CompiledExpr::value_ref(scoped_id, Type::Geometry))
