@@ -1574,6 +1574,66 @@ mod tests {
         );
     }
 
+    /// Behavioral regression guard: verifies that a one-byte mutation in the
+    /// workspace `Cargo.lock` produces a different `compose_engine_version_hash`
+    /// output when processed through the same `walk_contributor` path that
+    /// `build.rs` uses.
+    ///
+    /// This test covers the end-to-end contract required by the PRD
+    /// (`docs/prds/v0_3/persistent-fea-cache.md` §"Cache invalidation on engine
+    /// version"): "any change to the FEA engine" must invalidate.  The structural
+    /// inclusion test (below) proves Cargo.lock is *listed*; this test proves the
+    /// algorithm actually *distinguishes* different lock-file revisions.
+    #[test]
+    fn walking_workspace_cargo_lock_then_modifying_one_byte_changes_compose_engine_version_hash_output() {
+        use std::io::Write as _;
+
+        let lock_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../Cargo.lock");
+        assert!(
+            lock_path.exists(),
+            "workspace Cargo.lock not found at {}; the test path resolution \
+             (CARGO_MANIFEST_DIR/../../Cargo.lock) must match the path used by \
+             build.rs and CONTRIBUTORS_RELATIVE",
+            lock_path.display()
+        );
+
+        // Baseline: walk the real workspace Cargo.lock.
+        let baseline_walk =
+            crate::engine_hash_algo::walk_contributor("../../Cargo.lock", &lock_path);
+        let baseline_refs: Vec<&[u8]> =
+            baseline_walk.parts.iter().map(|v| v.as_slice()).collect();
+        let baseline_hash = compose_engine_version_hash(&baseline_refs);
+
+        // Mutated copy: flip the first byte of the lock file content.
+        let mut bytes = std::fs::read(&lock_path).expect("must read workspace Cargo.lock");
+        bytes[0] ^= 0xFF;
+        let mut mutated_tmpfile =
+            tempfile::NamedTempFile::new().expect("must create mutated tempfile");
+        mutated_tmpfile
+            .write_all(&bytes)
+            .expect("must write mutated bytes to tempfile");
+        mutated_tmpfile.flush().expect("must flush mutated tempfile");
+        let mutated_path = mutated_tmpfile.path().to_path_buf();
+
+        // Walk the mutated file under the SAME label so the only difference is
+        // content, not the path key.
+        let mutated_walk =
+            crate::engine_hash_algo::walk_contributor("../../Cargo.lock", &mutated_path);
+        let mutated_refs: Vec<&[u8]> =
+            mutated_walk.parts.iter().map(|v| v.as_slice()).collect();
+        let mutated_hash = compose_engine_version_hash(&mutated_refs);
+
+        assert_ne!(
+            baseline_hash,
+            mutated_hash,
+            "a one-byte flip in the workspace Cargo.lock must change \
+             compose_engine_version_hash output (PRD requirement: any change to \
+             the FEA engine — including transitive dep version bumps captured by \
+             Cargo.lock — must invalidate all cache entries)"
+        );
+    }
+
     /// PRD-required structural guard: the workspace `Cargo.lock` must appear in
     /// `CONTRIBUTORS_RELATIVE` so that any transitive dependency version bump
     /// (e.g. `nalgebra`, `faer`, `gmsh-sys`, `nalgebra-sparse`) causes
