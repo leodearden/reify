@@ -67,9 +67,10 @@ pub(crate) fn phase_traits(
 ) -> HashSet<String> {
     // 1. The trait_names and structure_names sets were pre-computed by
     //    names_phase::build_resolution_names (which ran before phase_functions).
-    //    Clone trait_names for the return value (downstream phases consume it
-    //    as an owned HashSet); borrow structure_names in place.
-    let trait_names = ctx.resolution_trait_names.clone();
+    //    Move trait_names out of ctx (no other phase reads resolution_trait_names
+    //    after phase_traits, so cloning would be wasteful); borrow structure_names
+    //    in place.
+    let trait_names = std::mem::take(&mut ctx.resolution_trait_names);
     let structure_names = &ctx.resolution_structure_names;
 
     // 2. Compile each trait (depends on resolution_enums for enum type resolution in params).

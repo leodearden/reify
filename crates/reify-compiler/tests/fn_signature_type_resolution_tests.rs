@@ -236,18 +236,24 @@ fn fn_signature_resolves_solid_builtin_alias() {
 }
 
 /// Both `phase_functions` (fn signature) and `phase_traits` (structure
-/// conformance check) consume the same pre-computed name sets with no regression.
+/// conformance check) work correctly together after the DRY refactor in
+/// step-2 (g), where `phase_traits` was changed to read the pre-computed
+/// ctx name sets instead of rebuilding local copies.
 ///
-/// Source contains a fn whose parameter type is a stdlib trait name AND a local
-/// structure that refines that same trait.  After the DRY refactor in step-2 (g),
-/// phase_traits reads `ctx.resolution_trait_names` / `ctx.resolution_structure_names`
-/// instead of rebuilding its own local copies.  This test pins that both phases
-/// read the correct sets — a field-swap bug (e.g. reading resolution_structure_names
-/// where resolution_trait_names is expected) would produce diagnostics here.
+/// Source contains a fn whose parameter type is a stdlib trait name AND a
+/// local structure that refines that same trait.  The test pins that both
+/// phases integrate without producing Error diagnostics:
+/// - `phase_functions` resolves `MaterialSpec` in the fn signature (reads
+///   `ctx.resolution_trait_names`).
+/// - `phase_traits` compiles the `MyMat : MaterialSpec` conformance
+///   relationship via `build_trait_registry` (reads
+///   `ctx.resolution_trait_names` / `ctx.resolution_structure_names`).
 ///
-/// Specifically catches the regression where step-2 (g) broke phase_traits'
-/// name lookup (e.g., by reading from the wrong ctx field or mutating it
-/// between phases).
+/// Note: because this source contains no local `trait` declarations,
+/// `compile_trait` is not invoked; the conformance check exercised here is
+/// the `build_trait_registry` / deprecation path in `phase_traits`, not the
+/// trait-member type-resolution path.  The zero-errors assertion confirms
+/// that both phases share the ctx name sets without interference.
 #[test]
 fn phase_traits_consumes_shared_names_no_regression() {
     // MyMat must implement all required MaterialSpec members (density: Real,
