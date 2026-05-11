@@ -409,3 +409,89 @@ fn sweep_runner_returns_morph_and_from_scratch_quality_metrics_for_single_param_
         "morphed and from-scratch meshes must have the same vertex count"
     );
 }
+
+// ── Step-11: box wall-thickness sweep obeys the materially-better rule ────────
+
+/// Materially-better rule from the PRD task #13 / task #2950 spec:
+///
+/// - **If verdict is reject** (`HardFail` or `SoftFail`), then `from_scratch`
+///   must be materially better on at least one of (`min_sj` or `AR-factor`).
+///   Encoded as `from_scratch_min_sj > 1.20 * morph_min_sj` (higher-is-better
+///   polarity) OR `morph_ar_factor > 1.20 * 1.0` (AR is lower-is-better; the
+///   from-scratch reference for an undistorted remesh is ~1.0).
+///
+/// - **If verdict is Pass**, then `from_scratch` must NOT be materially
+///   better on `min_sj` (rule polarity from the plan: "materially-better
+///   must be false on min_sj"). Indicates the threshold is not too lax.
+///
+/// Helper kept module-local so each sweep test calls it identically; the
+/// canonical 1.20× materiality factor lives in `sweep::is_materially_better`.
+fn assert_materially_better_rule_holds(
+    fixture_name: &str,
+    target: f64,
+    report: &sweep::SweepReport,
+) {
+    use reify_mesh_morph::QualityVerdict;
+
+    let sj_materially_better =
+        sweep::is_materially_better(report.morph_min_scaled_j, report.from_scratch_min_scaled_j);
+    // For AR (lower-is-better) we compare morph_ar_factor to the from-scratch
+    // baseline of ~1.0 (from-scratch is a procedural remesh of the target
+    // geometry — its AR vs the same target has ratio ≈ 1). A morph_ar_factor
+    // > 1.20 means the morph's elements are ≥20% more elongated than a
+    // fresh remesh would produce.
+    let ar_materially_better = report.morph_max_ar_factor > 1.20;
+
+    match &report.morph_verdict {
+        QualityVerdict::Pass => {
+            assert!(
+                !sj_materially_better,
+                "{fixture_name} sweep target={target}: Pass verdict but from-scratch is \
+                 materially better on min_sj (morph={}, from_scratch={}) — \
+                 calibration too lax",
+                report.morph_min_scaled_j, report.from_scratch_min_scaled_j
+            );
+        }
+        QualityVerdict::HardFail(_) | QualityVerdict::SoftFail(_) => {
+            assert!(
+                sj_materially_better || ar_materially_better,
+                "{fixture_name} sweep target={target}: reject verdict {:?} but from-scratch \
+                 is NOT materially better (min_sj morph={} from_scratch={}; \
+                 ar_factor morph={}) — calibration too strict",
+                report.morph_verdict,
+                report.morph_min_scaled_j,
+                report.from_scratch_min_scaled_j,
+                report.morph_max_ar_factor
+            );
+        }
+    }
+}
+
+#[test]
+fn box_wall_thickness_sweep_obeys_materially_better_rule_with_calibrated_defaults() {
+    use reify_mesh_morph::MorphOptions;
+
+    // Sweep: vary the wall_thickness parameter. base = 0.10. Targets cover a
+    // small step (0.105) up to a large deformation (0.30, the cavity halves).
+    //
+    // Note: the hollow-box fixture has 0 interior vertices regardless of `n` —
+    // every grid vertex lies on either the outer-cube boundary or the inner
+    // cavity boundary, so `surface_node_indices` covers every vertex. As a
+    // consequence the elasticity_morph effectively performs an identity
+    // assignment to the prescribed positions, and `morph_min_sj` always
+    // matches `from_scratch_min_sj` exactly. The calibration of this sweep
+    // therefore reduces to: thresholds must be loose enough that whatever
+    // intrinsic quality the procedural fixture produces also passes the
+    // `quality_check` floors (the materially-better rule trivially holds in
+    // the Pass branch, but only IF the morph passes — calibration too strict
+    // would falsely reject).
+    let base_param = 0.10_f64;
+    let target_params = [0.105_f64, 0.12, 0.15, 0.20, 0.30];
+    let fixture = |w: f64| fixtures::box_mesh(1.0, w, 4);
+    let options = MorphOptions::default();
+
+    for &target in &target_params {
+        let report = sweep::run_sweep(fixture, base_param, target, &options);
+        assert_materially_better_rule_holds("box", target, &report);
+    }
+}
