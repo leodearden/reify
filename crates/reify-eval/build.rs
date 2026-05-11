@@ -92,7 +92,9 @@ fn main() {
         let path = manifest_path.join(rel);
         if !path.exists() {
             panic!(
-                "ENGINE_VERSION_HASH contributor not found: {} (resolved to {})",
+                "ENGINE_VERSION_HASH contributor not found: {} (resolved to {}). \
+                 If this file was renamed, moved, or deleted, update \
+                 CONTRIBUTORS_RELATIVE in crates/reify-eval/build.rs in the same commit.",
                 rel,
                 path.display()
             );

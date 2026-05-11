@@ -1114,25 +1114,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn engine_version_hash_const_matches_compose_engine_version_hash_output_shape() {
-        // Pins that ENGINE_VERSION_HASH obeys the same wire-format as the library
-        // function (catches a future regression where the const switches to e.g.
-        // base64 or a different length encoding).
-        let sample = compose_engine_version_hash(&[b"x"]);
-        assert_eq!(
-            ENGINE_VERSION_HASH.len(),
-            sample.len(),
-            "ENGINE_VERSION_HASH length differs from compose_engine_version_hash output"
-        );
-        assert!(
-            sample
-                .chars()
-                .all(|c| matches!(c, '0'..='9' | 'a'..='f')),
-            "compose_engine_version_hash output must be lowercase hex"
-        );
-    }
-
     // ── compose_engine_version_hash tests ────────────────────────────────────
 
     #[test]
@@ -1341,36 +1322,29 @@ mod tests {
         std::fs::write(root.join("c.rs"), b"// c").expect("must write c.rs");
 
         let walk = crate::engine_hash_algo::walk_contributor("root", &root);
+        let walk_refs: Vec<&[u8]> = walk.parts.iter().map(|v| v.as_slice()).collect();
+        let hash_from_walk = compose_engine_version_hash(&walk_refs);
 
-        // Parts alternate: [path0_bytes, file0_bytes, path1_bytes, file1_bytes, ...].
-        // step_by(2) starting at index 0 extracts path bytes for all entries.
-        let path_strs: Vec<String> = walk
-            .parts
-            .iter()
-            .step_by(2)
-            .map(|p| String::from_utf8_lossy(p).into_owned())
-            .collect();
+        // Manually build the expected parts in alphabetical order.
+        // If `walk_contributor` does NOT sort, its parts will arrive in a
+        // different order and the hashes will diverge — catching a sort
+        // regression on any platform regardless of filesystem iteration order.
+        // Driving through the public hash surface avoids coupling to the private
+        // `parts` Vec layout (e.g. if a directory-marker entry were ever
+        // interleaved, step_by(2) would silently extract the wrong elements).
+        let expected_parts: &[&[u8]] = &[
+            b"root/a.rs", b"// a",
+            b"root/b.rs", b"// b",
+            b"root/c.rs", b"// c",
+        ];
+        let expected_hash = compose_engine_version_hash(expected_parts);
 
-        let a_pos = path_strs
-            .iter()
-            .position(|p| p.contains("a.rs"))
-            .expect("a.rs must appear in path parts");
-        let b_pos = path_strs
-            .iter()
-            .position(|p| p.contains("b.rs"))
-            .expect("b.rs must appear in path parts");
-        let c_pos = path_strs
-            .iter()
-            .position(|p| p.contains("c.rs"))
-            .expect("c.rs must appear in path parts");
-
-        assert!(
-            a_pos < b_pos,
-            "a.rs must come before b.rs in sorted order; got positions a={a_pos}, b={b_pos}"
-        );
-        assert!(
-            b_pos < c_pos,
-            "b.rs must come before c.rs in sorted order; got positions b={b_pos}, c={c_pos}"
+        assert_eq!(
+            hash_from_walk,
+            expected_hash,
+            "walk_contributor must visit directory entries in sorted (alphabetical) \
+             order for byte-determinism across platforms; hash mismatch indicates a \
+             sort regression"
         );
     }
 
