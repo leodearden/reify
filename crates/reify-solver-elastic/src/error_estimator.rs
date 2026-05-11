@@ -248,6 +248,52 @@ mod tests {
         ) -> ZzIndicator = compute_zz_indicator;
     }
 
+    /// Global relative energy error on the same two-tet fan as the per-element
+    /// test.
+    ///
+    /// Closed form (same fixture: σ_A=diag(100,0,0), σ_B=diag(0,0,0), V=1/6,
+    /// E=1.0, ν=0.3):
+    ///
+    ///   Σ η_e² = 2 · V · (37.5)² / E = 2·(1/6)·1406.25 = 468.75
+    ///   U_solution = Σ V_e · σ_e · D⁻¹ · σ_e
+    ///              = V_A · (100)²/E + V_B · 0
+    ///              = (1/6) · 10000 = 1666.667
+    ///   η_global = sqrt(468.75 / 1666.667) = sqrt(0.28125) ≈ 0.53033...
+    ///
+    /// The stub returns global_relative_energy_error = 0.0, so this test fails.
+    #[test]
+    fn global_relative_energy_error_two_tet_fan_nonuniform_stress_closed_form() {
+        let mat = dimensionless_steel_like();
+        let v = 1.0_f64 / 6.0;
+        let conn0 = [0_usize, 1, 2, 3];
+        let conn1 = [1_usize, 2, 3, 4];
+        let sigma_a = [[100.0_f64, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]];
+        let sigma_b = [[0.0_f64; 3]; 3];
+        let elements = [
+            StressElement { connectivity: &conn0, stress: sigma_a, volume: v },
+            StressElement { connectivity: &conn1, stress: sigma_b, volume: v },
+        ];
+        let mesh = two_tet_fan_mesh();
+
+        let result = compute_zz_indicator(&elements, &mesh, &mat);
+
+        // Closed form:
+        //   sum_eta_sq = 2·(1/6)·37.5²/E = 468.75
+        //   U_solution  = (1/6)·100²/E   = 1666.666...
+        //   global = sqrt(468.75 / 1666.666...) = sqrt(0.28125) ≈ 0.530330...
+        let sum_eta_sq = 2.0 * v * 37.5_f64 * 37.5 / mat.youngs_modulus;
+        let u_solution = v * 100.0_f64 * 100.0 / mat.youngs_modulus;
+        let expected_global = (sum_eta_sq / u_solution).sqrt();
+
+        let rel_tol = 1e-9;
+        assert!(
+            (result.global_relative_energy_error - expected_global).abs()
+                < rel_tol * expected_global,
+            "global = {}, expected ≈ {expected_global}",
+            result.global_relative_energy_error,
+        );
+    }
+
     /// Per-element indicator on a two-tet fan with σ_A ≠ σ_B.
     ///
     /// Fixture: σ_A = diag(100,0,0), σ_B = diag(0,0,0), V_A = V_B = 1/6.
