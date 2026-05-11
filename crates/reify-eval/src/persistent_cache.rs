@@ -1831,6 +1831,28 @@ mod tests {
     // ── path-layout tests ────────────────────────────────────────────────────
 
     #[test]
+    fn shard_dir_returns_two_level_directory_under_engine_version_hash() {
+        use std::path::PathBuf;
+        let root   = PathBuf::from("/some/cache");
+        let engine = "abc123def456abc123def456abc123ff";
+        let input  = "0123456789abcdef0123456789abcdef";
+        let dir = shard_dir(&root, engine, input);
+        assert_eq!(
+            dir,
+            PathBuf::from("/some/cache/abc123def456abc123def456abc123ff/01"),
+            "shard_dir must produce <root>/<engine>/<input[0..2]>"
+        );
+        // Callers do `create_dir_all(&shard_dir(...))` once, then write both
+        // .bin and .meta into it — the parent must match entry_bin_path's parent.
+        let bin = entry_bin_path(&root, engine, input);
+        assert_eq!(
+            Some(dir.as_path()),
+            bin.parent(),
+            "shard_dir must equal entry_bin_path(...).parent()"
+        );
+    }
+
+    #[test]
     fn entry_meta_path_uses_meta_extension_under_same_shard_dir_as_bin() {
         use std::path::PathBuf;
         let root   = PathBuf::from("/some/cache");
