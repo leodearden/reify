@@ -1128,6 +1128,50 @@ describe('engineStore autoResolve driving_metric invariance', () => {
       dispose();
     });
   });
+
+  it('(6) endAutoResolveLoop + beginAutoResolveLoop resets canonical so a new loop adopts a different driving_metric', () => {
+    createRoot((dispose) => {
+      const { state, beginAutoResolveLoop, applyAutoResolveIteration, endAutoResolveLoop } = createEngineStore();
+      beginAutoResolveLoop();
+      const iterA = { ...sampleIteration, driving_metric: 'A', driving_metric_value: 1 };
+      applyAutoResolveIteration(iterA);
+      expect(state.autoResolve.canonicalDrivingMetric).toBe('A');
+      expect(state.autoResolve.iterations).toHaveLength(1);
+
+      endAutoResolveLoop();
+      beginAutoResolveLoop();
+      expect(state.autoResolve.canonicalDrivingMetric).toBeUndefined();
+
+      const iterB = { ...sampleIteration, driving_metric: 'B', driving_metric_value: 1 };
+      applyAutoResolveIteration(iterB);
+      expect(state.autoResolve.canonicalDrivingMetric).toBe('B');
+      expect(state.autoResolve.iterations).toHaveLength(1);
+      expect(state.autoResolve.iterations[0].driving_metric).toBe('B');
+      dispose();
+    });
+  });
+
+  it('(7) a second beginAutoResolveLoop without endAutoResolveLoop in between still clears canonical', () => {
+    createRoot((dispose) => {
+      const { state, beginAutoResolveLoop, applyAutoResolveIteration } = createEngineStore();
+      beginAutoResolveLoop();
+      const iterA = { ...sampleIteration, driving_metric: 'A', driving_metric_value: 1 };
+      applyAutoResolveIteration(iterA);
+      expect(state.autoResolve.canonicalDrivingMetric).toBe('A');
+
+      // Fresh begin without an explicit end — must still clear canonical.
+      beginAutoResolveLoop();
+      expect(state.autoResolve.canonicalDrivingMetric).toBeUndefined();
+      expect(state.autoResolve.iterations).toHaveLength(0);
+
+      const iterB = { ...sampleIteration, driving_metric: 'B', driving_metric_value: 1 };
+      applyAutoResolveIteration(iterB);
+      expect(state.autoResolve.canonicalDrivingMetric).toBe('B');
+      expect(state.autoResolve.iterations).toHaveLength(1);
+      expect(state.autoResolve.iterations[0].driving_metric).toBe('B');
+      dispose();
+    });
+  });
 });
 
 describe('engineStore kernelStatus', () => {
