@@ -344,3 +344,68 @@ fn bracket_fixture_returns_valid_p1_mesh_with_fillet_radius_respected_and_positi
         "surface must include curved fillet-arc nodes (r≈fillet_radius from inner corner)"
     );
 }
+
+// ── Step-9: sweep runner returns morph + from-scratch metrics ─────────────────
+
+#[test]
+fn sweep_runner_returns_morph_and_from_scratch_quality_metrics_for_single_param_step() {
+    use reify_mesh_morph::MorphOptions;
+
+    // Use box_mesh as the fixture: wall_thickness is the swept parameter,
+    // outer=1.0 and n=3 are fixed so the fixture closure has a single-f64
+    // signature matching `sweep::run_sweep`'s `Fn(f64) -> (VolumeMesh, Vec<u32>)`.
+    let fixture = |wall_thickness: f64| fixtures::box_mesh(1.0, wall_thickness, 3);
+    let options = MorphOptions::default();
+
+    // A tiny step (0.10 → 0.105) — well within the elasticity solver's
+    // operating range, so the morph should produce a mesh whose connectivity
+    // matches the from-scratch target mesh. The numeric values themselves are
+    // not asserted here (calibration sweeps in step-11/13/15 do that); this
+    // step pins only the public signature and the SweepReport field surface.
+    let report = sweep::run_sweep(fixture, 0.10, 0.105, &options);
+
+    // SweepReport surface contract — every field must be populated.
+    //   `morph_verdict`: QualityVerdict produced by quality_check on the
+    //                     morphed mesh against the source mesh.
+    //   `morph_min_scaled_j`, `from_scratch_min_scaled_j`: minimum
+    //     scaled-Jacobian across all tets of the morphed / from-scratch mesh,
+    //     respectively (finite f64).
+    //   `morph_max_ar_factor`: max(morphed_ar / source_ar) across all tets,
+    //     non-negative finite f64.
+    //   `morphed`, `from_scratch`: full VolumeMesh outputs for downstream
+    //     inspection / debugging.
+    let _verdict: &reify_mesh_morph::QualityVerdict = &report.morph_verdict;
+    assert!(
+        report.morph_min_scaled_j.is_finite(),
+        "morph_min_scaled_j must be a finite f64, got {}",
+        report.morph_min_scaled_j
+    );
+    assert!(
+        report.from_scratch_min_scaled_j.is_finite(),
+        "from_scratch_min_scaled_j must be a finite f64, got {}",
+        report.from_scratch_min_scaled_j
+    );
+    assert!(
+        report.morph_max_ar_factor.is_finite() && report.morph_max_ar_factor >= 0.0,
+        "morph_max_ar_factor must be non-negative and finite, got {}",
+        report.morph_max_ar_factor
+    );
+
+    // The morphed mesh must share connectivity with the from-scratch target
+    // (the sweep runner guarantees same-topology by construction — source and
+    // target come from the same procedural function so their tet_indices are
+    // identical).
+    assert!(
+        !report.morphed.tet_indices.is_empty(),
+        "morphed mesh must be non-empty"
+    );
+    assert_eq!(
+        report.morphed.tet_indices, report.from_scratch.tet_indices,
+        "morphed and from-scratch meshes must share connectivity (same tet_indices)"
+    );
+    assert_eq!(
+        report.morphed.vertices.len(),
+        report.from_scratch.vertices.len(),
+        "morphed and from-scratch meshes must have the same vertex count"
+    );
+}
