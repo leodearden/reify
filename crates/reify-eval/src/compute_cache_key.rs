@@ -117,6 +117,31 @@ mod tests {
     }
 
     #[test]
+    fn compute_cache_key_is_invariant_under_value_input_reordering() {
+        let id_a = ValueCellId::new("Bracket", "a");
+        let id_b = ValueCellId::new("Bracket", "b");
+        let id_c = ValueCellId::new("Bracket", "c");
+
+        let mut graph = EvaluationGraph::default();
+        insert_value_cell(&mut graph, id_a.clone(), ContentHash::of_str("hash_a"));
+        insert_value_cell(&mut graph, id_b.clone(), ContentHash::of_str("hash_b"));
+        insert_value_cell(&mut graph, id_c.clone(), ContentHash::of_str("hash_c"));
+
+        let mut node_abc = make_empty_node();
+        node_abc.value_inputs = vec![id_a.clone(), id_b.clone(), id_c.clone()];
+
+        let mut node_cab = make_empty_node();
+        node_cab.value_inputs = vec![id_c.clone(), id_a.clone(), id_b.clone()];
+
+        let key_abc = compute_cache_key(&node_abc, &graph);
+        let key_cab = compute_cache_key(&node_cab, &graph);
+        assert_eq!(
+            key_abc, key_cab,
+            "cache key must be invariant under value_input ordering"
+        );
+    }
+
+    #[test]
     fn compute_cache_key_changes_when_options_hash_changes() {
         let mut node_a = make_empty_node();
         node_a.options_hash = ContentHash::of_str("opts_a");
