@@ -93,7 +93,7 @@ pub struct EngineSession {
     /// `build_gui_state` emits this field into `GuiState::compile_diagnostics` only on
     /// the early-return branch (when `compiled` is `None`).
     last_compile_diagnostics: Vec<DiagnosticInfo>,
-/// Structured diagnostics from a failed live edit when a prior successful compile exists.
+    /// Structured diagnostics from a failed live edit when a prior successful compile exists.
     ///
     /// Populated on `Err` by `load_from_source`, `update_source`, and `load_file` when
     /// `self.compiled` is `Some` at the time of failure (live-edit path).  The distinction
@@ -2366,7 +2366,7 @@ impl EngineSession {
         &self.live_compile_diagnostics
     }
 
-/// Directly inject a `CompiledModule` as the session's current compiled state,
+    /// Directly inject a `CompiledModule` as the session's current compiled state,
     /// bypassing parse / compile / check.
     ///
     /// Allows tests to exercise functions that operate on `self.compiled` with
