@@ -1,4 +1,4 @@
-import { type Component, Show, For, createSignal, createMemo, createEffect, onCleanup } from 'solid-js';
+import { type Component, Show, For, createSignal, createMemo, createEffect, onCleanup, untrack } from 'solid-js';
 import type { DiagnosticInfo } from '../types';
 import styles from './DiagnosticsPanel.module.css';
 import {
@@ -35,16 +35,23 @@ export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
     // Without this, the cached value from the first render would be reused
     // on every subsequent open, silently discarding the user's manual resize.
     const _open = props.open;
-    const persisted = loadDiagnosticsPanelSize();
-    if (persisted) return persisted;
-    const longestChars = props.diagnostics.reduce(
-      (max, d) => Math.max(max, d.message?.length ?? 0),
-      0
-    );
-    return computeDefaultDialogSize({
-      longestMessageChars: longestChars,
-      viewportWidth: window.innerWidth,
-      viewportHeight: window.innerHeight,
+    // Everything below is wrapped in untrack() so that reads of props.diagnostics
+    // do NOT register as reactive dependencies of this memo. The default size is a
+    // one-shot choice made at mount or on a fresh open transition — never a reaction
+    // to diagnostics arriving mid-session. Matches the untrack() pattern used in
+    // App.tsx for the same "read a non-reactive snapshot inside a tracked scope" use case.
+    return untrack(() => {
+      const persisted = loadDiagnosticsPanelSize();
+      if (persisted) return persisted;
+      const longestChars = props.diagnostics.reduce(
+        (max, d) => Math.max(max, d.message?.length ?? 0),
+        0
+      );
+      return computeDefaultDialogSize({
+        longestMessageChars: longestChars,
+        viewportWidth: window.innerWidth,
+        viewportHeight: window.innerHeight,
+      });
     });
   });
 
