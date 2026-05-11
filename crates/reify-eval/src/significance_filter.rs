@@ -92,8 +92,19 @@ pub fn significance_filter(
     if !is_opted_in(target) {
         return FilterOutcome::NotOptedIn;
     }
-    let _ = (prev, new, length_tolerance_si);
-    todo!("significance_filter body: remaining branches land in steps 6, 8, 10")
+
+    // Bit-equality shortcut: identical Values are Equivalent without consulting
+    // the Map shape or tolerance. This is the steady-state-cheap path and the
+    // ONLY path that can declare Equivalent without consulting length_tolerance_si.
+    // Relies on Value::PartialEq (value.rs:1573).
+    // Exercises: significance_filter_returns_equivalent_for_bit_equal_results
+    //            significance_filter_does_not_false_positive_on_bit_equal_with_zero_tolerance
+    if prev == new {
+        return FilterOutcome::Equivalent;
+    }
+
+    let _ = length_tolerance_si;
+    todo!("significance_filter body: tolerance guard + Map extraction land in steps 8, 10")
 }
 
 #[cfg(test)]
