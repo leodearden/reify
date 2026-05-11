@@ -246,6 +246,41 @@ impl<'u> CompilationScope<'u> {
     pub(crate) fn resolve_match_arm_group(&self, name: &str) -> Option<&GuardedDeclGroup> {
         self.match_arm_groups.get(name)
     }
+
+    /// Returns `true` when `self.<sub_name>.<member>` should lower to a
+    /// cross-sub geometry handle on the compile side.
+    ///
+    /// The predicate is `has_realization || forward_declared` where:
+    /// * `has_realization` — `sub_realization_names[sub_name]` contains `member`.
+    /// * `forward_declared` — the sub is registered in `sub_component_types`
+    ///   but its `sub_member_types` entry has not yet been populated (parent
+    ///   template compiled before child template; see expr.rs:239-250 and
+    ///   geometry.rs:304-311 for the forward-declared optimism rationale).
+    ///
+    /// Centralizes the predicate so the two compile-side call sites cannot
+    /// drift apart:
+    /// * `expr.rs::try_resolve_cross_sub_geometry_value_ref` — value-ref
+    ///   `CompiledExpr` for `self.<sub>.<member>` in expression position.
+    /// * `geometry.rs::try_resolve_cross_sub_geom_ref` — `GeomRef::Sub` for
+    ///   the same access in geometry-arg position.
+    ///
+    /// The eval-side handshake (`engine_build.rs` populating
+    /// `named_steps["<sub>.<member>"]`) and the unresolvable-handle diagnostic
+    /// (`geometry_ops.rs::resolve_geom_ref`) are unchanged; only the source
+    /// of the compile-side decision is consolidated.
+    pub(crate) fn sub_member_is_cross_sub_geometry_or_forward_declared(
+        &self,
+        sub_name: &str,
+        member: &str,
+    ) -> bool {
+        let has_realization = self
+            .sub_realization_names
+            .get(sub_name)
+            .is_some_and(|s| s.contains(member));
+        let forward_declared = self.sub_component_types.contains_key(sub_name)
+            && !self.sub_member_types.contains_key(sub_name);
+        has_realization || forward_declared
+    }
 }
 
 #[cfg(test)]
