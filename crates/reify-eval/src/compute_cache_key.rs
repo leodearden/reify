@@ -48,6 +48,23 @@ mod tests {
     }
 
     #[test]
+    fn compute_cache_key_changes_when_options_hash_changes() {
+        let mut node_a = make_empty_node();
+        node_a.options_hash = ContentHash::of_str("opts_a");
+
+        let mut node_b = make_empty_node();
+        node_b.options_hash = ContentHash::of_str("opts_b");
+
+        let graph = EvaluationGraph::default();
+        let key_a = compute_cache_key(&node_a, &graph);
+        let key_b = compute_cache_key(&node_b, &graph);
+        assert_ne!(
+            key_a, key_b,
+            "distinct options_hash values must produce distinct cache keys"
+        );
+    }
+
+    #[test]
     fn compute_cache_key_changes_when_target_changes() {
         let mut node_a = make_empty_node();
         node_a.target = "solver::elastic_static".to_string();
