@@ -766,6 +766,10 @@ mod tests {
                 0.0, 0.0, 1.0,       // 3: d
                 0.05, 0.05, 0.05,    // 4: p (near a → three small tets, one large)
             ],
+            // NOTE: these tet orderings are NOT all consistently right-handed;
+            // some yield negative Jacobian determinants.  This is intentional —
+            // the fixture exercises element_stiffness's internal `det.abs()`
+            // handling for mixed-orientation tets.
             tet_indices: vec![
                 0, 1, 2, 4, // a, b, c, p  — small vol
                 0, 1, 3, 4, // a, b, d, p  — small vol
