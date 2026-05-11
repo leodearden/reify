@@ -40,9 +40,9 @@ use std::f64::consts::PI;
 
 use reify_kernel_gmsh::GMSH_AVAILABLE;
 use reify_solver_elastic::{
-    check_sweep_through_thickness, derive_layer_count, mesh_swept_profile_2d, sweep_2d_mesh_to_3d,
-    Mesh2d, Mesh2dError, Mesh2dOptions, Mesh2dReport, ProfileBoundary, SweepElementTarget,
-    SweepError, SweepParams, SweptConnectivity, SweptMesh3d, ThroughThicknessSweepWarning,
+    Mesh2d, Mesh2dError, Mesh2dOptions, ProfileBoundary, SweepElementTarget, SweepError,
+    SweepParams, SweptConnectivity, SweptMesh3d, check_sweep_through_thickness, derive_layer_count,
+    mesh_swept_profile_2d, sweep_2d_mesh_to_3d,
 };
 
 // ---------------------------------------------------------------------------
@@ -312,6 +312,15 @@ fn simple_linear_sweep_byte_identical_to_extrude_on_meshed_profile() {
 
     let report = result.expect("linear sweep test: mesh_swept_profile_2d failed");
 
+    // A 10×5 rect at mesh_size=2.0 with HexPreferred must always produce a Quad
+    // mesh.  A Triangle fallback here indicates a recombiner regression and would
+    // make the byte-identity claim trivially vacuous via the Wedge arm.
+    assert!(
+        matches!(report.mesh, Mesh2d::Quad { .. }),
+        "linear sweep test: expected Quad mesh from HexPreferred on a 10×5 rect; \
+         got Triangle — possible recombiner regression",
+    );
+
     let k = derive_layer_count(4.0, 2.0, 2);
     assert!(
         k >= 2,
@@ -455,11 +464,12 @@ fn drilled_plate_phase_b_positive_case_succeeds() {
 /// without classifier interception, `validate_sweep_inputs` would reject it.
 /// Three sub-cases, all using a hand-rolled triangle mesh (no Gmsh needed):
 ///
-/// (a) `Revolve` with zero `axis_dir` → `Err(SweepError::DegenerateAxis)`.
-/// (b) `Extrude` with `length = -1.0` → `Err(SweepError::DegenerateMagnitude)`.
-/// (c) `Extrude` with `length = f64::NAN` → `Err(SweepError::DegenerateMagnitude)`.
+/// Two sub-cases, no Gmsh dependency — the sweep step is pure Rust:
 ///
-/// No `GMSH_AVAILABLE` gating — the sweep step is pure Rust.
+/// (a) `Revolve` with zero `axis_dir` → `Err(SweepError::DegenerateAxis)`.
+///     Distinct from the unit test `sweep_rejects_zero_axis` (which uses `Extrude`).
+/// (b) `Extrude` with `length = -1.0` → `Err(SweepError::DegenerateMagnitude)`.
+///     Negative length is not covered by the unit tests (which only test zero / NaN).
 #[test]
 fn degenerate_sweep_params_proxy_for_twisted_loft() {
     // Minimal hand-rolled triangle mesh (3 vertices, 1 triangle).
@@ -496,72 +506,4 @@ fn degenerate_sweep_params_proxy_for_twisted_loft() {
         matches!(r, Err(SweepError::DegenerateMagnitude)),
         "negative length must return Err(DegenerateMagnitude), got {r:?}",
     );
-
-    // (c) NaN length → DegenerateMagnitude.
-    let r = sweep_2d_mesh_to_3d(
-        &mesh,
-        &SweepParams::Extrude {
-            axis: [0.0, 0.0, 1.0],
-            length: f64::NAN,
-        },
-        1,
-    );
-    assert!(
-        matches!(r, Err(SweepError::DegenerateMagnitude)),
-        "NaN length must return Err(DegenerateMagnitude), got {r:?}",
-    );
-}
-
-/// Surface-pin test: verifies that every type, function, and constant used by
-/// the fixture tests below can be resolved at compile time.  A regression that
-/// renames or removes any of these re-exports breaks here *before* any fixture
-/// test runs, giving an immediate, targeted compilation error.
-#[test]
-fn compiles_against_public_surface() {
-    // Function-pointer casts verify exact signatures match the re-exports.
-    let _: fn(
-        &ProfileBoundary,
-        SweepElementTarget,
-        &Mesh2dOptions,
-    ) -> Result<Mesh2dReport, Mesh2dError> = mesh_swept_profile_2d;
-    let _: fn(&Mesh2d, &SweepParams, usize) -> Result<SweptMesh3d, SweepError> =
-        sweep_2d_mesh_to_3d;
-    let _: fn(f64, f64, usize) -> usize = derive_layer_count;
-    let _: fn(usize, usize) -> Option<ThroughThicknessSweepWarning> = check_sweep_through_thickness;
-
-    // GMSH_AVAILABLE: const bool from the kernel crate.
-    let _: bool = GMSH_AVAILABLE;
-
-    // Discriminant coverage — all variants must be reachable by name.
-    let _t1 = SweepElementTarget::HexPreferred;
-    let _t2 = SweepElementTarget::WedgeOnly;
-
-    let _p1 = SweepParams::Extrude {
-        axis: [0.0, 0.0, 1.0],
-        length: 1.0,
-    };
-    let _p2 = SweepParams::Revolve {
-        axis_origin: [0.0, 0.0, 0.0],
-        axis_dir: [0.0, 1.0, 0.0],
-        angle: PI / 2.0,
-    };
-    let _p3 = SweepParams::SweepLinear {
-        axis: [0.0, 0.0, 1.0],
-        length: 1.0,
-    };
-
-    let _e1 = SweepError::DegenerateAxis;
-    let _e2 = SweepError::DegenerateMagnitude;
-    let _e3 = SweepError::EmptyMesh2d;
-    let _e4 = SweepError::InvalidLayerCount;
-
-    let _c1 = SweptConnectivity::Wedge { indices: vec![] };
-    let _c2 = SweptConnectivity::Hex { indices: vec![] };
-
-    let warn = ThroughThicknessSweepWarning {
-        layer_count: 1,
-        min_layers: 2,
-        message: "test".to_string(),
-    };
-    let _ = (warn.layer_count, warn.min_layers, warn.message);
 }

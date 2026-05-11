@@ -165,8 +165,8 @@ pub enum SweepParams {
     /// # Phase A contract pin
     ///
     /// The byte-identity of `SweepLinear` and `Extrude` at integration mesh
-    /// density is pinned by:
-    /// `crates/reify-solver-elastic/tests/hex_wedge_quality.rs::simple_linear_sweep_byte_identical_to_extrude_on_meshed_profile`
+    /// density is pinned by the `simple_linear_sweep_*` test in:
+    /// `crates/reify-solver-elastic/tests/hex_wedge_quality.rs`
     SweepLinear {
         /// Direction of travel (any non-zero vector).
         axis: [f64; 3],
@@ -814,7 +814,7 @@ mod tests {
         // Bottom layer z=0
         assert!((mesh.vertices[2] - 0.0).abs() < eps); // z of node 0
         assert!((mesh.vertices[5] - 0.0).abs() < eps); // z of node 1
-                                                       // Top layer z=0.5
+        // Top layer z=0.5
         assert!((mesh.vertices[14] - 0.5).abs() < eps); // z of node 4 (=12+2)
         assert!((mesh.vertices[23] - 0.5).abs() < eps); // z of node 7 (=21+2)
 
