@@ -663,7 +663,203 @@ fn bracket_fillet_radius_sweep_obeys_materially_better_rule_with_calibrated_defa
 #[test]
 #[ignore]
 fn procedural_fixture_baseline_distribution_pins_task_3451_empirical_capture() {
-    panic!("step-4 implements assertions");
+    use reify_mesh_morph::{MorphOptions, QualityVerdict, quality_check};
+
+    // Probe options: sentinel thresholds so every metric field is always
+    // populated (Some(_)) in the SoftFailDetails payload, independent of
+    // production thresholds. Used to extract raw from_scratch pct_below_025.
+    let probe = MorphOptions {
+        quality_floor_min_scaled_jacobian: f64::INFINITY,
+        quality_floor_pct_below_025: -1.0,
+        quality_aspect_ratio_factor_max: -1.0,
+        ..MorphOptions::default()
+    };
+
+    // Helper: extract pct_below_025 from a mesh by comparing it against
+    // itself under probe options. The AR result (fs_ar/fs_ar = 1.0 for
+    // all tets) is discarded; we only want pct.
+    let fs_pct = |mesh: &reify_types::VolumeMesh| -> f64 {
+        match quality_check(mesh, mesh, &probe) {
+            QualityVerdict::SoftFail(d) => {
+                d.pct_below_025.expect("probe pct_below_025 must be Some under -1.0 threshold")
+            }
+            other => panic!(
+                "probe quality_check on from_scratch mesh returned {:?}; \
+                 expected SoftFail (probe thresholds are always-trip sentinels)",
+                other
+            ),
+        }
+    };
+
+    // ── Plate sweep (base=0.30, targets: 0.30..0.60) ──────────────────────
+    // `run_sweep(fixture, 0.30, target, &MorphOptions::default())` morphs
+    // from hole_diameter=0.30 → target. The from_scratch report fields
+    // document the procedural mesher's intrinsic quality at each target.
+    let plate_fixture =
+        |hole_diameter: f64| fixtures::plate_with_hole(1.0, hole_diameter, 0.1, 4, 2);
+
+    // plate hole_diameter = 0.30 (the base; morph is trivially identity)
+    {
+        let t = 0.30_f64;
+        let r = sweep::run_sweep(plate_fixture, 0.30, t, &MorphOptions::default());
+        let pct = fs_pct(&r.from_scratch);
+        assert!(
+            (0.0234..=0.0244).contains(&r.from_scratch_min_scaled_j),
+            "plate t={t}: from_scratch_min_sj={} not in [0.0234,0.0244]",
+            r.from_scratch_min_scaled_j
+        );
+        assert!(
+            (0.95..=1.05).contains(&r.from_scratch_max_ar_factor),
+            "plate t={t}: from_scratch_max_ar_factor={} not in [0.95,1.05]",
+            r.from_scratch_max_ar_factor
+        );
+        assert!(
+            (0.86..=0.90).contains(&pct),
+            "plate t={t}: from_scratch pct_below_025={pct} not in [0.86,0.90]"
+        );
+    }
+
+    // plate hole_diameter = 0.40
+    {
+        let t = 0.40_f64;
+        let r = sweep::run_sweep(plate_fixture, 0.30, t, &MorphOptions::default());
+        let pct = fs_pct(&r.from_scratch);
+        assert!(
+            (0.0202..=0.0212).contains(&r.from_scratch_min_scaled_j),
+            "plate t={t}: from_scratch_min_sj={} not in [0.0202,0.0212]",
+            r.from_scratch_min_scaled_j
+        );
+        assert!(
+            (0.99..=1.09).contains(&r.from_scratch_max_ar_factor),
+            "plate t={t}: from_scratch_max_ar_factor={} not in [0.99,1.09]",
+            r.from_scratch_max_ar_factor
+        );
+        assert!(
+            (0.94..=0.98).contains(&pct),
+            "plate t={t}: from_scratch pct_below_025={pct} not in [0.94,0.98]"
+        );
+    }
+
+    // plate hole_diameter = 0.50 (from_scratch_min_sj < old 0.02 floor)
+    {
+        let t = 0.50_f64;
+        let r = sweep::run_sweep(plate_fixture, 0.30, t, &MorphOptions::default());
+        let pct = fs_pct(&r.from_scratch);
+        assert!(
+            (0.0168..=0.0178).contains(&r.from_scratch_min_scaled_j),
+            "plate t={t}: from_scratch_min_sj={} not in [0.0168,0.0178] \
+             (confirms 0.02 floor was rejecting geometry, not morph distortion)",
+            r.from_scratch_min_scaled_j
+        );
+        assert!(
+            (1.04..=1.14).contains(&r.from_scratch_max_ar_factor),
+            "plate t={t}: from_scratch_max_ar_factor={} not in [1.04,1.14]",
+            r.from_scratch_max_ar_factor
+        );
+        assert!(
+            (0.97..=1.00).contains(&pct),
+            "plate t={t}: from_scratch pct_below_025={pct} not in [0.97,1.00]"
+        );
+    }
+
+    // plate hole_diameter = 0.60 (from_scratch_min_sj < old 0.02 floor;
+    // load-bearing for the task #3451 floor-move decision)
+    {
+        let t = 0.60_f64;
+        let r = sweep::run_sweep(plate_fixture, 0.30, t, &MorphOptions::default());
+        let pct = fs_pct(&r.from_scratch);
+        assert!(
+            (0.0134..=0.0144).contains(&r.from_scratch_min_scaled_j),
+            "plate t={t}: from_scratch_min_sj={} not in [0.0134,0.0144] \
+             (confirms 0.02 floor was rejecting geometry, not morph distortion)",
+            r.from_scratch_min_scaled_j
+        );
+        assert!(
+            (1.13..=1.23).contains(&r.from_scratch_max_ar_factor),
+            "plate t={t}: from_scratch_max_ar_factor={} not in [1.13,1.23]",
+            r.from_scratch_max_ar_factor
+        );
+        assert!(
+            (0.98..=1.00).contains(&pct),
+            "plate t={t}: from_scratch pct_below_025={pct} not in [0.98,1.00]"
+        );
+    }
+
+    // ── Bracket sweep (base=0.10, targets: 0.10..0.19) ────────────────────
+    let bracket_fixture = |fillet_radius: f64| fixtures::bracket(1.0, 0.2, fillet_radius, 4);
+
+    // bracket fillet_radius = 0.10 (the base; morph is trivially identity)
+    {
+        let t = 0.10_f64;
+        let r = sweep::run_sweep(bracket_fixture, 0.10, t, &MorphOptions::default());
+        let pct = fs_pct(&r.from_scratch);
+        assert!(
+            (0.0408..=0.0418).contains(&r.from_scratch_min_scaled_j),
+            "bracket t={t}: from_scratch_min_sj={} not in [0.0408,0.0418]",
+            r.from_scratch_min_scaled_j
+        );
+        assert!(
+            (0.95..=1.05).contains(&r.from_scratch_max_ar_factor),
+            "bracket t={t}: from_scratch_max_ar_factor={} not in [0.95,1.05]",
+            r.from_scratch_max_ar_factor
+        );
+        assert!(
+            (0.72..=0.76).contains(&pct),
+            "bracket t={t}: from_scratch pct_below_025={pct} not in [0.72,0.76]"
+        );
+    }
+
+    // bracket fillet_radius = 0.15 (from_scratch_min_sj < old 0.02 floor)
+    {
+        let t = 0.15_f64;
+        let r = sweep::run_sweep(bracket_fixture, 0.10, t, &MorphOptions::default());
+        let pct = fs_pct(&r.from_scratch);
+        assert!(
+            (0.0203..=0.0213).contains(&r.from_scratch_min_scaled_j),
+            "bracket t={t}: from_scratch_min_sj={} not in [0.0203,0.0213] \
+             (confirms 0.02 floor was rejecting geometry, not morph distortion)",
+            r.from_scratch_min_scaled_j
+        );
+        assert!(
+            (1.39..=1.49).contains(&r.from_scratch_max_ar_factor),
+            "bracket t={t}: from_scratch_max_ar_factor={} not in [1.39,1.49]",
+            r.from_scratch_max_ar_factor
+        );
+        assert!(
+            (0.95..=0.98).contains(&pct),
+            "bracket t={t}: from_scratch pct_below_025={pct} not in [0.95,0.98]"
+        );
+    }
+
+    // bracket fillet_radius = 0.19 (from_scratch_min_sj << 0.01; morph
+    // HardFails at this geometry under MorphOptions::default() so
+    // `from_scratch_max_ar_factor` is zeroed by the HardFail short-circuit
+    // in extract_metrics — that field is NOT asserted here).
+    {
+        let t = 0.19_f64;
+        let r = sweep::run_sweep(bracket_fixture, 0.10, t, &MorphOptions::default());
+        let pct = fs_pct(&r.from_scratch);
+        assert!(
+            (0.0037..=0.0047).contains(&r.from_scratch_min_scaled_j),
+            "bracket t={t}: from_scratch_min_sj={} not in [0.0037,0.0047] \
+             (load-bearing: shows the procedural mesher's own baseline is below 0.01 here)",
+            r.from_scratch_min_scaled_j
+        );
+        // from_scratch_max_ar_factor is 0.0 (HardFail short-circuit in
+        // extract_metrics(&morphed, &from_scratch) — not a meaningful
+        // baseline statistic at this target). Omitted from assertions.
+        assert!(
+            (0.98..=1.00).contains(&pct),
+            "bracket t={t}: from_scratch pct_below_025={pct} not in [0.98,1.00]"
+        );
+        // Surface-level verdict sanity: HardFail expected at this extreme step.
+        assert!(
+            matches!(r.morph_verdict, QualityVerdict::HardFail(_)),
+            "bracket t={t}: expected HardFail morph_verdict at this extreme step, \
+             got {:?}",
+            r.morph_verdict
+        );
+    }
 }
 
 // ── Step-17: from_scratch_max_ar_factor is distinct from morph_max_ar_factor ──
