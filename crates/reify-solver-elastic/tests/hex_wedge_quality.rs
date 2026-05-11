@@ -13,12 +13,21 @@
 //!
 //! # Existing coverage this file relies on
 //!
-//! - **Classifier units** (Loft / SweepGuided / twisted-Sweep `None` cases):
+//! The following three reify-eval test points cover the task-description claims
+//! that cannot be exercised from this crate (classifier + dispatcher live in
+//! `reify-eval`, which would create a circular dev-dep if imported here):
+//!
+//! (a) **Classifier units** — Loft / SweepGuided / twisted-Sweep `None` cases;
+//!   `classify_swept_body` catch-all arms; `SweptKind` discriminants:
 //!   `crates/reify-eval/src/sweep_classifier.rs#tests`
-//! - **Classifier e2e** (wired through `Engine::build`):
+//!
+//! (b) **Classifier e2e** — `classify_swept_body` wired through `Engine::build`
+//!   on realistic `GeomOp` sequences:
 //!   `crates/reify-eval/tests/swept_kind_classifier_e2e.rs`
-//! - **`dispatch_volume_mesh` 8-case truth table** (`force_tet` /
-//!   `require_hex_wedge` diagnostics surface):
+//!
+//! (c) **`dispatch_volume_mesh` 8-case truth table** — canonical `force_tet` /
+//!   `require_hex_wedge` diagnostic surface (the "diagnostics" claims in the
+//!   task description); added by PRD task #2989:
 //!   `crates/reify-eval/src/engine_build.rs#dispatch_volume_mesh_tests` (L4488+)
 //!
 //! # Gmsh gating
