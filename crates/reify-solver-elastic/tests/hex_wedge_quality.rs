@@ -351,6 +351,87 @@ fn simple_linear_sweep_byte_identical_to_extrude_on_meshed_profile() {
     }
 }
 
+/// Drilled plate — Phase B positive case at the meshing-pipeline layer.
+///
+/// `ProfileBoundary` with a 20×20 rectangular hole centred in a 100×100 square.
+/// The outer ring is CCW; the hole ring is CW (standard convention for holes).
+///
+/// This exercises Phase B's positive case: `mesh_swept_profile_2d` already
+/// supports multiply-connected regions (`holes: Vec<Vec<[f64; 2]>>`), and the
+/// sweep step is hole-agnostic (operates on the 2D index buffer regardless of
+/// topology), so the same `n_base × K` formula holds.
+///
+/// **Scope note:** The Phase A classifier-rejection case (post-sweep modify ops
+/// applied to an otherwise-swept body) is explicitly deferred to:
+/// `crates/reify-eval/src/sweep_classifier.rs#tests`
+///
+/// On stub builds: `Err(GmshUnavailable)` early-return.
+#[test]
+fn drilled_plate_phase_b_positive_case_succeeds() {
+    // Outer ring: CCW 100×100 square.
+    // Hole ring: CW 20×20 square centred at (50,50) — i.e. corners at
+    // (40,40)→(40,60)→(60,60)→(60,40), wound clockwise.
+    let boundary = ProfileBoundary {
+        outer: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 100.0], [0.0, 100.0]],
+        holes: vec![vec![
+            [40.0, 40.0],
+            [40.0, 60.0],
+            [60.0, 60.0],
+            [60.0, 40.0],
+        ]],
+    };
+    let options = Mesh2dOptions {
+        mesh_size: Some(20.0),
+        deterministic: true,
+        ..Mesh2dOptions::default()
+    };
+
+    let result = mesh_swept_profile_2d(&boundary, SweepElementTarget::HexPreferred, &options);
+
+    if !GMSH_AVAILABLE {
+        match result {
+            Err(Mesh2dError::GmshUnavailable) => {}
+            other => panic!("stub build: expected Err(GmshUnavailable), got {other:?}"),
+        }
+        return;
+    }
+
+    let report = result.expect("drilled plate: mesh_swept_profile_2d failed");
+
+    // HexPreferred always attempts recombination.
+    assert!(
+        report.recombine_attempted,
+        "drilled plate: HexPreferred must record recombine_attempted=true",
+    );
+
+    let k = derive_layer_count(2.0, 1.0, 2);
+    assert!(k >= 2, "derive_layer_count(2.0, 1.0, 2) must be >= 2, got {k}");
+
+    let swept = sweep_2d_mesh_to_3d(
+        &report.mesh,
+        &SweepParams::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: 2.0,
+        },
+        k,
+    )
+    .expect("drilled plate: sweep_2d_mesh_to_3d failed");
+
+    match &report.mesh {
+        Mesh2d::Quad { vertices, indices } => {
+            let n_base_quads = indices.len() / 4;
+            let n_base_verts = vertices.len() / 2;
+            assert_swept_hex_dimensions(&swept, k, n_base_quads, n_base_verts);
+        }
+        Mesh2d::Triangle { vertices, indices } => {
+            let n_base_tris = indices.len() / 3;
+            let n_base_verts = vertices.len() / 2;
+            assert_swept_wedge_dimensions(&swept, k, n_base_tris, n_base_verts);
+        }
+    }
+    through_thickness_must_pass(k, 2);
+}
+
 /// Surface-pin test: verifies that every type, function, and constant used by
 /// the fixture tests below can be resolved at compile time.  A regression that
 /// renames or removes any of these re-exports breaks here *before* any fixture
