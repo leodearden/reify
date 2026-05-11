@@ -1973,6 +1973,40 @@ mod tests {
     // ── sidecar tests ────────────────────────────────────────────────────────
 
     #[test]
+    fn touch_sidecar_updates_mtime_to_a_strictly_later_value_without_changing_content() {
+        use std::fs::File;
+        use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+        let tmpdir    = tempfile::TempDir::new().expect("must create tempdir");
+        let path      = tmpdir.path().join("entry.meta");
+        write_sidecar(&path).expect("write_sidecar must succeed");
+
+        // Back-date the file to a known-old mtime to guarantee strictly-earlier
+        // baseline regardless of filesystem mtime resolution.
+        let old_mtime = UNIX_EPOCH + Duration::from_secs(1_000_000);
+        {
+            let f = File::options().write(true).open(&path).expect("must open");
+            f.set_times(
+                std::fs::FileTimes::new().set_modified(old_mtime),
+            ).expect("must set old mtime");
+        }
+
+        touch_sidecar(&path).expect("touch_sidecar must succeed");
+
+        let mtime_after = std::fs::metadata(&path)
+            .expect("must stat")
+            .modified()
+            .expect("must have mtime");
+        assert!(
+            mtime_after > old_mtime,
+            "touch_sidecar must advance mtime beyond the back-dated baseline"
+        );
+        // Content must be unchanged.
+        let contents = std::fs::read(&path).expect("must read");
+        assert_eq!(contents, vec![SIDECAR_MAGIC_BYTE], "content must be unchanged after touch");
+    }
+
+    #[test]
     fn write_sidecar_creates_file_with_single_magic_byte() {
         let tmpdir = tempfile::TempDir::new().expect("must create tempdir");
         let meta_path = tmpdir.path().join("entry.meta");
