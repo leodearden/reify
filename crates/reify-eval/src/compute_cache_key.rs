@@ -359,4 +359,37 @@ mod tests {
             "distinct target strings must produce distinct cache keys"
         );
     }
+
+    #[test]
+    fn compute_cache_key_domain_separates_value_input_from_realization_input() {
+        // Same ContentHash on both a value cell and a realization — only the
+        // outer-position slot differs (value_bucket at pos 1, realization_bucket
+        // at pos 2 of combine_all([target, val_bucket, real_bucket, opts])).
+        // combine_all is order-dependent (hash.rs L32-37), so these must differ
+        // even when the inner bucket hash is identical.  Pins L33-36 + L153-158
+        // against a future flat-XOR refactor that would collapse domain separation.
+        let shared_h = ContentHash::of_str("shared_H");
+        let val_id = ValueCellId::new("Bracket", "x");
+        let real_id = RealizationNodeId::new("Bracket", 0);
+
+        let mut graph = EvaluationGraph::default();
+        insert_value_cell(&mut graph, val_id.clone(), shared_h);
+        insert_realization(&mut graph, real_id.clone(), shared_h);
+
+        let mut node_value = make_empty_node();
+        node_value.value_inputs = vec![val_id];
+
+        let mut node_real = make_empty_node();
+        node_real.realization_inputs = vec![real_id];
+
+        let key_value = compute_cache_key(&node_value, &graph);
+        let key_real = compute_cache_key(&node_real, &graph);
+        assert_ne!(
+            key_value,
+            key_real,
+            "domain separation: a value-input hash and a realization-input hash with the \
+             same ContentHash must not produce the same cache key — they occupy different \
+             positions in the outer combine_all (L153-158)"
+        );
+    }
 }
