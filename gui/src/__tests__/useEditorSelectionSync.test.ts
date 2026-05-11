@@ -264,6 +264,63 @@ describe('createEditorSelectionSync', () => {
     });
   });
 
+  it('(i) cross-input race: viewport click during in-flight bridge call is not overwritten', async () => {
+    // Scenario:
+    // 1. cursor moves → token=1, bridge call in flight
+    // 2. viewport click → selectionStore.selectedEntity changes synchronously (no token bump)
+    // 3. bridge resolves with an entity that differs from the viewport selection
+    // Expected: viewport selection is preserved; bridge result is discarded.
+    const { createEditorSelectionSync } = await importHook();
+
+    let resolvePromise!: (v: string | null) => void;
+    const promise = new Promise<string | null>(r => { resolvePromise = r; });
+    const getEntityAtSourceLocation = vi.fn().mockReturnValue(promise);
+    const selectEntity = vi.fn();
+    const flyToEntity = vi.fn();
+
+    await new Promise<void>((done) => {
+      createRoot(async (dispose) => {
+        const editorStore = makeEditorStore(null);
+        const selectionStore = makeSelectionStore(null);
+
+        createEditorSelectionSync({
+          editorStore,
+          selectionStore,
+          getEntityAtSourceLocation,
+          selectEntity,
+          flyToEntity,
+          debounceMs: 200,
+        });
+
+        // Step 1: cursor moves → bridge call starts after debounce
+        editorStore.setCursorPosition(1, 1);
+        await vi.advanceTimersByTimeAsync(250);
+        expect(getEntityAtSourceLocation).toHaveBeenCalledTimes(1);
+
+        // Step 2: simulate a viewport click updating the selection synchronously
+        // (no cursor change → latestRequestToken is NOT bumped)
+        selectionStore.selectEntity('NewEntity');
+        expect(selectionStore.state.selectedEntity).toBe('NewEntity');
+
+        // Step 3: in-flight bridge call resolves with a different entity
+        resolvePromise('OldEntity');
+        await Promise.resolve();
+        await Promise.resolve();
+
+        // Bridge result must NOT overwrite the viewport-originated selection.
+        // The hook's selectEntity callback is never called: the cross-input guard
+        // detected that selectionStore.state.selectedEntity changed from null to
+        // 'NewEntity' while the bridge call was in flight and discarded the result.
+        expect(selectEntity).not.toHaveBeenCalled();
+        // The state still reflects the viewport selection.
+        expect(selectionStore.state.selectedEntity).toBe('NewEntity');
+
+        dispose();
+        done();
+      });
+    });
+  });
+
   it('(h) race condition guard: slow request #1 then fast request #2; only #2 result applied', async () => {
     const { createEditorSelectionSync } = await importHook();
 

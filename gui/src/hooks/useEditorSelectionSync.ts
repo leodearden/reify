@@ -79,13 +79,22 @@ export function createEditorSelectionSync(opts: EditorSelectionSyncOptions): voi
       timerId = null;
       // Capture (do not increment) the current token before the await
       const token = latestRequestToken;
+      // Snapshot the current selection BEFORE the await so we can detect
+      // cross-input mutations (e.g. viewport click) that happen while the
+      // bridge call is in flight.
+      const selectionBeforeAwait = selectionStore.state.selectedEntity;
       const result = await getEntityAtSourceLocation(line, column);
 
-      // Discard stale results: a newer request fired while this one was in flight
+      // Discard stale results: a newer cursor-move fired while this was in flight
       if (token !== latestRequestToken) return;
 
       // Null result → keep existing selection unchanged (no bounce on whitespace/comments)
       if (result === null) return;
+
+      // Cross-input race guard: if selection was changed by a non-editor source
+      // (e.g. a viewport click) while the bridge call was in flight, discard
+      // this result to avoid overwriting the externally-set selection.
+      if (selectionStore.state.selectedEntity !== selectionBeforeAwait) return;
 
       // Equality-check guard: skip if the entity is already selected (prevents
       // viewport-click → editor-scroll → cursor-move → re-select bounce)
