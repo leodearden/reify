@@ -1,5 +1,67 @@
-// significance_filter: output significance filter for ComputeNode results.
-// Full rustdoc will be added in step-21 finalisation.
+//! Output significance filter for ComputeNode results.
+//!
+//! # PRD reference
+//!
+//! `docs/prds/v0_3/compute-node-infrastructure.md §P3.6`
+//!
+//! # Opt-in contract
+//!
+//! Only compute targets explicitly opted in (see [`is_opted_in`]) have their
+//! outputs compared with per-purpose length tolerance. Unknown targets return
+//! [`FilterOutcome::NotOptedIn`], which the caller (P3.3 task 3382, the
+//! freshness-walk hook) treats identically to [`FilterOutcome::Different`]
+//! (normal invalidation). Keeping the two variants distinct lets telemetry
+//! and integration tests distinguish "filter declined" from "filter ran and
+//! found a material difference".
+//!
+//! Current v1 allowlist: `"solver::elastic_static"` only.
+//!
+//! # Per-field policy (v1)
+//!
+//! The per-purpose length tolerance applies only to the `displacement` field
+//! (Length-valued). `stress`, `max_von_mises`, `converged`, and `iterations`
+//! use exact equality — no Pressure tolerance class exists today; the
+//! conservative over-invalidation posture is correct per task 3385 scope.
+//!
+//! # Conservative-fallback policy
+//!
+//! Any departure from the expected ElasticResult Map shape (see
+//! `crates/reify-stdlib/src/fea.rs`) or a missing/invalid tolerance returns
+//! [`FilterOutcome::Different`] — over-invalidate rather than under-invalidate.
+//!
+//! # Integration contract
+//!
+//! `length_tolerance_si: Option<f64>` is resolved by the caller via
+//! `Engine::active_tolerance_for(subject_entity_ref)` (task 3382, P3.3).
+//! The filter itself is engine-free (pure function).
+
+/// The three-variant outcome of the output significance filter.
+///
+/// `NotOptedIn` and `Different` both signal "proceed with normal invalidation"
+/// at the call site; the distinction lets observability surfaces
+/// (logs, telemetry, integration tests) tell "filter declined" from
+/// "filter ran and disagreed".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilterOutcome {
+    /// Previous and new result are within per-purpose tolerance — downstream
+    /// output ValueCells need NOT be marked dirty.
+    Equivalent,
+    /// Previous and new result differ materially (or tolerance is unknown) —
+    /// proceed with normal invalidation.
+    Different,
+    /// Target is not in the opt-in allowlist — filter did not run.
+    /// Caller should proceed with normal invalidation.
+    NotOptedIn,
+}
+
+/// Returns `true` if `target` has opted into significance filtering.
+///
+/// v1 allowlist: only `"solver::elastic_static"` opts in. Switching to a
+/// registry-based or annotation-driven mechanism is a non-breaking internal
+/// refactor — the function signature absorbs the lookup mechanism.
+pub fn is_opted_in(target: &str) -> bool {
+    matches!(target, "solver::elastic_static")
+}
 
 #[cfg(test)]
 mod tests {
