@@ -1375,6 +1375,42 @@ impl EngineSession {
         }
         best
     }
+
+    /// Find the entity (and optionally member) at the given 1-based `(line, col)`
+    /// source position.
+    ///
+    /// Delegates to `reify_eval::resolve_entity_at_source_position`, which uses
+    /// the compiled module's value-cell and constraint spans to approximate each
+    /// template's source range.
+    ///
+    /// Returns:
+    /// - `Some("Entity.member")` when the cursor is inside a value cell's span.
+    /// - `Some("Entity")` when the cursor is inside the template's approximate
+    ///   span but outside any specific value cell (e.g. a constraint line).
+    /// - `None` when `line` or `col` is zero, when no module is loaded, when the
+    ///   position is outside every template's approximate span, or when the position
+    ///   is past the end of source.
+    ///
+    /// # Caching
+    /// Reuses the same `line_offsets_cache` and `parsed_cache` as
+    /// `get_containing_definition` — both are populated eagerly in `commit_state`.
+    pub fn get_entity_at_source_location(&self, line: u32, col: u32) -> Option<String> {
+        // Documented contract: zero line or column is out-of-range → None.
+        if line == 0 || col == 0 {
+            return None;
+        }
+        let (_key, source) = self.resolve_source()?;
+
+        debug_assert!(
+            self.parsed_cache.is_some() && self.line_offsets_cache.is_some(),
+            "cache invariant broken: parsed_cache and line_offsets_cache must be Some \
+             whenever compiled is Some (i.e., whenever resolve_source succeeds)"
+        );
+
+        let compiled = self.compiled.as_ref()?;
+
+        reify_eval::resolve_entity_at_source_position(compiled, source, line, col)
+    }
 }
 
 // ---- GUI-state helpers -------------------------------------------------------

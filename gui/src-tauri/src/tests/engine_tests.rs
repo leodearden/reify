@@ -6630,3 +6630,144 @@ fn build_gui_state_surfaces_prior_warning_and_live_error_together_in_append_orde
         severities
     );
 }
+
+// ---- Step: get_entity_at_source_location() tests ----
+
+/// (a) No module loaded → get_entity_at_source_location returns None.
+#[test]
+fn get_entity_at_source_location_no_module_returns_none() {
+    let checker = SimpleConstraintChecker;
+    let session = EngineSession::new(Box::new(checker), None);
+    let result = session.get_entity_at_source_location(1, 1);
+    assert!(
+        result.is_none(),
+        "no module loaded → None, got {:?}",
+        result
+    );
+}
+
+/// (b) Zero line or zero col → None (documented out-of-range guard, 1-based coordinate system).
+#[test]
+fn get_entity_at_source_location_zero_line_or_col_returns_none() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+    assert!(
+        session.get_entity_at_source_location(0, 1).is_none(),
+        "zero line → None"
+    );
+    assert!(
+        session.get_entity_at_source_location(1, 0).is_none(),
+        "zero col → None"
+    );
+    assert!(
+        session.get_entity_at_source_location(0, 0).is_none(),
+        "zero line and col → None"
+    );
+}
+
+/// (c) Cursor mid-"width" identifier (line=2, col=11) → Some("Bracket.width").
+///
+/// bracket_source() line 2: "    param width: Scalar = 80mm"
+/// col 11 is 'w' in "width", inside the width cell span.
+#[test]
+fn get_entity_at_source_location_width_cell_returns_bracket_width() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+    let result = session.get_entity_at_source_location(2, 11);
+    assert_eq!(
+        result,
+        Some("Bracket.width".to_string()),
+        "cursor at (2, 11) should resolve to Bracket.width"
+    );
+}
+
+/// (d) Cursor mid-"thickness" identifier (line=4, col=11) → Some("Bracket.thickness").
+///
+/// bracket_source() line 4: "    param thickness: Scalar = 5mm"
+/// col 11 is 't' in "thickness", inside the thickness cell span.
+#[test]
+fn get_entity_at_source_location_thickness_cell_returns_bracket_thickness() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+    let result = session.get_entity_at_source_location(4, 11);
+    assert_eq!(
+        result,
+        Some("Bracket.thickness".to_string()),
+        "cursor at (4, 11) should resolve to Bracket.thickness"
+    );
+}
+
+/// (e) Cursor on the `structure Bracket {` header line (line=1, col=1) → None.
+///
+/// The template's approximate span is derived from value-cell and constraint spans,
+/// which start on line 2. The structure keyword at (1,1) = byte 0 falls before the
+/// span start, so the position is not inside any template → None.
+#[test]
+fn get_entity_at_source_location_structure_header_returns_none() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+    let result = session.get_entity_at_source_location(1, 1);
+    assert!(
+        result.is_none(),
+        "cursor on structure header (1,1) is outside the template's approximate span → None, \
+         got {:?}",
+        result
+    );
+}
+
+/// (f) Cursor on a constraint line → Some("Bracket") (inside template body, no value cell).
+///
+/// bracket_source() line 10: "    constraint thickness > 2mm"
+/// col 5 is 'c' in "constraint" — inside the template's approximate span but not
+/// within any value cell span.
+#[test]
+fn get_entity_at_source_location_constraint_line_returns_template_name() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+    let result = session.get_entity_at_source_location(10, 5);
+    assert_eq!(
+        result,
+        Some("Bracket".to_string()),
+        "cursor on constraint line (10, 5) should resolve to Bracket (template name, no cell hit)"
+    );
+}
+
+/// (g) Cursor on line 16 (beyond end of source) → None.
+///
+/// bracket_source() has 15 lines. Line 16 is past the end; the byte offset
+/// is outside every template's span → None.
+#[test]
+fn get_entity_at_source_location_past_end_of_source_returns_none() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+    let result = session.get_entity_at_source_location(16, 1);
+    assert!(
+        result.is_none(),
+        "cursor past end of source (16, 1) should return None, got {:?}",
+        result
+    );
+}
