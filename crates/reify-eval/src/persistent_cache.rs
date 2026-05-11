@@ -63,7 +63,8 @@ const ELASTIC_RESULT_FORMAT_VERSION: u32 = 1;
 /// Canonical engine-version hash for FEA persistent-cache keys. Baked at
 /// build time by `build.rs` over the contributor source files listed in
 /// `CONTRIBUTORS_RELATIVE` (reify-solver-elastic, reify-kernel-gmsh, stdlib
-/// FEA helpers, and per-purpose tolerance impls in this crate).
+/// FEA helpers, per-purpose tolerance impls in this crate, and the workspace
+/// `Cargo.lock` for transitive-dep version pinning).
 ///
 /// **Distinct from `ELASTIC_RESULT_FORMAT_VERSION`**: `FORMAT_VERSION` tracks
 /// the wire format (encoding layout — bump when `bincode`/`zstd` encoding

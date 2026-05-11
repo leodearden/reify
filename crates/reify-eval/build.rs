@@ -29,6 +29,7 @@
 //   3. Stdlib FEA helpers          — crates/reify-stdlib/src/{fea,loads,supports,analysis}.rs
 //   4. Per-purpose tolerance impl  — crates/reify-eval/src/tolerance_*.rs,
 //                                    engine_tolerance.rs, engine_purposes.rs
+//   5. Transitive-dep version pin  — workspace Cargo.lock (../../Cargo.lock)
 //
 // # Deferred contributor
 //   Materials database: PRD line 59 makes this conditional on materials living
@@ -46,35 +47,6 @@
 // xxhash_rust::xxh3::xxh3_128) from the single shared source file.
 // There is NO duplicate algorithm here.
 include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/engine_hash_algo.rs"));
-
-/// Contributor paths relative to `CARGO_MANIFEST_DIR` (i.e. `crates/reify-eval/`).
-/// Each entry is either a single file or a directory to walk recursively.
-/// Directories are walked by `walk_contributor` (entries sorted by file name
-/// for byte-determinism across platforms).
-const CONTRIBUTORS_RELATIVE: &[&str] = &[
-    // 1. FEA solver
-    "../reify-solver-elastic/src",
-    "../reify-solver-elastic/Cargo.toml",
-    // 2. Meshing pipeline
-    "../reify-kernel-gmsh/src",
-    "../reify-kernel-gmsh/Cargo.toml",
-    "../reify-kernel-gmsh/build.rs",
-    // 3. Stdlib FEA helpers
-    "../reify-stdlib/src/fea.rs",
-    "../reify-stdlib/src/loads.rs",
-    "../reify-stdlib/src/supports.rs",
-    "../reify-stdlib/src/analysis.rs",
-    // 4. Per-purpose tolerance implementation
-    "src/tolerance_bucket.rs",
-    "src/tolerance_budget.rs",
-    "src/tolerance_combine.rs",
-    "src/tolerance_format.rs",
-    "src/tolerance_gate.rs",
-    "src/tolerance_promise.rs",
-    "src/tolerance_scope.rs",
-    "src/engine_tolerance.rs",
-    "src/engine_purposes.rs",
-];
 
 fn main() {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
