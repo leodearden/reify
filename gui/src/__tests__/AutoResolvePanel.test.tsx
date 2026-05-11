@@ -169,7 +169,12 @@ describe('AutoResolvePanel (a) header and parameter rows', () => {
     const sparklineSvg = screen.getByTestId('auto-resolve-sparkline');
     const sparklineRow = sparklineSvg.closest('div')!;
     expect(within(sparklineRow).getByText('thickness')).toBeTruthy();
-    expect(screen.getByText('4.2mm')).toBeTruthy();
+    // Scope cell-id and display-value assertions to the Parameters section
+    // explicitly, so a regression that drops them from the Parameters row
+    // (but not the sparkline row) is caught.
+    const parametersSection = screen.getByTestId('auto-resolve-parameters');
+    expect(within(parametersSection).getByText('thickness')).toBeTruthy();
+    expect(within(parametersSection).getByText('4.2mm')).toBeTruthy();
   });
 });
 
