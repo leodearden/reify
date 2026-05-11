@@ -70,6 +70,7 @@ vi.mock('../bridge', () => ({
   getKernelStatus: vi.fn().mockResolvedValue({ available: true, message: null }),
   onKernelStatus: vi.fn().mockResolvedValue(() => {}),
   getContainingDefinition: vi.fn().mockResolvedValue(null),
+  getEntityAtSourceLocation: vi.fn().mockResolvedValue(null),
   getDefPreview: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [] }),
   getMechanismDescriptors: vi.fn().mockResolvedValue([]),
 }));
