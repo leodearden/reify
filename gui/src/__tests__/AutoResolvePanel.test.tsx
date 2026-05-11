@@ -176,6 +176,30 @@ describe('AutoResolvePanel (a) header and parameter rows', () => {
     expect(within(parametersSection).getByText('thickness')).toBeTruthy();
     expect(within(parametersSection).getByText('4.2mm')).toBeTruthy();
   });
+
+  it('(a.4) parameters section shows the LATEST iteration values when multiple iterations differ', () => {
+    // Two iterations share the same parameter cell-id but with different display values.
+    // The Parameters section must show the LAST iteration's value, not the first.
+    const iterations = [
+      makeIteration(1, {
+        parameters: {
+          'Bracket.thickness': { value: 4.2, unit: 'mm', display: '4.2mm' },
+        },
+      }),
+      makeIteration(2, {
+        parameters: {
+          'Bracket.thickness': { value: 5.5, unit: 'mm', display: '5.5mm' },
+        },
+      }),
+    ];
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+    const parametersSection = screen.getByTestId('auto-resolve-parameters');
+    // Latest iteration's display value must appear in the Parameters section
+    expect(within(parametersSection).getByText('5.5mm')).toBeTruthy();
+    // Earlier iteration's display value must NOT appear in the Parameters section
+    expect(within(parametersSection).queryByText('4.2mm')).toBeNull();
+  });
 });
 
 // ── Test group (c): line chart ───────────────────────────────────────────────
