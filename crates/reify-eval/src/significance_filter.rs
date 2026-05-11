@@ -359,6 +359,24 @@ mod tests {
         );
     }
 
+    // ── Step-13: NaN / ±Inf in displacement always signals Different ──────────
+
+    /// NaN or ±Inf in a displacement sample always yields Different.
+    /// Pins the task spec: "NaN should always propagate as a change signal."
+    /// f64::is_finite() uniformly covers NaN, +Inf, and -Inf.
+    #[test]
+    fn significance_filter_returns_different_for_nan_in_displacement() {
+        let v_prev = make_elastic_result_value(&[0.0, 0.0], &[0.0, 0.0], 1e8, true, 5);
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let v_new = make_elastic_result_value(&[0.0, bad], &[0.0, 0.0], 1e8, true, 5);
+            assert_eq!(
+                significance_filter("solver::elastic_static", &v_prev, &v_new, Some(1e-6)),
+                FilterOutcome::Different,
+                "non-finite displacement value {bad} must yield Different",
+            );
+        }
+    }
+
     // ── Step-7: missing-tolerance conservative fallback ───────────────────────
 
     /// When length_tolerance_si is None, the filter returns Different
