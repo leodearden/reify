@@ -4916,6 +4916,42 @@ mod dispatch_volume_mesh_tests {
     }
 }
 
+/// Produce an info-level diagnostic when a swept body is meshed with P1
+/// hex/wedge despite the user requesting `element_order = P2`.
+///
+/// P2 hex/wedge is deferred to v0.4+; the runtime silently produces P1 hex
+/// instead. This helper is the canonical source of that per-body diagnostic,
+/// cited by PRD `docs/prds/v0_3/hex-wedge-meshing.md` task #10.
+///
+/// # Contract
+///
+/// Returns `Some(Diagnostic::info(...))` only when ALL of the following hold:
+/// - `swept_kind` is `Some(_)` — the body qualified for hex/wedge promotion.
+/// - `force_tet` is `false` — hex/wedge meshing was not suppressed by the
+///   caller before we got here.
+/// - `element_order == ElementOrderTag::P2` — a substitution is actually
+///   happening (P1 is correct behaviour; only P2 triggers the warning).
+///
+/// Returns `None` in all other cases (no diagnostic to emit).
+///
+/// # One-shot guarantee
+///
+/// The helper is stateless. "One diagnostic per body" is enforced at the call
+/// site — each realization-final body handle invokes this helper exactly once,
+/// matching the `swept_kind_table.record(handle, kind)` per-handle pattern.
+pub(crate) fn p2_substitution_diagnostic(
+    swept_kind: Option<&SweptKind>,
+    force_tet: bool,
+    element_order: reify_types::ElementOrderTag,
+    body_label: &str,
+) -> Option<Diagnostic> {
+    // Naive initial implementation — no guards yet (added in step-4).
+    Some(Diagnostic::info(format!(
+        "Body {body_label} qualified for hex/wedge meshing; P1 hex used despite \
+`element_order = P2` (P2 hex deferred). Accuracy for thin geometry is comparable to P2 tet."
+    )))
+}
+
 // ── p2_substitution_diagnostic unit tests ────────────────────────────────────
 
 #[cfg(test)]
