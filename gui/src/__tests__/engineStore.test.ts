@@ -1174,6 +1174,133 @@ describe('engineStore autoResolve driving_metric invariance', () => {
   });
 });
 
+describe('engineStore autoResolve empty-string driving_metric', () => {
+  const sampleIteration = {
+    iteration: 1,
+    parameters: {
+      'Bracket.thickness': { value: 4.2, unit: 'mm', display: '4.2mm' },
+    },
+    constraints: {
+      max_von_mises: {
+        name: 'max_von_mises',
+        value: 180,
+        unit: 'MPa',
+        target_upper: 200,
+        satisfied: true,
+      },
+    },
+    driving_metric: 'max_von_mises',
+    driving_metric_value: 180,
+  };
+
+  it('(a) empty-string driving_metric after canonical established: appended, canonical unchanged, dedicated warn fires', () => {
+    createRoot((dispose) => {
+      const { state, beginAutoResolveLoop, applyAutoResolveIteration } = createEngineStore();
+      beginAutoResolveLoop();
+      applyAutoResolveIteration(sampleIteration);
+      expect(state.autoResolve.canonicalDrivingMetric).toBe('max_von_mises');
+
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      applyAutoResolveIteration({ ...sampleIteration, iteration: 2, driving_metric: '' });
+      // Iteration is still appended (not dropped)
+      expect(state.autoResolve.iterations).toHaveLength(2);
+      // Canonical is unchanged
+      expect(state.autoResolve.canonicalDrivingMetric).toBe('max_von_mises');
+      // Dedicated empty-string warn fires (not the mismatch warn)
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('empty driving_metric'),
+        expect.objectContaining({ iteration: 2 }),
+      );
+      warnSpy.mockRestore();
+      dispose();
+    });
+  });
+
+  it('(b) empty-string driving_metric as first iteration: appended, canonical stays undefined, warn fires', () => {
+    createRoot((dispose) => {
+      const { state, beginAutoResolveLoop, applyAutoResolveIteration } = createEngineStore();
+      beginAutoResolveLoop();
+
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      applyAutoResolveIteration({ ...sampleIteration, iteration: 1, driving_metric: '' });
+      // Iteration is appended
+      expect(state.autoResolve.iterations).toHaveLength(1);
+      // canonical must NOT be set to ''
+      expect(state.autoResolve.canonicalDrivingMetric).toBeUndefined();
+      // empty-string warn fires
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('empty driving_metric'),
+        expect.objectContaining({ iteration: 1 }),
+      );
+      warnSpy.mockRestore();
+      dispose();
+    });
+  });
+
+  it('(c) real-metric iteration following empty-string iteration still establishes canonical', () => {
+    createRoot((dispose) => {
+      const { state, beginAutoResolveLoop, applyAutoResolveIteration } = createEngineStore();
+      beginAutoResolveLoop();
+      // First: empty-string driving_metric — canonical stays undefined
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      applyAutoResolveIteration({ ...sampleIteration, iteration: 1, driving_metric: '' });
+      expect(state.autoResolve.canonicalDrivingMetric).toBeUndefined();
+      warnSpy.mockRestore();
+
+      // Second: real driving_metric — must be appended and establish the canonical
+      applyAutoResolveIteration({ ...sampleIteration, iteration: 2, driving_metric: 'displacement', driving_metric_value: 0.8 });
+      expect(state.autoResolve.iterations).toHaveLength(2);
+      expect(state.autoResolve.canonicalDrivingMetric).toBe('displacement');
+      dispose();
+    });
+  });
+
+  it('(d) warn fires at most once per loop even when multiple empty-string iterations arrive', () => {
+    createRoot((dispose) => {
+      const { state, beginAutoResolveLoop, applyAutoResolveIteration } = createEngineStore();
+      beginAutoResolveLoop();
+
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      // Three consecutive empty-string iterations
+      applyAutoResolveIteration({ ...sampleIteration, iteration: 1, driving_metric: '' });
+      applyAutoResolveIteration({ ...sampleIteration, iteration: 2, driving_metric: '' });
+      applyAutoResolveIteration({ ...sampleIteration, iteration: 3, driving_metric: '' });
+
+      expect(state.autoResolve.iterations).toHaveLength(3);
+      // Warn fires exactly once, not three times
+      const emptyWarnCalls = warnSpy.mock.calls.filter(([msg]) =>
+        typeof msg === 'string' && msg.includes('empty driving_metric'),
+      );
+      expect(emptyWarnCalls).toHaveLength(1);
+
+      warnSpy.mockRestore();
+      dispose();
+    });
+  });
+
+  it('(e) beginAutoResolveLoop resets warn-once flag so a new loop can warn again', () => {
+    createRoot((dispose) => {
+      const { state, beginAutoResolveLoop, applyAutoResolveIteration } = createEngineStore();
+
+      // First loop: empty-string → warn fires once and flag is set
+      beginAutoResolveLoop();
+      const spy1 = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      applyAutoResolveIteration({ ...sampleIteration, iteration: 1, driving_metric: '' });
+      applyAutoResolveIteration({ ...sampleIteration, iteration: 2, driving_metric: '' });
+      expect(spy1.mock.calls.filter(([m]) => typeof m === 'string' && m.includes('empty driving_metric'))).toHaveLength(1);
+      spy1.mockRestore();
+
+      // Second loop: beginAutoResolveLoop clears the flag — warn fires again on the first empty-string
+      beginAutoResolveLoop();
+      const spy2 = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      applyAutoResolveIteration({ ...sampleIteration, iteration: 1, driving_metric: '' });
+      expect(spy2.mock.calls.filter(([m]) => typeof m === 'string' && m.includes('empty driving_metric'))).toHaveLength(1);
+      spy2.mockRestore();
+      dispose();
+    });
+  });
+});
+
 describe('engineStore kernelStatus', () => {
   it('initial state.kernelStatus is null', () => {
     createRoot((dispose) => {

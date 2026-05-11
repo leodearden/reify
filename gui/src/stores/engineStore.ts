@@ -36,6 +36,13 @@ export interface AutoResolveLoopState {
    * `endAutoResolveLoop` so each loop starts with a fresh canonical.
    */
   canonicalDrivingMetric?: string;
+  /**
+   * Whether an empty-string `driving_metric` warning has already been emitted
+   * for the current loop. Used to rate-limit the warn to once-per-loop so a
+   * misconfigured producer that floods empty-string iterations does not flood
+   * the dev console. Cleared by `beginAutoResolveLoop` and `endAutoResolveLoop`.
+   */
+  warnedEmptyMetric?: boolean;
 }
 
 export interface EngineState {
@@ -66,7 +73,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
     tessellationDiagnostics: [],
     compileDiagnostics: [],
     kernelStatus: null,
-    autoResolve: { active: false, iterations: [], canonicalDrivingMetric: undefined },
+    autoResolve: { active: false, iterations: [], canonicalDrivingMetric: undefined, warnedEmptyMetric: undefined },
   });
 
   function initFromState(guiState: GuiState) {
@@ -142,7 +149,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
 
   /** Start a new auto-resolve loop: flip active=true and clear previous iterations. */
   function beginAutoResolveLoop() {
-    setState('autoResolve', { active: true, iterations: [], canonicalDrivingMetric: undefined });
+    setState('autoResolve', { active: true, iterations: [], canonicalDrivingMetric: undefined, warnedEmptyMetric: undefined });
   }
 
   /**
@@ -159,10 +166,20 @@ export function createEngineStore(options?: EngineStoreOptions) {
    * AutoResolveIteration invariant in types.ts).
    */
   function applyAutoResolveIteration(iter: AutoResolveIteration) {
-    // Both checks use the same truthy predicate so empty-string metrics behave
-    // consistently at both the canonical-lookup and mismatch-comparison sites.
+    // Empty-string driving_metric is treated as "no metric declared" — same as
+    // undefined — but emits a console.warn (once per loop) so the upstream
+    // malformation (the wire schema permits omission, not empty-string) is
+    // visible in dev without flooding the console when a misconfigured producer
+    // emits many such iterations in a single loop.
+    if (iter.driving_metric === '' && !state.autoResolve.warnedEmptyMetric) {
+      console.warn('[auto-resolve-iteration] empty driving_metric; treating as undeclared', {
+        iteration: iter.iteration,
+      });
+      setState('autoResolve', 'warnedEmptyMetric', true);
+    }
+    const metric = iter.driving_metric === '' ? undefined : iter.driving_metric;
     const canonical = state.autoResolve.canonicalDrivingMetric;
-    if (canonical && iter.driving_metric && iter.driving_metric !== canonical) {
+    if (canonical && metric && metric !== canonical) {
       console.warn('[auto-resolve-iteration] driving_metric mismatch; dropping iteration', {
         iteration: iter.iteration,
         canonical,
@@ -172,8 +189,8 @@ export function createEngineStore(options?: EngineStoreOptions) {
     }
     setState(produce((s) => { s.autoResolve.iterations.push(iter); }));
     // Establish canonical on first iteration that declares a driving_metric.
-    if (iter.driving_metric && !canonical) {
-      setState('autoResolve', 'canonicalDrivingMetric', iter.driving_metric);
+    if (metric && !canonical) {
+      setState('autoResolve', 'canonicalDrivingMetric', metric);
     }
   }
 
@@ -186,7 +203,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
    * Clearing eagerly avoids holding dead state between runs.
    */
   function endAutoResolveLoop() {
-    setState('autoResolve', { active: false, iterations: [], canonicalDrivingMetric: undefined });
+    setState('autoResolve', { active: false, iterations: [], canonicalDrivingMetric: undefined, warnedEmptyMetric: undefined });
   }
 
   async function subscribeToEvents(): Promise<() => void> {
