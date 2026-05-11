@@ -1012,6 +1012,104 @@ describe('engineStore autoResolve subscribeToEvents wiring', () => {
   });
 });
 
+describe('engineStore autoResolve driving_metric invariance', () => {
+  const sampleIteration = {
+    iteration: 1,
+    parameters: {
+      'Bracket.thickness': { value: 4.2, unit: 'mm', display: '4.2mm' },
+    },
+    constraints: {
+      max_von_mises: {
+        name: 'max_von_mises',
+        value: 180,
+        unit: 'MPa',
+        target_upper: 200,
+        satisfied: true,
+      },
+    },
+    driving_metric: 'max_von_mises',
+    driving_metric_value: 180,
+  };
+
+  it('(1) iteration with matching driving_metric is appended', () => {
+    createRoot((dispose) => {
+      const { state, beginAutoResolveLoop, applyAutoResolveIteration } = createEngineStore();
+      beginAutoResolveLoop();
+      applyAutoResolveIteration(sampleIteration);
+      const iter2 = { ...sampleIteration, iteration: 2, driving_metric_value: 165 };
+      applyAutoResolveIteration(iter2);
+      expect(state.autoResolve.iterations).toHaveLength(2);
+      expect(state.autoResolve.iterations[1]).toEqual(iter2);
+      dispose();
+    });
+  });
+
+  it('(2) iteration with mismatched driving_metric is dropped', () => {
+    createRoot((dispose) => {
+      const { state, beginAutoResolveLoop, applyAutoResolveIteration } = createEngineStore();
+      beginAutoResolveLoop();
+      applyAutoResolveIteration(sampleIteration);
+      const mismatchedIter = { ...sampleIteration, iteration: 2, driving_metric: 'displacement', driving_metric_value: 1.5 };
+      applyAutoResolveIteration(mismatchedIter);
+      expect(state.autoResolve.iterations).toHaveLength(1);
+      expect(state.autoResolve.iterations[0].driving_metric).toBe('max_von_mises');
+      dispose();
+    });
+  });
+
+  it('(3) iteration without driving_metric is appended regardless', () => {
+    createRoot((dispose) => {
+      const { state, beginAutoResolveLoop, applyAutoResolveIteration } = createEngineStore();
+      beginAutoResolveLoop();
+      applyAutoResolveIteration(sampleIteration);
+      // Apply an iteration without driving_metric
+      const { driving_metric, driving_metric_value, ...noMetricIter } = sampleIteration;
+      applyAutoResolveIteration({ ...noMetricIter, iteration: 2 });
+      expect(state.autoResolve.iterations).toHaveLength(2);
+      // Canonical metric is preserved: subsequent mismatched iteration is still rejected
+      const mismatchedIter = { ...sampleIteration, iteration: 3, driving_metric: 'displacement', driving_metric_value: 1.5 };
+      applyAutoResolveIteration(mismatchedIter);
+      expect(state.autoResolve.iterations).toHaveLength(2);
+      dispose();
+    });
+  });
+
+  it('(4) first iteration with driving_metric establishes the canonical', () => {
+    createRoot((dispose) => {
+      const { state, beginAutoResolveLoop, applyAutoResolveIteration } = createEngineStore();
+      beginAutoResolveLoop();
+      // First iteration has no driving_metric
+      const { driving_metric, driving_metric_value, ...noMetricIter } = sampleIteration;
+      applyAutoResolveIteration({ ...noMetricIter, iteration: 1 });
+      expect(state.autoResolve.iterations).toHaveLength(1);
+      // Second iteration establishes canonical (driving_metric='displacement')
+      const displacementIter = { ...sampleIteration, iteration: 2, driving_metric: 'displacement', driving_metric_value: 0.5 };
+      applyAutoResolveIteration(displacementIter);
+      expect(state.autoResolve.iterations).toHaveLength(2);
+      // Third iteration with a different metric should be dropped (canonical is now 'displacement')
+      const mismatchedIter = { ...sampleIteration, iteration: 3, driving_metric_value: 190 };
+      applyAutoResolveIteration(mismatchedIter);
+      expect(state.autoResolve.iterations).toHaveLength(2);
+      dispose();
+    });
+  });
+
+  it('(5) console.warn fires on rejection', () => {
+    createRoot((dispose) => {
+      const { state, beginAutoResolveLoop, applyAutoResolveIteration } = createEngineStore();
+      beginAutoResolveLoop();
+      applyAutoResolveIteration(sampleIteration);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const mismatchedIter = { ...sampleIteration, iteration: 2, driving_metric: 'displacement', driving_metric_value: 1.5 };
+      applyAutoResolveIteration(mismatchedIter);
+      expect(warnSpy).toHaveBeenCalled();
+      expect(state.autoResolve.iterations).toHaveLength(1);
+      warnSpy.mockRestore();
+      dispose();
+    });
+  });
+});
+
 describe('engineStore kernelStatus', () => {
   it('initial state.kernelStatus is null', () => {
     createRoot((dispose) => {
