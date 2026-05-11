@@ -361,6 +361,7 @@ pub use shell_assembly::{ShellFrame, build_shell_frame, plane_stress_d, shell_el
 pub use shell_boundary::{
     SupportBodyKind, SupportCompatibility, SupportKind, build_support_bcs,
 };
+pub use shell_kinematics::{ShellKinematics, shell_kinematics};
 pub use shell_result::{
     ShellElementStress, ShellStress, shell_element_frame, shell_element_stress,
 };

@@ -7,11 +7,120 @@
 //! (plus the J2 determinant `det2` used by the shear quadrature weight in the
 //! stiffness path), so a sign-convention or tying-point-ordering change made
 //! here propagates to both consumers atomically.
-//!
-//! # Implementation note
-//!
-//! `ShellKinematics` struct and `shell_kinematics` function are defined here.
-//! See the `#[cfg(test)]` module below for the contract pins.
+
+use crate::shell_assembly::ShellFrame;
+
+/// Per-element shell kinematics derived from physical nodes + the local
+/// mid-surface frame.
+pub struct ShellKinematics {
+    /// Local 2D coords: `xloc[i] = (R · (p_i − p0)).xy` (e3 component is 0
+    /// for a flat triangle by construction of the frame).
+    pub local_nodes_2d: [[f64; 2]; 3],
+    /// Constant 2D shape gradients in the local frame: `dn[i] = [dN_i/dx, dN_i/dy]`.
+    pub dn: [[f64; 2]; 3],
+    /// Covariant shear B-matrix at each MITC3 tying point A, B, C:
+    /// `b_cov_at_tying_points[tp_idx][cov_component][dof]` for
+    /// `tp_idx in {A=0, B=1, C=2}` and `cov_component in {γ_ξζ=0, γ_ηζ=1}`.
+    pub b_cov_at_tying_points: [[[f64; 18]; 2]; 3],
+    /// J2⁻ᵀ — maps covariant (ξ,η) shear components to physical (x,y).
+    pub jac2_inv_t: [[f64; 2]; 2],
+    /// `det(J2)` — local 2D Jacobian determinant. Always `> 0` for a
+    /// well-posed element; equals `2 · area`. Used by `shell_element_stiffness`
+    /// as the shear-quadrature weight factor.
+    pub det2: f64,
+}
+
+/// Compute shared MITC3 shell kinematics from physical node positions and the
+/// pre-built local mid-surface frame.
+///
+/// Both `shell_element_stiffness` and `shell_element_stress` call this after
+/// `build_shell_frame` and read the fields directly — no behaviour change,
+/// identical floating-point output.
+///
+/// # Arguments
+///
+/// - `nodes` — three physical vertex positions in global coordinates.
+/// - `frame` — pre-built local mid-surface frame (from `build_shell_frame`).
+pub fn shell_kinematics(nodes: &[[f64; 3]; 3], frame: &ShellFrame) -> ShellKinematics {
+    use crate::elements::mitc3_plus::Mitc3Plus;
+
+    const NDOF: usize = Mitc3Plus::N_DOFS; // 18 total DOFs
+    const NDP: usize = Mitc3Plus::N_DOFS_PER_NODE; // 6 DOFs per node
+    const NN: usize = Mitc3Plus::N_NODES; // 3 nodes
+
+    let r = frame.r;
+    let area = frame.area;
+
+    // --- Local 2D coordinates of nodes: xloc[i] = (R · (p_i − p0)).xy ---
+    let mut local_nodes_2d = [[0.0_f64; 2]; 3];
+    for i in 0..NN {
+        let d = [
+            nodes[i][0] - frame.origin[0],
+            nodes[i][1] - frame.origin[1],
+            nodes[i][2] - frame.origin[2],
+        ];
+        local_nodes_2d[i][0] = r[0][0] * d[0] + r[0][1] * d[1] + r[0][2] * d[2];
+        local_nodes_2d[i][1] = r[1][0] * d[0] + r[1][1] * d[1] + r[1][2] * d[2];
+    }
+
+    // --- 2D shape gradients via the standard triangle formula ---
+    // For nodes (x0,y0),(x1,y1),(x2,y2) with signed area A = area (positive):
+    //   ∂N_i/∂x = (y_j − y_k) / (2·A)
+    //   ∂N_i/∂y = (x_k − x_j) / (2·A)
+    // cyclic: i→j→k = 0→1→2→0
+    let two_a = 2.0 * area;
+    let x = [local_nodes_2d[0][0], local_nodes_2d[1][0], local_nodes_2d[2][0]];
+    let y = [local_nodes_2d[0][1], local_nodes_2d[1][1], local_nodes_2d[2][1]];
+    let dn = [
+        [(y[1] - y[2]) / two_a, (x[2] - x[1]) / two_a],
+        [(y[2] - y[0]) / two_a, (x[0] - x[2]) / two_a],
+        [(y[0] - y[1]) / two_a, (x[1] - x[0]) / two_a],
+    ];
+
+    // --- Local 2D Jacobian J2, determinant, and J2⁻ᵀ ---
+    // J2 = [[∂x/∂ξ, ∂x/∂η], [∂y/∂ξ, ∂y/∂η]] = [[x1-x0, x2-x0], [y1-y0, y2-y0]]
+    let jac2 = [[x[1] - x[0], x[2] - x[0]], [y[1] - y[0], y[2] - y[0]]];
+    let det2 = jac2[0][0] * jac2[1][1] - jac2[0][1] * jac2[1][0];
+    // J2⁻ᵀ: (J2⁻¹)ᵀ — maps covariant (ξ,η) components to physical (x,y)
+    // J2⁻¹ = (1/det) · [[jac2[1][1], -jac2[0][1]], [-jac2[1][0], jac2[0][0]]]
+    // J2⁻ᵀ[i][j] = J2⁻¹[j][i]
+    let jac2_inv_t = [
+        [jac2[1][1] / det2, -jac2[1][0] / det2],
+        [-jac2[0][1] / det2, jac2[0][0] / det2],
+    ];
+
+    // --- Covariant shear B-matrix at each MITC3 tying point ---
+    // b_cov_at_tying_points[tp_idx][cov_component][dof]
+    // For each tying point (ξ_t, η_t):
+    //   γ_ξζ = Σ_i dn_ref[i][0] * u_z_i + N_i(tp) * θ_y_i
+    //   γ_ηζ = Σ_i dn_ref[i][1] * u_z_i - N_i(tp) * θ_x_i
+    let tying_pts = Mitc3Plus.tying_points();
+    let mut b_cov_at_tying_points = [[[0.0_f64; NDOF]; 2]; 3];
+    for (tp_idx, tp) in tying_pts.iter().enumerate() {
+        let n_at_tp = Mitc3Plus.shape_at(tp.coord);
+        // shape_grad_at returns constant ∇N_0=(−1,−1), ∇N_1=(1,0), ∇N_2=(0,1)
+        let dn_ref_tp = Mitc3Plus.shape_grad_at(tp.coord);
+        for node in 0..NN {
+            let dof_uz = NDP * node + 2;
+            let dof_tx = NDP * node + 3;
+            let dof_ty = NDP * node + 4;
+            // γ_ξζ contribution: dn_ref[node][0]*u_z + N*θ_y
+            b_cov_at_tying_points[tp_idx][0][dof_uz] += dn_ref_tp[node][0];
+            b_cov_at_tying_points[tp_idx][0][dof_ty] += n_at_tp[node];
+            // γ_ηζ contribution: dn_ref[node][1]*u_z - N*θ_x
+            b_cov_at_tying_points[tp_idx][1][dof_uz] += dn_ref_tp[node][1];
+            b_cov_at_tying_points[tp_idx][1][dof_tx] -= n_at_tp[node];
+        }
+    }
+
+    ShellKinematics {
+        local_nodes_2d,
+        dn,
+        b_cov_at_tying_points,
+        jac2_inv_t,
+        det2,
+    }
+}
 
 #[cfg(test)]
 #[allow(clippy::needless_range_loop)]
