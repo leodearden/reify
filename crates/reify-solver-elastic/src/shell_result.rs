@@ -116,7 +116,6 @@ pub fn shell_element_stress(
 
     let frame = build_shell_frame(nodes);
     let r = frame.r; // rows = local basis in global coords: R · v_global = v_local
-    let area = frame.area;
     let t = thickness;
 
     // --- Rotate 18 global DOFs → local frame (6 blocks of 3 DOFs) ---
@@ -134,29 +133,9 @@ pub fn shell_element_stress(
         }
     }
 
-    // --- Local 2D nodal coords: xloc[n] = (R · (p_n − p0)).xy ---
-    let p0 = frame.origin;
-    let mut xloc = [[0.0_f64; 2]; 3];
-    for i in 0..n_nodes {
-        let d = [
-            nodes[i][0] - p0[0],
-            nodes[i][1] - p0[1],
-            nodes[i][2] - p0[2],
-        ];
-        xloc[i][0] = r[0][0] * d[0] + r[0][1] * d[1] + r[0][2] * d[2];
-        xloc[i][1] = r[1][0] * d[0] + r[1][1] * d[1] + r[1][2] * d[2];
-    }
-
-    // --- 2D shape gradients (constant for linear triangle) ---
-    let two_a = 2.0 * area;
-    let x = [xloc[0][0], xloc[1][0], xloc[2][0]];
-    let y = [xloc[0][1], xloc[1][1], xloc[2][1]];
-    // dN[i] = [dN_i/dx, dN_i/dy], cyclic (i,j,k) = (0,1,2), (1,2,0), (2,0,1)
-    let dn = [
-        [(y[1] - y[2]) / two_a, (x[2] - x[1]) / two_a],
-        [(y[2] - y[0]) / two_a, (x[0] - x[2]) / two_a],
-        [(y[0] - y[1]) / two_a, (x[1] - x[0]) / two_a],
-    ];
+    // Shared kinematics: local 2D coords, shape gradients, B_cov, J2⁻ᵀ.
+    let kin = crate::shell_kinematics::shell_kinematics(nodes, &frame);
+    let dn = kin.dn;
 
     // --- Membrane Voigt strain: ε = [ε_xx, ε_yy, γ_xy] ---
     let mut eps = [0.0_f64; 3];
@@ -179,7 +158,7 @@ pub fn shell_element_stress(
 
     // --- Curvature Voigt vector: κ = [κ_xx, κ_yy, 2κ_xy] from rotation DOFs ---
     // κ_xx = −∂θ_y/∂x, κ_yy = +∂θ_x/∂y, 2κ_xy = ∂θ_x/∂x − ∂θ_y/∂y
-    // (matches bending B-matrix convention in shell_assembly.rs:274-308)
+    // (matches bending B-matrix convention in shell_assembly.rs)
     let mut kappa = [0.0_f64; 3];
     for i in 0..n_nodes {
         let tx = u_loc[ndp * i + 3]; // θ_x in local frame
@@ -198,25 +177,9 @@ pub fn shell_element_stress(
     }
 
     // --- MITC3 transverse-shear recovery ---
-    // Replicate tying-point covariant shear sampling from shell_assembly.rs:352-433.
-    // Covariant shear at a tying point (ξ_t, η_t):
-    //   γ_ξζ = Σ_i dn_ref[i][0]*u_z_i + N_i*θ_y_i
-    //   γ_ηζ = Σ_i dn_ref[i][1]*u_z_i - N_i*θ_x_i
-    let tying_pts = Mitc3Plus.tying_points();
-    let mut b_cov = [[[0.0_f64; 18]; 2]; 3]; // [tp][cov_comp][dof]
-    for (tp_idx, tp) in tying_pts.iter().enumerate() {
-        let n_at_tp = Mitc3Plus.shape_at(tp.coord);
-        let dn_ref_tp = Mitc3Plus.shape_grad_at(tp.coord); // constant: [[-1,-1],[1,0],[0,1]]
-        for node in 0..n_nodes {
-            let dof_uz = ndp * node + 2;
-            let dof_tx = ndp * node + 3;
-            let dof_ty = ndp * node + 4;
-            b_cov[tp_idx][0][dof_uz] += dn_ref_tp[node][0]; // γ_ξζ ← dn_ref·u_z
-            b_cov[tp_idx][0][dof_ty] += n_at_tp[node]; // γ_ξζ ← N·θ_y
-            b_cov[tp_idx][1][dof_uz] += dn_ref_tp[node][1]; // γ_ηζ ← dn_ref·u_z
-            b_cov[tp_idx][1][dof_tx] -= n_at_tp[node]; // γ_ηζ ← −N·θ_x
-        }
-    }
+    // Covariant shear B-matrix from shared kinematics helper — single source of truth.
+    // See shell_kinematics::shell_kinematics for the construction.
+    let b_cov = kin.b_cov_at_tying_points;
 
     // Sample covariant shears at each tying point from u_loc.
     let mut g_cov_tp = [[0.0_f64; 2]; 3]; // [tp][xi/eta]
@@ -238,15 +201,8 @@ pub fn shell_element_stress(
     };
     let g_cov_ctr = Mitc3Plus.interpolate_assumed_shear(sampled, centroid);
 
-    // Covariant → physical: γ_phys = J2⁻ᵀ · γ_cov
-    // J2 = [[x1-x0, x2-x0], [y1-y0, y2-y0]] in local 2D coords.
-    let jac2 = [[x[1] - x[0], x[2] - x[0]], [y[1] - y[0], y[2] - y[0]]];
-    let det2 = jac2[0][0] * jac2[1][1] - jac2[0][1] * jac2[1][0];
-    // J2⁻ᵀ (= (J2⁻¹)ᵀ)
-    let inv_t = [
-        [jac2[1][1] / det2, -jac2[1][0] / det2],
-        [-jac2[0][1] / det2, jac2[0][0] / det2],
-    ];
+    // Covariant → physical: γ_phys = J2⁻ᵀ · γ_cov (J2⁻ᵀ from shared kinematics)
+    let inv_t = kin.jac2_inv_t;
     let g_phys_xz = inv_t[0][0] * g_cov_ctr.gamma_xi_zeta + inv_t[0][1] * g_cov_ctr.gamma_eta_zeta;
     let g_phys_yz = inv_t[1][0] * g_cov_ctr.gamma_xi_zeta + inv_t[1][1] * g_cov_ctr.gamma_eta_zeta;
 

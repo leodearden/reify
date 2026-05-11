@@ -218,34 +218,9 @@ pub fn shell_element_stiffness(
     let g = e / (2.0 * (1.0 + nu));
     let kappa_g = KAPPA * g;
 
-    // --- Local 2D coordinates of nodes (x_loc = R · (p_i - p0)) ---
-    // e3 component is zero for a flat triangle (by construction of R).
-    let mut xloc = [[0.0_f64; 2]; 3]; // [node][local_x, local_y]
-    for i in 0..3 {
-        let d = [
-            nodes[i][0] - frame.origin[0],
-            nodes[i][1] - frame.origin[1],
-            nodes[i][2] - frame.origin[2],
-        ];
-        xloc[i][0] = r[0][0] * d[0] + r[0][1] * d[1] + r[0][2] * d[2]; // x_loc
-        xloc[i][1] = r[1][0] * d[0] + r[1][1] * d[1] + r[1][2] * d[2]; // y_loc
-    }
-
-    // 2D shape gradients via the standard triangle formula.
-    // For nodes (x0,y0),(x1,y1),(x2,y2) with signed area A_signed = area (positive):
-    //   ∂N_i/∂x = (y_j - y_k) / (2·A_signed)
-    //   ∂N_i/∂y = (x_k - x_j) / (2·A_signed)
-    // cyclic: i→j→k = 0→1→2→0
-    let two_a = 2.0 * area;
-    let x = [xloc[0][0], xloc[1][0], xloc[2][0]];
-    let y = [xloc[0][1], xloc[1][1], xloc[2][1]];
-
-    // dN[i] = [dN_i/dx, dN_i/dy] in local frame
-    let dn = [
-        [(y[1] - y[2]) / two_a, (x[2] - x[1]) / two_a],
-        [(y[2] - y[0]) / two_a, (x[0] - x[2]) / two_a],
-        [(y[0] - y[1]) / two_a, (x[1] - x[0]) / two_a],
-    ];
+    // Shared kinematics: local 2D coords, shape gradients, B_cov, J2⁻ᵀ, det2.
+    let kin = crate::shell_kinematics::shell_kinematics(nodes, &frame);
+    let dn = kin.dn;
 
     // --- 18×18 K_local (assembled in local frame) ---
     let mut k_loc = [[0.0_f64; NDOF]; NDOF];
@@ -338,82 +313,13 @@ pub fn shell_element_stiffness(
     // ---- Transverse-shear K (step 10, implemented here) ----
     // MITC3 assumed-strain interpolation.
     // Physical DOFs per node for shear: u_z (6n+2), θ_x (6n+3), θ_y (6n+4).
-    //
-    // Local 2D Jacobian from reference (ξ,η) to local (x_loc, y_loc):
-    //   J2 = [[∂x/∂ξ, ∂x/∂η], [∂y/∂ξ, ∂y/∂η]]
-    //      = [[x1-x0, x2-x0], [y1-y0, y2-y0]]
-    // Inverse (for 2×2): J2⁻¹ = (1/det) · [[d, -b], [-c, a]] for [[a,b],[c,d]]
-    //
-    // Covariant → physical transform: γ_phys = J2⁻ᵀ · γ_cov
-    let jac2 = [[x[1] - x[0], x[2] - x[0]], [y[1] - y[0], y[2] - y[0]]];
-    let det2 = jac2[0][0] * jac2[1][1] - jac2[0][1] * jac2[1][0];
-    // J2⁻ᵀ: (J2⁻¹)ᵀ — maps covariant (ξ,η) components to physical (x,y)
-    // J2⁻¹ = (1/det) · [[jac2[1][1], -jac2[0][1]], [-jac2[1][0], jac2[0][0]]]
-    // J2⁻ᵀ[i][j] = J2⁻¹[j][i]
-    let inv_t = [
-        [jac2[1][1] / det2, -jac2[1][0] / det2],
-        [-jac2[0][1] / det2, jac2[0][0] / det2],
-    ];
+    let det2 = kin.det2;
+    let inv_t = kin.jac2_inv_t;
 
-    // Covariant shear at a tying point (ξ_t, η_t):
-    // γ_ξζ = Σ_i (∂N_i/∂ξ · u_z_i + N_i · θ_y_i)
-    // γ_ηζ = Σ_i (∂N_i/∂η · u_z_i - N_i · θ_x_i)
-    //
-    // For a given DOF vector u, the contributions per node are in columns
-    // (u_z=DOF2, θ_x=DOF3, θ_y=DOF4).
-    // We build B_s rows as: [γ_cov_xi, γ_cov_eta] × 18-DOF columns.
-    //
-    // But since we need to evaluate B_s at multiple quadrature points and
-    // also sample at tying points, we use the full MITC3 pipeline:
-    //   1. Sample covariant strains at A, B, C.
-    //   2. Interpolate via Mitc3Plus::interpolate_assumed_shear.
-    //   3. Convert to physical via J2⁻ᵀ.
-    //   4. Accumulate K_s += B_sᵀ · (κ·G·t·I₂) · B_s · det2 · w_q.
-    //
-    // Quadrature: 3-point edge-midpoint (A,B,C) with weight 1/6 each.
-    // det2 is the Jacobian determinant (reference → local), weight = 1/6.
-    // The 3 quadrature points coincide with the MITC3 tying points.
-
+    // MITC3 assumed-strain: covariant shear B-matrix from shared kinematics helper.
+    // See shell_kinematics::shell_kinematics for the single source of truth.
+    let b_cov = kin.b_cov_at_tying_points;
     let tying_pts = Mitc3Plus.tying_points();
-    // tying_pts = [A=(0.5,0), B=(0,0.5), C=(0.5,0.5)]
-
-    // Build per-node covariant shear row contributions at each tying point.
-    // B_cov_at_tp[tp_idx][row][dof] where row in {xi_zeta, eta_zeta}, dof in 0..18.
-    // But we only need the per-node block: node n contributes to DOFs {6n+2, 6n+3, 6n+4}.
-
-    // For each quadrature point (= tying point), compute the MITC3 projected
-    // covariant shear B_s_cov (2×18), then apply J2⁻ᵀ to get B_s_phys (2×18).
-
-    // For the assumed-strain, we first build the 3×(DOFs for u_z,θ_x,θ_y)
-    // covariant strains at each tying point.
-    // covariant strain at tying point tp = (xi_t, eta_t):
-    //   γ_ξζ = Σ_i dn_ref[i][0] * u_z_i + N_i(tp) * θ_y_i
-    //   γ_ηζ = Σ_i dn_ref[i][1] * u_z_i - N_i(tp) * θ_x_i
-
-    // TyingShears takes scalar inputs, so we drive it column-by-column: feeding
-    // the per-DOF slice of b_cov[tp][component][dof] and recovering a 2×NDOF row of B_s_cov_qp.
-
-    // B_cov[tp][component][dof]: covariant shear B-matrix at each tying point
-    let mut b_cov = [[[0.0_f64; NDOF]; 2]; 3]; // [tp][cov_component][dof]
-    for (tp_idx, tp) in tying_pts.iter().enumerate() {
-        // Use Mitc3Plus's canonical shape functions — single source of truth
-        // for the reference-triangle layout (ξ, η) → [N_0, N_1, N_2].
-        let n_at_tp = Mitc3Plus.shape_at(tp.coord);
-        // shape_grad_at returns the constant ∂N/∂ξ and ∂N/∂η for each node:
-        // ∇N_0=(−1,−1), ∇N_1=(1,0), ∇N_2=(0,1)
-        let dn_ref_tp = Mitc3Plus.shape_grad_at(tp.coord);
-        for node in 0..NN {
-            let dof_uz = NDP * node + 2;
-            let dof_tx = NDP * node + 3;
-            let dof_ty = NDP * node + 4;
-            // γ_ξζ contribution from this node: dn_ref[node][0]*u_z + N*θ_y
-            b_cov[tp_idx][0][dof_uz] += dn_ref_tp[node][0];
-            b_cov[tp_idx][0][dof_ty] += n_at_tp[node];
-            // γ_ηζ contribution from this node: dn_ref[node][1]*u_z - N*θ_x
-            b_cov[tp_idx][1][dof_uz] += dn_ref_tp[node][1];
-            b_cov[tp_idx][1][dof_tx] -= n_at_tp[node];
-        }
-    }
 
     // For each quadrature point (= tying point, weight=1/6, det2 is Jacobian),
     // compute the MITC3 projected B_s_phys (2×18) and accumulate K_s.
