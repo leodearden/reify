@@ -46,10 +46,15 @@ pub(crate) fn build_trait_registry<'a>(
 /// Run phase-8 (traits). Returns the compile-time `trait_names` set used by
 /// downstream phases for `Type::TraitObject` resolution.
 ///
+/// The `trait_names` and `structure_names` sets are pre-computed by
+/// `names_phase::build_resolution_names` (which runs before `phase_functions`)
+/// and stored on `ctx`. This phase reads them from `ctx` rather than
+/// rebuilding, so both `phase_functions` and `phase_traits` consume the same
+/// shared sets.
+///
 /// Steps, in order:
-/// 1. Build `trait_names` from local trait decls + every prelude trait. This
-///    happens BEFORE compiling traits so trait members whose types reference
-///    other traits can resolve their siblings.
+/// 1. Read `trait_names` and `structure_names` from `ctx` (pre-computed by
+///    `names_phase::build_resolution_names` before `phase_functions`).
 /// 2. Compile each local trait via [`compile_trait`] and push into
 ///    `ctx.trait_defs`.
 /// 3. Build a phase-local `trait_registry` (prelude first, then local
@@ -60,41 +65,13 @@ pub(crate) fn phase_traits(
     prelude: &[&CompiledModule],
     trait_refs: &[&TraitDecl],
 ) -> HashSet<String> {
-    // 1. Build the set of trait names known at compile time so the type resolver
-    //    can resolve `param m : Material` (trait name) to Type::TraitObject(...).
-    //
-    //    Collected from local trait declarations (syntax) and prelude trait defs
-    //    (already compiled) BEFORE `compile_trait` runs, so trait members whose
-    //    types reference other traits can resolve their siblings. Trait-name
-    //    resolution is last in precedence (builtins → type params → alias → trait)
-    //    so existing name-reuse stays backward compatible.
-    let trait_names: HashSet<String> = trait_refs
-        .iter()
-        .map(|t| t.name.clone())
-        .chain(
-            prelude
-                .iter()
-                .flat_map(|m| m.trait_defs.iter().map(|t| t.name.clone())),
-        )
-        .collect();
-
-    // Build the set of structure/occurrence names known at compile time so trait
-    // members whose types reference a first-class structure (e.g. the canonical
-    // stdlib `Material` struct from task 1876) resolve to Type::StructureRef
-    // rather than falling through to "unresolved type".  Collected from local
-    // structure/occurrence decls (already in `ctx.seen_entity_names` from
-    // pre_pass::collect_decl_refs) and every prelude module's exported templates.
-    let structure_names: HashSet<String> = ctx
-        .seen_entity_names
-        .iter()
-        .filter(|(_, (_, kind))| *kind == "structure" || *kind == "occurrence")
-        .map(|(name, _)| name.clone())
-        .chain(
-            prelude
-                .iter()
-                .flat_map(|m| m.templates.iter().map(|t| t.name.clone())),
-        )
-        .collect();
+    // 1. The trait_names and structure_names sets were pre-computed by
+    //    names_phase::build_resolution_names (which ran before phase_functions).
+    //    Move trait_names out of ctx (no other phase reads resolution_trait_names
+    //    after phase_traits, so cloning would be wasteful); borrow structure_names
+    //    in place.
+    let trait_names = std::mem::take(&mut ctx.resolution_trait_names);
+    let structure_names = &ctx.resolution_structure_names;
 
     // 2. Compile each trait (depends on resolution_enums for enum type resolution in params).
     for trait_decl in trait_refs {
@@ -102,7 +79,7 @@ pub(crate) fn phase_traits(
             trait_decl,
             &ctx.resolution_enums,
             &ctx.alias_registry,
-            &structure_names,
+            structure_names,
             &trait_names,
             &mut ctx.diagnostics,
         );

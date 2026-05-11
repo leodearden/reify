@@ -309,6 +309,12 @@ pub fn compile_with_prelude_context(
         );
     }
 
+    compile_builder::names_phase::build_resolution_names(
+        &mut compile_ctx,
+        prelude_refs,
+        &decl_refs.trait_refs,
+    );
+
     compile_builder::functions_phase::phase_functions(
         &mut compile_ctx,
         prelude_refs,

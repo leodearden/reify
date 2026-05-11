@@ -10,6 +10,7 @@ pub(crate) mod fields_phase;
 pub(crate) mod forall_walk;
 pub(crate) mod functions_phase;
 pub(crate) mod hash;
+pub(crate) mod names_phase;
 pub(crate) mod post_passes;
 pub(crate) mod pre_pass;
 pub(crate) mod shadow_lint;

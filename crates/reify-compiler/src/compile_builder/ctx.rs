@@ -11,7 +11,7 @@
 //! phase-local ref collections (`fn_refs`, `trait_refs`, etc.) flow as explicit
 //! args from the orchestrator to the phases that need them.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use reify_syntax::ParsedModule;
 use reify_types::{ContentHash, Diagnostic, DiagnosticLabel, SourceSpan};
@@ -59,6 +59,19 @@ pub(crate) struct CompilationCtx {
     /// prelude functions via [`crate::merge_prelude_functions`]. Populated by
     /// `functions_phase::phase_functions`.
     pub(crate) resolution_functions: Vec<CompiledFunction>,
+    /// Trait names known at compile time: local trait declarations + prelude
+    /// trait defs. Populated by `names_phase::build_resolution_names` BEFORE
+    /// `phase_functions` so fn-signature type resolution can resolve trait names
+    /// to `Type::TraitObject`. Consumed by both `phase_functions` (via
+    /// `compile_function`) and `phase_traits` (replacing its previously-local
+    /// construction).
+    pub(crate) resolution_trait_names: HashSet<String>,
+    /// Structure/occurrence names known at compile time: local structure and
+    /// occurrence declarations + prelude templates. Populated by
+    /// `names_phase::build_resolution_names` BEFORE `phase_functions` so
+    /// fn-signature type resolution can resolve structure names to
+    /// `Type::StructureRef`. Consumed by both `phase_functions` and `phase_traits`.
+    pub(crate) resolution_structure_names: HashSet<String>,
 }
 
 impl CompilationCtx {
@@ -83,6 +96,8 @@ impl CompilationCtx {
             alias_registry: TypeAliasRegistry::new(),
             resolution_enums: Vec::new(),
             resolution_functions: Vec::new(),
+            resolution_trait_names: HashSet::new(),
+            resolution_structure_names: HashSet::new(),
         }
     }
 
@@ -322,6 +337,14 @@ mod tests {
         assert!(
             ctx.resolution_functions.is_empty(),
             "resolution_functions should be empty"
+        );
+        assert!(
+            ctx.resolution_trait_names.is_empty(),
+            "resolution_trait_names should be empty"
+        );
+        assert!(
+            ctx.resolution_structure_names.is_empty(),
+            "resolution_structure_names should be empty"
         );
         assert!(
             ctx.seen_entity_names.is_empty(),
