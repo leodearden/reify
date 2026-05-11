@@ -120,207 +120,181 @@ pub fn propagate_freshness_only(
         let dependents: Vec<NodeId> = reverse_index.dependents_of(&cell).iter().cloned().collect();
 
         for dependent in dependents {
-            let current = cache.freshness(&dependent);
-
-            // Failed-skip guard (cache.rs:545-566 mark_failed contract;
-            // arch §9.2 lines 880-890): a Failed node is a terminal
-            // chain-root state. Re-deriving it via the §7.2/§9.2 helper
-            // would silently flip it to Final/Intermediate/Pending based
-            // on its inputs, destroying the chain-root invariant
-            // (`pending_cause` reader contract requires Failed to read
-            // None). However, downstream propagation MUST continue —
-            // dependents of Failed b correctly become Pending with b as
-            // the chain root, so we DO push the cell onto the frontier
-            // before continuing. The `continue` MUST come AFTER
-            // `frontier.push_back` so that the inner derivation step at
-            // c (which sees Failed b as input) still fires.
-            if matches!(current, Freshness::Failed { .. }) {
-                if let NodeId::Value(vcid) = &dependent {
-                    frontier.push_back(vcid.clone());
-                }
-                continue;
-            }
-
-            // Cause-bearing variant (arch §9.2 lines 880-890): returns the
-            // upstream `NodeId` chain root for a Pending output. We forward
-            // `cause` through `mark_pending_with_cause` so the §9.2
-            // diagnostic chain is preserved across freshness-only walks
-            // (matching `evaluate_let_bindings`'s pre-eval Pending gate).
-            // still_refining=false: this walk runs after the value-mode
-            // refinement pass has settled, so derivation must consult actual
-            // input freshnesses, not the §7.2 refinement gate that
-            // short-circuits to Intermediate{generation}.
-            let (new, cause) =
-                cache.derive_output_freshness_for_node_with_cause(&dependent, false, generation);
-
-            // Freshness early cutoff (arch §3.5 lines 432-436): if the
-            // newly-derived freshness equals the current freshness the walk
-            // halts at this node and does NOT propagate to its dependents.
-            //
-            // The strict `==` comparison is correct for non-Pending
-            // outputs because `Freshness` derives `PartialEq`, so a single
-            // `generation` parameter is threaded through the whole walk:
-            // an Intermediate{1} input that produces an Intermediate{1}
-            // output cuts off, but an Intermediate{1} → Intermediate{2}
-            // change would not (yielding a legitimate generation-bumping
-            // transition that *should* propagate). DO NOT WEAKEN this
-            // comparison for Final/Intermediate without re-deriving the
-            // §7.2 truth table.
-            //
-            // Pending requires a separate cutoff (see below) because the
-            // pure helper returns `Pending { last_substantive:
-            // ResultRef::none() }` while the canonical writers replace
-            // `last_substantive` with `ResultRef::of_hash(entry.result_hash)`.
-            // A naive `new == current` check therefore never fires for
-            // already-Pending dependents, which would re-bump
-            // `pending_transition_count` on every walk and break the
-            // fixed-point property under repeated invocation.
-            if new == current {
-                continue;
-            }
-
-            // Pending idempotency cutoff: when both the derived freshness
-            // and the current freshness are Pending and the diagnostic
-            // chain root (`pending_cause`) matches what the writer would
-            // record, the canonical Pending writers would only re-record
-            // the same final state while bumping `pending_transition_count`
-            // and re-cloning `pending_cause`. Short-circuit before invoking
-            // the writer so the walk remains a true fixed-point operator
-            // for Pending transitions, matching its behavior for the
-            // Final/Intermediate cases above.
-            //
-            // Why compare `pending_cause` instead of `last_substantive`?
-            // `last_substantive` cannot be compared against the pure
-            // helper's output (`ResultRef::none()`) because the writer
-            // replaces it with `ResultRef::of_hash(entry.result_hash)`.
-            // `pending_cause` IS comparable: a Pending entry written by
-            // `mark_pending_with_cause(c)` carries `Some(c)`, and one
-            // written by `mark_pending` carries `None` — exactly the same
-            // values the cause-bearing helper returns. So if the stored
-            // cause matches the derived cause AND both freshnesses are
-            // Pending, we know the writer's effect would be a no-op
-            // modulo the counter bump.
-            if matches!(new, Freshness::Pending { .. })
-                && matches!(current, Freshness::Pending { .. })
-                && cache.pending_cause(&dependent) == cause
-            {
-                continue;
-            }
-
-            // Route Pending writes through the canonical Pending writers so
-            // they (a) capture `last_substantive: ResultRef::of_hash(...)`
-            // from the entry's existing `result_hash`, and (b) record the
-            // §9.2 chain root via `pending_cause`. Other variants
-            // (Final / Intermediate) go through `set_freshness` directly.
-            // Failed is never written by the walk — the cause-bearing
-            // helper never returns Failed (only Final / Intermediate /
-            // Pending), so the `_ =>` arm cannot in practice receive
-            // Failed.
-            let wrote = match &new {
-                Freshness::Pending { .. } => match cause.clone() {
-                    Some(c) => cache.mark_pending_with_cause(&dependent, c),
-                    None => cache.mark_pending(&dependent),
-                },
-                _ => cache.set_freshness(&dependent, new.clone()),
-            };
-
-            if wrote {
-                updated.insert(dependent.clone());
-                if let NodeId::Value(vcid) = &dependent {
-                    frontier.push_back(vcid.clone());
-                }
-            }
-            // Absent-entry guard is actually the early-cutoff branch above:
-            // `freshness()` returns Final by default for absent nodes
-            // (cache.rs:617-621), the §7.2/§9.2 helper returns (Final, None)
-            // when iterating zero inputs, so `new == current == Final` fires
-            // the cutoff before any writer is invoked. This `if wrote` arm is
-            // belt-and-suspenders defense in case a future code path bypasses
-            // that cutoff for an absent dependent.
+            let cutoffs_passed = process_dependent_freshness(
+                cache,
+                &dependent,
+                &mut frontier,
+                &mut updated,
+                generation,
+                /* push_value_on_all_branches */ false,
+            );
 
             // P3.3 step-16: edge #12 — Compute → output_value_cells fan-out.
-            // When `dependent` is a ComputeNode whose freshness was just
-            // (re-)derived, each of its declared `output_value_cells` must
-            // also have its freshness re-derived: arch §5 defines the
-            // ComputeNode as the writer of those VCs, so when C's freshness
-            // changes the VCs it writes need their side-table updated too.
-            //
-            // This block only runs when Compute(C)'s freshness actually
-            // transitioned: it sits BELOW the Failed-skip (line ~137),
-            // freshness early-cutoff (line ~178), and Pending idempotency
-            // cutoff (line ~203), each of which `continue`s past the
-            // remainder of the per-dependent loop body. If C's derived
-            // freshness equals its current freshness the fan-out is skipped
-            // — the outputs are coupled to C's freshness via this walk, so
-            // unchanged C implies unchanged outputs. The push onto the
-            // frontier mirrors `dirty.rs:49-56`'s edge-#12 fan-out,
-            // ensuring further downstream dependents (constraints reading
-            // the output VC, other compute nodes consuming it) propagate
-            // the same way as for any standard value-cell write.
-            if let NodeId::Compute(cn_id) = &dependent
+            // Runs only when `cutoffs_passed` is true: the ComputeNode's
+            // freshness actually transitioned (passed Failed-skip,
+            // freshness-early, and Pending-idempotency cutoffs). If C's
+            // derived freshness equals its current freshness, the fan-out
+            // is skipped — the outputs are coupled to C's freshness via
+            // this walk, so unchanged C implies unchanged outputs. The
+            // per-output processing reuses `process_dependent_freshness`
+            // (with `push_value_on_all_branches=true` so the more
+            // conservative "always push" semantics mirror `dirty.rs:49-56`).
+            if cutoffs_passed
+                && let NodeId::Compute(cn_id) = &dependent
                 && let Some(cn_data) = graph.compute_nodes.get(cn_id)
             {
                 // Clone the list so the immutable borrow on `graph` drops
                 // before any `&mut cache` write inside the inner loop.
                 let outputs = cn_data.output_value_cells.clone();
                 for out_vc in outputs {
-                    let out_node = NodeId::Value(out_vc.clone());
-                    let out_current = cache.freshness(&out_node);
-
-                    // Failed-skip: terminal chain-root state, never a
-                    // write target. Forward downstream via the frontier
-                    // so dependents become Pending with the Failed VC
-                    // as chain root (matches the main loop at lines
-                    // 130-135).
-                    if matches!(out_current, Freshness::Failed { .. }) {
-                        frontier.push_back(out_vc);
-                        continue;
-                    }
-
-                    let (out_new, out_cause) = cache
-                        .derive_output_freshness_for_node_with_cause(
-                            &out_node, false, generation,
-                        );
-
-                    // Freshness early cutoff — same contract as the
-                    // main per-dependent block.
-                    if out_new == out_current {
-                        frontier.push_back(out_vc);
-                        continue;
-                    }
-
-                    // Pending idempotency cutoff — same contract as
-                    // the main per-dependent block.
-                    if matches!(out_new, Freshness::Pending { .. })
-                        && matches!(out_current, Freshness::Pending { .. })
-                        && cache.pending_cause(&out_node) == out_cause
-                    {
-                        frontier.push_back(out_vc);
-                        continue;
-                    }
-
-                    let out_wrote = match &out_new {
-                        Freshness::Pending { .. } => match out_cause.clone() {
-                            Some(c) => cache.mark_pending_with_cause(&out_node, c),
-                            None => cache.mark_pending(&out_node),
-                        },
-                        _ => cache.set_freshness(&out_node, out_new.clone()),
-                    };
-
-                    if out_wrote {
-                        updated.insert(out_node);
-                    }
-                    // Always push onto frontier so downstream dependents
-                    // (constraints / let-bindings / further compute
-                    // nodes reading this VC) propagate even when the
-                    // VC's own freshness didn't actually change.
-                    frontier.push_back(out_vc);
+                    let out_node = NodeId::Value(out_vc);
+                    process_dependent_freshness(
+                        cache,
+                        &out_node,
+                        &mut frontier,
+                        &mut updated,
+                        generation,
+                        /* push_value_on_all_branches */ true,
+                    );
                 }
             }
         }
     }
 
     updated
+}
+
+/// Run the freshness-derivation step for a single dependent: read current
+/// freshness, derive new freshness, apply the three cutoffs (Failed-skip,
+/// freshness-early, Pending-idempotency), then route the write through
+/// the canonical writers and record `updated` / `frontier` per the
+/// established propagation rules.
+///
+/// Returns `true` when the canonical writer was invoked — i.e. all three
+/// cutoffs were bypassed. The "absent-entry" belt-and-suspenders case
+/// (writer returns false; see cache.rs:617-621) counts as `true` because
+/// `new != current` did hold. Callers use this to gate further fan-out
+/// (only the main per-dependent loop does; the output-VC inner loop
+/// discards the return value).
+///
+/// `push_value_on_all_branches`:
+/// - `false` (main per-dependent loop): push the dependent (if it's a
+///   Value) onto the frontier only on Failed-skip or successful canonical
+///   write. The cutoff branches do not push, matching the original
+///   `continue`-without-push behaviour at the top-level loop.
+/// - `true` (output-VC fan-out): push the dependent (always a Value) onto
+///   the frontier in *every* branch — Failed, both cutoffs, and the
+///   not-wrote case. Mirrors `dirty.rs:49-56` so downstream consumers of
+///   the output VC always get a chance to re-derive even when this VC's
+///   own freshness didn't change.
+///
+/// # Cross-references
+///
+/// - Failed-skip contract: arch §9.2 lines 880-890 + cache.rs:545-566
+///   (`mark_failed`'s chain-root invariant). Re-deriving Failed via the
+///   §7.2/§9.2 helper would silently flip it to Final/Intermediate/
+///   Pending based on its inputs; we never write to a Failed node.
+/// - Freshness early cutoff: arch §3.5 lines 432-436. The strict `==` is
+///   correct because `Freshness` derives `PartialEq` and a single
+///   `generation` parameter threads through the whole walk.
+/// - Pending idempotency cutoff: locks in the fixed-point property under
+///   repeated invocation. Compare `pending_cause` rather than
+///   `last_substantive` because the canonical writers replace
+///   `last_substantive` with `ResultRef::of_hash(entry.result_hash)` —
+///   which the §9.2 helper never returns.
+fn process_dependent_freshness(
+    cache: &mut CacheStore,
+    dependent: &NodeId,
+    frontier: &mut VecDeque<ValueCellId>,
+    updated: &mut HashSet<NodeId>,
+    generation: u64,
+    push_value_on_all_branches: bool,
+) -> bool {
+    let current = cache.freshness(dependent);
+
+    // Failed-skip: terminal chain-root state. Forward downstream via the
+    // frontier so dependents become Pending-with-cause-rooted-at-Failed
+    // (matches the canonical Pending writer's invariant). The push MUST
+    // come before the return so the inner derivation at any downstream
+    // node, which sees Failed as input, still fires.
+    if matches!(current, Freshness::Failed { .. }) {
+        if let NodeId::Value(vcid) = dependent {
+            frontier.push_back(vcid.clone());
+        }
+        return false;
+    }
+
+    // still_refining=false: this walk runs after value-mode refinement
+    // has settled, so derivation consults actual input freshnesses, not
+    // the §7.2 refinement gate that short-circuits to Intermediate{generation}.
+    let (new, cause) =
+        cache.derive_output_freshness_for_node_with_cause(dependent, false, generation);
+
+    // Freshness early cutoff: identical comparison for Final/Intermediate
+    // (PartialEq + thread-shared generation). Pending requires the
+    // separate cutoff below because the helper returns
+    // `Pending { last_substantive: ResultRef::none() }` while the
+    // writer replaces it with `ResultRef::of_hash(...)`, so naive `==`
+    // never fires for already-Pending dependents and would re-bump
+    // `pending_transition_count` on every walk.
+    if new == current {
+        if push_value_on_all_branches
+            && let NodeId::Value(vcid) = dependent
+        {
+            frontier.push_back(vcid.clone());
+        }
+        return false;
+    }
+
+    // Pending idempotency cutoff: both freshnesses Pending AND
+    // `pending_cause` matches what the writer would record ⇒ writer's
+    // effect would be a no-op modulo the counter bump. Short-circuit to
+    // keep the walk a true fixed-point operator for Pending transitions.
+    if matches!(new, Freshness::Pending { .. })
+        && matches!(current, Freshness::Pending { .. })
+        && cache.pending_cause(dependent) == cause
+    {
+        if push_value_on_all_branches
+            && let NodeId::Value(vcid) = dependent
+        {
+            frontier.push_back(vcid.clone());
+        }
+        return false;
+    }
+
+    // Route Pending writes through the canonical Pending writers so they
+    // (a) capture `last_substantive: ResultRef::of_hash(...)` from the
+    // entry's `result_hash`, and (b) record the §9.2 chain root via
+    // `pending_cause`. Other variants (Final / Intermediate) go through
+    // `set_freshness` directly. Failed is never returned by the §9.2
+    // helper, so the `_ =>` arm cannot in practice receive it.
+    let wrote = match &new {
+        Freshness::Pending { .. } => match cause.clone() {
+            Some(c) => cache.mark_pending_with_cause(dependent, c),
+            None => cache.mark_pending(dependent),
+        },
+        _ => cache.set_freshness(dependent, new.clone()),
+    };
+
+    if wrote {
+        updated.insert(dependent.clone());
+        if let NodeId::Value(vcid) = dependent {
+            frontier.push_back(vcid.clone());
+        }
+    } else if push_value_on_all_branches
+        && let NodeId::Value(vcid) = dependent
+    {
+        // Belt-and-suspenders: the §7.2/§9.2 helper returns (Final, None)
+        // for an absent dependent and `freshness()` returns Final by
+        // default (cache.rs:617-621), so `new == current == Final` fires
+        // the early cutoff before any writer is invoked — this branch is
+        // unreachable in practice. Still push when the caller requested
+        // "always push" to preserve the conservative output-VC semantics
+        // against any future code path that bypasses that cutoff.
+        frontier.push_back(vcid.clone());
+    }
+
+    true
 }
 
 #[cfg(test)]
