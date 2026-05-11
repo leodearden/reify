@@ -425,6 +425,17 @@ pub trait PersistentlyCacheable: Sized {
     /// zeros for any `f64` fields).
     fn deserialize_from_reader(r: &mut impl Read) -> io::Result<Self>;
 
+    /// Uncompressed body byte count, used to populate
+    /// [`CacheEntryHeader::byte_size`] so the value is reportable by
+    /// `cache stats` without decompressing the body.
+    ///
+    /// MUST equal the number of bytes a caller would see after decompressing
+    /// the output of [`serialize_to_writer`](Self::serialize_to_writer).
+    ///
+    /// No default implementation — every cacheable type must answer. Pinned by
+    /// `write_entry_populates_byte_size_field_with_actually_uncompressed_body_byte_count`.
+    fn uncompressed_byte_size(&self) -> u64;
+
     /// Solve time in milliseconds, exposed to the cache layer for
     /// cost-weighted LRU eviction.
     fn solve_time_ms(&self) -> u64;
@@ -754,6 +765,32 @@ impl PersistentlyCacheable for ElasticResult {
         })
     }
 
+    fn uncompressed_byte_size(&self) -> u64 {
+        // The uncompressed body is a zstd frame wrapping:
+        //   1. bincode 1.3 fixint-LE encoded ElasticResultHeader (37 bytes; pinned
+        //      by `elastic_result_header_bincode_encoding_matches_pinned_hex_literal`).
+        //   2. displacement slab: displacement.len() * 8 bytes (little-endian f64).
+        //   3. stress slab: stress.len() * 8 bytes (little-endian f64).
+        //
+        // `bincode::serialized_size` is used rather than a hardcoded 37-byte
+        // magic constant so that future ElasticResultHeader field additions
+        // automatically update the uncompressed size without a manual edit.
+        // bincode 1.3 fixint-LE encoding of a struct with no variable-length fields
+        // cannot fail in practice — the `.unwrap_or(0)` is unreachable for the
+        // current struct shape (only fixed-size fields: u64, bool, u32, u64, u64, u64).
+        let header = ElasticResultHeader {
+            max_von_mises_bits: self.max_von_mises.to_bits(),
+            converged: self.converged,
+            iterations: self.iterations,
+            solve_time_ms: self.solve_time_ms,
+            displacement_len: self.displacement.len() as u64,
+            stress_len: self.stress.len() as u64,
+        };
+        let header_bytes = bincode::serialized_size(&header).unwrap_or(0);
+        let slab_bytes = 8 * (self.displacement.len() as u64 + self.stress.len() as u64);
+        header_bytes + slab_bytes
+    }
+
     fn solve_time_ms(&self) -> u64 {
         self.solve_time_ms
     }
@@ -829,8 +866,14 @@ pub fn write_entry<V: PersistentlyCacheable>(
         .prefix(".tmp.")
         .tempfile_in(&sd)?;
 
-    // Pre-buffer the compressed body so byte_size is known before writing
-    // the header (no seek-back required).
+    // Pre-buffer the compressed body so we can bulk-write it in one syscall
+    // after the header.
+    //
+    // NOTE: header.byte_size is the UNCOMPRESSED body byte count (per
+    // CacheEntryHeader doc, lines 195-196 / 210-211), supplied by
+    // value.uncompressed_byte_size() — NOT body_buf.len(), which is the
+    // compressed length and would make the field redundant with
+    // `file_size - ENTRY_HEADER_ENCODED_LEN`.
     let mut body_buf: Vec<u8> = Vec::new();
     value.serialize_to_writer(&mut body_buf)?;
 
@@ -847,7 +890,7 @@ pub fn write_entry<V: PersistentlyCacheable>(
         engine_version_hash: engine_bytes,
         input_hash: input_bytes,
         solve_time_ms: value.solve_time_ms(),
-        byte_size: body_buf.len() as u64,
+        byte_size: value.uncompressed_byte_size(),
         written_at,
     };
 
