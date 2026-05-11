@@ -43,6 +43,14 @@ use xxhash_rust::xxh3::xxh3_128;
 /// listed in `build.rs` are **not** passed through this filter (filtering only
 /// happens inside the directory-enumeration branch of `walk_recursive`).
 ///
+/// **Root-directory bypass:** When `walk_contributor` is called with a directory
+/// `root`, that root path itself is never filtered — only its *children* are
+/// checked.  If a caller ever passes a root directory whose final component
+/// matches a debris pattern (e.g. `/tmp/.DS_Store/`) it will still be entered
+/// and its contents walked.  This is intentional: the filter's purpose is to
+/// exclude transient files that appear *alongside* real sources, not to gate
+/// which top-level contributors the caller may name.
+///
 /// # Denylist rationale
 ///
 /// This is a denylist, not an allowlist.  An allowlist would silently exclude

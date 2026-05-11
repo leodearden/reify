@@ -1403,13 +1403,17 @@ mod tests {
     /// different hash → spurious cache miss + spurious `cargo:rerun-if-changed`
     /// triggers.
     ///
-    /// Debris files tested:
+    /// Debris files tested (one entry per `is_editor_debris` branch):
     ///   `.foo.swp`       — vim swap (hidden, extension .swp)
-    ///   `bar.swo`        — vim swap (extension .swo)
-    ///   `baz.orig`       — merge-conflict residue (extension .orig)
+    ///   `bar.swo`        — vim swap alt (extension .swo)
+    ///   `baz.swn`        — vim swap variant (extension .swn)
+    ///   `qux.orig`       — merge-conflict residue (extension .orig)
     ///   `quux.bk`        — backup (extension .bk)
-    ///   `.DS_Store`      — macOS metadata (exact name)
+    ///   `.DS_Store`      — macOS metadata (exact name, case-insensitive)
+    ///   `thumbs.db`      — Windows thumbnail cache (exact name, case-insensitive)
+    ///   `desktop.ini`    — Windows folder settings (exact name, case-insensitive)
     ///   `emacs_backup~`  — Emacs backup (trailing tilde)
+    ///   `FOO.SWP`        — uppercase extension (exercises to_lowercase path)
     #[test]
     fn walk_contributor_filters_editor_debris_so_two_developers_produce_the_same_hash() {
         let tmpdir = tempfile::TempDir::new().expect("must create tempdir");
@@ -1421,13 +1425,23 @@ mod tests {
 
         // Editor debris files that must be excluded from the hash and from
         // cargo:rerun-if-changed directives.
+        //
+        // Each entry exercises a distinct branch of `is_editor_debris`:
+        //   .swp / .swo / .swn / .orig / .bk  — extension-based matches
+        //   .DS_Store / thumbs.db / desktop.ini — exact-name matches (case-insensitive)
+        //   emacs_backup~                        — trailing-tilde match
+        //   FOO.SWP                              — case-insensitive extension match
         let debris_names = [
             ".foo.swp",
             "bar.swo",
-            "baz.orig",
+            "baz.swn",       // vim swap variant (.swn)
+            "qux.orig",
             "quux.bk",
             ".DS_Store",
+            "thumbs.db",     // Windows thumbnail cache (exact-name)
+            "desktop.ini",   // Windows folder settings (exact-name)
             "emacs_backup~",
+            "FOO.SWP",       // uppercase extension — exercises to_lowercase path
         ];
         for name in &debris_names {
             std::fs::write(root.join(name), b"DEBRIS - must not appear in hash")
@@ -1463,10 +1477,14 @@ mod tests {
              leaked: \
              .swp (vim swap), \
              .swo (vim swap alt), \
+             .swn (vim swap variant), \
              .orig (merge residue), \
              .bk (backup), \
              .DS_Store (macOS metadata), \
-             trailing ~ (Emacs backup)"
+             thumbs.db (Windows thumbnail cache), \
+             desktop.ini (Windows folder settings), \
+             trailing ~ (Emacs backup), \
+             FOO.SWP (uppercase extension — case-insensitive path)"
         );
     }
 
@@ -1524,6 +1542,20 @@ mod tests {
             "symlink target bytes 'DO NOT INCLUDE' must not appear in walk.parts; \
              walk_recursive is following the symlink via is_file() instead of \
              using symlink_metadata()"
+        );
+
+        // The symlink's own path key must also not appear in parts.
+        // A future regression might frame the symlink's path-key bytes (e.g.
+        // `b"root/link.rs"`) without reading the target — the target-bytes check
+        // above would still pass, but the hash would silently diverge.
+        let path_key_leaked = walk.parts.iter().any(|chunk| {
+            chunk.windows(b"link.rs".len()).any(|w| w == b"link.rs")
+        });
+        assert!(
+            !path_key_leaked,
+            "symlink path key bytes 'link.rs' must not appear in walk.parts; \
+             a regression may be framing the symlink's path key without reading \
+             its target — the hash would still diverge across machines"
         );
 
         // The walk hash must equal the hash of [real.rs path, real.rs content].
