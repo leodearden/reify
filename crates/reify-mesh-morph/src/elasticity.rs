@@ -160,6 +160,22 @@ pub enum ElasticityFailure {
     /// `prescribed_positions` routes through `InvalidNodeIndex` (the
     /// prescribed-positions bounds-check fires first), not this variant.
     NoElementsForPrescribedDisplacements,
+
+    /// `old_mesh.tet_indices.len()` is not a multiple of 4. Each tet is
+    /// identified by exactly 4 node indices, so a length that is not a
+    /// multiple of 4 has stray 1–3 trailing entries that would be silently
+    /// dropped by the FEA pipeline's `chunks_exact(4)` assembly loop.
+    ///
+    /// Surfacing this upfront treats it as a likely caller data-corruption
+    /// signal rather than swallowing it. Payload `len` carries the offending
+    /// length for diagnostic logging without re-walking the slice.
+    ///
+    /// Mirrors the structured-failure pattern of
+    /// `NoElementsForPrescribedDisplacements`: don't silently drop user input.
+    MalformedTetIndices {
+        /// The offending `tet_indices.len()` (not a multiple of 4).
+        len: usize,
+    },
 }
 
 // ── elasticity_morph / elasticity_morph_with_cg_opts ─────────────────────────
@@ -259,13 +275,27 @@ pub fn elasticity_morph_with_cg_opts(
     }
 
     // ── Pipeline ─────────────────────────────────────────────────────────────
+
+    // Structural-shape check: reject non-multiple-of-4 lengths upfront, before
+    // computing n_nodes or walking the index values. A malformed length is a
+    // more fundamental violation than a single out-of-range index — structure
+    // first, then semantics. Prevents the chunks_exact(4) silent-drop pathology
+    // for in-range tails (e.g. [0,1,2,3, 0,1,2] would otherwise quietly discard
+    // the trailing triple). The existing bounds-check loop below becomes a pure
+    // semantic validator once this gate is in place.
+    if old_mesh.tet_indices.len() % 4 != 0 {
+        return Err(ElasticityFailure::MalformedTetIndices {
+            len: old_mesh.tet_indices.len(),
+        });
+    }
+
     let n_nodes = old_mesh.vertices.len() / 3;
 
-    // Validate tet_indices upfront — overflow-safe check mirrors the
-    // prescribed_positions validation above. Returns the first offending index.
-    // Intentionally walks the full slice (not chunks_exact(4)) so stray tail
-    // entries when tet_indices.len() % 4 != 0 are caught here rather than
-    // silently dropped by the FEA pipeline's chunks_exact(4) loop below.
+    // Validates every tet-index value is in-range. Length-shape is already
+    // validated upfront by the malformed-length check above, so this loop only
+    // checks index bounds. Walks the full slice (equivalent to `chunks_exact(4)`
+    // here since length is guaranteed to be a multiple of 4) — kept as a flat
+    // loop for clarity.
     for tet_idx in &old_mesh.tet_indices {
         if (*tet_idx as usize) >= n_nodes {
             return Err(ElasticityFailure::InvalidTetIndex(*tet_idx));
@@ -926,8 +956,16 @@ mod tests {
         let not_converged = ElasticityFailure::SolverNotConverged { iterations: 1000 };
         let invalid_tet = ElasticityFailure::InvalidTetIndex(7);
         let no_elements = ElasticityFailure::NoElementsForPrescribedDisplacements;
+        let malformed = ElasticityFailure::MalformedTetIndices { len: 12 };
 
-        for failure in [&invalid, &unsupported, &not_converged, &invalid_tet, &no_elements] {
+        for failure in [
+            &invalid,
+            &unsupported,
+            &not_converged,
+            &invalid_tet,
+            &no_elements,
+            &malformed,
+        ] {
             match failure {
                 ElasticityFailure::InvalidNodeIndex(idx) => {
                     assert_eq!(*idx, 5);
@@ -944,6 +982,9 @@ mod tests {
                 ElasticityFailure::NoElementsForPrescribedDisplacements => {
                     // No payload to assert — unit variant. The arm's presence
                     // in this no-wildcard match is the verification.
+                }
+                ElasticityFailure::MalformedTetIndices { len } => {
+                    assert_eq!(*len, 12);
                 }
             }
         }
@@ -1142,22 +1183,24 @@ mod tests {
         }
     }
 
-    // ── task 3362 amend: non-multiple-of-4 tail index validation ─────────────
+    // ── task 3449: non-multiple-of-4 tet_indices — precedence ordering ────────
 
-    /// The upfront tet_indices validation walks the **full slice**, not
-    /// `chunks_exact(4)`. This means a stray out-of-range index in the
-    /// non-multiple-of-4 tail is caught and returned as `InvalidTetIndex`
-    /// rather than silently dropped by the FEA pipeline's `chunks_exact(4)`.
+    /// Pins **precedence ordering**: when `tet_indices.len() % 4 != 0` AND the
+    /// tail contains an out-of-range index, the malformed-length check fires
+    /// first and `MalformedTetIndices` is returned — NOT `InvalidTetIndex`.
     ///
-    /// This pins the deliberate full-slice-walk behaviour: a future refactor
-    /// that switches to `chunks_exact` for the validation loop would silently
-    /// change this semantics and this test would catch it.
+    /// Guards against a future refactor that places the bounds-check before the
+    /// malformed-length check, which would silently invert the precedence and
+    /// break the all-in-range tail case (covered by the companion test
+    /// `elasticity_morph_with_malformed_tet_indices_length_returns_malformed_tet_indices`).
     #[test]
-    fn elasticity_morph_with_out_of_range_index_in_non_multiple_of_4_tail_returns_invalid_tet_index()
+    fn elasticity_morph_with_malformed_tet_indices_length_and_out_of_range_tail_returns_malformed_tet_indices()
     {
         // 4 nodes → n_nodes == 4.
         // tet_indices = [0, 1, 2, 3, 99]: one complete tet (indices 0..3)
-        // plus a stray tail entry (index 99 >= 4) — len % 4 == 1.
+        // plus a stray tail entry (index 99 >= 4) — len == 5, 5 % 4 == 1.
+        // The malformed-length check fires first (len % 4 != 0), returning
+        // MalformedTetIndices { len: 5 } before the bounds-check loop sees 99.
         let mesh = VolumeMesh {
             vertices: vec![
                 0.0_f32, 0.0, 0.0, // node 0
@@ -1165,18 +1208,16 @@ mod tests {
                 0.0, 1.0, 0.0,     // node 2
                 0.0, 0.0, 1.0,     // node 3
             ],
-            tet_indices: vec![0, 1, 2, 3, 99], // valid tet + stray tail index 99
+            tet_indices: vec![0, 1, 2, 3, 99], // valid tet + stray OOR tail
             element_order: ElementOrderTag::P1,
             normals: None,
         };
-        // Empty prescribed_positions — the no-tet short-circuit doesn't fire
-        // (tet_indices is non-empty), so the validation loop runs.
         let result = elasticity_morph(&mesh, &[], &crate::MorphOptions::default());
         match result {
-            Err(ElasticityFailure::InvalidTetIndex(idx)) => {
-                assert_eq!(idx, 99, "expected InvalidTetIndex(99), got InvalidTetIndex({idx})");
+            Err(ElasticityFailure::MalformedTetIndices { len }) => {
+                assert_eq!(len, 5, "expected len=5, got len={len}");
             }
-            other => panic!("expected Err(InvalidTetIndex(99)), got: {other:?}"),
+            other => panic!("expected Err(MalformedTetIndices {{ len: 5 }}), got: {other:?}"),
         }
     }
 
@@ -1210,10 +1251,11 @@ mod tests {
             normals: None,
         };
         let result = elasticity_morph(&mesh, &[], &crate::MorphOptions::default());
-        assert_eq!(
-            result,
-            Err(ElasticityFailure::MalformedTetIndices { len: 7 }),
-            "expected MalformedTetIndices {{ len: 7 }}, got: {result:?}",
-        );
+        match result {
+            Err(ElasticityFailure::MalformedTetIndices { len }) => {
+                assert_eq!(len, 7, "expected len=7, got len={len}");
+            }
+            other => panic!("expected Err(MalformedTetIndices {{ len: 7 }}), got: {other:?}"),
+        }
     }
 }

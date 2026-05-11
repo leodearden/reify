@@ -389,6 +389,7 @@ mod tests {
         let _: ElasticityFailure = ElasticityFailure::SolverNotConverged { iterations: 0 };
         let _: ElasticityFailure = ElasticityFailure::InvalidTetIndex(0u32);
         let _: ElasticityFailure = ElasticityFailure::NoElementsForPrescribedDisplacements;
+        let _: ElasticityFailure = ElasticityFailure::MalformedTetIndices { len: 0 };
     };
 
     // ── Step-12: lib re-exports make quality module public surface accessible ──
