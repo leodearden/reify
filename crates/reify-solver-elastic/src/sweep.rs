@@ -46,6 +46,19 @@
 /// `K = max(min_layers, round(sweep_distance / mesh_size))`.
 /// Task #9 wires this via `ElasticOptions.mesh_size` and
 /// `ElasticOptions.sweep_subdivisions`.
+pub fn derive_layer_count(sweep_distance: f64, mesh_size: f64, min_layers: usize) -> usize {
+    if sweep_distance.is_finite()
+        && mesh_size.is_finite()
+        && sweep_distance > 0.0
+        && mesh_size > 0.0
+    {
+        let raw = (sweep_distance / mesh_size).round();
+        raw.max(min_layers as f64) as usize
+    } else {
+        min_layers
+    }
+}
+
 /// Check whether the swept mesh has enough elements through its thickness.
 ///
 /// Returns `None` when `layers >= min_layers` (acceptable).  Returns
@@ -74,19 +87,6 @@ pub fn check_sweep_through_thickness(
              Decrease mesh_size or set an explicit sweep_subdivisions.",
         ),
     })
-}
-
-pub fn derive_layer_count(sweep_distance: f64, mesh_size: f64, min_layers: usize) -> usize {
-    if sweep_distance.is_finite()
-        && mesh_size.is_finite()
-        && sweep_distance > 0.0
-        && mesh_size > 0.0
-    {
-        let raw = (sweep_distance / mesh_size).round();
-        raw.max(min_layers as f64) as usize
-    } else {
-        min_layers
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -288,7 +288,7 @@ pub fn sweep_2d_mesh_to_3d(
     match mesh2d {
         crate::Mesh2d::Triangle { vertices, indices } => {
             let verts3d = build_vertices(vertices, params, &unit_axis, layers);
-            let conn = build_wedge_connectivity(indices, vertices.len() / 2, layers);
+            let conn = build_swept_connectivity(indices, vertices.len() / 2, layers, 3);
             Ok(SweptMesh3d {
                 vertices: verts3d,
                 connectivity: SweptConnectivity::Wedge { indices: conn },
@@ -297,7 +297,7 @@ pub fn sweep_2d_mesh_to_3d(
         }
         crate::Mesh2d::Quad { vertices, indices } => {
             let verts3d = build_vertices(vertices, params, &unit_axis, layers);
-            let conn = build_hex_connectivity(indices, vertices.len() / 2, layers);
+            let conn = build_swept_connectivity(indices, vertices.len() / 2, layers, 4);
             Ok(SweptMesh3d {
                 vertices: verts3d,
                 connectivity: SweptConnectivity::Hex { indices: conn },
@@ -309,8 +309,10 @@ pub fn sweep_2d_mesh_to_3d(
 
 /// Build the 3D vertex buffer by replicating the 2D base layer K+1 times.
 ///
-/// The 2D node `[x, y]` embeds at `z=0` in 3D; each layer adds the per-layer
-/// transform derived from `params`.
+/// The 2D node `[x, y]` embeds at `z=0` in 3D; each layer applies a
+/// transform derived from `params`. Per-layer constants (translation offset
+/// for Extrude/SweepLinear, trig values for Revolve) are hoisted out of the
+/// inner node loop to avoid redundant computation across base nodes.
 fn build_vertices(
     verts2d: &[f32],
     params: &SweepParams,
@@ -320,120 +322,87 @@ fn build_vertices(
     let n_base = verts2d.len() / 2;
     let mut out = Vec::with_capacity(n_base * (layers + 1) * 3);
 
-    for layer in 0..=(layers as u32) {
-        let t = layer as f64 / layers as f64; // 0.0 .. 1.0
-        for i in 0..n_base {
-            let x2 = verts2d[i * 2] as f64;
-            let y2 = verts2d[i * 2 + 1] as f64;
-            let (x3, y3, z3) = apply_layer_transform(x2, y2, params, unit_axis, t);
-            out.push(x3 as f32);
-            out.push(y3 as f32);
-            out.push(z3 as f32);
+    match params {
+        SweepParams::Extrude { length, .. } | SweepParams::SweepLinear { length, .. } => {
+            let [ax, ay, az] = *unit_axis;
+            for layer in 0..=layers {
+                // Per-layer translation offset — constant across all base nodes.
+                let d = layer as f64 / layers as f64 * length;
+                let (dx, dy, dz) = (ax * d, ay * d, az * d);
+                for i in 0..n_base {
+                    let x2 = verts2d[i * 2] as f64;
+                    let y2 = verts2d[i * 2 + 1] as f64;
+                    out.push((x2 + dx) as f32);
+                    out.push((y2 + dy) as f32);
+                    out.push(dz as f32);
+                }
+            }
+        }
+        SweepParams::Revolve { axis_origin, angle, .. } => {
+            let [kx, ky, kz] = *unit_axis;
+            let [ox, oy, oz] = *axis_origin;
+            // pz is constant: the 2D mesh sits at z=0 in the profile frame.
+            let pz_const = -oz;
+            for layer in 0..=layers {
+                // Per-layer trig — constant across all base nodes for this layer.
+                //
+                // Negate the angle so positive revolution sweeps from the profile's
+                // local +x toward the 3D +z direction (cylindrical-coordinate
+                // convention used throughout the CAD pipeline). The standard
+                // right-hand Rodrigues formula around +y would go from +x toward -z;
+                // negating θ reverses the sweep to +x → +z, matching the test
+                // contract locked in step-15 and PRD task #8 surface-extraction
+                // assumptions.
+                let theta = -(layer as f64 / layers as f64 * angle);
+                let (sin_t, cos_t) = theta.sin_cos();
+                let one_m_cos = 1.0 - cos_t;
+                for i in 0..n_base {
+                    let px = verts2d[i * 2] as f64 - ox;
+                    let py = verts2d[i * 2 + 1] as f64 - oy;
+                    let kdotp = kx * px + ky * py + kz * pz_const;
+                    // Rodrigues: R(θ) p = p cosθ + (k × p) sinθ + k (k·p)(1 − cosθ)
+                    let cx = px * cos_t + (ky * pz_const - kz * py) * sin_t
+                        + kx * kdotp * one_m_cos;
+                    let cy = py * cos_t + (kz * px - kx * pz_const) * sin_t
+                        + ky * kdotp * one_m_cos;
+                    let cz = pz_const * cos_t + (kx * py - ky * px) * sin_t
+                        + kz * kdotp * one_m_cos;
+                    out.push((cx + ox) as f32);
+                    out.push((cy + oy) as f32);
+                    out.push((cz + oz) as f32);
+                }
+            }
         }
     }
     out
 }
 
-/// Compute the 3D position of a 2D node `[x2, y2]` at parameter `t ∈ [0,1]`.
+/// Build element connectivity by sweeping a 2D face list across K layers.
 ///
-/// `t=0` returns the node at the profile origin; `t=1` returns the node at
-/// the sweep end.
-#[inline]
-fn apply_layer_transform(
-    x2: f64,
-    y2: f64,
-    params: &SweepParams,
-    unit_axis: &[f64; 3],
-    t: f64,
-) -> (f64, f64, f64) {
-    match params {
-        SweepParams::Extrude { length, .. } | SweepParams::SweepLinear { length, .. } => {
-            let d = t * length;
-            (
-                x2 + unit_axis[0] * d,
-                y2 + unit_axis[1] * d,
-                unit_axis[2] * d,
-            )
-        }
-        SweepParams::Revolve {
-            axis_origin,
-            angle,
-            ..
-        } => {
-            // The 2D node sits at (x2, y2, 0) in the profile frame.
-            // Translate so axis_origin is the origin, then apply Rodrigues.
-            let px = x2 - axis_origin[0];
-            let py = y2 - axis_origin[1];
-            let pz = 0.0_f64 - axis_origin[2];
-
-            // Negate the angle so positive revolution sweeps from the profile's
-            // local +x toward the 3D +z direction (cylindrical-coordinate
-            // convention used throughout the CAD pipeline). The standard
-            // right-hand Rodrigues formula around +y would go from +x toward -z;
-            // negating θ reverses the sweep to +x → +z, matching the test
-            // contract locked in step-15 and consistent with the downstream
-            // PRD task #8 surface-extraction assumptions.
-            let theta = -(t * angle);
-            let (sin_t, cos_t) = theta.sin_cos();
-
-            // k = unit_axis (already normalised)
-            let kx = unit_axis[0];
-            let ky = unit_axis[1];
-            let kz = unit_axis[2];
-
-            // k · p
-            let kdotp = kx * px + ky * py + kz * pz;
-
-            // Rodrigues: R(θ) p = p cosθ + (k × p) sinθ + k (k·p)(1 − cosθ)
-            let cx = px * cos_t + (ky * pz - kz * py) * sin_t + kx * kdotp * (1.0 - cos_t);
-            let cy = py * cos_t + (kz * px - kx * pz) * sin_t + ky * kdotp * (1.0 - cos_t);
-            let cz = pz * cos_t + (kx * py - ky * px) * sin_t + kz * kdotp * (1.0 - cos_t);
-
-            // Translate back.
-            (cx + axis_origin[0], cy + axis_origin[1], cz + axis_origin[2])
-        }
-    }
-}
-
-/// Build wedge connectivity: for each (layer k, triangle face f) → 6 indices.
-fn build_wedge_connectivity(indices: &[u32], n_base: usize, layers: usize) -> Vec<u32> {
-    let n_faces = indices.len() / 3;
-    let mut conn = Vec::with_capacity(layers * n_faces * 6);
+/// Each (layer k, face f with `face_arity` nodes) emits one element with
+/// `face_arity * 2` indices: the bottom-face node indices (same order as
+/// the 2D face), then the top-face node indices in the same order.
+///
+/// Used for both wedge (`face_arity = 3`) and hex (`face_arity = 4`) meshes.
+fn build_swept_connectivity(
+    indices: &[u32],
+    n_base: usize,
+    layers: usize,
+    face_arity: usize,
+) -> Vec<u32> {
+    let n_faces = indices.len() / face_arity;
+    let elem_size = face_arity * 2;
+    let mut conn = Vec::with_capacity(layers * n_faces * elem_size);
     for k in 0..layers {
         let base_off = (k * n_base) as u32;
         let top_off = ((k + 1) * n_base) as u32;
-        for tri in indices.chunks_exact(3) {
-            conn.extend_from_slice(&[
-                base_off + tri[0],
-                base_off + tri[1],
-                base_off + tri[2],
-                top_off + tri[0],
-                top_off + tri[1],
-                top_off + tri[2],
-            ]);
-        }
-    }
-    conn
-}
-
-/// Build hex connectivity: for each (layer k, quad face f) → 8 indices.
-fn build_hex_connectivity(indices: &[u32], n_base: usize, layers: usize) -> Vec<u32> {
-    let n_faces = indices.len() / 4;
-    let mut conn = Vec::with_capacity(layers * n_faces * 8);
-    for k in 0..layers {
-        let base_off = (k * n_base) as u32;
-        let top_off = ((k + 1) * n_base) as u32;
-        for quad in indices.chunks_exact(4) {
-            conn.extend_from_slice(&[
-                base_off + quad[0],
-                base_off + quad[1],
-                base_off + quad[2],
-                base_off + quad[3],
-                top_off + quad[0],
-                top_off + quad[1],
-                top_off + quad[2],
-                top_off + quad[3],
-            ]);
+        for face in indices.chunks_exact(face_arity) {
+            for &idx in face {
+                conn.push(base_off + idx);
+            }
+            for &idx in face {
+                conn.push(top_off + idx);
+            }
         }
     }
     conn
@@ -458,56 +427,6 @@ mod tests {
             vertices: vec![0.0_f32, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0],
             indices: vec![0, 1, 2, 3],
         }
-    }
-
-    // step-1: surface compilation check — each line constructs one variant /
-    // struct field.  A missing variant, renamed field, or wrong type fails
-    // to compile before a single assertion is evaluated.
-
-    #[test]
-    fn sweep_params_has_required_variants() {
-        let _extrude = SweepParams::Extrude {
-            axis: [0.0_f64, 0.0, 1.0],
-            length: 1.0_f64,
-        };
-        let _revolve = SweepParams::Revolve {
-            axis_origin: [0.0_f64, 0.0, 0.0],
-            axis_dir: [0.0_f64, 1.0, 0.0],
-            angle: std::f64::consts::FRAC_PI_2,
-        };
-        let _linear = SweepParams::SweepLinear {
-            axis: [0.0_f64, 0.0, 1.0],
-            length: 2.0_f64,
-        };
-    }
-
-    #[test]
-    fn sweep_error_has_required_variants() {
-        let _empty = SweepError::EmptyMesh2d;
-        let _invalid = SweepError::InvalidLayerCount;
-        let _axis = SweepError::DegenerateAxis;
-        let _mag = SweepError::DegenerateMagnitude;
-    }
-
-    #[test]
-    fn swept_connectivity_has_required_variants() {
-        let _wedge = SweptConnectivity::Wedge {
-            indices: vec![0_u32, 1, 2, 3, 4, 5],
-        };
-        let _hex = SweptConnectivity::Hex {
-            indices: vec![0_u32, 1, 2, 3, 4, 5, 6, 7],
-        };
-    }
-
-    #[test]
-    fn swept_mesh3d_has_required_fields() {
-        let mesh = SweptMesh3d {
-            vertices: vec![0.0_f32, 0.0, 0.0, 0.0, 0.0, 1.0],
-            connectivity: SweptConnectivity::Wedge { indices: vec![0_u32] },
-            layers: 1_usize,
-        };
-        assert_eq!(mesh.layers, 1);
-        assert_eq!(mesh.vertices.len(), 6);
     }
 
     #[test]
@@ -858,8 +777,8 @@ mod tests {
     fn derive_layer_count_basic_cases() {
         // (a) round(1.0/0.5) = round(2.0) = 2 → max(2, 2) = 2
         assert_eq!(derive_layer_count(1.0, 0.5, 2), 2);
-        // (b) round(2.5/1.0) = round(2.5); Rust rounds half-values to nearest-even
-        //     (2.5_f64.round() == 3), so result is max(3, 2) = 3
+        // (b) round(2.5/1.0) = round(2.5); 2.5_f64.round() == 3 (Rust rounds
+        //     half-values away from zero), so result is max(3, 2) = 3
         assert_eq!(derive_layer_count(2.5, 1.0, 2), 3);
         // (c) round(0.1/1.0) = round(0.1) = 0 → max(0, 2) = 2
         assert_eq!(derive_layer_count(0.1, 1.0, 2), 2);
@@ -879,5 +798,25 @@ mod tests {
         assert_eq!(derive_layer_count(1.0, f64::NAN, 2), 2);
         // negative mesh_size → min_layers
         assert_eq!(derive_layer_count(1.0, -1.0, 2), 2);
+    }
+}
+
+/// Compile-time signature pins for `sweep`'s public function items.
+///
+/// If a function's parameter types or return type changes, this module fails
+/// to compile before any test runs — behavioral tests alone would not catch
+/// a signature change that happens to preserve the same observable behaviour.
+#[cfg(test)]
+mod surface_pins {
+    use super::*;
+    use crate::Mesh2d;
+
+    #[test]
+    fn function_signatures_compile() {
+        let _: fn(f64, f64, usize) -> usize = derive_layer_count;
+        let _: fn(usize, usize) -> Option<ThroughThicknessSweepWarning> =
+            check_sweep_through_thickness;
+        let _: fn(&Mesh2d, &SweepParams, usize) -> Result<SweptMesh3d, SweepError> =
+            sweep_2d_mesh_to_3d;
     }
 }

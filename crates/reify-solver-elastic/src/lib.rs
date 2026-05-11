@@ -283,27 +283,8 @@
 //!     &Mesh2dOptions,
 //! ) -> Result<Mesh2dReport, Mesh2dError> = mesh_swept_profile_2d;
 //!
-//! // Task 2988: sweep step — pin each new crate-root symbol by construction
-//! // (a renamed variant or removed field fails to compile), then pin the three
-//! // public function signatures as function-item coercions.
-//! let _ = SweepParams::Extrude { axis: [0.0_f64, 0.0, 1.0], length: 1.0_f64 };
-//! let _ = SweepParams::Revolve {
-//!     axis_origin: [0.0_f64; 3],
-//!     axis_dir: [0.0_f64, 1.0, 0.0],
-//!     angle: std::f64::consts::FRAC_PI_2,
-//! };
-//! let _ = SweepParams::SweepLinear { axis: [0.0_f64, 0.0, 1.0], length: 1.0_f64 };
-//! let _ = SweepError::EmptyMesh2d;
-//! let _ = SweepError::InvalidLayerCount;
-//! let _ = SweepError::DegenerateAxis;
-//! let _ = SweepError::DegenerateMagnitude;
-//! let _ = SweptConnectivity::Wedge { indices: vec![0_u32, 1, 2, 3, 4, 5] };
-//! let _ = SweptConnectivity::Hex { indices: vec![0_u32, 1, 2, 3, 4, 5, 6, 7] };
-//! let _: fn(f64, f64, usize) -> usize = derive_layer_count;
-//! let _: fn(usize, usize) -> Option<ThroughThicknessSweepWarning> = check_sweep_through_thickness;
-//! let _: fn(&Mesh2d, &SweepParams, usize) -> Result<SweptMesh3d, SweepError> = sweep_2d_mesh_to_3d;
-//! // Behaviour anchor: K=1 extrude of unit triangle — guards against returning an
-//! // empty placeholder (the pre-impl stub returns vertices: vec![]).
+//! // Task 2988: sweep step — behavioral smoke test.
+//! // Variant/field/signature pins live in `sweep::surface_pins` and `sweep::tests`.
 //! let base2d = Mesh2d::Triangle {
 //!     vertices: vec![0.0_f32, 0.0, 1.0, 0.0, 0.0, 1.0],
 //!     indices: vec![0_u32, 1, 2],
