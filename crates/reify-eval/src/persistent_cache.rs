@@ -42,6 +42,26 @@ use serde::{Deserialize, Serialize};
 /// documentation including framing rationale and PRD reference.
 pub use crate::engine_hash_algo::compose_engine_version_hash;
 
+/// Magic byte written as the sole content of every `.meta` sidecar file.
+///
+/// Mnemonic: `CA` = **CA**che. The single-byte content is self-identifying —
+/// a future `cache fsck` command can reject any `.meta` file whose first byte
+/// is not `0xCA` without reading the adjacent `.bin`. The content is
+/// deliberately minimal; the mtime of the `.meta` file is the real
+/// last-access signal (see [`touch_sidecar`]).
+pub const SIDECAR_MAGIC_BYTE: u8 = 0xCA;
+
+/// Create (or overwrite) a `.meta` sidecar file at `path` containing exactly
+/// [`SIDECAR_MAGIC_BYTE`].
+///
+/// The parent directory must already exist; callers are expected to call
+/// `fs::create_dir_all(&shard_dir(...))` before writing any files into the
+/// shard. Failure to create the parent surfaces as an `io::Error` from the
+/// underlying `fs::write`.
+pub fn write_sidecar(path: &Path) -> io::Result<()> {
+    std::fs::write(path, &[SIDECAR_MAGIC_BYTE])
+}
+
 /// On-disk layout version for the [`CacheEntryHeader`] struct. Bump when the
 /// on-disk entry-header schema changes (fields added, removed, reordered, or
 /// bincode/zstd wire-format shifts).
