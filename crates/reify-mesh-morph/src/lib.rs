@@ -386,6 +386,7 @@ mod tests {
             ElasticityFailure::UnsupportedElementOrder(reify_types::ElementOrderTag::P2);
         let _: ElasticityFailure = ElasticityFailure::SolverNotConverged { iterations: 0 };
         let _: ElasticityFailure = ElasticityFailure::InvalidTetIndex(0u32);
+        let _: ElasticityFailure = ElasticityFailure::NoElementsForPrescribedDisplacements;
     };
 
     // ── Step-12: lib re-exports make quality module public surface accessible ──

@@ -135,6 +135,19 @@ pub enum ElasticityFailure {
     /// `assemble_global_stiffness`'s debug-only panic shape. The first
     /// offending index is returned as the payload.
     InvalidTetIndex(u32),
+
+    /// `old_mesh.tet_indices` is empty (no continuum elements) but
+    /// `prescribed_positions` is non-empty. Silently dropping the BCs would
+    /// violate the documented `output = vertices_old + u` contract — the
+    /// caller supplied displacements that have nowhere to be applied. This
+    /// variant surfaces the mismatch as a recoverable failure so the engine's
+    /// projection layer can choose a fallback rather than silently discarding
+    /// user intent.
+    ///
+    /// Note: the empty-mesh case (`vertices.is_empty()`) with non-empty
+    /// `prescribed_positions` routes through `InvalidNodeIndex` (the
+    /// prescribed-positions bounds-check fires first), not this variant.
+    NoElementsForPrescribedDisplacements,
 }
 
 // ── elasticity_morph / elasticity_morph_with_cg_opts ─────────────────────────
@@ -187,15 +200,24 @@ pub fn elasticity_morph_with_cg_opts(
             .ok_or(ElasticityFailure::InvalidNodeIndex(*node_idx))?;
     }
 
-    // Short-circuit when there are no tets to assemble: covers both the empty-
-    // mesh case (vertices.is_empty()) and a mesh with vertices but no tets
-    // (tet_indices.is_empty()). Without this guard, a no-tet mesh falls into
-    // the FEA pipeline and panics: assemble_global_stiffness emits a 3N×3N
-    // matrix with zero stored entries, and apply_dirichlet_row_elimination
-    // asserts `DirichletBc has no explicit diagonal entry` (debug build) or
-    // solve_cg panics in extract_diag_jacobi on a zero/missing diagonal.
-    // Return the input vertices unchanged; drop normals per the contract above.
-    if old_mesh.vertices.is_empty() || old_mesh.tet_indices.is_empty() {
+    // Short-circuit when there are no tets to assemble. Without this guard a
+    // no-tet mesh falls into the FEA pipeline and panics:
+    // assemble_global_stiffness emits a 3N×3N matrix with zero stored entries,
+    // apply_dirichlet_row_elimination asserts 'DirichletBc has no explicit
+    // diagonal entry' (debug build), or solve_cg panics in
+    // extract_diag_jacobi on a zero/missing diagonal.
+    //
+    // Tightened contract (task 3362): if prescribed_positions is non-empty,
+    // silently discarding BCs would violate the output = vertices_old + u
+    // contract — surface the mismatch as a structured failure.
+    // The empty-mesh case (vertices.is_empty()) with non-empty
+    // prescribed_positions already fires InvalidNodeIndex via the
+    // prescribed-positions bounds-check above; only the tet_indices gate is
+    // needed here.
+    if old_mesh.tet_indices.is_empty() {
+        if !prescribed_positions.is_empty() {
+            return Err(ElasticityFailure::NoElementsForPrescribedDisplacements);
+        }
         return Ok(VolumeMesh {
             vertices: old_mesh.vertices.clone(),
             tet_indices: old_mesh.tet_indices.clone(),
