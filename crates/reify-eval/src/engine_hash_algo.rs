@@ -46,7 +46,7 @@ use xxhash_rust::xxh3::xxh3_128;
 /// 2. Meshing pipeline            — crates/reify-kernel-gmsh (src/ + Cargo.toml + build.rs)
 /// 3. Stdlib FEA helpers          — crates/reify-stdlib/src/{fea,loads,supports,analysis}.rs
 /// 4. Per-purpose tolerance impl  — crates/reify-eval/src/tolerance_*.rs,
-///   engine_tolerance.rs, engine_purposes.rs
+///    engine_tolerance.rs, engine_purposes.rs
 /// 5. Transitive-dep version pin  — workspace Cargo.lock
 ///
 /// # Why the workspace Cargo.lock (category 5)?
