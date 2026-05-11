@@ -792,6 +792,23 @@ fn hex_str_to_ascii_32(s: &str) -> io::Result<[u8; 32]> {
 /// The sidecar `.meta` file is written AFTER the rename so a failed rename
 /// never leaves an orphan sidecar pointing at a non-existent `.bin`.
 ///
+/// # Concurrency
+///
+/// Per PRD `docs/prds/v0_3/persistent-fea-cache.md` §"Concurrency": two
+/// concurrent callers writing the same `(engine_version_hash, input_hash)` key
+/// both succeed without any lock. The `tempfile::Builder::new().prefix(".tmp.")`
+/// placement in the same shard directory satisfies the POSIX requirement for
+/// `rename(2)` atomicity (same filesystem). The `.tmp.` prefix also matches the
+/// PRD's convention for orphan identification, so the future startup-sweep task
+/// can glob `**/.tmp.*` to find and remove any temp files left behind by a
+/// writer killed between creation and rename. `sync_all()` before `persist()`
+/// is the durability guarantee — a crash between `persist()` and the sidecar
+/// write leaves the `.bin` consistent (last atomic rename wins) but the sidecar
+/// absent; the next `read_entry` tolerates an absent sidecar gracefully.
+///
+/// Pinned by test
+/// `concurrent_write_entry_calls_for_same_input_both_succeed_and_final_read_entry_decodes_to_original_value`.
+///
 /// # Errors
 ///
 /// Propagates `io::Error` for unexpected I/O failures (directory creation,
