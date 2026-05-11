@@ -2539,6 +2539,54 @@ mod tests {
     }
 
     #[test]
+    fn read_entry_advances_meta_sidecar_mtime_above_backdated_baseline_on_hit_and_succeeds_when_sidecar_pre_deleted() {
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "cccccccccccccccccccccccccccccccc";
+        let inp = "dddddddddddddddddddddddddddddddd";
+        let original = make_sample_result();
+
+        write_entry(root, eng, inp, &original).unwrap();
+
+        let meta_path = entry_meta_path(root, eng, inp);
+
+        // --- Phase 1: back-date the sidecar mtime to a known-old value ---
+        let old_mtime = UNIX_EPOCH + Duration::from_secs(1_000_000);
+        {
+            let f = std::fs::File::options()
+                .write(true)
+                .open(&meta_path)
+                .expect("must open sidecar for mtime back-dating");
+            f.set_times(std::fs::FileTimes::new().set_modified(old_mtime))
+                .expect("must set modified time to old_mtime");
+        }
+
+        // read_entry must succeed and return the value.
+        let hit = read_entry::<ElasticResult>(root, eng, inp).unwrap();
+        assert_eq!(hit, Some(original.clone()), "phase 1: cache hit must return the original value");
+
+        // Sidecar mtime must have advanced above the backdated baseline.
+        let new_mtime = std::fs::metadata(&meta_path)
+            .expect("sidecar must still exist after read_entry")
+            .modified()
+            .unwrap();
+        assert!(
+            new_mtime > old_mtime,
+            "read_entry must touch the sidecar mtime (LRU signal update); \
+             got new_mtime={new_mtime:?} <= old_mtime={old_mtime:?}"
+        );
+
+        // --- Phase 2: sidecar deleted before second read ---
+        // Simulates the GC evicting the sidecar between write and read;
+        // read_entry must still succeed (data is in the .bin).
+        std::fs::remove_file(&meta_path).unwrap();
+        let hit2 = read_entry::<ElasticResult>(root, eng, inp).unwrap();
+        assert_eq!(hit2, Some(original), "phase 2: read must succeed even if sidecar was pre-deleted");
+    }
+
+    #[test]
     fn read_entry_returns_ok_none_when_bin_file_is_absent_even_with_orphaned_tempfile_in_shard_dir() {
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path();
