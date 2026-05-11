@@ -87,6 +87,12 @@ export function createEditorSelectionSync(opts: EditorSelectionSyncOptions): voi
       timerId = null;
       // Capture (do not increment) the current token before the await
       const token = latestRequestToken;
+
+      // Early-exit: if selection changed during the debounce window, the bridge
+      // result will be discarded anyway by the cross-input race guard — skip the
+      // round-trip entirely.
+      if (untrack(() => selectionStore.state.selectedEntity) !== selectionAtCursorChange) return;
+
       const result = await getEntityAtSourceLocation(line, column);
 
       // Discard stale results: a newer cursor-move fired while this was in flight
