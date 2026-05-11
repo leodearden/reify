@@ -10,7 +10,7 @@ use crate::engine::EngineSession;
 /// - `String` — from `panic!("{}", value)`
 ///
 /// Falls back to `"<non-string payload>"` for anything else.
-fn panic_message(payload: &Box<dyn Any + Send>) -> String {
+fn panic_message(payload: &(dyn Any + Send)) -> String {
     if let Some(s) = payload.downcast_ref::<&'static str>() {
         return s.to_string();
     }
@@ -25,10 +25,11 @@ fn panic_message(payload: &Box<dyn Any + Send>) -> String {
 ///
 /// # Poison recovery
 ///
-/// `EngineSession` uses an atomic-commit invariant (`engine.rs:28-44`): every
-/// state mutation is deferred behind `commit_state` until after `check()`
-/// returns.  This means a panic inside `check()` or `build_gui_state` leaves
-/// all seven core session fields completely unchanged.  Recovering via
+/// `EngineSession` uses an atomic-commit invariant: `commit_state` is the
+/// only mutation point for core fields (`engine`, `compiled`, `source_map`,
+/// `file_path`, `last_check`, `module_name`).  A panic inside `check()` or
+/// `build_gui_state` leaves those core fields unchanged; other fields are
+/// caches that tolerate partial state after a panic.  Recovering via
 /// `PoisonError::into_inner()` is therefore safe — the inner state is
 /// consistent even after a poisoning panic.
 ///
@@ -42,10 +43,10 @@ where
     F: FnOnce(&mut EngineSession) -> T,
 {
     // Recover from any pre-existing poisoning via into_inner().
-    // Safety: EngineSession's atomic-commit invariant (engine.rs:28-44)
-    // guarantees the seven core session fields are untouched after a
-    // panicking path, so the inner state is consistent even if the mutex
-    // was poisoned by an external panic.
+    // Safety: EngineSession's atomic-commit invariant — commit_state is the
+    // only mutation point for core fields; other fields are caches that
+    // tolerate partial state after a panic.  The inner state is therefore
+    // consistent even if the mutex was poisoned by an external panic.
     let mut guard = engine.lock().unwrap_or_else(|p| p.into_inner());
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&mut guard)));
     // Explicit drop BEFORE the match: releases the lock as soon as possible
@@ -55,6 +56,6 @@ where
     drop(guard);
     match result {
         Ok(v) => Ok(v),
-        Err(payload) => Err(format!("panic in engine: {}", panic_message(&payload))),
+        Err(payload) => Err(format!("panic in engine: {}", panic_message(&*payload))),
     }
 }

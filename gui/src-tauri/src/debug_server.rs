@@ -579,8 +579,7 @@ async fn handle_wait_for_idle(state: &DebugServerState, params: Value) -> Result
     // frontend where `evalStatus` starts as `'idle'` by default and would
     // produce a false-positive ok response on a fresh (un-loaded) session.
     {
-        let is_idle = crate::engine_lock::with_engine_lock(&state.engine, |s| s.is_idle())
-            .map_err(|e| e)?;
+        let is_idle = crate::engine_lock::with_engine_lock(&state.engine, |s| s.is_idle())?;
         if !is_idle {
             return Ok(json!({"error": "engine_not_started"}));
         }
@@ -629,22 +628,10 @@ pub async fn spawn_debug_server(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_constraints::SimpleConstraintChecker;
-    use reify_test_support::{MockGeometryKernel, bracket_source};
-
-    fn make_test_engine() -> Arc<Mutex<EngineSession>> {
-        let checker = SimpleConstraintChecker;
-        let kernel = MockGeometryKernel::new();
-        let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
-        session
-            .load_from_source(bracket_source(), "bracket")
-            .expect("initial load should succeed");
-        Arc::new(Mutex::new(session))
-    }
 
     #[tokio::test]
     async fn run_on_engine_does_not_poison_mutex_when_closure_panics() {
-        let engine = make_test_engine();
+        let engine = crate::tests::make_test_engine();
 
         // First call: closure panics — run_on_engine must return Err, not propagate.
         let first = run_on_engine(&engine, |_s| -> Result<(), String> {
