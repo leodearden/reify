@@ -2135,7 +2135,6 @@ structure AxisBox {
         .find(match_expr)
         .expect("source must contain the match expression");
     let match_end = match_start + match_expr.len();
-    assert!(!target_error.labels.is_empty(), "must have at least one label");
     let label = &target_error.labels[0];
     assert_eq!(
         label.span.start as usize,
