@@ -17,6 +17,18 @@
 
 use reify_types::GeometryError;
 
+/// Marker substring embedded in the `GeometryError::OperationFailed` message
+/// returned by the stub-build (`cfg(not(has_gmsh))`) arm of [`mesh_plane_2d`].
+///
+/// Downstream orchestrators (e.g. `reify_solver_elastic::mesher::
+/// mesh_swept_profile_2d`) pattern-match on this constant via
+/// `msg.contains(STUB_UNAVAILABLE_MARKER)` to distinguish "libgmsh not present
+/// at build time" (configuration error) from "libgmsh failed at runtime"
+/// (operational error). Keeping the marker as a `pub const` removes the
+/// cross-crate magic-string coupling: any rewording of the stub message must
+/// go through this constant, which is itself referenced by the orchestrator.
+pub const STUB_UNAVAILABLE_MARKER: &str = "Gmsh not available";
+
 /// Output of [`mesh_plane_2d`]: a 2D mesh in flat-XY layout with separate
 /// triangle and quad index buffers.
 ///
@@ -212,10 +224,13 @@ pub fn mesh_plane_2d(
     }
     let quad_indices = remap(&quad_node_tags)?;
 
-    // Defensive cleanup: clear the model so the next call starts clean.
-    // Errors here are deliberately ignored — the next call's leading
-    // `ffi::clear()?` covers re-entry.
-    let _ = ffi::clear();
+    // Note: we intentionally do NOT issue a trailing `ffi::clear()` here.
+    // The leading `ffi::clear()?` at the top of every `mesh_plane_2d` call
+    // is the documented invariant for entering a clean model state; an
+    // additional defensive clear at the tail would (a) duplicate that work,
+    // and (b) silently swallow any failure (since the function has already
+    // produced its successful return value), masking a persistent libgmsh
+    // bad-state failure until the next call's leading clear surfaces it.
 
     Ok(MeshPlane2dResult {
         vertices_xy,
@@ -224,10 +239,11 @@ pub fn mesh_plane_2d(
     })
 }
 
-/// Stub-build companion: returns `GeometryError::OperationFailed` with
-/// "Gmsh not available" in the message. Mirrors how downstream callers
-/// (`reify-solver-elastic::mesher::mesh_swept_profile_2d`) detect the
-/// stub error and map it to `Mesh2dError::GmshUnavailable`.
+/// Stub-build companion: returns `GeometryError::OperationFailed` containing
+/// [`STUB_UNAVAILABLE_MARKER`]. Downstream callers
+/// (`reify-solver-elastic::mesher::mesh_swept_profile_2d`) detect the stub
+/// error by `msg.contains(STUB_UNAVAILABLE_MARKER)` and map it to
+/// `Mesh2dError::GmshUnavailable`.
 #[cfg(not(has_gmsh))]
 pub fn mesh_plane_2d(
     _outer: &[[f64; 2]],
@@ -236,9 +252,8 @@ pub fn mesh_plane_2d(
     _recombine: bool,
     _deterministic: bool,
 ) -> Result<MeshPlane2dResult, GeometryError> {
-    Err(GeometryError::OperationFailed(
-        "mesh_plane_2d: Gmsh not available in this build \
+    Err(GeometryError::OperationFailed(format!(
+        "mesh_plane_2d: {STUB_UNAVAILABLE_MARKER} in this build \
          (libgmsh not detected at build time)"
-            .to_string(),
-    ))
+    )))
 }
