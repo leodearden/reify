@@ -161,6 +161,12 @@ pub enum SweepParams {
     /// which are geometrically identical to [`SweepParams::Extrude`]. The
     /// variant is kept distinct to preserve diagnostic-routing contracts
     /// (PRD task #11 emits different fallback messages per variant).
+    ///
+    /// # Phase A contract pin
+    ///
+    /// The byte-identity of `SweepLinear` and `Extrude` at integration mesh
+    /// density is pinned by:
+    /// `crates/reify-solver-elastic/tests/hex_wedge_quality.rs::simple_linear_sweep_byte_identical_to_extrude_on_meshed_profile`
     SweepLinear {
         /// Direction of travel (any non-zero vector).
         axis: [f64; 3],
