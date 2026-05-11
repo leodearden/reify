@@ -25,6 +25,8 @@
 //! for the MMG3D bookmark (task #3003): if a refinement loop spends >30% of
 //! wallclock in remeshing, swap to MMG3D.
 
+use std::collections::HashMap;
+
 use reify_types::{ElementOrderTag, GeometryError, Mesh, VolumeMesh};
 
 use crate::options::MeshingOptions;
@@ -48,19 +50,228 @@ use crate::options::MeshingOptions;
 /// `cfg(not(has_gmsh))`: always returns `GeometryError::OperationFailed`
 /// containing [`crate::STUB_UNAVAILABLE_MARKER`] — downstream callers
 /// detect this via `msg.contains(STUB_UNAVAILABLE_MARKER)`.
-// step-6 replaces this placeholder with the real FFI-backed implementation.
+/// Real FFI-backed remesh implementation.
+///
+/// Mirrors `crates/reify-kernel-gmsh/src/kernel_real.rs::mesh_to_volume` with
+/// two additional steps:
+/// 1. After `geo_synchronize`, query all 0D corner entities and set their
+///    target mesh size via `gmshModelMeshSetSize`.
+/// 2. Enable `Mesh.MeshSizeFromPoints=1` so gmsh interpolates sizes between
+///    the corner hints across the whole domain.
 #[cfg(has_gmsh)]
 pub fn refine_volume_with_size_field(
-    _surface: &Mesh,
-    _vertex_sizes: &[f64],
-    _options: &MeshingOptions,
-    _order: ElementOrderTag,
+    surface: &Mesh,
+    vertex_sizes: &[f64],
+    options: &MeshingOptions,
+    order: ElementOrderTag,
 ) -> Result<VolumeMesh, GeometryError> {
-    Err(GeometryError::OperationFailed(
-        "refine_volume_with_size_field: not yet implemented (placeholder — step-6 \
-         will replace this with the full FFI-backed remesh)"
-            .into(),
-    ))
+    use crate::{ffi, init};
+
+    // --- Input validation (mirrors mesh_to_volume, with extra vertex_sizes check) ---
+    if !surface.vertices.len().is_multiple_of(3) {
+        return Err(GeometryError::OperationFailed(format!(
+            "refine_volume_with_size_field: surface.vertices.len()={} is not divisible by 3",
+            surface.vertices.len()
+        )));
+    }
+    if !surface.indices.len().is_multiple_of(3) {
+        return Err(GeometryError::OperationFailed(format!(
+            "refine_volume_with_size_field: surface.indices.len()={} is not divisible by 3",
+            surface.indices.len()
+        )));
+    }
+    let n_verts = surface.vertices.len() / 3;
+    if vertex_sizes.len() != n_verts {
+        return Err(GeometryError::OperationFailed(format!(
+            "refine_volume_with_size_field: vertex_sizes.len()={} != n_verts={}; \
+             one size hint required per surface vertex",
+            vertex_sizes.len(),
+            n_verts,
+        )));
+    }
+    if let Some(&bad) = surface.indices.iter().find(|&&i| (i as usize) >= n_verts) {
+        return Err(GeometryError::OperationFailed(format!(
+            "refine_volume_with_size_field: surface.indices contains {bad}, out of bounds \
+             for mesh with {n_verts} vertices"
+        )));
+    }
+    if surface.vertices.is_empty() || surface.indices.is_empty() {
+        return Err(GeometryError::OperationFailed(format!(
+            "refine_volume_with_size_field: empty surface mesh \
+             (vertices.len()={}, indices.len()={})",
+            surface.vertices.len(),
+            surface.indices.len()
+        )));
+    }
+
+    // --- Acquire lock + initialise ---
+    let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    init::ensure_initialized();
+    ffi::clear()?;
+    ffi::option_set_number("General.Terminal", 0.0)?;
+
+    // --- Gmsh options (mirrors mesh_to_volume) ---
+    let num_threads: f64 = if options.deterministic {
+        1.0
+    } else {
+        match options.threads {
+            Some(t) => t as f64,
+            None => std::thread::available_parallelism()
+                .map(|n| n.get() as f64)
+                .unwrap_or(1.0),
+        }
+    };
+    ffi::option_set_number("General.NumThreads", num_threads)?;
+    let element_order_value: f64 = match order {
+        ElementOrderTag::P1 => 1.0,
+        ElementOrderTag::P2 => 2.0,
+    };
+    ffi::option_set_number("Mesh.ElementOrder", element_order_value)?;
+    ffi::option_set_number("Mesh.Algorithm3D", 10.0)?;
+
+    // --- Add discrete surface entity and push surface mesh ---
+    ffi::model_add("reify_refine_volume")?;
+    let surf_tag = ffi::add_discrete_entity(2, &[])?;
+
+    let node_tags: Vec<u64> = (1..=n_verts as u64).collect();
+    let coords_f64: Vec<f64> = surface.vertices.iter().map(|&v| v as f64).collect();
+    ffi::add_nodes_2d(surf_tag, &node_tags, &coords_f64)?;
+
+    let n_tris = surface.indices.len() / 3;
+    let tri_tags: Vec<u64> = (1..=n_tris as u64).collect();
+    let tri_node_tags: Vec<u64> = surface.indices.iter().map(|&i| i as u64 + 1).collect();
+    ffi::add_elements_2d(surf_tag, 2, &tri_tags, &tri_node_tags)?;
+
+    // --- Classify and create geometry (same as mesh_to_volume) ---
+    ffi::classify_surfaces(std::f64::consts::FRAC_PI_2, 1, 1, std::f64::consts::PI, 0)?;
+    ffi::create_geometry(&[])?;
+
+    let surface_tags = ffi::get_entity_tags(2)?;
+    if surface_tags.is_empty() {
+        return Err(GeometryError::OperationFailed(
+            "refine_volume_with_size_field: no dim=2 entities after classify+create_geometry; \
+             surface may be open or non-manifold"
+                .into(),
+        ));
+    }
+
+    let loop_tag = ffi::geo_add_surface_loop(&surface_tags)?;
+    let _vol_tag = ffi::geo_add_volume(&[loop_tag])?;
+    ffi::geo_synchronize()?;
+
+    // --- Per-vertex size hints ---
+    // MeshSizeFromPoints=1: use 0D-entity sizes (GEO corners) as anchors.
+    // The boundary mesh sized from these corners extends into the volume via
+    // gmsh's default ExtendFromBoundary=1 behavior, which gives good
+    // localization for the step-7 integration test.
+    ffi::option_set_number("Mesh.MeshSizeFromPoints", 1.0)?;
+
+    // For each 0D corner entity (created by classify_surfaces + create_geometry),
+    // query its mesh node to find the original surface-vertex index (1-indexed
+    // node tag → 0-indexed vertex_sizes entry), then set the target mesh size
+    // at that corner.
+    let corner_tags = ffi::get_entity_tags(0)?;
+    eprintln!("DEBUG refine_volume: corner_tags = {:?}", corner_tags);
+    for &corner_tag in &corner_tags {
+        // Each 0D entity holds exactly one mesh node — the corner node whose
+        // 1-indexed tag corresponds to the surface vertex index we assigned
+        // with add_nodes_2d.
+        if let Ok((node_tags_at_corner, coords)) = ffi::get_nodes_at_entity(0, corner_tag) {
+            eprintln!(
+                "DEBUG   corner_tag={} node_tags={:?} coords={:?}",
+                corner_tag,
+                &node_tags_at_corner,
+                coords.get(..3.min(coords.len()))
+            );
+            if let Some(&node_tag) = node_tags_at_corner.first() {
+                let v_idx = (node_tag as usize).saturating_sub(1);
+                if v_idx < vertex_sizes.len() {
+                    let size = vertex_sizes[v_idx];
+                    eprintln!(
+                        "DEBUG   → setting size={} at entity (0, {})",
+                        size, corner_tag
+                    );
+                    // Best-effort: ignore set-size errors (shouldn't happen for
+                    // entities that exist, but defensive against gmsh internals).
+                    let _ = ffi::mesh_set_size_at_entity(0, corner_tag, size);
+                }
+            }
+        } else {
+            eprintln!("DEBUG   corner_tag={} get_nodes_at_entity FAILED", corner_tag);
+        }
+    }
+
+    // --- Tet meshing ---
+    ffi::mesh_generate(3)?;
+
+    // --- Readback (mirrors mesh_to_volume verbatim) ---
+    let elem_type = match order {
+        ElementOrderTag::P1 => 4,
+        ElementOrderTag::P2 => 11,
+    };
+    let nodes_per_elem: usize = match order {
+        ElementOrderTag::P1 => 4,
+        ElementOrderTag::P2 => 10,
+    };
+
+    let (out_node_tags, coord_buf) = ffi::get_nodes_all()?;
+    if coord_buf.len() != out_node_tags.len() * 3 {
+        return Err(GeometryError::OperationFailed(format!(
+            "refine_volume_with_size_field: get_nodes_all stride mismatch: \
+             node_tags.len()={}, coord_buf.len()={} (expected {})",
+            out_node_tags.len(),
+            coord_buf.len(),
+            out_node_tags.len() * 3,
+        )));
+    }
+    let (_elem_tags, elem_node_tags) = ffi::get_elements_by_type(elem_type)?;
+    if !elem_node_tags.len().is_multiple_of(nodes_per_elem) {
+        return Err(GeometryError::OperationFailed(format!(
+            "refine_volume_with_size_field: get_elements_by_type stride mismatch: \
+             elem_node_tags.len()={} not multiple of {nodes_per_elem}",
+            elem_node_tags.len(),
+        )));
+    }
+
+    let mut paired: Vec<(u64, [f64; 3])> = out_node_tags
+        .iter()
+        .copied()
+        .zip(coord_buf.chunks_exact(3))
+        .map(|(t, c)| (t, [c[0], c[1], c[2]]))
+        .collect();
+    paired.sort_by_key(|(t, _)| *t);
+
+    let mut tag_to_idx: HashMap<u64, u32> = HashMap::with_capacity(paired.len());
+    let mut vertices: Vec<f32> = Vec::with_capacity(paired.len() * 3);
+    for (idx, (tag, xyz)) in paired.iter().enumerate() {
+        let idx_u32 = u32::try_from(idx).map_err(|_| {
+            GeometryError::OperationFailed(format!(
+                "refine_volume_with_size_field: {} nodes exceeds u32 tet_indices limit",
+                paired.len()
+            ))
+        })?;
+        tag_to_idx.insert(*tag, idx_u32);
+        vertices.extend(xyz.iter().map(|&v| v as f32));
+    }
+
+    let mut tet_indices: Vec<u32> = Vec::with_capacity(elem_node_tags.len());
+    for &tag in &elem_node_tags {
+        let idx = *tag_to_idx.get(&tag).ok_or_else(|| {
+            GeometryError::OperationFailed(format!(
+                "refine_volume_with_size_field: element references unknown node tag {tag}"
+            ))
+        })?;
+        tet_indices.push(idx);
+    }
+
+    let _ = ffi::clear();
+
+    Ok(VolumeMesh {
+        vertices,
+        tet_indices,
+        element_order: order,
+        normals: None,
+    })
 }
 
 /// Stub-build companion: always returns `GeometryError::OperationFailed`

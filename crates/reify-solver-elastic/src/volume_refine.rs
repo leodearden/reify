@@ -147,10 +147,10 @@ pub fn project_per_element_sizes_to_vertices(
 /// or ±∞, `RefineError::NonPositiveSize` on `<= 0`, or kernel errors on
 /// Gmsh failures.
 pub fn refine_with_size_field(
-    _surface: &Mesh,
+    surface: &Mesh,
     volume_mesh: &VolumeMesh,
     size_hints: &[f64],
-    _options: &MeshingOptions,
+    options: &MeshingOptions,
 ) -> Result<VolumeMesh, RefineError> {
     // Validate size_hints length.
     let nodes_per_elem: usize = match volume_mesh.element_order {
@@ -175,15 +175,89 @@ pub fn refine_with_size_field(
         }
     }
 
-    // step-8 will replace this placeholder with the wired kernel call.
-    Err(RefineError::Gmsh(GeometryError::OperationFailed(
-        "refine_with_size_field: not yet wired to kernel-gmsh (step-8)".into(),
-    )))
+    // Project per-element hints → per-volume-vertex sizes (conservative min).
+    let vol_vertex_sizes = project_per_element_sizes_to_vertices(volume_mesh, size_hints);
+
+    // Map per-volume-vertex sizes → per-surface-vertex sizes.
+    //
+    // The surface boundary vertices of `volume_mesh` correspond to the input
+    // `surface` vertices (same positions, f32 coords).  For each surface
+    // vertex we find the nearest volume-mesh vertex by squared-distance and
+    // adopt its projected size.  This is O(n_surf × n_vol) but acceptable for
+    // test-scale meshes; a spatial index would be needed for production-scale
+    // refinement loops.
+    let surface_vertex_sizes =
+        project_volume_to_surface_vertices(surface, volume_mesh, &vol_vertex_sizes);
+
+    // DEBUG: print surface vertex sizes
+    eprintln!(
+        "DEBUG refine_with_size_field: surface_vertex_sizes = {:?}",
+        &surface_vertex_sizes
+    );
+
+    // Delegate to the kernel-gmsh helper for the full-remesh with size hints.
+    reify_kernel_gmsh::refine_volume_with_size_field(
+        surface,
+        &surface_vertex_sizes,
+        options,
+        volume_mesh.element_order,
+    )
+    .map_err(map_geometry_error)
 }
 
 // ---------------------------------------------------------------------------
 // Private helpers
 // ---------------------------------------------------------------------------
+
+/// Map per-volume-mesh-vertex sizes to per-surface-vertex sizes via
+/// nearest-neighbour coordinate matching.
+///
+/// The boundary vertices of `volume_mesh` are the same points as the surface
+/// mesh vertices (both stored as f32 flat XYZ coords, same positions).  For
+/// each surface vertex we scan all volume vertices and adopt the size of the
+/// closest one.  The scan is O(n_surf × n_vol) — acceptable for test-scale
+/// meshes (n_surf ≪ n_vol is typical); a spatial index is the right upgrade
+/// if this path shows up in profiling.
+///
+/// If no volume vertex is found within a finite distance (shouldn't happen
+/// for a well-formed surface/volume pair), the surface vertex receives the
+/// global minimum of `vol_vertex_sizes` as a safe fallback.
+fn project_volume_to_surface_vertices(
+    surface: &Mesh,
+    volume_mesh: &VolumeMesh,
+    vol_vertex_sizes: &[f64],
+) -> Vec<f64> {
+    let n_surf = surface.vertices.len() / 3;
+    let n_vol = volume_mesh.vertices.len() / 3;
+
+    let global_min = vol_vertex_sizes
+        .iter()
+        .copied()
+        .fold(f64::INFINITY, f64::min);
+
+    let mut result = vec![global_min; n_surf];
+    for s in 0..n_surf {
+        let sx = surface.vertices[s * 3];
+        let sy = surface.vertices[s * 3 + 1];
+        let sz = surface.vertices[s * 3 + 2];
+
+        let mut best_dist_sq = f32::INFINITY;
+        let mut best_size = global_min;
+        for v in 0..n_vol {
+            let vx = volume_mesh.vertices[v * 3];
+            let vy = volume_mesh.vertices[v * 3 + 1];
+            let vz = volume_mesh.vertices[v * 3 + 2];
+            let dist_sq =
+                (sx - vx) * (sx - vx) + (sy - vy) * (sy - vy) + (sz - vz) * (sz - vz);
+            if dist_sq < best_dist_sq {
+                best_dist_sq = dist_sq;
+                best_size = vol_vertex_sizes[v];
+            }
+        }
+        result[s] = best_size;
+    }
+    result
+}
 
 /// Map a `GeometryError` from the kernel-gmsh layer to a `RefineError`,
 /// routing stub-build errors to [`RefineError::GmshUnavailable`].
