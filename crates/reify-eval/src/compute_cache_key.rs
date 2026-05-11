@@ -161,6 +161,46 @@ mod tests {
         );
     }
 
+    /// Regression pin: `compute_cache_key` treats `options_hash` as opaque.
+    ///
+    /// Per `docs/prds/v0_3/compute-node-infrastructure.md` §"Resolved design
+    /// decisions" and the task description's "Exclusion contract" section:
+    /// thread count, determinism mode, and any future execution-profile flags
+    /// MUST be filtered out by the upstream `options_hash` producer (e.g.
+    /// `ElasticOptions::cacheable_hash`, owned by P3.4 / structural-analysis-fea.md
+    /// task #4). The *composer* (`compute_cache_key`) is unaware of which fields
+    /// are excluded — it accepts `options_hash` as a fully opaque `ContentHash`.
+    ///
+    /// This test represents two solver invocations whose `ElasticOptions` differ
+    /// ONLY in `threads` (a non-cacheable field). The upstream producer has already
+    /// filtered `threads` so both invocations produce the *same* `options_hash`.
+    /// The composer must therefore produce the same cache key — guaranteeing that
+    /// the exclusion contract is honoured end-to-end.
+    #[test]
+    fn compute_cache_key_treats_options_hash_as_opaque_so_thread_count_can_be_excluded_upstream() {
+        // Simulate: two ElasticOptions that differ only in `threads` but whose
+        // upstream cacheable_hash producer has already filtered `threads`,
+        // producing the same options_hash for both.
+        let shared_options_hash = ContentHash::of_str("elastic_options_without_threads");
+
+        let mut node_a = make_empty_node();
+        node_a.target = "solver::elastic_static".to_string();
+        node_a.options_hash = shared_options_hash;
+
+        let mut node_b = make_empty_node();
+        node_b.target = "solver::elastic_static".to_string();
+        node_b.options_hash = shared_options_hash; // same hash — threads filtered upstream
+
+        let graph = EvaluationGraph::default();
+        let key_a = compute_cache_key(&node_a, &graph);
+        let key_b = compute_cache_key(&node_b, &graph);
+        assert_eq!(
+            key_a, key_b,
+            "identical options_hash (threads filtered upstream) must produce identical cache keys: \
+             compute_cache_key must treat options_hash as opaque"
+        );
+    }
+
     #[test]
     fn compute_cache_key_is_invariant_under_realization_input_reordering() {
         // Three realizations with distinct (entity, index) pairs.
