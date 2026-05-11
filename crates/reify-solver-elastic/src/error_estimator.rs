@@ -182,16 +182,14 @@ fn compliance_matrix(material: &IsotropicElastic) -> [[f64; 6]; 6] {
     let inv_g = 1.0 / g;
 
     let mut s = [[0.0_f64; 6]; 6];
-    // Normal-stress block (rows/cols 0..3).
-    for i in 0..3 {
-        for j in 0..3 {
-            s[i][j] = if i == j { inv_e } else { neg_nu_over_e };
-        }
-    }
+    // Normal-stress block (rows/cols 0..3): diagonal = 1/E, off-diagonal = -ν/E.
+    s[0][0] = inv_e;          s[0][1] = neg_nu_over_e; s[0][2] = neg_nu_over_e;
+    s[1][0] = neg_nu_over_e; s[1][1] = inv_e;          s[1][2] = neg_nu_over_e;
+    s[2][0] = neg_nu_over_e; s[2][1] = neg_nu_over_e; s[2][2] = inv_e;
     // Shear-stress block (rows/cols 3..6) — diagonal 1/G, off-diagonal 0.
-    for k in 3..6 {
-        s[k][k] = inv_g;
-    }
+    s[3][3] = inv_g;
+    s[4][4] = inv_g;
+    s[5][5] = inv_g;
     s
 }
 
