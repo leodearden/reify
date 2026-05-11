@@ -63,6 +63,39 @@ pub fn is_opted_in(target: &str) -> bool {
     matches!(target, "solver::elastic_static")
 }
 
+/// Compare a compute node's previous and new result with per-purpose tolerance.
+///
+/// # Arguments
+///
+/// - `target`: the compute target string (e.g. `"solver::elastic_static"`).
+///   See [`is_opted_in`] for the opt-in mechanism.
+/// - `prev`: the previously-cached result value.
+/// - `new`: the newly-computed result value.
+/// - `length_tolerance_si`: SI-metre tolerance from
+///   `Engine::active_tolerance_for(subject_entity_ref)` (task 3382 / P3.3).
+///   `None` triggers the conservative `Different` fallback.
+///
+/// # Return value
+///
+/// | Outcome      | Meaning |
+/// |--------------|---------|
+/// | `Equivalent` | Delta within tolerance — MAY skip marking output ValueCells dirty |
+/// | `Different`  | Material change / unknown tolerance — MUST mark dirty |
+/// | `NotOptedIn` | Target not in allowlist — MUST mark dirty |
+pub fn significance_filter(
+    target: &str,
+    prev: &reify_types::Value,
+    new: &reify_types::Value,
+    length_tolerance_si: Option<f64>,
+) -> FilterOutcome {
+    // Opt-in guard: unknown targets never reach comparison logic.
+    if !is_opted_in(target) {
+        return FilterOutcome::NotOptedIn;
+    }
+    let _ = (prev, new, length_tolerance_si);
+    todo!("significance_filter body: remaining branches land in steps 6, 8, 10")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{FilterOutcome, is_opted_in, significance_filter};
