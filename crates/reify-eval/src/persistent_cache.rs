@@ -2377,4 +2377,18 @@ mod tests {
         assert_eq!(decoded.byte_size, original.byte_size);
         assert_eq!(decoded.written_at, original.written_at);
     }
+
+    // ── write_entry / read_entry I/O tests ───────────────────────────────────
+
+    #[test]
+    fn write_entry_then_read_entry_round_trips_an_elastic_result_value() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "abcdef0123456789abcdef0123456789";
+        let inp = "fedcba9876543210fedcba9876543210";
+        let original = make_sample_result();
+        write_entry(root, eng, inp, &original).unwrap();
+        let read_back = read_entry::<ElasticResult>(root, eng, inp).unwrap();
+        assert_eq!(read_back, Some(original));
+    }
 }
