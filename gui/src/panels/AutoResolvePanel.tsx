@@ -97,10 +97,11 @@ export interface AutoResolvePanelProps {
 }
 
 export const AutoResolvePanel: Component<AutoResolvePanelProps> = (props) => {
-  const latestIteration = () =>
+  const latestIteration = createMemo(() =>
     props.state.iterations.length > 0
       ? props.state.iterations[props.state.iterations.length - 1]
-      : null;
+      : null,
+  );
 
   /**
    * Driving metric name — invariant across the loop. Reads from the O(1) cached
