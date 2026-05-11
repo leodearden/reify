@@ -1469,4 +1469,75 @@ mod tests {
              trailing ~ (Emacs backup)"
         );
     }
+
+    /// Regression guard for symlinks leaking into the cache key.
+    ///
+    /// `Path::is_file()` follows symlinks via `fs::metadata()` (std docs).
+    /// A symlink to a regular file therefore passes `is_file()` and its target
+    /// bytes would be framed into `parts`, making `ENGINE_VERSION_HASH`
+    /// machine-specific (the target path / content differs per developer or CI
+    /// host).  `walk_recursive` must instead use `symlink_metadata()` so that
+    /// symlinks — whether dangling, valid, or pointing outside the contributor
+    /// tree — are always silently skipped.
+    #[cfg(unix)]
+    #[test]
+    fn walk_contributor_skips_symlinks_via_symlink_metadata_so_machine_local_links_do_not_perturb_the_hash() {
+        use std::os::unix::fs::symlink;
+
+        let tmpdir = tempfile::TempDir::new().expect("must create tempdir");
+        let root = tmpdir.path().to_path_buf();
+
+        // Real contributor file that MUST be included.
+        std::fs::write(root.join("real.rs"), b"// real content")
+            .expect("must write real.rs");
+
+        // Create an external file with distinguishable content and symlink to it
+        // from inside the walked directory.
+        let extern_dir = tmpdir.path().join("_extern");
+        std::fs::create_dir_all(&extern_dir).expect("must create extern dir");
+        let outside_target = extern_dir.join("outside.txt");
+        std::fs::write(&outside_target, b"DO NOT INCLUDE")
+            .expect("must write outside target");
+
+        // Symlink named `link.rs` points outside the contributor tree.
+        let symlink_path = root.join("link.rs");
+        symlink(&outside_target, &symlink_path).expect("must create symlink");
+
+        let walk = crate::engine_hash_algo::walk_contributor("root", &root);
+
+        // The symlink path must NOT appear in rerun_paths.
+        assert!(
+            !walk.rerun_paths.contains(&symlink_path),
+            "symlink path must not appear in rerun_paths; got: {:?}",
+            walk.rerun_paths
+        );
+
+        // The sentinel bytes from the symlink target must NOT appear anywhere
+        // in parts (tested with a sliding window to defeat any framing/length
+        // prefix that might split the literal across two Vec<u8> chunks).
+        let sentinel = b"DO NOT INCLUDE";
+        let leaked = walk.parts.iter().any(|chunk| {
+            chunk.windows(sentinel.len()).any(|w| w == sentinel)
+        });
+        assert!(
+            !leaked,
+            "symlink target bytes 'DO NOT INCLUDE' must not appear in walk.parts; \
+             walk_recursive is following the symlink via is_file() instead of \
+             using symlink_metadata()"
+        );
+
+        // The walk hash must equal the hash of [real.rs path, real.rs content].
+        let walk_refs: Vec<&[u8]> = walk.parts.iter().map(|v| v.as_slice()).collect();
+        let hash_from_walk = compose_engine_version_hash(&walk_refs);
+
+        let expected_parts: &[&[u8]] = &[b"root/real.rs", b"// real content"];
+        let expected_hash = compose_engine_version_hash(expected_parts);
+
+        assert_eq!(
+            hash_from_walk,
+            expected_hash,
+            "walk_contributor hash must equal the hash of the real file only; \
+             symlink target bytes must not enter the hash input"
+        );
+    }
 }
