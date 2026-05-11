@@ -173,10 +173,9 @@ fn make_cross_sub_geometry_error(
 /// together in `entity.rs` (regular Sub pre-pass and match-arm Sub pre-pass)
 /// inside the same `if let Some(child_tmpl) = find_template(...)` guard, with
 /// `sub_component_types` written unconditionally before the template lookup.
-/// A `.unwrap_or_else(|| panic!("…sub '{}' …", sub_name))` on the
-/// `sub_component_types.get(sub_name)` lookup below enforces the invariant in
-/// **all** build modes (debug and release; task-3431) and names the offending
-/// sub instance in the panic message (task-3439) so a future code path that
+/// The `sub_component_types.get(sub_name)` lookup below enforces this invariant
+/// in **all** build modes (debug and release; task-3431) and names the offending
+/// sub instance in the panic message (task-3439), so a future code path that
 /// populates `sub_realization_names` without `sub_component_types` panics
 /// loudly rather than silently producing a diagnostic that names the sub
 /// instance instead of its child structure.
@@ -2865,11 +2864,14 @@ pub structure Outer {
     ///
     /// ## What this test pins
     ///
-    /// `.unwrap_or_else(|| panic!("…task-3420; release-enforced task-3431: sub '{}' …", sub_name))`
-    /// enforces the `sub_realization_names ⊂ sub_component_types` invariant in both
-    /// debug and release, unlike the previous `debug_assert!` + `.unwrap_or(sub_name)`
-    /// combination which only caught violations in debug builds and silently mis-named
-    /// the child structure in release.
+    /// The `sub_component_types.get(sub_name)` lookup enforces the
+    /// `sub_realization_names ⊂ sub_component_types` invariant in both debug and
+    /// release builds (task-3431), unlike the previous `debug_assert!` +
+    /// `.unwrap_or(sub_name)` combination which only caught violations in debug
+    /// builds and silently mis-named the child structure in release.  The panic
+    /// message dynamically names the offending sub instance (task-3439), so
+    /// `expected = "'inner'"` proves both that the correct enforcement site fired
+    /// **and** that the runtime sub name reached the panic message.
     ///
     /// ## Why this test is NOT `#[cfg(debug_assertions)]`-gated
     ///
@@ -2885,55 +2887,15 @@ pub structure Outer {
     /// compile API — `entity.rs` always populates both maps together. The helper
     /// must be called directly to reach the panicking code path.
     ///
-    /// ## Why `expected = "task-3420"` rather than the full panic message
+    /// ## Why `expected = "'inner'"` rather than a static tag
     ///
-    /// Both `"task-3420"` (invariant origin) and `"task-3431"` (release-enforcement
-    /// promotion) are baked into the `panic!()` format literal.  Coupling to either
-    /// stable reference tag minimises test-maintenance churn while still verifying the
-    /// correct code site panicked; `"task-3420"` is retained here so a future grep for
-    /// the invariant's origin tag reaches this test site as well as the production call.
+    /// `'inner'` can only appear in the panic message when the runtime `sub_name`
+    /// value is interpolated — the format literal contains no instance name.  This
+    /// pins both release-enforcement and dynamic naming (task-3439) in one assertion,
+    /// without coupling to the surrounding prose of the message.
     #[test]
-    #[should_panic(expected = "task-3420")]
+    #[should_panic(expected = "'inner'")]
     fn try_emit_cross_sub_geometry_panics_on_invariant_violation_in_all_builds() {
-        use std::collections::BTreeSet;
-        let mut scope = CompilationScope::new("Outer");
-        // Populate sub_realization_names["inner"] = {"body"} but deliberately leave
-        // sub_component_types empty — this violates the invariant and must panic.
-        scope
-            .sub_realization_names
-            .insert("inner".to_string(), BTreeSet::from(["body".to_string()]));
-        // sub_component_types intentionally not populated.
-        try_emit_cross_sub_geometry(
-            &scope,
-            "inner",
-            "body",
-            reify_types::SourceSpan::prelude(),
-            &mut Vec::new(),
-        );
-    }
-
-    /// `try_emit_cross_sub_geometry` panic message must dynamically interpolate
-    /// the offending sub instance name so diagnostics pinpoint the exact sub that
-    /// violated the `sub_realization_names ⊂ sub_component_types` invariant.
-    ///
-    /// ## What this test pins
-    ///
-    /// The `.unwrap_or_else(|| panic!("…sub '{}' …", sub_name))` form restored in
-    /// task-3439 embeds the runtime value of `sub_name` in the panic message.  The
-    /// prior static `.expect("…task-3420; release-enforced task-3431")` message
-    /// contained no occurrence of any specific sub instance name, so this test — with
-    /// `#[should_panic(expected = "sub 'inner'")]` — would FAIL against the old code
-    /// and PASS only once the dynamic interpolation is in place.
-    ///
-    /// ## Setup
-    ///
-    /// Identical to `try_emit_cross_sub_geometry_panics_on_invariant_violation_in_all_builds`:
-    /// `CompilationScope::new("Outer")` with `sub_realization_names["inner"] = {"body"}`
-    /// and `sub_component_types` left empty.  The only meaningful delta between the two
-    /// tests is the `expected` substring on the `should_panic` attribute.
-    #[test]
-    #[should_panic(expected = "sub 'inner'")]
-    fn try_emit_cross_sub_geometry_panic_names_offending_sub_dynamically() {
         use std::collections::BTreeSet;
         let mut scope = CompilationScope::new("Outer");
         // Populate sub_realization_names["inner"] = {"body"} but deliberately leave
