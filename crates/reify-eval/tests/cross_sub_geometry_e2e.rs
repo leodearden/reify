@@ -333,3 +333,158 @@ pub structure Assy {
             .collect::<Vec<_>>()
     );
 }
+
+/// Nested transform chain over a cross-sub body: `translate(rotate(self.inner.body,
+/// 0, 0, 1, 90deg), 10mm, 0mm, 0mm)`.
+///
+/// Pins that nesting works end-to-end: a `Sub`-resolved geometry-arg can sit at any
+/// depth of a nested transform call, and the resulting ops form a clean
+/// Box → Rotate → Translate chain where each step's target is the previous step's
+/// result handle.
+///
+/// Asserts (a) no Error diagnostics, (b) recorded ops include exactly one Rotate
+/// whose target is Inner.body's Box handle, followed by exactly one Translate
+/// whose target is the Rotate's result handle.
+///
+/// Anti-cascade guard: confirms `current_offset` accounting in geometry.rs's
+/// arg-resolution loop doesn't perturb the step offset for sibling args when a
+/// `Sub`-resolved arg short-circuits sub-op accumulation.
+#[test]
+fn cross_sub_geometry_anti_cascade_no_spurious_errors_in_translate_chain() {
+    let source = r#"pub structure Inner {
+    let body = box(10mm, 20mm, 30mm)
+}
+pub structure Outer {
+    sub inner = Inner()
+    let composed = translate(rotate(self.inner.body, 0, 0, 1, 90deg), 10mm, 0mm, 0mm)
+}"#;
+    let compiled = compile_source(source);
+
+    // (a) No compile-time Error diagnostics.
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "expected no compile-time Error diagnostics; got: {:?}",
+        compile_errors
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    // (a) No Error diagnostics from build.
+    let build_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        build_errors.is_empty(),
+        "expected no build-time Error diagnostics; got: {:?}",
+        build_errors
+            .iter()
+            .map(|d| format!("[{:?}] {}", d.severity, d.message))
+            .collect::<Vec<_>>()
+    );
+
+    let recorded = ops_ref.lock().unwrap().clone();
+
+    // (b) Exactly one Box (Inner.body), one Rotate, one Translate.
+    let box_count = recorded
+        .iter()
+        .filter(|rec| matches!(rec.op, GeometryOp::Box { .. }))
+        .count();
+    let rotate_count = recorded
+        .iter()
+        .filter(|rec| matches!(rec.op, GeometryOp::Rotate { .. }))
+        .count();
+    let translate_count = recorded
+        .iter()
+        .filter(|rec| matches!(rec.op, GeometryOp::Translate { .. }))
+        .count();
+    assert_eq!(
+        box_count, 1,
+        "expected exactly 1 Box op (Inner.body); got {} in {:?}",
+        box_count,
+        recorded
+            .iter()
+            .map(|r| format!("{:?}", r.op))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        rotate_count, 1,
+        "expected exactly 1 Rotate op (inner of Outer.composed); got {} in {:?}",
+        rotate_count,
+        recorded
+            .iter()
+            .map(|r| format!("{:?}", r.op))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        translate_count, 1,
+        "expected exactly 1 Translate op (outer of Outer.composed); got {} in {:?}",
+        translate_count,
+        recorded
+            .iter()
+            .map(|r| format!("{:?}", r.op))
+            .collect::<Vec<_>>()
+    );
+
+    let box_rec = recorded
+        .iter()
+        .find(|rec| matches!(rec.op, GeometryOp::Box { .. }))
+        .expect("expected a Box op recorded for Inner.body");
+    let rotate_rec = recorded
+        .iter()
+        .find(|rec| matches!(rec.op, GeometryOp::Rotate { .. }))
+        .expect("expected a Rotate op recorded inside Outer.composed");
+    let translate_rec = recorded
+        .iter()
+        .find(|rec| matches!(rec.op, GeometryOp::Translate { .. }))
+        .expect("expected a Translate op recorded for Outer.composed");
+
+    // (b) Rotate's target == Inner.body's Box handle.
+    match rotate_rec.op {
+        GeometryOp::Rotate { target, .. } => {
+            assert_eq!(
+                target, box_rec.result_handle,
+                "Rotate.target should be Inner.body's Box handle ({:?}); got {:?}",
+                box_rec.result_handle, target
+            );
+        }
+        ref other => panic!("expected Rotate op, got {:?}", other),
+    }
+
+    // (b) Translate's target == Rotate's result handle.
+    match translate_rec.op {
+        GeometryOp::Translate { target, .. } => {
+            assert_eq!(
+                target, rotate_rec.result_handle,
+                "Translate.target should be the inner Rotate's result handle ({:?}); got {:?}",
+                rotate_rec.result_handle, target
+            );
+        }
+        ref other => panic!("expected Translate op, got {:?}", other),
+    }
+
+    // Build should also succeed (geometry_output some).
+    assert!(
+        result.geometry_output.is_some(),
+        "expected geometry_output to be Some, got None; diagnostics: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| format!("[{:?}] {}", d.severity, d.message))
+            .collect::<Vec<_>>()
+    );
+}
