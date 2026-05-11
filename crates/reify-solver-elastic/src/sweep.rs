@@ -199,6 +199,23 @@ pub struct ThroughThicknessSweepWarning {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Mesh2d;
+
+    // Unit triangle fixture for validation tests.
+    fn unit_triangle() -> Mesh2d {
+        Mesh2d::Triangle {
+            vertices: vec![0.0_f32, 0.0, 1.0, 0.0, 0.0, 1.0],
+            indices: vec![0, 1, 2],
+        }
+    }
+
+    // Unit square quad fixture.
+    fn unit_quad() -> Mesh2d {
+        Mesh2d::Quad {
+            vertices: vec![0.0_f32, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0],
+            indices: vec![0, 1, 2, 3],
+        }
+    }
 
     // step-1: surface compilation check — each line constructs one variant /
     // struct field.  A missing variant, renamed field, or wrong type fails
@@ -260,6 +277,85 @@ mod tests {
         assert_eq!(w.layer_count, 1);
         assert_eq!(w.min_layers, 2);
         assert!(w.message.contains("test"));
+    }
+
+    // step-7: sweep_2d_mesh_to_3d validation pre-pass tests
+
+    #[test]
+    fn sweep_rejects_empty_vertices() {
+        // (a) empty vertices → EmptyMesh2d
+        let empty_verts = Mesh2d::Triangle { vertices: vec![], indices: vec![] };
+        let params = SweepParams::Extrude { axis: [0.0, 0.0, 1.0], length: 1.0 };
+        let r = sweep_2d_mesh_to_3d(&empty_verts, &params, 1);
+        assert!(matches!(r, Err(SweepError::EmptyMesh2d)), "got: {r:?}");
+    }
+
+    #[test]
+    fn sweep_rejects_empty_indices() {
+        // (b) vertices present but no faces → EmptyMesh2d
+        let no_faces = Mesh2d::Triangle {
+            vertices: vec![0.0_f32, 0.0, 1.0, 0.0, 0.0, 1.0],
+            indices: vec![],
+        };
+        let params = SweepParams::Extrude { axis: [0.0, 0.0, 1.0], length: 1.0 };
+        let r = sweep_2d_mesh_to_3d(&no_faces, &params, 1);
+        assert!(matches!(r, Err(SweepError::EmptyMesh2d)), "got: {r:?}");
+    }
+
+    #[test]
+    fn sweep_rejects_zero_layers() {
+        // (c) layers=0 → InvalidLayerCount
+        let params = SweepParams::Extrude { axis: [0.0, 0.0, 1.0], length: 1.0 };
+        let r = sweep_2d_mesh_to_3d(&unit_triangle(), &params, 0);
+        assert!(matches!(r, Err(SweepError::InvalidLayerCount)), "got: {r:?}");
+    }
+
+    #[test]
+    fn sweep_rejects_zero_axis() {
+        // (d) Extrude zero axis → DegenerateAxis
+        let params = SweepParams::Extrude { axis: [0.0, 0.0, 0.0], length: 1.0 };
+        let r = sweep_2d_mesh_to_3d(&unit_triangle(), &params, 1);
+        assert!(matches!(r, Err(SweepError::DegenerateAxis)), "got: {r:?}");
+    }
+
+    #[test]
+    fn sweep_rejects_zero_length() {
+        // (e) Extrude zero length → DegenerateMagnitude
+        let params = SweepParams::Extrude { axis: [0.0, 0.0, 1.0], length: 0.0 };
+        let r = sweep_2d_mesh_to_3d(&unit_triangle(), &params, 1);
+        assert!(matches!(r, Err(SweepError::DegenerateMagnitude)), "got: {r:?}");
+    }
+
+    #[test]
+    fn sweep_rejects_nan_length() {
+        // (f) Extrude NaN length → DegenerateMagnitude
+        let params = SweepParams::Extrude { axis: [0.0, 0.0, 1.0], length: f64::NAN };
+        let r = sweep_2d_mesh_to_3d(&unit_triangle(), &params, 1);
+        assert!(matches!(r, Err(SweepError::DegenerateMagnitude)), "got: {r:?}");
+    }
+
+    #[test]
+    fn sweep_rejects_revolve_zero_axis_dir() {
+        // (g) Revolve zero axis_dir → DegenerateAxis
+        let params = SweepParams::Revolve {
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [0.0, 0.0, 0.0],
+            angle: 1.0,
+        };
+        let r = sweep_2d_mesh_to_3d(&unit_triangle(), &params, 1);
+        assert!(matches!(r, Err(SweepError::DegenerateAxis)), "got: {r:?}");
+    }
+
+    #[test]
+    fn sweep_rejects_revolve_zero_angle() {
+        // (h) Revolve zero angle → DegenerateMagnitude
+        let params = SweepParams::Revolve {
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [0.0, 1.0, 0.0],
+            angle: 0.0,
+        };
+        let r = sweep_2d_mesh_to_3d(&unit_triangle(), &params, 1);
+        assert!(matches!(r, Err(SweepError::DegenerateMagnitude)), "got: {r:?}");
     }
 
     // step-5: check_sweep_through_thickness unit tests
