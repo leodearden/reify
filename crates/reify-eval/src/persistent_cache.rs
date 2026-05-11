@@ -475,6 +475,31 @@ fn decode_f64_slab_from_le_bytes(bytes: &[u8]) -> impl Iterator<Item = f64> + '_
     })
 }
 
+/// Construct the two-level shard directory for a given set of key components.
+///
+/// # Layout
+///
+/// ```text
+/// <cache_root>/<engine_version_hash>/<input_hash[0..2]>
+/// ```
+///
+/// Callers create this directory once via `fs::create_dir_all(&shard_dir(...))`
+/// and then write both the `.bin` and `.meta` files into it. The directory is
+/// the shared parent of both files, which is a structural requirement for
+/// atomic-rename and for GC sweeps to touch related files together.
+///
+/// See [`entry_bin_path`] for the full layout and precondition documentation.
+pub fn shard_dir(cache_root: &Path, engine_version_hash: &str, input_hash: &str) -> PathBuf {
+    debug_assert!(
+        input_hash.len() >= 2,
+        "shard_dir: input_hash must be at least 2 chars, got {:?}",
+        input_hash
+    );
+    cache_root
+        .join(engine_version_hash)
+        .join(&input_hash[..2])
+}
+
 /// Construct the `.meta` sidecar path for a given set of key components.
 ///
 /// The `.meta` file lives in the same directory as the corresponding `.bin`
