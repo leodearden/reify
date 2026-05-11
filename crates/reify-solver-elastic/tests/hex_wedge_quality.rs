@@ -51,6 +51,84 @@ use reify_solver_elastic::{
     SweepError, SweepParams, SweptConnectivity, SweptMesh3d, ThroughThicknessSweepWarning,
 };
 
+// ---------------------------------------------------------------------------
+// Fixture tests
+// ---------------------------------------------------------------------------
+
+/// Extruded plate (100×100×2 mm, hex-eligible).
+///
+/// Profiles a 100×100 square with `HexPreferred`; sweeps 2 mm along Z.
+/// Asserts:
+/// - On Gmsh builds: quad 2D mesh → hex 3D connectivity with
+///   `indices.len() == 8 * n_base_quads * K` and vertex buffer
+///   `len == 3 * (K+1) * n_base_vertices`.
+/// - Through-thickness: `check_sweep_through_thickness(K, 2).is_none()`.
+/// - On stub builds: `Err(GmshUnavailable)` early-return.
+#[test]
+fn extruded_plate_hex_mesh_succeeds_with_expected_element_count() {
+    let boundary = rect_boundary(100.0, 100.0);
+    let options = Mesh2dOptions {
+        mesh_size: Some(20.0),
+        deterministic: true,
+        ..Mesh2dOptions::default()
+    };
+
+    let result = mesh_swept_profile_2d(&boundary, SweepElementTarget::HexPreferred, &options);
+
+    if !GMSH_AVAILABLE {
+        match result {
+            Err(Mesh2dError::GmshUnavailable) => {}
+            other => panic!("stub build: expected Err(GmshUnavailable), got {other:?}"),
+        }
+        return;
+    }
+
+    let report = result.expect("extruded plate: mesh_swept_profile_2d failed");
+
+    let (n_base_quads, n_base_vertices) = match &report.mesh {
+        Mesh2d::Quad { vertices, indices } => {
+            assert_eq!(indices.len() % 4, 0, "quad indices must be stride-4");
+            assert!(!indices.is_empty(), "quad indices must be non-empty");
+            (indices.len() / 4, vertices.len() / 2)
+        }
+        Mesh2d::Triangle { .. } => {
+            panic!("extruded plate with HexPreferred should return Quad mesh")
+        }
+    };
+    assert!(n_base_quads >= 1, "expected at least one base quad");
+
+    let k = derive_layer_count(2.0, 1.0, 2);
+    assert!(k >= 2, "derive_layer_count(2.0, 1.0, 2) must be >= 2, got {k}");
+
+    let swept = sweep_2d_mesh_to_3d(&report.mesh, &SweepParams::Extrude { axis: [0.0, 0.0, 1.0], length: 2.0 }, k)
+        .expect("extruded plate: sweep_2d_mesh_to_3d failed");
+
+    match &swept.connectivity {
+        SweptConnectivity::Hex { indices } => {
+            assert_eq!(
+                indices.len(),
+                8 * n_base_quads * k,
+                "hex indices.len() must be 8 * n_base_quads * K \
+                 (n_base_quads={n_base_quads}, K={k})",
+            );
+        }
+        SweptConnectivity::Wedge { .. } => {
+            panic!("extruded plate with Quad base must produce Hex connectivity")
+        }
+    }
+    assert_eq!(
+        swept.vertices.len(),
+        3 * (k + 1) * n_base_vertices,
+        "vertex buffer must be 3 * (K+1) * n_base_vertices \
+         (K={k}, n_base_vertices={n_base_vertices})",
+    );
+    assert_eq!(swept.layers, k, "swept.layers must equal K={k}");
+    assert!(
+        check_sweep_through_thickness(k, 2).is_none(),
+        "through-thickness check must pass for K={k}",
+    );
+}
+
 /// Surface-pin test: verifies that every type, function, and constant used by
 /// the fixture tests below can be resolved at compile time.  A regression that
 /// renames or removes any of these re-exports breaks here *before* any fixture
