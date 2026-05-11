@@ -60,11 +60,14 @@ use reify_types::ContentHash;
 /// task #4).  Any struct intended to feed a `ComputeNode.options_hash` must
 /// implement an equivalent "cacheable hash" that omits non-cacheable fields.
 ///
-/// The regression-pin test
-/// `compute_cache_key_treats_options_hash_as_opaque_so_thread_count_can_be_excluded_upstream`
-/// confirms this invariant holds at the composer boundary.
+/// The behavioural contract is verified indirectly by
+/// `compute_cache_key_changes_when_options_hash_changes`: if two solver
+/// invocations produce the same `options_hash` (e.g. because threads was
+/// filtered upstream), the composer produces the same cache key — it cannot
+/// smuggle in any non-opaque fields.  The filtering itself belongs in the
+/// upstream producer's tests (e.g. `ElasticOptions::cacheable_hash`).
 ///
-/// # Missing-input policy
+/// # Missing-input and duplicate-input policy
 ///
 /// If a `ValueCellId` or `RealizationNodeId` in `node.value_inputs` /
 /// `node.realization_inputs` is not present in `ctx`, this function **panics**
@@ -72,6 +75,12 @@ use reify_types::ContentHash;
 /// bug — `ComputeNodeData` is constructed by the upstream lowering pass (P3.4)
 /// and is expected to reference live graph nodes.  Silently substituting a
 /// sentinel hash would mask such bugs and could create collisions.
+///
+/// **Duplicate inputs** (the same id appearing more than once in either vec)
+/// are likewise a producer bug.  A `debug_assert!` catches duplicates in debug
+/// builds.  In release builds the cache key is still deterministic for a given
+/// duplicated shape, but it differs from the deduplicated version — so
+/// duplicates cause spurious cache misses without producing incorrect results.
 ///
 /// # PRD references
 ///
@@ -83,11 +92,16 @@ pub fn compute_cache_key(node: &ComputeNodeData, ctx: &EvaluationGraph) -> Conte
     // Collect value-input cell content_hashes sorted by ValueCellId (derived Ord
     // on (entity, member) lexicographic order) so the bucket is invariant under
     // insertion-order variation in node.value_inputs.
+    // Sort references rather than owned values to avoid allocating Strings per input.
     let value_bucket_hash: ContentHash = {
-        let mut sorted_value_inputs = node.value_inputs.clone();
-        sorted_value_inputs.sort(); // ValueCellId derives Ord via (entity, member)
-        let hashes: Vec<ContentHash> = sorted_value_inputs
-            .iter()
+        let mut sorted_refs: Vec<&reify_types::ValueCellId> = node.value_inputs.iter().collect();
+        sorted_refs.sort(); // ValueCellId derives Ord via (entity, member)
+        debug_assert!(
+            sorted_refs.windows(2).all(|w| w[0] != w[1]),
+            "compute_cache_key: value_inputs contains duplicate ValueCellId — producer bug"
+        );
+        let hashes: Vec<ContentHash> = sorted_refs
+            .into_iter()
             .map(|id| {
                 ctx.value_cells
                     .get(id)
@@ -107,12 +121,20 @@ pub fn compute_cache_key(node: &ComputeNodeData, ctx: &EvaluationGraph) -> Conte
     // RealizationNodeId does not derive Ord upstream (intentionally, per design
     // decision in plan.json), so we sort locally by the same (entity, index)
     // lexicographic ordering that a derived Ord would produce.
+    // Sort references rather than owned values to avoid allocating Strings per input.
     let realization_bucket_hash: ContentHash = {
-        let mut sorted_realization_inputs = node.realization_inputs.clone();
-        sorted_realization_inputs
+        let mut sorted_refs: Vec<&reify_types::RealizationNodeId> =
+            node.realization_inputs.iter().collect();
+        sorted_refs
             .sort_by(|a, b| (a.entity.as_str(), a.index).cmp(&(b.entity.as_str(), b.index)));
-        let hashes: Vec<ContentHash> = sorted_realization_inputs
-            .iter()
+        debug_assert!(
+            sorted_refs.windows(2).all(|w| {
+                (w[0].entity.as_str(), w[0].index) != (w[1].entity.as_str(), w[1].index)
+            }),
+            "compute_cache_key: realization_inputs contains duplicate RealizationNodeId — producer bug"
+        );
+        let hashes: Vec<ContentHash> = sorted_refs
+            .into_iter()
             .map(|id| {
                 ctx.realizations
                     .get(id)
@@ -226,46 +248,6 @@ mod tests {
         assert_ne!(
             key_v1, key_v2,
             "mutating a value-cell's content_hash must change the cache key"
-        );
-    }
-
-    /// Regression pin: `compute_cache_key` treats `options_hash` as opaque.
-    ///
-    /// Per `docs/prds/v0_3/compute-node-infrastructure.md` §"Resolved design
-    /// decisions" and the task description's "Exclusion contract" section:
-    /// thread count, determinism mode, and any future execution-profile flags
-    /// MUST be filtered out by the upstream `options_hash` producer (e.g.
-    /// `ElasticOptions::cacheable_hash`, owned by P3.4 / structural-analysis-fea.md
-    /// task #4). The *composer* (`compute_cache_key`) is unaware of which fields
-    /// are excluded — it accepts `options_hash` as a fully opaque `ContentHash`.
-    ///
-    /// This test represents two solver invocations whose `ElasticOptions` differ
-    /// ONLY in `threads` (a non-cacheable field). The upstream producer has already
-    /// filtered `threads` so both invocations produce the *same* `options_hash`.
-    /// The composer must therefore produce the same cache key — guaranteeing that
-    /// the exclusion contract is honoured end-to-end.
-    #[test]
-    fn compute_cache_key_treats_options_hash_as_opaque_so_thread_count_can_be_excluded_upstream() {
-        // Simulate: two ElasticOptions that differ only in `threads` but whose
-        // upstream cacheable_hash producer has already filtered `threads`,
-        // producing the same options_hash for both.
-        let shared_options_hash = ContentHash::of_str("elastic_options_without_threads");
-
-        let mut node_a = make_empty_node();
-        node_a.target = "solver::elastic_static".to_string();
-        node_a.options_hash = shared_options_hash;
-
-        let mut node_b = make_empty_node();
-        node_b.target = "solver::elastic_static".to_string();
-        node_b.options_hash = shared_options_hash; // same hash — threads filtered upstream
-
-        let graph = EvaluationGraph::default();
-        let key_a = compute_cache_key(&node_a, &graph);
-        let key_b = compute_cache_key(&node_b, &graph);
-        assert_eq!(
-            key_a, key_b,
-            "identical options_hash (threads filtered upstream) must produce identical cache keys: \
-             compute_cache_key must treat options_hash as opaque"
         );
     }
 
