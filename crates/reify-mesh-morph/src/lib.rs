@@ -83,6 +83,10 @@ pub use boundary::{
 };
 pub use elasticity::{ElasticityFailure, elasticity_morph, elasticity_morph_with_cg_opts};
 pub use eligibility::{Eligibility, MorphSnapshot, Reason, morph_eligible};
+
+/// Re-exported so consumers of [`elasticity_morph_with_cg_opts`] can construct
+/// `CgSolverOptions` without depending on `reify-solver-elastic` directly.
+pub use reify_solver_elastic::CgSolverOptions;
 pub use laplacian::{LaplacianFailure, laplacian_smooth};
 pub use options::{MorphFailure, MorphOptions, StiffnessRule};
 pub use quality::{QualityVerdict, quality_check};
