@@ -41,6 +41,32 @@ use serde::{Deserialize, Serialize};
 /// documentation including framing rationale and PRD reference.
 pub use crate::engine_hash_algo::compose_engine_version_hash;
 
+/// On-disk layout version for the [`CacheEntryHeader`] struct. Bump when the
+/// on-disk entry-header schema changes (fields added, removed, reordered, or
+/// bincode/zstd wire-format shifts).
+///
+/// **Distinct from `ELASTIC_RESULT_FORMAT_VERSION`** (which versions the
+/// *body* encoding per-type) and from [`ENGINE_VERSION_HASH`] (which
+/// invalidates result *semantics* when solver sources change). These three
+/// version namespaces must never be conflated — see PRD
+/// `docs/prds/v0_3/persistent-fea-cache.md` §"Storage format":
+/// "Format-version is separate from engine-version-hash — engine bumps
+/// invalidate result semantics; format bumps invalidate on-disk layout.
+/// Don't conflate."
+///
+/// **Wire-format contract:** `ENTRY_FORMAT_VERSION` covers the `bincode 1.3`
+/// fixint-LE encoding of [`CacheEntryHeader`] (4+32+32+8+8+8 = 92 bytes)
+/// AND the `zstd 0.13` compressed body that follows it. Any change to either
+/// encoder that produces different bytes on disk — including a minor version
+/// bump within the `=1.3` or `0.13` pins — MUST be accompanied by a bump of
+/// this constant in the same commit. Pinned by
+/// `cache_entry_header_bincode_encoding_matches_pinned_hex_literal` and
+/// `entry_format_version_const_is_one`.
+///
+/// Starting at 1 follows the Reify convention that 0 means "uninitialised /
+/// unknown", matching `ELASTIC_RESULT_FORMAT_VERSION`.
+pub const ENTRY_FORMAT_VERSION: u32 = 1;
+
 /// On-disk-layout version for [`ElasticResult`]. Bump when the encoding
 /// format changes (separate from `engine_version_hash`, which invalidates
 /// result semantics rather than the wire format). Starting at 1 follows the
