@@ -6218,66 +6218,29 @@ fn commit_state_clears_live_compile_diagnostics_on_successful_recovery() {
     );
 }
 
-/// When `last_tessellation_diagnostics` is populated (via the test injector) and
-/// `compiled` is `None`, `build_gui_state` must surface those diagnostics through
-/// `state.tessellation_diagnostics`.
-///
-/// Pins step-9/step-10 of the task-3351 plan: the early-return branch of
-/// `build_gui_state` must emit `self.last_tessellation_diagnostics.clone()` into
-/// `GuiState::tessellation_diagnostics`, and `compile_diagnostics` must remain
-/// separate (empty in this case, since no load was attempted).
+/// On a fresh session with no module loaded, `build_gui_state` must return an
+/// empty `tessellation_diagnostics`. This is structural — no production producer
+/// for `tessellation_diagnostics` populates the cold-start branch (tessellation
+/// runs only when `compiled is Some`). The test pins the empty-vec emission so
+/// a future regression that re-introduces speculative stored-field plumbing
+/// without a producer is caught.
 #[test]
-fn build_gui_state_surfaces_stored_tessellation_diagnostics_when_no_module_loaded() {
-    use reify_types::DiagnosticInfo;
-
+fn build_gui_state_returns_empty_tessellation_diagnostics_when_no_module_loaded() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
-
-    // Inject two synthetic tessellation DiagnosticInfo entries.
-    let injected = vec![
-        DiagnosticInfo {
-            file_path: "main.ri".to_string(),
-            line: 3,
-            column: 1,
-            end_line: 3,
-            end_column: 10,
-            severity: "Error".to_string(),
-            message: "tessellation failure alpha".to_string(),
-            code: None,
-        },
-        DiagnosticInfo {
-            file_path: "main.ri".to_string(),
-            line: 7,
-            column: 5,
-            end_line: 7,
-            end_column: 20,
-            severity: "Error".to_string(),
-            message: "tessellation failure beta".to_string(),
-            code: None,
-        },
-    ];
-    session.inject_last_tessellation_diagnostics_for_test(injected.clone());
 
     let state = session
         .build_gui_state()
         .expect("build_gui_state should return Ok when compiled is None");
 
-    // tessellation_diagnostics must match the injected entries (same length, same values).
-    assert_eq!(
-        state.tessellation_diagnostics.len(),
-        injected.len(),
-        "tessellation_diagnostics length should match injected count"
+    assert!(
+        state.tessellation_diagnostics.is_empty(),
+        "cold-start build_gui_state should emit empty tessellation_diagnostics — no producer exists yet"
     );
-    for (got, want) in state.tessellation_diagnostics.iter().zip(injected.iter()) {
-        assert_eq!(got.severity, want.severity, "severity mismatch");
-        assert_eq!(got.message, want.message, "message mismatch");
-    }
-
-    // compile_diagnostics must remain empty — the two streams are independent.
     assert!(
         state.compile_diagnostics.is_empty(),
-        "compile_diagnostics should be empty when no load was attempted"
+        "cold-start build_gui_state should emit empty compile_diagnostics — no load attempted"
     );
 }
 

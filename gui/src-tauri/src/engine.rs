@@ -93,14 +93,6 @@ pub struct EngineSession {
     /// `build_gui_state` emits this field into `GuiState::compile_diagnostics` only on
     /// the early-return branch (when `compiled` is `None`).
     last_compile_diagnostics: Vec<DiagnosticInfo>,
-    /// Structured diagnostics from the most recent tessellation failure.
-    ///
-    /// Populated via `#[cfg(test)] inject_last_tessellation_diagnostics_for_test` today;
-    /// no production path populates it yet because tessellation only runs when `compiled`
-    /// is `Some`.  Cleared atomically in `commit_state` alongside `last_compile_diagnostics`.
-    /// `build_gui_state` emits this field into `GuiState::tessellation_diagnostics` when
-    /// `compiled` is `None`, preserving structural symmetry for forward compatibility.
-    last_tessellation_diagnostics: Vec<DiagnosticInfo>,
     /// Structured diagnostics from a failed live edit when a prior successful compile exists.
     ///
     /// Populated on `Err` by `load_from_source`, `update_source`, and `load_file` when
@@ -441,7 +433,6 @@ impl EngineSession {
             line_offsets_cache: None,
             consumed_idents_cache: None,
             last_compile_diagnostics: Vec::new(),
-            last_tessellation_diagnostics: Vec::new(),
             live_compile_diagnostics: Vec::new(),
         }
     }
@@ -655,11 +646,10 @@ impl EngineSession {
 
     /// Atomically commit all session state after a successful parse+compile+check cycle.
     ///
-    /// This helper enforces the invariant that the eight core session fields always
-    /// change together: either all eight are updated or none are.  The eight fields
+    /// This helper enforces the invariant that the seven core session fields always
+    /// change together: either all seven are updated or none are.  The seven fields
     /// are: `source_map`, `module_name`, `compiled`, `last_check`, `parsed_cache`,
-    /// `last_compile_diagnostics`, `last_tessellation_diagnostics`, and
-    /// `live_compile_diagnostics`.
+    /// `last_compile_diagnostics`, and `live_compile_diagnostics`.
     /// Callers **must** only invoke this after both compilation and `check()` have
     /// succeeded — invoking it on a partially-valid state would violate the invariant.
     ///
@@ -694,10 +684,9 @@ impl EngineSession {
         self.consumed_idents_cache = None;
         // Clear stored failure diagnostics — the compile succeeded, so any stale
         // failure diagnostics from a prior failed load must not appear in subsequent
-        // build_gui_state calls.  All three fields are cleared atomically here so the
-        // atomic-commit invariant ("all eight fields move together") remains intact.
+        // build_gui_state calls.  Both fields are cleared atomically here so the
+        // atomic-commit invariant ("all seven fields move together") remains intact.
         self.last_compile_diagnostics.clear();
-        self.last_tessellation_diagnostics.clear();
         self.live_compile_diagnostics.clear();
     }
 
@@ -853,7 +842,7 @@ impl EngineSession {
                     values: Vec::new(),
                     constraints: Vec::new(),
                     files: Vec::new(),
-                    tessellation_diagnostics: self.last_tessellation_diagnostics.clone(),
+                    tessellation_diagnostics: Vec::new(),
                     compile_diagnostics: self.last_compile_diagnostics.clone(),
                 });
             }
@@ -2375,21 +2364,6 @@ impl EngineSession {
     /// Mirrors the style of `last_compile_diagnostics_for_test`.
     pub(crate) fn live_compile_diagnostics_for_test(&self) -> &[DiagnosticInfo] {
         &self.live_compile_diagnostics
-    }
-
-    /// Inject synthetic diagnostics into `last_tessellation_diagnostics` for testing.
-    ///
-    /// Allows tests to exercise the `build_gui_state` early-return tessellation
-    /// wiring without requiring a production population path (which does not exist
-    /// yet — tessellation only runs when `compiled is Some`).  Mirrors the style of
-    /// `inject_diagnostic_for_test` (engine.rs:2091).
-    ///
-    /// Replaces any previously-stored diagnostics; call with an empty vec to clear.
-    pub(crate) fn inject_last_tessellation_diagnostics_for_test(
-        &mut self,
-        diags: Vec<DiagnosticInfo>,
-    ) {
-        self.last_tessellation_diagnostics = diags;
     }
 
     /// Directly inject a `CompiledModule` as the session's current compiled state,
