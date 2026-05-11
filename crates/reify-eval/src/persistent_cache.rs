@@ -1995,6 +1995,38 @@ mod tests {
     // ── sidecar tests ────────────────────────────────────────────────────────
 
     #[test]
+    fn read_sidecar_mtime_returns_value_consistent_with_fs_metadata_modified() {
+        use std::fs::File;
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let tmpdir = tempfile::TempDir::new().expect("must create tempdir");
+        let path   = tmpdir.path().join("entry.meta");
+        write_sidecar(&path).expect("write_sidecar must succeed");
+
+        // Back-date to a well-known absolute time so we can verify the value.
+        let known_mtime = UNIX_EPOCH + Duration::from_secs(42_424_242);
+        {
+            let f = File::options().write(true).open(&path).expect("must open");
+            f.set_times(std::fs::FileTimes::new().set_modified(known_mtime))
+                .expect("must set mtime");
+        }
+
+        let got = read_sidecar_mtime(&path).expect("read_sidecar_mtime must succeed");
+        let expected = std::fs::metadata(&path)
+            .expect("must stat")
+            .modified()
+            .expect("must have mtime");
+        assert_eq!(got, expected, "read_sidecar_mtime must match fs::metadata().modified()");
+        assert_eq!(got, known_mtime, "read_sidecar_mtime must return the back-dated value");
+
+        // Non-existent path must return Err with kind NotFound.
+        let missing = tmpdir.path().join("no_such.meta");
+        let err = read_sidecar_mtime(&missing).expect_err("must fail for missing file");
+        assert_eq!(err.kind(), io::ErrorKind::NotFound,
+            "expected NotFound for missing sidecar, got {:?}", err);
+    }
+
+    #[test]
     fn touch_sidecar_updates_mtime_to_a_strictly_later_value_without_changing_content() {
         use std::fs::File;
         use std::time::{Duration, SystemTime, UNIX_EPOCH};
