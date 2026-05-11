@@ -46,6 +46,36 @@
 /// `K = max(min_layers, round(sweep_distance / mesh_size))`.
 /// Task #9 wires this via `ElasticOptions.mesh_size` and
 /// `ElasticOptions.sweep_subdivisions`.
+/// Check whether the swept mesh has enough elements through its thickness.
+///
+/// Returns `None` when `layers >= min_layers` (acceptable).  Returns
+/// `Some(warning)` when too few layers were produced, with a human-readable
+/// message that names the two knobs (`mesh_size`, `sweep_subdivisions`) a
+/// caller can adjust.
+///
+/// The diagnostic vocabulary (`mesh_size`, `sweep_subdivisions`) is locked by
+/// test assertions — preserve those exact substrings when editing the message.
+///
+/// Mirrors the pattern in `reify_kernel_gmsh::through_thickness::through_thickness_check`
+/// but as a standalone one-liner (no bin-detection needed since K is an input).
+pub fn check_sweep_through_thickness(
+    layers: usize,
+    min_layers: usize,
+) -> Option<ThroughThicknessSweepWarning> {
+    if layers >= min_layers {
+        return None;
+    }
+    Some(ThroughThicknessSweepWarning {
+        layer_count: layers,
+        min_layers,
+        message: format!(
+            "swept body has only {layers} elements through the sweep direction; \
+             expected at least {min_layers}. \
+             Decrease mesh_size or set an explicit sweep_subdivisions.",
+        ),
+    })
+}
+
 pub fn derive_layer_count(sweep_distance: f64, mesh_size: f64, min_layers: usize) -> usize {
     if sweep_distance.is_finite()
         && mesh_size.is_finite()
