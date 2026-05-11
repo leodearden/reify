@@ -1,32 +1,37 @@
-//! Tests for improved diagnostics on cross-sub access to geometry-typed members.
+//! Tests for cross-sub access to geometry-typed members.
 //!
-//! ## Background
+//! ## Background — split purpose (task 3441)
 //!
-//! `self.<sub>.<member>` fails with a generic "unknown member" error when `<member>`
-//! is a `Solid`-typed param or a geometry `let` — because geometry-producing
-//! members are lowered as `RealizationDecl`s and never appear in `value_cells`,
-//! which is the only source `sub_member_types` maps are built from.
+//! This file pins TWO complementary behaviours that share a single AST shape
+//! (`self.<sub>.<member>` where `<member>` is a `Solid`-typed param or a
+//! geometry `let` on the child structure):
 //!
-//! ## Scope (v0.1)
+//! 1. **Working-path lowering (non-collection subs).**  `self.inner.body`
+//!    where `inner` is a singular sub now lowers successfully to a
+//!    `GeomRef::Sub("<sub>.<member>")` reference — compile produces no Error
+//!    diagnostic.  The integration-level lowering shape is pinned in
+//!    `cross_sub_geometry_lowering_tests.rs`; this file confirms the
+//!    no-diagnostic invariant at the same call sites that previously emitted
+//!    the v0.1 "not yet supported" diagnostic.
 //!
-//! Full cross-sub geometry composition is deferred. Instead, the compiler emits
-//! a specific, actionable diagnostic when the missing member IS a realization on
-//! the child template, distinguishing it from genuinely-missing scalar members.
+//! 2. **Diagnostic preserved (collection subs).**  `bolts[0].body` and
+//!    bare `self.bolts.body` continue to emit the geometry-specific
+//!    diagnostic — per-instance handles for collection elements are out of
+//!    scope for v0.1.
 //!
-//! ## Test step numbering
+//! 3. **Generic-fallback preserved (truly missing members).**
+//!    `self.inner.nonexistent` still emits the generic "unknown member"
+//!    diagnostic — the working path is gated on
+//!    `sub_realization_names[sub].contains(member)`.
 //!
-//! - Step 1 (test):  `param_body_solid_cross_sub_access_emits_specific_diagnostic`
-//! - Step 2 (impl):  add `sub_realization_names` and route to specific diagnostic
-//! - Step 3 (test):  `let_body_cross_sub_access_emits_specific_diagnostic`
-//! - Step 4 (impl):  verify let-body case (no-op if step-3 passes after step-2)
-//! - Step 5 (test):  `nonexistent_member_still_emits_generic_unknown_member_diagnostic`
-//! - Step 6 (impl):  verify generic-path short-circuit (no-op if step-5 passes)
-//! - Step 7 (test):  `collection_sub_*_geometry_access_emits_specific_diagnostic`
-//! - Step 8 (impl):  collection-sub branches
-//! - Step 9 (test):  `cross_sub_geometry_access_does_not_cascade`
-//! - Step 10 (impl): anti-cascade verification (no-op if step-9 passes)
-//! - Step 11 (impl): docs/reify-language-spec.md §8.3 note
+//! ## Historical step numbering
+//!
+//! The original task-3397 diagnostic was added by steps 1-11 of that task.
+//! Task 3441 flipped steps 1, 3, and 9 to working-path expectations while
+//! preserving steps 5, 7's collection-sub diagnostics and step-5's
+//! generic-fallback regression guard.
 
+use reify_compiler::{CompiledGeometryOp, GeomRef, TransformKind};
 use reify_test_support::compile_source;
 use reify_types::Severity;
 
@@ -40,145 +45,166 @@ fn has_deferred_keyword(msg: &str) -> bool {
         || msg.contains("not supported")
 }
 
-// ─── step-1: param body : Solid cross-sub access ─────────────────────────────
+// ─── flipped (was step-1, diagnostic): param body : Solid cross-sub access ───
 
 /// Accessing `self.inner.body` where `body` is a `param body : Solid = box(...)`
-/// on a child structure must emit a *specific*, actionable diagnostic — not the
-/// generic "unknown member 'body' on sub 'inner'" fallback.
+/// on a singular (non-collection) child sub now lowers to a stable
+/// `GeomRef::Sub("inner.body")` reference — NO Error diagnostic fires.
 ///
-/// Expected diagnostic shape (keyword-matched, not pinned to exact prose):
-///   - severity == Error
-///   - message contains "geometry"
-///   - message contains "not yet" or "v0.1" or "not supported"
-///   - message mentions "inner" and "body"
-///   - NO diagnostic contains the old generic text "unknown member 'body' on sub 'inner'"
+/// Flipped by task 3441 (step-9): the prior v0.1 "geometry not yet supported"
+/// diagnostic was replaced by a working-path lowering in `expr.rs` /
+/// `geometry.rs`, and the parent's `named_steps` is seeded with the
+/// compound-key `"inner.body"` entry by `engine_build.rs`.
 ///
-/// RED until step-2 lands.
+/// Regression guard: the generic "unknown member" fallback must NOT fire for
+/// this case — the cross-sub working path is reached because `body` is a
+/// realisation on `Inner`.
 #[test]
-fn param_body_solid_cross_sub_access_emits_specific_diagnostic() {
+fn param_body_solid_cross_sub_access_lowers_to_geom_ref_sub() {
     let source = r#"pub structure Inner {
     param body : Solid = box(10mm, 20mm, 30mm)
 }
 pub structure Outer {
     sub inner = Inner()
-    let copy = self.inner.body
+    let copy = translate(self.inner.body, 0mm, 0mm, 0mm)
 }"#;
     let compiled = compile_source(source);
+
+    // (a) No Error diagnostics — the working path replaces the old diagnostic.
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-
     assert!(
-        !errors.is_empty(),
-        "expected at least one Error diagnostic for `self.inner.body` (Solid param access)"
-    );
-
-    // (b) The message should contain "geometry" AND a "not yet"/"v0.1"/"not supported" keyword.
-    let has_geometry_diagnostic = errors.iter().any(|d| {
-        d.message.contains("geometry") && has_deferred_keyword(&d.message)
-    });
-    assert!(
-        has_geometry_diagnostic,
-        "expected a diagnostic containing 'geometry' and ('not yet' | 'v0.1' | 'not supported'); \
-         got: {:?}",
+        errors.is_empty(),
+        "expected no Error diagnostics; got: {:?}",
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    // (c) The geometry-specific diagnostic should name both the sub and the member.
-    let names_sub_and_member = errors.iter().any(|d| {
-        d.message.contains("geometry")
-            && has_deferred_keyword(&d.message)
-            && d.message.contains("inner")
-            && d.message.contains("body")
+    // (b) Outer's `copy` realization contains a Translate whose target is
+    //     `GeomRef::Sub("inner.body")`.
+    let outer = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Outer")
+        .expect("Outer template should be present");
+    let copy = outer
+        .realizations
+        .iter()
+        .find(|r| r.name.as_deref() == Some("copy"))
+        .expect("Outer.copy realization should be present");
+
+    let has_expected_sub_ref = copy.operations.iter().any(|op| {
+        matches!(
+            op,
+            CompiledGeometryOp::Transform {
+                kind: TransformKind::Translate,
+                target: GeomRef::Sub(name),
+                ..
+            } if name == "inner.body"
+        )
     });
     assert!(
-        names_sub_and_member,
-        "geometry diagnostic must name both 'inner' (sub) and 'body' (member); \
+        has_expected_sub_ref,
+        "expected a Translate op targeting GeomRef::Sub(\"inner.body\"); \
          got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        copy.operations
     );
 
-    // (d) Regression guard: the OLD generic "unknown member" path must NOT fire for
-    //     this member — the geometry-specific diagnostic proves the new path took over.
-    //     We check by substring rather than exact equality so minor wording tweaks
-    //     (e.g. "on sub" → "of sub") don't silently defeat the guard.
-    let has_generic_fallback = errors.iter().any(|d| {
+    // (c) Regression guard: NO generic "unknown member" fallback for this
+    //     member — the cross-sub working path is gated on
+    //     `sub_realization_names[sub].contains(member)`, which `body` satisfies.
+    let has_generic_fallback = compiled.diagnostics.iter().any(|d| {
         d.message.contains("unknown member")
             && d.message.contains("'body'")
             && d.message.contains("'inner'")
-            && !d.message.contains("geometry")
     });
     assert!(
         !has_generic_fallback,
-        "found old generic 'unknown member' diagnostic for 'body'/'inner' — \
-         it should have been replaced by the geometry-specific diagnostic; \
+        "found generic 'unknown member' diagnostic for 'body'/'inner' — \
+         it should have been replaced by the working-path lowering; \
          got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        compiled
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }
 
-// ─── step-3: let body = geometry cross-sub access ────────────────────────────
+// ─── flipped (was step-3, diagnostic): let body = geometry cross-sub access ──
 
-/// Same as step-1 but `Inner` uses `let body = box(...)` (geometry let binding).
+/// Same as the param-body-Solid case above, but with `let body = box(...)`
+/// on the child (geometry let binding).  Both shapes lower to the same
+/// `RealizationDecl`, so the working-path lowering must fire uniformly.
 ///
-/// Both `param body : Solid` and `let body = <geometry>` lower to `RealizationDecl`
-/// — so the diagnostic must be uniform. May already be GREEN after step-2.
+/// Flipped by task 3441 (step-9): no Error diagnostic; the Translate must
+/// target `GeomRef::Sub("inner.body")`.
 #[test]
-fn let_body_cross_sub_access_emits_specific_diagnostic() {
+fn let_body_cross_sub_access_lowers_to_geom_ref_sub() {
     let source = r#"pub structure Inner {
     let body = box(10mm, 20mm, 30mm)
 }
 pub structure Outer {
     sub inner = Inner()
-    let copy = self.inner.body
+    let copy = translate(self.inner.body, 0mm, 0mm, 0mm)
 }"#;
     let compiled = compile_source(source);
+
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-
     assert!(
-        !errors.is_empty(),
-        "expected at least one Error diagnostic for `self.inner.body` (geometry let access)"
+        errors.is_empty(),
+        "expected no Error diagnostics; got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    let has_geometry_diagnostic = errors.iter().any(|d| {
-        d.message.contains("geometry") && has_deferred_keyword(&d.message)
+    let outer = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Outer")
+        .expect("Outer template should be present");
+    let copy = outer
+        .realizations
+        .iter()
+        .find(|r| r.name.as_deref() == Some("copy"))
+        .expect("Outer.copy realization should be present");
+
+    let has_expected_sub_ref = copy.operations.iter().any(|op| {
+        matches!(
+            op,
+            CompiledGeometryOp::Transform {
+                kind: TransformKind::Translate,
+                target: GeomRef::Sub(name),
+                ..
+            } if name == "inner.body"
+        )
     });
     assert!(
-        has_geometry_diagnostic,
-        "expected geometry-specific diagnostic for let-body cross-sub access; \
+        has_expected_sub_ref,
+        "expected a Translate op targeting GeomRef::Sub(\"inner.body\"); \
          got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        copy.operations
     );
 
-    let names_sub_and_member = errors.iter().any(|d| {
-        d.message.contains("geometry")
-            && has_deferred_keyword(&d.message)
-            && d.message.contains("inner")
-            && d.message.contains("body")
-    });
-    assert!(
-        names_sub_and_member,
-        "geometry diagnostic must name both 'inner' and 'body'; got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-
-    let has_generic_fallback = errors.iter().any(|d| {
+    let has_generic_fallback = compiled.diagnostics.iter().any(|d| {
         d.message.contains("unknown member")
             && d.message.contains("'body'")
             && d.message.contains("'inner'")
-            && !d.message.contains("geometry")
     });
     assert!(
         !has_generic_fallback,
-        "found old generic 'unknown member' diagnostic for 'body'/'inner' — \
-         should have been replaced by geometry-specific one; got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        "found generic 'unknown member' diagnostic for 'body'/'inner' — \
+         should have been replaced by the working-path lowering; got: {:?}",
+        compiled
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -332,14 +358,19 @@ pub structure Rack {
     );
 }
 
-// ─── step-9: anti-cascade — geometry access as operand does not cascade ────────
+// ─── flipped (was step-9, anti-cascade): no spurious errors in nested call ────
 
-/// When `self.inner.body` (a cross-sub geometry member access) appears as an
-/// operand to another expression, the geometry-specific diagnostic fires exactly
-/// ONCE and downstream type-checking does NOT emit spurious cascade errors.
+/// When `self.inner.body` appears as an operand to another geometry call
+/// (e.g. `translate(...)`), the working-path lowering must (i) emit NO Error
+/// diagnostic for the cross-sub access itself, AND (ii) not trigger any
+/// downstream cascade errors ("argument N must be a geometry expression",
+/// "type mismatch", "expected geometry expression").
 ///
-/// `make_poison_literal` returns `Type::Error`; downstream geometry-call
-/// argument checking already short-circuits on `Type::Error`.
+/// Flipped by task 3441 (step-9): formerly verified that the cross-sub
+/// diagnostic fired exactly once + no cascade; now verifies the working-path
+/// alternative — no diagnostic and no cascade.  The compile-side `GeomRef::Sub`
+/// is asserted by `cross_sub_geometry_lowering_tests.rs`; this test pins the
+/// no-error invariant at the original call site.
 #[test]
 fn cross_sub_geometry_access_does_not_cascade() {
     let source = r#"pub structure Inner {
@@ -356,28 +387,62 @@ pub structure Outer {
         .filter(|d| d.severity == Severity::Error)
         .collect();
 
-    // (a) The geometry-cross-sub diagnostic must fire at least once.
-    let has_geometry_diagnostic = errors.iter().any(|d| {
-        d.message.contains("geometry") && has_deferred_keyword(&d.message)
-    });
+    // (a) Working-path lowering: NO Error diagnostics for the cross-sub access.
     assert!(
-        has_geometry_diagnostic,
-        "expected geometry-specific diagnostic to fire; got: {:?}",
+        errors.is_empty(),
+        "expected no Error diagnostics for working-path cross-sub access; \
+         got: {:?}",
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    // (b) No cascade "expected geometry expression" / "type mismatch" / "argument N" errors.
-    // Matches by distinguishing prefixes so cascade errors that happen to mention
-    // "geometry" (e.g. "argument 1 must be a geometry expression") are not
-    // inadvertently excluded by a content-based filter.
-    let has_cascade = errors.iter().any(|d| {
-        d.message.starts_with("argument")
-            || d.message.starts_with("type mismatch")
-            || d.message == "expected geometry expression"
+    // (b) Specifically no cascade "argument N" / "type mismatch" /
+    //     "expected geometry expression" errors — guards against the case where
+    //     a future regression silently produces these without the original
+    //     "geometry not yet supported" diagnostic.
+    let has_cascade = compiled.diagnostics.iter().any(|d| {
+        d.severity == Severity::Error
+            && (d.message.starts_with("argument")
+                || d.message.starts_with("type mismatch")
+                || d.message == "expected geometry expression")
     });
     assert!(
         !has_cascade,
         "unexpected cascade diagnostic in errors: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    // (c) The Translate op lowers with target = GeomRef::Sub("inner.body") —
+    //     the working path completed for the nested call's geometry arg.
+    let outer = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Outer")
+        .expect("Outer template should be present");
+    let composed = outer
+        .realizations
+        .iter()
+        .find(|r| r.name.as_deref() == Some("composed"))
+        .expect("Outer.composed realization should be present");
+
+    let has_expected_sub_ref = composed.operations.iter().any(|op| {
+        matches!(
+            op,
+            CompiledGeometryOp::Transform {
+                kind: TransformKind::Translate,
+                target: GeomRef::Sub(name),
+                ..
+            } if name == "inner.body"
+        )
+    });
+    assert!(
+        has_expected_sub_ref,
+        "expected a Translate op targeting GeomRef::Sub(\"inner.body\"); \
+         got: {:?}",
+        composed.operations
     );
 }
