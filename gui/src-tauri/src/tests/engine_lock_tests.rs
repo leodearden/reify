@@ -97,3 +97,39 @@ fn pre_poisoned_mutex_is_recovered() {
         "with_engine_lock must recover from a pre-poisoned mutex"
     );
 }
+
+#[test]
+fn panic_payload_string_appears_in_error_message() {
+    let engine = make_engine();
+    let result =
+        engine_lock::with_engine_lock(&engine, |_s: &mut EngineSession| -> bool {
+            panic!("my-marker-7e9c")
+        });
+    let err = result.expect_err("panicking closure must return Err");
+    assert!(
+        err.contains("panic in engine"),
+        "error must contain 'panic in engine', got: {err:?}"
+    );
+    assert!(
+        err.contains("my-marker-7e9c"),
+        "error must contain the panic message 'my-marker-7e9c', got: {err:?}"
+    );
+}
+
+#[test]
+fn panic_payload_str_literal_appears_in_error_message() {
+    let engine = make_engine();
+    let result =
+        engine_lock::with_engine_lock(&engine, |_s: &mut EngineSession| -> bool {
+            panic!("literal-only-marker")
+        });
+    let err = result.expect_err("panicking closure must return Err");
+    assert!(
+        err.contains("panic in engine"),
+        "error must contain 'panic in engine', got: {err:?}"
+    );
+    assert!(
+        err.contains("literal-only-marker"),
+        "error must contain the panic message 'literal-only-marker', got: {err:?}"
+    );
+}
