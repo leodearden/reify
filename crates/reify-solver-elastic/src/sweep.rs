@@ -28,9 +28,25 @@
 // Pure helpers
 // ---------------------------------------------------------------------------
 
+/// Defensive upper bound on the derived layer count.
+///
+/// `(K+1) * n_base * 3` f32s ([`build_vertices`]) plus `K * n_faces * elem_size`
+/// u32s ([`build_swept_connectivity`]) are allocated unconditionally on the
+/// success path.  Without this clamp, pathological inputs such as
+/// `sweep_distance = 1.0e25, mesh_size = 1.0` (or the `f64::MAX /
+/// f64::MIN_POSITIVE = +∞` case) round to `usize::MAX` after the `as usize` cast
+/// and OOM.  `1 << 20` ≈ 1 M layers is roughly three orders of magnitude beyond
+/// realistic usage and keeps the vertex allocation under ~13 GiB even for
+/// `n_base = 1000`.
+///
+/// Not exploitable via PRD task #9's `ElasticOptions` wiring today — this is
+/// defense-in-depth at the public boundary of [`derive_layer_count`].
+const MAX_LAYERS: usize = 1 << 20;
+
 /// Derive the number of element layers from the sweep distance and element size.
 ///
-/// Returns `round(sweep_distance / mesh_size).max(min_layers)`.
+/// Returns `round(sweep_distance / mesh_size).max(min_layers)`, clamped to
+/// [`MAX_LAYERS`] to prevent `usize::MAX` saturation on pathological inputs.
 ///
 /// # Defensive handling
 ///
@@ -39,6 +55,11 @@
 /// expected behaviour when called from PRD task #9's `ElasticOptions` wiring:
 /// if `mesh_size` was unset (0 or negative) or the geometry produced a
 /// degenerate distance, we fall through to the minimum.
+///
+/// When both inputs are positive and finite, the derived raw count is clamped
+/// to `MAX_LAYERS` before being compared against `min_layers`.  `min_layers`
+/// therefore remains an authoritative caller-requested floor — the clamp only
+/// applies to the value *computed* from `sweep_distance / mesh_size`.
 ///
 /// # PRD contract
 ///
@@ -53,7 +74,11 @@ pub fn derive_layer_count(sweep_distance: f64, mesh_size: f64, min_layers: usize
         && mesh_size > 0.0
     {
         let raw = (sweep_distance / mesh_size).round();
-        raw.max(min_layers as f64) as usize
+        // Clamp the *derived* layer count to MAX_LAYERS to prevent usize::MAX
+        // saturation on pathological inputs (see MAX_LAYERS doc-comment).
+        // `min_layers` is applied after the clamp so it remains a hard floor
+        // for caller-requested minimums.
+        raw.min(MAX_LAYERS as f64).max(min_layers as f64) as usize
     } else {
         min_layers
     }
