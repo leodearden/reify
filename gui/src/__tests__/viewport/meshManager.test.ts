@@ -2582,7 +2582,7 @@ describe('meshManager', () => {
   });
 
   describe('input MeshData.vertices is not mutated by setDeformation warp', () => {
-    it('(a) createMeshFromData path — caller’s vertices buffer is not written by warp', () => {
+    it('(a) createMeshFromData path: input buffer is not mutated by warp', () => {
       const scene = new Scene();
       const manager = createMeshManager(scene);
       vi.clearAllMocks();
@@ -2602,9 +2602,49 @@ describe('meshManager', () => {
       manager.sync({ A: meshData });
       manager.setDeformation({ warpFactor: 2 });
 
-      // The caller’s original Float32Array must be untouched — the warp writes
+      // The caller's original Float32Array must be untouched — the warp writes
       // into the position buffer which must be a copy, not the input reference.
       expect(Array.from(callerVerts)).toEqual(snapshot);
+    });
+
+    it('(b) updateMeshGeometry same-length path — caller buffer is not written by warp', () => {
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+
+      // Initial sync (3 vertices = 9 floats) to get the mesh created.
+      const initialVerts = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+      const displaced1 = new Float32Array([0.1, 0, 0, 1.1, 0, 0, 0.1, 1, 0]);
+      manager.sync({
+        A: {
+          entity_path: 'A',
+          vertices: initialVerts,
+          indices: new Uint32Array([0, 1, 2]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          displaced_positions: displaced1,
+        },
+      });
+
+      // Re-sync with SAME length (9 floats) — hits the same-length branch
+      // (posAttr.array = data.vertices) in updateMeshGeometry.
+      const callerVerts2 = new Float32Array([0.5, 0, 0, 1.5, 0, 0, 0.5, 1, 0]);
+      const displaced2 = new Float32Array([0.6, 0, 0, 1.6, 0, 0, 0.6, 1, 0]);
+      const snapshot = Array.from(callerVerts2);
+      manager.sync({
+        A: {
+          entity_path: 'A',
+          vertices: callerVerts2,
+          indices: new Uint32Array([0, 1, 2]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          displaced_positions: displaced2,
+        },
+      });
+
+      // Trigger warp — without the fix, posAttr.array === callerVerts2 and
+      // applyWarpToMesh writes into callerVerts2.
+      manager.setDeformation({ warpFactor: 2 });
+
+      expect(Array.from(callerVerts2)).toEqual(snapshot);
     });
   });
 });
