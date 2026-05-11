@@ -594,6 +594,38 @@ mod tests {
         assert!(matches!(r, Err(SweepError::DegenerateMagnitude)), "got: {r:?}");
     }
 
+    // step-11: Extrude single CCW unit-square quad, K=1
+
+    #[test]
+    fn extrude_unit_quad_k1() {
+        let mesh2d = unit_quad();
+        let params = SweepParams::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: 0.5,
+        };
+        let mesh = sweep_2d_mesh_to_3d(&mesh2d, &params, 1).expect("should succeed");
+
+        assert_eq!(mesh.layers, 1);
+        // 2 layers × 4 verts × 3 coords = 24
+        assert_eq!(mesh.vertices.len(), 24, "vertices.len()");
+
+        let eps = 1e-6_f32;
+        // Bottom layer z=0
+        assert!((mesh.vertices[2] - 0.0).abs() < eps); // z of node 0
+        assert!((mesh.vertices[5] - 0.0).abs() < eps); // z of node 1
+        // Top layer z=0.5
+        assert!((mesh.vertices[14] - 0.5).abs() < eps); // z of node 4 (=12+2)
+        assert!((mesh.vertices[23] - 0.5).abs() < eps); // z of node 7 (=21+2)
+
+        // Connectivity: one hex [0,1,2,3, 4,5,6,7]
+        match &mesh.connectivity {
+            SweptConnectivity::Hex { indices } => {
+                assert_eq!(indices, &vec![0_u32, 1, 2, 3, 4, 5, 6, 7]);
+            }
+            other => panic!("expected Hex, got {other:?}"),
+        }
+    }
+
     // step-9: Extrude single CCW unit-triangle, K=1
 
     #[test]
