@@ -799,6 +799,80 @@ mod tests {
         // negative mesh_size → min_layers
         assert_eq!(derive_layer_count(1.0, -1.0, 2), 2);
     }
+
+    // step-1: debug-only `#[should_panic]` tests for malformed Mesh2d shape invariants.
+    //
+    // Each test is gated by `#[cfg(debug_assertions)]` because `debug_assert!` is
+    // elided in release builds — without the gate, `#[should_panic]` would falsely
+    // fail under `cargo test --release` (same rationale as
+    // `shell_boundary.rs:542-573` and `crates/reify-eval/src/kernel_registry.rs:915-933`).
+
+    /// Triangle with indices.len() % 3 != 0 must debug-panic naming `indices.len()`.
+    ///
+    /// Gated `#[cfg(debug_assertions)]`: `debug_assert!` is elided in release builds;
+    /// without the gate `#[should_panic]` would falsely fail under `cargo test --release`.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "Mesh2d::Triangle indices.len()")]
+    fn validate_sweep_inputs_panics_on_triangle_bad_indices_len() {
+        // indices has 4 elements — 4 % 3 != 0.  Vertices are valid (len=8, 8%2==0)
+        // so the vertices-stride check passes and the indices-stride check fires.
+        let mesh = Mesh2d::Triangle {
+            vertices: vec![0.0_f32, 0.0, 1.0, 0.0, 0.0, 1.0, 0.5, 0.5],
+            indices: vec![0, 1, 2, 3],
+        };
+        let params = SweepParams::Extrude { axis: [0.0, 0.0, 1.0], length: 1.0 };
+        let _ = sweep_2d_mesh_to_3d(&mesh, &params, 1);
+    }
+
+    /// Quad with indices.len() % 4 != 0 must debug-panic naming `indices.len()`.
+    ///
+    /// Gated `#[cfg(debug_assertions)]`: see sibling `_triangle_bad_indices_len` for rationale.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "Mesh2d::Quad indices.len()")]
+    fn validate_sweep_inputs_panics_on_quad_bad_indices_len() {
+        // indices has 5 elements — 5 % 4 != 0.  Vertices are valid (len=10, 10%2==0)
+        // so the vertices-stride check passes and the indices-stride check fires.
+        let mesh = Mesh2d::Quad {
+            vertices: vec![0.0_f32, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.5, 0.5],
+            indices: vec![0, 1, 2, 3, 4],
+        };
+        let params = SweepParams::Extrude { axis: [0.0, 0.0, 1.0], length: 1.0 };
+        let _ = sweep_2d_mesh_to_3d(&mesh, &params, 1);
+    }
+
+    /// Triangle with vertices.len() % 2 != 0 must debug-panic naming `vertices.len()`.
+    ///
+    /// Gated `#[cfg(debug_assertions)]`: see sibling `_triangle_bad_indices_len` for rationale.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "Mesh2d::Triangle vertices.len()")]
+    fn validate_sweep_inputs_panics_on_triangle_bad_vertices_len() {
+        // vertices has 3 elements — 3 % 2 != 0; the vertices-stride check fires first.
+        let mesh = Mesh2d::Triangle {
+            vertices: vec![0.0_f32, 0.0, 1.0],
+            indices: vec![0, 1, 2],
+        };
+        let params = SweepParams::Extrude { axis: [0.0, 0.0, 1.0], length: 1.0 };
+        let _ = sweep_2d_mesh_to_3d(&mesh, &params, 1);
+    }
+
+    /// Quad with vertices.len() % 2 != 0 must debug-panic naming `vertices.len()`.
+    ///
+    /// Gated `#[cfg(debug_assertions)]`: see sibling `_triangle_bad_indices_len` for rationale.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "Mesh2d::Quad vertices.len()")]
+    fn validate_sweep_inputs_panics_on_quad_bad_vertices_len() {
+        // vertices has 5 elements — 5 % 2 != 0; the vertices-stride check fires first.
+        let mesh = Mesh2d::Quad {
+            vertices: vec![0.0_f32, 0.0, 1.0, 0.0, 1.0],
+            indices: vec![0, 1, 2, 3],
+        };
+        let params = SweepParams::Extrude { axis: [0.0, 0.0, 1.0], length: 1.0 };
+        let _ = sweep_2d_mesh_to_3d(&mesh, &params, 1);
+    }
 }
 
 /// Compile-time signature pins for `sweep`'s public function items.
