@@ -26,5 +26,9 @@ where
     let mut guard = engine
         .lock()
         .map_err(|e| format!("engine lock poisoned: {e}"))?;
-    Ok(f(&mut guard))
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&mut guard)));
+    match result {
+        Ok(v) => Ok(v),
+        Err(_) => Err("panic in engine: <caught>".into()),
+    }
 }
