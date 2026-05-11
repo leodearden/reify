@@ -461,7 +461,11 @@ purpose check_part(part : Structure) {{
     // (b) and (c): constraint is a Quantifier whose collection is the new
     // PurposeReflectiveAggregation placeholder variant with
     // result_type == Type::List(Box::new(Type::Real)).
-    assert_eq!(module.compiled_purposes.len(), 1, "expected 1 compiled purpose");
+    assert_eq!(
+        module.compiled_purposes.len(),
+        1,
+        "expected 1 compiled purpose"
+    );
     let purpose = &module.compiled_purposes[0];
     assert_eq!(purpose.constraints.len(), 1, "expected 1 constraint");
 
@@ -669,38 +673,30 @@ purpose lightweight(subject : Structure) {
                 ),
             }
         }
-        other => panic!(
-            "expected BinOp constraint expression, got {:?}",
-            other
-        ),
+        other => panic!("expected BinOp constraint expression, got {:?}", other),
     }
 
     // (c) objective is Some(Minimize(ValueRef(lightweight.mass)))
     match &purpose.objective {
-        Some(OptimizationObjective::Minimize(expr)) => {
-            match &expr.kind {
-                CompiledExprKind::ValueRef(id) => {
-                    assert_eq!(
-                        id.entity, "lightweight",
-                        "objective ValueRef entity must equal purpose name (pre-remap), got {:?}",
-                        id.entity
-                    );
-                    assert_eq!(
-                        id.member, "mass",
-                        "objective ValueRef member must be 'mass', got {:?}",
-                        id.member
-                    );
-                }
-                other => panic!(
-                    "expected ValueRef for minimize objective expr, got {:?}",
-                    other
-                ),
+        Some(OptimizationObjective::Minimize(expr)) => match &expr.kind {
+            CompiledExprKind::ValueRef(id) => {
+                assert_eq!(
+                    id.entity, "lightweight",
+                    "objective ValueRef entity must equal purpose name (pre-remap), got {:?}",
+                    id.entity
+                );
+                assert_eq!(
+                    id.member, "mass",
+                    "objective ValueRef member must be 'mass', got {:?}",
+                    id.member
+                );
             }
-        }
-        other => panic!(
-            "expected Some(Minimize(_)) for objective, got {:?}",
-            other
-        ),
+            other => panic!(
+                "expected ValueRef for minimize objective expr, got {:?}",
+                other
+            ),
+        },
+        other => panic!("expected Some(Minimize(_)) for objective, got {:?}", other),
     }
 }
 
@@ -717,10 +713,7 @@ purpose lightweight(subject : Structure) {
 /// m5_purpose.ri still hit the catch-all "member access not yet supported".
 #[test]
 fn m5_purpose_example_compiles_under_stdlib_with_zero_errors() {
-    const M5_PATH: &str = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/m5_purpose.ri"
-    );
+    const M5_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/m5_purpose.ri");
     let src = std::fs::read_to_string(M5_PATH)
         .expect("failed to read examples/m5_purpose.ri — check CARGO_MANIFEST_DIR resolution");
 
@@ -750,7 +743,11 @@ fn m5_purpose_example_compiles_under_stdlib_with_zero_errors() {
         module.compiled_purposes.len(),
         3,
         "expected 3 compiled purposes (manufacturing_ready, lightweight, dimensionally_valid), got: {:?}",
-        module.compiled_purposes.iter().map(|p| &p.name).collect::<Vec<_>>()
+        module
+            .compiled_purposes
+            .iter()
+            .map(|p| &p.name)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -859,7 +856,11 @@ purpose check(subject : Widget) {
     );
 
     // (b) Compiled purpose exists with one constraint.
-    assert_eq!(module.compiled_purposes.len(), 1, "expected 1 compiled purpose");
+    assert_eq!(
+        module.compiled_purposes.len(),
+        1,
+        "expected 1 compiled purpose"
+    );
     let purpose = &module.compiled_purposes[0];
     assert_eq!(purpose.name, "check");
     assert_eq!(purpose.constraints.len(), 1, "expected 1 constraint");
@@ -1050,7 +1051,11 @@ purpose check(subject : Structure) {
         template.value_cells.iter().any(|vc| vc.id.member == "mass"),
         "expected registered `Structure` template to contain a `mass` value \
          cell, but value_cells were: {:?}",
-        template.value_cells.iter().map(|vc| &vc.id.member).collect::<Vec<_>>()
+        template
+            .value_cells
+            .iter()
+            .map(|vc| &vc.id.member)
+            .collect::<Vec<_>>()
     );
 
     // ── Wildcard-guard characterization ───────────────────────────────────────
@@ -1264,9 +1269,6 @@ purpose lightweight(subject : Structure) {
                 ),
             }
         }
-        other => panic!(
-            "expected BinOp constraint expression, got {:?}",
-            other
-        ),
+        other => panic!("expected BinOp constraint expression, got {:?}", other),
     }
 }

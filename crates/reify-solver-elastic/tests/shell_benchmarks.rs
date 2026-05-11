@@ -54,9 +54,8 @@
 //! ("Validation & polish").
 
 use reify_solver_elastic::{
-    AssemblyElement, AssemblyMode, ElementStiffness, assemble_global_stiffness,
-    apply_dirichlet_row_elimination, DirichletBc,
-    shell_element_stiffness, IsotropicElastic,
+    AssemblyElement, AssemblyMode, DirichletBc, ElementStiffness, IsotropicElastic,
+    apply_dirichlet_row_elimination, assemble_global_stiffness, shell_element_stiffness,
 };
 
 // ─── test-local helpers ──────────────────────────────────────────────────────
@@ -195,7 +194,11 @@ fn assembly_elements_for<'a>(
         .iter()
         .zip(stiffness.iter())
         .enumerate()
-        .map(|(i, (conn, k_e))| AssemblyElement { id: i, connectivity: conn, k_e })
+        .map(|(i, (conn, k_e))| AssemblyElement {
+            id: i,
+            connectivity: conn,
+            k_e,
+        })
         .collect()
 }
 
@@ -264,11 +267,7 @@ fn assembly_elements_for<'a>(
 /// tolerance band.
 ///
 /// Cross-reference: reviewer escalation `esc-3034-165`.
-fn pinched_cylinder_octant_symmetry_bcs(
-    nodes: &[[f64; 3]],
-    l: f64,
-    tol: f64,
-) -> Vec<DirichletBc> {
+fn pinched_cylinder_octant_symmetry_bcs(nodes: &[[f64; 3]], l: f64, tol: f64) -> Vec<DirichletBc> {
     // Guard: tol must be < 0.5 * min_spacing so no interior node is
     // accidentally captured as a boundary node.  Only active in debug builds;
     // O(n²) over the node count (negligible for small test meshes).
@@ -309,27 +308,60 @@ fn pinched_cylinder_octant_symmetry_bcs(
         let dof = |d: usize| node * 6 + d;
 
         if is_diaphragm {
-            bcs.push(DirichletBc { dof: dof(2), value: 0.0 }); // w = u_z = 0
-            bcs.push(DirichletBc { dof: dof(5), value: 0.0 }); // θ_z = 0 (torsion)
+            bcs.push(DirichletBc {
+                dof: dof(2),
+                value: 0.0,
+            }); // w = u_z = 0
+            bcs.push(DirichletBc {
+                dof: dof(5),
+                value: 0.0,
+            }); // θ_z = 0 (torsion)
         }
         if is_y0 {
-            bcs.push(DirichletBc { dof: dof(1), value: 0.0 }); // u_y
-            bcs.push(DirichletBc { dof: dof(3), value: 0.0 }); // θ_x
-            bcs.push(DirichletBc { dof: dof(5), value: 0.0 }); // θ_z
+            bcs.push(DirichletBc {
+                dof: dof(1),
+                value: 0.0,
+            }); // u_y
+            bcs.push(DirichletBc {
+                dof: dof(3),
+                value: 0.0,
+            }); // θ_x
+            bcs.push(DirichletBc {
+                dof: dof(5),
+                value: 0.0,
+            }); // θ_z
         }
         if is_x0 {
-            bcs.push(DirichletBc { dof: dof(0), value: 0.0 }); // u_x
-            bcs.push(DirichletBc { dof: dof(4), value: 0.0 }); // θ_y
-            bcs.push(DirichletBc { dof: dof(5), value: 0.0 }); // θ_z
+            bcs.push(DirichletBc {
+                dof: dof(0),
+                value: 0.0,
+            }); // u_x
+            bcs.push(DirichletBc {
+                dof: dof(4),
+                value: 0.0,
+            }); // θ_y
+            bcs.push(DirichletBc {
+                dof: dof(5),
+                value: 0.0,
+            }); // θ_z
         }
         if is_z0 {
-            bcs.push(DirichletBc { dof: dof(2), value: 0.0 }); // u_z = 0
+            bcs.push(DirichletBc {
+                dof: dof(2),
+                value: 0.0,
+            }); // u_z = 0
             // Meridional rotation at axis-aligned corners only:
             if is_y0 {
-                bcs.push(DirichletBc { dof: dof(4), value: 0.0 }); // θ_y = 0 at θ=0
+                bcs.push(DirichletBc {
+                    dof: dof(4),
+                    value: 0.0,
+                }); // θ_y = 0 at θ=0
             }
             if is_x0 {
-                bcs.push(DirichletBc { dof: dof(3), value: 0.0 }); // θ_x = 0 at θ=π/2
+                bcs.push(DirichletBc {
+                    dof: dof(3),
+                    value: 0.0,
+                }); // θ_x = 0 at θ=π/2
             }
         }
     }
@@ -371,8 +403,7 @@ fn pinched_cylinder_octant_symmetry_bcs(
 /// MITC3+ implementation will move radial_disp UPWARD toward the published
 /// reference and require widening (or replacement) of this band.
 #[test]
-fn pinched_cylinder_octant_smoke_test_radial_displacement_is_finite_and_inward(
-) {
+fn pinched_cylinder_octant_smoke_test_radial_displacement_is_finite_and_inward() {
     const R: f64 = 300.0;
     const L: f64 = 600.0;
     const T: f64 = 3.0;
@@ -487,7 +518,7 @@ fn cylinder_octant_mesh(nx: usize, ny: usize, r: f64, l: f64) -> (Vec<[f64; 3]>,
             //   A───B      i+1: C, D
             //   │   │      i:   A, B
             //   C───D      j:   left/right (θ)
-            let a = i * (nx + 1) + j;       // (i, j)
+            let a = i * (nx + 1) + j; // (i, j)
             let b = i * (nx + 1) + (j + 1); // (i, j+1)
             let c = (i + 1) * (nx + 1) + j; // (i+1, j)
             let d = (i + 1) * (nx + 1) + (j + 1); // (i+1, j+1)
@@ -539,7 +570,7 @@ fn roof_quadrant_mesh(nx: usize, ny: usize) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) 
     let mut connectivity = Vec::with_capacity(2 * nx * ny);
     for i in 0..ny {
         for j in 0..nx {
-            let a = i * (nx + 1) + j;       // (i,   j)
+            let a = i * (nx + 1) + j; // (i,   j)
             let b = i * (nx + 1) + (j + 1); // (i,   j+1)
             let c = (i + 1) * (nx + 1) + j; // (i+1, j)
             let d = (i + 1) * (nx + 1) + (j + 1); // (i+1, j+1)
@@ -587,7 +618,11 @@ fn hemisphere_quadrant_mesh(nx: usize, ny: usize) -> (Vec<[f64; 3]>, Vec<[usize;
         let cos_phi = phi.cos();
         for j in 0..=ny {
             let theta = j as f64 * FRAC_PI_2 / ny as f64;
-            nodes.push([R * sin_phi * theta.cos(), R * sin_phi * theta.sin(), R * cos_phi]);
+            nodes.push([
+                R * sin_phi * theta.cos(),
+                R * sin_phi * theta.sin(),
+                R * cos_phi,
+            ]);
         }
     }
 
@@ -600,9 +635,9 @@ fn hemisphere_quadrant_mesh(nx: usize, ny: usize) -> (Vec<[f64; 3]>, Vec<[usize;
     let mut connectivity = Vec::with_capacity(2 * nx * ny);
     for i in 0..nx {
         for j in 0..ny {
-            let a = i * (ny + 1) + j;           // (i,   j)
-            let b = i * (ny + 1) + (j + 1);     // (i,   j+1)
-            let c = (i + 1) * (ny + 1) + j;     // (i+1, j)
+            let a = i * (ny + 1) + j; // (i,   j)
+            let b = i * (ny + 1) + (j + 1); // (i,   j+1)
+            let c = (i + 1) * (ny + 1) + j; // (i+1, j)
             let d = (i + 1) * (ny + 1) + (j + 1); // (i+1, j+1)
             connectivity.push([a, b, d]);
             connectivity.push([a, d, c]);
@@ -654,9 +689,9 @@ fn twisted_beam_mesh(nz: usize, ny: usize) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
     let mut connectivity = Vec::with_capacity(2 * nz * ny);
     for i in 0..nz {
         for j in 0..ny {
-            let a = i * (ny + 1) + j;           // (i,   j)
-            let b = i * (ny + 1) + (j + 1);     // (i,   j+1)
-            let c = (i + 1) * (ny + 1) + j;     // (i+1, j)
+            let a = i * (ny + 1) + j; // (i,   j)
+            let b = i * (ny + 1) + (j + 1); // (i,   j+1)
+            let c = (i + 1) * (ny + 1) + j; // (i+1, j)
             let d = (i + 1) * (ny + 1) + (j + 1); // (i+1, j+1)
             connectivity.push([a, b, d]);
             connectivity.push([a, d, c]);
@@ -715,8 +750,7 @@ fn twisted_beam_mesh(nz: usize, ny: usize) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
 /// This test asserts only sign / finiteness / order-of-magnitude — see the
 /// pinched-cylinder smoke test above for the same rationale.
 #[test]
-fn scordelis_lo_roof_quadrant_smoke_test_vertical_deflection_is_finite_and_downward(
-) {
+fn scordelis_lo_roof_quadrant_smoke_test_vertical_deflection_is_finite_and_downward() {
     const R: f64 = 25.0;
     const L: f64 = 50.0;
     const T: f64 = 0.25;
@@ -766,9 +800,9 @@ fn scordelis_lo_roof_quadrant_smoke_test_vertical_deflection_is_finite_and_downw
 
     for (node, n) in nodes.iter().enumerate() {
         let dof = |d: usize| node * 6 + d;
-        let is_crown = n[1].abs() < tol;                   // y ≈ 0: θ=0 crown symmetry
-        let is_diaphragm = n[0].abs() < tol;               // x=0: rigid end diaphragm
-        let is_midspan = (n[0] - L / 2.0).abs() < tol;    // x=L/2: longitudinal midspan symmetry
+        let is_crown = n[1].abs() < tol; // y ≈ 0: θ=0 crown symmetry
+        let is_diaphragm = n[0].abs() < tol; // x=0: rigid end diaphragm
+        let is_midspan = (n[0] - L / 2.0).abs() < tol; // x=L/2: longitudinal midspan symmetry
 
         // Rigid end diaphragm at x=0 (one end of the full doubly-supported roof).
         //
@@ -782,14 +816,29 @@ fn scordelis_lo_roof_quadrant_smoke_test_vertical_deflection_is_finite_and_downw
         // Note: the axial rigid-body mode is eliminated by the midspan symmetry
         // condition u_x=0 at x=L/2, not by this diaphragm constraint.
         if is_diaphragm {
-            bcs.push(DirichletBc { dof: dof(1), value: 0.0 }); // u_y = 0 (circumferential)
-            bcs.push(DirichletBc { dof: dof(2), value: 0.0 }); // u_z = 0 (vertical)
+            bcs.push(DirichletBc {
+                dof: dof(1),
+                value: 0.0,
+            }); // u_y = 0 (circumferential)
+            bcs.push(DirichletBc {
+                dof: dof(2),
+                value: 0.0,
+            }); // u_z = 0 (vertical)
         }
         // Crown / longitudinal mid-plane symmetry (θ=0).
         if is_crown {
-            bcs.push(DirichletBc { dof: dof(1), value: 0.0 }); // u_y = 0
-            bcs.push(DirichletBc { dof: dof(3), value: 0.0 }); // θ_x = 0
-            bcs.push(DirichletBc { dof: dof(5), value: 0.0 }); // θ_z = 0
+            bcs.push(DirichletBc {
+                dof: dof(1),
+                value: 0.0,
+            }); // u_y = 0
+            bcs.push(DirichletBc {
+                dof: dof(3),
+                value: 0.0,
+            }); // θ_x = 0
+            bcs.push(DirichletBc {
+                dof: dof(5),
+                value: 0.0,
+            }); // θ_z = 0
         }
         // Longitudinal midspan symmetry at x=L/2.
         //
@@ -800,8 +849,14 @@ fn scordelis_lo_roof_quadrant_smoke_test_vertical_deflection_is_finite_and_downw
         // Crucially, u_z is NOT constrained here — the midspan vertical
         // displacement is the quantity we measure (it equals the max deflection).
         if is_midspan {
-            bcs.push(DirichletBc { dof: dof(0), value: 0.0 }); // u_x = 0 (antisymmetry)
-            bcs.push(DirichletBc { dof: dof(4), value: 0.0 }); // θ_y = 0 (symmetry)
+            bcs.push(DirichletBc {
+                dof: dof(0),
+                value: 0.0,
+            }); // u_x = 0 (antisymmetry)
+            bcs.push(DirichletBc {
+                dof: dof(4),
+                value: 0.0,
+            }); // θ_y = 0 (symmetry)
         }
     }
 
@@ -898,8 +953,7 @@ fn scordelis_lo_roof_quadrant_smoke_test_vertical_deflection_is_finite_and_downw
 /// This test asserts only sign / finiteness / order-of-magnitude — see the
 /// pinched-cylinder smoke test for the same rationale.
 #[test]
-fn hemisphere_with_point_loads_smoke_test_radial_displacement_is_finite_and_outward(
-) {
+fn hemisphere_with_point_loads_smoke_test_radial_displacement_is_finite_and_outward() {
     const R: f64 = 10.0;
     const T: f64 = 0.04;
     const NX: usize = 4; // polar angle (φ) divisions
@@ -934,16 +988,34 @@ fn hemisphere_with_point_loads_smoke_test_radial_displacement_is_finite_and_outw
         // x-antisymmetry at the x=0 plane (θ=90° meridian).
         // u_x is antisymmetric under x-reflection ⇒ u_x=0 on this plane.
         if is_x0 {
-            bcs.push(DirichletBc { dof: dof(0), value: 0.0 }); // u_x = 0
-            bcs.push(DirichletBc { dof: dof(4), value: 0.0 }); // θ_y = 0
-            bcs.push(DirichletBc { dof: dof(5), value: 0.0 }); // θ_z = 0
+            bcs.push(DirichletBc {
+                dof: dof(0),
+                value: 0.0,
+            }); // u_x = 0
+            bcs.push(DirichletBc {
+                dof: dof(4),
+                value: 0.0,
+            }); // θ_y = 0
+            bcs.push(DirichletBc {
+                dof: dof(5),
+                value: 0.0,
+            }); // θ_z = 0
         }
         // y-antisymmetry at the y=0 plane (θ=0° meridian).
         // u_y is antisymmetric under y-reflection ⇒ u_y=0 on this plane.
         if is_y0 {
-            bcs.push(DirichletBc { dof: dof(1), value: 0.0 }); // u_y = 0
-            bcs.push(DirichletBc { dof: dof(3), value: 0.0 }); // θ_x = 0
-            bcs.push(DirichletBc { dof: dof(5), value: 0.0 }); // θ_z = 0
+            bcs.push(DirichletBc {
+                dof: dof(1),
+                value: 0.0,
+            }); // u_y = 0
+            bcs.push(DirichletBc {
+                dof: dof(3),
+                value: 0.0,
+            }); // θ_x = 0
+            bcs.push(DirichletBc {
+                dof: dof(5),
+                value: 0.0,
+            }); // θ_z = 0
         }
     }
 
@@ -1037,7 +1109,7 @@ fn hemisphere_with_point_loads_smoke_test_radial_displacement_is_finite_and_outw
 fn twisted_beam_tip_out_of_plane_load_smoke_test_displacement_is_finite_and_signed() {
     const L: f64 = 12.0;
     const NZ: usize = 12; // segments along z
-    const NY: usize = 2;  // strips across width
+    const NY: usize = 2; // strips across width
     const MACNEAL_HARDER_REF: f64 = 1.754e-3;
 
     let mat = IsotropicElastic {
@@ -1063,7 +1135,10 @@ fn twisted_beam_tip_out_of_plane_load_smoke_test_displacement_is_finite_and_sign
         if n[2].abs() < tol {
             // Root (z=0): clamp all 6 DOFs.
             for dof_idx in 0..6_usize {
-                bcs.push(DirichletBc { dof: node * 6 + dof_idx, value: 0.0 });
+                bcs.push(DirichletBc {
+                    dof: node * 6 + dof_idx,
+                    value: 0.0,
+                });
             }
         }
     }
@@ -1086,9 +1161,7 @@ fn twisted_beam_tip_out_of_plane_load_smoke_test_displacement_is_finite_and_sign
     // At z=L (α=90°): position = (s·cos 90°, s·sin 90°, L) = (0, 0, L) for s=0.
     let centroid_node = nodes
         .iter()
-        .position(|n| {
-            (n[2] - L).abs() < tol && n[0].abs() < tol && n[1].abs() < tol
-        })
+        .position(|n| (n[2] - L).abs() < tol && n[0].abs() < tol && n[1].abs() < tol)
         .expect("tip centroid node (0, 0, L) not found in twisted-beam mesh");
 
     // Out-of-plane displacement = u_y at tip centroid.
@@ -1221,7 +1294,10 @@ fn mitc3_thin_shell_pinched_cylinder_does_not_lock_under_decreasing_thickness() 
 
     let mut n_vals = [0.0_f64; 3];
     for (idx, &t) in thicknesses.iter().enumerate() {
-        let mat = IsotropicElastic { youngs_modulus: mat_e, poisson_ratio: 0.3 };
+        let mat = IsotropicElastic {
+            youngs_modulus: mat_e,
+            poisson_ratio: 0.3,
+        };
 
         let stiffness = build_shell_stiffnesses(&nodes, &connectivity, t, &mat);
         let elements = assembly_elements_for(&connectivity, &stiffness);
@@ -1270,7 +1346,9 @@ fn mitc3_thin_shell_pinched_cylinder_does_not_lock_under_decreasing_thickness() 
          MITC3 should increase n as shell thins; ratio < 1 indicates spurious \
          stiffness blocking the bending-dominated response. \
          Observed: t=1.0→{:.4e}, t=0.1→{:.4e}, t=0.01→{:.4e}",
-        n_vals[0], n_vals[1], n_vals[2],
+        n_vals[0],
+        n_vals[1],
+        n_vals[2],
     );
 }
 
@@ -1317,7 +1395,10 @@ fn flat_plate_cantilever_under_tip_load_displaces_in_load_direction() {
     let mut bcs: Vec<DirichletBc> = Vec::new();
     for node in [0_usize, 2_usize] {
         for dof in 0..6_usize {
-            bcs.push(DirichletBc { dof: node * 6 + dof, value: 0.0 });
+            bcs.push(DirichletBc {
+                dof: node * 6 + dof,
+                value: 0.0,
+            });
         }
     }
     // Pin θ_z (drilling rotation about the element normal) at the free
@@ -1332,7 +1413,10 @@ fn flat_plate_cantilever_under_tip_load_displaces_in_load_direction() {
     // have different normals — the variation across normals supplies the
     // missing local θ_z constraint at each interior node.
     for node in [1_usize, 3_usize] {
-        bcs.push(DirichletBc { dof: node * 6 + 5, value: 0.0 });
+        bcs.push(DirichletBc {
+            dof: node * 6 + 5,
+            value: 0.0,
+        });
     }
 
     // Load: transverse (+z) unit load at free-edge nodes 1 and 3.
@@ -1438,10 +1522,10 @@ fn pinched_cylinder_octant_symmetry_bcs_pins_exact_dofs_on_1x1_mesh() {
 
     // Expected DOF indices (see table in doc-comment above).
     let expected: Vec<usize> = vec![
-        1, 2, 3, 4, 5,      // node 0: y=0 + z=0 (u_y, u_z, θ_x, θ_y, θ_z)
-        6, 8, 9, 10, 11,    // node 1: x=0 + z=0 (u_x, u_z, θ_x, θ_y, θ_z)
-        13, 14, 15, 17,     // node 2: diaphragm + y=0 (u_y, u_z, θ_x, θ_z)
-        18, 20, 22, 23,     // node 3: diaphragm + x=0 (u_x, u_z, θ_y, θ_z)
+        1, 2, 3, 4, 5, // node 0: y=0 + z=0 (u_y, u_z, θ_x, θ_y, θ_z)
+        6, 8, 9, 10, 11, // node 1: x=0 + z=0 (u_x, u_z, θ_x, θ_y, θ_z)
+        13, 14, 15, 17, // node 2: diaphragm + y=0 (u_y, u_z, θ_x, θ_z)
+        18, 20, 22, 23, // node 3: diaphragm + x=0 (u_x, u_z, θ_y, θ_z)
     ];
 
     assert_eq!(

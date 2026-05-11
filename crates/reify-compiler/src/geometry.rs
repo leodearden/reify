@@ -117,7 +117,11 @@ pub(crate) fn is_geometry_let(
         // function cannot collide with a geometry let via this branch.
         reify_syntax::ExprKind::Ident(name) => known_geometry_lets.contains(name.as_str()),
         // Conditional — see rustdoc above for rationale (task 3395).
-        reify_syntax::ExprKind::Conditional { then_branch, else_branch, .. } => {
+        reify_syntax::ExprKind::Conditional {
+            then_branch,
+            else_branch,
+            ..
+        } => {
             is_geometry_let(then_branch, functions, known_geometry_lets)
                 || is_geometry_let(else_branch, functions, known_geometry_lets)
         }
@@ -481,7 +485,13 @@ pub(crate) fn compile_geometry_call(
         // --- Patterns ---
         // linear_pattern(target, dx, dy, dz, count, spacing)
         "linear_pattern" => {
-            if !check_arg_count_exact("linear_pattern", compiled_args.len(), 6, expr.span, diagnostics) {
+            if !check_arg_count_exact(
+                "linear_pattern",
+                compiled_args.len(),
+                6,
+                expr.span,
+                diagnostics,
+            ) {
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -503,7 +513,13 @@ pub(crate) fn compile_geometry_call(
         }
         // circular_pattern(target, ox, oy, oz, ax, ay, az, count, angle)
         "circular_pattern" => {
-            if !check_arg_count_exact("circular_pattern", compiled_args.len(), 9, expr.span, diagnostics) {
+            if !check_arg_count_exact(
+                "circular_pattern",
+                compiled_args.len(),
+                9,
+                expr.span,
+                diagnostics,
+            ) {
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -551,7 +567,13 @@ pub(crate) fn compile_geometry_call(
         }
         // linear_pattern_2d(target, dx1, dy1, dz1, count1, spacing1, dx2, dy2, dz2, count2, spacing2)
         "linear_pattern_2d" => {
-            if !check_arg_count_exact("linear_pattern_2d", compiled_args.len(), 11, expr.span, diagnostics) {
+            if !check_arg_count_exact(
+                "linear_pattern_2d",
+                compiled_args.len(),
+                11,
+                expr.span,
+                diagnostics,
+            ) {
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -890,9 +912,14 @@ pub(crate) fn compile_geometry_call(
             Some(sub_ops)
         }
         // --- Transforms ---
-        "translate" | "rotate" | "scale" | "rotate_around" => {
-            compile_transform_op(name, compiled_args, geom_ref(0), expr.span, diagnostics, sub_ops)
-        }
+        "translate" | "rotate" | "scale" | "rotate_around" => compile_transform_op(
+            name,
+            compiled_args,
+            geom_ref(0),
+            expr.span,
+            diagnostics,
+            sub_ops,
+        ),
         // --- Modify extensions ---
         // All five modifiers take a geometry target as their first argument (correctly
         // resolved from geom_refs via geom_ref(0)) and are registered in geometry_arg_indices().
@@ -1798,7 +1825,10 @@ mod tests {
             kind: reify_syntax::ExprKind::FunctionCall {
                 name: "make_cube".to_string(),
                 args: vec![reify_syntax::Expr {
-                    kind: reify_syntax::ExprKind::NumberLiteral { value: 1.0, is_real: false },
+                    kind: reify_syntax::ExprKind::NumberLiteral {
+                        value: 1.0,
+                        is_real: false,
+                    },
                     span: reify_types::SourceSpan::new(0, 1),
                 }],
             },
@@ -1846,11 +1876,17 @@ mod tests {
                 name: "sweep".to_string(),
                 args: vec![
                     reify_syntax::Expr {
-                        kind: reify_syntax::ExprKind::NumberLiteral { value: 1.0, is_real: false },
+                        kind: reify_syntax::ExprKind::NumberLiteral {
+                            value: 1.0,
+                            is_real: false,
+                        },
                         span: reify_types::SourceSpan::new(0, 1),
                     },
                     reify_syntax::Expr {
-                        kind: reify_syntax::ExprKind::NumberLiteral { value: 2.0, is_real: false },
+                        kind: reify_syntax::ExprKind::NumberLiteral {
+                            value: 2.0,
+                            is_real: false,
+                        },
                         span: reify_types::SourceSpan::new(0, 1),
                     },
                 ],
@@ -1893,7 +1929,11 @@ mod tests {
                     "sweep profile fallback should be Step(step_offset=3), not {:?}",
                     profiles[0]
                 );
-                assert_eq!(profiles[1], GeomRef::Step(4), "sweep path fallback should be Step(step_offset+1=4)");
+                assert_eq!(
+                    profiles[1],
+                    GeomRef::Step(4),
+                    "sweep path fallback should be Step(step_offset+1=4)"
+                );
             }
             other => panic!("expected Sweep(Sweep), got {:?}", other),
         }
@@ -1918,15 +1958,24 @@ mod tests {
                 name: "loft".to_string(),
                 args: vec![
                     reify_syntax::Expr {
-                        kind: reify_syntax::ExprKind::NumberLiteral { value: 1.0, is_real: false },
+                        kind: reify_syntax::ExprKind::NumberLiteral {
+                            value: 1.0,
+                            is_real: false,
+                        },
                         span: reify_types::SourceSpan::new(0, 1),
                     },
                     reify_syntax::Expr {
-                        kind: reify_syntax::ExprKind::NumberLiteral { value: 2.0, is_real: false },
+                        kind: reify_syntax::ExprKind::NumberLiteral {
+                            value: 2.0,
+                            is_real: false,
+                        },
                         span: reify_types::SourceSpan::new(0, 1),
                     },
                     reify_syntax::Expr {
-                        kind: reify_syntax::ExprKind::NumberLiteral { value: 3.0, is_real: false },
+                        kind: reify_syntax::ExprKind::NumberLiteral {
+                            value: 3.0,
+                            is_real: false,
+                        },
                         span: reify_types::SourceSpan::new(0, 1),
                     },
                 ],
@@ -1996,7 +2045,10 @@ mod tests {
     fn make_call_with_arity(name: &str, n: usize) -> reify_syntax::Expr {
         let args = (0..n)
             .map(|_| reify_syntax::Expr {
-                kind: reify_syntax::ExprKind::NumberLiteral { value: 1.0, is_real: false },
+                kind: reify_syntax::ExprKind::NumberLiteral {
+                    value: 1.0,
+                    is_real: false,
+                },
                 span: reify_types::SourceSpan::new(0, 1),
             })
             .collect();
@@ -2149,7 +2201,10 @@ mod tests {
             span: reify_types::SourceSpan::new(0, 1),
         };
         let num_literal = reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::NumberLiteral { value: 1.0, is_real: false },
+            kind: reify_syntax::ExprKind::NumberLiteral {
+                value: 1.0,
+                is_real: false,
+            },
             span: reify_types::SourceSpan::new(0, 1),
         };
 
@@ -2165,11 +2220,7 @@ mod tests {
         );
 
         // (b) Neither branch geometry → false
-        let num_num = make_conditional(
-            bool_cond.clone(),
-            num_literal.clone(),
-            num_literal.clone(),
-        );
+        let num_num = make_conditional(bool_cond.clone(), num_literal.clone(), num_literal.clone());
         assert!(
             !is_geometry_let(&num_num, &functions, &known),
             "Conditional with no geometry branches must NOT classify as a geometry let"
@@ -2234,7 +2285,10 @@ mod tests {
         };
         let match_expr = make_match(
             discriminant,
-            vec![make_call_with_arity("box", 3), make_call_with_arity("box", 3)],
+            vec![
+                make_call_with_arity("box", 3),
+                make_call_with_arity("box", 3),
+            ],
         );
 
         let scope = CompilationScope::new("test");
@@ -2291,7 +2345,10 @@ mod tests {
 
     /// Helper: build a `Match` Expr from a discriminant Expr and a slice of arm body Exprs.
     /// Each arm gets a single string pattern ("X", "Y", "Z", ...) assigned in order.
-    fn make_match(discriminant: reify_syntax::Expr, bodies: Vec<reify_syntax::Expr>) -> reify_syntax::Expr {
+    fn make_match(
+        discriminant: reify_syntax::Expr,
+        bodies: Vec<reify_syntax::Expr>,
+    ) -> reify_syntax::Expr {
         let pattern_names = ["X", "Y", "Z", "W", "V"];
         let arms = bodies
             .into_iter()
@@ -2328,7 +2385,10 @@ mod tests {
             span: reify_types::SourceSpan::new(0, 4),
         };
         let num_literal = reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::NumberLiteral { value: 1.0, is_real: false },
+            kind: reify_syntax::ExprKind::NumberLiteral {
+                value: 1.0,
+                is_real: false,
+            },
             span: reify_types::SourceSpan::new(0, 1),
         };
 
@@ -2349,7 +2409,11 @@ mod tests {
         // (b) No arms geometry → false
         let no_geom = make_match(
             discriminant.clone(),
-            vec![num_literal.clone(), num_literal.clone(), num_literal.clone()],
+            vec![
+                num_literal.clone(),
+                num_literal.clone(),
+                num_literal.clone(),
+            ],
         );
         assert!(
             !is_geometry_let(&no_geom, &functions, &known),
@@ -2375,10 +2439,7 @@ mod tests {
             discriminant.clone(),
             vec![make_call_with_arity("box", 3), num_literal.clone()],
         );
-        let outer_match = make_match(
-            discriminant.clone(),
-            vec![num_literal.clone(), inner_match],
-        );
+        let outer_match = make_match(discriminant.clone(), vec![num_literal.clone(), inner_match]);
         assert!(
             is_geometry_let(&outer_match, &functions, &known),
             "Nested Match whose inner arm is geometry must classify as a geometry let"

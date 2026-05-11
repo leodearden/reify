@@ -157,7 +157,14 @@ fn conductive_refines_electrically_characterized_with_constraint() {
     );
 
     // BinOp-level check: op="<", LHS=resistivity, RHS≈1.0e-4
-    assert_trait_constraint_binop(conductive, "Conductive", "resistivity", "<", 1.0e-4, 1.0e-16);
+    assert_trait_constraint_binop(
+        conductive,
+        "Conductive",
+        "resistivity",
+        "<",
+        1.0e-4,
+        1.0e-16,
+    );
 }
 
 // ─── (d) Insulating refines ElectricallyCharacterized with resistivity > 1e6 ─
@@ -205,7 +212,14 @@ fn insulating_has_dielectric_strength_positive_constraint() {
         .expect("expected 'Insulating' trait in std/materials/electrical");
 
     // BinOp-level check: op=">", LHS=dielectric_strength, RHS=0.0 (exact)
-    assert_trait_constraint_binop(insulating, "Insulating", "dielectric_strength", ">", 0.0, 0.0);
+    assert_trait_constraint_binop(
+        insulating,
+        "Insulating",
+        "dielectric_strength",
+        ">",
+        0.0,
+        0.0,
+    );
 }
 
 // ─── (e) Copper : Conductive conformance test with inherited constraint ────────
@@ -356,6 +370,6 @@ structure def Glass : Insulating {
     };
 
     // Both inherited Insulating constraints must have correct operator and literal injected.
-    assert_gt_constraint("dielectric_strength", 0.0, 0.0);   // dielectric_strength > 0.0
-    assert_gt_constraint("resistivity", 1_000_000.0, 0.0);   // resistivity > 1000000.0
+    assert_gt_constraint("dielectric_strength", 0.0, 0.0); // dielectric_strength > 0.0
+    assert_gt_constraint("resistivity", 1_000_000.0, 0.0); // resistivity > 1000000.0
 }

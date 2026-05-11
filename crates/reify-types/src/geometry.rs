@@ -615,13 +615,9 @@ pub enum GeometryOp {
         height: f64,
     },
     /// Create an interpolated curve through points.
-    InterpCurve {
-        points: Vec<[f64; 3]>,
-    },
+    InterpCurve { points: Vec<[f64; 3]> },
     /// Create a Bézier curve from control points.
-    BezierCurve {
-        control_points: Vec<[f64; 3]>,
-    },
+    BezierCurve { control_points: Vec<[f64; 3]> },
     /// Create a NURBS curve.
     NurbsCurve {
         control_points: Vec<[f64; 3]>,
@@ -1212,7 +1208,8 @@ impl VolumeMesh {
     /// Returns `None` for the same out-of-range or overflow conditions as
     /// `vertex`.
     pub fn vertex_f64(&self, idx: u32) -> Option<[f64; 3]> {
-        self.vertex(idx).map(|[x, y, z]| [x as f64, y as f64, z as f64])
+        self.vertex(idx)
+            .map(|[x, y, z]| [x as f64, y as f64, z as f64])
     }
 }
 
@@ -1296,7 +1293,10 @@ pub enum QueryError {
     /// `OcctKernel::curvature_at`) when `u` or `v` is NaN or ±Infinity.
     /// The variant echoes back the bad inputs so callers can surface
     /// structured diagnostics without parsing message strings.
-    NonFiniteParameter { u: f64, v: f64 },
+    NonFiniteParameter {
+        u: f64,
+        v: f64,
+    },
 }
 
 impl fmt::Display for QueryError {
@@ -2321,10 +2321,7 @@ pub enum BooleanOpParents<'a> {
 /// using `BooleanOpParentsError::LengthMismatch`'s Display impl as the
 /// canonical wording. Module-private: the only callers are the in-module
 /// `face_slices` / `edge_slices` accessors.
-fn debug_check_nary_invariant(
-    faces: &[&[GeometryHandleId]],
-    edges: &[&[GeometryHandleId]],
-) {
+fn debug_check_nary_invariant(faces: &[&[GeometryHandleId]], edges: &[&[GeometryHandleId]]) {
     debug_assert!(
         faces.len() == edges.len(),
         "{}",
@@ -2366,10 +2363,7 @@ impl<'a> BooleanOpParents<'a> {
     ///
     /// Panics with a message containing `"faces.len()"` when
     /// `faces.len() != edges.len()`.
-    pub fn nary(
-        faces: &'a [&'a [GeometryHandleId]],
-        edges: &'a [&'a [GeometryHandleId]],
-    ) -> Self {
+    pub fn nary(faces: &'a [&'a [GeometryHandleId]], edges: &'a [&'a [GeometryHandleId]]) -> Self {
         Self::try_nary(faces, edges).unwrap_or_else(|e| panic!("{e}"))
     }
 
@@ -2495,11 +2489,22 @@ mod tests {
     #[test]
     fn geometry_op_line_segment_variant_exists() {
         let op = GeometryOp::LineSegment {
-            x1: 0.0, y1: 0.0, z1: 0.0,
-            x2: 1.0, y2: 2.0, z2: 3.0,
+            x1: 0.0,
+            y1: 0.0,
+            z1: 0.0,
+            x2: 1.0,
+            y2: 2.0,
+            z2: 3.0,
         };
         match &op {
-            GeometryOp::LineSegment { x1, y1, z1, x2, y2, z2 } => {
+            GeometryOp::LineSegment {
+                x1,
+                y1,
+                z1,
+                x2,
+                y2,
+                z2,
+            } => {
                 assert_eq!((*x1, *y1, *z1), (0.0, 0.0, 0.0));
                 assert_eq!((*x2, *y2, *z2), (1.0, 2.0, 3.0));
             }
@@ -2517,7 +2522,13 @@ mod tests {
             axis: [0.0, 0.0, 1.0],
         };
         match &op {
-            GeometryOp::Arc { center, radius, start_angle, end_angle, axis } => {
+            GeometryOp::Arc {
+                center,
+                radius,
+                start_angle,
+                end_angle,
+                axis,
+            } => {
                 assert_eq!(*center, [1.0, 2.0, 3.0]);
                 assert_eq!(*radius, 5.0);
                 assert_eq!(*start_angle, 0.0);
@@ -2536,7 +2547,11 @@ mod tests {
             height: 20.0,
         };
         match &op {
-            GeometryOp::Helix { radius, pitch, height } => {
+            GeometryOp::Helix {
+                radius,
+                pitch,
+                height,
+            } => {
                 assert_eq!(*radius, 10.0);
                 assert_eq!(*pitch, 2.0);
                 assert_eq!(*height, 20.0);
@@ -2548,7 +2563,12 @@ mod tests {
     #[test]
     fn geometry_op_interp_curve_variant_exists() {
         let op = GeometryOp::InterpCurve {
-            points: vec![[0.0, 0.0, 0.0], [1.0, 1.0, 0.0], [2.0, 0.0, 0.0], [3.0, 1.0, 0.0]],
+            points: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [2.0, 0.0, 0.0],
+                [3.0, 1.0, 0.0],
+            ],
         };
         match &op {
             GeometryOp::InterpCurve { points } => {
@@ -2563,7 +2583,12 @@ mod tests {
     #[test]
     fn geometry_op_bezier_curve_variant_exists() {
         let op = GeometryOp::BezierCurve {
-            control_points: vec![[0.0, 0.0, 0.0], [1.0, 2.0, 0.0], [3.0, 2.0, 0.0], [4.0, 0.0, 0.0]],
+            control_points: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 2.0, 0.0],
+                [3.0, 2.0, 0.0],
+                [4.0, 0.0, 0.0],
+            ],
         };
         match &op {
             GeometryOp::BezierCurve { control_points } => {
@@ -2682,13 +2707,23 @@ mod tests {
     #[test]
     fn geometry_op_nurbs_curve_variant_exists() {
         let op = GeometryOp::NurbsCurve {
-            control_points: vec![[0.0, 0.0, 0.0], [1.0, 1.0, 0.0], [2.0, 0.0, 0.0], [3.0, 1.0, 0.0]],
+            control_points: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [2.0, 0.0, 0.0],
+                [3.0, 1.0, 0.0],
+            ],
             weights: vec![1.0, 1.0, 1.0, 1.0],
             knots: vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
             degree: 3,
         };
         match &op {
-            GeometryOp::NurbsCurve { control_points, weights, knots, degree } => {
+            GeometryOp::NurbsCurve {
+                control_points,
+                weights,
+                knots,
+                degree,
+            } => {
                 assert_eq!(control_points.len(), 4);
                 assert_eq!(weights.len(), 4);
                 assert_eq!(knots.len(), 8);
@@ -2715,10 +2750,7 @@ mod tests {
         }
 
         impl GeometryKernel for CountingKernel {
-            fn execute(
-                &mut self,
-                _op: &GeometryOp,
-            ) -> Result<GeometryHandle, GeometryError> {
+            fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
                 unimplemented!("CountingKernel only supports query")
             }
 
@@ -2758,7 +2790,11 @@ mod tests {
         let result = kernel
             .query_many(&queries)
             .expect("query_many should succeed");
-        assert_eq!(result.len(), 2, "query_many should return one Value per query");
+        assert_eq!(
+            result.len(),
+            2,
+            "query_many should return one Value per query"
+        );
         match (&result[0], &result[1]) {
             (Value::Real(a), Value::Real(b)) => {
                 assert!((a - 42.0).abs() < 1e-15);
@@ -2800,10 +2836,7 @@ mod tests {
         }
 
         impl GeometryKernel for FailAfterKernel {
-            fn execute(
-                &mut self,
-                _op: &GeometryOp,
-            ) -> Result<GeometryHandle, GeometryError> {
+            fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
                 unimplemented!("FailAfterKernel only supports query")
             }
 
@@ -3027,10 +3060,7 @@ mod tests {
     fn debug_assert_query_many_invariant_passes_when_lengths_match() {
         // Empty batch: the boundary case most likely to expose an off-by-one
         // bug if the helper's comparison were inverted.
-        debug_assert_query_many_invariant(
-            &[] as &[GeometryQuery],
-            &[] as &[Value],
-        );
+        debug_assert_query_many_invariant(&[] as &[GeometryQuery], &[] as &[Value]);
 
         // Single-element batch.
         debug_assert_query_many_invariant(
@@ -3467,10 +3497,7 @@ mod tests {
         }
 
         impl GeometryKernel for ExecuteOnlyKernel {
-            fn execute(
-                &mut self,
-                _op: &GeometryOp,
-            ) -> Result<GeometryHandle, GeometryError> {
+            fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
                 let id = self.next_id;
                 self.next_id += 1;
                 Ok(GeometryHandle {
@@ -3543,10 +3570,7 @@ mod tests {
         struct AlwaysFailKernel;
 
         impl GeometryKernel for AlwaysFailKernel {
-            fn execute(
-                &mut self,
-                _op: &GeometryOp,
-            ) -> Result<GeometryHandle, GeometryError> {
+            fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
                 Err(GeometryError::OperationFailed("simulated".into()))
             }
 
@@ -3667,8 +3691,8 @@ mod tests {
     // --- task 3033 (T20): MidSurfaceFace + MidSurfaceEdge Role variants ---
 
     #[test]
-    fn role_mid_surface_face_and_edge_variants_are_distinct_from_each_other_and_existing_variants(
-    ) {
+    fn role_mid_surface_face_and_edge_variants_are_distinct_from_each_other_and_existing_variants()
+    {
         // Pairwise distinctness: the two new variants must differ from
         // each other AND from every existing Role variant. Mirrors the
         // discipline of the SweptFace/LoftedFace distinctness suite.
@@ -3880,10 +3904,7 @@ mod tests {
         }
 
         impl GeometryKernel for ExecuteOnlyKernel {
-            fn execute(
-                &mut self,
-                _op: &GeometryOp,
-            ) -> Result<GeometryHandle, GeometryError> {
+            fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
                 let id = self.next_id;
                 self.next_id += 1;
                 Ok(GeometryHandle {
@@ -4367,7 +4388,10 @@ mod tests {
         for i in 0..variants.len() {
             for j in 0..variants.len() {
                 if i != j {
-                    assert_ne!(variants[i], variants[j], "expected distinct variants at {i} and {j}");
+                    assert_ne!(
+                        variants[i], variants[j],
+                        "expected distinct variants at {i} and {j}"
+                    );
                 }
             }
         }
@@ -4377,9 +4401,16 @@ mod tests {
         for (idx, v) in variants.iter().enumerate() {
             map.insert(*v, idx as u32); // *v requires Copy
         }
-        assert_eq!(map.len(), 6, "all 6 BRepKind variants must be stored as distinct keys");
+        assert_eq!(
+            map.len(),
+            6,
+            "all 6 BRepKind variants must be stored as distinct keys"
+        );
         for (idx, v) in variants.iter().enumerate() {
-            assert_eq!(map[v], idx as u32, "HashMap lookup must recover inserted value for {v:?}");
+            assert_eq!(
+                map[v], idx as u32,
+                "HashMap lookup must recover inserted value for {v:?}"
+            );
         }
     }
 
@@ -4405,7 +4436,10 @@ mod tests {
         for i in 0..variants.len() {
             for j in 0..variants.len() {
                 if i != j {
-                    assert_ne!(variants[i], variants[j], "expected distinct variants at {i} and {j}");
+                    assert_ne!(
+                        variants[i], variants[j],
+                        "expected distinct variants at {i} and {j}"
+                    );
                 }
             }
         }
@@ -4415,9 +4449,16 @@ mod tests {
         for (idx, v) in variants.iter().enumerate() {
             map.insert(*v, idx as u32); // *v requires Copy
         }
-        assert_eq!(map.len(), 5, "all 5 ReprKind variants must be stored as distinct keys");
+        assert_eq!(
+            map.len(),
+            5,
+            "all 5 ReprKind variants must be stored as distinct keys"
+        );
         for (idx, v) in variants.iter().enumerate() {
-            assert_eq!(map[v], idx as u32, "HashMap lookup must recover inserted value for {v:?}");
+            assert_eq!(
+                map[v], idx as u32,
+                "HashMap lookup must recover inserted value for {v:?}"
+            );
         }
 
         // Compile-time exhaustiveness check: this match must cover all variants.
@@ -4488,11 +4529,21 @@ mod tests {
             Operation::CurveBezierCurve,
             Operation::CurveNurbsCurve,
             // Convert (5 — one per ReprKind)
-            Operation::Convert { from: ReprKind::BRep },
-            Operation::Convert { from: ReprKind::Mesh },
-            Operation::Convert { from: ReprKind::Sdf },
-            Operation::Convert { from: ReprKind::Voxel },
-            Operation::Convert { from: ReprKind::VolumeMesh },
+            Operation::Convert {
+                from: ReprKind::BRep,
+            },
+            Operation::Convert {
+                from: ReprKind::Mesh,
+            },
+            Operation::Convert {
+                from: ReprKind::Sdf,
+            },
+            Operation::Convert {
+                from: ReprKind::Voxel,
+            },
+            Operation::Convert {
+                from: ReprKind::VolumeMesh,
+            },
         ];
 
         // (No count-pinning assertion: the compile-time exhaustive `match`
@@ -4506,7 +4557,10 @@ mod tests {
         for i in 0..variants.len() {
             for j in 0..variants.len() {
                 if i != j {
-                    assert_ne!(variants[i], variants[j], "expected distinct variants at {i} and {j}");
+                    assert_ne!(
+                        variants[i], variants[j],
+                        "expected distinct variants at {i} and {j}"
+                    );
                 }
             }
         }
@@ -4523,7 +4577,10 @@ mod tests {
             variants.len()
         );
         for (idx, v) in variants.iter().enumerate() {
-            assert_eq!(map[v], idx as u32, "HashMap lookup must recover inserted value for {v:?}");
+            assert_eq!(
+                map[v], idx as u32,
+                "HashMap lookup must recover inserted value for {v:?}"
+            );
         }
 
         // Compile-time exhaustiveness check: this match must cover all variants.
@@ -4575,7 +4632,10 @@ mod tests {
     #[test]
     fn capability_descriptor_default_is_empty() {
         let d = CapabilityDescriptor::default();
-        assert!(d.supports.is_empty(), "default descriptor must have empty supports table");
+        assert!(
+            d.supports.is_empty(),
+            "default descriptor must have empty supports table"
+        );
     }
 
     /// `descriptor.supports(op, repr)` performs an exact-pair match against the
@@ -4588,7 +4648,12 @@ mod tests {
         let d = CapabilityDescriptor {
             supports: vec![
                 (Operation::BooleanUnion, ReprKind::Mesh),
-                (Operation::Convert { from: ReprKind::BRep }, ReprKind::Mesh),
+                (
+                    Operation::Convert {
+                        from: ReprKind::BRep,
+                    },
+                    ReprKind::Mesh,
+                ),
             ],
         };
 
@@ -4598,7 +4663,12 @@ mod tests {
             "(BooleanUnion, Mesh) is declared, expected supports() to return true"
         );
         assert!(
-            d.supports(Operation::Convert { from: ReprKind::BRep }, ReprKind::Mesh),
+            d.supports(
+                Operation::Convert {
+                    from: ReprKind::BRep
+                },
+                ReprKind::Mesh
+            ),
             "(Convert{{from: BRep}}, Mesh) is declared, expected supports() to return true"
         );
 
@@ -4616,7 +4686,12 @@ mod tests {
 
         // Convert with a different `from` is a distinct entry — not a match.
         assert!(
-            !d.supports(Operation::Convert { from: ReprKind::Mesh }, ReprKind::Mesh),
+            !d.supports(
+                Operation::Convert {
+                    from: ReprKind::Mesh
+                },
+                ReprKind::Mesh
+            ),
             "Convert{{from: Mesh}} != Convert{{from: BRep}}, expected supports() to return false"
         );
     }
@@ -4636,7 +4711,12 @@ mod tests {
             supports: vec![
                 (Operation::PrimitiveBox, ReprKind::BRep),
                 (Operation::BooleanUnion, ReprKind::Mesh),
-                (Operation::Convert { from: ReprKind::BRep }, ReprKind::Mesh),
+                (
+                    Operation::Convert {
+                        from: ReprKind::BRep,
+                    },
+                    ReprKind::Mesh,
+                ),
             ],
         };
 
@@ -4669,7 +4749,12 @@ mod tests {
         //     must inspect the output (second tuple element), so the result
         //     is false.
         let convert_only = CapabilityDescriptor {
-            supports: vec![(Operation::Convert { from: ReprKind::BRep }, ReprKind::Mesh)],
+            supports: vec![(
+                Operation::Convert {
+                    from: ReprKind::BRep,
+                },
+                ReprKind::Mesh,
+            )],
         };
         assert!(
             !convert_only.supports_any_repr(ReprKind::BRep),
@@ -4688,9 +4773,15 @@ mod tests {
             ],
         };
         let cloned = d.clone();
-        assert_eq!(cloned.supports, d.supports, "clone must preserve supports table");
+        assert_eq!(
+            cloned.supports, d.supports,
+            "clone must preserve supports table"
+        );
         // PartialEq derive: descriptors compare by structural equality.
-        assert_eq!(cloned, d, "PartialEq derive must hold for cloned descriptor");
+        assert_eq!(
+            cloned, d,
+            "PartialEq derive must hold for cloned descriptor"
+        );
     }
 
     /// Minimal `GeometryKernel` impl that uses every default trait method.
@@ -4707,7 +4798,9 @@ mod tests {
 
     impl GeometryKernel for DefaultsOnlyKernel {
         fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
-            Err(GeometryError::OperationFailed("not used by this test".into()))
+            Err(GeometryError::OperationFailed(
+                "not used by this test".into(),
+            ))
         }
         fn query(&self, _q: &GeometryQuery) -> Result<Value, QueryError> {
             Err(QueryError::QueryFailed("not used by this test".into()))
@@ -4721,7 +4814,9 @@ mod tests {
             Err(ExportError::FormatError("not used by this test".into()))
         }
         fn tessellate(&self, _h: GeometryHandleId, _t: f64) -> Result<Mesh, TessError> {
-            Err(TessError::TessellationFailed("not used by this test".into()))
+            Err(TessError::TessellationFailed(
+                "not used by this test".into(),
+            ))
         }
     }
 
@@ -4918,171 +5013,280 @@ mod tests {
         // Tokens are the variant names verbatim — any rename breaks this test
         // visibly (compile-time exhaustiveness + runtime string check).
         let cases: &[(&str, GeometryOp)] = &[
-            ("Box", GeometryOp::Box {
-                width: Value::Real(1.0),
-                height: Value::Real(1.0),
-                depth: Value::Real(1.0),
-            }),
-            ("Cylinder", GeometryOp::Cylinder {
-                radius: Value::Real(1.0),
-                height: Value::Real(1.0),
-            }),
-            ("Sphere", GeometryOp::Sphere {
-                radius: Value::Real(1.0),
-            }),
-            ("Tube", GeometryOp::Tube {
-                outer_r: Value::Real(0.01),
-                inner_r: Value::Real(0.005),
-                height: Value::Real(0.02),
-            }),
-            ("Union", GeometryOp::Union {
-                left: GeometryHandleId(1),
-                right: GeometryHandleId(2),
-            }),
-            ("Difference", GeometryOp::Difference {
-                left: GeometryHandleId(1),
-                right: GeometryHandleId(2),
-            }),
-            ("Intersection", GeometryOp::Intersection {
-                left: GeometryHandleId(1),
-                right: GeometryHandleId(2),
-            }),
-            ("Fillet", GeometryOp::Fillet {
-                target: GeometryHandleId(1),
-                radius: Value::Real(0.001),
-            }),
-            ("Chamfer", GeometryOp::Chamfer {
-                target: GeometryHandleId(1),
-                distance: Value::Real(0.001),
-            }),
-            ("Translate", GeometryOp::Translate {
-                target: GeometryHandleId(1),
-                dx: 1.0,
-                dy: 0.0,
-                dz: 0.0,
-            }),
-            ("Rotate", GeometryOp::Rotate {
-                target: GeometryHandleId(1),
-                axis: [0.0, 0.0, 1.0],
-                angle_rad: 0.0,
-            }),
-            ("Scale", GeometryOp::Scale {
-                target: GeometryHandleId(1),
-                factor: 2.0,
-            }),
-            ("RotateAround", GeometryOp::RotateAround {
-                target: GeometryHandleId(1),
-                point: [0.0, 0.0, 0.0],
-                axis: [0.0, 0.0, 1.0],
-                angle_rad: 0.0,
-            }),
-            ("LinearPattern", GeometryOp::LinearPattern {
-                target: GeometryHandleId(1),
-                direction: [1.0, 0.0, 0.0],
-                count: 3,
-                spacing: Value::Real(0.01),
-            }),
-            ("CircularPattern", GeometryOp::CircularPattern {
-                target: GeometryHandleId(1),
-                axis_origin: [0.0, 0.0, 0.0],
-                axis_dir: [0.0, 0.0, 1.0],
-                count: 4,
-                angle: Value::Real(std::f64::consts::TAU),
-            }),
-            ("Mirror", GeometryOp::Mirror {
-                target: GeometryHandleId(1),
-                plane_origin: [0.0, 0.0, 0.0],
-                plane_normal: [1.0, 0.0, 0.0],
-            }),
-            ("LinearPattern2D", GeometryOp::LinearPattern2D {
-                target: GeometryHandleId(1),
-                direction1: [1.0, 0.0, 0.0],
-                count1: 2,
-                spacing1: Value::Real(0.01),
-                direction2: [0.0, 1.0, 0.0],
-                count2: 2,
-                spacing2: Value::Real(0.01),
-            }),
-            ("ArbitraryPattern", GeometryOp::ArbitraryPattern {
-                target: GeometryHandleId(1),
-                transforms: vec![[0.0, 0.0, 0.0]],
-            }),
-            ("Loft", GeometryOp::Loft {
-                profiles: vec![GeometryHandleId(1), GeometryHandleId(2)],
-            }),
-            ("Extrude", GeometryOp::Extrude {
-                profile: GeometryHandleId(1),
-                distance: Value::Real(0.01),
-            }),
-            ("Revolve", GeometryOp::Revolve {
-                profile: GeometryHandleId(1),
-                axis_origin: [0.0, 0.0, 0.0],
-                axis_dir: [0.0, 0.0, 1.0],
-                angle_rad: std::f64::consts::TAU,
-            }),
-            ("Sweep", GeometryOp::Sweep {
-                profile: GeometryHandleId(1),
-                path: GeometryHandleId(2),
-            }),
-            ("Pipe", GeometryOp::Pipe {
-                path: GeometryHandleId(1),
-                radius: Value::Real(0.002),
-            }),
-            ("ExtrudeSymmetric", GeometryOp::ExtrudeSymmetric {
-                profile: GeometryHandleId(1),
-                distance: Value::Real(0.01),
-            }),
-            ("SweepGuided", GeometryOp::SweepGuided {
-                profile: GeometryHandleId(1),
-                path: GeometryHandleId(2),
-                guide: GeometryHandleId(3),
-            }),
-            ("LoftGuided", GeometryOp::LoftGuided {
-                profiles: vec![GeometryHandleId(1), GeometryHandleId(2)],
-                guides: vec![GeometryHandleId(3)],
-            }),
-            ("LineSegment", GeometryOp::LineSegment {
-                x1: 0.0, y1: 0.0, z1: 0.0,
-                x2: 1.0, y2: 0.0, z2: 0.0,
-            }),
-            ("Arc", GeometryOp::Arc {
-                center: [0.0, 0.0, 0.0],
-                radius: 1.0,
-                start_angle: 0.0,
-                end_angle: std::f64::consts::FRAC_PI_2,
-                axis: [0.0, 0.0, 1.0],
-            }),
-            ("Helix", GeometryOp::Helix {
-                radius: 0.01,
-                pitch: 0.002,
-                height: 0.02,
-            }),
-            ("InterpCurve", GeometryOp::InterpCurve {
-                points: vec![[0.0, 0.0, 0.0], [1.0, 1.0, 0.0], [2.0, 0.0, 0.0]],
-            }),
-            ("BezierCurve", GeometryOp::BezierCurve {
-                control_points: vec![[0.0, 0.0, 0.0], [1.0, 2.0, 0.0], [2.0, 0.0, 0.0]],
-            }),
-            ("NurbsCurve", GeometryOp::NurbsCurve {
-                control_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
-                weights: vec![1.0, 1.0],
-                knots: vec![0.0, 0.0, 1.0, 1.0],
-                degree: 1,
-            }),
-            ("Draft", GeometryOp::Draft {
-                target: GeometryHandleId(1),
-                angle: Value::Real(0.1),
-                plane: GeometryHandleId(2),
-            }),
-            ("Thicken", GeometryOp::Thicken {
-                target: GeometryHandleId(1),
-                offset: Value::Real(0.001),
-            }),
-            ("Shell", GeometryOp::Shell {
-                target: GeometryHandleId(1),
-                thickness: Value::Real(0.001),
-                faces_to_remove: vec![0],
-            }),
+            (
+                "Box",
+                GeometryOp::Box {
+                    width: Value::Real(1.0),
+                    height: Value::Real(1.0),
+                    depth: Value::Real(1.0),
+                },
+            ),
+            (
+                "Cylinder",
+                GeometryOp::Cylinder {
+                    radius: Value::Real(1.0),
+                    height: Value::Real(1.0),
+                },
+            ),
+            (
+                "Sphere",
+                GeometryOp::Sphere {
+                    radius: Value::Real(1.0),
+                },
+            ),
+            (
+                "Tube",
+                GeometryOp::Tube {
+                    outer_r: Value::Real(0.01),
+                    inner_r: Value::Real(0.005),
+                    height: Value::Real(0.02),
+                },
+            ),
+            (
+                "Union",
+                GeometryOp::Union {
+                    left: GeometryHandleId(1),
+                    right: GeometryHandleId(2),
+                },
+            ),
+            (
+                "Difference",
+                GeometryOp::Difference {
+                    left: GeometryHandleId(1),
+                    right: GeometryHandleId(2),
+                },
+            ),
+            (
+                "Intersection",
+                GeometryOp::Intersection {
+                    left: GeometryHandleId(1),
+                    right: GeometryHandleId(2),
+                },
+            ),
+            (
+                "Fillet",
+                GeometryOp::Fillet {
+                    target: GeometryHandleId(1),
+                    radius: Value::Real(0.001),
+                },
+            ),
+            (
+                "Chamfer",
+                GeometryOp::Chamfer {
+                    target: GeometryHandleId(1),
+                    distance: Value::Real(0.001),
+                },
+            ),
+            (
+                "Translate",
+                GeometryOp::Translate {
+                    target: GeometryHandleId(1),
+                    dx: 1.0,
+                    dy: 0.0,
+                    dz: 0.0,
+                },
+            ),
+            (
+                "Rotate",
+                GeometryOp::Rotate {
+                    target: GeometryHandleId(1),
+                    axis: [0.0, 0.0, 1.0],
+                    angle_rad: 0.0,
+                },
+            ),
+            (
+                "Scale",
+                GeometryOp::Scale {
+                    target: GeometryHandleId(1),
+                    factor: 2.0,
+                },
+            ),
+            (
+                "RotateAround",
+                GeometryOp::RotateAround {
+                    target: GeometryHandleId(1),
+                    point: [0.0, 0.0, 0.0],
+                    axis: [0.0, 0.0, 1.0],
+                    angle_rad: 0.0,
+                },
+            ),
+            (
+                "LinearPattern",
+                GeometryOp::LinearPattern {
+                    target: GeometryHandleId(1),
+                    direction: [1.0, 0.0, 0.0],
+                    count: 3,
+                    spacing: Value::Real(0.01),
+                },
+            ),
+            (
+                "CircularPattern",
+                GeometryOp::CircularPattern {
+                    target: GeometryHandleId(1),
+                    axis_origin: [0.0, 0.0, 0.0],
+                    axis_dir: [0.0, 0.0, 1.0],
+                    count: 4,
+                    angle: Value::Real(std::f64::consts::TAU),
+                },
+            ),
+            (
+                "Mirror",
+                GeometryOp::Mirror {
+                    target: GeometryHandleId(1),
+                    plane_origin: [0.0, 0.0, 0.0],
+                    plane_normal: [1.0, 0.0, 0.0],
+                },
+            ),
+            (
+                "LinearPattern2D",
+                GeometryOp::LinearPattern2D {
+                    target: GeometryHandleId(1),
+                    direction1: [1.0, 0.0, 0.0],
+                    count1: 2,
+                    spacing1: Value::Real(0.01),
+                    direction2: [0.0, 1.0, 0.0],
+                    count2: 2,
+                    spacing2: Value::Real(0.01),
+                },
+            ),
+            (
+                "ArbitraryPattern",
+                GeometryOp::ArbitraryPattern {
+                    target: GeometryHandleId(1),
+                    transforms: vec![[0.0, 0.0, 0.0]],
+                },
+            ),
+            (
+                "Loft",
+                GeometryOp::Loft {
+                    profiles: vec![GeometryHandleId(1), GeometryHandleId(2)],
+                },
+            ),
+            (
+                "Extrude",
+                GeometryOp::Extrude {
+                    profile: GeometryHandleId(1),
+                    distance: Value::Real(0.01),
+                },
+            ),
+            (
+                "Revolve",
+                GeometryOp::Revolve {
+                    profile: GeometryHandleId(1),
+                    axis_origin: [0.0, 0.0, 0.0],
+                    axis_dir: [0.0, 0.0, 1.0],
+                    angle_rad: std::f64::consts::TAU,
+                },
+            ),
+            (
+                "Sweep",
+                GeometryOp::Sweep {
+                    profile: GeometryHandleId(1),
+                    path: GeometryHandleId(2),
+                },
+            ),
+            (
+                "Pipe",
+                GeometryOp::Pipe {
+                    path: GeometryHandleId(1),
+                    radius: Value::Real(0.002),
+                },
+            ),
+            (
+                "ExtrudeSymmetric",
+                GeometryOp::ExtrudeSymmetric {
+                    profile: GeometryHandleId(1),
+                    distance: Value::Real(0.01),
+                },
+            ),
+            (
+                "SweepGuided",
+                GeometryOp::SweepGuided {
+                    profile: GeometryHandleId(1),
+                    path: GeometryHandleId(2),
+                    guide: GeometryHandleId(3),
+                },
+            ),
+            (
+                "LoftGuided",
+                GeometryOp::LoftGuided {
+                    profiles: vec![GeometryHandleId(1), GeometryHandleId(2)],
+                    guides: vec![GeometryHandleId(3)],
+                },
+            ),
+            (
+                "LineSegment",
+                GeometryOp::LineSegment {
+                    x1: 0.0,
+                    y1: 0.0,
+                    z1: 0.0,
+                    x2: 1.0,
+                    y2: 0.0,
+                    z2: 0.0,
+                },
+            ),
+            (
+                "Arc",
+                GeometryOp::Arc {
+                    center: [0.0, 0.0, 0.0],
+                    radius: 1.0,
+                    start_angle: 0.0,
+                    end_angle: std::f64::consts::FRAC_PI_2,
+                    axis: [0.0, 0.0, 1.0],
+                },
+            ),
+            (
+                "Helix",
+                GeometryOp::Helix {
+                    radius: 0.01,
+                    pitch: 0.002,
+                    height: 0.02,
+                },
+            ),
+            (
+                "InterpCurve",
+                GeometryOp::InterpCurve {
+                    points: vec![[0.0, 0.0, 0.0], [1.0, 1.0, 0.0], [2.0, 0.0, 0.0]],
+                },
+            ),
+            (
+                "BezierCurve",
+                GeometryOp::BezierCurve {
+                    control_points: vec![[0.0, 0.0, 0.0], [1.0, 2.0, 0.0], [2.0, 0.0, 0.0]],
+                },
+            ),
+            (
+                "NurbsCurve",
+                GeometryOp::NurbsCurve {
+                    control_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                    weights: vec![1.0, 1.0],
+                    knots: vec![0.0, 0.0, 1.0, 1.0],
+                    degree: 1,
+                },
+            ),
+            (
+                "Draft",
+                GeometryOp::Draft {
+                    target: GeometryHandleId(1),
+                    angle: Value::Real(0.1),
+                    plane: GeometryHandleId(2),
+                },
+            ),
+            (
+                "Thicken",
+                GeometryOp::Thicken {
+                    target: GeometryHandleId(1),
+                    offset: Value::Real(0.001),
+                },
+            ),
+            (
+                "Shell",
+                GeometryOp::Shell {
+                    target: GeometryHandleId(1),
+                    thickness: Value::Real(0.001),
+                    faces_to_remove: vec![0],
+                },
+            ),
         ];
         // Changing this constant forces the test to be updated whenever a
         // variant is added or removed from GeometryOp — compile-time
@@ -5110,64 +5314,115 @@ mod tests {
         // visibly (compile-time exhaustiveness + runtime string check).
         let cases: &[(&str, GeometryQuery)] = &[
             ("Volume", GeometryQuery::Volume(GeometryHandleId(1))),
-            ("SurfaceArea", GeometryQuery::SurfaceArea(GeometryHandleId(1))),
+            (
+                "SurfaceArea",
+                GeometryQuery::SurfaceArea(GeometryHandleId(1)),
+            ),
             ("Centroid", GeometryQuery::Centroid(GeometryHandleId(1))),
-            ("BoundingBox", GeometryQuery::BoundingBox(GeometryHandleId(1))),
-            ("Distance", GeometryQuery::Distance {
-                from: GeometryHandleId(1),
-                to: GeometryHandleId(2),
-            }),
-            ("MomentOfInertia", GeometryQuery::MomentOfInertia {
-                handle: GeometryHandleId(1),
-                axis: [0.0, 0.0, 1.0],
-            }),
-            ("AdjacentFaces", GeometryQuery::AdjacentFaces {
-                shape: GeometryHandleId(1),
-                face_index: 0,
-            }),
-            ("AncestorFacesOfEdge", GeometryQuery::AncestorFacesOfEdge {
-                shape: GeometryHandleId(1),
-                edge_index: 0,
-            }),
-            ("SharedEdges", GeometryQuery::SharedEdges {
-                shape: GeometryHandleId(1),
-                face_a: 0,
-                face_b: 1,
-            }),
-            ("IsWatertight", GeometryQuery::IsWatertight(GeometryHandleId(1))),
+            (
+                "BoundingBox",
+                GeometryQuery::BoundingBox(GeometryHandleId(1)),
+            ),
+            (
+                "Distance",
+                GeometryQuery::Distance {
+                    from: GeometryHandleId(1),
+                    to: GeometryHandleId(2),
+                },
+            ),
+            (
+                "MomentOfInertia",
+                GeometryQuery::MomentOfInertia {
+                    handle: GeometryHandleId(1),
+                    axis: [0.0, 0.0, 1.0],
+                },
+            ),
+            (
+                "AdjacentFaces",
+                GeometryQuery::AdjacentFaces {
+                    shape: GeometryHandleId(1),
+                    face_index: 0,
+                },
+            ),
+            (
+                "AncestorFacesOfEdge",
+                GeometryQuery::AncestorFacesOfEdge {
+                    shape: GeometryHandleId(1),
+                    edge_index: 0,
+                },
+            ),
+            (
+                "SharedEdges",
+                GeometryQuery::SharedEdges {
+                    shape: GeometryHandleId(1),
+                    face_a: 0,
+                    face_b: 1,
+                },
+            ),
+            (
+                "IsWatertight",
+                GeometryQuery::IsWatertight(GeometryHandleId(1)),
+            ),
             ("IsManifold", GeometryQuery::IsManifold(GeometryHandleId(1))),
-            ("IsOrientable", GeometryQuery::IsOrientable(GeometryHandleId(1))),
-            ("CenterOfMass", GeometryQuery::CenterOfMass {
-                handle: GeometryHandleId(1),
-                density: 1000.0,
-            }),
-            ("InertiaTensor", GeometryQuery::InertiaTensor {
-                handle: GeometryHandleId(1),
-                density: 1000.0,
-            }),
+            (
+                "IsOrientable",
+                GeometryQuery::IsOrientable(GeometryHandleId(1)),
+            ),
+            (
+                "CenterOfMass",
+                GeometryQuery::CenterOfMass {
+                    handle: GeometryHandleId(1),
+                    density: 1000.0,
+                },
+            ),
+            (
+                "InertiaTensor",
+                GeometryQuery::InertiaTensor {
+                    handle: GeometryHandleId(1),
+                    density: 1000.0,
+                },
+            ),
             ("EdgeLength", GeometryQuery::EdgeLength(GeometryHandleId(1))),
-            ("EdgeTangent", GeometryQuery::EdgeTangent(GeometryHandleId(1))),
+            (
+                "EdgeTangent",
+                GeometryQuery::EdgeTangent(GeometryHandleId(1)),
+            ),
             ("FaceNormal", GeometryQuery::FaceNormal(GeometryHandleId(1))),
-            ("FaceSurfaceKind", GeometryQuery::FaceSurfaceKind(GeometryHandleId(1))),
-            ("EdgeCurveKind", GeometryQuery::EdgeCurveKind(GeometryHandleId(1))),
+            (
+                "FaceSurfaceKind",
+                GeometryQuery::FaceSurfaceKind(GeometryHandleId(1)),
+            ),
+            (
+                "EdgeCurveKind",
+                GeometryQuery::EdgeCurveKind(GeometryHandleId(1)),
+            ),
             ("OwnerBody", GeometryQuery::OwnerBody(GeometryHandleId(1))),
-            ("ClosestPointOnShape", GeometryQuery::ClosestPointOnShape {
-                handle: GeometryHandleId(1),
-                px: 0.0,
-                py: 0.0,
-                pz: 0.0,
-            }),
-            ("PointOnShape", GeometryQuery::PointOnShape {
-                handle: GeometryHandleId(1),
-                px: 0.0,
-                py: 0.0,
-                pz: 0.0,
-                tolerance: super::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
-            }),
-            ("SurfaceAngle", GeometryQuery::SurfaceAngle {
-                face_a: GeometryHandleId(1),
-                face_b: GeometryHandleId(2),
-            }),
+            (
+                "ClosestPointOnShape",
+                GeometryQuery::ClosestPointOnShape {
+                    handle: GeometryHandleId(1),
+                    px: 0.0,
+                    py: 0.0,
+                    pz: 0.0,
+                },
+            ),
+            (
+                "PointOnShape",
+                GeometryQuery::PointOnShape {
+                    handle: GeometryHandleId(1),
+                    px: 0.0,
+                    py: 0.0,
+                    pz: 0.0,
+                    tolerance: super::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
+                },
+            ),
+            (
+                "SurfaceAngle",
+                GeometryQuery::SurfaceAngle {
+                    face_a: GeometryHandleId(1),
+                    face_b: GeometryHandleId(2),
+                },
+            ),
         ];
         // Changing this constant forces the test to be updated whenever a
         // variant is added or removed from GeometryQuery — compile-time

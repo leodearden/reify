@@ -142,7 +142,10 @@ fn linear_combine(args: &[Value]) -> Value {
         let weight = match weight_val {
             Value::Real(r) => *r,
             Value::Int(i) => *i as f64,
-            Value::Scalar { si_value, dimension } if dimension.is_dimensionless() => *si_value,
+            Value::Scalar {
+                si_value,
+                dimension,
+            } if dimension.is_dimensionless() => *si_value,
             _ => return Value::Undef,
         };
         // Non-finite weights (NaN, ±Inf) would poison the accumulator — reject.
@@ -219,7 +222,14 @@ fn linear_combine(args: &[Value]) -> Value {
             if !metadata_matches(ref_disp_sf, sf_d, ref_disp_dom, ref_disp_cod, dom_d, cod_d) {
                 return Value::Undef;
             }
-            if !metadata_matches(ref_stress_sf, sf_s, ref_stress_dom, ref_stress_cod, dom_s, cod_s) {
+            if !metadata_matches(
+                ref_stress_sf,
+                sf_s,
+                ref_stress_dom,
+                ref_stress_cod,
+                dom_s,
+                cod_s,
+            ) {
                 return Value::Undef;
             }
         }
@@ -439,18 +449,31 @@ impl TensorShape {
     /// `Type::Scalar { dimension: LENGTH }`).
     fn extract_quantity(self, codomain: &Type) -> Option<Type> {
         match (self, codomain) {
-            (TensorShape::Matrix3x3, Type::Matrix { m: 3, n: 3, quantity }) => {
-                Some((**quantity).clone())
-            }
-            (TensorShape::Matrix3x3, Type::Tensor { rank: 2, n: 3, quantity }) => {
-                Some((**quantity).clone())
-            }
-            (TensorShape::Vector3, Type::Vector { n: 3, quantity }) => {
-                Some((**quantity).clone())
-            }
-            (TensorShape::Vector3, Type::Tensor { rank: 1, n: 3, quantity }) => {
-                Some((**quantity).clone())
-            }
+            (
+                TensorShape::Matrix3x3,
+                Type::Matrix {
+                    m: 3,
+                    n: 3,
+                    quantity,
+                },
+            ) => Some((**quantity).clone()),
+            (
+                TensorShape::Matrix3x3,
+                Type::Tensor {
+                    rank: 2,
+                    n: 3,
+                    quantity,
+                },
+            ) => Some((**quantity).clone()),
+            (TensorShape::Vector3, Type::Vector { n: 3, quantity }) => Some((**quantity).clone()),
+            (
+                TensorShape::Vector3,
+                Type::Tensor {
+                    rank: 1,
+                    n: 3,
+                    quantity,
+                },
+            ) => Some((**quantity).clone()),
             _ => None,
         }
     }
@@ -1207,11 +1230,7 @@ mod tests {
     /// axis grid point). The resulting `SampledField.data` has length
     /// `axis.len() * 3` — the stride-3 layout established locally for
     /// envelope_displacement_magnitude in step-8.
-    fn make_sampled_vector3_1d(
-        name: &str,
-        axis: Vec<f64>,
-        vectors: Vec<[f64; 3]>,
-    ) -> SampledField {
+    fn make_sampled_vector3_1d(name: &str, axis: Vec<f64>, vectors: Vec<[f64; 3]>) -> SampledField {
         assert_eq!(
             vectors.len(),
             axis.len(),
@@ -1993,7 +2012,10 @@ mod tests {
         m.insert(Value::String("stress".to_string()), Value::Real(0.0));
         m.insert(Value::String("max_von_mises".to_string()), Value::Real(0.0));
         m.insert(Value::String("converged".to_string()), Value::Bool(true));
-        m.insert(Value::String("iterations".to_string()), Value::Int(iterations));
+        m.insert(
+            Value::String("iterations".to_string()),
+            Value::Int(iterations),
+        );
         Value::Map(m)
     }
 
@@ -2055,7 +2077,11 @@ mod tests {
 
     #[test]
     fn case_names_non_map_arg_returns_undef() {
-        assert!(eval_fea("case_names", &[Value::Int(42)]).unwrap().is_undef());
+        assert!(
+            eval_fea("case_names", &[Value::Int(42)])
+                .unwrap()
+                .is_undef()
+        );
     }
 
     #[test]
@@ -2063,11 +2089,7 @@ mod tests {
         // A Map without a "cases" key is not a valid MultiCaseResult struct.
         let mut m = BTreeMap::new();
         m.insert(Value::String("other_field".to_string()), Value::Int(1));
-        assert!(
-            eval_fea("case_names", &[Value::Map(m)])
-                .unwrap()
-                .is_undef()
-        );
+        assert!(eval_fea("case_names", &[Value::Map(m)]).unwrap().is_undef());
     }
 
     #[test]
@@ -2078,11 +2100,7 @@ mod tests {
             Value::String("cases".to_string()),
             Value::Int(99), // not a Map
         );
-        assert!(
-            eval_fea("case_names", &[Value::Map(m)])
-                .unwrap()
-                .is_undef()
-        );
+        assert!(eval_fea("case_names", &[Value::Map(m)]).unwrap().is_undef());
     }
 
     // ── result_for dispatcher signal ─────────────────────────────────────────
@@ -2104,11 +2122,8 @@ mod tests {
         let er_op = make_fixture_elastic_result(42);
         let mcr = multi_case_result_value(&[("operating", er_op.clone())]);
 
-        let result = eval_fea(
-            "result_for",
-            &[mcr, Value::String("operating".to_string())],
-        )
-        .unwrap();
+        let result =
+            eval_fea("result_for", &[mcr, Value::String("operating".to_string())]).unwrap();
 
         assert_eq!(
             result, er_op,
@@ -2121,11 +2136,7 @@ mod tests {
         let er_op = make_fixture_elastic_result(42);
         let mcr = multi_case_result_value(&[("operating", er_op)]);
 
-        let result = eval_fea(
-            "result_for",
-            &[mcr, Value::String("missing".to_string())],
-        )
-        .unwrap();
+        let result = eval_fea("result_for", &[mcr, Value::String("missing".to_string())]).unwrap();
 
         assert!(
             result.is_undef(),
@@ -2163,9 +2174,12 @@ mod tests {
     #[test]
     fn result_for_non_map_first_arg_returns_undef() {
         assert!(
-            eval_fea("result_for", &[Value::Int(1), Value::String("k".to_string())])
-                .unwrap()
-                .is_undef()
+            eval_fea(
+                "result_for",
+                &[Value::Int(1), Value::String("k".to_string())]
+            )
+            .unwrap()
+            .is_undef()
         );
     }
 
@@ -2367,10 +2381,7 @@ mod tests {
     /// placeholders), this variant accepts actual Field-typed Values for
     /// displacement and stress — required for linear_combine which reads
     /// and arithmetic-combines those Fields.
-    fn make_fixture_elastic_result_with_fields(
-        displacement: Value,
-        stress: Value,
-    ) -> Value {
+    fn make_fixture_elastic_result_with_fields(displacement: Value, stress: Value) -> Value {
         let mut m = BTreeMap::new();
         m.insert(Value::String("displacement".to_string()), displacement);
         m.insert(Value::String("stress".to_string()), stress);
@@ -2417,14 +2428,22 @@ mod tests {
             .get(&Value::String("displacement".to_string()))
             .expect("result must have 'displacement' key");
         let disp_sf = extract_sampled(disp);
-        assert_eq!(disp_sf.data, vec![2.0, 4.0, 6.0], "displacement data should be 2x input");
+        assert_eq!(
+            disp_sf.data,
+            vec![2.0, 4.0, 6.0],
+            "displacement data should be 2x input"
+        );
 
         // Check stress field: data should be [20.0, 40.0, 60.0].
         let stress = result_map
             .get(&Value::String("stress".to_string()))
             .expect("result must have 'stress' key");
         let stress_sf = extract_sampled(stress);
-        assert_eq!(stress_sf.data, vec![20.0, 40.0, 60.0], "stress data should be 2x input");
+        assert_eq!(
+            stress_sf.data,
+            vec![20.0, 40.0, 60.0],
+            "stress data should be 2x input"
+        );
 
         // frame must be Undef (tet-elastic convention).
         let frame = result_map
@@ -2454,10 +2473,7 @@ mod tests {
     // ── linear_combine multi-case LRFD happy path ───────────────────────────
 
     fn approx_eq_slice(a: &[f64], b: &[f64], tol: f64) -> bool {
-        a.len() == b.len()
-            && a.iter()
-                .zip(b.iter())
-                .all(|(x, y)| (x - y).abs() <= tol)
+        a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| (x - y).abs() <= tol)
     }
 
     #[test]
@@ -2528,11 +2544,7 @@ mod tests {
             .get(&Value::String("max_von_mises".to_string()))
             .expect("result must have 'max_von_mises' key");
         match mvm {
-            Value::Real(v) => assert!(
-                (v - 3680.0).abs() <= 1e-9,
-                "max_von_mises mismatch: {}",
-                v
-            ),
+            Value::Real(v) => assert!((v - 3680.0).abs() <= 1e-9, "max_von_mises mismatch: {}", v),
             other => panic!("expected Value::Real for max_von_mises, got {:?}", other),
         }
     }
@@ -2598,7 +2610,10 @@ mod tests {
             stress_sf.data
         );
         // max_von_mises = max(|[112, 224]|) = 224.0
-        match result_map.get(&Value::String("max_von_mises".to_string())).unwrap() {
+        match result_map
+            .get(&Value::String("max_von_mises".to_string()))
+            .unwrap()
+        {
             Value::Real(v) => assert!((v - 224.0).abs() <= 1e-9, "max_von_mises: {}", v),
             other => panic!("expected Real, got {:?}", other),
         }
@@ -2610,12 +2625,20 @@ mod tests {
     fn linear_combine_displacement_grid_axis_lengths_mismatch_returns_undef() {
         // Case A displacement has 5 grid points, case B has 4 — mismatch → Undef.
         let a_disp = wrap_sampled_field(
-            make_sampled_1d("da", vec![0.0, 1.0, 2.0, 3.0, 4.0], vec![1.0, 2.0, 3.0, 4.0, 5.0]),
+            make_sampled_1d(
+                "da",
+                vec![0.0, 1.0, 2.0, 3.0, 4.0],
+                vec![1.0, 2.0, 3.0, 4.0, 5.0],
+            ),
             Type::Real,
             Type::Real,
         );
         let a_stress = wrap_sampled_field(
-            make_sampled_1d("sa", vec![0.0, 1.0, 2.0, 3.0, 4.0], vec![10.0, 20.0, 30.0, 40.0, 50.0]),
+            make_sampled_1d(
+                "sa",
+                vec![0.0, 1.0, 2.0, 3.0, 4.0],
+                vec![10.0, 20.0, 30.0, 40.0, 50.0],
+            ),
             Type::Real,
             Type::Real,
         );
@@ -2635,7 +2658,11 @@ mod tests {
         let mut wm = BTreeMap::new();
         wm.insert(Value::String("A".to_string()), Value::Real(1.0));
         wm.insert(Value::String("B".to_string()), Value::Real(1.0));
-        assert!(eval_fea("linear_combine", &[mcr, Value::Map(wm)]).unwrap().is_undef());
+        assert!(
+            eval_fea("linear_combine", &[mcr, Value::Map(wm)])
+                .unwrap()
+                .is_undef()
+        );
     }
 
     #[test]
@@ -2664,7 +2691,11 @@ mod tests {
         let mut wm = BTreeMap::new();
         wm.insert(Value::String("A".to_string()), Value::Real(1.0));
         wm.insert(Value::String("B".to_string()), Value::Real(1.0));
-        assert!(eval_fea("linear_combine", &[mcr, Value::Map(wm)]).unwrap().is_undef());
+        assert!(
+            eval_fea("linear_combine", &[mcr, Value::Map(wm)])
+                .unwrap()
+                .is_undef()
+        );
     }
 
     #[test]
@@ -2684,7 +2715,9 @@ mod tests {
         let b_stress = wrap_sampled_field(
             make_sampled_1d("sb", axis.clone(), vec![10.0, 20.0, 30.0]),
             Type::Real,
-            Type::Scalar { dimension: DimensionVector::PRESSURE },
+            Type::Scalar {
+                dimension: DimensionVector::PRESSURE,
+            },
         );
         let case_a = make_fixture_elastic_result_with_fields(shared_disp.clone(), a_stress);
         let case_b = make_fixture_elastic_result_with_fields(shared_disp, b_stress);
@@ -2692,7 +2725,11 @@ mod tests {
         let mut wm = BTreeMap::new();
         wm.insert(Value::String("A".to_string()), Value::Real(1.0));
         wm.insert(Value::String("B".to_string()), Value::Real(1.0));
-        assert!(eval_fea("linear_combine", &[mcr, Value::Map(wm)]).unwrap().is_undef());
+        assert!(
+            eval_fea("linear_combine", &[mcr, Value::Map(wm)])
+                .unwrap()
+                .is_undef()
+        );
     }
 
     #[test]
@@ -2721,7 +2758,11 @@ mod tests {
         let mut wm = BTreeMap::new();
         wm.insert(Value::String("A".to_string()), Value::Real(1.0));
         wm.insert(Value::String("B".to_string()), Value::Real(1.0));
-        assert!(eval_fea("linear_combine", &[mcr, Value::Map(wm)]).unwrap().is_undef());
+        assert!(
+            eval_fea("linear_combine", &[mcr, Value::Map(wm)])
+                .unwrap()
+                .is_undef()
+        );
     }
 
     #[test]
@@ -2750,7 +2791,11 @@ mod tests {
         let mut wm = BTreeMap::new();
         wm.insert(Value::String("A".to_string()), Value::Real(1.0));
         wm.insert(Value::String("B".to_string()), Value::Real(1.0));
-        assert!(eval_fea("linear_combine", &[mcr, Value::Map(wm)]).unwrap().is_undef());
+        assert!(
+            eval_fea("linear_combine", &[mcr, Value::Map(wm)])
+                .unwrap()
+                .is_undef()
+        );
     }
 
     // ── linear_combine Pressure codomain preservation ────────────────────────
@@ -2824,7 +2869,10 @@ mod tests {
         );
 
         // max_von_mises = 450e6.
-        match result_map.get(&Value::String("max_von_mises".to_string())).unwrap() {
+        match result_map
+            .get(&Value::String("max_von_mises".to_string()))
+            .unwrap()
+        {
             Value::Real(v) => assert!((v - 450e6).abs() <= 1.0, "max_von_mises: {}", v),
             other => panic!("expected Real, got {:?}", other),
         }
@@ -2866,10 +2914,17 @@ mod tests {
 
         // max_von_mises must be finite — NaN at index 1 is skipped.
         // Finite values: |100.0|=100.0, |300.0|=300.0 → max = 300.0.
-        match result_map.get(&Value::String("max_von_mises".to_string())).unwrap() {
+        match result_map
+            .get(&Value::String("max_von_mises".to_string()))
+            .unwrap()
+        {
             Value::Real(v) => {
                 assert!(v.is_finite(), "max_von_mises must be finite, got {}", v);
-                assert!((*v - 300.0).abs() <= 1e-9, "max_von_mises must be 300.0, got {}", v);
+                assert!(
+                    (*v - 300.0).abs() <= 1e-9,
+                    "max_von_mises must be 300.0, got {}",
+                    v
+                );
             }
             other => panic!("expected Value::Real, got {:?}", other),
         }
@@ -3011,7 +3066,10 @@ mod tests {
         // Build a partial ElasticResult missing the displacement key.
         let mut partial = BTreeMap::new();
         partial.insert(Value::String("stress".to_string()), stress_field);
-        partial.insert(Value::String("max_von_mises".to_string()), Value::Real(30.0));
+        partial.insert(
+            Value::String("max_von_mises".to_string()),
+            Value::Real(30.0),
+        );
         partial.insert(Value::String("converged".to_string()), Value::Bool(true));
         partial.insert(Value::String("iterations".to_string()), Value::Int(0));
         let partial_case = Value::Map(partial);
@@ -3019,7 +3077,11 @@ mod tests {
         let mcr = multi_case_result_value(&[("A", partial_case)]);
         let mut wm = BTreeMap::new();
         wm.insert(Value::String("A".to_string()), Value::Real(1.0));
-        assert!(eval_fea("linear_combine", &[mcr, Value::Map(wm)]).unwrap().is_undef());
+        assert!(
+            eval_fea("linear_combine", &[mcr, Value::Map(wm)])
+                .unwrap()
+                .is_undef()
+        );
     }
 
     #[test]
@@ -3042,7 +3104,11 @@ mod tests {
         let mcr = multi_case_result_value(&[("A", partial_case)]);
         let mut wm = BTreeMap::new();
         wm.insert(Value::String("A".to_string()), Value::Real(1.0));
-        assert!(eval_fea("linear_combine", &[mcr, Value::Map(wm)]).unwrap().is_undef());
+        assert!(
+            eval_fea("linear_combine", &[mcr, Value::Map(wm)])
+                .unwrap()
+                .is_undef()
+        );
     }
 
     // ── linear_combine NaN/Inf weight rejection ──────────────────────────────
@@ -3189,7 +3255,11 @@ mod tests {
         let mut wm = BTreeMap::new();
         wm.insert(Value::String("A".to_string()), Value::Real(1.0));
         wm.insert(Value::String("B".to_string()), Value::Real(1.0));
-        assert!(eval_fea("linear_combine", &[mcr, Value::Map(wm)]).unwrap().is_undef());
+        assert!(
+            eval_fea("linear_combine", &[mcr, Value::Map(wm)])
+                .unwrap()
+                .is_undef()
+        );
     }
 
     #[test]
@@ -3219,7 +3289,11 @@ mod tests {
         let mut wm = BTreeMap::new();
         wm.insert(Value::String("A".to_string()), Value::Real(1.0));
         wm.insert(Value::String("B".to_string()), Value::Real(1.0));
-        assert!(eval_fea("linear_combine", &[mcr, Value::Map(wm)]).unwrap().is_undef());
+        assert!(
+            eval_fea("linear_combine", &[mcr, Value::Map(wm)])
+                .unwrap()
+                .is_undef()
+        );
     }
 
     // ── linear_combine Int weight accepted ───────────────────────────────────
@@ -3248,9 +3322,15 @@ mod tests {
             Value::Map(m) => m,
             other => panic!("expected Value::Map, got {:?}", other),
         };
-        let disp = result_map.get(&Value::String("displacement".to_string())).unwrap();
+        let disp = result_map
+            .get(&Value::String("displacement".to_string()))
+            .unwrap();
         let disp_sf = extract_sampled(disp);
-        assert_eq!(disp_sf.data, vec![2.0, 4.0, 6.0], "Int(2) weight must double displacement");
+        assert_eq!(
+            disp_sf.data,
+            vec![2.0, 4.0, 6.0],
+            "Int(2) weight must double displacement"
+        );
     }
 
     // ── linear_combine displacement codomain mismatch ────────────────────────
@@ -3274,7 +3354,9 @@ mod tests {
         let b_disp = wrap_sampled_field(
             make_sampled_1d("db", axis.clone(), vec![1.0, 2.0, 3.0]),
             Type::Real,
-            Type::Scalar { dimension: DimensionVector::PRESSURE }, // codomain mismatch
+            Type::Scalar {
+                dimension: DimensionVector::PRESSURE,
+            }, // codomain mismatch
         );
         let case_a = make_fixture_elastic_result_with_fields(a_disp, shared_stress.clone());
         let case_b = make_fixture_elastic_result_with_fields(b_disp, shared_stress);
@@ -3282,7 +3364,11 @@ mod tests {
         let mut wm = BTreeMap::new();
         wm.insert(Value::String("A".to_string()), Value::Real(1.0));
         wm.insert(Value::String("B".to_string()), Value::Real(1.0));
-        assert!(eval_fea("linear_combine", &[mcr, Value::Map(wm)]).unwrap().is_undef());
+        assert!(
+            eval_fea("linear_combine", &[mcr, Value::Map(wm)])
+                .unwrap()
+                .is_undef()
+        );
     }
 
     // ── envelope_von_mises round-trip ───────────────────────────────────────
@@ -3318,8 +3404,14 @@ mod tests {
         //   data[1] = max(50·√3 ≈ 86.6, 200)  = 200.0
         //   data[2] = max(0, 100·√3 ≈ 173.2)  = 100·√3
         let axis = vec![0.0, 1.0, 2.0];
-        let pressure = Type::Scalar { dimension: DimensionVector::PRESSURE };
-        let tensor_codomain = Type::Matrix { m: 3, n: 3, quantity: Box::new(pressure.clone()) };
+        let pressure = Type::Scalar {
+            dimension: DimensionVector::PRESSURE,
+        };
+        let tensor_codomain = Type::Matrix {
+            m: 3,
+            n: 3,
+            quantity: Box::new(pressure.clone()),
+        };
         let domain = Type::Real;
 
         let a_tensors: Vec<[f64; 9]> = vec![
@@ -3364,12 +3456,16 @@ mod tests {
         // `3.0_f64.sqrt()` literal is the closed-form √3; `f64::consts`
         // does not yet stabilise `SQRT_3`.
         let expected: [f64; 3] = [
-            100.0,                    // max(vm_A=100, vm_B=0)
-            200.0,                    // max(vm_A=50·√3, vm_B=200)
-            100.0 * 3.0_f64.sqrt(),   // max(vm_A=0, vm_B=100·√3)
+            100.0,                  // max(vm_A=100, vm_B=0)
+            200.0,                  // max(vm_A=50·√3, vm_B=200)
+            100.0 * 3.0_f64.sqrt(), // max(vm_A=0, vm_B=100·√3)
         ];
 
-        assert_eq!(result_sf.data.len(), axis.len(), "result must have one scalar per grid point");
+        assert_eq!(
+            result_sf.data.len(),
+            axis.len(),
+            "result must have one scalar per grid point"
+        );
         for (i, (got, want)) in result_sf.data.iter().zip(expected.iter()).enumerate() {
             assert!(
                 (got - want).abs() < 1e-6,
@@ -3407,7 +3503,8 @@ mod tests {
     }
 
     #[test]
-    fn envelope_max_principal_two_case_round_trip_returns_per_grid_max_of_per_case_max_eigenvalue() {
+    fn envelope_max_principal_two_case_round_trip_returns_per_grid_max_of_per_case_max_eigenvalue()
+    {
         // 1-D 3-grid-point fixture with diagonal stress tensors at every
         // point — eigenvalues equal the diagonal entries exactly, so the
         // expected per-grid max-principal is the max of (σ_xx, σ_yy, σ_zz)
@@ -3427,8 +3524,14 @@ mod tests {
         //   data[1] = max(80, 50)   = 80
         //   data[2] = max(10, 150)  = 150
         let axis = vec![0.0, 1.0, 2.0];
-        let pressure = Type::Scalar { dimension: DimensionVector::PRESSURE };
-        let tensor_codomain = Type::Matrix { m: 3, n: 3, quantity: Box::new(pressure.clone()) };
+        let pressure = Type::Scalar {
+            dimension: DimensionVector::PRESSURE,
+        };
+        let tensor_codomain = Type::Matrix {
+            m: 3,
+            n: 3,
+            quantity: Box::new(pressure.clone()),
+        };
         let domain = Type::Real;
 
         let a_tensors: Vec<[f64; 9]> = vec![
@@ -3468,12 +3571,15 @@ mod tests {
         // Independently compute expected per-grid envelope.
         let expected: Vec<f64> = (0..axis.len())
             .map(|i| {
-                max_principal_diagonal(&a_tensors[i])
-                    .max(max_principal_diagonal(&b_tensors[i]))
+                max_principal_diagonal(&a_tensors[i]).max(max_principal_diagonal(&b_tensors[i]))
             })
             .collect();
 
-        assert_eq!(result_sf.data.len(), axis.len(), "result must have one scalar per grid point");
+        assert_eq!(
+            result_sf.data.len(),
+            axis.len(),
+            "result must have one scalar per grid point"
+        );
         for (i, (got, want)) in result_sf.data.iter().zip(expected.iter()).enumerate() {
             assert!(
                 (got - want).abs() < 1e-6,
@@ -3519,20 +3625,17 @@ mod tests {
         //   data[1] = max(0,    10)    = 10
         //   data[2] = max(√3,   2)     = 2
         let axis = vec![0.0, 1.0, 2.0];
-        let length = Type::Scalar { dimension: DimensionVector::LENGTH };
-        let vector_codomain = Type::Vector { n: 3, quantity: Box::new(length.clone()) };
+        let length = Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        };
+        let vector_codomain = Type::Vector {
+            n: 3,
+            quantity: Box::new(length.clone()),
+        };
         let domain = Type::Real;
 
-        let a_vectors: Vec<[f64; 3]> = vec![
-            [3.0, 4.0, 0.0],
-            [0.0, 0.0, 0.0],
-            [1.0, 1.0, 1.0],
-        ];
-        let b_vectors: Vec<[f64; 3]> = vec![
-            [0.0, 0.0, 0.0],
-            [6.0, 8.0, 0.0],
-            [2.0, 0.0, 0.0],
-        ];
+        let a_vectors: Vec<[f64; 3]> = vec![[3.0, 4.0, 0.0], [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]];
+        let b_vectors: Vec<[f64; 3]> = vec![[0.0, 0.0, 0.0], [6.0, 8.0, 0.0], [2.0, 0.0, 0.0]];
 
         let a_disp = wrap_sampled_field(
             make_sampled_vector3_1d("a_disp", axis.clone(), a_vectors.clone()),
@@ -3605,8 +3708,14 @@ mod tests {
     /// other case" alongside an intentionally-bad case to exercise the
     /// per-case validation paths.
     fn make_valid_stress_field_3x3(grid: &[f64]) -> Value {
-        let pressure = Type::Scalar { dimension: DimensionVector::PRESSURE };
-        let tensor_codomain = Type::Matrix { m: 3, n: 3, quantity: Box::new(pressure) };
+        let pressure = Type::Scalar {
+            dimension: DimensionVector::PRESSURE,
+        };
+        let tensor_codomain = Type::Matrix {
+            m: 3,
+            n: 3,
+            quantity: Box::new(pressure),
+        };
         // Diagonal identity tensors at every grid point — eigenvalues = (1,1,1),
         // vm = 0; arbitrary content since this case is the "valid other".
         let tensors: Vec<[f64; 9]> = grid
@@ -3623,8 +3732,13 @@ mod tests {
     /// Build a 3-vector displacement field with the right codomain and
     /// a stride-3 buffer matching the given grid count.
     fn make_valid_displacement_field_v3(grid: &[f64]) -> Value {
-        let length = Type::Scalar { dimension: DimensionVector::LENGTH };
-        let vector_codomain = Type::Vector { n: 3, quantity: Box::new(length) };
+        let length = Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        };
+        let vector_codomain = Type::Vector {
+            n: 3,
+            quantity: Box::new(length),
+        };
         let vectors: Vec<[f64; 3]> = grid.iter().map(|_| [1.0, 0.0, 0.0]).collect();
         wrap_sampled_field(
             make_sampled_vector3_1d("valid_disp", grid.to_vec(), vectors),
@@ -3707,7 +3821,10 @@ mod tests {
     fn assert_envelope_helper_map_without_cases_field_returns_undef(name: &str) {
         // Outer Map must have a "cases" key (extract_cases_map enforces).
         let mut bad_outer = BTreeMap::new();
-        bad_outer.insert(Value::String("not_cases".to_string()), Value::Map(BTreeMap::new()));
+        bad_outer.insert(
+            Value::String("not_cases".to_string()),
+            Value::Map(BTreeMap::new()),
+        );
         assert!(eval_fea(name, &[Value::Map(bad_outer)]).unwrap().is_undef());
     }
 
@@ -3723,7 +3840,9 @@ mod tests {
 
     #[test]
     fn envelope_displacement_magnitude_map_without_cases_field_returns_undef() {
-        assert_envelope_helper_map_without_cases_field_returns_undef("envelope_displacement_magnitude");
+        assert_envelope_helper_map_without_cases_field_returns_undef(
+            "envelope_displacement_magnitude",
+        );
     }
 
     fn assert_envelope_helper_cases_field_non_map_returns_undef(name: &str) {
@@ -3871,8 +3990,14 @@ mod tests {
     fn envelope_von_mises_per_case_field_wrong_stride_returns_undef() {
         // Matrix<3,3,Pressure> expects stride 9; supply a 10-float buffer
         // (not a multiple of 9 for grid_count=3).
-        let pressure = Type::Scalar { dimension: DimensionVector::PRESSURE };
-        let codomain = Type::Matrix { m: 3, n: 3, quantity: Box::new(pressure) };
+        let pressure = Type::Scalar {
+            dimension: DimensionVector::PRESSURE,
+        };
+        let codomain = Type::Matrix {
+            m: 3,
+            n: 3,
+            quantity: Box::new(pressure),
+        };
         assert_envelope_helper_per_case_field_wrong_stride_returns_undef(
             "envelope_von_mises",
             "stress",
@@ -3883,8 +4008,14 @@ mod tests {
 
     #[test]
     fn envelope_max_principal_per_case_field_wrong_stride_returns_undef() {
-        let pressure = Type::Scalar { dimension: DimensionVector::PRESSURE };
-        let codomain = Type::Matrix { m: 3, n: 3, quantity: Box::new(pressure) };
+        let pressure = Type::Scalar {
+            dimension: DimensionVector::PRESSURE,
+        };
+        let codomain = Type::Matrix {
+            m: 3,
+            n: 3,
+            quantity: Box::new(pressure),
+        };
         assert_envelope_helper_per_case_field_wrong_stride_returns_undef(
             "envelope_max_principal",
             "stress",
@@ -3897,8 +4028,13 @@ mod tests {
     fn envelope_displacement_magnitude_per_case_field_wrong_stride_returns_undef() {
         // Vector<3,Length> expects stride 3; supply a 4-float buffer
         // (not a multiple of 3 for grid_count=3 — expected len=9; 4 violates).
-        let length = Type::Scalar { dimension: DimensionVector::LENGTH };
-        let codomain = Type::Vector { n: 3, quantity: Box::new(length) };
+        let length = Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        };
+        let codomain = Type::Vector {
+            n: 3,
+            quantity: Box::new(length),
+        };
         assert_envelope_helper_per_case_field_wrong_stride_returns_undef(
             "envelope_displacement_magnitude",
             "displacement",

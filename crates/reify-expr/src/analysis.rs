@@ -23,13 +23,20 @@ use super::{EvalContext, apply_lambda_with_point_unpacking};
 /// Returns `None` for all other types.
 fn tensor_element_dimension(codomain: &Type) -> Option<DimensionVector> {
     match codomain {
-        Type::Matrix { m: 3, n: 3, quantity } | Type::Tensor { rank: 2, n: 3, quantity } => {
-            match quantity.as_ref() {
-                Type::Scalar { dimension } => Some(*dimension),
-                Type::Real | Type::Int => Some(DimensionVector::DIMENSIONLESS),
-                _ => None,
-            }
+        Type::Matrix {
+            m: 3,
+            n: 3,
+            quantity,
         }
+        | Type::Tensor {
+            rank: 2,
+            n: 3,
+            quantity,
+        } => match quantity.as_ref() {
+            Type::Scalar { dimension } => Some(*dimension),
+            Type::Real | Type::Int => Some(DimensionVector::DIMENSIONLESS),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -123,11 +130,10 @@ fn scalar_type_for_dim(dim: DimensionVector) -> Type {
 ///
 /// The resulting field has `codomain_type = Scalar<element_dim>`.
 fn wrap_tensor_field(field_val: &Value, op: &str, source_kind: FieldSourceKind) -> Value {
-    let (domain_type, _codomain_type, elem_dim) =
-        match validate_tensor_field(field_val, op) {
-            Some(triple) => triple,
-            None => return Value::Undef,
-        };
+    let (domain_type, _codomain_type, elem_dim) = match validate_tensor_field(field_val, op) {
+        Some(triple) => triple,
+        None => return Value::Undef,
+    };
 
     let result_codomain = scalar_type_for_dim(elem_dim);
 

@@ -205,7 +205,11 @@ fn parse_imported_field_format_identifier_captured_verbatim() {
 
     match &field.source {
         FieldSource::Imported { format, .. } => {
-            assert_eq!(format.as_deref(), Some("HDF5"), "format should be captured verbatim");
+            assert_eq!(
+                format.as_deref(),
+                Some("HDF5"),
+                "format should be captured verbatim"
+            );
         }
         other => panic!("expected Imported source, got {:?}", other),
     }
@@ -233,7 +237,11 @@ fn parse_imported_field_extra_keys_do_not_break_known_keys() {
     match &field.source {
         FieldSource::Imported { path, format, grid } => {
             assert_eq!(path.as_deref(), Some("x.vdb"), "path should be populated");
-            assert_eq!(format.as_deref(), Some("OpenVDB"), "format should be populated");
+            assert_eq!(
+                format.as_deref(),
+                Some("OpenVDB"),
+                "format should be populated"
+            );
             assert_eq!(grid.as_deref(), Some("g"), "grid should be populated");
         }
         other => panic!("expected Imported source, got {:?}", other),
@@ -261,7 +269,11 @@ fn parse_imported_field_duplicate_keys_last_write_wins() {
     match &field.source {
         FieldSource::Imported { path, .. } => {
             // Last-write-wins: "second.vdb" overwrites "first.vdb".
-            assert_eq!(path.as_deref(), Some("second.vdb"), "last path value should win");
+            assert_eq!(
+                path.as_deref(),
+                Some("second.vdb"),
+                "last path value should win"
+            );
         }
         other => panic!("expected Imported source, got {:?}", other),
     }
@@ -309,7 +321,10 @@ fn parse_imported_field_wrong_type_values_dropped() {
     match &field.source {
         FieldSource::Imported { path, format, grid } => {
             assert_eq!(*path, None, "path with non-string value should be dropped");
-            assert_eq!(*format, None, "format with non-ident value should be dropped");
+            assert_eq!(
+                *format, None,
+                "format with non-ident value should be dropped"
+            );
             assert_eq!(*grid, None, "grid with non-string value should be dropped");
         }
         other => panic!("expected Imported source, got {:?}", other),
@@ -326,9 +341,7 @@ fn parse_imported_field_wrong_type_values_dropped() {
 /// all-None. This is the boundary of "partial block" as documented in `lib.rs:708-709`.
 #[test]
 fn parse_imported_field_empty_block() {
-    let (decls, errors) = parse_decls(
-        "field def fea : Point3 -> Scalar { source = imported { } }",
-    );
+    let (decls, errors) = parse_decls("field def fea : Point3 -> Scalar { source = imported { } }");
     assert!(errors.is_empty(), "parse errors: {:?}", errors);
     assert_eq!(decls.len(), 1);
 

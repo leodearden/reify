@@ -496,8 +496,7 @@ mod tests {
     /// Mirrors the `UNIT_TRI` constant in `shell_assembly.rs::tests` so shell
     /// K_e instances built here match those built there for the shell-assembly
     /// regression tests.
-    const UNIT_TRI: [[f64; 3]; 3] =
-        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+    const UNIT_TRI: [[f64; 3]; 3] = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
 
     /// Canonical shell thickness for the mixed-element fixtures. 0.05 matches
     /// the value used throughout `shell_assembly.rs::tests`.
@@ -1122,17 +1121,32 @@ mod tests {
                     let tol = 1e-12 * d.abs().max(1.0);
                     let delta = (p - d).abs();
                     if delta >= tol {
-                        let is_worse = worst
-                            .as_ref()
-                            .is_none_or(|w| delta / tol > w.delta / w.tol);
+                        let is_worse = worst.as_ref().is_none_or(|w| delta / tol > w.delta / w.tol);
                         if is_worse {
-                            worst = Some(Worst { threads, i, j, p, d, delta, tol });
+                            worst = Some(Worst {
+                                threads,
+                                i,
+                                j,
+                                p,
+                                d,
+                                delta,
+                                tol,
+                            });
                         }
                     }
                 }
             }
         }
-        if let Some(Worst { threads, i, j, p, d, delta, tol }) = worst {
+        if let Some(Worst {
+            threads,
+            i,
+            j,
+            p,
+            d,
+            delta,
+            tol,
+        }) = worst
+        {
             panic!(
                 "worst-offender across sweep: threads={threads} K_par[{i}][{j}] = {p} \
                  but K_det[{i}][{j}] = {d}; |Δ| = {delta} ≥ tol = {tol} \
@@ -1435,8 +1449,7 @@ mod tests {
                 let i = alpha;
                 let j = beta;
                 let actual = read(&k, i, j);
-                let expected =
-                    k_e_tet.get(alpha, beta) + k_e_shell.get(alpha, beta);
+                let expected = k_e_tet.get(alpha, beta) + k_e_shell.get(alpha, beta);
                 assert_eq!(
                     actual.to_bits(),
                     expected.to_bits(),
@@ -1555,8 +1568,7 @@ mod tests {
         let conns_tet: Vec<[usize; 4]> = (0..4)
             .map(|k| [6 * k, 6 * k + 1, 6 * k + 2, 6 * k + 3])
             .collect();
-        let conns_shell: Vec<[usize; 3]> =
-            (0..4).map(|k| [6 * k, 6 * k + 4, 6 * k + 5]).collect();
+        let conns_shell: Vec<[usize; 3]> = (0..4).map(|k| [6 * k, 6 * k + 4, 6 * k + 5]).collect();
 
         let mut elements: Vec<AssemblyElement<'_>> = Vec::with_capacity(8);
         for k in 0..4usize {

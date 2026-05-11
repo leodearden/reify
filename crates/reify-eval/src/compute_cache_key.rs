@@ -125,8 +125,7 @@ pub fn compute_cache_key(node: &ComputeNodeData, ctx: &EvaluationGraph) -> Conte
     let realization_bucket_hash: ContentHash = {
         let mut sorted_refs: Vec<&reify_types::RealizationNodeId> =
             node.realization_inputs.iter().collect();
-        sorted_refs
-            .sort_by(|a, b| (a.entity.as_str(), a.index).cmp(&(b.entity.as_str(), b.index)));
+        sorted_refs.sort_by(|a, b| (a.entity.as_str(), a.index).cmp(&(b.entity.as_str(), b.index)));
         debug_assert!(
             sorted_refs.windows(2).all(|w| {
                 (w[0].entity.as_str(), w[0].index) != (w[1].entity.as_str(), w[1].index)
@@ -209,11 +208,7 @@ mod tests {
     }
 
     /// Insert a bare ValueCellNode (no default_expr) with the given content_hash.
-    fn insert_value_cell(
-        graph: &mut EvaluationGraph,
-        id: ValueCellId,
-        content_hash: ContentHash,
-    ) {
+    fn insert_value_cell(graph: &mut EvaluationGraph, id: ValueCellId, content_hash: ContentHash) {
         graph.value_cells.insert(
             id.clone(),
             ValueCellNode {
@@ -238,11 +233,7 @@ mod tests {
         let key_v1 = compute_cache_key(&node, &graph);
 
         // Mutate the cell's content_hash in-place (P3.1 landed get_mut for this).
-        graph
-            .value_cells
-            .get_mut(&load_id)
-            .unwrap()
-            .content_hash = ContentHash::of_str("load_v2");
+        graph.value_cells.get_mut(&load_id).unwrap().content_hash = ContentHash::of_str("load_v2");
 
         let key_v2 = compute_cache_key(&node, &graph);
         assert_ne!(
@@ -288,11 +279,7 @@ mod tests {
 
         let key_v1 = compute_cache_key(&node, &graph);
 
-        graph
-            .realizations
-            .get_mut(&real_id)
-            .unwrap()
-            .content_hash = ContentHash::of_str("mesh_v2");
+        graph.realizations.get_mut(&real_id).unwrap().content_hash = ContentHash::of_str("mesh_v2");
 
         let key_v2 = compute_cache_key(&node, &graph);
         assert_ne!(

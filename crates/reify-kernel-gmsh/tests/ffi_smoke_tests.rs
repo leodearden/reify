@@ -47,8 +47,7 @@ fn gmsh_add_and_read_mesh_nodes_and_triangles_round_trip() {
         1.0, 0.0, 0.0, // node 2
         0.0, 1.0, 0.0, // node 3
     ];
-    ffi::add_nodes_2d(surf_tag, &in_node_tags, &in_coords)
-        .expect("ffi::add_nodes_2d failed");
+    ffi::add_nodes_2d(surf_tag, &in_node_tags, &in_coords).expect("ffi::add_nodes_2d failed");
 
     let in_tri_tags: [u64; 1] = [1];
     let in_tri_node_tags: [u64; 3] = [1, 2, 3];
@@ -60,8 +59,7 @@ fn gmsh_add_and_read_mesh_nodes_and_triangles_round_trip() {
     )
     .expect("ffi::add_elements_2d failed");
 
-    let (out_node_tags, out_coords) =
-        ffi::get_nodes_all().expect("ffi::get_nodes_all failed");
+    let (out_node_tags, out_coords) = ffi::get_nodes_all().expect("ffi::get_nodes_all failed");
     assert_eq!(
         out_node_tags.len(),
         3,
@@ -85,11 +83,7 @@ fn gmsh_add_and_read_mesh_nodes_and_triangles_round_trip() {
     paired.sort_by_key(|(t, _)| *t);
     for (i, (tag, coord)) in paired.iter().enumerate() {
         assert_eq!(*tag, in_node_tags[i], "node tag mismatch at slot {i}");
-        let expected = [
-            in_coords[3 * i],
-            in_coords[3 * i + 1],
-            in_coords[3 * i + 2],
-        ];
+        let expected = [in_coords[3 * i], in_coords[3 * i + 1], in_coords[3 * i + 2]];
         for k in 0..3 {
             assert!(
                 (coord[k] - expected[k]).abs() < 1e-9,
@@ -146,35 +140,40 @@ fn geo_add_point_line_curve_loop_plane_surface_and_set_recombine_round_trip() {
     ffi::model_add("smoke_2987").expect("ffi::model_add failed");
 
     // (a) geo_add_point — two distinct points with positive tags.
-    let p1 = ffi::geo_add_point(0.0, 0.0, 0.0, 0.0)
-        .expect("ffi::geo_add_point(0,0,0) failed");
-    let p2 = ffi::geo_add_point(1.0, 0.0, 0.0, 0.0)
-        .expect("ffi::geo_add_point(1,0,0) failed");
+    let p1 = ffi::geo_add_point(0.0, 0.0, 0.0, 0.0).expect("ffi::geo_add_point(0,0,0) failed");
+    let p2 = ffi::geo_add_point(1.0, 0.0, 0.0, 0.0).expect("ffi::geo_add_point(1,0,0) failed");
     assert!(p1 > 0, "geo_add_point returned non-positive tag {p1}");
     assert!(p2 > 0, "geo_add_point returned non-positive tag {p2}");
     assert_ne!(p1, p2, "geo_add_point returned the same tag twice: {p1}");
 
-    let p3 = ffi::geo_add_point(1.0, 1.0, 0.0, 0.0)
-        .expect("ffi::geo_add_point(1,1,0) failed");
-    let p4 = ffi::geo_add_point(0.0, 1.0, 0.0, 0.0)
-        .expect("ffi::geo_add_point(0,1,0) failed");
+    let p3 = ffi::geo_add_point(1.0, 1.0, 0.0, 0.0).expect("ffi::geo_add_point(1,1,0) failed");
+    let p4 = ffi::geo_add_point(0.0, 1.0, 0.0, 0.0).expect("ffi::geo_add_point(0,1,0) failed");
 
     // (b) geo_add_line — four lines forming a unit-square loop.
     let l1 = ffi::geo_add_line(p1, p2).expect("ffi::geo_add_line(p1,p2) failed");
     let l2 = ffi::geo_add_line(p2, p3).expect("ffi::geo_add_line(p2,p3) failed");
     let l3 = ffi::geo_add_line(p3, p4).expect("ffi::geo_add_line(p3,p4) failed");
     let l4 = ffi::geo_add_line(p4, p1).expect("ffi::geo_add_line(p4,p1) failed");
-    assert!(l1 > 0 && l2 > 0 && l3 > 0 && l4 > 0, "non-positive line tag(s)");
+    assert!(
+        l1 > 0 && l2 > 0 && l3 > 0 && l4 > 0,
+        "non-positive line tag(s)"
+    );
 
     // (c) geo_add_curve_loop — one closed loop from the four lines.
-    let loop_tag = ffi::geo_add_curve_loop(&[l1, l2, l3, l4])
-        .expect("ffi::geo_add_curve_loop failed");
-    assert!(loop_tag > 0, "geo_add_curve_loop returned non-positive tag {loop_tag}");
+    let loop_tag =
+        ffi::geo_add_curve_loop(&[l1, l2, l3, l4]).expect("ffi::geo_add_curve_loop failed");
+    assert!(
+        loop_tag > 0,
+        "geo_add_curve_loop returned non-positive tag {loop_tag}"
+    );
 
     // (d) geo_add_plane_surface — plane surface bounded by the loop.
-    let surf_tag = ffi::geo_add_plane_surface(&[loop_tag])
-        .expect("ffi::geo_add_plane_surface failed");
-    assert!(surf_tag > 0, "geo_add_plane_surface returned non-positive tag {surf_tag}");
+    let surf_tag =
+        ffi::geo_add_plane_surface(&[loop_tag]).expect("ffi::geo_add_plane_surface failed");
+    assert!(
+        surf_tag > 0,
+        "geo_add_plane_surface returned non-positive tag {surf_tag}"
+    );
 
     // Synchronise the built-in CAD into the gmsh model so the surface
     // becomes a real model entity. Without this, the next call hits

@@ -159,9 +159,9 @@ impl ReferenceElement for WedgeP1 {
         for &(a, s) in &VERTEX_BARY_ZETA {
             let half_layer = (1.0 + s * zeta) / 2.0;
             g.push([
-                GRAD_LAMBDA[a][0] * half_layer,       // ∂N_i/∂ξ
-                GRAD_LAMBDA[a][1] * half_layer,       // ∂N_i/∂η
-                lambda[a] * s / 2.0,                  // ∂N_i/∂ζ
+                GRAD_LAMBDA[a][0] * half_layer, // ∂N_i/∂ξ
+                GRAD_LAMBDA[a][1] * half_layer, // ∂N_i/∂η
+                lambda[a] * s / 2.0,            // ∂N_i/∂ζ
             ]);
         }
         g
@@ -323,7 +323,11 @@ mod tests {
         // Line sweep: 2 points at ζ = ±1/√3.
         // All 6 combinations (tri_idx, line_idx) must appear exactly once.
         let g = 1.0_f64 / 3.0_f64.sqrt();
-        let tri_pts: [(f64, f64); 3] = [(2.0 / 3.0, 1.0 / 6.0), (1.0 / 6.0, 2.0 / 3.0), (1.0 / 6.0, 1.0 / 6.0)];
+        let tri_pts: [(f64, f64); 3] = [
+            (2.0 / 3.0, 1.0 / 6.0),
+            (1.0 / 6.0, 2.0 / 3.0),
+            (1.0 / 6.0, 1.0 / 6.0),
+        ];
         let zeta_pts: [f64; 2] = [g, -g];
 
         let mut seen = [[false; 2]; 3];
@@ -345,12 +349,7 @@ mod tests {
             let li = zeta_pts
                 .iter()
                 .position(|&z| (c.zeta - z).abs() < QUAD_TOL)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "qp[{qp_i}] ζ={} does not match ±1/√3",
-                        c.zeta,
-                    )
-                });
+                .unwrap_or_else(|| panic!("qp[{qp_i}] ζ={} does not match ±1/√3", c.zeta,));
             assert!(
                 !seen[ti][li],
                 "(tri={ti}, line={li}) pair matched more than once; second match at qp[{qp_i}]",
@@ -527,7 +526,11 @@ mod tests {
                 );
             }
         }
-        assert!((j.det - 1.0).abs() < JAC_TOL, "det J of translation = {}", j.det);
+        assert!(
+            (j.det - 1.0).abs() < JAC_TOL,
+            "det J of translation = {}",
+            j.det
+        );
     }
 
     #[test]

@@ -103,7 +103,11 @@ pub fn compute_hover(source: &str, uri: &Url, position: Position) -> Option<Hove
                     md = format!(
                         "```reify\ntrait {} : {}\n```",
                         t.name,
-                        t.refinements.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(" + ")
+                        t.refinements
+                            .iter()
+                            .map(|r| r.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(" + ")
                     );
                 }
                 if let Some(doc) = ctx.find_entity_doc(word) {
@@ -155,7 +159,10 @@ pub(crate) const KEYWORD_DESCRIPTIONS: &[(&str, &str)] = &[
         "param",
         "Declares an externally settable parameter with a type and default value.",
     ),
-    ("let", "Declares a computed binding derived from other values."),
+    (
+        "let",
+        "Declares a computed binding derived from other values.",
+    ),
     (
         "constraint",
         "Declares a boolean constraint that must be satisfied.",
@@ -174,7 +181,10 @@ pub(crate) const KEYWORD_DESCRIPTIONS: &[(&str, &str)] = &[
         "auto",
         "Marks a parameter for automatic resolution by the constraint solver.",
     ),
-    ("occurrence", "Declares a concrete occurrence of a structure."),
+    (
+        "occurrence",
+        "Declares a concrete occurrence of a structure.",
+    ),
     ("fn", "Declares a function."),
     ("trait", "Declares a trait."),
     ("enum", "Declares an enumeration type."),
@@ -255,8 +265,8 @@ mod tests {
         // 'p' is on line 1: "    param p: Money = auto"
         // 4 spaces + "param " = 10 chars, so 'p' is at column 10
         let position = Position::new(1, 10); // on 'p'
-        let md = hover_markdown(source, position)
-            .expect("hover should return info for Money param");
+        let md =
+            hover_markdown(source, position).expect("hover should return info for Money param");
         assert!(
             md.contains("Scalar[USD]"),
             "type string should contain 'Scalar[USD]' (source-form via Type::Display), got: {md}"
@@ -767,7 +777,8 @@ structure B {
     fn hover_on_bare_auto_param_shows_auto() {
         let source = "structure S {\n    param x: Scalar = auto\n}";
         let position = Position::new(1, 10); // on 'x'
-        let md = hover_markdown(source, position).expect("hover should return info for auto param x");
+        let md =
+            hover_markdown(source, position).expect("hover should return info for auto param x");
         assert!(
             md.contains("auto x:"),
             "should contain 'auto x:', got: {md}"
@@ -782,7 +793,8 @@ structure B {
     fn hover_on_auto_free_param_shows_auto_free() {
         let source = "structure S {\n    param x: Scalar = auto(free)\n}";
         let position = Position::new(1, 10); // on 'x'
-        let md = hover_markdown(source, position).expect("hover should return info for auto(free) param x");
+        let md = hover_markdown(source, position)
+            .expect("hover should return info for auto(free) param x");
         assert!(
             md.contains("auto(free) x:"),
             "should contain 'auto(free) x:', got: {md}"

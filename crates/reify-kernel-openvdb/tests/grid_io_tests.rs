@@ -20,28 +20,31 @@
 #[cfg(has_openvdb)]
 #[test]
 fn vdb_grid_round_trip_preserves_metadata_and_active_count() {
-    use reify_kernel_openvdb::{
-        OpenVdbKernel,
-        ingest::read_vdb_file,
-    };
+    use reify_kernel_openvdb::{OpenVdbKernel, ingest::read_vdb_file};
     use reify_types::{SampledGridKind, Type};
 
     // ---------------------------------------------------------------------------
     // Octahedron unit-sphere mesh fixture (6 verts, 8 tris)
     // ---------------------------------------------------------------------------
     let verts: Vec<[f32; 3]> = vec![
-        [1.0, 0.0, 0.0],   // 0 +X
-        [-1.0, 0.0, 0.0],  // 1 -X
-        [0.0, 1.0, 0.0],   // 2 +Y
-        [0.0, -1.0, 0.0],  // 3 -Y
-        [0.0, 0.0, 1.0],   // 4 +Z
-        [0.0, 0.0, -1.0],  // 5 -Z
+        [1.0, 0.0, 0.0],  // 0 +X
+        [-1.0, 0.0, 0.0], // 1 -X
+        [0.0, 1.0, 0.0],  // 2 +Y
+        [0.0, -1.0, 0.0], // 3 -Y
+        [0.0, 0.0, 1.0],  // 4 +Z
+        [0.0, 0.0, -1.0], // 5 -Z
     ];
     let tris: Vec<[u32; 3]> = vec![
         // Top hemisphere
-        [0, 2, 4], [2, 1, 4], [1, 3, 4], [3, 0, 4],
+        [0, 2, 4],
+        [2, 1, 4],
+        [1, 3, 4],
+        [3, 0, 4],
         // Bottom hemisphere
-        [2, 0, 5], [1, 2, 5], [3, 1, 5], [0, 3, 5],
+        [2, 0, 5],
+        [1, 2, 5],
+        [3, 1, 5],
+        [0, 3, 5],
     ];
 
     let voxel_size = 0.05_f64;
@@ -62,13 +65,15 @@ fn vdb_grid_round_trip_preserves_metadata_and_active_count() {
     let original_count = kernel
         .active_voxel_count(original_handle)
         .expect("active_voxel_count should succeed for the realized grid");
-    assert!(original_count > 0, "expected non-zero active voxels after realization");
+    assert!(
+        original_count > 0,
+        "expected non-zero active voxels after realization"
+    );
 
     // ---------------------------------------------------------------------------
     // Step 3: Write to a temporary file.
     // ---------------------------------------------------------------------------
-    let tmp = tempfile::NamedTempFile::new()
-        .expect("tempfile creation should succeed");
+    let tmp = tempfile::NamedTempFile::new().expect("tempfile creation should succeed");
     let vdb_path = tmp.path();
 
     // ---------------------------------------------------------------------------
@@ -105,13 +110,22 @@ fn vdb_grid_round_trip_preserves_metadata_and_active_count() {
     // ---------------------------------------------------------------------------
     // Step 8: Assert bounds are 3D and non-degenerate.
     // ---------------------------------------------------------------------------
-    assert_eq!(outcome.field.bounds_min.len(), 3, "3D grid must have 3 bounds_min elements");
-    assert_eq!(outcome.field.bounds_max.len(), 3, "3D grid must have 3 bounds_max elements");
+    assert_eq!(
+        outcome.field.bounds_min.len(),
+        3,
+        "3D grid must have 3 bounds_min elements"
+    );
+    assert_eq!(
+        outcome.field.bounds_max.len(),
+        3,
+        "3D grid must have 3 bounds_max elements"
+    );
     for i in 0..3 {
         assert!(
             outcome.field.bounds_max[i] > outcome.field.bounds_min[i],
             "bounds_max[{i}]={} must exceed bounds_min[{i}]={}",
-            outcome.field.bounds_max[i], outcome.field.bounds_min[i]
+            outcome.field.bounds_max[i],
+            outcome.field.bounds_min[i]
         );
     }
 
@@ -125,7 +139,11 @@ fn vdb_grid_round_trip_preserves_metadata_and_active_count() {
     // checks but fail this assertion. Pinning spacing here is what makes the
     // test name's "preserves metadata" claim accurate.
     // ---------------------------------------------------------------------------
-    assert_eq!(outcome.field.spacing.len(), 3, "3D grid must have 3 spacing elements");
+    assert_eq!(
+        outcome.field.spacing.len(),
+        3,
+        "3D grid must have 3 spacing elements"
+    );
     for i in 0..3 {
         let delta = (outcome.field.spacing[i] - voxel_size).abs();
         assert!(
@@ -145,7 +163,10 @@ fn vdb_grid_round_trip_preserves_metadata_and_active_count() {
     for i in 0..3 {
         let span = outcome.field.bounds_max[i] - outcome.field.bounds_min[i];
         let n = outcome.field.axis_grids[i].len();
-        assert!(n >= 2, "axis_grids[{i}] must have ≥ 2 nodes after lowering, got {n}");
+        assert!(
+            n >= 2,
+            "axis_grids[{i}] must have ≥ 2 nodes after lowering, got {n}"
+        );
         let expected_span = (n - 1) as f64 * outcome.field.spacing[i];
         let delta = (span - expected_span).abs();
         assert!(
@@ -417,18 +438,24 @@ fn write_vdb_grid_does_not_mutate_registered_handle_grid_name() {
     // 8 tris). Kept inline so this test is self-contained and the fixture
     // does not get coupled across test functions.
     let verts: Vec<[f32; 3]> = vec![
-        [1.0, 0.0, 0.0],   // 0 +X
-        [-1.0, 0.0, 0.0],  // 1 -X
-        [0.0, 1.0, 0.0],   // 2 +Y
-        [0.0, -1.0, 0.0],  // 3 -Y
-        [0.0, 0.0, 1.0],   // 4 +Z
-        [0.0, 0.0, -1.0],  // 5 -Z
+        [1.0, 0.0, 0.0],  // 0 +X
+        [-1.0, 0.0, 0.0], // 1 -X
+        [0.0, 1.0, 0.0],  // 2 +Y
+        [0.0, -1.0, 0.0], // 3 -Y
+        [0.0, 0.0, 1.0],  // 4 +Z
+        [0.0, 0.0, -1.0], // 5 -Z
     ];
     let tris: Vec<[u32; 3]> = vec![
         // Top hemisphere
-        [0, 2, 4], [2, 1, 4], [1, 3, 4], [3, 0, 4],
+        [0, 2, 4],
+        [2, 1, 4],
+        [1, 3, 4],
+        [3, 0, 4],
         // Bottom hemisphere
-        [2, 0, 5], [1, 2, 5], [3, 1, 5], [0, 3, 5],
+        [2, 0, 5],
+        [1, 2, 5],
+        [3, 1, 5],
+        [0, 3, 5],
     ];
 
     let mut kernel = OpenVdbKernel::new();
@@ -443,8 +470,7 @@ fn write_vdb_grid_does_not_mutate_registered_handle_grid_name() {
         .grid_name_for_test(handle)
         .expect("grid_name_for_test should succeed for the registered handle");
 
-    let tmp = tempfile::NamedTempFile::new()
-        .expect("tempfile creation should succeed");
+    let tmp = tempfile::NamedTempFile::new().expect("tempfile creation should succeed");
     kernel
         .write_vdb_grid(handle, tmp.path(), "renamed_for_export")
         .expect("write_vdb_grid should succeed for the realized grid");

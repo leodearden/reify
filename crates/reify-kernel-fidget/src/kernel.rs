@@ -38,10 +38,9 @@ use fidget::context::Tree;
 use fidget::shape::EzShape;
 
 use reify_types::{
-    ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId,
-    GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError,
-    SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE, BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE,
-    TessError, Value,
+    BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, ExportError, ExportFormat, GeometryError,
+    GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError,
+    SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE, TessError, Value,
 };
 
 /// Tree-backed Fidget SDF kernel.
@@ -96,10 +95,7 @@ impl FidgetKernel {
     fn insert_tree(&mut self, tree: Tree) -> GeometryHandle {
         let id = self.allocate_id();
         self.trees.insert(id, tree);
-        GeometryHandle {
-            id,
-            repr: None,
-        }
+        GeometryHandle { id, repr: None }
     }
 
     /// Look up two handles, cloning the underlying Trees. Errors with
@@ -166,8 +162,7 @@ impl FidgetKernel {
         let qx_pos = qx.max(0.0);
         let qy_pos = qy.max(0.0);
         let qz_pos = qz.max(0.0);
-        let outside_part =
-            (qx_pos.square() + qy_pos.square() + qz_pos.square()).sqrt();
+        let outside_part = (qx_pos.square() + qy_pos.square() + qz_pos.square()).sqrt();
 
         // inside_part = min(max(qx, qy, qz), 0)
         // qy, qz are not used after this expression — move them in directly.
@@ -240,7 +235,6 @@ fn extract_f64(v: &Value) -> Result<f64, GeometryError> {
 fn is_positive_finite(v: f64) -> bool {
     v.is_finite() && v > 0.0
 }
-
 
 impl GeometryKernel for FidgetKernel {
     fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
@@ -728,9 +722,17 @@ mod tests {
             // NaN depth
             (Value::Real(1.0), Value::Real(1.0), Value::Real(f64::NAN)),
             // +Inf width
-            (Value::Real(f64::INFINITY), Value::Real(1.0), Value::Real(1.0)),
+            (
+                Value::Real(f64::INFINITY),
+                Value::Real(1.0),
+                Value::Real(1.0),
+            ),
             // -Inf height
-            (Value::Real(1.0), Value::Real(f64::NEG_INFINITY), Value::Real(1.0)),
+            (
+                Value::Real(1.0),
+                Value::Real(f64::NEG_INFINITY),
+                Value::Real(1.0),
+            ),
             // all bad
             (Value::Real(-1.0), Value::Real(-2.0), Value::Real(-3.0)),
         ];
@@ -792,5 +794,4 @@ mod tests {
             ),
         }
     }
-
 }

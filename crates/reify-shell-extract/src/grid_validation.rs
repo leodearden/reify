@@ -112,7 +112,7 @@ pub(crate) fn validate_regular3d(sdf: &SampledField) -> Result<(), GridValidatio
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_regular3d, GridValidationError};
+    use super::{GridValidationError, validate_regular3d};
     use reify_types::value::{InterpolationKind, SampledField, SampledGridKind};
     use std::sync::atomic::AtomicBool;
 
@@ -208,8 +208,7 @@ mod tests {
     fn validate_regular3d_rejects_axis_length_mismatch() {
         let mut sdf = minimal_3d_field();
         sdf.bounds_min = vec![0.0]; // length 1, not 3
-        let err =
-            validate_regular3d(&sdf).expect_err("axis length mismatch must be rejected");
+        let err = validate_regular3d(&sdf).expect_err("axis length mismatch must be rejected");
         assert_eq!(
             err,
             GridValidationError::AxisLengthMismatch {
@@ -226,8 +225,7 @@ mod tests {
     fn validate_regular3d_rejects_empty_axis_grid() {
         let mut sdf = minimal_3d_field();
         sdf.axis_grids[0] = vec![]; // empty first axis
-        let err =
-            validate_regular3d(&sdf).expect_err("empty axis grid must be rejected");
+        let err = validate_regular3d(&sdf).expect_err("empty axis grid must be rejected");
         assert_eq!(err, GridValidationError::EmptyAxisGrid { axis: 0 });
     }
 
@@ -297,13 +295,12 @@ mod tests {
         for (field, mutate, expected) in cases {
             let mut sdf = minimal_3d_field();
             mutate(&mut sdf);
-            let err = validate_regular3d(&sdf)
-                .expect_err(&format!("{field} length-1 must be rejected"));
+            let err =
+                validate_regular3d(&sdf).expect_err(&format!("{field} length-1 must be rejected"));
             assert_eq!(
                 err, *expected,
                 "{field} length-1 mismatch must report correct lengths in AxisLengthMismatch"
             );
         }
     }
-
 }

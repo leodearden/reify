@@ -67,9 +67,7 @@ fn cylinder_op() -> GeometryOp {
 fn unwrap_kind_string(value: &Value, ctx: &str) -> String {
     match value {
         Value::String(s) => s.clone(),
-        other => panic!(
-            "{ctx}: expected Value::String(kind_name), got {other:?}"
-        ),
+        other => panic!("{ctx}: expected Value::String(kind_name), got {other:?}"),
     }
 }
 
@@ -253,9 +251,7 @@ fn adjacent_to_face_box_each_face_has_four_neighbours() {
     // extract_faces output and none of which is the queried face itself.
     for (i, face_id) in face_handles.iter().enumerate() {
         let neighbours = adjacent_to_face(&mut kernel, box_id, *face_id).unwrap_or_else(|e| {
-            panic!(
-                "adjacent_to_face(box, face[{i}]={face_id:?}) should succeed, got {e:?}"
-            )
+            panic!("adjacent_to_face(box, face[{i}]={face_id:?}) should succeed, got {e:?}")
         });
         assert_eq!(
             neighbours.len(),
@@ -338,9 +334,7 @@ fn owner_body_of_box_face_resolves_to_box() {
 
     for (i, face_id) in face_handles.iter().enumerate() {
         let parent = owner_body_of(&kernel, *face_id).unwrap_or_else(|e| {
-            panic!(
-                "owner_body_of(face[{i}]={face_id:?}) should succeed, got {e:?}"
-            )
+            panic!("owner_body_of(face[{i}]={face_id:?}) should succeed, got {e:?}")
         });
         assert_eq!(
             parent, box_id,
@@ -372,9 +366,7 @@ fn owner_body_of_box_edge_resolves_to_box() {
 
     for (i, edge_id) in edge_handles.iter().enumerate() {
         let parent = owner_body_of(&kernel, *edge_id).unwrap_or_else(|e| {
-            panic!(
-                "owner_body_of(edge[{i}]={edge_id:?}) should succeed, got {e:?}"
-            )
+            panic!("owner_body_of(edge[{i}]={edge_id:?}) should succeed, got {e:?}")
         });
         assert_eq!(
             parent, box_id,
@@ -454,8 +446,8 @@ fn compositional_smoke_box_top_planar_face_chain() {
     let top_face_h = top[0];
 
     // (4) owner_body_of must round-trip the sub-handle back to the box.
-    let parent = owner_body_of(&kernel, top_face_h)
-        .expect("owner_body_of(top_face) should succeed");
+    let parent =
+        owner_body_of(&kernel, top_face_h).expect("owner_body_of(top_face) should succeed");
     assert_eq!(
         parent, box_id,
         "top face must resolve to box_id; got {parent:?}"
@@ -519,7 +511,11 @@ fn compositional_smoke_attribute_filters_over_box_faces() {
 
     let mut table = TopologyAttributeTable::default();
     for (i, fid) in faces.iter().enumerate() {
-        let user_label = if i == 0 { Some("top".to_string()) } else { None };
+        let user_label = if i == 0 {
+            Some("top".to_string())
+        } else {
+            None
+        };
         table.record(
             *fid,
             TopologyAttribute {

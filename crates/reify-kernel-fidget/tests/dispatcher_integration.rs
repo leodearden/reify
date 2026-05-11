@@ -46,9 +46,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use reify_eval::{dispatcher, kernel_registry};
 use reify_kernel_fidget::FidgetKernel;
-use reify_types::{
-    CapabilityDescriptor, GeometryKernel, GeometryOp, Operation, ReprKind, Value,
-};
+use reify_types::{CapabilityDescriptor, GeometryKernel, GeometryOp, Operation, ReprKind, Value};
 
 /// Proves that `reify_eval::kernel_registry::registry()` contains `"fidget"`
 /// when the fidget adapter is linked in (i.e. the `inventory::submit!` in

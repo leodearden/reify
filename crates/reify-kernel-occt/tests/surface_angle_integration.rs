@@ -41,11 +41,7 @@ fn box_kernel() -> (OcctKernel, GeometryHandleId) {
 
 /// Query `AdjacentFaces` for `face_index` and return the neighbor indices
 /// as a `HashSet<usize>`.
-fn neighbors_of(
-    kernel: &OcctKernel,
-    shape: GeometryHandleId,
-    face_index: usize,
-) -> HashSet<usize> {
+fn neighbors_of(kernel: &OcctKernel, shape: GeometryHandleId, face_index: usize) -> HashSet<usize> {
     let result = kernel
         .query(&GeometryQuery::AdjacentFaces { shape, face_index })
         .unwrap_or_else(|e| panic!("AdjacentFaces({face_index}) returned Err: {e:?}"));
@@ -116,9 +112,7 @@ fn box_opposite_faces_yield_pi() {
         .expect("extract_faces should succeed");
     assert_eq!(faces.len(), 6, "expected 6 faces for a box");
 
-    let neighbors: Vec<HashSet<usize>> = (0..6)
-        .map(|i| neighbors_of(&kernel, box_id, i))
-        .collect();
+    let neighbors: Vec<HashSet<usize>> = (0..6).map(|i| neighbors_of(&kernel, box_id, i)).collect();
 
     for i in 0..6usize {
         let opposite_candidates: Vec<usize> = (0..6)
@@ -133,9 +127,7 @@ fn box_opposite_faces_yield_pi() {
 
         let angle = kernel
             .surface_angle(faces[i], faces[j])
-            .unwrap_or_else(|e| {
-                panic!("surface_angle(face[{i}], face[{j}]) returned Err: {e:?}")
-            });
+            .unwrap_or_else(|e| panic!("surface_angle(face[{i}], face[{j}]) returned Err: {e:?}"));
         assert!(
             (angle - PI).abs() < 1e-9,
             "opposite box faces ({i}, {j}): expected π ≈ {PI:.10}, got {angle:.10}"
@@ -190,9 +182,9 @@ fn unknown_face_a_handle_returns_invalid_handle() {
 
     match kernel.surface_angle(unknown, valid) {
         Err(QueryError::InvalidHandle(id)) if id == unknown => {}
-        Err(QueryError::InvalidHandle(id)) => panic!(
-            "expected InvalidHandle({unknown:?}), got InvalidHandle({id:?})"
-        ),
+        Err(QueryError::InvalidHandle(id)) => {
+            panic!("expected InvalidHandle({unknown:?}), got InvalidHandle({id:?})")
+        }
         other => panic!("expected Err(InvalidHandle({unknown:?})), got {other:?}"),
     }
 }
@@ -210,9 +202,9 @@ fn unknown_face_b_handle_returns_invalid_handle() {
 
     match kernel.surface_angle(valid, unknown) {
         Err(QueryError::InvalidHandle(id)) if id == unknown => {}
-        Err(QueryError::InvalidHandle(id)) => panic!(
-            "expected InvalidHandle({unknown:?}), got InvalidHandle({id:?})"
-        ),
+        Err(QueryError::InvalidHandle(id)) => {
+            panic!("expected InvalidHandle({unknown:?}), got InvalidHandle({id:?})")
+        }
         other => panic!("expected Err(InvalidHandle({unknown:?})), got {other:?}"),
     }
 }
@@ -302,16 +294,18 @@ fn cylinder_curved_face_returns_finite_angle() {
     let faces = kernel
         .extract_faces(cyl_id)
         .expect("extract_faces should succeed for cylinder");
-    assert_eq!(faces.len(), 3, "expected 3 faces for a cylinder (bottom, top, side)");
+    assert_eq!(
+        faces.len(),
+        3,
+        "expected 3 faces for a cylinder (bottom, top, side)"
+    );
 
     // Every pair must return Ok with a finite angle in [0, π].
     for i in 0..faces.len() {
         for j in 0..faces.len() {
             let angle = kernel
                 .surface_angle(faces[i], faces[j])
-                .unwrap_or_else(|e| {
-                    panic!("surface_angle(face[{i}], face[{j}]) failed: {e:?}")
-                });
+                .unwrap_or_else(|e| panic!("surface_angle(face[{i}], face[{j}]) failed: {e:?}"));
             assert!(
                 angle.is_finite() && (0.0..=PI + 1e-9).contains(&angle),
                 "surface_angle(face[{i}], face[{j}]) = {angle:.10}, \

@@ -29,10 +29,12 @@ fn assert_no_import_warning_for(b_source: &str, module_name: &str) {
     fs::write(dir.join("b.ri"), b_source).unwrap();
 
     let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
-    let modules = compile_project(&dir.join("b.ri"), &resolver)
-        .expect("compile_project should succeed");
+    let modules =
+        compile_project(&dir.join("b.ri"), &resolver).expect("compile_project should succeed");
 
-    let b_module = modules.last().expect("expected at least one module in result");
+    let b_module = modules
+        .last()
+        .expect("expected at least one module in result");
 
     let needle = format!("import \"{}\"", module_name);
     let import_warnings: Vec<_> = b_module
@@ -116,9 +118,10 @@ fn compile_with_stdlib_unresolved_user_import_emits_specific_warning() {
     // (b) actionable API referenced — may appear in the message or a label
     let has_api_ref = diag.message.contains("compile_project")
         || diag.message.contains("ModuleDag")
-        || diag.labels.iter().any(|l| {
-            l.message.contains("compile_project") || l.message.contains("ModuleDag")
-        });
+        || diag
+            .labels
+            .iter()
+            .any(|l| l.message.contains("compile_project") || l.message.contains("ModuleDag"));
     assert!(
         has_api_ref,
         "message or labels must reference 'compile_project' or 'ModuleDag': {:#?}",

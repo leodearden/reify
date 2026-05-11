@@ -307,9 +307,10 @@ pub fn swept_kind_to_sweep_params(
     use reify_solver_elastic::SweepParams;
     match kind {
         // Step-16: Extrude — forward axis verbatim, extract length as f64.
-        SweptKind::Extrude { axis, length } => {
-            length.as_f64().map(|len| SweepParams::Extrude { axis: *axis, length: len })
-        }
+        SweptKind::Extrude { axis, length } => length.as_f64().map(|len| SweepParams::Extrude {
+            axis: *axis,
+            length: len,
+        }),
         // Step-18: Revolve — forward fields; rename angle_rad → angle.
         // SweepParams::Revolve.angle must be > 0 (validate_sweep_inputs rejects
         // angle <= 0.0 with DegenerateMagnitude).  SweptKind::Revolve.angle_rad
@@ -340,7 +341,14 @@ pub fn swept_kind_to_sweep_params(
                 .position(|h| h == path)
                 .and_then(|i| ops.get(i))?;
             match source_op {
-                GeometryOp::LineSegment { x1, y1, z1, x2, y2, z2 } => {
+                GeometryOp::LineSegment {
+                    x1,
+                    y1,
+                    z1,
+                    x2,
+                    y2,
+                    z2,
+                } => {
                     let axis = [x2 - x1, y2 - y1, z2 - z1];
                     let length = (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
                     Some(SweepParams::SweepLinear { axis, length })
@@ -635,8 +643,16 @@ mod tests {
                 axis_dir,
                 angle_rad,
             }) => {
-                assert_eq!(axis_origin, [0.0, 0.0, 0.0], "axis_origin must be propagated verbatim");
-                assert_eq!(angle_rad, std::f64::consts::PI, "angle_rad must be propagated verbatim");
+                assert_eq!(
+                    axis_origin,
+                    [0.0, 0.0, 0.0],
+                    "axis_origin must be propagated verbatim"
+                );
+                assert_eq!(
+                    angle_rad,
+                    std::f64::consts::PI,
+                    "angle_rad must be propagated verbatim"
+                );
                 let norm: f64 = axis_dir.iter().map(|c| c * c).sum::<f64>().sqrt();
                 assert!(
                     (norm - 1.0).abs() < 1e-12,
@@ -1060,7 +1076,9 @@ mod tests {
                     "length must be 0.5; got {length}"
                 );
             }
-            other => panic!("subcase A: expected Some(SweepParams::SweepLinear {{ ... }}), got {other:?}"),
+            other => panic!(
+                "subcase A: expected Some(SweepParams::SweepLinear {{ ... }}), got {other:?}"
+            ),
         }
 
         // Subcase B: unresolvable — path handle 99 not in handles slice
@@ -1089,7 +1107,11 @@ mod tests {
         };
         let result = swept_kind_to_sweep_params(&kind, &[], &[]);
         match result {
-            Some(reify_solver_elastic::SweepParams::Revolve { axis_origin, axis_dir, angle }) => {
+            Some(reify_solver_elastic::SweepParams::Revolve {
+                axis_origin,
+                axis_dir,
+                angle,
+            }) => {
                 // angle must be positive (abs of input)
                 assert!(
                     (angle - std::f64::consts::FRAC_PI_2).abs() < 1e-12,

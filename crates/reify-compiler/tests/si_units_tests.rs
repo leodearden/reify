@@ -2,9 +2,9 @@
 
 mod common;
 
+use common::stdlib_param_si_value;
 use reify_compiler::{CompiledUnit, compile, si_units};
 use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only};
-use common::stdlib_param_si_value;
 use reify_types::{DimensionVector, ModulePath};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -244,7 +244,6 @@ fn generated_source_parses_and_compiles_cleanly() {
 }
 
 // ─── step-11: task-specified prefixed-base resolution via stdlib ─────────────
-
 
 #[test]
 fn task_test_prefixed_bases_resolve_via_stdlib() {

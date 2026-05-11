@@ -1042,10 +1042,16 @@ pub fn detect_local_index_reassignment_diagnostics(
                             "topology-attribute selector for (feature '{}', role '{}') has \
                              geometrically tied local_index assignments at indices {} and {}; \
                              selector resolution may shuffle after edits",
-                            feature_id, role_sort_key(role).1, idx_i, idx_j,
+                            feature_id,
+                            role_sort_key(role).1,
+                            idx_i,
+                            idx_j,
                         ))
                         .with_code(DiagnosticCode::TopologyAttributeLocalIndexReassigned)
-                        .with_label(DiagnosticLabel::new(realization_span, "realization producing geometrically tied attributes")),
+                        .with_label(DiagnosticLabel::new(
+                            realization_span,
+                            "realization producing geometrically tied attributes",
+                        )),
                     );
                     break 'outer;
                 }
@@ -2972,7 +2978,8 @@ mod tests {
                 diag.message
             );
             assert!(
-                diag.message.contains("local_index assignments at indices 0 and 1"),
+                diag.message
+                    .contains("local_index assignments at indices 0 and 1"),
                 "missing tied indices in message: {}",
                 diag.message
             );
@@ -3079,7 +3086,8 @@ mod tests {
             );
             let diag = &diagnostics[0];
             assert!(
-                diag.message.contains("local_index assignments at indices 0 and 1"),
+                diag.message
+                    .contains("local_index assignments at indices 0 and 1"),
                 "expected the smallest tied pair (0 and 1) to be named, got: {}",
                 diag.message
             );
@@ -3107,13 +3115,22 @@ mod tests {
             let mut diagnostics = Vec::new();
             // Supply inputs in B, A order (reversed) to exercise the sort.
             detect_local_index_reassignment_diagnostics(
-                &[(hb0, &attr_b0), (hb1, &attr_b1), (ha0, &attr_a0), (ha1, &attr_a1)],
+                &[
+                    (hb0, &attr_b0),
+                    (hb1, &attr_b1),
+                    (ha0, &attr_a0),
+                    (ha1, &attr_a1),
+                ],
                 &centroids,
                 LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M,
                 synthetic_span(),
                 &mut diagnostics,
             );
-            assert_eq!(diagnostics.len(), 2, "expected two diagnostics, got: {diagnostics:?}");
+            assert_eq!(
+                diagnostics.len(),
+                2,
+                "expected two diagnostics, got: {diagnostics:?}"
+            );
             assert!(
                 diagnostics[0].message.contains("A#realization[0]"),
                 "first diagnostic should be for A (sorted first), got: {}",
@@ -3143,13 +3160,22 @@ mod tests {
             let mut diagnostics2 = Vec::new();
             // Supply Side entries before Cap entries to exercise role sort.
             detect_local_index_reassignment_diagnostics(
-                &[(hs0, &attr_s0), (hs1, &attr_s1), (hc0, &attr_c0), (hc1, &attr_c1)],
+                &[
+                    (hs0, &attr_s0),
+                    (hs1, &attr_s1),
+                    (hc0, &attr_c0),
+                    (hc1, &attr_c1),
+                ],
                 &centroids2,
                 LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M,
                 synthetic_span(),
                 &mut diagnostics2,
             );
-            assert_eq!(diagnostics2.len(), 2, "expected two diagnostics, got: {diagnostics2:?}");
+            assert_eq!(
+                diagnostics2.len(),
+                2,
+                "expected two diagnostics, got: {diagnostics2:?}"
+            );
             assert!(
                 diagnostics2[0].message.contains("Cap(Top)"),
                 "first diagnostic should be Cap(Top) (lower discriminant), got: {}",
@@ -3161,6 +3187,5 @@ mod tests {
                 diagnostics2[1].message
             );
         }
-
     }
 }

@@ -44,7 +44,11 @@ fn cost_aggregation_costed_trait_present_in_std_io_with_required_quantity_produc
                 panic!(
                     "std.io should contain trait '{}'; found: {:?}",
                     name,
-                    module.trait_defs.iter().map(|t| &t.name).collect::<Vec<_>>()
+                    module
+                        .trait_defs
+                        .iter()
+                        .map(|t| &t.name)
+                        .collect::<Vec<_>>()
                 )
             })
     };
@@ -67,7 +71,11 @@ fn cost_aggregation_costed_trait_present_in_std_io_with_required_quantity_produc
         .unwrap_or_else(|| {
             panic!(
                 "Costed should have required member 'quantity_produced'; found: {:?}",
-                costed.required_members.iter().map(|r| &r.name).collect::<Vec<_>>()
+                costed
+                    .required_members
+                    .iter()
+                    .map(|r| &r.name)
+                    .collect::<Vec<_>>()
             )
         });
     match &req.kind {
@@ -118,7 +126,9 @@ fn cost_aggregation_costed_exposes_line_cost_let_default_with_money_dim() {
         DefaultKind::Let { cell_type, .. } => {
             assert_eq!(
                 *cell_type,
-                Some(Type::Scalar { dimension: DimensionVector::MONEY }),
+                Some(Type::Scalar {
+                    dimension: DimensionVector::MONEY
+                }),
                 "Costed.line_cost should be DefaultKind::Let with cell_type Some(Scalar<MONEY>), got cell_type = {:?}",
                 cell_type
             );
@@ -176,13 +186,19 @@ structure def MinimalCosted : Costed {
             panic!(
                 "MinimalCosted should inherit a 'line_cost' value cell from Costed; \
                  found cells: {:?}",
-                probe.value_cells.iter().map(|c| &c.id.member).collect::<Vec<_>>()
+                probe
+                    .value_cells
+                    .iter()
+                    .map(|c| &c.id.member)
+                    .collect::<Vec<_>>()
             )
         });
 
     assert_eq!(
         line_cost_cell.cell_type,
-        Type::Scalar { dimension: DimensionVector::MONEY },
+        Type::Scalar {
+            dimension: DimensionVector::MONEY
+        },
         "MinimalCosted.line_cost should have type Scalar<MONEY>, got {:?}",
         line_cost_cell.cell_type
     );
@@ -258,7 +274,9 @@ fn cost_aggregation_example_compiles_under_stdlib_with_zero_errors() {
 
     assert_eq!(
         total_cost_cell.cell_type,
-        Type::Scalar { dimension: DimensionVector::MONEY },
+        Type::Scalar {
+            dimension: DimensionVector::MONEY
+        },
         "AssemblyBOM.total_cost should have type Scalar<MONEY>, got {:?}",
         total_cost_cell.cell_type
     );

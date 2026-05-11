@@ -150,7 +150,10 @@ fn find_cell_type(
     template_name: &str,
     member_name: &str,
 ) -> Option<Type> {
-    let template = compiled.templates.iter().find(|t| t.name == template_name)?;
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == template_name)?;
     template
         .value_cells
         .iter()
@@ -744,7 +747,10 @@ fn index_access(object: Expr, idx_val: f64) -> Expr {
         kind: ExprKind::IndexAccess {
             object: Box::new(object),
             index: Box::new(Expr {
-                kind: ExprKind::NumberLiteral { value: idx_val, is_real: false },
+                kind: ExprKind::NumberLiteral {
+                    value: idx_val,
+                    is_real: false,
+                },
                 span: zero_span(),
             }),
         },
@@ -1044,7 +1050,10 @@ fn external_collection_sub_indexed_dot_cluster_dot_divergent_types_emits_diagnos
 fn collection_sub_indexed_nan_emits_out_of_range_diagnostic() {
     let bolt = structure_with_members("Bolt", vec![param_member("across_flats", "Real")]);
 
-    let probe_expr = member_access(index_access(make_ident_expr("bolts"), f64::NAN), "across_flats");
+    let probe_expr = member_access(
+        index_access(make_ident_expr("bolts"), f64::NAN),
+        "across_flats",
+    );
     let probe = let_member("probe", probe_expr);
     let driver = structure_with_members(
         "Driver",
@@ -1147,7 +1156,10 @@ fn collection_sub_indexed_infinity_emits_out_of_range_diagnostic() {
 fn collection_sub_indexed_1e20_emits_out_of_range_diagnostic() {
     let bolt = structure_with_members("Bolt", vec![param_member("across_flats", "Real")]);
 
-    let probe_expr = member_access(index_access(make_ident_expr("bolts"), 1e20_f64), "across_flats");
+    let probe_expr = member_access(
+        index_access(make_ident_expr("bolts"), 1e20_f64),
+        "across_flats",
+    );
     let probe = let_member("probe", probe_expr);
     let driver = structure_with_members(
         "Driver",

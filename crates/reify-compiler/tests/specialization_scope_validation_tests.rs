@@ -25,16 +25,14 @@
 //! diagnostics from stub types like `"Foo"`).
 
 use reify_syntax::{Expr, ExprKind, MatchArmDeclArmDecl, MatchArmDeclGroupDecl, MemberDecl};
-use reify_types::{DiagnosticCode, Severity, SourceSpan};
 use reify_test_support::specialization_fixtures::*;
+use reify_types::{DiagnosticCode, Severity, SourceSpan};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Filter a slice of diagnostics to only those with
 /// `code == DiagnosticCode::SpecializationForbiddenDecl`.
-fn forbidden_diagnostics(
-    diagnostics: &[reify_types::Diagnostic],
-) -> Vec<&reify_types::Diagnostic> {
+fn forbidden_diagnostics(diagnostics: &[reify_types::Diagnostic]) -> Vec<&reify_types::Diagnostic> {
     diagnostics
         .iter()
         .filter(|d| d.code == Some(DiagnosticCode::SpecializationForbiddenDecl))
@@ -78,9 +76,11 @@ fn make_match_arm_decl_group(
 /// Shape: `structure S { sub scope : Foo { param x } }`
 #[test]
 fn compile_pipeline_invokes_specialization_scope_validator() {
-    let parsed = parsed_module_with_structure_members(
-        vec![make_sub_with_body("scope", zero_span(), vec![make_param("x", zero_span())])],
-    );
+    let parsed = parsed_module_with_structure_members(vec![make_sub_with_body(
+        "scope",
+        zero_span(),
+        vec![make_param("x", zero_span())],
+    )]);
 
     let compiled = reify_compiler::compile(&parsed);
     let diags = forbidden_diagnostics(&compiled.diagnostics);
@@ -131,15 +131,16 @@ fn forbidden_decl_in_match_arm_sub_body_emits_diagnostic() {
     let leaf_param_span = SourceSpan::new(30, 50);
 
     // Inner arm: `sub head : Foo { param x }`
-    let arm_sub =
-        make_sub_with_body("head", arm_sub_span, vec![make_param("x", leaf_param_span)]);
+    let arm_sub = make_sub_with_body("head", arm_sub_span, vec![make_param("x", leaf_param_span)]);
     let match_group =
         make_match_arm_decl_group("head_type", vec![make_match_arm_decl("Hex", arm_sub)]);
 
     // Outer specialization scope: `sub motor : Foo { <match_group> }`
-    let parsed = parsed_module_with_structure_members(
-        vec![make_sub_with_body("motor", zero_span(), vec![match_group])],
-    );
+    let parsed = parsed_module_with_structure_members(vec![make_sub_with_body(
+        "motor",
+        zero_span(),
+        vec![match_group],
+    )]);
 
     let compiled = reify_compiler::compile(&parsed);
     let diags = forbidden_diagnostics(&compiled.diagnostics);

@@ -129,7 +129,11 @@ fn union_dedupes_duplicates_within_either_operand() {
 
     assert_eq!(
         union(&a, &b),
-        vec![GeometryHandleId(1), GeometryHandleId(2), GeometryHandleId(3)],
+        vec![
+            GeometryHandleId(1),
+            GeometryHandleId(2),
+            GeometryHandleId(3)
+        ],
         "union must dedupe on first-seen even when either operand has duplicates"
     );
 }
@@ -282,22 +286,12 @@ fn faces_perpendicular_to_keeps_faces_orthogonal_to_axis() {
 
     let mut kernel = MockGeometryKernel::new()
         .with_extracted_faces(parent, vec![f_x, f_y, f_z])
-        .with_face_normal_result(
-            f_x,
-            Value::String("{\"x\":1.0,\"y\":0.0,\"z\":0.0}".into()),
-        )
-        .with_face_normal_result(
-            f_y,
-            Value::String("{\"x\":0.0,\"y\":1.0,\"z\":0.0}".into()),
-        )
-        .with_face_normal_result(
-            f_z,
-            Value::String("{\"x\":0.0,\"y\":0.0,\"z\":1.0}".into()),
-        );
+        .with_face_normal_result(f_x, Value::String("{\"x\":1.0,\"y\":0.0,\"z\":0.0}".into()))
+        .with_face_normal_result(f_y, Value::String("{\"x\":0.0,\"y\":1.0,\"z\":0.0}".into()))
+        .with_face_normal_result(f_z, Value::String("{\"x\":0.0,\"y\":0.0,\"z\":1.0}".into()));
 
-    let result =
-        faces_perpendicular_to(&mut kernel, parent, [1.0, 0.0, 0.0], 1.0_f64.to_radians())
-            .expect("faces_perpendicular_to should succeed for axis-aligned normals");
+    let result = faces_perpendicular_to(&mut kernel, parent, [1.0, 0.0, 0.0], 1.0_f64.to_radians())
+        .expect("faces_perpendicular_to should succeed for axis-aligned normals");
     assert_eq!(
         result,
         vec![f_y, f_z],
@@ -320,14 +314,10 @@ fn faces_perpendicular_to_is_sign_tolerant() {
             f_neg_x,
             Value::String("{\"x\":-1.0,\"y\":0.0,\"z\":0.0}".into()),
         )
-        .with_face_normal_result(
-            f_y,
-            Value::String("{\"x\":0.0,\"y\":1.0,\"z\":0.0}".into()),
-        );
+        .with_face_normal_result(f_y, Value::String("{\"x\":0.0,\"y\":1.0,\"z\":0.0}".into()));
 
-    let result =
-        faces_perpendicular_to(&mut kernel, parent, [1.0, 0.0, 0.0], 1.0_f64.to_radians())
-            .expect("faces_perpendicular_to should succeed");
+    let result = faces_perpendicular_to(&mut kernel, parent, [1.0, 0.0, 0.0], 1.0_f64.to_radians())
+        .expect("faces_perpendicular_to should succeed");
     assert_eq!(
         result,
         vec![f_y],
@@ -394,8 +384,8 @@ fn assert_faces_perpendicular_to_tol_accepted_at_boundaries() {
             face,
             Value::String("{\"x\":0.0,\"y\":1.0,\"z\":0.0}".into()),
         );
-    let result = faces_perpendicular_to(&mut kernel, parent, [1.0, 0.0, 0.0], 0.0)
-        .unwrap_or_else(|e| {
+    let result =
+        faces_perpendicular_to(&mut kernel, parent, [1.0, 0.0, 0.0], 0.0).unwrap_or_else(|e| {
             panic!(
                 "faces_perpendicular_to must accept tol=0.0 and include an exactly-perpendicular \
                  face, got Err: {e:?}"
@@ -448,10 +438,7 @@ fn faces_perpendicular_to_degenerate_normal_returns_query_failed() {
     let f = GeometryHandleId(2);
     let mut kernel = MockGeometryKernel::new()
         .with_extracted_faces(parent, vec![f])
-        .with_face_normal_result(
-            f,
-            Value::String("{\"x\":0.0,\"y\":0.0,\"z\":0.0}".into()),
-        );
+        .with_face_normal_result(f, Value::String("{\"x\":0.0,\"y\":0.0,\"z\":0.0}".into()));
     let result = faces_perpendicular_to(&mut kernel, parent, [1.0, 0.0, 0.0], 0.1);
     assert!(
         matches!(result, Err(QueryError::QueryFailed(_))),
@@ -476,22 +463,12 @@ fn edges_perpendicular_to_keeps_edges_orthogonal_to_axis() {
 
     let mut kernel = MockGeometryKernel::new()
         .with_extracted_edges(parent, vec![e_x, e_y, e_z])
-        .with_edge_tangent_result(
-            e_x,
-            Value::String("{\"x\":1.0,\"y\":0.0,\"z\":0.0}".into()),
-        )
-        .with_edge_tangent_result(
-            e_y,
-            Value::String("{\"x\":0.0,\"y\":1.0,\"z\":0.0}".into()),
-        )
-        .with_edge_tangent_result(
-            e_z,
-            Value::String("{\"x\":0.0,\"y\":0.0,\"z\":1.0}".into()),
-        );
+        .with_edge_tangent_result(e_x, Value::String("{\"x\":1.0,\"y\":0.0,\"z\":0.0}".into()))
+        .with_edge_tangent_result(e_y, Value::String("{\"x\":0.0,\"y\":1.0,\"z\":0.0}".into()))
+        .with_edge_tangent_result(e_z, Value::String("{\"x\":0.0,\"y\":0.0,\"z\":1.0}".into()));
 
-    let result =
-        edges_perpendicular_to(&mut kernel, parent, [0.0, 0.0, 1.0], 1.0_f64.to_radians())
-            .expect("edges_perpendicular_to should succeed");
+    let result = edges_perpendicular_to(&mut kernel, parent, [0.0, 0.0, 1.0], 1.0_f64.to_radians())
+        .expect("edges_perpendicular_to should succeed");
     assert_eq!(
         result,
         vec![e_x, e_y],
@@ -558,8 +535,8 @@ fn assert_edges_perpendicular_to_tol_accepted_at_boundaries() {
             edge,
             Value::String("{\"x\":1.0,\"y\":0.0,\"z\":0.0}".into()),
         );
-    let result = edges_perpendicular_to(&mut kernel, parent, [0.0, 0.0, 1.0], 0.0)
-        .unwrap_or_else(|e| {
+    let result =
+        edges_perpendicular_to(&mut kernel, parent, [0.0, 0.0, 1.0], 0.0).unwrap_or_else(|e| {
             panic!(
                 "edges_perpendicular_to must accept tol=0.0 and include an exactly-perpendicular \
                  edge, got Err: {e:?}"
@@ -610,10 +587,7 @@ fn edges_perpendicular_to_degenerate_tangent_returns_query_failed() {
     let e = GeometryHandleId(2);
     let mut kernel = MockGeometryKernel::new()
         .with_extracted_edges(parent, vec![e])
-        .with_edge_tangent_result(
-            e,
-            Value::String("{\"x\":0.0,\"y\":0.0,\"z\":0.0}".into()),
-        );
+        .with_edge_tangent_result(e, Value::String("{\"x\":0.0,\"y\":0.0,\"z\":0.0}".into()));
     let result = edges_perpendicular_to(&mut kernel, parent, [0.0, 0.0, 1.0], 0.1);
     assert!(
         matches!(result, Err(QueryError::QueryFailed(_))),
@@ -727,7 +701,11 @@ fn extremal_by_bbox_axis_x_picks_along_x_only() {
 
     let result = extremal_by_bbox(&mut kernel, &candidates, Axis::X, ExtremalSense::Max, 1e-6)
         .expect("extremal_by_bbox should succeed along X");
-    assert_eq!(result, vec![f2], "Max along X picks the candidate with xmax=0.009");
+    assert_eq!(
+        result,
+        vec![f2],
+        "Max along X picks the candidate with xmax=0.009"
+    );
 }
 
 #[test]
@@ -745,7 +723,11 @@ fn extremal_by_bbox_axis_z_picks_along_z_only() {
 
     let result = extremal_by_bbox(&mut kernel, &candidates, Axis::Z, ExtremalSense::Max, 1e-6)
         .expect("extremal_by_bbox should succeed along Z");
-    assert_eq!(result, vec![f2], "Max along Z picks the candidate with zmax=0.011");
+    assert_eq!(
+        result,
+        vec![f2],
+        "Max along Z picks the candidate with zmax=0.011"
+    );
 }
 
 #[test]
@@ -773,10 +755,7 @@ fn extremal_by_bbox_empty_candidates_returns_empty() {
 /// Helper to format a centroid JSON payload in the kernel's canonical
 /// `{"x":..,"y":..,"z":..}` encoding.
 fn xyz_json(p: [f64; 3]) -> Value {
-    Value::String(format!(
-        "{{\"x\":{},\"y\":{},\"z\":{}}}",
-        p[0], p[1], p[2]
-    ))
+    Value::String(format!("{{\"x\":{},\"y\":{},\"z\":{}}}", p[0], p[1], p[2]))
 }
 
 #[test]
@@ -795,9 +774,8 @@ fn extremal_by_centroid_unique_max_along_y_returns_single_face() {
         .with_centroid_result(f3, xyz_json([0.0, 0.005, 0.0]))
         .with_centroid_result(f4, xyz_json([0.0, 0.010, 0.0]));
 
-    let result =
-        extremal_by_centroid(&mut kernel, &candidates, Axis::Y, ExtremalSense::Max, 1e-6)
-            .expect("extremal_by_centroid should succeed for unique max");
+    let result = extremal_by_centroid(&mut kernel, &candidates, Axis::Y, ExtremalSense::Max, 1e-6)
+        .expect("extremal_by_centroid should succeed for unique max");
     assert_eq!(
         result,
         vec![f4],
@@ -825,9 +803,8 @@ fn extremal_by_centroid_min_sense_returns_tied_cluster_in_input_order() {
         .with_centroid_result(f3, xyz_json([0.0, 0.0005, 0.0]))
         .with_centroid_result(f4, xyz_json([0.0, 0.010, 0.0]));
 
-    let result =
-        extremal_by_centroid(&mut kernel, &candidates, Axis::Y, ExtremalSense::Min, 1e-3)
-            .expect("extremal_by_centroid should succeed for tie cluster");
+    let result = extremal_by_centroid(&mut kernel, &candidates, Axis::Y, ExtremalSense::Min, 1e-3)
+        .expect("extremal_by_centroid should succeed for tie cluster");
     assert_eq!(
         result,
         vec![f1, f2, f3],
@@ -847,14 +824,12 @@ fn extremal_by_centroid_distinguishes_by_axis() {
         .with_centroid_result(f1, xyz_json([0.0, 0.005, 0.0]))
         .with_centroid_result(f2, xyz_json([0.010, 0.005, 0.0]));
 
-    let max_x =
-        extremal_by_centroid(&mut kernel, &candidates, Axis::X, ExtremalSense::Max, 1e-6)
-            .expect("extremal_by_centroid X/Max should succeed");
+    let max_x = extremal_by_centroid(&mut kernel, &candidates, Axis::X, ExtremalSense::Max, 1e-6)
+        .expect("extremal_by_centroid X/Max should succeed");
     assert_eq!(max_x, vec![f2], "Max along X picks the f2 (x=0.010)");
 
-    let max_y =
-        extremal_by_centroid(&mut kernel, &candidates, Axis::Y, ExtremalSense::Max, 1e-6)
-            .expect("extremal_by_centroid Y/Max should succeed");
+    let max_y = extremal_by_centroid(&mut kernel, &candidates, Axis::Y, ExtremalSense::Max, 1e-6)
+        .expect("extremal_by_centroid Y/Max should succeed");
     assert_eq!(
         max_y,
         vec![f1, f2],
@@ -866,9 +841,8 @@ fn extremal_by_centroid_distinguishes_by_axis() {
 fn extremal_by_centroid_empty_candidates_returns_empty() {
     let mut kernel = MockGeometryKernel::new();
     let candidates: Vec<GeometryHandleId> = vec![];
-    let result =
-        extremal_by_centroid(&mut kernel, &candidates, Axis::Z, ExtremalSense::Max, 1e-6)
-            .expect("extremal_by_centroid on empty candidates should succeed");
+    let result = extremal_by_centroid(&mut kernel, &candidates, Axis::Z, ExtremalSense::Max, 1e-6)
+        .expect("extremal_by_centroid on empty candidates should succeed");
     assert!(
         result.is_empty(),
         "empty candidate slice yields empty cluster"
@@ -1023,8 +997,7 @@ fn geom_universal_returns_input_slice_unchanged() {
     ];
     let result = geom_universal(&handles);
     assert_eq!(
-        result,
-        handles,
+        result, handles,
         "geom_universal must return the input slice unchanged (no dedup, no reorder)"
     );
 }
@@ -1471,7 +1444,12 @@ fn adjacent_to_face_returns_neighbours_in_kernel_order() {
         .with_adjacent_faces_result(
             parent,
             0,
-            Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3), Value::Int(4)]),
+            Value::List(vec![
+                Value::Int(1),
+                Value::Int(2),
+                Value::Int(3),
+                Value::Int(4),
+            ]),
         );
 
     let result = adjacent_to_face(&mut kernel, parent, f0)
@@ -1637,11 +1615,7 @@ fn ancestor_faces_of_edge_returns_owning_faces_in_kernel_order() {
             vec![e0, e1, e2, e3, e4, e5, e6, e7, e8, e9, e10, e11],
         )
         .with_extracted_faces(parent, vec![f0, f1, f2, f3, f4, f5])
-        .with_ancestor_faces_result(
-            parent,
-            3,
-            Value::List(vec![Value::Int(0), Value::Int(2)]),
-        );
+        .with_ancestor_faces_result(parent, 3, Value::List(vec![Value::Int(0), Value::Int(2)]));
 
     let result = ancestor_faces_of_edge(&mut kernel, parent, e3)
         .expect("ancestor_faces_of_edge should succeed for a child edge");
@@ -1732,8 +1706,8 @@ fn siblings_of_face_returns_all_other_faces_in_canonical_order() {
     let f4 = GeometryHandleId(6);
     let f5 = GeometryHandleId(7);
 
-    let mut kernel = MockGeometryKernel::new()
-        .with_extracted_faces(parent, vec![f0, f1, f2, f3, f4, f5]);
+    let mut kernel =
+        MockGeometryKernel::new().with_extracted_faces(parent, vec![f0, f1, f2, f3, f4, f5]);
 
     let result = siblings_of_face(&mut kernel, parent, f2)
         .expect("siblings_of_face should succeed for a child face");
@@ -1842,8 +1816,8 @@ fn owner_body_of_returns_query_failed_on_non_int_payload() {
     // for OwnerBody, the selector must surface it as QueryFailed rather
     // than panicking on the type mismatch.
     let child = GeometryHandleId(2);
-    let kernel = MockGeometryKernel::new()
-        .with_owner_body_value(child, Value::String("not an int".into()));
+    let kernel =
+        MockGeometryKernel::new().with_owner_body_value(child, Value::String("not an int".into()));
 
     let result = owner_body_of(&kernel, child);
     assert!(matches!(result, Err(QueryError::QueryFailed(_))));
@@ -1861,6 +1835,12 @@ fn owner_body_of_distinguishes_distinct_children_of_same_parent() {
         .with_owner_body_result(f0, parent)
         .with_owner_body_result(f1, parent);
 
-    assert_eq!(owner_body_of(&kernel, f0).expect("f0 should resolve"), parent);
-    assert_eq!(owner_body_of(&kernel, f1).expect("f1 should resolve"), parent);
+    assert_eq!(
+        owner_body_of(&kernel, f0).expect("f0 should resolve"),
+        parent
+    );
+    assert_eq!(
+        owner_body_of(&kernel, f1).expect("f1 should resolve"),
+        parent
+    );
 }

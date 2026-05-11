@@ -438,17 +438,29 @@ fn assert_conjugate_undef(re: f64, im: f64) {
 }
 
 #[test]
-fn conjugate_nan_re_undef() { assert_conjugate_undef(f64::NAN, 1.0); }
+fn conjugate_nan_re_undef() {
+    assert_conjugate_undef(f64::NAN, 1.0);
+}
 #[test]
-fn conjugate_nan_im_undef() { assert_conjugate_undef(1.0, f64::NAN); }
+fn conjugate_nan_im_undef() {
+    assert_conjugate_undef(1.0, f64::NAN);
+}
 #[test]
-fn conjugate_inf_re_undef() { assert_conjugate_undef(f64::INFINITY, 1.0); }
+fn conjugate_inf_re_undef() {
+    assert_conjugate_undef(f64::INFINITY, 1.0);
+}
 #[test]
-fn conjugate_neg_inf_re_undef() { assert_conjugate_undef(f64::NEG_INFINITY, 1.0); }
+fn conjugate_neg_inf_re_undef() {
+    assert_conjugate_undef(f64::NEG_INFINITY, 1.0);
+}
 #[test]
-fn conjugate_neg_inf_im_undef() { assert_conjugate_undef(1.0, f64::NEG_INFINITY); }
+fn conjugate_neg_inf_im_undef() {
+    assert_conjugate_undef(1.0, f64::NEG_INFINITY);
+}
 #[test]
-fn conjugate_pos_inf_im_undef() { assert_conjugate_undef(1.0, f64::INFINITY); }
+fn conjugate_pos_inf_im_undef() {
+    assert_conjugate_undef(1.0, f64::INFINITY);
+}
 
 /// .conjugate() with non-finite re and a LENGTH dimension returns Undef.
 /// Verifies the pre-guard isn't short-circuited by dimension-aware branches.
@@ -474,7 +486,10 @@ fn conjugate_pure_imaginary() {
         "conjugate",
         Type::complex(Type::Real),
     );
-    assert_eq!(result, complex_val(0.0, -5.0, DimensionVector::DIMENSIONLESS));
+    assert_eq!(
+        result,
+        complex_val(0.0, -5.0, DimensionVector::DIMENSIONLESS)
+    );
 }
 
 /// .conjugate() with negative imaginary part flips it to positive: (2-3i).conjugate == (2+3i).
@@ -487,7 +502,10 @@ fn conjugate_negative_im() {
         "conjugate",
         Type::complex(Type::Real),
     );
-    assert_eq!(result, complex_val(2.0, 3.0, DimensionVector::DIMENSIONLESS));
+    assert_eq!(
+        result,
+        complex_val(2.0, 3.0, DimensionVector::DIMENSIONLESS)
+    );
 }
 
 // ─── step-21: Edge-case tests ───────────────────────────────────────────────

@@ -61,8 +61,11 @@ fn parse_trait_with_refinement() {
     };
 
     assert_eq!(trait_decl.name, "Fastener");
-    let refinement_names: Vec<&str> =
-        trait_decl.refinements.iter().map(|r| r.name.as_str()).collect();
+    let refinement_names: Vec<&str> = trait_decl
+        .refinements
+        .iter()
+        .map(|r| r.name.as_str())
+        .collect();
     assert_eq!(refinement_names, vec!["Rigid"]);
     assert_eq!(trait_decl.members.len(), 1);
 
@@ -86,8 +89,11 @@ fn parse_trait_multiple_refinements() {
     };
 
     assert_eq!(trait_decl.name, "A");
-    let refinement_names: Vec<&str> =
-        trait_decl.refinements.iter().map(|r| r.name.as_str()).collect();
+    let refinement_names: Vec<&str> = trait_decl
+        .refinements
+        .iter()
+        .map(|r| r.name.as_str())
+        .collect();
     assert_eq!(refinement_names, vec!["B", "C"]);
     assert!(trait_decl.members.is_empty());
 }

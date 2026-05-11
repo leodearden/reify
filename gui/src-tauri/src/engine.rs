@@ -6,11 +6,11 @@ use std::path::{Path, PathBuf};
 use tracing::warn;
 
 use reify_compiler::{CompiledModule, ValueCellKind, Visibility};
-use reify_eval::{CheckResult, Engine};
 use reify_eval::cache::NodeId;
+use reify_eval::{CheckResult, Engine};
 use reify_types::{
-    ConstraintChecker, ContentHash, DeterminacyState, DimensionVector, ExportFormat, GeometryKernel,
-    ModulePath, Satisfaction, Severity, Value, ValueCellId,
+    ConstraintChecker, ContentHash, DeterminacyState, DimensionVector, ExportFormat,
+    GeometryKernel, ModulePath, Satisfaction, Severity, Value, ValueCellId,
 };
 
 use reify_types::{Diagnostic, DiagnosticInfo, DiagnosticLabel, SourceLocationInfo, SourceSpan};
@@ -202,8 +202,7 @@ fn compile_single_file_with_stdlib(
 ) -> Result<(reify_syntax::ParsedModule, CompiledModule), (String, Vec<DiagnosticInfo>)> {
     // Prelude-aware parse so stdlib enum references like `CorrosionClass.C5`
     // disambiguate to `EnumAccess` rather than `MemberAccess`.  See task 2525.
-    let parsed =
-        reify_compiler::parse_with_stdlib(content, ModulePath::single(module_name));
+    let parsed = reify_compiler::parse_with_stdlib(content, ModulePath::single(module_name));
     if !parsed.errors.is_empty() {
         let file_path = module_key(module_name);
         return Err(parse_errs_to_payload(&parsed.errors, &file_path, content));
@@ -220,7 +219,12 @@ fn compile_single_file_with_stdlib(
             .filter(|d| d.severity == Severity::Error)
             .collect();
         let file_path = module_key(module_name);
-        return Err(build_err_payload("Compile errors", &error_diags, &file_path, content));
+        return Err(build_err_payload(
+            "Compile errors",
+            &error_diags,
+            &file_path,
+            content,
+        ));
     }
     Ok((parsed, compiled))
 }
@@ -324,23 +328,24 @@ fn compile_entry_with_imports(
         if is_stdlib_path(import_path) {
             continue;
         }
-        dag.compile_module(import_path, &resolver).map_err(|diags| {
-            let file_path = format!("{}.ri", import_path);
-            // Resolve the import's source via the resolver for accurate span resolution
-            // so line/column numbers in the diagnostics panel point to real locations.
-            // Falls back to "" (spans collapse to 1:1) if resolution or I/O fails.
-            let import_source = resolver
-                .resolve_import_path(import_path)
-                .ok()
-                .and_then(|p| std::fs::read_to_string(p).ok())
-                .unwrap_or_default();
-            build_err_payload(
-                &format!("Compile errors in import '{}'", import_path),
-                &diags,
-                &file_path,
-                &import_source,
-            )
-        })?;
+        dag.compile_module(import_path, &resolver)
+            .map_err(|diags| {
+                let file_path = format!("{}.ri", import_path);
+                // Resolve the import's source via the resolver for accurate span resolution
+                // so line/column numbers in the diagnostics panel point to real locations.
+                // Falls back to "" (spans collapse to 1:1) if resolution or I/O fails.
+                let import_source = resolver
+                    .resolve_import_path(import_path)
+                    .ok()
+                    .and_then(|p| std::fs::read_to_string(p).ok())
+                    .unwrap_or_default();
+                build_err_payload(
+                    &format!("Compile errors in import '{}'", import_path),
+                    &diags,
+                    &file_path,
+                    &import_source,
+                )
+            })?;
     }
 
     // Build prelude refs: stdlib (static) + user imports from dag.modules.
@@ -373,7 +378,12 @@ fn compile_entry_with_imports(
             .filter(|d| d.severity == Severity::Error)
             .collect();
         let file_path = module_key(module_name);
-        return Err(build_err_payload("Compile errors", &error_diags, &file_path, source));
+        return Err(build_err_payload(
+            "Compile errors",
+            &error_diags,
+            &file_path,
+            source,
+        ));
     }
 
     // Merge pub templates from direct (1-hop) non-stdlib imports into the entry's
@@ -501,8 +511,8 @@ impl EngineSession {
         source: &str,
         module_name: &str,
     ) -> Result<GuiState, String> {
-        let (parsed, compiled) = compile_single_file_with_stdlib(source, module_name)
-            .map_err(|(msg, diags)| {
+        let (parsed, compiled) =
+            compile_single_file_with_stdlib(source, module_name).map_err(|(msg, diags)| {
                 self.record_compile_failure(diags);
                 msg
             })?;
@@ -572,8 +582,8 @@ impl EngineSession {
         // Err from `compile_entry_with_imports` doesn't leave file_path pointing
         // at a file whose compiled / module_name / source_map state hasn't been
         // committed.  Atomic-commit invariant: see engine.rs:30-44 doc block.
-        let (compiled, parsed) = compile_entry_with_imports(path, &source, module_name)
-            .map_err(|(msg, diags)| {
+        let (compiled, parsed) =
+            compile_entry_with_imports(path, &source, module_name).map_err(|(msg, diags)| {
                 self.record_compile_failure(diags);
                 msg
             })?;
@@ -618,21 +628,19 @@ impl EngineSession {
             // siblings relative to the directory of the originally-loaded file,
             // regardless of how the GUI serialised `path`.  See design decision in
             // task 3318 for rationale.
-            let (compiled, parsed) =
-                compile_entry_with_imports(&entry_path, content, module_name)
-                    .map_err(|(msg, diags)| {
-                        self.record_compile_failure(diags);
-                        msg
-                    })?;
+            let (compiled, parsed) = compile_entry_with_imports(&entry_path, content, module_name)
+                .map_err(|(msg, diags)| {
+                    self.record_compile_failure(diags);
+                    msg
+                })?;
             (parsed, compiled)
         } else {
             // Single-file flow — no prior load_file means no project_root anchor;
             // delegate to compile_single_file_with_stdlib (shared with load_from_source).
-            compile_single_file_with_stdlib(content, module_name)
-                .map_err(|(msg, diags)| {
-                    self.record_compile_failure(diags);
-                    msg
-                })?
+            compile_single_file_with_stdlib(content, module_name).map_err(|(msg, diags)| {
+                self.record_compile_failure(diags);
+                msg
+            })?
         };
 
         // Parse+compile succeeded — run check() before mutating any state, so
@@ -917,8 +925,7 @@ impl EngineSession {
                     // happy path; the "<unknown>"/"" fallback is zero-length static strs.
                     let resolved = self.resolve_source();
                     let unresolved = resolved.is_none();
-                    let (file_path, source): (&str, &str) =
-                        resolved.unwrap_or(("<unknown>", ""));
+                    let (file_path, source): (&str, &str) = resolved.unwrap_or(("<unknown>", ""));
                     let mut diags = diagnostics_to_info(&result.diagnostics, file_path, source);
                     if unresolved {
                         for d in &mut diags {
@@ -1235,8 +1242,10 @@ impl EngineSession {
             // (angle-bracket form is an impossible template identifier, preventing
             // collision with user-defined templates named "root").
             // Format: "{kind}:{parent}:{sub_count}:{hash}".
-            let structural_fingerprint =
-                format!("{}:{}:{}:{}", entity_kind, "<root>", sub_count, children_hash);
+            let structural_fingerprint = format!(
+                "{}:{}:{}:{}",
+                entity_kind, "<root>", sub_count, children_hash
+            );
 
             map.insert(
                 template.name.clone(),
@@ -1342,8 +1351,7 @@ impl EngineSession {
         let gui_state = build_preview_gui_state(&preview_module, &check_result);
 
         // Phase 6: cache and return.
-        self.def_preview_cache
-            .insert(cache_key, gui_state.clone());
+        self.def_preview_cache.insert(cache_key, gui_state.clone());
         Ok(gui_state)
     }
 
@@ -1399,18 +1407,14 @@ impl EngineSession {
         let mut best: Option<DefInfo> = None;
         for decl in &parsed.declarations {
             let (name, kind, span) = match decl {
-                reify_syntax::Declaration::Structure(s) => {
-                    (s.name.as_str(), "structure", s.span)
-                }
-                reify_syntax::Declaration::Occurrence(o) => {
-                    (o.name.as_str(), "occurrence", o.span)
-                }
+                reify_syntax::Declaration::Structure(s) => (s.name.as_str(), "structure", s.span),
+                reify_syntax::Declaration::Occurrence(o) => (o.name.as_str(), "occurrence", o.span),
                 _ => continue,
             };
             if offset >= span.start && offset < span.end {
-                let is_smaller = best.as_ref().is_none_or(|b| {
-                    (span.end - span.start) < (b.span.end - b.span.start)
-                });
+                let is_smaller = best
+                    .as_ref()
+                    .is_none_or(|b| (span.end - span.start) < (b.span.end - b.span.start));
                 if is_smaller {
                     best = Some(DefInfo {
                         name: name.to_string(),
@@ -1680,8 +1684,7 @@ pub(crate) fn extract_joints_from_mechanism(
 fn is_world_sentinel(val: &Value) -> bool {
     match val {
         Value::Map(m) => {
-            m.get(&Value::String("kind".to_string()))
-                == Some(&Value::String("world".to_string()))
+            m.get(&Value::String("kind".to_string())) == Some(&Value::String("world".to_string()))
         }
         _ => false,
     }
@@ -1824,7 +1827,11 @@ fn resolve_driving_params_from_ast(
         let structure_name = &structure.name;
 
         // Find the compiled template for this structure.
-        let template = match compiled.templates.iter().find(|t| t.name == *structure_name) {
+        let template = match compiled
+            .templates
+            .iter()
+            .find(|t| t.name == *structure_name)
+        {
             Some(t) => t,
             None => continue,
         };
@@ -1842,10 +1849,10 @@ fn resolve_driving_params_from_ast(
         // Resolve each pair.
         for (joint_cell_name, value_cell_name) in bind_pairs {
             // The value side must be a Param cell (not a Let or Auto).
-            let is_param = template.value_cells.iter().any(|c| {
-                c.id.member == value_cell_name
-                    && matches!(c.kind, ValueCellKind::Param)
-            });
+            let is_param = template
+                .value_cells
+                .iter()
+                .any(|c| c.id.member == value_cell_name && matches!(c.kind, ValueCellKind::Param));
             if !is_param {
                 continue;
             }
@@ -1879,27 +1886,28 @@ fn resolve_driving_params_from_ast(
                 };
 
                 if let Some(jd) = desc.joints.get_mut(joint_index)
-                    && jd.driving_param_cell_id.is_none() {
-                        jd.driving_param_cell_id = Some(param_cell_id_str.clone());
-                        // Telemetry: confirm which (structure, joint, param) triple
-                        // was resolved so operators can verify AST-based matching.
-                        // Fires AFTER the Param check has passed and
-                        // driving_param_cell_id has been populated.
-                        tracing::debug!(
-                            target: "reify_gui::engine::param_resolution",
-                            structure = %structure_name,
-                            joint = %joint_cell_name,
-                            param_cell = %param_cell_id_str,
-                            "resolved driving param via snapshot+bind AST match"
-                        );
-                        // Step-24: populate current_value_si from the param cell's
-                        // post-eval value so the slider's initial position reflects
-                        // the actual evaluated parameter value (not just the source
-                        // default).  Uses the same check.values channel as build_values.
-                        let param_cell_id = ValueCellId::new(structure_name, &value_cell_name);
-                        let param_val = check.values.get_or_undef(&param_cell_id);
-                        jd.current_value_si = scalar_to_f64(&param_val);
-                    }
+                    && jd.driving_param_cell_id.is_none()
+                {
+                    jd.driving_param_cell_id = Some(param_cell_id_str.clone());
+                    // Telemetry: confirm which (structure, joint, param) triple
+                    // was resolved so operators can verify AST-based matching.
+                    // Fires AFTER the Param check has passed and
+                    // driving_param_cell_id has been populated.
+                    tracing::debug!(
+                        target: "reify_gui::engine::param_resolution",
+                        structure = %structure_name,
+                        joint = %joint_cell_name,
+                        param_cell = %param_cell_id_str,
+                        "resolved driving param via snapshot+bind AST match"
+                    );
+                    // Step-24: populate current_value_si from the param cell's
+                    // post-eval value so the slider's initial position reflects
+                    // the actual evaluated parameter value (not just the source
+                    // default).  Uses the same check.values channel as build_values.
+                    let param_cell_id = ValueCellId::new(structure_name, &value_cell_name);
+                    let param_val = check.values.get_or_undef(&param_cell_id);
+                    jd.current_value_si = scalar_to_f64(&param_val);
+                }
             }
         }
     }
@@ -1988,10 +1996,7 @@ fn walk_function_calls(
 /// Calls with fewer than two arguments (`args.len() < 2`) are also **silent**
 /// — they cannot contribute pairs regardless of shadowing, so they are
 /// excluded from the anomaly surface intentionally.
-fn collect_snapshot_bind_pairs(
-    expr: &reify_syntax::Expr,
-    pairs: &mut Vec<(String, String)>,
-) {
+fn collect_snapshot_bind_pairs(expr: &reify_syntax::Expr, pairs: &mut Vec<(String, String)>) {
     use reify_syntax::ExprKind;
     walk_function_calls(expr, &mut |name, args| {
         if name != "snapshot" || args.len() < 2 {
@@ -2163,7 +2168,6 @@ pub(crate) fn build_template_node(
     compiled: &reify_compiler::CompiledModule,
     engine: Option<&Engine>,
 ) -> EntityTreeNode {
-
     let kind = template.entity_kind.as_label();
 
     let mut children = Vec::new();
@@ -2844,7 +2848,11 @@ fn collect_value_refs(expr: &reify_types::CompiledExpr) -> Vec<String> {
 /// The wire format is pinned by tests; the log field shares the same call
 /// but is not separately asserted.
 /// MCP consumers and TypeScript code must compare against PascalCase strings.
-fn diagnostics_to_info(diagnostics: &[Diagnostic], file_path: &str, source: &str) -> Vec<DiagnosticInfo> {
+fn diagnostics_to_info(
+    diagnostics: &[Diagnostic],
+    file_path: &str,
+    source: &str,
+) -> Vec<DiagnosticInfo> {
     if diagnostics.is_empty() {
         return Vec::new();
     }
@@ -2971,7 +2979,7 @@ pub(crate) fn line_col_to_byte_offset_with_offsets(
         0
     } else {
         match line_offsets.get(line - 2) {
-            Some(&nl) => nl + 1, // byte after the preceding newline
+            Some(&nl) => nl + 1,         // byte after the preceding newline
             None => return source.len(), // line is beyond end of source
         }
     };

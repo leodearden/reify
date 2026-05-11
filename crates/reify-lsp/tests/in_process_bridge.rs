@@ -1,12 +1,11 @@
 //! Integration tests for the InProcessLsp bridge.
 
-use reify_lsp::bridge::error_prefix;
 use reify_lsp::bridge::InProcessLsp;
+use reify_lsp::bridge::error_prefix;
 use reify_test_support::assert_warn_count;
 use reify_test_support::warn_counting_guard;
 use serde_json::json;
 use std::time::Duration;
-
 
 /// Assert that calling `handle_request` with `method` and `json!(42)` (a canonical
 /// malformed payload) returns an `Err` whose message contains `fragment`.
@@ -37,9 +36,8 @@ async fn assert_malformed_params_returns_error(lsp: &InProcessLsp, method: &str,
 /// pre-handshake tests or `initialized_lsp().await` for post-handshake tests).
 async fn assert_shutdown_returns_null(lsp: &InProcessLsp, params: &serde_json::Value) {
     let result = lsp.handle_request("shutdown", params.clone()).await;
-    let val = result.unwrap_or_else(|e| {
-        panic!("shutdown(params={params}) should return Ok, got Err: {e}")
-    });
+    let val = result
+        .unwrap_or_else(|e| panic!("shutdown(params={params}) should return Ok, got Err: {e}"));
     assert_eq!(
         val,
         serde_json::Value::Null,
@@ -144,9 +142,7 @@ fn completion_items(response: &serde_json::Value) -> &[serde_json::Value] {
         if let Some(arr) = items_val.as_array() {
             return arr;
         }
-        panic!(
-            "CompletionResponse::List has non-array 'items' field: {response}"
-        );
+        panic!("CompletionResponse::List has non-array 'items' field: {response}");
     }
     panic!(
         "completion response should be CompletionResponse::Array (JSON array) or \
@@ -202,9 +198,7 @@ async fn with_hang_guard<F: std::future::Future<Output = ()>>(seconds: u64, f: F
     let caller = std::panic::Location::caller();
     tokio::time::timeout(Duration::from_secs(seconds), f)
         .await
-        .unwrap_or_else(|_| {
-            panic!("{caller} must not hang (timed out after {seconds}s)")
-        });
+        .unwrap_or_else(|_| panic!("{caller} must not hang (timed out after {seconds}s)"));
 }
 
 /// Assert that `result` is either `Ok(val)` or a well-defined non-empty `Err`.
@@ -427,12 +421,9 @@ async fn diagnostics_captured_after_did_open_with_syntax_error() {
         // Open a document with a syntax error
         let broken_source = "structure {";
         let uri = "file:///broken.ri";
-        lsp.handle_request(
-            "textDocument/didOpen",
-            did_open_params(uri, broken_source),
-        )
-        .await
-        .unwrap();
+        lsp.handle_request("textDocument/didOpen", did_open_params(uri, broken_source))
+            .await
+            .unwrap();
 
         // Get diagnostics from the bridge (async to properly await the RwLock)
         let diags = lsp.get_diagnostics(uri).await;
@@ -652,8 +643,12 @@ async fn did_open_returns_ok_null() {
 async fn initialized_with_malformed_params_returns_error() {
     hang_guard!(async {
         let lsp = InProcessLsp::new();
-        assert_malformed_params_returns_error(&lsp, "initialized", error_prefix::INITIALIZED_PARAMS)
-            .await;
+        assert_malformed_params_returns_error(
+            &lsp,
+            "initialized",
+            error_prefix::INITIALIZED_PARAMS,
+        )
+        .await;
     });
 }
 
@@ -1054,8 +1049,12 @@ async fn error_prefix_constants_match_actual_errors() {
         // Verify each constant is contained in the error for its matching method.
         assert_malformed_params_returns_error(&lsp, "initialize", error_prefix::INITIALIZE_PARAMS)
             .await;
-        assert_malformed_params_returns_error(&lsp, "initialized", error_prefix::INITIALIZED_PARAMS)
-            .await;
+        assert_malformed_params_returns_error(
+            &lsp,
+            "initialized",
+            error_prefix::INITIALIZED_PARAMS,
+        )
+        .await;
         assert_malformed_params_returns_error(
             &lsp,
             "textDocument/didOpen",
@@ -1135,7 +1134,8 @@ async fn downstream_ops_after_malformed_initialize_without_initialized() {
         // Uses json!(42) — the canonical malformed payload in this file — to guarantee
         // serde rejects it before server.initialize() is ever called, so workspace_root
         // and stdlib_path remain at their defaults.
-        assert_malformed_params_returns_error(&lsp, "initialize", error_prefix::INITIALIZE_PARAMS).await;
+        assert_malformed_params_returns_error(&lsp, "initialize", error_prefix::INITIALIZE_PARAMS)
+            .await;
 
         // Step 2: intentionally skip the `initialized` notification.
         // The `initialized()` handler is a no-op, so skipping it produces no server-side
@@ -1151,7 +1151,8 @@ async fn downstream_ops_after_malformed_initialize_without_initialized() {
                 did_open_params("file:///test.ri", reify_test_support::bracket_source()),
             )
             .await;
-        if let Some(val) = assert_ok_or_nonempty_err(did_open_result, "didOpen before initialized") {
+        if let Some(val) = assert_ok_or_nonempty_err(did_open_result, "didOpen before initialized")
+        {
             assert_eq!(
                 val,
                 serde_json::Value::Null,
@@ -1174,7 +1175,8 @@ async fn downstream_ops_after_malformed_initialize_without_initialized() {
                 }),
             )
             .await;
-        if let Some(val) = assert_ok_or_nonempty_err(completion_result, "completion before initialized")
+        if let Some(val) =
+            assert_ok_or_nonempty_err(completion_result, "completion before initialized")
             && !val.is_null()
         {
             let _items = completion_items(&val);
@@ -1196,11 +1198,7 @@ mod hang_guard_tests {
     #[tokio::test]
     #[should_panic(expected = "must not hang")]
     async fn panics_on_timeout() {
-        with_hang_guard(
-            1,
-            tokio::time::sleep(Duration::from_secs(60)),
-        )
-        .await;
+        with_hang_guard(1, tokio::time::sleep(Duration::from_secs(60))).await;
     }
 
     /// The panic message must include the caller's file name so hangs are
@@ -1238,11 +1236,7 @@ mod assert_ok_or_nonempty_err_tests {
     fn nonempty_err_returns_none() {
         let result: Result<serde_json::Value, String> = Err("some error".into());
         let out = assert_ok_or_nonempty_err(result, "nonempty_err_returns_none");
-        assert_eq!(
-            out,
-            None,
-            "non-empty Err should return None, got: {out:?}"
-        );
+        assert_eq!(out, None, "non-empty Err should return None, got: {out:?}");
     }
 
     #[test]

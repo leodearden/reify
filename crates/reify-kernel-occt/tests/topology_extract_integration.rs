@@ -9,7 +9,7 @@
 
 use reify_kernel_occt::OcctKernel;
 use reify_types::{
-    GeometryHandleId, GeometryOp, GeometryQuery, QueryError, BRepKind, Value, WarmStartable,
+    BRepKind, GeometryHandleId, GeometryOp, GeometryQuery, QueryError, Value, WarmStartable,
 };
 
 /// Helper: build a kernel containing one box of the given mm dimensions
@@ -143,7 +143,10 @@ fn extract_faces_face_handles_have_correct_surface_area() {
         .iter()
         .map(|id| match kernel.query(&GeometryQuery::SurfaceArea(*id)) {
             Ok(Value::Real(a)) => a,
-            other => panic!("SurfaceArea({:?}) returned unexpected value: {:?}", id, other),
+            other => panic!(
+                "SurfaceArea({:?}) returned unexpected value: {:?}",
+                id, other
+            ),
         })
         .collect();
     areas.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -180,7 +183,10 @@ fn query_edge_length_returns_correct_value_for_extracted_box_edge() {
         .iter()
         .map(|id| match kernel.query(&GeometryQuery::EdgeLength(*id)) {
             Ok(Value::Real(l)) => l,
-            other => panic!("EdgeLength({:?}) returned unexpected value: {:?}", id, other),
+            other => panic!(
+                "EdgeLength({:?}) returned unexpected value: {:?}",
+                id, other
+            ),
         })
         .collect();
     lengths.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -210,8 +216,8 @@ fn parse_xyz(v: &Value) -> (f64, f64, f64) {
         Value::String(s) => s,
         other => panic!("expected Value::String, got {:?}", other),
     };
-    let parsed: serde_json::Value = serde_json::from_str(s)
-        .unwrap_or_else(|e| panic!("failed to parse {:?} as JSON: {e}", s));
+    let parsed: serde_json::Value =
+        serde_json::from_str(s).unwrap_or_else(|e| panic!("failed to parse {:?} as JSON: {e}", s));
     let x = parsed["x"].as_f64().expect("missing x");
     let y = parsed["y"].as_f64().expect("missing y");
     let z = parsed["z"].as_f64().expect("missing z");
@@ -267,8 +273,8 @@ fn parse_bbox(v: &Value) -> (f64, f64, f64, f64, f64, f64) {
         Value::String(s) => s,
         other => panic!("expected Value::String, got {:?}", other),
     };
-    let parsed: serde_json::Value = serde_json::from_str(s)
-        .unwrap_or_else(|e| panic!("failed to parse {:?} as JSON: {e}", s));
+    let parsed: serde_json::Value =
+        serde_json::from_str(s).unwrap_or_else(|e| panic!("failed to parse {:?} as JSON: {e}", s));
     let xmin = parsed["xmin"].as_f64().expect("missing xmin");
     let ymin = parsed["ymin"].as_f64().expect("missing ymin");
     let zmin = parsed["zmin"].as_f64().expect("missing zmin");
@@ -318,9 +324,7 @@ fn query_edge_tangent_returns_unit_vector_along_axis() {
                 return *id;
             }
         }
-        panic!(
-            "no edge found with bbox extents ({ex}, {ey}, {ez}) within tol={extent_tol}"
-        );
+        panic!("no edge found with bbox extents ({ex}, {ey}, {ez}) within tol={extent_tol}");
     };
 
     // Each axis-aligned edge of a 10×20×30 mm box has zero extent on the
@@ -339,28 +343,46 @@ fn query_edge_tangent_returns_unit_vector_along_axis() {
         (tx.abs() - 1.0).abs() < dir_tol,
         "x-edge tangent |x| should be ≈1, got tx={tx}"
     );
-    assert!(ty.abs() < dir_tol, "x-edge tangent y should be ≈0, got {ty}");
-    assert!(tz.abs() < dir_tol, "x-edge tangent z should be ≈0, got {tz}");
+    assert!(
+        ty.abs() < dir_tol,
+        "x-edge tangent y should be ≈0, got {ty}"
+    );
+    assert!(
+        tz.abs() < dir_tol,
+        "x-edge tangent z should be ≈0, got {tz}"
+    );
 
     // y-aligned edge: tangent should be ±(0, 1, 0).
     let t_y = kernel
         .query(&GeometryQuery::EdgeTangent(y_edge))
         .expect("EdgeTangent on y-aligned edge");
     let (tx, ty, tz) = parse_xyz(&t_y);
-    assert!(tx.abs() < dir_tol, "y-edge tangent x should be ≈0, got {tx}");
+    assert!(
+        tx.abs() < dir_tol,
+        "y-edge tangent x should be ≈0, got {tx}"
+    );
     assert!(
         (ty.abs() - 1.0).abs() < dir_tol,
         "y-edge tangent |y| should be ≈1, got ty={ty}"
     );
-    assert!(tz.abs() < dir_tol, "y-edge tangent z should be ≈0, got {tz}");
+    assert!(
+        tz.abs() < dir_tol,
+        "y-edge tangent z should be ≈0, got {tz}"
+    );
 
     // z-aligned edge: tangent should be ±(0, 0, 1).
     let t_z = kernel
         .query(&GeometryQuery::EdgeTangent(z_edge))
         .expect("EdgeTangent on z-aligned edge");
     let (tx, ty, tz) = parse_xyz(&t_z);
-    assert!(tx.abs() < dir_tol, "z-edge tangent x should be ≈0, got {tx}");
-    assert!(ty.abs() < dir_tol, "z-edge tangent y should be ≈0, got {ty}");
+    assert!(
+        tx.abs() < dir_tol,
+        "z-edge tangent x should be ≈0, got {tx}"
+    );
+    assert!(
+        ty.abs() < dir_tol,
+        "z-edge tangent y should be ≈0, got {ty}"
+    );
     assert!(
         (tz.abs() - 1.0).abs() < dir_tol,
         "z-edge tangent |z| should be ≈1, got tz={tz}"
@@ -425,8 +447,15 @@ fn extract_edges_after_fillet_count_differs_from_box() {
     let mut seen = std::collections::HashSet::new();
     for id in &edges {
         assert_ne!(*id, box_id, "extracted edge handle must differ from box_id");
-        assert_ne!(*id, filleted.id, "extracted edge handle must differ from filleted.id");
-        assert_ne!(*id, GeometryHandleId::INVALID, "extracted edge handle must not be INVALID");
+        assert_ne!(
+            *id, filleted.id,
+            "extracted edge handle must differ from filleted.id"
+        );
+        assert_ne!(
+            *id,
+            GeometryHandleId::INVALID,
+            "extracted edge handle must not be INVALID"
+        );
         assert!(seen.insert(*id), "duplicate edge handle id {:?}", id);
     }
 }

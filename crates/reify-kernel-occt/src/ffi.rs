@@ -507,29 +507,27 @@ pub mod ffi {
 
         // --- Curve constructors ---
         fn make_arc_wire(
-            cx: f64, cy: f64, cz: f64,
+            cx: f64,
+            cy: f64,
+            cz: f64,
             radius: f64,
-            start_angle: f64, end_angle: f64,
-            ax: f64, ay: f64, az: f64,
+            start_angle: f64,
+            end_angle: f64,
+            ax: f64,
+            ay: f64,
+            az: f64,
         ) -> Result<UniquePtr<OcctShape>>;
-        fn make_helix_wire(
-            radius: f64, pitch: f64, height: f64,
-        ) -> Result<UniquePtr<OcctShape>>;
+        fn make_helix_wire(radius: f64, pitch: f64, height: f64) -> Result<UniquePtr<OcctShape>>;
         /// Build a polyline wire from N >= 2 points (flat 3*N coord slice).
         /// Produces N-1 line edges.  Stable kernel FFI primitive: polygon-face
         /// backing wires, multi-segment sweep/pipe paths, and
         /// BRepAdaptor_CompCurve composite-wire testing.
-        fn make_polyline_wire(
-            coords: &[f64], n_points: usize,
-        ) -> Result<UniquePtr<OcctShape>>;
-        fn make_interp_curve(
-            coords: &[f64], n_points: usize,
-        ) -> Result<UniquePtr<OcctShape>>;
-        fn make_bezier_curve(
-            coords: &[f64], n_points: usize,
-        ) -> Result<UniquePtr<OcctShape>>;
+        fn make_polyline_wire(coords: &[f64], n_points: usize) -> Result<UniquePtr<OcctShape>>;
+        fn make_interp_curve(coords: &[f64], n_points: usize) -> Result<UniquePtr<OcctShape>>;
+        fn make_bezier_curve(coords: &[f64], n_points: usize) -> Result<UniquePtr<OcctShape>>;
         fn make_nurbs_curve(
-            pole_coords: &[f64], n_poles: usize,
+            pole_coords: &[f64],
+            n_poles: usize,
             weights: &[f64],
             flat_knots: &[f64],
             degree: i32,
@@ -665,8 +663,7 @@ pub mod ffi {
         /// Uses `BRepExtrema_DistShapeShape(shape, vertex)` where the vertex is
         /// built from the query point. Returns `PointOnShape1(1)` — the witness on
         /// the input shape. Operand ordering matches `min_clearance` / `query_distance`.
-        fn closest_point_on_shape(shape: &OcctShape, px: f64, py: f64, pz: f64)
-            -> Result<Point3>;
+        fn closest_point_on_shape(shape: &OcctShape, px: f64, py: f64, pz: f64) -> Result<Point3>;
 
         /// Test whether the query point `(px, py, pz)` lies on the BREP boundary
         /// (face/edge/vertex) of `shape` within `tolerance`.
@@ -734,10 +731,7 @@ pub mod ffi {
         /// exactly two ancestor faces; degenerate / non-manifold edges may
         /// surface 1 or > 2. Deduplicated; returned ascending. Errors if
         /// `edge_index` is out of range.
-        fn ancestor_faces_of_edge(
-            shape: &OcctShape,
-            edge_index: u32,
-        ) -> Result<Vec<u32>>;
+        fn ancestor_faces_of_edge(shape: &OcctShape, edge_index: u32) -> Result<Vec<u32>>;
 
         /// Classify the underlying surface of a face by its OCCT
         /// `BRepAdaptor_Surface::GetType()` (`GeomAbs_*`) result. Returns a
@@ -814,8 +808,13 @@ pub mod ffi {
         /// location path through `BRepAdaptor_Surface`. See C++ header for full contract.
         fn apply_test_placement_for_test(
             shape: &OcctShape,
-            ax: f64, ay: f64, az: f64, angle_rad: f64,
-            dx: f64, dy: f64, dz: f64,
+            ax: f64,
+            ay: f64,
+            az: f64,
+            angle_rad: f64,
+            dx: f64,
+            dy: f64,
+            dz: f64,
         ) -> Result<UniquePtr<OcctShape>>;
 
         // --- Export ---

@@ -239,7 +239,8 @@ fn non_parametric_alias_scalar_use_site_emits_unresolved_type_diagnostic() {
 /// noise outside the contract under test.
 #[test]
 fn parametric_alias_user_parametric_chain_defers_dfs_diagnostics() {
-    let module = compile_with_stdlib_helper("type Wrapper<T> = List<T>\ntype OuterWrapper<T> = Wrapper<T>");
+    let module =
+        compile_with_stdlib_helper("type Wrapper<T> = List<T>\ntype OuterWrapper<T> = Wrapper<T>");
     // Filter to diagnostics whose message mentions either alias name in the fixture.
     // "OuterWrapper" is a strict superset of "Wrapper" character-wise, but both
     // are caught by the single `contains("Wrapper")` predicate.

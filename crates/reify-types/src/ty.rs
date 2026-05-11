@@ -1398,10 +1398,7 @@ mod tests {
             format!("{}", Type::TraitObject("Material".into())),
             "Material"
         );
-        assert_eq!(
-            format!("{}", Type::TraitObject("Rigid".into())),
-            "Rigid"
-        );
+        assert_eq!(format!("{}", Type::TraitObject("Rigid".into())), "Rigid");
     }
 
     #[test]

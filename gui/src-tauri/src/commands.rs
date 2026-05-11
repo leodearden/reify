@@ -8,7 +8,10 @@ use reify_mcp::{SelectionInfo, SourceLocationInfo};
 
 use crate::claude_bridge::SidecarHandle;
 use crate::engine::EngineSession;
-use crate::types::{DefInfo, EntityIdentity, EntityTreeNode, FileData, GuiState, MechanismDescriptor, PersistentViewState};
+use crate::types::{
+    DefInfo, EntityIdentity, EntityTreeNode, FileData, GuiState, MechanismDescriptor,
+    PersistentViewState,
+};
 use crate::watcher::FileWatcher;
 
 /// Application state shared across all Tauri commands.
@@ -105,9 +108,7 @@ pub fn open_file_engine_impl(
 /// Return the hierarchical entity tree for the currently loaded module.
 ///
 /// Returns an empty vec when no module is loaded.
-pub fn get_entity_tree_impl(
-    engine: &Mutex<EngineSession>,
-) -> Result<Vec<EntityTreeNode>, String> {
+pub fn get_entity_tree_impl(engine: &Mutex<EngineSession>) -> Result<Vec<EntityTreeNode>, String> {
     let s = engine.lock().map_err(|e| format!("Lock error: {}", e))?;
     Ok(s.get_entity_tree())
 }

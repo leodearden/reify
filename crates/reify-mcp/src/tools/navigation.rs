@@ -50,7 +50,13 @@ pub fn register(registry: &mut ToolRegistry) {
 
             match ctx.get_source_location(entity_path) {
                 Ok(loc) => {
-                    ctx.navigate_to_source(&loc.file_path, loc.line, loc.column, loc.end_line, loc.end_column)?;
+                    ctx.navigate_to_source(
+                        &loc.file_path,
+                        loc.line,
+                        loc.column,
+                        loc.end_line,
+                        loc.end_column,
+                    )?;
 
                     Ok(serde_json::json!({
                         "success": true,

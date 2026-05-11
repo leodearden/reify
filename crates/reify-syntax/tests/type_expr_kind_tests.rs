@@ -9,8 +9,15 @@ use reify_syntax::*;
 // ── Local helpers ─────────────────────────────────────────────────
 
 fn parse_single_type_alias(source: &str) -> TypeAliasDecl {
-    let module = reify_syntax::parse(source, reify_types::ModulePath::single("type_expr_kind_test"));
-    assert!(module.errors.is_empty(), "unexpected parse errors: {:?}", module.errors);
+    let module = reify_syntax::parse(
+        source,
+        reify_types::ModulePath::single("type_expr_kind_test"),
+    );
+    assert!(
+        module.errors.is_empty(),
+        "unexpected parse errors: {:?}",
+        module.errors
+    );
     assert_eq!(module.declarations.len(), 1, "expected 1 declaration");
     match module.declarations.into_iter().next().unwrap() {
         Declaration::TypeAlias(ta) => ta,
@@ -40,7 +47,11 @@ fn as_dim_op(te: &TypeExpr) -> (DimOp, &TypeExpr, &TypeExpr) {
 fn type_expr_kind_dimensional_division() {
     let ta = parse_single_type_alias("type Pressure = Force / Area");
     let (op, left, right) = as_dim_op(&ta.type_expr);
-    assert!(matches!(op, DimOp::Div), "expected DimOp::Div, got {:?}", op);
+    assert!(
+        matches!(op, DimOp::Div),
+        "expected DimOp::Div, got {:?}",
+        op
+    );
     let (lname, largs) = as_named(left);
     assert_eq!(lname, "Force");
     assert!(largs.is_empty());
@@ -68,7 +79,11 @@ fn type_expr_kind_named_parameterized() {
 fn type_expr_kind_dimensional_multiplication() {
     let ta = parse_single_type_alias("type Energy = Mass * Length");
     let (op, left, right) = as_dim_op(&ta.type_expr);
-    assert!(matches!(op, DimOp::Mul), "expected DimOp::Mul, got {:?}", op);
+    assert!(
+        matches!(op, DimOp::Mul),
+        "expected DimOp::Mul, got {:?}",
+        op
+    );
     let (lname, _) = as_named(left);
     assert_eq!(lname, "Mass");
     let (rname, _) = as_named(right);
@@ -105,7 +120,10 @@ fn span() -> reify_types::SourceSpan {
 
 fn named_te(name: &str, args: Vec<TypeExpr>) -> TypeExpr {
     TypeExpr {
-        kind: TypeExprKind::Named { name: name.to_owned(), type_args: args },
+        kind: TypeExprKind::Named {
+            name: name.to_owned(),
+            type_args: args,
+        },
         span: span(),
     }
 }
@@ -145,7 +163,11 @@ fn display_named_two_type_args() {
 // (d) DimensionalOp renders as "Left / Right".
 #[test]
 fn display_dimensional_op_div() {
-    let te = dim_op_te(DimOp::Div, named_te("Force", vec![]), named_te("Area", vec![]));
+    let te = dim_op_te(
+        DimOp::Div,
+        named_te("Force", vec![]),
+        named_te("Area", vec![]),
+    );
     assert_eq!(format!("{te}"), "Force / Area");
 }
 
@@ -153,7 +175,11 @@ fn display_dimensional_op_div() {
 #[test]
 fn display_nested_dimensional_op() {
     // (Mass * Length) / Time → "Mass * Length / Time"
-    let inner = dim_op_te(DimOp::Mul, named_te("Mass", vec![]), named_te("Length", vec![]));
+    let inner = dim_op_te(
+        DimOp::Mul,
+        named_te("Mass", vec![]),
+        named_te("Length", vec![]),
+    );
     let te = dim_op_te(DimOp::Div, inner, named_te("Time", vec![]));
     assert_eq!(format!("{te}"), "Mass * Length / Time");
 }

@@ -33,7 +33,10 @@ fn content_hash_preserved_across_identical_evals() {
         .last_content_hash()
         .expect("last_content_hash must be Some after second call");
 
-    assert_eq!(h1, h2, "identical source must produce the same content_hash");
+    assert_eq!(
+        h1, h2,
+        "identical source must produce the same content_hash"
+    );
 }
 
 /// Engine is initialized after a single eval call.

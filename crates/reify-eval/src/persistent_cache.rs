@@ -490,7 +490,8 @@ fn write_f64_slab<W: Write>(w: &mut W, slab: &[f64]) -> io::Result<()> {
         // supported target — no overflow is possible.
         let byte_count = slab.len() * 8;
         let mut buf: Vec<u8> = Vec::new();
-        buf.try_reserve_exact(byte_count).map_err(io::Error::other)?;
+        buf.try_reserve_exact(byte_count)
+            .map_err(io::Error::other)?;
         for v in slab {
             buf.extend_from_slice(&v.to_le_bytes());
         }
@@ -543,16 +544,17 @@ fn read_f64_slab<R: Read>(r: &mut R, len: usize) -> io::Result<Vec<f64>> {
         // memory region as the first `len` MaybeUninit<f64> slots. Materialising
         // &mut [u8] to uninitialised bytes is sound because u8 has no validity
         // invariants; we immediately overwrite every byte via read_exact.
-        let byte_slice: &mut [u8] = unsafe {
-            std::slice::from_raw_parts_mut(spare.as_mut_ptr() as *mut u8, len * 8)
-        };
+        let byte_slice: &mut [u8] =
+            unsafe { std::slice::from_raw_parts_mut(spare.as_mut_ptr() as *mut u8, len * 8) };
         r.read_exact(byte_slice)?;
         // SAFETY: (a) capacity >= len after the successful try_reserve_exact
         // above; (b) all len*8 bytes are now initialised — read_exact returned
         // Ok(()), so every byte in the backing store was written; (c) f64 is
         // Pod / AnyBitPattern so any bit pattern is a valid f64. set_len is
         // only reached on the Ok path, so no partially-uninitialised Vec exists.
-        unsafe { vec.set_len(len); }
+        unsafe {
+            vec.set_len(len);
+        }
     }
     #[cfg(target_endian = "big")]
     {
@@ -560,7 +562,9 @@ fn read_f64_slab<R: Read>(r: &mut R, len: usize) -> io::Result<Vec<f64>> {
             .checked_mul(8)
             .ok_or_else(|| io::Error::other("BE read: f64 slab byte size overflow"))?;
         let mut byte_buf: Vec<u8> = Vec::new();
-        byte_buf.try_reserve_exact(bytes).map_err(io::Error::other)?;
+        byte_buf
+            .try_reserve_exact(bytes)
+            .map_err(io::Error::other)?;
         byte_buf.resize(bytes, 0u8);
         r.read_exact(&mut byte_buf)?;
         vec.extend(decode_f64_slab_from_le_bytes(&byte_buf));
@@ -612,7 +616,11 @@ fn decode_f64_slab_from_le_bytes(bytes: &[u8]) -> impl Iterator<Item = f64> + '_
         bytes.len()
     );
     bytes.chunks_exact(8).map(|chunk| {
-        f64::from_le_bytes(chunk.try_into().expect("chunks_exact(8) yields exactly-8-byte slices"))
+        f64::from_le_bytes(
+            chunk
+                .try_into()
+                .expect("chunks_exact(8) yields exactly-8-byte slices"),
+        )
     })
 }
 
@@ -787,10 +795,7 @@ mod tests {
             iterations: 0,
             solve_time_ms: 9999,
         };
-        assert_eq!(
-            nine_thousand_nine_hundred_ninety_nine.solve_time_ms(),
-            9999
-        );
+        assert_eq!(nine_thousand_nine_hundred_ninety_nine.solve_time_ms(), 9999);
 
         // Pin that the accessor isn't returning a hard-coded constant.
         let zero = ElasticResult {
@@ -854,7 +859,11 @@ mod tests {
         let decoded = ElasticResult::deserialize_from_reader(&mut &buf[..]).unwrap();
         // NaN != NaN under PartialEq, so compare bit-patterns explicitly.
         assert_eq!(decoded.displacement.len(), original.displacement.len());
-        for (d, o) in decoded.displacement.iter().zip(original.displacement.iter()) {
+        for (d, o) in decoded
+            .displacement
+            .iter()
+            .zip(original.displacement.iter())
+        {
             assert_eq!(d.to_bits(), o.to_bits(), "displacement bit pattern drift");
         }
         assert_eq!(decoded.stress.len(), original.stress.len());
@@ -898,9 +907,7 @@ mod tests {
         assert!(
             matches!(
                 kind,
-                io::ErrorKind::UnexpectedEof
-                    | io::ErrorKind::InvalidData
-                    | io::ErrorKind::Other
+                io::ErrorKind::UnexpectedEof | io::ErrorKind::InvalidData | io::ErrorKind::Other
             ),
             "{label}: unexpected io::ErrorKind {kind:?} (full error: {err:?})"
         );
@@ -1081,20 +1088,14 @@ mod tests {
         let displacement: Vec<f64> = (0..n)
             .map(|i| {
                 f64::from_bits(
-                    (i as u64)
-                        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
-                        ^ 0xDEAD_BEEF_CAFE_BABE,
+                    (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xDEAD_BEEF_CAFE_BABE,
                 )
             })
             .collect();
         // Smaller stress vector derived from a different scramble constant so
         // both slab paths are exercised without doubling the allocation.
         let stress: Vec<f64> = (0..1024u64)
-            .map(|i| {
-                f64::from_bits(
-                    i.wrapping_mul(0x6C62_272E_07BB_0142) ^ 0xFEED_FACE_DEAD_BEEF,
-                )
-            })
+            .map(|i| f64::from_bits(i.wrapping_mul(0x6C62_272E_07BB_0142) ^ 0xFEED_FACE_DEAD_BEEF))
             .collect();
         let original = ElasticResult {
             displacement,
@@ -1115,7 +1116,11 @@ mod tests {
         // payloads, signaling-NaN bits, and signed zeros survive the assertion.
         // Reuses the pattern from
         // elastic_result_round_trip_preserves_nan_and_infinity_bit_patterns.
-        for (d, o) in decoded.displacement.iter().zip(original.displacement.iter()) {
+        for (d, o) in decoded
+            .displacement
+            .iter()
+            .zip(original.displacement.iter())
+        {
             assert_eq!(d.to_bits(), o.to_bits(), "displacement bit pattern drift");
         }
         for (d, o) in decoded.stress.iter().zip(original.stress.iter()) {
@@ -1158,8 +1163,8 @@ mod tests {
         // exactly as many bytes as the header occupies, leaving `slice`
         // pointing at the first byte of the slab section.
         let mut slice: &[u8] = &decompressed;
-        let _header: ElasticResultHeader = bincode::deserialize_from(&mut slice)
-            .expect("header must deserialize cleanly");
+        let _header: ElasticResultHeader =
+            bincode::deserialize_from(&mut slice).expect("header must deserialize cleanly");
 
         // Build expected slab: displacement bytes then stress bytes, each
         // value as 8-byte little-endian (unconditionally, regardless of host
@@ -1240,8 +1245,7 @@ mod tests {
         // We request `len=4`, meaning 32 bytes are required, so the short-read
         // fault occurs at the very first element boundary.
         let short = [0u8; 7];
-        let err = read_f64_slab(&mut &short[..], 4)
-            .expect_err("short input must return Err");
+        let err = read_f64_slab(&mut &short[..], 4).expect_err("short input must return Err");
         assert_eq!(
             err.kind(),
             io::ErrorKind::UnexpectedEof,
@@ -1259,7 +1263,10 @@ mod tests {
         write_f64_slab(&mut buf, empty).unwrap();
         assert_eq!(buf.len(), 0, "zero-element slab must produce zero bytes");
         let decoded = read_f64_slab(&mut &buf[..], 0).unwrap();
-        assert!(decoded.is_empty(), "read of zero-length slab must return empty Vec");
+        assert!(
+            decoded.is_empty(),
+            "read of zero-length slab must return empty Vec"
+        );
     }
 
     /// Pins the BE `chunks_exact(8) → f64::from_le_bytes` algorithm host-agnostically
@@ -1371,8 +1378,8 @@ mod tests {
         // Total: 37 bytes.
         let expected: [u8; 37] = [
             0xEF, 0xBE, 0xAD, 0xDE, 0xBE, 0xBA, 0xFE, 0xCA, // max_von_mises_bits LE
-            0x01,                                               // converged = true
-            0x78, 0x56, 0x34, 0x12,                            // iterations LE
+            0x01, // converged = true
+            0x78, 0x56, 0x34, 0x12, // iterations LE
             0xBE, 0xBA, 0xFE, 0xCA, 0xEF, 0xBE, 0xAD, 0xDE, // solve_time_ms LE
             0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // displacement_len = 5
             0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // stress_len = 7
@@ -1387,8 +1394,8 @@ mod tests {
         // Round-trip: decode from the pinned literal back to the original struct.
         // (Cannot use `assert_eq!(decoded, header)` because ElasticResultHeader does
         // not derive PartialEq — six per-field asserts cover the full struct.)
-        let decoded: ElasticResultHeader = bincode::deserialize(&expected[..])
-            .expect("must decode pinned literal");
+        let decoded: ElasticResultHeader =
+            bincode::deserialize(&expected[..]).expect("must decode pinned literal");
         assert_eq!(decoded.max_von_mises_bits, header.max_von_mises_bits);
         assert_eq!(decoded.converged, header.converged);
         assert_eq!(decoded.iterations, header.iterations);
@@ -1422,8 +1429,7 @@ mod tests {
         // any file) would collapse to the all-zeros sentinel. A real build with at
         // least one non-empty contributor cannot collide on this value.
         assert_ne!(
-            ENGINE_VERSION_HASH,
-            "00000000000000000000000000000000",
+            ENGINE_VERSION_HASH, "00000000000000000000000000000000",
             "ENGINE_VERSION_HASH must not be the all-zeros sentinel"
         );
     }
@@ -1459,20 +1465,14 @@ mod tests {
 
         for (ci, contributor) in contributors.iter().enumerate() {
             for bi in 0..contributor.len() {
-                let mut perturbed: Vec<Vec<u8>> = contributors
-                    .iter()
-                    .map(|c| c.to_vec())
-                    .collect();
+                let mut perturbed: Vec<Vec<u8>> = contributors.iter().map(|c| c.to_vec()).collect();
                 perturbed[ci][bi] ^= 0xFF;
-                let perturbed_refs: Vec<&[u8]> =
-                    perturbed.iter().map(|v| v.as_slice()).collect();
+                let perturbed_refs: Vec<&[u8]> = perturbed.iter().map(|v| v.as_slice()).collect();
                 let h = compose_engine_version_hash(&perturbed_refs);
                 assert_ne!(
-                    h,
-                    baseline,
+                    h, baseline,
                     "hash unchanged after flipping byte {} of contributor {}",
-                    bi,
-                    ci
+                    bi, ci
                 );
             }
         }
@@ -1524,8 +1524,7 @@ mod tests {
         // Update this literal deliberately whenever the algorithm changes.
         let h = compose_engine_version_hash(&[b"reify", b"engine"]);
         assert_eq!(
-            h,
-            "30b30882195f8e834bdbd936fa5324e0",
+            h, "30b30882195f8e834bdbd936fa5324e0",
             "algorithm drift detected — update this literal in the same commit"
         );
     }
@@ -1539,7 +1538,8 @@ mod tests {
     // `pub(crate) mod engine_hash_algo;` in `lib.rs`.
 
     #[test]
-    fn walk_contributor_for_a_single_file_root_emits_rerun_path_for_the_file_and_two_framed_parts() {
+    fn walk_contributor_for_a_single_file_root_emits_rerun_path_for_the_file_and_two_framed_parts()
+    {
         use std::io::Write as _;
 
         let mut tmpfile = tempfile::NamedTempFile::new().expect("must create tempfile");
@@ -1570,7 +1570,8 @@ mod tests {
     /// excluded from the hash. DO NOT REMOVE this test without understanding
     /// that consequence.
     #[test]
-    fn walk_contributor_for_a_directory_root_emits_rerun_path_for_the_directory_itself_so_added_files_trigger_rebuild() {
+    fn walk_contributor_for_a_directory_root_emits_rerun_path_for_the_directory_itself_so_added_files_trigger_rebuild()
+     {
         let tmpdir = tempfile::TempDir::new().expect("must create tempdir");
         let dir_path = tmpdir.path().to_path_buf();
         let file_path = dir_path.join("foo.rs");
@@ -1593,7 +1594,8 @@ mod tests {
     }
 
     #[test]
-    fn walk_contributor_for_nested_subdirectories_emits_rerun_paths_for_every_intermediate_directory() {
+    fn walk_contributor_for_nested_subdirectories_emits_rerun_paths_for_every_intermediate_directory()
+     {
         let tmpdir = tempfile::TempDir::new().expect("must create tempdir");
         let root = tmpdir.path().to_path_buf();
         let a = root.join("a");
@@ -1647,15 +1649,17 @@ mod tests {
         // `parts` Vec layout (e.g. if a directory-marker entry were ever
         // interleaved, step_by(2) would silently extract the wrong elements).
         let expected_parts: &[&[u8]] = &[
-            b"root/a.rs", b"// a",
-            b"root/b.rs", b"// b",
-            b"root/c.rs", b"// c",
+            b"root/a.rs",
+            b"// a",
+            b"root/b.rs",
+            b"// b",
+            b"root/c.rs",
+            b"// c",
         ];
         let expected_hash = compose_engine_version_hash(expected_parts);
 
         assert_eq!(
-            hash_from_walk,
-            expected_hash,
+            hash_from_walk, expected_hash,
             "walk_contributor must visit directory entries in sorted (alphabetical) \
              order for byte-determinism across platforms; hash mismatch indicates a \
              sort regression"
@@ -1668,13 +1672,13 @@ mod tests {
     /// either function breaks this test. The pinned hex literal (filled in during
     /// step-6 GREEN) provides a standalone algorithm-drift sentinel.
     #[test]
-    fn walk_contributor_drives_compose_engine_version_hash_end_to_end_for_a_synthetic_two_file_contributor_set() {
+    fn walk_contributor_drives_compose_engine_version_hash_end_to_end_for_a_synthetic_two_file_contributor_set()
+     {
         let tmpdir = tempfile::TempDir::new().expect("must create tempdir");
         let root = tmpdir.path().to_path_buf();
         // Files created in reverse alphabetical order to confirm sorting:
         std::fs::write(root.join("beta.rs"), b"// beta content").expect("must write beta.rs");
-        std::fs::write(root.join("alpha.rs"), b"// alpha content")
-            .expect("must write alpha.rs");
+        std::fs::write(root.join("alpha.rs"), b"// alpha content").expect("must write alpha.rs");
 
         let walk = crate::engine_hash_algo::walk_contributor("mydir", &root);
         let walk_refs: Vec<&[u8]> = walk.parts.iter().map(|v| v.as_slice()).collect();
@@ -1692,8 +1696,7 @@ mod tests {
         let hash_from_manual = compose_engine_version_hash(expected_parts);
 
         assert_eq!(
-            hash_from_walk,
-            hash_from_manual,
+            hash_from_walk, hash_from_manual,
             "walk_contributor output must match manually constructed parts \
              when fed through compose_engine_version_hash"
         );
@@ -1702,8 +1705,7 @@ mod tests {
         // length-prefix scheme, hash primitive, path format, or sort order must
         // update this literal deliberately in the same commit.
         assert_eq!(
-            hash_from_manual,
-            "a2cfd904bb7edc68837b0069bafa3469",
+            hash_from_manual, "a2cfd904bb7edc68837b0069bafa3469",
             "algorithm drift sentinel — update this literal when the \
              length-prefix scheme, hash primitive, or path format changes"
         );
@@ -1734,8 +1736,7 @@ mod tests {
         let root = tmpdir.path().to_path_buf();
 
         // Real source file that must be included.
-        std::fs::write(root.join("clean.rs"), b"// real source")
-            .expect("must write clean.rs");
+        std::fs::write(root.join("clean.rs"), b"// real source").expect("must write clean.rs");
 
         // Editor debris files that must be excluded from the hash and from
         // cargo:rerun-if-changed directives.
@@ -1748,14 +1749,14 @@ mod tests {
         let debris_names = [
             ".foo.swp",
             "bar.swo",
-            "baz.swn",       // vim swap variant (.swn)
+            "baz.swn", // vim swap variant (.swn)
             "qux.orig",
             "quux.bk",
             ".DS_Store",
-            "thumbs.db",     // Windows thumbnail cache (exact-name)
-            "desktop.ini",   // Windows folder settings (exact-name)
+            "thumbs.db",   // Windows thumbnail cache (exact-name)
+            "desktop.ini", // Windows folder settings (exact-name)
             "emacs_backup~",
-            "FOO.SWP",       // uppercase extension — exercises to_lowercase path
+            "FOO.SWP", // uppercase extension — exercises to_lowercase path
         ];
         for name in &debris_names {
             std::fs::write(root.join(name), b"DEBRIS - must not appear in hash")
@@ -1783,8 +1784,7 @@ mod tests {
         let expected_hash = compose_engine_version_hash(expected_parts);
 
         assert_eq!(
-            hash_from_walk,
-            expected_hash,
+            hash_from_walk, expected_hash,
             "walk_contributor must produce the same hash as a hand-constructed \
              parts list containing only the real source file; debris files must \
              not enter the hash input. If this fails, check which debris pattern \
@@ -1813,23 +1813,22 @@ mod tests {
     /// tree — are always silently skipped.
     #[cfg(unix)]
     #[test]
-    fn walk_contributor_skips_symlinks_via_symlink_metadata_so_machine_local_links_do_not_perturb_the_hash() {
+    fn walk_contributor_skips_symlinks_via_symlink_metadata_so_machine_local_links_do_not_perturb_the_hash()
+     {
         use std::os::unix::fs::symlink;
 
         let tmpdir = tempfile::TempDir::new().expect("must create tempdir");
         let root = tmpdir.path().to_path_buf();
 
         // Real contributor file that MUST be included.
-        std::fs::write(root.join("real.rs"), b"// real content")
-            .expect("must write real.rs");
+        std::fs::write(root.join("real.rs"), b"// real content").expect("must write real.rs");
 
         // Create an external file with distinguishable content in a SEPARATE
         // tempdir so it is genuinely outside the walked directory tree.
         // (Placing it under `root` would make the walker visit it directly.)
         let extern_tmpdir = tempfile::TempDir::new().expect("must create extern tempdir");
         let outside_target = extern_tmpdir.path().join("outside.txt");
-        std::fs::write(&outside_target, b"DO NOT INCLUDE")
-            .expect("must write outside target");
+        std::fs::write(&outside_target, b"DO NOT INCLUDE").expect("must write outside target");
 
         // Symlink named `link.rs` points outside the contributor tree.
         let symlink_path = root.join("link.rs");
@@ -1848,9 +1847,10 @@ mod tests {
         // in parts (tested with a sliding window to defeat any framing/length
         // prefix that might split the literal across two Vec<u8> chunks).
         let sentinel = b"DO NOT INCLUDE";
-        let leaked = walk.parts.iter().any(|chunk| {
-            chunk.windows(sentinel.len()).any(|w| w == sentinel)
-        });
+        let leaked = walk
+            .parts
+            .iter()
+            .any(|chunk| chunk.windows(sentinel.len()).any(|w| w == sentinel));
         assert!(
             !leaked,
             "symlink target bytes 'DO NOT INCLUDE' must not appear in walk.parts; \
@@ -1862,9 +1862,10 @@ mod tests {
         // A future regression might frame the symlink's path-key bytes (e.g.
         // `b"root/link.rs"`) without reading the target — the target-bytes check
         // above would still pass, but the hash would silently diverge.
-        let path_key_leaked = walk.parts.iter().any(|chunk| {
-            chunk.windows(b"link.rs".len()).any(|w| w == b"link.rs")
-        });
+        let path_key_leaked = walk
+            .parts
+            .iter()
+            .any(|chunk| chunk.windows(b"link.rs".len()).any(|w| w == b"link.rs"));
         assert!(
             !path_key_leaked,
             "symlink path key bytes 'link.rs' must not appear in walk.parts; \
@@ -1880,8 +1881,7 @@ mod tests {
         let expected_hash = compose_engine_version_hash(expected_parts);
 
         assert_eq!(
-            hash_from_walk,
-            expected_hash,
+            hash_from_walk, expected_hash,
             "walk_contributor hash must equal the hash of the real file only; \
              symlink target bytes must not enter the hash input"
         );
@@ -1898,11 +1898,12 @@ mod tests {
     /// inclusion test (below) proves Cargo.lock is *listed*; this test proves the
     /// algorithm actually *distinguishes* different lock-file revisions.
     #[test]
-    fn walking_workspace_cargo_lock_then_modifying_one_byte_changes_compose_engine_version_hash_output() {
+    fn walking_workspace_cargo_lock_then_modifying_one_byte_changes_compose_engine_version_hash_output()
+     {
         use std::io::Write as _;
 
-        let lock_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../Cargo.lock");
+        let lock_path =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.lock");
         assert!(
             lock_path.exists(),
             "workspace Cargo.lock not found at {}; the test path resolution \
@@ -1914,8 +1915,7 @@ mod tests {
         // Baseline: walk the real workspace Cargo.lock.
         let baseline_walk =
             crate::engine_hash_algo::walk_contributor("../../Cargo.lock", &lock_path);
-        let baseline_refs: Vec<&[u8]> =
-            baseline_walk.parts.iter().map(|v| v.as_slice()).collect();
+        let baseline_refs: Vec<&[u8]> = baseline_walk.parts.iter().map(|v| v.as_slice()).collect();
         let baseline_hash = compose_engine_version_hash(&baseline_refs);
 
         // Mutated copy: flip the first byte of the lock file content.
@@ -1926,20 +1926,20 @@ mod tests {
         mutated_tmpfile
             .write_all(&bytes)
             .expect("must write mutated bytes to tempfile");
-        mutated_tmpfile.flush().expect("must flush mutated tempfile");
+        mutated_tmpfile
+            .flush()
+            .expect("must flush mutated tempfile");
         let mutated_path = mutated_tmpfile.path().to_path_buf();
 
         // Walk the mutated file under the SAME label so the only difference is
         // content, not the path key.
         let mutated_walk =
             crate::engine_hash_algo::walk_contributor("../../Cargo.lock", &mutated_path);
-        let mutated_refs: Vec<&[u8]> =
-            mutated_walk.parts.iter().map(|v| v.as_slice()).collect();
+        let mutated_refs: Vec<&[u8]> = mutated_walk.parts.iter().map(|v| v.as_slice()).collect();
         let mutated_hash = compose_engine_version_hash(&mutated_refs);
 
         assert_ne!(
-            baseline_hash,
-            mutated_hash,
+            baseline_hash, mutated_hash,
             "a one-byte flip in the workspace Cargo.lock must change \
              compose_engine_version_hash output (PRD requirement: any change to \
              the FEA engine — including transitive dep version bumps captured by \

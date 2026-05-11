@@ -26,8 +26,7 @@ fn approx_eq(a: f64, b: f64, tol: f64) -> bool {
 fn linear_1d_two_point_midpoint_is_mean() {
     let grid = [0.0f64, 1.0];
     let values = [10.0f64, 20.0];
-    let r: InterpolationResult =
-        interpolate_1d(InterpolationMethod::Linear, &grid, &values, 0.5);
+    let r: InterpolationResult = interpolate_1d(InterpolationMethod::Linear, &grid, &values, 0.5);
     assert!(approx_eq(r.value, 15.0, TOL), "got {}", r.value);
     assert!(r.diagnostics.is_empty(), "linear emits no diagnostics");
 }
@@ -80,10 +79,18 @@ fn linear_1d_out_of_range_clamps_to_endpoint() {
     let values = [10.0f64, 20.0, 30.0];
 
     let r_below = interpolate_1d(InterpolationMethod::Linear, &grid, &values, -1.5);
-    assert!(approx_eq(r_below.value, 10.0, TOL), "below got {}", r_below.value);
+    assert!(
+        approx_eq(r_below.value, 10.0, TOL),
+        "below got {}",
+        r_below.value
+    );
 
     let r_above = interpolate_1d(InterpolationMethod::Linear, &grid, &values, 99.0);
-    assert!(approx_eq(r_above.value, 30.0, TOL), "above got {}", r_above.value);
+    assert!(
+        approx_eq(r_above.value, 30.0, TOL),
+        "above got {}",
+        r_above.value
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -156,12 +163,10 @@ fn nearest_1d_out_of_range_clamps_to_endpoint() {
     let grid = [0.0f64, 1.0, 2.0];
     let values = [10.0f64, 20.0, 30.0];
 
-    let r_below =
-        interpolate_1d(InterpolationMethod::NearestNeighbor, &grid, &values, -10.0);
+    let r_below = interpolate_1d(InterpolationMethod::NearestNeighbor, &grid, &values, -10.0);
     assert!(approx_eq(r_below.value, 10.0, TOL));
 
-    let r_above =
-        interpolate_1d(InterpolationMethod::NearestNeighbor, &grid, &values, 99.0);
+    let r_above = interpolate_1d(InterpolationMethod::NearestNeighbor, &grid, &values, 99.0);
     assert!(approx_eq(r_above.value, 30.0, TOL));
 }
 
@@ -308,13 +313,7 @@ fn linear_2d_unit_cell_center_is_mean() {
     let gx = [0.0f64, 1.0];
     let gy = [0.0f64, 1.0];
     let values = vec![10.0, 20.0, 30.0, 40.0];
-    let r = interpolate_2d(
-        InterpolationMethod::Linear,
-        &gx,
-        &gy,
-        &values,
-        (0.5, 0.5),
-    );
+    let r = interpolate_2d(InterpolationMethod::Linear, &gx, &gy, &values, (0.5, 0.5));
     let expected = (10.0 + 20.0 + 30.0 + 40.0) / 4.0;
     assert!(approx_eq(r.value, expected, TOL), "got {}", r.value);
 }
@@ -340,13 +339,7 @@ fn linear_2d_separable_against_1d_linear() {
             .collect();
 
         for &qx in &xs {
-            let r2 = interpolate_2d(
-                InterpolationMethod::Linear,
-                &gx,
-                &gy,
-                &values,
-                (qx, qy),
-            );
+            let r2 = interpolate_2d(InterpolationMethod::Linear, &gx, &gy, &values, (qx, qy));
             let r1 = interpolate_1d(InterpolationMethod::Linear, &gx, &row, qx).value;
             assert!(
                 approx_eq(r2.value, r1, 1e-9),
@@ -368,33 +361,15 @@ fn linear_2d_out_of_range_clamps_each_axis() {
     let values = vec![10.0, 20.0, 30.0, 40.0]; // (0,0) (0,1) (1,0) (1,1)
 
     // Below-left corner: clamps to (0,0)
-    let r1 = interpolate_2d(
-        InterpolationMethod::Linear,
-        &gx,
-        &gy,
-        &values,
-        (-5.0, -2.0),
-    );
+    let r1 = interpolate_2d(InterpolationMethod::Linear, &gx, &gy, &values, (-5.0, -2.0));
     assert!(approx_eq(r1.value, 10.0, TOL), "got {}", r1.value);
 
     // Above-right corner: clamps to (1,1)
-    let r2 = interpolate_2d(
-        InterpolationMethod::Linear,
-        &gx,
-        &gy,
-        &values,
-        (10.0, 12.0),
-    );
+    let r2 = interpolate_2d(InterpolationMethod::Linear, &gx, &gy, &values, (10.0, 12.0));
     assert!(approx_eq(r2.value, 40.0, TOL), "got {}", r2.value);
 
     // Mixed: x in range, y above → clamp y to last; lerp in x
-    let r3 = interpolate_2d(
-        InterpolationMethod::Linear,
-        &gx,
-        &gy,
-        &values,
-        (0.5, 10.0),
-    );
+    let r3 = interpolate_2d(InterpolationMethod::Linear, &gx, &gy, &values, (0.5, 10.0));
     let expected = 0.5 * (20.0 + 40.0); // y=1 row: (0,1)=20, (1,1)=40
     assert!(approx_eq(r3.value, expected, TOL), "got {}", r3.value);
 }
@@ -537,13 +512,7 @@ fn cubic_2d_reproduces_total_degree_three_in_interior() {
                 for &dy in &ys {
                     let qx = gx[ci] + dx;
                     let qy = gy[cj] + dy;
-                    let r = interpolate_2d(
-                        InterpolationMethod::Cubic,
-                        &gx,
-                        &gy,
-                        &values,
-                        (qx, qy),
-                    );
+                    let r = interpolate_2d(InterpolationMethod::Cubic, &gx, &gy, &values, (qx, qy));
                     let expected = f(qx, qy);
                     assert!(
                         approx_eq(r.value, expected, 1e-9),
@@ -574,13 +543,7 @@ fn cubic_2d_separable_against_1d_cubic_tensor_product() {
 
     let qs = [(2.3f64, 2.7f64), (2.5, 3.5), (1.1, 4.4)];
     for &(qx, qy) in &qs {
-        let r2 = interpolate_2d(
-            InterpolationMethod::Cubic,
-            &gx,
-            &gy,
-            &values,
-            (qx, qy),
-        );
+        let r2 = interpolate_2d(InterpolationMethod::Cubic, &gx, &gy, &values, (qx, qy));
 
         // Manual tensor product: for each i, compute a 1D cubic along y of
         // column i; this gives a row of length grid_x.len(); then 1D cubic
@@ -694,8 +657,7 @@ fn linear_3d_separable_against_2d_linear_at_constant_z() {
     let gx = vec![0.0f64, 1.0, 3.0];
     let gy = vec![0.0f64, 2.0, 5.0];
     let gz = vec![0.0f64, 1.0, 4.0];
-    let f =
-        |x: f64, y: f64, z: f64| 1.0 + 2.0 * x - 0.5 * y + 0.7 * z + 0.1 * x * y - 0.3 * y * z;
+    let f = |x: f64, y: f64, z: f64| 1.0 + 2.0 * x - 0.5 * y + 0.7 * z + 0.1 * x * y - 0.3 * y * z;
     let values = build_3d(&gx, &gy, &gz, f);
     let nx = gx.len();
     let ny = gy.len();
@@ -724,14 +686,8 @@ fn linear_3d_separable_against_2d_linear_at_constant_z() {
                 &values,
                 (qx, qy, qz),
             );
-            let r2 = interpolate_2d(
-                InterpolationMethod::Linear,
-                &gx,
-                &gy,
-                &slice2d,
-                (qx, qy),
-            )
-            .value;
+            let r2 =
+                interpolate_2d(InterpolationMethod::Linear, &gx, &gy, &slice2d, (qx, qy)).value;
             assert!(
                 approx_eq(r3.value, r2, 1e-9),
                 "({},{},{}): 3D={} vs 2D-on-slice={}",
@@ -1016,13 +972,7 @@ fn linear_2d_4x4_cell_midpoint_is_corner_mean() {
             let v10 = values[(i + 1) * gy.len() + j];
             let v11 = values[(i + 1) * gy.len() + (j + 1)];
             let expected = 0.25 * (v00 + v01 + v10 + v11);
-            let r = interpolate_2d(
-                InterpolationMethod::Linear,
-                &gx,
-                &gy,
-                &values,
-                (qx, qy),
-            );
+            let r = interpolate_2d(InterpolationMethod::Linear, &gx, &gy, &values, (qx, qy));
             assert!(
                 approx_eq(r.value, expected, TOL),
                 "cell ({},{}) got {}, expected {}",
@@ -1077,8 +1027,7 @@ fn deferred_methods_1d_match_linear_and_warn() {
     let grid = [0.0f64, 1.0, 3.0, 6.0];
     let values = [0.0f64, 10.0, 30.0, 90.0];
     let q = 1.7;
-    let expected =
-        interpolate_1d(InterpolationMethod::Linear, &grid, &values, q).value;
+    let expected = interpolate_1d(InterpolationMethod::Linear, &grid, &values, q).value;
     for (method, name) in [
         (InterpolationMethod::Rbf, "RBF"),
         (InterpolationMethod::Kriging, "Kriging"),
@@ -1098,8 +1047,7 @@ fn deferred_methods_2d_match_linear_and_warn() {
     let f = |x: f64, y: f64| 1.0 + 2.0 * x - 0.5 * y + 0.3 * x * y;
     let values = build_2d(&gx, &gy, f);
     let q = (1.4f64, 3.7f64);
-    let expected =
-        interpolate_2d(InterpolationMethod::Linear, &gx, &gy, &values, q).value;
+    let expected = interpolate_2d(InterpolationMethod::Linear, &gx, &gy, &values, q).value;
     for (method, name) in [
         (InterpolationMethod::Rbf, "RBF"),
         (InterpolationMethod::Kriging, "Kriging"),
@@ -1117,12 +1065,10 @@ fn deferred_methods_3d_match_linear_and_warn() {
     let gx = vec![0.0f64, 1.0, 3.0];
     let gy = vec![0.0f64, 2.0, 5.0];
     let gz = vec![0.0f64, 1.0, 4.0];
-    let f =
-        |x: f64, y: f64, z: f64| 1.0 + 2.0 * x - 0.5 * y + 0.7 * z + 0.1 * x * y - 0.3 * y * z;
+    let f = |x: f64, y: f64, z: f64| 1.0 + 2.0 * x - 0.5 * y + 0.7 * z + 0.1 * x * y - 0.3 * y * z;
     let values = build_3d(&gx, &gy, &gz, f);
     let q = (1.4f64, 3.7f64, 2.0f64);
-    let expected =
-        interpolate_3d(InterpolationMethod::Linear, &gx, &gy, &gz, &values, q).value;
+    let expected = interpolate_3d(InterpolationMethod::Linear, &gx, &gy, &gz, &values, q).value;
     for (method, name) in [
         (InterpolationMethod::Rbf, "RBF"),
         (InterpolationMethod::Kriging, "Kriging"),
@@ -1207,12 +1153,16 @@ fn nan_query_3d_returns_nan_with_no_diagnostics() {
             assert!(
                 r.value.is_nan(),
                 "3D {:?} query {:?}: expected NaN, got {}",
-                m, q, r.value
+                m,
+                q,
+                r.value
             );
             assert!(
                 r.diagnostics.is_empty(),
                 "3D {:?} query {:?}: expected empty diagnostics, got {:?}",
-                m, q, r.diagnostics
+                m,
+                q,
+                r.diagnostics
             );
         }
     }
@@ -1226,11 +1176,7 @@ fn nan_query_2d_returns_nan_with_no_diagnostics() {
     let gx = [0.0f64, 1.0, 2.0];
     let gy = [0.0f64, 1.0, 2.0];
     let values = build_2d(&gx, &gy, |x, y| x + y);
-    let queries: &[(f64, f64)] = &[
-        (f64::NAN, 0.5),
-        (0.5, f64::NAN),
-        (f64::NAN, f64::NAN),
-    ];
+    let queries: &[(f64, f64)] = &[(f64::NAN, 0.5), (0.5, f64::NAN), (f64::NAN, f64::NAN)];
     for m in [
         InterpolationMethod::Linear,
         InterpolationMethod::NearestNeighbor,
@@ -1241,12 +1187,16 @@ fn nan_query_2d_returns_nan_with_no_diagnostics() {
             assert!(
                 r.value.is_nan(),
                 "2D {:?} query {:?}: expected NaN, got {}",
-                m, q, r.value
+                m,
+                q,
+                r.value
             );
             assert!(
                 r.diagnostics.is_empty(),
                 "2D {:?} query {:?}: expected empty diagnostics, got {:?}",
-                m, q, r.diagnostics
+                m,
+                q,
+                r.diagnostics
             );
         }
     }
@@ -1268,7 +1218,12 @@ fn nan_query_1d_returns_nan_with_no_diagnostics() {
         InterpolationMethod::Cubic,
     ] {
         let r = interpolate_1d(m, &grid, &values, f64::NAN);
-        assert!(r.value.is_nan(), "1D {:?}: expected NaN, got {}", m, r.value);
+        assert!(
+            r.value.is_nan(),
+            "1D {:?}: expected NaN, got {}",
+            m,
+            r.value
+        );
         assert!(
             r.diagnostics.is_empty(),
             "1D {:?}: expected empty diagnostics, got {:?}",

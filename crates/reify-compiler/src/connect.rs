@@ -15,15 +15,16 @@ pub(crate) fn resolve_port_name(expr: &reify_syntax::Expr) -> Option<String> {
             // branches in `compile_connection` (which skip entity-port
             // lookup and direction checks for refs containing '.') flow
             // unchanged.
-            reify_syntax::ExprKind::IndexAccess { object: inner, index } => {
-                match (&inner.kind, &index.kind) {
-                    (
-                        reify_syntax::ExprKind::Ident(obj_name),
-                        reify_syntax::ExprKind::NumberLiteral { value: n, .. },
-                    ) => Some(format!("{}[{}].{}", obj_name, *n as i64, member)),
-                    _ => None,
-                }
-            }
+            reify_syntax::ExprKind::IndexAccess {
+                object: inner,
+                index,
+            } => match (&inner.kind, &index.kind) {
+                (
+                    reify_syntax::ExprKind::Ident(obj_name),
+                    reify_syntax::ExprKind::NumberLiteral { value: n, .. },
+                ) => Some(format!("{}[{}].{}", obj_name, *n as i64, member)),
+                _ => None,
+            },
             _ => None,
         },
         // Bare indexed sub-component (e.g. `vents[0]`) — also produced by

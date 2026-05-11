@@ -504,15 +504,12 @@ fn extract_faces_then_adjacent_faces_round_trip_box_face_zero() {
             idx
         );
         let usize_idx = usize::try_from(idx).expect("non-negative");
-        let _neighbour_handle = face_handles
-            .get(usize_idx)
-            .copied()
-            .unwrap_or_else(|| {
-                panic!(
-                    "neighbour index {} must map to a handle in extract_faces output (len={})",
-                    idx,
-                    face_handles.len()
-                )
-            });
+        let _neighbour_handle = face_handles.get(usize_idx).copied().unwrap_or_else(|| {
+            panic!(
+                "neighbour index {} must map to a handle in extract_faces output (len={})",
+                idx,
+                face_handles.len()
+            )
+        });
     }
 }

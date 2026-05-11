@@ -13,7 +13,7 @@
 //!
 //! `crates/reify-kernel-openvdb/tests/inventory_registration.rs:1-130`.
 
-use reify_kernel_gmsh::register::{gmsh_capability_descriptor, GMSH_KERNEL_NAME};
+use reify_kernel_gmsh::register::{GMSH_KERNEL_NAME, gmsh_capability_descriptor};
 use reify_types::{CapabilityDescriptor, KernelRegistration, Operation, ReprKind};
 
 /// Gmsh's capability descriptor must enumerate exactly the

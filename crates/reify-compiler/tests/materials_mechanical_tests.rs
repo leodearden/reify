@@ -517,7 +517,12 @@ fn remaining_five_traits_exist() {
 fn four_mechanical_traits_refine_material_spec() {
     let module = load_stdlib_module();
 
-    for trait_name in &["FatigueRated", "FractureTough", "ImpactResistant", "Damping"] {
+    for trait_name in &[
+        "FatigueRated",
+        "FractureTough",
+        "ImpactResistant",
+        "Damping",
+    ] {
         let trait_def = module
             .trait_defs
             .iter()
@@ -551,7 +556,10 @@ fn four_refining_traits_without_material_members_is_conformance_error() {
     // MaterialSpec params deliberately omitted to trigger the conformance error)
     let cases: &[(&str, &str)] = &[
         ("FatigueRated", "    param endurance_limit : Real = 500.0"),
-        ("FractureTough", "    param fracture_toughness : Real = 50.0"),
+        (
+            "FractureTough",
+            "    param fracture_toughness : Real = 50.0",
+        ),
         ("ImpactResistant", "    param impact_energy : Real = 30.0"),
         (
             "Damping",
@@ -606,7 +614,10 @@ fn four_refining_traits_with_all_material_members_conform_cleanly() {
     // (trait_name, trait-specific params to include alongside inherited density/name)
     let cases: &[(&str, &str)] = &[
         ("FatigueRated", "    param endurance_limit : Real = 500.0"),
-        ("FractureTough", "    param fracture_toughness : Real = 50.0"),
+        (
+            "FractureTough",
+            "    param fracture_toughness : Real = 50.0",
+        ),
         ("ImpactResistant", "    param impact_energy : Real = 30.0"),
         (
             "Damping",
@@ -643,7 +654,11 @@ fn four_refining_traits_with_all_material_members_conform_cleanly() {
                     "'{}': expected compiled template named '{}', got templates: {:?}",
                     trait_name,
                     expected_name,
-                    compiled.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
+                    compiled
+                        .templates
+                        .iter()
+                        .map(|t| &t.name)
+                        .collect::<Vec<_>>()
                 )
             });
         assert!(

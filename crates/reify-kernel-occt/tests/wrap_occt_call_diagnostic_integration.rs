@@ -71,11 +71,9 @@ fn zero_axis_moment_of_inertia_produces_standard_failure_prefix() {
                 "Standard_Failure arm must NOT include 'unexpected:' marker, got: {msg:?}"
             );
         }
-        Ok(v) => panic!(
-            "expected Err(QueryFailed) for zero-magnitude axis, got Ok({v:?})"
-        ),
-        Err(other) => panic!(
-            "expected Err(QueryFailed) for zero-magnitude axis, got Err({other:?})"
-        ),
+        Ok(v) => panic!("expected Err(QueryFailed) for zero-magnitude axis, got Ok({v:?})"),
+        Err(other) => {
+            panic!("expected Err(QueryFailed) for zero-magnitude axis, got Err({other:?})")
+        }
     }
 }

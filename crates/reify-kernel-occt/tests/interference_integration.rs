@@ -95,10 +95,7 @@ fn shapes_intersect_returns_false_for_disjoint_boxes() {
 fn min_clearance_between_disjoint_boxes_matches_gap() {
     let (kernel, box_a_id, box_b_id) = two_box_kernel(50.0);
     match kernel.min_clearance(box_a_id, box_b_id) {
-        Ok(d) => assert!(
-            (d - 40.0).abs() < 1e-6,
-            "expected clearance ~40.0, got {d}"
-        ),
+        Ok(d) => assert!((d - 40.0).abs() < 1e-6, "expected clearance ~40.0, got {d}"),
         Err(e) => panic!("expected Ok(~40.0), got Err({e:?})"),
     }
 }

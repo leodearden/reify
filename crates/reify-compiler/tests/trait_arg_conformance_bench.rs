@@ -35,7 +35,10 @@ use reify_types::Severity;
 /// in a `List<Option<MaterialSpec>>` arg.
 fn make_source(n: usize) -> String {
     assert!(n > 0, "make_source requires n >= 1");
-    let list_body = (0..n).map(|_| "some(Steel())").collect::<Vec<_>>().join(", ");
+    let list_body = (0..n)
+        .map(|_| "some(Steel())")
+        .collect::<Vec<_>>()
+        .join(", ");
     format!(
         r#"
         structure def Steel : MaterialSpec {{

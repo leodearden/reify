@@ -31,15 +31,11 @@ const TAU: f64 = std::f64::consts::TAU;
 fn assert_bool_query(kernel: &OcctKernel, q: GeometryQuery, expected: bool, label: &str) {
     match kernel.query(&q) {
         Ok(Value::Bool(got)) if got == expected => {}
-        Ok(Value::Bool(got)) => panic!(
-            "{label}: expected Ok(Bool({expected})), got Ok(Bool({got}))"
-        ),
-        Ok(other) => panic!(
-            "{label}: expected Ok(Bool({expected})), got Ok({other:?})"
-        ),
-        Err(e) => panic!(
-            "{label}: expected Ok(Bool({expected})), got Err({e:?})"
-        ),
+        Ok(Value::Bool(got)) => {
+            panic!("{label}: expected Ok(Bool({expected})), got Ok(Bool({got}))")
+        }
+        Ok(other) => panic!("{label}: expected Ok(Bool({expected})), got Ok({other:?})"),
+        Err(e) => panic!("{label}: expected Ok(Bool({expected})), got Err({e:?})"),
     }
 }
 
@@ -76,9 +72,24 @@ fn box_kernel() -> (OcctKernel, GeometryHandleId) {
 fn box_is_watertight_manifold_orientable() {
     let (kernel, box_id) = box_kernel();
 
-    assert_bool_query(&kernel, GeometryQuery::IsWatertight(box_id), true,  "IsWatertight on box");
-    assert_bool_query(&kernel, GeometryQuery::IsManifold(box_id),   true,  "IsManifold on box");
-    assert_bool_query(&kernel, GeometryQuery::IsOrientable(box_id), true,  "IsOrientable on box");
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsWatertight(box_id),
+        true,
+        "IsWatertight on box",
+    );
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsManifold(box_id),
+        true,
+        "IsManifold on box",
+    );
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsOrientable(box_id),
+        true,
+        "IsOrientable on box",
+    );
 }
 
 /// A stand-alone closed shell extracted from a 10×10×10 mm box (via
@@ -95,9 +106,24 @@ fn closed_shell_passes_all_three_conformance_queries() {
     let mut kernel = OcctKernel::new();
     let shell_id = kernel.store_closed_shell_for_test();
 
-    assert_bool_query(&kernel, GeometryQuery::IsWatertight(shell_id), true,  "IsWatertight on closed shell");
-    assert_bool_query(&kernel, GeometryQuery::IsManifold(shell_id),   true,  "IsManifold on closed shell");
-    assert_bool_query(&kernel, GeometryQuery::IsOrientable(shell_id), true,  "IsOrientable on closed shell");
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsWatertight(shell_id),
+        true,
+        "IsWatertight on closed shell",
+    );
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsManifold(shell_id),
+        true,
+        "IsManifold on closed shell",
+    );
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsOrientable(shell_id),
+        true,
+        "IsOrientable on closed shell",
+    );
 }
 
 /// A `TopAbs_COMPSOLID` containing one 10×10×10 mm box solid passes through
@@ -130,9 +156,19 @@ fn compsolid_passes_through_shape_type_guard() {
          not error or return a non-Bool value; got {wt_result:?}"
     );
     // every edge of the wrapped box has exactly 2 face parents → manifold
-    assert_bool_query(&kernel, GeometryQuery::IsManifold(cs_id),   true, "IsManifold on compsolid");
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsManifold(cs_id),
+        true,
+        "IsManifold on compsolid",
+    );
     // the box's shell is consistently oriented → orientable
-    assert_bool_query(&kernel, GeometryQuery::IsOrientable(cs_id), true, "IsOrientable on compsolid");
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsOrientable(cs_id),
+        true,
+        "IsOrientable on compsolid",
+    );
 }
 
 /// A sphere (radius 5 mm) and a cylinder (radius 3 mm, height 10 mm) are both
@@ -145,13 +181,30 @@ fn sphere_and_cylinder_pass_all_three_conformance_queries() {
 
     // --- sphere (radius 5 mm) ---
     let sphere_h = kernel
-        .execute(&GeometryOp::Sphere { radius: Value::Real(0.005) })
+        .execute(&GeometryOp::Sphere {
+            radius: Value::Real(0.005),
+        })
         .expect("Sphere creation should succeed");
     let sphere_id = sphere_h.id;
 
-    assert_bool_query(&kernel, GeometryQuery::IsWatertight(sphere_id), true, "IsWatertight on sphere");
-    assert_bool_query(&kernel, GeometryQuery::IsManifold(sphere_id),   true, "IsManifold on sphere");
-    assert_bool_query(&kernel, GeometryQuery::IsOrientable(sphere_id), true, "IsOrientable on sphere");
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsWatertight(sphere_id),
+        true,
+        "IsWatertight on sphere",
+    );
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsManifold(sphere_id),
+        true,
+        "IsManifold on sphere",
+    );
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsOrientable(sphere_id),
+        true,
+        "IsOrientable on sphere",
+    );
 
     // --- cylinder (radius 3 mm, height 10 mm) ---
     let cyl_h = kernel
@@ -162,9 +215,24 @@ fn sphere_and_cylinder_pass_all_three_conformance_queries() {
         .expect("Cylinder creation should succeed");
     let cyl_id = cyl_h.id;
 
-    assert_bool_query(&kernel, GeometryQuery::IsWatertight(cyl_id), true, "IsWatertight on cylinder");
-    assert_bool_query(&kernel, GeometryQuery::IsManifold(cyl_id),   true, "IsManifold on cylinder");
-    assert_bool_query(&kernel, GeometryQuery::IsOrientable(cyl_id), true, "IsOrientable on cylinder");
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsWatertight(cyl_id),
+        true,
+        "IsWatertight on cylinder",
+    );
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsManifold(cyl_id),
+        true,
+        "IsManifold on cylinder",
+    );
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsOrientable(cyl_id),
+        true,
+        "IsOrientable on cylinder",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -191,11 +259,26 @@ fn circle_wire_is_not_watertight_but_is_manifold_and_orientable() {
     let wire_id = wire_h.id;
 
     // shape-type guard must fire → false
-    assert_bool_query(&kernel, GeometryQuery::IsWatertight(wire_id), false, "IsWatertight on wire");
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsWatertight(wire_id),
+        false,
+        "IsWatertight on wire",
+    );
     // no edges with 3+ face parents → manifold
-    assert_bool_query(&kernel, GeometryQuery::IsManifold(wire_id),   true,  "IsManifold on wire");
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsManifold(wire_id),
+        true,
+        "IsManifold on wire",
+    );
     // NbLoaded() == 0 → trivially orientable
-    assert_bool_query(&kernel, GeometryQuery::IsOrientable(wire_id), true,  "IsOrientable on wire");
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsOrientable(wire_id),
+        true,
+        "IsOrientable on wire",
+    );
 }
 
 /// A single edge (`TopAbs_EDGE`) hits the shape-type guard in `is_watertight`
@@ -212,11 +295,26 @@ fn edge_is_not_watertight_but_is_manifold_and_orientable() {
     let edge_id = kernel.store_edge_for_test();
 
     // shape-type guard fires → false
-    assert_bool_query(&kernel, GeometryQuery::IsWatertight(edge_id), false, "IsWatertight on edge");
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsWatertight(edge_id),
+        false,
+        "IsWatertight on edge",
+    );
     // isolated edge: no edge→face incidence → trivially manifold
-    assert_bool_query(&kernel, GeometryQuery::IsManifold(edge_id),   true,  "IsManifold on edge");
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsManifold(edge_id),
+        true,
+        "IsManifold on edge",
+    );
     // no shells loaded → NbLoaded() == 0 → trivially orientable
-    assert_bool_query(&kernel, GeometryQuery::IsOrientable(edge_id), true,  "IsOrientable on edge");
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsOrientable(edge_id),
+        true,
+        "IsOrientable on edge",
+    );
 }
 
 /// A single vertex (`TopAbs_VERTEX`) hits the shape-type guard in `is_watertight`
@@ -233,11 +331,26 @@ fn vertex_is_not_watertight_but_is_manifold_and_orientable() {
     let vertex_id = kernel.store_vertex_for_test();
 
     // shape-type guard fires → false
-    assert_bool_query(&kernel, GeometryQuery::IsWatertight(vertex_id), false, "IsWatertight on vertex");
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsWatertight(vertex_id),
+        false,
+        "IsWatertight on vertex",
+    );
     // no edge→face incidence → trivially manifold
-    assert_bool_query(&kernel, GeometryQuery::IsManifold(vertex_id),   true,  "IsManifold on vertex");
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsManifold(vertex_id),
+        true,
+        "IsManifold on vertex",
+    );
     // no shells loaded → NbLoaded() == 0 → trivially orientable
-    assert_bool_query(&kernel, GeometryQuery::IsOrientable(vertex_id), true,  "IsOrientable on vertex");
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsOrientable(vertex_id),
+        true,
+        "IsOrientable on vertex",
+    );
 }
 
 /// A single circle face (`TopAbs_FACE`) is NOT watertight — the shape-type guard
@@ -256,7 +369,12 @@ fn single_face_is_not_watertight() {
     let mut kernel = OcctKernel::new();
     let face_id = kernel.store_circle_face_for_test(0.005, 0.0);
 
-    assert_bool_query(&kernel, GeometryQuery::IsWatertight(face_id), false, "IsWatertight on circle face");
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsWatertight(face_id),
+        false,
+        "IsWatertight on circle face",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -275,9 +393,19 @@ fn nonmanifold_compound_fails_is_manifold() {
     let shape_id = kernel.store_nonmanifold_compound_for_test();
 
     // COMPOUND hits the shape-type guard → always false for watertight
-    assert_bool_query(&kernel, GeometryQuery::IsWatertight(shape_id), false, "IsWatertight on nonmanifold compound");
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsWatertight(shape_id),
+        false,
+        "IsWatertight on nonmanifold compound",
+    );
     // The shared edge has 3 parent faces → manifold check fails
-    assert_bool_query(&kernel, GeometryQuery::IsManifold(shape_id), false, "IsManifold on nonmanifold compound");
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsManifold(shape_id),
+        false,
+        "IsManifold on nonmanifold compound",
+    );
 }
 
 /// A malformed solid built from an open shell (5 faces of a box) causes
@@ -290,7 +418,12 @@ fn malformed_solid_fails_is_watertight() {
     let shape_id = kernel.store_malformed_solid_for_test();
 
     // SOLID passes the guard but BRepCheck_Analyzer reports it as invalid
-    assert_bool_query(&kernel, GeometryQuery::IsWatertight(shape_id), false, "IsWatertight on malformed solid");
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsWatertight(shape_id),
+        false,
+        "IsWatertight on malformed solid",
+    );
 }
 
 /// A shell whose two adjacent faces have the same (rather than opposite) edge
@@ -302,7 +435,12 @@ fn nonorientable_shell_fails_is_orientable() {
     let shape_id = kernel.store_nonorientable_shell_for_test();
 
     // SHELL passes the shape-type guard; the shell has shells loaded → not trivially true
-    assert_bool_query(&kernel, GeometryQuery::IsOrientable(shape_id), false, "IsOrientable on non-orientable shell");
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsOrientable(shape_id),
+        false,
+        "IsOrientable on non-orientable shell",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -319,7 +457,10 @@ fn conformance_query_invalid_handle_returns_invalid_handle_err() {
     // IsWatertight on unknown handle
     match kernel.query(&GeometryQuery::IsWatertight(bad_id)) {
         Err(QueryError::InvalidHandle(id)) => {
-            assert_eq!(id, bad_id, "IsWatertight: InvalidHandle should carry the bad id");
+            assert_eq!(
+                id, bad_id,
+                "IsWatertight: InvalidHandle should carry the bad id"
+            );
         }
         Ok(v) => panic!(
             "IsWatertight with invalid handle: expected Err(InvalidHandle), got Ok({:?})",
@@ -334,7 +475,10 @@ fn conformance_query_invalid_handle_returns_invalid_handle_err() {
     // IsManifold on unknown handle
     match kernel.query(&GeometryQuery::IsManifold(bad_id)) {
         Err(QueryError::InvalidHandle(id)) => {
-            assert_eq!(id, bad_id, "IsManifold: InvalidHandle should carry the bad id");
+            assert_eq!(
+                id, bad_id,
+                "IsManifold: InvalidHandle should carry the bad id"
+            );
         }
         Ok(v) => panic!(
             "IsManifold with invalid handle: expected Err(InvalidHandle), got Ok({:?})",
@@ -349,7 +493,10 @@ fn conformance_query_invalid_handle_returns_invalid_handle_err() {
     // IsOrientable on unknown handle
     match kernel.query(&GeometryQuery::IsOrientable(bad_id)) {
         Err(QueryError::InvalidHandle(id)) => {
-            assert_eq!(id, bad_id, "IsOrientable: InvalidHandle should carry the bad id");
+            assert_eq!(
+                id, bad_id,
+                "IsOrientable: InvalidHandle should carry the bad id"
+            );
         }
         Ok(v) => panic!(
             "IsOrientable with invalid handle: expected Err(InvalidHandle), got Ok({:?})",

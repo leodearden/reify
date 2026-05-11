@@ -4,11 +4,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use reify_types::{
-    AutoParam, ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintNodeId,
-    ConstraintResult, ConstraintSolver, Diagnostic, ExportError, ExportFormat, GeometryError,
-    GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh,
-    BRepKind, OptimizedImpl, OptimizedImplInput, OptimizedImplOutput, QueryError,
-    ResolutionProblem, Satisfaction, SolveResult, TessError, Type, Value, ValueCellId, ValueMap,
+    AutoParam, BRepKind, ConstraintChecker, ConstraintDiagnostics, ConstraintInput,
+    ConstraintNodeId, ConstraintResult, ConstraintSolver, Diagnostic, ExportError, ExportFormat,
+    GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery,
+    Mesh, OptimizedImpl, OptimizedImplInput, OptimizedImplOutput, QueryError, ResolutionProblem,
+    Satisfaction, SolveResult, TessError, Type, Value, ValueCellId, ValueMap,
 };
 
 /// Create an empty `ResolutionProblem` with all fields set to empty/default values.
@@ -585,7 +585,11 @@ fn density_bits(density: f64) -> u64 {
         !density.is_nan(),
         "density is NaN — to_bits would not roundtrip and HashMap lookup would silently miss"
     );
-    if density == 0.0 { 0u64 } else { density.to_bits() }
+    if density == 0.0 {
+        0u64
+    } else {
+        density.to_bits()
+    }
 }
 
 impl QueryKey {
@@ -660,17 +664,14 @@ impl QueryKey {
             GeometryQuery::OwnerBody(id) => QueryKey::OwnerBody(*id),
             // Topology selectors from task 2324 (PRD §3.9). f64 fields hashed
             // via density_bits for ±0.0 canonicalisation + NaN debug-assert.
-            GeometryQuery::ClosestPointOnShape {
-                handle,
-                px,
-                py,
-                pz,
-            } => QueryKey::ClosestPointOnShape {
-                handle: *handle,
-                px_bits: density_bits(*px),
-                py_bits: density_bits(*py),
-                pz_bits: density_bits(*pz),
-            },
+            GeometryQuery::ClosestPointOnShape { handle, px, py, pz } => {
+                QueryKey::ClosestPointOnShape {
+                    handle: *handle,
+                    px_bits: density_bits(*px),
+                    py_bits: density_bits(*py),
+                    pz_bits: density_bits(*pz),
+                }
+            }
             GeometryQuery::PointOnShape {
                 handle,
                 px,
@@ -891,21 +892,13 @@ impl MockGeometryKernel {
     ///
     /// Typically used to inject `QueryError::InvalidHandle(parent)` for
     /// error-propagation tests.
-    pub fn with_extract_edges_error(
-        mut self,
-        parent: GeometryHandleId,
-        err: QueryError,
-    ) -> Self {
+    pub fn with_extract_edges_error(mut self, parent: GeometryHandleId, err: QueryError) -> Self {
         self.extracted_edges.insert(parent, Err(err));
         self
     }
 
     /// Configure `extract_faces(parent)` to return an error.
-    pub fn with_extract_faces_error(
-        mut self,
-        parent: GeometryHandleId,
-        err: QueryError,
-    ) -> Self {
+    pub fn with_extract_faces_error(mut self, parent: GeometryHandleId, err: QueryError) -> Self {
         self.extracted_faces.insert(parent, Err(err));
         self
     }
@@ -1030,11 +1023,7 @@ impl MockGeometryKernel {
     /// [`GeometryQuery::FaceSurfaceKind`]. Decoded by the
     /// `selector_vocabulary_v2::faces_by_surface_kind` selector via
     /// [`reify_types::FaceSurfaceKind`]'s `TryFrom<&str>` impl.
-    pub fn with_face_surface_kind_result(
-        mut self,
-        handle: GeometryHandleId,
-        value: Value,
-    ) -> Self {
+    pub fn with_face_surface_kind_result(mut self, handle: GeometryHandleId, value: Value) -> Self {
         self.typed_queries
             .insert(QueryKey::FaceSurfaceKind(handle), value);
         self
@@ -1049,11 +1038,7 @@ impl MockGeometryKernel {
     /// [`GeometryQuery::EdgeCurveKind`]. Decoded by the
     /// `selector_vocabulary_v2::edges_by_curve_kind` selector via
     /// [`reify_types::EdgeCurveKind`]'s `TryFrom<&str>` impl.
-    pub fn with_edge_curve_kind_result(
-        mut self,
-        handle: GeometryHandleId,
-        value: Value,
-    ) -> Self {
+    pub fn with_edge_curve_kind_result(mut self, handle: GeometryHandleId, value: Value) -> Self {
         self.typed_queries
             .insert(QueryKey::EdgeCurveKind(handle), value);
         self
@@ -1126,10 +1111,8 @@ impl MockGeometryKernel {
         child: GeometryHandleId,
         parent: GeometryHandleId,
     ) -> Self {
-        self.typed_queries.insert(
-            QueryKey::OwnerBody(child),
-            Value::Int(parent.0 as i64),
-        );
+        self.typed_queries
+            .insert(QueryKey::OwnerBody(child), Value::Int(parent.0 as i64));
         self
     }
 
@@ -1139,11 +1122,7 @@ impl MockGeometryKernel {
     /// Mainly useful for defence-in-depth tests asserting the selector
     /// returns `QueryError::QueryFailed` on a non-`Value::Int` payload
     /// (e.g. a `Value::String` from a hypothetical future kernel).
-    pub fn with_owner_body_value(
-        mut self,
-        child: GeometryHandleId,
-        value: Value,
-    ) -> Self {
+    pub fn with_owner_body_value(mut self, child: GeometryHandleId, value: Value) -> Self {
         self.typed_queries.insert(QueryKey::OwnerBody(child), value);
         self
     }
@@ -1492,17 +1471,11 @@ impl CountingMockKernel {
 }
 
 impl GeometryKernel for CountingMockKernel {
-    fn execute(
-        &mut self,
-        op: &GeometryOp,
-    ) -> Result<GeometryHandle, GeometryError> {
+    fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
         self.inner.execute(op)
     }
 
-    fn query(
-        &self,
-        query: &GeometryQuery,
-    ) -> Result<Value, QueryError> {
+    fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
         self.counts.total.fetch_add(1, Ordering::SeqCst);
         match query {
             GeometryQuery::IsWatertight(_) => {
@@ -1519,17 +1492,11 @@ impl GeometryKernel for CountingMockKernel {
         self.inner.query(query)
     }
 
-    fn extract_edges(
-        &mut self,
-        h: GeometryHandleId,
-    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+    fn extract_edges(&mut self, h: GeometryHandleId) -> Result<Vec<GeometryHandleId>, QueryError> {
         self.inner.extract_edges(h)
     }
 
-    fn extract_faces(
-        &mut self,
-        h: GeometryHandleId,
-    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+    fn extract_faces(&mut self, h: GeometryHandleId) -> Result<Vec<GeometryHandleId>, QueryError> {
         self.inner.extract_faces(h)
     }
 
@@ -1542,11 +1509,7 @@ impl GeometryKernel for CountingMockKernel {
         self.inner.export(handle, format, writer)
     }
 
-    fn tessellate(
-        &self,
-        handle: GeometryHandleId,
-        tolerance: f64,
-    ) -> Result<Mesh, TessError> {
+    fn tessellate(&self, handle: GeometryHandleId, tolerance: f64) -> Result<Mesh, TessError> {
         self.inner.tessellate(handle, tolerance)
     }
 }
@@ -1678,8 +1641,8 @@ mod tests {
     use crate::values::{meters, mm2, mm3, point3};
     use reify_types::{CompiledExpr, Type, Value, ValueMap};
     use std::borrow::Cow;
-    use std::sync::atomic::Ordering;
     use std::sync::Barrier;
+    use std::sync::atomic::Ordering;
 
     #[test]
     fn empty_problem_has_all_defaults() {
@@ -2009,8 +1972,16 @@ mod tests {
 
         // Before any calls: both counter_handle and call_count must report 0.
         let counter = solver.counter_handle();
-        assert_eq!(solver.call_count(), 0, "call_count should be 0 before any solve()");
-        assert_eq!(counter.load(Ordering::Relaxed), 0, "handle should be 0 before any solve()");
+        assert_eq!(
+            solver.call_count(),
+            0,
+            "call_count should be 0 before any solve()"
+        );
+        assert_eq!(
+            counter.load(Ordering::Relaxed),
+            0,
+            "handle should be 0 before any solve()"
+        );
 
         // Drive three invocations.
         solver.solve(&problem);
@@ -2018,7 +1989,11 @@ mod tests {
         solver.solve(&problem);
 
         // Both accessors must agree and reflect all three calls.
-        assert_eq!(solver.call_count(), 3, "call_count should be 3 after three solve() calls");
+        assert_eq!(
+            solver.call_count(),
+            3,
+            "call_count should be 3 after three solve() calls"
+        );
         assert_eq!(
             counter.load(Ordering::Relaxed),
             3,
@@ -2839,11 +2814,7 @@ mod tests {
             })
             .unwrap();
 
-        let transforms = vec![
-            [0.02, 0.0, 0.0],
-            [0.0, 0.02, 0.0],
-            [0.02, 0.02, 0.0],
-        ];
+        let transforms = vec![[0.02, 0.0, 0.0], [0.0, 0.02, 0.0], [0.02, 0.02, 0.0]];
         let handle = kernel
             .execute(&GeometryOp::ArbitraryPattern {
                 target: target.id,
@@ -3652,7 +3623,10 @@ mod tests {
                 density: 0.0_f64,
             })
             .unwrap();
-        assert_eq!(result, expected, "insert -0.0 / query +0.0 should hit the same key");
+        assert_eq!(
+            result, expected,
+            "insert -0.0 / query +0.0 should hit the same key"
+        );
 
         // Insert with +0.0, query with -0.0 — symmetric case.
         let kernel =
@@ -3663,7 +3637,10 @@ mod tests {
                 density: -0.0_f64,
             })
             .unwrap();
-        assert_eq!(result, expected, "insert +0.0 / query -0.0 should hit the same key");
+        assert_eq!(
+            result, expected,
+            "insert +0.0 / query -0.0 should hit the same key"
+        );
     }
 
     #[test]
@@ -3676,26 +3653,32 @@ mod tests {
         ]);
 
         // Insert with -0.0, query with +0.0 — must resolve to the same key.
-        let kernel = MockGeometryKernel::new()
-            .with_inertia_tensor_result(id, -0.0_f64, expected.clone());
+        let kernel =
+            MockGeometryKernel::new().with_inertia_tensor_result(id, -0.0_f64, expected.clone());
         let result = kernel
             .query(&GeometryQuery::InertiaTensor {
                 handle: id,
                 density: 0.0_f64,
             })
             .unwrap();
-        assert_eq!(result, expected, "insert -0.0 / query +0.0 should hit the same key");
+        assert_eq!(
+            result, expected,
+            "insert -0.0 / query +0.0 should hit the same key"
+        );
 
         // Insert with +0.0, query with -0.0 — symmetric case.
-        let kernel = MockGeometryKernel::new()
-            .with_inertia_tensor_result(id, 0.0_f64, expected.clone());
+        let kernel =
+            MockGeometryKernel::new().with_inertia_tensor_result(id, 0.0_f64, expected.clone());
         let result = kernel
             .query(&GeometryQuery::InertiaTensor {
                 handle: id,
                 density: -0.0_f64,
             })
             .unwrap();
-        assert_eq!(result, expected, "insert +0.0 / query -0.0 should hit the same key");
+        assert_eq!(
+            result, expected,
+            "insert +0.0 / query -0.0 should hit the same key"
+        );
     }
 
     #[test]
@@ -3709,10 +3692,7 @@ mod tests {
         // Realistic density value
         assert_eq!(super::density_bits(7850.0_f64), 7850.0_f64.to_bits());
         // Non-zero non-special: infinity is a valid f64 bit pattern (not NaN)
-        assert_eq!(
-            super::density_bits(f64::INFINITY),
-            f64::INFINITY.to_bits()
-        );
+        assert_eq!(super::density_bits(f64::INFINITY), f64::INFINITY.to_bits());
     }
 
     #[test]
@@ -3720,8 +3700,7 @@ mod tests {
         let parent = GeometryHandleId(1);
         let e1 = GeometryHandleId(2);
         let e2 = GeometryHandleId(3);
-        let mut kernel = MockGeometryKernel::new()
-            .with_extracted_edges(parent, vec![e1, e2]);
+        let mut kernel = MockGeometryKernel::new().with_extracted_edges(parent, vec![e1, e2]);
         let result = kernel.extract_edges(parent).expect("should return Ok");
         assert_eq!(result, vec![e1, e2]);
     }
@@ -3731,8 +3710,7 @@ mod tests {
         let parent = GeometryHandleId(1);
         let f1 = GeometryHandleId(2);
         let f2 = GeometryHandleId(3);
-        let mut kernel = MockGeometryKernel::new()
-            .with_extracted_faces(parent, vec![f1, f2]);
+        let mut kernel = MockGeometryKernel::new().with_extracted_faces(parent, vec![f1, f2]);
         let result = kernel.extract_faces(parent).expect("should return Ok");
         assert_eq!(result, vec![f1, f2]);
     }
@@ -3811,8 +3789,7 @@ mod tests {
     #[test]
     fn mock_with_edge_length_result_returns_for_edge_length_query() {
         let handle = GeometryHandleId(1);
-        let kernel = MockGeometryKernel::new()
-            .with_edge_length_result(handle, Value::Real(1.5));
+        let kernel = MockGeometryKernel::new().with_edge_length_result(handle, Value::Real(1.5));
         let result = kernel.query(&GeometryQuery::EdgeLength(handle)).unwrap();
         assert_eq!(result, Value::Real(1.5));
     }
@@ -3821,8 +3798,7 @@ mod tests {
     fn mock_with_edge_tangent_result_returns_for_edge_tangent_query() {
         let handle = GeometryHandleId(1);
         let tangent = Value::String("{\"x\":1,\"y\":0,\"z\":0}".into());
-        let kernel = MockGeometryKernel::new()
-            .with_edge_tangent_result(handle, tangent.clone());
+        let kernel = MockGeometryKernel::new().with_edge_tangent_result(handle, tangent.clone());
         let result = kernel.query(&GeometryQuery::EdgeTangent(handle)).unwrap();
         assert_eq!(result, tangent);
     }
@@ -3831,8 +3807,7 @@ mod tests {
     fn mock_with_face_normal_result_returns_for_face_normal_query() {
         let handle = GeometryHandleId(1);
         let normal = Value::String("{\"x\":0,\"y\":0,\"z\":1}".into());
-        let kernel = MockGeometryKernel::new()
-            .with_face_normal_result(handle, normal.clone());
+        let kernel = MockGeometryKernel::new().with_face_normal_result(handle, normal.clone());
         let result = kernel.query(&GeometryQuery::FaceNormal(handle)).unwrap();
         assert_eq!(result, normal);
     }
@@ -3841,8 +3816,11 @@ mod tests {
     fn mock_with_closest_point_on_shape_result_returns_for_query() {
         let handle = GeometryHandleId(1);
         let payload = Value::String("{\"x\":5,\"y\":0,\"z\":0}".into());
-        let kernel = MockGeometryKernel::new()
-            .with_closest_point_on_shape_result(handle, [10.0, 0.0, 0.0], payload.clone());
+        let kernel = MockGeometryKernel::new().with_closest_point_on_shape_result(
+            handle,
+            [10.0, 0.0, 0.0],
+            payload.clone(),
+        );
         let result = kernel
             .query(&GeometryQuery::ClosestPointOnShape {
                 handle,
@@ -3908,8 +3886,7 @@ mod tests {
     #[test]
     fn counting_mock_kernel_total_increments_per_query() {
         let handle = GeometryHandleId(1);
-        let inner = MockGeometryKernel::new()
-            .with_query_result(handle, Value::Bool(true));
+        let inner = MockGeometryKernel::new().with_query_result(handle, Value::Bool(true));
         let kernel = CountingMockKernel::new(inner);
 
         kernel.query(&GeometryQuery::IsWatertight(handle)).unwrap();
@@ -3923,8 +3900,7 @@ mod tests {
     #[test]
     fn counting_mock_kernel_per_variant_counters_track_only_their_variant() {
         let handle = GeometryHandleId(2);
-        let inner = MockGeometryKernel::new()
-            .with_query_result(handle, Value::Bool(true));
+        let inner = MockGeometryKernel::new().with_query_result(handle, Value::Bool(true));
         let kernel = CountingMockKernel::new(inner);
 
         kernel.query(&GeometryQuery::IsWatertight(handle)).unwrap();
@@ -3936,25 +3912,31 @@ mod tests {
         assert_eq!(counts.is_watertight(), 1);
         assert_eq!(counts.is_manifold(), 1);
         assert_eq!(counts.is_orientable(), 1);
-        assert_eq!(counts.total(), 4, "Volume contributes to total but not to any per-variant counter");
+        assert_eq!(
+            counts.total(),
+            4,
+            "Volume contributes to total but not to any per-variant counter"
+        );
     }
 
     #[test]
     fn counting_mock_kernel_query_proxies_inner_result() {
         let handle = GeometryHandleId(3);
-        let inner = MockGeometryKernel::new()
-            .with_query_result(handle, Value::Bool(true));
+        let inner = MockGeometryKernel::new().with_query_result(handle, Value::Bool(true));
         let kernel = CountingMockKernel::new(inner);
 
         let result = kernel.query(&GeometryQuery::IsWatertight(handle)).unwrap();
-        assert_eq!(result, Value::Bool(true), "CountingMockKernel must not change the inner kernel's result");
+        assert_eq!(
+            result,
+            Value::Bool(true),
+            "CountingMockKernel must not change the inner kernel's result"
+        );
     }
 
     #[test]
     fn counting_mock_kernel_counts_arc_survives_kernel_move_into_box() {
         let handle = GeometryHandleId(4);
-        let inner = MockGeometryKernel::new()
-            .with_query_result(handle, Value::Bool(true));
+        let inner = MockGeometryKernel::new().with_query_result(handle, Value::Bool(true));
         let kernel = CountingMockKernel::new(inner);
         let counts = kernel.counts();
 
@@ -3975,8 +3957,7 @@ mod tests {
         // `CountingMockKernel` or the inner `MockGeometryKernel` ever gains
         // an explicit `query_many` override that bypasses `query()`.
         let handle = GeometryHandleId(5);
-        let inner = MockGeometryKernel::new()
-            .with_query_result(handle, Value::Bool(true));
+        let inner = MockGeometryKernel::new().with_query_result(handle, Value::Bool(true));
         let kernel = CountingMockKernel::new(inner);
 
         kernel
@@ -3987,8 +3968,16 @@ mod tests {
             .unwrap();
 
         let counts = kernel.counts();
-        assert_eq!(counts.is_watertight(), 1, "IsWatertight element must be counted");
-        assert_eq!(counts.is_manifold(), 1, "IsManifold element must be counted");
+        assert_eq!(
+            counts.is_watertight(),
+            1,
+            "IsWatertight element must be counted"
+        );
+        assert_eq!(
+            counts.is_manifold(),
+            1,
+            "IsManifold element must be counted"
+        );
         assert_eq!(counts.total(), 2, "both elements contribute to grand total");
     }
 }

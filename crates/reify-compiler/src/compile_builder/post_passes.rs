@@ -13,9 +13,7 @@ use reify_syntax::ParsedModule;
 use reify_types::{ContentHash, Diagnostic, Type};
 
 use crate::compile_builder::ctx::CompilationCtx;
-use crate::functions::{
-    check_field_composition_types, collect_composed_field_dependencies,
-};
+use crate::functions::{check_field_composition_types, collect_composed_field_dependencies};
 use crate::scc;
 use crate::termination::check_recursive_termination;
 use crate::traits::compile_purpose;

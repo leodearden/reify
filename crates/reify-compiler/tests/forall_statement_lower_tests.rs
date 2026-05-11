@@ -34,7 +34,11 @@ fn with_first_forall_connect<R>(
     f: impl FnOnce(&reify_syntax::ForallConnectDecl) -> R,
 ) -> R {
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     for decl in &parsed.declarations {
         if let reify_syntax::Declaration::Structure(s) = decl
             && s.name == structure_name
@@ -60,7 +64,11 @@ fn with_first_forall_constraint<R>(
     f: impl FnOnce(&reify_syntax::ForallConstraintDecl) -> R,
 ) -> R {
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     for decl in &parsed.declarations {
         if let reify_syntax::Declaration::Structure(s) = decl
             && s.name == structure_name
@@ -78,20 +86,14 @@ fn with_first_forall_constraint<R>(
 /// Recover the `MemberDecl::ForallConstraint` span by re-parsing `source`,
 /// finding the structure named `structure_name`, and returning the span of
 /// the first ForallConstraint member encountered. Panics if not found.
-fn find_forall_constraint_span(
-    source: &str,
-    structure_name: &str,
-) -> reify_types::SourceSpan {
+fn find_forall_constraint_span(source: &str, structure_name: &str) -> reify_types::SourceSpan {
     with_first_forall_constraint(source, structure_name, |f| f.span)
 }
 
 /// Recover the `MemberDecl::ForallConnect` span by re-parsing `source`,
 /// finding the structure named `structure_name`, and returning the span of
 /// the first ForallConnect member encountered. Panics if not found.
-fn find_forall_connect_span(
-    source: &str,
-    structure_name: &str,
-) -> reify_types::SourceSpan {
+fn find_forall_connect_span(source: &str, structure_name: &str) -> reify_types::SourceSpan {
     with_first_forall_connect(source, structure_name, |f| f.span)
 }
 
@@ -117,15 +119,10 @@ fn assert_no_forall_connect_emissions(template: &reify_compiler::TopologyTemplat
     let forall_label_count = template
         .constraints
         .iter()
-        .filter(|c| {
-            c.label
-                .as_deref()
-                .is_some_and(|s| s.starts_with("forall@"))
-        })
+        .filter(|c| c.label.as_deref().is_some_and(|s| s.starts_with("forall@")))
         .count();
     assert_eq!(
-        forall_label_count,
-        0,
+        forall_label_count, 0,
         "expected zero forall@* constraint labels (empty/undef-count forall), got {}",
         forall_label_count
     );
@@ -166,9 +163,24 @@ struct Sides {
 }
 
 impl Sides {
-    fn left_only() -> Self { Self { left: true, right: false } }
-    fn right_only() -> Self { Self { left: false, right: true } }
-    fn both() -> Self { Self { left: true, right: true } }
+    fn left_only() -> Self {
+        Self {
+            left: true,
+            right: false,
+        }
+    }
+    fn right_only() -> Self {
+        Self {
+            left: false,
+            right: true,
+        }
+    }
+    fn both() -> Self {
+        Self {
+            left: true,
+            right: true,
+        }
+    }
 }
 
 /// Shared structural assertion helper for the three unsupported-port-shape
@@ -184,11 +196,7 @@ impl Sides {
 ///   `sides.left`, exactly one `"left port shape not supported"`
 ///   label AND its `span` equals `cd.left.expr.span`; otherwise zero.
 ///   Likewise for `sides.right` and `cd.right.expr.span`.
-fn assert_unsupported_port_shape_diagnostic(
-    source: &str,
-    structure_name: &str,
-    sides: Sides,
-) {
+fn assert_unsupported_port_shape_diagnostic(source: &str, structure_name: &str, sides: Sides) {
     use reify_types::Severity;
 
     let module = compile_source(source);
@@ -270,12 +278,10 @@ fn assert_unsupported_port_shape_diagnostic(
         diag.labels
     );
     assert_eq!(
-        primary_labels[0].span,
-        forall_span,
+        primary_labels[0].span, forall_span,
         "primary 'forall connect' label span should equal forall_span; \
          label span = {:?}, expected = {:?}",
-        primary_labels[0].span,
-        forall_span
+        primary_labels[0].span, forall_span
     );
 
     // (f) Per-side label presence/absence with span pinning.
@@ -297,12 +303,10 @@ fn assert_unsupported_port_shape_diagnostic(
     );
     if sides.left {
         assert_eq!(
-            left_labels[0].span,
-            left_expr_span,
+            left_labels[0].span, left_expr_span,
             "left-side label span should equal left expr span; \
              label span = {:?}, expected = {:?}",
-            left_labels[0].span,
-            left_expr_span
+            left_labels[0].span, left_expr_span
         );
     }
 
@@ -323,12 +327,10 @@ fn assert_unsupported_port_shape_diagnostic(
     );
     if sides.right {
         assert_eq!(
-            right_labels[0].span,
-            right_expr_span,
+            right_labels[0].span, right_expr_span,
             "right-side label span should equal right expr span; \
              label span = {:?}, expected = {:?}",
-            right_labels[0].span,
-            right_expr_span
+            right_labels[0].span, right_expr_span
         );
     }
 }
@@ -425,10 +427,7 @@ structure S {
                     ),
                 }
             }
-            other => panic!(
-                "expected BinOp(Gt) for element {}, got {:?}",
-                i, other
-            ),
+            other => panic!("expected BinOp(Gt) for element {}, got {:?}", i, other),
         }
     }
 }
@@ -525,10 +524,7 @@ structure S {
                     ),
                 }
             }
-            other => panic!(
-                "expected BinOp(Lt) for element {}, got {:?}",
-                i, other
-            ),
+            other => panic!("expected BinOp(Lt) for element {}, got {:?}", i, other),
         }
     }
 }
@@ -568,7 +564,11 @@ structure S {
 
     assert_eq!(
         labels,
-        vec!["forall@v[0]".to_string(), "forall@v[1]".to_string(), "forall@v[2]".to_string()],
+        vec![
+            "forall@v[0]".to_string(),
+            "forall@v[1]".to_string(),
+            "forall@v[2]".to_string()
+        ],
         "expected exact labels forall@v[0..3], got {:?}",
         labels
     );
@@ -576,7 +576,10 @@ structure S {
     // Sanity: no two labels should be equal (uniqueness — also implied
     // by the assert above, but pin explicitly so a future label-reuse
     // bug fails this assertion specifically).
-    let unique_count = labels.iter().collect::<std::collections::HashSet<_>>().len();
+    let unique_count = labels
+        .iter()
+        .collect::<std::collections::HashSet<_>>()
+        .len();
     assert_eq!(
         unique_count,
         labels.len(),
@@ -634,11 +637,7 @@ structure S {
     let forall_constraints_count = template
         .constraints
         .iter()
-        .filter(|c| {
-            c.label
-                .as_deref()
-                .is_some_and(|s| s.starts_with("forall@"))
-        })
+        .filter(|c| c.label.as_deref().is_some_and(|s| s.starts_with("forall@")))
         .count();
 
     assert_eq!(
@@ -718,11 +717,7 @@ structure S {
     let forall_constraints_count = template
         .constraints
         .iter()
-        .filter(|c| {
-            c.label
-                .as_deref()
-                .is_some_and(|s| s.starts_with("forall@"))
-        })
+        .filter(|c| c.label.as_deref().is_some_and(|s| s.starts_with("forall@")))
         .count();
     assert_eq!(
         forall_constraints_count, 0,
@@ -839,11 +834,7 @@ structure S {
     let forall_constraints_count = template
         .constraints
         .iter()
-        .filter(|c| {
-            c.label
-                .as_deref()
-                .is_some_and(|s| s.starts_with("forall@"))
-        })
+        .filter(|c| c.label.as_deref().is_some_and(|s| s.starts_with("forall@")))
         .count();
     assert_eq!(
         forall_constraints_count, 0,
@@ -901,7 +892,7 @@ structure S {
 ///     stable substring tying it to the future-scope task.
 #[test]
 fn forall_constraint_inst_body_over_undef_count_collection_sub_skips_capture_with_info_diagnostic()
- {
+{
     use reify_types::Severity;
 
     let source = r#"
@@ -1260,7 +1251,8 @@ structure def S {
         .iter()
         .filter(|d| d.severity == Severity::Info)
         .filter(|d| {
-            d.message.contains("connector type and params are not propagated")
+            d.message
+                .contains("connector type and params are not propagated")
                 || d.message.contains("connector spec dropped")
         })
         .collect();
@@ -1282,8 +1274,7 @@ structure def S {
     // diagnostic's primary label points at it.
     let forall_span = find_forall_connect_span(source, "S");
     let diag = info_diags[0];
-    let label_spans: Vec<reify_types::SourceSpan> =
-        diag.labels.iter().map(|l| l.span).collect();
+    let label_spans: Vec<reify_types::SourceSpan> = diag.labels.iter().map(|l| l.span).collect();
     assert!(
         label_spans.contains(&forall_span),
         "expected diagnostic label span to match the source forall span; \
@@ -1426,14 +1417,11 @@ structure S {
     let top_level_forall = template
         .constraints
         .iter()
-        .filter(|c| {
-            c.label
-                .as_deref()
-                .is_some_and(|s| s.starts_with("forall@"))
-        })
+        .filter(|c| c.label.as_deref().is_some_and(|s| s.starts_with("forall@")))
         .count();
     assert_eq!(
-        top_level_forall, 0,
+        top_level_forall,
+        0,
         "guarded forall constraints must not appear in top-level constraints, got {} \
          (labels: {:?})",
         top_level_forall,
@@ -1545,11 +1533,7 @@ structure S {
     let top_level_forall = template
         .constraints
         .iter()
-        .filter(|c| {
-            c.label
-                .as_deref()
-                .is_some_and(|s| s.starts_with("forall@"))
-        })
+        .filter(|c| c.label.as_deref().is_some_and(|s| s.starts_with("forall@")))
         .count();
     assert_eq!(
         top_level_forall, 0,
@@ -1586,7 +1570,8 @@ structure S {
                     *op,
                     BinOp::Gt,
                     "expected guard_expr BinOp::Gt for group {}, got {:?}",
-                    i, op
+                    i,
+                    op
                 );
                 // left: v.mass → S.vents[i].mass after substitution
                 match &left.kind {
@@ -1595,7 +1580,9 @@ structure S {
                             id.entity,
                             format!("S.vents[{}]", i),
                             "expected guard_expr left.entity == 'S.vents[{}]' for group {}, got {}",
-                            i, i, id.entity
+                            i,
+                            i,
+                            id.entity
                         );
                         assert_eq!(
                             id.member, "mass",
@@ -1678,11 +1665,7 @@ structure S {
     let forall_inst: Vec<_> = template
         .constraints
         .iter()
-        .filter(|c| {
-            c.label
-                .as_deref()
-                .is_some_and(|s| s.contains(":forall@v["))
-        })
+        .filter(|c| c.label.as_deref().is_some_and(|s| s.contains(":forall@v[")))
         .collect();
 
     assert_eq!(
@@ -1745,10 +1728,7 @@ structure S {
                     ),
                 }
             }
-            other => panic!(
-                "expected BinOp(Gt) for element {}, got {:?}",
-                i, other
-            ),
+            other => panic!("expected BinOp(Gt) for element {}, got {:?}", i, other),
         }
     }
 }
@@ -1781,11 +1761,7 @@ structure S {
     let forall_constraints_count = template
         .constraints
         .iter()
-        .filter(|c| {
-            c.label
-                .as_deref()
-                .is_some_and(|s| s.starts_with("forall@"))
-        })
+        .filter(|c| c.label.as_deref().is_some_and(|s| s.starts_with("forall@")))
         .count();
 
     assert_eq!(
@@ -1864,7 +1840,8 @@ structure def S {
             conn.operator,
             reify_syntax::ConnectOp::Forward,
             "expected ConnectOp::Forward for element {}, got {:?}",
-            i, conn.operator
+            i,
+            conn.operator
         );
         assert_eq!(
             conn.span, forall_span,
@@ -1995,7 +1972,8 @@ structure S {
         .iter()
         .filter(|d| {
             d.severity == reify_types::Severity::Error
-                && d.message.contains("cannot iterate over non-collection type")
+                && d.message
+                    .contains("cannot iterate over non-collection type")
         })
         .collect();
     assert_eq!(
@@ -2044,11 +2022,7 @@ structure S {
     let forall_constraints_count = template
         .constraints
         .iter()
-        .filter(|c| {
-            c.label
-                .as_deref()
-                .is_some_and(|s| s.starts_with("forall@"))
-        })
+        .filter(|c| c.label.as_deref().is_some_and(|s| s.starts_with("forall@")))
         .count();
     assert_eq!(
         forall_constraints_count, 0,
@@ -2337,11 +2311,7 @@ structure S {
     let inst_forall_count = template
         .constraints
         .iter()
-        .filter(|c| {
-            c.label
-                .as_deref()
-                .is_some_and(|s| s.contains(":forall@v["))
-        })
+        .filter(|c| c.label.as_deref().is_some_and(|s| s.contains(":forall@v[")))
         .count();
     assert_eq!(
         inst_forall_count, 0,
@@ -2512,7 +2482,11 @@ structure S {
 #[test]
 fn forall_connect_over_undef_count_collection_sub_unsupported_port_shape_emits_info_diagnostic() {
     // (None, Some) arm: left unsupported, right resolves fine.
-    assert_unsupported_port_shape_diagnostic(&make_fixture("v.inner.a", "air_channel"), "S", Sides::left_only());
+    assert_unsupported_port_shape_diagnostic(
+        &make_fixture("v.inner.a", "air_channel"),
+        "S",
+        Sides::left_only(),
+    );
 }
 
 /// `(Some, None)` arm of forall-Connect unsupported-port-shape diagnostic:
@@ -2536,7 +2510,11 @@ fn forall_connect_over_undef_count_collection_sub_unsupported_port_shape_emits_i
 #[test]
 fn forall_connect_over_undef_count_unsupported_right_port_shape_emits_right_label() {
     // (Some, None) arm: left resolves fine, right unsupported.
-    assert_unsupported_port_shape_diagnostic(&make_fixture("air_channel", "v.inner.a"), "S", Sides::right_only());
+    assert_unsupported_port_shape_diagnostic(
+        &make_fixture("air_channel", "v.inner.a"),
+        "S",
+        Sides::right_only(),
+    );
 }
 
 /// `(None, None)` arm of forall-Connect unsupported-port-shape diagnostic: both
@@ -2568,7 +2546,11 @@ fn forall_connect_over_undef_count_unsupported_right_port_shape_emits_right_labe
 #[test]
 fn forall_connect_over_undef_count_unsupported_both_port_shapes_emits_both_labels() {
     // (None, None) arm: both sides unsupported.
-    assert_unsupported_port_shape_diagnostic(&make_fixture("v.inner.a", "v.inner.b"), "S", Sides::both());
+    assert_unsupported_port_shape_diagnostic(
+        &make_fixture("v.inner.a", "v.inner.b"),
+        "S",
+        Sides::both(),
+    );
 }
 
 /// `forall v in vents: connect v.inlet <-> air_channel` over a 3-element
@@ -2640,7 +2622,8 @@ structure def S {
             conn.operator,
             reify_syntax::ConnectOp::Bidirectional,
             "expected ConnectOp::Bidirectional for element {}, got {:?}",
-            i, conn.operator
+            i,
+            conn.operator
         );
         assert_eq!(
             conn.span, forall_span,

@@ -1550,14 +1550,18 @@ mod tests {
     /// branch without this table catching it.
     #[test]
     fn determine_context_at_sampled_positions() {
-        let check = |source: &str,
-                     pos: Position,
-                     label: &str,
-                     matcher: fn(&CursorContext) -> bool| {
-            let ctx = AnalysisContext::new(source, &test_uri());
-            let result = determine_context(source, pos, &ctx);
-            assert!(matcher(&result), "expected {} @ {:?}, got {:?}", label, pos, result);
-        };
+        let check =
+            |source: &str, pos: Position, label: &str, matcher: fn(&CursorContext) -> bool| {
+                let ctx = AnalysisContext::new(source, &test_uri());
+                let result = determine_context(source, pos, &ctx);
+                assert!(
+                    matcher(&result),
+                    "expected {} @ {:?}, got {:?}",
+                    label,
+                    pos,
+                    result
+                );
+            };
         // (a) bracket_source() @ Position(1,0) → StructureBody
         check(
             reify_test_support::bracket_source(),

@@ -334,21 +334,13 @@ pub mod warm_state;
 
 pub use assembly::{
     AssemblyElement, AssemblyMode, ElementOrder, ElementStiffness, assemble_global_stiffness,
-    element_stiffness,
-    hex::element_stiffness_hex_p1,
-    wedge::element_stiffness_wedge_p1,
+    element_stiffness, hex::element_stiffness_hex_p1, wedge::element_stiffness_wedge_p1,
 };
 pub use boundary::{
     DirichletBc, FaceOrder, apply_body_force, apply_dirichlet_row_elimination, apply_point_load,
     apply_traction_load,
 };
 pub use constitutive::IsotropicElastic;
-pub use mpc::{MpcRow, apply_mpc_row_elimination};
-pub use progressive::{
-    AdvanceDecision, PartialElasticResult, PassTuning, ProgressiveOptions, RefinementDemand,
-    TerminationReason, coarse_pass_tuning, near_constraint_boundary, refinement_pass_tuning,
-    should_refine,
-};
 pub use elements::{
     Jacobian, QuadraturePoint, ReferenceCoord, ReferenceElement,
     hex_p1::HexP1,
@@ -357,18 +349,22 @@ pub use elements::{
     tet_p2::TetP2,
     wedge_p1::WedgeP1,
 };
-pub use shell_assembly::{ShellFrame, build_shell_frame, plane_stress_d, shell_element_stiffness};
-pub use shell_boundary::{
-    SupportBodyKind, SupportCompatibility, SupportKind, build_support_bcs,
+pub use interpolation::{
+    LocatableTet, barycentric_p1, interpolate_p1_at_point, locate_element_p1, point_in_tet_p1,
 };
+pub use mpc::{MpcRow, apply_mpc_row_elimination};
+pub use progressive::{
+    AdvanceDecision, PartialElasticResult, PassTuning, ProgressiveOptions, RefinementDemand,
+    TerminationReason, coarse_pass_tuning, near_constraint_boundary, refinement_pass_tuning,
+    should_refine,
+};
+pub use result::{StressElement, element_stress_p1, recover_nodal_stress_p1, tet_volume_p1};
+pub use shell_assembly::{ShellFrame, build_shell_frame, plane_stress_d, shell_element_stiffness};
+pub use shell_boundary::{SupportBodyKind, SupportCompatibility, SupportKind, build_support_bcs};
 pub use shell_kinematics::{ShellKinematics, shell_kinematics};
 pub use shell_result::{
     ShellElementStress, ShellStress, shell_element_frame, shell_element_stress,
 };
-pub use interpolation::{
-    LocatableTet, barycentric_p1, interpolate_p1_at_point, locate_element_p1, point_in_tet_p1,
-};
-pub use result::{StressElement, element_stress_p1, recover_nodal_stress_p1, tet_volume_p1};
 // Task 2996: Z-Z error indicator — kernel-layer a-posteriori error estimator.
 // PRD: docs/prds/v0_4/a-posteriori-error-estimation.md, Task decomposition #1.
 pub use error_estimator::{ZzIndicator, compute_zz_indicator};
@@ -380,8 +376,8 @@ pub use warm_state::{CgWarmState, solve_cg_with_warm_state};
 // (task 2988 sweep step, task 2989 eval-side wiring) can reach them via
 // `reify_solver_elastic::*` without descending into the `mesher` module.
 pub use mesher::{
-    auto_mesh_size_from_boundary, compute_quad_skew, mesh_swept_profile_2d, recombine_quality_ok,
     Mesh2d, Mesh2dError, Mesh2dOptions, Mesh2dReport, ProfileBoundary, SweepElementTarget,
+    auto_mesh_size_from_boundary, compute_quad_skew, mesh_swept_profile_2d, recombine_quality_ok,
 };
 // Task 2988: sweep step — 2D mesh × K layers → 3D wedge/hex connectivity.
 // PRD reference: docs/prds/v0_3/hex-wedge-meshing.md task #7.

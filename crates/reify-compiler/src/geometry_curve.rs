@@ -20,7 +20,13 @@ pub(crate) fn compile_curve_op(
     match name {
         // line_segment(x1, y1, z1, x2, y2, z2)
         "line_segment" => {
-            if !check_arg_count_exact("line_segment", compiled_args.len(), 6, expr_span, diagnostics) {
+            if !check_arg_count_exact(
+                "line_segment",
+                compiled_args.len(),
+                6,
+                expr_span,
+                diagnostics,
+            ) {
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -155,12 +161,25 @@ mod tests {
     fn compile_curve_op_line_segment_direct() {
         let args: Vec<CompiledExpr> = (1..=6).map(|i| scalar_literal(i as f64)).collect();
         let mut diagnostics: Vec<Diagnostic> = vec![];
-        let result = compile_curve_op("line_segment", args.clone(), SourceSpan::new(0, 0), &mut diagnostics, vec![]);
-        assert!(diagnostics.is_empty(), "unexpected diagnostics: {:?}", diagnostics);
+        let result = compile_curve_op(
+            "line_segment",
+            args.clone(),
+            SourceSpan::new(0, 0),
+            &mut diagnostics,
+            vec![],
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            diagnostics
+        );
         let ops = result.expect("compile_curve_op line_segment should return Some");
         assert_eq!(ops.len(), 1);
         match &ops[0] {
-            CompiledGeometryOp::Curve { kind: CurveKind::LineSegment, args: op_args } => {
+            CompiledGeometryOp::Curve {
+                kind: CurveKind::LineSegment,
+                args: op_args,
+            } => {
                 let names: Vec<&str> = op_args.iter().map(|(n, _)| n.as_str()).collect();
                 assert_eq!(names, vec!["x1", "y1", "z1", "x2", "y2", "z2"]);
                 assert_eq!(op_args.len(), 6);
@@ -196,16 +215,32 @@ mod tests {
         }];
         let args: Vec<CompiledExpr> = (1..=6).map(|i| scalar_literal(i as f64)).collect();
         let mut diagnostics: Vec<Diagnostic> = vec![];
-        let result = compile_curve_op("line_segment", args, SourceSpan::new(0, 0), &mut diagnostics, marker_sub_ops);
-        assert!(diagnostics.is_empty(), "unexpected diagnostics: {:?}", diagnostics);
+        let result = compile_curve_op(
+            "line_segment",
+            args,
+            SourceSpan::new(0, 0),
+            &mut diagnostics,
+            marker_sub_ops,
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            diagnostics
+        );
         let ops = result.expect("compile_curve_op line_segment should return Some");
         assert_eq!(ops.len(), 2);
         match &ops[0] {
-            CompiledGeometryOp::Primitive { kind: PrimitiveKind::Sphere, .. } => {}
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Sphere,
+                ..
+            } => {}
             other => panic!("expected Primitive(Sphere) at index 0, got {:?}", other),
         }
         match &ops[1] {
-            CompiledGeometryOp::Curve { kind: CurveKind::LineSegment, .. } => {}
+            CompiledGeometryOp::Curve {
+                kind: CurveKind::LineSegment,
+                ..
+            } => {}
             other => panic!("expected Curve(LineSegment) at index 1, got {:?}", other),
         }
     }

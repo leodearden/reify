@@ -355,7 +355,10 @@ fn parse_outbound_tool_call_without_tool_use_id_defaults_to_empty() {
             );
         }
         Ok(other) => panic!("Expected ToolCall, got {:?}", other),
-        Err(e) => panic!("Expected Ok(ToolCall with empty tool_use_id), got Err: {}", e),
+        Err(e) => panic!(
+            "Expected Ok(ToolCall with empty tool_use_id), got Err: {}",
+            e
+        ),
     }
 }
 
@@ -541,8 +544,7 @@ async fn from_parts_with_mcp_intercepts_reify_tool_calls() {
     );
 
     // Inject a reify_ tool_call from simulated sidecar stdout
-    let tool_call =
-        r#"{"type":"tool_call","id":"msg-1","tool_name":"reify_get_diagnostics","tool_input":{},"tool_use_id":"tu-diag"}"#;
+    let tool_call = r#"{"type":"tool_call","id":"msg-1","tool_name":"reify_get_diagnostics","tool_input":{},"tool_use_id":"tu-diag"}"#;
     stdout_writer
         .write_all(format!("{}\n", tool_call).as_bytes())
         .await
@@ -580,8 +582,10 @@ async fn from_parts_with_mcp_intercepts_reify_tool_calls() {
         written
     );
     assert_eq!(json_val["tool_name"], "reify_get_diagnostics");
-    assert_eq!(json_val["tool_use_id"], "tu-diag",
-        "tool_use_id must be echoed from the tool_call outbound");
+    assert_eq!(
+        json_val["tool_use_id"], "tu-diag",
+        "tool_use_id must be echoed from the tool_call outbound"
+    );
 
     drop(stdout_writer);
 }
@@ -625,8 +629,7 @@ async fn from_parts_with_mcp_threads_selection_into_tool_result() {
     );
 
     // Inject a reify_get_selection tool_call
-    let tool_call =
-        r#"{"type":"tool_call","id":"msg-sel","tool_name":"reify_get_selection","tool_input":{},"tool_use_id":"tu-sel"}"#;
+    let tool_call = r#"{"type":"tool_call","id":"msg-sel","tool_name":"reify_get_selection","tool_input":{},"tool_use_id":"tu-sel"}"#;
     stdout_writer
         .write_all(format!("{}\n", tool_call).as_bytes())
         .await
@@ -652,8 +655,10 @@ async fn from_parts_with_mcp_threads_selection_into_tool_result() {
         written
     );
     assert_eq!(json_val["tool_name"], "reify_get_selection");
-    assert_eq!(json_val["tool_use_id"], "tu-sel",
-        "tool_use_id must be echoed from the tool_call outbound");
+    assert_eq!(
+        json_val["tool_use_id"], "tu-sel",
+        "tool_use_id must be echoed from the tool_call outbound"
+    );
 
     let selection_result = &json_val["result"];
     assert_eq!(
@@ -718,8 +723,7 @@ async fn from_parts_with_mcp_wires_event_emitter_into_tool_context() {
     let notified = notify.notified();
 
     // Inject a reify_focus_entity tool_call from simulated sidecar stdout
-    let tool_call =
-        r#"{"type":"tool_call","id":"msg-focus","tool_name":"reify_focus_entity","tool_input":{"entity_path":"Bracket"},"tool_use_id":"tu-focus"}"#;
+    let tool_call = r#"{"type":"tool_call","id":"msg-focus","tool_name":"reify_focus_entity","tool_input":{"entity_path":"Bracket"},"tool_use_id":"tu-focus"}"#;
     stdout_writer
         .write_all(format!("{}\n", tool_call).as_bytes())
         .await
@@ -745,10 +749,8 @@ async fn from_parts_with_mcp_wires_event_emitter_into_tool_context() {
     {
         let emitted = events.lock().unwrap();
         assert!(
-            emitted
-                .iter()
-                .any(|(name, payload)| name == "focus-entity"
-                    && payload == &serde_json::json!("Bracket")),
+            emitted.iter().any(|(name, payload)| name == "focus-entity"
+                && payload == &serde_json::json!("Bracket")),
             "Expected focus-entity event with payload \"Bracket\" in sink, got: {:?}",
             emitted
                 .iter()
@@ -802,8 +804,7 @@ async fn tool_result_write_failure_emits_claude_error_event() {
     // Inject a reify_ tool_call from simulated sidecar stdout.
     // The MCP handler will try to write the tool_result back to stdin_writer,
     // which will fail because stdin_reader was dropped.
-    let tool_call =
-        r#"{"type":"tool_call","id":"msg-fail","tool_name":"reify_get_diagnostics","tool_input":{},"tool_use_id":"tu-fail"}"#;
+    let tool_call = r#"{"type":"tool_call","id":"msg-fail","tool_name":"reify_get_diagnostics","tool_input":{},"tool_use_id":"tu-fail"}"#;
     stdout_writer
         .write_all(format!("{}\n", tool_call).as_bytes())
         .await
@@ -1062,7 +1063,9 @@ async fn sidecar_handle_abort_short_circuits_when_state_is_crashed() {
     assert!(
         read_result.is_err(),
         "expected no write to stdin when state is Crashed, but read bytes: {:?}",
-        read_result.map(|r| r.map(|n| std::str::from_utf8(&buf[..n]).unwrap_or("<invalid utf8>").to_string()))
+        read_result.map(|r| r.map(|n| std::str::from_utf8(&buf[..n])
+            .unwrap_or("<invalid utf8>")
+            .to_string()))
     );
 }
 
@@ -1096,7 +1099,9 @@ async fn sidecar_handle_abort_short_circuits_when_state_is_not_started() {
     assert!(
         read_result.is_err(),
         "expected no write to stdin when state is NotStarted, but read bytes: {:?}",
-        read_result.map(|r| r.map(|n| std::str::from_utf8(&buf[..n]).unwrap_or("<invalid utf8>").to_string()))
+        read_result.map(|r| r.map(|n| std::str::from_utf8(&buf[..n])
+            .unwrap_or("<invalid utf8>")
+            .to_string()))
     );
 }
 
@@ -1395,7 +1400,11 @@ async fn read_sidecar_output_warns_when_tool_call_missing_tool_use_id() {
 
     // (a) Message was delivered (not silently dropped).
     let msgs = received.lock().unwrap();
-    assert_eq!(msgs.len(), 1, "stale ToolCall must be delivered to on_message");
+    assert_eq!(
+        msgs.len(),
+        1,
+        "stale ToolCall must be delivered to on_message"
+    );
     assert!(
         matches!(
             &msgs[0],
@@ -1578,7 +1587,10 @@ fn outbound_to_event_notice() {
     assert_eq!(name, "claude-notice");
     assert_eq!(payload["id"], "msg-6");
     assert_eq!(payload["code"], "degraded_turn_boundary");
-    assert_eq!(payload["message"], "assistant event missing message.id; turn-boundary detection disabled");
+    assert_eq!(
+        payload["message"],
+        "assistant event missing message.id; turn-boundary detection disabled"
+    );
 }
 
 #[test]
@@ -1958,8 +1970,10 @@ fn format_inbound_tool_result_includes_tool_use_id() {
     assert_eq!(json_val["type"], "tool_result");
     assert_eq!(json_val["id"], "msg-tr1");
     assert_eq!(json_val["tool_name"], "reify_get_diagnostics");
-    assert_eq!(json_val["tool_use_id"], "tu-echo-1",
-        "tool_use_id must be echoed so the sidecar can use id-based correlation");
+    assert_eq!(
+        json_val["tool_use_id"], "tu-echo-1",
+        "tool_use_id must be echoed so the sidecar can use id-based correlation"
+    );
 }
 
 // --- shutdown_sidecar edge-case tests (task-353/step-1) ---
@@ -2900,9 +2914,18 @@ fn inbound_permission_decision_minimal_serializes() {
     assert_eq!(json_val["request_id"], "r1");
     assert_eq!(json_val["behavior"], "allow");
     // None fields must be absent — skip_serializing_if = Option::is_none
-    assert!(json_val.get("message").is_none(), "None message should be absent");
-    assert!(json_val.get("updated_input").is_none(), "None updated_input should be absent");
-    assert!(json_val.get("remember").is_none(), "None remember should be absent");
+    assert!(
+        json_val.get("message").is_none(),
+        "None message should be absent"
+    );
+    assert!(
+        json_val.get("updated_input").is_none(),
+        "None updated_input should be absent"
+    );
+    assert!(
+        json_val.get("remember").is_none(),
+        "None remember should be absent"
+    );
 }
 
 /// (b) InboundMessage::PermissionDecision with all optional fields present serializes all.
@@ -3017,9 +3040,18 @@ async fn claude_permission_decision_impl_writes_json_when_ready() {
     assert_eq!(json_val["request_id"], "r1");
     assert_eq!(json_val["behavior"], "allow");
     // None fields must be absent (skip_serializing_if = Option::is_none)
-    assert!(json_val.get("message").is_none(), "None message must be absent from wire");
-    assert!(json_val.get("updated_input").is_none(), "None updated_input must be absent from wire");
-    assert!(json_val.get("remember").is_none(), "None remember must be absent from wire");
+    assert!(
+        json_val.get("message").is_none(),
+        "None message must be absent from wire"
+    );
+    assert!(
+        json_val.get("updated_input").is_none(),
+        "None updated_input must be absent from wire"
+    );
+    assert!(
+        json_val.get("remember").is_none(),
+        "None remember must be absent from wire"
+    );
 }
 
 /// (d) All optional fields present in the decision are forwarded to the wire.
@@ -3115,7 +3147,7 @@ async fn make_ready_handle_stays_ready_on_multi_thread() {
 // --- workspace_resolution tests (task 3210 step-13) ---
 
 mod workspace_resolution {
-    use crate::claude_bridge::{resolve_workspace_dir, MessageContext};
+    use crate::claude_bridge::{MessageContext, resolve_workspace_dir};
     use std::path::{Path, PathBuf};
 
     fn ctx_with_file(path: &str) -> MessageContext {
@@ -3212,7 +3244,10 @@ mod sidecar_env {
             reify_ws,
             Some(&("REIFY_WORKSPACE".to_string(), "/ws".to_string()))
         );
-        assert!(reify_le.is_none(), "REIFY_LANDLOCK_EXEC should not appear when None");
+        assert!(
+            reify_le.is_none(),
+            "REIFY_LANDLOCK_EXEC should not appear when None"
+        );
     }
 
     #[test]
@@ -3244,9 +3279,16 @@ mod apply_sidecar_env_tests {
         let envs: Vec<_> = cmd
             .as_std()
             .get_envs()
-            .map(|(k, v)| (k.to_string_lossy().into_owned(), v.map(|v| v.to_string_lossy().into_owned())))
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
             .collect();
-        let has_ws = envs.iter().any(|(k, v)| k == "REIFY_WORKSPACE" && v.as_deref() == Some("/ws"));
+        let has_ws = envs
+            .iter()
+            .any(|(k, v)| k == "REIFY_WORKSPACE" && v.as_deref() == Some("/ws"));
         let has_le = envs.iter().any(|(k, _)| k == "REIFY_LANDLOCK_EXEC");
         assert!(has_ws, "REIFY_WORKSPACE=/ws should be set: {:?}", envs);
         assert!(!has_le, "REIFY_LANDLOCK_EXEC should not be set: {:?}", envs);
@@ -3259,12 +3301,25 @@ mod apply_sidecar_env_tests {
         let envs: Vec<_> = cmd
             .as_std()
             .get_envs()
-            .map(|(k, v)| (k.to_string_lossy().into_owned(), v.map(|v| v.to_string_lossy().into_owned())))
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
             .collect();
-        let has_ws = envs.iter().any(|(k, v)| k == "REIFY_WORKSPACE" && v.as_deref() == Some("/ws"));
-        let has_le = envs.iter().any(|(k, v)| k == "REIFY_LANDLOCK_EXEC" && v.as_deref() == Some("/sb/le.py"));
+        let has_ws = envs
+            .iter()
+            .any(|(k, v)| k == "REIFY_WORKSPACE" && v.as_deref() == Some("/ws"));
+        let has_le = envs
+            .iter()
+            .any(|(k, v)| k == "REIFY_LANDLOCK_EXEC" && v.as_deref() == Some("/sb/le.py"));
         assert!(has_ws, "REIFY_WORKSPACE=/ws should be set: {:?}", envs);
-        assert!(has_le, "REIFY_LANDLOCK_EXEC=/sb/le.py should be set: {:?}", envs);
+        assert!(
+            has_le,
+            "REIFY_LANDLOCK_EXEC=/sb/le.py should be set: {:?}",
+            envs
+        );
     }
 }
 

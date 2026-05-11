@@ -102,7 +102,13 @@ pub(crate) fn run_element_stiffness_tests(
     make_phys: &dyn Fn(f64) -> Vec<[f64; 3]>,
     spec: ElementStiffnessTestSpec,
 ) {
-    let ElementStiffnessTestSpec { n_nodes, vol_ref, centroid, swap_pair, vol_swapped } = spec;
+    let ElementStiffnessTestSpec {
+        n_nodes,
+        vol_ref,
+        centroid,
+        swap_pair,
+        vol_swapped,
+    } = spec;
     let n_dofs = 3 * n_nodes;
     let mat = dimensionless_steel_like();
     let phys1 = make_phys(1.0);
@@ -148,12 +154,8 @@ pub(crate) fn run_element_stiffness_tests(
         omega[axis] = 1.0;
         let mut u = vec![0.0; n_dofs];
         for (node, x) in phys1.iter().enumerate() {
-            let dx = [
-                x[0] - centroid[0],
-                x[1] - centroid[1],
-                x[2] - centroid[2],
-            ];
-            u[3 * node]     = omega[1] * dx[2] - omega[2] * dx[1];
+            let dx = [x[0] - centroid[0], x[1] - centroid[1], x[2] - centroid[2]];
+            u[3 * node] = omega[1] * dx[2] - omega[2] * dx[1];
             u[3 * node + 1] = omega[2] * dx[0] - omega[0] * dx[2];
             u[3 * node + 2] = omega[0] * dx[1] - omega[1] * dx[0];
         }
@@ -172,7 +174,7 @@ pub(crate) fn run_element_stiffness_tests(
         let (a, b, c) = (0.01_f64, -0.005, 0.003);
         let mut u = vec![0.0; n_dofs];
         for (ni, x) in phys1.iter().enumerate() {
-            u[3 * ni]     = a * x[0];
+            u[3 * ni] = a * x[0];
             u[3 * ni + 1] = b * x[1];
             u[3 * ni + 2] = c * x[2];
         }
@@ -190,9 +192,9 @@ pub(crate) fn run_element_stiffness_tests(
     {
         let (a, b, c, dv, ev, fv) = (0.01_f64, -0.005, 0.003, 0.002, -0.001, 0.0007);
         let big_a = [
-            [a,       dv / 2.0, fv / 2.0],
-            [dv / 2.0, b,       ev / 2.0],
-            [fv / 2.0, ev / 2.0, c      ],
+            [a, dv / 2.0, fv / 2.0],
+            [dv / 2.0, b, ev / 2.0],
+            [fv / 2.0, ev / 2.0, c],
         ];
         let mut u = vec![0.0; n_dofs];
         for (ni, x) in phys1.iter().enumerate() {
@@ -239,7 +241,7 @@ pub(crate) fn run_element_stiffness_tests(
         let k_lh = compute_k(&phys_lh, &mat);
         let mut u = vec![0.0; n_dofs];
         for (ni, x) in phys_lh.iter().enumerate() {
-            u[3 * ni]     = a * x[0];
+            u[3 * ni] = a * x[0];
             u[3 * ni + 1] = b * x[1];
             u[3 * ni + 2] = c * x[2];
         }

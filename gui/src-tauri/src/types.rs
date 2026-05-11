@@ -2,8 +2,8 @@
 
 use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
 use serde::ser::Error as SerError;
+use serde::{Deserialize, Serialize};
 
 use reify_types::{DeterminacyState, DiagnosticInfo, Freshness, Value};
 
@@ -259,7 +259,10 @@ impl serde::Serialize for MeshData {
             s.serialize_field("scalar_channels", &FiniteF32MapRef(&self.scalar_channels))?;
         }
         if self.displaced_positions.is_some() {
-            s.serialize_field("displaced_positions", &FiniteF32SliceOpt(&self.displaced_positions))?;
+            s.serialize_field(
+                "displaced_positions",
+                &FiniteF32SliceOpt(&self.displaced_positions),
+            )?;
         }
         s.end()
     }

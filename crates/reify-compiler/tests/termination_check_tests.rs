@@ -787,7 +787,8 @@ structure S {
     // message is incorrect and actionably misleading.
     let has_no_termination_error = errors.iter().any(|d| {
         let msg = d.message.to_lowercase();
-        msg.contains("no termination") || (msg.contains("recursive sub") && msg.contains("where clause"))
+        msg.contains("no termination")
+            || (msg.contains("recursive sub") && msg.contains("where clause"))
     });
     assert!(
         !has_no_termination_error,

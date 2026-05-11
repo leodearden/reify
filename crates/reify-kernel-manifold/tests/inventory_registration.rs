@@ -117,7 +117,10 @@ fn manifold_kernel_registration_appears_in_inventory_iter() {
     // order-insensitive) as defence-in-depth for the case where fn pointers
     // diverge but happen to produce equivalent content.
     let inventory_supports: std::collections::HashSet<(Operation, ReprKind)> =
-        (manifold_entries[0].descriptor)().supports.into_iter().collect();
+        (manifold_entries[0].descriptor)()
+            .supports
+            .into_iter()
+            .collect();
     let direct_supports: std::collections::HashSet<(Operation, ReprKind)> =
         reify_kernel_manifold::register::manifold_capability_descriptor()
             .supports

@@ -22,7 +22,9 @@ pub fn fixture_path(name: &str) -> String {
 #[allow(dead_code)]
 pub fn example_path(name: &str) -> String {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let raw = PathBuf::from(manifest_dir).join("../../examples").join(name);
+    let raw = PathBuf::from(manifest_dir)
+        .join("../../examples")
+        .join(name);
     std::fs::canonicalize(&raw)
         .unwrap_or(raw)
         .to_string_lossy()

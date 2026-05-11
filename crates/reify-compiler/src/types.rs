@@ -1209,61 +1209,82 @@ mod kind_display_tests {
         }
     }
 
-    #[test] fn primitive_kind_display() { check(&[
-        (PrimitiveKind::Box, "box"),
-        (PrimitiveKind::Cylinder, "cylinder"),
-        (PrimitiveKind::Sphere, "sphere"),
-        (PrimitiveKind::Tube, "tube"),
-    ]); }
+    #[test]
+    fn primitive_kind_display() {
+        check(&[
+            (PrimitiveKind::Box, "box"),
+            (PrimitiveKind::Cylinder, "cylinder"),
+            (PrimitiveKind::Sphere, "sphere"),
+            (PrimitiveKind::Tube, "tube"),
+        ]);
+    }
 
-    #[test] fn boolean_op_display() { check(&[
-        (BooleanOp::Union, "union"),
-        (BooleanOp::Difference, "difference"),
-        (BooleanOp::Intersection, "intersection"),
-    ]); }
+    #[test]
+    fn boolean_op_display() {
+        check(&[
+            (BooleanOp::Union, "union"),
+            (BooleanOp::Difference, "difference"),
+            (BooleanOp::Intersection, "intersection"),
+        ]);
+    }
 
-    #[test] fn modify_kind_display() { check(&[
-        (ModifyKind::Fillet, "fillet"),
-        (ModifyKind::Chamfer, "chamfer"),
-        (ModifyKind::Shell, "shell"),
-        (ModifyKind::Draft, "draft"),
-        (ModifyKind::Thicken, "thicken"),
-    ]); }
+    #[test]
+    fn modify_kind_display() {
+        check(&[
+            (ModifyKind::Fillet, "fillet"),
+            (ModifyKind::Chamfer, "chamfer"),
+            (ModifyKind::Shell, "shell"),
+            (ModifyKind::Draft, "draft"),
+            (ModifyKind::Thicken, "thicken"),
+        ]);
+    }
 
-    #[test] fn transform_kind_display() { check(&[
-        (TransformKind::Translate, "translate"),
-        (TransformKind::Rotate, "rotate"),
-        (TransformKind::Scale, "scale"),
-        (TransformKind::RotateAround, "rotate_around"),
-    ]); }
+    #[test]
+    fn transform_kind_display() {
+        check(&[
+            (TransformKind::Translate, "translate"),
+            (TransformKind::Rotate, "rotate"),
+            (TransformKind::Scale, "scale"),
+            (TransformKind::RotateAround, "rotate_around"),
+        ]);
+    }
 
-    #[test] fn pattern_kind_display() { check(&[
-        (PatternKind::Linear, "linear"),
-        (PatternKind::Circular, "circular"),
-        (PatternKind::Mirror, "mirror"),
-        (PatternKind::Linear2D, "linear_2d"),
-        (PatternKind::Arbitrary, "arbitrary"),
-    ]); }
+    #[test]
+    fn pattern_kind_display() {
+        check(&[
+            (PatternKind::Linear, "linear"),
+            (PatternKind::Circular, "circular"),
+            (PatternKind::Mirror, "mirror"),
+            (PatternKind::Linear2D, "linear_2d"),
+            (PatternKind::Arbitrary, "arbitrary"),
+        ]);
+    }
 
-    #[test] fn sweep_kind_display() { check(&[
-        (SweepKind::Loft, "loft"),
-        (SweepKind::Extrude, "extrude"),
-        (SweepKind::Revolve, "revolve"),
-        (SweepKind::Sweep, "sweep"),
-        (SweepKind::ExtrudeSymmetric, "extrude_symmetric"),
-        (SweepKind::SweepGuided, "sweep_guided"),
-        (SweepKind::LoftGuided, "loft_guided"),
-        (SweepKind::Pipe, "pipe"),
-    ]); }
+    #[test]
+    fn sweep_kind_display() {
+        check(&[
+            (SweepKind::Loft, "loft"),
+            (SweepKind::Extrude, "extrude"),
+            (SweepKind::Revolve, "revolve"),
+            (SweepKind::Sweep, "sweep"),
+            (SweepKind::ExtrudeSymmetric, "extrude_symmetric"),
+            (SweepKind::SweepGuided, "sweep_guided"),
+            (SweepKind::LoftGuided, "loft_guided"),
+            (SweepKind::Pipe, "pipe"),
+        ]);
+    }
 
-    #[test] fn curve_kind_display() { check(&[
-        (CurveKind::LineSegment, "line_segment"),
-        (CurveKind::Arc, "arc"),
-        (CurveKind::Helix, "helix"),
-        (CurveKind::InterpCurve, "interp_curve"),
-        (CurveKind::BezierCurve, "bezier_curve"),
-        (CurveKind::NurbsCurve, "nurbs_curve"),
-    ]); }
+    #[test]
+    fn curve_kind_display() {
+        check(&[
+            (CurveKind::LineSegment, "line_segment"),
+            (CurveKind::Arc, "arc"),
+            (CurveKind::Helix, "helix"),
+            (CurveKind::InterpCurve, "interp_curve"),
+            (CurveKind::BezierCurve, "bezier_curve"),
+            (CurveKind::NurbsCurve, "nurbs_curve"),
+        ]);
+    }
 }
 
 #[cfg(test)]

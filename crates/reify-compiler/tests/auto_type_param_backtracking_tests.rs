@@ -198,7 +198,10 @@ structure def ORingSeal : Seal {
     assert_eq!(
         outcome,
         MultiParamResolutionOutcome {
-            per_param: vec![("T".to_string(), SelectionResult::Selected("ORingSeal".to_string()))],
+            per_param: vec![(
+                "T".to_string(),
+                SelectionResult::Selected("ORingSeal".to_string())
+            )],
             substitution: vec![("T".to_string(), "ORingSeal".to_string())],
         },
         "DFS single-param one-candidate must produce Selected(ORingSeal) — parity with BFS happy path"
@@ -288,8 +291,14 @@ structure def WaterCooled : Cooled {
         outcome,
         MultiParamResolutionOutcome {
             per_param: vec![
-                ("T".to_string(), SelectionResult::Selected("ORingSeal".to_string())),
-                ("U".to_string(), SelectionResult::Selected("AirCooled".to_string())),
+                (
+                    "T".to_string(),
+                    SelectionResult::Selected("ORingSeal".to_string())
+                ),
+                (
+                    "U".to_string(),
+                    SelectionResult::Selected("AirCooled".to_string())
+                ),
             ],
             substitution: vec![
                 ("T".to_string(), "ORingSeal".to_string()),
@@ -415,8 +424,14 @@ structure def WaterCooled : Cooled {
         outcome,
         MultiParamResolutionOutcome {
             per_param: vec![
-                ("T".to_string(), SelectionResult::Selected("ORingSeal".to_string())),
-                ("U".to_string(), SelectionResult::Selected("WaterCooled".to_string())),
+                (
+                    "T".to_string(),
+                    SelectionResult::Selected("ORingSeal".to_string())
+                ),
+                (
+                    "U".to_string(),
+                    SelectionResult::Selected("WaterCooled".to_string())
+                ),
             ],
             substitution: vec![
                 ("T".to_string(), "ORingSeal".to_string()),
@@ -932,7 +947,8 @@ structure def S7 : T7 { param x : Real = 7.0 }
         dfs_diagnostics.len(),
         bfs_diagnostics.len() + 1,
         "DFS above max_depth must emit exactly one extra diagnostic beyond BFS. DFS diagnostics: {:?}, BFS diagnostics: {:?}",
-        dfs_diagnostics, bfs_diagnostics
+        dfs_diagnostics,
+        bfs_diagnostics
     );
     let extra = dfs_diagnostics
         .iter()
@@ -1029,7 +1045,11 @@ structure def S6 : T6 { param x : Real = 6.0 }
     for (i, (name, sel)) in outcome.per_param.iter().enumerate() {
         let expected_param = format!("P{}", i + 1);
         let expected_struct = format!("S{}", i + 1);
-        assert_eq!(name, &expected_param, "per_param[{}].0 must be {expected_param}", i);
+        assert_eq!(
+            name, &expected_param,
+            "per_param[{}].0 must be {expected_param}",
+            i
+        );
         assert_eq!(
             sel,
             &SelectionResult::Selected(expected_struct.clone()),
@@ -1226,7 +1246,10 @@ structure def ORingSeal : Seal {
     assert_eq!(
         bfs_fallback_outcome.per_param,
         vec![
-            ("T".to_string(), SelectionResult::Selected("ORingSeal".to_string())),
+            (
+                "T".to_string(),
+                SelectionResult::Selected("ORingSeal".to_string())
+            ),
             ("U".to_string(), SelectionResult::NoCandidate),
         ],
         "BFS-fallback path (max_depth=1, n=2): per_param must be length-2 \
@@ -1405,7 +1428,8 @@ structure def S4B : T4 { param x : Real = 4.5 }
         bfs_diagnostics.len() + 1,
         "DFS above max_cross_product_size must emit exactly one extra diagnostic \
          beyond BFS. DFS diagnostics: {:?}, BFS diagnostics: {:?}",
-        dfs_diagnostics, bfs_diagnostics
+        dfs_diagnostics,
+        bfs_diagnostics
     );
     let extra = dfs_diagnostics
         .iter()
@@ -1544,7 +1568,8 @@ structure def S4B : T4 { param x : Real = 4.5 }
         assert!(
             matches!(sel, SelectionResult::Selected(_)),
             "per_param entry for {} must be Selected (DFS ran end-to-end), got: {:?}",
-            name, sel
+            name,
+            sel
         );
     }
     assert_eq!(
@@ -2099,7 +2124,9 @@ structure def WaterCooled : Cooled {
 
     // (a) Prefix illustration section header.
     assert!(
-        diagnostics[0].message.contains("first-param prefix illustration"),
+        diagnostics[0]
+            .message
+            .contains("first-param prefix illustration"),
         "rich format must contain 'first-param prefix illustration' header; got: {:?}",
         diagnostics[0].message
     );
@@ -2120,7 +2147,9 @@ structure def WaterCooled : Cooled {
     //     user the compiler did NOT localize a specific conflict, so the
     //     illustration is not mistaken for help-channel output.
     assert!(
-        diagnostics[0].message.contains("no specific conflict localized"),
+        diagnostics[0]
+            .message
+            .contains("no specific conflict localized"),
         "rich format must include the 'no specific conflict localized' \
          disclaimer so users understand the illustration is a labeling \
          anchor, not a conflict diagnosis; got: {:?}",
@@ -2762,8 +2791,14 @@ structure def WaterCooled : Cooled {
         outcome,
         MultiParamResolutionOutcome {
             per_param: vec![
-                ("T".to_string(), SelectionResult::Selected("RubberSeal".to_string())),
-                ("U".to_string(), SelectionResult::Selected("WaterCooled".to_string())),
+                (
+                    "T".to_string(),
+                    SelectionResult::Selected("RubberSeal".to_string())
+                ),
+                (
+                    "U".to_string(),
+                    SelectionResult::Selected("WaterCooled".to_string())
+                ),
             ],
             substitution: vec![
                 ("T".to_string(), "RubberSeal".to_string()),
@@ -2973,8 +3008,7 @@ structure def AirCooled : Cooled {
         // v0.1 zero-rejections message form.
         let msg = &diagnostics[0].message;
         assert_eq!(
-            msg,
-            "auto type parameter has no feasible candidates for bound 'Seal'",
+            msg, "auto type parameter has no feasible candidates for bound 'Seal'",
             "Phase A first-param empty pool MUST emit the v0.1 zero-rejections \
              form (NOT the v0.2 rich cross-product form); got: {:?}",
             msg
@@ -3061,8 +3095,7 @@ structure def ORingSeal : Seal {
         // v0.1 zero-rejections message form (now mentions U's bound 'Cooled').
         let msg = &diagnostics[0].message;
         assert_eq!(
-            msg,
-            "auto type parameter has no feasible candidates for bound 'Cooled'",
+            msg, "auto type parameter has no feasible candidates for bound 'Cooled'",
             "Phase A second-param empty pool MUST emit the v0.1 zero-rejections \
              form (NOT the v0.2 rich cross-product form); got: {:?}",
             msg
@@ -3308,7 +3341,10 @@ structure def RubberSeal : Seal {
     assert_eq!(
         outcome,
         MultiParamResolutionOutcome {
-            per_param: vec![("T".to_string(), SelectionResult::Selected("RubberSeal".to_string()))],
+            per_param: vec![(
+                "T".to_string(),
+                SelectionResult::Selected("RubberSeal".to_string())
+            )],
             substitution: vec![("T".to_string(), "RubberSeal".to_string())],
         },
         "With multi-constraint template and queue [Violated, Satisfied], DFS must backtrack \
@@ -3365,8 +3401,8 @@ structure def RubberSeal : Seal {
 /// changing the lex-first selection from `(RubberSeal, WaterCooled)` to
 /// `(RubberSeal, AirCooled)` — an observable assertion failure.
 #[test]
-fn dfs_leaf_invokes_constraint_checker_exactly_once_per_leaf_with_multi_constraint_template_two_params(
-) {
+fn dfs_leaf_invokes_constraint_checker_exactly_once_per_leaf_with_multi_constraint_template_two_params()
+ {
     let source = r#"
 trait Seal {}
 trait Cooled {}
@@ -3445,8 +3481,14 @@ structure def WaterCooled : Cooled {
         outcome,
         MultiParamResolutionOutcome {
             per_param: vec![
-                ("T".to_string(), SelectionResult::Selected("RubberSeal".to_string())),
-                ("U".to_string(), SelectionResult::Selected("WaterCooled".to_string())),
+                (
+                    "T".to_string(),
+                    SelectionResult::Selected("RubberSeal".to_string())
+                ),
+                (
+                    "U".to_string(),
+                    SelectionResult::Selected("WaterCooled".to_string())
+                ),
             ],
             substitution: vec![
                 ("T".to_string(), "RubberSeal".to_string()),
@@ -3732,8 +3774,10 @@ structure def WaterCooled : Cooled {
     // to "(more than NON_UNIQUE_DISPLAY_CAP feasibles exist; rest elided)" — the
     // wording makes the uncertainty explicit (we know at least one was elided
     // from the collected set, plus an unknown number were never collected).
-    let expected_marker =
-        format!("more than {} feasibles exist; rest elided", NON_UNIQUE_DISPLAY_CAP);
+    let expected_marker = format!(
+        "more than {} feasibles exist; rest elided",
+        NON_UNIQUE_DISPLAY_CAP
+    );
     assert!(
         diagnostics[0].message.contains(&expected_marker),
         "message must contain '{}' (free-mode cap = NON_UNIQUE_DISPLAY_CAP({}) + 1, exact total \
@@ -3774,13 +3818,10 @@ structure def WaterCooled : Cooled {
             .0;
         let witness_count = witnesses_section.split("; ").count();
         assert_eq!(
-            witness_count,
-            NON_UNIQUE_DISPLAY_CAP,
+            witness_count, NON_UNIQUE_DISPLAY_CAP,
             "expected exactly {} witnesses rendered (display window not applied); \
              witnesses section: {:?}; full message: {:?}",
-            NON_UNIQUE_DISPLAY_CAP,
-            witnesses_section,
-            msg
+            NON_UNIQUE_DISPLAY_CAP, witnesses_section, msg
         );
     }
     // (c) Lex-first T candidate appears in the message.
@@ -3805,7 +3846,10 @@ structure def WaterCooled : Cooled {
     // (f) First param maps to lex-first T candidate.
     assert_eq!(
         outcome.per_param[0],
-        ("T".to_string(), SelectionResult::Selected("ORingSeal".to_string())),
+        (
+            "T".to_string(),
+            SelectionResult::Selected("ORingSeal".to_string())
+        ),
         "per_param[0] must be (T, Selected(ORingSeal)) — lex-first T"
     );
     // (g) Full substitution Vec.
@@ -3952,10 +3996,17 @@ structure def WaterCooled : Cooled {
         diagnostics[0].message
     );
     // Success shape: 2 per_param entries, lex-first selected.
-    assert_eq!(outcome.per_param.len(), 2, "success shape must have 2 per_param entries");
+    assert_eq!(
+        outcome.per_param.len(),
+        2,
+        "success shape must have 2 per_param entries"
+    );
     assert_eq!(
         outcome.per_param[0],
-        ("T".to_string(), SelectionResult::Selected("ORingSeal".to_string())),
+        (
+            "T".to_string(),
+            SelectionResult::Selected("ORingSeal".to_string())
+        ),
         "per_param[0] must be (T, Selected(ORingSeal))"
     );
 }
@@ -4065,8 +4116,14 @@ structure def WaterCooled : Cooled {
     assert_eq!(
         outcome.per_param,
         vec![
-            ("T".to_string(), SelectionResult::Selected("ORingSeal".to_string())),
-            ("U".to_string(), SelectionResult::Selected("AirCooled".to_string())),
+            (
+                "T".to_string(),
+                SelectionResult::Selected("ORingSeal".to_string())
+            ),
+            (
+                "U".to_string(),
+                SelectionResult::Selected("AirCooled".to_string())
+            ),
         ],
         "all-free ≥2 NonUnique path must produce length-2 per_param with Selected \
          entries (success shape, not Ambiguous); got: {:?}",
@@ -4215,8 +4272,7 @@ structure def Hot2 : Hot {
     // Template: one cell `field_t : TypeParam("T")`, one constraint that
     // ValueRefs field_t. Blame = {T(0)} — only T is referenced.
     let field_t = ValueCellId::new("Coupling", "field_t");
-    let constraint_expr =
-        CompiledExpr::value_ref(field_t.clone(), Type::TypeParam("T".into()));
+    let constraint_expr = CompiledExpr::value_ref(field_t.clone(), Type::TypeParam("T".into()));
     let template = TopologyTemplateBuilder::new("Coupling")
         .param("Coupling", "field_t", Type::TypeParam("T".into()), None)
         .constraint("Coupling", 0, None, constraint_expr)
@@ -4581,8 +4637,14 @@ structure def WaterCooled : Cooled {
         outcome,
         MultiParamResolutionOutcome {
             per_param: vec![
-                ("T".to_string(), SelectionResult::Selected("ORingSeal".to_string())),
-                ("U".to_string(), SelectionResult::Selected("WaterCooled".to_string())),
+                (
+                    "T".to_string(),
+                    SelectionResult::Selected("ORingSeal".to_string())
+                ),
+                (
+                    "U".to_string(),
+                    SelectionResult::Selected("WaterCooled".to_string())
+                ),
             ],
             substitution: vec![
                 ("T".to_string(), "ORingSeal".to_string()),
@@ -4706,8 +4768,7 @@ structure def WaterCooled : Cooled {
         outcome.per_param
     );
     assert_eq!(
-        outcome.per_param[0].0,
-        "T",
+        outcome.per_param[0].0, "T",
         "Ambiguous must attach to the first param's name; got: {:?}",
         outcome.per_param[0].0
     );

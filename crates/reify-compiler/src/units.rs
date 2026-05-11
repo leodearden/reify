@@ -72,8 +72,7 @@ pub(crate) fn is_geometry_function(name: &str) -> bool {
 /// lower to a `CompiledGeometryOp` and must be classified as
 /// non-geometry-producing by `is_geometry_let`. Case-sensitive: Reify
 /// function names are snake_case.
-pub const GEOMETRY_QUERY_HELPER_NAMES: &[&str] =
-    &["is_watertight", "is_manifold", "is_orientable"];
+pub const GEOMETRY_QUERY_HELPER_NAMES: &[&str] = &["is_watertight", "is_manifold", "is_orientable"];
 
 pub(crate) fn is_geometry_query_helper(name: &str) -> bool {
     GEOMETRY_QUERY_HELPER_NAMES.contains(&name)
@@ -649,23 +648,56 @@ mod tests {
     // one-line table edit — no per-name boilerplate.
     fn task_2699_topology_selector_cases() -> Vec<(&'static str, reify_types::Type)> {
         vec![
-            ("edges",             reify_types::Type::List(Box::new(reify_types::Type::Geometry))),
-            ("faces",             reify_types::Type::List(Box::new(reify_types::Type::Geometry))),
-            ("edges_by_length",   reify_types::Type::List(Box::new(reify_types::Type::Geometry))),
-            ("faces_by_area",     reify_types::Type::List(Box::new(reify_types::Type::Geometry))),
-            ("faces_by_normal",   reify_types::Type::List(Box::new(reify_types::Type::Geometry))),
-            ("edges_parallel_to", reify_types::Type::List(Box::new(reify_types::Type::Geometry))),
-            ("edges_at_height",   reify_types::Type::List(Box::new(reify_types::Type::Geometry))),
-            ("adjacent_faces",    reify_types::Type::List(Box::new(reify_types::Type::Geometry))),
-            ("shared_edges",      reify_types::Type::List(Box::new(reify_types::Type::Geometry))),
-            ("center_of_mass",    reify_types::Type::point3(reify_types::Type::length())),
-            ("moment_of_inertia", reify_types::Type::tensor(
-                2,
-                3,
-                reify_types::Type::Scalar {
-                    dimension: reify_types::DimensionVector::MOMENT_OF_INERTIA,
-                },
-            )),
+            (
+                "edges",
+                reify_types::Type::List(Box::new(reify_types::Type::Geometry)),
+            ),
+            (
+                "faces",
+                reify_types::Type::List(Box::new(reify_types::Type::Geometry)),
+            ),
+            (
+                "edges_by_length",
+                reify_types::Type::List(Box::new(reify_types::Type::Geometry)),
+            ),
+            (
+                "faces_by_area",
+                reify_types::Type::List(Box::new(reify_types::Type::Geometry)),
+            ),
+            (
+                "faces_by_normal",
+                reify_types::Type::List(Box::new(reify_types::Type::Geometry)),
+            ),
+            (
+                "edges_parallel_to",
+                reify_types::Type::List(Box::new(reify_types::Type::Geometry)),
+            ),
+            (
+                "edges_at_height",
+                reify_types::Type::List(Box::new(reify_types::Type::Geometry)),
+            ),
+            (
+                "adjacent_faces",
+                reify_types::Type::List(Box::new(reify_types::Type::Geometry)),
+            ),
+            (
+                "shared_edges",
+                reify_types::Type::List(Box::new(reify_types::Type::Geometry)),
+            ),
+            (
+                "center_of_mass",
+                reify_types::Type::point3(reify_types::Type::length()),
+            ),
+            (
+                "moment_of_inertia",
+                reify_types::Type::tensor(
+                    2,
+                    3,
+                    reify_types::Type::Scalar {
+                        dimension: reify_types::DimensionVector::MOMENT_OF_INERTIA,
+                    },
+                ),
+            ),
         ]
     }
 
@@ -689,5 +721,4 @@ mod tests {
             );
         }
     }
-
 }

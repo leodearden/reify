@@ -23,11 +23,7 @@ fn compile_no_errors(source: &str) -> reify_compiler::CompiledModule {
         .iter()
         .filter(|d| d.severity == reify_types::Severity::Error)
         .collect();
-    assert!(
-        errors.is_empty(),
-        "compile errors: {:#?}",
-        errors
-    );
+    assert!(errors.is_empty(), "compile errors: {:#?}", errors);
     compiled
 }
 
@@ -40,9 +36,7 @@ fn compile_no_errors(source: &str) -> reify_compiler::CompiledModule {
 /// `source_span == realization.span`.
 #[test]
 fn box_realization_carries_single_primitive_feature_tag() {
-    let compiled = compile_no_errors(
-        "structure A { let body = box(10mm, 20mm, 30mm) }",
-    );
+    let compiled = compile_no_errors("structure A { let body = box(10mm, 20mm, 30mm) }");
     let template = compiled
         .templates
         .iter()
@@ -90,9 +84,7 @@ fn box_realization_carries_single_primitive_feature_tag() {
 /// Each must have a tag with the correct StepKind and a sequential sub_index.
 #[test]
 fn multi_op_realization_tags_one_per_op_with_sequential_sub_indices() {
-    let compiled = compile_no_errors(
-        "structure B { let s = fillet(box(10mm, 20mm, 30mm), 1mm) }",
-    );
+    let compiled = compile_no_errors("structure B { let s = fillet(box(10mm, 20mm, 30mm), 1mm) }");
     let template = compiled
         .templates
         .iter()
@@ -126,8 +118,7 @@ fn multi_op_realization_tags_one_per_op_with_sequential_sub_indices() {
         "ops[0] (box) must be StepKind::Primitive"
     );
     assert_eq!(
-        realization.feature_tags[0].sub_index,
-        0,
+        realization.feature_tags[0].sub_index, 0,
         "ops[0] must have sub_index == 0"
     );
 
@@ -138,8 +129,7 @@ fn multi_op_realization_tags_one_per_op_with_sequential_sub_indices() {
         "ops[1] (fillet) must be StepKind::Modify"
     );
     assert_eq!(
-        realization.feature_tags[1].sub_index,
-        1,
+        realization.feature_tags[1].sub_index, 1,
         "ops[1] must have sub_index == 1"
     );
 }
@@ -151,9 +141,8 @@ fn multi_op_realization_tags_one_per_op_with_sequential_sub_indices() {
 /// Each must carry the correct StepKind.
 #[test]
 fn boolean_realization_tags_classify_op_kinds_correctly() {
-    let compiled = compile_no_errors(
-        "structure C { let s = union(box(10mm, 20mm, 30mm), sphere(5mm)) }",
-    );
+    let compiled =
+        compile_no_errors("structure C { let s = union(box(10mm, 20mm, 30mm), sphere(5mm)) }");
     let template = compiled
         .templates
         .iter()
@@ -254,7 +243,12 @@ fn realization_decl_feature_tags_invariant_held_after_compile() {
             .realizations
             .iter()
             .find(|r| r.name.as_deref() == Some(case.binding_name))
-            .unwrap_or_else(|| panic!("realization '{}' not found in {}", case.binding_name, case.structure_name));
+            .unwrap_or_else(|| {
+                panic!(
+                    "realization '{}' not found in {}",
+                    case.binding_name, case.structure_name
+                )
+            });
 
         // 1. Parallel-array length invariant.
         assert_eq!(
@@ -279,13 +273,9 @@ fn realization_decl_feature_tags_invariant_held_after_compile() {
         // 2. Sequential sub_index: feature_tags[i].sub_index == i as u32.
         for (i, tag) in realization.feature_tags.iter().enumerate() {
             assert_eq!(
-                tag.sub_index,
-                i as u32,
+                tag.sub_index, i as u32,
                 "[{}] feature_tags[{}].sub_index must be {}, got {}",
-                case.structure_name,
-                i,
-                i,
-                tag.sub_index,
+                case.structure_name, i, i, tag.sub_index,
             );
         }
     }

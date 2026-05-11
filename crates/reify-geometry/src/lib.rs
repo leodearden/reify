@@ -94,8 +94,8 @@ mod tests {
     use reify_test_support::MockGeometryKernel;
     use reify_test_support::mm3;
     use reify_types::{
-        ExportError, ExportFormat, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp,
-        BRepKind, GeometryQuery, QueryError, TessError, Value,
+        BRepKind, ExportError, ExportFormat, GeometryError, GeometryHandleId, GeometryKernel,
+        GeometryOp, GeometryQuery, QueryError, TessError, Value,
     };
 
     use super::*;
