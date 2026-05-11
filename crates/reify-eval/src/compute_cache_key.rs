@@ -47,9 +47,9 @@ mod tests {
     use super::compute_cache_key;
 
     use reify_compiler::ValueCellKind;
-    use reify_types::{ComputeNodeId, ContentHash, Type, ValueCellId};
+    use reify_types::{ComputeNodeId, ContentHash, RealizationNodeId, Type, ValueCellId};
 
-    use crate::graph::{ComputeNodeData, EvaluationGraph, ValueCellNode};
+    use crate::graph::{ComputeNodeData, EvaluationGraph, RealizationNodeData, ValueCellNode};
 
     fn make_empty_node() -> ComputeNodeData {
         ComputeNodeData {
@@ -74,6 +74,22 @@ mod tests {
         let key1 = compute_cache_key(&node, &graph);
         let key2 = compute_cache_key(&node, &graph);
         assert_eq!(key1, key2, "compute_cache_key must be deterministic");
+    }
+
+    /// Insert a bare RealizationNodeData with the given content_hash.
+    fn insert_realization(
+        graph: &mut EvaluationGraph,
+        id: RealizationNodeId,
+        content_hash: ContentHash,
+    ) {
+        graph.realizations.insert(
+            id.clone(),
+            RealizationNodeData {
+                id,
+                operations: vec![],
+                content_hash,
+            },
+        );
     }
 
     /// Insert a bare ValueCellNode (no default_expr) with the given content_hash.
@@ -116,6 +132,30 @@ mod tests {
         assert_ne!(
             key_v1, key_v2,
             "mutating a value-cell's content_hash must change the cache key"
+        );
+    }
+
+    #[test]
+    fn compute_cache_key_changes_when_realization_input_content_hash_changes() {
+        let real_id = RealizationNodeId::new("Bracket", 0);
+        let mut graph = EvaluationGraph::default();
+        insert_realization(&mut graph, real_id.clone(), ContentHash::of_str("mesh_v1"));
+
+        let mut node = make_empty_node();
+        node.realization_inputs = vec![real_id.clone()];
+
+        let key_v1 = compute_cache_key(&node, &graph);
+
+        graph
+            .realizations
+            .get_mut(&real_id)
+            .unwrap()
+            .content_hash = ContentHash::of_str("mesh_v2");
+
+        let key_v2 = compute_cache_key(&node, &graph);
+        assert_ne!(
+            key_v1, key_v2,
+            "mutating a realization's content_hash must change the cache key"
         );
     }
 
