@@ -82,6 +82,61 @@ impl<'a> RealizationOutputs<'a> {
     }
 }
 
+/// Task 3441: seed compound-key entries `<sub>.<member> → handle` from each
+/// non-collection sub's completed snapshot in `module_named_steps`.  No
+/// entries are produced for collection subs (the compile-side already blocks
+/// collection-sub geometry composition) or for subs whose child template
+/// hasn't been realised yet (forward-declared / recursive); those cases fall
+/// through to the `geometry_ops.rs::resolve_geom_ref` "unresolvable
+/// GeomRef::Sub" runtime error path.
+///
+/// Extracted (amendment) to the single source of truth for the three eval
+/// loop sites (`build`, `build_snapshot`, `tessellate_from_values`) — keeps
+/// any future change (e.g. handling collection subs, narrowing the snapshot,
+/// emitting forward-ref diagnostics) a one-place edit instead of three.
+///
+/// **Same-template aliasing note (v0.1 limitation).** Because the registry
+/// keys by sub's *structure* (`sub.structure_name`), two subs of the same
+/// child template share a single set of handles — `sub a = Inner(); sub b =
+/// Inner();` makes `a.body` and `b.body` resolve to identical kernel handles.
+/// Likewise, per-instance args on a sub do NOT affect the cross-sub view (the
+/// child template is realised once with default param values).  Pinned by
+/// the `cross_sub_same_template_subs_share_handle*` regression tests in
+/// `cross_sub_geometry_e2e.rs`.
+fn seed_cross_sub_named_steps(
+    template: &reify_compiler::TopologyTemplate,
+    module_named_steps: &HashMap<String, HashMap<String, GeometryHandleId>>,
+    named_steps: &mut HashMap<String, GeometryHandleId>,
+) {
+    for sub in &template.sub_components {
+        if sub.is_collection {
+            continue;
+        }
+        if let Some(child_snapshot) = module_named_steps.get(&sub.structure_name) {
+            for (member, handle) in child_snapshot {
+                named_steps.insert(format!("{}.{}", sub.name, member), *handle);
+            }
+        }
+    }
+}
+
+/// Task 3441: snapshot this template's `named_steps` under its template name
+/// so a subsequent template with `sub <s> = <T>()` can seed compound-key
+/// entries via [`seed_cross_sub_named_steps`].
+///
+/// Takes `named_steps` by value (amendment for the prior `.clone()` at this
+/// call site) — the per-iteration `named_steps` is about to fall out of scope
+/// at the end of the loop body, and the post-process helpers above (which
+/// are the only readers between primary loop and this snapshot) read by
+/// shared reference and do not need the local binding afterwards.
+fn snapshot_named_steps(
+    template: &reify_compiler::TopologyTemplate,
+    named_steps: HashMap<String, GeometryHandleId>,
+    module_named_steps: &mut HashMap<String, HashMap<String, GeometryHandleId>>,
+) {
+    module_named_steps.insert(template.name.clone(), named_steps);
+}
+
 /// Dispatch on `attribute_history` to populate `topology_attribute_table`
 /// for sweep-style ops (extrude / revolve, currently). Called by
 /// `Engine::execute_realization_ops` immediately after the existing
@@ -479,12 +534,34 @@ impl Engine {
             self.feature_tag_table = FeatureTagTable::default();
             self.topology_attribute_table = TopologyAttributeTable::default();
             self.swept_kind_table = SweptKindTable::default();
+            // Task 3441: cross-template `GeomRef::Sub` threading.  As each
+            // template's realizations complete, snapshot its `named_steps`
+            // under the template name so a subsequent template that has
+            // `sub <s> = <T>()` can seed its local `named_steps` with
+            // `<s>.<member> → handle` entries derived from `T`'s snapshot.
+            // Declaration order is treated as topological for non-recursive
+            // structures (compile_builder/entities_phase.rs pushes templates
+            // in declaration order; SCC detection tags cycles but does not
+            // reorder).  Forward-declared subs and recursive structures fall
+            // back to the existing "named_steps miss → Error" path in
+            // `geometry_ops.rs::resolve_geom_ref`.
+            //
+            // Helper invocations (`seed_cross_sub_named_steps`,
+            // `snapshot_named_steps`) factor the per-template seed/snapshot
+            // logic out so the three eval loop sites stay in sync.
+            let mut module_named_steps: HashMap<String, HashMap<String, GeometryHandleId>> =
+                HashMap::new();
             for (t_idx, template) in module.templates.iter().enumerate() {
                 // `named_steps` is scoped per-template so that two structures
                 // that each declare `let body = …` cannot clobber each other's
-                // name → handle entries.  Cross-template GeomRef::Sub references
-                // are intentionally not supported.
+                // name → handle entries.  Cross-template `GeomRef::Sub`
+                // references are now supported for non-collection subs via
+                // compound keys `<sub_name>.<member>` seeded below (task 3441);
+                // collection-sub geometry composition remains deferred (the
+                // compile-side diagnostic in `expr.rs::try_emit_cross_sub_geometry`
+                // continues to fire for those call sites).
                 let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
+                seed_cross_sub_named_steps(template, &module_named_steps, &mut named_steps);
                 for (r_idx, realization) in template.realizations.iter().enumerate() {
                     // Task 2874, step-6 wiring: per-realization demanded
                     // tolerance for the cache-key triple `(entity_id,
@@ -575,6 +652,18 @@ impl Engine {
                     kernel.as_ref(),
                     &mut diagnostics,
                 );
+                // Task 3441: snapshot this template's `named_steps` so a
+                // later template that subs from it can seed compound-key
+                // entries.  Placed AFTER the post-process queries so the
+                // local `named_steps` reflects the same view the post-process
+                // helpers saw (the post-process helpers do not write to
+                // `named_steps`, so ordering is informational rather than
+                // load-bearing — but keeping the snapshot here documents the
+                // "complete snapshot" intent).  `named_steps` is moved (not
+                // cloned) — it would fall out of scope at the loop body's
+                // end anyway, and the post-process helpers above only
+                // borrow it.
+                snapshot_named_steps(template, named_steps, &mut module_named_steps);
             }
 
             if step_handles.is_empty() {
@@ -699,12 +788,34 @@ impl Engine {
             self.feature_tag_table = FeatureTagTable::default();
             self.topology_attribute_table = TopologyAttributeTable::default();
             self.swept_kind_table = SweptKindTable::default();
+            // Task 3441: cross-template `GeomRef::Sub` threading.  As each
+            // template's realizations complete, snapshot its `named_steps`
+            // under the template name so a subsequent template that has
+            // `sub <s> = <T>()` can seed its local `named_steps` with
+            // `<s>.<member> → handle` entries derived from `T`'s snapshot.
+            // Declaration order is treated as topological for non-recursive
+            // structures (compile_builder/entities_phase.rs pushes templates
+            // in declaration order; SCC detection tags cycles but does not
+            // reorder).  Forward-declared subs and recursive structures fall
+            // back to the existing "named_steps miss → Error" path in
+            // `geometry_ops.rs::resolve_geom_ref`.
+            //
+            // Helper invocations (`seed_cross_sub_named_steps`,
+            // `snapshot_named_steps`) factor the per-template seed/snapshot
+            // logic out so the three eval loop sites stay in sync.
+            let mut module_named_steps: HashMap<String, HashMap<String, GeometryHandleId>> =
+                HashMap::new();
             for (t_idx, template) in module.templates.iter().enumerate() {
                 // `named_steps` is scoped per-template so that two structures
                 // that each declare `let body = …` cannot clobber each other's
-                // name → handle entries.  Cross-template GeomRef::Sub references
-                // are intentionally not supported.
+                // name → handle entries.  Cross-template `GeomRef::Sub`
+                // references are now supported for non-collection subs via
+                // compound keys `<sub_name>.<member>` seeded below (task 3441);
+                // collection-sub geometry composition remains deferred (the
+                // compile-side diagnostic in `expr.rs::try_emit_cross_sub_geometry`
+                // continues to fire for those call sites).
                 let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
+                seed_cross_sub_named_steps(template, &module_named_steps, &mut named_steps);
                 for (r_idx, realization) in template.realizations.iter().enumerate() {
                     // Task 2874, step-6 wiring: per-realization demanded
                     // tolerance for the cache-key triple `(entity_id,
@@ -791,6 +902,18 @@ impl Engine {
                     kernel.as_ref(),
                     &mut diagnostics,
                 );
+                // Task 3441: snapshot this template's `named_steps` so a
+                // later template that subs from it can seed compound-key
+                // entries.  Placed AFTER the post-process queries so the
+                // local `named_steps` reflects the same view the post-process
+                // helpers saw (the post-process helpers do not write to
+                // `named_steps`, so ordering is informational rather than
+                // load-bearing — but keeping the snapshot here documents the
+                // "complete snapshot" intent).  `named_steps` is moved (not
+                // cloned) — it would fall out of scope at the loop body's
+                // end anyway, and the post-process helpers above only
+                // borrow it.
+                snapshot_named_steps(template, named_steps, &mut module_named_steps);
             }
 
             if step_handles.is_empty() {
@@ -1253,13 +1376,35 @@ impl Engine {
         };
 
         let mut step_handles: Vec<GeometryHandleId> = Vec::new();
+        // Task 3441: cross-template `GeomRef::Sub` threading.  As each
+        // template's realizations complete, snapshot its `named_steps`
+        // under the template name so a subsequent template that has
+        // `sub <s> = <T>()` can seed its local `named_steps` with
+        // `<s>.<member> → handle` entries derived from `T`'s snapshot.
+        // Declaration order is treated as topological for non-recursive
+        // structures (compile_builder/entities_phase.rs pushes templates
+        // in declaration order; SCC detection tags cycles but does not
+        // reorder).  Forward-declared subs and recursive structures fall
+        // back to the existing "named_steps miss → Error" path in
+        // `geometry_ops.rs::resolve_geom_ref`.
+        //
+        // Helper invocations (`seed_cross_sub_named_steps`,
+        // `snapshot_named_steps`) factor the per-template seed/snapshot
+        // logic out so the three eval loop sites stay in sync.
+        let mut module_named_steps: HashMap<String, HashMap<String, GeometryHandleId>> =
+            HashMap::new();
 
         for (t_idx, template) in module.templates.iter().enumerate() {
             // `named_steps` is scoped per-template so that two structures
             // that each declare `let body = …` cannot clobber each other's
-            // name → handle entries.  Cross-template GeomRef::Sub references
-            // are intentionally not supported.
+            // name → handle entries.  Cross-template `GeomRef::Sub`
+            // references are now supported for non-collection subs via
+            // compound keys `<sub_name>.<member>` seeded below (task 3441);
+            // collection-sub geometry composition remains deferred (the
+            // compile-side diagnostic in `expr.rs::try_emit_cross_sub_geometry`
+            // continues to fire for those call sites).
             let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
+            seed_cross_sub_named_steps(template, &module_named_steps, &mut named_steps);
             for (r_idx, realization) in template.realizations.iter().enumerate() {
                 let handle_start = step_handles.len();
                 // Tessellate paths do not propagate kernel errors into
@@ -1361,6 +1506,13 @@ impl Engine {
                 kernel.as_ref(),
                 diagnostics,
             );
+            // Task 3441: snapshot this template's `named_steps` so a later
+            // template that subs from it can seed compound-key entries.
+            // See the matching wiring in `build` / `build_snapshot`.
+            // `named_steps` is moved (not cloned) — it would fall out of
+            // scope at the loop body's end anyway, and the post-process
+            // helpers above only borrow it.
+            snapshot_named_steps(template, named_steps, &mut module_named_steps);
         }
 
         meshes

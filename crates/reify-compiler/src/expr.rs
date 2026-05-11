@@ -163,8 +163,12 @@ fn make_cross_sub_geometry_error(
 /// the member is not a realization, allowing the caller to fall through to its
 /// existing generic-error branch.
 ///
-/// Used at all three sub-member-access sites (bare collection sub, non-collection
-/// sub, indexed collection sub) to avoid duplicating the lookup-and-dispatch logic.
+/// Used at the two **collection-sub** member-access sites (bare collection sub,
+/// indexed collection sub).  Collection-sub cross-sub geometry remains deferred
+/// in v0.1 because per-instance handles would require per-element realisation,
+/// which is out of scope.  The **non-collection** sub site uses the sibling
+/// helper [`try_resolve_cross_sub_geometry_value_ref`] instead, which produces a
+/// working value-ref (task 3441) rather than a diagnostic.
 ///
 /// # Invariant (task-3420)
 ///
@@ -207,6 +211,62 @@ fn try_emit_cross_sub_geometry(
             child_struct,
             span,
         ))
+    } else {
+        None
+    }
+}
+
+/// **Non-collection** sub working path for cross-sub geometry access (task 3441).
+///
+/// When `<sub_name>` is a non-collection sub of the current entity AND `<member>`
+/// is a geometry realisation on its child structure (per
+/// `scope.sub_realization_names[sub_name].contains(member)`), this helper
+/// produces a synthetic value-ref `CompiledExpr` whose entity stamp follows
+/// the same `format!("{}.{}", entity_name, sub_name)` convention used at
+/// expr.rs:1317 for scalar cross-sub member access, with `Type::Geometry`.
+///
+/// Returns `None` when the member is not a realisation on the child template,
+/// allowing the caller to fall through to its existing "unknown member" branch.
+///
+/// **No diagnostic emitted on success.**  The eval side (engine_build.rs) is
+/// responsible for plumbing the realised geometry handle into
+/// `named_steps["<sub>.<member>"]` so that the parallel `GeomRef::Sub("<sub>.<member>")`
+/// in the realisation ops resolves to the child's handle.
+///
+/// The collection-sub call sites continue to use [`try_emit_cross_sub_geometry`]
+/// to emit the v0.1 diagnostic until per-instance handles are implemented.
+///
+/// # Forward-declared sub (runtime fallback)
+///
+/// When the parent template is compiled before the child template (i.e., the sub's
+/// `structure_name` was not yet in `compiled_templates` at the time the parent's
+/// scope was built), `scope.sub_member_types` and `scope.sub_realization_names`
+/// are both empty for that sub.  In that case this helper still emits the
+/// working-path value-ref optimistically: the compile-side cannot distinguish a
+/// forward-declared geometry member from a forward-declared scalar member, so we
+/// trust the runtime to flag the missing handle via the
+/// `unresolvable GeomRef::Sub('<sub>.<member>')` diagnostic produced by
+/// `geometry_ops.rs::resolve_geom_ref`.  Pinned by
+/// `crates/reify-eval/tests/cross_sub_geometry_e2e.rs::cross_sub_forward_declared_sub_yields_unresolvable_geom_ref_error`.
+fn try_resolve_cross_sub_geometry_value_ref(
+    scope: &CompilationScope<'_>,
+    sub_name: &str,
+    member: &str,
+) -> Option<CompiledExpr> {
+    let has_realization = scope
+        .sub_realization_names
+        .get(sub_name)
+        .is_some_and(|s| s.contains(member));
+    // Forward-declared sub: parent compiled before child, so sub_member_types
+    // and sub_realization_names are unpopulated for this sub.  Emit the
+    // optimistic working path; runtime will flag a missing handle via
+    // `unresolvable GeomRef::Sub('<sub>.<member>')`.
+    let forward_declared = scope.sub_component_types.contains_key(sub_name)
+        && !scope.sub_member_types.contains_key(sub_name);
+    if has_realization || forward_declared {
+        let scoped_entity = format!("{}.{}", scope.entity_name, sub_name);
+        let scoped_id = ValueCellId::new(&scoped_entity, member);
+        Some(CompiledExpr::value_ref(scoped_id, Type::Geometry))
     } else {
         None
     }
@@ -1289,16 +1349,20 @@ pub(crate) fn compile_expr_guarded(
                     {
                         Some(ty) => ty,
                         None => {
-                            // Check whether the member is a geometry realization on the child
-                            // template (task-3397). If so, emit a specific, actionable diagnostic
-                            // rather than the generic "unknown member" fallback.
-                            if let Some(e) = try_emit_cross_sub_geometry(
-                                scope,
-                                sub_name,
-                                member,
-                                expr.span,
-                                diagnostics,
-                            ) {
+                            // Cross-sub geometry working path (task 3441):
+                            // when `member` is a geometry realisation on the
+                            // non-collection sub's child template, return a
+                            // value-ref CompiledExpr stamped with the same
+                            // `<entity>.<sub>` scope used for scalar cross-sub
+                            // access (line 1317 below).  The eval side
+                            // (engine_build.rs) populates the matching
+                            // compound-key `named_steps["<sub>.<member>"]`
+                            // entry, and the parallel `GeomRef::Sub` produced
+                            // by `geometry.rs::try_resolve_cross_sub_geom_ref`
+                            // resolves through it.
+                            if let Some(e) =
+                                try_resolve_cross_sub_geometry_value_ref(scope, sub_name, member)
+                            {
                                 return e;
                             }
                             // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
@@ -2790,30 +2854,40 @@ mod tests {
     /// `try_emit_cross_sub_geometry` must name the child **structure type** in the
     /// diagnostic's "compose geometry inside '...'" phrase, not the sub instance name.
     ///
-    /// Concretely: given `sub inner = Inner()`, the diagnostic should say
-    /// "compose geometry inside 'Inner'" — not "inside 'inner'".  The distinction
-    /// is the `sub_realization_names ⊂ sub_component_types` invariant (task-3420):
-    /// `sub_component_types` maps the instance name ("inner") to the structure type
-    /// name ("Inner"), and the lookup in `try_emit_cross_sub_geometry` uses that
+    /// Concretely: given `sub bolts : List<Bolt>`, the diagnostic for the still-
+    /// unsupported collection-sub geometry access must say "compose geometry
+    /// inside 'Bolt'" — not "inside 'bolts'".  The distinction is the
+    /// `sub_realization_names ⊂ sub_component_types` invariant (task-3420):
+    /// `sub_component_types` maps the instance name ("bolts") to the structure type
+    /// name ("Bolt"), and the lookup in `try_emit_cross_sub_geometry` uses that
     /// mapping.  If the mapping were absent the fallback would silently produce
-    /// "inside 'inner'" (lower-case instance name), which is the bug this invariant
+    /// "inside 'bolts'" (lower-case instance name), which is the bug this invariant
     /// exists to prevent.
     ///
     /// This is an end-to-end test using the full compile pipeline so it exercises
     /// the production code path through `entity.rs` (which populates both maps) and
     /// through `try_emit_cross_sub_geometry` (which consumes them).
+    ///
+    /// **Task 3441 note.**  The original test used `sub inner = Inner()` +
+    /// `let copy = self.inner.body` to exercise the diagnostic path.  Task 3441
+    /// flipped non-collection sub geometry access to a working-path lowering, so
+    /// the diagnostic no longer fires for that shape.  The test now uses a
+    /// **collection sub** (`bolts : List<Bolt>` with `bolts[0].body`) to keep
+    /// exercising the same diagnostic-emitting branch — collection-sub cross-sub
+    /// geometry remains deferred in v0.1 and continues to call
+    /// `try_emit_cross_sub_geometry`.
     #[test]
     fn cross_sub_geometry_diagnostic_names_child_structure_type() {
         use reify_test_support::compile_source;
         use reify_types::Severity;
-        // "Inner" (capital-I structure type) vs "inner" (lower-case instance name).
+        // "Bolt" (capital-B structure type) vs "bolts" (lower-case instance name).
         // The diagnostic's "compose geometry inside '...'" phrase must use the former.
-        let source = r#"pub structure Inner {
-    param body : Solid = box(10mm, 20mm, 30mm)
+        let source = r#"pub structure Bolt {
+    param body : Solid = cylinder(2mm, 10mm)
 }
-pub structure Outer {
-    sub inner = Inner()
-    let copy = self.inner.body
+pub structure Rack {
+    sub bolts : List<Bolt>
+    let first = bolts[0].body
 }"#;
         let compiled = compile_source(source);
         let errors: Vec<_> = compiled
@@ -2828,19 +2902,19 @@ pub structure Outer {
             .find(|d| d.message.contains("geometry") && d.message.contains("not yet"));
         assert!(
             geometry_diagnostic.is_some(),
-            "expected a geometry-specific diagnostic for `self.inner.body`; got: {:?}",
+            "expected a geometry-specific diagnostic for `bolts[0].body`; got: {:?}",
             errors.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
 
-        // (b) The "compose geometry inside '...'" phrase must name 'Inner' (capital-I
-        //     structure type name from sub_component_types), not 'inner' (instance name).
+        // (b) The "compose geometry inside '...'" phrase must name 'Bolt' (capital-B
+        //     structure type name from sub_component_types), not 'bolts' (instance name).
         //     This directly pins the behavior the sub_realization_names ⊂ sub_component_types
         //     invariant exists to preserve.
         let msg = &geometry_diagnostic.unwrap().message;
         assert!(
-            msg.contains("inside 'Inner'"),
-            "diagnostic must say \"inside 'Inner'\" (the structure type name), \
-             not \"inside 'inner'\" (the instance name); got: {:?}",
+            msg.contains("inside 'Bolt'"),
+            "diagnostic must say \"inside 'Bolt'\" (the structure type name), \
+             not \"inside 'bolts'\" (the instance name); got: {:?}",
             msg
         );
     }
