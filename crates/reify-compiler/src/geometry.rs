@@ -310,25 +310,35 @@ pub(crate) fn compile_geometry_call(
         return None;
     }
 
-    // Task 3395: emit a clean compile-time Error for if-then-else expressions
-    // that return a geometry value.  Prior to this check, Conditional fell
-    // through the `_ => return None` arm below with no diagnostic, leaving the
-    // caller's silent fallback to emit `GeomRef::Step(0)` and produce the
-    // cryptic "unresolvable GeomRef::Step(0)" runtime crash.
+    // Tasks 3395, 3418: emit a clean compile-time Error for branching expressions
+    // (Conditional, Match) that return a geometry value.  Prior to task 3395,
+    // Conditional fell through the `_ => return None` arm below with no
+    // diagnostic, leaving the caller's silent fallback to emit
+    // `GeomRef::Step(0)` and produce the cryptic "unresolvable GeomRef::Step(0)"
+    // runtime crash.  Task 3418 extends this to Match with a unified,
+    // parameterised diagnostic.
     //
     // Placed AFTER the Ident handling above (so transitive let-references
     // remain unaffected) and BEFORE the `(name, args)` extraction (so the
-    // check fires regardless of whether the Conditional appears at the let's
+    // check fires regardless of whether the branching expr appears at the let's
     // root or as a sub-arg of another geometry call that recurses back here).
-    if let reify_syntax::ExprKind::Conditional { .. } = &expr.kind {
+    let branching_kind_label = match &expr.kind {
+        reify_syntax::ExprKind::Conditional { .. } => Some("if-then-else"),
+        reify_syntax::ExprKind::Match { .. } => Some("match expression"),
+        _ => None,
+    };
+    if let Some(kind) = branching_kind_label {
         diagnostics.push(
-            Diagnostic::error(
-                "if-then-else returning a geometry value is not yet supported as a geometry \
-                 expression; hoist the conditional out of geometry space \
-                 (e.g. select scalar arguments first via `if cond then a else b`, \
-                 then build the geometry unconditionally)",
-            )
-            .with_label(DiagnosticLabel::new(expr.span, "geometry-typed conditional")),
+            Diagnostic::error(format!(
+                "{kind} returning a geometry value is not yet supported as a geometry \
+                 expression; branching/wrapping expressions returning a geometry value \
+                 must be hoisted out of geometry space (select scalar arguments first \
+                 via the {kind}, then build the geometry unconditionally)",
+            ))
+            .with_label(DiagnosticLabel::new(
+                expr.span,
+                format!("geometry-typed {kind}"),
+            )),
         );
         return None;
     }
