@@ -329,6 +329,34 @@ mod tests {
         );
     }
 
+    // ── Step-11: over-tolerance displacement delta ────────────────────────────
+
+    /// Large displacement delta (1.0 m) >>> tolerance (1e-6 m) → Different.
+    /// Also pins the strict-greater-than semantics: a delta EQUAL to tol_si
+    /// is NOT Different (the comparison is `> tol_si`, not `>= tol_si`).
+    #[test]
+    fn significance_filter_returns_different_for_over_tolerance_displacement_delta() {
+        let v1 = make_elastic_result_value(&[0.0, 0.001], &[0.0, 0.001], 1e8, true, 5);
+
+        // Clear over-threshold: delta = 1.0 m >> tol_si = 1e-6 m.
+        let v2 = make_elastic_result_value(&[0.0 + 1.0, 0.001 + 1.0], &[0.0, 0.001], 1e8, true, 5);
+        assert_eq!(
+            significance_filter("solver::elastic_static", &v1, &v2, Some(1e-6)),
+            FilterOutcome::Different,
+            "displacement delta 1.0 m >> tol 1e-6 m must yield Different",
+        );
+
+        // Boundary: delta == tol_si → Equivalent (strict > semantics).
+        let tol = 1e-6_f64;
+        let v3 = make_elastic_result_value(&[0.0, 0.001], &[0.0, 0.001], 1e8, true, 5);
+        let v4 = make_elastic_result_value(&[0.0 + tol, 0.001], &[0.0, 0.001], 1e8, true, 5);
+        assert_eq!(
+            significance_filter("solver::elastic_static", &v3, &v4, Some(tol)),
+            FilterOutcome::Equivalent,
+            "displacement delta == tol_si must be Equivalent (strict-gt: delta > tol is false)",
+        );
+    }
+
     // ── Step-7: missing-tolerance conservative fallback ───────────────────────
 
     /// When length_tolerance_si is None, the filter returns Different
