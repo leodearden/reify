@@ -78,6 +78,22 @@ enum ShellForce { Off, Auto, On }
 // Param semantics:
 //   element_order          — P1 (linear) vs P2 (quadratic) tetrahedral elements.
 //                            See `ElementOrder` enum doc for the trade-off.
+//                            P2 hex/wedge substitution: when `element_order =
+//                            P2` is set and a body qualifies for hex/wedge
+//                            promotion (the sweep classifier returns `Some(_)`
+//                            and `force_tet = false`), the meshing path
+//                            produces P1 hex/wedge instead of P2 (P2 hex/wedge
+//                            is deferred to v0.4+). The runtime emits a per-
+//                            body info-level diagnostic:
+//                              "Body <label> qualified for hex/wedge meshing;
+//                               P1 hex used despite `element_order = P2`
+//                               (P2 hex deferred). Accuracy for thin geometry
+//                               is comparable to P2 tet."
+//                            Under `force_tet = true` no hex/wedge is produced
+//                            and no diagnostic fires. See `force_tet` below and
+//                            PRD `docs/prds/v0_3/hex-wedge-meshing.md` task
+//                            #10, §"ElasticOptions.element_order = P2
+//                            interaction".
 //   mesh_size              — target characteristic mesh edge length. `none`
 //                            (default) asks the solver to derive an appropriate
 //                            size from the per-purpose tolerancing chain; an
