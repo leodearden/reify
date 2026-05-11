@@ -2490,4 +2490,22 @@ mod tests {
         let read_back = read_entry::<ElasticResult>(root, eng, inp).unwrap();
         assert_eq!(read_back, Some(original));
     }
+
+    #[test]
+    fn read_entry_returns_ok_none_when_bin_file_is_absent_even_with_orphaned_tempfile_in_shard_dir() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "1111111111111111111111111111111a";
+        let inp = "2222222222222222222222222222222b";
+
+        // Create the shard dir and drop a stray orphan tempfile (simulates
+        // a writer that was killed mid-write; the .bin was never renamed in).
+        let sd = shard_dir(root, eng, inp);
+        std::fs::create_dir_all(&sd).unwrap();
+        std::fs::write(sd.join(".tmp.orphan"), b"garbage bytes not a valid entry").unwrap();
+
+        // The .bin for this key does NOT exist; read_entry must return Ok(None).
+        let result = read_entry::<ElasticResult>(root, eng, inp).unwrap();
+        assert_eq!(result, None);
+    }
 }
