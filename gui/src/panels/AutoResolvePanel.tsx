@@ -103,13 +103,17 @@ export const AutoResolvePanel: Component<AutoResolvePanelProps> = (props) => {
       : null;
 
   /**
-   * Driving metric name — invariant across the loop, so reading from the first
-   * iteration that declares one is sufficient. `engineStore.applyAutoResolveIteration`
-   * enforces this invariant: iterations with a conflicting `driving_metric` are
-   * dropped before they reach the panel's state.
+   * Driving metric name — invariant across the loop. Reads from the O(1) cached
+   * `canonicalDrivingMetric` field set by `engineStore.applyAutoResolveIteration`
+   * when the first metric-bearing iteration is accepted. Falls back to scanning
+   * `iterations` for state objects constructed directly (e.g. in unit tests that
+   * do not go through `applyAutoResolveIteration`). The engineStore enforces the
+   * invariant: conflicting iterations are dropped before reaching the panel.
    */
   const chartMetricName = () =>
-    props.state.iterations.find((it) => it.driving_metric)?.driving_metric ?? null;
+    props.state.canonicalDrivingMetric ??
+    props.state.iterations.find((it) => it.driving_metric)?.driving_metric ??
+    null;
 
   /**
    * (iteration_number, driving_metric_value) pairs with finite values only.

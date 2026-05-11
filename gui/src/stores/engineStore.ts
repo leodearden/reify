@@ -29,6 +29,13 @@ import type { KernelStatus } from '../bridge';
 export interface AutoResolveLoopState {
   active: boolean;
   iterations: AutoResolveIteration[];
+  /**
+   * Canonical driving metric for the current loop — cached on first acceptance of
+   * an iteration that declares one. Read by `applyAutoResolveIteration` in O(1)
+   * rather than scanning `iterations`. Cleared by `beginAutoResolveLoop` and
+   * `endAutoResolveLoop` so each loop starts with a fresh canonical.
+   */
+  canonicalDrivingMetric?: string;
 }
 
 export interface EngineState {
@@ -59,7 +66,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
     tessellationDiagnostics: [],
     compileDiagnostics: [],
     kernelStatus: null,
-    autoResolve: { active: false, iterations: [] },
+    autoResolve: { active: false, iterations: [], canonicalDrivingMetric: undefined },
   });
 
   function initFromState(guiState: GuiState) {
@@ -135,7 +142,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
 
   /** Start a new auto-resolve loop: flip active=true and clear previous iterations. */
   function beginAutoResolveLoop() {
-    setState('autoResolve', { active: true, iterations: [] });
+    setState('autoResolve', { active: true, iterations: [], canonicalDrivingMetric: undefined });
   }
 
   /**
@@ -143,13 +150,19 @@ export function createEngineStore(options?: EngineStoreOptions) {
    *
    * Enforces the AutoResolveIteration invariant: `driving_metric` must be
    * consistent across all iterations in a single loop. If the incoming
-   * iteration's `driving_metric` conflicts with the canonical metric (the
-   * first iteration in the array that declares one), the iteration is dropped
-   * with a `console.warn` rather than corrupting the chart data series.
+   * iteration's `driving_metric` conflicts with the canonical metric, the
+   * iteration is dropped with a `console.warn` rather than corrupting the
+   * chart data series.
+   *
+   * The canonical metric is cached in `state.autoResolve.canonicalDrivingMetric`
+   * (O(1) read) rather than re-scanning `iterations` on every call (see
+   * AutoResolveIteration invariant in types.ts).
    */
   function applyAutoResolveIteration(iter: AutoResolveIteration) {
-    const canonical = state.autoResolve.iterations.find((it) => it.driving_metric)?.driving_metric;
-    if (canonical !== undefined && iter.driving_metric !== undefined && iter.driving_metric !== canonical) {
+    // Both checks use the same truthy predicate so empty-string metrics behave
+    // consistently at both the canonical-lookup and mismatch-comparison sites.
+    const canonical = state.autoResolve.canonicalDrivingMetric;
+    if (canonical && iter.driving_metric && iter.driving_metric !== canonical) {
       console.warn('[auto-resolve-iteration] driving_metric mismatch; dropping iteration', {
         iteration: iter.iteration,
         canonical,
@@ -158,6 +171,10 @@ export function createEngineStore(options?: EngineStoreOptions) {
       return;
     }
     setState(produce((s) => { s.autoResolve.iterations.push(iter); }));
+    // Establish canonical on first iteration that declares a driving_metric.
+    if (iter.driving_metric && !canonical) {
+      setState('autoResolve', 'canonicalDrivingMetric', iter.driving_metric);
+    }
   }
 
   /**
@@ -169,7 +186,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
    * Clearing eagerly avoids holding dead state between runs.
    */
   function endAutoResolveLoop() {
-    setState('autoResolve', { active: false, iterations: [] });
+    setState('autoResolve', { active: false, iterations: [], canonicalDrivingMetric: undefined });
   }
 
   async function subscribeToEvents(): Promise<() => void> {

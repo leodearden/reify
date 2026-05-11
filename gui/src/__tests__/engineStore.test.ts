@@ -1036,10 +1036,12 @@ describe('engineStore autoResolve driving_metric invariance', () => {
       const { state, beginAutoResolveLoop, applyAutoResolveIteration } = createEngineStore();
       beginAutoResolveLoop();
       applyAutoResolveIteration(sampleIteration);
+      expect(state.autoResolve.canonicalDrivingMetric).toBe('max_von_mises');
       const iter2 = { ...sampleIteration, iteration: 2, driving_metric_value: 165 };
       applyAutoResolveIteration(iter2);
       expect(state.autoResolve.iterations).toHaveLength(2);
       expect(state.autoResolve.iterations[1]).toEqual(iter2);
+      expect(state.autoResolve.canonicalDrivingMetric).toBe('max_von_mises');
       dispose();
     });
   });
@@ -1074,22 +1076,33 @@ describe('engineStore autoResolve driving_metric invariance', () => {
     });
   });
 
-  it('(4) first iteration with driving_metric establishes the canonical', () => {
+  it('(4) first iteration with driving_metric establishes the canonical; no-canonical state accepts any metric', () => {
     createRoot((dispose) => {
       const { state, beginAutoResolveLoop, applyAutoResolveIteration } = createEngineStore();
       beginAutoResolveLoop();
-      // First iteration has no driving_metric
+
+      // Initially no canonical — the loop accepts ANY driving_metric value.
+      expect(state.autoResolve.canonicalDrivingMetric).toBeUndefined();
+
+      // First iteration has no driving_metric — accepted; canonical remains undefined.
       const { driving_metric, driving_metric_value, ...noMetricIter } = sampleIteration;
       applyAutoResolveIteration({ ...noMetricIter, iteration: 1 });
       expect(state.autoResolve.iterations).toHaveLength(1);
-      // Second iteration establishes canonical (driving_metric='displacement')
+      expect(state.autoResolve.canonicalDrivingMetric).toBeUndefined();
+
+      // Second iteration declares driving_metric='displacement' — accepted (no canonical
+      // conflict) and ESTABLISHES the canonical for the remainder of the loop.
       const displacementIter = { ...sampleIteration, iteration: 2, driving_metric: 'displacement', driving_metric_value: 0.5 };
       applyAutoResolveIteration(displacementIter);
       expect(state.autoResolve.iterations).toHaveLength(2);
-      // Third iteration with a different metric should be dropped (canonical is now 'displacement')
+      expect(state.autoResolve.canonicalDrivingMetric).toBe('displacement');
+
+      // Third iteration with a different metric — DROPPED (canonical is now 'displacement').
       const mismatchedIter = { ...sampleIteration, iteration: 3, driving_metric_value: 190 };
       applyAutoResolveIteration(mismatchedIter);
       expect(state.autoResolve.iterations).toHaveLength(2);
+      expect(state.autoResolve.canonicalDrivingMetric).toBe('displacement');
+
       dispose();
     });
   });
