@@ -441,6 +441,74 @@ fn drilled_plate_phase_b_positive_case_succeeds() {
     through_thickness_must_pass(k, 2);
 }
 
+/// Degenerate `SweepParams` proxy for the twisted-loft negative case.
+///
+/// Twisted-loft and curved-path-Sweep rejections at the classifier level (before
+/// any sweep step runs) live in `reify-eval` and are already pinned by:
+/// `crates/reify-eval/src/sweep_classifier.rs#tests`
+///
+/// This test pins the **meshing-pipeline-side boundary contract**: if a
+/// geometrically-malformed `SweepParams` somehow reached `sweep_2d_mesh_to_3d`
+/// without classifier interception, `validate_sweep_inputs` would reject it.
+/// Three sub-cases, all using a hand-rolled triangle mesh (no Gmsh needed):
+///
+/// (a) `Revolve` with zero `axis_dir` → `Err(SweepError::DegenerateAxis)`.
+/// (b) `Extrude` with `length = -1.0` → `Err(SweepError::DegenerateMagnitude)`.
+/// (c) `Extrude` with `length = f64::NAN` → `Err(SweepError::DegenerateMagnitude)`.
+///
+/// No `GMSH_AVAILABLE` gating — the sweep step is pure Rust.
+#[test]
+fn degenerate_sweep_params_proxy_for_twisted_loft() {
+    // Minimal hand-rolled triangle mesh (3 vertices, 1 triangle).
+    let mesh = Mesh2d::Triangle {
+        vertices: vec![0.0_f32, 0.0, 1.0, 0.0, 0.0, 1.0],
+        indices: vec![0, 1, 2],
+    };
+
+    // (a) Zero axis_dir → DegenerateAxis.
+    let r = sweep_2d_mesh_to_3d(
+        &mesh,
+        &SweepParams::Revolve {
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [0.0, 0.0, 0.0],
+            angle: PI / 2.0,
+        },
+        1,
+    );
+    assert!(
+        matches!(r, Err(SweepError::DegenerateAxis)),
+        "zero axis_dir must return Err(DegenerateAxis), got {r:?}",
+    );
+
+    // (b) Negative length → DegenerateMagnitude.
+    let r = sweep_2d_mesh_to_3d(
+        &mesh,
+        &SweepParams::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: -1.0,
+        },
+        1,
+    );
+    assert!(
+        matches!(r, Err(SweepError::DegenerateMagnitude)),
+        "negative length must return Err(DegenerateMagnitude), got {r:?}",
+    );
+
+    // (c) NaN length → DegenerateMagnitude.
+    let r = sweep_2d_mesh_to_3d(
+        &mesh,
+        &SweepParams::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: f64::NAN,
+        },
+        1,
+    );
+    assert!(
+        matches!(r, Err(SweepError::DegenerateMagnitude)),
+        "NaN length must return Err(DegenerateMagnitude), got {r:?}",
+    );
+}
+
 /// Surface-pin test: verifies that every type, function, and constant used by
 /// the fixture tests below can be resolved at compile time.  A regression that
 /// renames or removes any of these re-exports breaks here *before* any fixture
