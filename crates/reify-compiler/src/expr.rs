@@ -173,11 +173,11 @@ fn make_cross_sub_geometry_error(
 /// together in `entity.rs` (regular Sub pre-pass and match-arm Sub pre-pass)
 /// inside the same `if let Some(child_tmpl) = find_template(...)` guard, with
 /// `sub_component_types` written unconditionally before the template lookup.
-/// A `debug_assert!` before the lookup below enforces the invariant in
-/// debug/test builds so a future code path that populates
-/// `sub_realization_names` without `sub_component_types` is caught loudly
-/// rather than silently producing a diagnostic that names the sub instance
-/// instead of its child structure.
+/// An `.expect(...)` on the `sub_component_types.get(sub_name)` lookup below
+/// enforces the invariant in **all** build modes (debug and release; task-3431)
+/// so a future code path that populates `sub_realization_names` without
+/// `sub_component_types` panics loudly rather than silently producing a
+/// diagnostic that names the sub instance instead of its child structure.
 fn try_emit_cross_sub_geometry(
     scope: &CompilationScope<'_>,
     sub_name: &str,
@@ -190,18 +190,11 @@ fn try_emit_cross_sub_geometry(
         .get(sub_name)
         .is_some_and(|s| s.contains(member))
     {
-        debug_assert!(
-            scope.sub_component_types.contains_key(sub_name),
-            "sub_realization_names ⊂ sub_component_types invariant violated: \
-             sub '{}' has realization entries but no structure-name entry — \
-             check entity.rs Sub/match-arm pre-passes",
-            sub_name,
-        );
         let child_struct = scope
             .sub_component_types
             .get(sub_name)
-            .map(|s| s.as_str())
-            .unwrap_or(sub_name);
+            .expect("sub_realization_names ⊂ sub_component_types invariant (task-3420; release-enforced task-3431)")
+            .as_str();
         Some(make_cross_sub_geometry_error(
             diagnostics,
             member,
@@ -2857,6 +2850,59 @@ pub structure Outer {
             "diagnostic must say \"inside 'Inner'\" (the structure type name), \
              not \"inside 'inner'\" (the instance name); got: {:?}",
             msg
+        );
+    }
+
+    /// `try_emit_cross_sub_geometry` must panic (not silently fall back) when
+    /// `sub_realization_names` contains an entry for a sub but `sub_component_types`
+    /// does not — in **all** build modes (debug and release).
+    ///
+    /// ## What this test pins
+    ///
+    /// `.expect("…task-3420…")` enforces the `sub_realization_names ⊂
+    /// sub_component_types` invariant in both debug and release, unlike the
+    /// previous `debug_assert!` + `.unwrap_or(sub_name)` combination which only
+    /// caught violations in debug builds and silently mis-named the child structure
+    /// in release.
+    ///
+    /// ## Why this test is NOT `#[cfg(debug_assertions)]`-gated
+    ///
+    /// The explicit goal of task-3431 is to make the enforcement active in **release**
+    /// builds too. Gating the test on `debug_assertions` would only verify debug-only
+    /// behavior — exactly the gap this task closes. Omitting the gate ensures the
+    /// `#[should_panic]` assertion is checked in both profiles.
+    ///
+    /// ## Why this test calls `try_emit_cross_sub_geometry` directly
+    ///
+    /// The invariant-violating state (a sub in `sub_realization_names` with no
+    /// corresponding entry in `sub_component_types`) is unreachable via the public
+    /// compile API — `entity.rs` always populates both maps together. The helper
+    /// must be called directly to reach the panicking code path.
+    ///
+    /// ## Why `expected = "task-3420"` rather than the full panic message
+    ///
+    /// Both `"task-3420"` (invariant origin) and `"task-3431"` (release-enforcement
+    /// promotion) are baked into the `.expect()` argument.  Coupling to either stable
+    /// reference tag minimises test-maintenance churn while still verifying the correct
+    /// code site panicked; `"task-3420"` is retained here so a future grep for the
+    /// invariant's origin tag reaches this test site as well as the production call.
+    #[test]
+    #[should_panic(expected = "task-3420")]
+    fn try_emit_cross_sub_geometry_panics_on_invariant_violation_in_all_builds() {
+        use std::collections::BTreeSet;
+        let mut scope = CompilationScope::new("Outer");
+        // Populate sub_realization_names["inner"] = {"body"} but deliberately leave
+        // sub_component_types empty — this violates the invariant and must panic.
+        scope
+            .sub_realization_names
+            .insert("inner".to_string(), BTreeSet::from(["body".to_string()]));
+        // sub_component_types intentionally not populated.
+        try_emit_cross_sub_geometry(
+            &scope,
+            "inner",
+            "body",
+            reify_types::SourceSpan::prelude(),
+            &mut Vec::new(),
         );
     }
 
