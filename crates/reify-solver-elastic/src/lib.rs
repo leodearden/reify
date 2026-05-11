@@ -51,6 +51,9 @@
 //!     SweepElementTarget, Mesh2d, Mesh2dReport, ProfileBoundary, Mesh2dOptions, Mesh2dError,
 //!     compute_quad_skew, recombine_quality_ok, auto_mesh_size_from_boundary,
 //!     mesh_swept_profile_2d,
+//!     // Task 2988: sweep step public surface
+//!     SweepParams, SweptMesh3d, SweptConnectivity, SweepError, ThroughThicknessSweepWarning,
+//!     sweep_2d_mesh_to_3d, derive_layer_count, check_sweep_through_thickness,
 //! };
 //!
 //! let _: TetP1 = TetP1;
@@ -279,6 +282,39 @@
 //!     SweepElementTarget,
 //!     &Mesh2dOptions,
 //! ) -> Result<Mesh2dReport, Mesh2dError> = mesh_swept_profile_2d;
+//!
+//! // Task 2988: sweep step — pin each new crate-root symbol by construction
+//! // (a renamed variant or removed field fails to compile), then pin the three
+//! // public function signatures as function-item coercions.
+//! let _ = SweepParams::Extrude { axis: [0.0_f64, 0.0, 1.0], length: 1.0_f64 };
+//! let _ = SweepParams::Revolve {
+//!     axis_origin: [0.0_f64; 3],
+//!     axis_dir: [0.0_f64, 1.0, 0.0],
+//!     angle: std::f64::consts::FRAC_PI_2,
+//! };
+//! let _ = SweepParams::SweepLinear { axis: [0.0_f64, 0.0, 1.0], length: 1.0_f64 };
+//! let _ = SweepError::EmptyMesh2d;
+//! let _ = SweepError::InvalidLayerCount;
+//! let _ = SweepError::DegenerateAxis;
+//! let _ = SweepError::DegenerateMagnitude;
+//! let _ = SweptConnectivity::Wedge { indices: vec![0_u32, 1, 2, 3, 4, 5] };
+//! let _ = SweptConnectivity::Hex { indices: vec![0_u32, 1, 2, 3, 4, 5, 6, 7] };
+//! let _: fn(f64, f64, usize) -> usize = derive_layer_count;
+//! let _: fn(usize, usize) -> Option<ThroughThicknessSweepWarning> = check_sweep_through_thickness;
+//! let _: fn(&Mesh2d, &SweepParams, usize) -> Result<SweptMesh3d, SweepError> = sweep_2d_mesh_to_3d;
+//! // Behaviour anchor: K=1 extrude of unit triangle — guards against returning an
+//! // empty placeholder (the pre-impl stub returns vertices: vec![]).
+//! let base2d = Mesh2d::Triangle {
+//!     vertices: vec![0.0_f32, 0.0, 1.0, 0.0, 0.0, 1.0],
+//!     indices: vec![0_u32, 1, 2],
+//! };
+//! let swept = sweep_2d_mesh_to_3d(
+//!     &base2d,
+//!     &SweepParams::Extrude { axis: [0.0_f64, 0.0, 1.0], length: 1.0_f64 },
+//!     1,
+//! ).unwrap();
+//! assert_eq!(swept.layers, 1);
+//! assert_eq!(swept.vertices.len(), 18); // 2 planes × 3 verts × 3 coords
 //! ```
 
 pub mod assembly;
