@@ -311,6 +311,152 @@ mod tests {
         );
     }
 
+    /// Textbook Zienkiewicz patch test: uniform stress across the two-tet fan
+    /// must produce zero per-element indicators and zero global error.
+    ///
+    /// When σ is uniform, every nodal patch average equals σ, so the
+    /// smoothed interpolation σ̄_e* = σ everywhere. The difference σ_e − σ̄_e*
+    /// is zero for every element ⇒ η_e = 0, η_global = 0.
+    ///
+    /// Uses a non-trivial σ = diag(100, 50, 25) to catch any accidental
+    /// zero-tensor short-circuit.
+    #[test]
+    fn uniform_stress_field_yields_zero_per_element_indicator_and_zero_global_error() {
+        let mat = dimensionless_steel_like();
+        let v = 1.0_f64 / 6.0;
+        let conn0 = [0_usize, 1, 2, 3];
+        let conn1 = [1_usize, 2, 3, 4];
+        // Non-trivial uniform stress across both elements.
+        let sigma = [[100.0_f64, 0.0, 0.0], [0.0, 50.0, 0.0], [0.0, 0.0, 25.0]];
+        let elements = [
+            StressElement { connectivity: &conn0, stress: sigma, volume: v },
+            StressElement { connectivity: &conn1, stress: sigma, volume: v },
+        ];
+        let mesh = two_tet_fan_mesh();
+
+        let result = compute_zz_indicator(&elements, &mesh, &mat);
+
+        assert_eq!(result.per_element.len(), 2);
+        let abs_tol = 1e-12;
+        assert!(
+            result.per_element[0].abs() < abs_tol,
+            "uniform stress: per_element[0] = {} (expected < {abs_tol})",
+            result.per_element[0],
+        );
+        assert!(
+            result.per_element[1].abs() < abs_tol,
+            "uniform stress: per_element[1] = {} (expected < {abs_tol})",
+            result.per_element[1],
+        );
+        assert!(
+            result.global_relative_energy_error.abs() < abs_tol,
+            "uniform stress: global = {} (expected < {abs_tol})",
+            result.global_relative_energy_error,
+        );
+    }
+
+    /// Zero-energy guard: all-zero stress field must yield zero indicators and
+    /// zero global error without dividing by zero (NaN).
+    ///
+    /// Pins the `if sum_energy_sq > 0.0 else 0.0` guard in
+    /// [`compute_zz_indicator`]. Without that guard, this case returns NaN
+    /// from 0/0 and propagates through downstream code.
+    #[test]
+    fn zero_stress_field_yields_zero_indicator_and_zero_global_error_without_dividing_by_zero() {
+        let mat = dimensionless_steel_like();
+        let v = 1.0_f64 / 6.0;
+        let conn0 = [0_usize, 1, 2, 3];
+        let conn1 = [1_usize, 2, 3, 4];
+        let sigma_zero = [[0.0_f64; 3]; 3];
+        let elements = [
+            StressElement { connectivity: &conn0, stress: sigma_zero, volume: v },
+            StressElement { connectivity: &conn1, stress: sigma_zero, volume: v },
+        ];
+        let mesh = two_tet_fan_mesh();
+
+        let result = compute_zz_indicator(&elements, &mesh, &mat);
+
+        assert_eq!(result.per_element.len(), 2);
+        assert_eq!(result.per_element[0], 0.0, "zero-stress per_element[0] must be 0.0");
+        assert_eq!(result.per_element[1], 0.0, "zero-stress per_element[1] must be 0.0");
+        assert_eq!(
+            result.global_relative_energy_error, 0.0,
+            "zero-energy guard must return 0.0, not NaN",
+        );
+        assert!(
+            !result.global_relative_energy_error.is_nan(),
+            "global must not be NaN for zero-stress input",
+        );
+    }
+
+    /// L-corner-style localisation: one "hot" element with σ >> neighbours
+    /// must dominate the per-element indicator.
+    ///
+    /// Synthetic fixture: 3-tet fan where tet_hot is "hot" with
+    /// σ_hot = diag(1000, 0, 0), and the two flanking tets are "cold" with
+    /// σ_cold = diag(0, 0, 0). All volumes = 1/6.
+    ///
+    /// Topology: all 3 tets share vertex 0; no other shared nodes.
+    ///
+    ///   tet_hot:   connectivity = [0, 1, 2, 3]
+    ///   tet_cold0: connectivity = [0, 4, 5, 6]
+    ///   tet_cold1: connectivity = [0, 7, 8, 9]
+    ///
+    /// Analytical ratio: η_hot / η_cold = 2.0 (exactly).
+    ///   Node 0 (shared × 3): σ̄₀ = σ_hot/3.
+    ///   Nodes 1-3 (only hot): σ̄ = σ_hot.
+    ///   Hot σ̄* = (σ_hot/3 + 3·σ_hot)/4 = 5σ_hot/6  →  diff = σ_hot/6
+    ///   Cold σ̄* = (σ_hot/3)/4 = σ_hot/12             →  diff = σ_hot/12
+    ///   Ratio = (1/6)/(1/12) = 2. Threshold 1.5 is conservative.
+    ///
+    /// Note: the plan originally specified 5×, but that ratio is not
+    /// achievable with a 3-tet single-shared-node topology (escalation
+    /// esc-2996-104). The 1.5× threshold still demonstrates the core
+    /// localisation property: the element at the stress boundary has a
+    /// larger indicator than its low-stress neighbours.
+    #[test]
+    fn l_corner_style_hot_element_localisation_dominates_uniform_neighbours() {
+        let mat = dimensionless_steel_like();
+        let v = 1.0_f64 / 6.0;
+        // 10 nodes: 0 is the shared vertex; 1-3 belong only to hot; 4-9 to colds.
+        let conn_hot = [0_usize, 1, 2, 3];
+        let conn_cold0 = [0_usize, 4, 5, 6];
+        let conn_cold1 = [0_usize, 7, 8, 9];
+        let sigma_hot = [[1000.0_f64, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]];
+        let sigma_cold = [[0.0_f64; 3]; 3];
+        let elements = [
+            StressElement { connectivity: &conn_hot, stress: sigma_hot, volume: v },
+            StressElement { connectivity: &conn_cold0, stress: sigma_cold, volume: v },
+            StressElement { connectivity: &conn_cold1, stress: sigma_cold, volume: v },
+        ];
+        let mesh = VolumeMesh {
+            vertices: vec![0.0_f32; 30], // 10 nodes × 3 coords
+            tet_indices: vec![0, 1, 2, 3, 0, 4, 5, 6, 0, 7, 8, 9],
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+
+        let result = compute_zz_indicator(&elements, &mesh, &mat);
+
+        assert_eq!(result.per_element.len(), 3);
+        let eta_hot = result.per_element[0];
+        let eta_cold0 = result.per_element[1];
+        let eta_cold1 = result.per_element[2];
+
+        // Conservative threshold: actual ratio = 2.0, threshold = 1.5.
+        let threshold = 1.5;
+        assert!(
+            eta_hot > threshold * eta_cold0,
+            "hot element must dominate cold0: η_hot={eta_hot} vs {threshold}×η_cold0={}",
+            threshold * eta_cold0,
+        );
+        assert!(
+            eta_hot > threshold * eta_cold1,
+            "hot element must dominate cold1: η_hot={eta_hot} vs {threshold}×η_cold1={}",
+            threshold * eta_cold1,
+        );
+    }
+
     /// Per-element indicator on a two-tet fan with σ_A ≠ σ_B.
     ///
     /// Fixture: σ_A = diag(100,0,0), σ_B = diag(0,0,0), V_A = V_B = 1/6.
