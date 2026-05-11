@@ -195,6 +195,21 @@ pub fn get_containing_definition_impl(
     Ok(s.get_containing_definition(line, col))
 }
 
+/// Return the entity (and optionally member) at the given 1-based `(line, col)` source position.
+///
+/// Returns `Ok(Some("Entity.member"))` when the cursor is inside a value cell span,
+/// `Ok(Some("Entity"))` when inside a template body but no cell matches,
+/// `Ok(None)` when no module is loaded, zero line/col, or outside every template span.
+/// Returns `Err` when the engine mutex is poisoned.
+pub fn get_entity_at_source_location_impl(
+    engine: &Mutex<EngineSession>,
+    line: u32,
+    col: u32,
+) -> Result<Option<String>, String> {
+    let s = engine.lock().map_err(|e| format!("Lock error: {}", e))?;
+    Ok(s.get_entity_at_source_location(line, col))
+}
+
 /// Return mechanism descriptors for all non-errored mechanisms in the loaded module.
 ///
 /// Each descriptor contains the mechanism's cell id, entity path, name, body count,

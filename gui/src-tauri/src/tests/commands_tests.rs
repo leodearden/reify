@@ -287,6 +287,45 @@ fn get_containing_definition_impl_returns_ok_on_healthy_mutex() {
     );
 }
 
+// --- get_entity_at_source_location_impl tests ---
+
+#[test]
+fn get_entity_at_source_location_impl_returns_err_on_poisoned_mutex() {
+    use crate::commands::get_entity_at_source_location_impl;
+
+    let engine = make_poisoned_engine();
+    let result = get_entity_at_source_location_impl(&engine, 2, 11);
+    assert!(result.is_err(), "expected Err on poisoned mutex, got {:?}", result);
+    assert!(
+        result.unwrap_err().contains("Lock error"),
+        "error message should contain 'Lock error'"
+    );
+}
+
+#[test]
+fn get_entity_at_source_location_impl_returns_ok_on_healthy_mutex() {
+    use crate::commands::get_entity_at_source_location_impl;
+
+    let session = make_loaded_session();
+    let engine = Mutex::new(session);
+
+    // Position (2, 11) is inside the Bracket.width cell span.
+    let result = get_entity_at_source_location_impl(&engine, 2, 11);
+    assert_eq!(
+        result,
+        Ok(Some("Bracket.width".to_string())),
+        "position (2,11) should resolve to Bracket.width"
+    );
+
+    // Position (16, 1) is beyond the source end → outside any template span → None.
+    let result_outside = get_entity_at_source_location_impl(&engine, 16, 1);
+    assert_eq!(
+        result_outside,
+        Ok(None),
+        "position (16,1) is beyond the source and should return None"
+    );
+}
+
 // --- Integration tests (step-11) ---
 
 #[test]
