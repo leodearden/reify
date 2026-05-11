@@ -229,3 +229,64 @@ where
 pub fn is_materially_better(morph: f64, from_scratch: f64) -> bool {
     from_scratch > MATERIALITY_FACTOR * morph
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reify_types::ElementOrderTag;
+
+    /// Build a synthetic `SweepReport` with hand-picked metric values and
+    /// empty meshes. The predicate functions only read scalar fields, so
+    /// the meshes need not contain any elements.
+    fn synthetic_report(morph_max_ar_factor: f64, from_scratch_max_ar_factor: f64) -> SweepReport {
+        let empty = VolumeMesh {
+            vertices: Vec::new(),
+            tet_indices: Vec::new(),
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+        SweepReport {
+            morph_verdict: reify_mesh_morph::QualityVerdict::Pass,
+            morph_min_scaled_j: 0.0,
+            from_scratch_min_scaled_j: 0.0,
+            morph_max_ar_factor,
+            from_scratch_max_ar_factor,
+            morphed: empty.clone(),
+            from_scratch: empty,
+        }
+    }
+
+    /// `ar_materially_better` uses `from_scratch_max_ar_factor`, NOT
+    /// `morph_max_ar_factor` — the two fields must be independent.
+    ///
+    /// Case (a): old source-aliased check (`morph_max_ar_factor > 1.20`) would
+    /// trip, but `from_scratch_max_ar_factor = 1.10 < 1.20` so the new
+    /// predicate must return false.
+    #[test]
+    fn ar_materially_better_predicate_compares_morph_against_from_scratch_baseline_not_source() {
+        // (a) morph_max_ar_factor=1.50 (old check trips), from_scratch=1.10 → false
+        let report_a = synthetic_report(1.50, 1.10);
+        assert!(
+            !ar_materially_better(&report_a),
+            "from_scratch_max_ar_factor=1.10 < MATERIALITY_FACTOR=1.20 must return false; \
+             old source-proxied check would have tripped on morph_max_ar_factor=1.50"
+        );
+
+        // (b) morph_max_ar_factor=1.00 (old check doesn't trip), from_scratch=1.30 → true
+        let report_b = synthetic_report(1.00, 1.30);
+        assert!(
+            ar_materially_better(&report_b),
+            "from_scratch_max_ar_factor=1.30 > MATERIALITY_FACTOR=1.20 must return true; \
+             old source-proxied check would NOT have tripped on morph_max_ar_factor=1.00"
+        );
+
+        // Boundary: from_scratch_max_ar_factor == MATERIALITY_FACTOR — strict >
+        // comparison must return false (equal is not materially better).
+        let report_boundary = synthetic_report(2.00, MATERIALITY_FACTOR);
+        assert!(
+            !ar_materially_better(&report_boundary),
+            "from_scratch_max_ar_factor == MATERIALITY_FACTOR must return false \
+             (strict greater-than comparison)"
+        );
+    }
+}
