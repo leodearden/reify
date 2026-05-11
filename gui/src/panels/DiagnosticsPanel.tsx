@@ -132,7 +132,6 @@ export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
             width: `${dialogSize().width}px`,
             height: `${dialogSize().height}px`,
             resize: 'both',
-            overflow: 'auto',
           }}
         >
           <h2
