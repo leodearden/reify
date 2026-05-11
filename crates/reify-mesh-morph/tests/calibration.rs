@@ -491,7 +491,7 @@ fn assert_materially_better_rule_holds(
 /// The synthetic procedural fixtures' structured hex-to-6-tet decomposition
 /// produces baseline populations skewed toward sj < 0.25 (e.g. plate base
 /// pct ≈ 0.91 at `hole_diameter = 0.30`; bracket base similar). The
-/// production default is the PRD seed 0.01 — relaxed here to 0.97 so the
+/// production default is the PRD seed 0.01 — relaxed here to 0.99 so the
 /// materially-better-rule check exercises real morph distortion rather than
 /// the fixtures' baseline distribution. Re-evaluate against real CAD meshes
 /// once PRD task #10 (engine wiring) lands.
@@ -553,7 +553,7 @@ fn plate_hole_diameter_sweep_obeys_materially_better_rule_with_calibrated_defaul
     //
     // Several sweep steps land near calibration boundaries. Notably
     // target=0.40 produces `pct_below_025 ≈ 0.958` against the test-only
-    // override of 0.97 (margin < 0.02) and a corrected
+    // override of 0.99 (margin ≈ 0.03) and a corrected
     // `from_scratch_max_ar_factor ≈ 1.03` against the 1.20 materiality bar.
     // The earlier proxy AR factor (`morphed_AR / source_AR`) read ≈ 1.23 at
     // this target — that margin disappeared once task #3435 switched the
@@ -573,7 +573,9 @@ fn plate_hole_diameter_sweep_obeys_materially_better_rule_with_calibrated_defaul
     // morph distortion. With the corrected predicate there is no test-only
     // threshold override that preserves the Reject-branch materiality rule
     // signal at target=0.60, so the target was dropped. The bracket sweep
-    // continues to exercise the Reject branch via its fillet-radius range.
+    // continues to exercise the Reject branch via its fillet-radius range —
+    // its `saw_pass && saw_reject` assertion is now load-bearing for
+    // Reject-branch materiality coverage and must not be weakened.
     let target_params = [0.31_f64, 0.35, 0.40, 0.50];
     let fixture = |hole_diameter: f64| {
         fixtures::plate_with_hole(1.0, hole_diameter, 0.1, 4, 2)
