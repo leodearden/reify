@@ -662,10 +662,14 @@ impl EngineSession {
 
     /// Atomically commit all session state after a successful parse+compile+check cycle.
     ///
-    /// This helper enforces the invariant that the seven core session fields always
-    /// change together: either all seven are updated or none are.  The seven fields
-    /// are: `source_map`, `module_name`, `compiled`, `last_check`, `parsed_cache`,
-    /// `last_compile_diagnostics`, and `live_compile_diagnostics`.
+    /// Enforces the invariant that the canonical compiled state, all derived caches,
+    /// and both failure-diagnostic buffers move together: either every field below is
+    /// updated/cleared in this single call, or none are.  The fields, grouped by role:
+    ///
+    /// - **Canonical compiled state**: `source_map`, `module_name`, `compiled`, `last_check`
+    /// - **Derived caches**: `def_preview_cache`, `parsed_cache`, `line_offsets_cache`, `consumed_idents_cache`
+    /// - **Failure-diagnostic state**: `last_compile_diagnostics`, `live_compile_diagnostics`
+    ///
     /// Callers **must** only invoke this after both compilation and `check()` have
     /// succeeded — invoking it on a partially-valid state would violate the invariant.
     ///
@@ -701,7 +705,7 @@ impl EngineSession {
         // Clear stored failure diagnostics — the compile succeeded, so any stale
         // failure diagnostics from a prior failed load must not appear in subsequent
         // build_gui_state calls.  Both fields are cleared atomically here so the
-        // atomic-commit invariant ("all seven fields move together") remains intact.
+        // atomic-commit invariant (all fields listed in the doc comment above move together) remains intact.
         self.last_compile_diagnostics.clear();
         self.live_compile_diagnostics.clear();
     }
