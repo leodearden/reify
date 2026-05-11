@@ -1245,12 +1245,17 @@ describe('engineStore autoResolve empty-string driving_metric', () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       applyAutoResolveIteration({ ...sampleIteration, iteration: 1, driving_metric: '' });
       expect(state.autoResolve.canonicalDrivingMetric).toBeUndefined();
-      warnSpy.mockRestore();
 
       // Second: real driving_metric — must be appended and establish the canonical
       applyAutoResolveIteration({ ...sampleIteration, iteration: 2, driving_metric: 'displacement', driving_metric_value: 0.8 });
       expect(state.autoResolve.iterations).toHaveLength(2);
       expect(state.autoResolve.canonicalDrivingMetric).toBe('displacement');
+
+      const emptyWarnCalls = warnSpy.mock.calls.filter(
+        ([msg]) => typeof msg === 'string' && msg.includes('empty driving_metric'),
+      );
+      expect(emptyWarnCalls).toHaveLength(1);
+      warnSpy.mockRestore();
       dispose();
     });
   });
