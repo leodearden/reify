@@ -4988,4 +4988,35 @@ mod p2_substitution_diagnostic_tests {
             "diagnostic message must match PRD wording verbatim"
         );
     }
+
+    /// Suppression cases: each of the three gating conditions independently
+    /// disables diagnostic emission and returns `None`.
+    ///
+    /// (a) element_order = P1 — no substitution happening, nothing to warn about.
+    /// (b) force_tet = true — hex/wedge was suppressed by the caller; PRD states
+    ///     "Diagnostic is suppressed under `force_tet = true`".
+    /// (c) swept_kind = None — body doesn't qualify for hex/wedge promotion.
+    #[test]
+    fn p2_substitution_suppression_cases_return_none() {
+        let kind = extrude_kind();
+
+        // (a) P1 element order — no substitution, no diagnostic.
+        assert!(
+            p2_substitution_diagnostic(Some(&kind), false, ElementOrderTag::P1, "B_P1").is_none(),
+            "(a) element_order=P1 must return None"
+        );
+
+        // (b) force_tet=true — hex/wedge suppressed; diagnostic must not fire.
+        assert!(
+            p2_substitution_diagnostic(Some(&kind), true, ElementOrderTag::P2, "B_ForceTet")
+                .is_none(),
+            "(b) force_tet=true must return None"
+        );
+
+        // (c) swept_kind=None — body not hex/wedge-eligible; diagnostic must not fire.
+        assert!(
+            p2_substitution_diagnostic(None, false, ElementOrderTag::P2, "B_NoSweep").is_none(),
+            "(c) swept_kind=None must return None"
+        );
+    }
 }
