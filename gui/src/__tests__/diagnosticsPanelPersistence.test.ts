@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   DIAGNOSTICS_LINE_WRAP_KEY,
   DIAGNOSTICS_PANEL_SIZE_KEY,
+  MAX_PERSISTED_DIMENSION_PX,
   loadDiagnosticsLineWrap,
   saveDiagnosticsLineWrap,
   loadDiagnosticsPanelSize,
@@ -88,19 +89,19 @@ describe('diagnosticsPanelPersistence', () => {
       expect(loadDiagnosticsPanelSize()).toBeNull();
     });
 
-    // Corrupt-width cases: each should be rejected even though typeof === 'number'
-    it('returns null when width is NaN', () => {
-      localStorage.setItem(DIAGNOSTICS_PANEL_SIZE_KEY, JSON.stringify({ width: NaN, height: 500 }));
+    // Corrupt-width cases. ±Infinity are injected via raw JSON literals (1e500 /
+    // -1e500) so that JSON.parse produces a proper Infinity value with
+    // typeof === 'number' — these are the cases that exercise the Number.isFinite
+    // branch in isValidDimension. NaN is not a representable JSON value and
+    // JSON.stringify converts it to null anyway, so there is no testable path
+    // through which a real serialiser could inject NaN; those cases are omitted.
+    it('returns null when width is +Infinity (raw JSON 1e500)', () => {
+      localStorage.setItem(DIAGNOSTICS_PANEL_SIZE_KEY, '{"width": 1e500, "height": 500}');
       expect(loadDiagnosticsPanelSize()).toBeNull();
     });
 
-    it('returns null when width is Infinity', () => {
-      localStorage.setItem(DIAGNOSTICS_PANEL_SIZE_KEY, JSON.stringify({ width: Infinity, height: 500 }));
-      expect(loadDiagnosticsPanelSize()).toBeNull();
-    });
-
-    it('returns null when width is -Infinity', () => {
-      localStorage.setItem(DIAGNOSTICS_PANEL_SIZE_KEY, JSON.stringify({ width: -Infinity, height: 500 }));
+    it('returns null when width is -Infinity (raw JSON -1e500)', () => {
+      localStorage.setItem(DIAGNOSTICS_PANEL_SIZE_KEY, '{"width": -1e500, "height": 500}');
       expect(loadDiagnosticsPanelSize()).toBeNull();
     });
 
@@ -114,24 +115,22 @@ describe('diagnosticsPanelPersistence', () => {
       expect(loadDiagnosticsPanelSize()).toBeNull();
     });
 
-    it('returns null when width exceeds upper bound (10001)', () => {
-      localStorage.setItem(DIAGNOSTICS_PANEL_SIZE_KEY, JSON.stringify({ width: 10001, height: 500 }));
+    it(`returns null when width exceeds upper bound (MAX_PERSISTED_DIMENSION_PX + 1 = ${MAX_PERSISTED_DIMENSION_PX + 1})`, () => {
+      localStorage.setItem(
+        DIAGNOSTICS_PANEL_SIZE_KEY,
+        JSON.stringify({ width: MAX_PERSISTED_DIMENSION_PX + 1, height: 500 }),
+      );
       expect(loadDiagnosticsPanelSize()).toBeNull();
     });
 
-    // Corrupt-height cases: symmetric set
-    it('returns null when height is NaN', () => {
-      localStorage.setItem(DIAGNOSTICS_PANEL_SIZE_KEY, JSON.stringify({ width: 900, height: NaN }));
+    // Corrupt-height cases: symmetric set.
+    it('returns null when height is +Infinity (raw JSON 1e500)', () => {
+      localStorage.setItem(DIAGNOSTICS_PANEL_SIZE_KEY, '{"width": 900, "height": 1e500}');
       expect(loadDiagnosticsPanelSize()).toBeNull();
     });
 
-    it('returns null when height is Infinity', () => {
-      localStorage.setItem(DIAGNOSTICS_PANEL_SIZE_KEY, JSON.stringify({ width: 900, height: Infinity }));
-      expect(loadDiagnosticsPanelSize()).toBeNull();
-    });
-
-    it('returns null when height is -Infinity', () => {
-      localStorage.setItem(DIAGNOSTICS_PANEL_SIZE_KEY, JSON.stringify({ width: 900, height: -Infinity }));
+    it('returns null when height is -Infinity (raw JSON -1e500)', () => {
+      localStorage.setItem(DIAGNOSTICS_PANEL_SIZE_KEY, '{"width": 900, "height": -1e500}');
       expect(loadDiagnosticsPanelSize()).toBeNull();
     });
 
@@ -145,8 +144,11 @@ describe('diagnosticsPanelPersistence', () => {
       expect(loadDiagnosticsPanelSize()).toBeNull();
     });
 
-    it('returns null when height exceeds upper bound (10001)', () => {
-      localStorage.setItem(DIAGNOSTICS_PANEL_SIZE_KEY, JSON.stringify({ width: 900, height: 10001 }));
+    it(`returns null when height exceeds upper bound (MAX_PERSISTED_DIMENSION_PX + 1 = ${MAX_PERSISTED_DIMENSION_PX + 1})`, () => {
+      localStorage.setItem(
+        DIAGNOSTICS_PANEL_SIZE_KEY,
+        JSON.stringify({ width: 900, height: MAX_PERSISTED_DIMENSION_PX + 1 }),
+      );
       expect(loadDiagnosticsPanelSize()).toBeNull();
     });
   });

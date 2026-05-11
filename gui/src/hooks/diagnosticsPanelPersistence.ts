@@ -6,6 +6,14 @@
 export const DIAGNOSTICS_LINE_WRAP_KEY = 'reify-diagnostics-line-wrap';
 export const DIAGNOSTICS_PANEL_SIZE_KEY = 'reify-diagnostics-panel-size';
 
+/**
+ * Maximum allowed persisted dimension in pixels. Values above this are
+ * rejected as implausible and cause the panel to fall back to
+ * computeDefaultDialogSize. Named here so tests can reference the constant
+ * rather than duplicating the magic number.
+ */
+export const MAX_PERSISTED_DIMENSION_PX = 10000;
+
 /** Load persisted line-wrap state. Returns null if missing, invalid, or non-boolean. */
 export function loadDiagnosticsLineWrap(): boolean | null {
   try {
@@ -35,9 +43,10 @@ export function saveDiagnosticsLineWrap(value: boolean): void {
  * Load persisted panel size. Returns null if missing, invalid, or wrong shape.
  *
  * Validation: each dimension must be a finite positive number within the sane
- * range (0, 10000]. Values outside this range (including NaN, ±Infinity,
- * negative numbers, zero, or values above 10000) are rejected and null is
- * returned, causing the panel to fall back to computeDefaultDialogSize.
+ * range (0, MAX_PERSISTED_DIMENSION_PX]. Values outside this range (including
+ * NaN, ±Infinity, negative numbers, zero, or values above
+ * MAX_PERSISTED_DIMENSION_PX) are rejected and null is returned, causing the
+ * panel to fall back to computeDefaultDialogSize.
  */
 export function loadDiagnosticsPanelSize(): { width: number; height: number } | null {
   try {
@@ -59,9 +68,9 @@ export function loadDiagnosticsPanelSize(): { width: number; height: number } | 
   }
 }
 
-/** Returns true iff v is a finite positive number within the sane range (0, 10000]. */
+/** Returns true iff v is a finite positive number within the sane range (0, MAX_PERSISTED_DIMENSION_PX]. */
 function isValidDimension(v: unknown): v is number {
-  return typeof v === 'number' && Number.isFinite(v) && v > 0 && v <= 10000;
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 && v <= MAX_PERSISTED_DIMENSION_PX;
 }
 
 /** Save panel size to localStorage. */
