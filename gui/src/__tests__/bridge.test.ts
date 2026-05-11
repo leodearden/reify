@@ -689,6 +689,16 @@ describe('onAutoResolveIteration malformed payload', () => {
     expect(warnSpy).toHaveBeenCalled();
   });
 
+  it('drops payload with primitive-string parameters', async () => {
+    mockListen.mockImplementation(
+      makeHandler({ iteration: 0, parameters: 'not-an-object', constraints: {} }) as any,
+    );
+    const cb = vi.fn();
+    await onAutoResolveIteration(cb);
+    expect(cb).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalled();
+  });
+
   it('drops payload with non-numeric iteration', async () => {
     mockListen.mockImplementation(
       makeHandler({ iteration: '0', parameters: {}, constraints: {} }) as any,
