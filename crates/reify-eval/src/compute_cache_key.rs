@@ -157,6 +157,32 @@ mod tests {
     }
 
     #[test]
+    fn compute_cache_key_is_invariant_under_realization_input_reordering() {
+        // Three realizations with distinct (entity, index) pairs.
+        let real_0 = RealizationNodeId::new("Bracket", 0);
+        let real_1 = RealizationNodeId::new("Bracket", 1);
+        let real_stud = RealizationNodeId::new("Stud", 0);
+
+        let mut graph = EvaluationGraph::default();
+        insert_realization(&mut graph, real_0.clone(), ContentHash::of_str("r0"));
+        insert_realization(&mut graph, real_1.clone(), ContentHash::of_str("r1"));
+        insert_realization(&mut graph, real_stud.clone(), ContentHash::of_str("rs"));
+
+        let mut node_a = make_empty_node();
+        node_a.realization_inputs = vec![real_0.clone(), real_1.clone(), real_stud.clone()];
+
+        let mut node_b = make_empty_node();
+        node_b.realization_inputs = vec![real_stud.clone(), real_0.clone(), real_1.clone()];
+
+        let key_a = compute_cache_key(&node_a, &graph);
+        let key_b = compute_cache_key(&node_b, &graph);
+        assert_eq!(
+            key_a, key_b,
+            "cache key must be invariant under realization_input ordering"
+        );
+    }
+
+    #[test]
     fn compute_cache_key_changes_when_realization_input_content_hash_changes() {
         let real_id = RealizationNodeId::new("Bracket", 0);
         let mut graph = EvaluationGraph::default();
