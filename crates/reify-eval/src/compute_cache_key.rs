@@ -12,10 +12,13 @@ use reify_types::ContentHash;
 /// See `docs/prds/v0_3/compute-node-infrastructure.md` §"Cache key" for the
 /// full specification.  Composition is finalised in P3.2 task steps 2–16.
 pub fn compute_cache_key(node: &ComputeNodeData, ctx: &EvaluationGraph) -> ContentHash {
-    // Collect value-input cell content_hashes (Vec order — sort applied in step-10).
+    // Collect value-input cell content_hashes sorted by ValueCellId (derived Ord
+    // on (entity, member) lexicographic order) so the bucket is invariant under
+    // insertion-order variation in node.value_inputs.
     let value_bucket_hash: ContentHash = {
-        let hashes: Vec<ContentHash> = node
-            .value_inputs
+        let mut sorted_value_inputs = node.value_inputs.clone();
+        sorted_value_inputs.sort(); // ValueCellId derives Ord via (entity, member)
+        let hashes: Vec<ContentHash> = sorted_value_inputs
             .iter()
             .map(|id| {
                 ctx.value_cells
