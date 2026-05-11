@@ -35,9 +35,30 @@ pub fn compute_cache_key(node: &ComputeNodeData, ctx: &EvaluationGraph) -> Conte
         ContentHash::combine_all(hashes)
     };
 
+    // Collect realization_input content_hashes (Vec order — sort applied in step-14).
+    let realization_bucket_hash: ContentHash = {
+        let hashes: Vec<ContentHash> = node
+            .realization_inputs
+            .iter()
+            .map(|id| {
+                ctx.realizations
+                    .get(id)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "compute_cache_key [task-3381]: realization_input {:?} not present in graph",
+                            id
+                        )
+                    })
+                    .content_hash
+            })
+            .collect();
+        ContentHash::combine_all(hashes)
+    };
+
     ContentHash::combine_all([
         ContentHash::of_str(&node.target),
         value_bucket_hash,
+        realization_bucket_hash,
         node.options_hash,
     ])
 }
