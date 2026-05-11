@@ -149,6 +149,18 @@ impl ReverseDependencyIndex {
             }
         }
 
+        // ComputeNodes (P3.3 edge #6): VC → ComputeNode reverse edge. Each
+        // entry in `value_inputs` is a VC the ComputeNode reads, so the
+        // ComputeNode becomes a dependent of that VC. The realization_inputs
+        // edge (#10) is registered separately in step-6 because its key type
+        // is RealizationNodeId, not ValueCellId.
+        for (_, cnode) in graph.compute_nodes.iter() {
+            let node_id = NodeId::Compute(cnode.computation_id.clone());
+            for vc in &cnode.value_inputs {
+                index.add(vc.clone(), node_id.clone());
+            }
+        }
+
         // Composed fields: extract deps from the lambda expression — the
         // compiler post-pass `phase_augment_composed_captures` already
         // injected `__field.<name>` cells into the lambda's `captures`,
