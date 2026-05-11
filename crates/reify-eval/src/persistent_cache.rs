@@ -868,6 +868,22 @@ pub fn read_entry<V: PersistentlyCacheable>(
     };
     let _header = CacheEntryHeader::read_from(&mut f)?;
     let value = V::deserialize_from_reader(&mut f)?;
+
+    // Update the sidecar mtime as the LRU last-access signal. touch_sidecar
+    // already absorbs NotFound as Ok(()) (handles the GC-evicts-between-read-
+    // and-touch race per PRD). Any other error (e.g. EACCES on a read-only
+    // mount) is logged at debug level only — the cache hit is valid regardless
+    // of whether the LRU signal update succeeded.
+    if let Err(e) = touch_sidecar(&entry_meta_path(cache_root, engine_version_hash, input_hash)) {
+        tracing::debug!(
+            ?e,
+            cache_root = %cache_root.display(),
+            engine_version_hash,
+            input_hash,
+            "touch_sidecar failed on cache hit; LRU signal will be stale"
+        );
+    }
+
     Ok(Some(value))
 }
 
