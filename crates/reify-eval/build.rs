@@ -66,7 +66,7 @@ fn main() {
             panic!(
                 "ENGINE_VERSION_HASH contributor not found: {} (resolved to {}). \
                  If this file was renamed, moved, or deleted, update \
-                 CONTRIBUTORS_RELATIVE in crates/reify-eval/build.rs in the same commit.",
+                 CONTRIBUTORS_RELATIVE in crates/reify-eval/src/engine_hash_algo.rs in the same commit.",
                 rel,
                 path.display()
             );
