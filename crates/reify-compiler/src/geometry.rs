@@ -55,6 +55,12 @@ use super::*;
 ///   by the type system elsewhere; we just need any geometry-branch path to
 ///   route through `compile_geometry_call`'s new Error arm.
 ///
+/// - **`Match`** — `true` when ANY arm body (recursively) classifies as a
+///   geometry expression. Same rationale as Conditional: "any arm" is
+///   sufficient because mixed-type Match arms are caught by the type system
+///   elsewhere; we just need any geometry-arm path to route to the Error arm
+///   in `compile_geometry_call` (see task 3418).
+///
 /// # Ordering invariant for `known_geometry_lets`
 ///
 /// `known_geometry_lets` is built **incrementally** by the caller. It grows as
@@ -115,13 +121,14 @@ pub(crate) fn is_geometry_let(
             is_geometry_let(then_branch, functions, known_geometry_lets)
                 || is_geometry_let(else_branch, functions, known_geometry_lets)
         }
-        // NOTE: Block, Match, and other branching/wrapping ExprKinds that can
-        // yield a geometry-typed value are NOT handled here. A let whose
-        // initialiser is (e.g.) `{ box(...) }` will still fall through to the
-        // plain-value-cell path and may produce a cryptic "GeomRef::Step(0)"
-        // crash. Tracked as a follow-up to task 3395 — extend `is_geometry_let`
-        // + `compile_geometry_call` to cover Block, Match, and any future
-        // branching forms that the parser allows as let initialisers.
+        // Match — see rustdoc above for rationale (task 3418).
+        reify_syntax::ExprKind::Match { arms, .. } => arms
+            .iter()
+            .any(|arm| is_geometry_let(&arm.body, functions, known_geometry_lets)),
+        // Future branching/wrapping ExprKinds (Lambda body, etc.) extend here
+        // with the same any-sub-yields-geometry pattern. Note: ExprKind has no
+        // Block variant (parenthesised expressions are unwrapped during lowering
+        // and never reach this predicate as a distinct kind).
         _ => false,
     }
 }
