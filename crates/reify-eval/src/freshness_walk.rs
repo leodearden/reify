@@ -1231,4 +1231,151 @@ mod tests {
 
         // (iii) Walk terminates (implicit: assertions above are reached).
     }
+
+    /// P3.3 step-15: edge #6 → edge #12 freshness propagation through a
+    /// ComputeNode and onto its declared `output_value_cells`.
+    ///
+    /// Topology:
+    /// - `a: ValueCellId` seeded `Intermediate { generation: 1 }`, reads=[].
+    /// - `C: ComputeNodeId` cache-seeded with `dependency_trace.reads=[a]`
+    ///   and `Freshness::Intermediate { generation: 1 }`. Its
+    ///   `ComputeNodeData` is inserted into `graph.compute_nodes` with
+    ///   `value_inputs=[a]` and `output_value_cells=[b]`.
+    /// - `b: ValueCellId` seeded `Intermediate { generation: 1 }`, reads=[]
+    ///   (so its standalone freshness derivation yields Final from zero
+    ///   inputs per §7.2). b is in `graph.value_cells` so the impl
+    ///   can ask the helper to re-derive b after C flips.
+    /// - Reverse index built from `graph` registers `a → Compute(C)` via
+    ///   the step-4 loop.
+    ///
+    /// Walk: flip `a` to `Final`, then call
+    /// `propagate_freshness_only(&mut cache, &reverse_index, &graph, &{a}, 1)`.
+    ///
+    /// Assertions:
+    /// (i) `Compute(C)` in `updated`, its freshness is `Final` — pins
+    ///     edge #6 propagation into a `NodeId::Compute(_)` dependent (the
+    ///     existing per-dependent derivation already handles this once the
+    ///     graph parameter threads through).
+    /// (ii) `Value(b)` in `updated`, its freshness is `Final` — pins
+    ///     edge #12 propagation onto C's `output_value_cells`: when C's
+    ///     freshness changes, each output VC must be re-derived and
+    ///     written through the canonical writers exactly like a regular
+    ///     dependent would be.
+    ///
+    /// Fails today because (a) `propagate_freshness_only` does not yet
+    /// take a `graph` parameter and (b) the per-dependent block does not
+    /// fan out onto C's `output_value_cells`.
+    #[test]
+    fn propagate_freshness_only_propagates_through_compute_node_to_output_value_cells() {
+        use crate::graph::{ComputeNodeData, EvaluationGraph, ValueCellNode};
+        use reify_compiler::ValueCellKind;
+        use reify_types::{ComputeNodeId, Type};
+
+        let e = "T";
+        let a = ValueCellId::new(e, "a");
+        let b = ValueCellId::new(e, "b");
+
+        // Build the EvaluationGraph: a, b as Param ValueCells, C as a
+        // ComputeNode with value_inputs=[a] and output_value_cells=[b].
+        let mut graph = EvaluationGraph::default();
+        for name in &["a", "b"] {
+            let id = ValueCellId::new(e, *name);
+            graph.value_cells.insert(
+                id.clone(),
+                ValueCellNode {
+                    id: id.clone(),
+                    kind: ValueCellKind::Param,
+                    cell_type: Type::Real,
+                    default_expr: None,
+                    content_hash: ContentHash::of_str(name),
+                },
+            );
+        }
+        let c_id = ComputeNodeId::new(e, 0);
+        graph.insert_compute_node(ComputeNodeData {
+            computation_id: c_id.clone(),
+            target: "fea".to_string(),
+            value_inputs: vec![a.clone()],
+            realization_inputs: vec![],
+            options_hash: ContentHash::of_str("opt"),
+            cache_key: ContentHash::of_str("ck"),
+            cached_result: None,
+            result_content_hash: None,
+            opaque_state: None,
+            running: None,
+            output_value_cells: vec![b.clone()],
+        });
+
+        // Seed cache entries.
+        let mut cache = CacheStore::new();
+        put_value_entry(
+            &mut cache,
+            &a,
+            Freshness::Intermediate { generation: 1 },
+            vec![],
+        );
+        put_value_entry(
+            &mut cache,
+            &b,
+            Freshness::Intermediate { generation: 1 },
+            vec![],
+        );
+        // Seed Compute(C)'s cache entry with reads=[a]. The CachedResult
+        // payload mirrors the cold-start synthesis pattern in
+        // insert_synthetic_realization_entry (cache.rs:987-1009): a
+        // placeholder Value entry whose specific bits the walk never reads
+        // — only the freshness side-table and dependency_trace matter.
+        let c_node = NodeId::Compute(c_id.clone());
+        cache.put(
+            c_node.clone(),
+            NodeCache::new(
+                CachedResult::Value(Value::Real(0.0), DeterminacyState::Determined),
+                Freshness::Intermediate { generation: 1 },
+                DependencyTrace {
+                    reads: vec![a.clone()],
+                },
+                VersionId(1),
+            ),
+        );
+
+        // Build the reverse index from the graph — this registers
+        // `a → Compute(C)` via the step-4 loop over graph.compute_nodes.
+        let reverse_index = ReverseDependencyIndex::build_from_graph(&graph);
+
+        // Flip a to Final — the edge that triggers the walk.
+        assert!(cache.set_freshness(&NodeId::Value(a.clone()), Freshness::Final));
+
+        let mut changed = HashSet::new();
+        changed.insert(a.clone());
+
+        let updated =
+            super::propagate_freshness_only(&mut cache, &reverse_index, &graph, &changed, 1);
+
+        // (i) Compute(C) reached via edge #6, freshness derived to Final
+        //     from reads=[a] (a is Final).
+        assert!(
+            updated.contains(&c_node),
+            "updated must contain Compute(C) via edge #6 (a → C), got: {:?}",
+            updated
+        );
+        assert_eq!(
+            cache.freshness(&c_node),
+            Freshness::Final,
+            "Compute(C)'s freshness must be Final after a flips Final"
+        );
+
+        // (ii) Value(b) reached via edge #12 (C's output_value_cells),
+        //      freshness derived to Final from b's empty reads.
+        let b_node = NodeId::Value(b.clone());
+        assert!(
+            updated.contains(&b_node),
+            "updated must contain Value(b) via edge #12 (C → b), got: {:?}",
+            updated
+        );
+        assert_eq!(
+            cache.freshness(&b_node),
+            Freshness::Final,
+            "Value(b)'s freshness must be Final after edge #12 propagation from C"
+        );
+    }
 }
