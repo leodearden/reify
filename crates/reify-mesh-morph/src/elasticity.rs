@@ -170,11 +170,31 @@ pub enum ElasticityFailure {
 ///
 /// ## Parameters
 ///
-/// Same as [`elasticity_morph`], plus:
-///
+/// - `old_mesh` — the source tetrahedral mesh.
+/// - `prescribed_positions` — `(node_index, new_position)` pairs identifying
+///   surface nodes and their target positions; the natural producer is
+///   [`crate::compute_dirichlet_bcs`] (PRD task #5). The internal pipeline
+///   converts each pair into a per-axis [`DirichletBc`] with
+///   `value = new_position[axis] - old_position[axis]` (delta, not absolute).
+///   **Duplicate `node_index` entries are a precondition violation**: each
+///   occurrence appends three more `DirichletBc` entries for the same DOFs,
+///   and `apply_dirichlet_row_elimination` asserts uniqueness in debug builds
+///   (boundary/dirichlet.rs:170-186). The natural producer
+///   (`compute_dirichlet_bcs` via `BTreeMap`) always emits each node once.
+/// - `options` — supplies the fictitious-stiffness parameters
+///   (`fictitious_youngs_modulus_base`, `fictitious_poisson_ratio`) used to
+///   build the [`IsotropicElastic`] material driving the FEA solve.
 /// - `cg_opts` — [`CgSolverOptions`] forwarded directly to [`solve_cg`].
 ///   Panics if `cg_opts.max_iter == 0` or `cg_opts.tolerance` is
 ///   non-finite/non-positive (those are preconditions of `solve_cg`).
+///
+/// ## Output normals
+///
+/// The returned mesh always has `normals: None`, regardless of whether the
+/// input mesh carried per-vertex normals. Vertex motion under the elasticity
+/// solve makes any pre-existing normals geometrically stale; dropping them
+/// fails closed (a consumer that needs surface normals must recompute them
+/// after morphing). Same convention as [`crate::laplacian::laplacian_smooth`].
 ///
 /// ## Failure modes
 ///
@@ -231,6 +251,9 @@ pub fn elasticity_morph_with_cg_opts(
 
     // Validate tet_indices upfront — overflow-safe check mirrors the
     // prescribed_positions validation above. Returns the first offending index.
+    // Intentionally walks the full slice (not chunks_exact(4)) so stray tail
+    // entries when tet_indices.len() % 4 != 0 are caught here rather than
+    // silently dropped by the FEA pipeline's chunks_exact(4) loop below.
     for tet_idx in &old_mesh.tet_indices {
         if (*tet_idx as usize) >= n_nodes {
             return Err(ElasticityFailure::InvalidTetIndex(*tet_idx));
@@ -238,6 +261,11 @@ pub fn elasticity_morph_with_cg_opts(
     }
 
     let n_elements = old_mesh.tet_indices.len() / 4;
+
+    // Panic message for the contract assertions below — extracted to avoid
+    // repeating a long string literal four times in the chunks_exact loop.
+    const TET_IDX_PRE_VALIDATED: &str =
+        "tet_indices validated upfront — InvalidTetIndex returned earlier";
 
     // Per-element data — Vec storage keeps `ElementStiffness` and
     // connectivity buffers alive for the `AssemblyElement` borrows.
@@ -248,10 +276,10 @@ pub fn elasticity_morph_with_cg_opts(
         // guarantees all tet indices are in-range; vertex_f64 cannot return
         // None here.
         let phys: [[f64; 3]; 4] = [
-            old_mesh.vertex_f64(tet[0]).expect("tet_indices validated upfront — InvalidTetIndex returned earlier"),
-            old_mesh.vertex_f64(tet[1]).expect("tet_indices validated upfront — InvalidTetIndex returned earlier"),
-            old_mesh.vertex_f64(tet[2]).expect("tet_indices validated upfront — InvalidTetIndex returned earlier"),
-            old_mesh.vertex_f64(tet[3]).expect("tet_indices validated upfront — InvalidTetIndex returned earlier"),
+            old_mesh.vertex_f64(tet[0]).expect(TET_IDX_PRE_VALIDATED),
+            old_mesh.vertex_f64(tet[1]).expect(TET_IDX_PRE_VALIDATED),
+            old_mesh.vertex_f64(tet[2]).expect(TET_IDX_PRE_VALIDATED),
+            old_mesh.vertex_f64(tet[3]).expect(TET_IDX_PRE_VALIDATED),
         ];
         // Per-element Young's modulus: the stiffness_rule controls how E_e is
         // derived from e_base. K_e = ∫ BᵀDB dV is linear in E (D is linear in
@@ -358,41 +386,11 @@ pub fn elasticity_morph_with_cg_opts(
     })
 }
 
-/// Linear-elasticity mesh morph — compute interior-node displacements
-/// consistent with prescribed surface-node positions by solving the
-/// fictitious-elastic BVP `K · u = 0` with `bcs = prescribed_displacements`.
+/// Linear-elasticity mesh morph — delegates to [`elasticity_morph_with_cg_opts`]
+/// with [`CgSolverOptions::default()`] (tolerance 1e-8, max_iter 1000).
 ///
-/// Delegates to [`elasticity_morph_with_cg_opts`] with
-/// [`CgSolverOptions::default()`] (tolerance 1e-8, max_iter 1000).
-///
-/// ## Parameters
-///
-/// - `old_mesh` — the source tetrahedral mesh.
-/// - `prescribed_positions` — `(node_index, new_position)` pairs identifying
-///   surface nodes and their target positions; the natural producer is
-///   [`crate::compute_dirichlet_bcs`] (PRD task #5). The internal pipeline
-///   converts each pair into a per-axis [`DirichletBc`] with
-///   `value = new_position[axis] - old_position[axis]` (delta, not absolute).
-///   **Duplicate `node_index` entries are a precondition violation**: each
-///   occurrence appends three more `DirichletBc` entries for the same DOFs,
-///   and `apply_dirichlet_row_elimination` asserts uniqueness in debug builds
-///   (boundary/dirichlet.rs:170-186). The natural producer
-///   (`compute_dirichlet_bcs` via `BTreeMap`) always emits each node once.
-/// - `options` — supplies the fictitious-stiffness parameters
-///   (`fictitious_youngs_modulus_base`, `fictitious_poisson_ratio`) used to
-///   build the [`IsotropicElastic`] material driving the FEA solve.
-///
-/// ## Output normals
-///
-/// The returned mesh always has `normals: None`, regardless of whether the
-/// input mesh carried per-vertex normals. Vertex motion under the elasticity
-/// solve makes any pre-existing normals geometrically stale; dropping them
-/// fails closed (a consumer that needs surface normals must recompute them
-/// after morphing). Same convention as [`crate::laplacian::laplacian_smooth`].
-///
-/// ## Failure modes
-///
-/// See [`ElasticityFailure`].
+/// See [`elasticity_morph_with_cg_opts`] for full parameter, output-normal, and
+/// failure-mode documentation.
 pub fn elasticity_morph(
     old_mesh: &VolumeMesh,
     prescribed_positions: &[(u32, [f64; 3])],
@@ -1067,6 +1065,44 @@ mod tests {
                 assert_eq!(order, ElementOrderTag::P2);
             }
             other => panic!("expected UnsupportedElementOrder(P2), got: {other:?}"),
+        }
+    }
+
+    // ── task 3362 amend: non-multiple-of-4 tail index validation ─────────────
+
+    /// The upfront tet_indices validation walks the **full slice**, not
+    /// `chunks_exact(4)`. This means a stray out-of-range index in the
+    /// non-multiple-of-4 tail is caught and returned as `InvalidTetIndex`
+    /// rather than silently dropped by the FEA pipeline's `chunks_exact(4)`.
+    ///
+    /// This pins the deliberate full-slice-walk behaviour: a future refactor
+    /// that switches to `chunks_exact` for the validation loop would silently
+    /// change this semantics and this test would catch it.
+    #[test]
+    fn elasticity_morph_with_out_of_range_index_in_non_multiple_of_4_tail_returns_invalid_tet_index()
+    {
+        // 4 nodes → n_nodes == 4.
+        // tet_indices = [0, 1, 2, 3, 99]: one complete tet (indices 0..3)
+        // plus a stray tail entry (index 99 >= 4) — len % 4 == 1.
+        let mesh = VolumeMesh {
+            vertices: vec![
+                0.0_f32, 0.0, 0.0, // node 0
+                1.0, 0.0, 0.0,     // node 1
+                0.0, 1.0, 0.0,     // node 2
+                0.0, 0.0, 1.0,     // node 3
+            ],
+            tet_indices: vec![0, 1, 2, 3, 99], // valid tet + stray tail index 99
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+        // Empty prescribed_positions — the no-tet short-circuit doesn't fire
+        // (tet_indices is non-empty), so the validation loop runs.
+        let result = elasticity_morph(&mesh, &[], &crate::MorphOptions::default());
+        match result {
+            Err(ElasticityFailure::InvalidTetIndex(idx)) => {
+                assert_eq!(idx, 99, "expected InvalidTetIndex(99), got InvalidTetIndex({idx})");
+            }
+            other => panic!("expected Err(InvalidTetIndex(99)), got: {other:?}"),
         }
     }
 }
