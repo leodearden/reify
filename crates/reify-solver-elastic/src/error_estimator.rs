@@ -106,8 +106,9 @@ pub fn compute_zz_indicator(
         let n = el.connectivity.len();
         // Centroid interpolation assumes uniform barycentric coords (1/N, …, 1/N),
         // which is only correct for P1 tets (N=4). Guard against silent misuse
-        // by callers passing P2 or higher-order connectivity.
-        debug_assert_eq!(
+        // — including in release builds — by callers passing P2 or higher-order
+        // connectivity.
+        assert_eq!(
             n,
             4,
             "compute_zz_indicator currently supports P1 tets only; \
