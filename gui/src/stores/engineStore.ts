@@ -159,10 +159,17 @@ export function createEngineStore(options?: EngineStoreOptions) {
    * AutoResolveIteration invariant in types.ts).
    */
   function applyAutoResolveIteration(iter: AutoResolveIteration) {
-    // Both checks use the same truthy predicate so empty-string metrics behave
-    // consistently at both the canonical-lookup and mismatch-comparison sites.
+    // Empty-string driving_metric is treated as "no metric declared" — same as
+    // undefined — but emits a console.warn so the upstream malformation (the
+    // wire schema permits omission, not empty-string) is visible in dev.
+    if (iter.driving_metric === '') {
+      console.warn('[auto-resolve-iteration] empty driving_metric; treating as undeclared', {
+        iteration: iter.iteration,
+      });
+    }
+    const metric = iter.driving_metric === '' ? undefined : iter.driving_metric;
     const canonical = state.autoResolve.canonicalDrivingMetric;
-    if (canonical && iter.driving_metric && iter.driving_metric !== canonical) {
+    if (canonical && metric && metric !== canonical) {
       console.warn('[auto-resolve-iteration] driving_metric mismatch; dropping iteration', {
         iteration: iter.iteration,
         canonical,
@@ -172,8 +179,8 @@ export function createEngineStore(options?: EngineStoreOptions) {
     }
     setState(produce((s) => { s.autoResolve.iterations.push(iter); }));
     // Establish canonical on first iteration that declares a driving_metric.
-    if (iter.driving_metric && !canonical) {
-      setState('autoResolve', 'canonicalDrivingMetric', iter.driving_metric);
+    if (metric && !canonical) {
+      setState('autoResolve', 'canonicalDrivingMetric', metric);
     }
   }
 
