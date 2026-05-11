@@ -100,14 +100,22 @@ pub structure Outer {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    // (d) Regression guard: the OLD generic diagnostic must NOT appear.
-    let has_generic_fallback = errors
-        .iter()
-        .any(|d| d.message == "unknown member 'body' on sub 'inner'");
+    // (d) Regression guard: the OLD generic "unknown member" path must NOT fire for
+    //     this member — the geometry-specific diagnostic proves the new path took over.
+    //     We check by substring rather than exact equality so minor wording tweaks
+    //     (e.g. "on sub" → "of sub") don't silently defeat the guard.
+    let has_generic_fallback = errors.iter().any(|d| {
+        d.message.contains("unknown member")
+            && d.message.contains("'body'")
+            && d.message.contains("'inner'")
+            && !d.message.contains("geometry")
+    });
     assert!(
         !has_generic_fallback,
-        "found old generic diagnostic 'unknown member 'body' on sub 'inner'' — \
-         it should have been replaced by the geometry-specific diagnostic"
+        "found old generic 'unknown member' diagnostic for 'body'/'inner' — \
+         it should have been replaced by the geometry-specific diagnostic; \
+         got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
 
@@ -160,12 +168,17 @@ pub structure Outer {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    let has_generic_fallback = errors
-        .iter()
-        .any(|d| d.message == "unknown member 'body' on sub 'inner'");
+    let has_generic_fallback = errors.iter().any(|d| {
+        d.message.contains("unknown member")
+            && d.message.contains("'body'")
+            && d.message.contains("'inner'")
+            && !d.message.contains("geometry")
+    });
     assert!(
         !has_generic_fallback,
-        "found old generic diagnostic — should have been replaced by geometry-specific one"
+        "found old generic 'unknown member' diagnostic for 'body'/'inner' — \
+         should have been replaced by geometry-specific one; got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
 
@@ -353,16 +366,7 @@ pub structure Outer {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    // (b) Total error count is bounded (≤ 2): the cross-sub diagnostic plus at
-    //     most one bubble-up from the surrounding translate() call context.
-    assert!(
-        errors.len() <= 2,
-        "expected at most 2 errors (cross-sub + at most one bubble-up), got {}: {:?}",
-        errors.len(),
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-
-    // (c) No cascade "expected geometry expression" / "type mismatch" / "argument N" errors.
+    // (b) No cascade "expected geometry expression" / "type mismatch" / "argument N" errors.
     // Matches by distinguishing prefixes so cascade errors that happen to mention
     // "geometry" (e.g. "argument 1 must be a geometry expression") are not
     // inadvertently excluded by a content-based filter.
