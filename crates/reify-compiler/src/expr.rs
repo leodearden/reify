@@ -193,7 +193,7 @@ fn try_emit_cross_sub_geometry(
         let child_struct = scope
             .sub_component_types
             .get(sub_name)
-            .expect("sub_realization_names ⊂ sub_component_types invariant (task-3420)")
+            .expect("sub_realization_names ⊂ sub_component_types invariant (task-3420; release-enforced task-3431)")
             .as_str();
         Some(make_cross_sub_geometry_error(
             diagnostics,
@@ -2881,10 +2881,11 @@ pub structure Outer {
     ///
     /// ## Why `expected = "task-3420"` rather than the full panic message
     ///
-    /// The stable reference tag `"task-3420"` is baked into the `.expect()` argument
-    /// and is unlikely to change during future rewordings of the prose. Coupling only
-    /// to the tag minimises test-maintenance churn while still verifying the correct
-    /// code site panicked.
+    /// Both `"task-3420"` (invariant origin) and `"task-3431"` (release-enforcement
+    /// promotion) are baked into the `.expect()` argument.  Coupling to either stable
+    /// reference tag minimises test-maintenance churn while still verifying the correct
+    /// code site panicked; `"task-3420"` is retained here so a future grep for the
+    /// invariant's origin tag reaches this test site as well as the production call.
     #[test]
     #[should_panic(expected = "task-3420")]
     fn try_emit_cross_sub_geometry_panics_on_invariant_violation_in_all_builds() {
