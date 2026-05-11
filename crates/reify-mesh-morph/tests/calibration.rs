@@ -632,6 +632,40 @@ fn bracket_fillet_radius_sweep_obeys_materially_better_rule_with_calibrated_defa
     );
 }
 
+// ── Task-#3451 baseline characterisation (ignored — run on-demand) ────────────
+
+/// Pins the empirical from_scratch baseline distributions captured on
+/// 2026-05-11 for the plate-with-hole and L-bracket procedural fixtures,
+/// under the production [`reify_mesh_morph::MorphOptions::default()`].
+///
+/// This test documents the data the task #3451 analysis is grounded in:
+/// - `from_scratch_min_sj`: minimum scaled-Jacobian across the from-scratch
+///   mesh (lower bound on mesher quality at each geometry).
+/// - `from_scratch_max_ar_factor` relative to itself (≡ the raw
+///   `max(morphed_AR / from_scratch_AR)` with morph == from_scratch, i.e.
+///   the ratio is expected to be ≈ 1.0 for a from-scratch baseline).
+/// - `pct_below_025`: fraction of elements with scaled-J < 0.25, obtained
+///   via a probe-options second `quality_check(&fs, &fs, &probe)` call so
+///   the value is always populated regardless of production thresholds.
+///
+/// **Reproducibility recipe** (run when re-calibrating or checking fixture
+/// drift):
+/// ```text
+/// cargo test -p reify-mesh-morph --test calibration -- \
+///     --ignored procedural_fixture_baseline_distribution_pins
+/// ```
+///
+/// The test is `#[ignore]`'d so normal CI does not pay the sweep cost.
+/// It acts as a regression guard against fixture-builder drift (e.g. a
+/// change to [`fixtures::plate_with_hole`] or [`fixtures::bracket`] that
+/// shifts element shapes) and as reference data for the production threshold
+/// question task #3451 answers.
+#[test]
+#[ignore]
+fn procedural_fixture_baseline_distribution_pins_task_3451_empirical_capture() {
+    panic!("step-4 implements assertions");
+}
+
 // ── Step-17: from_scratch_max_ar_factor is distinct from morph_max_ar_factor ──
 
 /// Regression guard against silent re-aliasing of `from_scratch_max_ar_factor`
