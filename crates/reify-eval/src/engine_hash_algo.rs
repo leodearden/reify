@@ -140,6 +140,7 @@ pub(crate) const CONTRIBUTORS_RELATIVE: &[&str] = &[
 /// | Exact name (case-insensitive) `{.ds_store, thumbs.db, desktop.ini}` | `.DS_Store` |
 /// | Name ending with `~` | `foo.rs~` (Emacs backup) |
 // Used by `walk_recursive` which is itself `#[allow(dead_code)]`.
+// See walk_contributor for inline-never workaround history (task 3429).
 #[allow(dead_code)]
 fn is_editor_debris(file_name: &OsStr) -> bool {
     let name = file_name.to_string_lossy();
@@ -274,10 +275,10 @@ pub struct ContributorWalk {
 // workaround added in commit 95b3d3c6af). Re-verification on 2026-05-11
 // confirmed the attributes are no longer needed:
 //   rustc 1.94.1 (e408947bf 2026-03-25), LLVM 21.1.8
-//   repro: cargo test --release -p reify-eval --test kinematic_sweep_closed_chain
+//   narrow repro: cargo test --release -p reify-eval --test kinematic_sweep_closed_chain
+//   full suite:   cargo test --release -p reify-eval (2116 tests, all passed)
 //   base commit: 65a7156bd40ee9d47c400f6f50a4d6a52212130e
-// All 2116 release-mode tests passed without the attributes. The symmetric
-// attributes on `walk_recursive` and `is_editor_debris` were removed in the
+// The symmetric attributes on `walk_recursive` and `is_editor_debris` were removed in the
 // same commit.
 #[allow(dead_code)]
 pub fn walk_contributor(label: &str, root: &Path) -> ContributorWalk {
@@ -292,6 +293,7 @@ pub fn walk_contributor(label: &str, root: &Path) -> ContributorWalk {
 // Called only from `walk_contributor` which is itself `#[allow(dead_code)]`;
 // suppress the lint here too so the compiler doesn't complain about the
 // transitively unreachable private function in the non-test lib build.
+// See walk_contributor for inline-never workaround history (task 3429).
 #[allow(dead_code)]
 fn walk_recursive(label: &str, root: &Path, path: &Path, walk: &mut ContributorWalk) {
     // Use symlink_metadata so we dispatch on the type of `path` itself, NOT
