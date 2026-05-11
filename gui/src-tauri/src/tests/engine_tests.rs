@@ -6714,6 +6714,14 @@ fn get_entity_at_source_location_thickness_cell_returns_bracket_thickness() {
 /// The template's approximate span is derived from value-cell and constraint spans,
 /// which start on line 2. The structure keyword at (1,1) = byte 0 falls before the
 /// span start, so the position is not inside any template → None.
+///
+/// **Current-behavior note:** this assertion pins the result of the _current_
+/// approximate-span derivation (union of member spans starting at line 2) and is
+/// not a hard semantic contract.  If a future patch derives the span from the
+/// parsed structure declaration (which starts at byte 0), (1,1) could legitimately
+/// return `Some("Bracket")`.  Updating this assertion to match the improved
+/// approximation is safe — the real invariant is that the position maps
+/// consistently to at most one entity, not the exact `None` outcome.
 #[test]
 fn get_entity_at_source_location_structure_header_returns_none() {
     let checker = SimpleConstraintChecker;

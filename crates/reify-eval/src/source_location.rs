@@ -33,6 +33,15 @@ use reify_types::SourceLocationInfo;
 /// - `None` when `line` or `col` is 0, when the position is outside every
 ///   template's approximate span, or when the position is past the end of
 ///   `source`.
+///
+/// # Limitations (v1)
+///
+/// The cell-narrowing step only matches `value_cells`.  Cursors inside a
+/// `sub_component` or `realization` declaration body therefore fall through to
+/// the bare-template-name result (`Some("Entity")`) even though they belong to
+/// a named sub-entity.  This asymmetry is intentional for v1; extend the
+/// narrowing step to cover `realizations` / `sub_components` when those
+/// members need first-class editor selection.
 pub fn resolve_entity_at_source_position(
     compiled: &CompiledModule,
     source: &str,
@@ -116,10 +125,16 @@ pub fn resolve_entity_at_source_position(
 /// character by character.
 ///
 /// Returns `None` when `line` exceeds the number of lines in `source`, or when
-/// `col` exceeds the length of the target line (col is clamped to line end).
+/// `col` exceeds the length of the target line (col is clamped to end of line).
 /// Returns `Some(source.len())` only when `line` exactly equals the number of
 /// lines + 1 (i.e., one past the end), matching the behaviour of
 /// `line_col_to_byte_offset_with_offsets`.
+///
+/// When `col` is past the end of the target line the function clamps by
+/// returning the byte offset of the **first character of the following line**
+/// (i.e. the character immediately after the `\n` that ended the target line).
+/// Callers that do arithmetic against this value (e.g. comparing with a
+/// half-open span end) should be aware of this semantics.
 fn line_col_to_byte_offset(source: &str, line: u32, col: u32) -> Option<usize> {
     debug_assert!(line > 0 && col > 0, "caller must guard zero inputs");
 
@@ -131,8 +146,8 @@ fn line_col_to_byte_offset(source: &str, line: u32, col: u32) -> Option<usize> {
             return Some(i);
         }
         if cur_line > line {
-            // We have passed the target line without matching — col was past end.
-            // Clamp: return the byte just before the newline that ended the line.
+            // We have passed the target line without matching — col was past end of line.
+            // `i` here is the byte offset of the first character of the following line.
             return Some(i);
         }
         if ch == '\n' {

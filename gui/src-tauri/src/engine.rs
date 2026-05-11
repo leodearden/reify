@@ -1392,8 +1392,13 @@ impl EngineSession {
     ///   is past the end of source.
     ///
     /// # Caching
-    /// Reuses the same `line_offsets_cache` and `parsed_cache` as
-    /// `get_containing_definition` — both are populated eagerly in `commit_state`.
+    /// `parsed_cache` and `line_offsets_cache` are checked via `debug_assert`
+    /// to enforce the cache invariant, but the byte-offset conversion is
+    /// performed inside `reify_eval::resolve_entity_at_source_position` by
+    /// walking the source character-by-character; the pre-built
+    /// `line_offsets_cache` is not passed through to that call.  A future
+    /// refactor could thread the cache into the eval layer to avoid the
+    /// redundant walk.
     pub fn get_entity_at_source_location(&self, line: u32, col: u32) -> Option<String> {
         // Documented contract: zero line or column is out-of-range → None.
         if line == 0 || col == 0 {
