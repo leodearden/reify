@@ -30,6 +30,21 @@
 use std::f64::consts::PI;
 
 use reify_kernel_gmsh::GMSH_AVAILABLE;
+
+// ---------------------------------------------------------------------------
+// Shared fixture helpers
+// ---------------------------------------------------------------------------
+
+/// Build a rectangular `ProfileBoundary` with a CCW outer ring and no holes.
+///
+/// Corners are `(0,0)` → `(w,0)` → `(w,h)` → `(0,h)` (counter-clockwise),
+/// mirroring the `unit_square_boundary()` style in `mesh_swept_profile_2d_tests.rs`.
+fn rect_boundary(w: f64, h: f64) -> ProfileBoundary {
+    ProfileBoundary {
+        outer: vec![[0.0, 0.0], [w, 0.0], [w, h], [0.0, h]],
+        holes: vec![],
+    }
+}
 use reify_solver_elastic::{
     check_sweep_through_thickness, derive_layer_count, mesh_swept_profile_2d, sweep_2d_mesh_to_3d,
     Mesh2d, Mesh2dError, Mesh2dOptions, Mesh2dReport, ProfileBoundary, SweepElementTarget,
