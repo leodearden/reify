@@ -189,12 +189,6 @@ pub fn refine_with_size_field(
     let surface_vertex_sizes =
         project_volume_to_surface_vertices(surface, volume_mesh, &vol_vertex_sizes);
 
-    // DEBUG: print surface vertex sizes
-    eprintln!(
-        "DEBUG refine_with_size_field: surface_vertex_sizes = {:?}",
-        &surface_vertex_sizes
-    );
-
     // Delegate to the kernel-gmsh helper for the full-remesh with size hints.
     reify_kernel_gmsh::refine_volume_with_size_field(
         surface,
@@ -230,20 +224,37 @@ fn project_volume_to_surface_vertices(
     let n_surf = surface.vertices.len() / 3;
     let n_vol = volume_mesh.vertices.len() / 3;
 
-    let global_min = vol_vertex_sizes
+    // Compute global minimum over FINITE sizes only.
+    // `vol_vertex_sizes` may contain f64::INFINITY for volume vertices that
+    // are not referenced by any tet element (orphaned surface/boundary nodes
+    // produced by gmsh's classify_surfaces + create_geometry step). These
+    // orphaned nodes must be excluded from the nearest-neighbour search so
+    // the surface vertex sizes are not contaminated by the orphaned infinity.
+    let finite_min = vol_vertex_sizes
         .iter()
         .copied()
+        .filter(|v| v.is_finite())
         .fold(f64::INFINITY, f64::min);
+    // Safe fallback: if somehow ALL vol_vertex_sizes are infinite, every
+    // surface vertex receives f64::INFINITY too (signals a misconfiguration
+    // upstream; callers are responsible for passing a well-formed volume mesh).
+    let fallback = finite_min;
 
-    let mut result = vec![global_min; n_surf];
+    let mut result = vec![fallback; n_surf];
     for s in 0..n_surf {
         let sx = surface.vertices[s * 3];
         let sy = surface.vertices[s * 3 + 1];
         let sz = surface.vertices[s * 3 + 2];
 
         let mut best_dist_sq = f32::INFINITY;
-        let mut best_size = global_min;
+        let mut best_size = fallback;
         for v in 0..n_vol {
+            // Skip orphaned nodes (not part of any tet) — they carry
+            // f64::INFINITY and would pollute the result if chosen as the
+            // nearest neighbour.
+            if !vol_vertex_sizes[v].is_finite() {
+                continue;
+            }
             let vx = volume_mesh.vertices[v * 3];
             let vy = volume_mesh.vertices[v * 3 + 1];
             let vz = volume_mesh.vertices[v * 3 + 2];

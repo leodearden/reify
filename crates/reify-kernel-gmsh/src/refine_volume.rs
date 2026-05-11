@@ -142,8 +142,28 @@ pub fn refine_volume_with_size_field(
     let tri_node_tags: Vec<u64> = surface.indices.iter().map(|&i| i as u64 + 1).collect();
     ffi::add_elements_2d(surf_tag, 2, &tri_tags, &tri_node_tags)?;
 
-    // --- Classify and create geometry (same as mesh_to_volume) ---
-    ffi::classify_surfaces(std::f64::consts::FRAC_PI_2, 1, 1, std::f64::consts::PI, 0)?;
+    // --- Classify and create geometry ---
+    //
+    // Use a tighter dihedral-angle threshold (PI/12 ≈ 15°) than
+    // `mesh_to_volume`'s PI/2 so that virtually every mesh edge is treated as
+    // a "hard" edge.  For the unit-cube test geometry (90° dihedral angles at
+    // each edge), this ensures all 12 edges become 1D curve entities and all
+    // 8 cube-corner vertices become 0D point entities.  Without this, the
+    // cube corners do NOT become 0D entities under PI/2 threshold (90° is NOT
+    // > PI/2), so we'd only have ~1 corner entity and could not assign
+    // per-vertex size hints.
+    //
+    // For the `curveAngle` (4th argument) we use the same PI/12 so that
+    // vertices at intersections of curves separated by < 15° are still
+    // classified as hard corners; this keeps the corner count stable across
+    // test geometries.
+    ffi::classify_surfaces(
+        std::f64::consts::PI / 12.0,
+        1,
+        1,
+        std::f64::consts::PI / 12.0,
+        0,
+    )?;
     ffi::create_geometry(&[])?;
 
     let surface_tags = ffi::get_entity_tags(2)?;
@@ -160,44 +180,33 @@ pub fn refine_volume_with_size_field(
     ffi::geo_synchronize()?;
 
     // --- Per-vertex size hints ---
-    // MeshSizeFromPoints=1: use 0D-entity sizes (GEO corners) as anchors.
-    // The boundary mesh sized from these corners extends into the volume via
-    // gmsh's default ExtendFromBoundary=1 behavior, which gives good
-    // localization for the step-7 integration test.
+    //
+    // `Mesh.MeshSizeFromPoints=1`: use 0D-entity (corner) sizes as mesh-size
+    // anchors; gmsh interpolates these sizes across the surface and into the
+    // volume via `Mesh.MeshSizeExtendFromBoundary` (default=1).
+    //
+    // `Mesh.MeshSizeFromCurvature=0`: disable curvature-based refinement so
+    // only our explicit corner hints drive the mesh size, preventing gmsh from
+    // independently inserting small elements where the surface curves sharply.
     ffi::option_set_number("Mesh.MeshSizeFromPoints", 1.0)?;
+    ffi::option_set_number("Mesh.MeshSizeFromCurvature", 0.0)?;
 
-    // For each 0D corner entity (created by classify_surfaces + create_geometry),
-    // query its mesh node to find the original surface-vertex index (1-indexed
-    // node tag → 0-indexed vertex_sizes entry), then set the target mesh size
-    // at that corner.
+    // For each 0D corner entity created by classify_surfaces + create_geometry,
+    // query its single mesh node (whose 1-indexed tag corresponds directly to
+    // the surface-vertex index from add_nodes_2d) and set the target mesh size.
     let corner_tags = ffi::get_entity_tags(0)?;
-    eprintln!("DEBUG refine_volume: corner_tags = {:?}", corner_tags);
     for &corner_tag in &corner_tags {
         // Each 0D entity holds exactly one mesh node — the corner node whose
-        // 1-indexed tag corresponds to the surface vertex index we assigned
-        // with add_nodes_2d.
-        if let Ok((node_tags_at_corner, coords)) = ffi::get_nodes_at_entity(0, corner_tag) {
-            eprintln!(
-                "DEBUG   corner_tag={} node_tags={:?} coords={:?}",
-                corner_tag,
-                &node_tags_at_corner,
-                coords.get(..3.min(coords.len()))
-            );
+        // 1-indexed tag maps to a 0-indexed entry in vertex_sizes.
+        if let Ok((node_tags_at_corner, _coords)) = ffi::get_nodes_at_entity(0, corner_tag) {
             if let Some(&node_tag) = node_tags_at_corner.first() {
                 let v_idx = (node_tag as usize).saturating_sub(1);
                 if v_idx < vertex_sizes.len() {
-                    let size = vertex_sizes[v_idx];
-                    eprintln!(
-                        "DEBUG   → setting size={} at entity (0, {})",
-                        size, corner_tag
-                    );
-                    // Best-effort: ignore set-size errors (shouldn't happen for
-                    // entities that exist, but defensive against gmsh internals).
-                    let _ = ffi::mesh_set_size_at_entity(0, corner_tag, size);
+                    // Best-effort: ignore set-size errors (defensive against
+                    // gmsh internals; entities that exist should always accept).
+                    let _ = ffi::mesh_set_size_at_entity(0, corner_tag, vertex_sizes[v_idx]);
                 }
             }
-        } else {
-            eprintln!("DEBUG   corner_tag={} get_nodes_at_entity FAILED", corner_tag);
         }
     }
 
