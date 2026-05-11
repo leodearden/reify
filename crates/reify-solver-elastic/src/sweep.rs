@@ -36,8 +36,8 @@
 /// `sweep_distance = 1.0e25, mesh_size = 1.0` (or the `f64::MAX /
 /// f64::MIN_POSITIVE = +∞` case) round to `usize::MAX` after the `as usize` cast
 /// and OOM.  `1 << 20` ≈ 1 M layers is roughly three orders of magnitude beyond
-/// realistic usage and keeps the vertex allocation under ~13 GiB even for
-/// `n_base = 1000`.
+/// realistic usage and keeps the vertex buffer allocation under ~13 GiB even for
+/// `n_base = 1000` (the connectivity buffer adds a comparable amount for quad meshes).
 ///
 /// Not exploitable via PRD task #9's `ElasticOptions` wiring today — this is
 /// defense-in-depth at the public boundary of [`derive_layer_count`].
@@ -883,6 +883,15 @@ mod tests {
 
         // (d) min_layers floor is irrelevant when the clamp wins: result is still MAX_LAYERS.
         assert_eq!(derive_layer_count(1.0e25, 1.0, 5), super::MAX_LAYERS);
+
+        // (e) min_layers > MAX_LAYERS: min_layers wins because it is applied *after* the
+        //     derived-count clamp.  This pins the documented contract: the OOM guard only
+        //     applies to the *derived* portion; an explicit caller-requested floor is
+        //     passed through unchanged.
+        assert_eq!(
+            derive_layer_count(1.0, 1.0, super::MAX_LAYERS + 5),
+            super::MAX_LAYERS + 5,
+        );
     }
 
     // step-1: debug-only `#[should_panic]` tests for malformed Mesh2d shape invariants.
