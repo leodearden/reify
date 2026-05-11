@@ -2196,4 +2196,115 @@ mod tests {
             "Conditional with an Ident then-branch referencing a known geometry let must classify as a geometry let"
         );
     }
+
+    // --- Match branch geometry recognition (task 3418) ---
+
+    /// Helper: build a `Match` Expr from a discriminant Expr and a slice of arm body Exprs.
+    /// Each arm gets a single string pattern ("X", "Y", "Z", ...) assigned in order.
+    fn make_match(discriminant: reify_syntax::Expr, bodies: Vec<reify_syntax::Expr>) -> reify_syntax::Expr {
+        let pattern_names = ["X", "Y", "Z", "W", "V"];
+        let arms = bodies
+            .into_iter()
+            .enumerate()
+            .map(|(i, body)| reify_syntax::MatchArm {
+                patterns: vec![pattern_names[i % pattern_names.len()].to_string()],
+                body,
+                span: reify_types::SourceSpan::new(0, 1),
+            })
+            .collect();
+        reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::Match {
+                discriminant: Box::new(discriminant),
+                arms,
+            },
+            span: reify_types::SourceSpan::new(0, 1),
+        }
+    }
+
+    /// `is_geometry_let` must classify a `match` expression as a geometry let
+    /// when ANY arm is a geometry call, so the expression is routed to
+    /// `compile_geometry_call` where a clean compile-time Error is emitted
+    /// (rather than silently falling through to the Step(0) crash).
+    ///
+    /// Task 3418 — this test MUST FAIL before the Match arm is added to
+    /// `is_geometry_let` (the wildcard `_ => false` arm catches Match today).
+    #[test]
+    fn is_geometry_let_recognizes_match_with_geometry_arms() {
+        let functions: Vec<CompiledFunction> = vec![];
+        let known: HashSet<&str> = HashSet::new();
+
+        let discriminant = reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::Ident("axis".to_string()),
+            span: reify_types::SourceSpan::new(0, 4),
+        };
+        let num_literal = reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::NumberLiteral { value: 1.0, is_real: false },
+            span: reify_types::SourceSpan::new(0, 1),
+        };
+
+        // (a) All arms geometry → true
+        let all_geom = make_match(
+            discriminant.clone(),
+            vec![
+                make_call_with_arity("box", 3),
+                make_call_with_arity("box", 3),
+                make_call_with_arity("box", 3),
+            ],
+        );
+        assert!(
+            is_geometry_let(&all_geom, &functions, &known),
+            "Match with all geometry arms must classify as a geometry let"
+        );
+
+        // (b) No arms geometry → false
+        let no_geom = make_match(
+            discriminant.clone(),
+            vec![num_literal.clone(), num_literal.clone(), num_literal.clone()],
+        );
+        assert!(
+            !is_geometry_let(&no_geom, &functions, &known),
+            "Match with no geometry arms must NOT classify as a geometry let"
+        );
+
+        // (c) One arm geometry, rest numeric → true (any arm suffices)
+        let one_geom = make_match(
+            discriminant.clone(),
+            vec![
+                make_call_with_arity("box", 3),
+                num_literal.clone(),
+                num_literal.clone(),
+            ],
+        );
+        assert!(
+            is_geometry_let(&one_geom, &functions, &known),
+            "Match with one geometry arm must classify as a geometry let"
+        );
+
+        // (d) Nested Match whose inner arm is geometry → true; recursion traverses.
+        let inner_match = make_match(
+            discriminant.clone(),
+            vec![make_call_with_arity("box", 3), num_literal.clone()],
+        );
+        let outer_match = make_match(
+            discriminant.clone(),
+            vec![num_literal.clone(), inner_match],
+        );
+        assert!(
+            is_geometry_let(&outer_match, &functions, &known),
+            "Nested Match whose inner arm is geometry must classify as a geometry let"
+        );
+
+        // (e) Ident arm referencing a known geometry let → transitive recognition.
+        let mut known_with_g: HashSet<&str> = HashSet::new();
+        known_with_g.insert("g");
+        let ident_g = reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::Ident("g".to_string()),
+            span: reify_types::SourceSpan::new(0, 1),
+        };
+        let match_ident = make_match(discriminant.clone(), vec![ident_g, num_literal.clone()]);
+        assert!(
+            is_geometry_let(&match_ident, &functions, &known_with_g),
+            "Match with an Ident arm referencing a known geometry let must classify as a geometry let"
+        );
+    }
 }
