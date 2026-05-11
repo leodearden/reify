@@ -831,8 +831,9 @@ mod tests {
         let unsupported = ElasticityFailure::UnsupportedElementOrder(ElementOrderTag::P2);
         let not_converged = ElasticityFailure::SolverNotConverged { iterations: 1000 };
         let invalid_tet = ElasticityFailure::InvalidTetIndex(7);
+        let no_elements = ElasticityFailure::NoElementsForPrescribedDisplacements;
 
-        for failure in [&invalid, &unsupported, &not_converged, &invalid_tet] {
+        for failure in [&invalid, &unsupported, &not_converged, &invalid_tet, &no_elements] {
             match failure {
                 ElasticityFailure::InvalidNodeIndex(idx) => {
                     assert_eq!(*idx, 5);
@@ -846,23 +847,31 @@ mod tests {
                 ElasticityFailure::InvalidTetIndex(idx) => {
                     assert_eq!(*idx, 7);
                 }
+                ElasticityFailure::NoElementsForPrescribedDisplacements => {
+                    // No payload to assert — unit variant. The arm's presence
+                    // in this no-wildcard match is the verification.
+                }
             }
         }
     }
 
-    // ── Robustness: non-empty vertices, empty tet_indices ────────────────────
+    // ── Robustness: non-empty vertices, empty tet_indices, empty prescribed ──
 
     /// A P1 mesh with non-empty `vertices` but empty `tet_indices` (orphan
-    /// nodes) is handled by the short-circuit — no FEA pipeline runs.
+    /// nodes) and **empty** `prescribed_positions` is handled by the
+    /// short-circuit — no FEA pipeline runs, input vertices are returned
+    /// unchanged and normals are dropped.
     ///
-    /// Without the `tet_indices.is_empty()` guard, `assemble_global_stiffness`
-    /// produces a 3N×3N matrix with zero stored entries. Subsequent calls to
-    /// `apply_dirichlet_row_elimination` then panic in debug builds with
-    /// "DirichletBc has no explicit diagonal entry" (boundary/dirichlet.rs:271),
-    /// and `solve_cg` panics in `extract_diag_jacobi` on zero/missing diagonal
-    /// when prescribed_positions is empty.
+    /// The tightened contract (task 3362): the short-circuit ONLY fires when
+    /// `prescribed_positions` is empty. Non-empty prescribed positions trigger
+    /// `NoElementsForPrescribedDisplacements` instead (tested separately
+    /// below). This preserves the documented `output = vertices_old + u`
+    /// contract: silently dropping BCs would be semantically wrong.
     ///
-    /// The output preserves the input vertices unchanged and drops normals.
+    /// Without the `tet_indices.is_empty()` guard the no-BC path would fall
+    /// into the FEA pipeline and panic: `assemble_global_stiffness` emits a
+    /// 3N×3N matrix with zero stored entries and `solve_cg` panics in
+    /// `extract_diag_jacobi` on a zero/missing diagonal.
     #[test]
     fn elasticity_morph_with_non_empty_vertices_but_empty_tet_indices_returns_input_vertices() {
         let mesh = VolumeMesh {
@@ -871,10 +880,9 @@ mod tests {
             element_order: ElementOrderTag::P1,
             normals: Some(vec![1.0_f32, 0.0, 0.0, 0.0, 1.0, 0.0]),
         };
-        // Node 0 is valid; prescribed_positions must not cause a panic because
-        // we short-circuit before any assembly.
-        let result =
-            elasticity_morph(&mesh, &[(0, [0.5, 0.5, 0.5])], &crate::MorphOptions::default());
+        // Empty prescribed_positions → short-circuit fires, not
+        // NoElementsForPrescribedDisplacements.
+        let result = elasticity_morph(&mesh, &[], &crate::MorphOptions::default());
         let out = result.unwrap();
         // Vertices returned unchanged.
         assert_eq!(out.vertices, mesh.vertices);
@@ -882,6 +890,43 @@ mod tests {
         assert_eq!(out.element_order, ElementOrderTag::P1);
         // Normals dropped regardless of input.
         assert!(out.normals.is_none());
+    }
+
+    // ── task 3362 step-5: NoElementsForPrescribedDisplacements structured failure ──
+
+    /// A P1 mesh with non-empty `vertices`, empty `tet_indices`, and
+    /// **non-empty** `prescribed_positions` must return
+    /// `Err(ElasticityFailure::NoElementsForPrescribedDisplacements)`.
+    ///
+    /// Silently dropping the BCs (the old behaviour before task 3362) would
+    /// violate the documented `output = vertices_old + u` contract — the caller
+    /// supplied BCs that have nowhere to be applied. Surfacing a structured
+    /// failure lets the engine's projection layer handle the mismatch rather
+    /// than silently discarding user intent.
+    #[test]
+    fn elasticity_morph_with_non_empty_prescribed_positions_but_empty_tet_indices_returns_no_elements_for_prescribed_displacements()
+    {
+        // 2 valid nodes → n_nodes == 2; node index 0 is in-range.
+        let mesh = VolumeMesh {
+            vertices: vec![0.0_f32, 0.0, 0.0, 1.0, 1.0, 1.0],
+            tet_indices: Vec::new(),
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+        // Node 0 is valid for this mesh — the prescribed-positions bounds
+        // check passes. The no-tet branch with non-empty prescribed_positions
+        // must return NoElementsForPrescribedDisplacements.
+        let result = elasticity_morph(
+            &mesh,
+            &[(0_u32, [0.5_f64, 0.5, 0.5])],
+            &crate::MorphOptions::default(),
+        );
+        match result {
+            Err(ElasticityFailure::NoElementsForPrescribedDisplacements) => {}
+            other => panic!(
+                "expected Err(NoElementsForPrescribedDisplacements), got: {other:?}"
+            ),
+        }
     }
 
     // ── task 3362 step-1: SolverNotConverged regression via elasticity_morph_with_cg_opts ──
