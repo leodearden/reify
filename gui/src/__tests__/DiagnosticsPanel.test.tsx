@@ -338,6 +338,31 @@ describe('DiagnosticsPanel', () => {
     expect(loadDiagnosticsPanelSize()).toEqual({ width: 950, height: 580 });
   });
 
+  it('dialog has no inline overflow style; relies on .dialog class for single vertical scroll axis', () => {
+    // The .dialog CSS class provides overflow-y: auto (vertical scroll for the
+    // full dialog content) and .list provides overflow-x: auto (horizontal scroll
+    // for long messages only). No inline overflow override must exist on the dialog
+    // element — having both an inline overflow: auto AND the class-level overflow-y: auto
+    // produces nested horizontal scrollbars for wide content.
+    const diag: DiagnosticEntry = {
+      ...makeDiag('Error', { message: 'x'.repeat(500) }),
+      source: 'compile',
+    };
+    render(() => (
+      <DiagnosticsPanel
+        open={true}
+        diagnostics={[diag]}
+        onClose={vi.fn()}
+        onNavigate={vi.fn()}
+      />
+    ));
+    const dialog = screen.getByTestId('diagnostics-dialog') as HTMLElement;
+    // All three inline overflow properties must be absent — the .dialog class governs scrolling.
+    expect(dialog.style.overflow).toBe('');
+    expect(dialog.style.overflowX).toBe('');
+    expect(dialog.style.overflowY).toBe('');
+  });
+
   it('does not resize when diagnostics list changes mid-session', () => {
     // Set innerWidth to 1400 so the default for empty diags is ~480px and
     // a 500-char message would compute ~1260px — a clearly visible difference
