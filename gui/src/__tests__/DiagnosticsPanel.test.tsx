@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@solidjs/testing-library';
+import { createSignal } from 'solid-js';
 import { DiagnosticsPanel } from '../panels/DiagnosticsPanel';
 import type { DiagnosticInfo } from '../types';
 import type { DiagnosticEntry } from '../panels/DiagnosticsPanel';
@@ -335,6 +336,39 @@ describe('DiagnosticsPanel', () => {
     capturedResizeCallback!([], {} as ResizeObserver);
 
     expect(loadDiagnosticsPanelSize()).toEqual({ width: 950, height: 580 });
+  });
+
+  it('does not resize when diagnostics list changes mid-session', () => {
+    // Set innerWidth to 1400 so the default for empty diags is ~480px and
+    // a 500-char message would compute ~1260px — a clearly visible difference
+    // if the memo incorrectly re-runs on diagnostics change.
+    const originalInnerWidth = window.innerWidth;
+    Object.defineProperty(window, 'innerWidth', { value: 1400, writable: true, configurable: true });
+    try {
+      const [diagnostics, setDiagnostics] = createSignal<DiagnosticEntry[]>([]);
+      render(() => (
+        <DiagnosticsPanel
+          open={true}
+          diagnostics={diagnostics()}
+          onClose={vi.fn()}
+          onNavigate={vi.fn()}
+        />
+      ));
+      const dialog = screen.getByTestId('diagnostics-dialog') as HTMLElement;
+      const widthAfterMount = dialog.style.width;
+
+      // Simulate a long message arriving mid-session (e.g. from a compile update).
+      // The dialogSize memo must NOT re-evaluate — it should only track props.open.
+      setDiagnostics([
+        { ...makeDiag('Error', { message: 'x'.repeat(500) }), source: 'compile' },
+      ]);
+
+      // Width must be unchanged: the default was computed at mount and the
+      // mid-session push must not reshape the dialog.
+      expect(dialog.style.width).toBe(widthAfterMount);
+    } finally {
+      Object.defineProperty(window, 'innerWidth', { value: originalInnerWidth, writable: true, configurable: true });
+    }
   });
 
   it('ignores the first (synchronous initial) ResizeObserver callback and persists only on subsequent user-driven resizes', () => {
