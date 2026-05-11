@@ -1518,26 +1518,49 @@ A parent scope accesses a child's declarations via dot notation: `motor.shaft_di
 
 **Visibility boundary:** Only **parameters** and **named sub-entities** (ports, sub-structures) are accessible from outside a scope. **`let` bindings** and **constraints** are private (unless marked `pub`).
 
-**v0.1 limitation — geometry-typed members are not cross-sub-accessible:**
-Geometry-producing members — whether declared as `param body : Solid = box(...)` or as `let body = box(...)` — are **not** accessible via cross-sub dot notation (e.g. `self.inner.body`) in v0.1. Both forms lower to internal realization declarations that the compiler does not expose through the parent scope's value-cell map.
-
-If you attempt cross-sub geometry access, the compiler emits an actionable diagnostic:
-```
-cross-sub access to geometry-typed member 'body' on sub 'inner'
-is not yet supported in v0.1; compose geometry inside 'Inner'
-or pass scalar parameters to its primitives
-```
-
-**Workaround:** Compose all geometry operations *inside* the child structure; pass scalar position or orientation parameters downward to individual leaf primitives rather than referencing a child's geometry handle from the parent:
+**Cross-sub geometry composition.** Geometry-typed members on a non-collection
+sub — whether declared as `param body : Solid = box(...)` or as
+`let body = box(...)` on the child — are accessible from the parent via
+`self.<sub>.<member>` dot notation. The access lowers to a stable reference to
+the child's realization handle, so transforms and boolean ops in the parent
+compose directly over the child's body:
 
 ```reify
-// ✗ Not supported in v0.1
+pub structure Inner {
+    let body = box(10mm, 20mm, 30mm)
+}
 pub structure Outer {
     sub inner = Inner()
-    let placed = translate(self.inner.body, 10mm, 0mm, 0mm)  // error
+    let placed = translate(self.inner.body, 10mm, 0mm, 0mm)
 }
 
-// ✓ Compose inside the child instead
+pub structure A { let body = box(10mm, 10mm, 10mm) }
+pub structure B { let body = cylinder(5mm, 10mm) }
+pub structure C {
+    sub a = A()
+    sub b = B()
+    let combined = union(self.a.body, self.b.body)
+}
+```
+
+Implemented in task 3441.
+
+**v0.1 limitations — remaining scope gaps:**
+
+1. **Collection-sub geometry is deferred.** Cross-sub geometry access on a
+   collection sub (e.g. `bolts[0].body` or bare `self.bolts.body`) is not yet
+   supported and continues to emit an actionable diagnostic. Per-element
+   realization handles require per-instance realization, which is out of
+   scope for v0.1.
+2. **Nested cross-sub access is deferred.** Chains deeper than one level —
+   e.g. `self.outer.inner.body` — are not yet supported.
+3. **Parameter overrides do not propagate into the child's body.** A sub's
+   body is realised once per build using the child structure's own parameter
+   defaults; parent-side parameter overrides on the sub do not flow into the
+   realised geometry. For per-instance variation, parameterise the child's
+   primitives and pass scalar arguments downward:
+
+```reify
 pub structure Inner {
     param offset_x : Length = 0mm
     let body = translate(box(10mm, 20mm, 30mm), offset_x, 0mm, 0mm)
@@ -1546,8 +1569,6 @@ pub structure Outer {
     sub inner = Inner(offset_x: 10mm)
 }
 ```
-
-Full cross-sub geometry composition is planned for a future release.
 
 ### 8.4 Upward Visibility
 
