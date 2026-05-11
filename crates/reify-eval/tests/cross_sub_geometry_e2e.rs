@@ -131,3 +131,107 @@ pub structure Outer {
             .collect::<Vec<_>>()
     );
 }
+
+/// A has `body = box(...)`, B has `body = cylinder(...)`, C has
+/// `sub a = A()`, `sub b = B()`, `combined = union(self.a.body, self.b.body)`.
+///
+/// Asserts (a) recorded ops contain a Union whose left == A.body's Box handle
+/// and right == B.body's Cylinder handle, (b) build succeeds with
+/// `geometry_output.is_some()`, (c) no Error-severity diagnostics.
+///
+/// RED until step-6 (boolean-op arg-resolution wiring) lands.
+#[test]
+fn cross_sub_union_two_sub_bodies_composes_in_parent() {
+    let source = r#"pub structure A {
+    let body = box(10mm, 10mm, 10mm)
+}
+pub structure B {
+    let body = cylinder(5mm, 10mm)
+}
+pub structure C {
+    sub a = A()
+    sub b = B()
+    let combined = union(self.a.body, self.b.body)
+}"#;
+    let compiled = compile_source(source);
+
+    // (c) No compile-time Error diagnostics.
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "expected no compile-time Error diagnostics; got: {:?}",
+        compile_errors
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    // (c) No Error diagnostics from build.
+    let build_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        build_errors.is_empty(),
+        "expected no build-time Error diagnostics; got: {:?}",
+        build_errors
+            .iter()
+            .map(|d| format!("[{:?}] {}", d.severity, d.message))
+            .collect::<Vec<_>>()
+    );
+
+    // (a) Recorded ops contain a Box (A.body), Cylinder (B.body), and a
+    // Union whose left == Box's handle and right == Cylinder's handle.
+    let recorded = ops_ref.lock().unwrap().clone();
+    let box_rec = recorded
+        .iter()
+        .find(|rec| matches!(rec.op, GeometryOp::Box { .. }))
+        .expect("expected a Box op recorded for A.body");
+    let cyl_rec = recorded
+        .iter()
+        .find(|rec| matches!(rec.op, GeometryOp::Cylinder { .. }))
+        .expect("expected a Cylinder op recorded for B.body");
+    let union_rec = recorded
+        .iter()
+        .find(|rec| matches!(rec.op, GeometryOp::Union { .. }))
+        .expect("expected a Union op recorded for C.combined");
+
+    match union_rec.op {
+        GeometryOp::Union { left, right } => {
+            assert_eq!(
+                left, box_rec.result_handle,
+                "Union.left should be A.body's Box handle ({:?}); got {:?}",
+                box_rec.result_handle, left
+            );
+            assert_eq!(
+                right, cyl_rec.result_handle,
+                "Union.right should be B.body's Cylinder handle ({:?}); got {:?}",
+                cyl_rec.result_handle, right
+            );
+        }
+        ref other => panic!("expected Union op, got {:?}", other),
+    }
+
+    // (b) Build produces a geometry output.
+    assert!(
+        result.geometry_output.is_some(),
+        "expected geometry_output to be Some, got None; diagnostics: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| format!("[{:?}] {}", d.severity, d.message))
+            .collect::<Vec<_>>()
+    );
+}
