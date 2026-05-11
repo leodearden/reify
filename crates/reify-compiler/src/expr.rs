@@ -165,6 +165,19 @@ fn make_cross_sub_geometry_error(
 ///
 /// Used at all three sub-member-access sites (bare collection sub, non-collection
 /// sub, indexed collection sub) to avoid duplicating the lookup-and-dispatch logic.
+///
+/// # Invariant (task-3420)
+///
+/// `sub_realization_names[sub_name].is_some()` implies
+/// `sub_component_types.contains_key(sub_name)`.  Both maps are populated
+/// together in `entity.rs` (regular Sub pre-pass and match-arm Sub pre-pass)
+/// inside the same `if let Some(child_tmpl) = find_template(...)` guard, with
+/// `sub_component_types` written unconditionally before the template lookup.
+/// A `debug_assert!` before the lookup below enforces the invariant in
+/// debug/test builds so a future code path that populates
+/// `sub_realization_names` without `sub_component_types` is caught loudly
+/// rather than silently producing a diagnostic that names the sub instance
+/// instead of its child structure.
 fn try_emit_cross_sub_geometry(
     scope: &CompilationScope<'_>,
     sub_name: &str,
@@ -177,6 +190,13 @@ fn try_emit_cross_sub_geometry(
         .get(sub_name)
         .is_some_and(|s| s.contains(member))
     {
+        debug_assert!(
+            scope.sub_component_types.contains_key(sub_name),
+            "sub_realization_names ⊂ sub_component_types invariant violated: \
+             sub '{}' has realization entries but no structure-name entry — \
+             check entity.rs Sub/match-arm pre-passes",
+            sub_name,
+        );
         let child_struct = scope
             .sub_component_types
             .get(sub_name)
