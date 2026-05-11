@@ -26,6 +26,7 @@
 //! static dispatch is sufficient.
 
 use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -472,6 +473,40 @@ fn decode_f64_slab_from_le_bytes(bytes: &[u8]) -> impl Iterator<Item = f64> + '_
     bytes.chunks_exact(8).map(|chunk| {
         f64::from_le_bytes(chunk.try_into().expect("chunks_exact(8) yields exactly-8-byte slices"))
     })
+}
+
+/// Construct the `.bin` cache-entry path for a given set of key components.
+///
+/// # Layout
+///
+/// ```text
+/// <cache_root>/<engine_version_hash>/<input_hash[0..2]>/<input_hash>.bin
+/// ```
+///
+/// Two-level git-style sharding per PRD
+/// `docs/prds/v0_3/persistent-fea-cache.md` §"Filesystem layout". The first
+/// level (`engine_version_hash`) groups all entries for the same engine build
+/// together, making engine-version invalidation (directory removal) O(1). The
+/// second level (`input_hash[0..2]`) limits directory fanout for large caches.
+///
+/// # Preconditions
+///
+/// - `engine_version_hash` should be a 32-char lowercase hex string (as
+///   produced by [`ENGINE_VERSION_HASH`] / [`compose_engine_version_hash`]).
+/// - `input_hash` must have at least 2 characters; production callers always
+///   pass a 32-char hex string (from `ContentHash::Display`).
+///
+/// A `debug_assert!` fires in debug builds if `input_hash.len() < 2`.
+pub fn entry_bin_path(cache_root: &Path, engine_version_hash: &str, input_hash: &str) -> PathBuf {
+    debug_assert!(
+        input_hash.len() >= 2,
+        "entry_bin_path: input_hash must be at least 2 chars, got {:?}",
+        input_hash
+    );
+    cache_root
+        .join(engine_version_hash)
+        .join(&input_hash[..2])
+        .join(format!("{input_hash}.bin"))
 }
 
 impl PersistentlyCacheable for ElasticResult {
