@@ -283,7 +283,7 @@ pub fn elasticity_morph_with_cg_opts(
     // for in-range tails (e.g. [0,1,2,3, 0,1,2] would otherwise quietly discard
     // the trailing triple). The existing bounds-check loop below becomes a pure
     // semantic validator once this gate is in place.
-    if old_mesh.tet_indices.len() % 4 != 0 {
+    if !old_mesh.tet_indices.len().is_multiple_of(4) {
         return Err(ElasticityFailure::MalformedTetIndices {
             len: old_mesh.tet_indices.len(),
         });
