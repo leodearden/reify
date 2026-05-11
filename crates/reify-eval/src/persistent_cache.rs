@@ -2498,6 +2498,40 @@ mod tests {
     }
 
     #[test]
+    fn write_entry_creates_meta_sidecar_with_magic_byte_in_same_shard_dir_as_bin() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "aabbccddeeff00112233445566778899";
+        let inp = "99887766554433221100ffeeddccbbaa";
+        let original = make_sample_result();
+
+        write_entry(root, eng, inp, &original).unwrap();
+
+        let meta_path = entry_meta_path(root, eng, inp);
+        let bin_path  = entry_bin_path(root, eng, inp);
+
+        // Sidecar must exist and contain exactly the magic byte.
+        assert!(
+            meta_path.exists(),
+            "write_entry must create the .meta sidecar; path: {}",
+            meta_path.display()
+        );
+        let content = std::fs::read(&meta_path).unwrap();
+        assert_eq!(
+            content,
+            vec![SIDECAR_MAGIC_BYTE],
+            ".meta sidecar must contain exactly [SIDECAR_MAGIC_BYTE=0xCA]"
+        );
+
+        // Structural invariant: both files live in the same shard dir.
+        assert_eq!(
+            meta_path.parent().unwrap(),
+            bin_path.parent().unwrap(),
+            ".meta and .bin must share the same parent shard directory"
+        );
+    }
+
+    #[test]
     fn read_entry_returns_ok_none_when_bin_file_is_absent_even_with_orphaned_tempfile_in_shard_dir() {
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path();
