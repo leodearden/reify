@@ -93,6 +93,9 @@ pub use types::{BRep, InversionDetails, SoftFailDetails, SolverErrorPayload};
 pub use reify_eval::{
     BijectionFailure, CorrespondenceMap, NamingLayerErrorReason, SubShapeKind, SubShapeSide,
 };
+/// Re-exported so consumers of [`elasticity_morph_with_cg_opts`] can construct
+/// `CgSolverOptions` without depending on `reify-solver-elastic` directly.
+pub use reify_solver_elastic::CgSolverOptions;
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -362,8 +365,7 @@ mod tests {
     // fences above — fails to compile if a re-export drops, the public
     // signature drifts, or a variant is renamed.
     const _: fn() = || {
-        use crate::{ElasticityFailure, elasticity_morph, elasticity_morph_with_cg_opts};
-        use reify_solver_elastic::CgSolverOptions;
+        use crate::{CgSolverOptions, ElasticityFailure, elasticity_morph, elasticity_morph_with_cg_opts};
         #[allow(clippy::type_complexity)] // pinning the full public signature is the point of the fence
         let _fn_ref: fn(
             &reify_types::VolumeMesh,
