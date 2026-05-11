@@ -244,14 +244,19 @@ pub fn propagate_freshness_only(
             // also have its freshness re-derived: arch §5 defines the
             // ComputeNode as the writer of those VCs, so when C's freshness
             // changes the VCs it writes need their side-table updated too.
-            // This block runs regardless of `wrote` — even when the early
-            // cutoff fired at Compute(C), an output VC might still need a
-            // re-derivation pass (e.g. its reads include cells that changed
-            // elsewhere in this same walk). The push onto the frontier
-            // mirrors `dirty.rs:49-56`'s edge-#12 fan-out, ensuring further
-            // downstream dependents (constraints reading the output VC,
-            // other compute nodes consuming it) propagate the same way as
-            // for any standard value-cell write.
+            //
+            // This block only runs when Compute(C)'s freshness actually
+            // transitioned: it sits BELOW the Failed-skip (line ~137),
+            // freshness early-cutoff (line ~178), and Pending idempotency
+            // cutoff (line ~203), each of which `continue`s past the
+            // remainder of the per-dependent loop body. If C's derived
+            // freshness equals its current freshness the fan-out is skipped
+            // — the outputs are coupled to C's freshness via this walk, so
+            // unchanged C implies unchanged outputs. The push onto the
+            // frontier mirrors `dirty.rs:49-56`'s edge-#12 fan-out,
+            // ensuring further downstream dependents (constraints reading
+            // the output VC, other compute nodes consuming it) propagate
+            // the same way as for any standard value-cell write.
             if let NodeId::Compute(cn_id) = &dependent
                 && let Some(cn_data) = graph.compute_nodes.get(cn_id)
             {

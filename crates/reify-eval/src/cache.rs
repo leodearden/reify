@@ -1324,7 +1324,12 @@ mod tests {
     }
 
     /// P3.3 step-1: Pin `Display for NodeId::Compute(id)` forwarding to
-    /// `id.fmt(f)` — i.e. `"E#computation[0]"`.
+    /// `id.fmt(f)`. The contract this test enforces is delegation: the
+    /// wrapper's Display impl must produce the same bytes as the inner
+    /// `ComputeNodeId`'s impl. We deliberately do NOT pin the literal
+    /// format produced by `ComputeNodeId::fmt` here — that lives in
+    /// reify_types and may be retuned independently of NodeId's
+    /// pass-through contract.
     #[test]
     fn node_id_display_compute_forwards_to_inner_variant() {
         use reify_types::ComputeNodeId;
@@ -1332,7 +1337,6 @@ mod tests {
         let inner = ComputeNodeId::new("E", 0);
         let node = NodeId::Compute(inner.clone());
         assert_eq!(format!("{}", node), format!("{}", inner));
-        assert_eq!(format!("{}", node), "E#computation[0]");
     }
 
     #[test]
