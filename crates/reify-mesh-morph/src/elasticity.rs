@@ -35,9 +35,21 @@ use crate::MorphOptions;
 /// `reify-solver-elastic/src/result.rs:39`. PRD task #21 will replace this
 /// placeholder with a mesh-scale-aware degeneracy detector and structured
 /// error variant; until then we fail-finite-but-garbage on degenerate input.
+///
+/// Even when this clamp engages and produces ~1e30:1 K-conditioning across
+/// mixed degenerate/healthy tets, the engine pipeline (PRD task #10) catches
+/// the resulting degenerate or inverted morphed elements via the quality pass:
+/// `QualityVerdict::HardFail` on negative scaled-Jacobian
+/// (`quality.rs::quality_check`, lines 254-267) and `QualityVerdict::SoftFail`
+/// with `degenerate_morphed_element = Some(_)` on `sj == 0.0`
+/// (quality.rs:271-272, 362-368), independently of the configured floor
+/// thresholds. PRD task #21 will replace this placeholder with a structured
+/// error variant; the quality pass acts as the safety net until then.
 const MIN_VOLUME: f64 = 1.0e-30;
 
-/// Analogous ε guard for the `InverseEdgeLengthSquared` rule.
+/// Analogous ε guard for the `InverseEdgeLengthSquared` rule. See `MIN_VOLUME`
+/// for the safety-net rationale (quality pass catches degenerate output even
+/// when this clamp produces extreme K-conditioning).
 const MIN_LENGTH_SQ: f64 = 1.0e-30;
 
 /// Average of the 6 squared edge lengths of a P1 tet.
