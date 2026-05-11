@@ -1491,11 +1491,11 @@ mod tests {
         std::fs::write(root.join("real.rs"), b"// real content")
             .expect("must write real.rs");
 
-        // Create an external file with distinguishable content and symlink to it
-        // from inside the walked directory.
-        let extern_dir = tmpdir.path().join("_extern");
-        std::fs::create_dir_all(&extern_dir).expect("must create extern dir");
-        let outside_target = extern_dir.join("outside.txt");
+        // Create an external file with distinguishable content in a SEPARATE
+        // tempdir so it is genuinely outside the walked directory tree.
+        // (Placing it under `root` would make the walker visit it directly.)
+        let extern_tmpdir = tempfile::TempDir::new().expect("must create extern tempdir");
+        let outside_target = extern_tmpdir.path().join("outside.txt");
         std::fs::write(&outside_target, b"DO NOT INCLUDE")
             .expect("must write outside target");
 

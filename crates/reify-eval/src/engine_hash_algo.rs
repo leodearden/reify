@@ -216,63 +216,92 @@ pub fn walk_contributor(label: &str, root: &Path) -> ContributorWalk {
 #[allow(dead_code)]
 #[inline(never)]
 fn walk_recursive(label: &str, root: &Path, path: &Path, walk: &mut ContributorWalk) {
-    if path.is_file() {
-        walk.rerun_paths.push(path.to_path_buf());
-        let path_bytes: Vec<u8> = if path == root {
-            // Single-file root: use the label as the path key.
-            label.as_bytes().to_vec()
-        } else {
-            // File within a directory: use "{label}/{relative_path}".
-            let rel = path
-                .strip_prefix(root)
-                .unwrap_or(path)
-                .to_string_lossy();
-            format!("{label}/{rel}").into_bytes()
-        };
-        let file_bytes = std::fs::read(path).unwrap_or_else(|e| {
-            panic!(
-                "ENGINE_VERSION_HASH: cannot read contributor {}: {e}",
-                path.display()
-            )
-        });
-        walk.parts.push(path_bytes);
-        walk.parts.push(file_bytes);
-    } else if path.is_dir() {
-        // Emit the directory itself so cargo re-runs when files are added or
-        // removed — not only when an already-listed file changes (issue #1 fix).
-        walk.rerun_paths.push(path.to_path_buf());
-        let mut entries: Vec<PathBuf> = std::fs::read_dir(path)
-            .unwrap_or_else(|e| {
-                panic!(
-                    "ENGINE_VERSION_HASH: cannot read dir {}: {e}",
-                    path.display()
-                )
-            })
-            .map(|e| {
-                e.unwrap_or_else(|e| {
+    // Use symlink_metadata so we dispatch on the type of `path` itself, NOT
+    // the type of whatever `path` points to through symlink chains.
+    // Path::is_file() / Path::is_dir() call fs::metadata(), which follows
+    // symlinks — so a symlink to a regular file passes is_file() and would be
+    // walked, making the hash machine-specific.  symlink_metadata() does not
+    // follow links, so symlinks are typed as symlinks and fall through to the
+    // silent-skip at the end of the match arm.
+    match path.symlink_metadata() {
+        Ok(meta) => {
+            let ft = meta.file_type();
+            if ft.is_file() {
+                walk.rerun_paths.push(path.to_path_buf());
+                let path_bytes: Vec<u8> = if path == root {
+                    // Single-file root: use the label as the path key.
+                    label.as_bytes().to_vec()
+                } else {
+                    // File within a directory: use "{label}/{relative_path}".
+                    let rel = path
+                        .strip_prefix(root)
+                        .unwrap_or(path)
+                        .to_string_lossy();
+                    format!("{label}/{rel}").into_bytes()
+                };
+                let file_bytes = std::fs::read(path).unwrap_or_else(|e| {
                     panic!(
-                        "ENGINE_VERSION_HASH: dir entry error in {}: {e}",
+                        "ENGINE_VERSION_HASH: cannot read contributor {}: {e}",
                         path.display()
                     )
-                })
-                .path()
-            })
-            .collect();
-        // Sort for byte-determinism across platforms.
-        entries.sort_by(|a, b| {
-            a.file_name()
-                .unwrap_or_default()
-                .cmp(b.file_name().unwrap_or_default())
-        });
-        // Drop known editor/OS debris before recursing so transient files
-        // never perturb the hash or cargo:rerun-if-changed directives.
-        // `map_or(true, …)` retains entries with no file-name component
-        // (impossible for read_dir results, but satisfies Option without
-        // unwrap — keeps the filter from silently skipping unexpected paths).
-        entries.retain(|p| p.file_name().map_or(true, |n| !is_editor_debris(n)));
-        for entry in entries {
-            walk_recursive(label, root, &entry, walk);
+                });
+                walk.parts.push(path_bytes);
+                walk.parts.push(file_bytes);
+            } else if ft.is_dir() {
+                // Emit the directory itself so cargo re-runs when files are
+                // added or removed — not only when an already-listed file
+                // changes (issue #1 fix).
+                walk.rerun_paths.push(path.to_path_buf());
+                let mut entries: Vec<PathBuf> = std::fs::read_dir(path)
+                    .unwrap_or_else(|e| {
+                        panic!(
+                            "ENGINE_VERSION_HASH: cannot read dir {}: {e}",
+                            path.display()
+                        )
+                    })
+                    .map(|e| {
+                        e.unwrap_or_else(|e| {
+                            panic!(
+                                "ENGINE_VERSION_HASH: dir entry error in {}: {e}",
+                                path.display()
+                            )
+                        })
+                        .path()
+                    })
+                    .collect();
+                // Sort for byte-determinism across platforms.
+                entries.sort_by(|a, b| {
+                    a.file_name()
+                        .unwrap_or_default()
+                        .cmp(b.file_name().unwrap_or_default())
+                });
+                // Drop known editor/OS debris before recursing so transient
+                // files never perturb the hash or cargo:rerun-if-changed
+                // directives.  `map_or(true, …)` retains entries with no
+                // file-name component (impossible for read_dir results, but
+                // satisfies Option without unwrap).
+                entries.retain(|p| p.file_name().map_or(true, |n| !is_editor_debris(n)));
+                for entry in entries {
+                    walk_recursive(label, root, &entry, walk);
+                }
+                // Symlinks, FIFOs, sockets, devices, and other non-regular
+                // entries fall through here — silently skipped.
+            }
         }
+        // Silently skip entries where symlink_metadata() fails (broken
+        // symlinks, races where an entry is removed between read_dir and the
+        // type check, transient permission issues).  This preserves today's
+        // behavior where Path::is_file/is_dir already returned false on
+        // metadata errors — no new panic paths.
+        Err(_) => {}
     }
-    // Symlinks and other non-file/dir entries are intentionally skipped.
+    // Only regular files and directories contribute to the hash.
+    // symlink_metadata() (used above) does NOT follow symlinks — so symlinks
+    // (whether pointing to files or directories), broken symlinks, FIFOs,
+    // sockets, character/block devices, and other non-regular entries are
+    // silently skipped.  Path::is_file/is_dir would have followed symlinks
+    // via fs::metadata; that is why we use symlink_metadata instead.  Cache
+    // determinism requires that machine-local symlinks (which may resolve to
+    // absolute paths that differ per developer or CI host) never enter the
+    // hash input.
 }
