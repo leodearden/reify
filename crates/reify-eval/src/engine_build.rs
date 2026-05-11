@@ -2245,7 +2245,7 @@ pub(crate) enum VolumeMeshOutcome {
 /// | `Some(_)`    | false       | false               | `Ok`      | `Err`        | `Tet` (fallback) |
 /// | `Some(_)`    | false       | true                | `Err`     | skip         | `Err("swept hex/wedge path failed: …")` |
 /// | `Some(_)`    | false       | true                | `Ok`      | `Err`        | `Err("swept hex/wedge path failed: …")` |
-#[allow(dead_code)]
+#[allow(dead_code, clippy::too_many_arguments)]
 pub(crate) fn dispatch_volume_mesh<G, S, T>(
     swept_kind: Option<&SweptKind>,
     force_tet: bool,
