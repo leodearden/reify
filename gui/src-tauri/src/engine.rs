@@ -126,6 +126,47 @@ fn is_stdlib_path(p: &str) -> bool {
     p == "std" || p.starts_with("std.")
 }
 
+/// Build the `(error_string, diag_infos)` payload for an error result.
+///
+/// Centralises the mechanical pattern shared by all parse- and compile-error
+/// return sites in `compile_single_file_with_stdlib` and
+/// `compile_entry_with_imports`: join diagnostic messages into a human-readable
+/// string and simultaneously call [`diagnostics_to_info`] for the structured
+/// wire payload.
+///
+/// `prefix` becomes the leading label (e.g. `"Parse errors"`, `"Compile errors"`).
+/// The returned string has the form `"{prefix}: msg1; msg2; …"`, preserving the
+/// wire-format invariant the function docstrings promise.
+fn build_err_payload(
+    prefix: &str,
+    diags: &[Diagnostic],
+    file_path: &str,
+    source: &str,
+) -> (String, Vec<DiagnosticInfo>) {
+    let msgs: Vec<String> = diags.iter().map(|d| d.message.clone()).collect();
+    let error_string = format!("{}: {}", prefix, msgs.join("; "));
+    let diag_infos = diagnostics_to_info(diags, file_path, source);
+    (error_string, diag_infos)
+}
+
+/// Synthesize [`Diagnostic`] values from a slice of [`reify_syntax::ParseError`]s
+/// and delegate to [`build_err_payload`].
+///
+/// Parse errors carry span information but are not `Diagnostic` values; this
+/// helper wraps each one in a synthetic `Diagnostic::error` with a label so
+/// [`diagnostics_to_info`] can resolve spans to line/column numbers.
+fn parse_errs_to_payload(
+    errors: &[reify_syntax::ParseError],
+    file_path: &str,
+    source: &str,
+) -> (String, Vec<DiagnosticInfo>) {
+    let synthetic_diags: Vec<Diagnostic> = errors
+        .iter()
+        .map(|e| Diagnostic::error(e.message.clone()).with_label(DiagnosticLabel::new(e.span, "")))
+        .collect();
+    build_err_payload("Parse errors", &synthetic_diags, file_path, source)
+}
+
 /// Parse and compile a single-file source string using the stdlib prelude.
 ///
 /// Returns `(ParsedModule, CompiledModule)` on success, or an `Err` containing
@@ -148,18 +189,8 @@ fn compile_single_file_with_stdlib(
     let parsed =
         reify_compiler::parse_with_stdlib(content, ModulePath::single(module_name));
     if !parsed.errors.is_empty() {
-        let msgs: Vec<String> = parsed.errors.iter().map(|e| e.message.clone()).collect();
-        let error_string = format!("Parse errors: {}", msgs.join("; "));
-        // Synthesize Diagnostic values from ParseError so diagnostics_to_info can
-        // resolve spans to line/column using the source text.
-        let synthetic_diags: Vec<Diagnostic> = parsed
-            .errors
-            .iter()
-            .map(|e| Diagnostic::error(e.message.clone()).with_label(DiagnosticLabel::new(e.span, "")))
-            .collect();
         let file_path = module_key(module_name);
-        let diag_infos = diagnostics_to_info(&synthetic_diags, &file_path, content);
-        return Err((error_string, diag_infos));
+        return Err(parse_errs_to_payload(&parsed.errors, &file_path, content));
     }
     let compiled = reify_compiler::compile_with_stdlib(&parsed);
     let has_errors = compiled
@@ -167,17 +198,13 @@ fn compile_single_file_with_stdlib(
         .iter()
         .any(|d| d.severity == Severity::Error);
     if has_errors {
-        let error_diags: Vec<&Diagnostic> = compiled
+        let error_diags: Vec<Diagnostic> = compiled
             .diagnostics
-            .iter()
+            .into_iter()
             .filter(|d| d.severity == Severity::Error)
             .collect();
-        let msgs: Vec<String> = error_diags.iter().map(|d| d.message.clone()).collect();
-        let error_string = format!("Compile errors: {}", msgs.join("; "));
-        let owned_diags: Vec<Diagnostic> = error_diags.into_iter().cloned().collect();
         let file_path = module_key(module_name);
-        let diag_infos = diagnostics_to_info(&owned_diags, &file_path, content);
-        return Err((error_string, diag_infos));
+        return Err(build_err_payload("Compile errors", &error_diags, &file_path, content));
     }
     Ok((parsed, compiled))
 }
@@ -248,16 +275,8 @@ fn compile_entry_with_imports(
     // Parse with stdlib enum pre-seeding (same as load_from_source / update_source).
     let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(module_name));
     if !parsed.errors.is_empty() {
-        let msgs: Vec<String> = parsed.errors.iter().map(|e| e.message.clone()).collect();
-        let error_string = format!("Parse errors: {}", msgs.join("; "));
-        let synthetic_diags: Vec<Diagnostic> = parsed
-            .errors
-            .iter()
-            .map(|e| Diagnostic::error(e.message.clone()).with_label(DiagnosticLabel::new(e.span, "")))
-            .collect();
         let file_path = module_key(module_name);
-        let diag_infos = diagnostics_to_info(&synthetic_diags, &file_path, source);
-        return Err((error_string, diag_infos));
+        return Err(parse_errs_to_payload(&parsed.errors, &file_path, source));
     }
 
     // project_root = directory of the entry file; stdlib_root matches LSP heuristic.
@@ -290,9 +309,6 @@ fn compile_entry_with_imports(
             continue;
         }
         dag.compile_module(import_path, &resolver).map_err(|diags| {
-            let msgs: Vec<String> = diags.iter().map(|d| d.message.clone()).collect();
-            let error_string =
-                format!("Compile errors in import '{}': {}", import_path, msgs.join("; "));
             let file_path = format!("{}.ri", import_path);
             // Resolve the import's source via the resolver for accurate span resolution
             // so line/column numbers in the diagnostics panel point to real locations.
@@ -302,8 +318,12 @@ fn compile_entry_with_imports(
                 .ok()
                 .and_then(|p| std::fs::read_to_string(p).ok())
                 .unwrap_or_default();
-            let diag_infos = diagnostics_to_info(&diags, &file_path, &import_source);
-            (error_string, diag_infos)
+            build_err_payload(
+                &format!("Compile errors in import '{}'", import_path),
+                &diags,
+                &file_path,
+                &import_source,
+            )
         })?;
     }
 
@@ -331,17 +351,13 @@ fn compile_entry_with_imports(
         .iter()
         .any(|d| d.severity == Severity::Error);
     if has_errors {
-        let error_diags: Vec<&Diagnostic> = compiled
+        let error_diags: Vec<Diagnostic> = compiled
             .diagnostics
-            .iter()
+            .into_iter()
             .filter(|d| d.severity == Severity::Error)
             .collect();
-        let msgs: Vec<String> = error_diags.iter().map(|d| d.message.clone()).collect();
-        let error_string = format!("Compile errors: {}", msgs.join("; "));
-        let owned_diags: Vec<Diagnostic> = error_diags.into_iter().cloned().collect();
         let file_path = module_key(module_name);
-        let diag_infos = diagnostics_to_info(&owned_diags, &file_path, source);
-        return Err((error_string, diag_infos));
+        return Err(build_err_payload("Compile errors", &error_diags, &file_path, source));
     }
 
     // Merge pub templates from direct (1-hop) non-stdlib imports into the entry's
