@@ -1771,6 +1771,28 @@ mod tests {
         );
     }
 
+    // ── path-layout tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn entry_bin_path_uses_two_level_shard_layout() {
+        use std::path::PathBuf;
+        let root = PathBuf::from("/some/cache");
+        let engine = "abc123def456abc123def456abc123ff";
+        let input  = "0123456789abcdef0123456789abcdef";
+        let got = entry_bin_path(&root, engine, input);
+        assert_eq!(
+            got,
+            PathBuf::from("/some/cache/abc123def456abc123def456abc123ff/01/0123456789abcdef0123456789abcdef.bin"),
+            "entry_bin_path must produce <root>/<engine>/<input[0..2]>/<input>.bin"
+        );
+        // The shard directory is determined by input[0..2] = "01".
+        assert_eq!(
+            got.parent().unwrap().file_name().unwrap().to_str().unwrap(),
+            &input[..2],
+            "shard dir name must be input_hash[0..2]"
+        );
+    }
+
     // ── CacheEntryHeader tests ────────────────────────────────────────────────
 
     #[test]
