@@ -1950,6 +1950,23 @@ mod tests {
         );
     }
 
+    // ── sidecar tests ────────────────────────────────────────────────────────
+
+    #[test]
+    fn write_sidecar_creates_file_with_single_magic_byte() {
+        let tmpdir = tempfile::TempDir::new().expect("must create tempdir");
+        let meta_path = tmpdir.path().join("entry.meta");
+        write_sidecar(&meta_path).expect("write_sidecar must succeed");
+        assert!(meta_path.exists(), "sidecar file must exist after write_sidecar");
+        let contents = std::fs::read(&meta_path).expect("must read sidecar");
+        assert_eq!(
+            contents,
+            vec![SIDECAR_MAGIC_BYTE],
+            "sidecar must contain exactly one byte equal to SIDECAR_MAGIC_BYTE"
+        );
+        assert_eq!(SIDECAR_MAGIC_BYTE, 0xCAu8, "SIDECAR_MAGIC_BYTE must be 0xCA");
+    }
+
     // ── CacheEntryHeader tests ────────────────────────────────────────────────
 
     #[test]
