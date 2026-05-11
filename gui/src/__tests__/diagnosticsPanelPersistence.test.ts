@@ -87,6 +87,68 @@ describe('diagnosticsPanelPersistence', () => {
       localStorage.setItem(DIAGNOSTICS_PANEL_SIZE_KEY, '{broken json!!!');
       expect(loadDiagnosticsPanelSize()).toBeNull();
     });
+
+    // Corrupt-width cases: each should be rejected even though typeof === 'number'
+    it('returns null when width is NaN', () => {
+      localStorage.setItem(DIAGNOSTICS_PANEL_SIZE_KEY, JSON.stringify({ width: NaN, height: 500 }));
+      expect(loadDiagnosticsPanelSize()).toBeNull();
+    });
+
+    it('returns null when width is Infinity', () => {
+      localStorage.setItem(DIAGNOSTICS_PANEL_SIZE_KEY, JSON.stringify({ width: Infinity, height: 500 }));
+      expect(loadDiagnosticsPanelSize()).toBeNull();
+    });
+
+    it('returns null when width is -Infinity', () => {
+      localStorage.setItem(DIAGNOSTICS_PANEL_SIZE_KEY, JSON.stringify({ width: -Infinity, height: 500 }));
+      expect(loadDiagnosticsPanelSize()).toBeNull();
+    });
+
+    it('returns null when width is negative (-1)', () => {
+      localStorage.setItem(DIAGNOSTICS_PANEL_SIZE_KEY, JSON.stringify({ width: -1, height: 500 }));
+      expect(loadDiagnosticsPanelSize()).toBeNull();
+    });
+
+    it('returns null when width is zero', () => {
+      localStorage.setItem(DIAGNOSTICS_PANEL_SIZE_KEY, JSON.stringify({ width: 0, height: 500 }));
+      expect(loadDiagnosticsPanelSize()).toBeNull();
+    });
+
+    it('returns null when width exceeds upper bound (10001)', () => {
+      localStorage.setItem(DIAGNOSTICS_PANEL_SIZE_KEY, JSON.stringify({ width: 10001, height: 500 }));
+      expect(loadDiagnosticsPanelSize()).toBeNull();
+    });
+
+    // Corrupt-height cases: symmetric set
+    it('returns null when height is NaN', () => {
+      localStorage.setItem(DIAGNOSTICS_PANEL_SIZE_KEY, JSON.stringify({ width: 900, height: NaN }));
+      expect(loadDiagnosticsPanelSize()).toBeNull();
+    });
+
+    it('returns null when height is Infinity', () => {
+      localStorage.setItem(DIAGNOSTICS_PANEL_SIZE_KEY, JSON.stringify({ width: 900, height: Infinity }));
+      expect(loadDiagnosticsPanelSize()).toBeNull();
+    });
+
+    it('returns null when height is -Infinity', () => {
+      localStorage.setItem(DIAGNOSTICS_PANEL_SIZE_KEY, JSON.stringify({ width: 900, height: -Infinity }));
+      expect(loadDiagnosticsPanelSize()).toBeNull();
+    });
+
+    it('returns null when height is negative (-1)', () => {
+      localStorage.setItem(DIAGNOSTICS_PANEL_SIZE_KEY, JSON.stringify({ width: 900, height: -1 }));
+      expect(loadDiagnosticsPanelSize()).toBeNull();
+    });
+
+    it('returns null when height is zero', () => {
+      localStorage.setItem(DIAGNOSTICS_PANEL_SIZE_KEY, JSON.stringify({ width: 900, height: 0 }));
+      expect(loadDiagnosticsPanelSize()).toBeNull();
+    });
+
+    it('returns null when height exceeds upper bound (10001)', () => {
+      localStorage.setItem(DIAGNOSTICS_PANEL_SIZE_KEY, JSON.stringify({ width: 900, height: 10001 }));
+      expect(loadDiagnosticsPanelSize()).toBeNull();
+    });
   });
 
   describe('saveDiagnosticsPanelSize', () => {
