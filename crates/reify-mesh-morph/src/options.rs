@@ -138,8 +138,9 @@ pub struct MorphOptions {
     /// `tests/calibration.rs` override this locally to 0.95 to admit the
     /// synthetic procedural fixtures' baseline pct distribution
     /// (structured hex-to-6-tet decomposition skews toward sj < 0.25).
-    /// Task #2950 calibration confirmed the seed is conservative against
-    /// the discriminating bracket fillet-radius sweep.
+    /// Task #2950 calibration confirmed the seed is intentionally tight;
+    /// the synthetic-fixture sweep tests must relax it locally to make the
+    /// materially-better-rule check meaningful.
     pub quality_floor_pct_below_025: f64,
 
     /// Maximum acceptable multiplicative aspect-ratio factor (morphed_AR / source_AR)
