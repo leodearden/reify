@@ -545,7 +545,9 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
       scene.remove(mesh);
     }
 
-    // Remove the undeformed overlay (if any) before disposing the deformed mesh's geometry.
+    // Remove the undeformed overlay first. Overlay disposal is no longer order-sensitive
+    // (the overlay owns cloned index/normal attributes), but doing it first keeps teardown
+    // deterministic and contrasts with the ghost-clone ordering requirement below.
     removeUndeformedOverlay(entityPath);
 
     // removeGhostClone MUST precede geometry disposal: the ghost clone shares
