@@ -418,4 +418,33 @@ mod tests {
         node.realization_inputs = vec![RealizationNodeId::new("Bracket", 0)];
         compute_cache_key(&node, &graph);
     }
+
+    #[test]
+    fn compute_cache_key_changes_when_value_input_cardinality_changes() {
+        // Compare node_one ([a]) vs node_two ([a, b]).  The only varying factor is
+        // bucket cardinality — both reference cell `a` and node_two also includes `b`.
+        // combine_all([hash_a]) must differ from combine_all([hash_a, hash_b]),
+        // guarding against a len-1 short-circuit in the inner bucket fold.
+        let a = ValueCellId::new("Bracket", "a");
+        let b = ValueCellId::new("Bracket", "b");
+
+        let mut graph = EvaluationGraph::default();
+        insert_value_cell(&mut graph, a.clone(), ContentHash::of_str("hash_a"));
+        insert_value_cell(&mut graph, b.clone(), ContentHash::of_str("hash_b"));
+
+        let mut node_one = make_empty_node();
+        node_one.value_inputs = vec![a.clone()];
+
+        let mut node_two = make_empty_node();
+        node_two.value_inputs = vec![a.clone(), b.clone()];
+
+        let key_one = compute_cache_key(&node_one, &graph);
+        let key_two = compute_cache_key(&node_two, &graph);
+        assert_ne!(
+            key_one,
+            key_two,
+            "bucket cardinality must affect the cache key: [a] and [a, b] must produce \
+             distinct keys (guards against a len-1 short-circuit in the bucket fold)"
+        );
+    }
 }
