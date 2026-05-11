@@ -22,21 +22,30 @@
 //! formula from `Mitc3Plus::interpolate_assumed_shear`. This corresponds to
 //! the **MITC3** formulation (Bathe & Dvorkin 1985).
 //!
-//! # Deferred: MITC3+ cubic-bubble enrichment
+//! # Why this is MITC3, not MITC3+
 //!
-//! The MITC3+ element (Bathe & Lee 2014) adds a deviatoric cubic-bubble
-//! rotation field to the covariant-shear sampling at the tying points, which
-//! further reduces residual locking on curved or twisted geometries. That
-//! enrichment is **not** wired here — the covariant shears at tying points
-//! are computed from the standard three-node linear rotation field only.
-//! The patch tests included pass because they exercise constant or affine
-//! fields that are insensitive to the bubble. The '+' enrichment is tracked
-//! as a follow-up task (PRD v0.4 T8 / curved-geometry accuracy).
+//! True MITC3+ (Bathe & Lee 2014) adds a deviatoric cubic-bubble rotation
+//! enrichment to relieve residual membrane locking on curved geometry. We
+//! investigated wiring that bubble into the bending block via static
+//! condensation (task 3349) and proved analytically that the approach is
+//! **mathematically inert for flat-facet elements**: the bending cross-
+//! coupling matrix `K_NB = ∫ B_b_nodal^T · D · B_b_bubble dA` is identically
+//! zero because the bubble `f_b = ξη(1−ξ−η)` vanishes on all three reference
+//! edges, so `∫∫ ∂f_b/∂x dA = ∮ f_b · n_x ds = 0` by the divergence theorem
+//! (and likewise for ∂/∂y). Static condensation
+//! `K_eff = K_NN − K_NB·K_BB⁻¹·K_BN` therefore reduces to `K_NN` —
+//! bit-identical to bare MITC3. Empirically confirmed: a WIP bubble
+//! implementation produced the same pinched-cylinder radial displacement
+//! (2.411163e-7) as bare MITC3, vs the MacNeal-Harder reference 1.8248e-5
+//! (~76× under-prediction).
+//!
+//! True MITC3+ requires curved-element geometry (per-element curvature
+//! coupling, not flat-facet) and is filed as a separate follow-up.
 
 use crate::assembly::ElementStiffness;
 use crate::constitutive::IsotropicElastic;
 
-/// Local mid-surface coordinate frame for a MITC3+ shell element.
+/// Local mid-surface coordinate frame for a MITC3 shell element.
 ///
 /// `r[i][j]` is the j-th global component of local basis vector `eᵢ`:
 /// - `r[0]` = `e1` (along edge p0→p1, in-plane)
@@ -151,7 +160,7 @@ fn mat3_mul(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
     c
 }
 
-/// Compute the 18×18 element stiffness matrix for a MITC3+ shell element.
+/// Compute the 18×18 element stiffness matrix for a MITC3 shell element.
 ///
 /// `nodes` are the three physical vertex positions in global coordinates.
 /// `thickness` is the constant shell thickness `t`.
@@ -161,7 +170,7 @@ fn mat3_mul(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
 /// `6 · node_idx + i` with `i ∈ {0..5}` for `(u_x, u_y, u_z, θ_x, θ_y, θ_z)`.
 ///
 /// **Drilling singularity.** The local drilling rotation — rotation about the
-/// element normal — carries zero stiffness by construction (pure MITC3+, no
+/// element normal — carries zero stiffness by construction (pure MITC3, no
 /// Allman/Hughes enrichment).  In the *local* frame this is the `θ_z` DOF
 /// (i=5 in each node's rotation triple), i.e. row/column 5, 11, 17 of K_local
 /// are zero.  After rotation to global via R^T·K_local·R the singular
@@ -327,7 +336,7 @@ pub fn shell_element_stiffness(
     }
 
     // ---- Transverse-shear K (step 10, implemented here) ----
-    // MITC3+ assumed-strain interpolation.
+    // MITC3 assumed-strain interpolation.
     // Physical DOFs per node for shear: u_z (6n+2), θ_x (6n+3), θ_y (6n+4).
     //
     // Local 2D Jacobian from reference (ξ,η) to local (x_loc, y_loc):
@@ -355,7 +364,7 @@ pub fn shell_element_stiffness(
     // We build B_s rows as: [γ_cov_xi, γ_cov_eta] × 18-DOF columns.
     //
     // But since we need to evaluate B_s at multiple quadrature points and
-    // also sample at tying points, we use the full MITC3+ pipeline:
+    // also sample at tying points, we use the full MITC3 pipeline:
     //   1. Sample covariant strains at A, B, C.
     //   2. Interpolate via Mitc3Plus::interpolate_assumed_shear.
     //   3. Convert to physical via J2⁻ᵀ.
@@ -363,7 +372,7 @@ pub fn shell_element_stiffness(
     //
     // Quadrature: 3-point edge-midpoint (A,B,C) with weight 1/6 each.
     // det2 is the Jacobian determinant (reference → local), weight = 1/6.
-    // The 3 quadrature points coincide with the MITC3+ tying points.
+    // The 3 quadrature points coincide with the MITC3 tying points.
 
     let tying_pts = Mitc3Plus.tying_points();
     // tying_pts = [A=(0.5,0), B=(0,0.5), C=(0.5,0.5)]
@@ -372,7 +381,7 @@ pub fn shell_element_stiffness(
     // B_cov_at_tp[tp_idx][row][dof] where row in {xi_zeta, eta_zeta}, dof in 0..18.
     // But we only need the per-node block: node n contributes to DOFs {6n+2, 6n+3, 6n+4}.
 
-    // For each quadrature point (= tying point), compute the MITC3+ projected
+    // For each quadrature point (= tying point), compute the MITC3 projected
     // covariant shear B_s_cov (2×18), then apply J2⁻ᵀ to get B_s_phys (2×18).
 
     // For the assumed-strain, we first build the 3×(DOFs for u_z,θ_x,θ_y)
@@ -407,8 +416,8 @@ pub fn shell_element_stiffness(
     }
 
     // For each quadrature point (= tying point, weight=1/6, det2 is Jacobian),
-    // compute the MITC3+ projected B_s_phys (2×18) and accumulate K_s.
-    // The MITC3+ interpolation is linear: for each DOF column d, the projected
+    // compute the MITC3 projected B_s_phys (2×18) and accumulate K_s.
+    // The MITC3 interpolation is linear: for each DOF column d, the projected
     // covariant strain is interpolate_assumed_shear(sampled_for_column_d, qp).
     // We handle this column-by-column for all 18 DOFs, building B_s_phys[2][18].
 
@@ -978,7 +987,7 @@ mod tests {
     #[test]
     fn shell_bending_patch_test_linear_theta_y_matches_analytical_total_energy() {
         // θ_y(node_i) = α · x_i: node0→0, node1→α, node2→0.
-        // Curvature κ_xx = -α (uniform), MITC3+ projects γ_xz to constant α/2.
+        // Curvature κ_xx = -α (uniform), MITC3 projects γ_xz to constant α/2.
         // U_total = 0.5·α²·D_pl[0][0]·(t³/12)·A + 0.5·(α/2)²·κ·G·t·A.
         let mat = steel_like();
         let t = 0.05_f64;

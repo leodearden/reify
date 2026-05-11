@@ -19,7 +19,7 @@ use super::ElementStiffness;
 /// `connectivity` lists the global node IDs of the element's local nodes in
 /// the same order as the rows/columns of `k_e`. The per-element
 /// DOFs-per-node count `d_e` is derived as `k_e.n_dofs / connectivity.len()`
-/// (which must divide evenly): tet ⇒ `d_e = 3`, MITC3+ shell ⇒ `d_e = 6`.
+/// (which must divide evenly): tet ⇒ `d_e = 3`, MITC3 shell ⇒ `d_e = 6`.
 /// The local DOF index `d_e * a + α` (axis/component
 /// `α ∈ {0, ..., d_e - 1}`) maps to global DOF
 /// `D * connectivity[a] + α`, where `D` is the global DOFs-per-node count
@@ -35,7 +35,7 @@ pub struct AssemblyElement<'a> {
     pub id: usize,
     /// Global node IDs — `k_e.n_dofs % connectivity.len() == 0` is required,
     /// and the derived per-element DOFs-per-node `k_e.n_dofs / connectivity.len()`
-    /// is the element's DOF stride (3 for tet, 6 for MITC3+ shell).
+    /// is the element's DOF stride (3 for tet, 6 for MITC3 shell).
     pub connectivity: &'a [usize],
     /// Per-element stiffness matrix.
     pub k_e: &'a ElementStiffness,
@@ -248,8 +248,8 @@ pub fn assemble_global_stiffness(
     //
     // Each element emits a full dense block of `d_e² · n_local²` triplets
     // where `d_e = k_e.n_dofs / n_local` is the element's per-node DOF
-    // count (3 for tet, 6 for MITC3+ shell). Worked examples: P1 tet
-    // ⇒ 3² · 4² = 144; P2 tet ⇒ 3² · 10² = 900; MITC3+ shell
+    // count (3 for tet, 6 for MITC3 shell). Worked examples: P1 tet
+    // ⇒ 3² · 4² = 144; P2 tet ⇒ 3² · 10² = 900; MITC3 shell
     // ⇒ 6² · 3² = 324. Pre-sizing both the merged accumulator and
     // per-thread local Vecs to the exact triplet count avoids the
     // O(log N) reallocs `Vec::new()` would walk through on the FEA hot
@@ -387,7 +387,7 @@ pub fn assemble_global_stiffness(
 
 /// Emit one dense `d_e² · n_local²` block of triplets for `element` and
 /// append to `out`. `d_e = element.k_e.n_dofs / n_local` is the element's
-/// per-node DOF count (3 for tet, 6 for MITC3+ shell). `n_dofs_per_node`
+/// per-node DOF count (3 for tet, 6 for MITC3 shell). `n_dofs_per_node`
 /// is the **global** per-node DOF count (`D` in module docs); it sets the
 /// global row/col stride `D · conn[a] + α` independent of `d_e`. When
 /// `D > d_e` (e.g. tet element in a 6-DOF/node mixed system, `D = 6`,
@@ -401,7 +401,7 @@ pub fn assemble_global_stiffness(
 ///   emits `9 · 16 = 144` triplets at `(3·conn[a]+α, 3·conn[b]+β)`.
 /// - **P2 tet in pure-tet mesh** (`d_e = 3`, `n_local = 10`, `D = 3`):
 ///   emits `9 · 100 = 900` triplets at `(3·conn[a]+α, 3·conn[b]+β)`.
-/// - **MITC3+ shell in pure-shell mesh** (`d_e = 6`, `n_local = 3`,
+/// - **MITC3 shell in pure-shell mesh** (`d_e = 6`, `n_local = 3`,
 ///   `D = 6`): emits `36 · 9 = 324` triplets at
 ///   `(6·conn[a]+α, 6·conn[b]+β)`.
 /// - **P1 tet in mixed tet+shell mesh** (`d_e = 3`, `n_local = 4`,
@@ -409,7 +409,7 @@ pub fn assemble_global_stiffness(
 ///   `(6·conn[a]+α, 6·conn[b]+β)` for `α, β ∈ 0..3` — leaves
 ///   `α, β ∈ 3..6` rows/cols **unstored** at the touched nodes,
 ///   producing the orphan rotation rows/cols densified to zero.
-/// - **MITC3+ shell in mixed tet+shell mesh** (`d_e = 6`, `n_local = 3`,
+/// - **MITC3 shell in mixed tet+shell mesh** (`d_e = 6`, `n_local = 3`,
 ///   `D = 6`): identical to the pure-shell case (the local and global
 ///   strides agree). Both translation and rotation DOFs land at
 ///   `(6·conn[a]+α, 6·conn[b]+β)` for `α, β ∈ 0..6`.
@@ -1374,7 +1374,7 @@ mod tests {
         }
     }
 
-    /// One P1 tet sharing only node 0 with one MITC3+ shell → unified
+    /// One P1 tet sharing only node 0 with one MITC3 shell → unified
     /// 6-DOF/node global K with the right per-node-pair contributions.
     ///
     /// Mesh: tet on connectivity `[0, 1, 2, 3]`, shell on connectivity
@@ -1522,7 +1522,7 @@ mod tests {
     /// 4×-replicated mixed-element (tet + shell-sharing-node) mesh.
     ///
     /// Mesh: four disjoint copies of the step-3 fixture (one P1 tet
-    /// `[6k, 6k+1, 6k+2, 6k+3]` plus one MITC3+ shell `[6k, 6k+4, 6k+5]`,
+    /// `[6k, 6k+1, 6k+2, 6k+3]` plus one MITC3 shell `[6k, 6k+4, 6k+5]`,
     /// for k ∈ {0, 1, 2, 3}). 8 elements total, 24 nodes, dim = `6 · 24
     /// = 144`. The eight-element slice gives `Parallel { threads: 4 }`'s
     /// `chunk_size = ceil(8 / 4) = 2` two elements per worker; each
@@ -1531,7 +1531,7 @@ mod tests {
     /// Pins three contracts that step-2's generalisation must preserve:
     ///
     /// 1. **Per-thread Vec capacity formula** uses
-    ///    `Σ d_e² · n_local²` (P1 tet: 144, MITC3+ shell: 324) — not the
+    ///    `Σ d_e² · n_local²` (P1 tet: 144, MITC3 shell: 324) — not the
     ///    old hardcoded `9 · n_local²` (which would over-allocate
     ///    by 3× for tets but under-allocate by 4× for shells, masking
     ///    correctness via Vec growth but breaking the pre-sized invariant
@@ -1598,7 +1598,7 @@ mod tests {
         }
     }
 
-    /// Single 18-DOF MITC3+ shell element with identity connectivity
+    /// Single 18-DOF MITC3 shell element with identity connectivity
     /// `[0, 1, 2]` → `K_global` equals `K_e` bit-for-bit at every entry.
     ///
     /// Pins the D-agnostic generalisation of the scatter loop: the shell
@@ -1643,7 +1643,7 @@ mod tests {
     /// pins.
     ///
     /// Mesh: a small fan rooted at node 0, mixing one P1 tet `[0,1,2,3]`
-    /// with two MITC3+ shells `[0,4,5]` and `[0,6,7]`. `n_nodes = 8`,
+    /// with two MITC3 shells `[0,4,5]` and `[0,6,7]`. `n_nodes = 8`,
     /// global dim = `6 · 8 = 48`. Node 0 is multi-coupled across all three
     /// elements so the duplicate-triplet summation path runs on a node
     /// where contributions from two different `dofs_per_node` (3 from
