@@ -494,46 +494,33 @@ fn assert_materially_better_rule_holds(
 /// materially-better-rule calibration sweep tests (plate hole-diameter,
 /// bracket fillet-radius).
 ///
-/// The synthetic procedural fixtures' structured hex-to-6-tet decomposition
-/// produces baseline populations skewed toward sj < 0.25 (e.g. plate base
-/// pct ≈ 0.91 at `hole_diameter = 0.30`; bracket base similar). The
-/// production default is the PRD seed 0.01 — relaxed here to 0.99 so the
-/// materially-better-rule check exercises real morph distortion rather than
-/// the fixtures' baseline distribution. Re-evaluate against real CAD meshes
-/// once PRD task #10 (engine wiring) lands.
+/// ## Post-task-#3451 state: one override remains
 ///
-/// ## Why these overrides (task #3435 follow-up)
+/// `quality_floor_pct_below_025: 0.99` is the only active override.
+/// The production default (PRD seed 0.01) is unreachable for every
+/// procedural hex-to-6-tet fixture: the from_scratch baseline pct
+/// distribution falls in [0.74, 0.99] across all plate and bracket
+/// sweep targets captured by task #3451 (2026-05-11). With the
+/// production 0.01 floor, a morph or from-scratch result that passes
+/// pct < 0.01 is structurally impossible for these fixtures — the floor
+/// would always fire, collapsing every step onto the Reject branch
+/// regardless of morph quality. The 0.99 override lets the
+/// materially-better-rule check exercise real morph distortion rather
+/// than fixture baseline distribution. Re-evaluate against CAD-derived
+/// meshes once PRD task #10 (engine wiring) lands.
 ///
-/// Originally only `quality_floor_pct_below_025` was overridden (0.95).
-/// Task #3435 corrected `ar_materially_better` to use the true
-/// `max(morphed_AR / from_scratch_AR)` ratio instead of the old
-/// `morph_AR / source_AR` proxy. The corrected predicate then surfaced
-/// that wider plate sweep targets were being rejected without any
-/// corrected metric (min_sj or true AR) showing the morph is materially
-/// worse than a fresh remesh — i.e. the fixture geometry itself, not the
-/// morph, was driving the rejection. Two adjustments were needed to keep
-/// the materially-better-rule sweep meaningful:
-///
-/// 1. `quality_floor_pct_below_025: 0.99` (was 0.95) — wider targets
-///    (≥ 0.50) push pct ≈ 0.98 even for the from-scratch baseline; with
-///    the corrected AR predicate those targets land on the Pass branch
-///    (morph ≡ from_scratch on both corrected metrics) rather than
-///    spuriously failing the rule.
-/// 2. `quality_floor_min_scaled_jacobian: 0.01` (default 0.02) — plate
-///    target=0.50 from_scratch_min_sj ≈ 0.0173 i.e. the procedural mesher
-///    itself sits below the production floor at that geometry, so the
-///    floor isn't separating "good morph" from "bad morph" but rather
-///    "easy geometry" from "hard geometry". Relaxing to 0.01 lets the
-///    sweep exercise wider parameter steps without rejecting morphs that
-///    are quality-indistinguishable from a fresh remesh.
-///
-/// Both overrides are TEST-ONLY. The corresponding production-defaults
-/// question (whether `MorphOptions::default().quality_floor_pct_below_025`
-/// or `quality_floor_min_scaled_jacobian` should move) is tracked
-/// separately — see the task #3435 escalation chain.
+/// `quality_floor_min_scaled_jacobian: 0.01` is kept explicit even though
+/// it currently equals the production default (task #3451 lowered the
+/// production floor from 0.02 to 0.01). Declaring it here makes the
+/// calibration sweep's assumed threshold visible so that a future task that
+/// adjusts the production default forces a reviewer to decide whether the
+/// calibration sweep should follow, rather than silently inheriting the change.
 fn calibration_sweep_options() -> reify_mesh_morph::MorphOptions {
     reify_mesh_morph::MorphOptions {
         quality_floor_pct_below_025: 0.99,
+        // Explicitly declared even though it currently matches the production
+        // default (task #3451 lowered the floor from 0.02 → 0.01). See the
+        // docstring above for the rationale on keeping this explicit.
         quality_floor_min_scaled_jacobian: 0.01,
         ..reify_mesh_morph::MorphOptions::default()
     }
@@ -571,17 +558,16 @@ fn plate_hole_diameter_sweep_obeys_materially_better_rule_with_calibrated_defaul
     // `MorphOptions::default()` (production) as appropriate — the calibrated
     // values are an empirical fit, not a closed-form invariant.
     let base_param = 0.30_f64;
-    // target=0.60 was previously included to stress wide-hole behaviour but
-    // task #3435's corrected `from_scratch_max_ar_factor` (1.18 at target=0.60,
-    // below the 1.20 materiality bar) revealed that the rejection at that
-    // target is driven by the plate fixture's geometry (pct_below_025 hits
-    // 1.0 unconditionally for both morph and from_scratch) rather than by
-    // morph distortion. With the corrected predicate there is no test-only
-    // threshold override that preserves the Reject-branch materiality rule
-    // signal at target=0.60, so the target was dropped. The bracket sweep
-    // continues to exercise the Reject branch via its fillet-radius range —
-    // its `saw_pass && saw_reject` assertion is now load-bearing for
-    // Reject-branch materiality coverage and must not be weakened.
+    // target=0.60 is dropped: the production proxy AR metric trips (~2.15 > 2.0)
+    // but the materiality predicate (`from_scratch_max_ar_factor ≈ 1.18 < 1.20`,
+    // `is_materially_better(morph_sj, fs_sj)` also false) says the morph is
+    // NOT materially worse than a fresh remesh. This asymmetry is pinned by the
+    // `plate_target_0_60_drop_pinned_by_proxy_vs_materiality_asymmetry` test;
+    // if a future production calibration change re-aligns the proxy with the
+    // materiality predicate, that guard will break and target=0.60 can be
+    // re-included here. The bracket sweep continues to exercise the Reject
+    // branch via its fillet-radius range — its `saw_pass && saw_reject`
+    // assertion is load-bearing for Reject-branch materiality coverage.
     let target_params = [0.31_f64, 0.35, 0.40, 0.50];
     let fixture = |hole_diameter: f64| fixtures::plate_with_hole(1.0, hole_diameter, 0.1, 4, 2);
     // See `calibration_sweep_options` for the rationale on the override.
@@ -648,6 +634,329 @@ fn bracket_fillet_radius_sweep_obeys_materially_better_rule_with_calibrated_defa
         "bracket sweep must produce at least one Reject verdict (HardFail or SoftFail) across \
          target_params={target_params:?} — calibration too lax (lib.rs PRD task #13 docs claim a \
          Pass→Reject traversal)"
+    );
+}
+
+// ── Task-#3451 baseline characterisation (ignored — run on-demand) ────────────
+
+/// Pins the empirical from_scratch baseline distributions captured on
+/// 2026-05-11 for the plate-with-hole and L-bracket procedural fixtures,
+/// under the production [`reify_mesh_morph::MorphOptions::default()`].
+///
+/// This test documents the data the task #3451 analysis is grounded in:
+/// - `from_scratch_min_sj`: minimum scaled-Jacobian across the from-scratch
+///   mesh (lower bound on mesher quality at each geometry).
+/// - `from_scratch_max_ar_factor`: the true `max(morphed_AR / from_scratch_AR)` —
+///   how much the morph distorts aspect-ratio relative to a fresh remesh at the
+///   same target geometry. Collapses to ≈ 1.0 only at the base step where the
+///   morph is identity (e.g. plate t=0.30, bracket t=0.10); for non-base targets
+///   the value rises with morph deformation (e.g. plate t=0.60 → ≈ 1.18,
+///   bracket t=0.15 → ≈ 1.44).
+/// - `pct_below_025`: fraction of elements with scaled-J < 0.25, obtained
+///   via a probe-options second `quality_check(&fs, &fs, &probe)` call so
+///   the value is always populated regardless of production thresholds.
+///
+/// **Reproducibility recipe** (run when re-calibrating or checking fixture
+/// drift):
+/// ```text
+/// cargo test -p reify-mesh-morph --test calibration -- \
+///     --ignored procedural_fixture_baseline_distribution_pins
+/// ```
+///
+/// The test is `#[ignore]`'d so normal CI does not pay the sweep cost.
+/// It acts as a regression guard against fixture-builder drift (e.g. a
+/// change to [`fixtures::plate_with_hole`] or [`fixtures::bracket`] that
+/// shifts element shapes) and as reference data for the production threshold
+/// question task #3451 answers.
+#[test]
+#[ignore]
+fn procedural_fixture_baseline_distribution_pins_task_3451_empirical_capture() {
+    use reify_mesh_morph::{MorphOptions, QualityVerdict, quality_check};
+
+    // Probe options: sentinel thresholds so every metric field is always
+    // populated (Some(_)) in the SoftFailDetails payload, independent of
+    // production thresholds. Used to extract raw from_scratch pct_below_025.
+    let probe = MorphOptions {
+        quality_floor_min_scaled_jacobian: f64::INFINITY,
+        quality_floor_pct_below_025: -1.0,
+        quality_aspect_ratio_factor_max: -1.0,
+        ..MorphOptions::default()
+    };
+
+    // Helper: extract pct_below_025 from a mesh by comparing it against
+    // itself under probe options. The AR result (fs_ar/fs_ar = 1.0 for
+    // all tets) is discarded; we only want pct.
+    let fs_pct = |mesh: &reify_types::VolumeMesh| -> f64 {
+        match quality_check(mesh, mesh, &probe) {
+            QualityVerdict::SoftFail(d) => {
+                d.pct_below_025.expect("probe pct_below_025 must be Some under -1.0 threshold")
+            }
+            other => panic!(
+                "probe quality_check on from_scratch mesh returned {:?}; \
+                 expected SoftFail (probe thresholds are always-trip sentinels)",
+                other
+            ),
+        }
+    };
+
+    // ── Plate sweep (base=0.30, targets: 0.30..0.60) ──────────────────────
+    // `run_sweep(fixture, 0.30, target, &MorphOptions::default())` morphs
+    // from hole_diameter=0.30 → target. The from_scratch report fields
+    // document the procedural mesher's intrinsic quality at each target.
+    let plate_fixture =
+        |hole_diameter: f64| fixtures::plate_with_hole(1.0, hole_diameter, 0.1, 4, 2);
+
+    // plate hole_diameter = 0.30 (the base; morph is trivially identity)
+    {
+        let t = 0.30_f64;
+        let r = sweep::run_sweep(plate_fixture, 0.30, t, &MorphOptions::default());
+        let pct = fs_pct(&r.from_scratch);
+        assert!(
+            (0.0234..=0.0244).contains(&r.from_scratch_min_scaled_j),
+            "plate t={t}: from_scratch_min_sj={} not in [0.0234,0.0244]",
+            r.from_scratch_min_scaled_j
+        );
+        assert!(
+            (0.95..=1.05).contains(&r.from_scratch_max_ar_factor),
+            "plate t={t}: from_scratch_max_ar_factor={} not in [0.95,1.05]",
+            r.from_scratch_max_ar_factor
+        );
+        assert!(
+            (0.86..=0.90).contains(&pct),
+            "plate t={t}: from_scratch pct_below_025={pct} not in [0.86,0.90]"
+        );
+    }
+
+    // plate hole_diameter = 0.40
+    {
+        let t = 0.40_f64;
+        let r = sweep::run_sweep(plate_fixture, 0.30, t, &MorphOptions::default());
+        let pct = fs_pct(&r.from_scratch);
+        assert!(
+            (0.0202..=0.0212).contains(&r.from_scratch_min_scaled_j),
+            "plate t={t}: from_scratch_min_sj={} not in [0.0202,0.0212]",
+            r.from_scratch_min_scaled_j
+        );
+        assert!(
+            (0.99..=1.09).contains(&r.from_scratch_max_ar_factor),
+            "plate t={t}: from_scratch_max_ar_factor={} not in [0.99,1.09]",
+            r.from_scratch_max_ar_factor
+        );
+        assert!(
+            (0.94..=0.98).contains(&pct),
+            "plate t={t}: from_scratch pct_below_025={pct} not in [0.94,0.98]"
+        );
+    }
+
+    // plate hole_diameter = 0.50 (from_scratch_min_sj < old 0.02 floor)
+    {
+        let t = 0.50_f64;
+        let r = sweep::run_sweep(plate_fixture, 0.30, t, &MorphOptions::default());
+        let pct = fs_pct(&r.from_scratch);
+        assert!(
+            (0.0168..=0.0178).contains(&r.from_scratch_min_scaled_j),
+            "plate t={t}: from_scratch_min_sj={} not in [0.0168,0.0178] \
+             (confirms 0.02 floor was rejecting geometry, not morph distortion)",
+            r.from_scratch_min_scaled_j
+        );
+        assert!(
+            (1.04..=1.14).contains(&r.from_scratch_max_ar_factor),
+            "plate t={t}: from_scratch_max_ar_factor={} not in [1.04,1.14]",
+            r.from_scratch_max_ar_factor
+        );
+        assert!(
+            (0.97..=1.00).contains(&pct),
+            "plate t={t}: from_scratch pct_below_025={pct} not in [0.97,1.00]"
+        );
+    }
+
+    // plate hole_diameter = 0.60 (from_scratch_min_sj < old 0.02 floor;
+    // load-bearing for the task #3451 floor-move decision)
+    {
+        let t = 0.60_f64;
+        let r = sweep::run_sweep(plate_fixture, 0.30, t, &MorphOptions::default());
+        let pct = fs_pct(&r.from_scratch);
+        assert!(
+            (0.0134..=0.0144).contains(&r.from_scratch_min_scaled_j),
+            "plate t={t}: from_scratch_min_sj={} not in [0.0134,0.0144] \
+             (confirms 0.02 floor was rejecting geometry, not morph distortion)",
+            r.from_scratch_min_scaled_j
+        );
+        assert!(
+            (1.13..=1.23).contains(&r.from_scratch_max_ar_factor),
+            "plate t={t}: from_scratch_max_ar_factor={} not in [1.13,1.23]",
+            r.from_scratch_max_ar_factor
+        );
+        assert!(
+            (0.98..=1.00).contains(&pct),
+            "plate t={t}: from_scratch pct_below_025={pct} not in [0.98,1.00]"
+        );
+    }
+
+    // ── Bracket sweep (base=0.10, targets: 0.10..0.19) ────────────────────
+    let bracket_fixture = |fillet_radius: f64| fixtures::bracket(1.0, 0.2, fillet_radius, 4);
+
+    // bracket fillet_radius = 0.10 (the base; morph is trivially identity)
+    {
+        let t = 0.10_f64;
+        let r = sweep::run_sweep(bracket_fixture, 0.10, t, &MorphOptions::default());
+        let pct = fs_pct(&r.from_scratch);
+        assert!(
+            (0.0408..=0.0418).contains(&r.from_scratch_min_scaled_j),
+            "bracket t={t}: from_scratch_min_sj={} not in [0.0408,0.0418]",
+            r.from_scratch_min_scaled_j
+        );
+        assert!(
+            (0.95..=1.05).contains(&r.from_scratch_max_ar_factor),
+            "bracket t={t}: from_scratch_max_ar_factor={} not in [0.95,1.05]",
+            r.from_scratch_max_ar_factor
+        );
+        assert!(
+            (0.72..=0.76).contains(&pct),
+            "bracket t={t}: from_scratch pct_below_025={pct} not in [0.72,0.76]"
+        );
+    }
+
+    // bracket fillet_radius = 0.15 (from_scratch_min_sj < old 0.02 floor)
+    {
+        let t = 0.15_f64;
+        let r = sweep::run_sweep(bracket_fixture, 0.10, t, &MorphOptions::default());
+        let pct = fs_pct(&r.from_scratch);
+        assert!(
+            (0.0203..=0.0213).contains(&r.from_scratch_min_scaled_j),
+            "bracket t={t}: from_scratch_min_sj={} not in [0.0203,0.0213] \
+             (confirms 0.02 floor was rejecting geometry, not morph distortion)",
+            r.from_scratch_min_scaled_j
+        );
+        assert!(
+            (1.39..=1.49).contains(&r.from_scratch_max_ar_factor),
+            "bracket t={t}: from_scratch_max_ar_factor={} not in [1.39,1.49]",
+            r.from_scratch_max_ar_factor
+        );
+        assert!(
+            (0.95..=0.98).contains(&pct),
+            "bracket t={t}: from_scratch pct_below_025={pct} not in [0.95,0.98]"
+        );
+    }
+
+    // bracket fillet_radius = 0.19 (from_scratch_min_sj << 0.01; morph
+    // HardFails at this geometry under MorphOptions::default() so
+    // `from_scratch_max_ar_factor` is zeroed by the HardFail short-circuit
+    // in extract_metrics — that field is NOT asserted here).
+    {
+        let t = 0.19_f64;
+        let r = sweep::run_sweep(bracket_fixture, 0.10, t, &MorphOptions::default());
+        let pct = fs_pct(&r.from_scratch);
+        assert!(
+            (0.0037..=0.0047).contains(&r.from_scratch_min_scaled_j),
+            "bracket t={t}: from_scratch_min_sj={} not in [0.0037,0.0047] \
+             (load-bearing: shows the procedural mesher's own baseline is below 0.01 here)",
+            r.from_scratch_min_scaled_j
+        );
+        // from_scratch_max_ar_factor is 0.0 (HardFail short-circuit in
+        // extract_metrics(&morphed, &from_scratch) — not a meaningful
+        // baseline statistic at this target). Omitted from assertions.
+        assert!(
+            (0.98..=1.00).contains(&pct),
+            "bracket t={t}: from_scratch pct_below_025={pct} not in [0.98,1.00]"
+        );
+        // Surface-level verdict sanity: HardFail expected at this extreme step.
+        assert!(
+            matches!(r.morph_verdict, QualityVerdict::HardFail(_)),
+            "bracket t={t}: expected HardFail morph_verdict at this extreme step, \
+             got {:?}",
+            r.morph_verdict
+        );
+    }
+}
+
+// ── Task-#3451 plate target=0.60 asymmetry regression guard ──────────────────
+
+/// Regression guard pinning the proxy-vs-materiality asymmetry that is the
+/// load-bearing reason plate `hole_diameter = 0.60` is dropped from
+/// `plate_hole_diameter_sweep_obeys_materially_better_rule_with_calibrated_defaults`.
+///
+/// At `hole_diameter = 0.60` two metrics diverge:
+///
+/// - **Production proxy verdict:** `morph_max_ar_factor ≈ 2.15`, which trips the
+///   production threshold (`quality_aspect_ratio_factor_max = 2.0`), yielding
+///   `QualityVerdict::SoftFail`.
+/// - **AR-side materiality predicate:** `from_scratch_max_ar_factor ≈ 1.18 < 1.20`
+///   (`MATERIALITY_FACTOR`), i.e. the morph's AR is NOT materially worse than a
+///   fresh remesh at the same target — the materiality predicate says "Pass".
+/// - **SJ-side materiality predicate:** also says "Pass" — `from_scratch_min_sj`
+///   is NOT materially better than `morph_min_sj` at this target.
+///
+/// The asymmetry arises because the production proxy measures `morphed_AR / source_AR`
+/// (no access to a from-scratch mesh in production callers; see PRD task #10), while
+/// the materiality predicate uses the true `morphed_AR / from_scratch_AR` ratio. At
+/// a wide step (source=small hole, target=large hole), `source_AR` is much smaller
+/// than `from_scratch_AR`, making the proxy read higher than the true ratio.
+///
+/// Re-including `target = 0.60` in the calibration sweep would require either
+/// raising `quality_aspect_ratio_factor_max` above `~2.15` (risky without broader
+/// empirical support) or adding a test-only AR override (avoids the production
+/// calibration question). If a future production change re-aligns the proxy with
+/// the materiality predicate (e.g. task #10 wires from-scratch context into
+/// `quality_check`), this test will trip — that is the intended signal that
+/// `target = 0.60` can be re-enabled.
+#[test]
+fn plate_target_0_60_drop_pinned_by_proxy_vs_materiality_asymmetry() {
+    use reify_mesh_morph::{MorphOptions, QualityVerdict};
+
+    let fixture =
+        |hole_diameter: f64| fixtures::plate_with_hole(1.0, hole_diameter, 0.1, 4, 2);
+    // Use calibration_sweep_options() (pct override only, since min_sj
+    // production default is now 0.01) so the sweep runs the same options
+    // as the plate calibration test. The asymmetry being pinned is on the
+    // AR side, not the pct side.
+    let report = sweep::run_sweep(fixture, 0.30, 0.60, &calibration_sweep_options());
+
+    // (a) Production proxy trips: morph_max_ar_factor (morphed_AR / source_AR)
+    //     exceeds the production threshold. This drives the SoftFail verdict.
+    assert!(
+        report.morph_max_ar_factor > MorphOptions::default().quality_aspect_ratio_factor_max,
+        "plate 0.60: production proxy should trip \
+         (morph_max_ar_factor={} > threshold={}); \
+         if not, the asymmetry no longer exists and target=0.60 can be re-included",
+        report.morph_max_ar_factor,
+        MorphOptions::default().quality_aspect_ratio_factor_max
+    );
+
+    // (b) AR-side materiality predicate says NOT materially better:
+    //     from_scratch_max_ar_factor (morphed_AR / from_scratch_AR) < MATERIALITY_FACTOR.
+    //     The morph is not ≥20 % more elongated than a fresh remesh — the
+    //     rejection is driven by the proxy, not true distortion.
+    assert!(
+        !sweep::ar_materially_better(&report),
+        "plate 0.60: AR-side materiality should say NOT materially better \
+         (from_scratch_max_ar_factor={} < MATERIALITY_FACTOR={}); \
+         if this trips, the proxy and materiality predicate are now aligned — \
+         consider re-including target=0.60 in the calibration sweep",
+        report.from_scratch_max_ar_factor,
+        sweep::MATERIALITY_FACTOR
+    );
+
+    // (c) SJ-side materiality predicate also says NOT materially better:
+    //     from_scratch_min_sj is NOT > MATERIALITY_FACTOR * morph_min_sj.
+    assert!(
+        !sweep::is_materially_better(report.morph_min_scaled_j, report.from_scratch_min_scaled_j),
+        "plate 0.60: SJ-side materiality should say NOT materially better \
+         (from_scratch_min_sj={} not > {}×morph_min_sj={}); \
+         if this trips, the floor might be too strict at target=0.60",
+        report.from_scratch_min_scaled_j,
+        sweep::MATERIALITY_FACTOR,
+        report.morph_min_scaled_j
+    );
+
+    // (d) The production verdict is SoftFail — the proxy tripped, not a
+    //     hard inversion. If this becomes HardFail or Pass the asymmetry
+    //     has structurally changed.
+    assert!(
+        matches!(report.morph_verdict, QualityVerdict::SoftFail(_)),
+        "plate 0.60: expected SoftFail (proxy trip, no hard inversion), \
+         got {:?}; the proxy-vs-materiality asymmetry may have shifted",
+        report.morph_verdict
     );
 }
 
