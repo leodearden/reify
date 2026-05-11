@@ -23,8 +23,6 @@
 //! - `trait_refs` — populated by `pre_pass::collect_decl_refs`
 //! - `prelude.trait_defs` / `prelude.templates` — from the caller's prelude
 
-use std::collections::HashSet;
-
 use reify_syntax::TraitDecl;
 
 use crate::CompiledModule;
