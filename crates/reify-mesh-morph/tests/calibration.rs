@@ -509,13 +509,19 @@ fn assert_materially_better_rule_holds(
 /// than fixture baseline distribution. Re-evaluate against CAD-derived
 /// meshes once PRD task #10 (engine wiring) lands.
 ///
-/// `quality_floor_min_scaled_jacobian` is NOT overridden: task #3451
-/// lowered the production default from 0.02 to 0.01, which matches the
-/// test value the steward applied in task #3435. The override is now
-/// a no-op and has been removed.
+/// `quality_floor_min_scaled_jacobian: 0.01` is kept explicit even though
+/// it currently equals the production default (task #3451 lowered the
+/// production floor from 0.02 to 0.01). Declaring it here makes the
+/// calibration sweep's assumed threshold visible so that a future task that
+/// adjusts the production default forces a reviewer to decide whether the
+/// calibration sweep should follow, rather than silently inheriting the change.
 fn calibration_sweep_options() -> reify_mesh_morph::MorphOptions {
     reify_mesh_morph::MorphOptions {
         quality_floor_pct_below_025: 0.99,
+        // Explicitly declared even though it currently matches the production
+        // default (task #3451 lowered the floor from 0.02 → 0.01). See the
+        // docstring above for the rationale on keeping this explicit.
+        quality_floor_min_scaled_jacobian: 0.01,
         ..reify_mesh_morph::MorphOptions::default()
     }
 }
@@ -640,9 +646,12 @@ fn bracket_fillet_radius_sweep_obeys_materially_better_rule_with_calibrated_defa
 /// This test documents the data the task #3451 analysis is grounded in:
 /// - `from_scratch_min_sj`: minimum scaled-Jacobian across the from-scratch
 ///   mesh (lower bound on mesher quality at each geometry).
-/// - `from_scratch_max_ar_factor` relative to itself (≡ the raw
-///   `max(morphed_AR / from_scratch_AR)` with morph == from_scratch, i.e.
-///   the ratio is expected to be ≈ 1.0 for a from-scratch baseline).
+/// - `from_scratch_max_ar_factor`: the true `max(morphed_AR / from_scratch_AR)` —
+///   how much the morph distorts aspect-ratio relative to a fresh remesh at the
+///   same target geometry. Collapses to ≈ 1.0 only at the base step where the
+///   morph is identity (e.g. plate t=0.30, bracket t=0.10); for non-base targets
+///   the value rises with morph deformation (e.g. plate t=0.60 → ≈ 1.18,
+///   bracket t=0.15 → ≈ 1.44).
 /// - `pct_below_025`: fraction of elements with scaled-J < 0.25, obtained
 ///   via a probe-options second `quality_check(&fs, &fs, &probe)` call so
 ///   the value is always populated regardless of production thresholds.

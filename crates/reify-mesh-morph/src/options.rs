@@ -218,6 +218,15 @@ impl Default for MorphOptions {
             // materiality predicate (>20 % improvement on min_sj OR the true
             // max(morphed_AR / from_scratch_AR) ratio, MATERIALITY_FACTOR=1.20
             // in tests/calibration/sweep.rs) do the discrimination.
+            //
+            // NOTE: this calibration is derived from two synthetic procedural
+            // fixtures (plate-with-hole, L-bracket) only — no real-CAD-mesh
+            // data point yet.  A real-CAD morph that produces min_sj=0.012 due
+            // to genuine distortion (not fixture-intrinsic geometry) now passes
+            // the floor that the old 0.02 would have caught.  Re-evaluate the
+            // floor against real CAD-derived meshes once PRD task #10 (engine
+            // wiring, `lib.rs::morph()`) lands and production mesh distributions
+            // are observable.
             quality_floor_min_scaled_jacobian: 0.01,
             // PRD seed 0.01 retained as the production default (task #3434
             // follow-up to #2950). Earlier calibration relaxed the default to
