@@ -269,7 +269,9 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
       (posAttr as { count: number }).count = data.vertices.length / 3;
       posAttr.needsUpdate = true;
     } else {
-      geometry.setAttribute('position', new BufferAttribute(data.vertices, 3));
+      // Copy vertices on ingest — applyWarpToMesh writes blended values into
+      // posAttr.array in place; aliasing data.vertices would clobber the caller's buffer.
+      geometry.setAttribute('position', new BufferAttribute(data.vertices.slice(), 3));
     }
 
     const indexAttr = geometry.index;

@@ -6,6 +6,13 @@
 /** Tessellated mesh data for 3D rendering (typed arrays for WebGL). */
 export interface MeshData {
   entity_path: string;
+  /**
+   * Packed vertex positions (`[x0, y0, z0, x1, y1, z1, ...]`).
+   *
+   * The renderer (MeshManager) always copies this buffer on ingest, so callers
+   * may freely retain or mutate the `Float32Array` after passing it to
+   * `sync()` — the position attribute will not alias it.
+   */
   vertices: Float32Array;
   indices: Uint32Array;
   normals: Float32Array | null;

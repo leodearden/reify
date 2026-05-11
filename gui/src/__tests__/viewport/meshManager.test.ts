@@ -460,9 +460,10 @@ describe('meshManager', () => {
       const indices2 = new Uint32Array([0, 1, 2]);
       manager.sync({ A: makeMeshData('A', verts2, indices2) });
 
-      // Should be a NEW BufferAttribute
+      // Should be a NEW BufferAttribute with copy semantics.
       expect(geom.attributes.position).not.toBe(posAttrBefore);
-      expect(geom.attributes.position.array).toBe(verts2);
+      expect(geom.attributes.position.array).not.toBe(verts2);
+      expect(Array.from(geom.attributes.position.array as Float32Array)).toEqual(Array.from(verts2));
     });
 
     it('update with different-length index array creates new index BufferAttribute', () => {
@@ -496,7 +497,9 @@ describe('meshManager', () => {
 
       const mesh = manager.getSceneMeshes().get('A')!;
       const geom = mesh.geometry as any;
-      expect(geom.attributes.position.array).toBe(verts2);
+      // Copy semantics: the position array must be a copy, not the caller's buffer.
+      expect(geom.attributes.position.array).not.toBe(verts2);
+      expect(Array.from(geom.attributes.position.array as Float32Array)).toEqual(Array.from(verts2));
       expect(geom.attributes.position.count).toBe(4); // 12 / 3
       expect(geom.attributes.position.itemSize).toBe(3);
     });
