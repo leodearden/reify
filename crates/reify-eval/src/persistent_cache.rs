@@ -1660,4 +1660,18 @@ mod tests {
             crate::engine_hash_algo::CONTRIBUTORS_RELATIVE
         );
     }
+
+    // ── CacheEntryHeader tests ────────────────────────────────────────────────
+
+    #[test]
+    fn entry_format_version_const_is_one() {
+        // Pins the start-at-1 convention (0 = uninitialised / unknown).
+        // An intentional on-disk-layout bump must touch this assertion — that
+        // is the point: it forces a deliberate acknowledgement that cached bytes
+        // from the previous version are now incompatible. Mirrors the
+        // `elastic_result_format_version_is_one` pattern for body-format
+        // versioning; these two consts are intentionally distinct namespaces
+        // (entry-header layout vs. body encoding).
+        assert_eq!(ENTRY_FORMAT_VERSION, 1);
+    }
 }
