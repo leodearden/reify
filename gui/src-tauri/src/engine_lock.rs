@@ -1,6 +1,24 @@
+use std::any::Any;
 use std::sync::Mutex;
 
 use crate::engine::EngineSession;
+
+/// Extract a human-readable string from a panic payload.
+///
+/// Rust panic payloads are `Box<dyn Any + Send>`.  The two common cases are:
+/// - `&'static str` — from `panic!("literal")`
+/// - `String` — from `panic!("{}", value)`
+///
+/// Falls back to `"<non-string payload>"` for anything else.
+fn panic_message(payload: &Box<dyn Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&'static str>() {
+        return s.to_string();
+    }
+    if let Some(s) = payload.downcast_ref::<String>() {
+        return s.clone();
+    }
+    "<non-string payload>".to_string()
+}
 
 /// Run a closure with access to the engine session, recovering from mutex
 /// poisoning and catching panics so they do not propagate to callers.
@@ -37,6 +55,6 @@ where
     drop(guard);
     match result {
         Ok(v) => Ok(v),
-        Err(_) => Err("panic in engine: <caught>".into()),
+        Err(payload) => Err(format!("panic in engine: {}", panic_message(&payload))),
     }
 }
