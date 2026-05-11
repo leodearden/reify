@@ -1809,6 +1809,27 @@ mod tests {
     // ── path-layout tests ────────────────────────────────────────────────────
 
     #[test]
+    fn entry_meta_path_uses_meta_extension_under_same_shard_dir_as_bin() {
+        use std::path::PathBuf;
+        let root   = PathBuf::from("/some/cache");
+        let engine = "abc123def456abc123def456abc123ff";
+        let input  = "0123456789abcdef0123456789abcdef";
+        let meta = entry_meta_path(&root, engine, input);
+        assert_eq!(
+            meta,
+            PathBuf::from("/some/cache/abc123def456abc123def456abc123ff/01/0123456789abcdef0123456789abcdef.meta"),
+        );
+        // Sidecar must share the same parent directory as the .bin file so
+        // atomic-rename semantics work (both files land in the same dir).
+        let bin = entry_bin_path(&root, engine, input);
+        assert_eq!(
+            meta.parent(),
+            bin.parent(),
+            "entry_meta_path and entry_bin_path must share the same parent directory"
+        );
+    }
+
+    #[test]
     fn entry_bin_path_uses_two_level_shard_layout() {
         use std::path::PathBuf;
         let root = PathBuf::from("/some/cache");
