@@ -28,11 +28,24 @@
 //! Any departure from the expected ElasticResult Map shape (see
 //! `crates/reify-stdlib/src/fea.rs`) or a missing/invalid tolerance returns
 //! [`FilterOutcome::Different`] — over-invalidate rather than under-invalidate.
+//! This includes mismatched sampling geometry on the `displacement` field:
+//! identical data values at physically different grid locations are always a
+//! material change (see [`sampled_field_grid_metadata_eq`]).
+//!
+//! # NaN handling
+//!
+//! Non-finite values (`NaN`, `±Inf`) in the `displacement` data yield
+//! [`FilterOutcome::Different`] when `prev` and `new` are not bit-equal.
+//! If both `prev` and `new` carry identical bit-pattern NaN (e.g. the solver
+//! returned NaN twice in a row without change), the bit-equality shortcut fires
+//! first and returns [`FilterOutcome::Equivalent`].
+//! Effective contract: *NaN propagates as Different only when prev and new are
+//! not bit-equal.*
 //!
 //! # Integration contract
 //!
 //! `length_tolerance_si: Option<f64>` is resolved by the caller via
-//! `Engine::active_tolerance_for(subject_entity_ref)` (task 3382, P3.3).
+//! `Engine::active_tolerance_for(subject_entity_ref)` (task 3382 / P3.3).
 //! The filter itself is engine-free (pure function).
 
 /// The three-variant outcome of the output significance filter.
@@ -70,7 +83,44 @@ const DISPLACEMENT_KEY: &str = "displacement";
 ///
 /// v1 policy: `stress`, `max_von_mises`, `converged`, and `iterations` are
 /// compared bit-exactly — no Pressure tolerance class exists today.
-const NON_DISPLACEMENT_KEYS: &[&str] = &["stress", "max_von_mises", "converged", "iterations"];
+const NON_DISPLACEMENT_KEYS: [&str; 4] = ["stress", "max_von_mises", "converged", "iterations"];
+
+/// Compare all grid-metadata fields of two [`reify_types::SampledField`]s,
+/// excluding `data` (the value payload) and `oob_emitted` (runtime flag).
+///
+/// Returns `false` if any spatial-geometry field differs — different grids mean
+/// samples at physically different locations, which is always a material change
+/// regardless of whether the numerical data values happen to fall within
+/// tolerance. This mirrors the same bit-exact `f64` comparisons used in
+/// `SampledField`'s own `PartialEq` implementation but skips the `data` slice.
+fn sampled_field_grid_metadata_eq(
+    a: &reify_types::SampledField,
+    b: &reify_types::SampledField,
+) -> bool {
+    if a.name != b.name || a.kind != b.kind || a.interpolation != b.interpolation {
+        return false;
+    }
+    let vecs_bit_eq = |xs: &[f64], ys: &[f64]| -> bool {
+        xs.len() == ys.len()
+            && xs
+                .iter()
+                .zip(ys.iter())
+                .all(|(x, y)| x.to_bits() == y.to_bits())
+    };
+    if !vecs_bit_eq(&a.bounds_min, &b.bounds_min)
+        || !vecs_bit_eq(&a.bounds_max, &b.bounds_max)
+        || !vecs_bit_eq(&a.spacing, &b.spacing)
+    {
+        return false;
+    }
+    if a.axis_grids.len() != b.axis_grids.len() {
+        return false;
+    }
+    a.axis_grids
+        .iter()
+        .zip(b.axis_grids.iter())
+        .all(|(ag, bg)| vecs_bit_eq(ag, bg))
+}
 
 /// Compare a compute node's previous and new result with per-purpose tolerance.
 ///
@@ -103,9 +153,12 @@ pub fn significance_filter(
     }
 
     // Bit-equality shortcut: identical Values are Equivalent without consulting
-    // the Map shape or tolerance. This is the steady-state-cheap path and the
-    // ONLY path that can declare Equivalent without consulting length_tolerance_si.
-    // Relies on Value::PartialEq (value.rs:1573).
+    // the Map shape or tolerance. This is the steady-state-cheap path.
+    // Note: bit-identical NaN values in displacement.data return Equivalent here
+    // (SampledField::PartialEq uses to_bits(), so same-bit NaN == same-bit NaN).
+    // The effective NaN contract is: "NaN propagates as Different only when prev
+    // and new are not bit-equal" — see the element-wise loop below. Relies on
+    // Value::PartialEq (value.rs:1573).
     // Exercises: significance_filter_returns_equivalent_for_bit_equal_results
     //            significance_filter_does_not_false_positive_on_bit_equal_with_zero_tolerance
     if prev == new {
@@ -128,20 +181,26 @@ pub fn significance_filter(
         _ => return FilterOutcome::Different,
     };
 
+    // Pre-build all BTreeMap key Values once — avoids re-allocation per lookup.
+    // BTreeMap::get<Q> requires K: Borrow<Q>; since Value: Borrow<Value> (blanket
+    // impl), passing &Value directly is valid. This builds 5 strings once per
+    // call rather than inside the loop body.
+    let non_disp_key_values: [reify_types::Value; 4] =
+        NON_DISPLACEMENT_KEYS.map(|k| reify_types::Value::String(k.to_string()));
+    let disp_key = reify_types::Value::String(DISPLACEMENT_KEY.to_string());
+
     // Non-displacement keys: require exact Value equality.
     // Any mismatch (including a key present in one map but absent in the other)
     // returns Different. v1 policy: no Pressure tolerance class exists today.
     // Exercises: significance_filter_returns_different_for_non_displacement_field_changes
-    for key in NON_DISPLACEMENT_KEYS {
-        let key_val = reify_types::Value::String((*key).to_string());
-        if prev_map.get(&key_val) != new_map.get(&key_val) {
+    for key_val in &non_disp_key_values {
+        if prev_map.get(key_val) != new_map.get(key_val) {
             return FilterOutcome::Different;
         }
     }
 
     // Displacement extraction: missing key is malformed — conservative fallback.
     // Exercises: significance_filter_returns_different_for_malformed_shapes (b)
-    let disp_key = reify_types::Value::String(DISPLACEMENT_KEY.to_string());
     let (prev_disp, new_disp) = match (prev_map.get(&disp_key), new_map.get(&disp_key)) {
         (Some(p), Some(n)) => (p, n),
         _ => return FilterOutcome::Different,
@@ -176,12 +235,23 @@ pub fn significance_filter(
         return FilterOutcome::Different;
     }
 
+    // Grid-metadata guard: mismatched sampling geometry is always Different —
+    // identical data values at different spatial coordinates are semantically
+    // different results. Compares kind, name, bounds, spacing, axis_grids, and
+    // interpolation (everything except data and oob_emitted).
+    // Exercises: significance_filter_returns_different_for_shifted_grid_metadata
+    if !sampled_field_grid_metadata_eq(prev_sf, new_sf) {
+        return FilterOutcome::Different;
+    }
+
     // Element-wise absolute-delta comparison with per-purpose length tolerance.
-    // Non-finite values (NaN, ±Inf) in EITHER operand always yield Different —
-    // NaN comparisons are always false, so we guard explicitly.
+    // Non-finite values (NaN, ±Inf) in EITHER operand yield Different when prev
+    // and new are not bit-equal (the bit-equality shortcut above handles the
+    // bit-identical NaN case). Effective contract: NaN propagates as Different
+    // only when prev != new. NaN comparisons are always false in IEEE 754, so we
+    // guard with is_finite() before the subtraction.
     // Strict-greater-than: delta == tol_si is Equivalent (not Different).
-    // step-12 confirmed: (p - n).abs() > tol_si already covers over-tolerance path
-    // with strict-gt semantics — no code change needed for step-12.
+    // step-12 confirmed: (p - n).abs() > tol_si covers over-tolerance with strict-gt.
     // Exercises: significance_filter_returns_different_for_nan_in_displacement
     //            significance_filter_returns_different_for_over_tolerance_displacement_delta
     //            significance_filter_returns_equivalent_for_sub_tolerance_displacement_delta
@@ -375,8 +445,9 @@ mod tests {
 
     // ── Step-13: NaN / ±Inf in displacement always signals Different ──────────
 
-    /// NaN or ±Inf in a displacement sample always yields Different.
-    /// Pins the task spec: "NaN should always propagate as a change signal."
+    /// NaN or ±Inf in a displacement sample always yields Different (when prev
+    /// and new are not bit-equal). Pins the task spec contract:
+    /// "NaN propagates as Different only when prev and new are not bit-equal."
     /// f64::is_finite() uniformly covers NaN, +Inf, and -Inf.
     #[test]
     fn significance_filter_returns_different_for_nan_in_displacement() {
@@ -592,6 +663,87 @@ mod tests {
             significance_filter("solver::elastic_static", &v, &v.clone(), None),
             FilterOutcome::Equivalent,
             "bit-equal values must be Equivalent even when tolerance is None",
+        );
+    }
+
+    // ── Amendment: grid-metadata inequality always yields Different ──────────
+
+    /// If two displacement SampledFields have identical data values within
+    /// tol_si but different axis_grids/bounds, the filter must return Different.
+    /// Identical data at different physical locations is a semantically material
+    /// change — same conservative posture as the missing-tolerance fallback.
+    ///
+    /// Pins the `sampled_field_grid_metadata_eq` check added in the amendment
+    /// pass: the filter compares grid geometry (kind, name, bounds, spacing,
+    /// axis_grids, interpolation) before the element-wise data comparison, so
+    /// a shifted grid cannot sneak through as Equivalent.
+    #[test]
+    fn significance_filter_returns_different_for_shifted_grid_metadata() {
+        // Build a displacement field with a spatially-shifted grid.
+        fn make_shifted_disp(data: &[f64], grid_offset: f64) -> Value {
+            let n = data.len();
+            Value::Field {
+                domain_type: Type::Real,
+                codomain_type: Type::Real,
+                source: FieldSourceKind::Sampled,
+                lambda: Arc::new(Value::SampledField(SampledField {
+                    name: "displacement".to_string(),
+                    kind: SampledGridKind::Regular1D,
+                    bounds_min: vec![grid_offset],
+                    bounds_max: vec![grid_offset + 1.0],
+                    spacing: vec![if n > 1 { 1.0 / (n as f64 - 1.0) } else { 1.0 }],
+                    axis_grids: vec![(0..n).map(|i| grid_offset + i as f64).collect()],
+                    interpolation: InterpolationKind::Linear,
+                    data: data.to_vec(),
+                    oob_emitted: AtomicBool::new(false),
+                })),
+            }
+        }
+
+        // prev: displacement data [0.0, 1e-12], grid at offset 0.0
+        // new:  displacement data [0.0, 2e-12], grid at offset 1.0
+        // data delta (1e-12) is well below tol_si (1e-6), so without the
+        // grid-metadata check the filter would incorrectly declare Equivalent.
+        let mut map_prev = BTreeMap::new();
+        map_prev.insert(
+            Value::String("displacement".to_string()),
+            make_shifted_disp(&[0.0, 1e-12], 0.0),
+        );
+        map_prev.insert(
+            Value::String("stress".to_string()),
+            make_sampled_field("stress", &[0.0, 0.001]),
+        );
+        map_prev.insert(Value::String("max_von_mises".to_string()), Value::Real(1e8));
+        map_prev.insert(Value::String("converged".to_string()), Value::Bool(true));
+        map_prev.insert(Value::String("iterations".to_string()), Value::Int(5));
+        let v_prev = Value::Map(map_prev);
+
+        let mut map_new = BTreeMap::new();
+        map_new.insert(
+            Value::String("displacement".to_string()),
+            // Same data length, sub-tolerance data delta, but axis_grids/bounds shifted.
+            make_shifted_disp(&[0.0, 2e-12], 1.0),
+        );
+        map_new.insert(
+            Value::String("stress".to_string()),
+            make_sampled_field("stress", &[0.0, 0.001]),
+        );
+        map_new.insert(Value::String("max_von_mises".to_string()), Value::Real(1e8));
+        map_new.insert(Value::String("converged".to_string()), Value::Bool(true));
+        map_new.insert(Value::String("iterations".to_string()), Value::Int(5));
+        let v_new = Value::Map(map_new);
+
+        // Sanity: confirm data delta is sub-tolerance (only grid metadata differs).
+        assert!(
+            (1e-12_f64 - 2e-12_f64).abs() < 1e-6,
+            "fixture: data delta must be sub-tolerance so only grid metadata triggers Different"
+        );
+        assert_ne!(v_prev, v_new, "fixture: values must be distinct");
+
+        assert_eq!(
+            significance_filter("solver::elastic_static", &v_prev, &v_new, Some(1e-6)),
+            FilterOutcome::Different,
+            "different axis_grids/bounds must yield Different even when data delta < tol_si",
         );
     }
 }
