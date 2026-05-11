@@ -41,6 +41,11 @@
 ///
 /// Not exploitable via PRD task #9's `ElasticOptions` wiring today — this is
 /// defense-in-depth at the public boundary of [`derive_layer_count`].
+///
+/// Note: this clamp bounds only the K (layer) axis.  `n_base` flows through
+/// from the upstream 2D mesher and is not capped here, so callers feeding a
+/// very large 2D mesh (e.g. `n_base ≳ 10⁴`) can still allocate proportionally
+/// — defence-in-depth here is K-axis only.
 const MAX_LAYERS: usize = 1 << 20;
 
 /// Derive the number of element layers from the sweep distance and element size.
