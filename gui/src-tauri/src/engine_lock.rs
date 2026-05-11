@@ -23,9 +23,12 @@ pub fn with_engine_lock<F, T>(engine: &Mutex<EngineSession>, f: F) -> Result<T, 
 where
     F: FnOnce(&mut EngineSession) -> T,
 {
-    let mut guard = engine
-        .lock()
-        .map_err(|e| format!("engine lock poisoned: {e}"))?;
+    // Recover from any pre-existing poisoning via into_inner().
+    // Safety: EngineSession's atomic-commit invariant (engine.rs:28-44)
+    // guarantees the seven core session fields are untouched after a
+    // panicking path, so the inner state is consistent even if the mutex
+    // was poisoned by an external panic.
+    let mut guard = engine.lock().unwrap_or_else(|p| p.into_inner());
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&mut guard)));
     // Explicit drop BEFORE the match: releases the lock as soon as possible
     // and makes the no-poison guarantee load-bearing and obvious. After
