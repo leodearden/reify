@@ -275,6 +275,70 @@ pub fn classify_swept_body(ops: &[GeometryOp], handles: &[GeometryHandleId]) -> 
     }
 }
 
+/// Translate a [`SweptKind`] classification into the kernel-facing
+/// [`reify_solver_elastic::SweepParams`] shape required by
+/// [`reify_solver_elastic::sweep_2d_mesh_to_3d`].
+///
+/// # Parameters
+///
+/// - `kind`: the swept-body classification produced by [`classify_swept_body`].
+/// - `ops`: the parallel compiled-op slice from the realization
+///   (`Engine::execute_realization_ops`).
+/// - `handles`: the parallel handle-id slice from the same realization.
+///
+/// `ops` and `handles` are only required for the [`SweptKind::SweepLinear`]
+/// arm, which must re-resolve the `path` handle's source
+/// [`GeometryOp::LineSegment`] to derive `axis` and `length`.  Pass empty
+/// slices for [`SweptKind::Extrude`] and [`SweptKind::Revolve`] — those arms
+/// ignore them.
+///
+/// # Returns
+///
+/// `Some(SweepParams)` when the conversion succeeds.  Returns `None` only for
+/// the [`SweptKind::SweepLinear`] arm when the `path` handle cannot be
+/// resolved in `handles` (cross-realization handle, or a malformed
+/// ops/handles pair) — a condition the classifier already rejects at
+/// classification time, so production callers will rarely see `None`.
+pub fn swept_kind_to_sweep_params(
+    kind: &SweptKind,
+    ops: &[GeometryOp],
+    handles: &[GeometryHandleId],
+) -> Option<reify_solver_elastic::SweepParams> {
+    use reify_solver_elastic::SweepParams;
+    match kind {
+        // Step-16: Extrude — forward axis verbatim, extract length as f64.
+        SweptKind::Extrude { axis, length } => {
+            length.as_f64().map(|len| SweepParams::Extrude { axis: *axis, length: len })
+        }
+        // Step-18: Revolve — forward fields verbatim; rename angle_rad → angle.
+        SweptKind::Revolve {
+            axis_origin,
+            axis_dir,
+            angle_rad,
+        } => Some(SweepParams::Revolve {
+            axis_origin: *axis_origin,
+            axis_dir: *axis_dir,
+            angle: *angle_rad,
+        }),
+        // Step-20: SweepLinear — re-resolve path handle to its LineSegment source.
+        SweptKind::SweepLinear { path, .. } => {
+            let source_op = handles
+                .iter()
+                .position(|h| h == path)
+                .and_then(|i| ops.get(i))?;
+            match source_op {
+                GeometryOp::LineSegment { x1, y1, z1, x2, y2, z2 } => {
+                    let axis = [x2 - x1, y2 - y1, z2 - z1];
+                    let length = (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
+                    Some(SweepParams::SweepLinear { axis, length })
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -890,6 +954,112 @@ mod tests {
             classify_swept_body(&ops, &handles),
             None,
             "Revolve followed by Union is no longer a recognised swept body (last op is Union)"
+        );
+    }
+
+    // ── Steps 15-20: swept_kind_to_sweep_params ───────────────────────────
+
+    #[test]
+    fn swept_kind_to_sweep_params_extrude_converts_with_axis_z_and_length() {
+        let kind = SweptKind::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: Value::length(0.01),
+        };
+        let result = swept_kind_to_sweep_params(&kind, &[], &[]);
+        match result {
+            Some(reify_solver_elastic::SweepParams::Extrude { axis, length }) => {
+                assert_eq!(axis, [0.0, 0.0, 1.0], "axis must be forwarded verbatim");
+                assert!(
+                    (length - 0.01).abs() < 1e-12,
+                    "length must be 0.01; got {length}"
+                );
+            }
+            other => panic!("expected Some(SweepParams::Extrude {{ ... }}), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn swept_kind_to_sweep_params_revolve_forwards_origin_dir_and_angle() {
+        let kind = SweptKind::Revolve {
+            axis_origin: [1.0, 2.0, 3.0],
+            axis_dir: [0.0, 1.0, 0.0],
+            angle_rad: std::f64::consts::FRAC_PI_2,
+        };
+        let result = swept_kind_to_sweep_params(&kind, &[], &[]);
+        match result {
+            Some(reify_solver_elastic::SweepParams::Revolve {
+                axis_origin,
+                axis_dir,
+                angle,
+            }) => {
+                assert!(
+                    (axis_origin[0] - 1.0).abs() < 1e-12
+                        && (axis_origin[1] - 2.0).abs() < 1e-12
+                        && (axis_origin[2] - 3.0).abs() < 1e-12,
+                    "axis_origin must match; got {axis_origin:?}"
+                );
+                assert!(
+                    axis_dir[0].abs() < 1e-12
+                        && (axis_dir[1] - 1.0).abs() < 1e-12
+                        && axis_dir[2].abs() < 1e-12,
+                    "axis_dir must match; got {axis_dir:?}"
+                );
+                assert!(
+                    (angle - std::f64::consts::FRAC_PI_2).abs() < 1e-12,
+                    "angle must be FRAC_PI_2; got {angle}"
+                );
+            }
+            other => panic!("expected Some(SweepParams::Revolve {{ ... }}), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn swept_kind_to_sweep_params_sweep_linear_resolvable_and_unresolvable() {
+        // Subcase A: resolvable — ops[0] is LineSegment with path handle id 1
+        let ops = vec![
+            GeometryOp::LineSegment {
+                x1: 0.0,
+                y1: 0.0,
+                z1: 0.0,
+                x2: 0.0,
+                y2: 0.0,
+                z2: 0.5,
+            },
+            GeometryOp::Sweep {
+                profile: GeometryHandleId(0),
+                path: GeometryHandleId(1),
+            },
+        ];
+        let handles = vec![GeometryHandleId(1), GeometryHandleId(2)];
+        let kind = SweptKind::SweepLinear {
+            profile: GeometryHandleId(0),
+            path: GeometryHandleId(1),
+        };
+        let result_a = swept_kind_to_sweep_params(&kind, &ops, &handles);
+        match result_a {
+            Some(reify_solver_elastic::SweepParams::SweepLinear { axis, length }) => {
+                // axis = endpoint diff [0-0, 0-0, 0.5-0] = [0, 0, 0.5], length = 0.5
+                assert!(
+                    axis[0].abs() < 1e-12 && axis[1].abs() < 1e-12 && (axis[2] - 0.5).abs() < 1e-12,
+                    "axis must be [0,0,0.5]; got {axis:?}"
+                );
+                assert!(
+                    (length - 0.5).abs() < 1e-12,
+                    "length must be 0.5; got {length}"
+                );
+            }
+            other => panic!("subcase A: expected Some(SweepParams::SweepLinear {{ ... }}), got {other:?}"),
+        }
+
+        // Subcase B: unresolvable — path handle 99 not in handles slice
+        let kind_b = SweptKind::SweepLinear {
+            profile: GeometryHandleId(0),
+            path: GeometryHandleId(99),
+        };
+        let result_b = swept_kind_to_sweep_params(&kind_b, &ops, &handles);
+        assert!(
+            result_b.is_none(),
+            "unresolvable path handle must return None; got {result_b:?}"
         );
     }
 
