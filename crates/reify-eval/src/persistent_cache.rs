@@ -67,6 +67,90 @@ pub use crate::engine_hash_algo::compose_engine_version_hash;
 /// unknown", matching `ELASTIC_RESULT_FORMAT_VERSION`.
 pub const ENTRY_FORMAT_VERSION: u32 = 1;
 
+/// Fixed byte length of a bincode-1.3 fixint-LE encoded [`CacheEntryHeader`].
+///
+/// Computed from the field sizes:
+/// - `format_version` (u32, 4 bytes)
+/// - `engine_version_hash` ([u8; 32], 32 bytes)
+/// - `input_hash` ([u8; 32], 32 bytes)
+/// - `solve_time_ms` (u64, 8 bytes)
+/// - `byte_size` (u64, 8 bytes)
+/// - `written_at` (i64, 8 bytes)
+///
+/// Total: 4 + 32 + 32 + 8 + 8 + 8 = 92 bytes.
+///
+/// Pinned by `cache_entry_header_bincode_encoding_matches_pinned_hex_literal`.
+pub const ENTRY_HEADER_ENCODED_LEN: usize = 92;
+
+/// Header placed at the leading `ENTRY_HEADER_ENCODED_LEN` bytes of every
+/// `.bin` cache-entry file, before the zstd-compressed body written by
+/// [`PersistentlyCacheable::serialize_to_writer`].
+///
+/// # PRD reference
+///
+/// Defined in `docs/prds/v0_3/persistent-fea-cache.md` §"Header schema".
+///
+/// # Wire-format contract
+///
+/// Field order in this struct IS the on-disk byte order. Reordering fields IS
+/// a wire-format change that requires a [`ENTRY_FORMAT_VERSION`] bump.
+/// [`bincode`] 1.3 fixint-LE encodes this struct as a fixed-size 92-byte
+/// sequence — pinned by
+/// `cache_entry_header_bincode_encoding_matches_pinned_hex_literal`.
+///
+/// # Fields
+///
+/// - `format_version`: Echoes [`ENTRY_FORMAT_VERSION`]; allows a reader to
+///   detect layout mismatches before attempting to decode the body.
+/// - `engine_version_hash`: 32 ASCII bytes of the directory-level
+///   [`ENGINE_VERSION_HASH`] hex string. Stored as ASCII bytes (NOT 16 raw
+///   hash bytes) so corruption detection is a memcmp on the same bytes the
+///   filesystem already returns as a `&str`.
+/// - `input_hash`: 32 ASCII bytes of the filename hex string
+///   (`ContentHash::Display`). Same rationale as `engine_version_hash`.
+/// - `solve_time_ms`: solver wall-time cost metric, used for cost-weighted
+///   LRU eviction.
+/// - `byte_size`: uncompressed body byte count for `cache stats` display,
+///   readable without decompressing the body.
+/// - `written_at`: unix-millisecond timestamp of when the entry was written.
+///   Signed `i64`; -1 is a valid sentinel for "unknown". Range is ample
+///   (covers year ~292M CE).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct CacheEntryHeader {
+    /// Echoes [`ENTRY_FORMAT_VERSION`]; mismatch → layout incompatibility.
+    pub format_version: u32,
+    /// 32 ASCII bytes of the `engine_version_hash` hex string (directory name).
+    pub engine_version_hash: [u8; 32],
+    /// 32 ASCII bytes of the `input_hash` hex string (file stem).
+    pub input_hash: [u8; 32],
+    /// Solver wall-time in milliseconds.
+    pub solve_time_ms: u64,
+    /// Uncompressed body byte count.
+    pub byte_size: u64,
+    /// Write timestamp as unix milliseconds (signed; -1 = unknown).
+    pub written_at: i64,
+}
+
+impl CacheEntryHeader {
+    /// Encode `self` into `w` using bincode 1.3 fixint-LE encoding.
+    ///
+    /// Same error-mapping discipline as
+    /// [`ElasticResult::serialize_to_writer`]: `bincode::Error` is wrapped via
+    /// [`io::Error::other`] because `bincode::Error` does not implement
+    /// `Into<io::Error>`.
+    pub fn write_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        bincode::serialize_into(w, self).map_err(io::Error::other)
+    }
+
+    /// Decode a [`CacheEntryHeader`] from `r`.
+    ///
+    /// Same error-mapping discipline as
+    /// [`ElasticResult::deserialize_from_reader`].
+    pub fn read_from<R: Read>(r: &mut R) -> io::Result<Self> {
+        bincode::deserialize_from(r).map_err(io::Error::other)
+    }
+}
+
 /// On-disk-layout version for [`ElasticResult`]. Bump when the encoding
 /// format changes (separate from `engine_version_hash`, which invalidates
 /// result semantics rather than the wire format). Starting at 1 follows the
