@@ -65,7 +65,7 @@ pub fn is_opted_in(target: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{FilterOutcome, is_opted_in};
+    use super::{FilterOutcome, is_opted_in, significance_filter};
 
     // ── Step-1: is_opted_in allowlist tests ──────────────────────────────────
 
@@ -86,6 +86,27 @@ mod tests {
         assert!(
             !is_opted_in("foo::bar"),
             "arbitrary strings must NOT be in the opt-in allowlist"
+        );
+    }
+
+    // ── Step-3: significance_filter opt-in guard (non-opted-in target) ───────
+
+    /// Pins that an unknown target returns NotOptedIn BEFORE any comparison logic
+    /// runs — even when prev/new differ, the filter declines rather than comparing.
+    #[test]
+    fn significance_filter_returns_not_opted_in_for_unknown_target() {
+        let v1 = reify_types::Value::Real(0.0);
+        let v2 = reify_types::Value::Real(1.0);
+        assert_eq!(
+            significance_filter("solver::modal", &v1, &v2, Some(1e-6)),
+            FilterOutcome::NotOptedIn,
+            "\"solver::modal\" is not opted in — filter must return NotOptedIn",
+        );
+        // Arbitrary string also returns NotOptedIn.
+        assert_eq!(
+            significance_filter("foo::bar", &v1, &v2, Some(1e-6)),
+            FilterOutcome::NotOptedIn,
+            "\"foo::bar\" is not opted in — filter must return NotOptedIn",
         );
     }
 }
