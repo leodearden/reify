@@ -60,6 +60,16 @@ pub struct SweepReport {
     /// matching tet pairs. Probe-options pattern: always populated.
     pub morph_max_ar_factor: f64,
 
+    /// Maximum aspect-ratio factor `morphed_ar / from_scratch_ar` across all
+    /// matching tet pairs — the morph's AR measured against the true
+    /// from-scratch baseline (NOT against `source` like `morph_max_ar_factor`).
+    /// Probe-options pattern: always populated.
+    ///
+    /// Used by [`ar_materially_better`] to evaluate whether the morph's AR
+    /// quality is materially worse than a fresh remesh of the same target
+    /// geometry.
+    pub from_scratch_max_ar_factor: f64,
+
     /// The morphed mesh produced by `elasticity_morph`.
     pub morphed: VolumeMesh,
 
@@ -185,12 +195,19 @@ where
     // `source` as second arg to satisfy the signature; the returned AR
     // factor (from_scratch_ar / source_ar) is ignored for this metric path.
     let (from_scratch_min_scaled_j, _) = extract_metrics(&from_scratch, &source);
+    // Compute the true morph-vs-from_scratch AR ratio: pass `from_scratch` in
+    // the source slot so quality_check computes max(morphed_AR / from_scratch_AR).
+    // The first tuple element (min_scaled_j) is discarded — it equals
+    // `morph_min_scaled_j` since it's the same `morphed` mesh evaluated again;
+    // we capture it as `_` to make the discard explicit.
+    let (_, from_scratch_max_ar_factor) = extract_metrics(&morphed, &from_scratch);
 
     SweepReport {
         morph_verdict,
         morph_min_scaled_j,
         from_scratch_min_scaled_j,
         morph_max_ar_factor,
+        from_scratch_max_ar_factor,
         morphed,
         from_scratch,
     }
