@@ -39,6 +39,7 @@ pub mod cache_key;
 pub mod mesh_profile_2d;
 pub mod mesh_volume;
 pub mod options;
+pub mod refine_volume;
 pub mod register;
 pub mod repair;
 pub mod through_thickness;
@@ -94,6 +95,11 @@ pub use mesh_volume::{MeshSurfaceToVolumeReport, mesh_surface_to_volume_with_dia
 // error without re-declaring the literal.
 pub use mesh_profile_2d::{MeshPlane2dResult, STUB_UNAVAILABLE_MARKER, mesh_plane_2d};
 pub use options::MeshingOptions;
+// Task 2999: a-posteriori volume mesh refinement driven by per-element size
+// hints (PRD docs/prds/v0_4/a-posteriori-error-estimation.md task #2).
+// Unconditional re-export — uniform signature in both cfg(has_gmsh) (real FFI
+// remesh) and cfg(not(has_gmsh)) (stub returning STUB_UNAVAILABLE_MARKER).
+pub use refine_volume::refine_volume_with_size_field;
 
 /// `true` when this crate was compiled with libgmsh detected at build time
 /// (real FFI surface available); `false` otherwise (stub-only build).

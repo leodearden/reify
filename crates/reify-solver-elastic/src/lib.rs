@@ -330,6 +330,7 @@ pub mod shell_kinematics;
 pub mod shell_result;
 pub mod solver;
 pub mod sweep;
+pub mod volume_refine;
 pub mod warm_state;
 
 pub use assembly::{
@@ -387,4 +388,9 @@ pub use mesher::{
 pub use sweep::{
     SweepError, SweepParams, SweptConnectivity, SweptMesh3d, ThroughThicknessSweepWarning,
     check_sweep_through_thickness, derive_layer_count, sweep_2d_mesh_to_3d,
+};
+// Task 2999: a-posteriori volume mesh refinement driven by per-element size
+// hints (PRD docs/prds/v0_4/a-posteriori-error-estimation.md task #2).
+pub use volume_refine::{
+    RefineError, project_per_element_sizes_to_vertices, refine_with_size_field,
 };
