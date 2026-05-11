@@ -837,6 +837,29 @@ mod tests {
         assert_eq!(derive_layer_count(1.0, -1.0, 2), 2);
     }
 
+    // step-3: derive_layer_count MAX_LAYERS upper-bound tests.
+    //
+    // Reference `super::MAX_LAYERS` symbolically so the test survives any future
+    // adjustment to the constant without requiring literal value updates here.
+
+    #[test]
+    fn derive_layer_count_clamps_pathological_inputs() {
+        // (a) finite-huge raw (1e25 / 1.0 = 1e25 >> MAX_LAYERS) → clamped to MAX_LAYERS.
+        assert_eq!(derive_layer_count(1.0e25, 1.0, 2), super::MAX_LAYERS);
+
+        // (b) +∞ raw (f64::MAX / f64::MIN_POSITIVE overflows to +∞) → clamped to MAX_LAYERS.
+        assert_eq!(derive_layer_count(f64::MAX, f64::MIN_POSITIVE, 2), super::MAX_LAYERS);
+
+        // (c) raw > MAX_LAYERS by a large factor (2^25 > 2^20) → clamped to MAX_LAYERS.
+        assert_eq!(
+            derive_layer_count((1u64 << 25) as f64, 1.0, 2),
+            super::MAX_LAYERS,
+        );
+
+        // (d) min_layers floor is irrelevant when the clamp wins: result is still MAX_LAYERS.
+        assert_eq!(derive_layer_count(1.0e25, 1.0, 5), super::MAX_LAYERS);
+    }
+
     // step-1: debug-only `#[should_panic]` tests for malformed Mesh2d shape invariants.
     //
     // Each test is gated by `#[cfg(debug_assertions)]` because `debug_assert!` is
