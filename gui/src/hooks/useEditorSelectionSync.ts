@@ -1,4 +1,4 @@
-import { createEffect, onCleanup } from 'solid-js';
+import { createEffect, onCleanup, untrack } from 'solid-js';
 
 // ── Dependency types ─────────────────────────────────────────────────────────
 
@@ -74,15 +74,19 @@ export function createEditorSelectionSync(opts: EditorSelectionSyncOptions): voi
     if (pos === null) return;
 
     const { line, column } = pos;
+    // Snapshot the current selection synchronously at cursor-change time.
+    // untrack() prevents this read from adding selectionStore to the effect's
+    // dependency set — we want the effect to re-run only on cursor changes, not
+    // on viewport-driven selection mutations.  The snapshot is closed over by
+    // the setTimeout callback so the cross-input race guard treats the entire
+    // request lifetime — debounce window AND in-flight bridge call — as the
+    // protected window during which any non-editor mutation wins.
+    const selectionAtCursorChange = untrack(() => selectionStore.state.selectedEntity);
 
     timerId = setTimeout(async () => {
       timerId = null;
       // Capture (do not increment) the current token before the await
       const token = latestRequestToken;
-      // Snapshot the current selection BEFORE the await so we can detect
-      // cross-input mutations (e.g. viewport click) that happen while the
-      // bridge call is in flight.
-      const selectionBeforeAwait = selectionStore.state.selectedEntity;
       const result = await getEntityAtSourceLocation(line, column);
 
       // Discard stale results: a newer cursor-move fired while this was in flight
@@ -92,9 +96,10 @@ export function createEditorSelectionSync(opts: EditorSelectionSyncOptions): voi
       if (result === null) return;
 
       // Cross-input race guard: if selection was changed by a non-editor source
-      // (e.g. a viewport click) while the bridge call was in flight, discard
-      // this result to avoid overwriting the externally-set selection.
-      if (selectionStore.state.selectedEntity !== selectionBeforeAwait) return;
+      // (e.g. a viewport click) at any point since the cursor moved — including
+      // during the debounce window before the bridge call started — discard this
+      // result to avoid overwriting the externally-set selection.
+      if (selectionStore.state.selectedEntity !== selectionAtCursorChange) return;
 
       // Equality-check guard: skip if the entity is already selected (prevents
       // viewport-click → editor-scroll → cursor-move → re-select bounce)
