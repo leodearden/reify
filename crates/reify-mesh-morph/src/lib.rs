@@ -40,24 +40,32 @@
 //!
 //! The three quality-floor knobs on [`MorphOptions`]
 //! (`quality_floor_min_scaled_jacobian`, `quality_floor_pct_below_025`,
-//! `quality_aspect_ratio_factor_max`) are calibrated against three
+//! `quality_aspect_ratio_factor_max`) are calibrated against two
 //! procedural parametric fixtures shipped as a regression-guard suite in
 //! `tests/calibration.rs`:
 //!
-//! - **box wall-thickness sweep** — hollow-shell hex-to-6-tet decomposition;
-//!   surface-pinned identity morph; exercises the floor's permissiveness.
 //! - **plate hole-diameter sweep** — polar-radial grid with hex-to-6-tet
 //!   decomposition; intrinsic min-scaled-J ≈ 0.022 at small steps.
 //! - **bracket fillet-radius sweep** — L-bracket with parametric inner
-//!   fillet; the most discriminating sweep — exercises all three
-//!   [`QualityVerdict`] branches (Pass → SoftFail → HardFail) as the
-//!   fillet grows from 0.105 to 0.19 (against thickness=0.20).
+//!   fillet; the discriminating sweep — traverses both Pass and Reject
+//!   ([`QualityVerdict::SoftFail`] or [`QualityVerdict::HardFail`]) branches
+//!   across the parameter range, pinned by an explicit verdict-mix
+//!   assertion at the end of the test.
+//!
+//! (A third box wall-thickness sweep was prototyped during calibration but
+//! dropped: the hollow-box fixture has zero interior vertices, so morphing
+//! reduces to an identity assignment and the materially-better rule holds
+//! trivially without exercising the thresholds. The plate and bracket
+//! sweeps both have non-trivial interior coupling and carry the calibration
+//! regression-guard signal.)
 //!
 //! The calibration rule: morph is rejected only when a from-scratch remesh
 //! is *materially better* (> 20 % improvement on the relevant metric). This
-//! is encoded as `from_scratch > 1.20 * morph` for higher-is-better metrics
-//! (min scaled J) and `morph_ar_factor > 1.20` for lower-is-better metrics
-//! (the from-scratch AR baseline is ~ 1.0 by construction).
+//! is encoded as `from_scratch > MATERIALITY_FACTOR * morph` for
+//! higher-is-better metrics (min scaled J) and
+//! `morph_ar_factor > MATERIALITY_FACTOR` for lower-is-better metrics (the
+//! from-scratch AR baseline is ~ 1.0 by construction). The canonical
+//! constant lives in `tests/calibration/sweep.rs::MATERIALITY_FACTOR`.
 //!
 //! Calibration was performed against the [`StiffnessRule::InverseVolume`]
 //! production default (PRD task #8 / task 2945, shipped on main).

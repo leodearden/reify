@@ -8,10 +8,6 @@ use reify_types::{ElementOrderTag, VolumeMesh};
 use std::collections::HashMap;
 use std::f64::consts::TAU;
 
-/// Sentinel pin used by `tests/calibration.rs`'s smoke test to verify the
-/// helper module is wired in before the procedural generators land.
-pub const MODULE_OK: bool = true;
-
 /// 6-tet decomposition of a unit hex with main diagonal between corners 0
 /// (origin) and 6 (opposite corner). Each tet is right-handed for the
 /// canonical CW-from-bottom corner ordering used in CFD/FEA codes

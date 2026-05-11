@@ -126,23 +126,26 @@ pub struct MorphOptions {
     /// Minimum scaled Jacobian below which an element is considered inverted.
     ///
     /// PRD §"Quality threshold for fallback": seed 0.15.
-    /// Calibrated by task #2950 against tests/calibration.rs (box, plate,
-    /// bracket sweeps under StiffnessRule::InverseVolume) to 0.02.
+    /// Calibrated by task #2950 against tests/calibration.rs (plate
+    /// hole-diameter and bracket fillet-radius sweeps under
+    /// StiffnessRule::InverseVolume) to 0.02.
     pub quality_floor_min_scaled_jacobian: f64,
 
     /// Maximum acceptable fraction of elements with scaled Jacobian < 0.25.
     ///
     /// PRD §"Quality threshold for fallback": seed 0.01 (1 %).
-    /// Calibrated by task #2950 against tests/calibration.rs (box, plate,
-    /// bracket sweeps under StiffnessRule::InverseVolume) to 0.95.
+    /// Calibrated by task #2950 against tests/calibration.rs (plate
+    /// hole-diameter and bracket fillet-radius sweeps under
+    /// StiffnessRule::InverseVolume) to 0.95.
     pub quality_floor_pct_below_025: f64,
 
     /// Maximum acceptable multiplicative aspect-ratio factor (morphed_AR / source_AR)
     /// relative to the pre-morph mesh. PRD §"Quality threshold for fallback": seed
     /// 2.0×. A value > 1 indicates worsening; the threshold trips when the observed
     /// factor exceeds this maximum.
-    /// Calibrated by task #2950 against tests/calibration.rs (box, plate,
-    /// bracket sweeps under StiffnessRule::InverseVolume); seed retained.
+    /// Calibrated by task #2950 against tests/calibration.rs (plate
+    /// hole-diameter and bracket fillet-radius sweeps under
+    /// StiffnessRule::InverseVolume); seed retained.
     pub quality_aspect_ratio_factor_max: f64,
 
     /// Scaled-Jacobian delta below which the Laplacian quick-pass is
@@ -185,17 +188,17 @@ pub struct MorphOptions {
 impl Default for MorphOptions {
     fn default() -> Self {
         Self {
-            // Calibrated by task #2950 against tests/calibration.rs (box
-            // wall-thickness sweep, plate hole-diameter sweep, bracket
-            // fillet-radius sweep under StiffnessRule::InverseVolume).
+            // Calibrated by task #2950 against tests/calibration.rs (plate
+            // hole-diameter and bracket fillet-radius sweeps under
+            // StiffnessRule::InverseVolume).
             //
             // PRD seed was 0.15; calibration lowered to 0.02 because the
             // procedural plate-with-hole fixture (polar-radial grid
             // hex-to-6-tet decomposition) intrinsically produces tets with
             // min_sj ≈ 0.022–0.024 at small parameter steps — well below
-            // the 0.15 PRD seed and below the 0.05 box-only-tuned interim.
-            // The materially-better rule (>20% improvement on the relevant
-            // metric) holds at the 0.02 floor across the box + plate sweeps.
+            // the 0.15 PRD seed. The materially-better rule (>20%
+            // improvement on the relevant metric) holds at the 0.02 floor
+            // across the plate and bracket sweeps.
             quality_floor_min_scaled_jacobian: 0.02,
             // PRD seed was 0.01; calibration raised to 0.95 because the
             // procedural fixtures' structured hex-to-6-tet decomposition
@@ -205,11 +208,33 @@ impl Default for MorphOptions {
             // distortion of realistic magnitude shows up via min_sj or
             // AR-factor (e.g. plate target=0.40 trips pct ≈ 0.96 but
             // ar_factor ≈ 1.23 > 1.20 materially-better bar).
+            //
+            // TODO(task #2950 follow-up): the 0.95 floor is calibrated against
+            // synthetic procedural fixtures rather than real CAD-derived
+            // meshes — at this level the metric is near-vestigial (almost any
+            // mesh satisfies pct < 0.95). Re-calibrate against real-world
+            // meshes once PRD task #10 (engine wiring) lands and supplies
+            // CAD-sourced meshes through the morph pipeline, OR consider
+            // dropping the pct_below_025 knob entirely if the simpler
+            // min_scaled_J floor proves sufficient on real meshes. Until
+            // then this knob exists primarily to admit the synthetic
+            // fixtures without false rejections — flagged for revisit.
             quality_floor_pct_below_025: 0.95,
             // PRD seed 2.0 retained — calibration confirmed it discriminates
             // bracket fillet-radius distortion (AR ≈ 2.75 at target=0.15
             // rejects) while leaving plate hole-diameter and box wall-
             // thickness sweeps (max AR ≈ 1.84 and 1.0 respectively) in Pass.
+            //
+            // Known asymmetry vs the materiality bar: the 2.0 floor is
+            // well above the 1.20 materiality factor used by the calibration
+            // rule, so Pass cases with `morph_ar_factor ∈ (1.20, 2.0)` are
+            // admitted even though the morph is technically materially
+            // worse than a fresh remesh on AR (e.g. bracket target=0.12
+            // Pass at AR=1.37). The calibration rule helper in
+            // `tests/calibration.rs::assert_materially_better_rule_holds`
+            // documents the asymmetry explicitly. If this floor is ever
+            // tightened toward the materiality bar, that Pass-branch
+            // helper must add the symmetric AR check.
             quality_aspect_ratio_factor_max: 2.0,
             laplacian_quickpass_threshold: 0.01,
             fictitious_youngs_modulus_base: 1.0,
@@ -237,8 +262,9 @@ mod tests {
     fn morph_options_default_returns_prd_calibrated_quality_and_stiffness_values() {
         let opts = MorphOptions::default();
         // Threshold-related fields calibrated by task #2950 against
-        // tests/calibration.rs (box, plate, bracket sweeps under the
-        // StiffnessRule::InverseVolume production default).
+        // tests/calibration.rs (plate hole-diameter and bracket fillet-
+        // radius sweeps under the StiffnessRule::InverseVolume production
+        // default).
         assert!((opts.quality_floor_min_scaled_jacobian - 0.02).abs() < 1e-12);
         assert!((opts.quality_floor_pct_below_025 - 0.95).abs() < 1e-12);
         assert!((opts.quality_aspect_ratio_factor_max - 2.0).abs() < 1e-12);

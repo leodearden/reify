@@ -19,14 +19,10 @@ mod fixtures;
 #[path = "calibration/sweep.rs"]
 mod sweep;
 
-/// Smoke test: helper modules are wired in correctly and expose the
-/// `MODULE_OK` sentinel constants. Fails to compile while either helper
-/// module is missing — pins the file layout the task spec requires.
-#[test]
-fn calibration_helper_modules_are_wired_in() {
-    assert!(fixtures::MODULE_OK);
-    assert!(sweep::MODULE_OK);
-}
+// Module wiring is exercised transitively by every test below (each one
+// references `fixtures::*` and/or `sweep::*`); the `#[path = …]` declarations
+// above are validated at compile time by Cargo, so a missing helper module
+// blocks build rather than passing through to a runtime smoke test.
 
 // ── Step-3: box_mesh fixture validity ─────────────────────────────────────────
 
@@ -410,22 +406,31 @@ fn sweep_runner_returns_morph_and_from_scratch_quality_metrics_for_single_param_
     );
 }
 
-// ── Step-11: box wall-thickness sweep obeys the materially-better rule ────────
+// ── Materially-better rule helper ─────────────────────────────────────────────
 
 /// Materially-better rule from the PRD task #13 / task #2950 spec:
 ///
 /// - **If verdict is reject** (`HardFail` or `SoftFail`), then `from_scratch`
 ///   must be materially better on at least one of (`min_sj` or `AR-factor`).
-///   Encoded as `from_scratch_min_sj > 1.20 * morph_min_sj` (higher-is-better
-///   polarity) OR `morph_ar_factor > 1.20 * 1.0` (AR is lower-is-better; the
-///   from-scratch reference for an undistorted remesh is ~1.0).
+///   Encoded as `from_scratch_min_sj > MATERIALITY_FACTOR * morph_min_sj`
+///   (higher-is-better polarity) OR `morph_ar_factor > MATERIALITY_FACTOR`
+///   (AR is lower-is-better; the from-scratch reference for an undistorted
+///   remesh is ~1.0).
 ///
 /// - **If verdict is Pass**, then `from_scratch` must NOT be materially
-///   better on `min_sj` (rule polarity from the plan: "materially-better
-///   must be false on min_sj"). Indicates the threshold is not too lax.
+///   better on `min_sj`. The Pass branch deliberately does NOT enforce the
+///   symmetric AR-side check: the calibrated `quality_aspect_ratio_factor_max`
+///   is 2.0 (PRD seed retained) which is well above the 1.20 materiality
+///   bar, so Pass cases with `morph_ar_factor ∈ (1.20, 2.0)` are admitted
+///   by the threshold even though the morph is technically materially worse
+///   than a fresh remesh on AR. Adding the symmetric check would force a
+///   tighter AR threshold of ~1.20 and reject many morphs the PRD intends
+///   to accept. This asymmetry is a known calibration gap — see the task
+///   #2950 follow-up note in `options.rs::quality_aspect_ratio_factor_max`
+///   doc-comment if the AR threshold is ever tightened.
 ///
-/// Helper kept module-local so each sweep test calls it identically; the
-/// canonical 1.20× materiality factor lives in `sweep::is_materially_better`.
+/// The canonical materiality factor lives in [`sweep::MATERIALITY_FACTOR`].
+/// Helper kept module-local so each sweep test calls it identically.
 fn assert_materially_better_rule_holds(
     fixture_name: &str,
     target: f64,
@@ -438,9 +443,9 @@ fn assert_materially_better_rule_holds(
     // For AR (lower-is-better) we compare morph_ar_factor to the from-scratch
     // baseline of ~1.0 (from-scratch is a procedural remesh of the target
     // geometry — its AR vs the same target has ratio ≈ 1). A morph_ar_factor
-    // > 1.20 means the morph's elements are ≥20% more elongated than a
-    // fresh remesh would produce.
-    let ar_materially_better = report.morph_max_ar_factor > 1.20;
+    // > MATERIALITY_FACTOR means the morph's elements are ≥20 % more
+    // elongated than a fresh remesh would produce.
+    let ar_materially_better = report.morph_max_ar_factor > sweep::MATERIALITY_FACTOR;
 
     match &report.morph_verdict {
         QualityVerdict::Pass => {
@@ -451,6 +456,7 @@ fn assert_materially_better_rule_holds(
                  calibration too lax",
                 report.morph_min_scaled_j, report.from_scratch_min_scaled_j
             );
+            // No symmetric AR-side check — see helper-doc rationale.
         }
         QualityVerdict::HardFail(_) | QualityVerdict::SoftFail(_) => {
             assert!(
@@ -464,35 +470,6 @@ fn assert_materially_better_rule_holds(
                 report.morph_max_ar_factor
             );
         }
-    }
-}
-
-#[test]
-fn box_wall_thickness_sweep_obeys_materially_better_rule_with_calibrated_defaults() {
-    use reify_mesh_morph::MorphOptions;
-
-    // Sweep: vary the wall_thickness parameter. base = 0.10. Targets cover a
-    // small step (0.105) up to a large deformation (0.30, the cavity halves).
-    //
-    // Note: the hollow-box fixture has 0 interior vertices regardless of `n` —
-    // every grid vertex lies on either the outer-cube boundary or the inner
-    // cavity boundary, so `surface_node_indices` covers every vertex. As a
-    // consequence the elasticity_morph effectively performs an identity
-    // assignment to the prescribed positions, and `morph_min_sj` always
-    // matches `from_scratch_min_sj` exactly. The calibration of this sweep
-    // therefore reduces to: thresholds must be loose enough that whatever
-    // intrinsic quality the procedural fixture produces also passes the
-    // `quality_check` floors (the materially-better rule trivially holds in
-    // the Pass branch, but only IF the morph passes — calibration too strict
-    // would falsely reject).
-    let base_param = 0.10_f64;
-    let target_params = [0.105_f64, 0.12, 0.15, 0.20, 0.30];
-    let fixture = |w: f64| fixtures::box_mesh(1.0, w, 4);
-    let options = MorphOptions::default();
-
-    for &target in &target_params {
-        let report = sweep::run_sweep(fixture, base_param, target, &options);
-        assert_materially_better_rule_holds("box", target, &report);
     }
 }
 
@@ -513,6 +490,17 @@ fn plate_hole_diameter_sweep_obeys_materially_better_rule_with_calibrated_defaul
     // tets near the hole (innermost ring's circumferential length scales with
     // hole_radius). Calibration here re-checks the materially-better rule
     // under the same `MorphOptions::default()` values baked in step-12.
+    //
+    // ## Margin sensitivity (task #2950 follow-up watchlist)
+    //
+    // Several sweep steps land near calibration boundaries — e.g. target=0.40
+    // trips with `pct ≈ 0.96` against threshold 0.95 (margin < 0.01) and
+    // `ar_factor ≈ 1.23` against the 1.20 materiality bar (margin < 0.03).
+    // An innocuous refactor that shifts a Jacobian by 1e-6 (e.g. vertex
+    // emission reorder) can flip a step's verdict and produce a confusing
+    // CI failure. If that happens: regenerate the metric distributions
+    // locally and recalibrate `MorphOptions::default()` — the calibrated
+    // values are an empirical fit, not a closed-form invariant.
     let base_param = 0.30_f64;
     let target_params = [0.31_f64, 0.35, 0.40, 0.50, 0.60];
     let fixture = |hole_diameter: f64| {
@@ -530,7 +518,7 @@ fn plate_hole_diameter_sweep_obeys_materially_better_rule_with_calibrated_defaul
 
 #[test]
 fn bracket_fillet_radius_sweep_obeys_materially_better_rule_with_calibrated_defaults() {
-    use reify_mesh_morph::MorphOptions;
+    use reify_mesh_morph::{MorphOptions, QualityVerdict};
 
     // Sweep: vary the `fillet_radius` parameter of the L-bracket fixture.
     // base = 0.10, targets cover a small step (0.105) up to the largest
@@ -542,14 +530,43 @@ fn bracket_fillet_radius_sweep_obeys_materially_better_rule_with_calibrated_defa
     // min scaled-Jacobian metric because the polar wedge zone's element
     // shapes deform substantially as the inner arc grows. This sweep
     // checks the materially-better rule under the joint-tuned defaults
-    // from step-14.
+    // from step-14, and is the discriminating fixture in the calibration
+    // suite — the lib.rs PRD task #13 docs claim it traverses both Pass
+    // and Reject verdict branches across the parameter range. The
+    // verdict-mix assertion below pins that claim so a future regression
+    // (e.g. solver/fixture change that makes every step Pass) breaks the
+    // test rather than silently invalidating the documented coverage.
     let base_param = 0.10_f64;
     let target_params = [0.105_f64, 0.12, 0.15, 0.18, 0.19];
     let fixture = |fillet_radius: f64| fixtures::bracket(1.0, 0.2, fillet_radius, 4);
     let options = MorphOptions::default();
 
+    let mut saw_pass = false;
+    let mut saw_reject = false;
     for &target in &target_params {
         let report = sweep::run_sweep(fixture, base_param, target, &options);
+        match &report.morph_verdict {
+            QualityVerdict::Pass => saw_pass = true,
+            QualityVerdict::HardFail(_) | QualityVerdict::SoftFail(_) => saw_reject = true,
+        }
         assert_materially_better_rule_holds("bracket", target, &report);
     }
+
+    // Calibration-boundary coverage: this sweep must traverse both Pass and
+    // Reject branches across `target_params`. If a future change collapses
+    // every step into a single verdict the materially-better rule still
+    // (trivially) holds, but the calibration discrimination claim in
+    // `lib.rs` becomes false — surface that failure here instead of
+    // silently.
+    assert!(
+        saw_pass,
+        "bracket sweep must produce at least one Pass verdict across target_params={target_params:?} \
+         — calibration too strict (lib.rs PRD task #13 docs claim a Pass→Reject traversal)"
+    );
+    assert!(
+        saw_reject,
+        "bracket sweep must produce at least one Reject verdict (HardFail or SoftFail) across \
+         target_params={target_params:?} — calibration too lax (lib.rs PRD task #13 docs claim a \
+         Pass→Reject traversal)"
+    );
 }

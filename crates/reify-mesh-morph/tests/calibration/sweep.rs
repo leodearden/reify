@@ -23,9 +23,15 @@ use reify_mesh_morph::{
 };
 use reify_types::VolumeMesh;
 
-/// Sentinel pin used by `tests/calibration.rs`'s smoke test to verify the
-/// helper module is wired in before the sweep runner lands.
-pub const MODULE_OK: bool = true;
+/// Canonical materiality factor for the "morph rejected only when from-scratch
+/// is materially better" calibration rule (PRD task #13 / task #2950).
+///
+/// A from-scratch remesh is *materially better* than a morph when its metric
+/// value exceeds the morph's by more than 20 %. Pinned as a single shared
+/// constant so the bar lives in one place and changes propagate uniformly to
+/// every materiality comparison ([`is_materially_better`] for higher-is-better
+/// metrics; AR-factor inline in the rule helper for lower-is-better metrics).
+pub const MATERIALITY_FACTOR: f64 = 1.20;
 
 /// One step of a calibration parameter sweep: morph quality + from-scratch
 /// quality, plus the meshes themselves for downstream inspection.
@@ -190,22 +196,19 @@ where
     }
 }
 
-/// "Materially-better" rule (PRD task #13): a from-scratch remesh is
-/// *materially better* than a morph on a given metric when the
-/// from-scratch value exceeds the morph value by more than 20 %.
+/// "Materially-better" rule (PRD task #13) for *higher-is-better* metrics
+/// (e.g. min scaled Jacobian): a from-scratch remesh is *materially better*
+/// than a morph when its value exceeds the morph value by more than 20 %.
 ///
-/// Encoded as `from_scratch > 1.20 * morph`. Used by the calibration
-/// sweep tests (steps 11/13/15) to gate the assertion "morph is rejected
-/// only when from-scratch is materially better" — the materiality bar
-/// the PRD specifies for threshold calibration.
+/// Encoded as `from_scratch > MATERIALITY_FACTOR * morph`. Used by the
+/// calibration sweep tests (steps 13/15) to gate the assertion "morph is
+/// rejected only when from-scratch is materially better" — the materiality
+/// bar the PRD specifies for threshold calibration.
 ///
-/// The 1.20 factor matches the task's stated >20% improvement threshold.
-/// Both inputs are read as "higher is better" metrics (e.g. min scaled
-/// Jacobian); for "lower is better" metrics (e.g. AR factor) the caller
-/// passes `1.0 / value` or `-value` to flip the polarity. The shared
-/// helper keeps the materiality bar pinned in one place rather than
-/// scattered through threshold comparisons.
-#[allow(dead_code)]
+/// For *lower-is-better* metrics (e.g. AR factor where 1.0 is ideal and the
+/// from-scratch baseline is ~1.0 by construction), compare `morph_value`
+/// directly against [`MATERIALITY_FACTOR`] at the call site — see the
+/// `assert_materially_better_rule_holds` helper in `tests/calibration.rs`.
 pub fn is_materially_better(morph: f64, from_scratch: f64) -> bool {
-    from_scratch > 1.20 * morph
+    from_scratch > MATERIALITY_FACTOR * morph
 }
