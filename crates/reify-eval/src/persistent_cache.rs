@@ -2936,11 +2936,16 @@ mod tests {
     /// zstd-COMPRESSED length — this test must FAIL until step-18 fixes the impl
     /// by computing the true uncompressed size via `value.uncompressed_byte_size()`.
     ///
-    /// Two assertions:
-    ///   1. `header.byte_size == decompressed.len() as u64`  (semantic contract)
-    ///   2. `header.byte_size > compressed_body.len() as u64`
-    ///      (belt-and-suspenders: compressed < uncompressed for any non-trivial
-    ///      zstd input; guards against a future regression back to compressed size)
+    /// Asserts the semantic contract:
+    ///   `header.byte_size == decompressed.len() as u64`
+    ///
+    /// A "compressed < uncompressed" check is deliberately NOT included here: on
+    /// a tiny fixture like `make_sample_result` (~109 uncompressed bytes with
+    /// limited redundancy) zstd's frame/block framing overhead (~13–17 bytes)
+    /// can make the compressed body ≥ uncompressed, so such a check would be
+    /// fragile and zstd-version-dependent. The primary equality assertion fully
+    /// pins the contract — if the impl regresses to storing `body_buf.len()`
+    /// (the compressed length), the equality fails.
     #[test]
     fn write_entry_populates_byte_size_field_with_actually_uncompressed_body_byte_count() {
         use std::fs::File;
@@ -2976,18 +2981,6 @@ mod tests {
              If the impl stores body_buf.len() (compressed size) instead, this fails.",
             got = header.byte_size,
             expected = decompressed.len() as u64,
-        );
-
-        // Belt-and-suspenders: for any non-trivial zstd input the compressed size
-        // is strictly smaller than the uncompressed size. If this assertion fires,
-        // the impl regressed to storing the compressed length again.
-        assert!(
-            header.byte_size > compressed_body.len() as u64,
-            "byte_size ({}) must be strictly greater than compressed body length ({}) — \
-             zstd compression must reduce the body size for the make_sample_result fixture; \
-             if this fires the impl is storing the compressed size, not the uncompressed size",
-            header.byte_size,
-            compressed_body.len(),
         );
     }
 }
