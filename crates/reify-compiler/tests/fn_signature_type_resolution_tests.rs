@@ -235,6 +235,48 @@ fn fn_signature_resolves_solid_builtin_alias() {
     );
 }
 
+/// Both `phase_functions` (fn signature) and `phase_traits` (structure
+/// conformance check) consume the same pre-computed name sets with no regression.
+///
+/// Source contains a fn whose parameter type is a stdlib trait name AND a local
+/// structure that refines that same trait.  After the DRY refactor in step-2 (g),
+/// phase_traits reads `ctx.resolution_trait_names` / `ctx.resolution_structure_names`
+/// instead of rebuilding its own local copies.  This test pins that both phases
+/// read the correct sets — a field-swap bug (e.g. reading resolution_structure_names
+/// where resolution_trait_names is expected) would produce diagnostics here.
+///
+/// Specifically catches the regression where step-2 (g) broke phase_traits'
+/// name lookup (e.g., by reading from the wrong ctx field or mutating it
+/// between phases).
+#[test]
+fn phase_traits_consumes_shared_names_no_regression() {
+    // MyMat must implement all required MaterialSpec members (density: Real,
+    // name: String) to avoid conformance errors — those are orthogonal to the
+    // type-resolution contract being pinned here.
+    let source = r#"
+        structure def MyMat : MaterialSpec {
+            param density : Real = 7800.0
+            param name : String = "my-mat"
+            param young_modulus : Real = 210000.0
+        }
+        fn use_mat(m: MaterialSpec) -> Real { 0 }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected zero Error diagnostics — both phase_functions (fn sig) and \
+         phase_traits (structure conformance) must read the shared name sets correctly; \
+         got: {:?}",
+        errors
+    );
+}
+
 /// A genuinely-unknown type name in a fn parameter still emits an Error
 /// diagnostic whose message contains both "unresolved type" and the offending name.
 ///
