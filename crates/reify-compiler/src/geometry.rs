@@ -261,6 +261,48 @@ fn resolve_loft_like_args(
     (profiles, named_args)
 }
 
+/// Recognise the cross-sub geometry pattern `self.<sub>.<member>` where
+/// `<sub>` is a non-collection sub of the current entity AND `<member>` is a
+/// geometry realisation on the sub's child template (per
+/// `scope.sub_realization_names[sub].contains(member)`).
+///
+/// On a match, returns `Some(GeomRef::Sub(format!("{}.{}", sub, member)))`.
+/// The compound key `"<sub>.<member>"` is the eval-side handshake: the engine
+/// populates `named_steps["<sub>.<member>"]` with the child template's named
+/// realisation handle before processing the parent's ops (see
+/// `engine_build.rs` cross-template threading, task 3441).
+///
+/// Returns `None` for every other shape — the caller falls through to its
+/// existing recursive `compile_geometry_call(...)` path.
+///
+/// Collection-sub accesses (e.g. `bolts[0].body`, `self.bolts.body`) are
+/// **not** recognised here; collection-sub geometry composition is deferred
+/// past v0.1 because per-instance handles would require per-element realisation.
+/// The parallel value-level diagnostic continues to fire in `expr.rs` at the
+/// two collection-sub call sites.
+pub(crate) fn try_resolve_cross_sub_geom_ref(
+    expr: &reify_syntax::Expr,
+    scope: &CompilationScope<'_>,
+) -> Option<GeomRef> {
+    if let reify_syntax::ExprKind::MemberAccess { object, member } = &expr.kind
+        && let reify_syntax::ExprKind::MemberAccess {
+            object: inner_obj,
+            member: sub_name,
+        } = &object.kind
+        && let reify_syntax::ExprKind::Ident(self_name) = &inner_obj.kind
+        && self_name == "self"
+        && !scope.collection_sub_names.contains(sub_name.as_str())
+        && scope
+            .sub_realization_names
+            .get(sub_name.as_str())
+            .is_some_and(|s| s.contains(member.as_str()))
+    {
+        Some(GeomRef::Sub(format!("{}.{}", sub_name, member)))
+    } else {
+        None
+    }
+}
+
 /// Compile a geometry function call expression into CompiledGeometryOps.
 ///
 /// Maps positional arguments to the named parameters expected by each primitive:
@@ -390,8 +432,19 @@ pub(crate) fn compile_geometry_call(
             static_indices.to_vec()
         };
         for idx in &effective_indices {
-            if *idx < args.len()
-                && let Some(ops) = compile_geometry_call(
+            if *idx < args.len() {
+                // Cross-sub geometry pre-check (task 3441): when the arg is
+                // `self.<sub>.<member>` referring to a geometry realisation on a
+                // non-collection sub's child template, lower it to a
+                // GeomRef::Sub with compound key — no sub-op accumulation, no
+                // step_offset perturbation for sibling args.  The eval side
+                // populates the matching `named_steps["<sub>.<member>"]` entry
+                // before processing this template's ops.
+                if let Some(sub_ref) = try_resolve_cross_sub_geom_ref(&args[*idx], scope) {
+                    geom_refs.insert(*idx, sub_ref);
+                    continue;
+                }
+                if let Some(ops) = compile_geometry_call(
                     &args[*idx],
                     scope,
                     enum_defs,
@@ -400,12 +453,12 @@ pub(crate) fn compile_geometry_call(
                     current_offset,
                     geometry_lets,
                     visiting,
-                )
-            {
-                let result_step = current_offset + ops.len() - 1;
-                current_offset += ops.len();
-                geom_refs.insert(*idx, GeomRef::Step(result_step));
-                sub_ops.extend(ops);
+                ) {
+                    let result_step = current_offset + ops.len() - 1;
+                    current_offset += ops.len();
+                    geom_refs.insert(*idx, GeomRef::Step(result_step));
+                    sub_ops.extend(ops);
+                }
             }
         }
     }

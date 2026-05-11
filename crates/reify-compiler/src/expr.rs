@@ -163,8 +163,12 @@ fn make_cross_sub_geometry_error(
 /// the member is not a realization, allowing the caller to fall through to its
 /// existing generic-error branch.
 ///
-/// Used at all three sub-member-access sites (bare collection sub, non-collection
-/// sub, indexed collection sub) to avoid duplicating the lookup-and-dispatch logic.
+/// Used at the two **collection-sub** member-access sites (bare collection sub,
+/// indexed collection sub).  Collection-sub cross-sub geometry remains deferred
+/// in v0.1 because per-instance handles would require per-element realisation,
+/// which is out of scope.  The **non-collection** sub site uses the sibling
+/// helper [`try_resolve_cross_sub_geometry_value_ref`] instead, which produces a
+/// working value-ref (task 3441) rather than a diagnostic.
 ///
 /// # Invariant (task-3420)
 ///
@@ -207,6 +211,43 @@ fn try_emit_cross_sub_geometry(
             child_struct,
             span,
         ))
+    } else {
+        None
+    }
+}
+
+/// **Non-collection** sub working path for cross-sub geometry access (task 3441).
+///
+/// When `<sub_name>` is a non-collection sub of the current entity AND `<member>`
+/// is a geometry realisation on its child structure (per
+/// `scope.sub_realization_names[sub_name].contains(member)`), this helper
+/// produces a synthetic value-ref `CompiledExpr` whose entity stamp follows
+/// the same `format!("{}.{}", entity_name, sub_name)` convention used at
+/// expr.rs:1317 for scalar cross-sub member access, with `Type::Geometry`.
+///
+/// Returns `None` when the member is not a realisation on the child template,
+/// allowing the caller to fall through to its existing "unknown member" branch.
+///
+/// **No diagnostic emitted on success.**  The eval side (engine_build.rs) is
+/// responsible for plumbing the realised geometry handle into
+/// `named_steps["<sub>.<member>"]` so that the parallel `GeomRef::Sub("<sub>.<member>")`
+/// in the realisation ops resolves to the child's handle.
+///
+/// The collection-sub call sites continue to use [`try_emit_cross_sub_geometry`]
+/// to emit the v0.1 diagnostic until per-instance handles are implemented.
+fn try_resolve_cross_sub_geometry_value_ref(
+    scope: &CompilationScope<'_>,
+    sub_name: &str,
+    member: &str,
+) -> Option<CompiledExpr> {
+    if scope
+        .sub_realization_names
+        .get(sub_name)
+        .is_some_and(|s| s.contains(member))
+    {
+        let scoped_entity = format!("{}.{}", scope.entity_name, sub_name);
+        let scoped_id = ValueCellId::new(&scoped_entity, member);
+        Some(CompiledExpr::value_ref(scoped_id, Type::Geometry))
     } else {
         None
     }
@@ -1291,16 +1332,20 @@ pub(crate) fn compile_expr_guarded(
                     {
                         Some(ty) => ty,
                         None => {
-                            // Check whether the member is a geometry realization on the child
-                            // template (task-3397). If so, emit a specific, actionable diagnostic
-                            // rather than the generic "unknown member" fallback.
-                            if let Some(e) = try_emit_cross_sub_geometry(
-                                scope,
-                                sub_name,
-                                member,
-                                expr.span,
-                                diagnostics,
-                            ) {
+                            // Cross-sub geometry working path (task 3441):
+                            // when `member` is a geometry realisation on the
+                            // non-collection sub's child template, return a
+                            // value-ref CompiledExpr stamped with the same
+                            // `<entity>.<sub>` scope used for scalar cross-sub
+                            // access (line 1317 below).  The eval side
+                            // (engine_build.rs) populates the matching
+                            // compound-key `named_steps["<sub>.<member>"]`
+                            // entry, and the parallel `GeomRef::Sub` produced
+                            // by `geometry.rs::try_resolve_cross_sub_geom_ref`
+                            // resolves through it.
+                            if let Some(e) =
+                                try_resolve_cross_sub_geometry_value_ref(scope, sub_name, member)
+                            {
                                 return e;
                             }
                             // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
