@@ -2127,31 +2127,34 @@ structure AxisBox {
         "the match Error must have at least one DiagnosticLabel"
     );
 
-    // The label span must point at the `match` expression — i.e. the slice of
-    // `source` it covers must start with "match" and end with "}".  We use
-    // structural slice assertions rather than pinning exact byte offsets so
-    // the test stays correct under harmless edits to arm order or whitespace.
+    // The label span must point at exactly the `match` expression — pinning
+    // both byte offsets so a regression where the span bleeds past the match
+    // block into the structure's closing `}` would still be caught.
+    let match_expr = "match axis { X => box(length, od, od), Y => box(od, length, od), Z => box(od, od, length) }";
+    let match_start = source
+        .find(match_expr)
+        .expect("source must contain the match expression");
+    let match_end = match_start + match_expr.len();
     assert!(!target_error.labels.is_empty(), "must have at least one label");
     let label = &target_error.labels[0];
-    let start = label.span.start as usize;
-    let end = label.span.end as usize;
-    let slice = &source[start..end];
-    assert!(
-        slice.starts_with("match"),
-        "label span should start at the 'match' keyword; \
-         got slice {:?} from labels: {:?}",
-        slice,
+    assert_eq!(
+        label.span.start as usize,
+        match_start,
+        "label start must equal the byte offset of the 'match' keyword (offset {}); \
+         got labels: {:?}",
+        match_start,
         target_error
             .labels
             .iter()
             .map(|l| (l.span.start, l.span.end, &l.message))
             .collect::<Vec<_>>()
     );
-    assert!(
-        slice.ends_with('}'),
-        "label span should end at the closing '}}' of the match block; \
-         got slice {:?} from labels: {:?}",
-        slice,
+    assert_eq!(
+        label.span.end as usize,
+        match_end,
+        "label end must equal the byte past the closing '}}' of the match block \
+         (offset {}); got labels: {:?}",
+        match_end,
         target_error
             .labels
             .iter()
