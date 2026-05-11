@@ -265,23 +265,30 @@ pub fn auto_mesh_size_from_boundary(boundary: &ProfileBoundary, multiplier: f64)
         if ring.len() < 2 {
             return;
         }
-        // Adjacent segments via windows(2)…
+        // Skip zero-length segments (adjacent duplicate points): they
+        // would otherwise yield a min_len of 0.0 and conflate the
+        // "duplicate-point caller bug" case with the legitimate
+        // "unavailable" sentinel returned for an empty outer ring. The
+        // resulting mesh size 0.0 also causes gmsh to fall back to its
+        // own default (`Mesh.MeshSizeMin/Max` is only set when > 0), so
+        // a ring with all-coincident points reaches the kernel default
+        // rather than producing a degenerate mesh.
         for w in ring.windows(2) {
             let dx = w[1][0] - w[0][0];
             let dy = w[1][1] - w[0][1];
             let len = (dx * dx + dy * dy).sqrt();
-            if len < *min_len {
+            if len > 0.0 && len < *min_len {
                 *min_len = len;
             }
         }
         // …plus the wrap-around segment from last point back to first to
-        // close the ring.
+        // close the ring (also skipped if zero-length).
         let last = ring[ring.len() - 1];
         let first = ring[0];
         let dx = first[0] - last[0];
         let dy = first[1] - last[1];
         let len = (dx * dx + dy * dy).sqrt();
-        if len < *min_len {
+        if len > 0.0 && len < *min_len {
             *min_len = len;
         }
     };
@@ -290,8 +297,11 @@ pub fn auto_mesh_size_from_boundary(boundary: &ProfileBoundary, multiplier: f64)
         update(&mut min_len, hole);
     }
     if min_len.is_infinite() {
-        // Outer ring had <2 distinct points (post-validation will reject)
-        // — fall through to the unavailable sentinel.
+        // Outer ring had <2 distinct points OR every segment was
+        // zero-length (all-duplicate ring). Both are caller-bug-ish
+        // shapes; fall through to the "unavailable" sentinel so the
+        // orchestrator collapses to `None` and gmsh's default mesh-size
+        // policy applies.
         return 0.0;
     }
     min_len * multiplier
@@ -343,6 +353,15 @@ fn validate_boundary(boundary: &ProfileBoundary) -> Result<(), Mesh2dError> {
     // effectively a line segment, not a region.
     if ring_signed_area_2d(&boundary.outer).abs() < 1e-14 {
         return Err(Mesh2dError::DegenerateBoundary);
+    }
+    // Hole rings must also be non-degenerate: a collinear / near-zero-area
+    // hole would either slip through gmsh as an opaque `GmshFailed` or get
+    // silently meshed as a slit, neither of which is a useful contract.
+    // Mirror the outer-ring tolerance.
+    for hole in &boundary.holes {
+        if ring_signed_area_2d(hole).abs() < 1e-14 {
+            return Err(Mesh2dError::DegenerateBoundary);
+        }
     }
     Ok(())
 }
@@ -447,6 +466,34 @@ pub fn mesh_swept_profile_2d(
                 });
             }
 
+            // Fall-back optimisation: if the first recombine attempt
+            // produced NO quads at all (gmsh tried, couldn't pair any
+            // triangles, and emitted a pure-triangle mesh), the triangle
+            // buffer already covers the full surface — return it directly
+            // and skip the second FFI round-trip.
+            //
+            // The PARTIAL-recombine case (both `quad_indices` AND
+            // `triangle_indices` non-empty) cannot reuse the triangle
+            // buffer alone: the triangles only cover the area gmsh
+            // couldn't pair; the quad-covered area would be lost. That
+            // case must re-mesh with recombine=false to obtain a complete
+            // pure-triangle tiling. Similarly, the fully-quad-but-low-skew
+            // case has zero triangles to reuse and also re-meshes.
+            if result.quad_indices.is_empty() && !result.triangle_indices.is_empty() {
+                return Ok(Mesh2dReport {
+                    mesh: Mesh2d::Triangle {
+                        vertices,
+                        indices: result.triangle_indices,
+                    },
+                    recombine_attempted: true,
+                    // Records that recombine was attempted but yielded no
+                    // quads — the caller's diagnostic code uses this to
+                    // emit the "wedge fallback" vs "wedge native"
+                    // distinction.
+                    recombine_quality_ok: false,
+                });
+            }
+
             // Fall-back: second `mesh_plane_2d` round-trip with
             // `recombine=false` produces a pure-triangle mesh. Acceptable
             // cost — this path is the exception, and the 2D meshes
@@ -478,12 +525,18 @@ pub fn mesh_swept_profile_2d(
 
 /// Map a `GeometryError` from `mesh_plane_2d` to the orchestrator's
 /// `Mesh2dError`. The stub arm of `mesh_plane_2d` returns a
-/// `GeometryError::OperationFailed` with "Gmsh not available" in the
-/// message; route that to `GmshUnavailable` so callers can distinguish
-/// "no libgmsh in this build" from "libgmsh failed at runtime".
+/// `GeometryError::OperationFailed` containing
+/// [`reify_kernel_gmsh::STUB_UNAVAILABLE_MARKER`]; route that to
+/// `GmshUnavailable` so callers can distinguish "no libgmsh in this build"
+/// from "libgmsh failed at runtime". The substring check is anchored on the
+/// shared `pub const` rather than a duplicated literal, so a stub-message
+/// reword can only happen by editing the constant — which is itself
+/// referenced here, surfacing the contract at compile time.
 fn map_geometry_error(err: GeometryError) -> Mesh2dError {
     match &err {
-        GeometryError::OperationFailed(msg) if msg.contains("Gmsh not available") => {
+        GeometryError::OperationFailed(msg)
+            if msg.contains(reify_kernel_gmsh::STUB_UNAVAILABLE_MARKER) =>
+        {
             Mesh2dError::GmshUnavailable
         }
         _ => Mesh2dError::GmshFailed(err),
@@ -813,6 +866,102 @@ mod tests {
         assert!(
             matches!(r, Err(Mesh2dError::DegenerateBoundary)),
             "expected DegenerateBoundary, got {r:?}"
+        );
+    }
+
+    #[test]
+    fn mesh_swept_profile_2d_rejects_collinear_hole() {
+        // Outer ring is fine; the hole ring is collinear (three points on
+        // the same horizontal line). Without the hole-area check this slips
+        // through to gmsh as an opaque failure (or a silent slit). The
+        // tolerance mirrors the outer-ring check.
+        let pb = ProfileBoundary {
+            outer: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
+            holes: vec![vec![[3.0, 5.0], [4.0, 5.0], [5.0, 5.0]]],
+        };
+        let r = mesh_swept_profile_2d(
+            &pb,
+            SweepElementTarget::WedgeOnly,
+            &Mesh2dOptions::default(),
+        );
+        assert!(
+            matches!(r, Err(Mesh2dError::DegenerateBoundary)),
+            "expected DegenerateBoundary, got {r:?}"
+        );
+    }
+
+    // ---- amend: auto_mesh_size_from_boundary all-duplicate ring ----
+    //
+    // Pins the chosen semantics for the all-coincident-points case: the
+    // function returns 0.0 (the "unavailable" sentinel), letting the
+    // orchestrator collapse to `None` and gmsh's default mesh-size policy
+    // apply rather than producing a min_len of 0.0 that would yield a
+    // degenerate mesh size.
+    #[test]
+    fn auto_mesh_size_all_duplicate_ring_returns_zero() {
+        let pb = ProfileBoundary {
+            outer: vec![[1.0, 1.0], [1.0, 1.0], [1.0, 1.0]],
+            holes: vec![],
+        };
+        let h = auto_mesh_size_from_boundary(&pb, 1.0);
+        assert_eq!(
+            h, 0.0,
+            "all-duplicate ring must yield the unavailable sentinel 0.0"
+        );
+    }
+
+    // Mixed-duplicate ring: a couple of adjacent duplicates but at least
+    // one non-zero segment. The function must skip the zero-length entries
+    // and report the smallest *real* segment, not collapse to 0.0.
+    #[test]
+    fn auto_mesh_size_mixed_duplicate_ring_skips_zero_segments() {
+        // Triangle with a duplicate at index 1: real segments are
+        // (0,0)->(1,0) length 1, (1,0)->(1,0) length 0 (skipped),
+        // (1,0)->(0,1) length sqrt(2), wrap (0,1)->(0,0) length 1.
+        // Smallest non-zero segment = 1.0.
+        let pb = ProfileBoundary {
+            outer: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+            holes: vec![],
+        };
+        let h = auto_mesh_size_from_boundary(&pb, 1.0);
+        assert!(
+            (h - 1.0).abs() < 1e-12,
+            "mixed-duplicate ring h = {h}, expected 1.0",
+        );
+    }
+
+    // ---- amend: map_geometry_error stub-marker contract ----
+    //
+    // Pins the end-to-end contract between mesh_profile_2d's stub message
+    // and the orchestrator's GmshUnavailable routing without needing a
+    // real stub build. Any reword of `STUB_UNAVAILABLE_MARKER` that fails
+    // to keep `map_geometry_error` in sync will be caught here.
+    #[test]
+    fn map_geometry_error_routes_stub_marker_to_unavailable() {
+        let stub_msg = format!(
+            "mesh_plane_2d: {} in this build (libgmsh not detected at build time)",
+            reify_kernel_gmsh::STUB_UNAVAILABLE_MARKER,
+        );
+        let err = GeometryError::OperationFailed(stub_msg);
+        let mapped = map_geometry_error(err);
+        assert!(
+            matches!(mapped, Mesh2dError::GmshUnavailable),
+            "stub marker message must map to GmshUnavailable, got {mapped:?}",
+        );
+    }
+
+    #[test]
+    fn map_geometry_error_routes_runtime_failure_to_gmsh_failed() {
+        // A non-stub OperationFailed message must NOT match the marker —
+        // routes to GmshFailed instead, so callers can distinguish runtime
+        // failures from missing-libgmsh configuration errors.
+        let err = GeometryError::OperationFailed(
+            "mesh_plane_2d: get_nodes_all stride mismatch".to_string(),
+        );
+        let mapped = map_geometry_error(err);
+        assert!(
+            matches!(mapped, Mesh2dError::GmshFailed(_)),
+            "runtime failure must map to GmshFailed, got {mapped:?}",
         );
     }
 }

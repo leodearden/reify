@@ -254,12 +254,10 @@
 //!     outer: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
 //!     holes: vec![],
 //! };
-//! let opts_2987 = Mesh2dOptions::default();
-//! assert_eq!(
-//!     opts_2987.recombine_skew_threshold,
-//!     std::f64::consts::FRAC_PI_4,
-//!     "Mesh2dOptions::default().recombine_skew_threshold must be \u{3c0}/4",
-//! );
+//! // The default-value contract for `recombine_skew_threshold` is pinned
+//! // by `mesher::tests::mesh2d_options_default_matches_spec`; we only check
+//! // here that `Mesh2dOptions::default()` is reachable / typed correctly.
+//! let _opts_2987: Mesh2dOptions = Mesh2dOptions::default();
 //! // Construct each variant of Mesh2d and Mesh2dError so a renamed field
 //! // or removed variant trips this doctest at compile time.
 //! let _ = Mesh2d::Triangle { vertices: vec![0.0_f32; 6], indices: vec![0_u32, 1, 2] };
