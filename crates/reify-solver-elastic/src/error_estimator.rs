@@ -515,6 +515,42 @@ mod tests {
         );
     }
 
+    /// Guard test: `compute_zz_indicator` must panic in **all** build modes
+    /// when called with P2-length (10-node) connectivity.
+    ///
+    /// # TDD red→green
+    ///
+    /// **RED** (step-1, before the fix): in `cargo test --release` the existing
+    /// `debug_assert_eq!` is compiled out, so no panic fires and this
+    /// `#[should_panic]` test fails — the release leg of the verify pipeline
+    /// catches the regression.
+    ///
+    /// **GREEN** (step-2, after promoting to `assert_eq!`): both debug and
+    /// release modes panic, and the test passes in both modes.
+    #[test]
+    #[should_panic(expected = "P1 tets only")]
+    fn compute_zz_indicator_panics_when_called_with_p2_length_connectivity() {
+        let mat = dimensionless_steel_like();
+        // P2 tet has 10 nodes; all pointing to node-0 keeps recover_nodal_stress_p1
+        // from OOB-panicking for an unrelated reason.
+        let conn_p2 = [0_usize; 10];
+        let sigma = [[1.0_f64, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]];
+        let elements = [StressElement {
+            connectivity: &conn_p2,
+            stress: sigma,
+            volume: 1.0 / 6.0,
+        }];
+        let mesh = VolumeMesh {
+            vertices: vec![0.0_f32; 30], // 10 nodes × 3 coords
+            tet_indices: vec![0; 10],
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+        // Expect a panic containing "P1 tets only" — substring present in both
+        // the existing debug_assert message and the new assert message.
+        compute_zz_indicator(&elements, &mesh, &mat);
+    }
+
     /// Per-element indicator on a two-tet fan with σ_A ≠ σ_B.
     ///
     /// Fixture: σ_A = diag(100,0,0), σ_B = diag(0,0,0), V_A = V_B = 1/6.
