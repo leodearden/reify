@@ -626,6 +626,38 @@ pub async fn spawn_debug_server(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reify_constraints::SimpleConstraintChecker;
+    use reify_test_support::{MockGeometryKernel, bracket_source};
+
+    fn make_test_engine() -> Arc<Mutex<EngineSession>> {
+        let checker = SimpleConstraintChecker;
+        let kernel = MockGeometryKernel::new();
+        let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+        session
+            .load_from_source(bracket_source(), "bracket")
+            .expect("initial load should succeed");
+        Arc::new(Mutex::new(session))
+    }
+
+    #[tokio::test]
+    async fn run_on_engine_does_not_poison_mutex_when_closure_panics() {
+        let engine = make_test_engine();
+
+        // First call: closure panics — run_on_engine must return Err, not propagate.
+        let first = run_on_engine(&engine, |_s| -> Result<(), String> {
+            panic!("from-closure")
+        })
+        .await;
+        assert!(first.is_err(), "panicking closure must produce Err from run_on_engine");
+
+        // Second call: mutex must be usable (not poisoned after the first call).
+        let second = run_on_engine(&engine, |s| Ok(s.is_idle())).await;
+        assert_eq!(
+            second,
+            Ok(true),
+            "engine must still be usable after a panicking closure (mutex must not be poisoned)"
+        );
+    }
 
     #[test]
     fn tool_defs_includes_set_camera() {
