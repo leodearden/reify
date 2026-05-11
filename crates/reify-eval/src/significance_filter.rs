@@ -234,6 +234,25 @@ mod tests {
         );
     }
 
+    // ── Step-9: ε-equivalent displacement delta test ─────────────────────────
+
+    /// Displacement delta within tolerance → Equivalent.
+    /// prev.displacement.data = [0.0, 0.001]; new adds 1e-12 to each sample.
+    /// tolerance = 1e-6 > 1e-12 → delta is sub-threshold → Equivalent.
+    /// Other fields (stress, max_von_mises, converged, iterations) are bit-equal.
+    #[test]
+    fn significance_filter_returns_equivalent_for_sub_tolerance_displacement_delta() {
+        let v1 = make_elastic_result_value(&[0.0, 0.001], &[0.0, 0.001], 1e8, true, 5);
+        let v2 =
+            make_elastic_result_value(&[0.0 + 1e-12, 0.001 + 1e-12], &[0.0, 0.001], 1e8, true, 5);
+        assert_ne!(v1, v2, "test fixture: v1 and v2 must be distinct (not bit-equal)");
+        assert_eq!(
+            significance_filter("solver::elastic_static", &v1, &v2, Some(1e-6)),
+            FilterOutcome::Equivalent,
+            "displacement delta 1e-12 < tolerance 1e-6 must yield Equivalent",
+        );
+    }
+
     // ── Step-7: missing-tolerance conservative fallback ───────────────────────
 
     /// When length_tolerance_si is None, the filter returns Different
