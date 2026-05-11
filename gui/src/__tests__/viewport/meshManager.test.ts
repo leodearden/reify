@@ -2613,6 +2613,16 @@ describe('meshManager', () => {
       // The caller's original Float32Array must be untouched — the warp writes
       // into the position buffer which must be a copy, not the input reference.
       expect(Array.from(callerVerts)).toEqual(snapshot);
+
+      // Also verify the warp actually ran — if applyWarpToMesh silently no-op'd
+      // (e.g. a future regression in the side-table lookup) the snapshot equality
+      // above would still pass while failing to exercise the warp path.
+      // callerVerts: [0,0,0, 1,0,0, 0,1,0], displaced: [0.1,0,0, 1.1,0,0, 0.1,1,0]
+      // vertex 0 x: 0 + 2*(0.1-0) = 0.2
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const posArr = mesh.geometry.attributes.position.array as Float32Array;
+      expect(Array.from(posArr)).not.toEqual(snapshot);
+      expect(posArr[0]).toBeCloseTo(0.2);
     });
 
     it('(b) updateMeshGeometry same-length path — caller buffer is not written by warp', () => {
@@ -2653,6 +2663,14 @@ describe('meshManager', () => {
       manager.setDeformation({ warpFactor: 2 });
 
       expect(Array.from(callerVerts2)).toEqual(snapshot);
+
+      // Also verify warp actually ran on the (copied) position buffer.
+      // callerVerts2: [0.5,0,0, 1.5,0,0, 0.5,1,0], displaced2: [0.6,0,0, ...]
+      // vertex 0 x: 0.5 + 2*(0.6-0.5) = 0.7
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const posArr = mesh.geometry.attributes.position.array as Float32Array;
+      expect(Array.from(posArr)).not.toEqual(snapshot);
+      expect(posArr[0]).toBeCloseTo(0.7);
     });
 
     it('(c) updateMeshGeometry different-length path — caller buffer is not written by warp', () => {
@@ -2694,6 +2712,14 @@ describe('meshManager', () => {
       manager.setDeformation({ warpFactor: 2 });
 
       expect(Array.from(callerVerts3)).toEqual(snapshot);
+
+      // Also verify warp actually ran on the (copied) position buffer.
+      // callerVerts3: [0,0,0, 1,0,0, 0,1,0, 1,1,0], displaced3: [0.1,0,0, ...]
+      // vertex 0 x: 0 + 2*(0.1-0) = 0.2
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const posArr = mesh.geometry.attributes.position.array as Float32Array;
+      expect(Array.from(posArr)).not.toEqual(snapshot);
+      expect(posArr[0]).toBeCloseTo(0.2);
     });
   });
 });
