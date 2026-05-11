@@ -1572,4 +1572,31 @@ mod tests {
              symlink target bytes must not enter the hash input"
         );
     }
+
+    /// PRD-required structural guard: the workspace `Cargo.lock` must appear in
+    /// `CONTRIBUTORS_RELATIVE` so that any transitive dependency version bump
+    /// (e.g. `nalgebra`, `faer`, `gmsh-sys`, `nalgebra-sparse`) causes
+    /// `ENGINE_VERSION_HASH` to change and all existing cache entries to miss.
+    ///
+    /// Without this entry, a transitive dep upgrade that alters FEA semantics
+    /// (different LU pivoting strategy, different eigensolver tolerances) would
+    /// leave the persistent cache serving stale results indefinitely.
+    ///
+    /// Reference: `docs/prds/v0_3/persistent-fea-cache.md`
+    /// §"Cache invalidation on engine version" — "any change to the FEA engine"
+    /// must invalidate.
+    #[test]
+    fn contributors_relative_includes_workspace_cargo_lock_for_transitive_dep_invalidation() {
+        let found = crate::engine_hash_algo::CONTRIBUTORS_RELATIVE
+            .iter()
+            .any(|&p| p == "../../Cargo.lock");
+        assert!(
+            found,
+            "CONTRIBUTORS_RELATIVE must contain \"../../Cargo.lock\" so that any \
+             transitive dependency version bump causes ENGINE_VERSION_HASH to change \
+             (PRD docs/prds/v0_3/persistent-fea-cache.md §\"Cache invalidation on engine \
+             version\"). Actual list: {:#?}",
+            crate::engine_hash_algo::CONTRIBUTORS_RELATIVE
+        );
+    }
 }
