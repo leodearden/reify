@@ -421,15 +421,22 @@ pub fn mesh_swept_profile_2d(
             let vertices: Vec<f32> =
                 result.vertices_xy.iter().map(|&v| v as f32).collect();
 
-            // Happy path: recombine produced a quad-dominated mesh
-            // AND every quad passes the per-corner skew predicate.
-            // Quality fall-back to triangles is added in the next pair.
+            // Happy path: a "clean" recombine produced quads only (no
+            // leftover triangles from a partial recombination) AND every
+            // quad passes the per-corner skew predicate. Returning a
+            // `Mesh2d::Quad` when triangles are also present would silently
+            // drop those leftover elements — so the presence of any
+            // triangle leftover counts as a non-clean recombine and routes
+            // through the fall-back path.
             let quality_ok = recombine_quality_ok(
                 &vertices,
                 &result.quad_indices,
                 options.recombine_skew_threshold,
             );
-            if !result.quad_indices.is_empty() && quality_ok {
+            let clean_recombine = !result.quad_indices.is_empty()
+                && result.triangle_indices.is_empty()
+                && quality_ok;
+            if clean_recombine {
                 return Ok(Mesh2dReport {
                     mesh: Mesh2d::Quad {
                         vertices,
@@ -440,10 +447,31 @@ pub fn mesh_swept_profile_2d(
                 });
             }
 
-            // Placeholder for the fall-back path: step-24 replaces this
-            // with a second `mesh_plane_2d(recombine=false)` round trip
-            // that returns triangles.
-            Err(Mesh2dError::GmshUnavailable)
+            // Fall-back: second `mesh_plane_2d` round-trip with
+            // `recombine=false` produces a pure-triangle mesh. Acceptable
+            // cost — this path is the exception, and the 2D meshes
+            // involved are small (cross-section sized).
+            let fb = reify_kernel_gmsh::mesh_profile_2d::mesh_plane_2d(
+                &boundary.outer,
+                &boundary.holes,
+                resolved_size,
+                false,
+                options.deterministic,
+            )
+            .map_err(map_geometry_error)?;
+            let fb_vertices: Vec<f32> =
+                fb.vertices_xy.iter().map(|&v| v as f32).collect();
+            Ok(Mesh2dReport {
+                mesh: Mesh2d::Triangle {
+                    vertices: fb_vertices,
+                    indices: fb.triangle_indices,
+                },
+                recombine_attempted: true,
+                // Records that recombine was attempted but rejected — the
+                // caller (task 2989's diagnostic code) uses this to emit
+                // the "wedge fallback" vs "wedge native" distinction.
+                recombine_quality_ok: false,
+            })
         }
     }
 }
