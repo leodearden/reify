@@ -1278,6 +1278,51 @@ mod tests {
         assert_eq!(from_node, res_node);
     }
 
+    /// P3.3 step-1: Pin the new `NodeId::Compute(ComputeNodeId)` variant.
+    ///
+    /// Mirrors `node_id_resolution_variant`. Asserts:
+    ///   (a) construction + equality/hash round-trip via `HashMap` key
+    ///   (b) `From<ComputeNodeId> for NodeId` produces `NodeId::Compute(_)`
+    ///   (c) the variant differs from every existing variant even with
+    ///       overlapping entity strings
+    #[test]
+    fn node_id_compute_variant() {
+        use reify_types::{ComputeNodeId, ResolutionNodeId};
+
+        let cn_id = ComputeNodeId::new("E", 0);
+        let cn_node = NodeId::Compute(cn_id.clone());
+
+        // (a) Equality with itself
+        assert_eq!(cn_node, NodeId::Compute(ComputeNodeId::new("E", 0)));
+
+        // (a) Hash round-trip through HashMap (mirrors node_id_hash_as_map_key)
+        let mut map = HashMap::new();
+        map.insert(cn_node.clone(), "compute");
+        assert_eq!(map.get(&NodeId::Compute(cn_id.clone())), Some(&"compute"));
+
+        // (c) Differs from other variants
+        assert_ne!(cn_node, NodeId::Value(ValueCellId::new("E", "x")));
+        assert_ne!(cn_node, NodeId::Constraint(ConstraintNodeId::new("E", 0)));
+        assert_ne!(cn_node, NodeId::Realization(RealizationNodeId::new("E", 0)));
+        assert_ne!(cn_node, NodeId::Resolution(ResolutionNodeId::new("E", 0)));
+
+        // (b) From<ComputeNodeId> conversion
+        let from_node: NodeId = NodeId::from(cn_id.clone());
+        assert_eq!(from_node, cn_node);
+    }
+
+    /// P3.3 step-1: Pin `Display for NodeId::Compute(id)` forwarding to
+    /// `id.fmt(f)` — i.e. `"E#computation[0]"`.
+    #[test]
+    fn node_id_display_compute_forwards_to_inner_variant() {
+        use reify_types::ComputeNodeId;
+
+        let inner = ComputeNodeId::new("E", 0);
+        let node = NodeId::Compute(inner.clone());
+        assert_eq!(format!("{}", node), format!("{}", inner));
+        assert_eq!(format!("{}", node), "E#computation[0]");
+    }
+
     #[test]
     fn node_id_variants_not_equal_even_with_overlapping_strings() {
         let vcid = ValueCellId::new("Bracket", "width");
