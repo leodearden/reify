@@ -69,3 +69,31 @@ fn panicking_closure_does_not_poison_mutex() {
         "mutex must be usable after a panicking closure (not poisoned)"
     );
 }
+
+#[test]
+fn pre_poisoned_mutex_is_recovered() {
+    let engine = make_engine();
+
+    // Manually poison the mutex using the canonical std-lib pattern:
+    // spawn a thread, acquire the lock, and panic while holding it.
+    let m = Arc::clone(&engine);
+    let _ = std::thread::spawn(move || {
+        let _g = m.lock().unwrap();
+        panic!("intentional poison");
+    })
+    .join();
+
+    // Confirm the mutex is actually poisoned now.
+    assert!(
+        engine.lock().is_err(),
+        "mutex should be poisoned after the spawned thread panicked"
+    );
+
+    // with_engine_lock must recover from pre-existing poisoning via into_inner().
+    let result = engine_lock::with_engine_lock(&engine, |s| s.is_idle());
+    assert_eq!(
+        result,
+        Ok(true),
+        "with_engine_lock must recover from a pre-poisoned mutex"
+    );
+}
