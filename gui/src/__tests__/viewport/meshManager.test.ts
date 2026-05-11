@@ -2651,5 +2651,46 @@ describe('meshManager', () => {
 
       expect(Array.from(callerVerts2)).toEqual(snapshot);
     });
+
+    it('(c) updateMeshGeometry different-length path — caller buffer is not written by warp', () => {
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+
+      // Initial sync with 3 vertices (9 floats).
+      const initialVerts = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+      const initialDisplaced = new Float32Array([0.1, 0, 0, 1.1, 0, 0, 0.1, 1, 0]);
+      manager.sync({
+        A: {
+          entity_path: 'A',
+          vertices: initialVerts,
+          indices: new Uint32Array([0, 1, 2]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          displaced_positions: initialDisplaced,
+        },
+      });
+
+      // Re-sync with DIFFERENT length (4 vertices = 12 floats) — hits the
+      // different-length branch (new BufferAttribute(data.vertices, 3)) in
+      // updateMeshGeometry.
+      const callerVerts3 = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0]);
+      const displaced3 = new Float32Array([0.1, 0, 0, 1.1, 0, 0, 0.1, 1, 0, 1.1, 1, 0]);
+      const snapshot = Array.from(callerVerts3);
+      manager.sync({
+        A: {
+          entity_path: 'A',
+          vertices: callerVerts3,
+          indices: new Uint32Array([0, 1, 2, 2, 3, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          displaced_positions: displaced3,
+        },
+      });
+
+      // Trigger warp — without the fix, the new BufferAttribute aliases
+      // callerVerts3 and applyWarpToMesh writes into it.
+      manager.setDeformation({ warpFactor: 2 });
+
+      expect(Array.from(callerVerts3)).toEqual(snapshot);
+    });
   });
 });
