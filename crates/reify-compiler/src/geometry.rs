@@ -125,10 +125,12 @@ pub(crate) fn is_geometry_let(
         reify_syntax::ExprKind::Match { arms, .. } => arms
             .iter()
             .any(|arm| is_geometry_let(&arm.body, functions, known_geometry_lets)),
-        // Future branching/wrapping ExprKinds (Lambda body, etc.) extend here
-        // with the same any-sub-yields-geometry pattern. Note: ExprKind has no
-        // Block variant (parenthesised expressions are unwrapped during lowering
-        // and never reach this predicate as a distinct kind).
+        // Future branching/wrapping ExprKinds (e.g. pipe expressions,
+        // try/else-style fallbacks) extend here with the same
+        // any-sub-yields-geometry pattern.  Note: ExprKind has no Block variant
+        // (parenthesised expressions are unwrapped during lowering and never
+        // reach this predicate as a distinct kind); Lambda bodies produce a
+        // function value, not a geometry value, so they are not candidates.
         _ => false,
     }
 }
@@ -332,8 +334,8 @@ pub(crate) fn compile_geometry_call(
             Diagnostic::error(format!(
                 "{kind} returning a geometry value is not yet supported as a geometry \
                  expression; branching/wrapping expressions returning a geometry value \
-                 must be hoisted out of geometry space (select scalar arguments first \
-                 via the {kind}, then build the geometry unconditionally)",
+                 must be hoisted out of geometry space (select scalar arguments first, \
+                 then build the geometry unconditionally outside the {kind})",
             ))
             .with_label(DiagnosticLabel::new(
                 expr.span,
