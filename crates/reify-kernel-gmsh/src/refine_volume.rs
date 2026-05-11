@@ -183,13 +183,23 @@ pub fn refine_volume_with_size_field(
     //
     // `Mesh.MeshSizeFromPoints=1`: use 0D-entity (corner) sizes as mesh-size
     // anchors; gmsh interpolates these sizes across the surface and into the
-    // volume via `Mesh.MeshSizeExtendFromBoundary` (default=1).
+    // volume.
     //
     // `Mesh.MeshSizeFromCurvature=0`: disable curvature-based refinement so
     // only our explicit corner hints drive the mesh size, preventing gmsh from
     // independently inserting small elements where the surface curves sharply.
+    //
+    // `Mesh.MeshSizeExtendFromBoundary=0`: do NOT propagate the gradient of
+    // the 2D boundary mesh sizes into the 3D volume.  With this enabled
+    // (default=1), a fine surface mesh on one face (e.g. the marked region at
+    // x<0.5) extends its fineness deep into the volume, over-refining the
+    // adjacent unmarked region.  Disabling this ensures that only the 0D
+    // corner-entity sizes (set by `gmshModelMeshSetSize` below) drive the
+    // interior mesh density, with a smooth interpolation between corners rather
+    // than an aggressive gradient from the finest boundary face.
     ffi::option_set_number("Mesh.MeshSizeFromPoints", 1.0)?;
     ffi::option_set_number("Mesh.MeshSizeFromCurvature", 0.0)?;
+    ffi::option_set_number("Mesh.MeshSizeExtendFromBoundary", 0.0)?;
 
     // For each 0D corner entity created by classify_surfaces + create_geometry,
     // query its single mesh node (whose 1-indexed tag corresponds directly to
