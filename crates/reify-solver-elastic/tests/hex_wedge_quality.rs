@@ -89,6 +89,56 @@ fn assert_swept_hex_dimensions(
     );
 }
 
+/// Assert that a `SweptMesh3d` has the expected wedge-element dimensions.
+///
+/// Checks:
+/// - `connectivity` is `SweptConnectivity::Wedge`.
+/// - `indices.len() == 6 * expected_n_base_tris * expected_layers`.
+/// - `vertices.len() == 3 * (expected_layers + 1) * expected_n_base_vertices`.
+/// - `mesh.layers == expected_layers`.
+fn assert_swept_wedge_dimensions(
+    mesh: &SweptMesh3d,
+    expected_layers: usize,
+    expected_n_base_tris: usize,
+    expected_n_base_vertices: usize,
+) {
+    match &mesh.connectivity {
+        SweptConnectivity::Wedge { indices } => {
+            assert_eq!(
+                indices.len(),
+                6 * expected_n_base_tris * expected_layers,
+                "wedge indices.len() must be 6 * n_base_tris * K \
+                 (n_base_tris={expected_n_base_tris}, K={expected_layers})",
+            );
+        }
+        SweptConnectivity::Hex { .. } => {
+            panic!("expected Wedge connectivity, got Hex");
+        }
+    }
+    assert_eq!(
+        mesh.vertices.len(),
+        3 * (expected_layers + 1) * expected_n_base_vertices,
+        "vertex buffer must be 3 * (K+1) * n_base_vertices \
+         (K={expected_layers}, n_base_vertices={expected_n_base_vertices})",
+    );
+    assert_eq!(
+        mesh.layers, expected_layers,
+        "swept.layers must equal K={expected_layers}",
+    );
+}
+
+/// Assert that `check_sweep_through_thickness(layers, min_layers)` returns `None`.
+///
+/// Panics with a human-readable message that names `mesh_size` and
+/// `sweep_subdivisions` (the two knobs callers can adjust) if the check fails.
+fn through_thickness_must_pass(layers: usize, min_layers: usize) {
+    assert!(
+        check_sweep_through_thickness(layers, min_layers).is_none(),
+        "through-thickness check failed: {layers} layers < {min_layers} minimum. \
+         Decrease mesh_size or set an explicit sweep_subdivisions.",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Fixture tests
 // ---------------------------------------------------------------------------
@@ -149,10 +199,7 @@ fn extruded_plate_hex_mesh_succeeds_with_expected_element_count() {
     .expect("extruded plate: sweep_2d_mesh_to_3d failed");
 
     assert_swept_hex_dimensions(&swept, k, n_base_quads, n_base_vertices);
-    assert!(
-        check_sweep_through_thickness(k, 2).is_none(),
-        "through-thickness check must pass for K={k}",
-    );
+    through_thickness_must_pass(k, 2);
 }
 
 /// Revolved disc (R=50, H=2 mm, hex/wedge-eligible).
@@ -202,47 +249,19 @@ fn revolved_disc_hex_or_wedge_mesh_succeeds() {
     let swept =
         sweep_2d_mesh_to_3d(&report.mesh, &params, k).expect("revolved disc: sweep failed");
 
-    match (&report.mesh, &swept.connectivity) {
-        (Mesh2d::Quad { vertices, indices }, SweptConnectivity::Hex { indices: hex_idx }) => {
+    match &report.mesh {
+        Mesh2d::Quad { vertices, indices } => {
             let n_base_quads = indices.len() / 4;
             let n_base_verts = vertices.len() / 2;
-            assert_eq!(
-                hex_idx.len(),
-                8 * n_base_quads * k,
-                "hex: indices must be 8*n_base_quads*K",
-            );
-            assert_eq!(
-                swept.vertices.len(),
-                3 * (k + 1) * n_base_verts,
-                "hex: vertex buffer must be 3*(K+1)*n_base_verts",
-            );
+            assert_swept_hex_dimensions(&swept, k, n_base_quads, n_base_verts);
         }
-        (Mesh2d::Triangle { vertices, indices }, SweptConnectivity::Wedge { indices: wed_idx }) => {
+        Mesh2d::Triangle { vertices, indices } => {
             let n_base_tris = indices.len() / 3;
             let n_base_verts = vertices.len() / 2;
-            assert_eq!(
-                wed_idx.len(),
-                6 * n_base_tris * k,
-                "wedge: indices must be 6*n_base_tris*K",
-            );
-            assert_eq!(
-                swept.vertices.len(),
-                3 * (k + 1) * n_base_verts,
-                "wedge: vertex buffer must be 3*(K+1)*n_base_verts",
-            );
-        }
-        (Mesh2d::Quad { .. }, SweptConnectivity::Wedge { .. }) => {
-            panic!("Quad base must produce Hex connectivity, not Wedge")
-        }
-        (Mesh2d::Triangle { .. }, SweptConnectivity::Hex { .. }) => {
-            panic!("Triangle base must produce Wedge connectivity, not Hex")
+            assert_swept_wedge_dimensions(&swept, k, n_base_tris, n_base_verts);
         }
     }
-    assert_eq!(swept.layers, k, "swept.layers must equal K={k}");
-    assert!(
-        check_sweep_through_thickness(k, 2).is_none(),
-        "through-thickness check must pass for K={k}",
-    );
+    through_thickness_must_pass(k, 2);
 }
 
 /// Surface-pin test: verifies that every type, function, and constant used by
