@@ -4945,7 +4945,19 @@ pub(crate) fn p2_substitution_diagnostic(
     element_order: reify_types::ElementOrderTag,
     body_label: &str,
 ) -> Option<Diagnostic> {
-    // Naive initial implementation — no guards yet (added in step-4).
+    // Three suppression guards — ordered cheapest first for short-circuit:
+    // 1. swept_kind=None: body didn't qualify for hex/wedge promotion.
+    // 2. force_tet: hex/wedge was suppressed upstream; no substitution occurs.
+    // 3. element_order=P1: user didn't request P2, nothing to warn about.
+    if swept_kind.is_none() {
+        return None;
+    }
+    if force_tet {
+        return None;
+    }
+    if element_order != reify_types::ElementOrderTag::P2 {
+        return None;
+    }
     Some(Diagnostic::info(format!(
         "Body {body_label} qualified for hex/wedge meshing; P1 hex used despite \
 `element_order = P2` (P2 hex deferred). Accuracy for thin geometry is comparable to P2 tet."
