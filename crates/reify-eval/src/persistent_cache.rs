@@ -80,10 +80,29 @@ pub fn read_sidecar_mtime(path: &Path) -> io::Result<std::time::SystemTime> {
 ///
 /// Uses [`std::fs::FileTimes::set_modified`] (stable since Rust 1.75,
 /// Dec 2023) — avoids adding the `filetime` crate to reify-eval's dep set.
+///
+/// # Race condition: evicted sidecar
+///
+/// If the GC evicts an entry between the cache read and this `touch_sidecar`
+/// call, the `.meta` file will have been removed and `open` will return
+/// `ErrorKind::NotFound`. On the read-path this is benign — the entry is gone
+/// and the touch is a no-op — so this function returns `Ok(())` for
+/// `NotFound`. All other errors (e.g. permission denied) are propagated to the
+/// caller.
+///
+/// # Permission notes
+///
+/// Opening with `write(true)` requires write permission on the file. On
+/// read-only mounts or under restrictive ACLs this returns `PermissionDenied`,
+/// which is propagated to the caller.
 pub fn touch_sidecar(path: &Path) -> io::Result<()> {
     use std::fs::File;
     use std::time::SystemTime;
-    let f = File::options().write(true).open(path)?;
+    let f = match File::options().write(true).open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
     f.set_times(std::fs::FileTimes::new().set_modified(SystemTime::now()))
 }
 
@@ -94,6 +113,12 @@ pub fn touch_sidecar(path: &Path) -> io::Result<()> {
 /// `fs::create_dir_all(&shard_dir(...))` before writing any files into the
 /// shard. Failure to create the parent surfaces as an `io::Error` from the
 /// underlying `fs::write`.
+///
+/// # Concurrency
+///
+/// Safe to call concurrently because the payload is a single byte. If the
+/// sidecar ever grows past one byte, switch to a temp-file + atomic-rename
+/// strategy to avoid torn reads.
 pub fn write_sidecar(path: &Path) -> io::Result<()> {
     std::fs::write(path, [SIDECAR_MAGIC_BYTE])
 }
@@ -189,6 +214,29 @@ pub struct CacheEntryHeader {
 }
 
 impl CacheEntryHeader {
+    /// Verify that `format_version` in this header matches
+    /// [`ENTRY_FORMAT_VERSION`], returning `Err(io::ErrorKind::InvalidData)`
+    /// on mismatch.
+    ///
+    /// Call this alongside [`Self::verify_field_echoes`] after decoding a
+    /// header to ensure the on-disk layout is compatible before attempting to
+    /// decode the body. Keeping the check here (rather than at every call
+    /// site) means readers do not need to import `ENTRY_FORMAT_VERSION`
+    /// directly — the contract is fully expressed by `CacheEntryHeader`.
+    pub fn verify_format_version(&self) -> io::Result<()> {
+        if self.format_version != ENTRY_FORMAT_VERSION {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "CacheEntryHeader format_version {} does not match \
+                     ENTRY_FORMAT_VERSION {} (incompatible on-disk layout?)",
+                    self.format_version, ENTRY_FORMAT_VERSION
+                ),
+            ));
+        }
+        Ok(())
+    }
+
     /// Verify that the echo fields in this header match the expected key
     /// components, returning `Err(io::ErrorKind::InvalidData)` on mismatch.
     ///
@@ -199,7 +247,12 @@ impl CacheEntryHeader {
     /// Per PRD `docs/prds/v0_3/persistent-fea-cache.md` §"Header schema":
     /// "engine_version_hash and input_hash are echoes of the directory-level
     /// and filename-level values, so corruption is detectable."
-    pub fn verify_echoes(
+    ///
+    /// Callers should also call [`Self::verify_format_version`] to check that
+    /// the on-disk layout version is compatible — that check is separate
+    /// because a version mismatch and a corrupted echo are distinct failure
+    /// modes requiring different handling.
+    pub fn verify_field_echoes(
         &self,
         expected_engine_version_hash: &[u8; 32],
         expected_input_hash: &[u8; 32],
@@ -597,17 +650,10 @@ pub fn shard_dir(cache_root: &Path, engine_version_hash: &str, input_hash: &str)
 /// can `create_dir_all(&shard_dir(...))` once and then write both files into
 /// it).
 ///
-/// See [`entry_bin_path`] for the full layout and precondition documentation.
+/// Delegates to [`shard_dir`] for the parent directory; see [`shard_dir`] for
+/// the precondition documentation.
 pub fn entry_meta_path(cache_root: &Path, engine_version_hash: &str, input_hash: &str) -> PathBuf {
-    debug_assert!(
-        input_hash.len() >= 2,
-        "entry_meta_path: input_hash must be at least 2 chars, got {:?}",
-        input_hash
-    );
-    cache_root
-        .join(engine_version_hash)
-        .join(&input_hash[..2])
-        .join(format!("{input_hash}.meta"))
+    shard_dir(cache_root, engine_version_hash, input_hash).join(format!("{input_hash}.meta"))
 }
 
 /// Construct the `.bin` cache-entry path for a given set of key components.
@@ -624,24 +670,11 @@ pub fn entry_meta_path(cache_root: &Path, engine_version_hash: &str, input_hash:
 /// together, making engine-version invalidation (directory removal) O(1). The
 /// second level (`input_hash[0..2]`) limits directory fanout for large caches.
 ///
-/// # Preconditions
-///
-/// - `engine_version_hash` should be a 32-char lowercase hex string (as
-///   produced by [`ENGINE_VERSION_HASH`] / [`compose_engine_version_hash`]).
-/// - `input_hash` must have at least 2 characters; production callers always
-///   pass a 32-char hex string (from `ContentHash::Display`).
-///
-/// A `debug_assert!` fires in debug builds if `input_hash.len() < 2`.
+/// Delegates to [`shard_dir`] for the parent directory, so the layout
+/// invariant (and the `debug_assert!` on `input_hash.len() >= 2`) lives in
+/// one place. See [`shard_dir`] for the precondition documentation.
 pub fn entry_bin_path(cache_root: &Path, engine_version_hash: &str, input_hash: &str) -> PathBuf {
-    debug_assert!(
-        input_hash.len() >= 2,
-        "entry_bin_path: input_hash must be at least 2 chars, got {:?}",
-        input_hash
-    );
-    cache_root
-        .join(engine_version_hash)
-        .join(&input_hash[..2])
-        .join(format!("{input_hash}.bin"))
+    shard_dir(cache_root, engine_version_hash, input_hash).join(format!("{input_hash}.bin"))
 }
 
 impl PersistentlyCacheable for ElasticResult {
@@ -2103,7 +2136,7 @@ mod tests {
         };
         let correct_engine = [0xAAu8; 32];
         let wrong_input    = [0xDDu8; 32];
-        let err = header.verify_echoes(&correct_engine, &wrong_input)
+        let err = header.verify_field_echoes(&correct_engine, &wrong_input)
             .expect_err("input_hash mismatch must return Err");
         assert_eq!(err.kind(), io::ErrorKind::InvalidData,
             "expected InvalidData, got {:?}", err);
@@ -2125,7 +2158,7 @@ mod tests {
         };
         let wrong_engine = [0xCCu8; 32];
         let correct_input = [0xBBu8; 32];
-        let err = header.verify_echoes(&wrong_engine, &correct_input)
+        let err = header.verify_field_echoes(&wrong_engine, &correct_input)
             .expect_err("engine_version_hash mismatch must return Err");
         assert_eq!(err.kind(), io::ErrorKind::InvalidData,
             "expected InvalidData, got {:?}", err);
@@ -2148,8 +2181,44 @@ mod tests {
             written_at:          0,
         };
         assert!(
-            header.verify_echoes(&engine, &input).is_ok(),
-            "verify_echoes must return Ok when both echoes match"
+            header.verify_field_echoes(&engine, &input).is_ok(),
+            "verify_field_echoes must return Ok when both echoes match"
+        );
+    }
+
+    #[test]
+    fn cache_entry_header_verify_format_version_returns_ok_for_current_version() {
+        let header = CacheEntryHeader {
+            format_version:      ENTRY_FORMAT_VERSION,
+            engine_version_hash: [0u8; 32],
+            input_hash:          [0u8; 32],
+            solve_time_ms:       0,
+            byte_size:           0,
+            written_at:          0,
+        };
+        assert!(
+            header.verify_format_version().is_ok(),
+            "verify_format_version must return Ok when format_version matches ENTRY_FORMAT_VERSION"
+        );
+    }
+
+    #[test]
+    fn cache_entry_header_verify_format_version_rejects_stale_version_with_invalid_data() {
+        let header = CacheEntryHeader {
+            format_version:      0, // stale / uninitialised sentinel
+            engine_version_hash: [0u8; 32],
+            input_hash:          [0u8; 32],
+            solve_time_ms:       0,
+            byte_size:           0,
+            written_at:          0,
+        };
+        let err = header.verify_format_version()
+            .expect_err("format_version mismatch must return Err");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData,
+            "expected InvalidData, got {:?}", err);
+        assert!(
+            err.to_string().contains("format_version"),
+            "error message must contain 'format_version', got: {err}"
         );
     }
 
