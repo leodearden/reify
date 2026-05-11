@@ -187,8 +187,8 @@ describe('AutoResolvePanel (c) line chart', () => {
     );
     const state: AutoResolveLoopState = { active: true, iterations };
     render(() => <AutoResolvePanel state={state} />);
-    const svg = screen.getByTestId('auto-resolve-chart') as unknown as SVGElement;
-    expect(svg).toBeTruthy();
+    const svg = screen.getByTestId('auto-resolve-chart');
+    expect(svg).toBeInstanceOf(SVGSVGElement);
     expect(svg.getAttribute('width')).toBe('300');
     expect(svg.getAttribute('height')).toBe('200');
   });
