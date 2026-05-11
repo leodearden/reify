@@ -185,9 +185,12 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
 
   function createMeshFromData(entityPath: string, data: MeshData): Mesh | null {
     const geometry = new BufferGeometry();
-    // Copy vertices on ingest — applyWarpToMesh writes blended values into
-    // posAttr.array in place; aliasing data.vertices would clobber the caller's buffer.
-    geometry.setAttribute('position', new BufferAttribute(data.vertices.slice(), 3));
+    // The position buffer and the original-vertices side-table each need an
+    // independent Float32Array: applyWarpToMesh mutates posAttr.array in-place,
+    // so sharing a single copy would silently corrupt the side-table's canonical
+    // pre-warp state.  One slice here; one at meshOriginalVertices.set below.
+    const vertsForBuffer = data.vertices.slice();
+    geometry.setAttribute('position', new BufferAttribute(vertsForBuffer, 3));
     geometry.setIndex(new BufferAttribute(data.indices, 1));
     if (data.normals) {
       geometry.setAttribute('normal', new BufferAttribute(data.normals, 3));
@@ -258,20 +261,22 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
   function updateMeshGeometry(mesh: Mesh, data: MeshData): void {
     const geometry = mesh.geometry as BufferGeometry;
 
+    // Copy vertices on ingest — applyWarpToMesh mutates posAttr.array in-place;
+    // aliasing data.vertices would clobber the caller's buffer.
+    // meshOriginalVertices gets its own independent slice further below (line ~313)
+    // so restore / re-apply at different warp factors works correctly.
+    const vertsForBuffer = data.vertices.slice();
+
     // Reuse existing BufferAttribute objects when array length matches to avoid
     // orphaning GPU-side WebGLBuffers. When length differs, create new attribute
     // because WebGL buffers have fixed size and cannot be resized.
     const posAttr = geometry.getAttribute('position') as BufferAttribute | null;
     if (posAttr && posAttr.array.length === data.vertices.length) {
-      // Copy vertices on ingest — applyWarpToMesh writes blended values into
-      // posAttr.array in place; aliasing data.vertices would clobber the caller's buffer.
-      posAttr.array = data.vertices.slice();
+      posAttr.array = vertsForBuffer;
       (posAttr as { count: number }).count = data.vertices.length / 3;
       posAttr.needsUpdate = true;
     } else {
-      // Copy vertices on ingest — applyWarpToMesh writes blended values into
-      // posAttr.array in place; aliasing data.vertices would clobber the caller's buffer.
-      geometry.setAttribute('position', new BufferAttribute(data.vertices.slice(), 3));
+      geometry.setAttribute('position', new BufferAttribute(vertsForBuffer, 3));
     }
 
     const indexAttr = geometry.index;

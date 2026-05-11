@@ -14,7 +14,19 @@ export interface MeshData {
    * `sync()` — the position attribute will not alias it.
    */
   vertices: Float32Array;
+  /**
+   * Triangle connectivity indices (flat list of vertex index triples).
+   * The renderer (MeshManager) aliases this buffer directly into a
+   * `BufferAttribute` — callers must not mutate the `Uint32Array` after
+   * passing it to `sync()`.
+   */
   indices: Uint32Array;
+  /**
+   * Per-vertex normals (`[nx0, ny0, nz0, nx1, ny1, nz1, ...]`), or `null` when
+   * the backend supplies none (MeshManager calls `computeVertexNormals()` in
+   * that case).  The renderer aliases this buffer directly — callers must not
+   * mutate the `Float32Array` after passing it to `sync()`.
+   */
   normals: Float32Array | null;
   /**
    * Per-vertex scalar attribute channels (e.g. `"vonMises"` stress).
@@ -30,6 +42,9 @@ export interface MeshData {
    * into the position buffer. Mirrors `displaced_positions: Option<Vec<f32>>`
    * in the Rust `MeshData` struct (task 2959). Absent (`undefined`) when the
    * Rust side serializes `None` — never `null` on the wire.
+   *
+   * The renderer aliases this buffer directly — callers must not mutate the
+   * `Float32Array` after passing it to `sync()`.
    */
   displaced_positions?: Float32Array;
 }
