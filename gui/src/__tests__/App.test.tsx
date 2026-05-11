@@ -112,6 +112,7 @@ vi.mock('../bridge', () => ({
   getKernelStatus: vi.fn().mockResolvedValue({ available: true, message: null }),
   onKernelStatus: vi.fn().mockResolvedValue(() => {}),
   getContainingDefinition: vi.fn().mockResolvedValue(null),
+  getEntityAtSourceLocation: vi.fn().mockResolvedValue(null),
   getDefPreview: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [] }),
   readViewSidecar: vi.fn().mockResolvedValue(null),
   writeViewSidecar: vi.fn().mockResolvedValue(undefined),
@@ -4911,5 +4912,89 @@ describe('App AutoResolvePanel integration', () => {
     await waitFor(() => {
       expect(screen.queryByTestId('auto-resolve-panel')).toBeNull();
     });
+  });
+});
+
+describe('App editor→selection wiring', () => {
+  it('(a) App invokes getEntityAtSourceLocation after editor cursor changes and updates selectionStore.selectedEntity', async () => {
+    vi.mocked((bridge as any).getEntityAtSourceLocation).mockResolvedValue('Bracket.width');
+
+    await renderAndWaitForReady();
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+
+    vi.useFakeTimers();
+    try {
+      capturedEditorStore.setCursorPosition(2, 11);
+      await vi.advanceTimersByTimeAsync(250);
+      // Let any microtasks (Promise resolutions) settle
+      await Promise.resolve();
+      await Promise.resolve();
+
+      await waitFor(() => {
+        expect(vi.mocked((bridge as any).getEntityAtSourceLocation)).toHaveBeenCalledWith(2, 11);
+        expect(capturedDualViewportProps.selectedEntity).toBe('Bracket.width');
+        expect(mockFlyToEntity).toHaveBeenCalledWith('Bracket.width');
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('(b) App does NOT clear selection when getEntityAtSourceLocation returns null', async () => {
+    // Pre-select via viewport click
+    vi.mocked(bridge.getSourceLocation).mockResolvedValue({ file_path: '/test.ri', line: 1, column: 1, end_line: 1, end_column: 5 });
+    await renderAndWaitForReady();
+    await waitFor(() => expect(capturedDualViewportProps.onSelect).toBeDefined());
+
+    capturedDualViewportProps.onSelect('Bracket');
+    await waitFor(() => {
+      expect(capturedDualViewportProps.selectedEntity).toBe('Bracket');
+    });
+
+    // Now set bridge to return null and move cursor
+    vi.mocked((bridge as any).getEntityAtSourceLocation).mockResolvedValue(null);
+
+    vi.useFakeTimers();
+    try {
+      capturedEditorStore.setCursorPosition(1, 1);
+      await vi.advanceTimersByTimeAsync(250);
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // Selection must NOT have been cleared
+      expect(capturedDualViewportProps.selectedEntity).toBe('Bracket');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('(c) App skips selectEntity and flyTo when getEntityAtSourceLocation returns the currently-selected entity', async () => {
+    // Pre-select 'Bracket.width' via viewport click
+    vi.mocked(bridge.getSourceLocation).mockResolvedValue({ file_path: '/test.ri', line: 1, column: 1, end_line: 1, end_column: 5 });
+    await renderAndWaitForReady();
+    await waitFor(() => expect(capturedDualViewportProps.onSelect).toBeDefined());
+
+    capturedDualViewportProps.onSelect('Bracket.width');
+    await waitFor(() => {
+      expect(capturedDualViewportProps.selectedEntity).toBe('Bracket.width');
+    });
+
+    mockFlyToEntity.mockClear();
+
+    // Bridge returns the same entity
+    vi.mocked((bridge as any).getEntityAtSourceLocation).mockResolvedValue('Bracket.width');
+
+    vi.useFakeTimers();
+    try {
+      capturedEditorStore.setCursorPosition(2, 11);
+      await vi.advanceTimersByTimeAsync(250);
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // Equality-check guard: flyToEntity must NOT be called again (no bounce)
+      expect(mockFlyToEntity).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
