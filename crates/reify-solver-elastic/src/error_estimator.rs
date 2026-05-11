@@ -64,6 +64,9 @@ pub struct ZzIndicator {
 ///     for P1 tets, barycentric coords at the centroid are (1/4,…,1/4), so
 ///     σ̄_e* = (1/N) Σ_{n ∈ conn(e)} σ_n*.
 /// (d) Per-element: `η_e = √(V_e · energy_density_voigt(σ_e − σ̄_e*, D⁻¹))`.
+///     Step (d) uses 1-point Gauss (centroid) quadrature; the integrand is
+///     quadratic, so this is an O(h) approximation — standard for Z-Z over
+///     P1 tets and consistent with PRD §13's allowance for either scheme.
 /// (e) Global: `η_global = √(Σ η_e² / U_solution)` where
 ///     `U_solution = Σ_e V_e · energy_density_voigt(σ_e, D⁻¹)`.
 ///
