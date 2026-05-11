@@ -7,8 +7,8 @@ use reify_compiler::{
     ValueCellKind, find_template,
 };
 use reify_types::{
-    CompiledExpr, ConstraintNodeId, ContentHash, PersistentMap, RealizationNodeId,
-    ResolutionNodeId, Type, Value, ValueCellId, ValueMap,
+    CompiledExpr, ComputeNodeId, ConstraintNodeId, ContentHash, OpaqueState, PersistentMap,
+    RealizationNodeId, ResolutionNodeId, Type, Value, ValueCellId, ValueMap,
 };
 
 /// A value cell node in the evaluation graph.
@@ -58,6 +58,68 @@ pub struct ResolutionNodeData {
     pub content_hash: ContentHash,
 }
 
+/// Placeholder for the in-flight cancellation handle carried by a running
+/// ComputeNode. P3.1 only ships this unit-type stand-in so `ComputeNodeData`
+/// has a stable field shape; P3.5 replaces it with the real cooperative-
+/// cancellation type (likely `Arc<AtomicBool>` per PRD §"Lifecycle: pending
+/// + cancellation"). Kept module-private (not re-exported) so the eventual
+///   real type can land without an API break.
+#[derive(Debug, Clone, Default)]
+pub struct CancellationHandle;
+
+/// A compute node in the evaluation graph.
+/// Parallel to RealizationNodeData / ResolutionNodeData. See
+/// `docs/prds/v0_3/compute-node-infrastructure.md` §"Struct shape" for
+/// the field-by-field PRD spec; the exhaustive-destructure test
+/// `compute_node_data_fields_match_prd_spec` pins this list at compile time.
+#[derive(Debug)]
+pub struct ComputeNodeData {
+    // Identity
+    pub computation_id: ComputeNodeId,
+    pub target: String,
+    // Inputs (drive cache key in P3.2)
+    pub value_inputs: Vec<ValueCellId>,
+    pub realization_inputs: Vec<RealizationNodeId>,
+    pub options_hash: ContentHash,
+    // Cache
+    pub cache_key: ContentHash,
+    pub cached_result: Option<Value>,
+    pub result_content_hash: Option<ContentHash>,
+    // Lifecycle
+    pub opaque_state: Option<OpaqueState>,
+    pub running: Option<CancellationHandle>,
+    // Output side
+    pub output_value_cells: Vec<ValueCellId>,
+}
+
+// Manual Clone mirroring `NodeCache::Clone` (cache.rs:171-183):
+// OpaqueState is !Clone (Box<dyn Any + Send>), so we drop the slot to
+// None on clone. Warm state is transient — best-effort recovery is the
+// existing WarmStatePool contract.
+//
+// `running` is propagated by value here because P3.1's `CancellationHandle`
+// is a unit-struct placeholder that is trivially Clone. When P3.5 replaces it
+// with the real type (likely `Arc<AtomicBool>`), the Clone impl MUST be
+// revisited: the desired semantics for an in-flight handle on clone — share
+// via Arc, reset to None, or cancel-on-clone — are a P3.5 lifecycle decision.
+impl Clone for ComputeNodeData {
+    fn clone(&self) -> Self {
+        Self {
+            computation_id: self.computation_id.clone(),
+            target: self.target.clone(),
+            value_inputs: self.value_inputs.clone(),
+            realization_inputs: self.realization_inputs.clone(),
+            options_hash: self.options_hash,
+            cache_key: self.cache_key,
+            cached_result: self.cached_result.clone(),
+            result_content_hash: self.result_content_hash,
+            opaque_state: None,
+            running: self.running.clone(),
+            output_value_cells: self.output_value_cells.clone(),
+        }
+    }
+}
+
 /// Metadata for a guarded group in the evaluation graph.
 /// Tracks which cells and constraints are conditionally active.
 #[derive(Debug, Clone)]
@@ -98,6 +160,11 @@ pub struct EvaluationGraph {
     pub constraints: PersistentMap<ConstraintNodeId, ConstraintNodeData>,
     pub realizations: PersistentMap<RealizationNodeId, RealizationNodeData>,
     pub resolutions: PersistentMap<ResolutionNodeId, ResolutionNodeData>,
+    /// Compute nodes (P3.1+). Keyed by ComputeNodeId; the field name is
+    /// `computations` (not `compute_nodes`) to avoid colliding with the
+    /// PRD-mandated `compute_nodes()` iterator method name. See design
+    /// decision in `.task/plan.json`.
+    pub computations: PersistentMap<ComputeNodeId, ComputeNodeData>,
     /// Guarded groups with conditional membership.
     pub guarded_groups: Vec<GuardedGroupInfo>,
     /// ValueCellIds whose boolean value controls topology (guard cells).
@@ -444,6 +511,38 @@ impl EvaluationGraph {
         }
 
         graph
+    }
+
+    /// Insert a ComputeNode into the graph. Returns the node's `ComputeNodeId`
+    /// (a clone of `data.computation_id`) for caller convenience.
+    ///
+    /// **Note (P3.1 scope):** ComputeNodes are not produced by any builder in
+    /// P3.1 — `from_templates` does not construct them, and the
+    /// `topology_fingerprint` does NOT yet include a ComputeNode bucket. P3.2
+    /// composes `cache_key` and adds the fingerprint bucket; P3.4 wires
+    /// `@optimized` lowering to call this method. See
+    /// `docs/prds/v0_3/compute-node-infrastructure.md`.
+    pub fn insert_compute_node(&mut self, data: ComputeNodeData) -> ComputeNodeId {
+        let id = data.computation_id.clone();
+        self.computations.insert(id.clone(), data);
+        id
+    }
+
+    pub fn get_compute_node(&self, id: &ComputeNodeId) -> Option<&ComputeNodeData> {
+        self.computations.get(id)
+    }
+
+    pub fn get_compute_node_mut(&mut self, id: &ComputeNodeId) -> Option<&mut ComputeNodeData> {
+        self.computations.get_mut(id)
+    }
+
+    /// Iterate over all ComputeNodes in the graph. Iteration order is
+    /// PersistentMap-determined (not stable across runs); callers needing
+    /// deterministic ordering must sort by `computation_id`. Matches the
+    /// convention used by sibling node maps (`value_cells.values()` etc.
+    /// are accessed directly via the field).
+    pub fn compute_nodes(&self) -> impl Iterator<Item = &ComputeNodeData> {
+        self.computations.values()
     }
 
     /// Returns `true` iff `id` refers to a value cell present in this graph
@@ -852,10 +951,287 @@ mod tests {
     }
 
     #[test]
+    fn compute_node_data_construction() {
+        use reify_types::{ComputeNodeId, RealizationNodeId as RnId};
+
+        let computation_id = ComputeNodeId::new("Bracket", 0);
+        let data = ComputeNodeData {
+            computation_id: computation_id.clone(),
+            target: "solver::elastic_static".to_string(),
+            value_inputs: vec![ValueCellId::new("Bracket", "load")],
+            realization_inputs: vec![RnId::new("Bracket", 0)],
+            options_hash: ContentHash::of_str("opts"),
+            cache_key: ContentHash::of_str("ck"),
+            cached_result: Some(Value::Real(0.0)),
+            result_content_hash: Some(ContentHash::of_str("rh")),
+            opaque_state: None,
+            running: None,
+            output_value_cells: vec![ValueCellId::new("Bracket", "stress")],
+        };
+
+        assert_eq!(data.computation_id, computation_id);
+        assert_eq!(data.target, "solver::elastic_static");
+        assert_eq!(data.value_inputs.len(), 1);
+        assert_eq!(data.value_inputs[0], ValueCellId::new("Bracket", "load"));
+        assert_eq!(data.realization_inputs.len(), 1);
+        assert_eq!(data.options_hash, ContentHash::of_str("opts"));
+        assert_eq!(data.cache_key, ContentHash::of_str("ck"));
+        assert!(data.cached_result.is_some());
+        assert!(data.result_content_hash.is_some());
+        assert!(data.opaque_state.is_none());
+        assert!(data.running.is_none());
+        assert_eq!(data.output_value_cells.len(), 1);
+        assert_eq!(data.output_value_cells[0], ValueCellId::new("Bracket", "stress"));
+
+        let debug = format!("{:?}", data);
+        assert!(debug.contains("ComputeNodeData"));
+    }
+
+    #[test]
+    fn compute_node_data_clone_drops_opaque_state() {
+        use reify_types::{ComputeNodeId, OpaqueState, RealizationNodeId as RnId};
+
+        let data = ComputeNodeData {
+            computation_id: ComputeNodeId::new("Bracket", 0),
+            target: "solver::elastic_static".to_string(),
+            value_inputs: vec![ValueCellId::new("Bracket", "load")],
+            realization_inputs: vec![RnId::new("Bracket", 0)],
+            options_hash: ContentHash::of_str("opts"),
+            cache_key: ContentHash::of_str("ck"),
+            cached_result: Some(Value::Real(1.5)),
+            result_content_hash: Some(ContentHash::of_str("rh")),
+            opaque_state: Some(OpaqueState::new(42i32, 4)),
+            running: Some(CancellationHandle::default()),
+            output_value_cells: vec![ValueCellId::new("Bracket", "stress")],
+        };
+
+        let cloned = data.clone();
+
+        // Manual-Clone contract: opaque_state is transient, dropped to None
+        assert!(cloned.opaque_state.is_none());
+        // CancellationHandle placeholder IS Clone, so running is preserved
+        assert!(cloned.running.is_some());
+        // Other fields are preserved
+        assert_eq!(cloned.computation_id, ComputeNodeId::new("Bracket", 0));
+        assert_eq!(cloned.target, "solver::elastic_static");
+        assert_eq!(cloned.value_inputs, vec![ValueCellId::new("Bracket", "load")]);
+        assert_eq!(cloned.options_hash, ContentHash::of_str("opts"));
+        assert_eq!(cloned.cache_key, ContentHash::of_str("ck"));
+    }
+
+    #[test]
+    fn compute_node_data_fields_match_prd_spec() {
+        use reify_types::ComputeNodeId;
+
+        let data = ComputeNodeData {
+            computation_id: ComputeNodeId::new("Bracket", 0),
+            target: "solver::elastic_static".to_string(),
+            value_inputs: vec![],
+            realization_inputs: vec![],
+            options_hash: ContentHash::of_str("opts"),
+            cache_key: ContentHash::of_str("ck"),
+            cached_result: None,
+            result_content_hash: None,
+            opaque_state: None,
+            running: None,
+            output_value_cells: vec![],
+        };
+        // Exhaustive destructure: adding/renaming/removing any field breaks compilation
+        let ComputeNodeData {
+            computation_id: _,
+            target: _,
+            value_inputs: _,
+            realization_inputs: _,
+            options_hash: _,
+            cache_key: _,
+            cached_result: _,
+            result_content_hash: _,
+            opaque_state: _,
+            running: _,
+            output_value_cells: _,
+        } = data;
+    }
+
+    #[test]
     fn evaluation_graph_has_resolutions_map() {
         let graph = EvaluationGraph::default();
         assert!(graph.resolutions.is_empty());
         assert_eq!(graph.resolutions.len(), 0);
+    }
+
+    #[test]
+    fn evaluation_graph_has_computations_map() {
+        let graph = EvaluationGraph::default();
+        assert!(graph.computations.is_empty());
+        assert_eq!(graph.computations.len(), 0);
+    }
+
+    #[test]
+    fn evaluation_graph_insert_compute_node_round_trip() {
+        use reify_types::{ComputeNodeId, RealizationNodeId as RnId};
+        let mut graph = EvaluationGraph::default();
+        let computation_id = ComputeNodeId::new("Bracket", 0);
+        let data = ComputeNodeData {
+            computation_id: computation_id.clone(),
+            target: "solver::elastic_static".to_string(),
+            value_inputs: vec![ValueCellId::new("Bracket", "load")],
+            realization_inputs: vec![RnId::new("Bracket", 0)],
+            options_hash: ContentHash::of_str("opts"),
+            cache_key: ContentHash::of_str("ck"),
+            cached_result: None,
+            result_content_hash: None,
+            opaque_state: None,
+            running: None,
+            output_value_cells: vec![],
+        };
+        let id = graph.insert_compute_node(data);
+        assert_eq!(id, computation_id);
+        let got = graph.get_compute_node(&id).unwrap();
+        assert_eq!(got.target, "solver::elastic_static");
+        assert_eq!(got.value_inputs, vec![ValueCellId::new("Bracket", "load")]);
+        assert_eq!(got.options_hash, ContentHash::of_str("opts"));
+    }
+
+    #[test]
+    fn evaluation_graph_get_compute_node_mut_returns_mutable_reference() {
+        use reify_types::ComputeNodeId;
+        let mut graph = EvaluationGraph::default();
+        let data = ComputeNodeData {
+            computation_id: ComputeNodeId::new("Bracket", 0),
+            target: "solver::elastic_static".to_string(),
+            value_inputs: vec![],
+            realization_inputs: vec![],
+            options_hash: ContentHash::of_str("opts"),
+            cache_key: ContentHash::of_str("ck"),
+            cached_result: None,
+            result_content_hash: None,
+            opaque_state: None,
+            running: None,
+            output_value_cells: vec![],
+        };
+        let id = graph.insert_compute_node(data);
+        graph.get_compute_node_mut(&id).unwrap().target = "other::target".to_string();
+        assert_eq!(graph.get_compute_node(&id).unwrap().target, "other::target");
+    }
+
+    #[test]
+    fn evaluation_graph_get_compute_node_missing_returns_none() {
+        use reify_types::ComputeNodeId;
+        let graph = EvaluationGraph::default();
+        assert!(graph.get_compute_node(&ComputeNodeId::new("Nope", 99)).is_none());
+    }
+
+    #[test]
+    fn evaluation_graph_multiple_compute_nodes_coexist() {
+        use reify_types::ComputeNodeId;
+        let mut graph = EvaluationGraph::default();
+
+        let id_a = graph.insert_compute_node(ComputeNodeData {
+            computation_id: ComputeNodeId::new("Bracket", 0),
+            target: "solver::elastic_static".to_string(),
+            value_inputs: vec![],
+            realization_inputs: vec![],
+            options_hash: ContentHash::of_str("opts_a"),
+            cache_key: ContentHash::of_str("ck_a"),
+            cached_result: None,
+            result_content_hash: None,
+            opaque_state: None,
+            running: None,
+            output_value_cells: vec![],
+        });
+        let id_b = graph.insert_compute_node(ComputeNodeData {
+            computation_id: ComputeNodeId::new("Bracket", 1),
+            target: "solver::modal".to_string(),
+            value_inputs: vec![],
+            realization_inputs: vec![],
+            options_hash: ContentHash::of_str("opts_b"),
+            cache_key: ContentHash::of_str("ck_b"),
+            cached_result: None,
+            result_content_hash: None,
+            opaque_state: None,
+            running: None,
+            output_value_cells: vec![],
+        });
+
+        assert_eq!(graph.computations.len(), 2);
+        assert_eq!(graph.get_compute_node(&id_a).unwrap().target, "solver::elastic_static");
+        assert_eq!(graph.get_compute_node(&id_b).unwrap().target, "solver::modal");
+    }
+
+    #[test]
+    fn evaluation_graph_clone_preserves_computations() {
+        use reify_types::{ComputeNodeId, OpaqueState};
+        let mut graph = EvaluationGraph::default();
+
+        let id = graph.insert_compute_node(ComputeNodeData {
+            computation_id: ComputeNodeId::new("Bracket", 0),
+            target: "solver::elastic_static".to_string(),
+            value_inputs: vec![],
+            realization_inputs: vec![],
+            options_hash: ContentHash::of_str("opts"),
+            cache_key: ContentHash::of_str("ck"),
+            cached_result: None,
+            result_content_hash: None,
+            opaque_state: Some(OpaqueState::new(7i32, 4)),
+            running: None,
+            output_value_cells: vec![],
+        });
+
+        let mut cloned = graph.clone();
+        // Insert a second node only in clone
+        cloned.insert_compute_node(ComputeNodeData {
+            computation_id: ComputeNodeId::new("Bracket", 1),
+            target: "solver::modal".to_string(),
+            value_inputs: vec![],
+            realization_inputs: vec![],
+            options_hash: ContentHash::of_str("opts2"),
+            cache_key: ContentHash::of_str("ck2"),
+            cached_result: None,
+            result_content_hash: None,
+            opaque_state: None,
+            running: None,
+            output_value_cells: vec![],
+        });
+
+        // Original unchanged
+        assert_eq!(graph.computations.len(), 1);
+        // Clone has both
+        assert_eq!(cloned.computations.len(), 2);
+        assert!(cloned.get_compute_node(&id).is_some());
+        // Manual-Clone contract: opaque_state dropped to None on clone
+        assert!(cloned.get_compute_node(&id).unwrap().opaque_state.is_none());
+    }
+
+    #[test]
+    fn evaluation_graph_compute_nodes_iter_yields_all_inserted() {
+        use reify_types::ComputeNodeId;
+        use std::collections::HashSet;
+        let mut graph = EvaluationGraph::default();
+
+        for (target, idx) in [("solver::a", 0u32), ("solver::b", 1), ("solver::c", 2)] {
+            graph.insert_compute_node(ComputeNodeData {
+                computation_id: ComputeNodeId::new("Bracket", idx),
+                target: target.to_string(),
+                value_inputs: vec![],
+                realization_inputs: vec![],
+                options_hash: ContentHash::of_str(target),
+                cache_key: ContentHash::of_str(target),
+                cached_result: None,
+                result_content_hash: None,
+                opaque_state: None,
+                running: None,
+                output_value_cells: vec![],
+            });
+        }
+
+        let targets: HashSet<String> = graph.compute_nodes().map(|n| n.target.clone()).collect();
+        assert_eq!(
+            targets,
+            ["solver::a", "solver::b", "solver::c"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<HashSet<_>>()
+        );
     }
 
     #[test]

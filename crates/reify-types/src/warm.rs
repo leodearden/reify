@@ -3,11 +3,11 @@ use std::fmt;
 
 /// Type-erased container for warm-start state.
 ///
-/// Wraps a `Box<dyn Any + Send>` with an estimated size hint, allowing
+/// Wraps a `Box<dyn Any + Send + Sync>` with an estimated size hint, allowing
 /// evaluators to preserve opaque solver/kernel state across re-evaluations
 /// without the evaluation engine knowing the concrete type.
 pub struct OpaqueState {
-    inner: Box<dyn Any + Send>,
+    inner: Box<dyn Any + Send + Sync>,
     estimated_size: usize,
 }
 
@@ -26,7 +26,7 @@ impl OpaqueState {
     /// `estimated_size_bytes` is a caller-provided hint of how much memory
     /// the value occupies (including heap allocations). Used by
     /// `WarmStatePool` for budget enforcement.
-    pub fn new<T: Any + Send>(value: T, estimated_size_bytes: usize) -> Self {
+    pub fn new<T: Any + Send + Sync>(value: T, estimated_size_bytes: usize) -> Self {
         Self {
             inner: Box::new(value),
             estimated_size: estimated_size_bytes,
@@ -91,9 +91,9 @@ mod tests {
     }
 
     #[test]
-    fn opaque_state_is_send() {
-        fn assert_send<T: Send>() {}
-        assert_send::<OpaqueState>();
+    fn opaque_state_is_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<OpaqueState>();
     }
 
     #[test]

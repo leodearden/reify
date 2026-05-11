@@ -27,6 +27,14 @@ impl<K: Clone + Hash + Eq, V: Clone> PersistentMap<K, V> {
         self.inner.get(key)
     }
 
+    /// Look up a mutable reference to a value by key. Uses `im::HashMap`'s
+    /// copy-on-write semantics: if the underlying trie node is shared with
+    /// another (cloned) map, it is cloned before the mutable borrow is
+    /// returned, preserving structural-sharing invariants for siblings.
+    pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
+        self.inner.get_mut(key)
+    }
+
     /// Insert a key-value pair, mutating in place (but sharing structure on clone).
     pub fn insert(&mut self, key: K, value: V) {
         self.inner.insert(key, value);
@@ -248,6 +256,42 @@ mod tests {
         let debug_str = format!("{:?}", map);
         assert!(debug_str.contains("key"));
         assert!(debug_str.contains("42"));
+    }
+
+    #[test]
+    fn get_mut_returns_mutable_reference() {
+        let mut map = PersistentMap::new();
+        map.insert("key".to_string(), 42);
+        {
+            let val = map.get_mut(&"key".to_string()).unwrap();
+            *val = 99;
+        }
+        assert_eq!(map.get(&"key".to_string()), Some(&99));
+    }
+
+    #[test]
+    fn get_mut_missing_key_returns_none() {
+        let mut map: PersistentMap<String, i32> = PersistentMap::new();
+        assert!(map.get_mut(&"missing".to_string()).is_none());
+    }
+
+    #[test]
+    fn get_mut_cow_semantics_sibling_clone_unaffected() {
+        // Verify the copy-on-write property documented on `get_mut`:
+        // mutating the original through `get_mut` must not affect a sibling
+        // clone that was taken before the mutation.
+        let mut original = PersistentMap::new();
+        original.insert("key".to_string(), 10i32);
+
+        // Clone shares structure with original at this point.
+        let sibling = original.clone();
+
+        // Mutate original in-place — im::HashMap clones the shared trie node
+        // before returning the mutable borrow, so sibling is unaffected.
+        *original.get_mut(&"key".to_string()).unwrap() = 99;
+
+        assert_eq!(original.get(&"key".to_string()), Some(&99));
+        assert_eq!(sibling.get(&"key".to_string()), Some(&10));
     }
 
     #[test]

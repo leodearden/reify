@@ -203,6 +203,25 @@ impl fmt::Display for ResolutionNodeId {
     }
 }
 
+/// Identifies a compute node (e.g. an @optimized FEA/solver computation) in the topology graph.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ComputeNodeId {
+    pub entity: String,
+    pub index: u32,
+}
+
+impl ComputeNodeId {
+    pub fn new(entity: impl Into<String>, index: u32) -> Self {
+        Self { entity: entity.into(), index }
+    }
+}
+
+impl fmt::Display for ComputeNodeId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}#computation[{}]", self.entity, self.index)
+    }
+}
+
 /// Identifies a source node (input from the parser/file).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SourceNodeId {
@@ -431,5 +450,44 @@ mod tests {
         assert_eq!(map.get(&id1), Some(&"first"));
         assert_eq!(map.get(&id2), Some(&"second"));
         assert_eq!(map.get(&ResolutionNodeId::new("Missing", 0)), None);
+    }
+
+    #[test]
+    fn compute_node_id_construction() {
+        let id = ComputeNodeId::new("Bracket", 0);
+        assert_eq!(id.entity, "Bracket");
+        assert_eq!(id.index, 0);
+    }
+
+    #[test]
+    fn compute_node_id_display() {
+        let id = ComputeNodeId::new("Bracket", 0);
+        assert_eq!(format!("{}", id), "Bracket#computation[0]");
+
+        let id2 = ComputeNodeId::new("Bracket", 3);
+        assert_eq!(format!("{}", id2), "Bracket#computation[3]");
+    }
+
+    #[test]
+    fn compute_node_id_equality() {
+        let a = ComputeNodeId::new("Bracket", 0);
+        let b = ComputeNodeId::new("Bracket", 0);
+        let c = ComputeNodeId::new("Bracket", 1);
+        let d = ComputeNodeId::new("Flange", 0);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert_ne!(a, d);
+    }
+
+    #[test]
+    fn compute_node_id_as_hashmap_key() {
+        let mut map = HashMap::new();
+        let id1 = ComputeNodeId::new("Bracket", 0);
+        let id2 = ComputeNodeId::new("Bracket", 1);
+        map.insert(id1.clone(), "first");
+        map.insert(id2.clone(), "second");
+        assert_eq!(map.get(&id1), Some(&"first"));
+        assert_eq!(map.get(&id2), Some(&"second"));
+        assert_eq!(map.get(&ComputeNodeId::new("Missing", 0)), None);
     }
 }
