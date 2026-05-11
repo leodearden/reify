@@ -39,12 +39,12 @@ use crate::MorphOptions;
 /// Even when this clamp engages and produces ~1e30:1 K-conditioning across
 /// mixed degenerate/healthy tets, the engine pipeline (PRD task #10) catches
 /// the resulting degenerate or inverted morphed elements via the quality pass:
-/// `QualityVerdict::HardFail` on negative scaled-Jacobian
-/// (`quality.rs::quality_check`, lines 254-267) and `QualityVerdict::SoftFail`
-/// with `degenerate_morphed_element = Some(_)` on `sj == 0.0`
-/// (quality.rs:271-272, 362-368), independently of the configured floor
-/// thresholds. PRD task #21 will replace this placeholder with a structured
-/// error variant; the quality pass acts as the safety net until then.
+/// `QualityVerdict::HardFail` on negative scaled-Jacobian and
+/// `QualityVerdict::SoftFail` with `degenerate_morphed_element = Some(_)` on
+/// `sj == 0.0` (both via `quality_check` in `quality.rs`), independently of
+/// the configured floor thresholds. PRD task #21 will replace this placeholder
+/// with a structured error variant; the quality pass acts as the safety net
+/// until then.
 const MIN_VOLUME: f64 = 1.0e-30;
 
 /// Analogous ε guard for the `InverseEdgeLengthSquared` rule. See `MIN_VOLUME`
@@ -303,8 +303,9 @@ pub fn elasticity_morph_with_cg_opts(
         // The dispatch is unconditional: per_element_youngs_modulus (#[inline])
         // handles all three rules including `Uniform → e_base` via its match
         // arm (a single-instruction return, zero extra computation). The no-op-
-        // for-Uniform property is pinned by the task-3422 unit test
-        // `per_element_youngs_modulus_with_uniform_rule_returns_e_base_unchanged_regardless_of_geometry`.
+        // for-Uniform property is pinned by a unit test in the test module
+        // asserting Uniform returns e_base for both canonical and
+        // near-degenerate tets.
         //
         // NOTE — duplicate volume/geometry computation for `InverseVolume` and
         // `InverseEdgeLengthSquared`: per_element_youngs_modulus calls
@@ -718,8 +719,7 @@ mod tests {
     /// accidentally introduce geometry-dependent side effects for the Uniform
     /// variant (e.g. a mistaken match-arm reorder or an extra computation).
     #[test]
-    fn per_element_youngs_modulus_with_uniform_rule_returns_e_base_unchanged_regardless_of_geometry(
-    ) {
+    fn uniform_rule_returns_e_base_for_any_geometry() {
         let e_base = 42.0_f64;
 
         // 1. Canonical unit tet.
