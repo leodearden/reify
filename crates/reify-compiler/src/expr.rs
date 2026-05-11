@@ -2802,40 +2802,61 @@ mod tests {
         let _ = make_poison_type(&mut vec![], Diagnostic::info("wrong severity"));
     }
 
-    /// `try_emit_cross_sub_geometry` fires the `debug_assert!` when
-    /// `sub_realization_names` has an entry for a sub but `sub_component_types`
-    /// does not — violating the `sub_realization_names ⊂ sub_component_types`
-    /// invariant established in `entity.rs`.
+    /// `try_emit_cross_sub_geometry` must name the child **structure type** in the
+    /// diagnostic's "compose geometry inside '...'" phrase, not the sub instance name.
     ///
-    /// The invariant previously went undetected because the lookup at the
-    /// `child_struct` assignment silently fell back to `sub_name` (the instance
-    /// name) instead of the structure name, producing subtly wrong diagnostic
-    /// text rather than a panic.  A `debug_assert!` before the lookup now
-    /// catches the violation loudly in debug/test builds (task-3420).
+    /// Concretely: given `sub inner = Inner()`, the diagnostic should say
+    /// "compose geometry inside 'Inner'" — not "inside 'inner'".  The distinction
+    /// is the `sub_realization_names ⊂ sub_component_types` invariant (task-3420):
+    /// `sub_component_types` maps the instance name ("inner") to the structure type
+    /// name ("Inner"), and the lookup in `try_emit_cross_sub_geometry` uses that
+    /// mapping.  If the mapping were absent the fallback would silently produce
+    /// "inside 'inner'" (lower-case instance name), which is the bug this invariant
+    /// exists to prevent.
     ///
-    /// This test must be `#[cfg(debug_assertions)]`-gated because the assert
-    /// is compiled out in release mode — the `.unwrap_or(sub_name)` fallback
-    /// remains as the intentional release-build defensive degradation.
+    /// This is an end-to-end test using the full compile pipeline so it exercises
+    /// the production code path through `entity.rs` (which populates both maps) and
+    /// through `try_emit_cross_sub_geometry` (which consumes them).
     #[test]
-    #[cfg(debug_assertions)]
-    #[should_panic(expected = "sub_realization_names")]
-    fn try_emit_cross_sub_geometry_debug_asserts_sub_component_types_contains_sub_name() {
-        let mut scope = CompilationScope::new("Outer");
-        // Populate sub_realization_names so the member "body" is recognised as
-        // a realization of the sub named "inner".
-        let mut realizations = std::collections::BTreeSet::new();
-        realizations.insert("body".to_string());
-        scope
-            .sub_realization_names
-            .insert("inner".to_string(), realizations);
-        // Deliberately do NOT insert anything into sub_component_types — this
-        // is the invariant-violating setup that the debug_assert! must catch.
-        let _ = try_emit_cross_sub_geometry(
-            &scope,
-            "inner",
-            "body",
-            reify_types::SourceSpan::prelude(),
-            &mut Vec::new(),
+    fn cross_sub_geometry_diagnostic_names_child_structure_type() {
+        use reify_test_support::compile_source;
+        use reify_types::Severity;
+        // "Inner" (capital-I structure type) vs "inner" (lower-case instance name).
+        // The diagnostic's "compose geometry inside '...'" phrase must use the former.
+        let source = r#"pub structure Inner {
+    param body : Solid = box(10mm, 20mm, 30mm)
+}
+pub structure Outer {
+    sub inner = Inner()
+    let copy = self.inner.body
+}"#;
+        let compiled = compile_source(source);
+        let errors: Vec<_> = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+
+        // (a) A geometry-specific diagnostic must fire.
+        let geometry_diagnostic = errors
+            .iter()
+            .find(|d| d.message.contains("geometry") && d.message.contains("not yet"));
+        assert!(
+            geometry_diagnostic.is_some(),
+            "expected a geometry-specific diagnostic for `self.inner.body`; got: {:?}",
+            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+
+        // (b) The "compose geometry inside '...'" phrase must name 'Inner' (capital-I
+        //     structure type name from sub_component_types), not 'inner' (instance name).
+        //     This directly pins the behavior the sub_realization_names ⊂ sub_component_types
+        //     invariant exists to preserve.
+        let msg = &geometry_diagnostic.unwrap().message;
+        assert!(
+            msg.contains("inside 'Inner'"),
+            "diagnostic must say \"inside 'Inner'\" (the structure type name), \
+             not \"inside 'inner'\" (the instance name); got: {:?}",
+            msg
         );
     }
 
