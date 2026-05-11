@@ -244,6 +244,25 @@ impl Default for MorphOptions {
             // lie in the kernel of every K_e) or zero-displacement BCs
             // (post-Dirichlet K → diag(1.0), E-invariant). No pinned-output
             // tests were broken by switching the default from Uniform.
+            //
+            // Wider-workspace audit (task #3422): no workspace crate outside
+            // `crates/reify-mesh-morph/` depends on this crate (verified via
+            // `find . -name Cargo.toml | xargs grep -l reify-mesh-morph` —
+            // only the crate's own Cargo.toml and the workspace root reference
+            // it; `grep -r MorphOptions::default` and `grep -r reify_mesh_morph::`
+            // produce zero hits in gui/, crates/reify-cli/, or any other crate).
+            // Within-crate non-elasticity callers are not E-sensitive: lib.rs's
+            // default-call tests only verify Err(MorphFailure::*) projections
+            // (morph() short-circuits before any elasticity solve); quality.rs's
+            // default-call tests build morphed meshes by hand and call
+            // quality_check directly without invoking elasticity_morph.
+            // The calibration sweep tests in tests/calibration.rs DO call
+            // elasticity_morph under MorphOptions::default() and are therefore
+            // E-sensitive — but they were explicitly calibrated TO the
+            // InverseVolume default by task #2950 (quality_floor_min_scaled_
+            // jacobian = 0.02 was tuned to admit the synthetic procedural
+            // fixtures' baseline distribution under InverseVolume). No call
+            // site needs an explicit `stiffness_rule: Uniform` override.
             stiffness_rule: StiffnessRule::InverseVolume,
         }
     }
