@@ -288,6 +288,10 @@ const KEYS_ID_CODE_MESSAGE: string[] = ['id', 'code', 'message'];
 const KEYS_ID_REQUEST_ID_TOOL_NAME: string[] = ['id', 'request_id', 'tool_name'];
 const KEYS_REASON: string[] = ['reason'];
 
+/** Type guard for non-null, non-array object payloads. */
+const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v);
+
 /**
  * Subscribe to all Claude sidecar events and map payloads to OutboundMessage.
  * Returns a combined unlisten function that tears down all 7 subscriptions.
@@ -591,17 +595,12 @@ export async function onAutoResolveIteration(
   // logs a warning and drops the event rather than letting a downstream NPE
   // crash the panel renderer.
   return listen<unknown>('auto-resolve-iteration', (event) => {
-    const p = event.payload as Record<string, unknown>;
+    const p = event.payload;
     if (
-      typeof p !== 'object' ||
-      p === null ||
+      !isPlainObject(p) ||
       typeof p['iteration'] !== 'number' ||
-      typeof p['parameters'] !== 'object' ||
-      p['parameters'] === null ||
-      Array.isArray(p['parameters']) ||
-      typeof p['constraints'] !== 'object' ||
-      p['constraints'] === null ||
-      Array.isArray(p['constraints'])
+      !isPlainObject(p['parameters']) ||
+      !isPlainObject(p['constraints'])
     ) {
       console.warn('[auto-resolve-iteration] malformed payload; dropping event', p);
       return;
