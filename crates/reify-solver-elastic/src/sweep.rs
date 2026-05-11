@@ -666,6 +666,44 @@ mod tests {
         }
     }
 
+    // step-17: SweepLinear produces byte-identical output to Extrude (Phase A contract)
+
+    #[test]
+    fn sweep_linear_equals_extrude_same_axis_length() {
+        // Phase A contract: SweepLinear on a LineSegment path IS Extrude.
+        // Use the K=3 triangle fixture so the full layer loop is exercised.
+        let mesh2d = unit_triangle();
+        let axis = [0.0_f64, 0.0, 1.0];
+        let length = 3.0_f64;
+
+        let extrude_params = SweepParams::Extrude { axis, length };
+        let linear_params = SweepParams::SweepLinear { axis, length };
+
+        let extrude_mesh = sweep_2d_mesh_to_3d(&mesh2d, &extrude_params, 3)
+            .expect("Extrude should succeed");
+        let linear_mesh = sweep_2d_mesh_to_3d(&mesh2d, &linear_params, 3)
+            .expect("SweepLinear should succeed");
+
+        // Vertices must be byte-identical (same f32 arithmetic from identical inputs).
+        assert_eq!(
+            extrude_mesh.vertices, linear_mesh.vertices,
+            "SweepLinear must produce identical vertices to Extrude (Phase A contract)"
+        );
+
+        assert_eq!(
+            extrude_mesh.layers, linear_mesh.layers,
+            "layers field must agree"
+        );
+
+        // Connectivity indices must be byte-identical.
+        match (&extrude_mesh.connectivity, &linear_mesh.connectivity) {
+            (SweptConnectivity::Wedge { indices: ei }, SweptConnectivity::Wedge { indices: li }) => {
+                assert_eq!(ei, li, "SweepLinear wedge indices must match Extrude");
+            }
+            _ => panic!("expected Wedge connectivity for both Extrude and SweepLinear"),
+        }
+    }
+
     // step-13: K>1 extrude — pins the layer-dimension generalisation
 
     #[test]
