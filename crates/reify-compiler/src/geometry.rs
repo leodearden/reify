@@ -55,6 +55,12 @@ use super::*;
 ///   by the type system elsewhere; we just need any geometry-branch path to
 ///   route through `compile_geometry_call`'s new Error arm.
 ///
+/// - **`Match`** — `true` when ANY arm body (recursively) classifies as a
+///   geometry expression. Same rationale as Conditional: "any arm" is
+///   sufficient because mixed-type Match arms are caught by the type system
+///   elsewhere; we just need any geometry-arm path to route to the Error arm
+///   in `compile_geometry_call` (see task 3418).
+///
 /// # Ordering invariant for `known_geometry_lets`
 ///
 /// `known_geometry_lets` is built **incrementally** by the caller. It grows as
@@ -115,13 +121,16 @@ pub(crate) fn is_geometry_let(
             is_geometry_let(then_branch, functions, known_geometry_lets)
                 || is_geometry_let(else_branch, functions, known_geometry_lets)
         }
-        // NOTE: Block, Match, and other branching/wrapping ExprKinds that can
-        // yield a geometry-typed value are NOT handled here. A let whose
-        // initialiser is (e.g.) `{ box(...) }` will still fall through to the
-        // plain-value-cell path and may produce a cryptic "GeomRef::Step(0)"
-        // crash. Tracked as a follow-up to task 3395 — extend `is_geometry_let`
-        // + `compile_geometry_call` to cover Block, Match, and any future
-        // branching forms that the parser allows as let initialisers.
+        // Match — see rustdoc above for rationale (task 3418).
+        reify_syntax::ExprKind::Match { arms, .. } => arms
+            .iter()
+            .any(|arm| is_geometry_let(&arm.body, functions, known_geometry_lets)),
+        // Future branching/wrapping ExprKinds (e.g. pipe expressions,
+        // try/else-style fallbacks) extend here with the same
+        // any-sub-yields-geometry pattern.  Note: ExprKind has no Block variant
+        // (parenthesised expressions are unwrapped during lowering and never
+        // reach this predicate as a distinct kind); Lambda bodies produce a
+        // function value, not a geometry value, so they are not candidates.
         _ => false,
     }
 }
@@ -303,25 +312,35 @@ pub(crate) fn compile_geometry_call(
         return None;
     }
 
-    // Task 3395: emit a clean compile-time Error for if-then-else expressions
-    // that return a geometry value.  Prior to this check, Conditional fell
-    // through the `_ => return None` arm below with no diagnostic, leaving the
-    // caller's silent fallback to emit `GeomRef::Step(0)` and produce the
-    // cryptic "unresolvable GeomRef::Step(0)" runtime crash.
+    // Tasks 3395, 3418: emit a clean compile-time Error for branching expressions
+    // (Conditional, Match) that return a geometry value.  Prior to task 3395,
+    // Conditional fell through the `_ => return None` arm below with no
+    // diagnostic, leaving the caller's silent fallback to emit
+    // `GeomRef::Step(0)` and produce the cryptic "unresolvable GeomRef::Step(0)"
+    // runtime crash.  Task 3418 extends this to Match with a unified,
+    // parameterised diagnostic.
     //
     // Placed AFTER the Ident handling above (so transitive let-references
     // remain unaffected) and BEFORE the `(name, args)` extraction (so the
-    // check fires regardless of whether the Conditional appears at the let's
+    // check fires regardless of whether the branching expr appears at the let's
     // root or as a sub-arg of another geometry call that recurses back here).
-    if let reify_syntax::ExprKind::Conditional { .. } = &expr.kind {
+    let branching_kind_label = match &expr.kind {
+        reify_syntax::ExprKind::Conditional { .. } => Some("if-then-else"),
+        reify_syntax::ExprKind::Match { .. } => Some("match expression"),
+        _ => None,
+    };
+    if let Some(kind) = branching_kind_label {
         diagnostics.push(
-            Diagnostic::error(
-                "if-then-else returning a geometry value is not yet supported as a geometry \
-                 expression; hoist the conditional out of geometry space \
-                 (e.g. select scalar arguments first via `if cond then a else b`, \
-                 then build the geometry unconditionally)",
-            )
-            .with_label(DiagnosticLabel::new(expr.span, "geometry-typed conditional")),
+            Diagnostic::error(format!(
+                "{kind} returning a geometry value is not yet supported as a geometry \
+                 expression; branching/wrapping expressions returning a geometry value \
+                 must be hoisted out of geometry space (select scalar arguments first, \
+                 then build the geometry unconditionally outside the {kind})",
+            ))
+            .with_label(DiagnosticLabel::new(
+                expr.span,
+                format!("geometry-typed {kind}"),
+            )),
         );
         return None;
     }
@@ -2194,6 +2213,188 @@ mod tests {
         assert!(
             is_geometry_let(&cond_ident, &functions, &known_with_g),
             "Conditional with an Ident then-branch referencing a known geometry let must classify as a geometry let"
+        );
+    }
+
+    // --- compile_geometry_call: Match emits Error (task 3418) ---
+
+    /// `compile_geometry_call` must emit a clean Error diagnostic (and return
+    /// `None`) when given a `Match` expression rather than silently falling
+    /// through to `_ => return None` with no message.
+    ///
+    /// This test MUST FAIL before the Match arm is added to
+    /// `compile_geometry_call` (today the expression falls through the
+    /// `_ => return None` catch-all with no diagnostic emitted).
+    #[test]
+    fn compile_geometry_call_match_returning_solid_emits_error_and_returns_none() {
+        // Build: match axis { X => box(1,1,1), Y => box(1,1,1) }
+        let discriminant = reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::Ident("axis".to_string()),
+            span: reify_types::SourceSpan::new(0, 4),
+        };
+        let match_expr = make_match(
+            discriminant,
+            vec![make_call_with_arity("box", 3), make_call_with_arity("box", 3)],
+        );
+
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_types::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_syntax::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &match_expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        // (a) Must return None — no ops produced.
+        assert!(
+            result.is_none(),
+            "compile_geometry_call must return None for a Match expression"
+        );
+
+        // (b) Must emit exactly one Error-severity diagnostic.
+        let error_diags: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.severity == reify_types::Severity::Error)
+            .collect();
+        assert_eq!(
+            error_diags.len(),
+            1,
+            "expected exactly one Error diagnostic, got: {:?}",
+            error_diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+
+        // (c) The Error message must mention "match" and "geometry".
+        let msg = &error_diags[0].message;
+        assert!(
+            msg.contains("match") && msg.contains("geometry"),
+            "Error message must contain 'match' and 'geometry', got: {:?}",
+            msg
+        );
+
+        // (d) The Error must have at least one DiagnosticLabel attached.
+        assert!(
+            !error_diags[0].labels.is_empty(),
+            "Error diagnostic must have at least one label, got none"
+        );
+    }
+
+    // --- Match branch geometry recognition (task 3418) ---
+
+    /// Helper: build a `Match` Expr from a discriminant Expr and a slice of arm body Exprs.
+    /// Each arm gets a single string pattern ("X", "Y", "Z", ...) assigned in order.
+    fn make_match(discriminant: reify_syntax::Expr, bodies: Vec<reify_syntax::Expr>) -> reify_syntax::Expr {
+        let pattern_names = ["X", "Y", "Z", "W", "V"];
+        let arms = bodies
+            .into_iter()
+            .enumerate()
+            .map(|(i, body)| reify_syntax::MatchArm {
+                patterns: vec![pattern_names[i % pattern_names.len()].to_string()],
+                body,
+                span: reify_types::SourceSpan::new(0, 1),
+            })
+            .collect();
+        reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::Match {
+                discriminant: Box::new(discriminant),
+                arms,
+            },
+            span: reify_types::SourceSpan::new(0, 1),
+        }
+    }
+
+    /// `is_geometry_let` must classify a `match` expression as a geometry let
+    /// when ANY arm is a geometry call, so the expression is routed to
+    /// `compile_geometry_call` where a clean compile-time Error is emitted
+    /// (rather than silently falling through to the Step(0) crash).
+    ///
+    /// Task 3418 — this test MUST FAIL before the Match arm is added to
+    /// `is_geometry_let` (the wildcard `_ => false` arm catches Match today).
+    #[test]
+    fn is_geometry_let_recognizes_match_with_geometry_arms() {
+        let functions: Vec<CompiledFunction> = vec![];
+        let known: HashSet<&str> = HashSet::new();
+
+        let discriminant = reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::Ident("axis".to_string()),
+            span: reify_types::SourceSpan::new(0, 4),
+        };
+        let num_literal = reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::NumberLiteral { value: 1.0, is_real: false },
+            span: reify_types::SourceSpan::new(0, 1),
+        };
+
+        // (a) All arms geometry → true
+        let all_geom = make_match(
+            discriminant.clone(),
+            vec![
+                make_call_with_arity("box", 3),
+                make_call_with_arity("box", 3),
+                make_call_with_arity("box", 3),
+            ],
+        );
+        assert!(
+            is_geometry_let(&all_geom, &functions, &known),
+            "Match with all geometry arms must classify as a geometry let"
+        );
+
+        // (b) No arms geometry → false
+        let no_geom = make_match(
+            discriminant.clone(),
+            vec![num_literal.clone(), num_literal.clone(), num_literal.clone()],
+        );
+        assert!(
+            !is_geometry_let(&no_geom, &functions, &known),
+            "Match with no geometry arms must NOT classify as a geometry let"
+        );
+
+        // (c) One arm geometry, rest numeric → true (any arm suffices)
+        let one_geom = make_match(
+            discriminant.clone(),
+            vec![
+                make_call_with_arity("box", 3),
+                num_literal.clone(),
+                num_literal.clone(),
+            ],
+        );
+        assert!(
+            is_geometry_let(&one_geom, &functions, &known),
+            "Match with one geometry arm must classify as a geometry let"
+        );
+
+        // (d) Nested Match whose inner arm is geometry → true; recursion traverses.
+        let inner_match = make_match(
+            discriminant.clone(),
+            vec![make_call_with_arity("box", 3), num_literal.clone()],
+        );
+        let outer_match = make_match(
+            discriminant.clone(),
+            vec![num_literal.clone(), inner_match],
+        );
+        assert!(
+            is_geometry_let(&outer_match, &functions, &known),
+            "Nested Match whose inner arm is geometry must classify as a geometry let"
+        );
+
+        // (e) Ident arm referencing a known geometry let → transitive recognition.
+        let mut known_with_g: HashSet<&str> = HashSet::new();
+        known_with_g.insert("g");
+        let ident_g = reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::Ident("g".to_string()),
+            span: reify_types::SourceSpan::new(0, 1),
+        };
+        let match_ident = make_match(discriminant.clone(), vec![ident_g, num_literal.clone()]);
+        assert!(
+            is_geometry_let(&match_ident, &functions, &known_with_g),
+            "Match with an Ident arm referencing a known geometry let must classify as a geometry let"
         );
     }
 }

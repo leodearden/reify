@@ -2077,3 +2077,85 @@ fn conditional_returning_solid_in_let_emits_compile_error() {
             .collect::<Vec<_>>()
     );
 }
+
+// ─── task-3418 regression: match returning Solid emits clean Error ─────────
+
+/// Regression pin: a geometry let whose initializer is a geometry-typed
+/// match expression must produce a clean compile-time Error mentioning
+/// "match" and "geometry" rather than crashing at eval time with the
+/// cryptic "unresolvable GeomRef::Step(0)" message.
+///
+/// Mirrors the user scenario:
+///   `let body = match axis { X => box(length, od, od), ... }`
+///
+/// The test exercises: `is_geometry_let(Match)` → `true`
+/// (routes to compile_geometry_call) → branching-kind Error arm fires →
+/// diagnostic.
+#[test]
+fn match_returning_solid_in_let_emits_compile_error() {
+    let source = r#"enum Axis { X, Y, Z }
+structure AxisBox {
+    param length: Scalar = 100mm
+    param od: Scalar = 50mm
+    let axis = Axis.X
+    let body = match axis { X => box(length, od, od), Y => box(od, length, od), Z => box(od, od, length) }
+}"#;
+
+    let compiled = compile_with_diagnostics(source);
+    let errors = error_diagnostics(&compiled);
+
+    // At least one Error must mention "match" and "geometry".
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("match") && d.message.contains("geometry")),
+        "expected a compile-time Error containing 'match' and 'geometry', got: {:?}",
+        errors
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    // The Error must have at least one DiagnosticLabel — pointing at the
+    // match expression in the source.
+    let target_error = errors
+        .iter()
+        .find(|d| d.message.contains("match") && d.message.contains("geometry"))
+        .unwrap();
+    assert!(
+        !target_error.labels.is_empty(),
+        "the match Error must have at least one DiagnosticLabel"
+    );
+
+    // The label span must point at the `match` expression — i.e. the slice of
+    // `source` it covers must start with "match" and end with "}".  We use
+    // structural slice assertions rather than pinning exact byte offsets so
+    // the test stays correct under harmless edits to arm order or whitespace.
+    assert!(!target_error.labels.is_empty(), "must have at least one label");
+    let label = &target_error.labels[0];
+    let start = label.span.start as usize;
+    let end = label.span.end as usize;
+    let slice = &source[start..end];
+    assert!(
+        slice.starts_with("match"),
+        "label span should start at the 'match' keyword; \
+         got slice {:?} from labels: {:?}",
+        slice,
+        target_error
+            .labels
+            .iter()
+            .map(|l| (l.span.start, l.span.end, &l.message))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        slice.ends_with('}'),
+        "label span should end at the closing '}}' of the match block; \
+         got slice {:?} from labels: {:?}",
+        slice,
+        target_error
+            .labels
+            .iter()
+            .map(|l| (l.span.start, l.span.end, &l.message))
+            .collect::<Vec<_>>()
+    );
+}
