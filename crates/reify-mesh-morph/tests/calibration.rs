@@ -495,3 +495,33 @@ fn box_wall_thickness_sweep_obeys_materially_better_rule_with_calibrated_default
         assert_materially_better_rule_holds("box", target, &report);
     }
 }
+
+// ── Step-13: plate hole-diameter sweep obeys the materially-better rule ───────
+
+#[test]
+fn plate_hole_diameter_sweep_obeys_materially_better_rule_with_calibrated_defaults() {
+    use reify_mesh_morph::MorphOptions;
+
+    // Sweep: vary the `hole_diameter` parameter of the plate-with-hole fixture.
+    // base = 0.30, targets cover a small step (0.31) up to a large opening
+    // (0.60 — doubling the hole). Outer dimensions are fixed, so only the
+    // inner-rim vertices move; the connectivity is preserved by construction
+    // (see `plate_with_hole` doc — `PLATE_N_THETA` is held constant).
+    //
+    // The plate fixture exposes different element-aspect-ratio behaviour than
+    // the box fixture because the polar-radial grid produces strongly graded
+    // tets near the hole (innermost ring's circumferential length scales with
+    // hole_radius). Calibration here re-checks the materially-better rule
+    // under the same `MorphOptions::default()` values baked in step-12.
+    let base_param = 0.30_f64;
+    let target_params = [0.31_f64, 0.35, 0.40, 0.50, 0.60];
+    let fixture = |hole_diameter: f64| {
+        fixtures::plate_with_hole(1.0, hole_diameter, 0.1, 4, 2)
+    };
+    let options = MorphOptions::default();
+
+    for &target in &target_params {
+        let report = sweep::run_sweep(fixture, base_param, target, &options);
+        assert_materially_better_rule_holds("plate", target, &report);
+    }
+}
