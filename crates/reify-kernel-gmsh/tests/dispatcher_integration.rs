@@ -123,11 +123,7 @@ fn gmsh_dispatches_for_mesh_to_volume_mesh_conversion() {
     //    VolumeMesh via gmsh.
     assert_eq!(
         plan.conversions,
-        vec![(
-            "gmsh".to_string(),
-            ReprKind::Mesh,
-            ReprKind::VolumeMesh,
-        )],
+        vec![("gmsh".to_string(), ReprKind::Mesh, ReprKind::VolumeMesh,)],
         "dispatch must produce a single (\"gmsh\", Mesh, VolumeMesh) conversion stage; \
          got conversions = {:?}",
         plan.conversions,

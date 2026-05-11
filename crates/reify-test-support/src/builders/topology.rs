@@ -464,7 +464,10 @@ mod annotation_tests {
     #[test]
     fn topology_builder_annotation_with_args() {
         let t = TopologyTemplateBuilder::new("T")
-            .annotation(annotation_with_args(DEPRECATED_ANNOTATION, vec![ann_str("use Q")]))
+            .annotation(annotation_with_args(
+                DEPRECATED_ANNOTATION,
+                vec![ann_str("use Q")],
+            ))
             .build();
         assert_eq!(t.annotations.len(), 1);
         assert_eq!(t.annotations[0].args.len(), 1);

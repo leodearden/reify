@@ -25,8 +25,7 @@ use std::sync::atomic::AtomicBool;
 use reify_expr::{EvalContext, eval_expr};
 use reify_types::{
     CompiledExpr, CompiledExprKind, ContentHash, DimensionVector, FieldSourceKind,
-    InterpolationKind, ResolvedFunction, SampledField, SampledGridKind, Type, Value,
-    ValueMap,
+    InterpolationKind, ResolvedFunction, SampledField, SampledGridKind, Type, Value, ValueMap,
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -71,12 +70,7 @@ fn make_sampled_1d(name: &str, axis: Vec<f64>, data: Vec<f64>) -> SampledField {
 
 /// Construct a 2-D `Value::SampledField` from two per-axis grid coords and
 /// row-major data (axis-0 outermost: `data[i0 * s1 + i1]`).
-fn make_sampled_2d(
-    name: &str,
-    axis0: Vec<f64>,
-    axis1: Vec<f64>,
-    data: Vec<f64>,
-) -> SampledField {
+fn make_sampled_2d(name: &str, axis0: Vec<f64>, axis1: Vec<f64>, data: Vec<f64>) -> SampledField {
     let bounds_min = vec![
         *axis0.first().expect("axis0 must be non-empty"),
         *axis1.first().expect("axis1 must be non-empty"),
@@ -86,8 +80,16 @@ fn make_sampled_2d(
         *axis1.last().expect("axis1 must be non-empty"),
     ];
     let spacing = vec![
-        if axis0.len() >= 2 { axis0[1] - axis0[0] } else { 1.0 },
-        if axis1.len() >= 2 { axis1[1] - axis1[0] } else { 1.0 },
+        if axis0.len() >= 2 {
+            axis0[1] - axis0[0]
+        } else {
+            1.0
+        },
+        if axis1.len() >= 2 {
+            axis1[1] - axis1[0]
+        } else {
+            1.0
+        },
     ];
     SampledField {
         name: name.to_string(),
@@ -122,9 +124,21 @@ fn make_sampled_3d(
         *axis2.last().expect("axis2 must be non-empty"),
     ];
     let spacing = vec![
-        if axis0.len() >= 2 { axis0[1] - axis0[0] } else { 1.0 },
-        if axis1.len() >= 2 { axis1[1] - axis1[0] } else { 1.0 },
-        if axis2.len() >= 2 { axis2[1] - axis2[0] } else { 1.0 },
+        if axis0.len() >= 2 {
+            axis0[1] - axis0[0]
+        } else {
+            1.0
+        },
+        if axis1.len() >= 2 {
+            axis1[1] - axis1[0]
+        } else {
+            1.0
+        },
+        if axis2.len() >= 2 {
+            axis2[1] - axis2[0]
+        } else {
+            1.0
+        },
     ];
     SampledField {
         name: name.to_string(),
@@ -269,11 +283,7 @@ fn max_sampled_field_with_pressure_codomain_returns_dimensioned_scalar() {
     let pressure = Type::Scalar {
         dimension: DimensionVector::PRESSURE,
     };
-    let sf = make_sampled_1d(
-        "stress",
-        vec![0.0, 1.0, 2.0],
-        vec![100e6, 250e6, 175e6],
-    );
+    let sf = make_sampled_1d("stress", vec![0.0, 1.0, 2.0], vec![100e6, 250e6, 175e6]);
     let (field, field_type) = wrap_sampled_field(sf, Type::Real, pressure.clone());
 
     let expr = make_function_call(
@@ -366,11 +376,7 @@ fn min_sampled_field_with_pressure_codomain_returns_dimensioned_scalar() {
     let pressure = Type::Scalar {
         dimension: DimensionVector::PRESSURE,
     };
-    let sf = make_sampled_1d(
-        "stress",
-        vec![0.0, 1.0, 2.0],
-        vec![100e6, 250e6, 175e6],
-    );
+    let sf = make_sampled_1d("stress", vec![0.0, 1.0, 2.0], vec![100e6, 250e6, 175e6]);
     let (field, field_type) = wrap_sampled_field(sf, Type::Real, pressure.clone());
 
     let expr = make_function_call(
@@ -556,7 +562,9 @@ fn argmax_sampled_field_3d_length_domain_returns_point3_at_max_index() {
         vec![0.0, 0.5],
         vec![0.0, 0.25, 0.5],
         // 12 reals; max at index 7 (= 99.0). All others smaller and unique.
-        vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 99.0, 8.0, 9.0, 10.0, 11.0],
+        vec![
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 99.0, 8.0, 9.0, 10.0, 11.0,
+        ],
     );
     let (field, field_type) = wrap_sampled_field(sf, domain.clone(), Type::Real);
 
@@ -602,7 +610,9 @@ fn argmin_sampled_field_3d_length_domain_returns_point3_at_min_index() {
         vec![0.0, 1.0],
         vec![0.0, 0.5],
         vec![0.0, 0.25, 0.5],
-        vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 99.0, 8.0, 9.0, 10.0, 11.0],
+        vec![
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 99.0, 8.0, 9.0, 10.0, 11.0,
+        ],
     );
     let (field, field_type) = wrap_sampled_field(sf, domain.clone(), Type::Real);
 
@@ -691,8 +701,7 @@ fn assert_all_reductions_undef(field: Value, field_type: Type, label: &str) {
 /// the lambda's bounded domain).
 #[test]
 fn all_reductions_on_analytical_field_return_undef() {
-    let (field, field_type) =
-        make_constant_real_analytical_field(FieldSourceKind::Analytical);
+    let (field, field_type) = make_constant_real_analytical_field(FieldSourceKind::Analytical);
     assert_all_reductions_undef(field, field_type, "Analytical");
 }
 
@@ -993,11 +1002,7 @@ fn argmax_sampled_field_with_shape_mismatch_returns_undef() {
         dimension: DimensionVector::LENGTH,
     };
     // axis length = 2, prod = 2; data length = 5 — shape mismatch (5 ≠ 2)
-    let sf = make_sampled_1d(
-        "f",
-        vec![0.0, 1.0],
-        vec![1.0, 2.0, 3.0, 4.0, 100.0],
-    );
+    let sf = make_sampled_1d("f", vec![0.0, 1.0], vec![1.0, 2.0, 3.0, 4.0, 100.0]);
     let (field, field_type) = wrap_sampled_field(sf, length.clone(), Type::Real);
 
     let expr = make_function_call(
@@ -1031,11 +1036,7 @@ fn argmin_sampled_field_with_shape_mismatch_returns_undef() {
         dimension: DimensionVector::LENGTH,
     };
     // axis length = 2, prod = 2; data length = 5 — shape mismatch (5 ≠ 2)
-    let sf = make_sampled_1d(
-        "f",
-        vec![0.0, 1.0],
-        vec![1.0, 2.0, 3.0, 4.0, 100.0],
-    );
+    let sf = make_sampled_1d("f", vec![0.0, 1.0], vec![1.0, 2.0, 3.0, 4.0, 100.0]);
     let (field, field_type) = wrap_sampled_field(sf, length.clone(), Type::Real);
 
     let expr = make_function_call(

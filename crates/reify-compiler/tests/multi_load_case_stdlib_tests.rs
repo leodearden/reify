@@ -193,12 +193,7 @@ fn loadcase_param_defaults_match_spec() {
             .value_cells
             .iter()
             .find(|vc| vc.id.member == *no_default)
-            .unwrap_or_else(|| {
-                panic!(
-                    "LoadCase.{} param cell missing",
-                    no_default
-                )
-            });
+            .unwrap_or_else(|| panic!("LoadCase.{} param cell missing", no_default));
         assert!(
             cell.default_expr.is_none(),
             "LoadCase.{} should have no default_expr (caller must supply it), \

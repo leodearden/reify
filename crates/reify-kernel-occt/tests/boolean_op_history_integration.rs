@@ -208,8 +208,7 @@ fn boolean_fuse_with_history_reports_per_parent_face_and_edge_records() {
     // (h) Silent-drop counter must be zero for a well-formed 5mm-overlap fuse:
     //     every Modified/Generated child must be resolvable in the result map.
     assert_eq!(
-        history.silent_drop_count,
-        0,
+        history.silent_drop_count, 0,
         "vanilla overlap fuse should not silently drop any Modified/Generated child \
          — got {}",
         history.silent_drop_count

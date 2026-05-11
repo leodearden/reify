@@ -182,10 +182,7 @@ pub fn repair_surface_mesh(mesh: &Mesh, cfg: RepairConfig) -> Mesh {
             new_idx += 1;
         }
     }
-    let new_indices: Vec<u32> = survivors
-        .into_iter()
-        .map(|i| remap[i as usize])
-        .collect();
+    let new_indices: Vec<u32> = survivors.into_iter().map(|i| remap[i as usize]).collect();
 
     Mesh {
         vertices: new_vertices,

@@ -64,9 +64,8 @@ fn watertight_refines_closed_and_manifold() {
 /// assert the trait bound landed on the generated template. Mirrors
 /// stdlib_loader_tests.rs's compile_with_prelude_makes_traits_visible pattern.
 fn assert_trait_resolves_from_prelude(trait_name: &str, struct_name: &str) {
-    let source = format!(
-        "structure def {struct_name} : {trait_name} {{\n    param x : Real = 1.0\n}}\n"
-    );
+    let source =
+        format!("structure def {struct_name} : {trait_name} {{\n    param x : Real = 1.0\n}}\n");
     let compiled = compile_source_with_stdlib(&source);
 
     let errors = errors_only(&compiled);
@@ -253,8 +252,7 @@ fn assert_helper_cell_typed(compiled: &CompiledModule, cell_name: &str, expected
 
 #[test]
 fn closest_point_let_binding_compiles_with_point3_length_type() {
-    let compiled =
-        assert_topology_selector_let_compiles("closest_point(p, body)", "cp");
+    let compiled = assert_topology_selector_let_compiles("closest_point(p, body)", "cp");
     assert_helper_cell_typed(&compiled, "cp", &Type::point3(Type::length()));
 }
 
@@ -273,10 +271,8 @@ fn angle_between_surfaces_let_binding_compiles_with_angle_type() {
     // semantic / runtime-arg validation lives in
     // `geometry_ops::try_eval_topology_selector` and falls through to
     // `Value::Undef` when args don't resolve to face handles.
-    let compiled = assert_topology_selector_let_compiles(
-        "angle_between_surfaces(body, body)",
-        "ang",
-    );
+    let compiled =
+        assert_topology_selector_let_compiles("angle_between_surfaces(body, body)", "ang");
     assert_helper_cell_typed(&compiled, "ang", &Type::angle());
 }
 
@@ -306,21 +302,71 @@ fn task_2699_topology_selector_cells_typed_per_registry() {
     // RHS expressions are inlined into the Bracket source below; the
     // cell-name / expected-type columns drive the post-compile assertion loop.
     let cases: &[(&str, &str, Type)] = &[
-        ("all_edges",      "edges(body)",                                    Type::List(Box::new(Type::Geometry))),
-        ("all_faces",      "faces(body)",                                    Type::List(Box::new(Type::Geometry))),
-        ("short_edges",    "edges_by_length(body, 0mm..50mm)",               Type::List(Box::new(Type::Geometry))),
-        ("small_faces",    "faces_by_area(body, 0mm * 1mm .. 1m * 1m)",      Type::List(Box::new(Type::Geometry))),
-        ("top_faces",      "faces_by_normal(body, vec3(0.0, 0.0, 1.0), 1deg)", Type::List(Box::new(Type::Geometry))),
-        ("vert_edges",     "edges_parallel_to(body, vec3(1.0, 0.0, 0.0), 1deg)", Type::List(Box::new(Type::Geometry))),
-        ("bot_edges",      "edges_at_height(body, 0mm, 0.01mm)",             Type::List(Box::new(Type::Geometry))),
-        ("neighbors",      "adjacent_faces(body, body)",                     Type::List(Box::new(Type::Geometry))),
-        ("shared",         "shared_edges(body, body)",                       Type::List(Box::new(Type::Geometry))),
-        ("centroid",       "center_of_mass(body, 7850.0)",                   Type::point3(Type::length())),
-        ("inertia_tensor", "moment_of_inertia(body, 7850.0)",
-            Type::tensor(2, 3, Type::Scalar { dimension: reify_types::DimensionVector::MOMENT_OF_INERTIA })),
+        (
+            "all_edges",
+            "edges(body)",
+            Type::List(Box::new(Type::Geometry)),
+        ),
+        (
+            "all_faces",
+            "faces(body)",
+            Type::List(Box::new(Type::Geometry)),
+        ),
+        (
+            "short_edges",
+            "edges_by_length(body, 0mm..50mm)",
+            Type::List(Box::new(Type::Geometry)),
+        ),
+        (
+            "small_faces",
+            "faces_by_area(body, 0mm * 1mm .. 1m * 1m)",
+            Type::List(Box::new(Type::Geometry)),
+        ),
+        (
+            "top_faces",
+            "faces_by_normal(body, vec3(0.0, 0.0, 1.0), 1deg)",
+            Type::List(Box::new(Type::Geometry)),
+        ),
+        (
+            "vert_edges",
+            "edges_parallel_to(body, vec3(1.0, 0.0, 0.0), 1deg)",
+            Type::List(Box::new(Type::Geometry)),
+        ),
+        (
+            "bot_edges",
+            "edges_at_height(body, 0mm, 0.01mm)",
+            Type::List(Box::new(Type::Geometry)),
+        ),
+        (
+            "neighbors",
+            "adjacent_faces(body, body)",
+            Type::List(Box::new(Type::Geometry)),
+        ),
+        (
+            "shared",
+            "shared_edges(body, body)",
+            Type::List(Box::new(Type::Geometry)),
+        ),
+        (
+            "centroid",
+            "center_of_mass(body, 7850.0)",
+            Type::point3(Type::length()),
+        ),
+        (
+            "inertia_tensor",
+            "moment_of_inertia(body, 7850.0)",
+            Type::tensor(
+                2,
+                3,
+                Type::Scalar {
+                    dimension: reify_types::DimensionVector::MOMENT_OF_INERTIA,
+                },
+            ),
+        ),
     ];
 
-    let mut source = String::from("structure def Bracket {\n    let body = box(50mm, 30mm, 10mm)\n");
+    let mut source =
+        String::from("structure def Bracket {\n    let body = box(50mm, 30mm, 10mm)\n");
     for (cell, rhs, _) in cases {
         source.push_str(&format!("    let {cell} = {rhs}\n"));
     }

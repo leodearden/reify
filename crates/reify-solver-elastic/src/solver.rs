@@ -440,9 +440,7 @@ fn pairwise_tree_sum_fn(start: usize, len: usize, get: &dyn Fn(usize) -> f64) ->
         2 => get(start) + get(start + 1),
         3 => get(start) + get(start + 1) + get(start + 2),
         4 => (get(start) + get(start + 1)) + (get(start + 2) + get(start + 3)),
-        5 => {
-            (get(start) + get(start + 1)) + (get(start + 2) + get(start + 3)) + get(start + 4)
-        }
+        5 => (get(start) + get(start + 1)) + (get(start + 2) + get(start + 3)) + get(start + 4),
         6 => {
             (get(start) + get(start + 1) + get(start + 2))
                 + (get(start + 3) + get(start + 4) + get(start + 5))
@@ -608,11 +606,9 @@ fn spmv_parallel(k: &SparseRowMat<usize, f64>, p: &[f64], out: &mut [f64], threa
                     let start_idx = row_ptr[global_row];
                     let end_idx = row_ptr[global_row + 1];
                     // No Vec allocation — pairwise_tree_sum_fn calls the generator directly.
-                    *out_elem = pairwise_tree_sum_fn(
-                        0,
-                        end_idx - start_idx,
-                        &|k| vals[start_idx + k] * p[col_idx[start_idx + k]],
-                    );
+                    *out_elem = pairwise_tree_sum_fn(0, end_idx - start_idx, &|k| {
+                        vals[start_idx + k] * p[col_idx[start_idx + k]]
+                    });
                 }
             }));
 
@@ -705,9 +701,9 @@ fn norm2_squared_parallel(v: &[f64], threads: usize) -> f64 {
             let chunk = &v[start..end];
 
             // No Vec allocation — pairwise_tree_sum_fn calls the generator directly.
-            handles.push(s.spawn(move || {
-                pairwise_tree_sum_fn(0, chunk.len(), &|i| chunk[i] * chunk[i])
-            }));
+            handles.push(
+                s.spawn(move || pairwise_tree_sum_fn(0, chunk.len(), &|i| chunk[i] * chunk[i])),
+            );
 
             start = end;
         }
@@ -797,7 +793,11 @@ where
 
     // Allocate scratch vectors. All axpy ops iterate slot 0 → n−1 in slice order.
     // z₀ = M⁻¹ r₀
-    let mut z: Vec<f64> = r.iter().zip(inv_diag.iter()).map(|(ri, di)| ri * di).collect();
+    let mut z: Vec<f64> = r
+        .iter()
+        .zip(inv_diag.iter())
+        .map(|(ri, di)| ri * di)
+        .collect();
     // p₀ = z₀
     let mut p: Vec<f64> = z.clone();
     // rz = r₀ · z₀
@@ -865,7 +865,7 @@ where
 mod tests {
     #![allow(clippy::needless_range_loop)] // index-parallel loops in test asserts
     use super::{
-        build_initial_u_r, CgSolverOptions, SolverMode, norm2_squared, pairwise_tree_sum_fn,
+        CgSolverOptions, SolverMode, build_initial_u_r, norm2_squared, pairwise_tree_sum_fn,
         solve_cg, solve_cg_warm, spmv_seq,
     };
     use faer::sparse::{SparseRowMat, Triplet};
@@ -1130,8 +1130,8 @@ mod tests {
     /// Same fixture as `assembly/global.rs::parallel_mode_tolerance_equivalent_to_deterministic_on_shared_dof_mesh`.
     /// n_nodes = 13, connectivity [0,1,2,3], [0,4,5,6], [0,7,8,9], [0,10,11,12].
     fn fan_mesh_k_spd_and_f() -> (faer::sparse::SparseRowMat<usize, f64>, Vec<f64>) {
-        use crate::assembly::{AssemblyElement, AssemblyMode, assemble_global_stiffness};
         use crate::assembly::tet::element_stiffness_p1;
+        use crate::assembly::{AssemblyElement, AssemblyMode, assemble_global_stiffness};
         use crate::boundary::{DirichletBc, apply_dirichlet_row_elimination};
 
         let mat = dimensionless_steel_like();
@@ -1139,17 +1139,16 @@ mod tests {
         assert_eq!(k_e.n_dofs, 12);
 
         // 4 tets fanning around central node 0.
-        let conns: [[usize; 4]; 4] = [
-            [0, 1, 2, 3],
-            [0, 4, 5, 6],
-            [0, 7, 8, 9],
-            [0, 10, 11, 12],
-        ];
+        let conns: [[usize; 4]; 4] = [[0, 1, 2, 3], [0, 4, 5, 6], [0, 7, 8, 9], [0, 10, 11, 12]];
         let n_nodes = 13;
         let elements: Vec<AssemblyElement<'_>> = conns
             .iter()
             .enumerate()
-            .map(|(i, c)| AssemblyElement { id: i, connectivity: c, k_e: &k_e })
+            .map(|(i, c)| AssemblyElement {
+                id: i,
+                connectivity: c,
+                k_e: &k_e,
+            })
             .collect();
 
         let mut k = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
@@ -1159,9 +1158,7 @@ mod tests {
         // making K SPD on the remaining free DOFs.
         let dim = 3 * n_nodes; // = 39
         let mut f = vec![0.0_f64; dim];
-        let bcs: Vec<DirichletBc> = (0..6)
-            .map(|dof| DirichletBc { dof, value: 0.0 })
-            .collect();
+        let bcs: Vec<DirichletBc> = (0..6).map(|dof| DirichletBc { dof, value: 0.0 }).collect();
         apply_dirichlet_row_elimination(&mut k, &mut f, &bcs);
 
         // Apply a single non-zero load at a free DOF (DOF 6).
@@ -1199,7 +1196,10 @@ mod tests {
         };
         let result = solve_cg(&k, &f, opts, SolverMode::Deterministic);
 
-        assert!(!result.converged, "must not converge with max_iter=1 and tol=1e-15");
+        assert!(
+            !result.converged,
+            "must not converge with max_iter=1 and tol=1e-15"
+        );
         assert_eq!(result.iterations, 1, "exactly the cap was consumed");
         assert_eq!(result.u.len(), 2, "u has the correct length");
         // At least one entry of u is non-zero (one CG step took effect).
@@ -1229,9 +1229,7 @@ mod tests {
         assert!(
             result.converged,
             "fan-mesh CG must converge in {} iterations; got converged={}, iterations={}",
-            opts.max_iter,
-            result.converged,
-            result.iterations
+            opts.max_iter, result.converged, result.iterations
         );
 
         // Verify residual r = f − Ku using spmv_seq.
@@ -1328,11 +1326,7 @@ mod tests {
             result_a.converged, result_b.converged,
             "converged flag must be bit-stable"
         );
-        assert_eq!(
-            result_a.u.len(),
-            result_b.u.len(),
-            "u lengths must match"
-        );
+        assert_eq!(result_a.u.len(), result_b.u.len(), "u lengths must match");
         for i in 0..result_a.u.len() {
             assert_eq!(
                 result_a.u[i].to_bits(),
@@ -1380,7 +1374,10 @@ mod tests {
         assert!(det.converged, "deterministic must converge on fan-mesh");
 
         let par4 = solve_cg(&k, &f, opts.clone(), SolverMode::Parallel { threads: 4 });
-        assert!(par4.converged, "Parallel {{ threads: 4 }} must converge on fan-mesh");
+        assert!(
+            par4.converged,
+            "Parallel {{ threads: 4 }} must converge on fan-mesh"
+        );
 
         for i in 0..f.len() {
             let tol = 1e-9 * det.u[i].abs().max(1.0);
@@ -1479,10 +1476,7 @@ mod tests {
 
         for &t in &[1_usize, 2, 4] {
             let par = solve_cg(&k, &f, opts.clone(), SolverMode::Parallel { threads: t });
-            assert!(
-                par.converged,
-                "Parallel {{ threads: {t} }} must converge"
-            );
+            assert!(par.converged, "Parallel {{ threads: {t} }} must converge");
             assert_eq!(
                 par.iterations, det.iterations,
                 "Parallel {{ threads: {t} }} iterations ({}) ≠ Deterministic ({})",
@@ -1580,8 +1574,7 @@ mod tests {
         assert!(cold_perturbed.converged, "cold perturbed must converge");
 
         // Warm solve K·u = f2 with u1 as initial guess.
-        let warm_perturbed =
-            solve_cg_warm(&k, &f2, Some(&u1), opts, SolverMode::Deterministic);
+        let warm_perturbed = solve_cg_warm(&k, &f2, Some(&u1), opts, SolverMode::Deterministic);
         assert!(warm_perturbed.converged, "warm perturbed must converge");
 
         // Iteration-reduction contract.
@@ -1647,13 +1640,7 @@ mod tests {
         let u_exact = cold.u.clone();
 
         // Warm-start at u_exact.
-        let warm = solve_cg_warm(
-            &k,
-            &f,
-            Some(&u_exact),
-            opts,
-            SolverMode::Deterministic,
-        );
+        let warm = solve_cg_warm(&k, &f, Some(&u_exact), opts, SolverMode::Deterministic);
 
         assert_eq!(
             warm.iterations, 0,
@@ -1790,8 +1777,13 @@ mod tests {
 
         // Parallel { threads: 4 } mode.
         let par_cold = solve_cg(&k, &f, opts.clone(), SolverMode::Parallel { threads: 4 });
-        let par_warm_none =
-            solve_cg_warm(&k, &f, None, opts.clone(), SolverMode::Parallel { threads: 4 });
+        let par_warm_none = solve_cg_warm(
+            &k,
+            &f,
+            None,
+            opts.clone(),
+            SolverMode::Parallel { threads: 4 },
+        );
         assert_eq!(
             par_cold.iterations, par_warm_none.iterations,
             "Parallel: solve_cg_warm(None) iterations must match solve_cg"
@@ -1885,7 +1877,10 @@ mod tests {
         for n in 2..=8_usize {
             let expected = (n * (n + 1) / 2) as f64;
             let actual = pairwise_tree_sum_fn(0, n, &|i| (i as f64) + 1.0);
-            assert_eq!(actual, expected, "start=0, len={n}: expected {expected}, got {actual}");
+            assert_eq!(
+                actual, expected,
+                "start=0, len={n}: expected {expected}, got {actual}"
+            );
         }
 
         // start > 0: pairwise_tree_sum_fn(2, 3, get) gives get(2)+get(3)+get(4)

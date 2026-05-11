@@ -183,11 +183,10 @@ fn validate_differentiable_field<'a>(
 }
 
 pub(crate) fn compute_gradient(field_val: &Value) -> Value {
-    let (domain_type, codomain_type) =
-        match validate_differentiable_field(field_val, "gradient") {
-            Some(pair) => pair,
-            None => return Value::Undef,
-        };
+    let (domain_type, codomain_type) = match validate_differentiable_field(field_val, "gradient") {
+        Some(pair) => pair,
+        None => return Value::Undef,
+    };
 
     // Determine dimensionality and validate scalar domain quantity
     let n = match domain_type {
@@ -245,11 +244,11 @@ pub(crate) fn compute_gradient(field_val: &Value) -> Value {
 /// - Domain must be `Point{n, scalar}` (n ≥ 1)
 /// - Codomain must be `Vector{n, scalar}` with matching dimension n
 pub(crate) fn compute_divergence(field_val: &Value) -> Value {
-    let (domain_type, codomain_type) =
-        match validate_differentiable_field(field_val, "divergence") {
-            Some(pair) => pair,
-            None => return Value::Undef,
-        };
+    let (domain_type, codomain_type) = match validate_differentiable_field(field_val, "divergence")
+    {
+        Some(pair) => pair,
+        None => return Value::Undef,
+    };
 
     // Domain must be a Point with scalar quantity
     let n = match domain_type {
@@ -315,11 +314,10 @@ pub(crate) fn compute_divergence(field_val: &Value) -> Value {
 /// - Domain must be `Point{3, scalar}`
 /// - Codomain must be `Vector{3, scalar}`
 pub(crate) fn compute_curl(field_val: &Value) -> Value {
-    let (domain_type, codomain_type) =
-        match validate_differentiable_field(field_val, "curl") {
-            Some(pair) => pair,
-            None => return Value::Undef,
-        };
+    let (domain_type, codomain_type) = match validate_differentiable_field(field_val, "curl") {
+        Some(pair) => pair,
+        None => return Value::Undef,
+    };
 
     // Domain must be Point{3, scalar}
     match domain_type {
@@ -387,11 +385,10 @@ pub(crate) fn compute_curl(field_val: &Value) -> Value {
 /// - Domain must be scalar or `Point{n, scalar}`
 /// - Codomain must be scalar (Real, Int, or Scalar)
 pub(crate) fn compute_laplacian(field_val: &Value) -> Value {
-    let (domain_type, codomain_type) =
-        match validate_differentiable_field(field_val, "laplacian") {
-            Some(pair) => pair,
-            None => return Value::Undef,
-        };
+    let (domain_type, codomain_type) = match validate_differentiable_field(field_val, "laplacian") {
+        Some(pair) => pair,
+        None => return Value::Undef,
+    };
 
     // Domain can be 1D scalar or nD Point
     match domain_type {
@@ -488,7 +485,7 @@ fn items_to_f64_vec(items: &[Value]) -> Option<Vec<f64>> {
 fn extract_coords(point: &Value) -> Option<Vec<f64>> {
     match point {
         Value::Real(r) if r.is_finite() => Some(vec![*r]),
-        Value::Real(_) => None, // NaN or Inf
+        Value::Real(_) => None,                 // NaN or Inf
         Value::Int(i) => Some(vec![*i as f64]), // i64 can never be NaN/Inf
         Value::Scalar { si_value, .. } if si_value.is_finite() => Some(vec![*si_value]),
         Value::Scalar { .. } => None, // NaN or Inf
@@ -653,9 +650,7 @@ fn eval_perturbed_point<F: Fn(f64) -> Value>(
     if single_point_param {
         match work_args.pop() {
             Some(Value::Point(inner)) => *work_point = inner,
-            other => unreachable!(
-                "expected Value::Point after apply_lambda, got {other:?}"
-            ),
+            other => unreachable!("expected Value::Point after apply_lambda, got {other:?}"),
         }
         debug_assert_eq!(
             work_point.len(),
@@ -2098,11 +2093,7 @@ mod tests {
 
     #[test]
     fn extract_coords_point_returns_f64_vec() {
-        let point = Value::Point(vec![
-            Value::Real(1.0),
-            Value::Real(2.0),
-            Value::Real(3.0),
-        ]);
+        let point = Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
         assert_eq!(extract_coords(&point), Some(vec![1.0, 2.0, 3.0]));
     }
 
@@ -2182,17 +2173,24 @@ mod tests {
     #[test]
     fn init_work_buffers_single_point_dimensioned_populates_scalar_work_point() {
         let coords = vec![4.0_f64, 5.0];
-        let (work_args, work_point) = init_work_buffers(&coords, true, Some(DimensionVector::LENGTH));
+        let (work_args, work_point) =
+            init_work_buffers(&coords, true, Some(DimensionVector::LENGTH));
         assert_eq!(work_args.capacity(), 1);
         assert!(work_args.is_empty());
         assert_eq!(work_point.len(), 2);
         assert_eq!(
             work_point[0],
-            Value::Scalar { si_value: 4.0, dimension: DimensionVector::LENGTH }
+            Value::Scalar {
+                si_value: 4.0,
+                dimension: DimensionVector::LENGTH
+            }
         );
         assert_eq!(
             work_point[1],
-            Value::Scalar { si_value: 5.0, dimension: DimensionVector::LENGTH }
+            Value::Scalar {
+                si_value: 5.0,
+                dimension: DimensionVector::LENGTH
+            }
         );
     }
 
@@ -2201,7 +2199,12 @@ mod tests {
     /// Scalar codomain with LENGTH dimension wraps as Value::Scalar{si_value, LENGTH}.
     #[test]
     fn wrap_scalar_result_scalar_length_returns_scalar() {
-        let result = wrap_scalar_result(42.0, &Type::Scalar { dimension: DimensionVector::LENGTH });
+        let result = wrap_scalar_result(
+            42.0,
+            &Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
+        );
         assert_eq!(
             result,
             Value::Scalar {

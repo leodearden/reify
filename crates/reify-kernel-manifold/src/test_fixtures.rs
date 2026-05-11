@@ -39,14 +39,30 @@ pub fn unit_cube_mesh(offset: [f32; 3]) -> Mesh {
     Mesh {
         vertices: vec![
             // 0..7 → (x, y, z) for the 8 cube corners
-            0.0 + dx, 0.0 + dy, 0.0 + dz, // 0
-            1.0 + dx, 0.0 + dy, 0.0 + dz, // 1
-            1.0 + dx, 1.0 + dy, 0.0 + dz, // 2
-            0.0 + dx, 1.0 + dy, 0.0 + dz, // 3
-            0.0 + dx, 0.0 + dy, 1.0 + dz, // 4
-            1.0 + dx, 0.0 + dy, 1.0 + dz, // 5
-            1.0 + dx, 1.0 + dy, 1.0 + dz, // 6
-            0.0 + dx, 1.0 + dy, 1.0 + dz, // 7
+            0.0 + dx,
+            0.0 + dy,
+            0.0 + dz, // 0
+            1.0 + dx,
+            0.0 + dy,
+            0.0 + dz, // 1
+            1.0 + dx,
+            1.0 + dy,
+            0.0 + dz, // 2
+            0.0 + dx,
+            1.0 + dy,
+            0.0 + dz, // 3
+            0.0 + dx,
+            0.0 + dy,
+            1.0 + dz, // 4
+            1.0 + dx,
+            0.0 + dy,
+            1.0 + dz, // 5
+            1.0 + dx,
+            1.0 + dy,
+            1.0 + dz, // 6
+            0.0 + dx,
+            1.0 + dy,
+            1.0 + dz, // 7
         ],
         #[rustfmt::skip]
         indices: vec![

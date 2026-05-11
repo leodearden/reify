@@ -1036,8 +1036,8 @@ mod tests {
     /// This test is RED before step-8 impl: both `pick_lexmin_brep_kernel` and
     /// `__0_mesh_kernel` synthetic do not yet exist in the global registry.
     #[test]
-    fn pick_lexmin_brep_kernel_returns_lex_smallest_brep_capable_synthetic_when_lex_smaller_mesh_only_synthetic_present(
-    ) {
+    fn pick_lexmin_brep_kernel_returns_lex_smallest_brep_capable_synthetic_when_lex_smaller_mesh_only_synthetic_present()
+     {
         // (a) The Mesh-only synthetic must be visible in the global registry.
         assert!(
             registry().contains_key(test_synthetic_kernel::NAME_MESH_ONLY),

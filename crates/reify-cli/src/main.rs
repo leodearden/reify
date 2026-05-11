@@ -19,13 +19,34 @@ fn print_usage(out: &mut dyn std::io::Write) {
     let _ = writeln!(out, "Usage: reify <command> [options]");
     let _ = writeln!(out, "Commands:");
     let _ = writeln!(out, "  check <file>              Check constraints");
-    let _ = writeln!(out, "  test <file>               Run @test-annotated structures");
-    let _ = writeln!(out, "  build <file> -o <output>   Build geometry and export");
-    let _ = writeln!(out, "  lsp                        Start language server (stdin/stdout)");
-    let _ = writeln!(out, "  gui [--debug] <file>       Open file in GUI (--debug enables MCP debug listener)");
-    let _ = writeln!(out, "  gui-debug <file>           Open file in GUI with debug MCP listener (alias for `gui --debug`)");
-    let _ = writeln!(out, "  mcp-server [file] [--project-dir <dir>]  Start MCP server (stdin/stdout)");
-    let _ = writeln!(out, "  doc <file> [-o <path>] [--format html|markdown|json] [--split] [--compact]  Generate documentation");
+    let _ = writeln!(
+        out,
+        "  test <file>               Run @test-annotated structures"
+    );
+    let _ = writeln!(
+        out,
+        "  build <file> -o <output>   Build geometry and export"
+    );
+    let _ = writeln!(
+        out,
+        "  lsp                        Start language server (stdin/stdout)"
+    );
+    let _ = writeln!(
+        out,
+        "  gui [--debug] <file>       Open file in GUI (--debug enables MCP debug listener)"
+    );
+    let _ = writeln!(
+        out,
+        "  gui-debug <file>           Open file in GUI with debug MCP listener (alias for `gui --debug`)"
+    );
+    let _ = writeln!(
+        out,
+        "  mcp-server [file] [--project-dir <dir>]  Start MCP server (stdin/stdout)"
+    );
+    let _ = writeln!(
+        out,
+        "  doc <file> [-o <path>] [--format html|markdown|json] [--split] [--compact]  Generate documentation"
+    );
     let _ = writeln!(out, "  --version                  Print version");
     let _ = writeln!(out, "  --help                     Show this list");
 }
@@ -357,15 +378,11 @@ fn render_html_stub(model: &reify_doc::model::DocModel) -> String {
         // we always pass `MarkdownOptions::default()` (split = false).  Use
         // `unreachable!` so a future refactor that breaks this invariant
         // panics loudly instead of silently emitting an empty `<pre>` block.
-        reify_doc::fmt_markdown::MarkdownOutput::Split(_) => unreachable!(
-            "render_html_stub always uses MarkdownOptions::default() (split = false)"
-        ),
+        reify_doc::fmt_markdown::MarkdownOutput::Split(_) => {
+            unreachable!("render_html_stub always uses MarkdownOptions::default() (split = false)")
+        }
     };
-    let path = model
-        .modules
-        .first()
-        .map(|m| m.path.as_str())
-        .unwrap_or("");
+    let path = model.modules.first().map(|m| m.path.as_str()).unwrap_or("");
     let escaped_path = escape_html(path);
     let escaped_body = escape_html(&md_body);
     format!(
@@ -534,13 +551,11 @@ fn cmd_doc(args: &[String]) -> ExitCode {
                     // `unwrap` so a future refactor that bypasses the guard
                     // panics with a loud, attributable message instead of
                     // silently writing to a wrong path.
-                    let dir = std::path::PathBuf::from(
-                        output.as_deref().expect(
-                            "--split + --format markdown without -o is rejected by the early \
+                    let dir = std::path::PathBuf::from(output.as_deref().expect(
+                        "--split + --format markdown without -o is rejected by the early \
                              usage-validation block; reaching this branch means that guard was \
                              accidentally bypassed",
-                        ),
-                    );
+                    ));
                     if let Err(e) = std::fs::create_dir_all(&dir) {
                         eprintln!("Error writing {}: {}", dir.display(), e);
                         return ExitCode::FAILURE;
@@ -692,11 +707,7 @@ fn cmd_gui(args: &[String]) -> ExitCode {
 ///
 /// Extracted as a pure helper so it can be unit-tested via `Command::get_envs()`
 /// without spawning a subprocess.
-fn build_gui_command(
-    gui_path: &std::path::Path,
-    file: &str,
-    debug: bool,
-) -> std::process::Command {
+fn build_gui_command(gui_path: &std::path::Path, file: &str, debug: bool) -> std::process::Command {
     let mut cmd = std::process::Command::new(gui_path);
     cmd.arg(file);
     if debug {

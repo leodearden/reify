@@ -19,9 +19,7 @@
 //! integration tests in `reify-eval/tests/kernel_registry_inventory.rs`
 //! (task 2642 step 9).
 
-use reify_types::{
-    CapabilityDescriptor, GeometryKernel, KernelRegistration, Operation, ReprKind,
-};
+use reify_types::{CapabilityDescriptor, GeometryKernel, KernelRegistration, Operation, ReprKind};
 
 #[test]
 fn kernel_registration_struct_constructible_with_descriptor_and_factory() {

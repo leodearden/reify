@@ -79,17 +79,11 @@ fn boolean_ops_round_trip_via_factory_and_geometry_kernel_trait_object() {
         .expect("unit_cube_mesh fixture must be a valid manifold");
 
     let u = kernel
-        .execute(&GeometryOp::Union {
-            left: a,
-            right: b,
-        })
+        .execute(&GeometryOp::Union { left: a, right: b })
         .expect("Union of two valid cubes must succeed");
 
     let d = kernel
-        .execute(&GeometryOp::Difference {
-            left: a,
-            right: b,
-        })
+        .execute(&GeometryOp::Difference { left: a, right: b })
         .expect("Difference of two valid cubes must succeed");
 
     let result = kernel

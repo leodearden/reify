@@ -285,7 +285,8 @@ impl CompiledExpr {
 
     /// Create a value reference expression.
     pub fn value_ref(id: ValueCellId, result_type: Type) -> Self {
-        let content_hash = ContentHash::of(&[TAG_VALUE_REF]).combine(ContentHash::of_str(&format!("{}", id)));
+        let content_hash =
+            ContentHash::of(&[TAG_VALUE_REF]).combine(ContentHash::of_str(&format!("{}", id)));
         CompiledExpr {
             kind: CompiledExprKind::ValueRef(id),
             result_type,
@@ -467,8 +468,8 @@ impl CompiledExpr {
                 // FunctionCall has no public constructor; rebuild manually with
                 // a fresh content hash. Mirror compile_expr's combine order:
                 // qualified_name + each arg hash.
-                let mut content_hash =
-                    ContentHash::of(&[TAG_FUNCTION_CALL]).combine(ContentHash::of_str(&function.qualified_name));
+                let mut content_hash = ContentHash::of(&[TAG_FUNCTION_CALL])
+                    .combine(ContentHash::of_str(&function.qualified_name));
                 for a in &new_args {
                     content_hash = content_hash.combine(a.content_hash);
                 }
@@ -514,7 +515,10 @@ impl CompiledExpr {
                     .collect();
                 CompiledExpr::match_expr(new_disc, new_arms, result_type)
             }
-            CompiledExprKind::UserFunctionCall { function_name, args } => {
+            CompiledExprKind::UserFunctionCall {
+                function_name,
+                args,
+            } => {
                 let new_args: Vec<CompiledExpr> =
                     args.into_iter().map(|a| a.map_value_refs(f)).collect();
                 CompiledExpr::user_function_call(function_name, new_args, result_type)
@@ -525,11 +529,9 @@ impl CompiledExpr {
                 body,
                 captures,
             } => {
-                let new_param_ids: Vec<ValueCellId> =
-                    param_ids.into_iter().map(&mut *f).collect();
+                let new_param_ids: Vec<ValueCellId> = param_ids.into_iter().map(&mut *f).collect();
                 let new_body = body.map_value_refs(f);
-                let new_captures: Vec<ValueCellId> =
-                    captures.into_iter().map(&mut *f).collect();
+                let new_captures: Vec<ValueCellId> = captures.into_iter().map(&mut *f).collect();
                 CompiledExpr::lambda(params, new_param_ids, new_body, new_captures, result_type)
             }
             CompiledExprKind::ListLiteral(elements) => {
@@ -559,7 +561,11 @@ impl CompiledExpr {
                 let new_idx = index.map_value_refs(f);
                 CompiledExpr::index_access(new_obj, new_idx, result_type)
             }
-            CompiledExprKind::MethodCall { object, method, args } => {
+            CompiledExprKind::MethodCall {
+                object,
+                method,
+                args,
+            } => {
                 let new_obj = object.map_value_refs(f);
                 let new_args: Vec<CompiledExpr> =
                     args.into_iter().map(|a| a.map_value_refs(f)).collect();
@@ -1271,7 +1277,11 @@ impl CompiledExpr {
         upper_inclusive: bool,
         result_type: Type,
     ) -> Self {
-        let mut content_hash = ContentHash::of(&[TAG_RANGE_CONSTRUCTOR, lower_inclusive as u8, upper_inclusive as u8]);
+        let mut content_hash = ContentHash::of(&[
+            TAG_RANGE_CONSTRUCTOR,
+            lower_inclusive as u8,
+            upper_inclusive as u8,
+        ]);
         if let Some(lo) = &lower {
             content_hash = content_hash.combine(lo.content_hash);
         }
@@ -1301,7 +1311,8 @@ impl CompiledExpr {
             SelectorKind::Point => 1,
             SelectorKind::Edge => 2,
         };
-        let mut content_hash = ContentHash::of(&[TAG_AD_HOC_SELECTOR, kind_byte]).combine(base.content_hash);
+        let mut content_hash =
+            ContentHash::of(&[TAG_AD_HOC_SELECTOR, kind_byte]).combine(base.content_hash);
         for arg in &args {
             content_hash = content_hash.combine(arg.content_hash);
         }
@@ -1328,8 +1339,8 @@ impl CompiledExpr {
             DeterminacyPredicateKind::Constrained => 2,
             DeterminacyPredicateKind::PartiallyDetermined => 3,
         };
-        let content_hash =
-            ContentHash::of(&[TAG_DETERMINACY_PREDICATE, kind_byte]).combine(ContentHash::of_str(&format!("{}", cell)));
+        let content_hash = ContentHash::of(&[TAG_DETERMINACY_PREDICATE, kind_byte])
+            .combine(ContentHash::of_str(&format!("{}", cell)));
         CompiledExpr {
             kind: CompiledExprKind::DeterminacyPredicate { kind, cell },
             result_type: Type::Bool,
@@ -1354,7 +1365,10 @@ impl CompiledExpr {
             content_hash = content_hash.combine(arg.content_hash);
         }
         CompiledExpr {
-            kind: CompiledExprKind::UserFunctionCall { function_name, args },
+            kind: CompiledExprKind::UserFunctionCall {
+                function_name,
+                args,
+            },
             result_type,
             content_hash,
         }
@@ -1517,12 +1531,14 @@ mod tests {
     fn user_function_call_constructs_expected_expr() {
         let arg1 = CompiledExpr::literal(Value::Int(1), Type::Int);
         let arg2 = CompiledExpr::literal(Value::Int(2), Type::Int);
-        let expr =
-            CompiledExpr::user_function_call("f".to_string(), vec![arg1, arg2], Type::Bool);
+        let expr = CompiledExpr::user_function_call("f".to_string(), vec![arg1, arg2], Type::Bool);
 
         // Kind and fields.
         match &expr.kind {
-            CompiledExprKind::UserFunctionCall { function_name, args } => {
+            CompiledExprKind::UserFunctionCall {
+                function_name,
+                args,
+            } => {
                 assert_eq!(function_name, "f");
                 assert_eq!(args.len(), 2);
                 // Verify arg contents are preserved (not swapped or dropped).
@@ -1540,8 +1556,7 @@ mod tests {
         assert_eq!(expr.result_type, Type::Bool);
 
         // Content hash differs for different function names.
-        let other_name =
-            CompiledExpr::user_function_call("g".to_string(), vec![], Type::Bool);
+        let other_name = CompiledExpr::user_function_call("g".to_string(), vec![], Type::Bool);
         assert_ne!(
             expr.content_hash, other_name.content_hash,
             "hash should differ for different function names"
@@ -1567,7 +1582,10 @@ mod tests {
 
         // Kind and fields.
         match &expr.kind {
-            CompiledExprKind::Match { discriminant: d, arms } => {
+            CompiledExprKind::Match {
+                discriminant: d,
+                arms,
+            } => {
                 assert_eq!(arms.len(), 1);
                 assert_eq!(arms[0].patterns, vec!["_".to_string()]);
                 // Verify the discriminant was preserved (not dropped or replaced).
@@ -1575,7 +1593,11 @@ mod tests {
                     matches!(&d.kind, CompiledExprKind::Literal(Value::Int(1))),
                     "discriminant should be Literal(Int(1))"
                 );
-                assert_eq!(d.result_type, Type::Int, "discriminant result_type should be Int");
+                assert_eq!(
+                    d.result_type,
+                    Type::Int,
+                    "discriminant result_type should be Int"
+                );
             }
             other => panic!("expected Match, got {other:?}"),
         }
@@ -1587,8 +1609,7 @@ mod tests {
             patterns: vec!["_".to_string()],
             body: CompiledExpr::literal(Value::Bool(true), Type::Bool),
         };
-        let expr2 =
-            CompiledExpr::match_expr(different_discriminant, vec![arm2], Type::Bool);
+        let expr2 = CompiledExpr::match_expr(different_discriminant, vec![arm2], Type::Bool);
         assert_ne!(
             expr.content_hash, expr2.content_hash,
             "hash should differ when discriminant changes"
@@ -1735,8 +1756,7 @@ mod tests {
                 .combine(pattern_hash)
                 .combine(body_hash);
             assert_ne!(
-                match_expr.content_hash,
-                hypothetical,
+                match_expr.content_hash, hypothetical,
                 "Match hash must not equal the hash produced by tag byte [{}] \
                  (Match must use a unique tag to avoid collisions with existing \
                  CompiledExpr or CachedResult variants)",
@@ -1823,8 +1843,8 @@ mod tests {
 
         // user_function_call with no args: tag + function name.
         let ufc = CompiledExpr::user_function_call("f".to_string(), vec![], Type::Bool);
-        let expected_ufc = ContentHash::of(&[TAG_USER_FUNCTION_CALL])
-            .combine(ContentHash::of_str("f"));
+        let expected_ufc =
+            ContentHash::of(&[TAG_USER_FUNCTION_CALL]).combine(ContentHash::of_str("f"));
         assert_eq!(
             ufc.content_hash, expected_ufc,
             "user_function_call hash must equal TAG_USER_FUNCTION_CALL-based reconstruction"
@@ -1873,13 +1893,16 @@ mod tests {
         let binop = CompiledExpr::binop(BinOp::Gt, lhs, rhs, Type::Bool);
 
         // Quantifier with variable_id == old, predicate references determinacy on old
-        let det = CompiledExpr::determinacy_predicate(
-            DeterminacyPredicateKind::Determined,
-            old.clone(),
-        );
+        let det =
+            CompiledExpr::determinacy_predicate(DeterminacyPredicateKind::Determined, old.clone());
         let coll = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Real)));
-        let quant =
-            CompiledExpr::quantifier(QuantifierKind::ForAll, "p".to_string(), old.clone(), coll, det);
+        let quant = CompiledExpr::quantifier(
+            QuantifierKind::ForAll,
+            "p".to_string(),
+            old.clone(),
+            coll,
+            det,
+        );
 
         // Lambda with captures = [old, unrelated] and param_ids = [old]
         let lambda_body = CompiledExpr::value_ref(unrelated.clone(), Type::Real);
@@ -1933,27 +1956,54 @@ mod tests {
 
         // Every direct ValueRef(old) is rewritten to new_id; ValueRef(other) is
         // unchanged; ValueRef(unrelated) (lambda body) is unchanged.
-        assert!(value_refs.contains(&new_id), "ValueRef(old) should be rewritten to new_id");
+        assert!(
+            value_refs.contains(&new_id),
+            "ValueRef(old) should be rewritten to new_id"
+        );
         assert!(value_refs.contains(&other), "ValueRef(other) must remain");
-        assert!(value_refs.contains(&unrelated), "ValueRef(unrelated) must remain");
+        assert!(
+            value_refs.contains(&unrelated),
+            "ValueRef(unrelated) must remain"
+        );
         assert!(!value_refs.contains(&old), "no ValueRef(old) should remain");
 
         // Quantifier.variable_id rewritten.
         assert_eq!(quant_var_ids.len(), 1);
-        assert_eq!(quant_var_ids[0], new_id, "Quantifier.variable_id should be rewritten");
+        assert_eq!(
+            quant_var_ids[0], new_id,
+            "Quantifier.variable_id should be rewritten"
+        );
 
         // DeterminacyPredicate.cell rewritten.
         assert_eq!(det_cells.len(), 1);
-        assert_eq!(det_cells[0], new_id, "DeterminacyPredicate.cell should be rewritten");
+        assert_eq!(
+            det_cells[0], new_id,
+            "DeterminacyPredicate.cell should be rewritten"
+        );
 
         // Lambda captures: old → new_id, unrelated → unchanged.
-        assert!(lambda_captures.contains(&new_id), "Lambda capture(old) should be rewritten");
-        assert!(lambda_captures.contains(&unrelated), "Lambda capture(unrelated) must remain");
-        assert!(!lambda_captures.contains(&old), "no Lambda capture(old) should remain");
+        assert!(
+            lambda_captures.contains(&new_id),
+            "Lambda capture(old) should be rewritten"
+        );
+        assert!(
+            lambda_captures.contains(&unrelated),
+            "Lambda capture(unrelated) must remain"
+        );
+        assert!(
+            !lambda_captures.contains(&old),
+            "no Lambda capture(old) should remain"
+        );
 
         // Lambda param_ids: old → new_id.
-        assert!(lambda_param_ids.contains(&new_id), "Lambda param_id(old) should be rewritten");
-        assert!(!lambda_param_ids.contains(&old), "no Lambda param_id(old) should remain");
+        assert!(
+            lambda_param_ids.contains(&new_id),
+            "Lambda param_id(old) should be rewritten"
+        );
+        assert!(
+            !lambda_param_ids.contains(&old),
+            "no Lambda param_id(old) should remain"
+        );
     }
 
     /// step-3 (task-2289): constructor for the new
@@ -2048,7 +2098,11 @@ mod tests {
             other => panic!("expected ReflectiveCellList, got {other:?}"),
         }
         assert_eq!(rcl.result_type, result_type, "result_type must match");
-        assert_ne!(rcl.content_hash, ContentHash::of(&[0u8; 0]), "content_hash must be non-zero");
+        assert_ne!(
+            rcl.content_hash,
+            ContentHash::of(&[0u8; 0]),
+            "content_hash must be non-zero"
+        );
 
         // Empty RCL has a different hash from a populated one.
         let empty_rcl = CompiledExpr::reflective_cell_list(vec![], result_type.clone());
@@ -2069,7 +2123,10 @@ mod tests {
             rcl.content_hash, ll.content_hash,
             "RCL tag byte must distinguish hash from ListLiteral with same elements"
         );
-        assert_ne!(TAG_REFLECTIVE_CELL_LIST, TAG_LIST_LITERAL, "tag bytes must differ");
+        assert_ne!(
+            TAG_REFLECTIVE_CELL_LIST, TAG_LIST_LITERAL,
+            "tag bytes must differ"
+        );
     }
 
     /// task-2458 step-1: `walk` visits the RCL root plus all element nodes.
@@ -2082,8 +2139,7 @@ mod tests {
         let elements: Vec<CompiledExpr> = (0..3)
             .map(|i| CompiledExpr::value_ref(ValueCellId::new("E", format!("c{i}")), Type::Real))
             .collect();
-        let rcl =
-            CompiledExpr::reflective_cell_list(elements, Type::List(Box::new(Type::Real)));
+        let rcl = CompiledExpr::reflective_cell_list(elements, Type::List(Box::new(Type::Real)));
         let mut count = 0;
         rcl.walk(&mut |_| count += 1);
         assert_eq!(count, 4, "walk must visit root + 3 element nodes");
@@ -2105,7 +2161,11 @@ mod tests {
             Type::List(Box::new(Type::Real)),
         );
         let refs = rcl.collect_value_refs();
-        assert_eq!(refs, vec![cell_a, cell_b], "collect_value_refs must return both cell IDs in order");
+        assert_eq!(
+            refs,
+            vec![cell_a, cell_b],
+            "collect_value_refs must return both cell IDs in order"
+        );
     }
 
     /// task-2458 step-1: `remap_entity` recurses into RCL elements and rewrites
@@ -2127,8 +2187,14 @@ mod tests {
 
         let refs = rcl.collect_value_refs();
         assert_eq!(refs.len(), 2);
-        assert_eq!(refs[0].entity, "F", "first element entity must be rewritten to F");
-        assert_eq!(refs[1].entity, "F", "second element entity must be rewritten to F");
+        assert_eq!(
+            refs[0].entity, "F",
+            "first element entity must be rewritten to F"
+        );
+        assert_eq!(
+            refs[1].entity, "F",
+            "second element entity must be rewritten to F"
+        );
         assert_eq!(refs[0].member, "x", "member must be unchanged");
         assert_eq!(refs[1].member, "y", "member must be unchanged");
     }
@@ -2153,7 +2219,10 @@ mod tests {
 
         let refs = rcl.collect_value_refs();
         assert_eq!(refs.len(), 2);
-        assert_eq!(refs[0], cell_new, "first element must be rewritten to cell_new");
+        assert_eq!(
+            refs[0], cell_new,
+            "first element must be rewritten to cell_new"
+        );
         assert_eq!(refs[1], cell_y, "second element must remain cell_y");
     }
 
@@ -2183,8 +2252,7 @@ mod tests {
         ];
         // Must panic in debug builds because the second element is a Literal,
         // not a ValueRef.
-        let _rcl =
-            CompiledExpr::reflective_cell_list(elements, Type::List(Box::new(Type::Real)));
+        let _rcl = CompiledExpr::reflective_cell_list(elements, Type::List(Box::new(Type::Real)));
     }
 
     // ── end task-2552 tests ───────────────────────────────────────────────────
@@ -2231,14 +2299,20 @@ mod tests {
 
         // Top-level shape preserved.
         assert!(
-            matches!(&rewritten.kind, CompiledExprKind::BinOp { op: BinOp::Lt, .. }),
+            matches!(
+                &rewritten.kind,
+                CompiledExprKind::BinOp { op: BinOp::Lt, .. }
+            ),
             "rewritten expr must remain BinOp(Lt, ...)"
         );
         match &rewritten.kind {
             CompiledExprKind::BinOp { left, right, .. } => {
                 match &left.kind {
                     CompiledExprKind::ValueRef(id) => {
-                        assert_eq!(*id, to_id, "left ValueRef must be rewritten to S.vents[2].mass");
+                        assert_eq!(
+                            *id, to_id,
+                            "left ValueRef must be rewritten to S.vents[2].mass"
+                        );
                     }
                     other => panic!("expected left ValueRef, got {other:?}"),
                 }
@@ -2327,7 +2401,10 @@ mod tests {
             Type::List(Box::new(Type::Real)),
         );
 
-        assert_eq!(a.content_hash, b.content_hash, "identical inputs → identical hashes");
+        assert_eq!(
+            a.content_hash, b.content_hash,
+            "identical inputs → identical hashes"
+        );
         assert_ne!(
             a.content_hash, different_kind.content_hash,
             "different query_kind must change the hash"

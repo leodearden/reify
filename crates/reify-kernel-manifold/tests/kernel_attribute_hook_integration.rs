@@ -56,9 +56,9 @@ fn manifold_kernel_attribute_hook_round_trip_via_geometry_kernel_trait_object() 
     let kernel = ManifoldKernel::new();
     let kernel_ref: &dyn GeometryKernel = &kernel;
 
-    let hook = kernel_ref
-        .attribute_hook()
-        .expect("ManifoldKernel must advertise a KernelAttributeHook via the trait-object accessor");
+    let hook = kernel_ref.attribute_hook().expect(
+        "ManifoldKernel must advertise a KernelAttributeHook via the trait-object accessor",
+    );
 
     let mut table = TopologyAttributeTable::default();
     let op = GeometryOp::Union {

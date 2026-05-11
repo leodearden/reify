@@ -287,7 +287,10 @@ pub fn apply_dirichlet_row_elimination(
 /// the row (faer `SymbolicSparseRowMat` soft invariant).
 #[inline]
 fn find_in_row(col_idx: &[usize], start: usize, end: usize, target: usize) -> Option<usize> {
-    col_idx[start..end].binary_search(&target).ok().map(|rel| start + rel)
+    col_idx[start..end]
+        .binary_search(&target)
+        .ok()
+        .map(|rel| start + rel)
 }
 
 #[cfg(test)]
@@ -863,7 +866,7 @@ mod tests {
     /// - Diagonal at non-boundary offset (row 2: start=4, rel=1 → slot 5).
     #[test]
     fn apply_dirichlet_to_sparse_csr_with_target_at_row_range_boundaries_eliminates_column_correctly()
-    {
+     {
         use faer::sparse::{SparseRowMat, Triplet};
 
         let n = 4usize;
@@ -889,8 +892,9 @@ mod tests {
         let mut f: Vec<f64> = vec![1.0, 2.0, 3.0, 4.0];
 
         // Snapshot K and f before the BC call.
-        let k_before: Vec<Vec<f64>> =
-            (0..n).map(|i| (0..n).map(|j| read(&k, i, j)).collect()).collect();
+        let k_before: Vec<Vec<f64>> = (0..n)
+            .map(|i| (0..n).map(|j| read(&k, i, j)).collect())
+            .collect();
         let f_before = f.clone();
 
         // Apply inhomogeneous BC at dof=2, value=0.5.
@@ -901,7 +905,11 @@ mod tests {
         // K[0][2] was at slot offset 1 in row 0's range (start=0, rel=1 → idx=1).
         // Using `rel` alone (=1) would correctly index idx=1 here, but for row 3
         // (start=7, rel=0) bare `rel` gives idx=0, corrupting K[0][0].
-        assert_eq!(read(&k, 0, 2), 0.0, "K[0][2] must be 0.0 (column i=2 eliminated)");
+        assert_eq!(
+            read(&k, 0, 2),
+            0.0,
+            "K[0][2] must be 0.0 (column i=2 eliminated)"
+        );
         assert_eq!(
             read(&k, 0, 0).to_bits(),
             k_before[0][0].to_bits(),
@@ -912,7 +920,8 @@ mod tests {
             f[0].to_bits(),
             expected_f0.to_bits(),
             "f[0]: expected {expected_f0} = {} - {} * {u}",
-            f_before[0], k_before[0][2],
+            f_before[0],
+            k_before[0][2],
         );
 
         // ── Row 1: bit-identical to pre-call snapshot (Err arm, K[1][2] absent) ─
@@ -937,15 +946,27 @@ mod tests {
             1.0_f64.to_bits(),
             "K[2][2] must be 1.0 (BC diagonal)"
         );
-        assert_eq!(read(&k, 2, 0), 0.0, "K[2][0] must be 0.0 (zeroed by step-2)");
-        assert_eq!(read(&k, 2, 3), 0.0, "K[2][3] must be 0.0 (zeroed by step-2)");
+        assert_eq!(
+            read(&k, 2, 0),
+            0.0,
+            "K[2][0] must be 0.0 (zeroed by step-2)"
+        );
+        assert_eq!(
+            read(&k, 2, 3),
+            0.0,
+            "K[2][3] must be 0.0 (zeroed by step-2)"
+        );
         assert_eq!(f[2].to_bits(), u.to_bits(), "f[2] must be u=0.5 (pinned)");
 
         // ── Row 3: K[3][2] zeroed; f[3] adjusted ────────────────────────────
         // K[3][2] is at slot offset 0 in row 3's range (start=7, rel=0 → idx=7).
         // A buggy impl using `rel` (=0) instead of `start + rel` (=7) would
         // silently write to vals[0] = K[0][0] and leave K[3][2] intact.
-        assert_eq!(read(&k, 3, 2), 0.0, "K[3][2] must be 0.0 (column i=2 eliminated)");
+        assert_eq!(
+            read(&k, 3, 2),
+            0.0,
+            "K[3][2] must be 0.0 (column i=2 eliminated)"
+        );
         assert_eq!(
             read(&k, 3, 3).to_bits(),
             k_before[3][3].to_bits(),
@@ -956,7 +977,8 @@ mod tests {
             f[3].to_bits(),
             expected_f3.to_bits(),
             "f[3]: expected {expected_f3} = {} - {} * {u}",
-            f_before[3], k_before[3][2],
+            f_before[3],
+            k_before[3][2],
         );
     }
 
@@ -1011,11 +1033,7 @@ mod tests {
         let mut f = vec![0.0_f64; 3];
         // BC at dof=0; the sorted-col_idx debug check runs at function entry
         // and fires on row 0 before any binary_search work.
-        apply_dirichlet_row_elimination(
-            &mut k,
-            &mut f,
-            &[DirichletBc { dof: 0, value: 0.0 }],
-        );
+        apply_dirichlet_row_elimination(&mut k, &mut f, &[DirichletBc { dof: 0, value: 0.0 }]);
     }
 
     /// Debug-only: sorted col_idx assertion fires on a later row, not just
@@ -1044,11 +1062,7 @@ mod tests {
         );
         let mut k = SparseRowMat::<usize, f64>::new(symbolic, vec![1.0, 2.0, 3.0, 4.0]);
         let mut f = vec![0.0_f64; 3];
-        apply_dirichlet_row_elimination(
-            &mut k,
-            &mut f,
-            &[DirichletBc { dof: 0, value: 0.0 }],
-        );
+        apply_dirichlet_row_elimination(&mut k, &mut f, &[DirichletBc { dof: 0, value: 0.0 }]);
     }
 
     /// Debug-only: the strictly-increasing (`<`) assertion catches duplicate
@@ -1076,11 +1090,7 @@ mod tests {
         );
         let mut k = SparseRowMat::<usize, f64>::new(symbolic, vec![1.0, 2.0, 3.0, 4.0]);
         let mut f = vec![0.0_f64; 3];
-        apply_dirichlet_row_elimination(
-            &mut k,
-            &mut f,
-            &[DirichletBc { dof: 0, value: 0.0 }],
-        );
+        apply_dirichlet_row_elimination(&mut k, &mut f, &[DirichletBc { dof: 0, value: 0.0 }]);
     }
 
     // -----------------------------------------------------------------------

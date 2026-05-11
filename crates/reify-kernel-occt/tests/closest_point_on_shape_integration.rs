@@ -52,18 +52,9 @@ fn closest_point_for_external_point_on_x_axis() {
     let (kernel, box_id) = box_kernel();
     match kernel.closest_point_on_shape(box_id, 10.0, 0.0, 0.0) {
         Ok([x, y, z]) => {
-            assert!(
-                (x - 5.0).abs() < 1e-6,
-                "expected x≈5.0, got {x}"
-            );
-            assert!(
-                y.abs() < 1e-6,
-                "expected y≈0.0, got {y}"
-            );
-            assert!(
-                z.abs() < 1e-6,
-                "expected z≈0.0, got {z}"
-            );
+            assert!((x - 5.0).abs() < 1e-6, "expected x≈5.0, got {x}");
+            assert!(y.abs() < 1e-6, "expected y≈0.0, got {y}");
+            assert!(z.abs() < 1e-6, "expected z≈0.0, got {z}");
         }
         Err(e) => panic!("expected Ok([5.0, 0.0, 0.0]), got Err({e:?})"),
     }
@@ -76,18 +67,9 @@ fn closest_point_for_external_point_on_y_axis() {
     let (kernel, box_id) = box_kernel();
     match kernel.closest_point_on_shape(box_id, 0.0, 7.0, 0.0) {
         Ok([x, y, z]) => {
-            assert!(
-                x.abs() < 1e-6,
-                "expected x≈0.0, got {x}"
-            );
-            assert!(
-                (y - 5.0).abs() < 1e-6,
-                "expected y≈5.0, got {y}"
-            );
-            assert!(
-                z.abs() < 1e-6,
-                "expected z≈0.0, got {z}"
-            );
+            assert!(x.abs() < 1e-6, "expected x≈0.0, got {x}");
+            assert!((y - 5.0).abs() < 1e-6, "expected y≈5.0, got {y}");
+            assert!(z.abs() < 1e-6, "expected z≈0.0, got {z}");
         }
         Err(e) => panic!("expected Ok([0.0, 5.0, 0.0]), got Err({e:?})"),
     }
@@ -144,8 +126,7 @@ fn closest_point_when_point_lies_on_face() {
     let (kernel, box_id) = box_kernel();
     match kernel.closest_point_on_shape(box_id, 5.0, 0.0, 0.0) {
         Ok([x, y, z]) => {
-            let dist =
-                ((x - 5.0).powi(2) + y.powi(2) + z.powi(2)).sqrt();
+            let dist = ((x - 5.0).powi(2) + y.powi(2) + z.powi(2)).sqrt();
             assert!(
                 dist < 1e-6,
                 "expected witness within 1e-6 of (5.0, 0.0, 0.0), got ({x}, {y}, {z}), dist={dist}"
@@ -226,16 +207,12 @@ fn closest_point_for_offcenter_interior_point() {
                 (x - 5.0).abs() < 1e-6,
                 "expected x≈5.0 (nearest face surface for interior query at (1,0,0)), got {x}"
             );
-            assert!(
-                y.abs() < 1e-6,
-                "expected y≈0.0, got {y}"
-            );
-            assert!(
-                z.abs() < 1e-6,
-                "expected z≈0.0, got {z}"
-            );
+            assert!(y.abs() < 1e-6, "expected y≈0.0, got {y}");
+            assert!(z.abs() < 1e-6, "expected z≈0.0, got {z}");
         }
-        Err(e) => panic!("expected Ok([5.0, 0.0, 0.0]) for off-centre interior query at (1,0,0), got Err({e:?})"),
+        Err(e) => panic!(
+            "expected Ok([5.0, 0.0, 0.0]) for off-centre interior query at (1,0,0), got Err({e:?})"
+        ),
     }
 }
 
@@ -315,9 +292,9 @@ fn closest_point_for_nan_query_coords_locks_current_behavior() {
             "expected Err(QueryError::QueryFailed(_)) for NaN query coords, \
              got Ok([{x}, {y}, {z}]) — if OCCT changed behaviour, pin the Ok branch instead"
         ),
-        Err(e) => panic!(
-            "expected Err(QueryError::QueryFailed(_)) for NaN query coords, got Err({e:?})"
-        ),
+        Err(e) => {
+            panic!("expected Err(QueryError::QueryFailed(_)) for NaN query coords, got Err({e:?})")
+        }
     }
 }
 
@@ -379,9 +356,7 @@ fn query_closest_point_on_shape_returns_xyz_json_for_external_point() {
             .unwrap_or_else(|| panic!("expected key {key:?} in {json:?}"))
             + needle.len();
         let tail = &json[start..];
-        let end = tail
-            .find([',', '}'])
-            .unwrap_or(tail.len());
+        let end = tail.find([',', '}']).unwrap_or(tail.len());
         tail[..end]
             .trim()
             .parse::<f64>()

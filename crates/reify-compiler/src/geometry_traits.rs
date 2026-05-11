@@ -43,7 +43,7 @@ pub fn is_geometry_marker_trait(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_geometry_marker_trait, GEOMETRY_MARKER_TRAITS};
+    use super::{GEOMETRY_MARKER_TRAITS, is_geometry_marker_trait};
 
     /// `GEOMETRY_MARKER_TRAITS` must agree with the shared test-fixture
     /// `EXPECTED_GEOMETRY_TRAITS` and `is_geometry_marker_trait` must accept

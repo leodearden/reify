@@ -1156,8 +1156,14 @@ fn local_index_reassignment_groups_independently_per_feature_id() {
 
     // One diagnostic per feature_id, and each names only its own.
     let messages: Vec<&str> = diagnostics.iter().map(|d| d.message.as_str()).collect();
-    let f0_match = messages.iter().filter(|m| m.contains("Foo#realization[0]")).count();
-    let f1_match = messages.iter().filter(|m| m.contains("Foo#realization[1]")).count();
+    let f0_match = messages
+        .iter()
+        .filter(|m| m.contains("Foo#realization[0]"))
+        .count();
+    let f1_match = messages
+        .iter()
+        .filter(|m| m.contains("Foo#realization[1]"))
+        .count();
     assert_eq!(
         f0_match, 1,
         "expected exactly one diagnostic naming Foo#realization[0], got messages: {messages:?}"

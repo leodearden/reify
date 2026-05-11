@@ -950,7 +950,11 @@ fn inconsistent_geometric_diagnostic_carries_constraint_unsatisfiable_code() {
     );
 
     // distance(pt, origin) == 10mm
-    let dist1 = geo_fn("pt_pt_distance", vec![pt.clone(), origin.clone()], Type::length());
+    let dist1 = geo_fn(
+        "pt_pt_distance",
+        vec![pt.clone(), origin.clone()],
+        Type::length(),
+    );
     let c1 = eq(dist1, literal(mm(10.0)));
 
     // distance(pt, origin) == 20mm — contradicts c1
@@ -959,8 +963,18 @@ fn inconsistent_geometric_diagnostic_carries_constraint_unsatisfiable_code() {
 
     let problem = ResolutionProblem {
         auto_params: vec![
-            AutoParam { id: x_id.clone(), param_type: Type::length(), bounds: None, free: false },
-            AutoParam { id: y_id.clone(), param_type: Type::length(), bounds: None, free: false },
+            AutoParam {
+                id: x_id.clone(),
+                param_type: Type::length(),
+                bounds: None,
+                free: false,
+            },
+            AutoParam {
+                id: y_id.clone(),
+                param_type: Type::length(),
+                bounds: None,
+                free: false,
+            },
         ],
         constraints: vec![(cnid("Over", 0), c1), (cnid("Over", 1), c2)],
         current_values: ValueMap::new(),

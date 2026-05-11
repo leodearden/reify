@@ -39,7 +39,10 @@ mod tests {
     }
 
     /// Depth-first search for the first node with the given kind.
-    fn find_node_by_kind<'a>(node: tree_sitter::Node<'a>, kind: &str) -> Option<tree_sitter::Node<'a>> {
+    fn find_node_by_kind<'a>(
+        node: tree_sitter::Node<'a>,
+        kind: &str,
+    ) -> Option<tree_sitter::Node<'a>> {
         if node.kind() == kind {
             return Some(node);
         }
@@ -97,8 +100,7 @@ mod tests {
     #[test]
     fn test_forall_statement_with_connect() {
         let mut parser = make_parser();
-        let source =
-            b"structure S { forall v in vents: connect v.inlet -> housing.air_channel }";
+        let source = b"structure S { forall v in vents: connect v.inlet -> housing.air_channel }";
         let tree = parser.parse(source, None).expect("parse failed");
         let kinds = collect_kinds(tree.root_node());
 

@@ -52,9 +52,7 @@ fn shell_shape_out_of_bounds_face_index_returns_error() {
                 "expected error message containing 'has 6 faces', got: {msg}"
             );
         }
-        Ok(_) => panic!(
-            "expected OperationFailed for out-of-bounds face index 99, got Ok"
-        ),
+        Ok(_) => panic!("expected OperationFailed for out-of-bounds face index 99, got Ok"),
         Err(other) => panic!("expected OperationFailed, got {:?}", other),
     }
 }
@@ -90,9 +88,7 @@ fn shell_shape_boundary_face_index_returns_error() {
                 "expected error message containing 'has 6 faces', got: {msg}"
             );
         }
-        Ok(_) => panic!(
-            "expected OperationFailed for out-of-bounds face index 6, got Ok"
-        ),
+        Ok(_) => panic!("expected OperationFailed for out-of-bounds face index 6, got Ok"),
         Err(other) => panic!("expected OperationFailed, got {:?}", other),
     }
 }

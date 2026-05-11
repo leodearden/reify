@@ -129,7 +129,12 @@ fn integrate_body_force_generic<E: ReferenceElement>(
     // is automatically checked — no per-dispatch-arm top-level assertion needed.
     // If the assert fires, bump `MAX_BODY_FORCE_NODES` to fit the new element
     // type's node count.
-    const { assert!(E::N_NODES <= MAX_BODY_FORCE_NODES, "E::N_NODES exceeds MAX_BODY_FORCE_NODES; bump the constant to fit the new element type's node count") };
+    const {
+        assert!(
+            E::N_NODES <= MAX_BODY_FORCE_NODES,
+            "E::N_NODES exceeds MAX_BODY_FORCE_NODES; bump the constant to fit the new element type's node count"
+        )
+    };
 
     assert_eq!(
         connectivity.len(),
@@ -315,9 +320,9 @@ fn tri_p2_shape(c: TriRefCoord) -> [f64; 6] {
         l0 * (2.0 * l0 - 1.0), // N_0
         l1 * (2.0 * l1 - 1.0), // N_1
         l2 * (2.0 * l2 - 1.0), // N_2
-        4.0 * l0 * l1,          // N_3 (edge 01 midpoint)
-        4.0 * l1 * l2,          // N_4 (edge 12 midpoint)
-        4.0 * l0 * l2,          // N_5 (edge 20 midpoint)
+        4.0 * l0 * l1,         // N_3 (edge 01 midpoint)
+        4.0 * l1 * l2,         // N_4 (edge 12 midpoint)
+        4.0 * l0 * l2,         // N_5 (edge 20 midpoint)
     ]
 }
 
@@ -479,13 +484,19 @@ pub fn apply_traction_load(
 ) {
     match face_order {
         FaceOrder::P1Tri => integrate_face_generic(
-            f, connectivity, phys_nodes, traction,
+            f,
+            connectivity,
+            phys_nodes,
+            traction,
             TRI_P1_QUAD,
             tri_p1_shape,
             |_| TRI_P1_GRADS,
         ),
         FaceOrder::P2Tri => integrate_face_generic(
-            f, connectivity, phys_nodes, traction,
+            f,
+            connectivity,
+            phys_nodes,
+            traction,
             TRI_P2_QUAD,
             tri_p2_shape,
             tri_p2_grads,
@@ -579,7 +590,13 @@ mod tests {
         ];
         let connectivity = [0usize, 1, 2, 3];
         let mut f = vec![0.0_f64; 12]; // 4 nodes × 3 DOFs
-        apply_body_force(&mut f, ElementOrder::P1, &connectivity, &phys_nodes, [1.0, 2.0, 3.0]);
+        apply_body_force(
+            &mut f,
+            ElementOrder::P1,
+            &connectivity,
+            &phys_nodes,
+            [1.0, 2.0, 3.0],
+        );
 
         let expected_weight = 1.0 / 24.0; // vol/4 = (1/6)/4
         let force = [1.0, 2.0, 3.0];
@@ -610,28 +627,50 @@ mod tests {
         // Local nodes 0/1/2/3 → global nodes 4/0/7/2.
         let conn = [4usize, 0, 7, 2];
         let mut f = vec![0.0_f64; 30]; // 10 global nodes × 3 DOFs
-        apply_body_force(&mut f, ElementOrder::P1, &conn, &phys_nodes, [1.0, 0.0, 0.0]);
+        apply_body_force(
+            &mut f,
+            ElementOrder::P1,
+            &conn,
+            &phys_nodes,
+            [1.0, 0.0, 0.0],
+        );
 
         // vol/4 = (1/6)/4 = 1/24 per local node on the unit reference tet.
         let expected = 1.0 / 24.0;
 
         // Global node 4: f[12..15]
-        assert!((f[12] - expected).abs() < TOL, "f[12] (node 4 x-DOF) = {}, expected {expected}", f[12]);
+        assert!(
+            (f[12] - expected).abs() < TOL,
+            "f[12] (node 4 x-DOF) = {}, expected {expected}",
+            f[12]
+        );
         assert_eq!(f[13], 0.0, "f[13] (node 4 y-DOF) should be 0");
         assert_eq!(f[14], 0.0, "f[14] (node 4 z-DOF) should be 0");
 
         // Global node 0: f[0..3]
-        assert!((f[0] - expected).abs() < TOL, "f[0] (node 0 x-DOF) = {}, expected {expected}", f[0]);
+        assert!(
+            (f[0] - expected).abs() < TOL,
+            "f[0] (node 0 x-DOF) = {}, expected {expected}",
+            f[0]
+        );
         assert_eq!(f[1], 0.0, "f[1] (node 0 y-DOF) should be 0");
         assert_eq!(f[2], 0.0, "f[2] (node 0 z-DOF) should be 0");
 
         // Global node 7: f[21..24]
-        assert!((f[21] - expected).abs() < TOL, "f[21] (node 7 x-DOF) = {}, expected {expected}", f[21]);
+        assert!(
+            (f[21] - expected).abs() < TOL,
+            "f[21] (node 7 x-DOF) = {}, expected {expected}",
+            f[21]
+        );
         assert_eq!(f[22], 0.0, "f[22] (node 7 y-DOF) should be 0");
         assert_eq!(f[23], 0.0, "f[23] (node 7 z-DOF) should be 0");
 
         // Global node 2: f[6..9]
-        assert!((f[6] - expected).abs() < TOL, "f[6] (node 2 x-DOF) = {}, expected {expected}", f[6]);
+        assert!(
+            (f[6] - expected).abs() < TOL,
+            "f[6] (node 2 x-DOF) = {}, expected {expected}",
+            f[6]
+        );
         assert_eq!(f[7], 0.0, "f[7] (node 2 y-DOF) should be 0");
         assert_eq!(f[8], 0.0, "f[8] (node 2 z-DOF) should be 0");
 
@@ -660,7 +699,13 @@ mod tests {
         let phys = scaled_p2_phys_nodes(1.0);
         let connectivity: [usize; 10] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
         let mut f = vec![0.0_f64; 30]; // 10 nodes × 3 DOFs
-        apply_body_force(&mut f, ElementOrder::P2, &connectivity, &phys, [1.0, 0.0, 0.0]);
+        apply_body_force(
+            &mut f,
+            ElementOrder::P2,
+            &connectivity,
+            &phys,
+            [1.0, 0.0, 0.0],
+        );
 
         // vertex: ∫ λ(2λ-1) dV = -1/120; midpoint: ∫ 4λ_a λ_b dV = 1/30 on unit ref tet
         let expected_vertex = -1.0 / 120.0;
@@ -788,15 +833,17 @@ mod tests {
     #[test]
     fn apply_body_force_p1_volume_scaling() {
         for &s in &[0.5_f64, 1.0, 2.0, 3.7] {
-            let phys: [[f64; 3]; 4] = [
-                [0.0, 0.0, 0.0],
-                [s, 0.0, 0.0],
-                [0.0, s, 0.0],
-                [0.0, 0.0, s],
-            ];
+            let phys: [[f64; 3]; 4] =
+                [[0.0, 0.0, 0.0], [s, 0.0, 0.0], [0.0, s, 0.0], [0.0, 0.0, s]];
             let connectivity = [0usize, 1, 2, 3];
             let mut f = vec![0.0_f64; 12];
-            apply_body_force(&mut f, ElementOrder::P1, &connectivity, &phys, [1.0, 0.0, 0.0]);
+            apply_body_force(
+                &mut f,
+                ElementOrder::P1,
+                &connectivity,
+                &phys,
+                [1.0, 0.0, 0.0],
+            );
 
             let vol = s * s * s / 6.0;
             let expected_per_node = vol / 4.0;
@@ -871,11 +918,7 @@ mod tests {
     /// area/3 = 1/6 of the traction force.
     #[test]
     fn apply_traction_p1tri_unit_right_triangle() {
-        let face_phys: [[f64; 3]; 3] = [
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-        ];
+        let face_phys: [[f64; 3]; 3] = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
         let conn = [0usize, 1, 2];
         let mut f = vec![0.0_f64; 15]; // 5 nodes
         apply_traction_load(&mut f, FaceOrder::P1Tri, &conn, &face_phys, [1.0, 2.0, 3.0]);
@@ -900,7 +943,9 @@ mod tests {
             assert!(
                 (total - area * traction[alpha]).abs() < TOL,
                 "axis {alpha}: total = {total}, expected {} * {} = {}",
-                area, traction[alpha], area * traction[alpha],
+                area,
+                traction[alpha],
+                area * traction[alpha],
             );
         }
 
@@ -919,11 +964,7 @@ mod tests {
     /// yz-plane, area = 1/2. Each node gets area/3 = 1/6.
     #[test]
     fn apply_traction_p1tri_rotated_yz_plane_conservation() {
-        let face_phys: [[f64; 3]; 3] = [
-            [0.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            [0.0, 0.0, 1.0],
-        ];
+        let face_phys: [[f64; 3]; 3] = [[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
         let conn = [0usize, 1, 2];
         let traction = [3.0, -1.0, 2.0];
         let mut f = vec![0.0_f64; 9]; // 3 nodes
@@ -964,11 +1005,7 @@ mod tests {
     /// would misplace the contributions and fail this test.
     #[test]
     fn apply_traction_p1tri_non_contiguous_connectivity_scatter() {
-        let face_phys: [[f64; 3]; 3] = [
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-        ];
+        let face_phys: [[f64; 3]; 3] = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
         // Local face nodes 0, 1, 2 → global nodes 4, 0, 7.
         let conn = [4usize, 0, 7];
         let traction = [1.0, 0.0, 0.0];
@@ -979,25 +1016,35 @@ mod tests {
         let expected = 1.0 / 6.0;
 
         // Global node 4: f[12..15]
-        assert!((f[12] - expected).abs() < TOL, "f[12] (node 4 x-DOF) = {}, expected {expected}", f[12]);
+        assert!(
+            (f[12] - expected).abs() < TOL,
+            "f[12] (node 4 x-DOF) = {}, expected {expected}",
+            f[12]
+        );
         assert_eq!(f[13], 0.0, "f[13] (node 4 y-DOF) should be 0");
         assert_eq!(f[14], 0.0, "f[14] (node 4 z-DOF) should be 0");
 
         // Global node 0: f[0..3]
-        assert!((f[0] - expected).abs() < TOL, "f[0] (node 0 x-DOF) = {}, expected {expected}", f[0]);
+        assert!(
+            (f[0] - expected).abs() < TOL,
+            "f[0] (node 0 x-DOF) = {}, expected {expected}",
+            f[0]
+        );
         assert_eq!(f[1], 0.0, "f[1] (node 0 y-DOF) should be 0");
         assert_eq!(f[2], 0.0, "f[2] (node 0 z-DOF) should be 0");
 
         // Global node 7: f[21..24]
-        assert!((f[21] - expected).abs() < TOL, "f[21] (node 7 x-DOF) = {}, expected {expected}", f[21]);
+        assert!(
+            (f[21] - expected).abs() < TOL,
+            "f[21] (node 7 x-DOF) = {}, expected {expected}",
+            f[21]
+        );
         assert_eq!(f[22], 0.0, "f[22] (node 7 y-DOF) should be 0");
         assert_eq!(f[23], 0.0, "f[23] (node 7 z-DOF) should be 0");
 
         // All other entries must remain zero.
-        let touched: std::collections::HashSet<usize> = [0, 1, 2, 12, 13, 14, 21, 22, 23]
-            .iter()
-            .cloned()
-            .collect();
+        let touched: std::collections::HashSet<usize> =
+            [0, 1, 2, 12, 13, 14, 21, 22, 23].iter().cloned().collect();
         for i in 0..30 {
             if !touched.contains(&i) {
                 assert_eq!(f[i], 0.0, "f[{i}] should be 0.0 (not a face DOF)");
@@ -1153,11 +1200,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "out of range")]
     fn apply_traction_connectivity_out_of_range() {
-        let phys: [[f64; 3]; 3] = [
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-        ];
+        let phys: [[f64; 3]; 3] = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
         let conn = [0usize, 1, 99]; // 99 out of range for f.len()/3 = 3
         let mut f = vec![0.0_f64; 9];
         apply_traction_load(&mut f, FaceOrder::P1Tri, &conn, &phys, [0.0; 3]);

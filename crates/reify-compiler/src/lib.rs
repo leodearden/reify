@@ -20,9 +20,9 @@ mod geometry;
 mod geometry_boolean;
 mod geometry_curve;
 mod geometry_modify;
-mod geometry_transform;
 pub mod geometry_traits;
 pub mod geometry_traits_inference;
+mod geometry_transform;
 mod guards;
 mod ice;
 mod list_helpers;
@@ -292,7 +292,11 @@ pub fn compile_with_prelude_context(
         }
         ctx.pub_aliases()
     };
-    compile_builder::aliases_phase::phase_aliases(&mut compile_ctx, prelude_aliases, &decl_refs.alias_refs);
+    compile_builder::aliases_phase::phase_aliases(
+        &mut compile_ctx,
+        prelude_aliases,
+        &decl_refs.alias_refs,
+    );
 
     // Use the pre-built resolution_enums from the context instead of
     // re-flattening the prelude modules on every call.

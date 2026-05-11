@@ -112,8 +112,7 @@ macro_rules! assert_stub_kernel_errors {
                 },
             ];
             for op in &ops {
-                let result =
-                    ::reify_types::GeometryKernel::execute(&mut kernel, op);
+                let result = ::reify_types::GeometryKernel::execute(&mut kernel, op);
                 match result {
                     Err(::reify_types::GeometryError::OperationFailed(msg)) => {
                         assert!(
@@ -201,8 +200,8 @@ macro_rules! assert_stub_kernel_errors {
 #[cfg(test)]
 mod tests {
     use reify_types::{
-        ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId,
-        GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value,
+        ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
+        GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value,
     };
 
     const STUB_MSG: &str = "TestStub kernel not available — fixture only";

@@ -204,8 +204,7 @@ impl<'a> Lowering<'a> {
             if child.kind() == "enum_declaration"
                 && let Some(name_node) = child.child_by_field_name("name")
             {
-                self.known_enums
-                    .insert(self.node_text(name_node));
+                self.known_enums.insert(self.node_text(name_node));
             }
         }
 
@@ -1134,10 +1133,7 @@ impl<'a> Lowering<'a> {
         })
     }
 
-    fn lower_purpose_members(
-        &mut self,
-        node: tree_sitter::Node,
-    ) -> (Vec<MemberDecl>, Vec<Pragma>) {
+    fn lower_purpose_members(&mut self, node: tree_sitter::Node) -> (Vec<MemberDecl>, Vec<Pragma>) {
         let mut members = Vec::new();
         let mut pragmas = Vec::new();
         let mut cursor = node.walk();
@@ -1220,10 +1216,7 @@ impl<'a> Lowering<'a> {
     }
 
     /// Collect members and block-level pragmas from trait_member children of a trait_declaration node.
-    fn lower_trait_members(
-        &mut self,
-        node: tree_sitter::Node,
-    ) -> (Vec<MemberDecl>, Vec<Pragma>) {
+    fn lower_trait_members(&mut self, node: tree_sitter::Node) -> (Vec<MemberDecl>, Vec<Pragma>) {
         let mut members = Vec::new();
         let mut pragmas = Vec::new();
         let mut cursor = node.walk();
@@ -2046,12 +2039,8 @@ impl<'a> Lowering<'a> {
 
         match body_node.kind() {
             "connect_statement" => {
-                let connect = check_and_lower!(
-                    self,
-                    body_node,
-                    "connect",
-                    self.lower_connect(body_node)
-                )?;
+                let connect =
+                    check_and_lower!(self, body_node, "connect", self.lower_connect(body_node))?;
                 Some(MemberDecl::ForallConnect(ForallConnectDecl {
                     variable,
                     collection,
@@ -2061,12 +2050,8 @@ impl<'a> Lowering<'a> {
                 }))
             }
             "chain_statement" => {
-                let chain = check_and_lower!(
-                    self,
-                    body_node,
-                    "chain",
-                    self.lower_chain(body_node)
-                )?;
+                let chain =
+                    check_and_lower!(self, body_node, "chain", self.lower_chain(body_node))?;
                 Some(MemberDecl::ForallConnect(ForallConnectDecl {
                     variable,
                     collection,
@@ -3989,11 +3974,17 @@ mod tests {
         assert!(!f.is_pub);
         assert_eq!(f.params.len(), 2);
         assert_eq!(f.params[0].name, "w");
-        assert!(matches!(&f.params[0].type_expr.kind, TypeExprKind::Named { name, .. } if name == "Scalar"));
+        assert!(
+            matches!(&f.params[0].type_expr.kind, TypeExprKind::Named { name, .. } if name == "Scalar")
+        );
         assert_eq!(f.params[1].name, "h");
-        assert!(matches!(&f.params[1].type_expr.kind, TypeExprKind::Named { name, .. } if name == "Scalar"));
+        assert!(
+            matches!(&f.params[1].type_expr.kind, TypeExprKind::Named { name, .. } if name == "Scalar")
+        );
         assert!(f.return_type.is_some());
-        assert!(matches!(&f.return_type.as_ref().unwrap().kind, TypeExprKind::Named { name, .. } if name == "Scalar"));
+        assert!(
+            matches!(&f.return_type.as_ref().unwrap().kind, TypeExprKind::Named { name, .. } if name == "Scalar")
+        );
         assert!(f.body.let_bindings.is_empty());
         assert!(matches!(&f.body.result_expr.kind, ExprKind::BinOp { op, .. } if op == "*"));
     }
@@ -4017,11 +4008,15 @@ mod tests {
         assert_eq!(f.name, "clamp");
         assert_eq!(f.params.len(), 3);
         assert_eq!(f.params[0].name, "x");
-        assert!(matches!(&f.params[0].type_expr.kind, TypeExprKind::Named { name, .. } if name == "Real"));
+        assert!(
+            matches!(&f.params[0].type_expr.kind, TypeExprKind::Named { name, .. } if name == "Real")
+        );
         assert_eq!(f.params[1].name, "lo");
         assert_eq!(f.params[2].name, "hi");
         assert!(f.return_type.is_some());
-        assert!(matches!(&f.return_type.as_ref().unwrap().kind, TypeExprKind::Named { name, .. } if name == "Real"));
+        assert!(
+            matches!(&f.return_type.as_ref().unwrap().kind, TypeExprKind::Named { name, .. } if name == "Real")
+        );
         assert!(matches!(
             &f.body.result_expr.kind,
             ExprKind::Conditional { .. }

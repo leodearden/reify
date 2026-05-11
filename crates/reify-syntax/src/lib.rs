@@ -343,11 +343,7 @@ where
             // the visitor sees per-arm declarations as children of the group.
             MemberDecl::MatchArmDeclGroup(g) => {
                 for arm in &g.arms {
-                    walk_members_depth(
-                        std::slice::from_ref(&*arm.member),
-                        visitor,
-                        depth + 1,
-                    );
+                    walk_members_depth(std::slice::from_ref(&*arm.member), visitor, depth + 1);
                 }
             }
             _ => {}
@@ -955,7 +951,10 @@ impl DimOp {
 #[derive(Debug, Clone)]
 pub enum TypeExprKind {
     /// A named type with optional type arguments (e.g., `Scalar`, `Box<T>`, `Map<K, V>`).
-    Named { name: String, type_args: Vec<TypeExpr> },
+    Named {
+        name: String,
+        type_args: Vec<TypeExpr>,
+    },
     /// A binary dimensional operator applied to two type expressions (e.g., `Force / Area`).
     DimensionalOp {
         op: DimOp,
@@ -1035,7 +1034,10 @@ pub enum PragmaValue {
     /// identifier (no whitespace between them per the grammar). Conversion
     /// to SI is done by consumers (e.g. `unit_to_scalar`) — `PragmaValue` is
     /// intentionally a dumb wire representation.
-    Quantity { value: f64, unit: String },
+    Quantity {
+        value: f64,
+        unit: String,
+    },
 }
 
 /// An annotation directive: `@name` or `@name(expr, ...)`.
@@ -1126,13 +1128,19 @@ mod number_class_tests {
     #[test]
     fn is_real_false_infinity_classifies_as_lossy_real() {
         // Inf is not finite → LossyReal fallback.
-        assert_eq!(classify_number_literal(f64::INFINITY, false), NumberClass::LossyReal(f64::INFINITY));
+        assert_eq!(
+            classify_number_literal(f64::INFINITY, false),
+            NumberClass::LossyReal(f64::INFINITY)
+        );
     }
 
     #[test]
     fn is_real_false_overflow_past_i64_max_classifies_as_lossy_real() {
         // 1e20 cannot be represented as i64; the round-trip check fails.
         // The classifier must return LossyReal, not Real, so callers know to warn.
-        assert_eq!(classify_number_literal(1e20, false), NumberClass::LossyReal(1e20));
+        assert_eq!(
+            classify_number_literal(1e20, false),
+            NumberClass::LossyReal(1e20)
+        );
     }
 }

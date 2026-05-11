@@ -181,14 +181,17 @@ structure S {
     // beginning of `param x : Real = 1`). Locate the inner lambda's `|x|`
     // start. The original-decl label must point at the entity's `param x`,
     // i.e. earlier than the inner lambda's `x`.
-    let param_x = source.find("param x").expect("source must contain `param x`");
-    let inner_lambda = source.rfind("|x|").expect("source must contain inner `|x|`");
+    let param_x = source
+        .find("param x")
+        .expect("source must contain `param x`");
+    let inner_lambda = source
+        .rfind("|x|")
+        .expect("source must contain inner `|x|`");
 
     let l0 = &warning.labels[0]; // child site
     let l1 = &warning.labels[1]; // original-decl site
     assert!(
-        (l1.span.start as usize) >= param_x
-            && (l1.span.start as usize) < inner_lambda,
+        (l1.span.start as usize) >= param_x && (l1.span.start as usize) < inner_lambda,
         "original-decl span must point at the entity-scope `param x` \
          (between byte {} and {}), got {:?}",
         param_x,
@@ -403,9 +406,7 @@ structure def S {
     let let_sqrt = source
         .find("let sqrt")
         .expect("source must contain `let sqrt`");
-    let lambda_sqrt = source
-        .find("|sqrt|")
-        .expect("source must contain `|sqrt|`");
+    let lambda_sqrt = source.find("|sqrt|").expect("source must contain `|sqrt|`");
     let child_label = &warning.labels[0];
     assert!(
         (child_label.span.start as usize) >= lambda_sqrt,
@@ -467,8 +468,7 @@ fn lambda_in_fn_body_shadows_fn_param() {
     let l0 = &warning.labels[0]; // child site
     let l1 = &warning.labels[1]; // original-decl site
     assert!(
-        (l1.span.start as usize) >= fn_param_w
-            && (l1.span.start as usize) < lambda_w,
+        (l1.span.start as usize) >= fn_param_w && (l1.span.start as usize) < lambda_w,
         "original-decl span must point at the fn param `w` \
          (between byte {} and {}), got {:?}",
         fn_param_w,
@@ -536,15 +536,12 @@ fn lambda_in_constraint_def_predicate_shadows_param() {
     let param_wall = source
         .find("param wall")
         .expect("source must contain `param wall`");
-    let lambda_wall = source
-        .find("|wall|")
-        .expect("source must contain `|wall|`");
+    let lambda_wall = source.find("|wall|").expect("source must contain `|wall|`");
 
     let l0 = &warning.labels[0]; // child site
     let l1 = &warning.labels[1]; // original-decl site
     assert!(
-        (l1.span.start as usize) >= param_wall
-            && (l1.span.start as usize) < lambda_wall,
+        (l1.span.start as usize) >= param_wall && (l1.span.start as usize) < lambda_wall,
         "original-decl span must point at the constraint def `param wall` \
          (between byte {} and {}), got {:?}",
         param_wall,
@@ -611,15 +608,12 @@ trait T {
     let param_mass = source
         .find("param mass")
         .expect("source must contain `param mass`");
-    let lambda_mass = source
-        .find("|mass|")
-        .expect("source must contain `|mass|`");
+    let lambda_mass = source.find("|mass|").expect("source must contain `|mass|`");
 
     let l0 = &warning.labels[0]; // child site
     let l1 = &warning.labels[1]; // original-decl site
     assert!(
-        (l1.span.start as usize) >= param_mass
-            && (l1.span.start as usize) < lambda_mass,
+        (l1.span.start as usize) >= param_mass && (l1.span.start as usize) < lambda_mass,
         "original-decl span must point at the trait `param mass` \
          (between byte {} and {}), got {:?}",
         param_mass,
@@ -763,8 +757,7 @@ purpose mfg(subject : Structure) {
     let l0 = &warning.labels[0]; // child site
     let l1 = &warning.labels[1]; // original-decl site
     assert!(
-        (l1.span.start as usize) >= purpose_param
-            && (l1.span.start as usize) < lambda_subject,
+        (l1.span.start as usize) >= purpose_param && (l1.span.start as usize) < lambda_subject,
         "original-decl span must point at the purpose param `subject` \
          (between byte {} and {}), got {:?}",
         purpose_param,
@@ -821,8 +814,7 @@ structure S {
 
     let warning = shadow_warnings[0];
     assert_eq!(
-        warning.message,
-        "declaration of 'x' shadows enclosing declaration",
+        warning.message, "declaration of 'x' shadows enclosing declaration",
         "Shadowing diagnostic message must match the canonical form pinned by \
          the PRD (docs/prds/shadowing-warning.md) and `DiagnosticCode::Shadowing`'s \
          doc comment in crates/reify-types/src/diagnostics.rs"
@@ -951,15 +943,12 @@ fn fn_body_let_shadows_fn_param() {
     let fn_param_x = source
         .find("(x:")
         .expect("source must contain `(x:` (fn signature)");
-    let body_let_x = source
-        .find("let x")
-        .expect("source must contain `let x`");
+    let body_let_x = source.find("let x").expect("source must contain `let x`");
 
     let l0 = &warning.labels[0]; // child site (body let)
     let l1 = &warning.labels[1]; // original-decl site (fn param)
     assert!(
-        (l1.span.start as usize) >= fn_param_x
-            && (l1.span.start as usize) < body_let_x,
+        (l1.span.start as usize) >= fn_param_x && (l1.span.start as usize) < body_let_x,
         "original-decl span must point at the fn param `x` \
          (between byte {} and {}), got {:?}",
         fn_param_x,
@@ -1046,8 +1035,7 @@ purpose mfg(subject : Structure) {
     let l0 = &warning.labels[0]; // child site (body let)
     let l1 = &warning.labels[1]; // original-decl site (purpose param)
     assert!(
-        (l1.span.start as usize) >= purpose_param
-            && (l1.span.start as usize) < body_let_subject,
+        (l1.span.start as usize) >= purpose_param && (l1.span.start as usize) < body_let_subject,
         "original-decl span must point at the purpose param `subject` \
          (between byte {} and {}), got {:?}",
         purpose_param,
@@ -1130,15 +1118,11 @@ fn fn_and_purpose_body_arm_emit_analogous_shadow_warnings() {
     );
     assert!(
         fn_warn.message.contains("'x'")
-            && fn_warn
-                .message
-                .contains("shadows enclosing declaration"),
+            && fn_warn.message.contains("shadows enclosing declaration"),
         "fn arm: unexpected message {:?}",
         fn_warn.message
     );
-    let fn_param_x = fn_source
-        .find("(x:")
-        .expect("fn source must contain `(x:`");
+    let fn_param_x = fn_source.find("(x:").expect("fn source must contain `(x:`");
     let fn_body_let_x = fn_source
         .find("let x")
         .expect("fn source must contain `let x`");
@@ -1255,13 +1239,11 @@ purpose mfg(subject : Structure) {
         purpose_warn.labels
     );
     assert_eq!(
-        fn_warn.severity,
-        purpose_warn.severity,
+        fn_warn.severity, purpose_warn.severity,
         "fn and purpose arms must emit the same diagnostic severity"
     );
     assert_eq!(
-        fn_warn.code,
-        purpose_warn.code,
+        fn_warn.code, purpose_warn.code,
         "fn and purpose arms must emit the same diagnostic code"
     );
     // Strip each arm's variable name before comparing so the canonical message
@@ -1269,12 +1251,10 @@ purpose mfg(subject : Structure) {
     let fn_template = fn_warn.message.replace("'x'", "'<name>'");
     let purpose_template = purpose_warn.message.replace("'subject'", "'<name>'");
     assert_eq!(
-        fn_template,
-        purpose_template,
+        fn_template, purpose_template,
         "fn and purpose arms must produce the same canonical message template \
          (fn={:?}, purpose={:?})",
-        fn_warn.message,
-        purpose_warn.message
+        fn_warn.message, purpose_warn.message
     );
 }
 
@@ -1327,9 +1307,7 @@ purpose mfg(subject : Structure) {
     let shadow_warnings: Vec<_> = module
         .diagnostics
         .iter()
-        .filter(|d| {
-            d.code == Some(DiagnosticCode::Shadowing) && d.severity == Severity::Warning
-        })
+        .filter(|d| d.code == Some(DiagnosticCode::Shadowing) && d.severity == Severity::Warning)
         .collect();
     assert_eq!(
         shadow_warnings.len(),
@@ -1349,7 +1327,9 @@ purpose mfg(subject : Structure) {
     let unsupported_errors: Vec<_> = module
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Error && d.code == Some(DiagnosticCode::PurposeLetUnsupported))
+        .filter(|d| {
+            d.severity == Severity::Error && d.code == Some(DiagnosticCode::PurposeLetUnsupported)
+        })
         .collect();
     assert!(
         !unsupported_errors.is_empty(),
@@ -1403,7 +1383,8 @@ purpose mfg(subject : Structure) {
          unsupported-let error first-label span [{ef_start}, {ef_end}) must \
          overlap (both point at the body `let subject` token). \
          Shadow span: {:?}, Error span: {:?}",
-        shadow_child_span, error_first_label_span
+        shadow_child_span,
+        error_first_label_span
     );
 }
 
@@ -1474,8 +1455,7 @@ structure S {
     let l0 = &warning.labels[0]; // child site (lambda)
     let l1 = &warning.labels[1]; // original-decl site (port-internal param)
     assert!(
-        (l1.span.start as usize) >= param_q
-            && (l1.span.start as usize) < lambda_q,
+        (l1.span.start as usize) >= param_q && (l1.span.start as usize) < lambda_q,
         "original-decl span must point at the port-internal `param q` \
          (between byte {} and {}), got {:?}",
         param_q,

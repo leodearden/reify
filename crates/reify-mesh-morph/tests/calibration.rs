@@ -181,8 +181,14 @@ fn plate_with_hole_fixture_returns_valid_p1_mesh_with_hole_at_center_and_positiv
             saw_inner_rim = true;
         }
     }
-    assert!(saw_outer_rim, "surface_node_indices must include outer-rim nodes");
-    assert!(saw_inner_rim, "surface_node_indices must include inner-rim (hole) nodes");
+    assert!(
+        saw_outer_rim,
+        "surface_node_indices must include outer-rim nodes"
+    );
+    assert!(
+        saw_inner_rim,
+        "surface_node_indices must include inner-rim (hole) nodes"
+    );
 }
 
 // ── Step-7: bracket fixture validity ─────────────────────────────────────────

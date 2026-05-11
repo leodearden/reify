@@ -127,12 +127,8 @@ fn filter_accepts_single_candidate_when_template_has_no_constraints() {
     let checker = MockConstraintChecker::new().with_default(Satisfaction::Violated);
     let functions: &[CompiledFunction] = &[];
 
-    let result = filter_feasible_candidates(
-        &["ORingSeal".to_string()],
-        &template,
-        &checker,
-        functions,
-    );
+    let result =
+        filter_feasible_candidates(&["ORingSeal".to_string()], &template, &checker, functions);
 
     assert_eq!(
         result,
@@ -165,12 +161,8 @@ fn filter_accepts_candidate_when_all_constraints_satisfied() {
     let checker = MockConstraintChecker::new(); // default is Satisfied
     let functions: &[CompiledFunction] = &[];
 
-    let result = filter_feasible_candidates(
-        &["ORingSeal".to_string()],
-        &template,
-        &checker,
-        functions,
-    );
+    let result =
+        filter_feasible_candidates(&["ORingSeal".to_string()], &template, &checker, functions);
 
     assert_eq!(
         result,
@@ -203,12 +195,8 @@ fn filter_rejects_candidate_when_any_constraint_violated() {
     let checker = MockConstraintChecker::new().with_default(Satisfaction::Violated);
     let functions: &[CompiledFunction] = &[];
 
-    let result = filter_feasible_candidates(
-        &["ORingSeal".to_string()],
-        &template,
-        &checker,
-        functions,
-    );
+    let result =
+        filter_feasible_candidates(&["ORingSeal".to_string()], &template, &checker, functions);
 
     assert_eq!(
         result,
@@ -243,12 +231,8 @@ fn filter_treats_indeterminate_as_feasible_per_arch_2_5() {
     let checker = MockConstraintChecker::new().with_default(Satisfaction::Indeterminate);
     let functions: &[CompiledFunction] = &[];
 
-    let result = filter_feasible_candidates(
-        &["ORingSeal".to_string()],
-        &template,
-        &checker,
-        functions,
-    );
+    let result =
+        filter_feasible_candidates(&["ORingSeal".to_string()], &template, &checker, functions);
 
     assert_eq!(
         result,
@@ -286,12 +270,8 @@ fn filter_only_violated_constraints_are_recorded_in_rejection() {
         .with_result(cnid_0.clone(), Satisfaction::Violated);
     let functions: &[CompiledFunction] = &[];
 
-    let result = filter_feasible_candidates(
-        &["ORingSeal".to_string()],
-        &template,
-        &checker,
-        functions,
-    );
+    let result =
+        filter_feasible_candidates(&["ORingSeal".to_string()], &template, &checker, functions);
 
     assert_eq!(
         result,
@@ -438,10 +418,8 @@ fn filter_invokes_checker_independently_per_candidate() {
 
     // Call #1 → Violated (candidate "A" rejected)
     // Call #2 → Satisfied (candidate "B" accepted)
-    let checker = StatefulMockConstraintChecker::new(vec![
-        Satisfaction::Violated,
-        Satisfaction::Satisfied,
-    ]);
+    let checker =
+        StatefulMockConstraintChecker::new(vec![Satisfaction::Violated, Satisfaction::Satisfied]);
     let functions: &[CompiledFunction] = &[];
 
     let result = filter_feasible_candidates(

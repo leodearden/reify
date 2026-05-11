@@ -23,10 +23,9 @@ const EXAMPLES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples"
 ///
 /// Default: empty — all 43 example files compile clean on HEAD after task #2346
 /// (recursive examples_smoke discovery) was merged on 2026-04-26.
-const SKIP_SET: &[(&str, &str)] = &[
-    (
-        "topology_selectors/fillet_top_edges.ri",
-        "topology-selectors PRD task 7 worked example; \
+const SKIP_SET: &[(&str, &str)] = &[(
+    "topology_selectors/fillet_top_edges.ri",
+    "topology-selectors PRD task 7 worked example; \
          compile_with_stdlib gated on the missing 3-arg fillet(solid, edges, radius) \
          stdlib binding — current compiler only wires 2-arg fillet(solid, radius) \
          (crates/reify-compiler/src/geometry_modify.rs:115). \
@@ -34,8 +33,7 @@ const SKIP_SET: &[(&str, &str)] = &[
          Gated compile-with-stdlib smoke is in \
          crates/reify-eval/tests/topology_selector_smoke_tests.rs::\
          fillet_top_edges_compiles_with_stdlib_no_errors (#[ignore]).",
-    ),
-];
+)];
 
 /// Bulk smoke: walk `examples/*.ri`, parse each file and compile it with the
 /// stdlib prelude, accumulate every file that produces an Error-severity
@@ -123,12 +121,14 @@ fn skip_set_entries_exist_under_examples_dir() {
 /// Canonicalized paths (which resolve `..` components) will not match the
 /// lexical prefix string and will panic.
 fn relative_to_examples_dir(path: &Path) -> String {
-    let rel = path
-        .strip_prefix(EXAMPLES_DIR)
-        .unwrap_or_else(|e| panic!(
+    let rel = path.strip_prefix(EXAMPLES_DIR).unwrap_or_else(|e| {
+        panic!(
             "examples_smoke: '{}' is not under EXAMPLES_DIR ({}): {}",
-            path.display(), EXAMPLES_DIR, e
-        ));
+            path.display(),
+            EXAMPLES_DIR,
+            e
+        )
+    });
     rel.to_string_lossy()
         .replace(std::path::MAIN_SEPARATOR, "/")
 }
@@ -217,9 +217,8 @@ fn smoke_one(path: &Path, rel_key: &str, failures: &mut Vec<(String, String)>) {
     use reify_compiler::{compile_with_stdlib, parse_with_stdlib};
     use reify_types::{ModulePath, Severity};
 
-    let source = std::fs::read_to_string(path).unwrap_or_else(|e| {
-        panic!("examples_smoke: cannot read '{}': {}", rel_key, e)
-    });
+    let source = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("examples_smoke: cannot read '{}': {}", rel_key, e));
 
     // Derive a module name from the file stem (e.g. "m5_geometry_flange").
     let stem = path
@@ -236,11 +235,7 @@ fn smoke_one(path: &Path, rel_key: &str, failures: &mut Vec<(String, String)>) {
     // companion below.
     let parsed = parse_with_stdlib(&source, module_path);
     if !parsed.errors.is_empty() {
-        let msgs: Vec<String> = parsed
-            .errors
-            .iter()
-            .map(|e| e.message.clone())
-            .collect();
+        let msgs: Vec<String> = parsed.errors.iter().map(|e| e.message.clone()).collect();
         failures.push((rel_key.to_owned(), msgs.join("\n")));
         return;
     }

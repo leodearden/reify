@@ -1819,9 +1819,14 @@ fn infeasible_residual_diagnostic_carries_constraint_unsatisfiable_code() {
                 diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
             );
             assert!(
-                diagnostics.iter().any(|d| d.message.contains("max absolute residual")),
+                diagnostics
+                    .iter()
+                    .any(|d| d.message.contains("max absolute residual")),
                 "expected residual-branch diagnostic message containing \"max absolute residual\"; got: {:?}",
-                diagnostics.iter().map(|d| d.message.clone()).collect::<Vec<_>>(),
+                diagnostics
+                    .iter()
+                    .map(|d| d.message.clone())
+                    .collect::<Vec<_>>(),
             );
         }
         other => panic!(
@@ -1942,8 +1947,8 @@ structure def WaterCooled : Cooled {
         &template,
         &checker,
         functions,
-        6,           // max_depth: 2 params ≤ 6 → DFS runs, no depth-bound fallback
-        usize::MAX,  // no cross-product cap
+        6,          // max_depth: 2 params ≤ 6 → DFS runs, no depth-bound fallback
+        usize::MAX, // no cross-product cap
         &mut diagnostics,
     );
 
@@ -2060,8 +2065,8 @@ structure def AirCooled : Cooled {
         &template,
         &checker,
         functions,
-        1,           // max_depth=1; 2 params > 1 → fallback
-        usize::MAX,  // no cross-product cap
+        1,          // max_depth=1; 2 params > 1 → fallback
+        usize::MAX, // no cross-product cap
         &mut diagnostics,
     );
 
@@ -2115,7 +2120,9 @@ structure def AirCooled : Cooled {
     // canonical format produced at auto_type_param.rs:1346:
     // "... {n} auto-type-params declared, max_depth = {m}; ..."
     assert!(
-        diagnostics[0].message.contains("2 auto-type-params declared"),
+        diagnostics[0]
+            .message
+            .contains("2 auto-type-params declared"),
         "depth-bound message must contain '2 auto-type-params declared'; got: {:?}",
         diagnostics[0].message
     );

@@ -805,12 +805,10 @@ pub fn compute_sidecar_env(
     workspace: &std::path::Path,
     landlock_exec: Option<&std::path::Path>,
 ) -> Vec<(String, String)> {
-    let mut envs = vec![
-        (
-            "REIFY_WORKSPACE".to_string(),
-            workspace.to_string_lossy().into_owned(),
-        ),
-    ];
+    let mut envs = vec![(
+        "REIFY_WORKSPACE".to_string(),
+        workspace.to_string_lossy().into_owned(),
+    )];
     if let Some(le) = landlock_exec {
         envs.push((
             "REIFY_LANDLOCK_EXEC".to_string(),

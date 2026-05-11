@@ -125,9 +125,7 @@ impl GmshKernel {
         // wipes any half-built model state left over from a panicked prior
         // call. Without this, a single panic anywhere under the lock would
         // permanently disable meshing for the rest of the process lifetime.
-        let _guard = init::GMSH_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init::ensure_initialized();
         ffi::clear()?;
         // Silence gmsh's stdout chatter — keeps test output readable.
@@ -139,12 +137,13 @@ impl GmshKernel {
         // (skip the SetNumber call).
         let resolved_size = match options.mesh_size {
             Some(s) => s,
-            None => auto_mesh_size_from_features(surface, AutoSizeConfig::default())
-                .map_err(|e| {
+            None => {
+                auto_mesh_size_from_features(surface, AutoSizeConfig::default()).map_err(|e| {
                     GeometryError::OperationFailed(format!(
                         "auto_mesh_size_from_features failed: {e}"
                     ))
-                })?,
+                })?
+            }
         };
         if resolved_size > 0.0 {
             ffi::option_set_number("Mesh.MeshSizeMin", resolved_size)?;
@@ -195,21 +194,14 @@ impl GmshKernel {
         // Reshape u32 indices -> u64, +1 (gmsh node tags are 1-based).
         let n_tris = surface.indices.len() / 3;
         let tri_tags: Vec<u64> = (1..=n_tris as u64).collect();
-        let tri_node_tags: Vec<u64> =
-            surface.indices.iter().map(|&i| i as u64 + 1).collect();
+        let tri_node_tags: Vec<u64> = surface.indices.iter().map(|&i| i as u64 + 1).collect();
         ffi::add_elements_2d(surf_tag, 2, &tri_tags, &tri_node_tags)?;
 
         // Reclassify the discrete surface and build geometry so 3D meshing
         // has a parametric region to fill. Dihedral threshold π/2 (90°)
         // splits the cube faces; π for curve-feature detection accepts any
         // sharp edge.
-        ffi::classify_surfaces(
-            std::f64::consts::FRAC_PI_2,
-            1,
-            1,
-            std::f64::consts::PI,
-            0,
-        )?;
+        ffi::classify_surfaces(std::f64::consts::FRAC_PI_2, 1, 1, std::f64::consts::PI, 0)?;
         ffi::create_geometry(&[])?;
 
         // After classify+createGeometry, gmsh creates new geometric surface

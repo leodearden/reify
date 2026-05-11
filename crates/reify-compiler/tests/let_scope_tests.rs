@@ -2023,10 +2023,7 @@ fn conditional_returning_solid_in_let_emits_compile_error() {
             .any(|d| d.message.contains("if-then-else") && d.message.contains("geometry")),
         "expected a compile-time Error containing 'if-then-else' and 'geometry', \
          got: {:?}",
-        errors
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
     // The Error must have at least one DiagnosticLabel — pointing at the
@@ -2050,7 +2047,10 @@ fn conditional_returning_solid_in_let_emits_compile_error() {
         .find("box(od, od, length)")
         .expect("source must contain 'box(od, od, length)'")
         + "box(od, od, length)".len();
-    assert!(!target_error.labels.is_empty(), "must have at least one label");
+    assert!(
+        !target_error.labels.is_empty(),
+        "must have at least one label"
+    );
     let label = &target_error.labels[0];
     assert_eq!(
         label.span.start as usize,
@@ -2110,10 +2110,7 @@ structure AxisBox {
             .iter()
             .any(|d| d.message.contains("match") && d.message.contains("geometry")),
         "expected a compile-time Error containing 'match' and 'geometry', got: {:?}",
-        errors
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
     // The Error must have at least one DiagnosticLabel — pointing at the

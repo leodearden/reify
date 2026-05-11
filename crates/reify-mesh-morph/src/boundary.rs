@@ -319,9 +319,17 @@ mod tests {
     /// Recorded call to a `Projector` method.
     #[derive(Debug, Clone, PartialEq)]
     enum ProjectorCall {
-        Face { face: GeometryHandleId, point: [f64; 3] },
-        Edge { edge: GeometryHandleId, point: [f64; 3] },
-        Vertex { vertex: GeometryHandleId },
+        Face {
+            face: GeometryHandleId,
+            point: [f64; 3],
+        },
+        Edge {
+            edge: GeometryHandleId,
+            point: [f64; 3],
+        },
+        Vertex {
+            vertex: GeometryHandleId,
+        },
     }
 
     /// A test double for `Projector` that records calls and returns canned
@@ -343,15 +351,27 @@ mod tests {
             }
         }
 
-        fn add_face_response(&mut self, face: GeometryHandleId, result: Result<[f64; 3], ProjectorPayload>) {
+        fn add_face_response(
+            &mut self,
+            face: GeometryHandleId,
+            result: Result<[f64; 3], ProjectorPayload>,
+        ) {
             self.face_responses.insert(face, result);
         }
 
-        fn add_edge_response(&mut self, edge: GeometryHandleId, result: Result<[f64; 3], ProjectorPayload>) {
+        fn add_edge_response(
+            &mut self,
+            edge: GeometryHandleId,
+            result: Result<[f64; 3], ProjectorPayload>,
+        ) {
             self.edge_responses.insert(edge, result);
         }
 
-        fn add_vertex_response(&mut self, vertex: GeometryHandleId, result: Result<[f64; 3], ProjectorPayload>) {
+        fn add_vertex_response(
+            &mut self,
+            vertex: GeometryHandleId,
+            result: Result<[f64; 3], ProjectorPayload>,
+        ) {
             self.vertex_responses.insert(vertex, result);
         }
 
@@ -366,7 +386,10 @@ mod tests {
             face: GeometryHandleId,
             point: [f64; 3],
         ) -> Result<[f64; 3], ProjectorPayload> {
-            self.calls.lock().unwrap().push(ProjectorCall::Face { face, point });
+            self.calls
+                .lock()
+                .unwrap()
+                .push(ProjectorCall::Face { face, point });
             self.face_responses
                 .get(&face)
                 .cloned()
@@ -378,18 +401,21 @@ mod tests {
             edge: GeometryHandleId,
             point: [f64; 3],
         ) -> Result<[f64; 3], ProjectorPayload> {
-            self.calls.lock().unwrap().push(ProjectorCall::Edge { edge, point });
+            self.calls
+                .lock()
+                .unwrap()
+                .push(ProjectorCall::Edge { edge, point });
             self.edge_responses
                 .get(&edge)
                 .cloned()
                 .unwrap_or_else(|| panic!("no canned response for edge {:?}", edge))
         }
 
-        fn vertex_position(
-            &self,
-            vertex: GeometryHandleId,
-        ) -> Result<[f64; 3], ProjectorPayload> {
-            self.calls.lock().unwrap().push(ProjectorCall::Vertex { vertex });
+        fn vertex_position(&self, vertex: GeometryHandleId) -> Result<[f64; 3], ProjectorPayload> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(ProjectorCall::Vertex { vertex });
             self.vertex_responses
                 .get(&vertex)
                 .cloned()
@@ -457,7 +483,11 @@ mod tests {
             &proj,
         );
         assert_eq!(result, Ok(vec![]));
-        assert_eq!(proj.captured_calls().len(), 0, "projector must not be called");
+        assert_eq!(
+            proj.captured_calls().len(),
+            0,
+            "projector must not be called"
+        );
     }
 
     // ── Step-11: face-attached node projects onto mapped new face ─────────────
@@ -481,7 +511,10 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(
             calls[0],
-            ProjectorCall::Face { face: h(20), point: [1.0, 2.0, 3.0] }
+            ProjectorCall::Face {
+                face: h(20),
+                point: [1.0, 2.0, 3.0]
+            }
         );
     }
 
@@ -489,14 +522,13 @@ mod tests {
 
     #[test]
     fn compute_dirichlet_bcs_face_attached_with_missing_correspondence_returns_missing_correspondence_face()
-    {
+     {
         let mesh = mesh_with_vertices(vec![0.0_f32, 0.0, 0.0]);
         let mut ba = BoundaryAssociation::default();
         ba.associate(0, NodeAttachment::OnFace(h(10)));
 
         let proj = RecordingProjector::new();
-        let result =
-            compute_dirichlet_bcs(&mesh, &ba, &CorrespondenceMap::default(), &proj);
+        let result = compute_dirichlet_bcs(&mesh, &ba, &CorrespondenceMap::default(), &proj);
         assert_eq!(
             result,
             Err(ProjectionFailure::MissingCorrespondence {
@@ -504,7 +536,11 @@ mod tests {
                 old_handle: h(10),
             })
         );
-        assert_eq!(proj.captured_calls().len(), 0, "projector must not be called");
+        assert_eq!(
+            proj.captured_calls().len(),
+            0,
+            "projector must not be called"
+        );
     }
 
     // ── Step-15: edge-attached node projects onto mapped new edge ─────────────
@@ -528,7 +564,10 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(
             calls[0],
-            ProjectorCall::Edge { edge: h(40), point: [0.0, 0.5, 1.0] }
+            ProjectorCall::Edge {
+                edge: h(40),
+                point: [0.0, 0.5, 1.0]
+            }
         );
     }
 
@@ -536,14 +575,13 @@ mod tests {
 
     #[test]
     fn compute_dirichlet_bcs_edge_attached_with_missing_correspondence_returns_missing_correspondence_edge()
-    {
+     {
         let mesh = mesh_with_vertices(vec![0.0_f32, 0.0, 0.0]);
         let mut ba = BoundaryAssociation::default();
         ba.associate(0, NodeAttachment::OnEdge(h(30)));
 
         let proj = RecordingProjector::new();
-        let result =
-            compute_dirichlet_bcs(&mesh, &ba, &CorrespondenceMap::default(), &proj);
+        let result = compute_dirichlet_bcs(&mesh, &ba, &CorrespondenceMap::default(), &proj);
         assert_eq!(
             result,
             Err(ProjectionFailure::MissingCorrespondence {
@@ -551,7 +589,11 @@ mod tests {
                 old_handle: h(30),
             })
         );
-        assert_eq!(proj.captured_calls().len(), 0, "projector must not be called");
+        assert_eq!(
+            proj.captured_calls().len(),
+            0,
+            "projector must not be called"
+        );
     }
 
     // ── Step-19: vertex-attached node snaps to new vertex position ────────────
@@ -586,15 +628,19 @@ mod tests {
     /// populates `vertex_to_vertex` will see this test fail and must update
     /// both the test and the doc-comment in lockstep.
     #[test]
-    fn compute_dirichlet_bcs_vertex_attached_with_v0_2_empty_vertex_correspondence_returns_missing_correspondence_vertex(
-    ) {
+    fn compute_dirichlet_bcs_vertex_attached_with_v0_2_empty_vertex_correspondence_returns_missing_correspondence_vertex()
+     {
         let mesh = mesh_with_vertices(vec![0.0_f32, 0.0, 0.0]);
         let mut ba = BoundaryAssociation::default();
         ba.associate(0, NodeAttachment::OnVertex(h(50)));
 
         // Default CorrespondenceMap: vertex_to_vertex is always empty in v0.2.
-        let result =
-            compute_dirichlet_bcs(&mesh, &ba, &CorrespondenceMap::default(), &RecordingProjector::new());
+        let result = compute_dirichlet_bcs(
+            &mesh,
+            &ba,
+            &CorrespondenceMap::default(),
+            &RecordingProjector::new(),
+        );
         assert_eq!(
             result,
             Err(ProjectionFailure::MissingCorrespondence {
@@ -619,14 +665,18 @@ mod tests {
         let proj = RecordingProjector::new();
         let result = compute_dirichlet_bcs(&mesh, &ba, &correspondence, &proj);
         assert_eq!(result, Err(ProjectionFailure::InvalidNodeIndex(5)));
-        assert_eq!(proj.captured_calls().len(), 0, "projector must not be called");
+        assert_eq!(
+            proj.captured_calls().len(),
+            0,
+            "projector must not be called"
+        );
     }
 
     // ── Step-25: propagates projector face failure ────────────────────────────
 
     #[test]
     fn compute_dirichlet_bcs_propagates_projector_face_failure_as_projection_failure_projector_variant()
-    {
+     {
         let mesh = mesh_with_vertices(vec![0.0_f32, 0.0, 0.0]);
         let mut ba = BoundaryAssociation::default();
         ba.associate(0, NodeAttachment::OnFace(h(10)));
@@ -653,7 +703,7 @@ mod tests {
 
     #[test]
     fn compute_dirichlet_bcs_propagates_projector_edge_failure_as_projection_failure_projector_variant()
-    {
+     {
         let mesh = mesh_with_vertices(vec![0.0_f32, 0.0, 0.0]);
         let mut ba = BoundaryAssociation::default();
         ba.associate(0, NodeAttachment::OnEdge(h(30)));
@@ -680,7 +730,7 @@ mod tests {
 
     #[test]
     fn compute_dirichlet_bcs_propagates_projector_vertex_failure_as_projection_failure_projector_variant()
-    {
+     {
         let mesh = mesh_with_vertices(vec![0.0_f32, 0.0, 0.0]);
         let mut ba = BoundaryAssociation::default();
         ba.associate(0, NodeAttachment::OnVertex(h(50)));
@@ -741,7 +791,10 @@ mod tests {
         assert_eq!(calls.len(), 1, "expected exactly one projector call");
         assert_eq!(
             calls[0],
-            ProjectorCall::Face { face: h(21), point: [1.0, 1.0, 0.0] },
+            ProjectorCall::Face {
+                face: h(21),
+                point: [1.0, 1.0, 0.0]
+            },
             "must dispatch to mapped face h(21), never the globally-closest h(20)"
         );
     }

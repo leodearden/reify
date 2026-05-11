@@ -103,8 +103,9 @@ fn hash_pragma_arg(arg: &reify_syntax::PragmaArg) -> ContentHash {
         reify_syntax::PragmaArg::KeyValue { key, value } => ContentHash::of_str("kv")
             .combine(ContentHash::of_str(key))
             .combine(hash_pragma_value(value)),
-        reify_syntax::PragmaArg::Bare(value) => ContentHash::of_str("bare")
-            .combine(hash_pragma_value(value)),
+        reify_syntax::PragmaArg::Bare(value) => {
+            ContentHash::of_str("bare").combine(hash_pragma_value(value))
+        }
     }
 }
 
@@ -218,9 +219,9 @@ mod tests {
         };
         let p_one = reify_syntax::Pragma {
             name: "foo".to_string(),
-            args: vec![reify_syntax::PragmaArg::Bare(reify_syntax::PragmaValue::Ident(
-                "x".to_string(),
-            ))],
+            args: vec![reify_syntax::PragmaArg::Bare(
+                reify_syntax::PragmaValue::Ident("x".to_string()),
+            )],
             span: reify_types::SourceSpan::new(0, 0),
         };
         assert_ne!(

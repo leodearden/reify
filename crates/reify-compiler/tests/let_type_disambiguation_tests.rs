@@ -809,9 +809,7 @@ structure S : HasA {
     // that is immediately followed by ` +` — giving us the byte offset of the
     // identifier reference in `let a = b + 1mm`.
     {
-        let b_offset = source
-            .find("b +")
-            .expect("test source must contain 'b +'") as u32;
+        let b_offset = source.find("b +").expect("test source must contain 'b +'") as u32;
         let has_span_on_b = errors.iter().any(|d| {
             d.labels.iter().any(|label| {
                 label.span.start == b_offset
@@ -851,8 +849,7 @@ structure S : HasA {
     let trait_member_mismatch: Vec<_> = errors
         .iter()
         .filter(|d| {
-            d.message.contains("type mismatch for trait member")
-                && d.message.contains("'a'")
+            d.message.contains("type mismatch for trait member") && d.message.contains("'a'")
         })
         .collect();
     assert!(
@@ -1004,8 +1001,7 @@ structure S : T {
     let trait_member_mismatch_a: Vec<_> = errors
         .iter()
         .filter(|d| {
-            d.message.contains("type mismatch for trait member")
-                && d.message.contains("'a'")
+            d.message.contains("type mismatch for trait member") && d.message.contains("'a'")
         })
         .collect();
     assert!(
@@ -1076,8 +1072,7 @@ structure S : HasX {
 
     match &default_expr.kind {
         CompiledExprKind::Literal(Value::Real(v)) => assert_eq!(
-            *v,
-            1.0,
+            *v, 1.0,
             "default_expr.kind must be Literal(Value::Real(1.0)), got value {}",
             v
         ),
@@ -1142,8 +1137,7 @@ structure S : HasX {
 
     match &default_expr.kind {
         CompiledExprKind::Literal(Value::Int(v)) => assert_eq!(
-            *v,
-            42,
+            *v, 42,
             "default_expr.kind must be Literal(Value::Int(42)), got value {}",
             v
         ),
@@ -1170,9 +1164,8 @@ structure S : HasX {
 /// `label` is a short human-readable tag included in assertion failure messages
 /// (e.g. `"lowercase e (1e6)"`) for quick triage.
 fn assert_let_real_literal(literal: &str, expected_value: f64, label: &str) {
-    let source = format!(
-        "trait HasX {{\n    let x : Real = {literal}\n}}\nstructure S : HasX {{}}\n"
-    );
+    let source =
+        format!("trait HasX {{\n    let x : Real = {literal}\n}}\nstructure S : HasX {{}}\n");
     let module = compile_source(&source);
     let errors = errors_only(&module);
     assert!(
@@ -1219,12 +1212,9 @@ fn assert_let_real_literal(literal: &str, expected_value: f64, label: &str) {
 
     match &default_expr.kind {
         CompiledExprKind::Literal(Value::Real(v)) => assert_eq!(
-            *v,
-            expected_value,
+            *v, expected_value,
             "default_expr.kind must be Literal(Value::Real({:?})) for `{}`, got value {}",
-            expected_value,
-            label,
-            v
+            expected_value, label, v
         ),
         other => panic!(
             "default_expr.kind must be Literal(Value::Real({:?})) for `{}` — \
@@ -1233,9 +1223,7 @@ fn assert_let_real_literal(literal: &str, expected_value: f64, label: &str) {
              Literal(Value::Int(...)) via the integer-cast branch in the NumberLiteral \
              lowering arm of reify-compiler/src/expr.rs for integer-equal exponent forms; \
              got: {:?}",
-            expected_value,
-            label,
-            other
+            expected_value, label, other
         ),
     }
 }

@@ -156,12 +156,11 @@ pub fn diff_gui_state(old: &GuiState, new: &GuiState) -> StateDelta {
         };
 
     // --- Compile diagnostics: emit the new list when it differs ---
-    let changed_compile_diagnostics =
-        if old.compile_diagnostics != new.compile_diagnostics {
-            Some(new.compile_diagnostics.clone())
-        } else {
-            None
-        };
+    let changed_compile_diagnostics = if old.compile_diagnostics != new.compile_diagnostics {
+        Some(new.compile_diagnostics.clone())
+    } else {
+        None
+    };
 
     StateDelta {
         changed_meshes,

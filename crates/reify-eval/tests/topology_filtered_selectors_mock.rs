@@ -259,14 +259,13 @@ fn assert_faces_by_normal_tol_accepted_at_boundaries() {
             face,
             Value::String("{\"x\":0.0,\"y\":0.0,\"z\":1.0}".into()),
         );
-    let result =
-        topology_selectors::faces_by_normal(&mut kernel, parent, [0.0, 0.0, 1.0], 0.0)
-            .unwrap_or_else(|e| {
-                panic!(
-                    "faces_by_normal must accept tol=0.0 and include an exactly-aligned face, \
+    let result = topology_selectors::faces_by_normal(&mut kernel, parent, [0.0, 0.0, 1.0], 0.0)
+        .unwrap_or_else(|e| {
+            panic!(
+                "faces_by_normal must accept tol=0.0 and include an exactly-aligned face, \
                      got Err: {e:?}"
-                )
-            });
+            )
+        });
     assert_eq!(
         result,
         vec![face],
@@ -407,8 +406,7 @@ fn edges_parallel_to_nan_axis_returns_query_failed() {
 fn assert_edges_parallel_to_tol_rejected(tol: f64) {
     let parent = GeometryHandleId(1);
     let mut kernel = MockGeometryKernel::new();
-    let result =
-        topology_selectors::edges_parallel_to(&mut kernel, parent, [1.0, 0.0, 0.0], tol);
+    let result = topology_selectors::edges_parallel_to(&mut kernel, parent, [1.0, 0.0, 0.0], tol);
     match result {
         Err(QueryError::QueryFailed(msg)) => assert!(
             msg.contains("angular_tol_rad"),
@@ -448,14 +446,13 @@ fn check_boundary_accepts(tol: f64, label: &str) {
             edge,
             Value::String("{\"x\":1.0,\"y\":0.0,\"z\":0.0}".into()),
         );
-    let result =
-        topology_selectors::edges_parallel_to(&mut kernel, parent, [1.0, 0.0, 0.0], tol)
-            .unwrap_or_else(|e| {
-                panic!(
-                    "edges_parallel_to must accept tol={label} with a parallel tangent, \
+    let result = topology_selectors::edges_parallel_to(&mut kernel, parent, [1.0, 0.0, 0.0], tol)
+        .unwrap_or_else(|e| {
+            panic!(
+                "edges_parallel_to must accept tol={label} with a parallel tangent, \
                      got Err: {e:?}"
-                )
-            });
+            )
+        });
     assert_eq!(
         result,
         vec![edge],

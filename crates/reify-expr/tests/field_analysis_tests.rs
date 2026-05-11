@@ -160,10 +160,7 @@ fn von_mises_field_returns_field_with_von_mises_source() {
         ..
     } = &result
     else {
-        panic!(
-            "von_mises(Field) should return a Field, got {:?}",
-            result
-        );
+        panic!("von_mises(Field) should return a Field, got {:?}", result);
     };
 
     // Domain preserved: Point3(Real)
@@ -215,7 +212,13 @@ fn von_mises_field_stores_original_field_in_lambda_slot() {
     };
 
     assert!(
-        matches!(lambda.as_ref(), Value::Field { source: FieldSourceKind::Analytical, .. }),
+        matches!(
+            lambda.as_ref(),
+            Value::Field {
+                source: FieldSourceKind::Analytical,
+                ..
+            }
+        ),
         "lambda slot should contain the original analytical field, got {:?}",
         lambda
     );
@@ -262,7 +265,10 @@ fn sample_von_mises_field_uniaxial_returns_sigma() {
 
     // Should return Scalar { si_value ≈ sigma, dimension: PRESSURE }
     match &result {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert_eq!(
                 *dimension,
                 DimensionVector::PRESSURE,
@@ -316,7 +322,10 @@ fn sample_von_mises_field_hydrostatic_returns_zero() {
     let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
 
     match &result {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert_eq!(*dimension, DimensionVector::PRESSURE);
             assert!(
                 si_value.abs() < 1e-6,
@@ -375,12 +384,15 @@ fn assert_analysis_wrapper(
         *codomain_type, expected_codomain,
         "{op_name}: codomain mismatch"
     );
-    assert_eq!(
-        *source, expected_source,
-        "{op_name}: source kind mismatch"
-    );
+    assert_eq!(*source, expected_source, "{op_name}: source kind mismatch");
     assert!(
-        matches!(lambda.as_ref(), Value::Field { source: FieldSourceKind::Analytical, .. }),
+        matches!(
+            lambda.as_ref(),
+            Value::Field {
+                source: FieldSourceKind::Analytical,
+                ..
+            }
+        ),
         "{op_name}: lambda slot should contain original analytical field"
     );
 }
@@ -503,7 +515,10 @@ fn sample_principal_stresses_field_diagonal_returns_sorted_list() {
     let expected = [25.0, 50.0, 100.0];
     for (i, (item, &exp)) in items.iter().zip(expected.iter()).enumerate() {
         match item {
-            Value::Scalar { si_value, dimension } => {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
                 assert_eq!(*dimension, DimensionVector::PRESSURE);
                 assert!(
                     (si_value - exp).abs() < 1e-6,
@@ -551,7 +566,10 @@ fn sample_max_shear_field_uniaxial_returns_half_sigma() {
     let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
 
     match &result {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert_eq!(*dimension, DimensionVector::PRESSURE);
             let expected = sigma / 2.0;
             assert!(

@@ -231,9 +231,11 @@ fn node_traits_exported() {
     );
 
     // ConstraintNode.default_traits().is_empty()
-    assert!(reify_types::NodeArchKind::ConstraintNode
-        .default_traits()
-        .is_empty());
+    assert!(
+        reify_types::NodeArchKind::ConstraintNode
+            .default_traits()
+            .is_empty()
+    );
 }
 
 #[test]

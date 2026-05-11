@@ -460,12 +460,7 @@ pub fn interpolate_2d(
 /// returns a valid cell index `(i, i+1)` and a `t ∈ {0.0, 1.0}` clamped
 /// against the boundary; the final `lerp(v_lo, v_hi, ty)` then collapses
 /// to whichever row is on the in-range side.
-fn linear_2d(
-    grid_x: &[f64],
-    grid_y: &[f64],
-    values: &[f64],
-    query: (f64, f64),
-) -> f64 {
+fn linear_2d(grid_x: &[f64], grid_y: &[f64], values: &[f64], query: (f64, f64)) -> f64 {
     let (qx, qy) = query;
     let ny = grid_y.len();
     let (i, tx) = locate_cell_with_clamp(grid_x, qx);
@@ -531,12 +526,7 @@ fn cubic_2d_kernel<F: Fn(usize, usize) -> f64>(
 }
 
 /// Slice-based 2D cubic kernel — thin wrapper over [`cubic_2d_kernel`].
-fn cubic_2d(
-    grid_x: &[f64],
-    grid_y: &[f64],
-    values: &[f64],
-    query: (f64, f64),
-) -> f64 {
+fn cubic_2d(grid_x: &[f64], grid_y: &[f64], values: &[f64], query: (f64, f64)) -> f64 {
     let (qx, qy) = query;
     let ny = grid_y.len();
     cubic_2d_kernel(grid_x, grid_y, qx, qy, |i, j| values[index_2d(i, j, ny)])

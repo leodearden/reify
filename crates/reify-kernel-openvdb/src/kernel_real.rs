@@ -99,10 +99,7 @@ impl OpenVdbKernel {
     ///
     /// Returns `Err(QueryError::InvalidHandle)` if the handle is not
     /// registered.
-    pub fn active_voxel_count(
-        &self,
-        handle: GeometryHandleId,
-    ) -> Result<usize, QueryError> {
+    pub fn active_voxel_count(&self, handle: GeometryHandleId) -> Result<usize, QueryError> {
         let grid = self
             .handles
             .get(&handle)
@@ -242,10 +239,7 @@ impl OpenVdbKernel {
     /// `Grid::getName()` is a pure read of the cached `MetaMap` entry
     /// — no lazy init, no tree walk.
     #[cfg(feature = "test-fixtures")]
-    pub fn grid_name_for_test(
-        &self,
-        handle: GeometryHandleId,
-    ) -> Result<String, QueryError> {
+    pub fn grid_name_for_test(&self, handle: GeometryHandleId) -> Result<String, QueryError> {
         let grid = self
             .handles
             .get(&handle)
@@ -328,8 +322,7 @@ unsafe impl Sync for OpenVdbKernel {}
 // GeometryKernel trait implementation
 // ---------------------------------------------------------------------------
 
-const VOXEL_BOOL_STUB_MSG: &str =
-    "OpenVDB voxel-Boolean execution requires Voxel handles on both operands. \
+const VOXEL_BOOL_STUB_MSG: &str = "OpenVDB voxel-Boolean execution requires Voxel handles on both operands. \
      Direct-call voxelization via realize_voxel_from_mesh is available; \
      dispatcher routing for Convert{from:Mesh}→Voxel is deferred until OCCT \
      declares (Convert{from:BRep}, Mesh) in its capability descriptor (v0.3).";

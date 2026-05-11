@@ -69,7 +69,10 @@ fn assert_length_constant(
             );
             for (i, (elem, &expected)) in elems.iter().zip(expected_si.iter()).enumerate() {
                 match elem {
-                    Value::Scalar { si_value, dimension } => {
+                    Value::Scalar {
+                        si_value,
+                        dimension,
+                    } => {
                         assert_eq!(
                             *dimension,
                             DimensionVector::LENGTH,
@@ -144,4 +147,3 @@ fn standard_sheet_thicknesses_function_present_and_returns_metal_gauge_series() 
         ],
     );
 }
-

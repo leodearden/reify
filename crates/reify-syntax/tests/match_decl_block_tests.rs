@@ -179,12 +179,10 @@ fn walk_specialization_scope_members_visits_match_arm_decl_group_arms() {
         content_hash: dummy_hash(),
     };
     let mut visited: Vec<String> = Vec::new();
-    walk_specialization_scope_members(&sub, &mut |member| {
-        match member {
-            MemberDecl::MatchArmDeclGroup(_) => visited.push("group".to_string()),
-            MemberDecl::Sub(s) => visited.push(format!("sub:{}", s.structure_name)),
-            _ => {}
-        }
+    walk_specialization_scope_members(&sub, &mut |member| match member {
+        MemberDecl::MatchArmDeclGroup(_) => visited.push("group".to_string()),
+        MemberDecl::Sub(s) => visited.push(format!("sub:{}", s.structure_name)),
+        _ => {}
     });
     assert!(
         visited.contains(&"group".to_string()),

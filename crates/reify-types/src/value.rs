@@ -177,7 +177,9 @@ impl PartialEq for SampledField {
                 .zip(other.axis_grids.iter())
                 .all(|(a, b)| {
                     a.len() == b.len()
-                        && a.iter().zip(b.iter()).all(|(x, y)| x.to_bits() == y.to_bits())
+                        && a.iter()
+                            .zip(b.iter())
+                            .all(|(x, y)| x.to_bits() == y.to_bits())
                 })
             && self.interpolation == other.interpolation
             && self.data.len() == other.data.len()
@@ -203,15 +205,13 @@ impl Ord for SampledField {
         // Float comparisons use IEEE 754 total_cmp() — consistent with how
         // Value::Real / Value::Scalar are ordered elsewhere in this module.
         fn cmp_floats(a: &[f64], b: &[f64]) -> std::cmp::Ordering {
-            a.len()
-                .cmp(&b.len())
-                .then_with(|| {
-                    a.iter()
-                        .zip(b.iter())
-                        .map(|(x, y)| x.total_cmp(y))
-                        .find(|o| !o.is_eq())
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                })
+            a.len().cmp(&b.len()).then_with(|| {
+                a.iter()
+                    .zip(b.iter())
+                    .map(|(x, y)| x.total_cmp(y))
+                    .find(|o| !o.is_eq())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
         }
         self.name
             .cmp(&other.name)
@@ -956,7 +956,9 @@ impl Value {
                 for grid in &sf.axis_grids {
                     h = h.combine(hash_floats(grid));
                 }
-                h = h.combine(ContentHash::of(format!("{:?}", sf.interpolation).as_bytes()));
+                h = h.combine(ContentHash::of(
+                    format!("{:?}", sf.interpolation).as_bytes(),
+                ));
                 h = h.combine(hash_floats(&sf.data));
                 h
             }
@@ -995,8 +997,11 @@ impl Value {
                     Type::List(Box::new(elem_ty))
                 }
                 Value::Set(items) => {
-                    let elem_ty =
-                        items.iter().next().map(|v| v.infer_type()).unwrap_or(Type::Real);
+                    let elem_ty = items
+                        .iter()
+                        .next()
+                        .map(|v| v.infer_type())
+                        .unwrap_or(Type::Real);
                     Type::Set(Box::new(elem_ty))
                 }
                 Value::Map(m) => {
@@ -1457,11 +1462,9 @@ impl Value {
                     lower_bracket, lower_str, upper_str, upper_bracket
                 )
             }
-            Value::SampledField(sf) => format!(
-                "SampledField('{}', {} samples)",
-                sf.name,
-                sf.data.len()
-            ),
+            Value::SampledField(sf) => {
+                format!("SampledField('{}', {} samples)", sf.name, sf.data.len())
+            }
             Value::Undef => "undefined".to_string(),
         }
     }
@@ -2524,8 +2527,8 @@ mod tests {
     // All 7 values are bit-distinct; insertion order is intentionally scrambled
     // so that tests exercise the sort rather than relying on insertion sequence.
     const BOUNDARY_REALS: &[f64] = &[
-        0.0,             // +0.0
-        -0.0,            // -0.0 (different bit pattern from +0.0)
+        0.0,  // +0.0
+        -0.0, // -0.0 (different bit pattern from +0.0)
         f64::INFINITY,
         f64::NEG_INFINITY,
         f64::NAN,
@@ -2704,7 +2707,10 @@ mod tests {
             let a = Value::Real(f64::NAN);
             let b = Value::Real(non_canon_nan);
             // PartialEq uses to_bits() → they are NOT equal
-            assert_ne!(a, b, "Real: NaN values with different payloads must be unequal via PartialEq");
+            assert_ne!(
+                a, b,
+                "Real: NaN values with different payloads must be unequal via PartialEq"
+            );
             // content_hash collapses both to canonical NaN → they DO hash equally
             assert_eq!(
                 a.content_hash(),
@@ -2715,9 +2721,18 @@ mod tests {
 
         // (2) Value::Scalar
         {
-            let a = Value::Scalar { si_value: f64::NAN, dimension: DimensionVector::DIMENSIONLESS };
-            let b = Value::Scalar { si_value: non_canon_nan, dimension: DimensionVector::DIMENSIONLESS };
-            assert_ne!(a, b, "Scalar: NaN values with different payloads must be unequal via PartialEq");
+            let a = Value::Scalar {
+                si_value: f64::NAN,
+                dimension: DimensionVector::DIMENSIONLESS,
+            };
+            let b = Value::Scalar {
+                si_value: non_canon_nan,
+                dimension: DimensionVector::DIMENSIONLESS,
+            };
+            assert_ne!(
+                a, b,
+                "Scalar: NaN values with different payloads must be unequal via PartialEq"
+            );
             assert_eq!(
                 a.content_hash(),
                 b.content_hash(),
@@ -2727,9 +2742,20 @@ mod tests {
 
         // (3) Value::Complex (re field)
         {
-            let a = Value::Complex { re: f64::NAN, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
-            let b = Value::Complex { re: non_canon_nan, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
-            assert_ne!(a, b, "Complex re: NaN values with different payloads must be unequal via PartialEq");
+            let a = Value::Complex {
+                re: f64::NAN,
+                im: 0.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            };
+            let b = Value::Complex {
+                re: non_canon_nan,
+                im: 0.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            };
+            assert_ne!(
+                a, b,
+                "Complex re: NaN values with different payloads must be unequal via PartialEq"
+            );
             assert_eq!(
                 a.content_hash(),
                 b.content_hash(),
@@ -2741,7 +2767,10 @@ mod tests {
         {
             let a = orient(f64::NAN, 0.0, 0.0, 0.0);
             let b = orient(non_canon_nan, 0.0, 0.0, 0.0);
-            assert_ne!(a, b, "Orientation: NaN values with different payloads must be unequal via PartialEq");
+            assert_ne!(
+                a, b,
+                "Orientation: NaN values with different payloads must be unequal via PartialEq"
+            );
             assert_eq!(
                 a.content_hash(),
                 b.content_hash(),
@@ -3414,7 +3443,10 @@ mod tests {
                 b.cmp(a).reverse(),
                 "PartialEq↔Ord contract: antisymmetry violated"
             );
-            assert!(a < b, "PartialEq↔Ord contract: expected a < b (caller must pass smaller value first)");
+            assert!(
+                a < b,
+                "PartialEq↔Ord contract: expected a < b (caller must pass smaller value first)"
+            );
         }
     }
 
@@ -3438,7 +3470,10 @@ mod tests {
             .iter()
             .position(|f| f.is_infinite() && f.is_sign_negative())
             .expect("NEG_INFINITY must be present");
-        let neg_one_idx = floats.iter().position(|&f| f == -1.0_f64).expect("-1.0 must be present");
+        let neg_one_idx = floats
+            .iter()
+            .position(|&f| f == -1.0_f64)
+            .expect("-1.0 must be present");
         let neg_zero_idx = floats
             .iter()
             .position(|f| *f == 0.0 && f.is_sign_negative())
@@ -3447,15 +3482,24 @@ mod tests {
             .iter()
             .position(|f| *f == 0.0 && f.is_sign_positive())
             .expect("+0.0 must be present");
-        let pos_one_idx = floats.iter().position(|&f| f == 1.0_f64).expect("1.0 must be present");
+        let pos_one_idx = floats
+            .iter()
+            .position(|&f| f == 1.0_f64)
+            .expect("1.0 must be present");
         let pos_inf_idx = floats
             .iter()
             .position(|f| f.is_infinite() && f.is_sign_positive())
             .expect("INFINITY must be present");
-        let nan_idx = floats.iter().position(|f| f.is_nan()).expect("NaN must be present");
+        let nan_idx = floats
+            .iter()
+            .position(|f| f.is_nan())
+            .expect("NaN must be present");
 
         // Full ordering: NEG_INFINITY < -1.0 < -0.0 < +0.0 < 1.0 < INFINITY < NaN
-        assert!(neg_inf_idx < neg_one_idx, "NEG_INFINITY must come before -1.0");
+        assert!(
+            neg_inf_idx < neg_one_idx,
+            "NEG_INFINITY must come before -1.0"
+        );
         assert!(neg_one_idx < neg_zero_idx, "-1.0 must come before -0.0");
         assert!(neg_zero_idx < pos_zero_idx, "-0.0 must come before +0.0");
         assert!(pos_zero_idx < pos_one_idx, "+0.0 must come before 1.0");
@@ -3565,8 +3609,8 @@ mod tests {
         assert_ieee754_total_order_real(&[
             f64::NEG_INFINITY,
             -1.0_f64,
-            0.0_f64,   // +0.0 in the -0.0 position → wrong order
-            -0.0_f64,  // -0.0 in the +0.0 position → wrong order
+            0.0_f64,  // +0.0 in the -0.0 position → wrong order
+            -0.0_f64, // -0.0 in the +0.0 position → wrong order
             1.0_f64,
             f64::INFINITY,
             f64::NAN,
@@ -3596,13 +3640,10 @@ mod tests {
         // Meta-test: assert_boundary_set_iteration_order must not panic when given
         // Value::Real as the build function and the corresponding Real extractor.
         // This documents the helper's contract using the simplest Value variant.
-        assert_boundary_set_iteration_order(
-            Value::Real,
-            |v| match v {
-                Value::Real(f) => *f,
-                _ => panic!("unexpected value"),
-            },
-        );
+        assert_boundary_set_iteration_order(Value::Real, |v| match v {
+            Value::Real(f) => *f,
+            _ => panic!("unexpected value"),
+        });
     }
 
     #[test]
@@ -3995,7 +4036,10 @@ mod tests {
         // the IEEE 754 totalOrder sequence matches BTreeSet iteration order.
         // Expected order: [NEG_INFINITY, -1.0, -0.0, +0.0, 1.0, INFINITY, NaN]
         assert_boundary_set_iteration_order(
-            |v| Value::Scalar { si_value: v, dimension: DimensionVector::LENGTH },
+            |v| Value::Scalar {
+                si_value: v,
+                dimension: DimensionVector::LENGTH,
+            },
             |v| match v {
                 Value::Scalar { si_value, .. } => *si_value,
                 _ => panic!("unexpected value"),
@@ -4011,7 +4055,11 @@ mod tests {
         // from BTreeSet iteration over the im components.
         // Expected order: [NEG_INFINITY, -1.0, -0.0, +0.0, 1.0, INFINITY, NaN]
         assert_boundary_set_iteration_order(
-            |v| Value::Complex { re: 0.0, im: v, dimension: DimensionVector::DIMENSIONLESS },
+            |v| Value::Complex {
+                re: 0.0,
+                im: v,
+                dimension: DimensionVector::DIMENSIONLESS,
+            },
             |v| match v {
                 Value::Complex { im, .. } => *im,
                 _ => panic!("unexpected value"),
@@ -4044,7 +4092,11 @@ mod tests {
         // BTreeSet iteration over the re components.
         // Expected order: [NEG_INFINITY, -1.0, -0.0, +0.0, 1.0, INFINITY, NaN]
         assert_boundary_set_iteration_order(
-            |v| Value::Complex { re: v, im: 0.0, dimension: DimensionVector::DIMENSIONLESS },
+            |v| Value::Complex {
+                re: v,
+                im: 0.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            },
             |v| match v {
                 Value::Complex { re, .. } => *re,
                 _ => panic!("unexpected value"),
@@ -5501,19 +5553,9 @@ mod tests {
         // Real bounds. Negative-bound ranges must therefore sort correctly.
 
         // Real lower=-5.0, upper=5.0 (half-open [−5, 5))
-        let r_neg_real = make_range(
-            Some(Value::Real(-5.0)),
-            Some(Value::Real(5.0)),
-            true,
-            false,
-        );
+        let r_neg_real = make_range(Some(Value::Real(-5.0)), Some(Value::Real(5.0)), true, false);
         // Real lower=0.0, upper=10.0 (half-open [0, 10))
-        let r_pos_real = make_range(
-            Some(Value::Real(0.0)),
-            Some(Value::Real(10.0)),
-            true,
-            false,
-        );
+        let r_pos_real = make_range(Some(Value::Real(0.0)), Some(Value::Real(10.0)), true, false);
         // [-5, 5) < [0, 10) because lower bounds: −5.0 < 0.0
         assert!(r_neg_real < r_pos_real);
         // Antisymmetry
@@ -5523,19 +5565,9 @@ mod tests {
         );
 
         // Int lower=-10, upper=-1 (closed [−10, −1])
-        let r_neg_int = make_range(
-            Some(Value::Int(-10)),
-            Some(Value::Int(-1)),
-            true,
-            true,
-        );
+        let r_neg_int = make_range(Some(Value::Int(-10)), Some(Value::Int(-1)), true, true);
         // Int lower=-5, upper=-1 (closed [−5, −1])
-        let r_less_neg_int = make_range(
-            Some(Value::Int(-5)),
-            Some(Value::Int(-1)),
-            true,
-            true,
-        );
+        let r_less_neg_int = make_range(Some(Value::Int(-5)), Some(Value::Int(-1)), true, true);
         // [−10, −1] < [−5, −1] because lower bounds: −10 < −5
         assert!(r_neg_int < r_less_neg_int);
         assert_eq!(
@@ -6999,7 +7031,6 @@ mod tests {
         assert_ne!(v1, v3);
     }
 
-
     /// Regression sentinel: verifies that `content_hash()` normalizes every
     /// non-canonical NaN bit pattern to the canonical `f64::NAN` bit pattern.
     /// Uses `f64::from_bits(f64::NAN.to_bits() ^ 1)` — XOR toggles the low
@@ -7128,10 +7159,7 @@ mod tests {
             ("Set", Value::Set(std::collections::BTreeSet::new())),
             ("Map", Value::Map(std::collections::BTreeMap::new())),
             ("Option_None", Value::Option(None)),
-            (
-                "Option_Some",
-                Value::Option(Some(Box::new(Value::Int(0)))),
-            ),
+            ("Option_Some", Value::Option(Some(Box::new(Value::Int(0))))),
             (
                 "Field",
                 Value::Field {
@@ -7200,10 +7228,7 @@ mod tests {
                     max: Box::new(Value::Point(vec![])),
                 },
             ),
-            (
-                "Range",
-                Value::range(None, None, false, false),
-            ),
+            ("Range", Value::range(None, None, false, false)),
             ("Matrix", Value::Matrix(vec![])),
             ("Undef", Value::Undef),
         ];
@@ -7226,9 +7251,7 @@ mod tests {
         for (name, val) in &variants {
             let hash = val.content_hash();
             if let Some(previous_name) = seen.insert(hash, name) {
-                panic!(
-                    "content_hash collision: Value::{name} collides with {previous_name}"
-                );
+                panic!("content_hash collision: Value::{name} collides with {previous_name}");
             }
         }
     }
@@ -7326,9 +7349,15 @@ mod tests {
 
     #[test]
     fn try_infer_type_scalar_values_return_some() {
-        assert_eq!(Value::Bool(true).try_infer_type(), Some(crate::ty::Type::Bool));
+        assert_eq!(
+            Value::Bool(true).try_infer_type(),
+            Some(crate::ty::Type::Bool)
+        );
         assert_eq!(Value::Int(0).try_infer_type(), Some(crate::ty::Type::Int));
-        assert_eq!(Value::Real(0.0).try_infer_type(), Some(crate::ty::Type::Real));
+        assert_eq!(
+            Value::Real(0.0).try_infer_type(),
+            Some(crate::ty::Type::Real)
+        );
         assert_eq!(
             Value::String("".into()).try_infer_type(),
             Some(crate::ty::Type::String)
@@ -7520,20 +7549,23 @@ mod tests {
     #[test]
     fn freshness_is_final_returns_true_only_for_final() {
         // is_final() must return true ONLY for Freshness::Final.
-        assert!(
-            Freshness::Final.is_final(),
-            "Final.is_final() must be true"
-        );
+        assert!(Freshness::Final.is_final(), "Final.is_final() must be true");
         assert!(
             !Freshness::Intermediate { generation: 1 }.is_final(),
             "Intermediate.is_final() must be false"
         );
         assert!(
-            !Freshness::Pending { last_substantive: ResultRef::none() }.is_final(),
+            !Freshness::Pending {
+                last_substantive: ResultRef::none()
+            }
+            .is_final(),
             "Pending.is_final() must be false"
         );
         assert!(
-            !Freshness::Failed { error: ErrorRef::new("e") }.is_final(),
+            !Freshness::Failed {
+                error: ErrorRef::new("e")
+            }
+            .is_final(),
             "Failed.is_final() must be false"
         );
     }
@@ -7571,7 +7603,10 @@ mod tests {
         if let Value::SampledField(sf) = &b {
             sf.oob_emitted.store(true, Ordering::Release);
         }
-        assert_eq!(a, b, "AtomicBool oob_emitted must be excluded from PartialEq");
+        assert_eq!(
+            a, b,
+            "AtomicBool oob_emitted must be excluded from PartialEq"
+        );
     }
 
     /// `Value::SampledField`'s Ord type-tag (25) places it after `BoundingBox` (24).

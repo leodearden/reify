@@ -144,11 +144,7 @@ unsafe extern "C" {
     );
 
     /// `void gmshModelMeshCreateGeometry(const int* dimTags, size_t dimTags_n, int* ierr)`
-    pub fn gmshModelMeshCreateGeometry(
-        dimTags: *const c_int,
-        dimTags_n: usize,
-        ierr: *mut c_int,
-    );
+    pub fn gmshModelMeshCreateGeometry(dimTags: *const c_int, dimTags_n: usize, ierr: *mut c_int);
 
     /// `int gmshModelGeoAddSurfaceLoop(const int* surfaceTags, size_t surfaceTags_n, int tag, int* ierr)`
     pub fn gmshModelGeoAddSurfaceLoop(
@@ -216,12 +212,7 @@ unsafe extern "C" {
     ) -> c_int;
 
     /// `void gmshModelMeshSetRecombine(int dim, int tag, double angle, int* ierr)`
-    pub fn gmshModelMeshSetRecombine(
-        dim: c_int,
-        tag: c_int,
-        angle: f64,
-        ierr: *mut c_int,
-    );
+    pub fn gmshModelMeshSetRecombine(dim: c_int, tag: c_int, angle: f64, ierr: *mut c_int);
 }
 
 // ---------------------------------------------------------------------------
@@ -239,7 +230,9 @@ fn last_error_message() -> String {
     if err_ptr.is_null() {
         return String::new();
     }
-    let msg = unsafe { CStr::from_ptr(err_ptr) }.to_string_lossy().into_owned();
+    let msg = unsafe { CStr::from_ptr(err_ptr) }
+        .to_string_lossy()
+        .into_owned();
     unsafe {
         gmshFree(err_ptr as *mut c_void);
     }
@@ -350,9 +343,8 @@ pub fn option_set_number(name: &str, value: f64) -> Result<(), GeometryError> {
 
 /// Add a new model with the given name and make it the current model.
 pub fn model_add(name: &str) -> Result<(), GeometryError> {
-    let cname = CString::new(name).map_err(|e| {
-        GeometryError::OperationFailed(format!("model_add: invalid CString: {e}"))
-    })?;
+    let cname = CString::new(name)
+        .map_err(|e| GeometryError::OperationFailed(format!("model_add: invalid CString: {e}")))?;
     gmsh_call!(
         "gmshModelAdd",
         ierr,
@@ -387,11 +379,7 @@ pub fn add_discrete_entity(dim: i32, boundary: &[i32]) -> Result<i32, GeometryEr
 ///
 /// `node_tags` and `coords` are parallel: 1 tag per 3 coords (`x`, `y`, `z`).
 /// Tags must be strictly positive and unique within the model.
-pub fn add_nodes_2d(
-    surf_tag: i32,
-    node_tags: &[u64],
-    coords: &[f64],
-) -> Result<(), GeometryError> {
+pub fn add_nodes_2d(surf_tag: i32, node_tags: &[u64], coords: &[f64]) -> Result<(), GeometryError> {
     // Runtime check (not debug_assert): mismatched slices here would feed a
     // bad buffer to gmsh in release builds — opaque internal error or
     // out-of-bounds reads on the C side. This is a public FFI-boundary
@@ -597,9 +585,8 @@ pub fn geo_add_surface_loop(surface_tags: &[i32]) -> Result<i32, GeometryError> 
 /// Returns the assigned volume tag.
 pub fn geo_add_volume(shell_tags: &[i32]) -> Result<i32, GeometryError> {
     let mut ierr: c_int = 0;
-    let tag = unsafe {
-        gmshModelGeoAddVolume(shell_tags.as_ptr(), shell_tags.len(), -1, &mut ierr)
-    };
+    let tag =
+        unsafe { gmshModelGeoAddVolume(shell_tags.as_ptr(), shell_tags.len(), -1, &mut ierr) };
     check_ierr("gmshModelGeoAddVolume", ierr)?;
     Ok(tag)
 }

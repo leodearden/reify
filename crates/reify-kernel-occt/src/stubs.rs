@@ -496,7 +496,10 @@ mod tests {
         let bad_id = GeometryHandleId(42);
         match kernel.topology_cache_build_counts(bad_id) {
             Err(GeometryError::InvalidReference(id)) => {
-                assert_eq!(id, bad_id, "InvalidReference should carry the bad handle id");
+                assert_eq!(
+                    id, bad_id,
+                    "InvalidReference should carry the bad handle id"
+                );
             }
             Ok(c) => panic!(
                 "expected Err(InvalidReference) for unknown handle, got Ok({:?})",
@@ -537,8 +540,7 @@ mod tests {
     #[test]
     fn stub_kernel_query_edge_length_returns_error() {
         let kernel = OcctKernel::new();
-        let result =
-            kernel.query(&reify_types::GeometryQuery::EdgeLength(GeometryHandleId(1)));
+        let result = kernel.query(&reify_types::GeometryQuery::EdgeLength(GeometryHandleId(1)));
         let err = result.expect_err("stub query EdgeLength should error");
         assert_stub_message(&format!("{err:?}"));
     }
@@ -546,8 +548,7 @@ mod tests {
     #[test]
     fn stub_kernel_query_face_normal_returns_error() {
         let kernel = OcctKernel::new();
-        let result =
-            kernel.query(&reify_types::GeometryQuery::FaceNormal(GeometryHandleId(1)));
+        let result = kernel.query(&reify_types::GeometryQuery::FaceNormal(GeometryHandleId(1)));
         let err = result.expect_err("stub query FaceNormal should error");
         assert_stub_message(&format!("{err:?}"));
     }
@@ -555,8 +556,9 @@ mod tests {
     #[test]
     fn stub_kernel_query_edge_tangent_returns_error() {
         let kernel = OcctKernel::new();
-        let result =
-            kernel.query(&reify_types::GeometryQuery::EdgeTangent(GeometryHandleId(1)));
+        let result = kernel.query(&reify_types::GeometryQuery::EdgeTangent(GeometryHandleId(
+            1,
+        )));
         let err = result.expect_err("stub query EdgeTangent should error");
         assert_stub_message(&format!("{err:?}"));
     }
@@ -612,8 +614,13 @@ mod tests {
     #[test]
     fn stub_kernel_point_on_shape_returns_error() {
         let kernel = OcctKernel::new();
-        let result =
-            kernel.point_on_shape(GeometryHandleId(1), 0.0, 0.0, 0.0, reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M);
+        let result = kernel.point_on_shape(
+            GeometryHandleId(1),
+            0.0,
+            0.0,
+            0.0,
+            reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
+        );
         let err = result.expect_err("stub point_on_shape should error");
         assert_stub_message(&format!("{err:?}"));
     }

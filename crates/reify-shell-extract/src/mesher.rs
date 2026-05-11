@@ -245,14 +245,20 @@ impl std::fmt::Display for MesherError {
                 "mesh.thickness.len() ({thickness_len}) ≠ mesh.vertices.len() \
                  ({vertices_len}); the two parallel arrays must be the same length"
             ),
-            MesherError::NonFiniteVertex { vertex_index, coord } => write!(
+            MesherError::NonFiniteVertex {
+                vertex_index,
+                coord,
+            } => write!(
                 f,
                 "vertex {vertex_index} contains non-finite coordinate {coord}; \
                  vertex coordinates must be finite (NaN silently collapses into \
                  the dedup origin bin; ±Inf saturates to i64 boundary bins, \
                  merging unrelated vertices and corrupting mesh topology)"
             ),
-            MesherError::NonFiniteThickness { vertex_index, value } => write!(
+            MesherError::NonFiniteThickness {
+                vertex_index,
+                value,
+            } => write!(
                 f,
                 "thickness[{vertex_index}] is non-finite ({value}); thickness values \
                  must be finite (NaN/±Inf would poison averaged thickness on \
@@ -278,9 +284,7 @@ impl std::fmt::Display for MesherError {
                  iteration(s): {} triangle(s) failed; \
                  worst aspect_ratio={:.6}, \
                  worst min_angle={:.3}°",
-                metrics.failed_triangle_count,
-                metrics.min_aspect_ratio,
-                metrics.min_angle_degrees,
+                metrics.failed_triangle_count, metrics.min_aspect_ratio, metrics.min_angle_degrees,
             ),
         }
     }
@@ -398,8 +402,7 @@ fn triangle_aspect_ratio(p0: [f64; 3], p1: [f64; 3], p2: [f64; 3]) -> f64 {
         e01[2] * e02[0] - e01[0] * e02[2],
         e01[0] * e02[1] - e01[1] * e02[0],
     ];
-    let area = 0.5
-        * (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
+    let area = 0.5 * (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
 
     if area < 1e-30 {
         return 0.0;
@@ -434,11 +437,14 @@ fn triangle_min_angle_degrees(p0: [f64; 3], p1: [f64; 3], p2: [f64; 3]) -> f64 {
         if l1 < 1e-30 || l2 < 1e-30 {
             return 0.0;
         }
-        (dot(v1, v2) / (l1 * l2)).clamp(-1.0, 1.0).acos().to_degrees()
+        (dot(v1, v2) / (l1 * l2))
+            .clamp(-1.0, 1.0)
+            .acos()
+            .to_degrees()
     };
 
-    let a0 = angle_between(e01, e02);          // angle at p0
-    let a1 = angle_between(neg(e01), e12);     // angle at p1
+    let a0 = angle_between(e01, e02); // angle at p0
+    let a1 = angle_between(neg(e01), e12); // angle at p1
     let a2 = angle_between(neg(e02), neg(e12)); // angle at p2
 
     a0.min(a1).min(a2)
@@ -515,12 +521,7 @@ pub fn mesh_mid_surface(
     // (NaN→0, ±Inf→i64 extremes); a NaN/±Inf thickness would poison the averaged
     // thickness on duplicate-vertex merges and propagate to downstream FEA.
     // Vertex-coordinate errors are reported before thickness errors at the same index.
-    for (vi, (v, &t)) in mesh
-        .vertices
-        .iter()
-        .zip(mesh.thickness.iter())
-        .enumerate()
-    {
+    for (vi, (v, &t)) in mesh.vertices.iter().zip(mesh.thickness.iter()).enumerate() {
         for &c in v.iter() {
             if !c.is_finite() {
                 return Err(MesherError::NonFiniteVertex {
@@ -568,8 +569,7 @@ pub fn mesh_mid_surface(
     }
 
     // ── 4. Vertex de-duplication ──────────────────────────────────────────────
-    let (new_vertices, new_thickness, remap) =
-        dedup_vertices(mesh, options.merge_tolerance);
+    let (new_vertices, new_thickness, remap) = dedup_vertices(mesh, options.merge_tolerance);
     let new_triangles: Vec<[u32; 3]> = mesh
         .triangles
         .iter()
@@ -674,7 +674,7 @@ pub fn mesh_mid_surface(
 
 #[cfg(test)]
 mod tests {
-    use super::{mesh_mid_surface, MesherError, MesherOptions, MesherResult, QualityMetrics};
+    use super::{MesherError, MesherOptions, MesherResult, QualityMetrics, mesh_mid_surface};
     use crate::MidSurfaceMesh;
 
     // ── Step 1: public-surface smoke test ────────────────────────────────────
@@ -704,7 +704,10 @@ mod tests {
             result.mesh.thickness.is_empty(),
             "empty input → empty output thickness"
         );
-        assert_eq!(result.metrics.triangle_count, 0, "empty input → 0 triangles");
+        assert_eq!(
+            result.metrics.triangle_count, 0,
+            "empty input → 0 triangles"
+        );
         assert_eq!(result.metrics.vertex_count, 0, "empty input → 0 vertices");
         assert_eq!(result.remesh_iterations, 0, "no remeshing on empty input");
 
@@ -716,8 +719,14 @@ mod tests {
             vertices_len: 0,
             thickness_len: 0,
         };
-        let _: MesherError = MesherError::NonFiniteVertex { vertex_index: 0, coord: 0.0 };
-        let _: MesherError = MesherError::NonFiniteThickness { vertex_index: 0, value: 0.0 };
+        let _: MesherError = MesherError::NonFiniteVertex {
+            vertex_index: 0,
+            coord: 0.0,
+        };
+        let _: MesherError = MesherError::NonFiniteThickness {
+            vertex_index: 0,
+            value: 0.0,
+        };
         let _: MesherError = MesherError::OutOfRangeTriangleIndex {
             triangle_index: 0,
             vertex_index: 0,
@@ -793,7 +802,10 @@ mod tests {
         // Negative tolerance
         let err = mesh_mid_surface(
             &empty,
-            &MesherOptions { merge_tolerance: -1.0, ..MesherOptions::default() },
+            &MesherOptions {
+                merge_tolerance: -1.0,
+                ..MesherOptions::default()
+            },
         )
         .expect_err("negative merge_tolerance must be rejected");
         assert!(
@@ -804,7 +816,10 @@ mod tests {
         // Zero tolerance
         let err = mesh_mid_surface(
             &empty,
-            &MesherOptions { merge_tolerance: 0.0, ..MesherOptions::default() },
+            &MesherOptions {
+                merge_tolerance: 0.0,
+                ..MesherOptions::default()
+            },
         )
         .expect_err("zero merge_tolerance must be rejected");
         assert!(
@@ -815,7 +830,10 @@ mod tests {
         // NaN tolerance
         let err = mesh_mid_surface(
             &empty,
-            &MesherOptions { merge_tolerance: f64::NAN, ..MesherOptions::default() },
+            &MesherOptions {
+                merge_tolerance: f64::NAN,
+                ..MesherOptions::default()
+            },
         )
         .expect_err("NaN merge_tolerance must be rejected");
         assert!(
@@ -826,7 +844,10 @@ mod tests {
         // +Infinity tolerance
         let err = mesh_mid_surface(
             &empty,
-            &MesherOptions { merge_tolerance: f64::INFINITY, ..MesherOptions::default() },
+            &MesherOptions {
+                merge_tolerance: f64::INFINITY,
+                ..MesherOptions::default()
+            },
         )
         .expect_err("+Inf merge_tolerance must be rejected");
         assert!(
@@ -847,7 +868,10 @@ mod tests {
         // Zero
         let err = mesh_mid_surface(
             &empty,
-            &MesherOptions { min_aspect_ratio: 0.0, ..MesherOptions::default() },
+            &MesherOptions {
+                min_aspect_ratio: 0.0,
+                ..MesherOptions::default()
+            },
         )
         .expect_err("min_aspect_ratio = 0.0 must be rejected");
         assert!(
@@ -858,7 +882,10 @@ mod tests {
         // Negative
         let err = mesh_mid_surface(
             &empty,
-            &MesherOptions { min_aspect_ratio: -0.5, ..MesherOptions::default() },
+            &MesherOptions {
+                min_aspect_ratio: -0.5,
+                ..MesherOptions::default()
+            },
         )
         .expect_err("negative min_aspect_ratio must be rejected");
         assert!(
@@ -869,7 +896,10 @@ mod tests {
         // Above 1.0
         let err = mesh_mid_surface(
             &empty,
-            &MesherOptions { min_aspect_ratio: 1.001, ..MesherOptions::default() },
+            &MesherOptions {
+                min_aspect_ratio: 1.001,
+                ..MesherOptions::default()
+            },
         )
         .expect_err("min_aspect_ratio > 1.0 must be rejected");
         assert!(
@@ -880,7 +910,10 @@ mod tests {
         // Exactly 1.0 is valid (equilateral-only gate)
         mesh_mid_surface(
             &empty,
-            &MesherOptions { min_aspect_ratio: 1.0, ..MesherOptions::default() },
+            &MesherOptions {
+                min_aspect_ratio: 1.0,
+                ..MesherOptions::default()
+            },
         )
         .expect("min_aspect_ratio = 1.0 must be accepted (exactly at upper bound)");
     }
@@ -897,7 +930,10 @@ mod tests {
         // Zero
         let err = mesh_mid_surface(
             &empty,
-            &MesherOptions { min_angle_degrees: 0.0, ..MesherOptions::default() },
+            &MesherOptions {
+                min_angle_degrees: 0.0,
+                ..MesherOptions::default()
+            },
         )
         .expect_err("min_angle_degrees = 0.0 must be rejected");
         assert!(
@@ -908,7 +944,10 @@ mod tests {
         // Negative
         let err = mesh_mid_surface(
             &empty,
-            &MesherOptions { min_angle_degrees: -10.0, ..MesherOptions::default() },
+            &MesherOptions {
+                min_angle_degrees: -10.0,
+                ..MesherOptions::default()
+            },
         )
         .expect_err("negative min_angle_degrees must be rejected");
         assert!(
@@ -919,9 +958,14 @@ mod tests {
         // Exactly 60.0 (equilateral upper bound, excluded)
         let err = mesh_mid_surface(
             &empty,
-            &MesherOptions { min_angle_degrees: 60.0, ..MesherOptions::default() },
+            &MesherOptions {
+                min_angle_degrees: 60.0,
+                ..MesherOptions::default()
+            },
         )
-        .expect_err("min_angle_degrees = 60.0 must be rejected (equilateral upper bound, excluded)");
+        .expect_err(
+            "min_angle_degrees = 60.0 must be rejected (equilateral upper bound, excluded)",
+        );
         assert!(
             matches!(err, MesherError::InvalidMinAngleDegrees { value } if value == 60.0),
             "expected InvalidMinAngleDegrees(60.0), got {err:?}"
@@ -930,7 +974,10 @@ mod tests {
         // Above 60.0
         let err = mesh_mid_surface(
             &empty,
-            &MesherOptions { min_angle_degrees: 90.0, ..MesherOptions::default() },
+            &MesherOptions {
+                min_angle_degrees: 90.0,
+                ..MesherOptions::default()
+            },
         )
         .expect_err("min_angle_degrees > 60.0 must be rejected");
         assert!(
@@ -941,7 +988,10 @@ mod tests {
         // A small positive value is valid
         mesh_mid_surface(
             &empty,
-            &MesherOptions { min_angle_degrees: 0.001, ..MesherOptions::default() },
+            &MesherOptions {
+                min_angle_degrees: 0.001,
+                ..MesherOptions::default()
+            },
         )
         .expect("min_angle_degrees = 0.001 must be accepted");
     }
@@ -1052,7 +1102,8 @@ mod tests {
 
         // De-duplication: 4 input vertices → 3 unique vertices.
         assert_eq!(
-            result.mesh.vertices.len(), 3,
+            result.mesh.vertices.len(),
+            3,
             "4 input vertices (one duplicate pair) → 3 unique vertices"
         );
         assert_eq!(
@@ -1235,9 +1286,9 @@ mod tests {
     // Duplication is intentional: mesher.rs must be self-contained, mirroring
     // the established pattern between mid_surface.rs and segmentation.rs.
 
-    use crate::mid_surface::{extract_mid_surface, MidSurfaceOptions};
-    use reify_types::value::{InterpolationKind, SampledField, SampledGridKind};
     use crate::medial::MedialMask;
+    use crate::mid_surface::{MidSurfaceOptions, extract_mid_surface};
+    use reify_types::value::{InterpolationKind, SampledField, SampledGridKind};
     use std::sync::atomic::AtomicBool;
 
     /// Build an analytic-slab Regular3D SampledField:
@@ -1410,8 +1461,14 @@ mod tests {
         let result = mesh_mid_surface(&mesh, &opts)
             .expect("non-empty vertices with empty triangles must return Ok");
 
-        assert_eq!(result.metrics.triangle_count, 0, "no triangles → triangle_count = 0");
-        assert_eq!(result.metrics.failed_triangle_count, 0, "no triangles → no failures");
+        assert_eq!(
+            result.metrics.triangle_count, 0,
+            "no triangles → triangle_count = 0"
+        );
+        assert_eq!(
+            result.metrics.failed_triangle_count, 0,
+            "no triangles → no failures"
+        );
         assert!(
             result.metrics.min_aspect_ratio.is_infinite(),
             "empty triangle list → min_aspect_ratio must be f64::INFINITY (sentinel), \
@@ -1424,7 +1481,10 @@ mod tests {
              got {}",
             result.metrics.min_angle_degrees
         );
-        assert_eq!(result.remesh_iterations, 0, "no remeshing on empty triangle list");
+        assert_eq!(
+            result.remesh_iterations, 0,
+            "no remeshing on empty triangle list"
+        );
     }
 
     // ── task-3194 step-3: NonFiniteVertex rejection ───────────────────────────
@@ -1462,16 +1522,16 @@ mod tests {
                 .expect_err(&format!("mesh with {label} must be rejected"));
 
             match err {
-                MesherError::NonFiniteVertex { vertex_index, coord } => {
+                MesherError::NonFiniteVertex {
+                    vertex_index,
+                    coord,
+                } => {
                     assert_eq!(
                         vertex_index, 1,
                         "{label}: expected vertex_index 1, got {vertex_index}"
                     );
                     if bad_coord.is_nan() {
-                        assert!(
-                            coord.is_nan(),
-                            "{label}: expected NaN coord, got {coord}"
-                        );
+                        assert!(coord.is_nan(), "{label}: expected NaN coord, got {coord}");
                     } else {
                         assert_eq!(
                             coord, bad_coord,
@@ -1527,11 +1587,7 @@ mod tests {
             ("-Inf thickness", f64::NEG_INFINITY),
         ] {
             let mesh = MidSurfaceMesh {
-                vertices: vec![
-                    [0.0, 0.0, 0.0],
-                    [1.0, 0.0, 0.0],
-                    [0.0, 1.0, 0.0],
-                ],
+                vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
                 triangles: vec![],
                 thickness: vec![1.0, bad_val, 1.0],
             };
@@ -1540,16 +1596,16 @@ mod tests {
                 .expect_err(&format!("mesh with {label} at index 1 must be rejected"));
 
             match err {
-                MesherError::NonFiniteThickness { vertex_index, value } => {
+                MesherError::NonFiniteThickness {
+                    vertex_index,
+                    value,
+                } => {
                     assert_eq!(
                         vertex_index, 1,
                         "{label}: expected vertex_index 1, got {vertex_index}"
                     );
                     if bad_val.is_nan() {
-                        assert!(
-                            value.is_nan(),
-                            "{label}: expected NaN value, got {value}"
-                        );
+                        assert!(value.is_nan(), "{label}: expected NaN value, got {value}");
                     } else {
                         assert_eq!(
                             value, bad_val,
@@ -1572,8 +1628,9 @@ mod tests {
             triangles: vec![],
             thickness: vec![1.0, f64::NAN],
         };
-        let err_dup = mesh_mid_surface(&mesh_dup, &opts)
-            .expect_err("duplicate-vertex mesh with NaN thickness[1] must be rejected before dedup");
+        let err_dup = mesh_mid_surface(&mesh_dup, &opts).expect_err(
+            "duplicate-vertex mesh with NaN thickness[1] must be rejected before dedup",
+        );
         assert!(
             matches!(
                 err_dup,
@@ -1613,11 +1670,16 @@ mod tests {
 
         // `f64::MIN_POSITIVE / 4.0` = 2^-1024 — subnormal, 1/x overflows to +inf.
         let subnormal_a = f64::MIN_POSITIVE / 4.0;
-        assert!(subnormal_a.is_subnormal() && subnormal_a.is_sign_positive(),
-            "test setup: subnormal_a should be a positive subnormal");
+        assert!(
+            subnormal_a.is_subnormal() && subnormal_a.is_sign_positive(),
+            "test setup: subnormal_a should be a positive subnormal"
+        );
         let err = mesh_mid_surface(
             &empty,
-            &MesherOptions { merge_tolerance: subnormal_a, ..MesherOptions::default() },
+            &MesherOptions {
+                merge_tolerance: subnormal_a,
+                ..MesherOptions::default()
+            },
         )
         .expect_err("subnormal merge_tolerance (f64::MIN_POSITIVE/4) must be rejected");
         assert!(
@@ -1629,15 +1691,20 @@ mod tests {
         // (~8.99e307).  This is the class that the old `!(1.0/x).is_finite()` gate
         // MISSED; the new `is_subnormal()` gate must catch it.
         let subnormal_c = f64::MIN_POSITIVE / 2.0;
-        assert!(subnormal_c.is_subnormal() && subnormal_c.is_sign_positive(),
-            "test setup: subnormal_c (2^-1023) should be a positive subnormal");
+        assert!(
+            subnormal_c.is_subnormal() && subnormal_c.is_sign_positive(),
+            "test setup: subnormal_c (2^-1023) should be a positive subnormal"
+        );
         assert!(
             (1.0_f64 / subnormal_c).is_finite(),
             "test setup: 1.0 / subnormal_c must be finite — this is the gap the old gate missed"
         );
         let err_c = mesh_mid_surface(
             &empty,
-            &MesherOptions { merge_tolerance: subnormal_c, ..MesherOptions::default() },
+            &MesherOptions {
+                merge_tolerance: subnormal_c,
+                ..MesherOptions::default()
+            },
         )
         .expect_err("subnormal merge_tolerance (f64::MIN_POSITIVE/2) must be rejected");
         assert!(
@@ -1647,10 +1714,16 @@ mod tests {
 
         // `5e-324` ≈ 2^-1074 — the smallest positive denormal; reciprocal is +inf.
         let subnormal_b = 5e-324_f64;
-        assert!(subnormal_b.is_subnormal(), "test setup: 5e-324 must be subnormal");
+        assert!(
+            subnormal_b.is_subnormal(),
+            "test setup: 5e-324 must be subnormal"
+        );
         let err2 = mesh_mid_surface(
             &empty,
-            &MesherOptions { merge_tolerance: subnormal_b, ..MesherOptions::default() },
+            &MesherOptions {
+                merge_tolerance: subnormal_b,
+                ..MesherOptions::default()
+            },
         )
         .expect_err("subnormal merge_tolerance (5e-324) must be rejected");
         assert!(
@@ -1665,7 +1738,10 @@ mod tests {
         );
         mesh_mid_surface(
             &empty,
-            &MesherOptions { merge_tolerance: f64::MIN_POSITIVE, ..MesherOptions::default() },
+            &MesherOptions {
+                merge_tolerance: f64::MIN_POSITIVE,
+                ..MesherOptions::default()
+            },
         )
         .expect("f64::MIN_POSITIVE is the smallest normal positive — must still be accepted");
     }

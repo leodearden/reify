@@ -1137,8 +1137,7 @@ mod tests {
     /// Verify that it chains with other builder methods.
     #[test]
     fn diagnostic_with_candidates_attaches_candidates() {
-        let d = Diagnostic::error("x")
-            .with_candidates(vec!["A".to_string(), "B".to_string()]);
+        let d = Diagnostic::error("x").with_candidates(vec!["A".to_string(), "B".to_string()]);
         assert_eq!(d.candidates, vec!["A".to_string(), "B".to_string()]);
         // Fluency check: with_candidates composes with with_code and with_label
         use super::DiagnosticLabel;
@@ -1217,7 +1216,10 @@ mod tests {
     fn diagnostic_code_geometry_unbounded_with_code_round_trips() {
         let d = Diagnostic::error("x").with_code(DiagnosticCode::GeometryUnbounded);
         assert_eq!(d.code, Some(DiagnosticCode::GeometryUnbounded));
-        assert_eq!(format!("{:?}", DiagnosticCode::GeometryUnbounded), "GeometryUnbounded");
+        assert_eq!(
+            format!("{:?}", DiagnosticCode::GeometryUnbounded),
+            "GeometryUnbounded"
+        );
     }
 
     /// Under `feature = "serde"`, `DiagnosticCode::GeometryUnbounded` serializes as
@@ -1415,8 +1417,7 @@ mod tests {
     #[test]
     fn field_sampled_invalid_config_diagnostic_code_is_constructible() {
         use super::Severity;
-        let d =
-            Diagnostic::warning("invalid").with_code(DiagnosticCode::FieldSampledInvalidConfig);
+        let d = Diagnostic::warning("invalid").with_code(DiagnosticCode::FieldSampledInvalidConfig);
         assert_eq!(d.severity, Severity::Warning);
         assert_eq!(d.code, Some(DiagnosticCode::FieldSampledInvalidConfig));
     }
@@ -1517,9 +1518,12 @@ mod tests {
     /// §"Imported geometry promise"; arch §10.4 / §14.5).
     #[test]
     fn diagnostic_code_imported_tolerance_promise_insufficient_with_code_round_trips() {
-        let d =
-            Diagnostic::warning("x").with_code(DiagnosticCode::ImportedTolerancePromiseInsufficient);
-        assert_eq!(d.code, Some(DiagnosticCode::ImportedTolerancePromiseInsufficient));
+        let d = Diagnostic::warning("x")
+            .with_code(DiagnosticCode::ImportedTolerancePromiseInsufficient);
+        assert_eq!(
+            d.code,
+            Some(DiagnosticCode::ImportedTolerancePromiseInsufficient)
+        );
     }
 
     /// Under `feature = "serde"`, `DiagnosticCode::ImportedTolerancePromiseInsufficient`
@@ -1528,8 +1532,8 @@ mod tests {
     #[cfg(feature = "serde")]
     #[test]
     fn diagnostic_code_imported_tolerance_promise_insufficient_serde_pascal_case() {
-        let s = serde_json::to_string(&DiagnosticCode::ImportedTolerancePromiseInsufficient)
-            .unwrap();
+        let s =
+            serde_json::to_string(&DiagnosticCode::ImportedTolerancePromiseInsufficient).unwrap();
         assert_eq!(s, "\"ImportedTolerancePromiseInsufficient\"");
     }
 
@@ -1549,8 +1553,7 @@ mod tests {
     /// §"Resolved design decisions" → "Imported geometry promise").
     #[test]
     fn diagnostic_code_input_tolerance_promise_is_zero_with_code_round_trips() {
-        let d =
-            Diagnostic::warning("x").with_code(DiagnosticCode::InputTolerancePromiseIsZero);
+        let d = Diagnostic::warning("x").with_code(DiagnosticCode::InputTolerancePromiseIsZero);
         assert_eq!(d.code, Some(DiagnosticCode::InputTolerancePromiseIsZero));
     }
 
@@ -1560,8 +1563,7 @@ mod tests {
     #[cfg(feature = "serde")]
     #[test]
     fn diagnostic_code_input_tolerance_promise_is_zero_serde_pascal_case() {
-        let s =
-            serde_json::to_string(&DiagnosticCode::InputTolerancePromiseIsZero).unwrap();
+        let s = serde_json::to_string(&DiagnosticCode::InputTolerancePromiseIsZero).unwrap();
         assert_eq!(s, "\"InputTolerancePromiseIsZero\"");
     }
 
@@ -1585,7 +1587,10 @@ mod tests {
         let d = Diagnostic::warning("x").with_code(DiagnosticCode::LongChainRealization);
         assert_eq!(d.severity, Severity::Warning);
         assert_eq!(d.code, Some(DiagnosticCode::LongChainRealization));
-        assert_eq!(format!("{:?}", DiagnosticCode::LongChainRealization), "LongChainRealization");
+        assert_eq!(
+            format!("{:?}", DiagnosticCode::LongChainRealization),
+            "LongChainRealization"
+        );
     }
 
     /// Under `feature = "serde"`, `DiagnosticCode::LongChainRealization`

@@ -184,7 +184,10 @@ structure def BorosilicateGlass : OpticallyCharacterized {
     ];
     for cell_name in &expected_cells {
         assert!(
-            template.value_cells.iter().any(|vc| vc.id.member == *cell_name),
+            template
+                .value_cells
+                .iter()
+                .any(|vc| vc.id.member == *cell_name),
             "BorosilicateGlass template missing value cell '{}', cells: {:?}",
             cell_name,
             template

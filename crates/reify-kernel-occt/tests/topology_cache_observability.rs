@@ -32,12 +32,7 @@ fn query_adjacent_faces(kernel: &OcctKernel, shape: GeometryHandleId, face_index
 }
 
 /// Helper: issue `SharedEdges { face_a, face_b }` and unwrap the result.
-fn query_shared_edges(
-    kernel: &OcctKernel,
-    shape: GeometryHandleId,
-    face_a: usize,
-    face_b: usize,
-) {
+fn query_shared_edges(kernel: &OcctKernel, shape: GeometryHandleId, face_a: usize, face_b: usize) {
     kernel
         .query(&GeometryQuery::SharedEdges {
             shape,
@@ -111,7 +106,10 @@ fn topology_cache_build_counts_returns_invalid_reference_for_unknown_handle() {
     let bad_id = GeometryHandleId(999);
     match kernel.topology_cache_build_counts(bad_id) {
         Err(GeometryError::InvalidReference(id)) => {
-            assert_eq!(id, bad_id, "InvalidReference should carry the bad handle id");
+            assert_eq!(
+                id, bad_id,
+                "InvalidReference should carry the bad handle id"
+            );
         }
         Ok(c) => panic!(
             "expected Err(InvalidReference) for unknown handle, got Ok({:?})",

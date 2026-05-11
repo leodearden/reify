@@ -113,7 +113,10 @@ mod tests {
 
     #[test]
     fn has_test_annotation_returns_false_when_other_annotations_present() {
-        let anns = vec![make_annotation(DEPRECATED_ANNOTATION), make_annotation("inline")];
+        let anns = vec![
+            make_annotation(DEPRECATED_ANNOTATION),
+            make_annotation("inline"),
+        ];
         assert!(!has_test_annotation(&anns));
     }
 

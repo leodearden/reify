@@ -5,8 +5,8 @@
 // the pending oneshot channels that connect the two sides.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -68,12 +68,9 @@ impl DebugBridge {
                     timeout.as_millis()
                 )
             })?
-            .map_err(|_| {
-                format!("debug-request '{command}' channel dropped")
-            })?;
+            .map_err(|_| format!("debug-request '{command}' channel dropped"))?;
 
-        serde_json::from_str(&result)
-            .map_err(|e| format!("invalid JSON from JS bridge: {e}"))
+        serde_json::from_str(&result).map_err(|e| format!("invalid JSON from JS bridge: {e}"))
     }
 
     /// Send a command to the JS debug bridge and wait for the response.
@@ -81,11 +78,7 @@ impl DebugBridge {
     /// Emits a `debug-request` event with `{ id, command, params }`, then waits
     /// on a oneshot channel for up to 5 seconds for the JS bridge to respond via
     /// the `debug_response` Tauri command.
-    pub async fn query_frontend(
-        &self,
-        command: &str,
-        params: Value,
-    ) -> Result<Value, String> {
+    pub async fn query_frontend(&self, command: &str, params: Value) -> Result<Value, String> {
         self.query_frontend_with_timeout(command, params, Duration::from_secs(5))
             .await
     }

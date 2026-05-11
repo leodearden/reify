@@ -2,10 +2,10 @@ pub(super) mod checker;
 use checker::*;
 
 use super::*;
-use std::cell::RefCell;
 use crate::geometry_traits_inference::{
     GeometryTrait, InferredTraits, LetBindingEnv, infer_traits_for_expr_in_env, infer_traits_for_op,
 };
+use std::cell::RefCell;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn check_trait_conformance(
@@ -227,11 +227,7 @@ fn promote_function_call_to_structure_ref(
 /// Recursive dispatcher: walk `param_type` lockstep against `compiled_arg`,
 /// recursing into Option/List/Set/Map wrapper pairs and delegating `TraitObject`
 /// to the leaf helper.
-fn walk_param_against_arg(
-    param_type: &Type,
-    compiled_arg: &CompiledExpr,
-    ctx: &mut WalkCtx<'_>,
-) {
+fn walk_param_against_arg(param_type: &Type, compiled_arg: &CompiledExpr, ctx: &mut WalkCtx<'_>) {
     match (param_type, &compiled_arg.kind) {
         // Option wrapper: recurse into the inner value.
         (Type::Option(inner_p), CompiledExprKind::OptionSome(inner_a)) => {
@@ -246,7 +242,8 @@ fn walk_param_against_arg(
         // do not silently fall through to the type-level fallback (task-2543).
         (
             Type::List(inner_p),
-            CompiledExprKind::ListLiteral(elements) | CompiledExprKind::ReflectiveCellList(elements),
+            CompiledExprKind::ListLiteral(elements)
+            | CompiledExprKind::ReflectiveCellList(elements),
         ) => {
             for elem in elements {
                 walk_param_against_arg(inner_p, elem, ctx);
@@ -431,11 +428,7 @@ fn emit_leaf_conformance_for_arg_type(
 /// secondary wrapper-shape diagnostic on top of the root-cause error. Non-wrapper,
 /// non-trait param types (e.g. `Real`, `Int`) fall through silently — a fully general
 /// arg-shape pass is tracked as future work.
-fn walk_param_against_arg_type(
-    param_type: &Type,
-    arg_type: &Type,
-    ctx: &mut WalkCtx<'_>,
-) {
+fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut WalkCtx<'_>) {
     // Anti-cascade: skip when either type carries the poison sentinel so no
     // wrapper-shape, leaf-conformance, or future-arm diagnostic piles on top
     // of an already-reported upstream error. Hoisted above the match so the
@@ -593,7 +586,9 @@ impl<'a> LetBindingEnv for RealizationLetEnv<'a> {
             // malformed IR before a stack overflow can occur.
             let expr = cell.default_expr.as_ref()?;
             self.in_flight.borrow_mut().push(id.clone());
-            let _guard = InFlightGuard { stack: &self.in_flight };
+            let _guard = InFlightGuard {
+                stack: &self.in_flight,
+            };
             let result = infer_traits_for_expr_in_env(expr, self);
             return Some(result);
         }
@@ -679,7 +674,12 @@ fn check_leaf_trait_conformance(
                 if matches!(trait_kind, GeometryTrait::Bounded) {
                     emit_geometry_unbounded(ctx.arg_name, ctx.span, ctx.diagnostics);
                 } else {
-                    emit_geometry_trait_violation(ctx.arg_name, required_trait, ctx.span, ctx.diagnostics);
+                    emit_geometry_trait_violation(
+                        ctx.arg_name,
+                        required_trait,
+                        ctx.span,
+                        ctx.diagnostics,
+                    );
                 }
             }
             return;
@@ -900,7 +900,10 @@ mod tests {
                     is_pub: false,
                     type_expr: Some(direction_type_expr),
                     value: reify_syntax::Expr {
-                        kind: reify_syntax::ExprKind::NumberLiteral { value: 0.0, is_real: false },
+                        kind: reify_syntax::ExprKind::NumberLiteral {
+                            value: 0.0,
+                            is_real: false,
+                        },
                         span: SourceSpan::empty(0),
                     },
                     where_clause: None,
@@ -1052,7 +1055,10 @@ mod tests {
                         is_pub: false,
                         type_expr: None,
                         value: reify_syntax::Expr {
-                            kind: reify_syntax::ExprKind::NumberLiteral { value: 5.5, is_real: true },
+                            kind: reify_syntax::ExprKind::NumberLiteral {
+                                value: 5.5,
+                                is_real: true,
+                            },
                             span: SourceSpan::empty(0),
                         },
                         where_clause: None,
@@ -1208,7 +1214,10 @@ mod tests {
             is_pub: false,
             type_expr: None, // cell_type carries the annotation; type_expr is the raw AST form
             value: reify_syntax::Expr {
-                kind: reify_syntax::ExprKind::NumberLiteral { value: 1.0, is_real: false },
+                kind: reify_syntax::ExprKind::NumberLiteral {
+                    value: 1.0,
+                    is_real: false,
+                },
                 span: SourceSpan::empty(0),
             },
             where_clause: None,
@@ -1225,7 +1234,10 @@ mod tests {
             is_pub: false,
             type_expr: None,
             value: reify_syntax::Expr {
-                kind: reify_syntax::ExprKind::NumberLiteral { value: 5.5, is_real: true },
+                kind: reify_syntax::ExprKind::NumberLiteral {
+                    value: 5.5,
+                    is_real: true,
+                },
                 span: SourceSpan::empty(0),
             },
             where_clause: None,
@@ -1679,7 +1691,10 @@ mod tests {
                         is_pub: false,
                         type_expr: None,
                         value: reify_syntax::Expr {
-                            kind: reify_syntax::ExprKind::NumberLiteral { value: 5.5, is_real: true },
+                            kind: reify_syntax::ExprKind::NumberLiteral {
+                                value: 5.5,
+                                is_real: true,
+                            },
                             span: SourceSpan::empty(0),
                         },
                         where_clause: None,
@@ -1803,7 +1818,10 @@ mod tests {
                     is_pub: false,
                     type_expr: Some(length_type_expr),
                     value: reify_syntax::Expr {
-                        kind: reify_syntax::ExprKind::NumberLiteral { value: 0.0, is_real: false },
+                        kind: reify_syntax::ExprKind::NumberLiteral {
+                            value: 0.0,
+                            is_real: false,
+                        },
                         span: SourceSpan::empty(0),
                     },
                     where_clause: None,
@@ -1814,7 +1832,10 @@ mod tests {
                 reify_syntax::MemberDecl::Constraint(reify_syntax::ConstraintDecl {
                     label: Some("bound".to_string()),
                     expr: reify_syntax::Expr {
-                        kind: reify_syntax::ExprKind::NumberLiteral { value: 1.0, is_real: false },
+                        kind: reify_syntax::ExprKind::NumberLiteral {
+                            value: 1.0,
+                            is_real: false,
+                        },
                         span: SourceSpan::empty(0),
                     },
                     where_clause: None,
@@ -2028,7 +2049,10 @@ mod tests {
             is_pub: false,
             type_expr: None, // unannotated — must go through Pass 2 inference
             value: reify_syntax::Expr {
-                kind: reify_syntax::ExprKind::NumberLiteral { value: 2.5, is_real: true },
+                kind: reify_syntax::ExprKind::NumberLiteral {
+                    value: 2.5,
+                    is_real: true,
+                },
                 span: SourceSpan::empty(0),
             },
             where_clause: None,
@@ -2092,7 +2116,8 @@ mod tests {
             "Expected no pass2_compile_errors for a successful compilation"
         );
         assert!(
-            out.inferred_let_exprs.contains_key(&("y".to_string(), AvailableDefaultKind::Let)),
+            out.inferred_let_exprs
+                .contains_key(&("y".to_string(), AvailableDefaultKind::Let)),
             "Expected composite key ('y', Let) in inferred_let_exprs after Pass 2 compiled the unannotated let"
         );
         assert_eq!(
@@ -2129,7 +2154,10 @@ mod tests {
             is_pub: false,
             type_expr: None, // unannotated — will be compiled in Pass 2
             value: reify_syntax::Expr {
-                kind: reify_syntax::ExprKind::NumberLiteral { value: 5.5, is_real: true },
+                kind: reify_syntax::ExprKind::NumberLiteral {
+                    value: 5.5,
+                    is_real: true,
+                },
                 span: SourceSpan::empty(0),
             },
             where_clause: None,
@@ -2252,7 +2280,10 @@ mod tests {
             is_pub: false,
             type_expr: None, // type_expr in LetDecl is not consulted by Pass 1 — DefaultKind carries cell_type
             value: reify_syntax::Expr {
-                kind: reify_syntax::ExprKind::NumberLiteral { value: 80.0, is_real: false },
+                kind: reify_syntax::ExprKind::NumberLiteral {
+                    value: 80.0,
+                    is_real: false,
+                },
                 span: SourceSpan::empty(0),
             },
             where_clause: None,
@@ -2367,7 +2398,10 @@ mod tests {
             is_pub: false,
             type_expr: None, // type_expr in LetDecl is not consulted by Pass 1 — DefaultKind carries cell_type
             value: reify_syntax::Expr {
-                kind: reify_syntax::ExprKind::NumberLiteral { value: 80.0, is_real: false },
+                kind: reify_syntax::ExprKind::NumberLiteral {
+                    value: 80.0,
+                    is_real: false,
+                },
                 span: SourceSpan::empty(0),
             },
             where_clause: None,
@@ -2564,7 +2598,8 @@ mod tests {
 
         // (c) The compiled expression must be cached in inferred_let_exprs.
         assert!(
-            out.inferred_let_exprs.contains_key(&("x".to_string(), AvailableDefaultKind::Let)),
+            out.inferred_let_exprs
+                .contains_key(&("x".to_string(), AvailableDefaultKind::Let)),
             "Expected composite key ('x', Let) in inferred_let_exprs — Pass 2 must cache \
              the compiled expression even when compile_expr emitted a Warning; \
              got keys: {:?}",
@@ -2905,7 +2940,10 @@ mod tests {
             is_pub: false,
             type_expr: None, // type_expr not consulted — DefaultKind carries cell_type directly
             value: reify_syntax::Expr {
-                kind: reify_syntax::ExprKind::NumberLiteral { value: 80.0, is_real: false },
+                kind: reify_syntax::ExprKind::NumberLiteral {
+                    value: 80.0,
+                    is_real: false,
+                },
                 span: SourceSpan::empty(0),
             },
             where_clause: None,
@@ -3544,7 +3582,10 @@ mod tests {
             is_pub: false,
             type_expr: None, // type_expr not consulted — DefaultKind::Let carries cell_type directly
             value: reify_syntax::Expr {
-                kind: reify_syntax::ExprKind::NumberLiteral { value: 80.0, is_real: false },
+                kind: reify_syntax::ExprKind::NumberLiteral {
+                    value: 80.0,
+                    is_real: false,
+                },
                 span: SourceSpan::empty(0),
             },
             where_clause: None,
@@ -3872,8 +3913,7 @@ mod tests {
         assert_eq!(d.severity, Severity::Error);
         assert_eq!(d.code, Some(DiagnosticCode::TypeNotConformingToTrait));
         assert_eq!(
-            d.message,
-            "geometry argument 'g' does not conform to trait 'Connected'",
+            d.message, "geometry argument 'g' does not conform to trait 'Connected'",
             "message wording contract: arg name + trait name, no 'required by param' suffix"
         );
         assert_eq!(

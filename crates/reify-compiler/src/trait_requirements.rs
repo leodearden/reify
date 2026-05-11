@@ -508,14 +508,9 @@ mod tests {
             &mut diags,
         );
 
-        let hole_count = ctx
-            .requirements
-            .iter()
-            .filter(|r| r.name == "hole")
-            .count();
+        let hole_count = ctx.requirements.iter().filter(|r| r.name == "hole").count();
         assert_eq!(
-            hole_count,
-            1,
+            hole_count, 1,
             "Expected exactly one 'hole' sub-requirement (dedup via seen_sub_names), got {}",
             hole_count
         );
@@ -591,14 +586,9 @@ mod tests {
         );
         // The first-seen 'hole' requirement (Hole, from ParentA) is kept; the conflicting
         // one (Rectangle, from ParentB) is dropped after the diagnostic fires.
-        let hole_count = ctx
-            .requirements
-            .iter()
-            .filter(|r| r.name == "hole")
-            .count();
+        let hole_count = ctx.requirements.iter().filter(|r| r.name == "hole").count();
         assert_eq!(
-            hole_count,
-            1,
+            hole_count, 1,
             "Expected one 'hole' requirement kept (first-seen wins), got {}",
             hole_count
         );
@@ -635,7 +625,10 @@ mod tests {
             is_pub: false,
             type_expr: None,
             value: reify_syntax::Expr {
-                kind: reify_syntax::ExprKind::NumberLiteral { value: 1.0, is_real: false },
+                kind: reify_syntax::ExprKind::NumberLiteral {
+                    value: 1.0,
+                    is_real: false,
+                },
                 span: SourceSpan::empty(0),
             },
             where_clause: None,
@@ -848,7 +841,12 @@ mod tests {
         assert_eq!(result, ControlFlow::Break(()));
         // Map must remain unchanged (conflict does NOT overwrite)
         assert_eq!(map.get("x"), Some(&(7_i32, "TraitA".to_string())));
-        assert_eq!(diags.len(), 1, "Expected exactly one diagnostic, got: {:?}", diags);
+        assert_eq!(
+            diags.len(),
+            1,
+            "Expected exactly one diagnostic, got: {:?}",
+            diags
+        );
         assert_eq!(diags[0].severity, Severity::Error);
         assert_eq!(
             diags[0].code,
@@ -890,7 +888,11 @@ mod tests {
         assert_eq!(result, ControlFlow::Break(()));
         // Map must not be overwritten (still TraitA, not TraitB)
         assert_eq!(map.get("x"), Some(&(7_i32, "TraitA".to_string())));
-        assert!(diags.is_empty(), "Expected no diagnostics on dedup, got: {:?}", diags);
+        assert!(
+            diags.is_empty(),
+            "Expected no diagnostics on dedup, got: {:?}",
+            diags
+        );
     }
 
     /// Cache-miss path of `try_dedup_or_conflict`: calling with a name not in the map
@@ -908,14 +910,16 @@ mod tests {
             "TraitA",
             SourceSpan::empty(0),
             // No code argument needed: cache-miss path never invokes the closure.
-            |_, _, _, _, _| -> (String, DiagnosticCode) {
-                unreachable!("not on cache miss")
-            },
+            |_, _, _, _, _| -> (String, DiagnosticCode) { unreachable!("not on cache miss") },
             &mut diags,
         );
         assert_eq!(result, ControlFlow::Continue(()));
         assert_eq!(map.get("x"), Some(&(7_i32, "TraitA".to_string())));
-        assert!(diags.is_empty(), "Expected no diagnostics, got: {:?}", diags);
+        assert!(
+            diags.is_empty(),
+            "Expected no diagnostics, got: {:?}",
+            diags
+        );
     }
 
     /// Param/Constraint cross-interference: two traits each providing a named default

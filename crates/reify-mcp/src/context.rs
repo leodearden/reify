@@ -51,7 +51,14 @@ pub trait ReifyToolContext: Send + Sync {
     fn focus_entity(&self, entity_path: &str) -> Result<bool, ToolError>;
 
     /// Navigate to a source location.
-    fn navigate_to_source(&self, file: &str, line: u32, column: u32, end_line: u32, end_column: u32) -> Result<bool, ToolError>;
+    fn navigate_to_source(
+        &self,
+        file: &str,
+        line: u32,
+        column: u32,
+        end_line: u32,
+        end_column: u32,
+    ) -> Result<bool, ToolError>;
 }
 
 /// Mock implementation of ReifyToolContext for testing.
@@ -199,7 +206,14 @@ impl ReifyToolContext for MockToolContext {
         Ok(true)
     }
 
-    fn navigate_to_source(&self, _file: &str, _line: u32, _column: u32, _end_line: u32, _end_column: u32) -> Result<bool, ToolError> {
+    fn navigate_to_source(
+        &self,
+        _file: &str,
+        _line: u32,
+        _column: u32,
+        _end_line: u32,
+        _end_column: u32,
+    ) -> Result<bool, ToolError> {
         if let Some(err) = &self.navigate_error {
             return Err(err.clone());
         }

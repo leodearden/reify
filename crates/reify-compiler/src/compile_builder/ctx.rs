@@ -129,7 +129,8 @@ impl CompilationCtx {
         kind: &'static str,
     ) -> bool {
         if self.is_first_entity_def(name, span) {
-            self.seen_entity_names.insert(name.to_string(), (span, kind));
+            self.seen_entity_names
+                .insert(name.to_string(), (span, kind));
             true
         } else {
             let (first_span, first_kind) = *self
@@ -249,21 +250,31 @@ mod tests {
             Some(&(span_a, "structure")),
             "entry should be present after insertion"
         );
-        assert!(ctx.diagnostics.is_empty(), "no diagnostic on first insertion");
+        assert!(
+            ctx.diagnostics.is_empty(),
+            "no diagnostic on first insertion"
+        );
 
         // Same name + same span is idempotent → true, still no diagnostic.
         assert!(
             ctx.record_or_report_duplicate("Widget", span_a, "structure"),
             "re-inserting with same span should return true"
         );
-        assert!(ctx.diagnostics.is_empty(), "no diagnostic on same-span revisit");
+        assert!(
+            ctx.diagnostics.is_empty(),
+            "no diagnostic on same-span revisit"
+        );
 
         // Same name + different span → false, duplicate diagnostic emitted.
         assert!(
             !ctx.record_or_report_duplicate("Widget", span_b, "structure"),
             "duplicate span should return false"
         );
-        assert_eq!(ctx.diagnostics.len(), 1, "exactly one diagnostic on duplicate");
+        assert_eq!(
+            ctx.diagnostics.len(),
+            1,
+            "exactly one diagnostic on duplicate"
+        );
 
         // Anchor the shape of the duplicate diagnostic — label count, span
         // ordering, and `{kind}` interpolation — so structural regressions
@@ -273,13 +284,18 @@ mod tests {
 
         // 1. Top-level message contains the stable substring.
         assert!(
-            diag.message.contains("duplicate entity definition 'Widget'"),
+            diag.message
+                .contains("duplicate entity definition 'Widget'"),
             "message should contain the stable duplicate-diagnostic substring, got: {:?}",
             diag.message,
         );
 
         // 2. Exactly two labels (duplicate site + first-seen site).
-        assert_eq!(diag.labels.len(), 2, "duplicate diagnostic must have exactly two labels");
+        assert_eq!(
+            diag.labels.len(),
+            2,
+            "duplicate diagnostic must have exactly two labels"
+        );
 
         // 3. labels[0] = duplicate site (span_b, "structure defined here").
         assert_eq!(
@@ -298,7 +314,9 @@ mod tests {
             "labels[1] should point to the first-seen site (span_a)"
         );
         assert!(
-            diag.labels[1].message.contains("first defined as structure"),
+            diag.labels[1]
+                .message
+                .contains("first defined as structure"),
             "labels[1] message should interpolate the `{{first_kind}}` token into the 'first defined as ... here' template, got: {:?}",
             diag.labels[1].message,
         );

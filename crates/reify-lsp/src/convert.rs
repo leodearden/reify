@@ -186,7 +186,11 @@ pub fn convert_diagnostic(diag: &Diagnostic, source: &str, uri: &Url) -> lsp_typ
     // non-string JSON values, leaving the code field absent (safe degradation).
     let code = diag
         .code
-        .and_then(|c| serde_json::to_value(c).ok().and_then(|v| v.as_str().map(str::to_owned)))
+        .and_then(|c| {
+            serde_json::to_value(c)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_owned))
+        })
         .map(lsp_types::NumberOrString::String);
 
     // Emit a structured debug event for the four AutoTypeParam diagnostic codes
@@ -679,8 +683,7 @@ mod tests {
         let diag = Diagnostic::error("x");
         let lsp = convert_diagnostic(&diag, source, &test_uri());
         assert_eq!(
-            lsp.data,
-            None,
+            lsp.data, None,
             "convert_diagnostic must leave data as None when no candidates are attached"
         );
     }
@@ -700,7 +703,10 @@ mod tests {
         let diag = Diagnostic::error("auto type parameter has multiple feasible candidates")
             .with_code(DiagnosticCode::AutoTypeParamAmbiguous)
             .with_candidates(vec!["foo::A".to_string(), "foo::B".to_string()])
-            .with_label(DiagnosticLabel::new(SourceSpan::new(0, 4), "auto type-param here"));
+            .with_label(DiagnosticLabel::new(
+                SourceSpan::new(0, 4),
+                "auto type-param here",
+            ));
         let lsp = convert_diagnostic(&diag, source, &test_uri());
         assert_eq!(
             lsp.code,
@@ -743,11 +749,9 @@ mod tests {
             .target_prefix("reify_lsp::auto_type_param")
             .count_level(tracing::Level::DEBUG)
             .build();
-        let debug_count = std::sync::Arc::clone(
-            counters
-                .get(&tracing::Level::DEBUG)
-                .expect("DEBUG counter must be registered — add .count_level(Level::DEBUG) to the builder"),
-        );
+        let debug_count = std::sync::Arc::clone(counters.get(&tracing::Level::DEBUG).expect(
+            "DEBUG counter must be registered — add .count_level(Level::DEBUG) to the builder",
+        ));
 
         tracing::subscriber::with_default(subscriber, || {
             let source = "auto";

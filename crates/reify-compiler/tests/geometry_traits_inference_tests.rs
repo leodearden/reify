@@ -17,15 +17,15 @@
 //! kept in the sibling file `geometry_traits_tests.rs`; this file is reserved
 //! for the inference pipeline.
 
-use reify_compiler::{
-    BooleanOp, CompiledGeometryOp, CurveKind, GeomRef, ModifyKind, PatternKind, PrimitiveKind,
-    SweepKind, TransformKind,
-};
 use reify_compiler::geometry_traits_inference::{
     EmptyLetEnv, GeometryTrait, InferredTraits, LetBindingEnv, combine_difference,
     combine_intersection, combine_modify, combine_pattern, combine_sweep, combine_transform,
     combine_union, infer_primitive, infer_traits_for_expr, infer_traits_for_expr_in_env,
     infer_traits_for_op,
+};
+use reify_compiler::{
+    BooleanOp, CompiledGeometryOp, CurveKind, GeomRef, ModifyKind, PatternKind, PrimitiveKind,
+    SweepKind, TransformKind,
 };
 use reify_test_support::{compile_source_with_stdlib, errors_only};
 use reify_types::{
@@ -218,8 +218,14 @@ fn combine_intersection_of_two_unbounded_inputs_is_none() {
 /// connected sets to connected sets, and convex sets to convex sets.
 #[test]
 fn combine_transform_preserves_all_three_traits() {
-    assert_eq!(combine_transform(InferredTraits::all()), InferredTraits::all());
-    assert_eq!(combine_transform(InferredTraits::none()), InferredTraits::none());
+    assert_eq!(
+        combine_transform(InferredTraits::all()),
+        InferredTraits::all()
+    );
+    assert_eq!(
+        combine_transform(InferredTraits::none()),
+        InferredTraits::none()
+    );
     assert_eq!(
         combine_transform(InferredTraits::bounded_only()),
         InferredTraits::bounded_only()
@@ -317,28 +323,16 @@ fn make_function_call(name: &str, args: Vec<CompiledExpr>, result_type: Type) ->
 #[test]
 fn infer_traits_for_expr_handles_primitive_function_calls() {
     let ten_mm = || CompiledExpr::literal(Value::Real(10.0), Type::length());
-    let box_expr = make_function_call(
-        "box",
-        vec![ten_mm(), ten_mm(), ten_mm()],
-        Type::Geometry,
-    );
+    let box_expr = make_function_call("box", vec![ten_mm(), ten_mm(), ten_mm()], Type::Geometry);
     assert_eq!(infer_traits_for_expr(&box_expr), InferredTraits::all());
 
-    let cylinder_expr = make_function_call(
-        "cylinder",
-        vec![ten_mm(), ten_mm()],
-        Type::Geometry,
-    );
+    let cylinder_expr = make_function_call("cylinder", vec![ten_mm(), ten_mm()], Type::Geometry);
     assert_eq!(infer_traits_for_expr(&cylinder_expr), InferredTraits::all());
 
     let sphere_expr = make_function_call("sphere", vec![ten_mm()], Type::Geometry);
     assert_eq!(infer_traits_for_expr(&sphere_expr), InferredTraits::all());
 
-    let tube_expr = make_function_call(
-        "tube",
-        vec![ten_mm(), ten_mm(), ten_mm()],
-        Type::Geometry,
-    );
+    let tube_expr = make_function_call("tube", vec![ten_mm(), ten_mm(), ten_mm()], Type::Geometry);
     assert_eq!(infer_traits_for_expr(&tube_expr), InferredTraits::all());
 }
 
@@ -348,16 +342,8 @@ fn infer_traits_for_expr_handles_primitive_function_calls() {
 #[test]
 fn infer_traits_for_expr_handles_nested_union_of_boxes() {
     let ten_mm = || CompiledExpr::literal(Value::Real(10.0), Type::length());
-    let box_a = make_function_call(
-        "box",
-        vec![ten_mm(), ten_mm(), ten_mm()],
-        Type::Geometry,
-    );
-    let box_b = make_function_call(
-        "box",
-        vec![ten_mm(), ten_mm(), ten_mm()],
-        Type::Geometry,
-    );
+    let box_a = make_function_call("box", vec![ten_mm(), ten_mm(), ten_mm()], Type::Geometry);
+    let box_b = make_function_call("box", vec![ten_mm(), ten_mm(), ten_mm()], Type::Geometry);
     let union_expr = make_function_call("union", vec![box_a, box_b], Type::Geometry);
     assert_eq!(
         infer_traits_for_expr(&union_expr),
@@ -388,18 +374,9 @@ fn infer_traits_for_expr_defaults_to_all_for_non_function_call() {
 #[test]
 fn infer_traits_for_expr_handles_variadic_union_all() {
     let ten_mm = || CompiledExpr::literal(Value::Real(10.0), Type::length());
-    let box_a = make_function_call(
-        "box",
-        vec![ten_mm(), ten_mm(), ten_mm()],
-        Type::Geometry,
-    );
-    let box_b = make_function_call(
-        "box",
-        vec![ten_mm(), ten_mm(), ten_mm()],
-        Type::Geometry,
-    );
-    let union_all_expr =
-        make_function_call("union_all", vec![box_a, box_b], Type::Geometry);
+    let box_a = make_function_call("box", vec![ten_mm(), ten_mm(), ten_mm()], Type::Geometry);
+    let box_b = make_function_call("box", vec![ten_mm(), ten_mm(), ten_mm()], Type::Geometry);
+    let union_all_expr = make_function_call("union_all", vec![box_a, box_b], Type::Geometry);
     assert_eq!(
         infer_traits_for_expr(&union_all_expr),
         InferredTraits::bounded_only(),
@@ -416,16 +393,8 @@ fn infer_traits_for_expr_handles_variadic_union_all() {
 #[test]
 fn infer_traits_for_expr_handles_variadic_intersection_all() {
     let ten_mm = || CompiledExpr::literal(Value::Real(10.0), Type::length());
-    let box_a = make_function_call(
-        "box",
-        vec![ten_mm(), ten_mm(), ten_mm()],
-        Type::Geometry,
-    );
-    let box_b = make_function_call(
-        "box",
-        vec![ten_mm(), ten_mm(), ten_mm()],
-        Type::Geometry,
-    );
+    let box_a = make_function_call("box", vec![ten_mm(), ten_mm(), ten_mm()], Type::Geometry);
+    let box_b = make_function_call("box", vec![ten_mm(), ten_mm(), ten_mm()], Type::Geometry);
     let intersection_all_expr =
         make_function_call("intersection_all", vec![box_a, box_b], Type::Geometry);
     let result = infer_traits_for_expr(&intersection_all_expr);
@@ -566,18 +535,9 @@ fn intersection_of_bounded_with_anything_remains_bounded_at_call_site() {
 #[test]
 fn infer_traits_for_expr_pins_intersection_dispatch_via_connected_drop() {
     let ten_mm = || CompiledExpr::literal(Value::Real(10.0), Type::length());
-    let box_a = make_function_call(
-        "box",
-        vec![ten_mm(), ten_mm(), ten_mm()],
-        Type::Geometry,
-    );
-    let box_b = make_function_call(
-        "box",
-        vec![ten_mm(), ten_mm(), ten_mm()],
-        Type::Geometry,
-    );
-    let intersection_expr =
-        make_function_call("intersection", vec![box_a, box_b], Type::Geometry);
+    let box_a = make_function_call("box", vec![ten_mm(), ten_mm(), ten_mm()], Type::Geometry);
+    let box_b = make_function_call("box", vec![ten_mm(), ten_mm(), ten_mm()], Type::Geometry);
+    let intersection_expr = make_function_call("intersection", vec![box_a, box_b], Type::Geometry);
     let result = infer_traits_for_expr(&intersection_expr);
     assert_eq!(
         result,
@@ -769,8 +729,14 @@ fn infer_traits_for_op_handles_primitive_root() {
 #[test]
 fn infer_traits_for_op_handles_boolean_union_root() {
     let ops = vec![
-        CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, args: vec![] },
-        CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, args: vec![] },
+        CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![],
+        },
+        CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![],
+        },
         CompiledGeometryOp::Boolean {
             op: BooleanOp::Union,
             left: GeomRef::Step(0),
@@ -785,8 +751,14 @@ fn infer_traits_for_op_handles_boolean_union_root() {
 #[test]
 fn infer_traits_for_op_handles_boolean_intersection_root() {
     let ops = vec![
-        CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, args: vec![] },
-        CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, args: vec![] },
+        CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![],
+        },
+        CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![],
+        },
         CompiledGeometryOp::Boolean {
             op: BooleanOp::Intersection,
             left: GeomRef::Step(0),
@@ -796,7 +768,11 @@ fn infer_traits_for_op_handles_boolean_intersection_root() {
     let result = infer_traits_for_op(&ops);
     assert_eq!(
         result,
-        InferredTraits { bounded: true, connected: false, convex: true },
+        InferredTraits {
+            bounded: true,
+            connected: false,
+            convex: true
+        },
         "intersection of two all-trait ops must be bounded+convex (connected dropped)"
     );
 }
@@ -806,8 +782,14 @@ fn infer_traits_for_op_handles_boolean_intersection_root() {
 #[test]
 fn infer_traits_for_op_handles_boolean_difference_root() {
     let ops = vec![
-        CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, args: vec![] },
-        CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, args: vec![] },
+        CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![],
+        },
+        CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![],
+        },
         CompiledGeometryOp::Boolean {
             op: BooleanOp::Difference,
             left: GeomRef::Step(0),
@@ -822,21 +804,30 @@ fn infer_traits_for_op_handles_boolean_difference_root() {
 #[test]
 fn infer_traits_for_op_handles_modify_root() {
     let ops = vec![
-        CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, args: vec![] },
+        CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![],
+        },
         CompiledGeometryOp::Modify {
             kind: ModifyKind::Fillet,
             target: GeomRef::Step(0),
             args: vec![],
         },
     ];
-    assert_eq!(infer_traits_for_op(&ops), InferredTraits::bounded_connected());
+    assert_eq!(
+        infer_traits_for_op(&ops),
+        InferredTraits::bounded_connected()
+    );
 }
 
 /// `Transform` root: `combine_transform(all)` → all three preserved.
 #[test]
 fn infer_traits_for_op_handles_transform_root() {
     let ops = vec![
-        CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, args: vec![] },
+        CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![],
+        },
         CompiledGeometryOp::Transform {
             kind: TransformKind::Translate,
             target: GeomRef::Step(0),
@@ -851,7 +842,10 @@ fn infer_traits_for_op_handles_transform_root() {
 #[test]
 fn infer_traits_for_op_handles_pattern_root() {
     let ops = vec![
-        CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, args: vec![] },
+        CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![],
+        },
         CompiledGeometryOp::Pattern {
             kind: PatternKind::Linear,
             target: GeomRef::Step(0),
@@ -866,14 +860,20 @@ fn infer_traits_for_op_handles_pattern_root() {
 #[test]
 fn infer_traits_for_op_handles_sweep_root() {
     let ops = vec![
-        CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, args: vec![] },
+        CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![],
+        },
         CompiledGeometryOp::Sweep {
             kind: SweepKind::Extrude,
             profiles: vec![GeomRef::Step(0)],
             args: vec![],
         },
     ];
-    assert_eq!(infer_traits_for_op(&ops), InferredTraits::bounded_connected());
+    assert_eq!(
+        infer_traits_for_op(&ops),
+        InferredTraits::bounded_connected()
+    );
 }
 
 /// `Curve` root → safe default `InferredTraits::all()` (1-D primitives,
@@ -894,7 +894,10 @@ fn infer_traits_for_op_handles_curve_root() {
 #[test]
 fn infer_traits_for_op_geom_ref_sub_defaults_to_all() {
     let ops = vec![
-        CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, args: vec![] },
+        CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![],
+        },
         CompiledGeometryOp::Boolean {
             op: BooleanOp::Union,
             left: GeomRef::Sub("x".to_string()),
@@ -926,7 +929,10 @@ fn infer_traits_for_op_empty_array_defaults_to_all() {
 #[test]
 fn infer_traits_for_op_geom_ref_step_out_of_range_defaults_to_all() {
     let ops = vec![
-        CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, args: vec![] },
+        CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![],
+        },
         CompiledGeometryOp::Boolean {
             op: BooleanOp::Union,
             left: GeomRef::Step(99), // deliberately out of range
@@ -1085,8 +1091,7 @@ fn infer_traits_for_expr_in_env_with_empty_env_matches_legacy_value_ref_behaviou
 #[test]
 fn infer_traits_for_expr_in_env_with_empty_env_matches_legacy_function_call_behaviour() {
     let ten_mm = || CompiledExpr::literal(Value::Real(10.0), Type::length());
-    let box_expr =
-        make_function_call("box", vec![ten_mm(), ten_mm(), ten_mm()], Type::Geometry);
+    let box_expr = make_function_call("box", vec![ten_mm(), ten_mm(), ten_mm()], Type::Geometry);
     assert_eq!(
         infer_traits_for_expr_in_env(&box_expr, &EmptyLetEnv),
         InferredTraits::all(),
@@ -1152,8 +1157,7 @@ fn infer_traits_for_expr_in_env_threads_env_through_function_call_args() {
 
     let g_ref = CompiledExpr::value_ref(target_id, Type::Geometry);
     let ten_mm = || CompiledExpr::literal(Value::Real(10.0), Type::length());
-    let box_expr =
-        make_function_call("box", vec![ten_mm(), ten_mm(), ten_mm()], Type::Geometry);
+    let box_expr = make_function_call("box", vec![ten_mm(), ten_mm(), ten_mm()], Type::Geometry);
     let union_expr = make_function_call("union", vec![g_ref, box_expr], Type::Geometry);
 
     // combine_union(none(), all()) = none() because both must be bounded
@@ -1180,8 +1184,7 @@ fn infer_traits_for_expr_in_env_threads_env_through_function_call_args() {
 /// which is tested in the `infer_traits_for_expr_in_env_*` suite below.
 #[test]
 fn infer_traits_for_expr_value_ref_returns_all_safe_default() {
-    let value_ref =
-        CompiledExpr::value_ref(ValueCellId::new("E", "g"), Type::Geometry);
+    let value_ref = CompiledExpr::value_ref(ValueCellId::new("E", "g"), Type::Geometry);
     assert_eq!(
         infer_traits_for_expr(&value_ref),
         InferredTraits::all(),

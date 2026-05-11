@@ -159,8 +159,8 @@ pub fn manufacturing_purpose(purpose_name: &str, purpose_tol: f64) -> CompiledPu
 /// `step_output_template_with_body` / `step_output_template` delegation
 /// precedent used elsewhere in this file.
 pub fn my_design_template_with_subs(subs: &[(&str, &str)]) -> TopologyTemplate {
-    let mut builder = TopologyTemplateBuilder::new("MyDesign")
-        .param("MyDesign", "thickness", Type::Real, None);
+    let mut builder =
+        TopologyTemplateBuilder::new("MyDesign").param("MyDesign", "thickness", Type::Real, None);
     for (name, kind) in subs {
         builder = builder.sub_component(*name, *kind, Vec::new());
     }
@@ -222,7 +222,11 @@ mod tests {
         );
 
         // Inspect the RepresentationWithin expression.
-        let CompiledExprKind::UserFunctionCall { function_name, args } = &constraint.expr.kind else {
+        let CompiledExprKind::UserFunctionCall {
+            function_name,
+            args,
+        } = &constraint.expr.kind
+        else {
             panic!(
                 "constraint expr must be a UserFunctionCall, got {:?}",
                 constraint.expr.kind
@@ -251,14 +255,24 @@ mod tests {
 
         // arg[1]: Scalar literal si=1e-6 dim=LENGTH
         let arg1 = &args[1];
-        let CompiledExprKind::Literal(Value::Scalar { si_value, dimension }) = &arg1.kind else {
+        let CompiledExprKind::Literal(Value::Scalar {
+            si_value,
+            dimension,
+        }) = &arg1.kind
+        else {
             panic!("arg[1] must be a Scalar literal, got {:?}", arg1.kind);
         };
         assert_eq!(*si_value, 1e-6, "arg[1] si_value must be 1e-6");
-        assert_eq!(*dimension, DimensionVector::LENGTH, "arg[1] dimension must be LENGTH");
+        assert_eq!(
+            *dimension,
+            DimensionVector::LENGTH,
+            "arg[1] dimension must be LENGTH"
+        );
         assert_eq!(
             arg1.result_type,
-            Type::Scalar { dimension: DimensionVector::LENGTH },
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH
+            },
         );
     }
 
@@ -272,9 +286,15 @@ mod tests {
 
         assert_eq!(template.name, "STEPOutput");
         assert_eq!(template.value_cells.len(), 1);
-        assert_eq!(template.value_cells[0].id, ValueCellId::new("STEPOutput", "subject"));
+        assert_eq!(
+            template.value_cells[0].id,
+            ValueCellId::new("STEPOutput", "subject")
+        );
         assert_eq!(template.constraints.len(), 1);
-        assert_eq!(template.constraints[0].id, ConstraintNodeId::new("STEPOutput", 0));
+        assert_eq!(
+            template.constraints[0].id,
+            ConstraintNodeId::new("STEPOutput", 0)
+        );
 
         // Body must be Bool(true) literal.
         assert!(
@@ -300,7 +320,10 @@ mod tests {
         assert_eq!(template.name, "STEPOutput");
         assert_eq!(template.value_cells.len(), 1);
         assert_eq!(template.constraints.len(), 1);
-        assert_eq!(template.constraints[0].id, ConstraintNodeId::new("STEPOutput", 0));
+        assert_eq!(
+            template.constraints[0].id,
+            ConstraintNodeId::new("STEPOutput", 0)
+        );
         assert!(
             matches!(
                 &template.constraints[0].expr.kind,
@@ -326,7 +349,9 @@ mod tests {
         assert_eq!(cell.id, ValueCellId::new("STEPInput", "tolerance"));
         assert_eq!(
             cell.cell_type,
-            Type::Scalar { dimension: DimensionVector::LENGTH },
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH
+            },
             "tolerance param type must be Length scalar"
         );
         assert!(
@@ -338,8 +363,10 @@ mod tests {
             .default_expr
             .as_ref()
             .expect("tolerance param must have a default expression");
-        let CompiledExprKind::Literal(Value::Scalar { si_value, dimension }) =
-            &default_expr.kind
+        let CompiledExprKind::Literal(Value::Scalar {
+            si_value,
+            dimension,
+        }) = &default_expr.kind
         else {
             panic!(
                 "default expr must be a Scalar literal, got {:?}",
@@ -350,11 +377,17 @@ mod tests {
         assert_eq!(*dimension, DimensionVector::LENGTH);
         assert_eq!(
             default_expr.result_type,
-            Type::Scalar { dimension: DimensionVector::LENGTH }
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH
+            }
         );
 
         // No constraints on STEPInput.
-        assert_eq!(template.constraints.len(), 0, "STEPInput has no constraints");
+        assert_eq!(
+            template.constraints.len(),
+            0,
+            "STEPInput has no constraints"
+        );
     }
 
     // ── manufacturing_purpose ───────────────────────────────────────────────
@@ -381,7 +414,11 @@ mod tests {
             "constraint id must be (subject, 0)"
         );
 
-        let CompiledExprKind::UserFunctionCall { function_name, args } = &constraint.expr.kind else {
+        let CompiledExprKind::UserFunctionCall {
+            function_name,
+            args,
+        } = &constraint.expr.kind
+        else {
             panic!(
                 "constraint expr must be a UserFunctionCall, got {:?}",
                 constraint.expr.kind
@@ -396,15 +433,27 @@ mod tests {
             matches!(&args[0].kind, CompiledExprKind::ValueRef(id) if *id == ValueCellId::new("subject", "self")),
             "arg[0] must be ValueRef(subject.self)"
         );
-        assert_eq!(args[0].result_type, Type::StructureRef("Structure".to_string()));
+        assert_eq!(
+            args[0].result_type,
+            Type::StructureRef("Structure".to_string())
+        );
 
         // arg[1]: Scalar literal si=1e-6 dim=LENGTH
-        let CompiledExprKind::Literal(Value::Scalar { si_value, dimension }) = &args[1].kind else {
+        let CompiledExprKind::Literal(Value::Scalar {
+            si_value,
+            dimension,
+        }) = &args[1].kind
+        else {
             panic!("arg[1] must be a Scalar literal, got {:?}", args[1].kind);
         };
         assert_eq!(*si_value, 1e-6, "arg[1] si_value must be 1e-6");
         assert_eq!(*dimension, DimensionVector::LENGTH);
-        assert_eq!(args[1].result_type, Type::Scalar { dimension: DimensionVector::LENGTH });
+        assert_eq!(
+            args[1].result_type,
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH
+            }
+        );
     }
 
     // ── manufacturing_purpose_with_inner_name ───────────────────────────────
@@ -434,7 +483,11 @@ mod tests {
             "constraint id must be (subject, 0)"
         );
 
-        let CompiledExprKind::UserFunctionCall { function_name, args } = &constraint.expr.kind else {
+        let CompiledExprKind::UserFunctionCall {
+            function_name,
+            args,
+        } = &constraint.expr.kind
+        else {
             panic!(
                 "constraint expr must be a UserFunctionCall, got {:?}",
                 constraint.expr.kind
@@ -456,12 +509,21 @@ mod tests {
         );
 
         // arg[1]: Scalar literal si=1e-6 dim=LENGTH
-        let CompiledExprKind::Literal(Value::Scalar { si_value, dimension }) = &args[1].kind else {
+        let CompiledExprKind::Literal(Value::Scalar {
+            si_value,
+            dimension,
+        }) = &args[1].kind
+        else {
             panic!("arg[1] must be a Scalar literal, got {:?}", args[1].kind);
         };
         assert_eq!(*si_value, 1e-6, "arg[1] si_value must be 1e-6");
         assert_eq!(*dimension, DimensionVector::LENGTH);
-        assert_eq!(args[1].result_type, Type::Scalar { dimension: DimensionVector::LENGTH });
+        assert_eq!(
+            args[1].result_type,
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH
+            }
+        );
     }
 
     // ── my_design_template_with_subs ────────────────────────────────────────
@@ -482,7 +544,11 @@ mod tests {
         //     `my_design_template_pins_thickness_param_shape`; just assert
         //     there are no sub-components.
         let template = my_design_template_with_subs(&[]);
-        assert_eq!(template.sub_components.len(), 0, "zero sub-components for empty slice");
+        assert_eq!(
+            template.sub_components.len(),
+            0,
+            "zero sub-components for empty slice"
+        );
 
         // (b) single sub
         let template = my_design_template_with_subs(&[("head", "Head")]);
@@ -494,7 +560,11 @@ mod tests {
         assert!(!sub.is_collection, "is_collection must be false");
         // The thickness param must survive sub-component appends — pin here so a
         // future builder reorder that drops the param can't slip past unit tests.
-        assert_eq!(template.value_cells.len(), 1, "thickness param survives sub append");
+        assert_eq!(
+            template.value_cells.len(),
+            1,
+            "thickness param survives sub append"
+        );
         assert_eq!(
             template.value_cells[0].id,
             ValueCellId::new("MyDesign", "thickness"),
@@ -528,7 +598,11 @@ mod tests {
 
         let cell = &template.value_cells[0];
         assert_eq!(cell.id, ValueCellId::new("MyDesign", "thickness"));
-        assert_eq!(cell.cell_type, Type::Real, "thickness param type must be Real");
+        assert_eq!(
+            cell.cell_type,
+            Type::Real,
+            "thickness param type must be Real"
+        );
         assert!(cell.default_expr.is_none(), "thickness has no default");
         assert!(matches!(cell.kind, ValueCellKind::Param));
 

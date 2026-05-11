@@ -131,22 +131,36 @@ fn mesh_plane_2d_quad_path_unit_square_recombines_cleanly() {
     let threshold = std::f64::consts::FRAC_PI_3;
     for (q_idx, chunk) in result.quad_indices.chunks_exact(4).enumerate() {
         let coords: [[f64; 2]; 4] = [
-            [result.vertices_xy[chunk[0] as usize * 2], result.vertices_xy[chunk[0] as usize * 2 + 1]],
-            [result.vertices_xy[chunk[1] as usize * 2], result.vertices_xy[chunk[1] as usize * 2 + 1]],
-            [result.vertices_xy[chunk[2] as usize * 2], result.vertices_xy[chunk[2] as usize * 2 + 1]],
-            [result.vertices_xy[chunk[3] as usize * 2], result.vertices_xy[chunk[3] as usize * 2 + 1]],
+            [
+                result.vertices_xy[chunk[0] as usize * 2],
+                result.vertices_xy[chunk[0] as usize * 2 + 1],
+            ],
+            [
+                result.vertices_xy[chunk[1] as usize * 2],
+                result.vertices_xy[chunk[1] as usize * 2 + 1],
+            ],
+            [
+                result.vertices_xy[chunk[2] as usize * 2],
+                result.vertices_xy[chunk[2] as usize * 2 + 1],
+            ],
+            [
+                result.vertices_xy[chunk[3] as usize * 2],
+                result.vertices_xy[chunk[3] as usize * 2 + 1],
+            ],
         ];
-        let max_skew = (0..4).map(|i| {
-            let prev = coords[(i + 3) % 4];
-            let curr = coords[i];
-            let next = coords[(i + 1) % 4];
-            let e1 = [next[0] - curr[0], next[1] - curr[1]];
-            let e2 = [prev[0] - curr[0], prev[1] - curr[1]];
-            let cross = e1[0] * e2[1] - e1[1] * e2[0];
-            let dot = e1[0] * e2[0] + e1[1] * e2[1];
-            let angle = cross.abs().atan2(dot);
-            (angle - std::f64::consts::FRAC_PI_2).abs()
-        }).fold(0.0_f64, f64::max);
+        let max_skew = (0..4)
+            .map(|i| {
+                let prev = coords[(i + 3) % 4];
+                let curr = coords[i];
+                let next = coords[(i + 1) % 4];
+                let e1 = [next[0] - curr[0], next[1] - curr[1]];
+                let e2 = [prev[0] - curr[0], prev[1] - curr[1]];
+                let cross = e1[0] * e2[1] - e1[1] * e2[0];
+                let dot = e1[0] * e2[0] + e1[1] * e2[1];
+                let angle = cross.abs().atan2(dot);
+                (angle - std::f64::consts::FRAC_PI_2).abs()
+            })
+            .fold(0.0_f64, f64::max);
         assert!(
             max_skew <= threshold,
             "quad[{q_idx}] (verts {chunk:?}, coords {coords:?}) max skew {max_skew} \
@@ -161,19 +175,9 @@ fn mesh_plane_2d_quad_path_unit_square_recombines_cleanly() {
 #[cfg(has_gmsh)]
 #[test]
 fn mesh_plane_2d_with_hole_avoids_hole_interior() {
-    let outer: Vec<[f64; 2]> = vec![
-        [0.0, 0.0],
-        [10.0, 0.0],
-        [10.0, 10.0],
-        [0.0, 10.0],
-    ];
+    let outer: Vec<[f64; 2]> = vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
     // CW order for the hole — gmsh accepts either winding.
-    let holes: Vec<Vec<[f64; 2]>> = vec![vec![
-        [4.0, 4.0],
-        [4.0, 6.0],
-        [6.0, 6.0],
-        [6.0, 4.0],
-    ]];
+    let holes: Vec<Vec<[f64; 2]>> = vec![vec![[4.0, 4.0], [4.0, 6.0], [6.0, 6.0], [6.0, 4.0]]];
 
     let result = mesh_plane_2d(&outer, &holes, Some(2.0), false, true)
         .expect("mesh_plane_2d failed on outer+hole boundary");
@@ -195,8 +199,7 @@ fn mesh_plane_2d_with_hole_avoids_hole_interior() {
     let eps = 1e-9;
     for (i, chunk) in result.vertices_xy.chunks_exact(2).enumerate() {
         let (x, y) = (chunk[0], chunk[1]);
-        let strictly_inside_hole =
-            x > 4.0 + eps && x < 6.0 - eps && y > 4.0 + eps && y < 6.0 - eps;
+        let strictly_inside_hole = x > 4.0 + eps && x < 6.0 - eps && y > 4.0 + eps && y < 6.0 - eps;
         assert!(
             !strictly_inside_hole,
             "vertex {i} at ({x}, {y}) lies strictly inside the hole rect [4,6]^2",

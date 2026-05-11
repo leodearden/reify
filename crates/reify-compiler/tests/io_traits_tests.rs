@@ -40,7 +40,11 @@ fn io_refining_traits_with_correct_params_and_dimensions() {
                 panic!(
                     "std.io should contain trait '{}'; found: {:?}",
                     name,
-                    module.trait_defs.iter().map(|t| &t.name).collect::<Vec<_>>()
+                    module
+                        .trait_defs
+                        .iter()
+                        .map(|t| &t.name)
+                        .collect::<Vec<_>>()
                 )
             })
     };
@@ -57,7 +61,10 @@ fn io_refining_traits_with_correct_params_and_dimensions() {
                     "trait '{}' should have required member '{}'; found: {:?}",
                     trait_name,
                     member,
-                    t.required_members.iter().map(|r| &r.name).collect::<Vec<_>>()
+                    t.required_members
+                        .iter()
+                        .map(|r| &r.name)
+                        .collect::<Vec<_>>()
                 )
             });
         match &req.kind {
@@ -71,8 +78,12 @@ fn io_refining_traits_with_correct_params_and_dimensions() {
 
     // Input : Source — source: String, provenance: StructureRef("Provenance")
     let refinements = &find_trait("Input").refinements;
-    assert_eq!(refinements.as_slice(), ["Source".to_string()].as_slice(),
-        "Input should refine exactly [Source], got: {:?}", refinements);
+    assert_eq!(
+        refinements.as_slice(),
+        ["Source".to_string()].as_slice(),
+        "Input should refine exactly [Source], got: {:?}",
+        refinements
+    );
     assert_eq!(param_type("Input", "source"), Type::String);
     assert_eq!(
         param_type("Input", "provenance"),
@@ -81,26 +92,38 @@ fn io_refining_traits_with_correct_params_and_dimensions() {
 
     // Buy : Source — supplier, part_number: String; unit_cost: Money; lead_time: Time
     let refinements = &find_trait("Buy").refinements;
-    assert_eq!(refinements.as_slice(), ["Source".to_string()].as_slice(),
-        "Buy should refine exactly [Source], got: {:?}", refinements);
+    assert_eq!(
+        refinements.as_slice(),
+        ["Source".to_string()].as_slice(),
+        "Buy should refine exactly [Source], got: {:?}",
+        refinements
+    );
     assert_eq!(param_type("Buy", "supplier"), Type::String);
     assert_eq!(param_type("Buy", "part_number"), Type::String);
     // Critical: Buy.unit_cost must have Money dimension.
     assert_eq!(
         param_type("Buy", "unit_cost"),
-        Type::Scalar { dimension: DimensionVector::MONEY },
+        Type::Scalar {
+            dimension: DimensionVector::MONEY
+        },
         "Buy.unit_cost must have DimensionVector::MONEY"
     );
     assert_eq!(
         param_type("Buy", "lead_time"),
-        Type::Scalar { dimension: DimensionVector::TIME },
+        Type::Scalar {
+            dimension: DimensionVector::TIME
+        },
         "Buy.lead_time must have DimensionVector::TIME"
     );
 
     // Output : Sink — format: Enum("OutputFormat")
     let refinements = &find_trait("Output").refinements;
-    assert_eq!(refinements.as_slice(), ["Sink".to_string()].as_slice(),
-        "Output should refine exactly [Sink], got: {:?}", refinements);
+    assert_eq!(
+        refinements.as_slice(),
+        ["Sink".to_string()].as_slice(),
+        "Output should refine exactly [Sink], got: {:?}",
+        refinements
+    );
     assert_eq!(
         param_type("Output", "format"),
         Type::Enum("OutputFormat".into())
@@ -108,8 +131,12 @@ fn io_refining_traits_with_correct_params_and_dimensions() {
 
     // Discard : Sink — reason: Enum("DiscardReason"), disposal_method: Enum("DisposalMethod")
     let refinements = &find_trait("Discard").refinements;
-    assert_eq!(refinements.as_slice(), ["Sink".to_string()].as_slice(),
-        "Discard should refine exactly [Sink], got: {:?}", refinements);
+    assert_eq!(
+        refinements.as_slice(),
+        ["Sink".to_string()].as_slice(),
+        "Discard should refine exactly [Sink], got: {:?}",
+        refinements
+    );
     assert_eq!(
         param_type("Discard", "reason"),
         Type::Enum("DiscardReason".into())
@@ -159,7 +186,9 @@ fn provenance_structure_present_with_correct_fields() {
     assert_eq!(find_cell("timestamp").cell_type, Type::String);
     assert_eq!(
         find_cell("tolerance_guarantee").cell_type,
-        Type::Scalar { dimension: DimensionVector::LENGTH }
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH
+        }
     );
 }
 
@@ -243,7 +272,11 @@ fn io_source_and_sink_marker_traits_present() {
                 panic!(
                     "std.io should contain trait '{}'; found: {:?}",
                     trait_name,
-                    module.trait_defs.iter().map(|t| &t.name).collect::<Vec<_>>()
+                    module
+                        .trait_defs
+                        .iter()
+                        .map(|t| &t.name)
+                        .collect::<Vec<_>>()
                 )
             });
 
@@ -257,7 +290,10 @@ fn io_source_and_sink_marker_traits_present() {
             t.required_members.is_empty(),
             "trait '{}' should have no required members, got: {:?}",
             trait_name,
-            t.required_members.iter().map(|r| &r.name).collect::<Vec<_>>()
+            t.required_members
+                .iter()
+                .map(|r| &r.name)
+                .collect::<Vec<_>>()
         );
         assert!(
             t.defaults.is_empty(),
@@ -267,4 +303,3 @@ fn io_source_and_sink_marker_traits_present() {
         );
     }
 }
-

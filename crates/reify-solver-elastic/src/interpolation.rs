@@ -230,11 +230,7 @@ pub struct LocatableTet<'a> {
 /// surface this as a bottleneck, a `LocatedTets` wrapper can be added at
 /// the engine layer (or as a separate helper here) without changing
 /// this primitive's signature.
-pub fn locate_element_p1(
-    elements: &[LocatableTet<'_>],
-    p: [f64; 3],
-    tol: f64,
-) -> Option<usize> {
+pub fn locate_element_p1(elements: &[LocatableTet<'_>], p: [f64; 3], tol: f64) -> Option<usize> {
     for (i, el) in elements.iter().enumerate() {
         if point_in_tet_p1(el.phys_nodes, p, tol) {
             return Some(i);
@@ -331,10 +327,11 @@ mod tests {
         let centroid = [0.25_f64, 0.25, 0.25];
         let interp = interpolate_p1_at_point(&UNIT_TET_P1, &nodal_values, centroid);
         for k in 0..3 {
-            let expected = 0.25 * (nodal_values[0][k]
-                + nodal_values[1][k]
-                + nodal_values[2][k]
-                + nodal_values[3][k]);
+            let expected = 0.25
+                * (nodal_values[0][k]
+                    + nodal_values[1][k]
+                    + nodal_values[2][k]
+                    + nodal_values[3][k]);
             assert!(
                 (interp[k] - expected).abs() < TOL,
                 "centroid interp[{k}] = {} expected mean {expected}",

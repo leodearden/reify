@@ -65,8 +65,7 @@ const BUILD_RS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/build.rs");
 /// expect message. All self-inspection tests should use this helper rather
 /// than calling `read_to_string(THIS_FILE)` directly.
 fn read_self_source() -> String {
-    std::fs::read_to_string(THIS_FILE)
-        .expect("should be able to read this test file via THIS_FILE")
+    std::fs::read_to_string(THIS_FILE).expect("should be able to read this test file via THIS_FILE")
 }
 
 /// Creates base/src/, writes placeholder files for all EXPECTED_OUTPUTS,
@@ -1449,9 +1448,11 @@ fn test_path_constants_guard_uses_exact_count() {
     let source = std::fs::read_to_string(THIS_FILE)
         .expect("should be able to read this test file via THIS_FILE");
 
-    let body =
-        extract_test_fn_body(&source, "fn test_self_path_constants_guard_is_not_vacuous()")
-            .expect("source should contain test_self_path_constants_guard_is_not_vacuous");
+    let body = extract_test_fn_body(
+        &source,
+        "fn test_self_path_constants_guard_is_not_vacuous()",
+    )
+    .expect("source should contain test_self_path_constants_guard_is_not_vacuous");
 
     assert!(
         body.contains("count == 2"),
@@ -1480,9 +1481,8 @@ fn test_self_reading_count_comment_accuracy() {
     let source = std::fs::read_to_string(THIS_FILE)
         .expect("should be able to read this test file via THIS_FILE");
 
-    let body =
-        extract_test_fn_body(&source, "fn test_self_read_paths_use_manifest_dir()")
-            .expect("source should contain test_self_read_paths_use_manifest_dir");
+    let body = extract_test_fn_body(&source, "fn test_self_read_paths_use_manifest_dir()")
+        .expect("source should contain test_self_read_paths_use_manifest_dir");
 
     // Compute the real count with the same self-exclusion filter used in the test.
     let real_count = find_self_reading_test_fns(&source)
@@ -1494,19 +1494,19 @@ fn test_self_reading_count_comment_accuracy() {
     let prefix = "(actual count is ";
     if let Some(start) = body.find(prefix) {
         let after = &body[start + prefix.len()..];
-        let end = after.find(')').expect("parenthetical must be closed with ')'");
+        let end = after
+            .find(')')
+            .expect("parenthetical must be closed with ')'");
         let claimed: usize = after[..end]
             .trim()
             .parse()
             .expect("value after '(actual count is ' must be a number");
         assert_eq!(
-            claimed,
-            real_count,
+            claimed, real_count,
             "test_self_read_paths_use_manifest_dir claims '(actual count is {})' but \
              find_self_reading_test_fns (after self-exclusion) returns {}. \
              Either update the claim or remove the parenthetical entirely.",
-            claimed,
-            real_count
+            claimed, real_count
         );
     }
     // No parenthetical present — passes vacuously.
@@ -1521,9 +1521,8 @@ fn test_drop_logs_error_check_is_form_agnostic() {
     // form that logs the error is acceptable.
     let source = read_self_source();
 
-    let drop_logs_body =
-        extract_test_fn_body(&source, "fn test_readonly_guard_drop_logs_error()")
-            .expect("source should contain test_readonly_guard_drop_logs_error");
+    let drop_logs_body = extract_test_fn_body(&source, "fn test_readonly_guard_drop_logs_error()")
+        .expect("source should contain test_readonly_guard_drop_logs_error");
 
     assert!(
         !drop_logs_body.contains("contains(\"if let Err\""),
@@ -1578,13 +1577,19 @@ fn test_strip_line_comments() {
     assert_eq!(strip_line_comments("foo(/* polling */ bar)"), "foo( bar)");
 
     // Known limitation: // inside string literals is treated as comment start
-    assert_eq!(strip_line_comments(r#"let s = "//"; let x = 1;"#), r#"let s = ""#);
+    assert_eq!(
+        strip_line_comments(r#"let s = "//"; let x = 1;"#),
+        r#"let s = ""#
+    );
 
     // Multiple /* */ blocks on one line — loop handles successive pairs
     assert_eq!(strip_line_comments("a /* x */ b /* y */ c"), "a  b  c");
 
     // Block comment then line comment — exercises both steps in sequence
-    assert_eq!(strip_line_comments("code /* block */ more // line"), "code  more ");
+    assert_eq!(
+        strip_line_comments("code /* block */ more // line"),
+        "code  more "
+    );
 }
 
 #[test]
@@ -1622,7 +1627,10 @@ fn test_find_bare_literal_violations_generic() {
     let src = "ok\nread_to_string(\"needle.rs\")\nok";
     let result = find_bare_literal_violations(src, &["\"needle.rs\""]);
     assert_eq!(result.len(), 1, "should detect exactly one violation");
-    assert_eq!(result[0].0, 2, "line numbering should be 1-based (hit is on line 2)");
+    assert_eq!(
+        result[0].0, 2,
+        "line numbering should be 1-based (hit is on line 2)"
+    );
 
     // ── Multiple needles: any match triggers detection ────────────────────────
     let multi = find_bare_literal_violations(
@@ -1692,7 +1700,10 @@ fn test_find_bare_self_path_violations() {
             ),
         ],
         &[
-            ("read_to_string(THIS_FILE)", "constant usage must not be detected"),
+            (
+                "read_to_string(THIS_FILE)",
+                "constant usage must not be detected",
+            ),
             (
                 "// read_to_string(\"tests/build_logic_tests.rs\")",
                 "full-line // comment must not be detected",
@@ -1720,7 +1731,10 @@ fn test_find_bare_self_path_violations() {
     let src = "ok\nread_to_string(\"tests/build_logic_tests.rs\")\nok";
     let hits = find_bare_self_path_violations(src);
     assert_eq!(hits.len(), 1, "should detect exactly one violation");
-    assert_eq!(hits[0].0, 2, "line numbering must be 1-based (hit is on line 2)");
+    assert_eq!(
+        hits[0].0, 2,
+        "line numbering must be 1-based (hit is on line 2)"
+    );
 }
 
 #[test]
@@ -1730,13 +1744,28 @@ fn test_find_bare_build_rs_violations() {
     assert_bare_literal_detection(
         find_bare_build_rs_violations,
         &[
-            ("read_to_string(\"build.rs\")", "exact call should be detected"),
-            ("read_to_string( \"build.rs\" )", "whitespace variant should be detected"),
-            ("read_to_string(\"./build.rs\")", "relative path variant should be detected"),
-            ("File::open(\"build.rs\")", "File::open variant should be detected"),
+            (
+                "read_to_string(\"build.rs\")",
+                "exact call should be detected",
+            ),
+            (
+                "read_to_string( \"build.rs\" )",
+                "whitespace variant should be detected",
+            ),
+            (
+                "read_to_string(\"./build.rs\")",
+                "relative path variant should be detected",
+            ),
+            (
+                "File::open(\"build.rs\")",
+                "File::open variant should be detected",
+            ),
         ],
         &[
-            ("read_to_string(BUILD_RS)", "constant usage must not be detected"),
+            (
+                "read_to_string(BUILD_RS)",
+                "constant usage must not be detected",
+            ),
             (
                 "// read_to_string(\"build.rs\")",
                 "full-line // comment must not be detected",

@@ -580,7 +580,7 @@ mod tests {
     // mesher.rs (see mesher.rs:1121-1124 for the rationale comment).
 
     use crate::medial::MedialMask;
-    use crate::mid_surface::{extract_mid_surface, MidSurfaceOptions};
+    use crate::mid_surface::{MidSurfaceOptions, extract_mid_surface};
     use reify_types::value::{InterpolationKind, SampledField, SampledGridKind};
     use std::sync::atomic::AtomicBool;
 
@@ -591,9 +591,7 @@ mod tests {
         let half_extent = (n as f64 - 1.0) / 2.0;
         let bounds_min = -half_extent;
         let bounds_max = half_extent;
-        let axis_grid: Vec<f64> = (0..n)
-            .map(|i| bounds_min + (i as f64) * spacing)
-            .collect();
+        let axis_grid: Vec<f64> = (0..n).map(|i| bounds_min + (i as f64) * spacing).collect();
         let mut data = Vec::with_capacity(n * n * n);
         for &_x in &axis_grid {
             for &_y in &axis_grid {
@@ -734,7 +732,8 @@ mod tests {
         // spike [3,4,5]: branch_length=0.5, local_t≈4.0 → ratio≈0.125 < 1.0 → pruned
         // body  [0,1,2]: branch_length≈10,  local_t=1.0 → ratio≈10   >> 1.0 → survives
         assert_eq!(
-            result.mesh.triangles.len(), 1,
+            result.mesh.triangles.len(),
+            1,
             "body triangle must survive when spike has duplicate-position vertices"
         );
         assert_eq!(
@@ -742,7 +741,8 @@ mod tests {
             "spike triangle must be pruned"
         );
         assert_eq!(
-            result.mesh.vertices.len(), 3,
+            result.mesh.vertices.len(),
+            3,
             "only the three body vertices survive (v0, v1, v2)"
         );
         assert!(
@@ -769,8 +769,8 @@ mod tests {
             triangles: vec![[0, 1, 2], [0, 1, 3]],
             thickness: vec![1.0, 1.0, 1.0, 10.0],
         };
-        let result = prune_branches(&mesh, &PruneOptions::default())
-            .expect("valid mesh should not error");
+        let result =
+            prune_branches(&mesh, &PruneOptions::default()).expect("valid mesh should not error");
 
         // Spike apex (v3) must be gone.
         assert_eq!(result.mesh.vertices.len(), 3, "only 3 vertices survive");
@@ -832,26 +832,25 @@ mod tests {
             ],
             thickness: vec![1.0, 1.0, 1.0, 10.0],
         };
-        let result = prune_branches(&mesh, &PruneOptions::default())
-            .expect("valid mesh should not error");
+        let result =
+            prune_branches(&mesh, &PruneOptions::default()).expect("valid mesh should not error");
         assert_eq!(
             result.metrics.pruned_triangle_count, 1,
             "exactly one triangle (the spike) must be pruned"
         );
         assert_eq!(
-            result.mesh.triangles.len(), 1,
+            result.mesh.triangles.len(),
+            1,
             "one triangle must survive (the body)"
         );
         // The surviving triangle's vertices must be a subset of the original body triangle.
         // After compaction v3 is gone; v0, v1, v2 survive (possibly re-indexed).
         assert_eq!(
-            result.mesh.vertices.len(), 3,
+            result.mesh.vertices.len(),
+            3,
             "three vertices survive (body triangle)"
         );
-        assert!(
-            result.metrics.iterations >= 1,
-            "at least one iteration ran"
-        );
+        assert!(result.metrics.iterations >= 1, "at least one iteration ran");
         assert!(
             result.metrics.converged,
             "spike fixture must converge naturally after spike is pruned"
@@ -938,7 +937,11 @@ mod tests {
             result.metrics.pruned_triangle_count, 0,
             "spike (ratio=1.0) must survive when threshold={threshold} (SPIKE_RATIO-0.05)"
         );
-        assert_eq!(result.mesh.triangles.len(), 2, "both triangles must survive");
+        assert_eq!(
+            result.mesh.triangles.len(),
+            2,
+            "both triangles must survive"
+        );
         assert!(
             result.metrics.converged,
             "just-above-threshold spike (no pruning) must converge naturally"
@@ -972,7 +975,11 @@ mod tests {
             result.metrics.pruned_triangle_count, 0,
             "spike (ratio≈0.125) must survive when threshold=0.05"
         );
-        assert_eq!(result.mesh.triangles.len(), 2, "both triangles must survive");
+        assert_eq!(
+            result.mesh.triangles.len(),
+            2,
+            "both triangles must survive"
+        );
         assert!(
             result.metrics.converged,
             "threshold-too-low fixture (no pruning) must converge naturally"
@@ -1005,8 +1012,8 @@ mod tests {
             triangles: vec![[0, 1, 2]],
             thickness: vec![1.0, 1.0, 1.0],
         };
-        let result = prune_branches(&mesh, &PruneOptions::default())
-            .expect("valid mesh should not error");
+        let result =
+            prune_branches(&mesh, &PruneOptions::default()).expect("valid mesh should not error");
         assert_eq!(result.mesh.triangles.len(), 1, "triangle must survive");
         assert_eq!(result.mesh.vertices.len(), 3, "all vertices must survive");
         assert_eq!(
@@ -1053,8 +1060,8 @@ mod tests {
     #[test]
     fn prune_branches_rejects_out_of_range_triangle_index() {
         let mesh = MidSurfaceMesh {
-            vertices: vec![[0.0, 0.0, 0.0]],             // only index 0 is valid
-            triangles: vec![[0, 1, 0]],                   // index 1 is out of range
+            vertices: vec![[0.0, 0.0, 0.0]], // only index 0 is valid
+            triangles: vec![[0, 1, 0]],      // index 1 is out of range
             thickness: vec![1.0],
         };
         match prune_branches(&mesh, &PruneOptions::default()) {
@@ -1093,15 +1100,10 @@ mod tests {
                     if bad_ratio.is_nan() {
                         assert!(value.is_nan(), "expected NaN, got {value}");
                     } else {
-                        assert_eq!(
-                            value, bad_ratio,
-                            "error value should echo the bad input"
-                        );
+                        assert_eq!(value, bad_ratio, "error value should echo the bad input");
                     }
                 }
-                other => panic!(
-                    "expected InvalidRatio for ratio={bad_ratio}, got {other:?}"
-                ),
+                other => panic!("expected InvalidRatio for ratio={bad_ratio}, got {other:?}"),
             }
         }
     }
@@ -1144,7 +1146,14 @@ mod tests {
             triangles: vec![],
             thickness: vec![],
         };
-        for bad_tol in [0.0_f64, -1.0, -1e-9, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        for bad_tol in [
+            0.0_f64,
+            -1.0,
+            -1e-9,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ] {
             let opts = PruneOptions {
                 grid_alignment_tolerance: bad_tol,
                 ..PruneOptions::default()
@@ -1155,10 +1164,7 @@ mod tests {
                     if bad_tol.is_nan() {
                         assert!(value.is_nan(), "expected NaN, got {value}");
                     } else {
-                        assert_eq!(
-                            value, bad_tol,
-                            "error value should echo the bad input"
-                        );
+                        assert_eq!(value, bad_tol, "error value should echo the bad input");
                     }
                 }
                 other => panic!(
@@ -1241,7 +1247,10 @@ mod tests {
 
         // `5e-324` ≈ 2^-1074 — the smallest positive denormal; reciprocal is +inf.
         let subnormal_b = 5e-324_f64;
-        assert!(subnormal_b.is_subnormal(), "test setup: 5e-324 must be subnormal");
+        assert!(
+            subnormal_b.is_subnormal(),
+            "test setup: 5e-324 must be subnormal"
+        );
         let err_b = prune_branches(
             &empty,
             &PruneOptions {
@@ -1339,8 +1348,8 @@ mod tests {
             thickness: vec![],
         };
 
-        let result: PruneResult = prune_branches(&mesh, &PruneOptions::default())
-            .expect("empty mesh should return Ok");
+        let result: PruneResult =
+            prune_branches(&mesh, &PruneOptions::default()).expect("empty mesh should return Ok");
         assert!(
             result.mesh.vertices.is_empty(),
             "empty input → empty output vertices"
@@ -1401,11 +1410,11 @@ mod tests {
     fn chain_pruning_fixture() -> MidSurfaceMesh {
         MidSurfaceMesh {
             vertices: vec![
-                [0.0, 0.0, 0.0],    // v0
-                [0.3, 0.0, 0.0],    // v1 — shared body/T1 base edge length = 0.3
-                [0.15, 10.0, 0.0],  // v2 — body apex (ratio ≈ 10, survives)
-                [0.15, -0.1, 0.0],  // v3 — T1/T2 hinge
-                [0.0, -0.2, 0.0],   // v4 — T2 apex
+                [0.0, 0.0, 0.0],   // v0
+                [0.3, 0.0, 0.0],   // v1 — shared body/T1 base edge length = 0.3
+                [0.15, 10.0, 0.0], // v2 — body apex (ratio ≈ 10, survives)
+                [0.15, -0.1, 0.0], // v3 — T1/T2 hinge
+                [0.0, -0.2, 0.0],  // v4 — T2 apex
             ],
             triangles: vec![
                 [0, 1, 2], // body
@@ -1427,8 +1436,7 @@ mod tests {
             max_prune_iterations: 1,
             ..PruneOptions::default()
         };
-        let result = prune_branches(&mesh, &opts)
-            .expect("chain-pruning fixture should not error");
+        let result = prune_branches(&mesh, &opts).expect("chain-pruning fixture should not error");
 
         // Loop ran one round and actively pruned → truncated, not converged.
         assert!(
@@ -1470,7 +1478,8 @@ mod tests {
             "T1 and T2 must both be pruned with default max iterations"
         );
         assert_eq!(
-            result.mesh.triangles.len(), 1,
+            result.mesh.triangles.len(),
+            1,
             "only the body triangle must survive"
         );
     }
@@ -1657,15 +1666,15 @@ mod tests {
         // → B has only 1 boundary edge → NOT a tip → NOT pruned.
         let mesh = MidSurfaceMesh {
             vertices: vec![
-                [0.0, 0.0, 0.0],                    // v0 — B vertex 0
-                [1.0, 0.0, 0.0],                    // v1 — B vertex 1
-                [0.5, 0.8, 0.0],                    // v2 — B vertex 2
-                [JITTER, 0.0, 0.0],                 // v3 ≈ v0 — N1 base (edge v0-v1)
-                [1.0 + JITTER, 0.0, 0.0],           // v4 ≈ v1 — N1 base
-                [0.5, -10.0, 0.0],                  // v5 — N1 far apex (ratio≈10)
-                [JITTER, 0.0, 0.0],                 // v6 ≈ v0 — N2 base (edge v0-v2)
+                [0.0, 0.0, 0.0],                   // v0 — B vertex 0
+                [1.0, 0.0, 0.0],                   // v1 — B vertex 1
+                [0.5, 0.8, 0.0],                   // v2 — B vertex 2
+                [JITTER, 0.0, 0.0],                // v3 ≈ v0 — N1 base (edge v0-v1)
+                [1.0 + JITTER, 0.0, 0.0],          // v4 ≈ v1 — N1 base
+                [0.5, -10.0, 0.0],                 // v5 — N1 far apex (ratio≈10)
+                [JITTER, 0.0, 0.0],                // v6 ≈ v0 — N2 base (edge v0-v2)
                 [0.5 + JITTER, 0.8 + JITTER, 0.0], // v7 ≈ v2 — N2 base
-                [-10.0, 0.4, 0.0],                  // v8 — N2 far apex (ratio≈10)
+                [-10.0, 0.4, 0.0],                 // v8 — N2 far apex (ratio≈10)
             ],
             triangles: vec![[0, 1, 2], [3, 4, 5], [6, 7, 8]],
             // B: thickness 5 → local_t=5, ratio=1/5=0.2<1 (prunable tip).
@@ -1689,7 +1698,8 @@ mod tests {
              N1/N2 survive as tips with ratio≈10"
         );
         assert_eq!(
-            result.mesh.triangles.len(), 3,
+            result.mesh.triangles.len(),
+            3,
             "all 3 triangles survive; len==2 would indicate B was wrongly \
              classified as a tip (regression to bit-exact dedup)"
         );

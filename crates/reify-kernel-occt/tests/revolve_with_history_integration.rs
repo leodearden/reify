@@ -20,7 +20,7 @@
 
 #![cfg(has_occt)]
 
-use reify_kernel_occt::{revolve_synthesis_post_sort_for_test, OCCT_AVAILABLE, OcctKernelHandle};
+use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle, revolve_synthesis_post_sort_for_test};
 use reify_types::GeometryQuery;
 
 /// 5×10mm rectangular face profile, expressed in SI metres. Centered at
@@ -361,9 +361,7 @@ fn full_revolve_with_history_reports_no_caps() {
             .face_generated
             .iter()
             .find(|r| r.parent_subshape_index == axial_edge)
-            .unwrap_or_else(|| {
-                panic!("rect axial edge e{axial_edge} missing from face_generated")
-            });
+            .unwrap_or_else(|| panic!("rect axial edge e{axial_edge} missing from face_generated"));
         let n = kernel
             .face_outward_unit_normal_for_test(result_faces[rec.result_subshape_index as usize])
             .expect("face_outward_unit_normal_for_test should succeed");
@@ -384,23 +382,19 @@ fn full_revolve_with_history_reports_no_caps() {
     //     edge must produce a face_generated record — no unsynthesized profile
     //     edges expected.
     assert_eq!(
-        history.unsynthesized_profile_edge_count,
-        0,
+        history.unsynthesized_profile_edge_count, 0,
         "full revolve of rect profile must report 0 unsynthesized profile edges, \
          got {} (face_generated = {:?})",
-        history.unsynthesized_profile_edge_count,
-        history.face_generated
+        history.unsynthesized_profile_edge_count, history.face_generated
     );
 
     // (g) No duplicate parent_subshape_index values after the post-sort/dedup
     //     pass — expected 0 for a well-formed rect profile.
     assert_eq!(
-        history.duplicate_parent_subshape_index_count,
-        0,
+        history.duplicate_parent_subshape_index_count, 0,
         "full revolve of rect profile must report 0 duplicate parent_subshape_index, \
          got {} (face_generated = {:?})",
-        history.duplicate_parent_subshape_index_count,
-        history.face_generated
+        history.duplicate_parent_subshape_index_count, history.face_generated
     );
 }
 
@@ -437,10 +431,10 @@ fn full_revolve_triangle_profile_synthesis_regression() {
     // by OCCT's Generated().
     let profile_id = kernel
         .make_triangle_profile_at_for_test(
-            0.015, 0.0,   // p1: x=15mm, z=0mm
-            0.025, 0.0,   // p2: x=25mm, z=0mm
+            0.015, 0.0, // p1: x=15mm, z=0mm
+            0.025, 0.0, // p2: x=25mm, z=0mm
             0.020, 0.010, // p3: x=20mm, z=10mm
-            0.0,          // cy=0 (XZ plane)
+            0.0,   // cy=0 (XZ plane)
         )
         .expect("triangle profile should build");
 
@@ -584,22 +578,18 @@ fn full_revolve_triangle_profile_synthesis_regression() {
     //       profile edge must produce a face_generated record — no unsynthesized
     //       profile edges expected.
     assert_eq!(
-        history.unsynthesized_profile_edge_count,
-        0,
+        history.unsynthesized_profile_edge_count, 0,
         "full revolve of triangle profile must report 0 unsynthesized profile edges, \
          got {} (face_generated = {:?})",
-        history.unsynthesized_profile_edge_count,
-        history.face_generated
+        history.unsynthesized_profile_edge_count, history.face_generated
     );
 
     // (viii) No duplicate parent_subshape_index values after post-sort/dedup.
     assert_eq!(
-        history.duplicate_parent_subshape_index_count,
-        0,
+        history.duplicate_parent_subshape_index_count, 0,
         "full revolve of triangle profile must report 0 duplicate parent_subshape_index, \
          got {} (face_generated = {:?})",
-        history.duplicate_parent_subshape_index_count,
-        history.face_generated
+        history.duplicate_parent_subshape_index_count, history.face_generated
     );
 }
 
@@ -715,10 +705,10 @@ fn full_revolve_misclassified_radial_edge_counter_best_effort() {
     // |dot(edge_dir, +Z)| ≈ 2e-8 / 0.01 = 2e-6 (just over DIR_TOL=1e-6).
     let profile_id = kernel
         .make_triangle_profile_at_for_test(
-            0.015, 0.0,    // p1: x=15mm, z=0mm
-            0.025, 2e-8,   // p2: x=25mm, z=2nm
-            0.020, 0.010,  // p3: x=20mm, z=10mm
-            0.0,           // cy=0 (XZ plane)
+            0.015, 0.0, // p1: x=15mm, z=0mm
+            0.025, 2e-8, // p2: x=25mm, z=2nm
+            0.020, 0.010, // p3: x=20mm, z=10mm
+            0.0,   // cy=0 (XZ plane)
         )
         .expect("slightly-slanted triangle profile should build");
 
@@ -827,8 +817,7 @@ fn revolve_synthesis_post_sort_drops_duplicate_parent_subshape_index() {
     ];
     let result_dup = revolve_synthesis_post_sort_for_test(&input_dup);
     assert_eq!(
-        result_dup.duplicate_count,
-        1,
+        result_dup.duplicate_count, 1,
         "exactly one duplicate must be dropped; got duplicate_count={}",
         result_dup.duplicate_count
     );
@@ -850,8 +839,7 @@ fn revolve_synthesis_post_sort_drops_duplicate_parent_subshape_index() {
     ];
     let result_ok = revolve_synthesis_post_sort_for_test(&input_ok);
     assert_eq!(
-        result_ok.duplicate_count,
-        0,
+        result_ok.duplicate_count, 0,
         "no-duplicate input must report duplicate_count=0; got {}",
         result_ok.duplicate_count
     );

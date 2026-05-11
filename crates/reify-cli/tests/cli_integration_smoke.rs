@@ -182,8 +182,8 @@ fn check_m5_geometry_flange_resolves_stdlib() {
 /// with violated constraints that make `reify check` exit non-zero (pre-2 confirms
 /// this — cmd_check evaluates @test templates as regular constraints).
 const NEW_M11_EXAMPLES: &[(&str, &str)] = &[
-    ("m11_field_calculus.ri", ""),          // always present in worktree
-    ("m11_combined.ri", "task 290"),        // created by task 290, may not be merged yet
+    ("m11_field_calculus.ri", ""),           // always present in worktree
+    ("m11_combined.ri", "task 290"),         // created by task 290, may not be merged yet
     ("integration_full_v01.ri", "task 291"), // created by task 291, may not be merged yet
 ];
 

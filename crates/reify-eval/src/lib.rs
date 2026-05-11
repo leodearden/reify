@@ -36,11 +36,11 @@ pub mod primitive_attribute_seed;
 pub mod realization_cache;
 pub mod snapshot;
 pub mod source_location;
-pub use source_location::resolve_entity_source_location;
 pub use source_location::resolve_entity_at_source_position;
+pub use source_location::resolve_entity_source_location;
+pub(crate) mod engine_hash_algo;
 pub mod field_import_provenance;
 pub mod morph_stage_b;
-pub(crate) mod engine_hash_algo;
 pub mod persistent_cache;
 pub mod test_runner;
 pub mod tolerance_bucket;
@@ -79,7 +79,9 @@ pub use dispatcher::{
     per_stage_tolerance_for_plan,
 };
 pub use kernel_attribute_hook::propagate_via_kernel_attribute_hook;
-pub use kernel_registry::{collect_registry, pick_lexmin_brep_kernel, pick_lexmin_kernel, registry};
+pub use kernel_registry::{
+    collect_registry, pick_lexmin_brep_kernel, pick_lexmin_kernel, registry,
+};
 pub use primitive_attribute_seed::seed_primitive_attributes;
 pub use realization_cache::RealizationCache;
 pub use test_runner::{TestResult, TestStatus, run_tests};

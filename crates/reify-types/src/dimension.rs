@@ -141,17 +141,13 @@ impl DimensionVector {
     /// Frequency: s⁻¹
     pub const FREQUENCY: DimensionVector = DimensionVector::from_exps(&[(2, -1)]);
     /// Force: kg·m·s⁻² (same as module-scope `FORCE` — kept in parallel for ergonomics).
-    pub const FORCE: DimensionVector =
-        DimensionVector::from_exps(&[(0, 1), (1, 1), (2, -2)]);
+    pub const FORCE: DimensionVector = DimensionVector::from_exps(&[(0, 1), (1, 1), (2, -2)]);
     /// Energy: kg·m²·s⁻²
-    pub const ENERGY: DimensionVector =
-        DimensionVector::from_exps(&[(0, 2), (1, 1), (2, -2)]);
+    pub const ENERGY: DimensionVector = DimensionVector::from_exps(&[(0, 2), (1, 1), (2, -2)]);
     /// Power: kg·m²·s⁻³
-    pub const POWER: DimensionVector =
-        DimensionVector::from_exps(&[(0, 2), (1, 1), (2, -3)]);
+    pub const POWER: DimensionVector = DimensionVector::from_exps(&[(0, 2), (1, 1), (2, -3)]);
     /// Pressure: kg·m⁻¹·s⁻²
-    pub const PRESSURE: DimensionVector =
-        DimensionVector::from_exps(&[(0, -1), (1, 1), (2, -2)]);
+    pub const PRESSURE: DimensionVector = DimensionVector::from_exps(&[(0, -1), (1, 1), (2, -2)]);
     /// Voltage (electric potential): kg·m²·s⁻³·A⁻¹
     pub const VOLTAGE: DimensionVector =
         DimensionVector::from_exps(&[(0, 2), (1, 1), (2, -3), (3, -1)]);
@@ -176,17 +172,13 @@ impl DimensionVector {
     pub const MAGNETIC_FLUX_DENSITY: DimensionVector =
         DimensionVector::from_exps(&[(1, 1), (2, -2), (3, -1)]);
     /// Luminous flux: cd·sr
-    pub const LUMINOUS_FLUX: DimensionVector =
-        DimensionVector::from_exps(&[(6, 1), (8, 1)]);
+    pub const LUMINOUS_FLUX: DimensionVector = DimensionVector::from_exps(&[(6, 1), (8, 1)]);
     /// Illuminance: cd·sr·m⁻²
-    pub const ILLUMINANCE: DimensionVector =
-        DimensionVector::from_exps(&[(0, -2), (6, 1), (8, 1)]);
+    pub const ILLUMINANCE: DimensionVector = DimensionVector::from_exps(&[(0, -2), (6, 1), (8, 1)]);
     /// Absorbed dose of ionising radiation: m²·s⁻² (also Sievert for equivalent dose).
-    pub const ABSORBED_DOSE: DimensionVector =
-        DimensionVector::from_exps(&[(0, 2), (2, -2)]);
+    pub const ABSORBED_DOSE: DimensionVector = DimensionVector::from_exps(&[(0, 2), (2, -2)]);
     /// Angular velocity: rad·s⁻¹
-    pub const ANGULAR_VELOCITY: DimensionVector =
-        DimensionVector::from_exps(&[(2, -1), (7, 1)]);
+    pub const ANGULAR_VELOCITY: DimensionVector = DimensionVector::from_exps(&[(2, -1), (7, 1)]);
     /// Dynamic viscosity: kg·m⁻¹·s⁻¹
     pub const DYNAMIC_VISCOSITY: DimensionVector =
         DimensionVector::from_exps(&[(0, -1), (1, 1), (2, -1)]);
@@ -195,8 +187,7 @@ impl DimensionVector {
     /// Dimensionally distinct from `ENERGY` (kg·m²·s⁻²) — pin the s-slot
     /// distinction in tests to prevent silent collisions if either constant
     /// is edited.
-    pub const MOMENT_OF_INERTIA: DimensionVector =
-        DimensionVector::from_exps(&[(0, 2), (1, 1)]);
+    pub const MOMENT_OF_INERTIA: DimensionVector = DimensionVector::from_exps(&[(0, 2), (1, 1)]);
     /// Mass density: kg·m⁻³
     ///
     /// Named at the Rust level as `MASS_DENSITY` to disambiguate from the
@@ -204,11 +195,9 @@ impl DimensionVector {
     /// quantity, not mass density). The user-facing canonical name is
     /// `"Density"` — the natural spelling at call sites like
     /// `density: Density`.
-    pub const MASS_DENSITY: DimensionVector =
-        DimensionVector::from_exps(&[(0, -3), (1, 1)]);
+    pub const MASS_DENSITY: DimensionVector = DimensionVector::from_exps(&[(0, -3), (1, 1)]);
     /// Acceleration: m·s⁻² (LENGTH / TIME²)
-    pub const ACCELERATION: DimensionVector =
-        DimensionVector::from_exps(&[(0, 1), (2, -2)]);
+    pub const ACCELERATION: DimensionVector = DimensionVector::from_exps(&[(0, 1), (2, -2)]);
     /// Force density (force per unit volume): N/m³ = kg·m⁻²·s⁻² (FORCE / VOLUME,
     /// equivalently PRESSURE / LENGTH)
     pub const FORCE_DENSITY: DimensionVector =
@@ -390,7 +379,10 @@ pub static NAMED_DIMENSIONS: &[(DimensionVector, &str)] = &[
     (DimensionVector::CONDUCTANCE, "Conductance"),
     (DimensionVector::INDUCTANCE, "Inductance"),
     (DimensionVector::MAGNETIC_FLUX, "MagneticFlux"),
-    (DimensionVector::MAGNETIC_FLUX_DENSITY, "MagneticFluxDensity"),
+    (
+        DimensionVector::MAGNETIC_FLUX_DENSITY,
+        "MagneticFluxDensity",
+    ),
     (DimensionVector::LUMINOUS_FLUX, "LuminousFlux"),
     (DimensionVector::ILLUMINANCE, "Illuminance"),
     (DimensionVector::ABSORBED_DOSE, "AbsorbedDose"),
@@ -585,10 +577,7 @@ mod tests {
         // Absorbed dose: m²·s⁻²
         assert_eq!(DimensionVector::ABSORBED_DOSE, make(&[(0, 2), (2, -2)]));
         // Angular velocity: rad·s⁻¹
-        assert_eq!(
-            DimensionVector::ANGULAR_VELOCITY,
-            make(&[(2, -1), (7, 1)])
-        );
+        assert_eq!(DimensionVector::ANGULAR_VELOCITY, make(&[(2, -1), (7, 1)]));
         // Dynamic viscosity: kg·m⁻¹·s⁻¹
         assert_eq!(
             DimensionVector::DYNAMIC_VISCOSITY,
@@ -786,7 +775,11 @@ mod tests {
 
     #[test]
     fn money_div_by_money_is_dimensionless() {
-        assert!(DimensionVector::MONEY.div(&DimensionVector::MONEY).is_dimensionless());
+        assert!(
+            DimensionVector::MONEY
+                .div(&DimensionVector::MONEY)
+                .is_dimensionless()
+        );
     }
 
     #[test]
@@ -816,15 +809,23 @@ mod tests {
         assert_ne!(money_hash, DimensionVector::TIME.content_hash());
         assert_ne!(money_hash, DimensionVector::CURRENT.content_hash());
         assert_ne!(money_hash, DimensionVector::TEMPERATURE.content_hash());
-        assert_ne!(money_hash, DimensionVector::AMOUNT_OF_SUBSTANCE.content_hash());
-        assert_ne!(money_hash, DimensionVector::LUMINOUS_INTENSITY.content_hash());
+        assert_ne!(
+            money_hash,
+            DimensionVector::AMOUNT_OF_SUBSTANCE.content_hash()
+        );
+        assert_ne!(
+            money_hash,
+            DimensionVector::LUMINOUS_INTENSITY.content_hash()
+        );
         assert_ne!(money_hash, DimensionVector::ANGLE.content_hash());
         assert_ne!(money_hash, DimensionVector::SOLID_ANGLE.content_hash());
         assert_ne!(money_hash, DimensionVector::DIMENSIONLESS.content_hash());
         assert_ne!(money_hash, DimensionVector::MONEY.pow(2).content_hash());
         assert_ne!(
             money_hash,
-            DimensionVector::MONEY.div(&DimensionVector::MASS).content_hash()
+            DimensionVector::MONEY
+                .div(&DimensionVector::MASS)
+                .content_hash()
         );
     }
 
@@ -853,7 +854,12 @@ mod tests {
     #[test]
     fn canonical_name_composite_returns_none() {
         // MONEY / MASS is a composite dimension — no single canonical name.
-        assert_eq!(DimensionVector::MONEY.div(&DimensionVector::MASS).canonical_name(), None);
+        assert_eq!(
+            DimensionVector::MONEY
+                .div(&DimensionVector::MASS)
+                .canonical_name(),
+            None
+        );
     }
 
     #[test]
@@ -898,7 +904,10 @@ mod tests {
     fn to_display_units_recognises_money() {
         let (value, unit) = DimensionVector::MONEY.to_display_units(25.0);
         assert_eq!(value, 25.0, "Money value should pass through unchanged");
-        assert_eq!(unit, "USD", "Money unit label should be USD, not SI fallback");
+        assert_eq!(
+            unit, "USD",
+            "Money unit label should be USD, not SI fallback"
+        );
         assert_ne!(unit, "SI", "Money must NOT fall through to the SI fallback");
     }
 
@@ -910,7 +919,10 @@ mod tests {
         // (e.g. assigning "USD/m" to this dimension) don't falsely fail.
         let cost_per_length = DimensionVector::MONEY.div(&DimensionVector::LENGTH);
         let (_, unit) = cost_per_length.to_display_units(1.0);
-        assert_ne!(unit, "USD", "bare 'USD' label must not appear for a composed Money/Length dimension");
+        assert_ne!(
+            unit, "USD",
+            "bare 'USD' label must not appear for a composed Money/Length dimension"
+        );
     }
 
     #[test]
@@ -943,10 +955,7 @@ mod tests {
     fn moment_of_inertia_is_distinct_from_energy() {
         // ENERGY is kg·m²·s⁻²; MOMENT_OF_INERTIA is kg·m². The s-slot distinction
         // is the whole reason MOMENT_OF_INERTIA needs its own constant.
-        assert_ne!(
-            DimensionVector::MOMENT_OF_INERTIA,
-            DimensionVector::ENERGY
-        );
+        assert_ne!(DimensionVector::MOMENT_OF_INERTIA, DimensionVector::ENERGY);
     }
 
     #[test]
@@ -1010,10 +1019,26 @@ mod tests {
     #[test]
     fn money_compound_with_force_pins_all_slots() {
         let result = DimensionVector::MONEY.mul(&DimensionVector::FORCE);
-        assert_eq!(result.0[0], Rational::ONE, "slot 0 (Length) should be ONE for MONEY × FORCE");
-        assert_eq!(result.0[1], Rational::ONE, "slot 1 (Mass) should be ONE for MONEY × FORCE");
-        assert_eq!(result.0[2], Rational::new(-2, 1), "slot 2 (Time) should be -2 for MONEY × FORCE");
-        assert_eq!(result.0[9], Rational::ONE, "slot 9 (Money) should be ONE for MONEY × FORCE");
+        assert_eq!(
+            result.0[0],
+            Rational::ONE,
+            "slot 0 (Length) should be ONE for MONEY × FORCE"
+        );
+        assert_eq!(
+            result.0[1],
+            Rational::ONE,
+            "slot 1 (Mass) should be ONE for MONEY × FORCE"
+        );
+        assert_eq!(
+            result.0[2],
+            Rational::new(-2, 1),
+            "slot 2 (Time) should be -2 for MONEY × FORCE"
+        );
+        assert_eq!(
+            result.0[9],
+            Rational::ONE,
+            "slot 9 (Money) should be ONE for MONEY × FORCE"
+        );
         for i in [3usize, 4, 5, 6, 7, 8] {
             assert_eq!(
                 result.0[i],
@@ -1039,7 +1064,10 @@ mod tests {
             .div(&DimensionVector::ANGLE);
         let energy = DimensionVector::FORCE.mul(&DimensionVector::LENGTH);
 
-        assert_ne!(torque, energy, "Torque and Energy must be distinct dimensions");
+        assert_ne!(
+            torque, energy,
+            "Torque and Energy must be distinct dimensions"
+        );
         assert_eq!(
             torque.0[7],
             Rational::new(-1, 1),
@@ -1071,8 +1099,7 @@ mod tests {
         let cost_per_energy = DimensionVector::MONEY.mul(&energy);
 
         assert_ne!(
-            cost_per_torque,
-            cost_per_energy,
+            cost_per_torque, cost_per_energy,
             "Money·Torque and Money·Energy must remain distinct"
         );
         assert_eq!(

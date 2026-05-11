@@ -778,14 +778,14 @@ fn type_compatible_param_error_debug_panics_list() {
 #[test]
 fn type_compatible_error_wildcard_mirror_all_variants() {
     let cases: Vec<(&str, Type)> = vec![
-        ("Real",             Type::Real),
-        ("Int",              Type::Int),
-        ("Bool",             Type::Bool),
-        ("String",           Type::String),
-        ("Scalar[m]",        Type::length()),
-        ("List<Int>",        Type::List(Box::new(Type::Int))),
-        ("Option<Real>",     Type::Option(Box::new(Type::Real))),
-        ("Vector<3,Real>",   Type::vec3(Type::Real)),
+        ("Real", Type::Real),
+        ("Int", Type::Int),
+        ("Bool", Type::Bool),
+        ("String", Type::String),
+        ("Scalar[m]", Type::length()),
+        ("List<Int>", Type::List(Box::new(Type::Int))),
+        ("Option<Real>", Type::Option(Box::new(Type::Real))),
+        ("Vector<3,Real>", Type::vec3(Type::Real)),
         ("Matrix<3,3,Real>", Type::matrix(3, 3, Type::Real)),
     ];
     for (label, param_ty) in &cases {
