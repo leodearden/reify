@@ -133,7 +133,14 @@ pub struct ContributorWalk {
 // Used by `build.rs` (via `include!()`) and by `#[cfg(test)]` blocks in
 // `persistent_cache.rs`. Neither site is visible to the non-test lib
 // compiler, so we suppress the dead_code lint here.
+//
+// `#[inline(never)]` prevents LLVM from treating these as inlining candidates
+// at -O3. Without it, LLVM's inliner stack overflows when compiling large
+// release-mode test binaries that link against reify-eval (e.g.
+// `kinematic_sweep_closed_chain`). The functions are dead in those binaries so
+// the attribute costs nothing at runtime.
 #[allow(dead_code)]
+#[inline(never)]
 pub fn walk_contributor(label: &str, root: &Path) -> ContributorWalk {
     let mut walk = ContributorWalk {
         parts: Vec::new(),
@@ -146,7 +153,9 @@ pub fn walk_contributor(label: &str, root: &Path) -> ContributorWalk {
 // Called only from `walk_contributor` which is itself `#[allow(dead_code)]`;
 // suppress the lint here too so the compiler doesn't complain about the
 // transitively unreachable private function in the non-test lib build.
+// `#[inline(never)]` is needed for the same reason as on `walk_contributor`.
 #[allow(dead_code)]
+#[inline(never)]
 fn walk_recursive(label: &str, root: &Path, path: &Path, walk: &mut ContributorWalk) {
     if path.is_file() {
         walk.rerun_paths.push(path.to_path_buf());
