@@ -282,6 +282,77 @@ mod tests {
         assert!(dirty.is_empty(), "fillet_radius dirty cone: {:?}", dirty);
     }
 
+    /// P3.3 step-7: edge #6 → edge #12 composition inside compute_dirty_cone.
+    ///
+    /// Topology: VC `a`, Compute `C` (value_inputs=[a], output_value_cells=[b]),
+    /// VC `b`. The reverse index registers a → Compute(C) (from step-4).
+    /// `compute_dirty_cone(&{a}, &idx, &graph)` must return a dirty set
+    /// containing BOTH `NodeId::Compute(C)` and `NodeId::Value(b)`: the first
+    /// from edge #6 (a → C), the second from edge #12 (C → b).
+    ///
+    /// Fails today because compute_dirty_cone does not yet take a graph
+    /// parameter and does not propagate from a Compute dependent.
+    #[test]
+    fn compute_dirty_cone_propagates_through_compute_node_to_output_value_cells() {
+        use crate::graph::{ComputeNodeData, EvaluationGraph, ValueCellNode};
+        use reify_compiler::ValueCellKind;
+        use reify_types::{ComputeNodeId, ContentHash, Type};
+
+        let mut graph = EvaluationGraph::default();
+        let e = "E";
+
+        // Params a and b (Param kind — default_expr=None irrelevant here).
+        for name in &["a", "b"] {
+            let id = ValueCellId::new(e, *name);
+            graph.value_cells.insert(
+                id.clone(),
+                ValueCellNode {
+                    id: id.clone(),
+                    kind: ValueCellKind::Param,
+                    cell_type: Type::Real,
+                    default_expr: None,
+                    content_hash: ContentHash::of_str(name),
+                },
+            );
+        }
+        let a = ValueCellId::new(e, "a");
+        let b = ValueCellId::new(e, "b");
+
+        // Compute C with value_inputs=[a], output_value_cells=[b].
+        let c_id = ComputeNodeId::new(e, 0);
+        graph.insert_compute_node(ComputeNodeData {
+            computation_id: c_id.clone(),
+            target: "fea".to_string(),
+            value_inputs: vec![a.clone()],
+            realization_inputs: vec![],
+            options_hash: ContentHash::of_str("opt"),
+            cache_key: ContentHash::of_str("ck"),
+            cached_result: None,
+            result_content_hash: None,
+            opaque_state: None,
+            running: None,
+            output_value_cells: vec![b.clone()],
+        });
+
+        let index = ReverseDependencyIndex::build_from_graph(&graph);
+
+        let mut changed = HashSet::new();
+        changed.insert(a.clone());
+
+        let dirty = compute_dirty_cone(&changed, &index, &graph);
+
+        assert!(
+            dirty.contains(&NodeId::Compute(c_id.clone())),
+            "dirty cone should include Compute(C) via edge #6, got: {:?}",
+            dirty
+        );
+        assert!(
+            dirty.contains(&NodeId::Value(b.clone())),
+            "dirty cone should include Value(b) via edge #12 (C's output_value_cells), got: {:?}",
+            dirty
+        );
+    }
+
     #[test]
     fn dirty_cone_includes_resolution_node() {
         use crate::graph::{EvaluationGraph, ResolutionNodeData, ValueCellNode};
