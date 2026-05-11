@@ -377,6 +377,93 @@ mod tests {
         );
     }
 
+    /// P3.3 step-9: multi-hop Value → Compute → Value → Constraint propagation.
+    ///
+    /// Topology: VC `a`; Compute `C` (value_inputs=[a], output_value_cells=[b]);
+    /// VC `b`; Constraint `C0` whose `expr` reads `b`. Reverse-index entries:
+    /// a → Compute(C) (edge #6 from step-4); b → Constraint(C0) (constraint
+    /// extracted in the standard build, added here directly to keep the
+    /// fixture pure-synthetic).
+    ///
+    /// `compute_dirty_cone(&{a}, &idx, &graph)` must mark ALL of
+    /// `Compute(C)`, `Value(b)`, and `Constraint(C0)` dirty — pins the
+    /// architecture-doc claim (§5 line 199) that ComputeNode → ConstraintNode
+    /// routes through the intermediate ValueCell `b` rather than via any
+    /// direct ComputeNode→Constraint edge.
+    #[test]
+    fn compute_dirty_cone_multi_hop_value_through_compute_to_constraint() {
+        use crate::graph::{ComputeNodeData, EvaluationGraph, ValueCellNode};
+        use reify_compiler::ValueCellKind;
+        use reify_types::{ComputeNodeId, ContentHash, Type};
+
+        let mut graph = EvaluationGraph::default();
+        let e = "E";
+
+        // Params a and b — b has no default_expr, so its only invalidation
+        // source is the ComputeNode that writes it.
+        for name in &["a", "b"] {
+            let id = ValueCellId::new(e, *name);
+            graph.value_cells.insert(
+                id.clone(),
+                ValueCellNode {
+                    id: id.clone(),
+                    kind: ValueCellKind::Param,
+                    cell_type: Type::Real,
+                    default_expr: None,
+                    content_hash: ContentHash::of_str(name),
+                },
+            );
+        }
+        let a = ValueCellId::new(e, "a");
+        let b = ValueCellId::new(e, "b");
+
+        // Compute C: value_inputs=[a], output_value_cells=[b].
+        let c_id = ComputeNodeId::new(e, 0);
+        graph.insert_compute_node(ComputeNodeData {
+            computation_id: c_id.clone(),
+            target: "fea".to_string(),
+            value_inputs: vec![a.clone()],
+            realization_inputs: vec![],
+            options_hash: ContentHash::of_str("opt"),
+            cache_key: ContentHash::of_str("ck"),
+            cached_result: None,
+            result_content_hash: None,
+            opaque_state: None,
+            running: None,
+            output_value_cells: vec![b.clone()],
+        });
+
+        // Build reverse index over the graph (registers a → Compute(C)),
+        // then manually splice in b → Constraint(C0). Manual `add` is the
+        // same primitive `build_from_graph_and_fields` uses internally
+        // (see deps.rs:147,157,166); this keeps the fixture pure-synthetic
+        // without forcing us to construct a CompiledExpr that reads `b`.
+        let mut index = ReverseDependencyIndex::build_from_graph(&graph);
+        let c0_id = ConstraintNodeId::new(e, 0);
+        index.add(b.clone(), NodeId::Constraint(c0_id.clone()));
+
+        let mut changed = HashSet::new();
+        changed.insert(a.clone());
+
+        let dirty = compute_dirty_cone(&changed, &index, &graph);
+
+        assert!(
+            dirty.contains(&NodeId::Compute(c_id.clone())),
+            "dirty cone should include Compute(C) via edge #6, got: {:?}",
+            dirty
+        );
+        assert!(
+            dirty.contains(&NodeId::Value(b.clone())),
+            "dirty cone should include Value(b) via edge #12, got: {:?}",
+            dirty
+        );
+        assert!(
+            dirty.contains(&NodeId::Constraint(c0_id.clone())),
+            "dirty cone should include Constraint(C0) via b's dependents (edge #6 → #12 → constraint), got: {:?}",
+            dirty
+        );
+    }
+
     #[test]
     fn dirty_cone_includes_resolution_node() {
         use crate::graph::{EvaluationGraph, ResolutionNodeData, ValueCellNode};
