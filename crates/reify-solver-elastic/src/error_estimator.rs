@@ -149,6 +149,8 @@ pub fn compute_zz_indicator(
     let nodal_smoothed = recover_nodal_stress_p1(n_nodes, elements);
 
     let mut per_element = Vec::with_capacity(elements.len());
+    let mut sum_eta_sq = 0.0_f64;
+    let mut sum_energy_sq = 0.0_f64;
 
     for el in elements {
         let n = el.connectivity.len();
@@ -180,14 +182,29 @@ pub fn compute_zz_indicator(
             }
         }
         let diff_voigt = pack_voigt(&diff);
-        let energy_density = voigt_bilinear(&diff_voigt, &compliance);
-        per_element.push((el.volume * energy_density).sqrt());
+        let eta_sq_density = voigt_bilinear(&diff_voigt, &compliance);
+        let eta_sq = el.volume * eta_sq_density;
+        per_element.push(eta_sq.sqrt());
+        sum_eta_sq += eta_sq;
+
+        // Accumulate solution strain energy: V_e · σ_e · S · σ_e.
+        let sigma_voigt = pack_voigt(&el.stress);
+        sum_energy_sq += el.volume * voigt_bilinear(&sigma_voigt, &compliance);
     }
 
-    // Global left as 0.0 — implemented in step-6.
+    // Step (e): global relative energy error.
+    // Guard: if U_solution == 0 (unloaded body, all σ_e = 0), return 0.0
+    // rather than NaN from 0/0. Consistent with recover_nodal_stress_p1's
+    // "no incident elements → zero tensor" convention (result.rs).
+    let global_relative_energy_error = if sum_energy_sq > 0.0 {
+        (sum_eta_sq / sum_energy_sq).sqrt()
+    } else {
+        0.0
+    };
+
     ZzIndicator {
         per_element,
-        global_relative_energy_error: 0.0,
+        global_relative_energy_error,
     }
 }
 
