@@ -246,24 +246,19 @@ fn try_emit_cross_sub_geometry(
 /// forward-declared geometry member from a forward-declared scalar member, so we
 /// trust the runtime to flag the missing handle via the
 /// `unresolvable GeomRef::Sub('<sub>.<member>')` diagnostic produced by
-/// `geometry_ops.rs::resolve_geom_ref`.  Pinned by
-/// `crates/reify-eval/tests/cross_sub_geometry_e2e.rs::cross_sub_forward_declared_sub_yields_unresolvable_geom_ref_error`.
+/// `geometry_ops.rs::resolve_geom_ref`.  The optimism is centralized in
+/// `CompilationScope::sub_member_is_cross_sub_geometry_or_forward_declared`
+/// (task 3455), shared with `geometry.rs::try_resolve_cross_sub_geom_ref`.
 fn try_resolve_cross_sub_geometry_value_ref(
     scope: &CompilationScope<'_>,
     sub_name: &str,
     member: &str,
 ) -> Option<CompiledExpr> {
-    let has_realization = scope
-        .sub_realization_names
-        .get(sub_name)
-        .is_some_and(|s| s.contains(member));
-    // Forward-declared sub: parent compiled before child, so sub_member_types
-    // and sub_realization_names are unpopulated for this sub.  Emit the
-    // optimistic working path; runtime will flag a missing handle via
-    // `unresolvable GeomRef::Sub('<sub>.<member>')`.
-    let forward_declared = scope.sub_component_types.contains_key(sub_name)
-        && !scope.sub_member_types.contains_key(sub_name);
-    if has_realization || forward_declared {
+    // Forward-declared optimism + realization check (task 3455): single
+    // source of truth shared with `geometry.rs::try_resolve_cross_sub_geom_ref`
+    // so the value-ref / GeomRef::Sub handshake cannot drift.  See the
+    // helper's docstring for the predicate semantics.
+    if scope.sub_member_is_cross_sub_geometry_or_forward_declared(sub_name, member) {
         let scoped_entity = format!("{}.{}", scope.entity_name, sub_name);
         let scoped_id = ValueCellId::new(&scoped_entity, member);
         Some(CompiledExpr::value_ref(scoped_id, Type::Geometry))
