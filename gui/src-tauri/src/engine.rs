@@ -958,10 +958,10 @@ impl EngineSession {
         // short-circuits above — so here `compiled` is `Some` and any stored failure
         // is `LiveEdit`).
         let mut compile_diagnostics = self.get_diagnostics();
-        if let Some(f) = &self.compile_failure {
-            if f.kind == CompileFailureKind::LiveEdit {
-                compile_diagnostics.extend(f.diags.iter().cloned());
-            }
+        if let Some(f) = &self.compile_failure
+            && f.kind == CompileFailureKind::LiveEdit
+        {
+            compile_diagnostics.extend(f.diags.iter().cloned());
         }
 
         Ok(GuiState {
