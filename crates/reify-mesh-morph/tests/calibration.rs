@@ -525,3 +525,31 @@ fn plate_hole_diameter_sweep_obeys_materially_better_rule_with_calibrated_defaul
         assert_materially_better_rule_holds("plate", target, &report);
     }
 }
+
+// ── Step-15: bracket fillet-radius sweep obeys the materially-better rule ─────
+
+#[test]
+fn bracket_fillet_radius_sweep_obeys_materially_better_rule_with_calibrated_defaults() {
+    use reify_mesh_morph::MorphOptions;
+
+    // Sweep: vary the `fillet_radius` parameter of the L-bracket fixture.
+    // base = 0.10, targets cover a small step (0.105) up to the largest
+    // fillet that still satisfies `fillet_radius < thickness = 0.20`. Only
+    // the inner fillet-arc vertices move; the connectivity is preserved
+    // across the sweep (see `bracket` doc).
+    //
+    // Bracket fillet-radius is typically the most sensitive case for the
+    // min scaled-Jacobian metric because the polar wedge zone's element
+    // shapes deform substantially as the inner arc grows. This sweep
+    // checks the materially-better rule under the joint-tuned defaults
+    // from step-14.
+    let base_param = 0.10_f64;
+    let target_params = [0.105_f64, 0.12, 0.15, 0.18, 0.19];
+    let fixture = |fillet_radius: f64| fixtures::bracket(1.0, 0.2, fillet_radius, 4);
+    let options = MorphOptions::default();
+
+    for &target in &target_params {
+        let report = sweep::run_sweep(fixture, base_param, target, &options);
+        assert_materially_better_rule_holds("bracket", target, &report);
+    }
+}
