@@ -88,6 +88,40 @@ mod tests {
     use super::*;
     use crate::constitutive::IsotropicElastic;
     use crate::result::StressElement;
+    use reify_types::{ElementOrderTag, VolumeMesh};
+
+    fn dimensionless_steel_like() -> IsotropicElastic {
+        IsotropicElastic {
+            youngs_modulus: 1.0,
+            poisson_ratio: 0.3,
+        }
+    }
+
+    /// Build the standard 5-node, 2-tet fan fixture used across all
+    /// error-estimator tests.
+    ///
+    /// Topology:
+    ///   tet0: nodes [0,1,2,3]  (the canonical unit tet)
+    ///   tet1: nodes [1,2,3,4]  (shares face {1,2,3} with tet0)
+    ///
+    /// Node positions:
+    ///   0=(0,0,0), 1=(1,0,0), 2=(0,1,0), 3=(0,0,1), 4=(1,1,1)
+    ///
+    /// Both tets have volume 1/6.  Returns a `VolumeMesh` with n_nodes=5.
+    fn two_tet_fan_mesh() -> VolumeMesh {
+        VolumeMesh {
+            vertices: vec![
+                0.0_f32, 0.0, 0.0, // node 0
+                1.0, 0.0, 0.0, // node 1
+                0.0, 1.0, 0.0, // node 2
+                0.0, 0.0, 1.0, // node 3
+                1.0, 1.0, 1.0, // node 4
+            ],
+            tet_indices: vec![0, 1, 2, 3, 1, 2, 3, 4],
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        }
+    }
 
     /// Surface compile pin — confirms that `ZzIndicator` is constructible as
     /// a struct literal and that `compute_zz_indicator` has the expected
@@ -104,5 +138,61 @@ mod tests {
             &reify_types::VolumeMesh,
             &IsotropicElastic,
         ) -> ZzIndicator = compute_zz_indicator;
+    }
+
+    /// Per-element indicator on a two-tet fan with σ_A ≠ σ_B.
+    ///
+    /// Fixture: σ_A = diag(100,0,0), σ_B = diag(0,0,0), V_A = V_B = 1/6.
+    ///
+    /// Patch averages:
+    ///   nodes 1,2,3 (shared face): σ̄_n = (V_A·σ_A + V_B·σ_B)/(V_A+V_B)
+    ///                                    = diag(50,0,0)
+    ///   node 0 (only A):           σ̄_0 = σ_A = diag(100,0,0)
+    ///   node 4 (only B):           σ̄_4 = σ_B = diag(0,0,0)
+    ///
+    /// Element centroid interpolation (mean of nodal σ̄ over 4 corners):
+    ///   σ̄_A* = (diag(100,0,0) + 3·diag(50,0,0)) / 4 = diag(62.5,0,0)
+    ///   σ̄_B* = (3·diag(50,0,0) + diag(0,0,0)) / 4   = diag(37.5,0,0)
+    ///
+    /// Difference Voigt vectors (diff = σ_e − σ̄_e*):
+    ///   diff_A = [37.5, 0, 0, 0, 0, 0]
+    ///   diff_B = [-37.5, 0, 0, 0, 0, 0]
+    ///
+    /// Energy density = diff_voigt · D⁻¹ · diff_voigt.
+    /// For a pure σ_xx vector with engineering-shear compliance: d² / E.
+    ///
+    /// η_e = sqrt(V_e · d²/E) = sqrt((1/6) · 37.5² / 1.0) ≈ 15.30931
+    /// Both elements have equal magnitude by symmetry.
+    #[test]
+    fn per_element_indicator_two_tet_fan_nonuniform_stress_closed_form() {
+        let mat = dimensionless_steel_like();
+        let v = 1.0_f64 / 6.0;
+        let conn0 = [0_usize, 1, 2, 3];
+        let conn1 = [1_usize, 2, 3, 4];
+        let sigma_a = [[100.0_f64, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]];
+        let sigma_b = [[0.0_f64; 3]; 3];
+        let elements = [
+            StressElement { connectivity: &conn0, stress: sigma_a, volume: v },
+            StressElement { connectivity: &conn1, stress: sigma_b, volume: v },
+        ];
+        let mesh = two_tet_fan_mesh();
+
+        let result = compute_zz_indicator(&elements, &mesh, &mat);
+
+        // Closed-form: η_e = sqrt(V · (37.5)² / E) = sqrt((1/6) · 1406.25)
+        //                   = sqrt(234.375) ≈ 15.30931...
+        let expected_eta = ((1.0 / 6.0) * 37.5_f64 * 37.5 / mat.youngs_modulus).sqrt();
+        assert_eq!(result.per_element.len(), 2, "must have 2 per-element entries");
+        let rel_tol = 1e-9;
+        assert!(
+            (result.per_element[0] - expected_eta).abs() < rel_tol * expected_eta,
+            "per_element[0] = {}, expected ≈ {expected_eta}",
+            result.per_element[0],
+        );
+        assert!(
+            (result.per_element[1] - expected_eta).abs() < rel_tol * expected_eta,
+            "per_element[1] = {}, expected ≈ {expected_eta}",
+            result.per_element[1],
+        );
     }
 }
