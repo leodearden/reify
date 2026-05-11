@@ -594,6 +594,71 @@ mod tests {
         assert!(matches!(r, Err(SweepError::DegenerateMagnitude)), "got: {r:?}");
     }
 
+    // step-15: Revolve around y-axis by π/2 with K=2
+
+    #[test]
+    fn revolve_triangle_y_axis_pi_over_2_k2() {
+        // Profile sits in the x>0 half-plane so revolution traces a positive arc.
+        let mesh2d = Mesh2d::Triangle {
+            vertices: vec![1.0_f32, 0.0, 2.0, 0.0, 1.0, 1.0],
+            indices: vec![0, 1, 2],
+        };
+        let params = SweepParams::Revolve {
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [0.0, 1.0, 0.0],
+            angle: std::f64::consts::FRAC_PI_2,
+        };
+        let mesh = sweep_2d_mesh_to_3d(&mesh2d, &params, 2).expect("should succeed");
+
+        assert_eq!(mesh.layers, 2);
+        // 3 node planes × 3 verts × 3 coords = 27
+        assert_eq!(mesh.vertices.len(), 27, "vertices.len()");
+
+        let eps = 1e-5_f32;
+
+        // Bottom layer (θ=0): nodes match input (x, y, 0)
+        // node 0: (1,0,0)
+        assert!((mesh.vertices[0] - 1.0).abs() < eps, "bot node0 x={}", mesh.vertices[0]);
+        assert!((mesh.vertices[1] - 0.0).abs() < eps, "bot node0 y={}", mesh.vertices[1]);
+        assert!((mesh.vertices[2] - 0.0).abs() < eps, "bot node0 z={}", mesh.vertices[2]);
+        // node 1: (2,0,0)
+        assert!((mesh.vertices[3] - 2.0).abs() < eps, "bot node1 x={}", mesh.vertices[3]);
+        assert!((mesh.vertices[4] - 0.0).abs() < eps);
+        assert!((mesh.vertices[5] - 0.0).abs() < eps);
+        // node 2: (1,1,0)
+        assert!((mesh.vertices[6] - 1.0).abs() < eps);
+        assert!((mesh.vertices[7] - 1.0).abs() < eps);
+        assert!((mesh.vertices[8] - 0.0).abs() < eps);
+
+        // Middle layer (θ=π/4): (1,0,0) → (cos(π/4), 0, sin(π/4)) ≈ (0.7071, 0, 0.7071)
+        let c45 = (std::f64::consts::FRAC_PI_4.cos()) as f32;
+        let s45 = (std::f64::consts::FRAC_PI_4.sin()) as f32;
+        // node 3 (middle, base 0): (cos45, 0, sin45)
+        assert!((mesh.vertices[9] - c45).abs() < eps, "mid node0 x");
+        assert!((mesh.vertices[10] - 0.0).abs() < eps, "mid node0 y");
+        assert!((mesh.vertices[11] - s45).abs() < eps, "mid node0 z");
+
+        // Top layer (θ=π/2): (1,0,0) → (cos(π/2), 0, sin(π/2)) ≈ (0, 0, 1)
+        let c90 = (std::f64::consts::FRAC_PI_2.cos()) as f32;
+        let s90 = (std::f64::consts::FRAC_PI_2.sin()) as f32;
+        // node 6 (top, base 0): (0, 0, 1)
+        assert!((mesh.vertices[18] - c90).abs() < eps, "top node0 x");
+        assert!((mesh.vertices[19] - 0.0).abs() < eps, "top node0 y");
+        assert!((mesh.vertices[20] - s90).abs() < eps, "top node0 z");
+        // node 8 (top, base 2): (1,1,0) → (0, 1, 1) at θ=π/2
+        assert!((mesh.vertices[24] - 0.0).abs() < eps, "top node2 x");
+        assert!((mesh.vertices[25] - 1.0).abs() < eps, "top node2 y");
+        assert!((mesh.vertices[26] - 1.0).abs() < eps, "top node2 z");
+
+        // Connectivity: 2 wedges
+        match &mesh.connectivity {
+            SweptConnectivity::Wedge { indices } => {
+                assert_eq!(indices.len(), 2 * 6, "2 wedges × 6 indices");
+            }
+            other => panic!("expected Wedge, got {other:?}"),
+        }
+    }
+
     // step-13: K>1 extrude — pins the layer-dimension generalisation
 
     #[test]
