@@ -2639,6 +2639,67 @@ mod tests {
         assert_eq!(hit2, Some(original), "phase 2: read must succeed even if sidecar was pre-deleted");
     }
 
+    /// Write a raw header plus `body_suffix` bytes to the .bin for a given key.
+    /// Useful for constructing corrupt-body .bin files in tests.
+    fn write_header_and_body_to_bin(
+        root: &Path,
+        eng: &str,
+        inp: &str,
+        header: &CacheEntryHeader,
+        body_suffix: &[u8],
+    ) {
+        let sd = shard_dir(root, eng, inp);
+        std::fs::create_dir_all(&sd).unwrap();
+        let mut f = std::fs::File::create(entry_bin_path(root, eng, inp)).unwrap();
+        header.write_to(&mut f).unwrap();
+        if !body_suffix.is_empty() {
+            use std::io::Write as _;
+            f.write_all(body_suffix).unwrap();
+        }
+    }
+
+    /// Build a CacheEntryHeader with correct echoes for the given key (for
+    /// tests that need a structurally valid header to get past echo verification).
+    fn make_correct_header(eng: &str, inp: &str) -> CacheEntryHeader {
+        CacheEntryHeader {
+            format_version: ENTRY_FORMAT_VERSION,
+            engine_version_hash: *eng.as_bytes().first_chunk::<32>().unwrap(),
+            input_hash:          *inp.as_bytes().first_chunk::<32>().unwrap(),
+            solve_time_ms: 0,
+            byte_size: 0,
+            written_at: 0,
+        }
+    }
+
+    #[test]
+    fn read_entry_returns_ok_none_when_compressed_body_is_corrupted_or_truncated() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // Sub-scenario (a): valid header + zero body bytes.
+        // zstd::Decoder::new will fail on the empty reader (no frame magic).
+        {
+            let eng = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeee55";
+            let inp = "ffffffffffffffffffffffffffff5566";
+            let h = make_correct_header(eng, inp);
+            write_header_and_body_to_bin(root, eng, inp, &h, &[]);
+            let result = read_entry::<ElasticResult>(root, eng, inp).unwrap();
+            assert_eq!(result, None, "zero body bytes must be treated as cache miss");
+        }
+
+        // Sub-scenario (b): valid header + 16 bytes of garbage.
+        // zstd will fail to parse the frame (bad magic number).
+        {
+            let eng = "aaaaaaaaaaaaaaaaaaaaaaaaaaaa7788";
+            let inp = "bbbbbbbbbbbbbbbbbbbbbbbbbbbb9900";
+            let h = make_correct_header(eng, inp);
+            let garbage = b"not-a-zstd-frame";
+            write_header_and_body_to_bin(root, eng, inp, &h, garbage);
+            let result = read_entry::<ElasticResult>(root, eng, inp).unwrap();
+            assert_eq!(result, None, "garbage body bytes must be treated as cache miss");
+        }
+    }
+
     /// Helper: write a raw CacheEntryHeader (and nothing else) to the .bin path
     /// for a given key in `root`. The caller controls the header fields, allowing
     /// sub-tests to inject mismatched echoes or other corruption.
