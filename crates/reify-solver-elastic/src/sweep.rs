@@ -24,6 +24,113 @@
 //! Node `(layer ℓ, base i)` lives at global flat index `ℓ * n_base + i`.
 //! Layer ℓ=0 is the "bottom" (origin) plane; layer ℓ=K is the "top" plane.
 
+// ---------------------------------------------------------------------------
+// Public types
+// ---------------------------------------------------------------------------
+
+/// Parameters that describe the sweep trajectory.
+///
+/// All coordinates are in the same profile-local frame as the input [`crate::Mesh2d`].
+/// The 2D mesh's `[x, y]` plane embeds at z=0; sweep directions are relative
+/// to that frame.
+#[derive(Debug, Clone)]
+pub enum SweepParams {
+    /// Straight extrusion along a constant axis direction.
+    ///
+    /// `axis` need not be unit-length — it is normalised internally. `length`
+    /// is the total extrusion distance along `axis`.
+    Extrude {
+        /// Direction of extrusion (any non-zero vector).
+        axis: [f64; 3],
+        /// Total extrusion distance (must be > 0 and finite).
+        length: f64,
+    },
+    /// Rotation of the profile around a line in 3D.
+    ///
+    /// The axis line passes through `axis_origin` in the direction `axis_dir`.
+    /// `angle` is the total rotation in radians (must be > 0 and finite).
+    Revolve {
+        /// A point on the rotation axis.
+        axis_origin: [f64; 3],
+        /// Direction of the rotation axis (any non-zero vector).
+        axis_dir: [f64; 3],
+        /// Total rotation angle in radians (must be > 0 and finite).
+        angle: f64,
+    },
+    /// Single-profile straight-path loft (Phase A semantics = Extrude).
+    ///
+    /// PRD Phase A restricts `SweepLinear` to `LineSegment`-pathed sweeps,
+    /// which are geometrically identical to [`SweepParams::Extrude`]. The
+    /// variant is kept distinct to preserve diagnostic-routing contracts
+    /// (PRD task #11 emits different fallback messages per variant).
+    SweepLinear {
+        /// Direction of travel (any non-zero vector).
+        axis: [f64; 3],
+        /// Total path length (must be > 0 and finite).
+        length: f64,
+    },
+}
+
+/// 3D wedge/hex mesh produced by [`sweep_2d_mesh_to_3d`].
+///
+/// `vertices` is a flat `[x0,y0,z0, x1,y1,z1, …]` buffer (stride 3, `f32`).
+/// `connectivity` carries the element index buffer — Wedge or Hex depending
+/// on the 2D input element shape.
+#[derive(Debug, Clone)]
+pub struct SweptMesh3d {
+    /// Flat 3D vertex buffer `[x,y,z, …]`, stride 3, in `f32`.
+    pub vertices: Vec<f32>,
+    /// Element connectivity — Wedge or Hex depending on input mesh shape.
+    pub connectivity: SweptConnectivity,
+    /// Number of element layers (K). The vertex buffer has `(K+1) * n_base`
+    /// nodes; the connectivity has `K * n_faces` elements.
+    pub layers: usize,
+}
+
+/// Element connectivity for a swept 3D mesh.
+///
+/// Index ordering follows the canonical PRI6 / hex8 orderings documented in
+/// `elements/wedge_p1.rs` and `elements/hex_p1.rs`: bottom face first (CCW),
+/// then top face in the same cyclic order.
+#[derive(Debug, Clone)]
+pub enum SweptConnectivity {
+    /// Wedge (PRI6) connectivity.  `indices.len() % 6 == 0`.
+    /// Each element: `[b0, b1, b2, t0, t1, t2]`.
+    Wedge { indices: Vec<u32> },
+    /// Hex8 connectivity.  `indices.len() % 8 == 0`.
+    /// Each element: `[b0, b1, b2, b3, t0, t1, t2, t3]`.
+    Hex { indices: Vec<u32> },
+}
+
+/// Errors returned by [`sweep_2d_mesh_to_3d`].
+#[derive(Debug, Clone)]
+pub enum SweepError {
+    /// The input [`crate::Mesh2d`] has no vertices or no faces.
+    EmptyMesh2d,
+    /// `layers == 0` — a zero-layer sweep produces no elements.
+    InvalidLayerCount,
+    /// The sweep axis (or revolution axis direction) has Euclidean norm < 1e-12.
+    DegenerateAxis,
+    /// The sweep magnitude (length or angle) is zero, negative, or non-finite.
+    DegenerateMagnitude,
+}
+
+/// Warning emitted when the swept mesh has fewer than `min_layers` elements
+/// through the sweep direction.
+///
+/// Mirrors the struct shape of `reify_kernel_gmsh::through_thickness::ThroughThicknessSweepWarning`
+/// but without the region-index / thickness fields (this is per-body, not
+/// per-region, and layer count is known directly from input).
+#[derive(Debug, Clone)]
+pub struct ThroughThicknessSweepWarning {
+    /// Actual number of element layers in the swept mesh.
+    pub layer_count: usize,
+    /// Minimum acceptable layers (typically 2).
+    pub min_layers: usize,
+    /// Human-readable diagnostic message.
+    pub message: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
