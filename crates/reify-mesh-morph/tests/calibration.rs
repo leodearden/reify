@@ -644,3 +644,43 @@ fn bracket_fillet_radius_sweep_obeys_materially_better_rule_with_calibrated_defa
          Pass→Reject traversal)"
     );
 }
+
+// ── Step-17: from_scratch_max_ar_factor is distinct from morph_max_ar_factor ──
+
+/// Regression guard against silent re-aliasing of `from_scratch_max_ar_factor`
+/// to `morph_max_ar_factor` in a future refactor — the new field must capture
+/// the morph-vs-from_scratch AR ratio, not the morph-vs-source AR ratio.
+///
+/// The plate hole-diameter sweep from 0.30 to 0.60 doubles the hole radius,
+/// producing source (small hole) and from-scratch (large hole) meshes whose
+/// innermost-ring element AR distributions diverge substantially. As a result
+/// `max(morphed_AR / source_AR)` and `max(morphed_AR / from_scratch_AR)` are
+/// materially different values.
+///
+/// If step-2's `extract_metrics` call in `run_sweep` was accidentally aliased
+/// (e.g. `extract_metrics(&morphed, &source)` instead of
+/// `extract_metrics(&morphed, &from_scratch)`) both fields would be equal and
+/// this test would fail with a clear diagnostic.
+#[test]
+fn from_scratch_max_ar_factor_distinct_from_morph_max_ar_factor_on_wide_plate_sweep_step() {
+    let fixture = |hole_diameter: f64| {
+        fixtures::plate_with_hole(1.0, hole_diameter, 0.1, 4, 2)
+    };
+    let options = calibration_sweep_options();
+
+    // Wide step: hole_diameter 0.30 → 0.60 (2× increase). The source AR
+    // distribution (small hole) and from-scratch AR distribution (large hole)
+    // are materially different, so `morph_max_ar_factor` (morphed/source) and
+    // `from_scratch_max_ar_factor` (morphed/from_scratch) must diverge by
+    // more than a floating-point rounding slop of 1e-3.
+    let report = sweep::run_sweep(fixture, 0.30, 0.60, &options);
+
+    assert!(
+        (report.from_scratch_max_ar_factor - report.morph_max_ar_factor).abs() > 1e-3,
+        "from_scratch_max_ar_factor ({}) and morph_max_ar_factor ({}) must differ by > 1e-3 \
+         on the wide plate step 0.30→0.60; if they are equal, run_sweep is aliasing the new \
+         field to morph_max_ar_factor instead of computing max(morphed_AR / from_scratch_AR)",
+        report.from_scratch_max_ar_factor,
+        report.morph_max_ar_factor
+    );
+}
