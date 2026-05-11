@@ -689,6 +689,16 @@ describe('onAutoResolveIteration malformed payload', () => {
     expect(warnSpy).toHaveBeenCalled();
   });
 
+  it('drops payload with non-numeric iteration', async () => {
+    mockListen.mockImplementation(
+      makeHandler({ iteration: '0', parameters: {}, constraints: {} }) as any,
+    );
+    const cb = vi.fn();
+    await onAutoResolveIteration(cb);
+    expect(cb).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalled();
+  });
+
   it('does NOT warn and calls callback for a well-formed payload', async () => {
     const wellFormed = {
       iteration: 0,
