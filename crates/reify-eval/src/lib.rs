@@ -50,6 +50,7 @@ pub(crate) mod tolerance_format;
 pub mod tolerance_gate;
 pub mod tolerance_promise;
 pub(crate) mod tolerance_scope;
+pub mod significance_filter;
 pub use morph_stage_b::{
     BijectionFailure, CorrespondenceMap, NamingLayerErrorReason, SubShapeKind, SubShapeSide,
     stage_b_eligible,
