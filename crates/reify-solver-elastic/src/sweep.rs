@@ -45,8 +45,11 @@ const MAX_LAYERS: usize = 1 << 20;
 
 /// Derive the number of element layers from the sweep distance and element size.
 ///
-/// Returns `round(sweep_distance / mesh_size).max(min_layers)`, clamped to
-/// [`MAX_LAYERS`] to prevent `usize::MAX` saturation on pathological inputs.
+/// Returns `round(sweep_distance / mesh_size)`, clamped to [`MAX_LAYERS`], then
+/// floored by `min_layers`.  The clamp prevents `usize::MAX` saturation on
+/// pathological inputs; the floor is applied after so an explicit
+/// caller-requested `min_layers > MAX_LAYERS` is passed through unchanged
+/// (pinned by `derive_layer_count_clamps_pathological_inputs` case (e)).
 ///
 /// # Defensive handling
 ///
