@@ -21,6 +21,38 @@ use crate::types::{
     format_value,
 };
 
+/// Discriminant for a stored compile failure: records which execution path produced the error.
+///
+/// `ColdStart` means `compiled` was `None` at failure time (no prior good compile exists).
+/// `LiveEdit`  means `compiled` was `Some`  at failure time (a prior good compile is still
+///             in the session — the user is editing live).
+///
+/// The two variants gate which `build_gui_state` branch surfaces the failure diagnostics:
+/// `ColdStart` → early-return branch; `LiveEdit` → append branch alongside `get_diagnostics()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CompileFailureKind {
+    /// Failure on the cold-start path — `compiled` is `None` at failure time.
+    ColdStart,
+    /// Failure on the live-edit path — `compiled` is `Some` at failure time
+    /// (a prior successful compile is still in the session).
+    LiveEdit,
+}
+
+/// A stored compile failure from the most recent failed parse/compile attempt.
+///
+/// Produced by `record_compile_failure` and consumed by `build_gui_state`.
+/// The `kind` discriminant controls which `build_gui_state` branch surfaces `diags`.
+///
+/// `Clone` is required because `build_gui_state`'s early-return branch clones `diags`
+/// into the returned `GuiState`.
+#[derive(Debug, Clone)]
+pub(crate) struct CompileFailure {
+    /// Structured diagnostics from the failed attempt.
+    pub(crate) diags: Vec<DiagnosticInfo>,
+    /// Which execution path produced this failure.
+    pub(crate) kind: CompileFailureKind,
+}
+
 /// Session wrapping an Engine with its compiled module and source text.
 ///
 /// Provides higher-level operations for the GUI: load, update, set parameter, export.
@@ -79,32 +111,16 @@ pub struct EngineSession {
     /// share the same lifecycle.  Left `None` when `parsed_cache` is `None` at population time
     /// — preserves the per-template WARN so fallback regressions remain visible.
     consumed_idents_cache: Option<HashMap<String, HashSet<String>>>,
-    /// Structured diagnostics from the most recent failed parse/compile attempt on the
-    /// cold-start path (when `compiled` was `None` at the time of failure).
+    /// Tagged compile failure from the most recent failed parse/compile attempt, or
+    /// `None` when no failure is stored (after construction or after every successful
+    /// `commit_state` cycle).  The `kind` discriminant encodes which path produced
+    /// the failure: `ColdStart` (`compiled` was `None` at failure time) routes through
+    /// `build_gui_state`'s early-return branch; `LiveEdit` (`compiled` was `Some`)
+    /// routes through the append branch alongside `get_diagnostics()` output.
     ///
-    /// Populated on `Err` by `load_from_source`, `update_source`, and `load_file` when
-    /// `self.compiled` is `None` at failure time.  When `compiled` is `Some` (live-edit
-    /// failure after a prior good compile), diagnostics go to `live_compile_diagnostics`
-    /// instead — the two fields are semantically disjoint.
-    ///
-    /// Cleared atomically in `commit_state` when a successful parse+compile+check cycle
-    /// commits — ensuring stale failure diagnostics are never surfaced after a recovery.
-    ///
-    /// `build_gui_state` emits this field into `GuiState::compile_diagnostics` only on
-    /// the early-return branch (when `compiled` is `None`).
-    last_compile_diagnostics: Vec<DiagnosticInfo>,
-    /// Structured diagnostics from a failed live edit when a prior successful compile exists.
-    ///
-    /// Populated on `Err` by `load_from_source`, `update_source`, and `load_file` when
-    /// `self.compiled` is `Some` at the time of failure (live-edit path).  The distinction
-    /// from `last_compile_diagnostics` is intentional: this field is consulted by the
-    /// **non-early-return** branch of `build_gui_state` (when `compiled is Some`), while
-    /// `last_compile_diagnostics` is consulted only by the early-return branch (cold-start,
-    /// `compiled is None`).  The two fields are semantically disjoint.
-    ///
-    /// Cleared atomically in `commit_state` on a successful parse+compile+check cycle so
-    /// stale live-failure diagnostics are never surfaced after a recovery.
-    live_compile_diagnostics: Vec<DiagnosticInfo>,
+    /// `Option<CompileFailure>` makes the at-most-one-non-empty invariant inexpressible —
+    /// the prior two-field representation enforced it only at runtime via `debug_assert!`s.
+    compile_failure: Option<CompileFailure>,
 }
 
 /// Build the normalized source-map key for a module name: `"{name}.ri"`.
@@ -174,8 +190,8 @@ fn parse_errs_to_payload(
 /// `"Compile errors: …"` format so existing substring assertions remain valid)
 /// **and** a `Vec<DiagnosticInfo>` with the same errors in structured form.
 /// The structured payload is used by callers to populate
-/// `EngineSession::last_compile_diagnostics` so `build_gui_state` can surface
-/// the failure in the diagnostics panel.
+/// `EngineSession::compile_failure` (via `record_compile_failure`) so `build_gui_state`
+/// can surface the failure in the diagnostics panel.
 ///
 /// This is the single-file counterpart to `compile_entry_with_imports`.  It is
 /// called by both `load_from_source` (which always uses the single-file path) and
@@ -448,8 +464,7 @@ impl EngineSession {
             parsed_cache: None,
             line_offsets_cache: None,
             consumed_idents_cache: None,
-            last_compile_diagnostics: Vec::new(),
-            live_compile_diagnostics: Vec::new(),
+            compile_failure: None,
         }
     }
 
@@ -630,45 +645,34 @@ impl EngineSession {
         self.build_gui_state()
     }
 
-    /// Route failure diagnostics to the appropriate stored field based on whether a prior
-    /// successful compile exists at the time of failure.
+    /// Route failure diagnostics into `compile_failure` based on whether a prior successful
+    /// compile exists at the time of failure.
     ///
-    /// - `compiled is None` → cold-start path; stores in `last_compile_diagnostics` so
-    ///   `build_gui_state`'s early-return branch can surface them.
-    /// - `compiled is Some` → live-edit path; stores in `live_compile_diagnostics` so
-    ///   `build_gui_state`'s non-early-return branch appends them alongside prior-good-state
-    ///   warnings.
+    /// - `compiled is None` → `CompileFailureKind::ColdStart`; `build_gui_state`'s
+    ///   early-return branch surfaces these diagnostics.
+    /// - `compiled is Some` → `CompileFailureKind::LiveEdit`; `build_gui_state`'s
+    ///   append branch surfaces these alongside prior-good-state warnings.
     ///
-    /// Enforces the at-most-one-non-empty invariant via debug-asserts: when populating
-    /// one field, the other must already be empty (ensured by `commit_state` clearing both
-    /// on every successful parse+compile+check cycle).
+    /// `Option<CompileFailure>` makes the at-most-one-non-empty invariant a type-level
+    /// guarantee — no `debug_assert!` guards are needed.
     fn record_compile_failure(&mut self, diags: Vec<DiagnosticInfo>) {
-        if self.compiled.is_none() {
-            debug_assert!(
-                self.live_compile_diagnostics.is_empty(),
-                "live_compile_diagnostics must be empty on cold-start failure \
-                 (compiled is None means no successful compile ever ran)"
-            );
-            self.last_compile_diagnostics = diags;
+        let kind = if self.compiled.is_none() {
+            CompileFailureKind::ColdStart
         } else {
-            debug_assert!(
-                self.last_compile_diagnostics.is_empty(),
-                "last_compile_diagnostics must be empty on live-edit failure \
-                 (commit_state clears it on every successful cycle)"
-            );
-            self.live_compile_diagnostics = diags;
-        }
+            CompileFailureKind::LiveEdit
+        };
+        self.compile_failure = Some(CompileFailure { diags, kind });
     }
 
     /// Atomically commit all session state after a successful parse+compile+check cycle.
     ///
     /// Enforces the invariant that the canonical compiled state, all derived caches,
-    /// and both failure-diagnostic buffers move together: either every field below is
+    /// and the failure-diagnostic field move together: either every field below is
     /// updated/cleared in this single call, or none are.  The fields, grouped by role:
     ///
     /// - **Canonical compiled state**: `source_map`, `module_name`, `compiled`, `last_check`
     /// - **Derived caches**: `def_preview_cache`, `parsed_cache`, `line_offsets_cache`, `consumed_idents_cache`
-    /// - **Failure-diagnostic state**: `last_compile_diagnostics`, `live_compile_diagnostics`
+    /// - **Failure-diagnostic state**: `compile_failure`
     ///
     /// Callers **must** only invoke this after both compilation and `check()` have
     /// succeeded — invoking it on a partially-valid state would violate the invariant.
@@ -702,12 +706,12 @@ impl EngineSession {
         // Invalidate the consumed-idents cache so get_mechanism_descriptors rebuilds
         // it on the next call for the new module.  Same lifecycle as parsed_cache.
         self.consumed_idents_cache = None;
-        // Clear stored failure diagnostics — the compile succeeded, so any stale
-        // failure diagnostics from a prior failed load must not appear in subsequent
-        // build_gui_state calls.  Both fields are cleared atomically here so the
-        // atomic-commit invariant (all fields listed in the doc comment above move together) remains intact.
-        self.last_compile_diagnostics.clear();
-        self.live_compile_diagnostics.clear();
+        // Clear stored compile failure — the compile succeeded, so any stale failure
+        // diagnostics from a prior failed load must not appear in subsequent
+        // build_gui_state calls.  `Option<CompileFailure>` means one field covers
+        // both the cold-start and live-edit cases; setting it to `None` atomically
+        // satisfies the invariant that all fields listed in the doc comment move together.
+        self.compile_failure = None;
     }
 
     /// Export geometry to a file.
@@ -847,23 +851,30 @@ impl EngineSession {
                 // so users see the error in the diagnostics panel rather than a silent
                 // empty viewport.
                 //
-                // `last_compile_diagnostics` is populated by `load_from_source`,
-                // `update_source`, and `load_file` on the failure path and cleared by
+                // `compile_failure` is populated by `load_from_source`, `update_source`,
+                // and `load_file` on the failure path and cleared to `None` by
                 // `commit_state` on every successful cycle — so here it always reflects
-                // exactly the most-recent failed-load error (or is empty when no load has
+                // exactly the most-recent failed-load error (or is `None` when no load has
                 // been attempted yet).
+                //
+                // Only `ColdStart` failures belong on this branch: a `LiveEdit` failure
+                // can only be stored when `compiled` was `Some` at failure time, which
+                // means `compiled` is still `Some` now — so this branch (`compiled is None`)
+                // can only carry a `ColdStart` failure or `None`.
                 //
                 // `last_check is None` while `compiled is Some` cannot occur with the
                 // current `commit_state` atomic-commit (both fields are assigned together),
-                // so this branch is reached only when `compiled` has never been set —
-                // `last_compile_diagnostics` is therefore the correct payload to surface.
+                // so this branch is reached only when `compiled` has never been set.
                 return Ok(GuiState {
                     meshes: Vec::new(),
                     values: Vec::new(),
                     constraints: Vec::new(),
                     files: Vec::new(),
                     tessellation_diagnostics: Vec::new(),
-                    compile_diagnostics: self.last_compile_diagnostics.clone(),
+                    compile_diagnostics: match &self.compile_failure {
+                        Some(f) if f.kind == CompileFailureKind::ColdStart => f.diags.clone(),
+                        _ => Vec::new(),
+                    },
                 });
             }
         };
@@ -941,10 +952,17 @@ impl EngineSession {
         // Also append any live compile failures (from a failed live edit while a
         // prior good compile was still in `self.compiled`).  Appending rather than
         // replacing preserves warnings/info from the last good state; Error entries
-        // from `live_compile_diagnostics` follow them, so frontends sorting by
-        // severity will surface errors first.
+        // from a `LiveEdit` failure follow them, so frontends sorting by severity
+        // will surface errors first.  Only `LiveEdit` failures reach this branch
+        // (a `ColdStart` failure is stored only when `compiled` is `None`, which
+        // short-circuits above — so here `compiled` is `Some` and any stored failure
+        // is `LiveEdit`).
         let mut compile_diagnostics = self.get_diagnostics();
-        compile_diagnostics.extend(self.live_compile_diagnostics.iter().cloned());
+        if let Some(f) = &self.compile_failure {
+            if f.kind == CompileFailureKind::LiveEdit {
+                compile_diagnostics.extend(f.diags.iter().cloned());
+            }
+        }
 
         Ok(GuiState {
             meshes,
@@ -2404,27 +2422,16 @@ impl EngineSession {
         self.consumed_idents_cache = Some(cache);
     }
 
-    /// Return a slice of the stored compile failure diagnostics.
+    /// Return the stored compile failure (if any).
     ///
-    /// Populated by `load_from_source`, `update_source`, and `load_file` on the
-    /// failure path and cleared by `commit_state` on a successful cycle.  Used by
-    /// tests that need to inspect field state without calling `build_gui_state`.
+    /// `None` when no failure is stored (after construction or any successful
+    /// `commit_state` cycle).  `Some(_)` after a failed parse/compile in
+    /// `load_from_source`, `update_source`, or `load_file`.  The `kind` discriminant
+    /// distinguishes cold-start from live-edit failures.
     ///
-    /// Mirrors the style of `parsed_cache_for_test` (engine.rs).
-    pub(crate) fn last_compile_diagnostics_for_test(&self) -> &[DiagnosticInfo] {
-        &self.last_compile_diagnostics
-    }
-
-    /// Return a slice of the stored live-edit compile failure diagnostics.
-    ///
-    /// Populated by `load_from_source`, `update_source`, and `load_file` on the
-    /// failure path when `compiled is Some` (live-edit failure after a prior good
-    /// compile).  Cleared by `commit_state` on a successful cycle.  Used by tests
-    /// that need to inspect field state without calling `build_gui_state`.
-    ///
-    /// Mirrors the style of `last_compile_diagnostics_for_test`.
-    pub(crate) fn live_compile_diagnostics_for_test(&self) -> &[DiagnosticInfo] {
-        &self.live_compile_diagnostics
+    /// Used by tests that need to inspect field state without calling `build_gui_state`.
+    pub(crate) fn compile_failure_for_test(&self) -> Option<&CompileFailure> {
+        self.compile_failure.as_ref()
     }
 
     /// Directly inject a `CompiledModule` as the session's current compiled state,
