@@ -318,6 +318,7 @@ pub mod assembly;
 pub mod boundary;
 pub mod constitutive;
 pub mod elements;
+pub mod error_estimator;
 pub mod interpolation;
 pub mod mesher;
 pub mod mpc;
@@ -366,6 +367,9 @@ pub use interpolation::{
     LocatableTet, barycentric_p1, interpolate_p1_at_point, locate_element_p1, point_in_tet_p1,
 };
 pub use result::{StressElement, element_stress_p1, recover_nodal_stress_p1, tet_volume_p1};
+// Task 2996: Z-Z error indicator — kernel-layer a-posteriori error estimator.
+// PRD: docs/prds/v0_4/a-posteriori-error-estimation.md, Task decomposition #1.
+pub use error_estimator::{ZzIndicator, compute_zz_indicator};
 pub use solver::{CgResult, CgSolverOptions, SolverMode, solve_cg, solve_cg_warm};
 pub use warm_state::{CgWarmState, solve_cg_with_warm_state};
 // Task 2987: 2D cross-section meshing surface for the hex/wedge swept-body
