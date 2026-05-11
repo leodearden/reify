@@ -63,6 +63,15 @@ pub fn is_opted_in(target: &str) -> bool {
     matches!(target, "solver::elastic_static")
 }
 
+/// Key for the displacement field in an ElasticResult Map.
+const DISPLACEMENT_KEY: &str = "displacement";
+
+/// Non-displacement field keys compared for exact equality in an ElasticResult Map.
+///
+/// v1 policy: `stress`, `max_von_mises`, `converged`, and `iterations` are
+/// compared bit-exactly — no Pressure tolerance class exists today.
+const NON_DISPLACEMENT_KEYS: &[&str] = &["stress", "max_von_mises", "converged", "iterations"];
+
 /// Compare a compute node's previous and new result with per-purpose tolerance.
 ///
 /// # Arguments
@@ -112,8 +121,75 @@ pub fn significance_filter(
         _ => return FilterOutcome::Different,
     };
 
-    let _ = (prev, new, tol_si);
-    todo!("significance_filter body: Map extraction and field comparison land in step 10")
+    // Map-shape guard: non-Map inputs are malformed — conservative fallback.
+    // Exercises: significance_filter_returns_different_for_malformed_shapes (a)
+    let (prev_map, new_map) = match (prev, new) {
+        (reify_types::Value::Map(p), reify_types::Value::Map(n)) => (p, n),
+        _ => return FilterOutcome::Different,
+    };
+
+    // Non-displacement keys: require exact Value equality.
+    // Any mismatch (including a key present in one map but absent in the other)
+    // returns Different. v1 policy: no Pressure tolerance class exists today.
+    // Exercises: significance_filter_returns_different_for_non_displacement_field_changes
+    for key in NON_DISPLACEMENT_KEYS {
+        let key_val = reify_types::Value::String((*key).to_string());
+        if prev_map.get(&key_val) != new_map.get(&key_val) {
+            return FilterOutcome::Different;
+        }
+    }
+
+    // Displacement extraction: missing key is malformed — conservative fallback.
+    // Exercises: significance_filter_returns_different_for_malformed_shapes (b)
+    let disp_key = reify_types::Value::String(DISPLACEMENT_KEY.to_string());
+    let (prev_disp, new_disp) = match (prev_map.get(&disp_key), new_map.get(&disp_key)) {
+        (Some(p), Some(n)) => (p, n),
+        _ => return FilterOutcome::Different,
+    };
+
+    // Displacement must be a Sampled Field wrapping a SampledField payload.
+    // Any other variant (Analytical, Real, missing lambda, …) is malformed.
+    // Exercises: significance_filter_returns_different_for_malformed_shapes (c), (d)
+    use reify_types::FieldSourceKind;
+    let (prev_sf, new_sf) = match (prev_disp, new_disp) {
+        (
+            reify_types::Value::Field {
+                source: FieldSourceKind::Sampled,
+                lambda: prev_lambda,
+                ..
+            },
+            reify_types::Value::Field {
+                source: FieldSourceKind::Sampled,
+                lambda: new_lambda,
+                ..
+            },
+        ) => match (prev_lambda.as_ref(), new_lambda.as_ref()) {
+            (reify_types::Value::SampledField(p), reify_types::Value::SampledField(n)) => (p, n),
+            _ => return FilterOutcome::Different,
+        },
+        _ => return FilterOutcome::Different,
+    };
+
+    // Data-length guard: mismatched DOF counts are malformed.
+    // Exercises: significance_filter_returns_different_for_malformed_shapes (e)
+    if prev_sf.data.len() != new_sf.data.len() {
+        return FilterOutcome::Different;
+    }
+
+    // Element-wise absolute-delta comparison with per-purpose length tolerance.
+    // Non-finite values (NaN, ±Inf) in EITHER operand always yield Different —
+    // NaN comparisons are always false, so we guard explicitly.
+    // Strict-greater-than: delta == tol_si is Equivalent (not Different).
+    // Exercises: significance_filter_returns_different_for_nan_in_displacement
+    //            significance_filter_returns_different_for_over_tolerance_displacement_delta
+    //            significance_filter_returns_equivalent_for_sub_tolerance_displacement_delta
+    for (&p, &n) in prev_sf.data.iter().zip(new_sf.data.iter()) {
+        if !p.is_finite() || !n.is_finite() || (p - n).abs() > tol_si {
+            return FilterOutcome::Different;
+        }
+    }
+
+    FilterOutcome::Equivalent
 }
 
 #[cfg(test)]
