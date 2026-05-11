@@ -58,6 +58,16 @@ pub struct SweepReport {
     /// matching tet pairs. Probe-options pattern: always populated.
     pub morph_max_ar_factor: f64,
 
+    /// Maximum aspect-ratio factor `morphed_ar / from_scratch_ar` across all
+    /// matching tet pairs — the morph's AR measured against the true
+    /// from-scratch baseline (NOT against `source` like `morph_max_ar_factor`).
+    /// Probe-options pattern: always populated.
+    ///
+    /// Used by [`ar_materially_better`] to evaluate whether the morph's AR
+    /// quality is materially worse than a fresh remesh of the same target
+    /// geometry.
+    pub from_scratch_max_ar_factor: f64,
+
     /// The morphed mesh produced by `elasticity_morph`.
     pub morphed: VolumeMesh,
 
@@ -178,16 +188,24 @@ where
 
     let morph_verdict = quality_check(&morphed, &source, options);
     let (morph_min_scaled_j, morph_max_ar_factor) = extract_metrics(&morphed, &source);
-    // For from-scratch: min_scaled_j depends only on the first arg. We pass
-    // `source` as second arg to satisfy the signature; the returned AR
-    // factor (from_scratch_ar / source_ar) is ignored for this metric path.
+    // For from-scratch min-J: second-arg `source` is arbitrary here — only the
+    // first tuple element (min_scaled_j of `from_scratch`) is used; the AR
+    // ratio (`from_scratch_ar / source_ar`) is discarded (`_`). Contrast with
+    // the third call below where the second-arg choice is load-bearing.
     let (from_scratch_min_scaled_j, _) = extract_metrics(&from_scratch, &source);
+    // Compute the true morph-vs-from_scratch AR ratio: pass `from_scratch` in
+    // the source slot so quality_check computes max(morphed_AR / from_scratch_AR).
+    // The first tuple element (min_scaled_j) is discarded — it equals
+    // `morph_min_scaled_j` since it's the same `morphed` mesh evaluated again;
+    // we capture it as `_` to make the discard explicit.
+    let (_, from_scratch_max_ar_factor) = extract_metrics(&morphed, &from_scratch);
 
     SweepReport {
         morph_verdict,
         morph_min_scaled_j,
         from_scratch_min_scaled_j,
         morph_max_ar_factor,
+        from_scratch_max_ar_factor,
         morphed,
         from_scratch,
     }
@@ -202,10 +220,86 @@ where
 /// rejected only when from-scratch is materially better" — the materiality
 /// bar the PRD specifies for threshold calibration.
 ///
-/// For *lower-is-better* metrics (e.g. AR factor where 1.0 is ideal and the
-/// from-scratch baseline is ~1.0 by construction), compare `morph_value`
-/// directly against [`MATERIALITY_FACTOR`] at the call site — see the
-/// `assert_materially_better_rule_holds` helper in `tests/calibration.rs`.
+/// For the *lower-is-better* AR-factor metric, use the companion helper
+/// [`ar_materially_better`] which reads [`SweepReport::from_scratch_max_ar_factor`]
+/// — the true `max(morphed_AR / from_scratch_AR)` ratio computed directly
+/// against the from-scratch baseline in [`run_sweep`].
 pub fn is_materially_better(morph: f64, from_scratch: f64) -> bool {
     from_scratch > MATERIALITY_FACTOR * morph
+}
+
+/// AR-side materially-better predicate (lower-is-better polarity).
+///
+/// True when the morph's AR is more than `MATERIALITY_FACTOR` × the from-scratch
+/// baseline AR — i.e. the morph is ≥20 % more elongated than a fresh remesh
+/// of the same target geometry.
+///
+/// Uses [`SweepReport::from_scratch_max_ar_factor`], the true
+/// `max(morphed_AR / from_scratch_AR)` ratio computed in [`run_sweep`] by
+/// calling `extract_metrics(&morphed, &from_scratch)`. This is NOT the old
+/// `morph_max_ar_factor` proxy that assumed `source_AR ≈ from_scratch_AR ≈ 1.0`
+/// — for wide sweep steps the two ratios diverge significantly.
+pub fn ar_materially_better(report: &SweepReport) -> bool {
+    report.from_scratch_max_ar_factor > MATERIALITY_FACTOR
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reify_types::ElementOrderTag;
+
+    /// Build a synthetic `SweepReport` with hand-picked metric values and
+    /// empty meshes. The predicate functions only read scalar fields, so
+    /// the meshes need not contain any elements.
+    fn synthetic_report(morph_max_ar_factor: f64, from_scratch_max_ar_factor: f64) -> SweepReport {
+        let empty = VolumeMesh {
+            vertices: Vec::new(),
+            tet_indices: Vec::new(),
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+        SweepReport {
+            morph_verdict: reify_mesh_morph::QualityVerdict::Pass,
+            morph_min_scaled_j: 0.0,
+            from_scratch_min_scaled_j: 0.0,
+            morph_max_ar_factor,
+            from_scratch_max_ar_factor,
+            morphed: empty.clone(),
+            from_scratch: empty,
+        }
+    }
+
+    /// `ar_materially_better` uses `from_scratch_max_ar_factor`, NOT
+    /// `morph_max_ar_factor` — the two fields must be independent.
+    ///
+    /// Case (a): old source-aliased check (`morph_max_ar_factor > 1.20`) would
+    /// trip, but `from_scratch_max_ar_factor = 1.10 < 1.20` so the new
+    /// predicate must return false.
+    #[test]
+    fn ar_materially_better_predicate_compares_morph_against_from_scratch_baseline_not_source() {
+        // (a) morph_max_ar_factor=1.50 (old check trips), from_scratch=1.10 → false
+        let report_a = synthetic_report(1.50, 1.10);
+        assert!(
+            !ar_materially_better(&report_a),
+            "from_scratch_max_ar_factor=1.10 < MATERIALITY_FACTOR=1.20 must return false; \
+             old source-proxied check would have tripped on morph_max_ar_factor=1.50"
+        );
+
+        // (b) morph_max_ar_factor=1.00 (old check doesn't trip), from_scratch=1.30 → true
+        let report_b = synthetic_report(1.00, 1.30);
+        assert!(
+            ar_materially_better(&report_b),
+            "from_scratch_max_ar_factor=1.30 > MATERIALITY_FACTOR=1.20 must return true; \
+             old source-proxied check would NOT have tripped on morph_max_ar_factor=1.00"
+        );
+
+        // Boundary: from_scratch_max_ar_factor == MATERIALITY_FACTOR — strict >
+        // comparison must return false (equal is not materially better).
+        let report_boundary = synthetic_report(2.00, MATERIALITY_FACTOR);
+        assert!(
+            !ar_materially_better(&report_boundary),
+            "from_scratch_max_ar_factor == MATERIALITY_FACTOR must return false \
+             (strict greater-than comparison)"
+        );
+    }
 }

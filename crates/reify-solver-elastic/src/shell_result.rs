@@ -116,7 +116,6 @@ pub fn shell_element_stress(
 
     let frame = build_shell_frame(nodes);
     let r = frame.r; // rows = local basis in global coords: R · v_global = v_local
-    let area = frame.area;
     let t = thickness;
 
     // --- Rotate 18 global DOFs → local frame (6 blocks of 3 DOFs) ---
@@ -134,29 +133,9 @@ pub fn shell_element_stress(
         }
     }
 
-    // --- Local 2D nodal coords: xloc[n] = (R · (p_n − p0)).xy ---
-    let p0 = frame.origin;
-    let mut xloc = [[0.0_f64; 2]; 3];
-    for i in 0..n_nodes {
-        let d = [
-            nodes[i][0] - p0[0],
-            nodes[i][1] - p0[1],
-            nodes[i][2] - p0[2],
-        ];
-        xloc[i][0] = r[0][0] * d[0] + r[0][1] * d[1] + r[0][2] * d[2];
-        xloc[i][1] = r[1][0] * d[0] + r[1][1] * d[1] + r[1][2] * d[2];
-    }
-
-    // --- 2D shape gradients (constant for linear triangle) ---
-    let two_a = 2.0 * area;
-    let x = [xloc[0][0], xloc[1][0], xloc[2][0]];
-    let y = [xloc[0][1], xloc[1][1], xloc[2][1]];
-    // dN[i] = [dN_i/dx, dN_i/dy], cyclic (i,j,k) = (0,1,2), (1,2,0), (2,0,1)
-    let dn = [
-        [(y[1] - y[2]) / two_a, (x[2] - x[1]) / two_a],
-        [(y[2] - y[0]) / two_a, (x[0] - x[2]) / two_a],
-        [(y[0] - y[1]) / two_a, (x[1] - x[0]) / two_a],
-    ];
+    // Shared kinematics: local 2D coords, shape gradients, B_cov, J2⁻ᵀ.
+    let kin = crate::shell_kinematics::shell_kinematics(nodes, &frame);
+    let dn = kin.dn;
 
     // --- Membrane Voigt strain: ε = [ε_xx, ε_yy, γ_xy] ---
     let mut eps = [0.0_f64; 3];
@@ -179,7 +158,7 @@ pub fn shell_element_stress(
 
     // --- Curvature Voigt vector: κ = [κ_xx, κ_yy, 2κ_xy] from rotation DOFs ---
     // κ_xx = −∂θ_y/∂x, κ_yy = +∂θ_x/∂y, 2κ_xy = ∂θ_x/∂x − ∂θ_y/∂y
-    // (matches bending B-matrix convention in shell_assembly.rs:274-308)
+    // (matches bending B-matrix convention in shell_assembly.rs)
     let mut kappa = [0.0_f64; 3];
     for i in 0..n_nodes {
         let tx = u_loc[ndp * i + 3]; // θ_x in local frame
@@ -198,25 +177,9 @@ pub fn shell_element_stress(
     }
 
     // --- MITC3 transverse-shear recovery ---
-    // Replicate tying-point covariant shear sampling from shell_assembly.rs:352-433.
-    // Covariant shear at a tying point (ξ_t, η_t):
-    //   γ_ξζ = Σ_i dn_ref[i][0]*u_z_i + N_i*θ_y_i
-    //   γ_ηζ = Σ_i dn_ref[i][1]*u_z_i - N_i*θ_x_i
-    let tying_pts = Mitc3Plus.tying_points();
-    let mut b_cov = [[[0.0_f64; 18]; 2]; 3]; // [tp][cov_comp][dof]
-    for (tp_idx, tp) in tying_pts.iter().enumerate() {
-        let n_at_tp = Mitc3Plus.shape_at(tp.coord);
-        let dn_ref_tp = Mitc3Plus.shape_grad_at(tp.coord); // constant: [[-1,-1],[1,0],[0,1]]
-        for node in 0..n_nodes {
-            let dof_uz = ndp * node + 2;
-            let dof_tx = ndp * node + 3;
-            let dof_ty = ndp * node + 4;
-            b_cov[tp_idx][0][dof_uz] += dn_ref_tp[node][0]; // γ_ξζ ← dn_ref·u_z
-            b_cov[tp_idx][0][dof_ty] += n_at_tp[node]; // γ_ξζ ← N·θ_y
-            b_cov[tp_idx][1][dof_uz] += dn_ref_tp[node][1]; // γ_ηζ ← dn_ref·u_z
-            b_cov[tp_idx][1][dof_tx] -= n_at_tp[node]; // γ_ηζ ← −N·θ_x
-        }
-    }
+    // Covariant shear B-matrix from shared kinematics helper — single source of truth.
+    // See shell_kinematics::shell_kinematics for the construction.
+    let b_cov = kin.b_cov_at_tying_points;
 
     // Sample covariant shears at each tying point from u_loc.
     let mut g_cov_tp = [[0.0_f64; 2]; 3]; // [tp][xi/eta]
@@ -238,15 +201,8 @@ pub fn shell_element_stress(
     };
     let g_cov_ctr = Mitc3Plus.interpolate_assumed_shear(sampled, centroid);
 
-    // Covariant → physical: γ_phys = J2⁻ᵀ · γ_cov
-    // J2 = [[x1-x0, x2-x0], [y1-y0, y2-y0]] in local 2D coords.
-    let jac2 = [[x[1] - x[0], x[2] - x[0]], [y[1] - y[0], y[2] - y[0]]];
-    let det2 = jac2[0][0] * jac2[1][1] - jac2[0][1] * jac2[1][0];
-    // J2⁻ᵀ (= (J2⁻¹)ᵀ)
-    let inv_t = [
-        [jac2[1][1] / det2, -jac2[1][0] / det2],
-        [-jac2[0][1] / det2, jac2[0][0] / det2],
-    ];
+    // Covariant → physical: γ_phys = J2⁻ᵀ · γ_cov (J2⁻ᵀ from shared kinematics)
+    let inv_t = kin.jac2_inv_t;
     let g_phys_xz = inv_t[0][0] * g_cov_ctr.gamma_xi_zeta + inv_t[0][1] * g_cov_ctr.gamma_eta_zeta;
     let g_phys_yz = inv_t[1][0] * g_cov_ctr.gamma_xi_zeta + inv_t[1][1] * g_cov_ctr.gamma_eta_zeta;
 
@@ -323,6 +279,19 @@ impl ShellStress {
 mod tests {
     use super::*;
     use reify_types::Value;
+    use crate::assembly::ElementStiffness;
+    use crate::shell_assembly::shell_element_stiffness;
+
+    /// Compute K · u for an 18-DOF stiffness matrix.
+    fn matvec(k: &ElementStiffness, u: &[f64; 18]) -> [f64; 18] {
+        let mut out = [0.0_f64; 18];
+        for i in 0..18 {
+            for j in 0..18 {
+                out[i] += k.get(i, j) * u[j];
+            }
+        }
+        out
+    }
 
     /// `shell_element_frame(nodes)` must return the transpose of `build_shell_frame(nodes).r`.
     ///
@@ -677,5 +646,91 @@ mod tests {
         assert_eq!(result.top, top, "explicit: top round-trips");
         assert_eq!(result.mid, mid, "explicit: mid round-trips");
         assert_eq!(result.bottom, bottom, "explicit: bottom round-trips");
+    }
+
+    /// Locks the membrane path of `shell_element_stiffness` and `shell_element_stress`
+    /// together: `B_mᵀ · σ_voigt_membrane(u) · area · t` (the membrane internal-force
+    /// residual computed via the stress kernel) must equal the in-plane components
+    /// of `K · u` (the same residual computed via the stiffness kernel) for any DOF
+    /// vector `u`. Variational consistency: `K_m = ∫ B_mᵀ D B_m dV ⇒
+    /// K_m · u_inplane = B_mᵀ · (D · ε(u_inplane)) · area · t = B_mᵀ · σ_voigt · area · t`.
+    ///
+    /// Run on UNIT_TRI (R = identity ⇒ K_global = K_local, u_loc = u, σ_local = σ_global).
+    /// Drives the test with 5 deterministic pseudo-random 18-DOF vectors so a
+    /// future divergence in either kernel's kinematics — sign flip, tying-point
+    /// re-ordering, dn formula change — surfaces here.
+    ///
+    /// For UNIT_TRI the in-plane K rows (6n+0, 6n+1) receive contributions only
+    /// from the membrane block: bending activates {θ_x, θ_y} DOFs and shear
+    /// activates {u_z, θ_x, θ_y} DOFs — neither writes into the u_x / u_y rows.
+    #[test]
+    fn shell_membrane_residual_locks_stiffness_and_stress_paths() {
+        let mat = steel_like();
+        let t = 0.05_f64;
+        let area = 0.5_f64; // UNIT_TRI area
+
+        // Build K once.
+        let k = shell_element_stiffness(&UNIT_TRI, t, &mat);
+
+        // dn for UNIT_TRI (two_a = 1): [[-1,-1],[1,0],[0,1]]
+        // These are the closed-form P1 shape-function gradients in local coords.
+        let dn: [[f64; 2]; 3] = [[-1.0_f64, -1.0], [1.0, 0.0], [0.0, 1.0]];
+
+        // Deterministic LCG (Knuth multiplicative): maps to small displacements ~1e-3
+        // so elastic regime applies and FP scales stay sane.
+        let mut lcg: u64 = 0xDEAD_BEEF_u64;
+        let mut next_val = || -> f64 {
+            lcg = lcg
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let bits = (lcg >> 11) as f64;
+            (bits / (1u64 << 53) as f64 - 0.5) * 2e-3
+        };
+
+        for trial in 0..5_usize {
+            let mut u = [0.0_f64; 18];
+            for dof in 0..18 {
+                u[dof] = next_val();
+            }
+
+            // K · u (stiffness path)
+            let ku = matvec(&k, &u);
+
+            // Stress at mid-surface (z=0): pure membrane stress, bending = 0.
+            let s = shell_element_stress(&UNIT_TRI, t, &mat, &u);
+            let sv_mem = [s.mid[0][0], s.mid[1][1], s.mid[0][1]];
+
+            // For each node, B_mᵀ · σ_voigt · area · t must equal K·u at in-plane DOFs.
+            // B_m sub-block for node n (3×2):
+            //   [ dn[n][0],    0    ]
+            //   [    0   ,  dn[n][1] ]
+            //   [ dn[n][1],  dn[n][0] ]
+            // B_mᵀ · σ_voigt:
+            //   x-component: dn[n][0]*σ_xx + dn[n][1]*σ_xy
+            //   y-component: dn[n][1]*σ_yy + dn[n][0]*σ_xy
+            for n in 0..3 {
+                let resid_x = (dn[n][0] * sv_mem[0] + dn[n][1] * sv_mem[2]) * area * t;
+                let resid_y = (dn[n][1] * sv_mem[1] + dn[n][0] * sv_mem[2]) * area * t;
+
+                let ku_x = ku[6 * n];
+                let ku_y = ku[6 * n + 1];
+
+                let scale_x = resid_x.abs().max(ku_x.abs()).max(1e-30);
+                let scale_y = resid_y.abs().max(ku_y.abs()).max(1e-30);
+
+                assert!(
+                    (ku_x - resid_x).abs() < 1e-9 * scale_x,
+                    "trial={trial} node={n}: K·u[x]={ku_x:.6e}, \
+                     B_mᵀ·σ·A·t={resid_x:.6e}, diff={:.6e}",
+                    (ku_x - resid_x).abs()
+                );
+                assert!(
+                    (ku_y - resid_y).abs() < 1e-9 * scale_y,
+                    "trial={trial} node={n}: K·u[y]={ku_y:.6e}, \
+                     B_mᵀ·σ·A·t={resid_y:.6e}, diff={:.6e}",
+                    (ku_y - resid_y).abs()
+                );
+            }
+        }
     }
 }

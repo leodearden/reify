@@ -346,4 +346,122 @@ mod tests {
             "distinct target strings must produce distinct cache keys"
         );
     }
+
+    #[test]
+    fn compute_cache_key_domain_separates_value_input_from_realization_input() {
+        // Same ContentHash on both a value cell and a realization — only the
+        // outer-position slot differs (value_bucket at pos 1, realization_bucket
+        // at pos 2 of combine_all([target, val_bucket, real_bucket, opts])).
+        // ContentHash::combine is order-dependent, so these must differ even when
+        // the inner bucket hash is identical.  Pins the outer combine_all call at
+        // the bottom of compute_cache_key against a future flat-XOR refactor that
+        // would collapse domain separation.
+        let shared_h = ContentHash::of_str("shared_H");
+        let val_id = ValueCellId::new("Bracket", "x");
+        let real_id = RealizationNodeId::new("Bracket", 0);
+
+        let mut graph = EvaluationGraph::default();
+        insert_value_cell(&mut graph, val_id.clone(), shared_h);
+        insert_realization(&mut graph, real_id.clone(), shared_h);
+
+        let mut node_value = make_empty_node();
+        node_value.value_inputs = vec![val_id];
+
+        let mut node_real = make_empty_node();
+        node_real.realization_inputs = vec![real_id];
+
+        let key_value = compute_cache_key(&node_value, &graph);
+        let key_real = compute_cache_key(&node_real, &graph);
+        assert_ne!(
+            key_value,
+            key_real,
+            "domain separation: a value-input hash and a realization-input hash with the \
+             same ContentHash must not produce the same cache key — they occupy different \
+             positions in the outer combine_all in compute_cache_key"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "value_input")]
+    fn compute_cache_key_panics_on_missing_value_input() {
+        // Empty graph — the ValueCellId "ghost" was never inserted.
+        // The .unwrap_or_else(|| panic!(...)) in the value_bucket_hash block fires
+        // with a message containing "value_input".  Pins the producer-bug panic
+        // policy (documented in compute_cache_key's docstring) against a future
+        // silent-fallback refactor (e.g. ContentHash(0)).
+        let graph = EvaluationGraph::default();
+        let mut node = make_empty_node();
+        node.value_inputs = vec![ValueCellId::new("Bracket", "ghost")];
+        compute_cache_key(&node, &graph);
+    }
+
+    #[test]
+    #[should_panic(expected = "realization_input")]
+    fn compute_cache_key_panics_on_missing_realization_input() {
+        // Empty graph — RealizationNodeId("Bracket", 0) was never inserted.
+        // The .unwrap_or_else(|| panic!(...)) in the realization_bucket_hash block
+        // fires with a message containing "realization_input".  "realization_input"
+        // is disjoint from "value_input", so this test pins exactly the
+        // realization-side panic arm.
+        let graph = EvaluationGraph::default();
+        let mut node = make_empty_node();
+        node.realization_inputs = vec![RealizationNodeId::new("Bracket", 0)];
+        compute_cache_key(&node, &graph);
+    }
+
+    #[test]
+    fn compute_cache_key_changes_when_value_input_cardinality_changes() {
+        // Compare node_one ([a]) vs node_two ([a, b]).  The only varying factor is
+        // bucket cardinality — both reference cell `a` and node_two also includes `b`.
+        // Adding a value input must change the cache key produced by compute_cache_key.
+        let a = ValueCellId::new("Bracket", "a");
+        let b = ValueCellId::new("Bracket", "b");
+
+        let mut graph = EvaluationGraph::default();
+        insert_value_cell(&mut graph, a.clone(), ContentHash::of_str("hash_a"));
+        insert_value_cell(&mut graph, b.clone(), ContentHash::of_str("hash_b"));
+
+        let mut node_one = make_empty_node();
+        node_one.value_inputs = vec![a.clone()];
+
+        let mut node_two = make_empty_node();
+        node_two.value_inputs = vec![a.clone(), b.clone()];
+
+        let key_one = compute_cache_key(&node_one, &graph);
+        let key_two = compute_cache_key(&node_two, &graph);
+        assert_ne!(
+            key_one,
+            key_two,
+            "adding a value input must change the cache key: [a] and [a, b] must produce \
+             distinct keys"
+        );
+    }
+
+    #[test]
+    fn compute_cache_key_changes_when_realization_input_cardinality_changes() {
+        // Mirror of the value-bucket cardinality test for the realization bucket.
+        // Compare node_one ([real_0]) vs node_two ([real_0, real_1]).  Adding a
+        // realization input must change the cache key produced by compute_cache_key.
+        let real_0 = RealizationNodeId::new("Bracket", 0);
+        let real_1 = RealizationNodeId::new("Bracket", 1);
+
+        let mut graph = EvaluationGraph::default();
+        insert_realization(&mut graph, real_0.clone(), ContentHash::of_str("mesh_a"));
+        insert_realization(&mut graph, real_1.clone(), ContentHash::of_str("mesh_b"));
+
+        let mut node_one = make_empty_node();
+        node_one.realization_inputs = vec![real_0.clone()];
+
+        let mut node_two = make_empty_node();
+        node_two.realization_inputs = vec![real_0.clone(), real_1.clone()];
+
+        let key_one = compute_cache_key(&node_one, &graph);
+        let key_two = compute_cache_key(&node_two, &graph);
+        assert_ne!(
+            key_one,
+            key_two,
+            "adding a realization input must change the cache key: [real_0] and \
+             [real_0, real_1] must produce distinct keys"
+        );
+    }
 }

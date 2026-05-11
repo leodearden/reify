@@ -326,6 +326,7 @@ pub mod progressive;
 pub mod result;
 pub mod shell_assembly;
 pub mod shell_boundary;
+pub mod shell_kinematics;
 pub mod shell_result;
 pub mod solver;
 pub mod sweep;
@@ -360,6 +361,7 @@ pub use progressive::{
 pub use result::{StressElement, element_stress_p1, recover_nodal_stress_p1, tet_volume_p1};
 pub use shell_assembly::{ShellFrame, build_shell_frame, plane_stress_d, shell_element_stiffness};
 pub use shell_boundary::{SupportBodyKind, SupportCompatibility, SupportKind, build_support_bcs};
+pub use shell_kinematics::{ShellKinematics, shell_kinematics};
 pub use shell_result::{
     ShellElementStress, ShellStress, shell_element_frame, shell_element_stress,
 };

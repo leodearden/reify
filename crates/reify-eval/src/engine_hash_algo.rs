@@ -140,10 +140,8 @@ pub(crate) const CONTRIBUTORS_RELATIVE: &[&str] = &[
 /// | Exact name (case-insensitive) `{.ds_store, thumbs.db, desktop.ini}` | `.DS_Store` |
 /// | Name ending with `~` | `foo.rs~` (Emacs backup) |
 // Used by `walk_recursive` which is itself `#[allow(dead_code)]`.
-// `#[inline(never)]` prevents LLVM stack-overflow when compiling large release
-// test binaries — same rationale as `walk_contributor` and `walk_recursive`.
+// See walk_contributor for inline-never workaround history (task 3429).
 #[allow(dead_code)]
-#[inline(never)]
 fn is_editor_debris(file_name: &OsStr) -> bool {
     let name = file_name.to_string_lossy();
     let name_lower = name.to_lowercase();
@@ -275,13 +273,17 @@ pub struct ContributorWalk {
 // `persistent_cache.rs`. Neither site is visible to the non-test lib
 // compiler, so we suppress the dead_code lint here.
 //
-// `#[inline(never)]` prevents LLVM from treating these as inlining candidates
-// at -O3. Without it, LLVM's inliner stack overflows when compiling large
-// release-mode test binaries that link against reify-eval (e.g.
-// `kinematic_sweep_closed_chain`). The functions are dead in those binaries so
-// the attribute costs nothing at runtime.
+// A previous `#[inline(never)]` workaround on `walk_contributor`,
+// `walk_recursive`, and `is_editor_debris` was removed in task 3429 (original
+// workaround added in commit 95b3d3c6af). Re-verification on 2026-05-11
+// confirmed the attributes are no longer needed:
+//   rustc 1.94.1 (e408947bf 2026-03-25), LLVM 21.1.8
+//   narrow repro: cargo test --release -p reify-eval --test kinematic_sweep_closed_chain
+//   full suite:   cargo test --release -p reify-eval (2116 tests, all passed)
+//   base commit: 65a7156bd40ee9d47c400f6f50a4d6a52212130e
+// The symmetric attributes on `walk_recursive` and `is_editor_debris` were removed in the
+// same commit.
 #[allow(dead_code)]
-#[inline(never)]
 pub fn walk_contributor(label: &str, root: &Path) -> ContributorWalk {
     let mut walk = ContributorWalk {
         parts: Vec::new(),
@@ -294,9 +296,8 @@ pub fn walk_contributor(label: &str, root: &Path) -> ContributorWalk {
 // Called only from `walk_contributor` which is itself `#[allow(dead_code)]`;
 // suppress the lint here too so the compiler doesn't complain about the
 // transitively unreachable private function in the non-test lib build.
-// `#[inline(never)]` is needed for the same reason as on `walk_contributor`.
+// See walk_contributor for inline-never workaround history (task 3429).
 #[allow(dead_code)]
-#[inline(never)]
 fn walk_recursive(label: &str, root: &Path, path: &Path, walk: &mut ContributorWalk) {
     // Use symlink_metadata so we dispatch on the type of `path` itself, NOT
     // the type of whatever `path` points to through symlink chains.

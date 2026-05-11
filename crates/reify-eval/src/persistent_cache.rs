@@ -26,6 +26,7 @@
 //! static dispatch is sufficient.
 
 use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -40,6 +41,257 @@ use serde::{Deserialize, Serialize};
 /// See [`crate::engine_hash_algo::compose_engine_version_hash`] for the full
 /// documentation including framing rationale and PRD reference.
 pub use crate::engine_hash_algo::compose_engine_version_hash;
+
+/// Magic byte written as the sole content of every `.meta` sidecar file.
+///
+/// Mnemonic: `CA` = **CA**che. The single-byte content is self-identifying —
+/// a future `cache fsck` command can reject any `.meta` file whose first byte
+/// is not `0xCA` without reading the adjacent `.bin`. The content is
+/// deliberately minimal; the mtime of the `.meta` file is the real
+/// last-access signal (see [`touch_sidecar`]).
+pub const SIDECAR_MAGIC_BYTE: u8 = 0xCA;
+
+/// Return the `mtime` (`SystemTime`) of the `.meta` sidecar file at `path`.
+///
+/// This is the last-access signal for GC eviction sorting and `cache stats`
+/// display. The mtime belongs to the `.meta` file specifically — NOT to the
+/// `.bin` file — per PRD policy (the `.bin` mtime stays fixed at
+/// `written_at`, which is useful for debugging; only the sidecar is touched
+/// on every read).
+///
+/// Propagates `io::Error` for both `NotFound` (missing sidecar) and
+/// permission errors via the `?` operator.
+pub fn read_sidecar_mtime(path: &Path) -> io::Result<std::time::SystemTime> {
+    std::fs::metadata(path)?.modified()
+}
+
+/// Update the mtime of an existing `.meta` sidecar file to `now` without
+/// altering its content.
+///
+/// Touching the sidecar (rather than the `.bin`) on every cache read preserves
+/// the `.bin` mtime at the `written_at` wall-time, which is useful for
+/// debugging ("when was this entry written?"). The sidecar mtime then carries
+/// the last-access signal, used for cost-weighted LRU eviction by the GC.
+///
+/// Per PRD `docs/prds/v0_3/persistent-fea-cache.md` §"Sidecar `.meta` file":
+/// works correctly under `noatime` and `relatime` mount options, where direct
+/// `atime` on the `.bin` would be either suppressed entirely or rounded to
+/// 24-hour resolution.
+///
+/// Uses [`std::fs::FileTimes::set_modified`] (stable since Rust 1.75,
+/// Dec 2023) — avoids adding the `filetime` crate to reify-eval's dep set.
+///
+/// # Race condition: evicted sidecar
+///
+/// If the GC evicts an entry between the cache read and this `touch_sidecar`
+/// call, the `.meta` file will have been removed and `open` will return
+/// `ErrorKind::NotFound`. On the read-path this is benign — the entry is gone
+/// and the touch is a no-op — so this function returns `Ok(())` for
+/// `NotFound`. All other errors (e.g. permission denied) are propagated to the
+/// caller.
+///
+/// # Permission notes
+///
+/// Opening with `write(true)` requires write permission on the file. On
+/// read-only mounts or under restrictive ACLs this returns `PermissionDenied`,
+/// which is propagated to the caller.
+pub fn touch_sidecar(path: &Path) -> io::Result<()> {
+    use std::fs::File;
+    use std::time::SystemTime;
+    let f = match File::options().write(true).open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    f.set_times(std::fs::FileTimes::new().set_modified(SystemTime::now()))
+}
+
+/// Create (or overwrite) a `.meta` sidecar file at `path` containing exactly
+/// [`SIDECAR_MAGIC_BYTE`].
+///
+/// The parent directory must already exist; callers are expected to call
+/// `fs::create_dir_all(&shard_dir(...))` before writing any files into the
+/// shard. Failure to create the parent surfaces as an `io::Error` from the
+/// underlying `fs::write`.
+///
+/// # Concurrency
+///
+/// Safe to call concurrently because the payload is a single byte. If the
+/// sidecar ever grows past one byte, switch to a temp-file + atomic-rename
+/// strategy to avoid torn reads.
+pub fn write_sidecar(path: &Path) -> io::Result<()> {
+    std::fs::write(path, [SIDECAR_MAGIC_BYTE])
+}
+
+/// On-disk layout version for the [`CacheEntryHeader`] struct. Bump when the
+/// on-disk entry-header schema changes (fields added, removed, reordered, or
+/// bincode/zstd wire-format shifts).
+///
+/// **Distinct from `ELASTIC_RESULT_FORMAT_VERSION`** (which versions the
+/// *body* encoding per-type) and from [`ENGINE_VERSION_HASH`] (which
+/// invalidates result *semantics* when solver sources change). These three
+/// version namespaces must never be conflated — see PRD
+/// `docs/prds/v0_3/persistent-fea-cache.md` §"Storage format":
+/// "Format-version is separate from engine-version-hash — engine bumps
+/// invalidate result semantics; format bumps invalidate on-disk layout.
+/// Don't conflate."
+///
+/// **Wire-format contract:** `ENTRY_FORMAT_VERSION` covers the `bincode 1.3`
+/// fixint-LE encoding of [`CacheEntryHeader`] (4+32+32+8+8+8 = 92 bytes)
+/// AND the `zstd 0.13` compressed body that follows it. Any change to either
+/// encoder that produces different bytes on disk — including a minor version
+/// bump within the `=1.3` or `0.13` pins — MUST be accompanied by a bump of
+/// this constant in the same commit. Pinned by
+/// `cache_entry_header_bincode_encoding_matches_pinned_hex_literal` and
+/// `entry_format_version_const_is_one`.
+///
+/// Starting at 1 follows the Reify convention that 0 means "uninitialised /
+/// unknown", matching `ELASTIC_RESULT_FORMAT_VERSION`.
+pub const ENTRY_FORMAT_VERSION: u32 = 1;
+
+/// Fixed byte length of a bincode-1.3 fixint-LE encoded [`CacheEntryHeader`].
+///
+/// Computed from the field sizes:
+/// - `format_version` (u32, 4 bytes)
+/// - `engine_version_hash` ([u8; 32], 32 bytes)
+/// - `input_hash` ([u8; 32], 32 bytes)
+/// - `solve_time_ms` (u64, 8 bytes)
+/// - `byte_size` (u64, 8 bytes)
+/// - `written_at` (i64, 8 bytes)
+///
+/// Total: 4 + 32 + 32 + 8 + 8 + 8 = 92 bytes.
+///
+/// Pinned by `cache_entry_header_bincode_encoding_matches_pinned_hex_literal`.
+pub const ENTRY_HEADER_ENCODED_LEN: usize = 92;
+
+/// Header placed at the leading `ENTRY_HEADER_ENCODED_LEN` bytes of every
+/// `.bin` cache-entry file, before the zstd-compressed body written by
+/// [`PersistentlyCacheable::serialize_to_writer`].
+///
+/// # PRD reference
+///
+/// Defined in `docs/prds/v0_3/persistent-fea-cache.md` §"Header schema".
+///
+/// # Wire-format contract
+///
+/// Field order in this struct IS the on-disk byte order. Reordering fields IS
+/// a wire-format change that requires a [`ENTRY_FORMAT_VERSION`] bump.
+/// [`bincode`] 1.3 fixint-LE encodes this struct as a fixed-size 92-byte
+/// sequence — pinned by
+/// `cache_entry_header_bincode_encoding_matches_pinned_hex_literal`.
+///
+/// # Fields
+///
+/// - `format_version`: Echoes [`ENTRY_FORMAT_VERSION`]; allows a reader to
+///   detect layout mismatches before attempting to decode the body.
+/// - `engine_version_hash`: 32 ASCII bytes of the directory-level
+///   [`ENGINE_VERSION_HASH`] hex string. Stored as ASCII bytes (NOT 16 raw
+///   hash bytes) so corruption detection is a memcmp on the same bytes the
+///   filesystem already returns as a `&str`.
+/// - `input_hash`: 32 ASCII bytes of the filename hex string
+///   (`ContentHash::Display`). Same rationale as `engine_version_hash`.
+/// - `solve_time_ms`: solver wall-time cost metric, used for cost-weighted
+///   LRU eviction.
+/// - `byte_size`: uncompressed body byte count for `cache stats` display,
+///   readable without decompressing the body.
+/// - `written_at`: unix-millisecond timestamp of when the entry was written.
+///   Signed `i64`; -1 is a valid sentinel for "unknown". Range is ample
+///   (covers year ~292M CE).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct CacheEntryHeader {
+    /// Echoes [`ENTRY_FORMAT_VERSION`]; mismatch → layout incompatibility.
+    pub format_version: u32,
+    /// 32 ASCII bytes of the `engine_version_hash` hex string (directory name).
+    pub engine_version_hash: [u8; 32],
+    /// 32 ASCII bytes of the `input_hash` hex string (file stem).
+    pub input_hash: [u8; 32],
+    /// Solver wall-time in milliseconds.
+    pub solve_time_ms: u64,
+    /// Uncompressed body byte count.
+    pub byte_size: u64,
+    /// Write timestamp as unix milliseconds (signed; -1 = unknown).
+    pub written_at: i64,
+}
+
+impl CacheEntryHeader {
+    /// Verify that `format_version` in this header matches
+    /// [`ENTRY_FORMAT_VERSION`], returning `Err(io::ErrorKind::InvalidData)`
+    /// on mismatch.
+    ///
+    /// Call this alongside [`Self::verify_field_echoes`] after decoding a
+    /// header to ensure the on-disk layout is compatible before attempting to
+    /// decode the body. Keeping the check here (rather than at every call
+    /// site) means readers do not need to import `ENTRY_FORMAT_VERSION`
+    /// directly — the contract is fully expressed by `CacheEntryHeader`.
+    pub fn verify_format_version(&self) -> io::Result<()> {
+        if self.format_version != ENTRY_FORMAT_VERSION {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "CacheEntryHeader format_version {} does not match \
+                     ENTRY_FORMAT_VERSION {} (incompatible on-disk layout?)",
+                    self.format_version, ENTRY_FORMAT_VERSION
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Verify that the echo fields in this header match the expected key
+    /// components, returning `Err(io::ErrorKind::InvalidData)` on mismatch.
+    ///
+    /// Called by the cache reader after decoding the header to detect
+    /// corrupted entries (a misplaced or bit-flipped `.bin` file where
+    /// the header echoes disagree with the directory name / filename).
+    ///
+    /// Per PRD `docs/prds/v0_3/persistent-fea-cache.md` §"Header schema":
+    /// "engine_version_hash and input_hash are echoes of the directory-level
+    /// and filename-level values, so corruption is detectable."
+    ///
+    /// Callers should also call [`Self::verify_format_version`] to check that
+    /// the on-disk layout version is compatible — that check is separate
+    /// because a version mismatch and a corrupted echo are distinct failure
+    /// modes requiring different handling.
+    pub fn verify_field_echoes(
+        &self,
+        expected_engine_version_hash: &[u8; 32],
+        expected_input_hash: &[u8; 32],
+    ) -> io::Result<()> {
+        if &self.engine_version_hash != expected_engine_version_hash {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "CacheEntryHeader engine_version_hash echo does not match \
+                 directory name (corrupted entry?)",
+            ));
+        }
+        if &self.input_hash != expected_input_hash {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "CacheEntryHeader input_hash echo does not match \
+                 filename (corrupted entry?)",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Encode `self` into `w` using bincode 1.3 fixint-LE encoding.
+    ///
+    /// Same error-mapping discipline as
+    /// [`ElasticResult::serialize_to_writer`]: `bincode::Error` is wrapped via
+    /// [`io::Error::other`] because `bincode::Error` does not implement
+    /// `Into<io::Error>`.
+    pub fn write_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        bincode::serialize_into(w, self).map_err(io::Error::other)
+    }
+
+    /// Decode a [`CacheEntryHeader`] from `r`.
+    ///
+    /// Same error-mapping discipline as
+    /// [`ElasticResult::deserialize_from_reader`].
+    pub fn read_from<R: Read>(r: &mut R) -> io::Result<Self> {
+        bincode::deserialize_from(r).map_err(io::Error::other)
+    }
+}
 
 /// On-disk-layout version for [`ElasticResult`]. Bump when the encoding
 /// format changes (separate from `engine_version_hash`, which invalidates
@@ -370,6 +622,67 @@ fn decode_f64_slab_from_le_bytes(bytes: &[u8]) -> impl Iterator<Item = f64> + '_
                 .expect("chunks_exact(8) yields exactly-8-byte slices"),
         )
     })
+}
+
+/// Construct the two-level shard directory for a given set of key components.
+///
+/// # Layout
+///
+/// ```text
+/// <cache_root>/<engine_version_hash>/<input_hash[0..2]>
+/// ```
+///
+/// Callers create this directory once via `fs::create_dir_all(&shard_dir(...))`
+/// and then write both the `.bin` and `.meta` files into it. The directory is
+/// the shared parent of both files, which is a structural requirement for
+/// atomic-rename and for GC sweeps to touch related files together.
+///
+/// See [`entry_bin_path`] for the full layout and precondition documentation.
+pub fn shard_dir(cache_root: &Path, engine_version_hash: &str, input_hash: &str) -> PathBuf {
+    debug_assert!(
+        input_hash.len() >= 2,
+        "shard_dir: input_hash must be at least 2 chars, got {:?}",
+        input_hash
+    );
+    cache_root
+        .join(engine_version_hash)
+        .join(&input_hash[..2])
+}
+
+/// Construct the `.meta` sidecar path for a given set of key components.
+///
+/// The `.meta` file lives in the same directory as the corresponding `.bin`
+/// file — this parent-dir invariant is exercised by
+/// `entry_meta_path_uses_meta_extension_under_same_shard_dir_as_bin` and is
+/// structurally required for atomic-rename semantics (the write orchestrator
+/// can `create_dir_all(&shard_dir(...))` once and then write both files into
+/// it).
+///
+/// Delegates to [`shard_dir`] for the parent directory; see [`shard_dir`] for
+/// the precondition documentation.
+pub fn entry_meta_path(cache_root: &Path, engine_version_hash: &str, input_hash: &str) -> PathBuf {
+    shard_dir(cache_root, engine_version_hash, input_hash).join(format!("{input_hash}.meta"))
+}
+
+/// Construct the `.bin` cache-entry path for a given set of key components.
+///
+/// # Layout
+///
+/// ```text
+/// <cache_root>/<engine_version_hash>/<input_hash[0..2]>/<input_hash>.bin
+/// ```
+///
+/// Two-level git-style sharding per PRD
+/// `docs/prds/v0_3/persistent-fea-cache.md` §"Filesystem layout". The first
+/// level (`engine_version_hash`) groups all entries for the same engine build
+/// together, making engine-version invalidation (directory removal) O(1). The
+/// second level (`input_hash[0..2]`) limits directory fanout for large caches.
+///
+/// Delegates to [`shard_dir`] for the parent directory, so the layout
+/// invariant (and the `debug_assert!` on `input_hash.len() >= 2`) lives in
+/// one place. See [`shard_dir`] for the precondition documentation.
+pub fn entry_bin_path(cache_root: &Path, engine_version_hash: &str, input_hash: &str) -> PathBuf {
+    shard_dir(cache_root, engine_version_hash, input_hash).join(format!("{input_hash}.bin"))
 }
 
 impl PersistentlyCacheable for ElasticResult {
@@ -1659,5 +1972,372 @@ mod tests {
              version\"). Actual list: {:#?}",
             crate::engine_hash_algo::CONTRIBUTORS_RELATIVE
         );
+    }
+
+    // ── path-layout tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn shard_dir_returns_two_level_directory_under_engine_version_hash() {
+        use std::path::PathBuf;
+        let root   = PathBuf::from("/some/cache");
+        let engine = "abc123def456abc123def456abc123ff";
+        let input  = "0123456789abcdef0123456789abcdef";
+        let dir = shard_dir(&root, engine, input);
+        assert_eq!(
+            dir,
+            PathBuf::from("/some/cache/abc123def456abc123def456abc123ff/01"),
+            "shard_dir must produce <root>/<engine>/<input[0..2]>"
+        );
+        // Callers do `create_dir_all(&shard_dir(...))` once, then write both
+        // .bin and .meta into it — the parent must match entry_bin_path's parent.
+        let bin = entry_bin_path(&root, engine, input);
+        assert_eq!(
+            Some(dir.as_path()),
+            bin.parent(),
+            "shard_dir must equal entry_bin_path(...).parent()"
+        );
+    }
+
+    #[test]
+    fn entry_meta_path_uses_meta_extension_under_same_shard_dir_as_bin() {
+        use std::path::PathBuf;
+        let root   = PathBuf::from("/some/cache");
+        let engine = "abc123def456abc123def456abc123ff";
+        let input  = "0123456789abcdef0123456789abcdef";
+        let meta = entry_meta_path(&root, engine, input);
+        assert_eq!(
+            meta,
+            PathBuf::from("/some/cache/abc123def456abc123def456abc123ff/01/0123456789abcdef0123456789abcdef.meta"),
+        );
+        // Sidecar must share the same parent directory as the .bin file so
+        // atomic-rename semantics work (both files land in the same dir).
+        let bin = entry_bin_path(&root, engine, input);
+        assert_eq!(
+            meta.parent(),
+            bin.parent(),
+            "entry_meta_path and entry_bin_path must share the same parent directory"
+        );
+    }
+
+    #[test]
+    fn entry_bin_path_uses_two_level_shard_layout() {
+        use std::path::PathBuf;
+        let root = PathBuf::from("/some/cache");
+        let engine = "abc123def456abc123def456abc123ff";
+        let input  = "0123456789abcdef0123456789abcdef";
+        let got = entry_bin_path(&root, engine, input);
+        assert_eq!(
+            got,
+            PathBuf::from("/some/cache/abc123def456abc123def456abc123ff/01/0123456789abcdef0123456789abcdef.bin"),
+            "entry_bin_path must produce <root>/<engine>/<input[0..2]>/<input>.bin"
+        );
+        // The shard directory is determined by input[0..2] = "01".
+        assert_eq!(
+            got.parent().unwrap().file_name().unwrap().to_str().unwrap(),
+            &input[..2],
+            "shard dir name must be input_hash[0..2]"
+        );
+    }
+
+    // ── sidecar tests ────────────────────────────────────────────────────────
+
+    #[test]
+    fn read_sidecar_mtime_returns_value_consistent_with_fs_metadata_modified() {
+        use std::fs::File;
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let tmpdir = tempfile::TempDir::new().expect("must create tempdir");
+        let path   = tmpdir.path().join("entry.meta");
+        write_sidecar(&path).expect("write_sidecar must succeed");
+
+        // Back-date to a well-known absolute time so we can verify the value.
+        let known_mtime = UNIX_EPOCH + Duration::from_secs(42_424_242);
+        {
+            let f = File::options().write(true).open(&path).expect("must open");
+            f.set_times(std::fs::FileTimes::new().set_modified(known_mtime))
+                .expect("must set mtime");
+        }
+
+        let got = read_sidecar_mtime(&path).expect("read_sidecar_mtime must succeed");
+        let expected = std::fs::metadata(&path)
+            .expect("must stat")
+            .modified()
+            .expect("must have mtime");
+        assert_eq!(got, expected, "read_sidecar_mtime must match fs::metadata().modified()");
+        assert_eq!(got, known_mtime, "read_sidecar_mtime must return the back-dated value");
+
+        // Non-existent path must return Err with kind NotFound.
+        let missing = tmpdir.path().join("no_such.meta");
+        let err = read_sidecar_mtime(&missing).expect_err("must fail for missing file");
+        assert_eq!(err.kind(), io::ErrorKind::NotFound,
+            "expected NotFound for missing sidecar, got {:?}", err);
+    }
+
+    #[test]
+    fn touch_sidecar_updates_mtime_to_a_strictly_later_value_without_changing_content() {
+        use std::fs::File;
+        use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+        let tmpdir    = tempfile::TempDir::new().expect("must create tempdir");
+        let path      = tmpdir.path().join("entry.meta");
+        write_sidecar(&path).expect("write_sidecar must succeed");
+
+        // Back-date the file to a known-old mtime to guarantee strictly-earlier
+        // baseline regardless of filesystem mtime resolution.
+        let old_mtime = UNIX_EPOCH + Duration::from_secs(1_000_000);
+        {
+            let f = File::options().write(true).open(&path).expect("must open");
+            f.set_times(
+                std::fs::FileTimes::new().set_modified(old_mtime),
+            ).expect("must set old mtime");
+        }
+
+        touch_sidecar(&path).expect("touch_sidecar must succeed");
+
+        let mtime_after = std::fs::metadata(&path)
+            .expect("must stat")
+            .modified()
+            .expect("must have mtime");
+        assert!(
+            mtime_after > old_mtime,
+            "touch_sidecar must advance mtime beyond the back-dated baseline"
+        );
+        // Content must be unchanged.
+        let contents = std::fs::read(&path).expect("must read");
+        assert_eq!(contents, vec![SIDECAR_MAGIC_BYTE], "content must be unchanged after touch");
+    }
+
+    #[test]
+    fn write_sidecar_creates_file_with_single_magic_byte() {
+        let tmpdir = tempfile::TempDir::new().expect("must create tempdir");
+        let meta_path = tmpdir.path().join("entry.meta");
+        write_sidecar(&meta_path).expect("write_sidecar must succeed");
+        assert!(meta_path.exists(), "sidecar file must exist after write_sidecar");
+        let contents = std::fs::read(&meta_path).expect("must read sidecar");
+        assert_eq!(
+            contents,
+            vec![SIDECAR_MAGIC_BYTE],
+            "sidecar must contain exactly one byte equal to SIDECAR_MAGIC_BYTE"
+        );
+        assert_eq!(SIDECAR_MAGIC_BYTE, 0xCAu8, "SIDECAR_MAGIC_BYTE must be 0xCA");
+    }
+
+    // ── CacheEntryHeader tests ────────────────────────────────────────────────
+
+    #[test]
+    fn cache_entry_header_verify_echoes_rejects_input_hash_mismatch_with_invalid_data() {
+        let header = CacheEntryHeader {
+            format_version:      1,
+            engine_version_hash: [0xAAu8; 32],
+            input_hash:          [0xBBu8; 32],
+            solve_time_ms:       0,
+            byte_size:           0,
+            written_at:          0,
+        };
+        let correct_engine = [0xAAu8; 32];
+        let wrong_input    = [0xDDu8; 32];
+        let err = header.verify_field_echoes(&correct_engine, &wrong_input)
+            .expect_err("input_hash mismatch must return Err");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData,
+            "expected InvalidData, got {:?}", err);
+        assert!(
+            err.to_string().contains("input_hash"),
+            "error message must contain 'input_hash', got: {err}"
+        );
+    }
+
+    #[test]
+    fn cache_entry_header_verify_echoes_rejects_engine_version_hash_mismatch_with_invalid_data() {
+        let header = CacheEntryHeader {
+            format_version:      1,
+            engine_version_hash: [0xAAu8; 32],
+            input_hash:          [0xBBu8; 32],
+            solve_time_ms:       0,
+            byte_size:           0,
+            written_at:          0,
+        };
+        let wrong_engine = [0xCCu8; 32];
+        let correct_input = [0xBBu8; 32];
+        let err = header.verify_field_echoes(&wrong_engine, &correct_input)
+            .expect_err("engine_version_hash mismatch must return Err");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData,
+            "expected InvalidData, got {:?}", err);
+        assert!(
+            err.to_string().contains("engine_version_hash"),
+            "error message must contain 'engine_version_hash', got: {err}"
+        );
+    }
+
+    #[test]
+    fn cache_entry_header_verify_echoes_returns_ok_when_both_echoes_match() {
+        let engine = [0xAAu8; 32];
+        let input  = [0xBBu8; 32];
+        let header = CacheEntryHeader {
+            format_version:      1,
+            engine_version_hash: engine,
+            input_hash:          input,
+            solve_time_ms:       0,
+            byte_size:           0,
+            written_at:          0,
+        };
+        assert!(
+            header.verify_field_echoes(&engine, &input).is_ok(),
+            "verify_field_echoes must return Ok when both echoes match"
+        );
+    }
+
+    #[test]
+    fn cache_entry_header_verify_format_version_returns_ok_for_current_version() {
+        let header = CacheEntryHeader {
+            format_version:      ENTRY_FORMAT_VERSION,
+            engine_version_hash: [0u8; 32],
+            input_hash:          [0u8; 32],
+            solve_time_ms:       0,
+            byte_size:           0,
+            written_at:          0,
+        };
+        assert!(
+            header.verify_format_version().is_ok(),
+            "verify_format_version must return Ok when format_version matches ENTRY_FORMAT_VERSION"
+        );
+    }
+
+    #[test]
+    fn cache_entry_header_verify_format_version_rejects_stale_version_with_invalid_data() {
+        let header = CacheEntryHeader {
+            format_version:      0, // stale / uninitialised sentinel
+            engine_version_hash: [0u8; 32],
+            input_hash:          [0u8; 32],
+            solve_time_ms:       0,
+            byte_size:           0,
+            written_at:          0,
+        };
+        let err = header.verify_format_version()
+            .expect_err("format_version mismatch must return Err");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData,
+            "expected InvalidData, got {:?}", err);
+        assert!(
+            err.to_string().contains("format_version"),
+            "error message must contain 'format_version', got: {err}"
+        );
+    }
+
+    #[test]
+    fn entry_format_version_const_is_one() {
+        // Pins the start-at-1 convention (0 = uninitialised / unknown).
+        // An intentional on-disk-layout bump must touch this assertion — that
+        // is the point: it forces a deliberate acknowledgement that cached bytes
+        // from the previous version are now incompatible. Mirrors the
+        // `elastic_result_format_version_is_one` pattern for body-format
+        // versioning; these two consts are intentionally distinct namespaces
+        // (entry-header layout vs. body encoding).
+        assert_eq!(ENTRY_FORMAT_VERSION, 1);
+    }
+
+    #[test]
+    fn cache_entry_header_bincode_encoding_matches_pinned_hex_literal() {
+        // Fixture uses recognisable, distinct non-zero per-field values so the
+        // LE byte order is visually verifiable at the test site.
+        // Field values:
+        //   format_version       = 0xDEAD_BEEF  (u32 LE: EF BE AD DE)
+        //   engine_version_hash  = [0xA0..=0xBF] (32 ascending bytes)
+        //   input_hash           = [0xC0..=0xDF] (32 ascending bytes)
+        //   solve_time_ms        = 0xCAFE_BABE_DEAD_BEEF (u64 LE)
+        //   byte_size            = 0x1234_5678_9ABC_DEF0 (u64 LE)
+        //   written_at           = 0x7EDC_BA98_7654_3210 (i64 LE)
+        let mut engine_hash = [0u8; 32];
+        for (i, b) in engine_hash.iter_mut().enumerate() { *b = 0xA0u8 + i as u8; }
+        let mut input_hash = [0u8; 32];
+        for (i, b) in input_hash.iter_mut().enumerate() { *b = 0xC0u8 + i as u8; }
+        let fixture = CacheEntryHeader {
+            format_version:      0xDEAD_BEEFu32,
+            engine_version_hash: engine_hash,
+            input_hash,
+            solve_time_ms:       0xCAFE_BABE_DEAD_BEEFu64,
+            byte_size:           0x1234_5678_9ABC_DEF0u64,
+            written_at:          0x7EDC_BA98_7654_3210i64,
+        };
+        let mut encoded: Vec<u8> = Vec::new();
+        fixture.write_to(&mut encoded).expect("write_to must not fail");
+
+        // Pinned bincode 1.3 fixint-LE encoding of the fixture.
+        // Layout (struct-declaration order, LE encoding):
+        //   format_version (u32, 4 bytes):              EF BE AD DE
+        //   engine_version_hash ([u8;32], 32 bytes):    A0 A1 A2 ... BF
+        //   input_hash ([u8;32], 32 bytes):              C0 C1 C2 ... DF
+        //   solve_time_ms (u64, 8 bytes):                EF BE AD DE BE BA FE CA
+        //   byte_size (u64, 8 bytes):                    F0 DE BC 9A 78 56 34 12
+        //   written_at (i64, 8 bytes):                   10 32 54 76 98 BA DC 7E
+        // Total: 92 bytes.
+        // Pinned bincode 1.3 fixint-LE encoding, observed and captured in
+        // step-6 GREEN. Any encoder drift (within or beyond the =1.3 pin)
+        // that alters the wire format will break this assertion; fix by
+        // updating the literal AND bumping ENTRY_FORMAT_VERSION in the same
+        // commit.
+        let expected: [u8; 92] = [
+            // format_version = 0xDEAD_BEEF (u32 LE, 4 bytes)
+            0xEF, 0xBE, 0xAD, 0xDE,
+            // engine_version_hash = [0xA0..=0xBF] (32 bytes)
+            0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7,
+            0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE, 0xAF,
+            0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7,
+            0xB8, 0xB9, 0xBA, 0xBB, 0xBC, 0xBD, 0xBE, 0xBF,
+            // input_hash = [0xC0..=0xDF] (32 bytes)
+            0xC0, 0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7,
+            0xC8, 0xC9, 0xCA, 0xCB, 0xCC, 0xCD, 0xCE, 0xCF,
+            0xD0, 0xD1, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7,
+            0xD8, 0xD9, 0xDA, 0xDB, 0xDC, 0xDD, 0xDE, 0xDF,
+            // solve_time_ms = 0xCAFE_BABE_DEAD_BEEF (u64 LE, 8 bytes)
+            0xEF, 0xBE, 0xAD, 0xDE, 0xBE, 0xBA, 0xFE, 0xCA,
+            // byte_size = 0x1234_5678_9ABC_DEF0 (u64 LE, 8 bytes)
+            0xF0, 0xDE, 0xBC, 0x9A, 0x78, 0x56, 0x34, 0x12,
+            // written_at = 0x7EDC_BA98_7654_3210 (i64 LE, 8 bytes)
+            0x10, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0x7E,
+        ];
+
+        assert_eq!(
+            encoded.len(),
+            ENTRY_HEADER_ENCODED_LEN,
+            "encoded length must be ENTRY_HEADER_ENCODED_LEN = {ENTRY_HEADER_ENCODED_LEN}"
+        );
+        assert_eq!(
+            encoded.as_slice(),
+            &expected[..],
+            "bincode 1.3 fixint-LE encoding of CacheEntryHeader has drifted from \
+             the pinned wire-format fixture; if intentional, bump ENTRY_FORMAT_VERSION \
+             in the SAME commit and update this literal"
+        );
+        // Round-trip: decode from the pinned literal back to the original struct.
+        let decoded = CacheEntryHeader::read_from(&mut &expected[..])
+            .expect("must decode pinned literal");
+        assert_eq!(decoded, fixture);
+    }
+
+    #[test]
+    fn cache_entry_header_round_trips_all_six_fields() {
+        // Forces `CacheEntryHeader` + `write_to`/`read_from` to exist and
+        // validates that all six fields survive a bincode round-trip.
+        // Uses non-zero, distinct-per-field values so any field aliasing
+        // or field-swap bug surfaces immediately.
+        let engine_hash = [0xABu8; 32];
+        let input_hash  = [0xCDu8; 32];
+        let original = CacheEntryHeader {
+            format_version:       1,
+            engine_version_hash:  engine_hash,
+            input_hash,
+            solve_time_ms:        1234,
+            byte_size:            5_678_901,
+            written_at:           1_700_000_000_000,
+        };
+        let mut buf: Vec<u8> = Vec::new();
+        original.write_to(&mut buf).expect("write_to must succeed");
+        let decoded = CacheEntryHeader::read_from(&mut &buf[..])
+            .expect("read_from must succeed");
+        assert_eq!(decoded.format_version,      original.format_version);
+        assert_eq!(decoded.engine_version_hash, original.engine_version_hash);
+        assert_eq!(decoded.input_hash,          original.input_hash);
+        assert_eq!(decoded.solve_time_ms,       original.solve_time_ms);
+        assert_eq!(decoded.byte_size,           original.byte_size);
+        assert_eq!(decoded.written_at,          original.written_at);
     }
 }

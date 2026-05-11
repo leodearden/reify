@@ -64,6 +64,9 @@ pub struct ZzIndicator {
 ///     for P1 tets, barycentric coords at the centroid are (1/4,…,1/4), so
 ///     σ̄_e* = (1/N) Σ_{n ∈ conn(e)} σ_n*.
 /// (d) Per-element: `η_e = √(V_e · energy_density_voigt(σ_e − σ̄_e*, D⁻¹))`.
+///     Step (d) uses 1-point Gauss (centroid) quadrature; the integrand is
+///     quadratic, so this is an O(h) approximation — standard for Z-Z over
+///     P1 tets and consistent with PRD §13's allowance for either scheme.
 /// (e) Global: `η_global = √(Σ η_e² / U_solution)` where
 ///     `U_solution = Σ_e V_e · energy_density_voigt(σ_e, D⁻¹)`.
 ///
@@ -106,9 +109,11 @@ pub fn compute_zz_indicator(
         let n = el.connectivity.len();
         // Centroid interpolation assumes uniform barycentric coords (1/N, …, 1/N),
         // which is only correct for P1 tets (N=4). Guard against silent misuse
-        // by callers passing P2 or higher-order connectivity.
-        debug_assert_eq!(
-            n, 4,
+        // — including in release builds — by callers passing P2 or higher-order
+        // connectivity.
+        assert_eq!(
+            n,
+            4,
             "compute_zz_indicator currently supports P1 tets only; \
              got connectivity of length {n}",
         );
@@ -566,6 +571,42 @@ mod tests {
             "hot element must dominate cold1: η_hot={eta_hot} vs {threshold}×η_cold1={}",
             threshold * eta_cold1,
         );
+    }
+
+    /// Guard test: `compute_zz_indicator` must panic in **all** build modes
+    /// when called with P2-length (10-node) connectivity.
+    ///
+    /// # TDD red→green
+    ///
+    /// **RED** (step-1, before the fix): in `cargo test --release` the existing
+    /// `debug_assert_eq!` is compiled out, so no panic fires and this
+    /// `#[should_panic]` test fails — the release leg of the verify pipeline
+    /// catches the regression.
+    ///
+    /// **GREEN** (step-2, after promoting to `assert_eq!`): both debug and
+    /// release modes panic, and the test passes in both modes.
+    #[test]
+    #[should_panic(expected = "P1 tets only")]
+    fn compute_zz_indicator_panics_when_called_with_p2_length_connectivity() {
+        let mat = dimensionless_steel_like();
+        // P2 tet has 10 nodes; all pointing to node-0 keeps recover_nodal_stress_p1
+        // from OOB-panicking for an unrelated reason.
+        let conn_p2 = [0_usize; 10];
+        let sigma = [[1.0_f64, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]];
+        let elements = [StressElement {
+            connectivity: &conn_p2,
+            stress: sigma,
+            volume: 1.0 / 6.0,
+        }];
+        let mesh = VolumeMesh {
+            vertices: vec![0.0_f32; 30], // 10 nodes × 3 coords
+            tet_indices: vec![0; 10],
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+        // Expect a panic containing "P1 tets only" — substring present in both
+        // the existing debug_assert message and the new assert message.
+        compute_zz_indicator(&elements, &mesh, &mat);
     }
 
     /// Per-element indicator on a two-tet fan with σ_A ≠ σ_B.

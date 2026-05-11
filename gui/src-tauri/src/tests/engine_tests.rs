@@ -14,7 +14,7 @@ use reify_types::{DiagnosticInfo, SourceLocationInfo, ValueCellId};
 
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
 
-use crate::engine::{EngineSession, build_template_node, module_key, parse_value_string};
+use crate::engine::{CompileFailure, CompileFailureKind, EngineSession, build_template_node, module_key, parse_value_string};
 use crate::types::EntityTreeNode;
 
 #[test]
@@ -6187,7 +6187,7 @@ fn load_file_with_std_import_does_not_double_seed_stdlib() {
 ///
 /// Pins step-3/step-4 of the task-3351 plan: `update_source`'s single-file
 /// branch (when `self.file_path` is `None`) must populate
-/// `last_compile_diagnostics` on failure, just like `load_from_source`.
+/// `compile_failure` on failure, just like `load_from_source`.
 #[test]
 fn build_gui_state_surfaces_parse_error_after_failed_update_source_on_fresh_session() {
     let checker = SimpleConstraintChecker;
@@ -6237,7 +6237,7 @@ fn build_gui_state_surfaces_parse_error_after_failed_update_source_on_fresh_sess
 ///
 /// Pins step-1 of the task-3351 plan: the early-return branch of
 /// `build_gui_state` (when `compiled` is `None`) must emit the stored
-/// `last_compile_diagnostics` rather than `Vec::new()`.
+/// `compile_failure.diags` rather than `Vec::new()`.
 #[test]
 fn build_gui_state_surfaces_parse_error_after_failed_load_from_source() {
     let checker = SimpleConstraintChecker;
@@ -6288,27 +6288,32 @@ fn build_gui_state_surfaces_parse_error_after_failed_load_from_source() {
 }
 
 /// After a successful `load_from_source`, `commit_state` must clear
-/// `last_compile_diagnostics` so stale failure diagnostics are not surfaced
-/// after a recovery.
+/// `compile_failure` so stale failure diagnostics are not surfaced after a recovery.
 ///
-/// Pins step-7/step-8 of the task-3351 plan: `commit_state` must call
-/// `self.last_compile_diagnostics.clear()` and the `last_compile_diagnostics_for_test`
-/// accessor must expose the field for test introspection.
+/// Pins step-7/step-8 of the task-3351 plan: `commit_state` must clear the stored
+/// compile failure and the `compile_failure_for_test` accessor must expose the field
+/// for test introspection.
+///
+/// Disjointness (cold-start vs live-edit) is now a type-level guarantee via
+/// `Option<CompileFailure>` rather than a runtime `debug_assert!` on separate fields.
 #[test]
-fn commit_state_clears_last_compile_diagnostics_on_successful_load() {
+fn commit_state_clears_cold_start_compile_failure_on_successful_load() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
 
-    // First, induce a parse error so last_compile_diagnostics is populated.
+    // First, induce a parse error so compile_failure is populated (ColdStart kind).
     let _ = session
         .load_from_source("this is not valid reify syntax {{{}}}", "bad")
         .expect_err("invalid source should return Err");
 
-    // The accessor must reflect the stored failure diagnostics.
+    // The accessor must reflect the stored failure diagnostics with ColdStart kind.
     assert!(
-        !session.last_compile_diagnostics_for_test().is_empty(),
-        "last_compile_diagnostics should be non-empty after a failed load"
+        matches!(
+            session.compile_failure_for_test(),
+            Some(CompileFailure { kind: CompileFailureKind::ColdStart, diags }) if !diags.is_empty()
+        ),
+        "compile_failure should be Some(ColdStart) with non-empty diags after a failed load"
     );
 
     // Now load a valid source — commit_state must clear the field.
@@ -6317,20 +6322,23 @@ fn commit_state_clears_last_compile_diagnostics_on_successful_load() {
         .expect("valid source should succeed");
 
     assert!(
-        session.last_compile_diagnostics_for_test().is_empty(),
-        "last_compile_diagnostics should be cleared after a successful load"
+        session.compile_failure_for_test().is_none(),
+        "compile_failure should be None after a successful load"
     );
 }
 
 /// After a successful recovery (valid `load_from_source` after a prior failed live
-/// edit), `commit_state` must clear `live_compile_diagnostics` so stale live-failure
+/// edit), `commit_state` must clear `compile_failure` so stale live-failure
 /// diagnostics are not surfaced after recovery.
 ///
-/// Pins step-3/step-4 of the task-3386 plan: `commit_state` must call
-/// `self.live_compile_diagnostics.clear()` and the `live_compile_diagnostics_for_test`
-/// accessor must expose the field for test introspection.
+/// Pins step-3/step-4 of the task-3386 plan: `commit_state` must clear the stored
+/// compile failure and the `compile_failure_for_test` accessor must expose the field
+/// for test introspection.
+///
+/// Disjointness (cold-start vs live-edit) is now a type-level guarantee via
+/// `Option<CompileFailure>` rather than a runtime `debug_assert!` on separate fields.
 #[test]
-fn commit_state_clears_live_compile_diagnostics_on_successful_recovery() {
+fn commit_state_clears_live_edit_compile_failure_on_successful_recovery() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
@@ -6340,22 +6348,82 @@ fn commit_state_clears_live_compile_diagnostics_on_successful_recovery() {
         .load_from_source(bracket_source(), "bracket")
         .expect("valid source should load successfully");
 
-    // Trigger a failed live edit to populate live_compile_diagnostics.
+    // Trigger a failed live edit to populate compile_failure (LiveEdit kind).
     let _ = session.load_from_source("this is not valid reify syntax {{{}}}", "bad");
 
     assert!(
-        !session.live_compile_diagnostics_for_test().is_empty(),
-        "live_compile_diagnostics should be non-empty after a failed live edit"
+        matches!(
+            session.compile_failure_for_test(),
+            Some(CompileFailure { kind: CompileFailureKind::LiveEdit, diags }) if !diags.is_empty()
+        ),
+        "compile_failure should be Some(LiveEdit) with non-empty diags after a failed live edit"
     );
 
-    // Recover with a successful load — commit_state must clear live_compile_diagnostics.
+    // Recover with a successful load — commit_state must clear compile_failure.
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("valid source should load successfully after recovery");
 
     assert!(
-        session.live_compile_diagnostics_for_test().is_empty(),
-        "live_compile_diagnostics should be cleared after a successful recovery"
+        session.compile_failure_for_test().is_none(),
+        "compile_failure should be None after a successful recovery"
+    );
+}
+
+/// After a cold-start failure the session must record `CompileFailure { kind: ColdStart, .. }`,
+/// and after a subsequent successful load it must clear to `None`.  After a live-edit failure
+/// (compiled is Some) it must record `CompileFailure { kind: LiveEdit, .. }`.
+///
+/// Pins the new `compile_failure: Option<CompileFailure>` representation introduced in
+/// task 3414: both kind discriminants are exercised from a single session lifecycle, and
+/// the `compile_failure_for_test` accessor exposes the field for assertion without
+/// calling `build_gui_state`.
+#[test]
+fn compile_failure_records_cold_start_then_live_edit_kinds() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // 1. Cold-start failure: compiled is None at failure time → ColdStart kind.
+    let _ = session.load_from_source("this is not valid reify syntax {{{}}}", "bad");
+
+    let failure = session
+        .compile_failure_for_test()
+        .expect("compile_failure must be Some after a failed cold-start load");
+    assert!(
+        matches!(failure.kind, CompileFailureKind::ColdStart),
+        "cold-start failure must record kind = ColdStart; got: {:?}",
+        failure.kind
+    );
+    assert!(
+        !failure.diags.is_empty(),
+        "cold-start failure must record non-empty diags"
+    );
+
+    // 2. Successful recovery clears compile_failure → None.
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("valid source should load successfully");
+
+    assert!(
+        session.compile_failure_for_test().is_none(),
+        "compile_failure must be None after a successful recovery"
+    );
+
+    // 3. Live-edit failure: compiled is Some at failure time → LiveEdit kind.
+    let _ = session.load_from_source("broken {{{}}}", "bad2");
+
+    let failure = session
+        .compile_failure_for_test()
+        .expect("compile_failure must be Some after a failed live-edit load");
+    assert!(
+        matches!(failure.kind, CompileFailureKind::LiveEdit),
+        "live-edit failure must record kind = LiveEdit; got: {:?}",
+        failure.kind
+    );
+    assert!(
+        !failure.diags.is_empty(),
+        "live-edit failure must record non-empty diags"
     );
 }
 
@@ -6390,7 +6458,7 @@ fn build_gui_state_returns_empty_tessellation_diagnostics_when_no_module_loaded(
 ///
 /// Pins step-5/step-6 of the task-3351 plan: `load_file` routes through
 /// `compile_entry_with_imports`, which must also populate
-/// `last_compile_diagnostics` on failure once refactored in step-6.
+/// `compile_failure` on failure once refactored in step-6.
 #[test]
 fn build_gui_state_surfaces_parse_error_after_failed_load_file() {
     let dir = tempfile::tempdir().expect("tempdir should be created");
@@ -6442,10 +6510,13 @@ fn build_gui_state_surfaces_parse_error_after_failed_load_file() {
 /// in `build_gui_state`'s `compile_diagnostics`.
 ///
 /// Pins the new behavior introduced in task 3386: when `compiled is Some` at
-/// failure time, the failure diagnostics are stored in `live_compile_diagnostics`
-/// (not `last_compile_diagnostics`), and `build_gui_state`'s non-early-return
-/// branch appends them so the user sees the live error alongside any warnings
+/// failure time, the failure diagnostics are stored as `CompileFailureKind::LiveEdit`
+/// and `build_gui_state`'s append branch surfaces them alongside any warnings
 /// from the prior good compile.
+///
+/// Disjointness between cold-start and live-edit failures is now a type-level
+/// guarantee via `Option<CompileFailure>` — only one failure can be stored at a time,
+/// so the separate "cold-start field is empty" assertion is no longer needed.
 ///
 /// Replaces `last_compile_diagnostics_not_overwritten_when_prior_compile_exists`
 /// (task 3351 pinning test) which pinned the opposite (now-removed) behavior.
@@ -6461,25 +6532,22 @@ fn build_gui_state_surfaces_live_compile_failure_after_failed_load_from_source_w
         .load_from_source(bracket_source(), "bracket")
         .expect("valid source should load successfully");
 
-    // last_compile_diagnostics must remain empty (cold-start field untouched).
+    // compile_failure must be None after a successful load.
     assert!(
-        session.last_compile_diagnostics_for_test().is_empty(),
-        "last_compile_diagnostics should be empty after a successful load"
+        session.compile_failure_for_test().is_none(),
+        "compile_failure should be None after a successful load"
     );
 
-    // Now fail a subsequent load — compiled is Some, so the new path stores
-    // failure diagnostics in live_compile_diagnostics (not last_compile_diagnostics).
+    // Now fail a subsequent load — compiled is Some, so the failure is LiveEdit kind.
     let _ = session.load_from_source("this is not valid reify syntax {{{}}}", "bad");
 
-    // live_compile_diagnostics must have been populated by the failure.
+    // compile_failure must be Some(LiveEdit) — disjointness is a type-level guarantee.
     assert!(
-        !session.live_compile_diagnostics_for_test().is_empty(),
-        "live_compile_diagnostics should be non-empty after a failed load_from_source with prior compile"
-    );
-    // last_compile_diagnostics must remain empty — this field is cold-start only.
-    assert!(
-        session.last_compile_diagnostics_for_test().is_empty(),
-        "last_compile_diagnostics must not be touched when compiled is already Some"
+        matches!(
+            session.compile_failure_for_test(),
+            Some(CompileFailure { kind: CompileFailureKind::LiveEdit, diags }) if !diags.is_empty()
+        ),
+        "compile_failure should be Some(LiveEdit) with non-empty diags after a failed load_from_source with prior compile"
     );
 
     // build_gui_state must surface the live failure diagnostics.
@@ -6513,7 +6581,7 @@ fn build_gui_state_surfaces_live_compile_failure_after_failed_load_from_source_w
 ///
 /// Exercises `update_source`'s single-file branch (`compile_single_file_with_stdlib`).
 /// Pins the invariant introduced in task 3386: live compile failures on the single-file
-/// path are routed to `live_compile_diagnostics` and surfaced via `build_gui_state`.
+/// path are stored as `CompileFailureKind::LiveEdit` and surfaced via `build_gui_state`.
 #[test]
 fn build_gui_state_surfaces_live_compile_failure_after_failed_update_source_single_file_with_prior_compile()
  {
@@ -6536,10 +6604,13 @@ fn build_gui_state_surfaces_live_compile_failure_after_failed_update_source_sing
         "error string should mention Parse errors; got: {err}"
     );
 
-    // live_compile_diagnostics must have been populated by the failure.
+    // compile_failure must be Some(LiveEdit) after the failure.
     assert!(
-        !session.live_compile_diagnostics_for_test().is_empty(),
-        "live_compile_diagnostics should be non-empty after a failed update_source (single-file)"
+        matches!(
+            session.compile_failure_for_test(),
+            Some(CompileFailure { kind: CompileFailureKind::LiveEdit, diags }) if !diags.is_empty()
+        ),
+        "compile_failure should be Some(LiveEdit) with non-empty diags after a failed update_source (single-file)"
     );
 
     // build_gui_state must surface the live failure diagnostics.
@@ -6574,7 +6645,7 @@ fn build_gui_state_surfaces_live_compile_failure_after_failed_update_source_sing
 ///
 /// Exercises `update_source`'s multi-file branch (`compile_entry_with_imports`).
 /// Pins the invariant introduced in task 3386: live compile failures on the multi-file
-/// path are routed to `live_compile_diagnostics` and surfaced via `build_gui_state`.
+/// path are stored as `CompileFailureKind::LiveEdit` and surfaced via `build_gui_state`.
 #[test]
 fn build_gui_state_surfaces_live_compile_failure_after_failed_update_source_multi_file_with_prior_compile()
  {
@@ -6601,10 +6672,13 @@ fn build_gui_state_surfaces_live_compile_failure_after_failed_update_source_mult
         "error string should mention parse/compile errors; got: {err}"
     );
 
-    // live_compile_diagnostics must have been populated by the failure.
+    // compile_failure must be Some(LiveEdit) after the failure.
     assert!(
-        !session.live_compile_diagnostics_for_test().is_empty(),
-        "live_compile_diagnostics should be non-empty after a failed update_source (multi-file)"
+        matches!(
+            session.compile_failure_for_test(),
+            Some(CompileFailure { kind: CompileFailureKind::LiveEdit, diags }) if !diags.is_empty()
+        ),
+        "compile_failure should be Some(LiveEdit) with non-empty diags after a failed update_source (multi-file)"
     );
 
     // build_gui_state must surface the live failure diagnostics.
@@ -6637,7 +6711,7 @@ fn build_gui_state_surfaces_live_compile_failure_after_failed_update_source_mult
 ///
 /// Exercises `load_file`'s failure path (`compile_entry_with_imports`).
 /// Pins the invariant introduced in task 3386: live compile failures via `load_file`
-/// are routed to `live_compile_diagnostics` and surfaced via `build_gui_state`.
+/// are stored as `CompileFailureKind::LiveEdit` and surfaced via `build_gui_state`.
 #[test]
 fn build_gui_state_surfaces_live_compile_failure_after_failed_load_file_with_prior_compile() {
     let dir = tempfile::tempdir().expect("tempdir should be created");
@@ -6664,10 +6738,13 @@ fn build_gui_state_surfaces_live_compile_failure_after_failed_load_file_with_pri
         "error string should mention parse/compile errors; got: {err}"
     );
 
-    // live_compile_diagnostics must have been populated by the failure.
+    // compile_failure must be Some(LiveEdit) after the failure.
     assert!(
-        !session.live_compile_diagnostics_for_test().is_empty(),
-        "live_compile_diagnostics should be non-empty after a failed load_file with prior compile"
+        matches!(
+            session.compile_failure_for_test(),
+            Some(CompileFailure { kind: CompileFailureKind::LiveEdit, diags }) if !diags.is_empty()
+        ),
+        "compile_failure should be Some(LiveEdit) with non-empty diags after a failed load_file with prior compile"
     );
 
     // build_gui_state must surface the live failure diagnostics.
@@ -6697,13 +6774,12 @@ fn build_gui_state_surfaces_live_compile_failure_after_failed_load_file_with_pri
 /// Pins the documented append-order guarantee: when a live-edit failure occurs while the
 /// prior good compile had warnings, `build_gui_state` surfaces both the prior warnings
 /// **and** the live error in `compile_diagnostics`, with warnings first (from
-/// `get_diagnostics()`) and the live error appended afterwards (from
-/// `live_compile_diagnostics`).
+/// `get_diagnostics()`) and the live error appended afterwards (from the `LiveEdit`
+/// `compile_failure`).
 ///
 /// This test verifies the design decision recorded in task 3386: "appending rather than
-/// replacing preserves warnings/info from the last good state; Error entries from
-/// `live_compile_diagnostics` follow them, so frontends sorting by severity will surface
-/// errors first."
+/// replacing preserves warnings/info from the last good state; Error entries from the
+/// live-edit failure follow them, so frontends sorting by severity will surface errors first."
 ///
 /// Uses `inject_diagnostic_for_test` to plant a synthetic Warning into the compiled module
 /// (without needing a real source that emits warnings) before triggering the live failure.
@@ -6723,13 +6799,16 @@ fn build_gui_state_surfaces_prior_warning_and_live_error_together_in_append_orde
     // Plant a synthetic Warning into the compiled module so get_diagnostics() returns it.
     session.inject_diagnostic_for_test(Diagnostic::warning("pre-existing warning from good state"));
 
-    // Trigger a live-edit failure (compiled is Some, so live_compile_diagnostics gets the errors).
+    // Trigger a live-edit failure (compiled is Some, so compile_failure gets LiveEdit kind).
     let _ = session.load_from_source("this is not valid reify syntax {{{}}}", "bad");
 
-    // live_compile_diagnostics must be non-empty from the failure.
+    // compile_failure must be Some(LiveEdit) from the failure.
     assert!(
-        !session.live_compile_diagnostics_for_test().is_empty(),
-        "live_compile_diagnostics should be non-empty after failed live edit"
+        matches!(
+            session.compile_failure_for_test(),
+            Some(CompileFailure { kind: CompileFailureKind::LiveEdit, diags }) if !diags.is_empty()
+        ),
+        "compile_failure should be Some(LiveEdit) with non-empty diags after failed live edit"
     );
 
     // build_gui_state must surface both the prior warning and the live error.
@@ -6765,9 +6844,9 @@ fn build_gui_state_surfaces_prior_warning_and_live_error_together_in_append_orde
         .iter()
         .position(|d| d.severity == "Error");
     assert!(
-        first_warning < first_error,
+        first_warning.unwrap() < first_error.unwrap(),
         "Warning entries (from prior good compile) must precede Error entries \
-         (from live_compile_diagnostics append); got order: {:?}",
+         (from LiveEdit compile_failure append); got order: {:?}",
         severities
     );
 }
