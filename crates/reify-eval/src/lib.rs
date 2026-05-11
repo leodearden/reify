@@ -5,6 +5,7 @@
 #![allow(clippy::mutable_key_type)]
 
 pub mod cache;
+pub mod compute_cache_key;
 mod concurrent;
 pub use concurrent::{ConcurrentEditResult, ConcurrentEditSetup, ConcurrentNodeResult};
 pub mod demand;
