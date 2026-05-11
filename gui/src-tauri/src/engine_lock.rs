@@ -27,6 +27,11 @@ where
         .lock()
         .map_err(|e| format!("engine lock poisoned: {e}"))?;
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&mut guard)));
+    // Explicit drop BEFORE the match: releases the lock as soon as possible
+    // and makes the no-poison guarantee load-bearing and obvious. After
+    // catch_unwind returns, thread::panicking() is false, so MutexGuard::drop
+    // does NOT set the poison flag regardless of whether f panicked.
+    drop(guard);
     match result {
         Ok(v) => Ok(v),
         Err(_) => Err("panic in engine: <caught>".into()),
