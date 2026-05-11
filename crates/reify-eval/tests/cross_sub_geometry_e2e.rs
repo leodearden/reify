@@ -132,6 +132,133 @@ pub structure Outer {
     );
 }
 
+/// Inner has `param body : Solid = box(...)`; Outer has `sub inner = Inner()` and
+/// `placed = translate(self.inner.body, 10mm, 0mm, 0mm)`.
+///
+/// This is the `param body : Solid` variant of the happy-path (compare
+/// `cross_sub_translate_resolves_child_body_handle` which uses `let body`).
+/// Both forms lower to the same `RealizationDecl` at compile time and must
+/// produce the same seeded `named_steps["inner.body"]` entry at eval time.
+///
+/// Asserts (a) no Error-severity diagnostics at compile or build time,
+/// (b) no "unresolvable GeomRef::Sub" error, (c) the kernel records a Box
+/// (Inner.body) and a Translate whose target == the Box's result handle,
+/// (d) `geometry_output.is_some()`.
+///
+/// Regression guard for task 3441 step-1 (flipped from diagnostic to
+/// working-path): if eval-side `named_steps` seeding breaks for the
+/// `param body : Solid` form while compile-side lowering continues to
+/// succeed, this test fails while the compile-only diagnostic tests do not.
+#[test]
+fn cross_sub_translate_param_body_solid_resolves_child_handle() {
+    let source = r#"pub structure Inner {
+    param body : Solid = box(10mm, 20mm, 30mm)
+}
+pub structure Outer {
+    sub inner = Inner()
+    let placed = translate(self.inner.body, 10mm, 0mm, 0mm)
+}"#;
+    let compiled = compile_source(source);
+
+    // (a) No compile-time Error diagnostics.
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "expected no compile-time Error diagnostics; got: {:?}",
+        compile_errors
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    // (a) No build-time Error diagnostics.
+    let build_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        build_errors.is_empty(),
+        "expected no Error diagnostics from build; got: {:?}",
+        build_errors
+            .iter()
+            .map(|d| format!("[{:?}] {}", d.severity, d.message))
+            .collect::<Vec<_>>()
+    );
+
+    // (b) No "unresolvable GeomRef::Sub" — named_steps seeded for param-body form.
+    let unresolvable: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("unresolvable GeomRef::Sub"))
+        .collect();
+    assert!(
+        unresolvable.is_empty(),
+        "expected no 'unresolvable GeomRef::Sub' diagnostic; got: {:?}",
+        unresolvable
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    // (c) Kernel recorded a Box (Inner.body) and a Translate targeting it.
+    let recorded = ops_ref.lock().unwrap().clone();
+    assert!(
+        recorded.len() >= 2,
+        "expected at least 2 recorded kernel ops (Box for Inner.body + Translate \
+         for Outer.placed), got {}: {:?}",
+        recorded.len(),
+        recorded
+            .iter()
+            .map(|r| format!("{:?}", r.op))
+            .collect::<Vec<_>>()
+    );
+
+    let box_rec = recorded
+        .iter()
+        .find(|rec| matches!(rec.op, GeometryOp::Box { .. }))
+        .expect("expected a Box op recorded for Inner.body (param body : Solid)");
+    let box_handle = box_rec.result_handle;
+
+    let translate_rec = recorded
+        .iter()
+        .find(|rec| matches!(rec.op, GeometryOp::Translate { .. }))
+        .expect("expected a Translate op recorded for Outer.placed");
+
+    match translate_rec.op {
+        GeometryOp::Translate { target, .. } => {
+            assert_eq!(
+                target, box_handle,
+                "Translate target should be Inner.body's Box handle ({:?}); got {:?}",
+                box_handle, target
+            );
+        }
+        ref other => panic!("expected Translate op, got {:?}", other),
+    }
+
+    // (d) Build produces a geometry output.
+    assert!(
+        result.geometry_output.is_some(),
+        "expected geometry_output to be Some, got None; diagnostics: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| format!("[{:?}] {}", d.severity, d.message))
+            .collect::<Vec<_>>()
+    );
+}
+
 /// A has `body = box(...)`, B has `body = cylinder(...)`, C has
 /// `sub a = A()`, `sub b = B()`, `combined = union(self.a.body, self.b.body)`.
 ///

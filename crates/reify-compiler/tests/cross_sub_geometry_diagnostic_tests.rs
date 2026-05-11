@@ -24,6 +24,27 @@
 //!    diagnostic — the working path is gated on
 //!    `sub_realization_names[sub].contains(member)`.
 //!
+//! ## Scope boundary — compile-side only
+//!
+//! Tests in this file exercise only the **compiler** (parse → compile).  They
+//! assert that the correct `GeomRef::Sub("<sub>.<member>")` IR is emitted and
+//! that no spurious diagnostics fire, but they do NOT run the evaluator or
+//! geometry kernel.
+//!
+//! **Runtime resolvability** (i.e. that the parent template's `named_steps` is
+//! actually seeded with the compound key so `GeomRef::Sub` resolves at eval
+//! time) is owned by:
+//!
+//! - `cross_sub_geometry_lowering_tests.rs` — integration-level structural
+//!   assertions on the compiled IR (also compile-only, but deeper shape checks).
+//! - `crates/reify-eval/tests/cross_sub_geometry_e2e.rs` — full
+//!   source-to-kernel pipeline tests that verify `named_steps` seeding and
+//!   confirm the kernel records the expected ops.  The happy-path cases for
+//!   both the `let body` form and the `param body : Solid` form are covered
+//!   there.  A regression that broke eval-side seeding while leaving
+//!   compile-side lowering intact would be caught by those e2e tests, not
+//!   by this file.
+//!
 //! ## Historical step numbering
 //!
 //! The original task-3397 diagnostic was added by steps 1-11 of that task.
