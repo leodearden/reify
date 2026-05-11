@@ -1,19 +1,10 @@
-use std::sync::{Arc, Mutex};
-
-use reify_constraints::SimpleConstraintChecker;
-use reify_test_support::{MockGeometryKernel, bracket_source};
+use std::sync::Arc;
 
 use crate::engine::EngineSession;
 use crate::engine_lock;
 
-fn make_engine() -> Arc<Mutex<EngineSession>> {
-    let checker = SimpleConstraintChecker;
-    let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
-    session
-        .load_from_source(bracket_source(), "bracket")
-        .expect("initial load should succeed");
-    Arc::new(Mutex::new(session))
+fn make_engine() -> Arc<std::sync::Mutex<EngineSession>> {
+    super::make_test_engine()
 }
 
 #[test]
@@ -117,11 +108,14 @@ fn panic_payload_string_appears_in_error_message() {
 }
 
 #[test]
-fn panic_payload_str_literal_appears_in_error_message() {
+fn panic_payload_owned_string_appears_in_error_message() {
+    // Covers the String downcast branch in panic_message:
+    // panic!("{}", x) produces a String payload (not &'static str).
     let engine = make_engine();
+    let marker = "string-arm-marker".to_string();
     let result =
         engine_lock::with_engine_lock(&engine, |_s: &mut EngineSession| -> bool {
-            panic!("literal-only-marker")
+            panic!("{}", marker)
         });
     let err = result.expect_err("panicking closure must return Err");
     assert!(
@@ -129,7 +123,27 @@ fn panic_payload_str_literal_appears_in_error_message() {
         "error must contain 'panic in engine', got: {err:?}"
     );
     assert!(
-        err.contains("literal-only-marker"),
-        "error must contain the panic message 'literal-only-marker', got: {err:?}"
+        err.contains("string-arm-marker"),
+        "error must contain the formatted panic message, got: {err:?}"
+    );
+}
+
+#[test]
+fn panic_payload_non_string_falls_back_to_placeholder() {
+    // Covers the fallback branch in panic_message:
+    // panic_any(42_i32) produces an i32 payload that neither downcast branch handles.
+    let engine = make_engine();
+    let result =
+        engine_lock::with_engine_lock(&engine, |_s: &mut EngineSession| -> bool {
+            std::panic::panic_any(42_i32)
+        });
+    let err = result.expect_err("panicking closure must return Err");
+    assert!(
+        err.contains("panic in engine"),
+        "error must contain 'panic in engine', got: {err:?}"
+    );
+    assert!(
+        err.contains("<non-string payload>"),
+        "error must contain fallback text for non-string payloads, got: {err:?}"
     );
 }
