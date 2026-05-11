@@ -205,17 +205,54 @@ const DEGENERATE_TOL: f64 = 1e-12;
 /// Validate sweep inputs before any allocation.
 ///
 /// Returns `Ok(unit_axis)` — the normalised axis vector — or a `SweepError`.
+///
+/// # Debug-only contract checks
+///
+/// In debug builds this function also enforces the `Mesh2d` buffer-layout invariants
+/// documented in `crate::Mesh2d` (see `mesher.rs:46-61`):
+///
+/// - `vertices.len()` must be a multiple of 2 (stride-2 `[x, y, …]` buffer).
+/// - `indices.len()` must be a multiple of 3 (Triangle) or 4 (Quad).
+///
+/// Violations trigger a `debug_assert!` panic — not a `SweepError` — because a
+/// malformed `Mesh2d` is an upstream construction bug, not a runtime input error.
+/// The asserts are elided in release builds (zero hot-path cost), consistent with
+/// the pattern used in `shell_boundary.rs`, `tet.rs`, `progressive.rs`, etc.
 fn validate_sweep_inputs(
     mesh2d: &crate::Mesh2d,
     params: &SweepParams,
     layers: usize,
 ) -> Result<[f64; 3], SweepError> {
-    // 1. Empty mesh check.
+    // 1. Empty mesh check (with debug-only stride invariant assertions per variant).
     let (verts_empty, faces_empty) = match mesh2d {
         crate::Mesh2d::Triangle { vertices, indices } => {
+            debug_assert!(
+                vertices.len() % 2 == 0,
+                "Mesh2d::Triangle vertices.len() ({}) must be a multiple of 2 \
+                 (stride-2 [x,y,...] buffer)",
+                vertices.len(),
+            );
+            debug_assert!(
+                indices.len() % 3 == 0,
+                "Mesh2d::Triangle indices.len() ({}) must be a multiple of 3 \
+                 (stride-3 face list)",
+                indices.len(),
+            );
             (vertices.is_empty(), indices.is_empty())
         }
         crate::Mesh2d::Quad { vertices, indices } => {
+            debug_assert!(
+                vertices.len() % 2 == 0,
+                "Mesh2d::Quad vertices.len() ({}) must be a multiple of 2 \
+                 (stride-2 [x,y,...] buffer)",
+                vertices.len(),
+            );
+            debug_assert!(
+                indices.len() % 4 == 0,
+                "Mesh2d::Quad indices.len() ({}) must be a multiple of 4 \
+                 (stride-4 face list)",
+                indices.len(),
+            );
             (vertices.is_empty(), indices.is_empty())
         }
     };
