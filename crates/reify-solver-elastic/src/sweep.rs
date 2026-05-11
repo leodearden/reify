@@ -196,4 +196,35 @@ mod tests {
         assert_eq!(w.min_layers, 2);
         assert!(w.message.contains("test"));
     }
+
+    // step-3: derive_layer_count unit tests
+    // Contract: round(sweep_distance / mesh_size).max(min_layers)
+    // with defensive handling of zero, negative, or non-finite inputs.
+
+    #[test]
+    fn derive_layer_count_basic_cases() {
+        // (a) round(1.0/0.5) = round(2.0) = 2 → max(2, 2) = 2
+        assert_eq!(derive_layer_count(1.0, 0.5, 2), 2);
+        // (b) round(2.5/1.0) = round(2.5); Rust rounds half-values to nearest-even
+        //     (2.5_f64.round() == 3), so result is max(3, 2) = 3
+        assert_eq!(derive_layer_count(2.5, 1.0, 2), 3);
+        // (c) round(0.1/1.0) = round(0.1) = 0 → max(0, 2) = 2
+        assert_eq!(derive_layer_count(0.1, 1.0, 2), 2);
+        // (d) round(10.0/1.0) = 10 → max(10, 2) = 10
+        assert_eq!(derive_layer_count(10.0, 1.0, 2), 10);
+    }
+
+    #[test]
+    fn derive_layer_count_defensive_cases() {
+        // (e) mesh_size = 0 → fall through to min_layers
+        assert_eq!(derive_layer_count(1.0, 0.0, 2), 2);
+        // (f) negative distance → min_layers
+        assert_eq!(derive_layer_count(-1.0, 1.0, 2), 2);
+        // (g) NaN distance → min_layers
+        assert_eq!(derive_layer_count(f64::NAN, 1.0, 2), 2);
+        // mesh_size = NaN → min_layers
+        assert_eq!(derive_layer_count(1.0, f64::NAN, 2), 2);
+        // negative mesh_size → min_layers
+        assert_eq!(derive_layer_count(1.0, -1.0, 2), 2);
+    }
 }
