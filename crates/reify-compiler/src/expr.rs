@@ -173,11 +173,13 @@ fn make_cross_sub_geometry_error(
 /// together in `entity.rs` (regular Sub pre-pass and match-arm Sub pre-pass)
 /// inside the same `if let Some(child_tmpl) = find_template(...)` guard, with
 /// `sub_component_types` written unconditionally before the template lookup.
-/// An `.expect(...)` on the `sub_component_types.get(sub_name)` lookup below
-/// enforces the invariant in **all** build modes (debug and release; task-3431)
-/// so a future code path that populates `sub_realization_names` without
-/// `sub_component_types` panics loudly rather than silently producing a
-/// diagnostic that names the sub instance instead of its child structure.
+/// A `.unwrap_or_else(|| panic!("…sub '{}' …", sub_name))` on the
+/// `sub_component_types.get(sub_name)` lookup below enforces the invariant in
+/// **all** build modes (debug and release; task-3431) and names the offending
+/// sub instance in the panic message (task-3439) so a future code path that
+/// populates `sub_realization_names` without `sub_component_types` panics
+/// loudly rather than silently producing a diagnostic that names the sub
+/// instance instead of its child structure.
 fn try_emit_cross_sub_geometry(
     scope: &CompilationScope<'_>,
     sub_name: &str,
@@ -193,7 +195,11 @@ fn try_emit_cross_sub_geometry(
         let child_struct = scope
             .sub_component_types
             .get(sub_name)
-            .expect("sub_realization_names ⊂ sub_component_types invariant (task-3420; release-enforced task-3431)")
+            .unwrap_or_else(|| panic!(
+                "sub_realization_names ⊂ sub_component_types invariant (task-3420; release-enforced task-3431): \
+                 sub '{}' has realization entries but no structure-name entry — check entity.rs Sub/match-arm pre-passes",
+                sub_name
+            ))
             .as_str();
         Some(make_cross_sub_geometry_error(
             diagnostics,
@@ -2859,11 +2865,11 @@ pub structure Outer {
     ///
     /// ## What this test pins
     ///
-    /// `.expect("…task-3420…")` enforces the `sub_realization_names ⊂
-    /// sub_component_types` invariant in both debug and release, unlike the
-    /// previous `debug_assert!` + `.unwrap_or(sub_name)` combination which only
-    /// caught violations in debug builds and silently mis-named the child structure
-    /// in release.
+    /// `.unwrap_or_else(|| panic!("…task-3420; release-enforced task-3431: sub '{}' …", sub_name))`
+    /// enforces the `sub_realization_names ⊂ sub_component_types` invariant in both
+    /// debug and release, unlike the previous `debug_assert!` + `.unwrap_or(sub_name)`
+    /// combination which only caught violations in debug builds and silently mis-named
+    /// the child structure in release.
     ///
     /// ## Why this test is NOT `#[cfg(debug_assertions)]`-gated
     ///
@@ -2882,10 +2888,10 @@ pub structure Outer {
     /// ## Why `expected = "task-3420"` rather than the full panic message
     ///
     /// Both `"task-3420"` (invariant origin) and `"task-3431"` (release-enforcement
-    /// promotion) are baked into the `.expect()` argument.  Coupling to either stable
-    /// reference tag minimises test-maintenance churn while still verifying the correct
-    /// code site panicked; `"task-3420"` is retained here so a future grep for the
-    /// invariant's origin tag reaches this test site as well as the production call.
+    /// promotion) are baked into the `panic!()` format literal.  Coupling to either
+    /// stable reference tag minimises test-maintenance churn while still verifying the
+    /// correct code site panicked; `"task-3420"` is retained here so a future grep for
+    /// the invariant's origin tag reaches this test site as well as the production call.
     #[test]
     #[should_panic(expected = "task-3420")]
     fn try_emit_cross_sub_geometry_panics_on_invariant_violation_in_all_builds() {
