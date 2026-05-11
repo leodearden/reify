@@ -269,6 +269,15 @@ fn get_containing_definition(
 }
 
 #[tauri::command]
+fn get_entity_at_source_location(
+    state: tauri::State<'_, AppState>,
+    line: u32,
+    col: u32,
+) -> Result<Option<String>, String> {
+    reify_gui::commands::get_entity_at_source_location_impl(&state.engine, line, col)
+}
+
+#[tauri::command]
 fn focus_entity(app: tauri::AppHandle, entity_path: String) -> Result<(), String> {
     // Emit an event to the frontend to focus on the given entity
     app.emit("focus-entity", entity_path)
@@ -594,6 +603,7 @@ fn main() {
             get_mechanism_descriptors,
             get_def_preview,
             get_containing_definition,
+            get_entity_at_source_location,
             focus_entity,
             update_selection,
             mcp_tool_call,

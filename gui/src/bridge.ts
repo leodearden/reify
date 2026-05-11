@@ -507,6 +507,11 @@ export async function getContainingDefinition(line: number, col: number): Promis
   return invoke<DefInfo | null>('get_containing_definition', { line, col });
 }
 
+/** Get the entity path (e.g. "Bracket.width" or "Bracket") for a cursor position. Returns null if the position is not inside any entity. */
+export async function getEntityAtSourceLocation(line: number, col: number): Promise<string | null> {
+  return invoke<string | null>('get_entity_at_source_location', { line, col });
+}
+
 /** Fetch the tessellated preview meshes for a named definition. Converts mesh wire data to typed arrays. */
 export async function getDefPreview(defName: string): Promise<GuiState> {
   const raw = await invoke<RawGuiState>('get_def_preview', { defName });
