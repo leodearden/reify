@@ -80,6 +80,18 @@ pub fn compute_dirty_cone(
 /// supplied seeds. This mirrors the existing `EvalOutcome::Changed/Unchanged`
 /// pattern at the seed boundary instead of duplicating the comparison logic
 /// inside the walk.
+///
+/// # Production wiring (staging note)
+///
+/// This entry point has no production call site yet — it is staged for
+/// P3.4+, the upcoming ComputeNode-evaluation pipeline. P3.4 will compare
+/// each evaluated RealizationNode's new `content_hash` against its cached
+/// value (mirroring `record_evaluation_propagating_freshness`'s
+/// `EvalOutcome::Changed/Unchanged` discrimination at the seed boundary),
+/// route the truly-changed Realizations into `changed_realizations`, and
+/// hand the result to this walk. The function is `pub` (so it is exempt
+/// from `dead_code` lint) and is exercised by the tests below until the
+/// production call site lands.
 pub fn compute_dirty_cone_with_realizations(
     changed_vcs: &HashSet<ValueCellId>,
     changed_realizations: &HashSet<RealizationNodeId>,
@@ -710,6 +722,111 @@ mod tests {
         assert!(
             dirty.is_empty(),
             "empty seeds must yield empty dirty cone (seed-discrimination contract); got: {:?}",
+            dirty
+        );
+    }
+
+    /// Amendment (Sugg 3b): transitive Realization → Compute → output VC →
+    /// downstream Constraint propagation.
+    ///
+    /// Closes the loop on `compute_dirty_cone_with_realizations` by extending
+    /// the topology from step-11 with a Constraint that reads the
+    /// ComputeNode's output VC. Verifies that once the output VC is seeded
+    /// onto the BFS frontier (edge #10 → edge #12), the standard
+    /// `dependents_of(out_vc)` propagation kicks in and pulls the Constraint
+    /// into the dirty cone — exactly the same way `compute_dirty_cone`'s
+    /// multi-hop test (step-9) does for a VC-seeded change.
+    ///
+    /// Topology: Realization `R0`; Compute `C` (realization_inputs=[R0],
+    /// output_value_cells=[b]); VC `b`; Constraint `C0` reads `b`.
+    /// Reverse-index entries: R0 → Compute(C) (edge #10); b → Constraint(C0)
+    /// (manually added like step-9 does).
+    #[test]
+    fn compute_dirty_cone_with_realizations_propagates_transitively_to_constraint_reading_output_vc(
+    ) {
+        use crate::dirty::compute_dirty_cone_with_realizations;
+        use crate::graph::{ComputeNodeData, EvaluationGraph, RealizationNodeData, ValueCellNode};
+        use reify_compiler::ValueCellKind;
+        use reify_types::{ComputeNodeId, ContentHash, RealizationNodeId, Type};
+
+        let mut graph = EvaluationGraph::default();
+        let e = "E";
+
+        // VC b — output of the compute node and read by the constraint.
+        let b = ValueCellId::new(e, "b");
+        graph.value_cells.insert(
+            b.clone(),
+            ValueCellNode {
+                id: b.clone(),
+                kind: ValueCellKind::Param,
+                cell_type: Type::Real,
+                default_expr: None,
+                content_hash: ContentHash::of_str("b"),
+            },
+        );
+
+        // Realization R0.
+        let r0_id = RealizationNodeId::new(e, 0);
+        graph.realizations.insert(
+            r0_id.clone(),
+            RealizationNodeData {
+                id: r0_id.clone(),
+                operations: vec![],
+                content_hash: ContentHash::of_str("r0"),
+            },
+        );
+
+        // Compute C: realization_inputs=[R0], output_value_cells=[b].
+        let c_id = ComputeNodeId::new(e, 0);
+        graph.insert_compute_node(ComputeNodeData {
+            computation_id: c_id.clone(),
+            target: "fea".to_string(),
+            value_inputs: vec![],
+            realization_inputs: vec![r0_id.clone()],
+            options_hash: ContentHash::of_str("opt"),
+            cache_key: ContentHash::of_str("ck"),
+            cached_result: None,
+            result_content_hash: None,
+            opaque_state: None,
+            running: None,
+            output_value_cells: vec![b.clone()],
+        });
+
+        // Reverse index: build_from_graph picks up R0 → Compute(C). Splice
+        // b → Constraint(C0) manually (pattern mirrors step-9 — keeps the
+        // fixture pure-synthetic without forcing a CompiledExpr that
+        // reads `b`).
+        let mut index = ReverseDependencyIndex::build_from_graph(&graph);
+        let c0_id = ConstraintNodeId::new(e, 0);
+        index.add(b.clone(), NodeId::Constraint(c0_id.clone()));
+
+        let mut changed_realizations = HashSet::new();
+        changed_realizations.insert(r0_id.clone());
+        let changed_vcs: HashSet<ValueCellId> = HashSet::new();
+
+        let dirty = compute_dirty_cone_with_realizations(
+            &changed_vcs,
+            &changed_realizations,
+            &index,
+            &graph,
+        );
+
+        // All three must be dirty: edge #10 (R0 → C), edge #12 (C → b),
+        // and the standard edge #1 (b → C0) picked up by the BFS over
+        // value-cell dependents.
+        assert!(
+            dirty.contains(&NodeId::Compute(c_id.clone())),
+            "dirty cone should include Compute(C) via edge #10, got: {:?}",
+            dirty
+        );
+        assert!(
+            dirty.contains(&NodeId::Value(b.clone())),
+            "dirty cone should include Value(b) via edge #12, got: {:?}",
+            dirty
+        );
+        assert!(
+            dirty.contains(&NodeId::Constraint(c0_id.clone())),
+            "dirty cone should include Constraint(C0) via b's dependents (edge #10 → #12 → constraint), got: {:?}",
             dirty
         );
     }
