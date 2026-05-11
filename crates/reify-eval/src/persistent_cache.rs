@@ -2655,6 +2655,50 @@ mod tests {
         assert_eq!(hit2, Some(original), "phase 2: read must succeed even if sidecar was pre-deleted");
     }
 
+    #[test]
+    fn concurrent_write_entry_calls_for_same_input_both_succeed_and_final_read_entry_decodes_to_original_value() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "0011223344556677889900aabbccddee";
+        let inp = "ffeeddccbbaa99887766554433221100";
+        let original = make_sample_result();
+
+        // Compute the expected compressed body len from a single-writer reference.
+        let mut body_ref: Vec<u8> = Vec::new();
+        original.serialize_to_writer(&mut body_ref).unwrap();
+        let expected_file_size = ENTRY_HEADER_ENCODED_LEN + body_ref.len();
+
+        // Both concurrent writers must succeed without panicking or returning Err.
+        std::thread::scope(|s| {
+            let h1 = s.spawn(|| write_entry(root, eng, inp, &original));
+            let h2 = s.spawn(|| write_entry(root, eng, inp, &original));
+            h1.join().expect("writer thread 1 must not panic").unwrap();
+            h2.join().expect("writer thread 2 must not panic").unwrap();
+        });
+
+        // The final read must return the original value.
+        let hit = read_entry::<ElasticResult>(root, eng, inp).unwrap();
+        assert_eq!(
+            hit,
+            Some(original.clone()),
+            "concurrent writers must produce a valid, decodable entry"
+        );
+
+        // The .bin must be exactly ENTRY_HEADER_ENCODED_LEN + body_len bytes —
+        // no torn writes, no extra bytes from concurrent interleaving.
+        let actual_file_size = std::fs::metadata(entry_bin_path(root, eng, inp))
+            .unwrap()
+            .len() as usize;
+        assert_eq!(
+            actual_file_size,
+            expected_file_size,
+            "concurrent writers must produce a .bin of exactly \
+             ENTRY_HEADER_ENCODED_LEN({ENTRY_HEADER_ENCODED_LEN}) + body_len({}) = {expected_file_size} bytes; \
+             got {actual_file_size}",
+            body_ref.len()
+        );
+    }
+
     /// Write a raw header plus `body_suffix` bytes to the .bin for a given key.
     /// Useful for constructing corrupt-body .bin files in tests.
     fn write_header_and_body_to_bin(
