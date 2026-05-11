@@ -197,7 +197,9 @@ pub fn significance_filter(
 #[cfg(test)]
 mod tests {
     use super::{FilterOutcome, is_opted_in, significance_filter};
-    use reify_types::{FieldSourceKind, InterpolationKind, SampledField, SampledGridKind, Type, Value};
+    use reify_types::{
+        FieldSourceKind, InterpolationKind, SampledField, SampledGridKind, Type, Value,
+    };
     use std::collections::BTreeMap;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
@@ -248,9 +250,18 @@ mod tests {
             Value::String("stress".to_string()),
             make_sampled_field("stress", stress_data),
         );
-        map.insert(Value::String("max_von_mises".to_string()), Value::Real(max_vm));
-        map.insert(Value::String("converged".to_string()), Value::Bool(converged));
-        map.insert(Value::String("iterations".to_string()), Value::Int(iters as i64));
+        map.insert(
+            Value::String("max_von_mises".to_string()),
+            Value::Real(max_vm),
+        );
+        map.insert(
+            Value::String("converged".to_string()),
+            Value::Bool(converged),
+        );
+        map.insert(
+            Value::String("iterations".to_string()),
+            Value::Int(iters as i64),
+        );
         Value::Map(map)
     }
 
@@ -323,7 +334,10 @@ mod tests {
         let v1 = make_elastic_result_value(&[0.0, 0.001], &[0.0, 0.001], 1e8, true, 5);
         let v2 =
             make_elastic_result_value(&[0.0 + 1e-12, 0.001 + 1e-12], &[0.0, 0.001], 1e8, true, 5);
-        assert_ne!(v1, v2, "test fixture: v1 and v2 must be distinct (not bit-equal)");
+        assert_ne!(
+            v1, v2,
+            "test fixture: v1 and v2 must be distinct (not bit-equal)"
+        );
         assert_eq!(
             significance_filter("solver::elastic_static", &v1, &v2, Some(1e-6)),
             FilterOutcome::Equivalent,
@@ -389,7 +403,10 @@ mod tests {
         // 1 ULP difference in one displacement sample (not bit-equal).
         let disp2 = vec![0.0_f64, f64::from_bits(0.001_f64.to_bits() + 1)];
         let v2 = make_elastic_result_value(&disp2, &[0.0, 0.001], 1e8, true, 5);
-        assert_ne!(v1, v2, "test fixture: v1 and v2 must be distinct (not bit-equal)");
+        assert_ne!(
+            v1, v2,
+            "test fixture: v1 and v2 must be distinct (not bit-equal)"
+        );
         assert_eq!(
             significance_filter("solver::elastic_static", &v1, &v2, None),
             FilterOutcome::Different,
@@ -404,42 +421,57 @@ mod tests {
     /// v1 per-field policy: no Pressure tolerance class — exact equality only.
     #[test]
     fn significance_filter_returns_different_for_non_displacement_field_changes() {
-        let baseline =
-            make_elastic_result_value(&[0.0, 0.001], &[0.0, 0.001], 1e8, true, 5);
+        let baseline = make_elastic_result_value(&[0.0, 0.001], &[0.0, 0.001], 1e8, true, 5);
 
         // stress: different stress data (displacement identical).
-        let stress_changed =
-            make_elastic_result_value(&[0.0, 0.001], &[0.0, 1.0], 1e8, true, 5);
+        let stress_changed = make_elastic_result_value(&[0.0, 0.001], &[0.0, 1.0], 1e8, true, 5);
         assert_eq!(
-            significance_filter("solver::elastic_static", &baseline, &stress_changed, Some(1e-6)),
+            significance_filter(
+                "solver::elastic_static",
+                &baseline,
+                &stress_changed,
+                Some(1e-6)
+            ),
             FilterOutcome::Different,
             "stress field change must yield Different",
         );
 
         // max_von_mises: change by 1 ULP.
         let mvm_ulp = f64::from_bits(1e8_f64.to_bits() + 1);
-        let mvm_changed =
-            make_elastic_result_value(&[0.0, 0.001], &[0.0, 0.001], mvm_ulp, true, 5);
+        let mvm_changed = make_elastic_result_value(&[0.0, 0.001], &[0.0, 0.001], mvm_ulp, true, 5);
         assert_eq!(
-            significance_filter("solver::elastic_static", &baseline, &mvm_changed, Some(1e-6)),
+            significance_filter(
+                "solver::elastic_static",
+                &baseline,
+                &mvm_changed,
+                Some(1e-6)
+            ),
             FilterOutcome::Different,
             "max_von_mises ULP change must yield Different",
         );
 
         // converged: true vs false.
-        let conv_changed =
-            make_elastic_result_value(&[0.0, 0.001], &[0.0, 0.001], 1e8, false, 5);
+        let conv_changed = make_elastic_result_value(&[0.0, 0.001], &[0.0, 0.001], 1e8, false, 5);
         assert_eq!(
-            significance_filter("solver::elastic_static", &baseline, &conv_changed, Some(1e-6)),
+            significance_filter(
+                "solver::elastic_static",
+                &baseline,
+                &conv_changed,
+                Some(1e-6)
+            ),
             FilterOutcome::Different,
             "converged flip (true→false) must yield Different",
         );
 
         // iterations: 5 vs 6.
-        let iters_changed =
-            make_elastic_result_value(&[0.0, 0.001], &[0.0, 0.001], 1e8, true, 6);
+        let iters_changed = make_elastic_result_value(&[0.0, 0.001], &[0.0, 0.001], 1e8, true, 6);
         assert_eq!(
-            significance_filter("solver::elastic_static", &baseline, &iters_changed, Some(1e-6)),
+            significance_filter(
+                "solver::elastic_static",
+                &baseline,
+                &iters_changed,
+                Some(1e-6)
+            ),
             FilterOutcome::Different,
             "iterations change (5→6) must yield Different",
         );
@@ -489,7 +521,12 @@ mod tests {
         wrong_disp.insert(Value::String("iterations".to_string()), Value::Int(5));
         let new_wrong_disp = Value::Map(wrong_disp);
         assert_eq!(
-            significance_filter("solver::elastic_static", &valid, &new_wrong_disp, Some(1e-6)),
+            significance_filter(
+                "solver::elastic_static",
+                &valid,
+                &new_wrong_disp,
+                Some(1e-6)
+            ),
             FilterOutcome::Different,
             "(c) displacement = Real (not Field) must yield Different",
         );
@@ -512,14 +549,18 @@ mod tests {
         analytical_map.insert(Value::String("iterations".to_string()), Value::Int(5));
         let new_analytical = Value::Map(analytical_map);
         assert_eq!(
-            significance_filter("solver::elastic_static", &valid, &new_analytical, Some(1e-6)),
+            significance_filter(
+                "solver::elastic_static",
+                &valid,
+                &new_analytical,
+                Some(1e-6)
+            ),
             FilterOutcome::Different,
             "(d) displacement Field with Analytical source must yield Different",
         );
 
         // (e) displacement data vectors have mismatched lengths (3 vs 4).
-        let v_len3 =
-            make_elastic_result_value(&[0.0, 0.001, 0.002], &[0.0, 0.001], 1e8, true, 5);
+        let v_len3 = make_elastic_result_value(&[0.0, 0.001, 0.002], &[0.0, 0.001], 1e8, true, 5);
         let v_len4 =
             make_elastic_result_value(&[0.0, 0.001, 0.002, 0.003], &[0.0, 0.001], 1e8, true, 5);
         assert_eq!(
