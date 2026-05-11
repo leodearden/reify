@@ -594,6 +594,46 @@ mod tests {
         assert!(matches!(r, Err(SweepError::DegenerateMagnitude)), "got: {r:?}");
     }
 
+    // step-13: K>1 extrude — pins the layer-dimension generalisation
+
+    #[test]
+    fn extrude_unit_triangle_k3() {
+        let mesh2d = unit_triangle();
+        let params = SweepParams::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: 3.0,
+        };
+        let mesh = sweep_2d_mesh_to_3d(&mesh2d, &params, 3).expect("should succeed");
+
+        assert_eq!(mesh.layers, 3);
+        // 4 node planes × 3 base verts × 3 coords = 36
+        assert_eq!(mesh.vertices.len(), 36, "vertices.len()");
+
+        let eps = 1e-6_f32;
+        // Layer 0: z=0.0
+        assert!((mesh.vertices[2] - 0.0).abs() < eps);
+        // Layer 1 (offset 9): z=1.0
+        assert!((mesh.vertices[9 + 2] - 1.0).abs() < eps);
+        // Layer 2 (offset 18): z=2.0
+        assert!((mesh.vertices[18 + 2] - 2.0).abs() < eps);
+        // Layer 3 (offset 27): z=3.0
+        assert!((mesh.vertices[27 + 2] - 3.0).abs() < eps);
+
+        // Connectivity: 3 wedges
+        match &mesh.connectivity {
+            SweptConnectivity::Wedge { indices } => {
+                assert_eq!(indices.len(), 3 * 6, "3 wedges × 6 indices");
+                // First wedge: layer 0→1
+                assert_eq!(&indices[0..6], &[0_u32, 1, 2, 3, 4, 5]);
+                // Second wedge: layer 1→2
+                assert_eq!(&indices[6..12], &[3_u32, 4, 5, 6, 7, 8]);
+                // Third wedge: layer 2→3
+                assert_eq!(&indices[12..18], &[6_u32, 7, 8, 9, 10, 11]);
+            }
+            other => panic!("expected Wedge, got {other:?}"),
+        }
+    }
+
     // step-11: Extrude single CCW unit-square quad, K=1
 
     #[test]
