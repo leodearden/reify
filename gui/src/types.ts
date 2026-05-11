@@ -408,6 +408,13 @@ export interface AutoResolveConstraintProgress {
  * A single iteration snapshot emitted by the auto-resolve loop.
  * `driving_metric` names the primary metric being optimised;
  * `driving_metric_value` is its scalar value at this iteration.
+ *
+ * **Invariant:** `driving_metric` MUST be the same value for every iteration
+ * within a single auto-resolve loop. Iterations whose `driving_metric` conflicts
+ * with the canonical metric (the first iteration in the array that declares one)
+ * are dropped by `engineStore.applyAutoResolveIteration` with a `console.warn`.
+ * Omitting `driving_metric` on an iteration is always permitted — those iterations
+ * are accepted without affecting the canonical.
  */
 export interface AutoResolveIteration {
   iteration: number;
