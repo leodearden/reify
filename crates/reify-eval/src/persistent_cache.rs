@@ -759,6 +759,105 @@ impl PersistentlyCacheable for ElasticResult {
     }
 }
 
+/// Write a cache entry to disk atomically using a temp-file + rename approach.
+///
+/// The body is pre-buffered into a `Vec<u8>` before the header is written so
+/// that `CacheEntryHeader::byte_size` is known without seeking. After
+/// `sync_all` for durability, `tempfile::NamedTempFile::persist` performs a
+/// POSIX `rename(2)` — atomic and last-writer-wins under concurrent writers.
+/// The sidecar `.meta` file is written AFTER the rename so a failed rename
+/// never leaves an orphan sidecar pointing at a non-existent `.bin`.
+///
+/// # Errors
+///
+/// Propagates `io::Error` for unexpected I/O failures (directory creation,
+/// file creation, write errors, sync, rename). The caller is responsible for
+/// any higher-level retry or eviction logic.
+pub fn write_entry<V: PersistentlyCacheable>(
+    cache_root: &Path,
+    engine_version_hash: &str,
+    input_hash: &str,
+    value: &V,
+) -> io::Result<()> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let sd = shard_dir(cache_root, engine_version_hash, input_hash);
+    std::fs::create_dir_all(&sd)?;
+
+    let mut temp = tempfile::Builder::new()
+        .prefix(".tmp.")
+        .tempfile_in(&sd)?;
+
+    // Pre-buffer the compressed body so byte_size is known before writing
+    // the header (no seek-back required).
+    let mut body_buf: Vec<u8> = Vec::new();
+    value.serialize_to_writer(&mut body_buf)?;
+
+    let engine_bytes: [u8; 32] = engine_version_hash
+        .as_bytes()
+        .try_into()
+        .map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "engine_version_hash must be exactly 32 ASCII chars",
+            )
+        })?;
+    let input_bytes: [u8; 32] = input_hash
+        .as_bytes()
+        .try_into()
+        .map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "input_hash must be exactly 32 ASCII chars",
+            )
+        })?;
+
+    let written_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(-1);
+
+    let header = CacheEntryHeader {
+        format_version: ENTRY_FORMAT_VERSION,
+        engine_version_hash: engine_bytes,
+        input_hash: input_bytes,
+        solve_time_ms: value.solve_time_ms(),
+        byte_size: body_buf.len() as u64,
+        written_at,
+    };
+
+    header.write_to(&mut temp)?;
+    temp.write_all(&body_buf)?;
+    temp.as_file().sync_all()?;
+
+    let bin_path = entry_bin_path(cache_root, engine_version_hash, input_hash);
+    temp.persist(&bin_path).map_err(|e| e.error)?;
+
+    Ok(())
+}
+
+/// Read a cache entry from disk.
+///
+/// Returns `Ok(None)` on cache miss (file absent) or on a corrupt/stale
+/// entry (format-version mismatch, echo mismatch, body decode error — all
+/// treated as miss per PRD corruption-recovery policy). Returns
+/// `Ok(Some(value))` on a successful hit. Propagates `Err` only for genuine
+/// I/O infrastructure problems (e.g. EACCES on the `.bin` file) where the
+/// caller must be informed.
+pub fn read_entry<V: PersistentlyCacheable>(
+    cache_root: &Path,
+    engine_version_hash: &str,
+    input_hash: &str,
+) -> io::Result<Option<V>> {
+    use std::fs::File;
+
+    let bin_path = entry_bin_path(cache_root, engine_version_hash, input_hash);
+    let mut f = File::open(&bin_path)?;
+    let _header = CacheEntryHeader::read_from(&mut f)?;
+    let value = V::deserialize_from_reader(&mut f)?;
+    Ok(Some(value))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
