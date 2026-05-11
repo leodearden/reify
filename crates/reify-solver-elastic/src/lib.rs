@@ -326,6 +326,7 @@ pub mod progressive;
 pub mod result;
 pub mod shell_assembly;
 pub mod shell_boundary;
+pub mod shell_kinematics;
 pub mod shell_result;
 pub mod solver;
 pub mod sweep;
