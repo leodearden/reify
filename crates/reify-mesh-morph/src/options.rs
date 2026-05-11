@@ -277,11 +277,15 @@ mod tests {
     #[test]
     fn morph_options_default_returns_prd_calibrated_quality_and_stiffness_values() {
         let opts = MorphOptions::default();
-        // Threshold-related fields calibrated by task #2950 against
-        // tests/calibration.rs (plate hole-diameter and bracket fillet-
-        // radius sweeps under the StiffnessRule::InverseVolume production
-        // default).
-        assert!((opts.quality_floor_min_scaled_jacobian - 0.02).abs() < 1e-12);
+        // `quality_floor_min_scaled_jacobian` lowered 0.02 → 0.01 by task #3451:
+        // empirical from_scratch baseline capture showed the procedural mesher itself
+        // produces min_sj ≈ 0.0139 at plate hole_diameter=0.60 and ≈ 0.0042 at
+        // bracket fillet_radius=0.19 — below the old 0.02 floor. The floor was
+        // rejecting fixture geometry, not morph distortion. Other threshold-related
+        // fields calibrated by task #2950 against tests/calibration.rs (plate
+        // hole-diameter and bracket fillet-radius sweeps under the
+        // StiffnessRule::InverseVolume production default).
+        assert!((opts.quality_floor_min_scaled_jacobian - 0.01).abs() < 1e-12);
         assert!((opts.quality_floor_pct_below_025 - 0.01).abs() < 1e-12);
         assert!((opts.quality_aspect_ratio_factor_max - 2.0).abs() < 1e-12);
         assert!((opts.laplacian_quickpass_threshold - 0.01).abs() < 1e-12);
