@@ -51,6 +51,20 @@ pub use crate::engine_hash_algo::compose_engine_version_hash;
 /// last-access signal (see [`touch_sidecar`]).
 pub const SIDECAR_MAGIC_BYTE: u8 = 0xCA;
 
+/// Return the `mtime` (`SystemTime`) of the `.meta` sidecar file at `path`.
+///
+/// This is the last-access signal for GC eviction sorting and `cache stats`
+/// display. The mtime belongs to the `.meta` file specifically — NOT to the
+/// `.bin` file — per PRD policy (the `.bin` mtime stays fixed at
+/// `written_at`, which is useful for debugging; only the sidecar is touched
+/// on every read).
+///
+/// Propagates `io::Error` for both `NotFound` (missing sidecar) and
+/// permission errors via the `?` operator.
+pub fn read_sidecar_mtime(path: &Path) -> io::Result<std::time::SystemTime> {
+    std::fs::metadata(path)?.modified()
+}
+
 /// Update the mtime of an existing `.meta` sidecar file to `now` without
 /// altering its content.
 ///
