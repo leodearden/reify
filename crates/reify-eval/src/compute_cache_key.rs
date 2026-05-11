@@ -405,4 +405,17 @@ mod tests {
         node.value_inputs = vec![ValueCellId::new("Bracket", "ghost")];
         compute_cache_key(&node, &graph);
     }
+
+    #[test]
+    #[should_panic(expected = "realization_input")]
+    fn compute_cache_key_panics_on_missing_realization_input() {
+        // Empty graph — RealizationNodeId("Bracket", 0) was never inserted.
+        // The .unwrap_or_else(|| panic!(...)) at L141-146 fires with a message
+        // containing "realization_input".  "realization_input" is disjoint from
+        // "value_input", so this test pins exactly the realization arm (L141-146).
+        let graph = EvaluationGraph::default();
+        let mut node = make_empty_node();
+        node.realization_inputs = vec![RealizationNodeId::new("Bracket", 0)];
+        compute_cache_key(&node, &graph);
+    }
 }
