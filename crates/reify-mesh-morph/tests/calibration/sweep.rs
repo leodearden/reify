@@ -222,12 +222,27 @@ where
 /// rejected only when from-scratch is materially better" — the materiality
 /// bar the PRD specifies for threshold calibration.
 ///
-/// For *lower-is-better* metrics (e.g. AR factor where 1.0 is ideal and the
-/// from-scratch baseline is ~1.0 by construction), compare `morph_value`
-/// directly against [`MATERIALITY_FACTOR`] at the call site — see the
-/// `assert_materially_better_rule_holds` helper in `tests/calibration.rs`.
+/// For the *lower-is-better* AR-factor metric, use the companion helper
+/// [`ar_materially_better`] which reads [`SweepReport::from_scratch_max_ar_factor`]
+/// — the true `max(morphed_AR / from_scratch_AR)` ratio computed directly
+/// against the from-scratch baseline in [`run_sweep`].
 pub fn is_materially_better(morph: f64, from_scratch: f64) -> bool {
     from_scratch > MATERIALITY_FACTOR * morph
+}
+
+/// AR-side materially-better predicate (lower-is-better polarity).
+///
+/// True when the morph's AR is more than `MATERIALITY_FACTOR` × the from-scratch
+/// baseline AR — i.e. the morph is ≥20 % more elongated than a fresh remesh
+/// of the same target geometry.
+///
+/// Uses [`SweepReport::from_scratch_max_ar_factor`], the true
+/// `max(morphed_AR / from_scratch_AR)` ratio computed in [`run_sweep`] by
+/// calling `extract_metrics(&morphed, &from_scratch)`. This is NOT the old
+/// `morph_max_ar_factor` proxy that assumed `source_AR ≈ from_scratch_AR ≈ 1.0`
+/// — for wide sweep steps the two ratios diverge significantly.
+pub fn ar_materially_better(report: &SweepReport) -> bool {
+    report.from_scratch_max_ar_factor > MATERIALITY_FACTOR
 }
 
 #[cfg(test)]

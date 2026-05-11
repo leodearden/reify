@@ -421,17 +421,18 @@ fn sweep_runner_returns_morph_and_from_scratch_quality_metrics_for_single_param_
 /// - **If verdict is reject** (`HardFail` or `SoftFail`), then `from_scratch`
 ///   must be materially better on at least one of (`min_sj` or `AR-factor`).
 ///   Encoded as `from_scratch_min_sj > MATERIALITY_FACTOR * morph_min_sj`
-///   (higher-is-better polarity) OR `morph_ar_factor > MATERIALITY_FACTOR`
-///   (AR is lower-is-better; the from-scratch reference for an undistorted
-///   remesh is ~1.0).
+///   (higher-is-better polarity, via [`sweep::is_materially_better`]) OR
+///   `from_scratch_max_ar_factor > MATERIALITY_FACTOR` (AR is lower-is-better;
+///   uses the true `max(morphed_AR / from_scratch_AR)` ratio via
+///   [`sweep::ar_materially_better`]).
 ///
 /// - **If verdict is Pass**, then `from_scratch` must NOT be materially
 ///   better on `min_sj`. The Pass branch deliberately does NOT enforce the
 ///   symmetric AR-side check: the calibrated `quality_aspect_ratio_factor_max`
 ///   is 2.0 (PRD seed retained) which is well above the 1.20 materiality
-///   bar, so Pass cases with `morph_ar_factor ∈ (1.20, 2.0)` are admitted
-///   by the threshold even though the morph is technically materially worse
-///   than a fresh remesh on AR. Adding the symmetric check would force a
+///   bar, so Pass cases with `from_scratch_max_ar_factor ∈ (1.20, 2.0)` are
+///   admitted by the threshold even though the morph is technically materially
+///   worse than a fresh remesh on AR. Adding the symmetric check would force a
 ///   tighter AR threshold of ~1.20 and reject many morphs the PRD intends
 ///   to accept. This asymmetry is a known calibration gap — see the task
 ///   #2950 follow-up note in `options.rs::quality_aspect_ratio_factor_max`
@@ -448,12 +449,12 @@ fn assert_materially_better_rule_holds(
 
     let sj_materially_better =
         sweep::is_materially_better(report.morph_min_scaled_j, report.from_scratch_min_scaled_j);
-    // For AR (lower-is-better) we compare morph_ar_factor to the from-scratch
-    // baseline of ~1.0 (from-scratch is a procedural remesh of the target
-    // geometry — its AR vs the same target has ratio ≈ 1). A morph_ar_factor
-    // > MATERIALITY_FACTOR means the morph's elements are ≥20 % more
-    // elongated than a fresh remesh would produce.
-    let ar_materially_better = report.morph_max_ar_factor > sweep::MATERIALITY_FACTOR;
+    // AR-side: compare the true morph-vs-from_scratch ratio. The helper reads
+    // `from_scratch_max_ar_factor = max(morphed_AR / from_scratch_AR)` computed
+    // in run_sweep by calling extract_metrics(&morphed, &from_scratch) — this
+    // is the direct ratio against the from-scratch baseline, not a proxy
+    // against the source mesh.
+    let ar_materially_better = sweep::ar_materially_better(report);
 
     match &report.morph_verdict {
         QualityVerdict::Pass => {
@@ -471,11 +472,11 @@ fn assert_materially_better_rule_holds(
                 sj_materially_better || ar_materially_better,
                 "{fixture_name} sweep target={target}: reject verdict {:?} but from-scratch \
                  is NOT materially better (min_sj morph={} from_scratch={}; \
-                 ar_factor morph={}) — calibration too strict",
+                 from_scratch_max_ar_factor={}) — calibration too strict",
                 report.morph_verdict,
                 report.morph_min_scaled_j,
                 report.from_scratch_min_scaled_j,
-                report.morph_max_ar_factor
+                report.from_scratch_max_ar_factor
             );
         }
     }
