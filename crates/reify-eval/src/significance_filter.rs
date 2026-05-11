@@ -180,6 +180,8 @@ pub fn significance_filter(
     // Non-finite values (NaN, ±Inf) in EITHER operand always yield Different —
     // NaN comparisons are always false, so we guard explicitly.
     // Strict-greater-than: delta == tol_si is Equivalent (not Different).
+    // step-12 confirmed: (p - n).abs() > tol_si already covers over-tolerance path
+    // with strict-gt semantics — no code change needed for step-12.
     // Exercises: significance_filter_returns_different_for_nan_in_displacement
     //            significance_filter_returns_different_for_over_tolerance_displacement_delta
     //            significance_filter_returns_equivalent_for_sub_tolerance_displacement_delta
