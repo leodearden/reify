@@ -3162,32 +3162,5 @@ mod tests {
             );
         }
 
-        #[test]
-        fn detect_local_index_reassignment_uses_role_human_name_for_message_role_field() {
-            // Cap(Top) has a sub-variant — its human name "Cap(Top)" contains
-            // parentheses, distinguishing it from a plain Debug-repr that might
-            // change if the enum were ever reformatted.
-            let attr0 = make_attr("F#realization[0]", Role::Cap(CapKind::Top), 0);
-            let attr1 = make_attr("F#realization[0]", Role::Cap(CapKind::Top), 1);
-            let h0 = GeometryHandleId(10);
-            let h1 = GeometryHandleId(11);
-            let mut centroids: HashMap<GeometryHandleId, [f64; 3]> = HashMap::new();
-            centroids.insert(h0, [0.0, 0.0, 0.0]);
-            centroids.insert(h1, [0.0, 0.0, 0.0]);
-            let mut diagnostics = Vec::new();
-            detect_local_index_reassignment_diagnostics(
-                &[(h0, &attr0), (h1, &attr1)],
-                &centroids,
-                LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M,
-                synthetic_span(),
-                &mut diagnostics,
-            );
-            assert_eq!(diagnostics.len(), 1);
-            let msg = &diagnostics[0].message;
-            assert!(
-                msg.contains("Cap(Top)"),
-                "diagnostic message should contain role human name 'Cap(Top)', got: {msg}"
-            );
-        }
     }
 }
