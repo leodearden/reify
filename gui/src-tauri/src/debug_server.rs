@@ -318,10 +318,12 @@ where
     let engine = Arc::clone(engine);
     let (tx, rx) = tokio::sync::oneshot::channel();
     std::thread::spawn(move || {
-        let result = engine
-            .lock()
-            .map_err(|e| format!("engine lock poisoned: {e}"))
-            .and_then(|mut session| f(&mut session));
+        // with_engine_lock catches panics and recovers from mutex poisoning,
+        // so f() panicking will not leave the mutex poisoned for future callers.
+        // The user closure f returns Result<T, String>, so with_engine_lock
+        // wraps it in another Result layer — flatten with and_then(identity).
+        let result = crate::engine_lock::with_engine_lock(&engine, f)
+            .and_then(std::convert::identity);
         let _ = tx.send(result);
     });
     rx.await.map_err(|_| "engine thread died".to_string())?
@@ -577,8 +579,8 @@ async fn handle_wait_for_idle(state: &DebugServerState, params: Value) -> Result
     // frontend where `evalStatus` starts as `'idle'` by default and would
     // produce a false-positive ok response on a fresh (un-loaded) session.
     {
-        let engine = state.engine.lock().unwrap();
-        if !engine.is_idle() {
+        let is_idle = crate::engine_lock::with_engine_lock(&state.engine, |s| s.is_idle())?;
+        if !is_idle {
             return Ok(json!({"error": "engine_not_started"}));
         }
     }
@@ -626,6 +628,26 @@ pub async fn spawn_debug_server(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn run_on_engine_does_not_poison_mutex_when_closure_panics() {
+        let engine = crate::tests::make_test_engine();
+
+        // First call: closure panics — run_on_engine must return Err, not propagate.
+        let first = run_on_engine(&engine, |_s| -> Result<(), String> {
+            panic!("from-closure")
+        })
+        .await;
+        assert!(first.is_err(), "panicking closure must produce Err from run_on_engine");
+
+        // Second call: mutex must be usable (not poisoned after the first call).
+        let second = run_on_engine(&engine, |s| Ok(s.is_idle())).await;
+        assert_eq!(
+            second,
+            Ok(true),
+            "engine must still be usable after a panicking closure (mutex must not be poisoned)"
+        );
+    }
 
     #[test]
     fn tool_defs_includes_set_camera() {

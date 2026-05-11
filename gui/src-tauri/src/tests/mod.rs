@@ -1,4 +1,5 @@
 mod claude_bridge_tests;
+mod engine_lock_tests;
 mod kernel_status_tests;
 mod commands_tests;
 mod diff_tests;
@@ -8,6 +9,28 @@ mod mcp_context_tests;
 mod mcp_dispatch_tests;
 mod types_tests;
 mod watcher_tests;
+
+use std::sync::{Arc, Mutex};
+
+use reify_constraints::SimpleConstraintChecker;
+use reify_test_support::{MockGeometryKernel, bracket_source};
+
+use crate::engine::EngineSession;
+
+/// Shared engine fixture for tests across this crate's test modules.
+///
+/// Builds a real [`EngineSession`] backed by a [`MockGeometryKernel`] with
+/// a known-good source file pre-loaded, wrapped in an `Arc<Mutex<…>>` ready
+/// for use with [`crate::engine_lock::with_engine_lock`] and related helpers.
+pub(crate) fn make_test_engine() -> Arc<Mutex<EngineSession>> {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial load should succeed");
+    Arc::new(Mutex::new(session))
+}
 
 /// Compile-time assertion that a type satisfies the full GUI IPC contract:
 /// serializable, deserializable (owned), cloneable, debuggable, and comparable.
