@@ -2906,6 +2906,45 @@ pub structure Outer {
         );
     }
 
+    /// `try_emit_cross_sub_geometry` panic message must dynamically interpolate
+    /// the offending sub instance name so diagnostics pinpoint the exact sub that
+    /// violated the `sub_realization_names ⊂ sub_component_types` invariant.
+    ///
+    /// ## What this test pins
+    ///
+    /// The `.unwrap_or_else(|| panic!("…sub '{}' …", sub_name))` form restored in
+    /// task-3439 embeds the runtime value of `sub_name` in the panic message.  The
+    /// prior static `.expect("…task-3420; release-enforced task-3431")` message
+    /// contained no occurrence of any specific sub instance name, so this test — with
+    /// `#[should_panic(expected = "sub 'inner'")]` — would FAIL against the old code
+    /// and PASS only once the dynamic interpolation is in place.
+    ///
+    /// ## Setup
+    ///
+    /// Identical to `try_emit_cross_sub_geometry_panics_on_invariant_violation_in_all_builds`:
+    /// `CompilationScope::new("Outer")` with `sub_realization_names["inner"] = {"body"}`
+    /// and `sub_component_types` left empty.  The only meaningful delta between the two
+    /// tests is the `expected` substring on the `should_panic` attribute.
+    #[test]
+    #[should_panic(expected = "sub 'inner'")]
+    fn try_emit_cross_sub_geometry_panic_names_offending_sub_dynamically() {
+        use std::collections::BTreeSet;
+        let mut scope = CompilationScope::new("Outer");
+        // Populate sub_realization_names["inner"] = {"body"} but deliberately leave
+        // sub_component_types empty — this violates the invariant and must panic.
+        scope
+            .sub_realization_names
+            .insert("inner".to_string(), BTreeSet::from(["body".to_string()]));
+        // sub_component_types intentionally not populated.
+        try_emit_cross_sub_geometry(
+            &scope,
+            "inner",
+            "body",
+            reify_types::SourceSpan::prelude(),
+            &mut Vec::new(),
+        );
+    }
+
     /// `resolve_cluster_inner_member` must NOT panic when called with an empty
     /// `per_arm` slice (review-cycle-1 robustness fix; task 2373 step-21/22).
     ///
