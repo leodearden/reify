@@ -224,4 +224,24 @@ mod tests {
             "bit-equal Values must short-circuit to Equivalent before Map extraction",
         );
     }
+
+    // ── Step-7: missing-tolerance conservative fallback ───────────────────────
+
+    /// When length_tolerance_si is None, the filter returns Different
+    /// (conservative: over-invalidate rather than under-invalidate).
+    /// Pins the contract that no per-purpose tolerance → Different regardless
+    /// of whether the actual displacement delta would be within any bound.
+    #[test]
+    fn significance_filter_returns_different_when_tolerance_missing() {
+        let v1 = make_elastic_result_value(&[0.0, 0.001], &[0.0, 0.001], 1e8, true, 5);
+        // 1 ULP difference in one displacement sample (not bit-equal).
+        let disp2 = vec![0.0_f64, f64::from_bits(0.001_f64.to_bits() + 1)];
+        let v2 = make_elastic_result_value(&disp2, &[0.0, 0.001], 1e8, true, 5);
+        assert_ne!(v1, v2, "test fixture: v1 and v2 must be distinct (not bit-equal)");
+        assert_eq!(
+            significance_filter("solver::elastic_static", &v1, &v2, None),
+            FilterOutcome::Different,
+            "None tolerance must produce Different (conservative fallback)",
+        );
+    }
 }
