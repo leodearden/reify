@@ -464,6 +464,98 @@ mod tests {
         );
     }
 
+    /// P3.3 step-11: Realization-seeded propagation through edge #10 → edge #12.
+    ///
+    /// Topology: Realization `R0`; Compute `C` (realization_inputs=[R0],
+    /// output_value_cells=[b]); VC `b`. Reverse-index entries: R0 → Compute(C)
+    /// (edge #10 from step-6) lives in the `realization_index` map.
+    ///
+    /// `compute_dirty_cone_with_realizations(&{}, &{R0}, &idx, &graph)` must
+    /// mark BOTH `Compute(C)` (consumes R0 via edge #10) and `Value(b)`
+    /// (output of C via edge #12) dirty — pins task-spec test 2
+    /// ("Recompute a RealizationNode whose new content-hash differs →
+    /// consuming ComputeNodes become dirty") and shows that the
+    /// edge-#10 → edge-#12 composition mirrors edge-#6 → edge-#12.
+    ///
+    /// Fails because `compute_dirty_cone_with_realizations` does not yet
+    /// exist.
+    #[test]
+    fn compute_dirty_cone_with_realizations_marks_consuming_compute_nodes_and_their_outputs() {
+        use crate::dirty::compute_dirty_cone_with_realizations;
+        use crate::graph::{
+            ComputeNodeData, EvaluationGraph, RealizationNodeData, ValueCellNode,
+        };
+        use reify_compiler::ValueCellKind;
+        use reify_types::{ComputeNodeId, ContentHash, RealizationNodeId, Type};
+
+        let mut graph = EvaluationGraph::default();
+        let e = "E";
+
+        // VC b — output of the compute node.
+        let b = ValueCellId::new(e, "b");
+        graph.value_cells.insert(
+            b.clone(),
+            ValueCellNode {
+                id: b.clone(),
+                kind: ValueCellKind::Param,
+                cell_type: Type::Real,
+                default_expr: None,
+                content_hash: ContentHash::of_str("b"),
+            },
+        );
+
+        // Realization R0.
+        let r0_id = RealizationNodeId::new(e, 0);
+        graph.realizations.insert(
+            r0_id.clone(),
+            RealizationNodeData {
+                id: r0_id.clone(),
+                operations: vec![],
+                content_hash: ContentHash::of_str("r0"),
+            },
+        );
+
+        // Compute C: realization_inputs=[R0], output_value_cells=[b].
+        let c_id = ComputeNodeId::new(e, 0);
+        graph.insert_compute_node(ComputeNodeData {
+            computation_id: c_id.clone(),
+            target: "fea".to_string(),
+            value_inputs: vec![],
+            realization_inputs: vec![r0_id.clone()],
+            options_hash: ContentHash::of_str("opt"),
+            cache_key: ContentHash::of_str("ck"),
+            cached_result: None,
+            result_content_hash: None,
+            opaque_state: None,
+            running: None,
+            output_value_cells: vec![b.clone()],
+        });
+
+        let index = ReverseDependencyIndex::build_from_graph(&graph);
+
+        let mut changed_realizations = HashSet::new();
+        changed_realizations.insert(r0_id.clone());
+        let changed_vcs: HashSet<ValueCellId> = HashSet::new();
+
+        let dirty = compute_dirty_cone_with_realizations(
+            &changed_vcs,
+            &changed_realizations,
+            &index,
+            &graph,
+        );
+
+        assert!(
+            dirty.contains(&NodeId::Compute(c_id.clone())),
+            "dirty cone should include Compute(C) via edge #10 (R0 → C), got: {:?}",
+            dirty
+        );
+        assert!(
+            dirty.contains(&NodeId::Value(b.clone())),
+            "dirty cone should include Value(b) via edge #12 (C → b) composed with edge #10, got: {:?}",
+            dirty
+        );
+    }
+
     #[test]
     fn dirty_cone_includes_resolution_node() {
         use crate::graph::{EvaluationGraph, ResolutionNodeData, ValueCellNode};
