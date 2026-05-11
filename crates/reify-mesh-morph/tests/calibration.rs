@@ -675,6 +675,23 @@ fn from_scratch_max_ar_factor_distinct_from_morph_max_ar_factor_on_wide_plate_sw
     // more than a floating-point rounding slop of 1e-3.
     let report = sweep::run_sweep(fixture, 0.30, 0.60, &options);
 
+    // Precondition: both AR fields must be positive. If either is 0.0 it means
+    // `extract_metrics` hit a HardFail short-circuit (which zeros out AR
+    // accumulation after the first inverted element). In that scenario both
+    // fields are 0.0 regardless of argument order, and the divergence assertion
+    // below would trip with the misleading "run_sweep is aliasing the new field"
+    // message when the real cause is hard-fail short-circuiting.
+    assert!(
+        report.morph_max_ar_factor > 0.0,
+        "morph_max_ar_factor is 0.0 — HardFail short-circuit in extract_metrics on the wide \
+         plate step 0.30→0.60, not aliasing; the divergence check below is meaningless here"
+    );
+    assert!(
+        report.from_scratch_max_ar_factor > 0.0,
+        "from_scratch_max_ar_factor is 0.0 — HardFail short-circuit in extract_metrics on the \
+         wide plate step 0.30→0.60, not aliasing; the divergence check below is meaningless here"
+    );
+
     assert!(
         (report.from_scratch_max_ar_factor - report.morph_max_ar_factor).abs() > 1e-3,
         "from_scratch_max_ar_factor ({}) and morph_max_ar_factor ({}) must differ by > 1e-3 \

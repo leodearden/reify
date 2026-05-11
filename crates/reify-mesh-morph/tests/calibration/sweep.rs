@@ -191,9 +191,10 @@ where
 
     let morph_verdict = quality_check(&morphed, &source, options);
     let (morph_min_scaled_j, morph_max_ar_factor) = extract_metrics(&morphed, &source);
-    // For from-scratch: min_scaled_j depends only on the first arg. We pass
-    // `source` as second arg to satisfy the signature; the returned AR
-    // factor (from_scratch_ar / source_ar) is ignored for this metric path.
+    // For from-scratch min-J: second-arg `source` is arbitrary here — only the
+    // first tuple element (min_scaled_j of `from_scratch`) is used; the AR
+    // ratio (`from_scratch_ar / source_ar`) is discarded (`_`). Contrast with
+    // the third call below where the second-arg choice is load-bearing.
     let (from_scratch_min_scaled_j, _) = extract_metrics(&from_scratch, &source);
     // Compute the true morph-vs-from_scratch AR ratio: pass `from_scratch` in
     // the source slot so quality_check computes max(morphed_AR / from_scratch_AR).
