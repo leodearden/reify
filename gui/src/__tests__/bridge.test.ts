@@ -502,6 +502,25 @@ describe('bridge def-preview commands', () => {
     expect(result).toBeNull();
   });
 
+  it('getEntityAtSourceLocation invokes get_entity_at_source_location with {line, col} and resolves to string', async () => {
+    mockInvoke.mockResolvedValue('Bracket.width');
+
+    const { getEntityAtSourceLocation } = await import('../bridge');
+    const result = await getEntityAtSourceLocation(7, 12);
+
+    expect(mockInvoke).toHaveBeenCalledWith('get_entity_at_source_location', { line: 7, col: 12 });
+    expect(result).toEqual('Bracket.width');
+  });
+
+  it('getEntityAtSourceLocation resolves to null when backend returns null', async () => {
+    mockInvoke.mockResolvedValue(null);
+
+    const { getEntityAtSourceLocation } = await import('../bridge');
+    const result = await getEntityAtSourceLocation(1, 1);
+
+    expect(result).toBeNull();
+  });
+
   it('getDefPreview invokes get_def_preview with {defName} and resolves to a converted GuiState', async () => {
     const rawState: RawGuiState = {
       meshes: [{ entity_path: 'BoltFlange.body', vertices: [0, 1, 2], indices: [0, 1, 2], normals: null }],
