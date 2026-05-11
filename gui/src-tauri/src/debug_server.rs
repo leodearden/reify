@@ -318,10 +318,12 @@ where
     let engine = Arc::clone(engine);
     let (tx, rx) = tokio::sync::oneshot::channel();
     std::thread::spawn(move || {
-        let result = engine
-            .lock()
-            .map_err(|e| format!("engine lock poisoned: {e}"))
-            .and_then(|mut session| f(&mut session));
+        // with_engine_lock catches panics and recovers from mutex poisoning,
+        // so f() panicking will not leave the mutex poisoned for future callers.
+        // The user closure f returns Result<T, String>, so with_engine_lock
+        // wraps it in another Result layer — flatten with and_then(identity).
+        let result = crate::engine_lock::with_engine_lock(&engine, f)
+            .and_then(std::convert::identity);
         let _ = tx.send(result);
     });
     rx.await.map_err(|_| "engine thread died".to_string())?
@@ -577,8 +579,9 @@ async fn handle_wait_for_idle(state: &DebugServerState, params: Value) -> Result
     // frontend where `evalStatus` starts as `'idle'` by default and would
     // produce a false-positive ok response on a fresh (un-loaded) session.
     {
-        let engine = state.engine.lock().unwrap();
-        if !engine.is_idle() {
+        let is_idle = crate::engine_lock::with_engine_lock(&state.engine, |s| s.is_idle())
+            .map_err(|e| e)?;
+        if !is_idle {
             return Ok(json!({"error": "engine_not_started"}));
         }
     }
