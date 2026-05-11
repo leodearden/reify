@@ -30,6 +30,11 @@
 use std::f64::consts::PI;
 
 use reify_kernel_gmsh::GMSH_AVAILABLE;
+use reify_solver_elastic::{
+    check_sweep_through_thickness, derive_layer_count, mesh_swept_profile_2d, sweep_2d_mesh_to_3d,
+    Mesh2d, Mesh2dError, Mesh2dOptions, Mesh2dReport, ProfileBoundary, SweepElementTarget,
+    SweepError, SweepParams, SweptConnectivity, SweptMesh3d, ThroughThicknessSweepWarning,
+};
 
 // ---------------------------------------------------------------------------
 // Shared fixture helpers
@@ -45,11 +50,44 @@ fn rect_boundary(w: f64, h: f64) -> ProfileBoundary {
         holes: vec![],
     }
 }
-use reify_solver_elastic::{
-    check_sweep_through_thickness, derive_layer_count, mesh_swept_profile_2d, sweep_2d_mesh_to_3d,
-    Mesh2d, Mesh2dError, Mesh2dOptions, Mesh2dReport, ProfileBoundary, SweepElementTarget,
-    SweepError, SweepParams, SweptConnectivity, SweptMesh3d, ThroughThicknessSweepWarning,
-};
+
+/// Assert that a `SweptMesh3d` has the expected hex-element dimensions.
+///
+/// Checks:
+/// - `connectivity` is `SweptConnectivity::Hex`.
+/// - `indices.len() == 8 * expected_n_base_quads * expected_layers`.
+/// - `vertices.len() == 3 * (expected_layers + 1) * expected_n_base_vertices`.
+/// - `mesh.layers == expected_layers`.
+fn assert_swept_hex_dimensions(
+    mesh: &SweptMesh3d,
+    expected_layers: usize,
+    expected_n_base_quads: usize,
+    expected_n_base_vertices: usize,
+) {
+    match &mesh.connectivity {
+        SweptConnectivity::Hex { indices } => {
+            assert_eq!(
+                indices.len(),
+                8 * expected_n_base_quads * expected_layers,
+                "hex indices.len() must be 8 * n_base_quads * K \
+                 (n_base_quads={expected_n_base_quads}, K={expected_layers})",
+            );
+        }
+        SweptConnectivity::Wedge { .. } => {
+            panic!("expected Hex connectivity, got Wedge");
+        }
+    }
+    assert_eq!(
+        mesh.vertices.len(),
+        3 * (expected_layers + 1) * expected_n_base_vertices,
+        "vertex buffer must be 3 * (K+1) * n_base_vertices \
+         (K={expected_layers}, n_base_vertices={expected_n_base_vertices})",
+    );
+    assert_eq!(
+        mesh.layers, expected_layers,
+        "swept.layers must equal K={expected_layers}",
+    );
+}
 
 // ---------------------------------------------------------------------------
 // Fixture tests
@@ -100,29 +138,17 @@ fn extruded_plate_hex_mesh_succeeds_with_expected_element_count() {
     let k = derive_layer_count(2.0, 1.0, 2);
     assert!(k >= 2, "derive_layer_count(2.0, 1.0, 2) must be >= 2, got {k}");
 
-    let swept = sweep_2d_mesh_to_3d(&report.mesh, &SweepParams::Extrude { axis: [0.0, 0.0, 1.0], length: 2.0 }, k)
-        .expect("extruded plate: sweep_2d_mesh_to_3d failed");
+    let swept = sweep_2d_mesh_to_3d(
+        &report.mesh,
+        &SweepParams::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: 2.0,
+        },
+        k,
+    )
+    .expect("extruded plate: sweep_2d_mesh_to_3d failed");
 
-    match &swept.connectivity {
-        SweptConnectivity::Hex { indices } => {
-            assert_eq!(
-                indices.len(),
-                8 * n_base_quads * k,
-                "hex indices.len() must be 8 * n_base_quads * K \
-                 (n_base_quads={n_base_quads}, K={k})",
-            );
-        }
-        SweptConnectivity::Wedge { .. } => {
-            panic!("extruded plate with Quad base must produce Hex connectivity")
-        }
-    }
-    assert_eq!(
-        swept.vertices.len(),
-        3 * (k + 1) * n_base_vertices,
-        "vertex buffer must be 3 * (K+1) * n_base_vertices \
-         (K={k}, n_base_vertices={n_base_vertices})",
-    );
-    assert_eq!(swept.layers, k, "swept.layers must equal K={k}");
+    assert_swept_hex_dimensions(&swept, k, n_base_quads, n_base_vertices);
     assert!(
         check_sweep_through_thickness(k, 2).is_none(),
         "through-thickness check must pass for K={k}",
