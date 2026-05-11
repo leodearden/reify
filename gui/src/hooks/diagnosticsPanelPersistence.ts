@@ -31,7 +31,14 @@ export function saveDiagnosticsLineWrap(value: boolean): void {
   }
 }
 
-/** Load persisted panel size. Returns null if missing, invalid, or wrong shape. */
+/**
+ * Load persisted panel size. Returns null if missing, invalid, or wrong shape.
+ *
+ * Validation: each dimension must be a finite positive number within the sane
+ * range (0, 10000]. Values outside this range (including NaN, ±Infinity,
+ * negative numbers, zero, or values above 10000) are rejected and null is
+ * returned, causing the panel to fall back to computeDefaultDialogSize.
+ */
 export function loadDiagnosticsPanelSize(): { width: number; height: number } | null {
   try {
     const raw = localStorage.getItem(DIAGNOSTICS_PANEL_SIZE_KEY);
@@ -41,8 +48,8 @@ export function loadDiagnosticsPanelSize(): { width: number; height: number } | 
     if (
       parsed !== null &&
       typeof parsed === 'object' &&
-      typeof parsed.width === 'number' &&
-      typeof parsed.height === 'number'
+      isValidDimension(parsed.width) &&
+      isValidDimension(parsed.height)
     ) {
       return { width: parsed.width, height: parsed.height };
     }
@@ -50,6 +57,11 @@ export function loadDiagnosticsPanelSize(): { width: number; height: number } | 
   } catch {
     return null;
   }
+}
+
+/** Returns true iff v is a finite positive number within the sane range (0, 10000]. */
+function isValidDimension(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 && v <= 10000;
 }
 
 /** Save panel size to localStorage. */
