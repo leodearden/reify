@@ -103,8 +103,17 @@ pub fn significance_filter(
         return FilterOutcome::Equivalent;
     }
 
-    let _ = length_tolerance_si;
-    todo!("significance_filter body: tolerance guard + Map extraction land in steps 8, 10")
+    // Missing/invalid tolerance guard: conservative fallback.
+    // Collapses None and any malformed tolerance (NaN/Inf/negative) into
+    // Different via the same gate as tolerance_scope.rs:151.
+    // Exercises: significance_filter_returns_different_when_tolerance_missing
+    let tol_si = match length_tolerance_si {
+        Some(t) if crate::tolerance_gate::is_valid_tolerance_si(t) => t,
+        _ => return FilterOutcome::Different,
+    };
+
+    let _ = (prev, new, tol_si);
+    todo!("significance_filter body: Map extraction and field comparison land in step 10")
 }
 
 #[cfg(test)]
