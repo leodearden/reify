@@ -133,6 +133,38 @@ pub struct CacheEntryHeader {
 }
 
 impl CacheEntryHeader {
+    /// Verify that the echo fields in this header match the expected key
+    /// components, returning `Err(io::ErrorKind::InvalidData)` on mismatch.
+    ///
+    /// Called by the cache reader after decoding the header to detect
+    /// corrupted entries (a misplaced or bit-flipped `.bin` file where
+    /// the header echoes disagree with the directory name / filename).
+    ///
+    /// Per PRD `docs/prds/v0_3/persistent-fea-cache.md` §"Header schema":
+    /// "engine_version_hash and input_hash are echoes of the directory-level
+    /// and filename-level values, so corruption is detectable."
+    pub fn verify_echoes(
+        &self,
+        expected_engine_version_hash: &[u8; 32],
+        expected_input_hash: &[u8; 32],
+    ) -> io::Result<()> {
+        if &self.engine_version_hash != expected_engine_version_hash {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "CacheEntryHeader engine_version_hash echo does not match \
+                 directory name (corrupted entry?)",
+            ));
+        }
+        if &self.input_hash != expected_input_hash {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "CacheEntryHeader input_hash echo does not match \
+                 filename (corrupted entry?)",
+            ));
+        }
+        Ok(())
+    }
+
     /// Encode `self` into `w` using bincode 1.3 fixint-LE encoding.
     ///
     /// Same error-mapping discipline as
