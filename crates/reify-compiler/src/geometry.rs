@@ -2204,6 +2204,77 @@ mod tests {
         );
     }
 
+    // --- compile_geometry_call: Match emits Error (task 3418) ---
+
+    /// `compile_geometry_call` must emit a clean Error diagnostic (and return
+    /// `None`) when given a `Match` expression rather than silently falling
+    /// through to `_ => return None` with no message.
+    ///
+    /// This test MUST FAIL before the Match arm is added to
+    /// `compile_geometry_call` (today the expression falls through the
+    /// `_ => return None` catch-all with no diagnostic emitted).
+    #[test]
+    fn compile_geometry_call_match_returning_solid_emits_error_and_returns_none() {
+        // Build: match axis { X => box(1,1,1), Y => box(1,1,1) }
+        let discriminant = reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::Ident("axis".to_string()),
+            span: reify_types::SourceSpan::new(0, 4),
+        };
+        let match_expr = make_match(
+            discriminant,
+            vec![make_call_with_arity("box", 3), make_call_with_arity("box", 3)],
+        );
+
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_types::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_syntax::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &match_expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        // (a) Must return None — no ops produced.
+        assert!(
+            result.is_none(),
+            "compile_geometry_call must return None for a Match expression"
+        );
+
+        // (b) Must emit exactly one Error-severity diagnostic.
+        let error_diags: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.severity == reify_types::Severity::Error)
+            .collect();
+        assert_eq!(
+            error_diags.len(),
+            1,
+            "expected exactly one Error diagnostic, got: {:?}",
+            error_diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+
+        // (c) The Error message must mention "match" and "geometry".
+        let msg = &error_diags[0].message;
+        assert!(
+            msg.contains("match") && msg.contains("geometry"),
+            "Error message must contain 'match' and 'geometry', got: {:?}",
+            msg
+        );
+
+        // (d) The Error must have at least one DiagnosticLabel attached.
+        assert!(
+            !error_diags[0].labels.is_empty(),
+            "Error diagnostic must have at least one label, got none"
+        );
+    }
+
     // --- Match branch geometry recognition (task 3418) ---
 
     /// Helper: build a `Match` Expr from a discriminant Expr and a slice of arm body Exprs.
