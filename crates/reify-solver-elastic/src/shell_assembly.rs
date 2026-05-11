@@ -538,6 +538,11 @@ pub fn shell_element_stiffness(
         [kbb_d / det_kbb, -kbb_b / det_kbb],
         [-kbb_c / det_kbb, kbb_a / det_kbb],
     ];
+    // DEBUG: print K_BB and max K_NB entry (remove after diagnosis)
+    {
+        let knb_max = (0..NDOF).flat_map(|i| (0..2).map(move |p| k_full[i][NDOF+p].abs())).fold(0.0_f64, f64::max);
+        eprintln!("DEBUG K_BB=[[{:.4e},{:.4e}],[{:.4e},{:.4e}]] det={:.4e} knb_max={:.4e}", kbb_a,kbb_b,kbb_c,kbb_d,det_kbb,knb_max);
+    }
     // K_eff[i][j] = K_NN[i][j] − Σ_{p,q} K_NB[i][p] · K_BB⁻¹[p][q] · K_BN[q][j]
     let mut k_loc = [[0.0_f64; NDOF]; NDOF];
     for i in 0..NDOF {
