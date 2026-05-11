@@ -25,6 +25,41 @@
 //! Layer ℓ=0 is the "bottom" (origin) plane; layer ℓ=K is the "top" plane.
 
 // ---------------------------------------------------------------------------
+// Pure helpers
+// ---------------------------------------------------------------------------
+
+/// Derive the number of element layers from the sweep distance and element size.
+///
+/// Returns `round(sweep_distance / mesh_size).max(min_layers)`.
+///
+/// # Defensive handling
+///
+/// Any non-positive or non-finite value in `sweep_distance` or `mesh_size`
+/// causes the function to return `min_layers` directly. This matches the
+/// expected behaviour when called from PRD task #9's `ElasticOptions` wiring:
+/// if `mesh_size` was unset (0 or negative) or the geometry produced a
+/// degenerate distance, we fall through to the minimum.
+///
+/// # PRD contract
+///
+/// From `docs/prds/v0_3/hex-wedge-meshing.md` task #7:
+/// `K = max(min_layers, round(sweep_distance / mesh_size))`.
+/// Task #9 wires this via `ElasticOptions.mesh_size` and
+/// `ElasticOptions.sweep_subdivisions`.
+pub fn derive_layer_count(sweep_distance: f64, mesh_size: f64, min_layers: usize) -> usize {
+    if sweep_distance.is_finite()
+        && mesh_size.is_finite()
+        && sweep_distance > 0.0
+        && mesh_size > 0.0
+    {
+        let raw = (sweep_distance / mesh_size).round();
+        raw.max(min_layers as f64) as usize
+    } else {
+        min_layers
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
 
