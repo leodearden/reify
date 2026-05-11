@@ -102,12 +102,8 @@ pub(crate) fn run_element_stiffness_tests(
     make_phys: &dyn Fn(f64) -> Vec<[f64; 3]>,
     spec: ElementStiffnessTestSpec,
 ) {
-    let n_nodes = spec.n_nodes;
+    let ElementStiffnessTestSpec { n_nodes, vol_ref, centroid, swap_pair, vol_swapped } = spec;
     let n_dofs = 3 * n_nodes;
-    let vol_ref = spec.vol_ref;
-    let centroid = spec.centroid;
-    let swap_pair = spec.swap_pair;
-    let vol_swapped = spec.vol_swapped;
     let mat = dimensionless_steel_like();
     let phys1 = make_phys(1.0);
     assert_eq!(
