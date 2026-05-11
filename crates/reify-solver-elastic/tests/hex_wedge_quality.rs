@@ -195,7 +195,10 @@ fn extruded_plate_hex_mesh_succeeds_with_expected_element_count() {
     assert!(n_base_quads >= 1, "expected at least one base quad");
 
     let k = derive_layer_count(2.0, 1.0, 2);
-    assert!(k >= 2, "derive_layer_count(2.0, 1.0, 2) must be >= 2, got {k}");
+    assert!(
+        k >= 2,
+        "derive_layer_count(2.0, 1.0, 2) must be >= 2, got {k}"
+    );
 
     let swept = sweep_2d_mesh_to_3d(
         &report.mesh,
@@ -255,8 +258,7 @@ fn revolved_disc_hex_or_wedge_mesh_succeeds() {
         angle: PI / 2.0,
     };
 
-    let swept =
-        sweep_2d_mesh_to_3d(&report.mesh, &params, k).expect("revolved disc: sweep failed");
+    let swept = sweep_2d_mesh_to_3d(&report.mesh, &params, k).expect("revolved disc: sweep failed");
 
     match &report.mesh {
         Mesh2d::Quad { vertices, indices } => {
@@ -311,7 +313,10 @@ fn simple_linear_sweep_byte_identical_to_extrude_on_meshed_profile() {
     let report = result.expect("linear sweep test: mesh_swept_profile_2d failed");
 
     let k = derive_layer_count(4.0, 2.0, 2);
-    assert!(k >= 2, "derive_layer_count(4.0, 2.0, 2) must be >= 2, got {k}");
+    assert!(
+        k >= 2,
+        "derive_layer_count(4.0, 2.0, 2) must be >= 2, got {k}"
+    );
 
     let extrude_mesh = sweep_2d_mesh_to_3d(
         &report.mesh,
@@ -382,12 +387,7 @@ fn drilled_plate_phase_b_positive_case_succeeds() {
     // (40,40)→(40,60)→(60,60)→(60,40), wound clockwise.
     let boundary = ProfileBoundary {
         outer: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 100.0], [0.0, 100.0]],
-        holes: vec![vec![
-            [40.0, 40.0],
-            [40.0, 60.0],
-            [60.0, 60.0],
-            [60.0, 40.0],
-        ]],
+        holes: vec![vec![[40.0, 40.0], [40.0, 60.0], [60.0, 60.0], [60.0, 40.0]]],
     };
     let options = Mesh2dOptions {
         mesh_size: Some(20.0),
@@ -414,7 +414,10 @@ fn drilled_plate_phase_b_positive_case_succeeds() {
     );
 
     let k = derive_layer_count(2.0, 1.0, 2);
-    assert!(k >= 2, "derive_layer_count(2.0, 1.0, 2) must be >= 2, got {k}");
+    assert!(
+        k >= 2,
+        "derive_layer_count(2.0, 1.0, 2) must be >= 2, got {k}"
+    );
 
     let swept = sweep_2d_mesh_to_3d(
         &report.mesh,
@@ -516,13 +519,15 @@ fn degenerate_sweep_params_proxy_for_twisted_loft() {
 #[test]
 fn compiles_against_public_surface() {
     // Function-pointer casts verify exact signatures match the re-exports.
-    let _: fn(&ProfileBoundary, SweepElementTarget, &Mesh2dOptions)
-        -> Result<Mesh2dReport, Mesh2dError> = mesh_swept_profile_2d;
+    let _: fn(
+        &ProfileBoundary,
+        SweepElementTarget,
+        &Mesh2dOptions,
+    ) -> Result<Mesh2dReport, Mesh2dError> = mesh_swept_profile_2d;
     let _: fn(&Mesh2d, &SweepParams, usize) -> Result<SweptMesh3d, SweepError> =
         sweep_2d_mesh_to_3d;
     let _: fn(f64, f64, usize) -> usize = derive_layer_count;
-    let _: fn(usize, usize) -> Option<ThroughThicknessSweepWarning> =
-        check_sweep_through_thickness;
+    let _: fn(usize, usize) -> Option<ThroughThicknessSweepWarning> = check_sweep_through_thickness;
 
     // GMSH_AVAILABLE: const bool from the kernel crate.
     let _: bool = GMSH_AVAILABLE;
