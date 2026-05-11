@@ -6156,7 +6156,7 @@ fn build_gui_state_surfaces_parse_error_after_failed_load_from_source() {
 /// Disjointness (cold-start vs live-edit) is now a type-level guarantee via
 /// `Option<CompileFailure>` rather than a runtime `debug_assert!` on separate fields.
 #[test]
-fn commit_state_clears_last_compile_diagnostics_on_successful_load() {
+fn commit_state_clears_cold_start_compile_failure_on_successful_load() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
@@ -6197,7 +6197,7 @@ fn commit_state_clears_last_compile_diagnostics_on_successful_load() {
 /// Disjointness (cold-start vs live-edit) is now a type-level guarantee via
 /// `Option<CompileFailure>` rather than a runtime `debug_assert!` on separate fields.
 #[test]
-fn commit_state_clears_live_compile_diagnostics_on_successful_recovery() {
+fn commit_state_clears_live_edit_compile_failure_on_successful_recovery() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
@@ -6239,7 +6239,6 @@ fn commit_state_clears_live_compile_diagnostics_on_successful_recovery() {
 /// calling `build_gui_state`.
 #[test]
 fn compile_failure_records_cold_start_then_live_edit_kinds() {
-
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));

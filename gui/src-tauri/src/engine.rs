@@ -873,7 +873,19 @@ impl EngineSession {
                     tessellation_diagnostics: Vec::new(),
                     compile_diagnostics: match &self.compile_failure {
                         Some(f) if f.kind == CompileFailureKind::ColdStart => f.diags.clone(),
-                        _ => Vec::new(),
+                        Some(f) => {
+                            // `compiled` is `None` on this branch, so only `ColdStart`
+                            // failures are expected.  A `LiveEdit` failure here means
+                            // `self.compiled` was set back to `None` without clearing
+                            // `compile_failure`, which is an invariant violation.
+                            debug_assert!(
+                                matches!(f.kind, CompileFailureKind::ColdStart),
+                                "LiveEdit failure stored while compiled is None — invariant broken; kind = {:?}",
+                                f.kind
+                            );
+                            f.diags.clone()
+                        }
+                        None => Vec::new(),
                     },
                 });
             }
