@@ -583,9 +583,7 @@ fn plate_hole_diameter_sweep_obeys_materially_better_rule_with_calibrated_defaul
     // its `saw_pass && saw_reject` assertion is now load-bearing for
     // Reject-branch materiality coverage and must not be weakened.
     let target_params = [0.31_f64, 0.35, 0.40, 0.50];
-    let fixture = |hole_diameter: f64| {
-        fixtures::plate_with_hole(1.0, hole_diameter, 0.1, 4, 2)
-    };
+    let fixture = |hole_diameter: f64| fixtures::plate_with_hole(1.0, hole_diameter, 0.1, 4, 2);
     // See `calibration_sweep_options` for the rationale on the override.
     let options = calibration_sweep_options();
 
@@ -671,9 +669,7 @@ fn bracket_fillet_radius_sweep_obeys_materially_better_rule_with_calibrated_defa
 /// this test would fail with a clear diagnostic.
 #[test]
 fn from_scratch_max_ar_factor_distinct_from_morph_max_ar_factor_on_wide_plate_sweep_step() {
-    let fixture = |hole_diameter: f64| {
-        fixtures::plate_with_hole(1.0, hole_diameter, 0.1, 4, 2)
-    };
+    let fixture = |hole_diameter: f64| fixtures::plate_with_hole(1.0, hole_diameter, 0.1, 4, 2);
     let options = calibration_sweep_options();
 
     // Wide step: hole_diameter 0.30 → 0.60 (2× increase). The source AR

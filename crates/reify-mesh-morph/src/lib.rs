@@ -367,8 +367,11 @@ mod tests {
     // fences above — fails to compile if a re-export drops, the public
     // signature drifts, or a variant is renamed.
     const _: fn() = || {
-        use crate::{CgSolverOptions, ElasticityFailure, elasticity_morph, elasticity_morph_with_cg_opts};
-        #[allow(clippy::type_complexity)] // pinning the full public signature is the point of the fence
+        use crate::{
+            CgSolverOptions, ElasticityFailure, elasticity_morph, elasticity_morph_with_cg_opts,
+        };
+        #[allow(clippy::type_complexity)]
+        // pinning the full public signature is the point of the fence
         let _fn_ref: fn(
             &reify_types::VolumeMesh,
             &[(u32, [f64; 3])],
@@ -393,6 +396,7 @@ mod tests {
         let _: ElasticityFailure = ElasticityFailure::SolverNotConverged { iterations: 0 };
         let _: ElasticityFailure = ElasticityFailure::InvalidTetIndex(0u32);
         let _: ElasticityFailure = ElasticityFailure::NoElementsForPrescribedDisplacements;
+        let _: ElasticityFailure = ElasticityFailure::MalformedTetIndices { len: 0 };
     };
 
     // ── Step-12: lib re-exports make quality module public surface accessible ──
