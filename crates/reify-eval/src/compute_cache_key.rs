@@ -35,10 +35,15 @@ pub fn compute_cache_key(node: &ComputeNodeData, ctx: &EvaluationGraph) -> Conte
         ContentHash::combine_all(hashes)
     };
 
-    // Collect realization_input content_hashes (Vec order — sort applied in step-14).
+    // Collect realization_input content_hashes sorted by (entity, index) tuple.
+    // RealizationNodeId does not derive Ord upstream (intentionally, per design
+    // decision in plan.json), so we sort locally by the same (entity, index)
+    // lexicographic ordering that a derived Ord would produce.
     let realization_bucket_hash: ContentHash = {
-        let hashes: Vec<ContentHash> = node
-            .realization_inputs
+        let mut sorted_realization_inputs = node.realization_inputs.clone();
+        sorted_realization_inputs
+            .sort_by(|a, b| (a.entity.as_str(), a.index).cmp(&(b.entity.as_str(), b.index)));
+        let hashes: Vec<ContentHash> = sorted_realization_inputs
             .iter()
             .map(|id| {
                 ctx.realizations
