@@ -310,16 +310,29 @@ pub fn swept_kind_to_sweep_params(
         SweptKind::Extrude { axis, length } => {
             length.as_f64().map(|len| SweepParams::Extrude { axis: *axis, length: len })
         }
-        // Step-18: Revolve — forward fields verbatim; rename angle_rad → angle.
+        // Step-18: Revolve — forward fields; rename angle_rad → angle.
+        // SweepParams::Revolve.angle must be > 0 (validate_sweep_inputs rejects
+        // angle <= 0.0 with DegenerateMagnitude).  SweptKind::Revolve.angle_rad
+        // is signed — the classifier only rejects |angle_rad| < tolerance, so
+        // negative values can pass through.  Normalise: when angle_rad < 0,
+        // negate axis_dir (reversing the rotation direction) and use abs(angle_rad)
+        // so the physical rotation is unchanged with a positive-angle representation.
         SweptKind::Revolve {
             axis_origin,
             axis_dir,
             angle_rad,
-        } => Some(SweepParams::Revolve {
-            axis_origin: *axis_origin,
-            axis_dir: *axis_dir,
-            angle: *angle_rad,
-        }),
+        } => {
+            let (axis_dir_out, angle_out) = if *angle_rad < 0.0 {
+                ([-axis_dir[0], -axis_dir[1], -axis_dir[2]], -*angle_rad)
+            } else {
+                (*axis_dir, *angle_rad)
+            };
+            Some(SweepParams::Revolve {
+                axis_origin: *axis_origin,
+                axis_dir: axis_dir_out,
+                angle: angle_out,
+            })
+        }
         // Step-20: SweepLinear — re-resolve path handle to its LineSegment source.
         SweptKind::SweepLinear { path, .. } => {
             let source_op = handles
@@ -1060,6 +1073,87 @@ mod tests {
             result_b.is_none(),
             "unresolvable path handle must return None; got {result_b:?}"
         );
+    }
+
+    // ── Amendment: additional swept_kind_to_sweep_params edge cases ──────
+
+    /// Negative `angle_rad` on a Revolve: the converter must emit a positive
+    /// `angle` in `SweepParams` (which validate_sweep_inputs requires > 0) and
+    /// flip `axis_dir` to preserve the rotation direction.
+    #[test]
+    fn swept_kind_to_sweep_params_revolve_negative_angle_normalises_to_positive() {
+        let kind = SweptKind::Revolve {
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [0.0, 0.0, 1.0],
+            angle_rad: -std::f64::consts::FRAC_PI_2,
+        };
+        let result = swept_kind_to_sweep_params(&kind, &[], &[]);
+        match result {
+            Some(reify_solver_elastic::SweepParams::Revolve { axis_origin, axis_dir, angle }) => {
+                // angle must be positive (abs of input)
+                assert!(
+                    (angle - std::f64::consts::FRAC_PI_2).abs() < 1e-12,
+                    "angle must be |angle_rad|; got {angle}"
+                );
+                // axis_dir must be negated to preserve rotation direction
+                assert!(
+                    axis_dir[0].abs() < 1e-12
+                        && axis_dir[1].abs() < 1e-12
+                        && (axis_dir[2] + 1.0).abs() < 1e-12,
+                    "axis_dir must be flipped to [0,0,-1]; got {axis_dir:?}"
+                );
+                // axis_origin forwarded unchanged
+                assert!(
+                    axis_origin[0].abs() < 1e-12
+                        && axis_origin[1].abs() < 1e-12
+                        && axis_origin[2].abs() < 1e-12,
+                    "axis_origin must be [0,0,0]; got {axis_origin:?}"
+                );
+            }
+            other => panic!("expected Some(SweepParams::Revolve {{ ... }}), got {other:?}"),
+        }
+    }
+
+    /// Zero-length `LineSegment` (both endpoints equal): the converter still
+    /// returns `Some(SweepParams::SweepLinear { axis: [0,0,0], length: 0.0 })`.
+    /// Validation (DegenerateMagnitude) is the kernel's responsibility, not the
+    /// converter's — document that contract here.
+    #[test]
+    fn swept_kind_to_sweep_params_sweep_linear_zero_length_line_returns_some() {
+        let ops = vec![
+            GeometryOp::LineSegment {
+                x1: 0.0,
+                y1: 0.0,
+                z1: 0.0,
+                x2: 0.0,
+                y2: 0.0,
+                z2: 0.0, // degenerate: same point
+            },
+            GeometryOp::Sweep {
+                profile: GeometryHandleId(0),
+                path: GeometryHandleId(1),
+            },
+        ];
+        let handles = vec![GeometryHandleId(1), GeometryHandleId(2)];
+        let kind = SweptKind::SweepLinear {
+            profile: GeometryHandleId(0),
+            path: GeometryHandleId(1),
+        };
+        let result = swept_kind_to_sweep_params(&kind, &ops, &handles);
+        match result {
+            Some(reify_solver_elastic::SweepParams::SweepLinear { axis, length }) => {
+                // axis = [0,0,0], length = 0 — degenerate but converter returns Some;
+                // kernel's validate_sweep_inputs will reject with DegenerateMagnitude.
+                assert!(
+                    axis[0].abs() < 1e-12 && axis[1].abs() < 1e-12 && axis[2].abs() < 1e-12,
+                    "axis must be [0,0,0]; got {axis:?}"
+                );
+                assert!(length.abs() < 1e-12, "length must be 0.0; got {length}");
+            }
+            other => {
+                panic!("expected Some(SweepParams::SweepLinear {{ ... }}), got {other:?}")
+            }
+        }
     }
 
     // ── Step-9: SweptKindTable record / lookup / len / is_empty ───────────

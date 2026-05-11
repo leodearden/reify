@@ -20,7 +20,7 @@ use crate::geometry_ops::compile_geometry_op;
 use crate::journal::{EvalEvent, EventJournal, EventKind};
 use crate::primitive_attribute_seed::seed_primitive_attributes_for_handle;
 use crate::realization_cache::RealizationCache;
-use crate::sweep_classifier::{SweptKind, SweptKindTable, classify_swept_body};
+use crate::sweep_classifier::{SweptKind, SweptKindTable, classify_swept_body, swept_kind_to_sweep_params};
 use crate::topology_attribute_propagation::{
     LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M, detect_local_index_reassignment_diagnostics,
     populate_extrude_attributes, populate_loft_attributes, populate_revolve_attributes,
@@ -2217,11 +2217,17 @@ pub(crate) enum VolumeMeshOutcome {
 /// - `require_hex_wedge`: when `true`, treat any swept-path failure as a
 ///   hard error rather than falling back to tets
 ///   (`ElasticOptions.require_hex_wedge`).
+/// - `ops`: the parallel compiled-op slice from the realization (forwarded to
+///   [`swept_kind_to_sweep_params`] for the `SweepLinear` arm's path-handle
+///   resolution; ignored for `Extrude`/`Revolve`).
+/// - `handles`: the parallel handle-id slice from the same realization (same
+///   usage as `ops`).
 /// - `gmsh_2d`: closure that 2D-meshes the swept cross-section profile;
 ///   receives `&SweptKind`. Signature:
 ///   `FnOnce(&SweptKind) -> Result<Mesh2dReport, Mesh2dError>`.
 /// - `sweep_step`: closure that extrudes/revolves the 2D mesh into a 3D
-///   hex/wedge mesh; receives `(&SweepParams, &Mesh2d)`. Signature:
+///   hex/wedge mesh; receives `(&SweepParams, &Mesh2d)` where `SweepParams`
+///   is built internally via [`swept_kind_to_sweep_params`]. Signature:
 ///   `FnOnce(&SweepParams, &Mesh2d) -> Result<SweptMesh3d, SweepError>`.
 /// - `tet_path`: closure that produces a tet mesh via
 ///   `mesh_surface_to_volume_with_diagnostics`; called as the fall-back.
@@ -2244,6 +2250,8 @@ pub(crate) fn dispatch_volume_mesh<G, S, T>(
     swept_kind: Option<&SweptKind>,
     force_tet: bool,
     require_hex_wedge: bool,
+    ops: &[GeometryOp],
+    handles: &[GeometryHandleId],
     gmsh_2d: G,
     sweep_step: S,
     tet_path: T,
@@ -2268,10 +2276,22 @@ where
     };
 
     // Steps 10 + 12 + 14: swept path — call gmsh_2d then sweep_step.
-    // Build SweepParams inline from the SweptKind so the dispatch function is
-    // self-contained (production callers may also use swept_kind_to_sweep_params
-    // from sweep_classifier.rs for the same conversion).
-    let params = inline_sweep_params(swept);
+    // Build SweepParams via the canonical converter in sweep_classifier.rs so
+    // there is a single conversion path.  Returns None only for SweepLinear
+    // with an unresolvable path handle — treat as a swept-path failure.
+    let params = match swept_kind_to_sweep_params(swept, ops, handles) {
+        Some(p) => p,
+        None => {
+            return if require_hex_wedge {
+                Err(GeometryError::OperationFailed(
+                    "swept hex/wedge path failed: cannot resolve SweepLinear path handle"
+                        .to_string(),
+                ))
+            } else {
+                tet_path().map(VolumeMeshOutcome::Tet)
+            };
+        }
+    };
     match gmsh_2d(swept) {
         Ok(report) => match sweep_step(&params, &report.mesh) {
             Ok(mesh3d) => Ok(VolumeMeshOutcome::Swept(mesh3d)),
@@ -2287,34 +2307,6 @@ where
     }
 }
 
-/// Build a [`SweepParams`] from a [`SweptKind`] without calling
-/// `swept_kind_to_sweep_params` (which also needs the ops/handles slices for
-/// `SweepLinear`).  Used internally by [`dispatch_volume_mesh`] so the
-/// dispatcher is self-contained.  For `SweepLinear`, a zero-axis placeholder
-/// is emitted — the closure passed as `sweep_step` is expected to close over
-/// the real params built by the caller via `swept_kind_to_sweep_params`.
-#[allow(dead_code)]
-fn inline_sweep_params(kind: &SweptKind) -> SweepParams {
-    match kind {
-        SweptKind::Extrude { axis, length } => SweepParams::Extrude {
-            axis: *axis,
-            length: length.as_f64().unwrap_or(0.0),
-        },
-        SweptKind::Revolve {
-            axis_origin,
-            axis_dir,
-            angle_rad,
-        } => SweepParams::Revolve {
-            axis_origin: *axis_origin,
-            axis_dir: *axis_dir,
-            angle: *angle_rad,
-        },
-        SweptKind::SweepLinear { .. } => SweepParams::SweepLinear {
-            axis: [0.0, 0.0, 0.0],
-            length: 0.0,
-        },
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -4538,10 +4530,9 @@ mod dispatch_volume_mesh_tests {
     // ── Step-1: compile-time surface pin ─────────────────────────────────
 
     /// Compile-time surface pin: names `VolumeMeshOutcome::Tet` and `::Swept`,
-    /// and verifies `dispatch_volume_mesh`'s three-parameter generic signature.
-    /// Compiles only after step-2 lands; until then it fails with
-    /// "cannot find type/function".  A rename or signature drift breaks this
-    /// function before any behavioural test runs.
+    /// and verifies `dispatch_volume_mesh`'s generic signature including the
+    /// new `ops`/`handles` slice parameters.  A rename, signature drift, or
+    /// removal of either variant breaks compilation before any behavioural test.
     // ── Step-3: force_tet short-circuit ──────────────────────────────────
 
     #[test]
@@ -4551,6 +4542,8 @@ mod dispatch_volume_mesh_tests {
             Some(&kind),
             true,  // force_tet
             true,  // require_hex_wedge (should be ignored when force_tet)
+            &[],   // ops — not reached before force_tet short-circuit
+            &[],   // handles
             |_swept| unreachable!("gmsh_2d must not be called when force_tet=true"),
             |_params, _mesh| unreachable!("sweep_step must not be called when force_tet=true"),
             || Ok(make_empty_volume_mesh()),
@@ -4569,6 +4562,8 @@ mod dispatch_volume_mesh_tests {
             None,
             false, // force_tet
             false, // require_hex_wedge
+            &[],   // ops
+            &[],   // handles
             |_swept| unreachable!("gmsh_2d must not be called when swept_kind=None"),
             |_params, _mesh| unreachable!("sweep_step must not be called when swept_kind=None"),
             || Ok(make_empty_volume_mesh()),
@@ -4587,6 +4582,8 @@ mod dispatch_volume_mesh_tests {
             None,
             false, // force_tet
             true,  // require_hex_wedge
+            &[],   // ops
+            &[],   // handles
             |_swept| unreachable!("gmsh_2d must not be called"),
             |_params, _mesh| unreachable!("sweep_step must not be called"),
             || unreachable!("tet_path must not be called when require_hex_wedge errors"),
@@ -4603,16 +4600,34 @@ mod dispatch_volume_mesh_tests {
     }
 
     // ── Step-9: Some(swept) happy path → Swept ───────────────────────────
+    // Also asserts that the SweepParams delivered to sweep_step match the
+    // SweptKind's fields — pins the params contract that dispatch advertises.
 
     #[test]
-    fn dispatch_swept_kind_happy_path_returns_swept() {
-        let kind = extrude_kind();
+    fn dispatch_swept_kind_happy_path_returns_swept_and_pins_sweep_params() {
+        let kind = extrude_kind(); // Extrude { axis: [0,0,1], length: Value::length(0.01) }
         let result = dispatch_volume_mesh(
             Some(&kind),
             false, // force_tet
             false, // require_hex_wedge
+            &[],   // ops — Extrude arm does not need them
+            &[],   // handles
             |_swept| Ok(make_mesh2d_report()),
-            |_params, _mesh| Ok(make_swept_mesh(2)),
+            |params, _mesh| {
+                // Assert that the SweepParams delivered to sweep_step are correct
+                // for the Extrude arm (axis forwarded verbatim, length = 0.01).
+                match params {
+                    SweepParams::Extrude { axis, length } => {
+                        assert_eq!(*axis, [0.0, 0.0, 1.0], "axis must be [0,0,1]");
+                        assert!(
+                            (length - 0.01).abs() < 1e-12,
+                            "length must be 0.01; got {length}"
+                        );
+                    }
+                    other => panic!("expected SweepParams::Extrude, got {other:?}"),
+                }
+                Ok(make_swept_mesh(2))
+            },
             || unreachable!("tet_path must not be called on the swept happy path"),
         );
         match result {
@@ -4634,6 +4649,7 @@ mod dispatch_volume_mesh_tests {
             Some(&kind),
             false,
             false,
+            &[], &[], // ops, handles
             |_swept| Err(Mesh2dError::DegenerateBoundary),
             |_params, _mesh| unreachable!("sweep_step must not be called when gmsh_2d fails"),
             || Ok(make_empty_volume_mesh()),
@@ -4648,6 +4664,7 @@ mod dispatch_volume_mesh_tests {
             Some(&kind),
             false,
             false,
+            &[], &[], // ops, handles
             |_swept| Ok(make_mesh2d_report()),
             |_params, _mesh| Err(SweepError::DegenerateAxis),
             || Ok(make_empty_volume_mesh()),
@@ -4669,6 +4686,7 @@ mod dispatch_volume_mesh_tests {
             Some(&kind),
             false,
             true, // require_hex_wedge
+            &[], &[], // ops, handles
             |_swept| Err(Mesh2dError::DegenerateBoundary),
             |_params, _mesh| unreachable!("sweep_step must not be called when gmsh_2d fails"),
             || unreachable!("tet_path must not be called when require_hex_wedge errors"),
@@ -4688,6 +4706,7 @@ mod dispatch_volume_mesh_tests {
             Some(&kind),
             false,
             true, // require_hex_wedge
+            &[], &[], // ops, handles
             |_swept| Ok(make_mesh2d_report()),
             |_params, _mesh| Err(SweepError::DegenerateMagnitude),
             || unreachable!("tet_path must not be called when require_hex_wedge errors"),
@@ -4708,13 +4727,14 @@ mod dispatch_volume_mesh_tests {
         // Name both variants — a rename or variant removal breaks compilation.
         let _: VolumeMeshOutcome = VolumeMeshOutcome::Tet(todo!());
         let _: VolumeMeshOutcome = VolumeMeshOutcome::Swept(todo!());
-        // Verify the three closure type-parameter signature via function-item
-        // to function-pointer coercion.  The `_` wildcards are inferred from
-        // the LHS type annotation.
+        // Verify the full signature including the new ops/handles slice parameters
+        // via function-item to function-pointer coercion.
         let _: fn(
             Option<&SweptKind>,
             bool,
             bool,
+            &[GeometryOp],
+            &[GeometryHandleId],
             fn(&SweptKind) -> Result<Mesh2dReport, Mesh2dError>,
             fn(&SweepParams, &Mesh2d) -> Result<SweptMesh3d, SweepError>,
             fn() -> Result<VolumeMesh, GeometryError>,
