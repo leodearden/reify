@@ -475,6 +475,28 @@ fn decode_f64_slab_from_le_bytes(bytes: &[u8]) -> impl Iterator<Item = f64> + '_
     })
 }
 
+/// Construct the `.meta` sidecar path for a given set of key components.
+///
+/// The `.meta` file lives in the same directory as the corresponding `.bin`
+/// file — this parent-dir invariant is exercised by
+/// `entry_meta_path_uses_meta_extension_under_same_shard_dir_as_bin` and is
+/// structurally required for atomic-rename semantics (the write orchestrator
+/// can `create_dir_all(&shard_dir(...))` once and then write both files into
+/// it).
+///
+/// See [`entry_bin_path`] for the full layout and precondition documentation.
+pub fn entry_meta_path(cache_root: &Path, engine_version_hash: &str, input_hash: &str) -> PathBuf {
+    debug_assert!(
+        input_hash.len() >= 2,
+        "entry_meta_path: input_hash must be at least 2 chars, got {:?}",
+        input_hash
+    );
+    cache_root
+        .join(engine_version_hash)
+        .join(&input_hash[..2])
+        .join(format!("{input_hash}.meta"))
+}
+
 /// Construct the `.bin` cache-entry path for a given set of key components.
 ///
 /// # Layout
