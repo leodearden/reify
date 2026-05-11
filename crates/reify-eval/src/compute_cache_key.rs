@@ -365,9 +365,10 @@ mod tests {
         // Same ContentHash on both a value cell and a realization — only the
         // outer-position slot differs (value_bucket at pos 1, realization_bucket
         // at pos 2 of combine_all([target, val_bucket, real_bucket, opts])).
-        // combine_all is order-dependent (hash.rs L32-37), so these must differ
-        // even when the inner bucket hash is identical.  Pins L33-36 + L153-158
-        // against a future flat-XOR refactor that would collapse domain separation.
+        // ContentHash::combine is order-dependent, so these must differ even when
+        // the inner bucket hash is identical.  Pins the outer combine_all call at
+        // the bottom of compute_cache_key against a future flat-XOR refactor that
+        // would collapse domain separation.
         let shared_h = ContentHash::of_str("shared_H");
         let val_id = ValueCellId::new("Bracket", "x");
         let real_id = RealizationNodeId::new("Bracket", 0);
@@ -389,7 +390,7 @@ mod tests {
             key_real,
             "domain separation: a value-input hash and a realization-input hash with the \
              same ContentHash must not produce the same cache key — they occupy different \
-             positions in the outer combine_all (L153-158)"
+             positions in the outer combine_all in compute_cache_key"
         );
     }
 
@@ -397,9 +398,10 @@ mod tests {
     #[should_panic(expected = "value_input")]
     fn compute_cache_key_panics_on_missing_value_input() {
         // Empty graph — the ValueCellId "ghost" was never inserted.
-        // The .unwrap_or_else(|| panic!(...)) at L108-113 fires with a message
-        // containing "value_input".  Pins the documented producer-bug panic policy
-        // (L70-77) against a future silent-fallback refactor (e.g. ContentHash(0)).
+        // The .unwrap_or_else(|| panic!(...)) in the value_bucket_hash block fires
+        // with a message containing "value_input".  Pins the producer-bug panic
+        // policy (documented in compute_cache_key's docstring) against a future
+        // silent-fallback refactor (e.g. ContentHash(0)).
         let graph = EvaluationGraph::default();
         let mut node = make_empty_node();
         node.value_inputs = vec![ValueCellId::new("Bracket", "ghost")];
@@ -410,9 +412,10 @@ mod tests {
     #[should_panic(expected = "realization_input")]
     fn compute_cache_key_panics_on_missing_realization_input() {
         // Empty graph — RealizationNodeId("Bracket", 0) was never inserted.
-        // The .unwrap_or_else(|| panic!(...)) at L141-146 fires with a message
-        // containing "realization_input".  "realization_input" is disjoint from
-        // "value_input", so this test pins exactly the realization arm (L141-146).
+        // The .unwrap_or_else(|| panic!(...)) in the realization_bucket_hash block
+        // fires with a message containing "realization_input".  "realization_input"
+        // is disjoint from "value_input", so this test pins exactly the
+        // realization-side panic arm.
         let graph = EvaluationGraph::default();
         let mut node = make_empty_node();
         node.realization_inputs = vec![RealizationNodeId::new("Bracket", 0)];
@@ -423,8 +426,7 @@ mod tests {
     fn compute_cache_key_changes_when_value_input_cardinality_changes() {
         // Compare node_one ([a]) vs node_two ([a, b]).  The only varying factor is
         // bucket cardinality — both reference cell `a` and node_two also includes `b`.
-        // combine_all([hash_a]) must differ from combine_all([hash_a, hash_b]),
-        // guarding against a len-1 short-circuit in the inner bucket fold.
+        // Adding a value input must change the cache key produced by compute_cache_key.
         let a = ValueCellId::new("Bracket", "a");
         let b = ValueCellId::new("Bracket", "b");
 
@@ -443,16 +445,16 @@ mod tests {
         assert_ne!(
             key_one,
             key_two,
-            "bucket cardinality must affect the cache key: [a] and [a, b] must produce \
-             distinct keys (guards against a len-1 short-circuit in the bucket fold)"
+            "adding a value input must change the cache key: [a] and [a, b] must produce \
+             distinct keys"
         );
     }
 
     #[test]
     fn compute_cache_key_changes_when_realization_input_cardinality_changes() {
         // Mirror of the value-bucket cardinality test for the realization bucket.
-        // Compare node_one ([real_0]) vs node_two ([real_0, real_1]).  Locks the
-        // realization-side bucket fold against a len-1 short-circuit regression.
+        // Compare node_one ([real_0]) vs node_two ([real_0, real_1]).  Adding a
+        // realization input must change the cache key produced by compute_cache_key.
         let real_0 = RealizationNodeId::new("Bracket", 0);
         let real_1 = RealizationNodeId::new("Bracket", 1);
 
@@ -471,9 +473,8 @@ mod tests {
         assert_ne!(
             key_one,
             key_two,
-            "realization bucket cardinality must affect the cache key: [real_0] and \
-             [real_0, real_1] must produce distinct keys (guards against a len-1 \
-             short-circuit in the realization bucket fold)"
+            "adding a realization input must change the cache key: [real_0] and \
+             [real_0, real_1] must produce distinct keys"
         );
     }
 }
