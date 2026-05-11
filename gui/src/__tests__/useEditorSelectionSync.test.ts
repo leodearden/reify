@@ -321,6 +321,70 @@ describe('createEditorSelectionSync', () => {
     });
   });
 
+  it('(j) cross-input race during debounce: viewport click before debounce fires is not overwritten', async () => {
+    // Scenario (the during-debounce race — distinct from the in-flight-bridge race tested in (i)):
+    // 1. cursor moves at t=0 → token=1, 200ms debounce timer starts, bridge NOT yet called
+    // 2. at t=100 (still within debounce window): viewport click sets selectedEntity = 'ViewportEntity'
+    // 3. debounce fires at t=200 → bridge called, resolves with 'EditorEntity'
+    // Expected: bridge result is discarded; viewport selection is preserved.
+    //
+    // With the buggy code, selectionBeforeAwait is captured INSIDE the setTimeout callback
+    // (at t=200) by which point selectedEntity is already 'ViewportEntity', so the guard
+    // sees 'ViewportEntity' !== 'ViewportEntity' → false → passes → selectEntity is wrongly called.
+    const { createEditorSelectionSync } = await importHook();
+
+    const getEntityAtSourceLocation = vi.fn().mockResolvedValue('EditorEntity');
+    const selectEntity = vi.fn();
+    const flyToEntity = vi.fn();
+
+    await new Promise<void>((done) => {
+      createRoot(async (dispose) => {
+        const editorStore = makeEditorStore(null);
+        const selectionStore = makeSelectionStore(null);
+
+        createEditorSelectionSync({
+          editorStore,
+          selectionStore,
+          getEntityAtSourceLocation,
+          selectEntity,
+          flyToEntity,
+          debounceMs: 200,
+        });
+
+        // Step 1: cursor moves at t=0 → debounce starts; bridge NOT yet called
+        editorStore.setCursorPosition(5, 10);
+        await vi.advanceTimersByTimeAsync(100); // t=100 — mid-debounce
+        expect(getEntityAtSourceLocation).not.toHaveBeenCalled();
+
+        // Step 2: viewport click during the debounce window (no cursor change → no token bump)
+        selectionStore.selectEntity('ViewportEntity');
+        expect(selectionStore.state.selectedEntity).toBe('ViewportEntity');
+
+        // Step 3: advance past debounce (t=250) → setTimeout fires → bridge called
+        await vi.advanceTimersByTimeAsync(150);
+        // Flush the resolved promise microtasks
+        await Promise.resolve();
+        await Promise.resolve();
+
+        // Bridge WAS called (debounce completed normally)
+        expect(getEntityAtSourceLocation).toHaveBeenCalledTimes(1);
+        expect(getEntityAtSourceLocation).toHaveBeenCalledWith(5, 10);
+
+        // The hook's selectEntity prop must NOT have been called: the cross-input race guard
+        // should have detected that selectedEntity changed from null (at cursor-change time)
+        // to 'ViewportEntity' and discarded the 'EditorEntity' bridge result.
+        expect(selectEntity).not.toHaveBeenCalled();
+        expect(flyToEntity).not.toHaveBeenCalled();
+
+        // Store still reflects the viewport-originated selection
+        expect(selectionStore.state.selectedEntity).toBe('ViewportEntity');
+
+        dispose();
+        done();
+      });
+    });
+  });
+
   it('(h) race condition guard: slow request #1 then fast request #2; only #2 result applied', async () => {
     const { createEditorSelectionSync } = await importHook();
 
