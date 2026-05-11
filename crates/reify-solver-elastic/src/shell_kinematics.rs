@@ -80,7 +80,10 @@ pub fn shell_kinematics(nodes: &[[f64; 3]; 3], frame: &ShellFrame) -> ShellKinem
     // --- Local 2D Jacobian J2, determinant, and J2⁻ᵀ ---
     // J2 = [[∂x/∂ξ, ∂x/∂η], [∂y/∂ξ, ∂y/∂η]] = [[x1-x0, x2-x0], [y1-y0, y2-y0]]
     let jac2 = [[x[1] - x[0], x[2] - x[0]], [y[1] - y[0], y[2] - y[0]]];
-    let det2 = jac2[0][0] * jac2[1][1] - jac2[0][1] * jac2[1][0];
+    // det2 = 2·area by construction of build_shell_frame (positive for a well-posed element).
+    // Using 2·area directly avoids recomputing the determinant from jac2 and keeps the
+    // sign convention aligned with build_shell_frame rather than the local coord ordering.
+    let det2 = 2.0 * area;
     // J2⁻ᵀ: (J2⁻¹)ᵀ — maps covariant (ξ,η) components to physical (x,y)
     // J2⁻¹ = (1/det) · [[jac2[1][1], -jac2[0][1]], [-jac2[1][0], jac2[0][0]]]
     // J2⁻ᵀ[i][j] = J2⁻¹[j][i]
@@ -221,7 +224,9 @@ mod tests {
         let kin = shell_kinematics(&UNIT_TRI, &frame);
 
         for tp in 0..3 {
-            let n_at_tp = Mitc3Plus.shape_at(Mitc3Plus.tying_points()[tp].coord);
+            let tp_coord = Mitc3Plus.tying_points()[tp].coord;
+            let n_at_tp = Mitc3Plus.shape_at(tp_coord);
+            let dn_ref_tp = Mitc3Plus.shape_grad_at(tp_coord);
             for dof in 0..18 {
                 let local_dof = dof % 6;
                 let node = dof / 6;
@@ -240,6 +245,24 @@ mod tests {
                     );
                 }
 
+                // u_z dofs (6n+2): γ_ξζ gets dn_ref[node][0], γ_ηζ gets dn_ref[node][1]
+                if local_dof == 2 {
+                    assert!(
+                        (kin.b_cov_at_tying_points[tp][0][dof] - dn_ref_tp[node][0]).abs()
+                            < 1e-12,
+                        "b_cov[{tp}][xi_zeta][{dof}] (uz@node{node}) = {}, expected dn_ref[{node}][0]={}",
+                        kin.b_cov_at_tying_points[tp][0][dof],
+                        dn_ref_tp[node][0]
+                    );
+                    assert!(
+                        (kin.b_cov_at_tying_points[tp][1][dof] - dn_ref_tp[node][1]).abs()
+                            < 1e-12,
+                        "b_cov[{tp}][eta_zeta][{dof}] (uz@node{node}) = {}, expected dn_ref[{node}][1]={}",
+                        kin.b_cov_at_tying_points[tp][1][dof],
+                        dn_ref_tp[node][1]
+                    );
+                }
+
                 // γ_ξζ (comp 0): θ_x dofs (6n+3) must be zero
                 if local_dof == 3 {
                     assert_eq!(
@@ -255,6 +278,17 @@ mod tests {
                         kin.b_cov_at_tying_points[tp][1][dof],
                         0.0,
                         "b_cov[{tp}][eta_zeta][{dof}] (theta_y@node{node}) must be 0"
+                    );
+                }
+
+                // γ_ξζ (comp 0): θ_y dofs (6n+4) must equal +N_i(tp)
+                if local_dof == 4 {
+                    let expected = n_at_tp[node];
+                    assert!(
+                        (kin.b_cov_at_tying_points[tp][0][dof] - expected).abs() < 1e-12,
+                        "b_cov[{tp}][xi_zeta][{dof}] (theta_y@node{node}) = {}, expected +N_i={}",
+                        kin.b_cov_at_tying_points[tp][0][dof],
+                        expected
                     );
                 }
 
