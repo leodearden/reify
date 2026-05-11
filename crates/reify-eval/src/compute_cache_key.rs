@@ -392,4 +392,17 @@ mod tests {
              positions in the outer combine_all (L153-158)"
         );
     }
+
+    #[test]
+    #[should_panic(expected = "value_input")]
+    fn compute_cache_key_panics_on_missing_value_input() {
+        // Empty graph — the ValueCellId "ghost" was never inserted.
+        // The .unwrap_or_else(|| panic!(...)) at L108-113 fires with a message
+        // containing "value_input".  Pins the documented producer-bug panic policy
+        // (L70-77) against a future silent-fallback refactor (e.g. ContentHash(0)).
+        let graph = EvaluationGraph::default();
+        let mut node = make_empty_node();
+        node.value_inputs = vec![ValueCellId::new("Bracket", "ghost")];
+        compute_cache_key(&node, &graph);
+    }
 }
