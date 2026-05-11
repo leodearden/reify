@@ -48,6 +48,9 @@
 //!     ProgressiveOptions, PartialElasticResult, PassTuning,
 //!     RefinementDemand, TerminationReason, AdvanceDecision,
 //!     coarse_pass_tuning, refinement_pass_tuning, near_constraint_boundary, should_refine,
+//!     SweepElementTarget, Mesh2d, Mesh2dReport, ProfileBoundary, Mesh2dOptions, Mesh2dError,
+//!     compute_quad_skew, recombine_quality_ok, auto_mesh_size_from_boundary,
+//!     mesh_swept_profile_2d,
 //! };
 //!
 //! let _: TetP1 = TetP1;
@@ -238,6 +241,46 @@
 //! let _: fn(&ProgressiveOptions, usize) -> PassTuning = refinement_pass_tuning;
 //! let _: fn(&PartialElasticResult, &ProgressiveOptions) -> bool = near_constraint_boundary;
 //! let _: fn(&ProgressiveOptions, usize, &PartialElasticResult, RefinementDemand) -> AdvanceDecision = should_refine;
+//!
+//! // Task 2987: 2D meshing public surface — pin SweepElementTarget,
+//! // Mesh2d/Mesh2dReport/Mesh2dOptions/Mesh2dError, ProfileBoundary, and
+//! // the four helpers/orchestrator are discoverable from the crate root.
+//! // Behaviour is covered by `mesher::tests` + the integration tests under
+//! // `tests/mesh_swept_profile_2d_tests.rs`; this block is purely an
+//! // API-surface check that mirrors the precedent set by hex_p1 / wedge_p1.
+//! let _: SweepElementTarget = SweepElementTarget::HexPreferred;
+//! let _: SweepElementTarget = SweepElementTarget::WedgeOnly;
+//! let _ = ProfileBoundary {
+//!     outer: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+//!     holes: vec![],
+//! };
+//! let opts_2987 = Mesh2dOptions::default();
+//! assert_eq!(
+//!     opts_2987.recombine_skew_threshold,
+//!     std::f64::consts::FRAC_PI_4,
+//!     "Mesh2dOptions::default().recombine_skew_threshold must be \u{3c0}/4",
+//! );
+//! // Construct each variant of Mesh2d and Mesh2dError so a renamed field
+//! // or removed variant trips this doctest at compile time.
+//! let _ = Mesh2d::Triangle { vertices: vec![0.0_f32; 6], indices: vec![0_u32, 1, 2] };
+//! let _ = Mesh2d::Quad { vertices: vec![0.0_f32; 8], indices: vec![0_u32, 1, 2, 3] };
+//! let _ = Mesh2dReport {
+//!     mesh: Mesh2d::Triangle { vertices: vec![0.0_f32; 6], indices: vec![0_u32, 1, 2] },
+//!     recombine_attempted: false,
+//!     recombine_quality_ok: true,
+//! };
+//! let _ = Mesh2dError::EmptyBoundary;
+//! let _ = Mesh2dError::DegenerateBoundary;
+//! let _ = Mesh2dError::GmshUnavailable;
+//! // Pin the four function items by their full signatures.
+//! let _: fn(&[[f64; 2]; 4]) -> f64 = compute_quad_skew;
+//! let _: fn(&[f32], &[u32], f64) -> bool = recombine_quality_ok;
+//! let _: fn(&ProfileBoundary, f64) -> f64 = auto_mesh_size_from_boundary;
+//! let _: fn(
+//!     &ProfileBoundary,
+//!     SweepElementTarget,
+//!     &Mesh2dOptions,
+//! ) -> Result<Mesh2dReport, Mesh2dError> = mesh_swept_profile_2d;
 //! ```
 
 pub mod assembly;
