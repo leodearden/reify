@@ -128,6 +128,13 @@ pub enum ElasticityFailure {
         /// (`== CgSolverOptions::max_iter`).
         iterations: usize,
     },
+
+    /// An entry in `old_mesh.tet_indices` references a node index ≥ `n_nodes`
+    /// (overflow-safe check via `(*idx as usize) >= n_nodes`). Validated
+    /// upfront before assembly to avoid coupling to
+    /// `assemble_global_stiffness`'s debug-only panic shape. The first
+    /// offending index is returned as the payload.
+    InvalidTetIndex(u32),
 }
 
 // ── elasticity_morph / elasticity_morph_with_cg_opts ─────────────────────────
@@ -199,6 +206,15 @@ pub fn elasticity_morph_with_cg_opts(
 
     // ── Pipeline ─────────────────────────────────────────────────────────────
     let n_nodes = old_mesh.vertices.len() / 3;
+
+    // Validate tet_indices upfront — overflow-safe check mirrors the
+    // prescribed_positions validation above. Returns the first offending index.
+    for tet_idx in &old_mesh.tet_indices {
+        if (*tet_idx as usize) >= n_nodes {
+            return Err(ElasticityFailure::InvalidTetIndex(*tet_idx));
+        }
+    }
+
     let n_elements = old_mesh.tet_indices.len() / 4;
 
     // Per-element data — Vec storage keeps `ElementStiffness` and
@@ -206,17 +222,14 @@ pub fn elasticity_morph_with_cg_opts(
     let mut k_elements: Vec<ElementStiffness> = Vec::with_capacity(n_elements);
     let mut connectivities: Vec<[usize; 4]> = Vec::with_capacity(n_elements);
     for tet in old_mesh.tet_indices.chunks_exact(4) {
-        // Per-tet physical-node coordinates. Out-of-range tet indices are
-        // a precondition violation per the doc-comment on tet_indices; the
-        // substituted [0;3] keeps element_stiffness total, but the raw
-        // index is forwarded into AssemblyElement.connectivity and
-        // assemble_global_stiffness will panic with a structured
-        // 'connectivity references node N >= n_nodes' message.
+        // Per-tet physical-node coordinates. The upfront validation above
+        // guarantees all tet indices are in-range; vertex_f64 cannot return
+        // None here.
         let phys: [[f64; 3]; 4] = [
-            old_mesh.vertex_f64(tet[0]).unwrap_or([0.0; 3]),
-            old_mesh.vertex_f64(tet[1]).unwrap_or([0.0; 3]),
-            old_mesh.vertex_f64(tet[2]).unwrap_or([0.0; 3]),
-            old_mesh.vertex_f64(tet[3]).unwrap_or([0.0; 3]),
+            old_mesh.vertex_f64(tet[0]).expect("tet_indices validated upfront — InvalidTetIndex returned earlier"),
+            old_mesh.vertex_f64(tet[1]).expect("tet_indices validated upfront — InvalidTetIndex returned earlier"),
+            old_mesh.vertex_f64(tet[2]).expect("tet_indices validated upfront — InvalidTetIndex returned earlier"),
+            old_mesh.vertex_f64(tet[3]).expect("tet_indices validated upfront — InvalidTetIndex returned earlier"),
         ];
         // Per-element Young's modulus: the stiffness_rule controls how E_e is
         // derived from e_base. K_e = ∫ BᵀDB dV is linear in E (D is linear in
