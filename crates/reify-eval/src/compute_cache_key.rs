@@ -447,4 +447,33 @@ mod tests {
              distinct keys (guards against a len-1 short-circuit in the bucket fold)"
         );
     }
+
+    #[test]
+    fn compute_cache_key_changes_when_realization_input_cardinality_changes() {
+        // Mirror of the value-bucket cardinality test for the realization bucket.
+        // Compare node_one ([real_0]) vs node_two ([real_0, real_1]).  Locks the
+        // realization-side bucket fold against a len-1 short-circuit regression.
+        let real_0 = RealizationNodeId::new("Bracket", 0);
+        let real_1 = RealizationNodeId::new("Bracket", 1);
+
+        let mut graph = EvaluationGraph::default();
+        insert_realization(&mut graph, real_0.clone(), ContentHash::of_str("mesh_a"));
+        insert_realization(&mut graph, real_1.clone(), ContentHash::of_str("mesh_b"));
+
+        let mut node_one = make_empty_node();
+        node_one.realization_inputs = vec![real_0.clone()];
+
+        let mut node_two = make_empty_node();
+        node_two.realization_inputs = vec![real_0.clone(), real_1.clone()];
+
+        let key_one = compute_cache_key(&node_one, &graph);
+        let key_two = compute_cache_key(&node_two, &graph);
+        assert_ne!(
+            key_one,
+            key_two,
+            "realization bucket cardinality must affect the cache key: [real_0] and \
+             [real_0, real_1] must produce distinct keys (guards against a len-1 \
+             short-circuit in the realization bucket fold)"
+        );
+    }
 }
