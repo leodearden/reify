@@ -32,6 +32,7 @@ import { createViewportStore, type CameraState } from './stores/viewportStore';
 import { createDefPreviewStore } from './stores/defPreviewStore';
 import { createMechanismStore } from './stores/mechanismStore';
 import { createDefPreviewActivation } from './hooks/useDefPreviewActivation';
+import { createEditorSelectionSync } from './hooks/useEditorSelectionSync';
 import {
   getInitialState,
   getEntityTree as bridgeGetEntityTree,
@@ -58,6 +59,7 @@ import {
   getKernelStatus,
   onKernelStatus,
   getContainingDefinition as bridgeGetContainingDefinition,
+  getEntityAtSourceLocation as bridgeGetEntityAtSourceLocation,
   getDefPreview as bridgeGetDefPreview,
   getMechanismDescriptors as bridgeGetMechanismDescriptors,
 } from './bridge';
@@ -230,6 +232,18 @@ const App: Component = () => {
     defPreviewStore,
     getContainingDefinition: bridgeGetContainingDefinition,
     getDefPreview: bridgeGetDefPreview,
+    debounceMs: 200,
+  });
+
+  // Editor→entity sync: watches editor cursor → debounces 200ms → resolves entity
+  // at cursor position → updates selectionStore + flies to entity in viewport.
+  // Equality-check guard prevents viewport-click → editor-scroll → cursor-move bounce.
+  createEditorSelectionSync({
+    editorStore,
+    selectionStore,
+    getEntityAtSourceLocation: bridgeGetEntityAtSourceLocation,
+    selectEntity: (ep) => selectionStore.selectEntity(ep),
+    flyToEntity: (ep) => flyToEntityFn?.(ep),
     debounceMs: 200,
   });
 
