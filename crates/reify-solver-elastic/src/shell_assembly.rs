@@ -22,21 +22,30 @@
 //! formula from `Mitc3Plus::interpolate_assumed_shear`. This corresponds to
 //! the **MITC3** formulation (Bathe & Dvorkin 1985).
 //!
-//! # Deferred: MITC3+ cubic-bubble enrichment
+//! # Why this is MITC3, not MITC3+
 //!
-//! The MITC3+ element (Bathe & Lee 2014) adds a deviatoric cubic-bubble
-//! rotation field to the covariant-shear sampling at the tying points, which
-//! further reduces residual locking on curved or twisted geometries. That
-//! enrichment is **not** wired here — the covariant shears at tying points
-//! are computed from the standard three-node linear rotation field only.
-//! The patch tests included pass because they exercise constant or affine
-//! fields that are insensitive to the bubble. The '+' enrichment is tracked
-//! as a follow-up task (PRD v0.4 T8 / curved-geometry accuracy).
+//! True MITC3+ (Bathe & Lee 2014) adds a deviatoric cubic-bubble rotation
+//! enrichment to relieve residual membrane locking on curved geometry. We
+//! investigated wiring that bubble into the bending block via static
+//! condensation (task 3349) and proved analytically that the approach is
+//! **mathematically inert for flat-facet elements**: the bending cross-
+//! coupling matrix `K_NB = ∫ B_b_nodal^T · D · B_b_bubble dA` is identically
+//! zero because the bubble `f_b = ξη(1−ξ−η)` vanishes on all three reference
+//! edges, so `∫∫ ∂f_b/∂x dA = ∮ f_b · n_x ds = 0` by the divergence theorem
+//! (and likewise for ∂/∂y). Static condensation
+//! `K_eff = K_NN − K_NB·K_BB⁻¹·K_BN` therefore reduces to `K_NN` —
+//! bit-identical to bare MITC3. Empirically confirmed: a WIP bubble
+//! implementation produced the same pinched-cylinder radial displacement
+//! (2.411163e-7) as bare MITC3, vs the MacNeal-Harder reference 1.8248e-5
+//! (~76× under-prediction).
+//!
+//! True MITC3+ requires curved-element geometry (per-element curvature
+//! coupling, not flat-facet) and is filed as a separate follow-up.
 
 use crate::assembly::ElementStiffness;
 use crate::constitutive::IsotropicElastic;
 
-/// Local mid-surface coordinate frame for a MITC3+ shell element.
+/// Local mid-surface coordinate frame for a MITC3 shell element.
 ///
 /// `r[i][j]` is the j-th global component of local basis vector `eᵢ`:
 /// - `r[0]` = `e1` (along edge p0→p1, in-plane)
@@ -151,7 +160,7 @@ fn mat3_mul(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
     c
 }
 
-/// Compute the 18×18 element stiffness matrix for a MITC3+ shell element.
+/// Compute the 18×18 element stiffness matrix for a MITC3 shell element.
 ///
 /// `nodes` are the three physical vertex positions in global coordinates.
 /// `thickness` is the constant shell thickness `t`.
@@ -161,7 +170,7 @@ fn mat3_mul(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
 /// `6 · node_idx + i` with `i ∈ {0..5}` for `(u_x, u_y, u_z, θ_x, θ_y, θ_z)`.
 ///
 /// **Drilling singularity.** The local drilling rotation — rotation about the
-/// element normal — carries zero stiffness by construction (pure MITC3+, no
+/// element normal — carries zero stiffness by construction (pure MITC3, no
 /// Allman/Hughes enrichment).  In the *local* frame this is the `θ_z` DOF
 /// (i=5 in each node's rotation triple), i.e. row/column 5, 11, 17 of K_local
 /// are zero.  After rotation to global via R^T·K_local·R the singular
@@ -238,13 +247,8 @@ pub fn shell_element_stiffness(
         [(y[0] - y[1]) / two_a, (x[1] - x[0]) / two_a],
     ];
 
-    // --- 20×20 K_full (18 nodal + 2 bubble DOFs, assembled in local frame) ---
-    // Bubble DOF layout: index NDOF = 18 → Δθ_x (internal rotation enrichment)
-    //                    index NDOF+1 = 19 → Δθ_y (internal rotation enrichment)
-    // Static condensation at the end of this function collapses these back to
-    // the public 18-DOF interface.
-    const NDOF_FULL: usize = NDOF + 2; // 20
-    let mut k_full = [[0.0_f64; NDOF_FULL]; NDOF_FULL];
+    // --- 18×18 K_local (assembled in local frame) ---
+    let mut k_loc = [[0.0_f64; NDOF]; NDOF];
 
     // ---- Membrane K (step 8) ----
     // B_m is 3×9 (rows: ε_xx, ε_yy, γ_xy; cols: u_x_0,u_y_0, u_x_1,u_y_1, u_x_2,u_y_2)
@@ -285,7 +289,7 @@ pub fn shell_element_stiffness(
                             v += bmi[r][a] * t_dpl[r][s] * bmj[s][b];
                         }
                     }
-                    k_full[doi[a]][doj[b]] += v * area;
+                    k_loc[doi[a]][doj[b]] += v * area;
                 }
             }
         }
@@ -325,14 +329,14 @@ pub fn shell_element_stiffness(
                             v += bbi[r][a] * t3_12_dpl[r][s] * bbj[s][b];
                         }
                     }
-                    k_full[doi[a]][doj[b]] += v * area;
+                    k_loc[doi[a]][doj[b]] += v * area;
                 }
             }
         }
     }
 
     // ---- Transverse-shear K (step 10, implemented here) ----
-    // MITC3+ assumed-strain interpolation.
+    // MITC3 assumed-strain interpolation.
     // Physical DOFs per node for shear: u_z (6n+2), θ_x (6n+3), θ_y (6n+4).
     //
     // Local 2D Jacobian from reference (ξ,η) to local (x_loc, y_loc):
@@ -360,7 +364,7 @@ pub fn shell_element_stiffness(
     // We build B_s rows as: [γ_cov_xi, γ_cov_eta] × 18-DOF columns.
     //
     // But since we need to evaluate B_s at multiple quadrature points and
-    // also sample at tying points, we use the full MITC3+ pipeline:
+    // also sample at tying points, we use the full MITC3 pipeline:
     //   1. Sample covariant strains at A, B, C.
     //   2. Interpolate via Mitc3Plus::interpolate_assumed_shear.
     //   3. Convert to physical via J2⁻ᵀ.
@@ -368,7 +372,7 @@ pub fn shell_element_stiffness(
     //
     // Quadrature: 3-point edge-midpoint (A,B,C) with weight 1/6 each.
     // det2 is the Jacobian determinant (reference → local), weight = 1/6.
-    // The 3 quadrature points coincide with the MITC3+ tying points.
+    // The 3 quadrature points coincide with the MITC3 tying points.
 
     let tying_pts = Mitc3Plus.tying_points();
     // tying_pts = [A=(0.5,0), B=(0,0.5), C=(0.5,0.5)]
@@ -377,7 +381,7 @@ pub fn shell_element_stiffness(
     // B_cov_at_tp[tp_idx][row][dof] where row in {xi_zeta, eta_zeta}, dof in 0..18.
     // But we only need the per-node block: node n contributes to DOFs {6n+2, 6n+3, 6n+4}.
 
-    // For each quadrature point (= tying point), compute the MITC3+ projected
+    // For each quadrature point (= tying point), compute the MITC3 projected
     // covariant shear B_s_cov (2×18), then apply J2⁻ᵀ to get B_s_phys (2×18).
 
     // For the assumed-strain, we first build the 3×(DOFs for u_z,θ_x,θ_y)
@@ -412,8 +416,8 @@ pub fn shell_element_stiffness(
     }
 
     // For each quadrature point (= tying point, weight=1/6, det2 is Jacobian),
-    // compute the MITC3+ projected B_s_phys (2×18) and accumulate K_s.
-    // The MITC3+ interpolation is linear: for each DOF column d, the projected
+    // compute the MITC3 projected B_s_phys (2×18) and accumulate K_s.
+    // The MITC3 interpolation is linear: for each DOF column d, the projected
     // covariant strain is interpolate_assumed_shear(sampled_for_column_d, qp).
     // We handle this column-by-column for all 18 DOFs, building B_s_phys[2][18].
 
@@ -448,108 +452,8 @@ pub fn shell_element_stiffness(
         for a in 0..NDOF {
             for b in 0..NDOF {
                 let v = (b_s_phys[0][a] * b_s_phys[0][b] + b_s_phys[1][a] * b_s_phys[1][b]) * scale;
-                k_full[a][b] += v;
+                k_loc[a][b] += v;
             }
-        }
-    }
-
-    // ---- MITC3+ cubic-bubble bending enrichment ----
-    // The rotation field enrichment θ_x += f_b·Δθ_x, θ_y += f_b·Δθ_y adds two
-    // internal DOFs (indices NDOF=18 and NDOF+1=19 in k_full).
-    //
-    // The bubble contributes to BENDING only (at the tying points, f_b = 0, so
-    // the direct shear contribution of the bubble vanishes there).  Its gradient
-    // ∂f_b/∂(x,y) = J2⁻ᵀ · ∂f_b/∂(ξ,η) is non-zero at A, B, C, yielding
-    // non-zero bending cross-blocks K_NB and K_BB that are then condensed away.
-    //
-    // Bending bubble columns (3×2) at a point with local gradients (dfb_dx, dfb_dy):
-    //   column DOF18 (Δθ_x): [κ_xx, κ_yy, 2κ_xy] = [ 0,        +dfb_dy, +dfb_dx ]
-    //   column DOF19 (Δθ_y): [κ_xx, κ_yy, 2κ_xy] = [ -dfb_dx,  0,       -dfb_dy ]
-    //
-    // Integration: 3-point tying quadrature (A,B,C), weight = det2/6 each.
-    // For constant integrands (nodal×nodal) this gives the same result as
-    // 1-point centroid (both sum to det2/2 = area), so the nodal bending block
-    // is self-consistent with its 1-point integration above.
-    for tp in tying_pts.iter() {
-        // Bubble gradient in reference coords: [∂f_b/∂ξ, ∂f_b/∂η]
-        let dfb_ref = Mitc3Plus.bubble_grad_at(tp.coord);
-        // Transform to local (x,y) via J2⁻ᵀ (same transform used for shear):
-        // [∂f_b/∂x, ∂f_b/∂y]ᵀ = J2⁻ᵀ · [∂f_b/∂ξ, ∂f_b/∂η]ᵀ
-        let dfb_dx = inv_t[0][0] * dfb_ref[0] + inv_t[0][1] * dfb_ref[1];
-        let dfb_dy = inv_t[1][0] * dfb_ref[0] + inv_t[1][1] * dfb_ref[1];
-        // Bubble bending B-matrix (3×2): column b_idx selects Δθ_x (0) or Δθ_y (1).
-        //   bb_b[r][0] = contribution of Δθ_x to κ-row r
-        //   bb_b[r][1] = contribution of Δθ_y to κ-row r
-        let bb_b = [[0.0_f64, -dfb_dx], [dfb_dy, 0.0], [dfb_dx, -dfb_dy]];
-        let bub_scale = det2 * qp_weight; // = det2 / 6
-
-        // K_NB: cross terms between nodal rotation DOFs and bubble DOFs.
-        for node in 0..NN {
-            let doi_rot = [NDP * node + 3, NDP * node + 4]; // θ_x, θ_y of this node
-            let bbi_node = [
-                [0.0_f64, -dn[node][0]],
-                [dn[node][1], 0.0],
-                [dn[node][0], -dn[node][1]],
-            ];
-            for a in 0..2 {
-                for b_bub in 0..2 {
-                    let mut v = 0.0;
-                    for r in 0..3 {
-                        for s in 0..3 {
-                            v += bbi_node[r][a] * t3_12_dpl[r][s] * bb_b[s][b_bub];
-                        }
-                    }
-                    let val = v * bub_scale;
-                    k_full[doi_rot[a]][NDOF + b_bub] += val;
-                    k_full[NDOF + b_bub][doi_rot[a]] += val; // symmetry K_BN = K_NBᵀ
-                }
-            }
-        }
-
-        // K_BB: bubble–bubble bending block (2×2).
-        for a_bub in 0..2 {
-            for b_bub in 0..2 {
-                let mut v = 0.0;
-                for r in 0..3 {
-                    for s in 0..3 {
-                        v += bb_b[r][a_bub] * t3_12_dpl[r][s] * bb_b[s][b_bub];
-                    }
-                }
-                k_full[NDOF + a_bub][NDOF + b_bub] += v * bub_scale;
-            }
-        }
-    }
-
-    // ---- Static condensation: K_eff = K_NN − K_NB · K_BB⁻¹ · K_BN ----
-    // K_BB is 2×2; invert analytically (det / cofactor) per design decision.
-    // K_BB is positive-definite for any non-degenerate triangle (the deviatoric
-    // bubble ∇f_b spans both local directions everywhere on the interior).
-    let kbb_a = k_full[NDOF][NDOF];
-    let kbb_b = k_full[NDOF][NDOF + 1];
-    let kbb_c = k_full[NDOF + 1][NDOF];
-    let kbb_d = k_full[NDOF + 1][NDOF + 1];
-    let det_kbb = kbb_a * kbb_d - kbb_b * kbb_c;
-    debug_assert!(
-        det_kbb.abs() > 1e-40,
-        "K_BB is singular (det = {det_kbb:.3e}); degenerate element?"
-    );
-    // K_BB⁻¹ = [[d, -b], [-c, a]] / det
-    let inv_kbb = [
-        [kbb_d / det_kbb, -kbb_b / det_kbb],
-        [-kbb_c / det_kbb, kbb_a / det_kbb],
-    ];
-    // K_eff[i][j] = K_NN[i][j] − Σ_{p,q} K_NB[i][p] · K_BB⁻¹[p][q] · K_BN[q][j]
-    let mut k_loc = [[0.0_f64; NDOF]; NDOF];
-    for i in 0..NDOF {
-        for j in 0..NDOF {
-            let mut correction = 0.0;
-            for p in 0..2 {
-                for q in 0..2 {
-                    correction +=
-                        k_full[i][NDOF + p] * inv_kbb[p][q] * k_full[NDOF + q][j];
-                }
-            }
-            k_loc[i][j] = k_full[i][j] - correction;
         }
     }
 
@@ -1083,7 +987,7 @@ mod tests {
     #[test]
     fn shell_bending_patch_test_linear_theta_y_matches_analytical_total_energy() {
         // θ_y(node_i) = α · x_i: node0→0, node1→α, node2→0.
-        // Curvature κ_xx = -α (uniform), MITC3+ projects γ_xz to constant α/2.
+        // Curvature κ_xx = -α (uniform), MITC3 projects γ_xz to constant α/2.
         // U_total = 0.5·α²·D_pl[0][0]·(t³/12)·A + 0.5·(α/2)²·κ·G·t·A.
         let mat = steel_like();
         let t = 0.05_f64;

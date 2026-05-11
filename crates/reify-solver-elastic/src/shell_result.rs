@@ -9,14 +9,14 @@
 // T18-T20 will add a cross-assertion once they consume both sides. This
 // file ships the data-only contract (define the shape + tet constructor);
 // engine-integration tasks T18-T20 are responsible for actually populating
-// these fields from the MITC3+ kernel and wiring the `to_global(stress,
+// these fields from the MITC3 kernel and wiring the `to_global(stress,
 // frame)` dispatch helper.
 
 use crate::constitutive::IsotropicElastic;
 use crate::shell_assembly::{build_shell_frame, plane_stress_d};
 use reify_types::Value;
 
-/// Returns the local-to-global rotation matrix for a three-node MITC3+ shell element.
+/// Returns the local-to-global rotation matrix for a three-node MITC3 shell element.
 ///
 /// # Convention
 ///
@@ -51,7 +51,7 @@ pub fn shell_element_frame(nodes: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
 }
 
 /// Per-element Cauchy stress tensors in the local mid-surface frame for a
-/// MITC3+ shell element.
+/// MITC3 shell element.
 ///
 /// Each field is a full 3×3 symmetric stress tensor in the element's local
 /// coordinate frame (e₁, e₂, e₃):
@@ -86,7 +86,7 @@ pub struct ShellElementStress {
 }
 
 /// Recover the Cauchy stress tensors at the top, mid, and bottom surfaces of a
-/// MITC3+ shell element in the element's local coordinate frame.
+/// MITC3 shell element in the element's local coordinate frame.
 ///
 /// # Arguments
 ///
@@ -197,7 +197,7 @@ pub fn shell_element_stress(
         }
     }
 
-    // --- MITC3+ transverse-shear recovery ---
+    // --- MITC3 transverse-shear recovery ---
     // Replicate tying-point covariant shear sampling from shell_assembly.rs:352-433.
     // Covariant shear at a tying point (ξ_t, η_t):
     //   γ_ξζ = Σ_i dn_ref[i][0]*u_z_i + N_i*θ_y_i
@@ -228,7 +228,7 @@ pub fn shell_element_stress(
         }
     }
 
-    // Project covariant shears at centroid (ξ=1/3, η=1/3) via MITC3+.
+    // Project covariant shears at centroid (ξ=1/3, η=1/3) via MITC3.
     let centroid = crate::elements::mitc3_plus::ShellReferenceCoord::new(1.0 / 3.0, 1.0 / 3.0);
     let sampled = TyingShears {
         gamma_xi_zeta_at_a: g_cov_tp[0][0],
@@ -556,7 +556,7 @@ mod tests {
     /// σ_xz = κ·G·α through the thickness, with σ_yz = 0 and all in-plane
     /// components zero (partition-of-unity cancels the curvature gradient).
     ///
-    /// For UNIT_TRI, jac2 = identity, so covariant = physical.  MITC3+ projected
+    /// For UNIT_TRI, jac2 = identity, so covariant = physical.  MITC3 projected
     /// shear at centroid: γ_ξζ = α (all N_i·α sum to 1·α), γ_ηζ = 0.
     /// Therefore σ_xz = (5/6)·G·α, uniform across top/mid/bottom.
     #[test]
@@ -658,7 +658,7 @@ mod tests {
 
     /// Explicit construction must preserve distinct per-channel values, proving
     /// that `ShellStress` can represent the fully differentiated per-layer
-    /// stress distribution produced by the MITC3+ shell kernel.
+    /// stress distribution produced by the MITC3 shell kernel.
     ///
     /// This test pins the explicit/per-channel shape needed for shell results:
     /// each of top/mid/bottom round-trips through the struct unchanged.

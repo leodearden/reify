@@ -38,7 +38,7 @@ pub enum SupportKind {
 /// vs. rotational.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SupportBodyKind {
-    /// MITC3+ shell element: 6 DOFs per node `(u_x, u_y, u_z, θ_x, θ_y, θ_z)`.
+    /// MITC3 shell element: 6 DOFs per node `(u_x, u_y, u_z, θ_x, θ_y, θ_z)`.
     Shell,
     /// P1/P2 tetrahedral element: 3 DOFs per node `(u_x, u_y, u_z)`.
     Tet,
