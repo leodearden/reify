@@ -185,6 +185,18 @@ pub enum QualityVerdict {
 /// aspect-ratio-factor comparison is skipped (`max_aspect_ratio_factor`
 /// stays `None`). The hard-fail, min-scaled-J / pct-below-025, and
 /// `degenerate_morphed_element` checks still run on the morphed mesh.
+///
+/// ## Source argument
+///
+/// `source` is a reference mesh used as the denominator of the per-element
+/// aspect-ratio factor (`morphed_AR / source_AR`) and as the lockstep
+/// iterator pivot for element-pair alignment. It does not need to be the
+/// literal pre-morph mesh — any reference of matching connectivity (e.g., a
+/// from-scratch remesh of the target geometry produced by the same procedural
+/// generator) is admissible. The calibration rig in
+/// `tests/calibration/sweep.rs` exploits this by passing a from-scratch
+/// target as the `source` argument to compute the true
+/// `morphed_AR / from_scratch_AR` ratio.
 pub fn quality_check(
     morphed: &VolumeMesh,
     source: &VolumeMesh,
