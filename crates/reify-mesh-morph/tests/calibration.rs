@@ -368,6 +368,9 @@ fn sweep_runner_returns_morph_and_from_scratch_quality_metrics_for_single_param_
     //     respectively (finite f64).
     //   `morph_max_ar_factor`: max(morphed_ar / source_ar) across all tets,
     //     non-negative finite f64.
+    //   `from_scratch_max_ar_factor`: max(morphed_ar / from_scratch_ar) across
+    //     all tets — morph AR measured against the true from-scratch baseline
+    //     rather than against `source`. Non-negative finite f64.
     //   `morphed`, `from_scratch`: full VolumeMesh outputs for downstream
     //     inspection / debugging.
     let _verdict: &reify_mesh_morph::QualityVerdict = &report.morph_verdict;
@@ -385,6 +388,11 @@ fn sweep_runner_returns_morph_and_from_scratch_quality_metrics_for_single_param_
         report.morph_max_ar_factor.is_finite() && report.morph_max_ar_factor >= 0.0,
         "morph_max_ar_factor must be non-negative and finite, got {}",
         report.morph_max_ar_factor
+    );
+    assert!(
+        report.from_scratch_max_ar_factor.is_finite() && report.from_scratch_max_ar_factor >= 0.0,
+        "from_scratch_max_ar_factor must be non-negative and finite, got {}",
+        report.from_scratch_max_ar_factor
     );
 
     // The morphed mesh must share connectivity with the from-scratch target
