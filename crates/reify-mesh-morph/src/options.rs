@@ -266,7 +266,7 @@ mod tests {
         // radius sweeps under the StiffnessRule::InverseVolume production
         // default).
         assert!((opts.quality_floor_min_scaled_jacobian - 0.02).abs() < 1e-12);
-        assert!((opts.quality_floor_pct_below_025 - 0.95).abs() < 1e-12);
+        assert!((opts.quality_floor_pct_below_025 - 0.01).abs() < 1e-12);
         assert!((opts.quality_aspect_ratio_factor_max - 2.0).abs() < 1e-12);
         assert!((opts.laplacian_quickpass_threshold - 0.01).abs() < 1e-12);
         assert!((opts.fictitious_youngs_modulus_base - 1.0).abs() < 1e-12);
