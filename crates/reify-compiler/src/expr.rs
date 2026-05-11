@@ -2848,30 +2848,40 @@ mod tests {
     /// `try_emit_cross_sub_geometry` must name the child **structure type** in the
     /// diagnostic's "compose geometry inside '...'" phrase, not the sub instance name.
     ///
-    /// Concretely: given `sub inner = Inner()`, the diagnostic should say
-    /// "compose geometry inside 'Inner'" — not "inside 'inner'".  The distinction
-    /// is the `sub_realization_names ⊂ sub_component_types` invariant (task-3420):
-    /// `sub_component_types` maps the instance name ("inner") to the structure type
-    /// name ("Inner"), and the lookup in `try_emit_cross_sub_geometry` uses that
+    /// Concretely: given `sub bolts : List<Bolt>`, the diagnostic for the still-
+    /// unsupported collection-sub geometry access must say "compose geometry
+    /// inside 'Bolt'" — not "inside 'bolts'".  The distinction is the
+    /// `sub_realization_names ⊂ sub_component_types` invariant (task-3420):
+    /// `sub_component_types` maps the instance name ("bolts") to the structure type
+    /// name ("Bolt"), and the lookup in `try_emit_cross_sub_geometry` uses that
     /// mapping.  If the mapping were absent the fallback would silently produce
-    /// "inside 'inner'" (lower-case instance name), which is the bug this invariant
+    /// "inside 'bolts'" (lower-case instance name), which is the bug this invariant
     /// exists to prevent.
     ///
     /// This is an end-to-end test using the full compile pipeline so it exercises
     /// the production code path through `entity.rs` (which populates both maps) and
     /// through `try_emit_cross_sub_geometry` (which consumes them).
+    ///
+    /// **Task 3441 note.**  The original test used `sub inner = Inner()` +
+    /// `let copy = self.inner.body` to exercise the diagnostic path.  Task 3441
+    /// flipped non-collection sub geometry access to a working-path lowering, so
+    /// the diagnostic no longer fires for that shape.  The test now uses a
+    /// **collection sub** (`bolts : List<Bolt>` with `bolts[0].body`) to keep
+    /// exercising the same diagnostic-emitting branch — collection-sub cross-sub
+    /// geometry remains deferred in v0.1 and continues to call
+    /// `try_emit_cross_sub_geometry`.
     #[test]
     fn cross_sub_geometry_diagnostic_names_child_structure_type() {
         use reify_test_support::compile_source;
         use reify_types::Severity;
-        // "Inner" (capital-I structure type) vs "inner" (lower-case instance name).
+        // "Bolt" (capital-B structure type) vs "bolts" (lower-case instance name).
         // The diagnostic's "compose geometry inside '...'" phrase must use the former.
-        let source = r#"pub structure Inner {
-    param body : Solid = box(10mm, 20mm, 30mm)
+        let source = r#"pub structure Bolt {
+    param body : Solid = cylinder(2mm, 10mm)
 }
-pub structure Outer {
-    sub inner = Inner()
-    let copy = self.inner.body
+pub structure Rack {
+    sub bolts : List<Bolt>
+    let first = bolts[0].body
 }"#;
         let compiled = compile_source(source);
         let errors: Vec<_> = compiled
@@ -2886,19 +2896,19 @@ pub structure Outer {
             .find(|d| d.message.contains("geometry") && d.message.contains("not yet"));
         assert!(
             geometry_diagnostic.is_some(),
-            "expected a geometry-specific diagnostic for `self.inner.body`; got: {:?}",
+            "expected a geometry-specific diagnostic for `bolts[0].body`; got: {:?}",
             errors.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
 
-        // (b) The "compose geometry inside '...'" phrase must name 'Inner' (capital-I
-        //     structure type name from sub_component_types), not 'inner' (instance name).
+        // (b) The "compose geometry inside '...'" phrase must name 'Bolt' (capital-B
+        //     structure type name from sub_component_types), not 'bolts' (instance name).
         //     This directly pins the behavior the sub_realization_names ⊂ sub_component_types
         //     invariant exists to preserve.
         let msg = &geometry_diagnostic.unwrap().message;
         assert!(
-            msg.contains("inside 'Inner'"),
-            "diagnostic must say \"inside 'Inner'\" (the structure type name), \
-             not \"inside 'inner'\" (the instance name); got: {:?}",
+            msg.contains("inside 'Bolt'"),
+            "diagnostic must say \"inside 'Bolt'\" (the structure type name), \
+             not \"inside 'bolts'\" (the instance name); got: {:?}",
             msg
         );
     }
