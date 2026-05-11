@@ -320,6 +320,63 @@ mod tests {
         assert!(deps.contains(&node_c));
     }
 
+    /// P3.3 step-3: Edge #6 — VC → ComputeNode reverse-index registration.
+    ///
+    /// Build an EvaluationGraph with one ValueCell `load` and one
+    /// ComputeNode `C` whose `value_inputs = [load]`. Assert that
+    /// `dependents_of(&load)` includes `NodeId::Compute(C.computation_id)`.
+    /// This is the static counterpart of the spec's edge #6 (consumer-Compute
+    /// reads producer-VC). Pins build_from_graph_and_fields' new compute_nodes
+    /// loop landed in step-4.
+    #[test]
+    fn reverse_index_registers_value_input_edge_for_each_compute_node() {
+        use crate::graph::{ComputeNodeData, EvaluationGraph, ValueCellNode};
+        use reify_compiler::ValueCellKind;
+        use reify_types::{ComputeNodeId, ContentHash, Type};
+
+        let mut graph = EvaluationGraph::default();
+        let e = "E";
+
+        // ValueCell `load` (a param — kind/value irrelevant for reverse index).
+        let load = ValueCellId::new(e, "load");
+        graph.value_cells.insert(
+            load.clone(),
+            ValueCellNode {
+                id: load.clone(),
+                kind: ValueCellKind::Param,
+                cell_type: Type::Real,
+                default_expr: None,
+                content_hash: ContentHash::of_str("load"),
+            },
+        );
+
+        // ComputeNode C with value_inputs=[load].
+        let c_id = ComputeNodeId::new(e, 0);
+        graph.insert_compute_node(ComputeNodeData {
+            computation_id: c_id.clone(),
+            target: "fea".to_string(),
+            value_inputs: vec![load.clone()],
+            realization_inputs: vec![],
+            options_hash: ContentHash::of_str("opt"),
+            cache_key: ContentHash::of_str("ck"),
+            cached_result: None,
+            result_content_hash: None,
+            opaque_state: None,
+            running: None,
+            output_value_cells: vec![],
+        });
+
+        let index = ReverseDependencyIndex::build_from_graph(&graph);
+
+        let load_deps = index.dependents_of(&load);
+        assert!(
+            load_deps.contains(&NodeId::Compute(c_id.clone())),
+            "dependents_of('load') should include Compute({:?}), got: {:?}",
+            c_id,
+            load_deps
+        );
+    }
+
     #[test]
     fn reverse_index_includes_resolution_deps() {
         use crate::graph::{EvaluationGraph, ResolutionNodeData, ValueCellNode};
