@@ -5031,4 +5031,58 @@ mod p2_substitution_diagnostic_tests {
             "(c) swept_kind=None must return None"
         );
     }
+
+    /// Variant invariance: Revolve and SweepLinear swept-body types both emit
+    /// the info diagnostic when the other conditions are met.
+    ///
+    /// This pins that the helper does NOT gate on a specific `SweptKind` variant
+    /// — any future refactor that accidentally adds a variant-specific branch
+    /// (e.g. only emitting for Extrude) will break this test.
+    #[test]
+    fn p2_substitution_variant_invariance_revolve_and_sweep_linear_emit() {
+        use std::f64::consts::FRAC_PI_2;
+
+        let revolve_kind = crate::sweep_classifier::SweptKind::Revolve {
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [0.0, 0.0, 1.0],
+            angle_rad: FRAC_PI_2,
+        };
+
+        let sweep_linear_kind = crate::sweep_classifier::SweptKind::SweepLinear {
+            profile: GeometryHandleId(0),
+            path: GeometryHandleId(1),
+        };
+
+        // Revolve variant.
+        let revolve_result = p2_substitution_diagnostic(
+            Some(&revolve_kind),
+            false,
+            ElementOrderTag::P2,
+            "RevolvedDisc",
+        );
+        let revolve_diag =
+            revolve_result.expect("Revolve variant must emit Some(Diagnostic) with P2");
+        assert_eq!(revolve_diag.severity, Severity::Info);
+        assert!(
+            revolve_diag.message.contains("Body RevolvedDisc"),
+            "Revolve diagnostic must contain body label; got: {}",
+            revolve_diag.message
+        );
+
+        // SweepLinear variant.
+        let sweep_result = p2_substitution_diagnostic(
+            Some(&sweep_linear_kind),
+            false,
+            ElementOrderTag::P2,
+            "SweptBar",
+        );
+        let sweep_diag =
+            sweep_result.expect("SweepLinear variant must emit Some(Diagnostic) with P2");
+        assert_eq!(sweep_diag.severity, Severity::Info);
+        assert!(
+            sweep_diag.message.contains("Body SweptBar"),
+            "SweepLinear diagnostic must contain body label; got: {}",
+            sweep_diag.message
+        );
+    }
 }
