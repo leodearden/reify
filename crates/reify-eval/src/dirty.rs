@@ -10,7 +10,7 @@ use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use crate::cache::NodeId;
 use crate::demand::DemandRegistry;
 use crate::deps::{DependencyTrace, ReverseDependencyIndex};
-use reify_types::ValueCellId;
+use reify_types::{RealizationNodeId, ValueCellId};
 
 /// Compute the dirty cone: all nodes that transitively depend on any changed cell.
 ///
@@ -46,6 +46,75 @@ pub fn compute_dirty_cone(
                 // downstream of the Compute node (the Compute writes them),
                 // not edges in the reverse index, so they must be inserted
                 // here — they don't surface via `dependents_of(cell)`.
+                if let NodeId::Compute(cn_id) = dependent
+                    && let Some(cn_data) = graph.compute_nodes.get(cn_id)
+                {
+                    for vc in &cn_data.output_value_cells {
+                        if dirty.insert(NodeId::Value(vc.clone())) {
+                            frontier.push_back(vc.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    dirty
+}
+
+/// Compute the dirty cone seeded by both changed ValueCells and changed
+/// RealizationNodes.
+///
+/// Extends [`compute_dirty_cone`] with a second source of seeds: a set of
+/// Realizations whose result content-hash actually changed. For each such
+/// Realization, every ComputeNode consuming it via edge #10
+/// (`realization_inputs`) is marked dirty, and each ComputeNode's declared
+/// `output_value_cells` (edge #12) is seeded onto the BFS frontier so its
+/// downstream consumers propagate the same way `compute_dirty_cone` does
+/// for ValueCell-seeded changes.
+///
+/// Seed discrimination (task-spec test 3, locked in by step-13): the caller
+/// is responsible for only inserting Realizations whose content-hash
+/// actually differs. An empty `changed_realizations` set yields no
+/// Realization-driven propagation — the function only iterates over the
+/// supplied seeds. This mirrors the existing `EvalOutcome::Changed/Unchanged`
+/// pattern at the seed boundary instead of duplicating the comparison logic
+/// inside the walk.
+pub fn compute_dirty_cone_with_realizations(
+    changed_vcs: &HashSet<ValueCellId>,
+    changed_realizations: &HashSet<RealizationNodeId>,
+    reverse_index: &ReverseDependencyIndex,
+    graph: &crate::graph::EvaluationGraph,
+) -> HashSet<NodeId> {
+    let mut dirty: HashSet<NodeId> = HashSet::new();
+    let mut frontier: VecDeque<ValueCellId> = changed_vcs.iter().cloned().collect();
+
+    // Seed from changed realizations via edge #10 (Realization → Compute).
+    // For each consuming ComputeNode, also seed edge #12 (Compute → output
+    // ValueCells) onto the frontier so downstream BFS picks up dependents
+    // of those output cells.
+    for rid in changed_realizations {
+        for dependent in reverse_index.realization_dependents_of(rid) {
+            if dirty.insert(dependent.clone())
+                && let NodeId::Compute(cn_id) = dependent
+                && let Some(cn_data) = graph.compute_nodes.get(cn_id)
+            {
+                for vc in &cn_data.output_value_cells {
+                    if dirty.insert(NodeId::Value(vc.clone())) {
+                        frontier.push_back(vc.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    // BFS over ValueCell dependents — identical to `compute_dirty_cone`.
+    while let Some(cell) = frontier.pop_front() {
+        for dependent in reverse_index.dependents_of(&cell) {
+            if dirty.insert(dependent.clone()) {
+                if let NodeId::Value(vcid) = dependent {
+                    frontier.push_back(vcid.clone());
+                }
                 if let NodeId::Compute(cn_id) = dependent
                     && let Some(cn_data) = graph.compute_nodes.get(cn_id)
                 {
