@@ -1394,4 +1394,79 @@ mod tests {
              length-prefix scheme, hash primitive, or path format changes"
         );
     }
+
+    /// Regression guard for editor-debris leaking into the cache key.
+    ///
+    /// If developer A's editor leaves `.swp`, `.orig`, `.DS_Store`, etc. in a
+    /// contributor directory, those bytes must NOT perturb `ENGINE_VERSION_HASH`.
+    /// Otherwise developer B (or CI) building the same git SHA would observe a
+    /// different hash → spurious cache miss + spurious `cargo:rerun-if-changed`
+    /// triggers.
+    ///
+    /// Debris files tested:
+    ///   `.foo.swp`       — vim swap (hidden, extension .swp)
+    ///   `bar.swo`        — vim swap (extension .swo)
+    ///   `baz.orig`       — merge-conflict residue (extension .orig)
+    ///   `quux.bk`        — backup (extension .bk)
+    ///   `.DS_Store`      — macOS metadata (exact name)
+    ///   `emacs_backup~`  — Emacs backup (trailing tilde)
+    #[test]
+    fn walk_contributor_filters_editor_debris_so_two_developers_produce_the_same_hash() {
+        let tmpdir = tempfile::TempDir::new().expect("must create tempdir");
+        let root = tmpdir.path().to_path_buf();
+
+        // Real source file that must be included.
+        std::fs::write(root.join("clean.rs"), b"// real source")
+            .expect("must write clean.rs");
+
+        // Editor debris files that must be excluded from the hash and from
+        // cargo:rerun-if-changed directives.
+        let debris_names = [
+            ".foo.swp",
+            "bar.swo",
+            "baz.orig",
+            "quux.bk",
+            ".DS_Store",
+            "emacs_backup~",
+        ];
+        for name in &debris_names {
+            std::fs::write(root.join(name), b"DEBRIS - must not appear in hash")
+                .unwrap_or_else(|e| panic!("must write debris file {name}: {e}"));
+        }
+
+        let walk = crate::engine_hash_algo::walk_contributor("root", &root);
+
+        // --- rerun_paths must NOT include any debris path ---
+        for name in &debris_names {
+            let debris_path = root.join(name);
+            assert!(
+                !walk.rerun_paths.contains(&debris_path),
+                "debris file '{name}' must not appear in rerun_paths but it did; \
+                 this means cargo would spuriously re-run the build script when \
+                 the editor writes/removes that debris file"
+            );
+        }
+
+        // --- hash must equal the hash of [clean.rs path, clean.rs content] ---
+        let walk_refs: Vec<&[u8]> = walk.parts.iter().map(|v| v.as_slice()).collect();
+        let hash_from_walk = compose_engine_version_hash(&walk_refs);
+
+        let expected_parts: &[&[u8]] = &[b"root/clean.rs", b"// real source"];
+        let expected_hash = compose_engine_version_hash(expected_parts);
+
+        assert_eq!(
+            hash_from_walk,
+            expected_hash,
+            "walk_contributor must produce the same hash as a hand-constructed \
+             parts list containing only the real source file; debris files must \
+             not enter the hash input. If this fails, check which debris pattern \
+             leaked: \
+             .swp (vim swap), \
+             .swo (vim swap alt), \
+             .orig (merge residue), \
+             .bk (backup), \
+             .DS_Store (macOS metadata), \
+             trailing ~ (Emacs backup)"
+        );
+    }
 }
