@@ -488,3 +488,291 @@ pub structure Outer {
             .collect::<Vec<_>>()
     );
 }
+
+// ─── amendment regression guards (reviewer suggestions #4 + #5) ───────────────
+
+/// Two singular subs of the same child template share one kernel handle for
+/// the child's body — `sub a = Inner(); sub b = Inner();` lower to
+/// `GeomRef::Sub("a.body")` and `GeomRef::Sub("b.body")` respectively, and
+/// the eval-side `module_named_steps` registry keys by the *structure name*
+/// (`sub.structure_name`) so both sub names get seeded from the same
+/// per-template snapshot.
+///
+/// This is a v0.1 documented limitation: the named_steps registry would need
+/// to key on the sub *instance* (not template) for two same-template subs to
+/// receive distinct handles.  Lifting this requires per-instance realisation
+/// of the child template, which is out of scope for the cross-sub composition
+/// MVP.  See `engine_build.rs::seed_cross_sub_named_steps` for the
+/// same-template aliasing note.
+///
+/// Regression guard: pins the current behaviour so a future change that
+/// inadvertently breaks the same-template aliasing (e.g. an attempt to fix
+/// it that mis-keys the registry) fails this test loudly.
+#[test]
+fn cross_sub_same_template_subs_share_kernel_handle() {
+    let source = r#"pub structure Inner {
+    let body = box(10mm, 20mm, 30mm)
+}
+pub structure Outer {
+    sub a = Inner()
+    sub b = Inner()
+    let placed_a = translate(self.a.body, 10mm, 0mm, 0mm)
+    let placed_b = translate(self.b.body, 0mm, 10mm, 0mm)
+}"#;
+    let compiled = compile_source(source);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "expected no compile-time Error diagnostics; got: {:?}",
+        compile_errors
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&compiled, ExportFormat::Step);
+    let build_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        build_errors.is_empty(),
+        "expected no build-time Error diagnostics; got: {:?}",
+        build_errors
+            .iter()
+            .map(|d| format!("[{:?}] {}", d.severity, d.message))
+            .collect::<Vec<_>>()
+    );
+
+    // Inner's `body` is realised exactly once; both translate ops target the
+    // same Box handle.  This is the same-template aliasing limitation
+    // documented above.
+    let recorded = ops_ref.lock().unwrap().clone();
+    let box_handles: Vec<_> = recorded
+        .iter()
+        .filter_map(|rec| match rec.op {
+            GeometryOp::Box { .. } => Some(rec.result_handle),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        box_handles.len(),
+        1,
+        "expected exactly 1 Box op (Inner.body realised once); got {} handles in {:?}",
+        box_handles.len(),
+        recorded
+            .iter()
+            .map(|r| format!("{:?}", r.op))
+            .collect::<Vec<_>>()
+    );
+    let inner_body_handle = box_handles[0];
+
+    let translate_targets: Vec<_> = recorded
+        .iter()
+        .filter_map(|rec| match rec.op {
+            GeometryOp::Translate { target, .. } => Some(target),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        translate_targets.len(),
+        2,
+        "expected exactly 2 Translate ops (placed_a + placed_b); got {} in {:?}",
+        translate_targets.len(),
+        recorded
+            .iter()
+            .map(|r| format!("{:?}", r.op))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        translate_targets[0], inner_body_handle,
+        "translate(self.a.body, ...) should target Inner's single Box handle; got {:?}",
+        translate_targets[0]
+    );
+    assert_eq!(
+        translate_targets[1], inner_body_handle,
+        "translate(self.b.body, ...) should target the SAME Inner Box handle \
+         (v0.1 same-template aliasing limitation); got {:?}",
+        translate_targets[1]
+    );
+}
+
+/// Forward-declared sub: parent template `Outer` is declared *before* the
+/// child template `Inner` in source order.  Because the eval seed loop
+/// processes templates in declaration order and only seeds compound-key
+/// entries from already-processed templates, the parent's `named_steps`
+/// will NOT contain `"inner.body"` at the time Outer's realisations run,
+/// and the `GeomRef::Sub("inner.body")` reference falls through to the
+/// `geometry_ops.rs::resolve_geom_ref` "unresolvable GeomRef::Sub" error
+/// path.
+///
+/// This is the v0.1 fallback for forward-declared / recursive subs.  Users
+/// will see a runtime error rather than a compile-time diagnostic; lifting
+/// this requires either a topological pre-pass over the template graph or
+/// a compile-time forward-reference check.  See
+/// `engine_build.rs::seed_cross_sub_named_steps` rustdoc.
+///
+/// Regression guard: pins the current error message so a future cleaner
+/// diagnostic path can flip this test to assert the new message rather
+/// than relying on the runtime fallback.
+#[test]
+fn cross_sub_forward_declared_sub_yields_unresolvable_geom_ref_error() {
+    // Outer is declared BEFORE Inner — at the time Outer's realisations run,
+    // Inner has not been realised yet, so `module_named_steps` does not
+    // contain Inner's "body" entry to seed `inner.body` into Outer's
+    // `named_steps`.
+    let source = r#"pub structure Outer {
+    sub inner = Inner()
+    let placed = translate(self.inner.body, 10mm, 0mm, 0mm)
+}
+pub structure Inner {
+    let body = box(10mm, 20mm, 30mm)
+}"#;
+    let compiled = compile_source(source);
+    // Compile-side passes — the working-path lowering does not check
+    // declaration order.
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "expected no compile-time Error diagnostics (forward-ref is a runtime fallback); got: {:?}",
+        compile_errors
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    // Runtime: the parent's `named_steps` is missing the compound-key
+    // `"inner.body"`, so `GeomRef::Sub("inner.body")` cannot resolve.
+    let unresolvable: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.message.contains("unresolvable GeomRef::Sub")
+                || d.message.contains("inner.body")
+        })
+        .collect();
+    assert!(
+        !unresolvable.is_empty(),
+        "expected a runtime diagnostic naming 'unresolvable GeomRef::Sub' or 'inner.body' \
+         for forward-declared sub; got diagnostics: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| format!("[{:?}] {}", d.severity, d.message))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Bare cross-sub geometry access (no enclosing geometry call):
+/// `let copy = self.inner.body` produces a value-cell binding rather than a
+/// realisation op.  The compile-side `try_resolve_cross_sub_geometry_value_ref`
+/// helper emits a `CompiledExpr::value_ref(ValueCellId::new("Outer.inner",
+/// "body"), Type::Geometry)`, but the eval side only seeds the *geometry*
+/// `named_steps["inner.body"]` entry — it does NOT seed a value cell at
+/// `("Outer.inner", "body")`.
+///
+/// The let binding has no `RealizationDecl` (a bare `MemberAccess` doesn't
+/// pass `is_geometry_let`), so the kernel records no ops for `copy`.  The
+/// value-cell lookup at eval time finds no binding and resolves to `Undef`.
+///
+/// This documents the v0.1 boundary: the working path is intended for use
+/// *inside* a geometry call (translate / union / mirror / etc.) where the
+/// parallel `try_resolve_cross_sub_geom_ref` in geometry.rs lowers the
+/// access to a `GeomRef::Sub` and the kernel resolves the handle.  Bare
+/// uses produce no kernel ops and no error.
+///
+/// Regression guard: pins (a) the no-compile-error behaviour, and (b) the
+/// no-kernel-op behaviour (the kernel sees no Box for Inner.body and no
+/// downstream op for `copy`).  If the bare-use path becomes broken in some
+/// other way (e.g. starts emitting a spurious error or wedging the build),
+/// this test fails loudly.
+#[test]
+fn bare_cross_sub_geometry_access_is_documented_v01_value_cell_only() {
+    let source = r#"pub structure Inner {
+    let body = box(10mm, 20mm, 30mm)
+}
+pub structure Outer {
+    sub inner = Inner()
+    let copy = self.inner.body
+}"#;
+    let compiled = compile_source(source);
+
+    // (a) No compile-time Error diagnostics — the working path lowers the
+    // value-cell expression to a Type::Geometry ValueRef.
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "expected no compile-time Error diagnostics for bare cross-sub access; \
+         got: {:?}",
+        compile_errors
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    // (b) The kernel records Inner.body's Box (because Inner's realisation
+    // runs), but `copy` itself is not a `RealizationDecl` and produces no
+    // additional op.
+    let recorded = ops_ref.lock().unwrap().clone();
+    let translate_count = recorded
+        .iter()
+        .filter(|rec| matches!(rec.op, GeometryOp::Translate { .. }))
+        .count();
+    assert_eq!(
+        translate_count, 0,
+        "bare cross-sub access must NOT synthesize a Translate or any op for `copy`; \
+         got translate_count={} in {:?}",
+        translate_count,
+        recorded
+            .iter()
+            .map(|r| format!("{:?}", r.op))
+            .collect::<Vec<_>>()
+    );
+    // No build-time "unresolvable" diagnostic either — the bare path simply
+    // doesn't emit kernel ops.
+    let unresolvable: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("unresolvable GeomRef::Sub"))
+        .collect();
+    assert!(
+        unresolvable.is_empty(),
+        "bare cross-sub access must NOT trigger 'unresolvable GeomRef::Sub'; \
+         got: {:?}",
+        unresolvable
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
