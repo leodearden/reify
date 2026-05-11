@@ -294,6 +294,7 @@ pub mod shell_assembly;
 pub mod shell_boundary;
 pub mod shell_result;
 pub mod solver;
+pub mod sweep;
 pub mod warm_state;
 
 pub use assembly::{
