@@ -31,8 +31,67 @@
 // `docs/prds/v0_3/persistent-fea-cache.md` §"Cache invalidation on engine
 // version".
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use xxhash_rust::xxh3::xxh3_128;
+
+/// Returns true when `file_name` matches a known editor or OS debris pattern.
+///
+/// Applied during directory iteration (after sorting, before recursion) so
+/// transient editor artifacts never enter the hash input or the
+/// `cargo:rerun-if-changed` directive list.  Explicit single-file contributors
+/// listed in `build.rs` are **not** passed through this filter (filtering only
+/// happens inside the directory-enumeration branch of `walk_recursive`).
+///
+/// # Denylist rationale
+///
+/// This is a denylist, not an allowlist.  An allowlist would silently exclude
+/// any new legitimate contributor file extension (`.rs`, `.toml`, `.py`, etc.)
+/// the moment it appears in a contributor directory — the exact failure mode
+/// that motivated adding recursive directory walking in the first place.  A
+/// denylist explicitly names known-transient artifacts and lets everything else
+/// through; the cost of missing an obscure pattern is a one-off hash divergence
+/// that is easy to diagnose.
+///
+/// # Patterns matched
+///
+/// | Pattern | Examples |
+/// |---------|---------|
+/// | Extension in `{swp, swo, swn, bk, bak, orig, rej, tmp}` | `.foo.swp`, `bar.orig` |
+/// | Exact name (case-insensitive) `{.ds_store, thumbs.db, desktop.ini}` | `.DS_Store` |
+/// | Name ending with `~` | `foo.rs~` (Emacs backup) |
+// Used by `walk_recursive` which is itself `#[allow(dead_code)]`.
+// `#[inline(never)]` prevents LLVM stack-overflow when compiling large release
+// test binaries — same rationale as `walk_contributor` and `walk_recursive`.
+#[allow(dead_code)]
+#[inline(never)]
+fn is_editor_debris(file_name: &OsStr) -> bool {
+    let name = file_name.to_string_lossy();
+    let name_lower = name.to_lowercase();
+
+    // Emacs backup: file ends with `~`.
+    if name_lower.ends_with('~') {
+        return true;
+    }
+
+    // Exact-name matches (case-insensitive).
+    if matches!(name_lower.as_str(), ".ds_store" | "thumbs.db" | "desktop.ini") {
+        return true;
+    }
+
+    // Extension-based matches: extract the last `.`-delimited component.
+    if let Some(ext) = std::path::Path::new(&*name).extension() {
+        let ext_lower = ext.to_string_lossy().to_lowercase();
+        if matches!(
+            ext_lower.as_str(),
+            "swp" | "swo" | "swn" | "bk" | "bak" | "orig" | "rej" | "tmp"
+        ) {
+            return true;
+        }
+    }
+
+    false
+}
 
 /// Compute the canonical engine-version hash for a set of contributor byte slices.
 ///
@@ -205,6 +264,12 @@ fn walk_recursive(label: &str, root: &Path, path: &Path, walk: &mut ContributorW
                 .unwrap_or_default()
                 .cmp(b.file_name().unwrap_or_default())
         });
+        // Drop known editor/OS debris before recursing so transient files
+        // never perturb the hash or cargo:rerun-if-changed directives.
+        // `map_or(true, …)` retains entries with no file-name component
+        // (impossible for read_dir results, but satisfies Option without
+        // unwrap — keeps the filter from silently skipping unexpected paths).
+        entries.retain(|p| p.file_name().map_or(true, |n| !is_editor_debris(n)));
         for entry in entries {
             walk_recursive(label, root, &entry, walk);
         }
