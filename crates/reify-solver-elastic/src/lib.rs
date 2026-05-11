@@ -54,6 +54,8 @@
 //!     // Task 2988: sweep step public surface
 //!     SweepParams, SweptMesh3d, SweptConnectivity, SweepError, ThroughThicknessSweepWarning,
 //!     sweep_2d_mesh_to_3d, derive_layer_count, check_sweep_through_thickness,
+//!     // Task 2996: Z-Z error indicator surface
+//!     ZzIndicator, compute_zz_indicator,
 //! };
 //!
 //! let _: TetP1 = TetP1;
@@ -296,6 +298,20 @@
 //! ).unwrap();
 //! assert_eq!(swept.layers, 1);
 //! assert_eq!(swept.vertices.len(), 18); // 2 planes × 3 verts × 3 coords
+//!
+//! // Task 2996: Z-Z error indicator surface pin.
+//! // Struct-literal + function-item signature pins; behaviour covered by
+//! // `error_estimator::tests`. A rename or removal of either the type or
+//! // the function trips this doctest at compile time.
+//! let _zz = ZzIndicator {
+//!     per_element: vec![0.5_f64],
+//!     global_relative_energy_error: 0.05_f64,
+//! };
+//! let _: fn(
+//!     &[StressElement<'_>],
+//!     &reify_types::VolumeMesh,
+//!     &IsotropicElastic,
+//! ) -> ZzIndicator = compute_zz_indicator;
 //! ```
 
 pub mod assembly;
