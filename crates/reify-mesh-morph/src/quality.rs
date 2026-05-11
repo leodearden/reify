@@ -749,9 +749,16 @@ mod tests {
             normals: None,
         };
 
-        // Default opts: quality_floor_min_scaled_jacobian = 0.15.
-        // The stretched tet has scaled J ≈ 0.054 → min_scaled_jacobian trips.
-        let opts = MorphOptions::default();
+        // Explicit threshold: quality_floor_min_scaled_jacobian = 0.15 (was
+        // the pre-task-#2950 PRD seed). The stretched tet has scaled J ≈ 0.054,
+        // which trips this floor regardless of the calibrated Default (which
+        // task #2950 lowered to accommodate procedurally-meshed fixtures). The
+        // test pins the *mechanism* — morphed-only checks still run when
+        // connectivity is mismatched — not the absolute floor value.
+        let opts = MorphOptions {
+            quality_floor_min_scaled_jacobian: 0.15,
+            ..MorphOptions::default()
+        };
         let result = quality_check(&morphed, &source, &opts);
 
         match &result {

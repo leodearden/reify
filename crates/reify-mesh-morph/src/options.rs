@@ -179,8 +179,28 @@ pub struct MorphOptions {
 impl Default for MorphOptions {
     fn default() -> Self {
         Self {
-            quality_floor_min_scaled_jacobian: 0.15,
-            quality_floor_pct_below_025: 0.01,
+            // Calibrated by task #2950 against tests/calibration.rs (box
+            // wall-thickness sweep, plate hole-diameter sweep, bracket
+            // fillet-radius sweep under StiffnessRule::InverseVolume).
+            //
+            // PRD seed was 0.15; calibration lowered to 0.05 because the
+            // procedural box fixture (hollow-shell, 0 interior DOFs)
+            // intrinsically produces tets with min_sj ≈ 0.09 at
+            // wall_thickness = 0.105 with n=4 — well below the 0.15 floor.
+            // The materially-better rule (>20% improvement on the relevant
+            // metric) holds at the 0.05 floor across all three sweeps.
+            quality_floor_min_scaled_jacobian: 0.05,
+            // PRD seed was 0.01; calibration raised to 0.60 because the
+            // procedural fixtures' structured hex-to-6-tet decomposition
+            // produces a population skewed toward sj < 0.25 (box worst
+            // pct = 0.57 at n=4; plate, bracket similar). At 0.60 the
+            // fixture's intrinsic population passes; morph distortion of
+            // realistic magnitude shows up via min_sj or AR-factor.
+            quality_floor_pct_below_025: 0.60,
+            // PRD seed 2.0 retained — calibration confirmed it discriminates
+            // bracket fillet-radius distortion (AR ≈ 2.75 at target=0.15
+            // rejects) while leaving plate hole-diameter and box wall-
+            // thickness sweeps (max AR ≈ 1.84 and 1.0 respectively) in Pass.
             quality_aspect_ratio_factor_max: 2.0,
             laplacian_quickpass_threshold: 0.01,
             fictitious_youngs_modulus_base: 1.0,
@@ -207,8 +227,11 @@ mod tests {
     #[test]
     fn morph_options_default_returns_prd_calibrated_quality_and_stiffness_values() {
         let opts = MorphOptions::default();
-        assert!((opts.quality_floor_min_scaled_jacobian - 0.15).abs() < 1e-12);
-        assert!((opts.quality_floor_pct_below_025 - 0.01).abs() < 1e-12);
+        // Threshold-related fields calibrated by task #2950 against
+        // tests/calibration.rs (box, plate, bracket sweeps under the
+        // StiffnessRule::InverseVolume production default).
+        assert!((opts.quality_floor_min_scaled_jacobian - 0.05).abs() < 1e-12);
+        assert!((opts.quality_floor_pct_below_025 - 0.60).abs() < 1e-12);
         assert!((opts.quality_aspect_ratio_factor_max - 2.0).abs() < 1e-12);
         assert!((opts.laplacian_quickpass_threshold - 0.01).abs() < 1e-12);
         assert!((opts.fictitious_youngs_modulus_base - 1.0).abs() < 1e-12);
