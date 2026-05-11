@@ -1921,6 +1921,24 @@ mod tests {
     // ── CacheEntryHeader tests ────────────────────────────────────────────────
 
     #[test]
+    fn cache_entry_header_verify_echoes_returns_ok_when_both_echoes_match() {
+        let engine = [0xAAu8; 32];
+        let input  = [0xBBu8; 32];
+        let header = CacheEntryHeader {
+            format_version:      1,
+            engine_version_hash: engine,
+            input_hash:          input,
+            solve_time_ms:       0,
+            byte_size:           0,
+            written_at:          0,
+        };
+        assert!(
+            header.verify_echoes(&engine, &input).is_ok(),
+            "verify_echoes must return Ok when both echoes match"
+        );
+    }
+
+    #[test]
     fn entry_format_version_const_is_one() {
         // Pins the start-at-1 convention (0 = uninitialised / unknown).
         // An intentional on-disk-layout bump must touch this assertion — that
