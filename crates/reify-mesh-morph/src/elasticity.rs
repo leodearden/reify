@@ -228,11 +228,19 @@ pub fn elasticity_morph(
         // elementwise — the existing element_stiffness API is reused unchanged.
         // The single shared IsotropicElastic from task #7 is replaced by a
         // per-tet construct; only E changes per element, ν stays uniform.
-        let e_e = per_element_youngs_modulus(
-            options.stiffness_rule,
-            &phys,
-            options.fictitious_youngs_modulus_base,
-        );
+        //
+        // For `Uniform`, bypass per-element geometry entirely — zero extra
+        // computation cost, bit-identical to the task-#7 baseline. For the
+        // spatially-varying rules, compute element-local E from tet geometry.
+        let e_e = if options.stiffness_rule == StiffnessRule::Uniform {
+            options.fictitious_youngs_modulus_base
+        } else {
+            per_element_youngs_modulus(
+                options.stiffness_rule,
+                &phys,
+                options.fictitious_youngs_modulus_base,
+            )
+        };
         let material_e = IsotropicElastic {
             youngs_modulus: e_e,
             poisson_ratio: options.fictitious_poisson_ratio,
@@ -599,25 +607,14 @@ mod tests {
         // tautological. Pinned by step-11.
     }
 
-    // ── task 2945 step-5: InverseVolume vs Uniform on graded mesh ────────────
+    // ── task 2945 step-5 + step-7: asymmetric-cone fixture + rule tests ─────────
 
-    /// Asymmetric cone fixture: 5 nodes, 4 tets all sharing interior node `p`.
-    /// Node `p` is placed near vertex `a` (at 0.05, 0.05, 0.05), so three
-    /// tets touching `a` have small volume and the fourth (`b, c, d, p`) has
-    /// large volume — a deliberately graded mesh.
-    ///
-    /// Non-rigid pinning (a, c, d fixed; b stretched to (2, 0, 0)) forces a
-    /// non-rigid deformation mode, which exposes the effect of per-element E
-    /// scaling: under `InverseVolume` the small-V tets are stiffer and the
-    /// interior node `p` moves differently than under `Uniform`.
-    ///
-    /// Asserts that the two rules produce demonstrably different interior-node
-    /// positions (L_∞ norm > 1e-3). No directional bias is asserted — the sign
-    /// depends on a non-trivial energy balance and would create fragility.
-    #[test]
-    fn elasticity_morph_inverse_volume_rule_produces_different_interior_node_position_than_uniform()
-    {
-        // Layout: 0=a, 1=b, 2=c, 3=d, 4=p (interior, near a)
+    /// Helper that builds the asymmetric cone fixture (5 nodes, 4 tets, `p`
+    /// near `a`) and the non-rigid prescribed positions (b stretched to
+    /// (2, 0, 0)). Shared by the `InverseVolume vs Uniform` test (step-5) and
+    /// the `InverseEdgeLengthSquared distinctness + determinism` test (step-7)
+    /// — single source of truth for the fixture definition.
+    fn asymmetric_cone_fixture() -> (reify_types::VolumeMesh, Vec<(u32, [f64; 3])>) {
         let mesh = reify_types::VolumeMesh {
             vertices: vec![
                 0.0_f32, 0.0, 0.0,  // 0: a
@@ -635,17 +632,32 @@ mod tests {
             element_order: reify_types::ElementOrderTag::P1,
             normals: None,
         };
-
-        // Non-rigid BCs: a, c, d pinned to their original positions; b
-        // stretched to (2, 0, 0). This imposes a stretching mode — NOT a
-        // rigid-body translation, so the per-element E scaling has an effect
-        // on the interior-node equilibrium position.
-        let prescribed = vec![
-            (0_u32, [0.0_f64, 0.0, 0.0]), // a fixed
-            (2, [0.0_f64, 1.0, 0.0]),      // c fixed
-            (3, [0.0_f64, 0.0, 1.0]),      // d fixed
-            (1, [2.0_f64, 0.0, 0.0]),      // b stretched
+        let prescribed: Vec<(u32, [f64; 3])> = vec![
+            (0, [0.0, 0.0, 0.0]), // a fixed
+            (2, [0.0, 1.0, 0.0]), // c fixed
+            (3, [0.0, 0.0, 1.0]), // d fixed
+            (1, [2.0, 0.0, 0.0]), // b stretched
         ];
+        (mesh, prescribed)
+    }
+
+    /// Asymmetric cone fixture: 5 nodes, 4 tets all sharing interior node `p`.
+    /// Node `p` is placed near vertex `a` (at 0.05, 0.05, 0.05), so three
+    /// tets touching `a` have small volume and the fourth (`b, c, d, p`) has
+    /// large volume — a deliberately graded mesh.
+    ///
+    /// Non-rigid pinning (a, c, d fixed; b stretched to (2, 0, 0)) forces a
+    /// non-rigid deformation mode, which exposes the effect of per-element E
+    /// scaling: under `InverseVolume` the small-V tets are stiffer and the
+    /// interior node `p` moves differently than under `Uniform`.
+    ///
+    /// Asserts that the two rules produce demonstrably different interior-node
+    /// positions (L_∞ norm > 1e-3). No directional bias is asserted — the sign
+    /// depends on a non-trivial energy balance and would create fragility.
+    #[test]
+    fn elasticity_morph_inverse_volume_rule_produces_different_interior_node_position_than_uniform()
+    {
+        let (mesh, prescribed) = asymmetric_cone_fixture();
 
         let opts_uniform = crate::MorphOptions {
             stiffness_rule: crate::options::StiffnessRule::Uniform,
@@ -677,36 +689,6 @@ mod tests {
     }
 
     // ── task 2945 step-7: InverseEdgeLengthSquared distinctness + determinism ──
-
-    /// Helper that builds the asymmetric cone fixture (5 nodes, 4 tets, `p`
-    /// near `a`) and the non-rigid prescribed positions (b stretched to
-    /// (2, 0, 0)). Shared by the step-5 and step-7 tests to avoid duplication.
-    fn asymmetric_cone_fixture() -> (reify_types::VolumeMesh, Vec<(u32, [f64; 3])>) {
-        let mesh = reify_types::VolumeMesh {
-            vertices: vec![
-                0.0_f32, 0.0, 0.0,  // 0: a
-                1.0, 0.0, 0.0,       // 1: b
-                0.0, 1.0, 0.0,       // 2: c
-                0.0, 0.0, 1.0,       // 3: d
-                0.05, 0.05, 0.05,    // 4: p (near a → three small tets, one large)
-            ],
-            tet_indices: vec![
-                0, 1, 2, 4, // a, b, c, p  — small vol
-                0, 1, 3, 4, // a, b, d, p  — small vol
-                0, 2, 3, 4, // a, c, d, p  — small vol
-                1, 2, 3, 4, // b, c, d, p  — large vol
-            ],
-            element_order: reify_types::ElementOrderTag::P1,
-            normals: None,
-        };
-        let prescribed: Vec<(u32, [f64; 3])> = vec![
-            (0, [0.0, 0.0, 0.0]), // a fixed
-            (2, [0.0, 1.0, 0.0]), // c fixed
-            (3, [0.0, 0.0, 1.0]), // d fixed
-            (1, [2.0, 0.0, 0.0]), // b stretched
-        ];
-        (mesh, prescribed)
-    }
 
     /// Green-on-arrival characterization + regression guard.
     ///
@@ -746,6 +728,12 @@ mod tests {
             .expect("InverseEdgeLengthSquared should succeed");
 
         // (b) Determinism: running InverseEdgeLengthSquared twice yields bit-equal output.
+        // The assertion is intentionally bit-exact (not tolerance-based): this is the
+        // correct contract while AssemblyMode::Deterministic + SolverMode::Deterministic
+        // are in effect (see elasticity_morph's assembly and CG calls). If the solver is
+        // ever parallelised (e.g. rayon-based reductions), this assertion will go flaky
+        // — update it to a tolerance-based check and document the new determinism
+        // contract at that point.
         let out_inv_edge_2 = elasticity_morph(&mesh, &prescribed, &opts_inv_edge)
             .expect("InverseEdgeLengthSquared second run should succeed");
         assert_eq!(

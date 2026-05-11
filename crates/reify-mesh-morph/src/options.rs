@@ -188,6 +188,11 @@ impl Default for MorphOptions {
             laplacian_iterations: 8,
             // PRD task #8: InverseVolume is the prescribed default for
             // mesh-gradation preservation (small elements stay stiff).
+            // Backward-compatibility audit: all pre-task-#8 tests in this
+            // crate use rigid-body BCs (invariant to E scaling — rigid modes
+            // lie in the kernel of every K_e) or zero-displacement BCs
+            // (post-Dirichlet K → diag(1.0), E-invariant). No pinned-output
+            // tests were broken by switching the default from Uniform.
             stiffness_rule: StiffnessRule::InverseVolume,
         }
     }
