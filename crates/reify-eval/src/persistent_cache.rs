@@ -1953,6 +1953,28 @@ mod tests {
     // ── CacheEntryHeader tests ────────────────────────────────────────────────
 
     #[test]
+    fn cache_entry_header_verify_echoes_rejects_engine_version_hash_mismatch_with_invalid_data() {
+        let header = CacheEntryHeader {
+            format_version:      1,
+            engine_version_hash: [0xAAu8; 32],
+            input_hash:          [0xBBu8; 32],
+            solve_time_ms:       0,
+            byte_size:           0,
+            written_at:          0,
+        };
+        let wrong_engine = [0xCCu8; 32];
+        let correct_input = [0xBBu8; 32];
+        let err = header.verify_echoes(&wrong_engine, &correct_input)
+            .expect_err("engine_version_hash mismatch must return Err");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData,
+            "expected InvalidData, got {:?}", err);
+        assert!(
+            err.to_string().contains("engine_version_hash"),
+            "error message must contain 'engine_version_hash', got: {err}"
+        );
+    }
+
+    #[test]
     fn cache_entry_header_verify_echoes_returns_ok_when_both_echoes_match() {
         let engine = [0xAAu8; 32];
         let input  = [0xBBu8; 32];
