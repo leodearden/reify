@@ -11,8 +11,32 @@ use reify_types::ContentHash;
 ///
 /// See `docs/prds/v0_3/compute-node-infrastructure.md` §"Cache key" for the
 /// full specification.  Composition is finalised in P3.2 task steps 2–16.
-pub fn compute_cache_key(node: &ComputeNodeData, _ctx: &EvaluationGraph) -> ContentHash {
-    ContentHash::combine_all([ContentHash::of_str(&node.target), node.options_hash])
+pub fn compute_cache_key(node: &ComputeNodeData, ctx: &EvaluationGraph) -> ContentHash {
+    // Collect value-input cell content_hashes (Vec order — sort applied in step-10).
+    let value_bucket_hash: ContentHash = {
+        let hashes: Vec<ContentHash> = node
+            .value_inputs
+            .iter()
+            .map(|id| {
+                ctx.value_cells
+                    .get(id)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "compute_cache_key [task-3381]: value_input {:?} not present in graph",
+                            id
+                        )
+                    })
+                    .content_hash
+            })
+            .collect();
+        ContentHash::combine_all(hashes)
+    };
+
+    ContentHash::combine_all([
+        ContentHash::of_str(&node.target),
+        value_bucket_hash,
+        node.options_hash,
+    ])
 }
 
 #[cfg(test)]
