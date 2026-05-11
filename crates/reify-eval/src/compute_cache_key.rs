@@ -1,4 +1,19 @@
 //! Cache key composition for `ComputeNode` inputs.
+//!
+//! Exposes [`compute_cache_key`], which composes a canonical deterministic
+//! cache key over a [`ComputeNodeData`]'s inputs per
+//! `docs/prds/v0_3/compute-node-infrastructure.md` §"Cache key".
+
+use crate::graph::{ComputeNodeData, EvaluationGraph};
+use reify_types::ContentHash;
+
+/// Compose a deterministic cache key over a `ComputeNode`'s inputs.
+///
+/// See `docs/prds/v0_3/compute-node-infrastructure.md` §"Cache key" for the
+/// full specification.  Composition is finalised in P3.2 task steps 2–16.
+pub fn compute_cache_key(_node: &ComputeNodeData, _ctx: &EvaluationGraph) -> ContentHash {
+    ContentHash(0)
+}
 
 #[cfg(test)]
 mod tests {
