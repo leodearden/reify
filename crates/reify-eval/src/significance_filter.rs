@@ -99,6 +99,62 @@ pub fn significance_filter(
 #[cfg(test)]
 mod tests {
     use super::{FilterOutcome, is_opted_in, significance_filter};
+    use reify_types::{FieldSourceKind, InterpolationKind, SampledField, SampledGridKind, Type, Value};
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+
+    // ── Test helper: ElasticResult-shaped Value::Map ──────────────────────────
+    //
+    // Matches the stdlib shape documented in crates/reify-stdlib/src/fea.rs:
+    //   "displacement" → Value::Field { source: Sampled, lambda: Value::SampledField }
+    //   "stress"       → Value::Field { source: Sampled, lambda: Value::SampledField }
+    //   "max_von_mises"→ Value::Real
+    //   "converged"    → Value::Bool
+    //   "iterations"   → Value::Int
+
+    fn make_sampled_field(name: &str, data: &[f64]) -> Value {
+        Value::Field {
+            domain_type: Type::Real,
+            codomain_type: Type::Real,
+            source: FieldSourceKind::Sampled,
+            lambda: Arc::new(Value::SampledField(SampledField {
+                name: name.to_string(),
+                kind: SampledGridKind::Regular1D,
+                bounds_min: vec![0.0],
+                bounds_max: vec![1.0],
+                spacing: vec![0.5],
+                axis_grids: vec![(0..data.len()).map(|i| i as f64).collect()],
+                interpolation: InterpolationKind::Linear,
+                data: data.to_vec(),
+                oob_emitted: AtomicBool::new(false),
+            })),
+        }
+    }
+
+    /// Build a synthesised ElasticResult-shaped Value::Map for use in
+    /// significance_filter unit tests. Matches the stdlib fea.rs output shape.
+    fn make_elastic_result_value(
+        displacement_data: &[f64],
+        stress_data: &[f64],
+        max_vm: f64,
+        converged: bool,
+        iters: u32,
+    ) -> Value {
+        let mut map = BTreeMap::new();
+        map.insert(
+            Value::String("displacement".to_string()),
+            make_sampled_field("displacement", displacement_data),
+        );
+        map.insert(
+            Value::String("stress".to_string()),
+            make_sampled_field("stress", stress_data),
+        );
+        map.insert(Value::String("max_von_mises".to_string()), Value::Real(max_vm));
+        map.insert(Value::String("converged".to_string()), Value::Bool(converged));
+        map.insert(Value::String("iterations".to_string()), Value::Int(iters as i64));
+        Value::Map(map)
+    }
 
     // ── Step-1: is_opted_in allowlist tests ──────────────────────────────────
 
@@ -128,8 +184,8 @@ mod tests {
     /// runs — even when prev/new differ, the filter declines rather than comparing.
     #[test]
     fn significance_filter_returns_not_opted_in_for_unknown_target() {
-        let v1 = reify_types::Value::Real(0.0);
-        let v2 = reify_types::Value::Real(1.0);
+        let v1 = Value::Real(0.0);
+        let v2 = Value::Real(1.0);
         assert_eq!(
             significance_filter("solver::modal", &v1, &v2, Some(1e-6)),
             FilterOutcome::NotOptedIn,
@@ -140,6 +196,21 @@ mod tests {
             significance_filter("foo::bar", &v1, &v2, Some(1e-6)),
             FilterOutcome::NotOptedIn,
             "\"foo::bar\" is not opted in — filter must return NotOptedIn",
+        );
+    }
+
+    // ── Step-5: bit-equality shortcut ────────────────────────────────────────
+
+    /// Bit-equal Values → Equivalent, regardless of Map shape or tolerance.
+    /// Pins the shortcut: identical Values short-circuit before any tolerance
+    /// branch or Map extraction.
+    #[test]
+    fn significance_filter_returns_equivalent_for_bit_equal_results() {
+        let val = make_elastic_result_value(&[0.0, 0.001], &[0.0, 0.001], 1e8, true, 5);
+        assert_eq!(
+            significance_filter("solver::elastic_static", &val, &val.clone(), Some(1e-6)),
+            FilterOutcome::Equivalent,
+            "bit-equal Values must short-circuit to Equivalent before Map extraction",
         );
     }
 }
