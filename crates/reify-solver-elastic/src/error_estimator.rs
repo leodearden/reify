@@ -19,7 +19,7 @@
 //!   material parameters, returns the Z-Z indicator.
 
 use crate::constitutive::IsotropicElastic;
-use crate::result::StressElement;
+use crate::result::{StressElement, recover_nodal_stress_p1};
 use reify_types::VolumeMesh;
 
 /// Output of the Zienkiewicz-Zhu superconvergent patch-recovery error
@@ -70,15 +70,123 @@ pub struct ZzIndicator {
 /// `recover_nodal_stress_p1`'s "no incident elements → zero tensor"
 /// convention (`result.rs`). The auto-refinement loop receives a sensible
 /// signal ("no error, no refinement needed") rather than NaN propagation.
+/// Compute the compliance matrix `S = D⁻¹` for an isotropic linear-elastic
+/// material in engineering-shear Voigt order
+/// `[σ_xx, σ_yy, σ_zz, σ_xy, σ_yz, σ_xz]`.
+///
+/// The analytical closed form (6×6 symmetric) is:
+///
+/// ```text
+/// S = [ 1/E   −ν/E  −ν/E   0    0    0  ]
+///     [ −ν/E   1/E  −ν/E   0    0    0  ]
+///     [ −ν/E  −ν/E   1/E   0    0    0  ]
+///     [  0     0     0    1/G   0    0  ]
+///     [  0     0     0     0   1/G   0  ]
+///     [  0     0     0     0    0   1/G ]
+/// ```
+///
+/// where `G = E / (2(1+ν))`. This mirrors the convention in
+/// [`crate::constitutive::IsotropicElastic::d_matrix`] — that function uses
+/// engineering-shear strains (`γ_ij = 2ε_ij`), so the shear diagonal of D
+/// is `G` (not `2G`). Inverting that convention yields `1/G` on the shear
+/// diagonal here.
+///
+/// Private to this module; kept local per the established pattern of
+/// `inverse_transpose_3x3` in `result.rs` and `interpolation.rs`.
+fn compliance_matrix(material: &IsotropicElastic) -> [[f64; 6]; 6] {
+    let e = material.youngs_modulus;
+    let nu = material.poisson_ratio;
+    let inv_e = 1.0 / e;
+    let neg_nu_over_e = -nu / e;
+    let g = e / (2.0 * (1.0 + nu));
+    let inv_g = 1.0 / g;
+
+    let mut s = [[0.0_f64; 6]; 6];
+    // Normal-stress block (rows/cols 0..3).
+    for i in 0..3 {
+        for j in 0..3 {
+            s[i][j] = if i == j { inv_e } else { neg_nu_over_e };
+        }
+    }
+    // Shear-stress block (rows/cols 3..6) — diagonal 1/G, off-diagonal 0.
+    for k in 3..6 {
+        s[k][k] = inv_g;
+    }
+    s
+}
+
+/// Pack a symmetric 3×3 stress tensor into the engineering-shear Voigt vector
+/// `[σ_xx, σ_yy, σ_zz, σ_xy, σ_yz, σ_xz]`.
+#[inline]
+fn pack_voigt(t: &[[f64; 3]; 3]) -> [f64; 6] {
+    [t[0][0], t[1][1], t[2][2], t[0][1], t[1][2], t[0][2]]
+}
+
+/// Compute the bilinear form `v · S · v` for a Voigt vector `v` and a
+/// symmetric compliance matrix `S` (6×6).
+#[inline]
+fn voigt_bilinear(v: &[f64; 6], s: &[[f64; 6]; 6]) -> f64 {
+    let mut result = 0.0;
+    for i in 0..6 {
+        let mut sv_i = 0.0;
+        for j in 0..6 {
+            sv_i += s[i][j] * v[j];
+        }
+        result += v[i] * sv_i;
+    }
+    result
+}
+
 pub fn compute_zz_indicator(
     elements: &[StressElement<'_>],
     mesh: &VolumeMesh,
     material: &IsotropicElastic,
 ) -> ZzIndicator {
-    let _ = mesh;
-    let _ = material;
+    let n_nodes = mesh.vertices.len() / 3;
+    let compliance = compliance_matrix(material);
+
+    // Steps (a)+(b): volume-weighted nodal patch average via reuse from result.rs.
+    let nodal_smoothed = recover_nodal_stress_p1(n_nodes, elements);
+
+    let mut per_element = Vec::with_capacity(elements.len());
+
+    for el in elements {
+        let n = el.connectivity.len();
+
+        // Step (c): interpolate smoothed stress back to the element centroid.
+        // For P1 tets, barycentric coords at the centroid are (1/N, …, 1/N),
+        // so centroid interpolation = arithmetic mean of the nodal values.
+        let mut sigma_bar = [[0.0_f64; 3]; 3];
+        for &node in el.connectivity {
+            let ns = &nodal_smoothed[node];
+            for i in 0..3 {
+                for j in 0..3 {
+                    sigma_bar[i][j] += ns[i][j];
+                }
+            }
+        }
+        let inv_n = 1.0 / (n as f64);
+        for row in &mut sigma_bar {
+            for cell in row.iter_mut() {
+                *cell *= inv_n;
+            }
+        }
+
+        // Step (d): per-element indicator η_e = sqrt(V_e · diff · S · diff).
+        let mut diff = [[0.0_f64; 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                diff[i][j] = el.stress[i][j] - sigma_bar[i][j];
+            }
+        }
+        let diff_voigt = pack_voigt(&diff);
+        let energy_density = voigt_bilinear(&diff_voigt, &compliance);
+        per_element.push((el.volume * energy_density).sqrt());
+    }
+
+    // Global left as 0.0 — implemented in step-6.
     ZzIndicator {
-        per_element: vec![0.0; elements.len()],
+        per_element,
         global_relative_energy_error: 0.0,
     }
 }
