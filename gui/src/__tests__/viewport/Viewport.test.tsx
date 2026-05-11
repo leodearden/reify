@@ -919,8 +919,7 @@ describe('Viewport deformation bridge', () => {
     // Change warpFactor — should NOT re-run the effect since showDeformed is false.
     store.setWarpFactor(99);
 
-    // No new setDeformation call should have been made.
-    expect(mockMeshSetDeformation).not.toHaveBeenCalledWith({ warpFactor: 99 });
-    expect(mockMeshSetDeformation).not.toHaveBeenCalledWith(expect.objectContaining({ warpFactor: 99 }));
+    // The effect must not re-run at all when showDeformed=false.
+    expect(mockMeshSetDeformation).not.toHaveBeenCalled();
   });
 });
