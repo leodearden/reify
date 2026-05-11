@@ -19,8 +19,10 @@ pub fn compute_cache_key(node: &ComputeNodeData, _ctx: &EvaluationGraph) -> Cont
 mod tests {
     use super::compute_cache_key;
 
-    use crate::graph::{ComputeNodeData, EvaluationGraph};
-    use reify_types::{ComputeNodeId, ContentHash};
+    use reify_compiler::ValueCellKind;
+    use reify_types::{ComputeNodeId, ContentHash, Type, ValueCellId};
+
+    use crate::graph::{ComputeNodeData, EvaluationGraph, ValueCellNode};
 
     fn make_empty_node() -> ComputeNodeData {
         ComputeNodeData {
@@ -45,6 +47,49 @@ mod tests {
         let key1 = compute_cache_key(&node, &graph);
         let key2 = compute_cache_key(&node, &graph);
         assert_eq!(key1, key2, "compute_cache_key must be deterministic");
+    }
+
+    /// Insert a bare ValueCellNode (no default_expr) with the given content_hash.
+    fn insert_value_cell(
+        graph: &mut EvaluationGraph,
+        id: ValueCellId,
+        content_hash: ContentHash,
+    ) {
+        graph.value_cells.insert(
+            id.clone(),
+            ValueCellNode {
+                id,
+                kind: ValueCellKind::Let,
+                cell_type: Type::Real,
+                default_expr: None,
+                content_hash,
+            },
+        );
+    }
+
+    #[test]
+    fn compute_cache_key_changes_when_value_input_cell_hash_changes() {
+        let load_id = ValueCellId::new("Bracket", "load");
+        let mut graph = EvaluationGraph::default();
+        insert_value_cell(&mut graph, load_id.clone(), ContentHash::of_str("load_v1"));
+
+        let mut node = make_empty_node();
+        node.value_inputs = vec![load_id.clone()];
+
+        let key_v1 = compute_cache_key(&node, &graph);
+
+        // Mutate the cell's content_hash in-place (P3.1 landed get_mut for this).
+        graph
+            .value_cells
+            .get_mut(&load_id)
+            .unwrap()
+            .content_hash = ContentHash::of_str("load_v2");
+
+        let key_v2 = compute_cache_key(&node, &graph);
+        assert_ne!(
+            key_v1, key_v2,
+            "mutating a value-cell's content_hash must change the cache key"
+        );
     }
 
     #[test]
