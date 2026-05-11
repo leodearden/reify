@@ -323,6 +323,19 @@ impl ShellStress {
 mod tests {
     use super::*;
     use reify_types::Value;
+    use crate::assembly::ElementStiffness;
+    use crate::shell_assembly::shell_element_stiffness;
+
+    /// Compute K · u for an 18-DOF stiffness matrix.
+    fn matvec(k: &ElementStiffness, u: &[f64; 18]) -> [f64; 18] {
+        let mut out = [0.0_f64; 18];
+        for i in 0..18 {
+            for j in 0..18 {
+                out[i] += k.get(i, j) * u[j];
+            }
+        }
+        out
+    }
 
     /// `shell_element_frame(nodes)` must return the transpose of `build_shell_frame(nodes).r`.
     ///
@@ -677,5 +690,91 @@ mod tests {
         assert_eq!(result.top, top, "explicit: top round-trips");
         assert_eq!(result.mid, mid, "explicit: mid round-trips");
         assert_eq!(result.bottom, bottom, "explicit: bottom round-trips");
+    }
+
+    /// Locks the membrane path of `shell_element_stiffness` and `shell_element_stress`
+    /// together: `B_mᵀ · σ_voigt_membrane(u) · area · t` (the membrane internal-force
+    /// residual computed via the stress kernel) must equal the in-plane components
+    /// of `K · u` (the same residual computed via the stiffness kernel) for any DOF
+    /// vector `u`. Variational consistency: `K_m = ∫ B_mᵀ D B_m dV ⇒
+    /// K_m · u_inplane = B_mᵀ · (D · ε(u_inplane)) · area · t = B_mᵀ · σ_voigt · area · t`.
+    ///
+    /// Run on UNIT_TRI (R = identity ⇒ K_global = K_local, u_loc = u, σ_local = σ_global).
+    /// Drives the test with 5 deterministic pseudo-random 18-DOF vectors so a
+    /// future divergence in either kernel's kinematics — sign flip, tying-point
+    /// re-ordering, dn formula change — surfaces here.
+    ///
+    /// For UNIT_TRI the in-plane K rows (6n+0, 6n+1) receive contributions only
+    /// from the membrane block: bending activates {θ_x, θ_y} DOFs and shear
+    /// activates {u_z, θ_x, θ_y} DOFs — neither writes into the u_x / u_y rows.
+    #[test]
+    fn shell_membrane_residual_locks_stiffness_and_stress_paths() {
+        let mat = steel_like();
+        let t = 0.05_f64;
+        let area = 0.5_f64; // UNIT_TRI area
+
+        // Build K once.
+        let k = shell_element_stiffness(&UNIT_TRI, t, &mat);
+
+        // dn for UNIT_TRI (two_a = 1): [[-1,-1],[1,0],[0,1]]
+        // These are the closed-form P1 shape-function gradients in local coords.
+        let dn: [[f64; 2]; 3] = [[-1.0_f64, -1.0], [1.0, 0.0], [0.0, 1.0]];
+
+        // Deterministic LCG (Knuth multiplicative): maps to small displacements ~1e-3
+        // so elastic regime applies and FP scales stay sane.
+        let mut lcg: u64 = 0xDEAD_BEEF_u64;
+        let mut next_val = || -> f64 {
+            lcg = lcg
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let bits = (lcg >> 11) as f64;
+            (bits / (1u64 << 53) as f64 - 0.5) * 2e-3
+        };
+
+        for trial in 0..5_usize {
+            let mut u = [0.0_f64; 18];
+            for dof in 0..18 {
+                u[dof] = next_val();
+            }
+
+            // K · u (stiffness path)
+            let ku = matvec(&k, &u);
+
+            // Stress at mid-surface (z=0): pure membrane stress, bending = 0.
+            let s = shell_element_stress(&UNIT_TRI, t, &mat, &u);
+            let sv_mem = [s.mid[0][0], s.mid[1][1], s.mid[0][1]];
+
+            // For each node, B_mᵀ · σ_voigt · area · t must equal K·u at in-plane DOFs.
+            // B_m sub-block for node n (3×2):
+            //   [ dn[n][0],    0    ]
+            //   [    0   ,  dn[n][1] ]
+            //   [ dn[n][1],  dn[n][0] ]
+            // B_mᵀ · σ_voigt:
+            //   x-component: dn[n][0]*σ_xx + dn[n][1]*σ_xy
+            //   y-component: dn[n][1]*σ_yy + dn[n][0]*σ_xy
+            for n in 0..3 {
+                let resid_x = (dn[n][0] * sv_mem[0] + dn[n][1] * sv_mem[2]) * area * t;
+                let resid_y = (dn[n][1] * sv_mem[1] + dn[n][0] * sv_mem[2]) * area * t;
+
+                let ku_x = ku[6 * n];
+                let ku_y = ku[6 * n + 1];
+
+                let scale_x = resid_x.abs().max(ku_x.abs()).max(1e-30);
+                let scale_y = resid_y.abs().max(ku_y.abs()).max(1e-30);
+
+                assert!(
+                    (ku_x - resid_x).abs() < 1e-9 * scale_x,
+                    "trial={trial} node={n}: K·u[x]={ku_x:.6e}, \
+                     B_mᵀ·σ·A·t={resid_x:.6e}, diff={:.6e}",
+                    (ku_x - resid_x).abs()
+                );
+                assert!(
+                    (ku_y - resid_y).abs() < 1e-9 * scale_y,
+                    "trial={trial} node={n}: K·u[y]={ku_y:.6e}, \
+                     B_mᵀ·σ·A·t={resid_y:.6e}, diff={:.6e}",
+                    (ku_y - resid_y).abs()
+                );
+            }
+        }
     }
 }
