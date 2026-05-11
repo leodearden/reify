@@ -862,6 +862,41 @@ fn procedural_fixture_baseline_distribution_pins_task_3451_empirical_capture() {
     }
 }
 
+// ── Task-#3451 plate target=0.60 asymmetry regression guard ──────────────────
+
+/// Regression guard pinning the proxy-vs-materiality asymmetry that is the
+/// load-bearing reason plate `hole_diameter = 0.60` is dropped from
+/// `plate_hole_diameter_sweep_obeys_materially_better_rule_with_calibrated_defaults`.
+///
+/// At `hole_diameter = 0.60` two metrics diverge:
+///
+/// - **Production proxy verdict:** `morph_max_ar_factor ≈ 2.15`, which trips the
+///   production threshold (`quality_aspect_ratio_factor_max = 2.0`), yielding
+///   `QualityVerdict::SoftFail`.
+/// - **AR-side materiality predicate:** `from_scratch_max_ar_factor ≈ 1.18 < 1.20`
+///   (`MATERIALITY_FACTOR`), i.e. the morph's AR is NOT materially worse than a
+///   fresh remesh at the same target — the materiality predicate says "Pass".
+/// - **SJ-side materiality predicate:** also says "Pass" — `from_scratch_min_sj`
+///   is NOT materially better than `morph_min_sj` at this target.
+///
+/// The asymmetry arises because the production proxy measures `morphed_AR / source_AR`
+/// (no access to a from-scratch mesh in production callers; see PRD task #10), while
+/// the materiality predicate uses the true `morphed_AR / from_scratch_AR` ratio. At
+/// a wide step (source=small hole, target=large hole), `source_AR` is much smaller
+/// than `from_scratch_AR`, making the proxy read higher than the true ratio.
+///
+/// Re-including `target = 0.60` in the calibration sweep would require either
+/// raising `quality_aspect_ratio_factor_max` above `~2.15` (risky without broader
+/// empirical support) or adding a test-only AR override (avoids the production
+/// calibration question). If a future production change re-aligns the proxy with
+/// the materiality predicate (e.g. task #10 wires from-scratch context into
+/// `quality_check`), this test will trip — that is the intended signal that
+/// `target = 0.60` can be re-enabled.
+#[test]
+fn plate_target_0_60_drop_pinned_by_proxy_vs_materiality_asymmetry() {
+    panic!("step-6 implements assertions");
+}
+
 // ── Step-17: from_scratch_max_ar_factor is distinct from morph_max_ar_factor ──
 
 /// Regression guard against silent re-aliasing of `from_scratch_max_ar_factor`
