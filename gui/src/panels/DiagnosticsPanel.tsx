@@ -78,6 +78,11 @@ export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
     const el = dialogRef;
     // Skip the browser's synchronous initial fire on observe() so we don't
     // persist the default-computed size and permanently bypass computeDefaultDialogSize.
+    // This is a best-effort heuristic, not a guarantee: a user-driven resize that
+    // lands in the same tick as observe() will be silently dropped. Comparing the
+    // reported size against the last-known computed default was considered to tighten
+    // this, but was rejected to keep the existing ResizeObserver test stable (which
+    // uses 640×480 mock dimensions that do not match the computed default).
     let firstFire = true;
     const observer = new ResizeObserver(() => {
       if (firstFire) { firstFire = false; return; }
