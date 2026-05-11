@@ -680,6 +680,56 @@ mod tests {
         // tautological. Pinned by step-11.
     }
 
+    // ── task 3422 step-1: per_element_youngs_modulus Uniform invariant ──────────
+
+    /// Pins the load-bearing invariant for the step-2 dedup refactor: for
+    /// `StiffnessRule::Uniform`, `per_element_youngs_modulus` returns `e_base`
+    /// unchanged regardless of the tet geometry. Asserts exact equality
+    /// (`assert_eq!`, not approx) because `Uniform` matches the single-instruction
+    /// `StiffnessRule::Uniform => e_base` arm with no geometric computation.
+    ///
+    /// Two geometrically distinct tets are tested:
+    ///  1. The canonical unit tet (a, b, c, d at unit axes).
+    ///  2. A near-degenerate tet (all vertices near the origin) whose
+    ///     `InverseVolume` and `InverseEdgeLengthSquared` E_e values would differ
+    ///     dramatically from `e_base` — confirming the Uniform arm is untouched.
+    ///
+    /// Protects against future drift in `per_element_youngs_modulus` that might
+    /// accidentally introduce geometry-dependent side effects for the Uniform
+    /// variant (e.g. a mistaken match-arm reorder or an extra computation).
+    #[test]
+    fn per_element_youngs_modulus_with_uniform_rule_returns_e_base_unchanged_regardless_of_geometry(
+    ) {
+        let e_base = 42.0_f64;
+
+        // 1. Canonical unit tet.
+        let unit_tet: [[f64; 3]; 4] = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ];
+        assert_eq!(
+            per_element_youngs_modulus(StiffnessRule::Uniform, &unit_tet, e_base),
+            e_base,
+            "Uniform rule on unit tet must return e_base unchanged"
+        );
+
+        // 2. Near-degenerate tet (tiny volume) — InverseVolume would give
+        //    ~1e30×e_base but Uniform must still return e_base exactly.
+        let tiny_tet: [[f64; 3]; 4] = [
+            [0.0, 0.0, 0.0],
+            [1.0e-10, 0.0, 0.0],
+            [0.0, 1.0e-10, 0.0],
+            [0.0, 0.0, 1.0e-10],
+        ];
+        assert_eq!(
+            per_element_youngs_modulus(StiffnessRule::Uniform, &tiny_tet, e_base),
+            e_base,
+            "Uniform rule on near-degenerate tet must return e_base unchanged"
+        );
+    }
+
     // ── task 2945 step-5 + step-7: asymmetric-cone fixture + rule tests ─────────
 
     /// Helper that builds the asymmetric cone fixture (5 nodes, 4 tets, `p`
