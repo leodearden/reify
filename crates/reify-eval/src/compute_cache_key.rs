@@ -11,8 +11,8 @@ use reify_types::ContentHash;
 ///
 /// See `docs/prds/v0_3/compute-node-infrastructure.md` §"Cache key" for the
 /// full specification.  Composition is finalised in P3.2 task steps 2–16.
-pub fn compute_cache_key(_node: &ComputeNodeData, _ctx: &EvaluationGraph) -> ContentHash {
-    ContentHash(0)
+pub fn compute_cache_key(node: &ComputeNodeData, _ctx: &EvaluationGraph) -> ContentHash {
+    ContentHash::combine_all([ContentHash::of_str(&node.target)])
 }
 
 #[cfg(test)]
