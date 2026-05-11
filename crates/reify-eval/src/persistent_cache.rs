@@ -833,6 +833,13 @@ pub fn write_entry<V: PersistentlyCacheable>(
     let bin_path = entry_bin_path(cache_root, engine_version_hash, input_hash);
     temp.persist(&bin_path).map_err(|e| e.error)?;
 
+    // Write the sidecar AFTER the atomic rename so a failed rename never
+    // leaves an orphan sidecar pointing at a non-existent .bin. write_sidecar
+    // (not touch_sidecar) is used here because the .meta may not exist yet on
+    // the first write of a fresh entry — write_sidecar creates-or-overwrites,
+    // which covers both the absent and already-present cases.
+    write_sidecar(&entry_meta_path(cache_root, engine_version_hash, input_hash))?;
+
     Ok(())
 }
 
