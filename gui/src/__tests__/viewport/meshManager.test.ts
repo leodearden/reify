@@ -2576,4 +2576,31 @@ describe('meshManager', () => {
       expect(posAttr.needsUpdate).toBe(true);
     });
   });
+
+  describe('input MeshData.vertices is not mutated by setDeformation warp', () => {
+    it('(a) createMeshFromData path — caller’s vertices buffer is not written by warp', () => {
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+
+      const callerVerts = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+      const displaced = new Float32Array([0.1, 0, 0, 1.1, 0, 0, 0.1, 1, 0]);
+      const snapshot = Array.from(callerVerts);
+
+      const meshData: MeshData = {
+        entity_path: 'A',
+        vertices: callerVerts,
+        indices: new Uint32Array([0, 1, 2]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        displaced_positions: displaced,
+      };
+
+      manager.sync({ A: meshData });
+      manager.setDeformation({ warpFactor: 2 });
+
+      // The caller’s original Float32Array must be untouched — the warp writes
+      // into the position buffer which must be a copy, not the input reference.
+      expect(Array.from(callerVerts)).toEqual(snapshot);
+    });
+  });
 });
