@@ -2603,6 +2603,34 @@ mod tests {
     }
 
     #[test]
+    fn read_entry_returns_ok_none_when_header_format_version_does_not_match_expected() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+        let inp = "ffffffffffffffffffffffffffffffff";
+
+        // Build a .bin with a mismatched format_version but correct echoes.
+        let sd = shard_dir(root, eng, inp);
+        std::fs::create_dir_all(&sd).unwrap();
+        let stale_header = CacheEntryHeader {
+            format_version: ENTRY_FORMAT_VERSION + 99,
+            engine_version_hash: *eng.as_bytes().first_chunk::<32>().unwrap(),
+            input_hash:          *inp.as_bytes().first_chunk::<32>().unwrap(),
+            solve_time_ms: 0,
+            byte_size: 0,
+            written_at: 0,
+        };
+        // Write header only — no body bytes follow (read_entry must reject on
+        // format_version before attempting body decode).
+        let mut bin_file = std::fs::File::create(entry_bin_path(root, eng, inp)).unwrap();
+        stale_header.write_to(&mut bin_file).unwrap();
+        drop(bin_file);
+
+        let result = read_entry::<ElasticResult>(root, eng, inp).unwrap();
+        assert_eq!(result, None, "format_version mismatch must be treated as cache miss");
+    }
+
+    #[test]
     fn read_entry_returns_ok_none_when_bin_file_is_absent_even_with_orphaned_tempfile_in_shard_dir() {
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path();
