@@ -1254,6 +1254,51 @@ describe('engineStore autoResolve empty-string driving_metric', () => {
       dispose();
     });
   });
+
+  it('(d) warn fires at most once per loop even when multiple empty-string iterations arrive', () => {
+    createRoot((dispose) => {
+      const { state, beginAutoResolveLoop, applyAutoResolveIteration } = createEngineStore();
+      beginAutoResolveLoop();
+
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      // Three consecutive empty-string iterations
+      applyAutoResolveIteration({ ...sampleIteration, iteration: 1, driving_metric: '' });
+      applyAutoResolveIteration({ ...sampleIteration, iteration: 2, driving_metric: '' });
+      applyAutoResolveIteration({ ...sampleIteration, iteration: 3, driving_metric: '' });
+
+      expect(state.autoResolve.iterations).toHaveLength(3);
+      // Warn fires exactly once, not three times
+      const emptyWarnCalls = warnSpy.mock.calls.filter(([msg]) =>
+        typeof msg === 'string' && msg.includes('empty driving_metric'),
+      );
+      expect(emptyWarnCalls).toHaveLength(1);
+
+      warnSpy.mockRestore();
+      dispose();
+    });
+  });
+
+  it('(e) beginAutoResolveLoop resets warn-once flag so a new loop can warn again', () => {
+    createRoot((dispose) => {
+      const { state, beginAutoResolveLoop, applyAutoResolveIteration } = createEngineStore();
+
+      // First loop: empty-string → warn fires once and flag is set
+      beginAutoResolveLoop();
+      const spy1 = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      applyAutoResolveIteration({ ...sampleIteration, iteration: 1, driving_metric: '' });
+      applyAutoResolveIteration({ ...sampleIteration, iteration: 2, driving_metric: '' });
+      expect(spy1.mock.calls.filter(([m]) => typeof m === 'string' && m.includes('empty driving_metric'))).toHaveLength(1);
+      spy1.mockRestore();
+
+      // Second loop: beginAutoResolveLoop clears the flag — warn fires again on the first empty-string
+      beginAutoResolveLoop();
+      const spy2 = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      applyAutoResolveIteration({ ...sampleIteration, iteration: 1, driving_metric: '' });
+      expect(spy2.mock.calls.filter(([m]) => typeof m === 'string' && m.includes('empty driving_metric'))).toHaveLength(1);
+      spy2.mockRestore();
+      dispose();
+    });
+  });
 });
 
 describe('engineStore kernelStatus', () => {
