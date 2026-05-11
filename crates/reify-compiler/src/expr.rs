@@ -2782,6 +2782,43 @@ mod tests {
         let _ = make_poison_type(&mut vec![], Diagnostic::info("wrong severity"));
     }
 
+    /// `try_emit_cross_sub_geometry` fires the `debug_assert!` when
+    /// `sub_realization_names` has an entry for a sub but `sub_component_types`
+    /// does not — violating the `sub_realization_names ⊂ sub_component_types`
+    /// invariant established in `entity.rs`.
+    ///
+    /// The invariant previously went undetected because the lookup at the
+    /// `child_struct` assignment silently fell back to `sub_name` (the instance
+    /// name) instead of the structure name, producing subtly wrong diagnostic
+    /// text rather than a panic.  A `debug_assert!` before the lookup now
+    /// catches the violation loudly in debug/test builds (task-3420).
+    ///
+    /// This test must be `#[cfg(debug_assertions)]`-gated because the assert
+    /// is compiled out in release mode — the `.unwrap_or(sub_name)` fallback
+    /// remains as the intentional release-build defensive degradation.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "sub_realization_names")]
+    fn try_emit_cross_sub_geometry_debug_asserts_sub_component_types_contains_sub_name() {
+        let mut scope = CompilationScope::new("Outer");
+        // Populate sub_realization_names so the member "body" is recognised as
+        // a realization of the sub named "inner".
+        let mut realizations = std::collections::BTreeSet::new();
+        realizations.insert("body".to_string());
+        scope
+            .sub_realization_names
+            .insert("inner".to_string(), realizations);
+        // Deliberately do NOT insert anything into sub_component_types — this
+        // is the invariant-violating setup that the debug_assert! must catch.
+        let _ = try_emit_cross_sub_geometry(
+            &scope,
+            "inner",
+            "body",
+            reify_types::SourceSpan::prelude(),
+            &mut Vec::new(),
+        );
+    }
+
     /// `resolve_cluster_inner_member` must NOT panic when called with an empty
     /// `per_arm` slice (review-cycle-1 robustness fix; task 2373 step-21/22).
     ///
