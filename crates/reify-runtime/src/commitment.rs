@@ -45,6 +45,8 @@ pub enum NodeKind {
     Realization,
     /// A resolution (constraint solver) node.
     Resolution,
+    /// A compute (ComputeNode) node — P3.3+, see §5 of the architecture.
+    Compute,
 }
 
 impl From<&NodeId> for NodeKind {
@@ -54,6 +56,7 @@ impl From<&NodeId> for NodeKind {
             NodeId::Constraint(_) => Self::Constraint,
             NodeId::Realization(_) => Self::Realization,
             NodeId::Resolution(_) => Self::Resolution,
+            NodeId::Compute(_) => Self::Compute,
         }
     }
 }

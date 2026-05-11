@@ -16,12 +16,17 @@ use reify_types::ValueCellId;
 ///
 /// BFS forward from changed cells through the reverse index. For each dependent
 /// that is a Value(vcid), add vcid to the frontier for further propagation.
-/// Constraint and Realization nodes are leaf nodes (no further propagation).
+/// P3.3: for Compute(cn_id) dependents, look up
+/// `graph.compute_nodes[cn_id].output_value_cells` and push each onto the
+/// frontier — this realises edge #12 (ComputeNode → output ValueCell) inline
+/// with the existing edge-#6 (VC → consumer) propagation.
+/// Constraint and Realization nodes remain leaf nodes (no further propagation).
 ///
 /// The changed cells themselves are NOT included in the result (they are roots).
 pub fn compute_dirty_cone(
     changed: &HashSet<ValueCellId>,
     reverse_index: &ReverseDependencyIndex,
+    graph: &crate::graph::EvaluationGraph,
 ) -> HashSet<NodeId> {
     let mut dirty = HashSet::new();
     let mut frontier: VecDeque<ValueCellId> = changed.iter().cloned().collect();
@@ -32,6 +37,23 @@ pub fn compute_dirty_cone(
                 // If the dependent is a Value node, continue propagation
                 if let NodeId::Value(vcid) = dependent {
                     frontier.push_back(vcid.clone());
+                }
+                // P3.3 edge #12: if the dependent is a Compute node, mark
+                // each of its declared output_value_cells as dirty AND push
+                // it onto the frontier so its downstream dependents
+                // (constraints, let-bindings, further compute nodes…) become
+                // dirty in the same BFS pass. The output VCs are *direct*
+                // downstream of the Compute node (the Compute writes them),
+                // not edges in the reverse index, so they must be inserted
+                // here — they don't surface via `dependents_of(cell)`.
+                if let NodeId::Compute(cn_id) = dependent
+                    && let Some(cn_data) = graph.compute_nodes.get(cn_id)
+                {
+                    for vc in &cn_data.output_value_cells {
+                        if dirty.insert(NodeId::Value(vc.clone())) {
+                            frontier.push_back(vc.clone());
+                        }
+                    }
                 }
             }
         }
@@ -171,9 +193,11 @@ mod tests {
 
     #[test]
     fn dirty_cone_empty_changed_set() {
+        use crate::graph::EvaluationGraph;
         let index = ReverseDependencyIndex::new();
+        let graph = EvaluationGraph::default();
         let changed: HashSet<ValueCellId> = HashSet::new();
-        let dirty = compute_dirty_cone(&changed, &index);
+        let dirty = compute_dirty_cone(&changed, &index, &graph);
         assert!(dirty.is_empty());
     }
 
@@ -191,7 +215,7 @@ mod tests {
         let mut changed = HashSet::new();
         changed.insert(ValueCellId::new(e, "width"));
 
-        let dirty = compute_dirty_cone(&changed, &index);
+        let dirty = compute_dirty_cone(&changed, &index, &graph);
 
         // Dirty should contain volume and C1 (both read width)
         assert!(dirty.contains(&NodeId::Value(ValueCellId::new(e, "volume"))));
@@ -218,7 +242,7 @@ mod tests {
         let mut changed = HashSet::new();
         changed.insert(ValueCellId::new(e, "width"));
 
-        let dirty = compute_dirty_cone(&changed, &index);
+        let dirty = compute_dirty_cone(&changed, &index, &graph);
 
         assert!(dirty.contains(&NodeId::Value(ValueCellId::new(e, "volume"))));
         assert!(dirty.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 1))));
@@ -248,7 +272,7 @@ mod tests {
         let mut changed = HashSet::new();
         changed.insert(ValueCellId::new(e, "thickness"));
 
-        let dirty = compute_dirty_cone(&changed, &index);
+        let dirty = compute_dirty_cone(&changed, &index, &graph);
 
         assert!(dirty.contains(&NodeId::Value(ValueCellId::new(e, "volume"))));
         assert!(dirty.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 0))));
@@ -277,7 +301,7 @@ mod tests {
         let mut changed = HashSet::new();
         changed.insert(ValueCellId::new(e, "fillet_radius"));
 
-        let dirty = compute_dirty_cone(&changed, &index);
+        let dirty = compute_dirty_cone(&changed, &index, &graph);
 
         assert!(dirty.is_empty(), "fillet_radius dirty cone: {:?}", dirty);
     }
@@ -391,7 +415,7 @@ mod tests {
 
         let mut changed = HashSet::new();
         changed.insert(a.clone());
-        let dirty = compute_dirty_cone(&changed, &index);
+        let dirty = compute_dirty_cone(&changed, &index, &graph);
 
         assert!(
             dirty.contains(&NodeId::Resolution(r0_id)),
@@ -726,7 +750,7 @@ mod tests {
         // Change width
         let mut changed = HashSet::new();
         changed.insert(ValueCellId::new(e, "width"));
-        let dirty = compute_dirty_cone(&changed, &index);
+        let dirty = compute_dirty_cone(&changed, &index, &graph);
 
         let eval_set = compute_eval_set(&dirty, &demand, &traces);
         assert_eq!(eval_set.len(), 1, "eval_set: {:?}", eval_set);
@@ -758,7 +782,7 @@ mod tests {
         // Change thickness
         let mut changed = HashSet::new();
         changed.insert(ValueCellId::new(e, "thickness"));
-        let dirty = compute_dirty_cone(&changed, &index);
+        let dirty = compute_dirty_cone(&changed, &index, &graph);
 
         let eval_set = compute_eval_set(&dirty, &demand, &traces);
         // volume is dirty but not demanded → excluded
@@ -831,7 +855,7 @@ mod tests {
         // Change width
         let mut changed = HashSet::new();
         changed.insert(ValueCellId::new(e, "width"));
-        let dirty = compute_dirty_cone(&changed, &index);
+        let dirty = compute_dirty_cone(&changed, &index, &graph);
 
         // Dirty should include C1 and Realization(0)
         assert!(dirty.contains(&c1));

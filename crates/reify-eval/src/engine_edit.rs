@@ -918,7 +918,11 @@ impl Engine {
         // Compute dirty cone and eval set while state borrow is active
         let mut changed_set = std::collections::HashSet::new();
         changed_set.insert(cell.clone());
-        let dirty_cone = crate::dirty::compute_dirty_cone(&changed_set, &state.reverse_index);
+        let dirty_cone = crate::dirty::compute_dirty_cone(
+            &changed_set,
+            &state.reverse_index,
+            &state.snapshot.graph,
+        );
         let eval_set = crate::dirty::compute_eval_set(&dirty_cone, &self.demand, &state.trace_map);
 
         // Seed has_changed_parent from dependents of the changed param
@@ -1382,8 +1386,11 @@ impl Engine {
             if !all_resolved_ids.is_empty()
                 && let Some(es) = self.eval_state.as_ref()
             {
-                let wave2_dirty =
-                    crate::dirty::compute_dirty_cone(&all_resolved_ids, &es.reverse_index);
+                let wave2_dirty = crate::dirty::compute_dirty_cone(
+                    &all_resolved_ids,
+                    &es.reverse_index,
+                    &new_snapshot.graph,
+                );
                 let wave2_eval =
                     crate::dirty::compute_eval_set(&wave2_dirty, &self.demand, &es.trace_map);
 
@@ -2079,7 +2086,11 @@ impl Engine {
         //     compute_dirty_cone helper excludes the roots themselves, so
         //     we also splice in NodeId::Value for each changed/added cell
         //     — their own default_expr must be re-evaluated.
-        let mut dirty_cone = crate::dirty::compute_dirty_cone(&changed_set, &new_reverse_index);
+        let mut dirty_cone = crate::dirty::compute_dirty_cone(
+            &changed_set,
+            &new_reverse_index,
+            &new_snapshot.graph,
+        );
         for id in &changed_set {
             dirty_cone.insert(NodeId::Value(id.clone()));
         }
@@ -2817,8 +2828,11 @@ impl Engine {
             // / demand (rather than self.eval_state's stale pre-edit
             // structures) because dependency edges may have shifted.
             if !all_resolved_ids.is_empty() {
-                let wave2_dirty =
-                    crate::dirty::compute_dirty_cone(&all_resolved_ids, &new_reverse_index);
+                let wave2_dirty = crate::dirty::compute_dirty_cone(
+                    &all_resolved_ids,
+                    &new_reverse_index,
+                    &new_snapshot.graph,
+                );
                 let wave2_eval =
                     crate::dirty::compute_eval_set(&wave2_dirty, &new_demand, &new_trace_map);
 
