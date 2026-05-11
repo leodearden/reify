@@ -415,6 +415,10 @@ export interface AutoResolveConstraintProgress {
  * are dropped by `engineStore.applyAutoResolveIteration` with a `console.warn`.
  * Omitting `driving_metric` on an iteration is always permitted — those iterations
  * are accepted without affecting the canonical.
+ *
+ * Empty-string `driving_metric` (`""`) is treated by the GUI as "no metric
+ * declared" (same as omission) and emits a `console.warn` so the upstream
+ * malformation is visible — producers SHOULD omit the field rather than emit `""`.
  */
 export interface AutoResolveIteration {
   iteration: number;
