@@ -235,3 +235,101 @@ pub structure C {
             .collect::<Vec<_>>()
     );
 }
+
+/// Stage has `body = box(...)`; Assy has `sub stage_left = Stage()` and
+/// `mirrored = mirror(self.stage_left.body, 0, 0, 0, 1, 0, 0)` — origin at
+/// the world origin, normal along +X.
+///
+/// Asserts (a) recorded ops contain a Mirror op whose target == Stage's box
+/// handle, (b) build succeeds with `geometry_output.is_some()`, (c) no
+/// Error-severity diagnostics.
+///
+/// Locks down the `mirror(self.<sub>.body, ...)` pattern called out in the
+/// task description.  Should pass without code change because `mirror` is in
+/// `geometry_arg_indices` returning `[0]` (geometry.rs:163), so the cross-sub
+/// pre-check in `compile_geometry_call`'s generic resolution loop already
+/// fires for the geometry arg at index 0.
+#[test]
+fn cross_sub_mirror_uses_child_body_handle() {
+    let source = r#"pub structure Stage {
+    let body = box(50mm, 30mm, 20mm)
+}
+pub structure Assy {
+    sub stage_left = Stage()
+    let mirrored = mirror(self.stage_left.body, 0, 0, 0, 1, 0, 0)
+}"#;
+    let compiled = compile_source(source);
+
+    // (c) No compile-time Error diagnostics.
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "expected no compile-time Error diagnostics; got: {:?}",
+        compile_errors
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    // (c) No Error diagnostics from build.
+    let build_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        build_errors.is_empty(),
+        "expected no build-time Error diagnostics; got: {:?}",
+        build_errors
+            .iter()
+            .map(|d| format!("[{:?}] {}", d.severity, d.message))
+            .collect::<Vec<_>>()
+    );
+
+    // (a) Recorded ops contain a Box (Stage.body) and a Mirror whose
+    // target == the Box's handle.
+    let recorded = ops_ref.lock().unwrap().clone();
+    let box_rec = recorded
+        .iter()
+        .find(|rec| matches!(rec.op, GeometryOp::Box { .. }))
+        .expect("expected a Box op recorded for Stage.body");
+    let box_handle = box_rec.result_handle;
+
+    let mirror_rec = recorded
+        .iter()
+        .find(|rec| matches!(rec.op, GeometryOp::Mirror { .. }))
+        .expect("expected a Mirror op recorded for Assy.mirrored");
+
+    match mirror_rec.op {
+        GeometryOp::Mirror { target, .. } => {
+            assert_eq!(
+                target, box_handle,
+                "Mirror.target should be Stage.body's Box handle ({:?}); got {:?}",
+                box_handle, target
+            );
+        }
+        ref other => panic!("expected Mirror op, got {:?}", other),
+    }
+
+    // (b) Build produces a geometry output.
+    assert!(
+        result.geometry_output.is_some(),
+        "expected geometry_output to be Some, got None; diagnostics: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| format!("[{:?}] {}", d.severity, d.message))
+            .collect::<Vec<_>>()
+    );
+}
