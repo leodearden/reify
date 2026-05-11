@@ -264,6 +264,93 @@ fn revolved_disc_hex_or_wedge_mesh_succeeds() {
     through_thickness_must_pass(k, 2);
 }
 
+/// Phase A contract: `SweepLinear` is byte-identical to `Extrude` on a meshed profile.
+///
+/// Meshes a 10×5 rectangle at `mesh_size=2.0` once, then sweeps it twice:
+/// - `SweepParams::Extrude { axis: [0,0,1], length: 4.0 }` → `extrude_mesh`
+/// - `SweepParams::SweepLinear { axis: [0,0,1], length: 4.0 }` → `linear_mesh`
+///
+/// Asserts that `extrude_mesh.vertices == linear_mesh.vertices` (byte-equal
+/// `Vec<f32>`), `extrude_mesh.layers == linear_mesh.layers`, and the inner
+/// `SweptConnectivity::Hex { indices }` buffers are byte-equal.
+///
+/// Pins the Phase A contract at integration mesh-density — the existing unit
+/// test `sweep_linear_equals_extrude_same_axis_length` in `sweep.rs` only
+/// covers a hand-rolled 3-vertex triangle; a regression that special-cases
+/// `SweepLinear` in any allocation or transform path would surface here.
+///
+/// On stub builds: `Err(GmshUnavailable)` early-return.
+#[test]
+fn simple_linear_sweep_byte_identical_to_extrude_on_meshed_profile() {
+    let boundary = rect_boundary(10.0, 5.0);
+    let options = Mesh2dOptions {
+        mesh_size: Some(2.0),
+        deterministic: true,
+        ..Mesh2dOptions::default()
+    };
+
+    let result = mesh_swept_profile_2d(&boundary, SweepElementTarget::HexPreferred, &options);
+
+    if !GMSH_AVAILABLE {
+        match result {
+            Err(Mesh2dError::GmshUnavailable) => {}
+            other => panic!("stub build: expected Err(GmshUnavailable), got {other:?}"),
+        }
+        return;
+    }
+
+    let report = result.expect("linear sweep test: mesh_swept_profile_2d failed");
+
+    let k = derive_layer_count(4.0, 2.0, 2);
+    assert!(k >= 2, "derive_layer_count(4.0, 2.0, 2) must be >= 2, got {k}");
+
+    let extrude_mesh = sweep_2d_mesh_to_3d(
+        &report.mesh,
+        &SweepParams::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: 4.0,
+        },
+        k,
+    )
+    .expect("linear sweep test: extrude sweep_2d_mesh_to_3d failed");
+
+    let linear_mesh = sweep_2d_mesh_to_3d(
+        &report.mesh,
+        &SweepParams::SweepLinear {
+            axis: [0.0, 0.0, 1.0],
+            length: 4.0,
+        },
+        k,
+    )
+    .expect("linear sweep test: SweepLinear sweep_2d_mesh_to_3d failed");
+
+    assert_eq!(
+        extrude_mesh.vertices, linear_mesh.vertices,
+        "Phase A: SweepLinear vertex buffer must be byte-identical to Extrude",
+    );
+    assert_eq!(
+        extrude_mesh.layers, linear_mesh.layers,
+        "Phase A: SweepLinear layers must equal Extrude layers",
+    );
+    match (&extrude_mesh.connectivity, &linear_mesh.connectivity) {
+        (SweptConnectivity::Hex { indices: ei }, SweptConnectivity::Hex { indices: li }) => {
+            assert_eq!(
+                ei, li,
+                "Phase A: SweepLinear hex index buffer must be byte-identical to Extrude",
+            );
+        }
+        (SweptConnectivity::Wedge { indices: ei }, SweptConnectivity::Wedge { indices: li }) => {
+            assert_eq!(
+                ei, li,
+                "Phase A: SweepLinear wedge index buffer must be byte-identical to Extrude",
+            );
+        }
+        _ => panic!(
+            "Phase A: Extrude and SweepLinear must produce the same connectivity discriminant",
+        ),
+    }
+}
+
 /// Surface-pin test: verifies that every type, function, and constant used by
 /// the fixture tests below can be resolved at compile time.  A regression that
 /// renames or removes any of these re-exports breaks here *before* any fixture
