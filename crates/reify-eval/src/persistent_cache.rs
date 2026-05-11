@@ -759,6 +759,30 @@ impl PersistentlyCacheable for ElasticResult {
     }
 }
 
+/// Convert a 32-character ASCII `&str` key component (hex string) into a
+/// fixed `[u8; 32]` byte array for storage in [`CacheEntryHeader`] echo fields.
+///
+/// Used by both [`write_entry`] (to populate the header echoes) and
+/// [`read_entry`] (to compute the expected echoes for verification against the
+/// on-disk header). A single helper keeps one source of truth for the
+/// conversion and ensures both sites produce the same `InvalidInput` error
+/// if a non-32-char string is accidentally passed.
+///
+/// The `debug_assert!` in [`shard_dir`] only guards `len >= 2`; this function
+/// enforces the stricter `len == 32` requirement that the echo fields demand.
+fn hex_str_to_ascii_32(s: &str) -> io::Result<[u8; 32]> {
+    s.as_bytes().try_into().map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "cache key must be exactly 32 ASCII chars, got {} chars: {:?}",
+                s.len(),
+                s
+            ),
+        )
+    })
+}
+
 /// Write a cache entry to disk atomically using a temp-file + rename approach.
 ///
 /// The body is pre-buffered into a `Vec<u8>` before the header is written so
@@ -793,24 +817,8 @@ pub fn write_entry<V: PersistentlyCacheable>(
     let mut body_buf: Vec<u8> = Vec::new();
     value.serialize_to_writer(&mut body_buf)?;
 
-    let engine_bytes: [u8; 32] = engine_version_hash
-        .as_bytes()
-        .try_into()
-        .map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "engine_version_hash must be exactly 32 ASCII chars",
-            )
-        })?;
-    let input_bytes: [u8; 32] = input_hash
-        .as_bytes()
-        .try_into()
-        .map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "input_hash must be exactly 32 ASCII chars",
-            )
-        })?;
+    let engine_bytes: [u8; 32] = hex_str_to_ascii_32(engine_version_hash)?;
+    let input_bytes: [u8; 32] = hex_str_to_ascii_32(input_hash)?;
 
     let written_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -877,6 +885,21 @@ pub fn read_entry<V: PersistentlyCacheable>(
             engine_version_hash,
             input_hash,
             "cache entry rejected: format_version mismatch (treating as miss)"
+        );
+        return Ok(None);
+    }
+
+    // Verify that the header's echo fields match the key components from the
+    // path. A mismatch indicates corruption (misplaced or bit-flipped .bin).
+    let expected_engine = hex_str_to_ascii_32(engine_version_hash)?;
+    let expected_input  = hex_str_to_ascii_32(input_hash)?;
+    if let Err(e) = header.verify_field_echoes(&expected_engine, &expected_input) {
+        tracing::warn!(
+            ?e,
+            cache_root = %cache_root.display(),
+            engine_version_hash,
+            input_hash,
+            "cache entry rejected: header echo mismatch (treating as miss)"
         );
         return Ok(None);
     }
