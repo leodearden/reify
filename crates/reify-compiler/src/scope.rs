@@ -348,4 +348,78 @@ mod tests {
         // Second call with same name must panic via debug_assert!.
         scope.register_match_arm_group("head", make_test_group("head"));
     }
+
+    // ── sub_member_is_cross_sub_geometry_or_forward_declared (task 3455) ─────
+
+    /// Returns true when the member is a named realization on the sub (e.g. a
+    /// geometry-producing let binding or geometry param on the child template).
+    #[test]
+    fn sub_member_is_cross_sub_geometry_or_forward_declared_returns_true_when_member_is_realization() {
+        let mut scope = CompilationScope::new("TestEntity");
+        scope
+            .sub_component_types
+            .insert("bolt".to_string(), "Bolt".to_string());
+        scope
+            .sub_member_types
+            .insert("bolt".to_string(), BTreeMap::new());
+        scope.sub_realization_names.insert(
+            "bolt".to_string(),
+            BTreeSet::from(["body".to_string()]),
+        );
+        assert!(
+            scope.sub_member_is_cross_sub_geometry_or_forward_declared("bolt", "body"),
+            "should return true when member is a realization"
+        );
+    }
+
+    /// Returns true for a forward-declared sub: `sub_component_types` has the
+    /// sub but `sub_member_types` does not (parent compiled before child).
+    #[test]
+    fn sub_member_is_cross_sub_geometry_or_forward_declared_returns_true_for_forward_declared_sub() {
+        let mut scope = CompilationScope::new("TestEntity");
+        scope
+            .sub_component_types
+            .insert("bolt".to_string(), "Bolt".to_string());
+        // Intentionally leave sub_member_types and sub_realization_names empty for "bolt".
+        assert!(
+            scope.sub_member_is_cross_sub_geometry_or_forward_declared("bolt", "body"),
+            "should return true for forward-declared sub regardless of member name"
+        );
+    }
+
+    /// Returns false when the member is neither a realization nor the sub is
+    /// forward-declared (sub_member_types is populated, so it's fully resolved,
+    /// but the queried member is not in sub_realization_names).
+    #[test]
+    fn sub_member_is_cross_sub_geometry_or_forward_declared_returns_false_when_member_is_unknown_on_populated_sub(
+    ) {
+        let mut scope = CompilationScope::new("TestEntity");
+        scope
+            .sub_component_types
+            .insert("bolt".to_string(), "Bolt".to_string());
+        scope.sub_member_types.insert(
+            "bolt".to_string(),
+            BTreeMap::from([("length".to_string(), Type::length())]),
+        );
+        scope.sub_realization_names.insert(
+            "bolt".to_string(),
+            BTreeSet::from(["body".to_string()]),
+        );
+        // "head" is neither a realization nor the sub is forward-declared.
+        assert!(
+            !scope.sub_member_is_cross_sub_geometry_or_forward_declared("bolt", "head"),
+            "should return false when member is unknown on a fully-populated sub"
+        );
+    }
+
+    /// Returns false when the sub is not registered at all (unknown sub name).
+    #[test]
+    fn sub_member_is_cross_sub_geometry_or_forward_declared_returns_false_for_unknown_sub() {
+        let scope = CompilationScope::new("TestEntity");
+        // All three maps are empty.
+        assert!(
+            !scope.sub_member_is_cross_sub_geometry_or_forward_declared("missing", "anything"),
+            "should return false for a completely unknown sub"
+        );
+    }
 }
