@@ -232,6 +232,31 @@ mod tests {
         assert!(w.message.contains("test"));
     }
 
+    // step-5: check_sweep_through_thickness unit tests
+
+    #[test]
+    fn check_through_thickness_ok_cases() {
+        // (a) exactly at min_layers boundary → None (OK)
+        assert!(check_sweep_through_thickness(2, 2).is_none());
+        // (b) well above min_layers → None
+        assert!(check_sweep_through_thickness(10, 2).is_none());
+    }
+
+    #[test]
+    fn check_through_thickness_warning_cases() {
+        // (c) layers=1 < min_layers=2 → Some warning
+        let w = check_sweep_through_thickness(1, 2).expect("should warn");
+        assert_eq!(w.layer_count, 1);
+        assert_eq!(w.min_layers, 2);
+        assert!(w.message.contains("1"), "message: {}", w.message);
+        assert!(w.message.contains("mesh_size"), "message: {}", w.message);
+        assert!(w.message.contains("sweep_subdivisions"), "message: {}", w.message);
+        // (d) layers=0 → Some warning
+        let w0 = check_sweep_through_thickness(0, 2).expect("should warn on zero layers");
+        assert_eq!(w0.layer_count, 0);
+        assert_eq!(w0.min_layers, 2);
+    }
+
     // step-3: derive_layer_count unit tests
     // Contract: round(sweep_distance / mesh_size).max(min_layers)
     // with defensive handling of zero, negative, or non-finite inputs.
