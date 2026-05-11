@@ -2077,3 +2077,95 @@ fn conditional_returning_solid_in_let_emits_compile_error() {
             .collect::<Vec<_>>()
     );
 }
+
+// ─── task-3418 regression: match returning Solid emits clean Error ─────────
+
+/// Regression pin: a geometry let whose initializer is a geometry-typed
+/// match expression must produce a clean compile-time Error mentioning
+/// "match" and "geometry" rather than crashing at eval time with the
+/// cryptic "unresolvable GeomRef::Step(0)" message.
+///
+/// Mirrors the user scenario:
+///   `let body = match axis { X => box(length, od, od), ... }`
+///
+/// The test exercises: `is_geometry_let(Match)` → `true`
+/// (routes to compile_geometry_call) → branching-kind Error arm fires →
+/// diagnostic.
+#[test]
+fn match_returning_solid_in_let_emits_compile_error() {
+    let source = r#"enum Axis { X, Y, Z }
+structure AxisBox {
+    param length: Scalar = 100mm
+    param od: Scalar = 50mm
+    let axis = Axis.X
+    let body = match axis { X => box(length, od, od), Y => box(od, length, od), Z => box(od, od, length) }
+}"#;
+
+    let compiled = compile_with_diagnostics(source);
+    let errors = error_diagnostics(&compiled);
+
+    // At least one Error must mention "match" and "geometry".
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("match") && d.message.contains("geometry")),
+        "expected a compile-time Error containing 'match' and 'geometry', got: {:?}",
+        errors
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    // The Error must have at least one DiagnosticLabel — pointing at the
+    // match expression in the source.
+    let target_error = errors
+        .iter()
+        .find(|d| d.message.contains("match") && d.message.contains("geometry"))
+        .unwrap();
+    assert!(
+        !target_error.labels.is_empty(),
+        "the match Error must have at least one DiagnosticLabel"
+    );
+
+    // The label's span must start exactly at the `match` keyword.
+    // The parser sets the Match node's span to [start_of_match, end_of_closing_}],
+    // so these are deterministic byte offsets for this fixed source string.
+    let match_offset = source
+        .find("match axis")
+        .expect("source must contain 'match axis'");
+    // End: byte past the closing `}` of the match block, which follows the
+    // last arm body `box(od, od, length)`.  The string "length) }" appears
+    // exactly once in the source (at the end of the Z arm + match close).
+    let match_end_marker = "length) }";
+    let match_end = source
+        .find(match_end_marker)
+        .expect("source must contain 'length) }'")
+        + match_end_marker.len();
+
+    assert!(!target_error.labels.is_empty(), "must have at least one label");
+    let label = &target_error.labels[0];
+    assert_eq!(
+        label.span.start as usize,
+        match_offset,
+        "label start must equal the byte offset of the 'match' keyword (offset {}); \
+         got labels: {:?}",
+        match_offset,
+        target_error
+            .labels
+            .iter()
+            .map(|l| (l.span.start, l.span.end, &l.message))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        label.span.end as usize,
+        match_end,
+        "label end must equal the byte past the closing '}}' of the match block \
+         (offset {}); got labels: {:?}",
+        match_end,
+        target_error
+            .labels
+            .iter()
+            .map(|l| (l.span.start, l.span.end, &l.message))
+            .collect::<Vec<_>>()
+    );
+}
