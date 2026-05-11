@@ -380,3 +380,12 @@ pub use mesher::{
     auto_mesh_size_from_boundary, compute_quad_skew, mesh_swept_profile_2d, recombine_quality_ok,
     Mesh2d, Mesh2dError, Mesh2dOptions, Mesh2dReport, ProfileBoundary, SweepElementTarget,
 };
+// Task 2988: sweep step — 2D mesh × K layers → 3D wedge/hex connectivity.
+// PRD reference: docs/prds/v0_3/hex-wedge-meshing.md task #7.
+// Downstream consumers:
+//   - PRD task #8 (volume-mesh integration wraps SweptMesh3d → VolumeMesh)
+//   - PRD task #9 (ElasticOptions wiring: derive_layer_count from mesh_size)
+pub use sweep::{
+    SweepError, SweepParams, SweptConnectivity, SweptMesh3d, ThroughThicknessSweepWarning,
+    check_sweep_through_thickness, derive_layer_count, sweep_2d_mesh_to_3d,
+};
