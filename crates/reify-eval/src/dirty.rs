@@ -625,6 +625,95 @@ mod tests {
         );
     }
 
+    /// P3.3 step-13: seed-discrimination negative case for the
+    /// Realization-recompute-with-same-hash early cutoff (task-spec test 3).
+    ///
+    /// Same topology as step-11 (R0 → Compute(C) → Value(b)): the graph
+    /// and reverse index still encode edges #10 and #12. The difference is
+    /// at the seed boundary: the caller did NOT add R0 to
+    /// `changed_realizations`, modelling the contract where the eval
+    /// pipeline compares the new content-hash of R0 against its cached
+    /// hash and withholds R0 from the dirty-seed set when they match.
+    ///
+    /// `compute_dirty_cone_with_realizations(&{}, &{}, &idx, &graph)` must
+    /// therefore return an empty dirty set — the walk is conservative and
+    /// faithfully propagates whatever (nothing) the caller seeded. This
+    /// locks the seed-discrimination contract in place against any future
+    /// regression where the walk might start unconditionally inserting
+    /// from the reverse-index maps regardless of the seed input.
+    #[test]
+    fn compute_dirty_cone_with_realizations_negative_case_does_not_propagate_with_empty_seed() {
+        use crate::dirty::compute_dirty_cone_with_realizations;
+        use crate::graph::{
+            ComputeNodeData, EvaluationGraph, RealizationNodeData, ValueCellNode,
+        };
+        use reify_compiler::ValueCellKind;
+        use reify_types::{ComputeNodeId, ContentHash, RealizationNodeId, Type};
+
+        let mut graph = EvaluationGraph::default();
+        let e = "E";
+
+        // VC b — output of the compute node.
+        let b = ValueCellId::new(e, "b");
+        graph.value_cells.insert(
+            b.clone(),
+            ValueCellNode {
+                id: b.clone(),
+                kind: ValueCellKind::Param,
+                cell_type: Type::Real,
+                default_expr: None,
+                content_hash: ContentHash::of_str("b"),
+            },
+        );
+
+        // Realization R0 — present in graph, but caller will NOT seed it.
+        let r0_id = RealizationNodeId::new(e, 0);
+        graph.realizations.insert(
+            r0_id.clone(),
+            RealizationNodeData {
+                id: r0_id.clone(),
+                operations: vec![],
+                content_hash: ContentHash::of_str("r0"),
+            },
+        );
+
+        // Compute C: realization_inputs=[R0], output_value_cells=[b].
+        let c_id = ComputeNodeId::new(e, 0);
+        graph.insert_compute_node(ComputeNodeData {
+            computation_id: c_id.clone(),
+            target: "fea".to_string(),
+            value_inputs: vec![],
+            realization_inputs: vec![r0_id.clone()],
+            options_hash: ContentHash::of_str("opt"),
+            cache_key: ContentHash::of_str("ck"),
+            cached_result: None,
+            result_content_hash: None,
+            opaque_state: None,
+            running: None,
+            output_value_cells: vec![b.clone()],
+        });
+
+        let index = ReverseDependencyIndex::build_from_graph(&graph);
+
+        // Empty seeds on BOTH inputs — models the "Realization recomputed
+        // with same content hash" cutoff at the caller boundary.
+        let changed_vcs: HashSet<ValueCellId> = HashSet::new();
+        let changed_realizations: HashSet<RealizationNodeId> = HashSet::new();
+
+        let dirty = compute_dirty_cone_with_realizations(
+            &changed_vcs,
+            &changed_realizations,
+            &index,
+            &graph,
+        );
+
+        assert!(
+            dirty.is_empty(),
+            "empty seeds must yield empty dirty cone (seed-discrimination contract); got: {:?}",
+            dirty
+        );
+    }
+
     #[test]
     fn dirty_cone_includes_resolution_node() {
         use crate::graph::{EvaluationGraph, ResolutionNodeData, ValueCellNode};
