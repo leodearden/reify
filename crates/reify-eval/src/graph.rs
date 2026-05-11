@@ -160,11 +160,8 @@ pub struct EvaluationGraph {
     pub constraints: PersistentMap<ConstraintNodeId, ConstraintNodeData>,
     pub realizations: PersistentMap<RealizationNodeId, RealizationNodeData>,
     pub resolutions: PersistentMap<ResolutionNodeId, ResolutionNodeData>,
-    /// Compute nodes (P3.1+). Keyed by ComputeNodeId; the field name is
-    /// `computations` (not `compute_nodes`) to avoid colliding with the
-    /// PRD-mandated `compute_nodes()` iterator method name. See design
-    /// decision in `.task/plan.json`.
-    pub computations: PersistentMap<ComputeNodeId, ComputeNodeData>,
+    /// Compute nodes (P3.1+). Keyed by ComputeNodeId.
+    pub compute_nodes: PersistentMap<ComputeNodeId, ComputeNodeData>,
     /// Guarded groups with conditional membership.
     pub guarded_groups: Vec<GuardedGroupInfo>,
     /// ValueCellIds whose boolean value controls topology (guard cells).
@@ -524,25 +521,16 @@ impl EvaluationGraph {
     /// `docs/prds/v0_3/compute-node-infrastructure.md`.
     pub fn insert_compute_node(&mut self, data: ComputeNodeData) -> ComputeNodeId {
         let id = data.computation_id.clone();
-        self.computations.insert(id.clone(), data);
+        self.compute_nodes.insert(id.clone(), data);
         id
     }
 
     pub fn get_compute_node(&self, id: &ComputeNodeId) -> Option<&ComputeNodeData> {
-        self.computations.get(id)
+        self.compute_nodes.get(id)
     }
 
     pub fn get_compute_node_mut(&mut self, id: &ComputeNodeId) -> Option<&mut ComputeNodeData> {
-        self.computations.get_mut(id)
-    }
-
-    /// Iterate over all ComputeNodes in the graph. Iteration order is
-    /// PersistentMap-determined (not stable across runs); callers needing
-    /// deterministic ordering must sort by `computation_id`. Matches the
-    /// convention used by sibling node maps (`value_cells.values()` etc.
-    /// are accessed directly via the field).
-    pub fn compute_nodes(&self) -> impl Iterator<Item = &ComputeNodeData> {
-        self.computations.values()
+        self.compute_nodes.get_mut(id)
     }
 
     /// Returns `true` iff `id` refers to a value cell present in this graph
@@ -1060,10 +1048,10 @@ mod tests {
     }
 
     #[test]
-    fn evaluation_graph_has_computations_map() {
+    fn evaluation_graph_has_compute_nodes_map() {
         let graph = EvaluationGraph::default();
-        assert!(graph.computations.is_empty());
-        assert_eq!(graph.computations.len(), 0);
+        assert!(graph.compute_nodes.is_empty());
+        assert_eq!(graph.compute_nodes.len(), 0);
     }
 
     #[test]
@@ -1153,13 +1141,13 @@ mod tests {
             output_value_cells: vec![],
         });
 
-        assert_eq!(graph.computations.len(), 2);
+        assert_eq!(graph.compute_nodes.len(), 2);
         assert_eq!(graph.get_compute_node(&id_a).unwrap().target, "solver::elastic_static");
         assert_eq!(graph.get_compute_node(&id_b).unwrap().target, "solver::modal");
     }
 
     #[test]
-    fn evaluation_graph_clone_preserves_computations() {
+    fn evaluation_graph_clone_preserves_compute_nodes() {
         use reify_types::{ComputeNodeId, OpaqueState};
         let mut graph = EvaluationGraph::default();
 
@@ -1194,9 +1182,9 @@ mod tests {
         });
 
         // Original unchanged
-        assert_eq!(graph.computations.len(), 1);
+        assert_eq!(graph.compute_nodes.len(), 1);
         // Clone has both
-        assert_eq!(cloned.computations.len(), 2);
+        assert_eq!(cloned.compute_nodes.len(), 2);
         assert!(cloned.get_compute_node(&id).is_some());
         // Manual-Clone contract: opaque_state dropped to None on clone
         assert!(cloned.get_compute_node(&id).unwrap().opaque_state.is_none());
@@ -1224,7 +1212,7 @@ mod tests {
             });
         }
 
-        let targets: HashSet<String> = graph.compute_nodes().map(|n| n.target.clone()).collect();
+        let targets: HashSet<String> = graph.compute_nodes.values().map(|n| n.target.clone()).collect();
         assert_eq!(
             targets,
             ["solver::a", "solver::b", "solver::c"]
