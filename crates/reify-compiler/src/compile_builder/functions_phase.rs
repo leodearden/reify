@@ -35,6 +35,8 @@ pub(crate) fn phase_functions(
             &ctx.resolution_enums,
             &ctx.functions,
             &ctx.alias_registry,
+            &ctx.resolution_structure_names,
+            &ctx.resolution_trait_names,
             &mut ctx.diagnostics,
         ) {
             ctx.functions.push(compiled_fn);

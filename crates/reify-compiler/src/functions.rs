@@ -5,14 +5,11 @@ pub(crate) fn compile_function(
     enum_defs: &[reify_types::EnumDef],
     functions: &[CompiledFunction],
     alias_registry: &TypeAliasRegistry,
+    structure_names: &HashSet<String>,
+    trait_names: &HashSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<CompiledFunction> {
     let empty_params = HashSet::new();
-    // Functions are compiled before the trait/structure registries are built,
-    // so trait-name and structure-name resolution is not applied inside
-    // function signatures. Pass empty sets.
-    let empty_structs: HashSet<String> = HashSet::new();
-    let empty_traits: HashSet<String> = HashSet::new();
     // Resolve parameter types
     let mut params = Vec::new();
     for p in &fn_def.params {
@@ -21,8 +18,8 @@ pub(crate) fn compile_function(
             &empty_params,
             alias_registry,
             diagnostics,
-            &empty_structs,
-            &empty_traits,
+            structure_names,
+            trait_names,
         ) {
             Some(t) => t,
             None => {
@@ -44,8 +41,8 @@ pub(crate) fn compile_function(
                 &empty_params,
                 alias_registry,
                 diagnostics,
-                &empty_structs,
-                &empty_traits,
+                structure_names,
+                trait_names,
             ) {
                 Some(t) => t,
                 None => {
