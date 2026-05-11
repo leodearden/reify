@@ -125,18 +125,24 @@ pub enum MorphFailure {
 pub struct MorphOptions {
     /// Minimum scaled Jacobian below which an element is considered inverted.
     ///
-    /// PRD §"Quality threshold for fallback": default 0.15.
+    /// PRD §"Quality threshold for fallback": seed 0.15.
+    /// Calibrated by task #2950 against tests/calibration.rs (box, plate,
+    /// bracket sweeps under StiffnessRule::InverseVolume) to 0.02.
     pub quality_floor_min_scaled_jacobian: f64,
 
     /// Maximum acceptable fraction of elements with scaled Jacobian < 0.25.
     ///
-    /// PRD §"Quality threshold for fallback": default 0.01 (1 %).
+    /// PRD §"Quality threshold for fallback": seed 0.01 (1 %).
+    /// Calibrated by task #2950 against tests/calibration.rs (box, plate,
+    /// bracket sweeps under StiffnessRule::InverseVolume) to 0.95.
     pub quality_floor_pct_below_025: f64,
 
     /// Maximum acceptable multiplicative aspect-ratio factor (morphed_AR / source_AR)
-    /// relative to the pre-morph mesh. PRD §"Quality threshold for fallback": default
+    /// relative to the pre-morph mesh. PRD §"Quality threshold for fallback": seed
     /// 2.0×. A value > 1 indicates worsening; the threshold trips when the observed
     /// factor exceeds this maximum.
+    /// Calibrated by task #2950 against tests/calibration.rs (box, plate,
+    /// bracket sweeps under StiffnessRule::InverseVolume); seed retained.
     pub quality_aspect_ratio_factor_max: f64,
 
     /// Scaled-Jacobian delta below which the Laplacian quick-pass is
