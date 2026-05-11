@@ -852,7 +852,13 @@ pub fn read_entry<V: PersistentlyCacheable>(
     use std::fs::File;
 
     let bin_path = entry_bin_path(cache_root, engine_version_hash, input_hash);
-    let mut f = File::open(&bin_path)?;
+    // NotFound is the cache-miss signal per PRD; any other Err is an
+    // infrastructure problem the caller must know about.
+    let mut f = match File::open(&bin_path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
     let _header = CacheEntryHeader::read_from(&mut f)?;
     let value = V::deserialize_from_reader(&mut f)?;
     Ok(Some(value))
