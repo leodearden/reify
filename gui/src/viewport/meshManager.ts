@@ -263,7 +263,9 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     // because WebGL buffers have fixed size and cannot be resized.
     const posAttr = geometry.getAttribute('position') as BufferAttribute | null;
     if (posAttr && posAttr.array.length === data.vertices.length) {
-      posAttr.array = data.vertices;
+      // Copy vertices on ingest — applyWarpToMesh writes blended values into
+      // posAttr.array in place; aliasing data.vertices would clobber the caller's buffer.
+      posAttr.array = data.vertices.slice();
       (posAttr as { count: number }).count = data.vertices.length / 3;
       posAttr.needsUpdate = true;
     } else {

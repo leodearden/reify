@@ -249,7 +249,10 @@ describe('meshManager', () => {
     expect(mockSceneAdd).toHaveBeenCalledTimes(1);
 
     const mesh = manager.getSceneMeshes().get('A')!;
-    expect(mesh.geometry.attributes.position.array).toBe(newVerts);
+    // Copy semantics: position buffer must NOT alias the caller's array after re-sync …
+    expect(mesh.geometry.attributes.position.array).not.toBe(newVerts);
+    // … but must contain identical values.
+    expect(Array.from(mesh.geometry.attributes.position.array as Float32Array)).toEqual(Array.from(newVerts));
   });
 
   it('sync with removed entity_path disposes and removes mesh', () => {
@@ -348,8 +351,10 @@ describe('meshManager', () => {
     expect(geom.attributes.position).toBe(posAttrBefore);
     expect(geom.index).toBe(indexBefore);
 
-    // Data should be updated
-    expect(posAttrBefore.array).toBe(verts2);
+    // Data should be updated — position uses copy semantics (not same reference),
+    // but index array is directly aliased (indices are never mutated in-place).
+    expect(posAttrBefore.array).not.toBe(verts2);
+    expect(Array.from(posAttrBefore.array as Float32Array)).toEqual(Array.from(verts2));
     expect(indexBefore.array).toBe(indices2);
 
     // needsUpdate should be flagged
