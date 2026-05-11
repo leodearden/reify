@@ -305,6 +305,16 @@ pub fn elasticity_morph_with_cg_opts(
         // arm (a single-instruction return, zero extra computation). The no-op-
         // for-Uniform property is pinned by the task-3422 unit test
         // `per_element_youngs_modulus_with_uniform_rule_returns_e_base_unchanged_regardless_of_geometry`.
+        //
+        // NOTE — duplicate volume/geometry computation for `InverseVolume` and
+        // `InverseEdgeLengthSquared`: per_element_youngs_modulus calls
+        // `tet_volume_p1(&phys)` / `mean_squared_edge_length(&phys)` to derive
+        // E_e, while element_stiffness (below) independently re-computes the
+        // same Jacobian determinant for the same tet. Eliminating the duplicate
+        // would require extending `reify-solver-elastic`'s element_stiffness API
+        // to return the determinant/volume alongside K_e — a cross-crate API
+        // change out of scope for this task. Defer to a future profiler-driven
+        // optimisation once real multi-million-tet workloads motivate the change.
         let e_e = per_element_youngs_modulus(
             options.stiffness_rule,
             &phys,
