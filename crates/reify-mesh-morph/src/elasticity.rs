@@ -130,44 +130,40 @@ pub enum ElasticityFailure {
     },
 }
 
-// ── elasticity_morph ─────────────────────────────────────────────────────────
+// ── elasticity_morph / elasticity_morph_with_cg_opts ─────────────────────────
 
-/// Linear-elasticity mesh morph — compute interior-node displacements
-/// consistent with prescribed surface-node positions by solving the
-/// fictitious-elastic BVP `K · u = 0` with `bcs = prescribed_displacements`.
+/// Linear-elasticity mesh morph with explicit CG solver options.
+///
+/// Full implementation — [`elasticity_morph`] delegates here with
+/// [`CgSolverOptions::default()`].
+///
+/// ## When to reach for this function
+///
+/// - **Test injectability**: inject deliberately tight opts
+///   (`max_iter: 1, tolerance: 1e-20`) to exercise the
+///   [`ElasticityFailure::SolverNotConverged`] path without relying on a
+///   pathological mesh.
+/// - **Future PRD task #16 ElasticOptions resolution layer**: the production
+///   morph engine will eventually surface CG opts to callers; this entry point
+///   lets that layer forward custom opts without changing the stable
+///   `elasticity_morph` signature.
 ///
 /// ## Parameters
 ///
-/// - `old_mesh` — the source tetrahedral mesh.
-/// - `prescribed_positions` — `(node_index, new_position)` pairs identifying
-///   surface nodes and their target positions; the natural producer is
-///   [`crate::compute_dirichlet_bcs`] (PRD task #5). The internal pipeline
-///   converts each pair into a per-axis [`DirichletBc`] with
-///   `value = new_position[axis] - old_position[axis]` (delta, not absolute).
-///   **Duplicate `node_index` entries are a precondition violation**: each
-///   occurrence appends three more `DirichletBc` entries for the same DOFs,
-///   and `apply_dirichlet_row_elimination` asserts uniqueness in debug builds
-///   (boundary/dirichlet.rs:170-186). The natural producer
-///   (`compute_dirichlet_bcs` via `BTreeMap`) always emits each node once.
-/// - `options` — supplies the fictitious-stiffness parameters
-///   (`fictitious_youngs_modulus_base`, `fictitious_poisson_ratio`) used to
-///   build the [`IsotropicElastic`] material driving the FEA solve.
+/// Same as [`elasticity_morph`], plus:
 ///
-/// ## Output normals
-///
-/// The returned mesh always has `normals: None`, regardless of whether the
-/// input mesh carried per-vertex normals. Vertex motion under the elasticity
-/// solve makes any pre-existing normals geometrically stale; dropping them
-/// fails closed (a consumer that needs surface normals must recompute them
-/// after morphing). Same convention as [`crate::laplacian::laplacian_smooth`].
+/// - `cg_opts` — [`CgSolverOptions`] forwarded directly to [`solve_cg`].
+///   Panics if `cg_opts.max_iter == 0` or `cg_opts.tolerance` is
+///   non-finite/non-positive (those are preconditions of `solve_cg`).
 ///
 /// ## Failure modes
 ///
 /// See [`ElasticityFailure`].
-pub fn elasticity_morph(
+pub fn elasticity_morph_with_cg_opts(
     old_mesh: &VolumeMesh,
     prescribed_positions: &[(u32, [f64; 3])],
     options: &MorphOptions,
+    cg_opts: CgSolverOptions,
 ) -> Result<VolumeMesh, ElasticityFailure> {
     if old_mesh.element_order != ElementOrderTag::P1 {
         return Err(ElasticityFailure::UnsupportedElementOrder(
@@ -292,13 +288,14 @@ pub fn elasticity_morph(
     apply_dirichlet_row_elimination(&mut k_global, &mut f, &bcs);
 
     // SolverMode::Deterministic — same rationale as AssemblyMode::Deterministic
-    // above. CgSolverOptions::default() (tolerance 1e-8, max_iter 1000) is
-    // calibrated for general FEA workloads; CG-tuning surface stays internal
-    // (PRD task #16's ElasticOptions resolution layer can swap in custom opts).
+    // above. The `cg_opts` parameter controls tolerance and max_iter; default
+    // opts (tolerance 1e-8, max_iter 1000) are calibrated for general FEA
+    // workloads. Custom opts (e.g. tight tolerance + max_iter=1) let tests
+    // exercise the SolverNotConverged path without a pathological mesh.
     let cg_result = solve_cg(
         &k_global,
         &f,
-        CgSolverOptions::default(),
+        cg_opts,
         SolverMode::Deterministic,
     );
     if !cg_result.converged {
@@ -324,6 +321,49 @@ pub fn elasticity_morph(
         element_order: old_mesh.element_order,
         normals: None,
     })
+}
+
+/// Linear-elasticity mesh morph — compute interior-node displacements
+/// consistent with prescribed surface-node positions by solving the
+/// fictitious-elastic BVP `K · u = 0` with `bcs = prescribed_displacements`.
+///
+/// Delegates to [`elasticity_morph_with_cg_opts`] with
+/// [`CgSolverOptions::default()`] (tolerance 1e-8, max_iter 1000).
+///
+/// ## Parameters
+///
+/// - `old_mesh` — the source tetrahedral mesh.
+/// - `prescribed_positions` — `(node_index, new_position)` pairs identifying
+///   surface nodes and their target positions; the natural producer is
+///   [`crate::compute_dirichlet_bcs`] (PRD task #5). The internal pipeline
+///   converts each pair into a per-axis [`DirichletBc`] with
+///   `value = new_position[axis] - old_position[axis]` (delta, not absolute).
+///   **Duplicate `node_index` entries are a precondition violation**: each
+///   occurrence appends three more `DirichletBc` entries for the same DOFs,
+///   and `apply_dirichlet_row_elimination` asserts uniqueness in debug builds
+///   (boundary/dirichlet.rs:170-186). The natural producer
+///   (`compute_dirichlet_bcs` via `BTreeMap`) always emits each node once.
+/// - `options` — supplies the fictitious-stiffness parameters
+///   (`fictitious_youngs_modulus_base`, `fictitious_poisson_ratio`) used to
+///   build the [`IsotropicElastic`] material driving the FEA solve.
+///
+/// ## Output normals
+///
+/// The returned mesh always has `normals: None`, regardless of whether the
+/// input mesh carried per-vertex normals. Vertex motion under the elasticity
+/// solve makes any pre-existing normals geometrically stale; dropping them
+/// fails closed (a consumer that needs surface normals must recompute them
+/// after morphing). Same convention as [`crate::laplacian::laplacian_smooth`].
+///
+/// ## Failure modes
+///
+/// See [`ElasticityFailure`].
+pub fn elasticity_morph(
+    old_mesh: &VolumeMesh,
+    prescribed_positions: &[(u32, [f64; 3])],
+    options: &MorphOptions,
+) -> Result<VolumeMesh, ElasticityFailure> {
+    elasticity_morph_with_cg_opts(old_mesh, prescribed_positions, options, CgSolverOptions::default())
 }
 
 #[cfg(test)]

@@ -81,7 +81,7 @@ pub use boundary::{
     BoundaryAssociation, NodeAttachment, ProjectionFailure, ProjectorPayload, Projector,
     compute_dirichlet_bcs,
 };
-pub use elasticity::{ElasticityFailure, elasticity_morph};
+pub use elasticity::{ElasticityFailure, elasticity_morph, elasticity_morph_with_cg_opts};
 pub use eligibility::{Eligibility, MorphSnapshot, Reason, morph_eligible};
 pub use laplacian::{LaplacianFailure, laplacian_smooth};
 pub use options::{MorphFailure, MorphOptions, StiffnessRule};
@@ -362,13 +362,22 @@ mod tests {
     // fences above — fails to compile if a re-export drops, the public
     // signature drifts, or a variant is renamed.
     const _: fn() = || {
-        use crate::{ElasticityFailure, elasticity_morph};
+        use crate::{ElasticityFailure, elasticity_morph, elasticity_morph_with_cg_opts};
+        use reify_solver_elastic::CgSolverOptions;
         #[allow(clippy::type_complexity)] // pinning the full public signature is the point of the fence
         let _fn_ref: fn(
             &reify_types::VolumeMesh,
             &[(u32, [f64; 3])],
             &MorphOptions,
         ) -> Result<reify_types::VolumeMesh, ElasticityFailure> = elasticity_morph;
+        #[allow(clippy::type_complexity)] // pinning the full public signature is the point of the fence
+        let _fn_with_opts: fn(
+            &reify_types::VolumeMesh,
+            &[(u32, [f64; 3])],
+            &MorphOptions,
+            CgSolverOptions,
+        ) -> Result<reify_types::VolumeMesh, ElasticityFailure> = elasticity_morph_with_cg_opts;
+        let _ = _fn_with_opts;
         // Variant mentions force the enum's variant set into the fence —
         // adding or removing a variant under the same names elsewhere would
         // still require these constructors to compile.
