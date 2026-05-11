@@ -6218,6 +6218,65 @@ fn commit_state_clears_live_compile_diagnostics_on_successful_recovery() {
     );
 }
 
+/// After a cold-start failure the session must record `CompileFailure { kind: ColdStart, .. }`,
+/// and after a subsequent successful load it must clear to `None`.  After a live-edit failure
+/// (compiled is Some) it must record `CompileFailure { kind: LiveEdit, .. }`.
+///
+/// Pins the new `compile_failure: Option<CompileFailure>` representation introduced in
+/// task 3414: both kind discriminants are exercised from a single session lifecycle, and
+/// the `compile_failure_for_test` accessor exposes the field for assertion without
+/// calling `build_gui_state`.
+#[test]
+fn compile_failure_records_cold_start_then_live_edit_kinds() {
+    use crate::engine::{CompileFailure, CompileFailureKind};
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // 1. Cold-start failure: compiled is None at failure time → ColdStart kind.
+    let _ = session.load_from_source("this is not valid reify syntax {{{}}}", "bad");
+
+    let failure = session
+        .compile_failure_for_test()
+        .expect("compile_failure must be Some after a failed cold-start load");
+    assert!(
+        matches!(failure.kind, CompileFailureKind::ColdStart),
+        "cold-start failure must record kind = ColdStart; got: {:?}",
+        failure.kind
+    );
+    assert!(
+        !failure.diags.is_empty(),
+        "cold-start failure must record non-empty diags"
+    );
+
+    // 2. Successful recovery clears compile_failure → None.
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("valid source should load successfully");
+
+    assert!(
+        session.compile_failure_for_test().is_none(),
+        "compile_failure must be None after a successful recovery"
+    );
+
+    // 3. Live-edit failure: compiled is Some at failure time → LiveEdit kind.
+    let _ = session.load_from_source("broken {{{}}}", "bad2");
+
+    let failure = session
+        .compile_failure_for_test()
+        .expect("compile_failure must be Some after a failed live-edit load");
+    assert!(
+        matches!(failure.kind, CompileFailureKind::LiveEdit),
+        "live-edit failure must record kind = LiveEdit; got: {:?}",
+        failure.kind
+    );
+    assert!(
+        !failure.diags.is_empty(),
+        "live-edit failure must record non-empty diags"
+    );
+}
+
 /// On a fresh session with no module loaded, `build_gui_state` must return an
 /// empty `tessellation_diagnostics`. This is structural — no production producer
 /// for `tessellation_diagnostics` populates the cold-start branch (tessellation
@@ -6624,7 +6683,7 @@ fn build_gui_state_surfaces_prior_warning_and_live_error_together_in_append_orde
         .iter()
         .position(|d| d.severity == "Error");
     assert!(
-        first_warning < first_error,
+        first_warning.unwrap() < first_error.unwrap(),
         "Warning entries (from prior good compile) must precede Error entries \
          (from live_compile_diagnostics append); got order: {:?}",
         severities
