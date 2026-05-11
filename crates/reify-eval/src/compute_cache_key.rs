@@ -46,4 +46,21 @@ mod tests {
         let key2 = compute_cache_key(&node, &graph);
         assert_eq!(key1, key2, "compute_cache_key must be deterministic");
     }
+
+    #[test]
+    fn compute_cache_key_changes_when_target_changes() {
+        let mut node_a = make_empty_node();
+        node_a.target = "solver::elastic_static".to_string();
+
+        let mut node_b = make_empty_node();
+        node_b.target = "solver::modal".to_string();
+
+        let graph = EvaluationGraph::default();
+        let key_a = compute_cache_key(&node_a, &graph);
+        let key_b = compute_cache_key(&node_b, &graph);
+        assert_ne!(
+            key_a, key_b,
+            "distinct target strings must produce distinct cache keys"
+        );
+    }
 }
