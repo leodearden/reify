@@ -203,7 +203,10 @@ describe('meshManager', () => {
 
     const mesh = manager.getSceneMeshes().get('A')!;
     expect(mesh.geometry.attributes.position).toBeDefined();
-    expect(mesh.geometry.attributes.position.array).toBe(verts);
+    // Copy semantics: the position buffer must NOT alias the caller's array …
+    expect(mesh.geometry.attributes.position.array).not.toBe(verts);
+    // … but must contain identical values.
+    expect(Array.from(mesh.geometry.attributes.position.array as Float32Array)).toEqual(Array.from(verts));
     expect(mesh.geometry.attributes.position.itemSize).toBe(3);
   });
 
@@ -547,8 +550,9 @@ describe('meshManager', () => {
       // Mesh should still exist but geometry should not have been updated with bad data
       const mesh = manager.getSceneMeshes().get('A')!;
       const geom = mesh.geometry as any;
-      // Position should still have the original data
-      expect(geom.attributes.position.array).toBe(verts);
+      // Position should still have the original data (copy semantics: not the same reference,
+      // but must contain identical values since the bad-data update was rejected).
+      expect(Array.from(geom.attributes.position.array as Float32Array)).toEqual(Array.from(verts));
       warnSpy.mockRestore();
     });
   });
