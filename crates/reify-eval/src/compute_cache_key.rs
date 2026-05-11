@@ -9,8 +9,76 @@ use reify_types::ContentHash;
 
 /// Compose a deterministic cache key over a `ComputeNode`'s inputs.
 ///
-/// See `docs/prds/v0_3/compute-node-infrastructure.md` §"Cache key" for the
-/// full specification.  Composition is finalised in P3.2 task steps 2–16.
+/// # Composition order
+///
+/// The returned `ContentHash` is `combine_all([target_hash, value_bucket_hash,
+/// realization_bucket_hash, options_hash])`, where:
+///
+/// - **`target_hash`** — `ContentHash::of_str(&node.target)`, the solver/target
+///   string that identifies the computation kind (e.g. `"solver::elastic_static"`).
+///
+/// - **`value_bucket_hash`** — `combine_all` over the `content_hash` of each
+///   `ValueCellNode` referenced by `node.value_inputs`.  Fetched from
+///   `ctx.value_cells`.  A `ValueCellNode::content_hash` encodes the cell's
+///   identity and default-expr content, so parameter edits automatically
+///   propagate through.
+///
+/// - **`realization_bucket_hash`** — `combine_all` over the `content_hash` of
+///   each `RealizationNodeData` referenced by `node.realization_inputs`.
+///   Fetched from `ctx.realizations`.
+///
+/// - **`options_hash`** — `node.options_hash` verbatim (opaque; see Exclusion
+///   contract below).
+///
+/// Domain separation: the 4 outer positions prevent aliasing — a value-cell
+/// hash equal-by-collision to a realization hash cannot produce the same key
+/// because they enter the outer `combine_all` at different positions.
+/// `ContentHash::combine` is order-dependent (hash.rs:32-37).
+///
+/// # Canonical sort keys
+///
+/// Both input buckets are sorted before combining to make the key invariant
+/// under `Vec` insertion-order variation:
+///
+/// - **`value_inputs`** sorted by `ValueCellId`'s derived `Ord`
+///   (lexicographic `(entity, member)`; identity.rs:119).
+///
+/// - **`realization_inputs`** sorted by `(entity.as_str(), index)` tuple.
+///   `RealizationNodeId` intentionally does not derive `Ord` upstream, so the
+///   sort is performed locally using the same field-order comparison that a
+///   derived `Ord` would produce.
+///
+/// # Exclusion contract
+///
+/// Thread count, determinism mode, and any future "execution profile" flags
+/// MUST be filtered out by the **upstream `options_hash` producer** before
+/// they reach this function.  `compute_cache_key` treats `options_hash` as
+/// a fully opaque `ContentHash` and passes it through unchanged.
+///
+/// The canonical producer for FEA nodes is `ElasticOptions::cacheable_hash`
+/// (to be implemented in P3.4 / `docs/prds/v0_3/structural-analysis-fea.md`
+/// task #4).  Any struct intended to feed a `ComputeNode.options_hash` must
+/// implement an equivalent "cacheable hash" that omits non-cacheable fields.
+///
+/// The regression-pin test
+/// `compute_cache_key_treats_options_hash_as_opaque_so_thread_count_can_be_excluded_upstream`
+/// confirms this invariant holds at the composer boundary.
+///
+/// # Missing-input policy
+///
+/// If a `ValueCellId` or `RealizationNodeId` in `node.value_inputs` /
+/// `node.realization_inputs` is not present in `ctx`, this function **panics**
+/// via `.unwrap_or_else(|| panic!(...))`.  Missing references are a producer
+/// bug — `ComputeNodeData` is constructed by the upstream lowering pass (P3.4)
+/// and is expected to reference live graph nodes.  Silently substituting a
+/// sentinel hash would mask such bugs and could create collisions.
+///
+/// # PRD references
+///
+/// - `docs/prds/v0_3/compute-node-infrastructure.md` §"Cache key" — primary spec.
+/// - `docs/prds/v0_3/compute-node-infrastructure.md` §"Resolved design decisions"
+///   — exclusion contract rationale.
+/// - `docs/prds/v0_3/structural-analysis-fea.md` task #4 — upstream producer.
 pub fn compute_cache_key(node: &ComputeNodeData, ctx: &EvaluationGraph) -> ContentHash {
     // Collect value-input cell content_hashes sorted by ValueCellId (derived Ord
     // on (entity, member) lexicographic order) so the bucket is invariant under
