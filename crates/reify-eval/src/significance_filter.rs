@@ -396,4 +396,161 @@ mod tests {
             "None tolerance must produce Different (conservative fallback)",
         );
     }
+
+    // ── Step-15: non-displacement field changes always yield Different ─────────
+
+    /// Any change to a non-displacement field (stress, max_von_mises, converged,
+    /// iterations) must return Different, regardless of displacement delta.
+    /// v1 per-field policy: no Pressure tolerance class — exact equality only.
+    #[test]
+    fn significance_filter_returns_different_for_non_displacement_field_changes() {
+        let baseline =
+            make_elastic_result_value(&[0.0, 0.001], &[0.0, 0.001], 1e8, true, 5);
+
+        // stress: different stress data (displacement identical).
+        let stress_changed =
+            make_elastic_result_value(&[0.0, 0.001], &[0.0, 1.0], 1e8, true, 5);
+        assert_eq!(
+            significance_filter("solver::elastic_static", &baseline, &stress_changed, Some(1e-6)),
+            FilterOutcome::Different,
+            "stress field change must yield Different",
+        );
+
+        // max_von_mises: change by 1 ULP.
+        let mvm_ulp = f64::from_bits(1e8_f64.to_bits() + 1);
+        let mvm_changed =
+            make_elastic_result_value(&[0.0, 0.001], &[0.0, 0.001], mvm_ulp, true, 5);
+        assert_eq!(
+            significance_filter("solver::elastic_static", &baseline, &mvm_changed, Some(1e-6)),
+            FilterOutcome::Different,
+            "max_von_mises ULP change must yield Different",
+        );
+
+        // converged: true vs false.
+        let conv_changed =
+            make_elastic_result_value(&[0.0, 0.001], &[0.0, 0.001], 1e8, false, 5);
+        assert_eq!(
+            significance_filter("solver::elastic_static", &baseline, &conv_changed, Some(1e-6)),
+            FilterOutcome::Different,
+            "converged flip (true→false) must yield Different",
+        );
+
+        // iterations: 5 vs 6.
+        let iters_changed =
+            make_elastic_result_value(&[0.0, 0.001], &[0.0, 0.001], 1e8, true, 6);
+        assert_eq!(
+            significance_filter("solver::elastic_static", &baseline, &iters_changed, Some(1e-6)),
+            FilterOutcome::Different,
+            "iterations change (5→6) must yield Different",
+        );
+    }
+
+    // ── Step-17: malformed Value shapes always yield Different ────────────────
+
+    /// All departures from the documented ElasticResult Map shape must return
+    /// Different — never Equivalent. Conservative-fallback policy.
+    #[test]
+    fn significance_filter_returns_different_for_malformed_shapes() {
+        let valid = make_elastic_result_value(&[0.0, 0.001], &[0.0, 0.001], 1e8, true, 5);
+
+        // (a) prev is not a Map at all.
+        let not_map = Value::Real(0.0);
+        assert_eq!(
+            significance_filter("solver::elastic_static", &not_map, &valid, Some(1e-6)),
+            FilterOutcome::Different,
+            "(a) non-Map prev must yield Different",
+        );
+
+        // (b) new is a Map missing the "displacement" key.
+        let mut no_disp = BTreeMap::new();
+        no_disp.insert(
+            Value::String("stress".to_string()),
+            make_sampled_field("stress", &[0.0, 0.001]),
+        );
+        no_disp.insert(Value::String("max_von_mises".to_string()), Value::Real(1e8));
+        no_disp.insert(Value::String("converged".to_string()), Value::Bool(true));
+        no_disp.insert(Value::String("iterations".to_string()), Value::Int(5));
+        let new_no_disp = Value::Map(no_disp);
+        assert_eq!(
+            significance_filter("solver::elastic_static", &valid, &new_no_disp, Some(1e-6)),
+            FilterOutcome::Different,
+            "(b) Map missing displacement key must yield Different",
+        );
+
+        // (c) new's displacement value is Value::Real (not a Field).
+        let mut wrong_disp = BTreeMap::new();
+        wrong_disp.insert(Value::String("displacement".to_string()), Value::Real(0.0));
+        wrong_disp.insert(
+            Value::String("stress".to_string()),
+            make_sampled_field("stress", &[0.0, 0.001]),
+        );
+        wrong_disp.insert(Value::String("max_von_mises".to_string()), Value::Real(1e8));
+        wrong_disp.insert(Value::String("converged".to_string()), Value::Bool(true));
+        wrong_disp.insert(Value::String("iterations".to_string()), Value::Int(5));
+        let new_wrong_disp = Value::Map(wrong_disp);
+        assert_eq!(
+            significance_filter("solver::elastic_static", &valid, &new_wrong_disp, Some(1e-6)),
+            FilterOutcome::Different,
+            "(c) displacement = Real (not Field) must yield Different",
+        );
+
+        // (d) new's displacement Field has source: Analytical (not Sampled).
+        let analytical_field = Value::Field {
+            domain_type: reify_types::ty::Type::Real,
+            codomain_type: reify_types::ty::Type::Real,
+            source: FieldSourceKind::Analytical,
+            lambda: Arc::new(Value::Undef),
+        };
+        let mut analytical_map = BTreeMap::new();
+        analytical_map.insert(Value::String("displacement".to_string()), analytical_field);
+        analytical_map.insert(
+            Value::String("stress".to_string()),
+            make_sampled_field("stress", &[0.0, 0.001]),
+        );
+        analytical_map.insert(Value::String("max_von_mises".to_string()), Value::Real(1e8));
+        analytical_map.insert(Value::String("converged".to_string()), Value::Bool(true));
+        analytical_map.insert(Value::String("iterations".to_string()), Value::Int(5));
+        let new_analytical = Value::Map(analytical_map);
+        assert_eq!(
+            significance_filter("solver::elastic_static", &valid, &new_analytical, Some(1e-6)),
+            FilterOutcome::Different,
+            "(d) displacement Field with Analytical source must yield Different",
+        );
+
+        // (e) displacement data vectors have mismatched lengths (3 vs 4).
+        let v_len3 =
+            make_elastic_result_value(&[0.0, 0.001, 0.002], &[0.0, 0.001], 1e8, true, 5);
+        let v_len4 =
+            make_elastic_result_value(&[0.0, 0.001, 0.002, 0.003], &[0.0, 0.001], 1e8, true, 5);
+        assert_eq!(
+            significance_filter("solver::elastic_static", &v_len3, &v_len4, Some(1e-6)),
+            FilterOutcome::Different,
+            "(e) mismatched displacement data lengths must yield Different",
+        );
+    }
+
+    // ── Step-19: bit-equality shortcut precedes ALL other guards ─────────────
+
+    /// bit-equal values must return Equivalent even when tolerance is 0.0 or
+    /// None — the shortcut runs immediately after the opt-in guard, before the
+    /// tolerance guard. Pins the documented invariant:
+    /// "bit-equality declares Equivalent regardless of whether tolerance is supplied."
+    #[test]
+    fn significance_filter_does_not_false_positive_on_bit_equal_with_zero_tolerance() {
+        let v = make_elastic_result_value(&[0.0, 0.001], &[0.0, 0.001], 1e8, true, 5);
+
+        // Some(0.0) tolerance — shortcut must run before the tolerance gate.
+        assert_eq!(
+            significance_filter("solver::elastic_static", &v, &v.clone(), Some(0.0)),
+            FilterOutcome::Equivalent,
+            "bit-equal values must be Equivalent even when tolerance is Some(0.0)",
+        );
+
+        // None tolerance — shortcut must run before the tolerance guard.
+        assert_eq!(
+            significance_filter("solver::elastic_static", &v, &v.clone(), None),
+            FilterOutcome::Equivalent,
+            "bit-equal values must be Equivalent even when tolerance is None",
+        );
+    }
 }
