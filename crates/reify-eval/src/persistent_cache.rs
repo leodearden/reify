@@ -95,7 +95,7 @@ pub fn touch_sidecar(path: &Path) -> io::Result<()> {
 /// shard. Failure to create the parent surfaces as an `io::Error` from the
 /// underlying `fs::write`.
 pub fn write_sidecar(path: &Path) -> io::Result<()> {
-    std::fs::write(path, &[SIDECAR_MAGIC_BYTE])
+    std::fs::write(path, [SIDECAR_MAGIC_BYTE])
 }
 
 /// On-disk layout version for the [`CacheEntryHeader`] struct. Bump when the
