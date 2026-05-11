@@ -133,10 +133,13 @@ pub struct MorphOptions {
 
     /// Maximum acceptable fraction of elements with scaled Jacobian < 0.25.
     ///
-    /// PRD §"Quality threshold for fallback": seed 0.01 (1 %).
-    /// Calibrated by task #2950 against tests/calibration.rs (plate
-    /// hole-diameter and bracket fillet-radius sweeps under
-    /// StiffnessRule::InverseVolume) to 0.95.
+    /// PRD §"Quality threshold for fallback": seed 0.01 (1 %). Production
+    /// default retained at the PRD seed; the calibration sweep tests in
+    /// `tests/calibration.rs` override this locally to 0.95 to admit the
+    /// synthetic procedural fixtures' baseline pct distribution
+    /// (structured hex-to-6-tet decomposition skews toward sj < 0.25).
+    /// Task #2950 calibration confirmed the seed is conservative against
+    /// the discriminating bracket fillet-radius sweep.
     pub quality_floor_pct_below_025: f64,
 
     /// Maximum acceptable multiplicative aspect-ratio factor (morphed_AR / source_AR)
@@ -200,26 +203,19 @@ impl Default for MorphOptions {
             // improvement on the relevant metric) holds at the 0.02 floor
             // across the plate and bracket sweeps.
             quality_floor_min_scaled_jacobian: 0.02,
-            // PRD seed was 0.01; calibration raised to 0.95 because the
-            // procedural fixtures' structured hex-to-6-tet decomposition
-            // produces a population skewed toward sj < 0.25 (plate base
-            // pct ≈ 0.91 at hole_diameter = 0.30; box pct ≈ 0.57 at n=4).
-            // At 0.95 the fixtures' intrinsic populations pass; morph
-            // distortion of realistic magnitude shows up via min_sj or
-            // AR-factor (e.g. plate target=0.40 trips pct ≈ 0.96 but
-            // ar_factor ≈ 1.23 > 1.20 materially-better bar).
-            //
-            // TODO(task #2950 follow-up): the 0.95 floor is calibrated against
-            // synthetic procedural fixtures rather than real CAD-derived
-            // meshes — at this level the metric is near-vestigial (almost any
-            // mesh satisfies pct < 0.95). Re-calibrate against real-world
-            // meshes once PRD task #10 (engine wiring) lands and supplies
-            // CAD-sourced meshes through the morph pipeline, OR consider
-            // dropping the pct_below_025 knob entirely if the simpler
-            // min_scaled_J floor proves sufficient on real meshes. Until
-            // then this knob exists primarily to admit the synthetic
-            // fixtures without false rejections — flagged for revisit.
-            quality_floor_pct_below_025: 0.95,
+            // PRD seed 0.01 retained as the production default (task #3434
+            // follow-up to #2950). Earlier calibration relaxed the default to
+            // 0.95 to admit the synthetic procedural fixtures, but at 0.95 the
+            // metric is near-vestigial in production (almost any mesh satisfies
+            // pct < 0.95). The two materially-better-rule sweep tests in
+            // tests/calibration.rs (plate hole-diameter, bracket fillet-radius)
+            // override this field locally to 0.95 because the procedural
+            // fixtures' structured hex-to-6-tet decomposition produces
+            // populations skewed toward sj < 0.25 (e.g. plate base pct ≈ 0.91
+            // at hole_diameter = 0.30). Re-evaluate the production default
+            // against real CAD-derived meshes once PRD task #10 (engine wiring,
+            // `lib.rs::morph()`) lands.
+            quality_floor_pct_below_025: 0.01,
             // PRD seed 2.0 retained — calibration confirmed it discriminates
             // bracket fillet-radius distortion (AR ≈ 2.75 at target=0.15
             // rejects) while leaving plate hole-diameter and box wall-
