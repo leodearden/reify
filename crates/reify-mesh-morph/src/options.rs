@@ -128,7 +128,13 @@ pub struct MorphOptions {
     /// PRD §"Quality threshold for fallback": seed 0.15.
     /// Calibrated by task #2950 against tests/calibration.rs (plate
     /// hole-diameter and bracket fillet-radius sweeps under
-    /// StiffnessRule::InverseVolume) to 0.02.
+    /// StiffnessRule::InverseVolume) to 0.02; then re-calibrated by task #3451
+    /// (empirical from_scratch baseline capture) to 0.01 — the procedural
+    /// mesher itself produces min_sj ≈ 0.0139 at plate hole_diameter=0.60 and
+    /// ≈ 0.0042 at bracket fillet_radius=0.19, so 0.02 was rejecting fixture
+    /// geometry rather than morph distortion. The materiality predicate
+    /// (>20 % improvement on min_sj OR true AR ratio) is the discriminating
+    /// signal; this floor is the absolute-safety net.
     pub quality_floor_min_scaled_jacobian: f64,
 
     /// Maximum acceptable fraction of elements with scaled Jacobian < 0.25.
@@ -194,16 +200,25 @@ impl Default for MorphOptions {
         Self {
             // Calibrated by task #2950 against tests/calibration.rs (plate
             // hole-diameter and bracket fillet-radius sweeps under
-            // StiffnessRule::InverseVolume).
+            // StiffnessRule::InverseVolume); re-calibrated to 0.01 by task
+            // #3451 empirical from_scratch baseline capture (2026-05-11):
             //
-            // PRD seed was 0.15; calibration lowered to 0.02 because the
-            // procedural plate-with-hole fixture (polar-radial grid
-            // hex-to-6-tet decomposition) intrinsically produces tets with
-            // min_sj ≈ 0.022–0.024 at small parameter steps — well below
-            // the 0.15 PRD seed. The materially-better rule (>20%
-            // improvement on the relevant metric) holds at the 0.02 floor
-            // across the plate and bracket sweeps.
-            quality_floor_min_scaled_jacobian: 0.02,
+            //   plate hole_diameter=0.30 → from_scratch min_sj ≈ 0.0239
+            //   plate hole_diameter=0.40 → from_scratch min_sj ≈ 0.0207
+            //   plate hole_diameter=0.50 → from_scratch min_sj ≈ 0.0173
+            //   plate hole_diameter=0.60 → from_scratch min_sj ≈ 0.0139
+            //   bracket fillet_radius=0.10 → from_scratch min_sj ≈ 0.0413
+            //   bracket fillet_radius=0.15 → from_scratch min_sj ≈ 0.0208
+            //   bracket fillet_radius=0.19 → from_scratch min_sj ≈ 0.0042
+            //
+            // At wider geometry (plate ≥ 0.50, bracket ≥ 0.15) the procedural
+            // mesher itself produces baselines below the old 0.02 floor.  The
+            // floor was separating "easy geometry" from "hard geometry" rather
+            // than "good morph" from "bad morph".  Moving to 0.01 lets the
+            // materiality predicate (>20 % improvement on min_sj OR the true
+            // max(morphed_AR / from_scratch_AR) ratio, MATERIALITY_FACTOR=1.20
+            // in tests/calibration/sweep.rs) do the discrimination.
+            quality_floor_min_scaled_jacobian: 0.01,
             // PRD seed 0.01 retained as the production default (task #3434
             // follow-up to #2950). Earlier calibration relaxed the default to
             // 0.95 to admit the synthetic procedural fixtures, but at 0.95 the

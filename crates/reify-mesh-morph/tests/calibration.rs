@@ -494,47 +494,28 @@ fn assert_materially_better_rule_holds(
 /// materially-better-rule calibration sweep tests (plate hole-diameter,
 /// bracket fillet-radius).
 ///
-/// The synthetic procedural fixtures' structured hex-to-6-tet decomposition
-/// produces baseline populations skewed toward sj < 0.25 (e.g. plate base
-/// pct ≈ 0.91 at `hole_diameter = 0.30`; bracket base similar). The
-/// production default is the PRD seed 0.01 — relaxed here to 0.99 so the
-/// materially-better-rule check exercises real morph distortion rather than
-/// the fixtures' baseline distribution. Re-evaluate against real CAD meshes
-/// once PRD task #10 (engine wiring) lands.
+/// ## Post-task-#3451 state: one override remains
 ///
-/// ## Why these overrides (task #3435 follow-up)
+/// `quality_floor_pct_below_025: 0.99` is the only active override.
+/// The production default (PRD seed 0.01) is unreachable for every
+/// procedural hex-to-6-tet fixture: the from_scratch baseline pct
+/// distribution falls in [0.74, 0.99] across all plate and bracket
+/// sweep targets captured by task #3451 (2026-05-11). With the
+/// production 0.01 floor, a morph or from-scratch result that passes
+/// pct < 0.01 is structurally impossible for these fixtures — the floor
+/// would always fire, collapsing every step onto the Reject branch
+/// regardless of morph quality. The 0.99 override lets the
+/// materially-better-rule check exercise real morph distortion rather
+/// than fixture baseline distribution. Re-evaluate against CAD-derived
+/// meshes once PRD task #10 (engine wiring) lands.
 ///
-/// Originally only `quality_floor_pct_below_025` was overridden (0.95).
-/// Task #3435 corrected `ar_materially_better` to use the true
-/// `max(morphed_AR / from_scratch_AR)` ratio instead of the old
-/// `morph_AR / source_AR` proxy. The corrected predicate then surfaced
-/// that wider plate sweep targets were being rejected without any
-/// corrected metric (min_sj or true AR) showing the morph is materially
-/// worse than a fresh remesh — i.e. the fixture geometry itself, not the
-/// morph, was driving the rejection. Two adjustments were needed to keep
-/// the materially-better-rule sweep meaningful:
-///
-/// 1. `quality_floor_pct_below_025: 0.99` (was 0.95) — wider targets
-///    (≥ 0.50) push pct ≈ 0.98 even for the from-scratch baseline; with
-///    the corrected AR predicate those targets land on the Pass branch
-///    (morph ≡ from_scratch on both corrected metrics) rather than
-///    spuriously failing the rule.
-/// 2. `quality_floor_min_scaled_jacobian: 0.01` (default 0.02) — plate
-///    target=0.50 from_scratch_min_sj ≈ 0.0173 i.e. the procedural mesher
-///    itself sits below the production floor at that geometry, so the
-///    floor isn't separating "good morph" from "bad morph" but rather
-///    "easy geometry" from "hard geometry". Relaxing to 0.01 lets the
-///    sweep exercise wider parameter steps without rejecting morphs that
-///    are quality-indistinguishable from a fresh remesh.
-///
-/// Both overrides are TEST-ONLY. The corresponding production-defaults
-/// question (whether `MorphOptions::default().quality_floor_pct_below_025`
-/// or `quality_floor_min_scaled_jacobian` should move) is tracked
-/// separately — see the task #3435 escalation chain.
+/// `quality_floor_min_scaled_jacobian` is NOT overridden: task #3451
+/// lowered the production default from 0.02 to 0.01, which matches the
+/// test value the steward applied in task #3435. The override is now
+/// a no-op and has been removed.
 fn calibration_sweep_options() -> reify_mesh_morph::MorphOptions {
     reify_mesh_morph::MorphOptions {
         quality_floor_pct_below_025: 0.99,
-        quality_floor_min_scaled_jacobian: 0.01,
         ..reify_mesh_morph::MorphOptions::default()
     }
 }
