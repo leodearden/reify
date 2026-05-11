@@ -187,6 +187,13 @@ fn freshness_walk_unblocks_gated_node_when_all_inputs_become_final() {
         .expect("eval_state populated by Engine::eval")
         .reverse_index
         .clone();
+    // P3.3 step-16: clone the graph for edge #12 fan-out.
+    let graph = engine
+        .eval_state()
+        .expect("eval_state populated by Engine::eval")
+        .snapshot
+        .graph
+        .clone();
 
     assert!(
         engine
@@ -201,6 +208,7 @@ fn freshness_walk_unblocks_gated_node_when_all_inputs_become_final() {
     let updated_after_a = freshness_walk::propagate_freshness_only(
         engine.cache_store_mut(),
         &reverse_index,
+        &graph,
         &changed_a,
         1,
     );
@@ -243,6 +251,7 @@ fn freshness_walk_unblocks_gated_node_when_all_inputs_become_final() {
     let updated_after_c = freshness_walk::propagate_freshness_only(
         engine.cache_store_mut(),
         &reverse_index,
+        &graph,
         &changed_c,
         1,
     );

@@ -404,6 +404,9 @@ mod tests {
     fn gating_composes_with_freshness_walk_in_isolation() {
         use crate::deps::ReverseDependencyIndex;
         use crate::freshness_walk;
+        use crate::graph::EvaluationGraph;
+
+        let graph = EvaluationGraph::default();
 
         let e = "T";
         let a = ValueCellId::new(e, "a");
@@ -451,7 +454,7 @@ mod tests {
         assert!(cache.set_freshness(&NodeId::Value(a.clone()), Freshness::Final));
         let mut changed = HashSet::new();
         changed.insert(a.clone());
-        freshness_walk::propagate_freshness_only(&mut cache, &index, &changed, 1);
+        freshness_walk::propagate_freshness_only(&mut cache, &index, &graph, &changed, 1);
 
         // b is still Intermediate because c is still Intermediate.
         assert_eq!(
@@ -472,7 +475,8 @@ mod tests {
         assert!(cache.set_freshness(&NodeId::Value(c.clone()), Freshness::Final));
         let mut changed2 = HashSet::new();
         changed2.insert(c.clone());
-        let updated = freshness_walk::propagate_freshness_only(&mut cache, &index, &changed2, 1);
+        let updated =
+            freshness_walk::propagate_freshness_only(&mut cache, &index, &graph, &changed2, 1);
 
         assert!(
             updated.contains(&b_node),

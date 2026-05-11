@@ -80,7 +80,13 @@ use reify_types::{Freshness, ValueCellId};
 /// # Touch-list
 ///
 /// **Touches:** `freshness`, and (transitively, via `mark_pending_with_cause`)
-/// `pending_cause`.
+/// `pending_cause`. P3.3: when a visited dependent is `NodeId::Compute(_)`,
+/// the walk also derives & writes freshness for each of the compute node's
+/// declared `output_value_cells` (edge #12) so the freshness side-table
+/// for those VCs reflects the upstream re-derivation. Like every other
+/// write the walk performs, these go through `set_freshness` /
+/// `mark_pending_with_cause` / `mark_pending` — never `put` or
+/// `record_evaluation`.
 ///
 /// **Does NOT touch:** `result`, `result_hash`, `dependency_trace`,
 /// `basis_version`, `warm_state`. The walk also never calls `record_evaluation`
@@ -94,6 +100,7 @@ use reify_types::{Freshness, ValueCellId};
 pub fn propagate_freshness_only(
     cache: &mut CacheStore,
     reverse_index: &ReverseDependencyIndex,
+    graph: &crate::graph::EvaluationGraph,
     changed: &HashSet<ValueCellId>,
     generation: u64,
 ) -> HashSet<NodeId> {
@@ -230,6 +237,81 @@ pub fn propagate_freshness_only(
             // the cutoff before any writer is invoked. This `if wrote` arm is
             // belt-and-suspenders defense in case a future code path bypasses
             // that cutoff for an absent dependent.
+
+            // P3.3 step-16: edge #12 — Compute → output_value_cells fan-out.
+            // When `dependent` is a ComputeNode whose freshness was just
+            // (re-)derived, each of its declared `output_value_cells` must
+            // also have its freshness re-derived: arch §5 defines the
+            // ComputeNode as the writer of those VCs, so when C's freshness
+            // changes the VCs it writes need their side-table updated too.
+            // This block runs regardless of `wrote` — even when the early
+            // cutoff fired at Compute(C), an output VC might still need a
+            // re-derivation pass (e.g. its reads include cells that changed
+            // elsewhere in this same walk). The push onto the frontier
+            // mirrors `dirty.rs:49-56`'s edge-#12 fan-out, ensuring further
+            // downstream dependents (constraints reading the output VC,
+            // other compute nodes consuming it) propagate the same way as
+            // for any standard value-cell write.
+            if let NodeId::Compute(cn_id) = &dependent
+                && let Some(cn_data) = graph.compute_nodes.get(cn_id)
+            {
+                // Clone the list so the immutable borrow on `graph` drops
+                // before any `&mut cache` write inside the inner loop.
+                let outputs = cn_data.output_value_cells.clone();
+                for out_vc in outputs {
+                    let out_node = NodeId::Value(out_vc.clone());
+                    let out_current = cache.freshness(&out_node);
+
+                    // Failed-skip: terminal chain-root state, never a
+                    // write target. Forward downstream via the frontier
+                    // so dependents become Pending with the Failed VC
+                    // as chain root (matches the main loop at lines
+                    // 130-135).
+                    if matches!(out_current, Freshness::Failed { .. }) {
+                        frontier.push_back(out_vc);
+                        continue;
+                    }
+
+                    let (out_new, out_cause) = cache
+                        .derive_output_freshness_for_node_with_cause(
+                            &out_node, false, generation,
+                        );
+
+                    // Freshness early cutoff — same contract as the
+                    // main per-dependent block.
+                    if out_new == out_current {
+                        frontier.push_back(out_vc);
+                        continue;
+                    }
+
+                    // Pending idempotency cutoff — same contract as
+                    // the main per-dependent block.
+                    if matches!(out_new, Freshness::Pending { .. })
+                        && matches!(out_current, Freshness::Pending { .. })
+                        && cache.pending_cause(&out_node) == out_cause
+                    {
+                        frontier.push_back(out_vc);
+                        continue;
+                    }
+
+                    let out_wrote = match &out_new {
+                        Freshness::Pending { .. } => match out_cause.clone() {
+                            Some(c) => cache.mark_pending_with_cause(&out_node, c),
+                            None => cache.mark_pending(&out_node),
+                        },
+                        _ => cache.set_freshness(&out_node, out_new.clone()),
+                    };
+
+                    if out_wrote {
+                        updated.insert(out_node);
+                    }
+                    // Always push onto frontier so downstream dependents
+                    // (constraints / let-bindings / further compute
+                    // nodes reading this VC) propagate even when the
+                    // VC's own freshness didn't actually change.
+                    frontier.push_back(out_vc);
+                }
+            }
         }
     }
 
@@ -240,6 +322,7 @@ pub fn propagate_freshness_only(
 mod tests {
     use crate::cache::{CacheStore, CachedResult, NodeCache, NodeId};
     use crate::deps::{DependencyTrace, ReverseDependencyIndex};
+    use crate::graph::EvaluationGraph;
     use reify_types::{
         ContentHash, DeterminacyState, ErrorRef, Freshness, GeometryHandleId, RealizationNodeId,
         ResultRef, Value, ValueCellId, VersionId,
@@ -327,7 +410,7 @@ mod tests {
         let mut changed = HashSet::new();
         changed.insert(a.clone());
 
-        let updated = super::propagate_freshness_only(&mut cache, &reverse_index, &changed, 1);
+        let updated = super::propagate_freshness_only(&mut cache, &reverse_index, &EvaluationGraph::default(), &changed, 1);
 
         assert_eq!(
             cache.freshness(&NodeId::Value(b.clone())),
@@ -384,7 +467,7 @@ mod tests {
         let mut changed = HashSet::new();
         changed.insert(a.clone());
 
-        let updated = super::propagate_freshness_only(&mut cache, &reverse_index, &changed, 1);
+        let updated = super::propagate_freshness_only(&mut cache, &reverse_index, &EvaluationGraph::default(), &changed, 1);
 
         assert_eq!(
             cache.freshness(&NodeId::Value(b.clone())),
@@ -469,7 +552,7 @@ mod tests {
         let mut changed = HashSet::new();
         changed.insert(a.clone());
 
-        let updated = super::propagate_freshness_only(&mut cache, &reverse_index, &changed, 1);
+        let updated = super::propagate_freshness_only(&mut cache, &reverse_index, &EvaluationGraph::default(), &changed, 1);
 
         assert_eq!(
             cache.freshness(&NodeId::Value(b.clone())),
@@ -546,7 +629,7 @@ mod tests {
         let mut changed = HashSet::new();
         changed.insert(a.clone());
 
-        let updated = super::propagate_freshness_only(&mut cache, &reverse_index, &changed, 1);
+        let updated = super::propagate_freshness_only(&mut cache, &reverse_index, &EvaluationGraph::default(), &changed, 1);
         assert!(
             updated.contains(&b_node),
             "sanity: b must be updated by the walk, got: {:?}",
@@ -630,7 +713,7 @@ mod tests {
         changed.insert(a.clone());
 
         let updated_first =
-            super::propagate_freshness_only(&mut cache, &reverse_index, &changed, 1);
+            super::propagate_freshness_only(&mut cache, &reverse_index, &EvaluationGraph::default(), &changed, 1);
         assert!(
             updated_first.contains(&b_node),
             "sanity: first walk must update b, got: {:?}",
@@ -648,7 +731,7 @@ mod tests {
 
         // Run the walk again with the same arguments.
         let updated_second =
-            super::propagate_freshness_only(&mut cache, &reverse_index, &changed, 1);
+            super::propagate_freshness_only(&mut cache, &reverse_index, &EvaluationGraph::default(), &changed, 1);
 
         assert!(
             updated_second.is_empty(),
@@ -773,7 +856,7 @@ mod tests {
         let mut changed = HashSet::new();
         changed.insert(a.clone());
 
-        let updated = super::propagate_freshness_only(&mut cache, &reverse_index, &changed, 1);
+        let updated = super::propagate_freshness_only(&mut cache, &reverse_index, &EvaluationGraph::default(), &changed, 1);
 
         // (i) b's freshness must STILL be Failed — the walk must skip it as
         //     a write target (re-derivation would destroy the chain root).
@@ -864,7 +947,7 @@ mod tests {
         let mut changed = HashSet::new();
         changed.insert(a.clone());
 
-        let updated = super::propagate_freshness_only(&mut cache, &reverse_index, &changed, 1);
+        let updated = super::propagate_freshness_only(&mut cache, &reverse_index, &EvaluationGraph::default(), &changed, 1);
 
         assert!(
             updated.contains(&b_node),
@@ -945,7 +1028,7 @@ mod tests {
         changed.insert(a.clone());
 
         let updated_first =
-            super::propagate_freshness_only(&mut cache, &reverse_index, &changed, 1);
+            super::propagate_freshness_only(&mut cache, &reverse_index, &EvaluationGraph::default(), &changed, 1);
         assert!(
             updated_first.contains(&b_node),
             "sanity: first walk must Pending-flip b, got: {:?}",
@@ -965,7 +1048,7 @@ mod tests {
         // Re-run with identical arguments — the Pending idempotency cutoff
         // must short-circuit at b.
         let updated_second =
-            super::propagate_freshness_only(&mut cache, &reverse_index, &changed, 1);
+            super::propagate_freshness_only(&mut cache, &reverse_index, &EvaluationGraph::default(), &changed, 1);
 
         assert!(
             updated_second.is_empty(),
@@ -1086,7 +1169,7 @@ mod tests {
         let mut changed = HashSet::new();
         changed.insert(a.clone());
 
-        let updated = super::propagate_freshness_only(&mut cache, &reverse_index, &changed, 1);
+        let updated = super::propagate_freshness_only(&mut cache, &reverse_index, &EvaluationGraph::default(), &changed, 1);
 
         // (i) R's freshness must STILL be Failed — the walk must skip it as a
         //     write target (re-derivation would silently flip Failed → Final,
@@ -1185,7 +1268,7 @@ mod tests {
         let mut changed = HashSet::new();
         changed.insert(a.clone());
 
-        let updated = super::propagate_freshness_only(&mut cache, &reverse_index, &changed, 1);
+        let updated = super::propagate_freshness_only(&mut cache, &reverse_index, &EvaluationGraph::default(), &changed, 1);
 
         // (i) b, c, d must all be Final after the walk.
         assert_eq!(
