@@ -2885,4 +2885,66 @@ mod tests {
         let result = read_entry::<ElasticResult>(root, eng, inp).unwrap();
         assert_eq!(result, None);
     }
+
+    /// Pins that `CacheEntryHeader.byte_size` holds the *uncompressed* body byte
+    /// count, as documented in lines 195-196 and 210-211 of this file.
+    ///
+    /// The current `write_entry` impl stores `body_buf.len()` which is the
+    /// zstd-COMPRESSED length — this test must FAIL until step-18 fixes the impl
+    /// by computing the true uncompressed size via `value.uncompressed_byte_size()`.
+    ///
+    /// Two assertions:
+    ///   1. `header.byte_size == decompressed.len() as u64`  (semantic contract)
+    ///   2. `header.byte_size > compressed_body.len() as u64`
+    ///      (belt-and-suspenders: compressed < uncompressed for any non-trivial
+    ///      zstd input; guards against a future regression back to compressed size)
+    #[test]
+    fn write_entry_populates_byte_size_field_with_actually_uncompressed_body_byte_count() {
+        use std::fs::File;
+        use std::io::Read as _;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "deadbeef00112233deadbeef00112233";
+        let inp = "cafebabe44556677cafebabe44556677";
+        let original = make_sample_result();
+
+        write_entry(root, eng, inp, &original).unwrap();
+
+        // Read the on-disk header directly.
+        let bin_path = entry_bin_path(root, eng, inp);
+        let mut f = File::open(&bin_path).unwrap();
+        let header = CacheEntryHeader::read_from(&mut f).unwrap();
+
+        // Collect the compressed body bytes that follow the header.
+        let mut compressed_body: Vec<u8> = Vec::new();
+        f.read_to_end(&mut compressed_body).unwrap();
+
+        // Independently decompress to recover the raw (uncompressed) body.
+        let mut decoder = zstd::Decoder::new(&compressed_body[..]).unwrap();
+        let mut decompressed: Vec<u8> = Vec::new();
+        decoder.read_to_end(&mut decompressed).unwrap();
+
+        assert_eq!(
+            header.byte_size,
+            decompressed.len() as u64,
+            "byte_size must be the uncompressed body byte count per CacheEntryHeader doc \
+             (lines 195-196 / 210-211) — got {got}, expected {expected} (decompressed length). \
+             If the impl stores body_buf.len() (compressed size) instead, this fails.",
+            got = header.byte_size,
+            expected = decompressed.len() as u64,
+        );
+
+        // Belt-and-suspenders: for any non-trivial zstd input the compressed size
+        // is strictly smaller than the uncompressed size. If this assertion fires,
+        // the impl regressed to storing the compressed length again.
+        assert!(
+            header.byte_size > compressed_body.len() as u64,
+            "byte_size ({}) must be strictly greater than compressed body length ({}) — \
+             zstd compression must reduce the body size for the make_sample_result fixture; \
+             if this fires the impl is storing the compressed size, not the uncompressed size",
+            header.byte_size,
+            compressed_body.len(),
+        );
+    }
 }
