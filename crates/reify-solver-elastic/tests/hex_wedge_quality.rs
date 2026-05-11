@@ -155,6 +155,96 @@ fn extruded_plate_hex_mesh_succeeds_with_expected_element_count() {
     );
 }
 
+/// Revolved disc (R=50, H=2 mm, hex/wedge-eligible).
+///
+/// Uses the meridian rectangle `[0..50] × [0..2]` in the (x,y) plane and
+/// revolves it π/2 around the Y axis.  A partial-arc keeps the fixture cheap;
+/// arc correctness is already pinned by the `revolve_*` unit tests in `sweep.rs`.
+///
+/// Accepts either `Mesh2d::Quad` (→ Hex) or `Mesh2d::Triangle` (→ Wedge): the
+/// disc meridian can be aspect-ratio-difficult for the recombiner, so both
+/// outcomes are valid.  The test asserts element-count consistency for whichever
+/// variant is produced, plus the through-thickness contract.
+///
+/// On stub builds: `Err(GmshUnavailable)` early-return.
+#[test]
+fn revolved_disc_hex_or_wedge_mesh_succeeds() {
+    // Meridian rectangle: 50 mm wide (radial), 2 mm tall (axial).
+    let boundary = ProfileBoundary {
+        outer: vec![[0.0, 0.0], [50.0, 0.0], [50.0, 2.0], [0.0, 2.0]],
+        holes: vec![],
+    };
+    let options = Mesh2dOptions {
+        mesh_size: Some(2.0),
+        deterministic: true,
+        ..Mesh2dOptions::default()
+    };
+
+    let result = mesh_swept_profile_2d(&boundary, SweepElementTarget::HexPreferred, &options);
+
+    if !GMSH_AVAILABLE {
+        match result {
+            Err(Mesh2dError::GmshUnavailable) => {}
+            other => panic!("stub build: expected Err(GmshUnavailable), got {other:?}"),
+        }
+        return;
+    }
+
+    let report = result.expect("revolved disc: mesh_swept_profile_2d failed");
+
+    let k: usize = 2;
+    let params = SweepParams::Revolve {
+        axis_origin: [0.0, 0.0, 0.0],
+        axis_dir: [0.0, 1.0, 0.0],
+        angle: PI / 2.0,
+    };
+
+    let swept =
+        sweep_2d_mesh_to_3d(&report.mesh, &params, k).expect("revolved disc: sweep failed");
+
+    match (&report.mesh, &swept.connectivity) {
+        (Mesh2d::Quad { vertices, indices }, SweptConnectivity::Hex { indices: hex_idx }) => {
+            let n_base_quads = indices.len() / 4;
+            let n_base_verts = vertices.len() / 2;
+            assert_eq!(
+                hex_idx.len(),
+                8 * n_base_quads * k,
+                "hex: indices must be 8*n_base_quads*K",
+            );
+            assert_eq!(
+                swept.vertices.len(),
+                3 * (k + 1) * n_base_verts,
+                "hex: vertex buffer must be 3*(K+1)*n_base_verts",
+            );
+        }
+        (Mesh2d::Triangle { vertices, indices }, SweptConnectivity::Wedge { indices: wed_idx }) => {
+            let n_base_tris = indices.len() / 3;
+            let n_base_verts = vertices.len() / 2;
+            assert_eq!(
+                wed_idx.len(),
+                6 * n_base_tris * k,
+                "wedge: indices must be 6*n_base_tris*K",
+            );
+            assert_eq!(
+                swept.vertices.len(),
+                3 * (k + 1) * n_base_verts,
+                "wedge: vertex buffer must be 3*(K+1)*n_base_verts",
+            );
+        }
+        (Mesh2d::Quad { .. }, SweptConnectivity::Wedge { .. }) => {
+            panic!("Quad base must produce Hex connectivity, not Wedge")
+        }
+        (Mesh2d::Triangle { .. }, SweptConnectivity::Hex { .. }) => {
+            panic!("Triangle base must produce Wedge connectivity, not Hex")
+        }
+    }
+    assert_eq!(swept.layers, k, "swept.layers must equal K={k}");
+    assert!(
+        check_sweep_through_thickness(k, 2).is_none(),
+        "through-thickness check must pass for K={k}",
+    );
+}
+
 /// Surface-pin test: verifies that every type, function, and constant used by
 /// the fixture tests below can be resolved at compile time.  A regression that
 /// renames or removes any of these re-exports breaks here *before* any fixture
