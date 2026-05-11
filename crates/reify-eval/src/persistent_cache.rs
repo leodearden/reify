@@ -51,6 +51,28 @@ pub use crate::engine_hash_algo::compose_engine_version_hash;
 /// last-access signal (see [`touch_sidecar`]).
 pub const SIDECAR_MAGIC_BYTE: u8 = 0xCA;
 
+/// Update the mtime of an existing `.meta` sidecar file to `now` without
+/// altering its content.
+///
+/// Touching the sidecar (rather than the `.bin`) on every cache read preserves
+/// the `.bin` mtime at the `written_at` wall-time, which is useful for
+/// debugging ("when was this entry written?"). The sidecar mtime then carries
+/// the last-access signal, used for cost-weighted LRU eviction by the GC.
+///
+/// Per PRD `docs/prds/v0_3/persistent-fea-cache.md` §"Sidecar `.meta` file":
+/// works correctly under `noatime` and `relatime` mount options, where direct
+/// `atime` on the `.bin` would be either suppressed entirely or rounded to
+/// 24-hour resolution.
+///
+/// Uses [`std::fs::FileTimes::set_modified`] (stable since Rust 1.75,
+/// Dec 2023) — avoids adding the `filetime` crate to reify-eval's dep set.
+pub fn touch_sidecar(path: &Path) -> io::Result<()> {
+    use std::fs::File;
+    use std::time::SystemTime;
+    let f = File::options().write(true).open(path)?;
+    f.set_times(std::fs::FileTimes::new().set_modified(SystemTime::now()))
+}
+
 /// Create (or overwrite) a `.meta` sidecar file at `path` containing exactly
 /// [`SIDECAR_MAGIC_BYTE`].
 ///
