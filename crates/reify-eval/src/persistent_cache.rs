@@ -644,9 +644,7 @@ pub fn shard_dir(cache_root: &Path, engine_version_hash: &str, input_hash: &str)
         "shard_dir: input_hash must be at least 2 chars, got {:?}",
         input_hash
     );
-    cache_root
-        .join(engine_version_hash)
-        .join(&input_hash[..2])
+    cache_root.join(engine_version_hash).join(&input_hash[..2])
 }
 
 /// Construct the `.meta` sidecar path for a given set of key components.
@@ -1979,9 +1977,9 @@ mod tests {
     #[test]
     fn shard_dir_returns_two_level_directory_under_engine_version_hash() {
         use std::path::PathBuf;
-        let root   = PathBuf::from("/some/cache");
+        let root = PathBuf::from("/some/cache");
         let engine = "abc123def456abc123def456abc123ff";
-        let input  = "0123456789abcdef0123456789abcdef";
+        let input = "0123456789abcdef0123456789abcdef";
         let dir = shard_dir(&root, engine, input);
         assert_eq!(
             dir,
@@ -2001,13 +1999,15 @@ mod tests {
     #[test]
     fn entry_meta_path_uses_meta_extension_under_same_shard_dir_as_bin() {
         use std::path::PathBuf;
-        let root   = PathBuf::from("/some/cache");
+        let root = PathBuf::from("/some/cache");
         let engine = "abc123def456abc123def456abc123ff";
-        let input  = "0123456789abcdef0123456789abcdef";
+        let input = "0123456789abcdef0123456789abcdef";
         let meta = entry_meta_path(&root, engine, input);
         assert_eq!(
             meta,
-            PathBuf::from("/some/cache/abc123def456abc123def456abc123ff/01/0123456789abcdef0123456789abcdef.meta"),
+            PathBuf::from(
+                "/some/cache/abc123def456abc123def456abc123ff/01/0123456789abcdef0123456789abcdef.meta"
+            ),
         );
         // Sidecar must share the same parent directory as the .bin file so
         // atomic-rename semantics work (both files land in the same dir).
@@ -2024,11 +2024,13 @@ mod tests {
         use std::path::PathBuf;
         let root = PathBuf::from("/some/cache");
         let engine = "abc123def456abc123def456abc123ff";
-        let input  = "0123456789abcdef0123456789abcdef";
+        let input = "0123456789abcdef0123456789abcdef";
         let got = entry_bin_path(&root, engine, input);
         assert_eq!(
             got,
-            PathBuf::from("/some/cache/abc123def456abc123def456abc123ff/01/0123456789abcdef0123456789abcdef.bin"),
+            PathBuf::from(
+                "/some/cache/abc123def456abc123def456abc123ff/01/0123456789abcdef0123456789abcdef.bin"
+            ),
             "entry_bin_path must produce <root>/<engine>/<input[0..2]>/<input>.bin"
         );
         // The shard directory is determined by input[0..2] = "01".
@@ -2047,7 +2049,7 @@ mod tests {
         use std::time::{Duration, UNIX_EPOCH};
 
         let tmpdir = tempfile::TempDir::new().expect("must create tempdir");
-        let path   = tmpdir.path().join("entry.meta");
+        let path = tmpdir.path().join("entry.meta");
         write_sidecar(&path).expect("write_sidecar must succeed");
 
         // Back-date to a well-known absolute time so we can verify the value.
@@ -2063,14 +2065,24 @@ mod tests {
             .expect("must stat")
             .modified()
             .expect("must have mtime");
-        assert_eq!(got, expected, "read_sidecar_mtime must match fs::metadata().modified()");
-        assert_eq!(got, known_mtime, "read_sidecar_mtime must return the back-dated value");
+        assert_eq!(
+            got, expected,
+            "read_sidecar_mtime must match fs::metadata().modified()"
+        );
+        assert_eq!(
+            got, known_mtime,
+            "read_sidecar_mtime must return the back-dated value"
+        );
 
         // Non-existent path must return Err with kind NotFound.
         let missing = tmpdir.path().join("no_such.meta");
         let err = read_sidecar_mtime(&missing).expect_err("must fail for missing file");
-        assert_eq!(err.kind(), io::ErrorKind::NotFound,
-            "expected NotFound for missing sidecar, got {:?}", err);
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::NotFound,
+            "expected NotFound for missing sidecar, got {:?}",
+            err
+        );
     }
 
     #[test]
@@ -2078,8 +2090,8 @@ mod tests {
         use std::fs::File;
         use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-        let tmpdir    = tempfile::TempDir::new().expect("must create tempdir");
-        let path      = tmpdir.path().join("entry.meta");
+        let tmpdir = tempfile::TempDir::new().expect("must create tempdir");
+        let path = tmpdir.path().join("entry.meta");
         write_sidecar(&path).expect("write_sidecar must succeed");
 
         // Back-date the file to a known-old mtime to guarantee strictly-earlier
@@ -2087,9 +2099,8 @@ mod tests {
         let old_mtime = UNIX_EPOCH + Duration::from_secs(1_000_000);
         {
             let f = File::options().write(true).open(&path).expect("must open");
-            f.set_times(
-                std::fs::FileTimes::new().set_modified(old_mtime),
-            ).expect("must set old mtime");
+            f.set_times(std::fs::FileTimes::new().set_modified(old_mtime))
+                .expect("must set old mtime");
         }
 
         touch_sidecar(&path).expect("touch_sidecar must succeed");
@@ -2104,7 +2115,11 @@ mod tests {
         );
         // Content must be unchanged.
         let contents = std::fs::read(&path).expect("must read");
-        assert_eq!(contents, vec![SIDECAR_MAGIC_BYTE], "content must be unchanged after touch");
+        assert_eq!(
+            contents,
+            vec![SIDECAR_MAGIC_BYTE],
+            "content must be unchanged after touch"
+        );
     }
 
     #[test]
@@ -2112,14 +2127,20 @@ mod tests {
         let tmpdir = tempfile::TempDir::new().expect("must create tempdir");
         let meta_path = tmpdir.path().join("entry.meta");
         write_sidecar(&meta_path).expect("write_sidecar must succeed");
-        assert!(meta_path.exists(), "sidecar file must exist after write_sidecar");
+        assert!(
+            meta_path.exists(),
+            "sidecar file must exist after write_sidecar"
+        );
         let contents = std::fs::read(&meta_path).expect("must read sidecar");
         assert_eq!(
             contents,
             vec![SIDECAR_MAGIC_BYTE],
             "sidecar must contain exactly one byte equal to SIDECAR_MAGIC_BYTE"
         );
-        assert_eq!(SIDECAR_MAGIC_BYTE, 0xCAu8, "SIDECAR_MAGIC_BYTE must be 0xCA");
+        assert_eq!(
+            SIDECAR_MAGIC_BYTE, 0xCAu8,
+            "SIDECAR_MAGIC_BYTE must be 0xCA"
+        );
     }
 
     // ── CacheEntryHeader tests ────────────────────────────────────────────────
@@ -2127,19 +2148,24 @@ mod tests {
     #[test]
     fn cache_entry_header_verify_echoes_rejects_input_hash_mismatch_with_invalid_data() {
         let header = CacheEntryHeader {
-            format_version:      1,
+            format_version: 1,
             engine_version_hash: [0xAAu8; 32],
-            input_hash:          [0xBBu8; 32],
-            solve_time_ms:       0,
-            byte_size:           0,
-            written_at:          0,
+            input_hash: [0xBBu8; 32],
+            solve_time_ms: 0,
+            byte_size: 0,
+            written_at: 0,
         };
         let correct_engine = [0xAAu8; 32];
-        let wrong_input    = [0xDDu8; 32];
-        let err = header.verify_field_echoes(&correct_engine, &wrong_input)
+        let wrong_input = [0xDDu8; 32];
+        let err = header
+            .verify_field_echoes(&correct_engine, &wrong_input)
             .expect_err("input_hash mismatch must return Err");
-        assert_eq!(err.kind(), io::ErrorKind::InvalidData,
-            "expected InvalidData, got {:?}", err);
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::InvalidData,
+            "expected InvalidData, got {:?}",
+            err
+        );
         assert!(
             err.to_string().contains("input_hash"),
             "error message must contain 'input_hash', got: {err}"
@@ -2149,19 +2175,24 @@ mod tests {
     #[test]
     fn cache_entry_header_verify_echoes_rejects_engine_version_hash_mismatch_with_invalid_data() {
         let header = CacheEntryHeader {
-            format_version:      1,
+            format_version: 1,
             engine_version_hash: [0xAAu8; 32],
-            input_hash:          [0xBBu8; 32],
-            solve_time_ms:       0,
-            byte_size:           0,
-            written_at:          0,
+            input_hash: [0xBBu8; 32],
+            solve_time_ms: 0,
+            byte_size: 0,
+            written_at: 0,
         };
         let wrong_engine = [0xCCu8; 32];
         let correct_input = [0xBBu8; 32];
-        let err = header.verify_field_echoes(&wrong_engine, &correct_input)
+        let err = header
+            .verify_field_echoes(&wrong_engine, &correct_input)
             .expect_err("engine_version_hash mismatch must return Err");
-        assert_eq!(err.kind(), io::ErrorKind::InvalidData,
-            "expected InvalidData, got {:?}", err);
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::InvalidData,
+            "expected InvalidData, got {:?}",
+            err
+        );
         assert!(
             err.to_string().contains("engine_version_hash"),
             "error message must contain 'engine_version_hash', got: {err}"
@@ -2171,14 +2202,14 @@ mod tests {
     #[test]
     fn cache_entry_header_verify_echoes_returns_ok_when_both_echoes_match() {
         let engine = [0xAAu8; 32];
-        let input  = [0xBBu8; 32];
+        let input = [0xBBu8; 32];
         let header = CacheEntryHeader {
-            format_version:      1,
+            format_version: 1,
             engine_version_hash: engine,
-            input_hash:          input,
-            solve_time_ms:       0,
-            byte_size:           0,
-            written_at:          0,
+            input_hash: input,
+            solve_time_ms: 0,
+            byte_size: 0,
+            written_at: 0,
         };
         assert!(
             header.verify_field_echoes(&engine, &input).is_ok(),
@@ -2189,12 +2220,12 @@ mod tests {
     #[test]
     fn cache_entry_header_verify_format_version_returns_ok_for_current_version() {
         let header = CacheEntryHeader {
-            format_version:      ENTRY_FORMAT_VERSION,
+            format_version: ENTRY_FORMAT_VERSION,
             engine_version_hash: [0u8; 32],
-            input_hash:          [0u8; 32],
-            solve_time_ms:       0,
-            byte_size:           0,
-            written_at:          0,
+            input_hash: [0u8; 32],
+            solve_time_ms: 0,
+            byte_size: 0,
+            written_at: 0,
         };
         assert!(
             header.verify_format_version().is_ok(),
@@ -2205,17 +2236,22 @@ mod tests {
     #[test]
     fn cache_entry_header_verify_format_version_rejects_stale_version_with_invalid_data() {
         let header = CacheEntryHeader {
-            format_version:      0, // stale / uninitialised sentinel
+            format_version: 0, // stale / uninitialised sentinel
             engine_version_hash: [0u8; 32],
-            input_hash:          [0u8; 32],
-            solve_time_ms:       0,
-            byte_size:           0,
-            written_at:          0,
+            input_hash: [0u8; 32],
+            solve_time_ms: 0,
+            byte_size: 0,
+            written_at: 0,
         };
-        let err = header.verify_format_version()
+        let err = header
+            .verify_format_version()
             .expect_err("format_version mismatch must return Err");
-        assert_eq!(err.kind(), io::ErrorKind::InvalidData,
-            "expected InvalidData, got {:?}", err);
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::InvalidData,
+            "expected InvalidData, got {:?}",
+            err
+        );
         assert!(
             err.to_string().contains("format_version"),
             "error message must contain 'format_version', got: {err}"
@@ -2246,19 +2282,25 @@ mod tests {
         //   byte_size            = 0x1234_5678_9ABC_DEF0 (u64 LE)
         //   written_at           = 0x7EDC_BA98_7654_3210 (i64 LE)
         let mut engine_hash = [0u8; 32];
-        for (i, b) in engine_hash.iter_mut().enumerate() { *b = 0xA0u8 + i as u8; }
+        for (i, b) in engine_hash.iter_mut().enumerate() {
+            *b = 0xA0u8 + i as u8;
+        }
         let mut input_hash = [0u8; 32];
-        for (i, b) in input_hash.iter_mut().enumerate() { *b = 0xC0u8 + i as u8; }
+        for (i, b) in input_hash.iter_mut().enumerate() {
+            *b = 0xC0u8 + i as u8;
+        }
         let fixture = CacheEntryHeader {
-            format_version:      0xDEAD_BEEFu32,
+            format_version: 0xDEAD_BEEFu32,
             engine_version_hash: engine_hash,
             input_hash,
-            solve_time_ms:       0xCAFE_BABE_DEAD_BEEFu64,
-            byte_size:           0x1234_5678_9ABC_DEF0u64,
-            written_at:          0x7EDC_BA98_7654_3210i64,
+            solve_time_ms: 0xCAFE_BABE_DEAD_BEEFu64,
+            byte_size: 0x1234_5678_9ABC_DEF0u64,
+            written_at: 0x7EDC_BA98_7654_3210i64,
         };
         let mut encoded: Vec<u8> = Vec::new();
-        fixture.write_to(&mut encoded).expect("write_to must not fail");
+        fixture
+            .write_to(&mut encoded)
+            .expect("write_to must not fail");
 
         // Pinned bincode 1.3 fixint-LE encoding of the fixture.
         // Layout (struct-declaration order, LE encoding):
@@ -2276,17 +2318,13 @@ mod tests {
         // commit.
         let expected: [u8; 92] = [
             // format_version = 0xDEAD_BEEF (u32 LE, 4 bytes)
-            0xEF, 0xBE, 0xAD, 0xDE,
-            // engine_version_hash = [0xA0..=0xBF] (32 bytes)
-            0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7,
-            0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE, 0xAF,
-            0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7,
-            0xB8, 0xB9, 0xBA, 0xBB, 0xBC, 0xBD, 0xBE, 0xBF,
-            // input_hash = [0xC0..=0xDF] (32 bytes)
-            0xC0, 0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7,
-            0xC8, 0xC9, 0xCA, 0xCB, 0xCC, 0xCD, 0xCE, 0xCF,
-            0xD0, 0xD1, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7,
-            0xD8, 0xD9, 0xDA, 0xDB, 0xDC, 0xDD, 0xDE, 0xDF,
+            0xEF, 0xBE, 0xAD, 0xDE, // engine_version_hash = [0xA0..=0xBF] (32 bytes)
+            0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD,
+            0xAE, 0xAF, 0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7, 0xB8, 0xB9, 0xBA, 0xBB,
+            0xBC, 0xBD, 0xBE, 0xBF, // input_hash = [0xC0..=0xDF] (32 bytes)
+            0xC0, 0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xCB, 0xCC, 0xCD,
+            0xCE, 0xCF, 0xD0, 0xD1, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7, 0xD8, 0xD9, 0xDA, 0xDB,
+            0xDC, 0xDD, 0xDE, 0xDF,
             // solve_time_ms = 0xCAFE_BABE_DEAD_BEEF (u64 LE, 8 bytes)
             0xEF, 0xBE, 0xAD, 0xDE, 0xBE, 0xBA, 0xFE, 0xCA,
             // byte_size = 0x1234_5678_9ABC_DEF0 (u64 LE, 8 bytes)
@@ -2308,8 +2346,8 @@ mod tests {
              in the SAME commit and update this literal"
         );
         // Round-trip: decode from the pinned literal back to the original struct.
-        let decoded = CacheEntryHeader::read_from(&mut &expected[..])
-            .expect("must decode pinned literal");
+        let decoded =
+            CacheEntryHeader::read_from(&mut &expected[..]).expect("must decode pinned literal");
         assert_eq!(decoded, fixture);
     }
 
@@ -2320,24 +2358,23 @@ mod tests {
         // Uses non-zero, distinct-per-field values so any field aliasing
         // or field-swap bug surfaces immediately.
         let engine_hash = [0xABu8; 32];
-        let input_hash  = [0xCDu8; 32];
+        let input_hash = [0xCDu8; 32];
         let original = CacheEntryHeader {
-            format_version:       1,
-            engine_version_hash:  engine_hash,
+            format_version: 1,
+            engine_version_hash: engine_hash,
             input_hash,
-            solve_time_ms:        1234,
-            byte_size:            5_678_901,
-            written_at:           1_700_000_000_000,
+            solve_time_ms: 1234,
+            byte_size: 5_678_901,
+            written_at: 1_700_000_000_000,
         };
         let mut buf: Vec<u8> = Vec::new();
         original.write_to(&mut buf).expect("write_to must succeed");
-        let decoded = CacheEntryHeader::read_from(&mut &buf[..])
-            .expect("read_from must succeed");
-        assert_eq!(decoded.format_version,      original.format_version);
+        let decoded = CacheEntryHeader::read_from(&mut &buf[..]).expect("read_from must succeed");
+        assert_eq!(decoded.format_version, original.format_version);
         assert_eq!(decoded.engine_version_hash, original.engine_version_hash);
-        assert_eq!(decoded.input_hash,          original.input_hash);
-        assert_eq!(decoded.solve_time_ms,       original.solve_time_ms);
-        assert_eq!(decoded.byte_size,           original.byte_size);
-        assert_eq!(decoded.written_at,          original.written_at);
+        assert_eq!(decoded.input_hash, original.input_hash);
+        assert_eq!(decoded.solve_time_ms, original.solve_time_ms);
+        assert_eq!(decoded.byte_size, original.byte_size);
+        assert_eq!(decoded.written_at, original.written_at);
     }
 }
