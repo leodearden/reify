@@ -2132,6 +2132,11 @@ describe('meshManager', () => {
       // (i.e., overlay disposal did not free or replace the deformed mesh's VBOs).
       expect((deformedMesh.geometry as any).index).toBe(deformedIndexRef);
       expect((deformedMesh.geometry as any).attributes.normal).toBe(deformedNormalRef);
+      // Disposal-isolation contract: overlay teardown must not call .dispose() on the
+      // deformed mesh's own index/normal attribute objects (distinct from the overlay's
+      // cloned copies, whose dispose is expected to be called via overlay.geometry.dispose()).
+      expect(deformedIndexRef.dispose).not.toHaveBeenCalled();
+      expect(deformedNormalRef.dispose).not.toHaveBeenCalled();
     });
   });
 
