@@ -2040,20 +2040,36 @@ fn conditional_returning_solid_in_let_emits_compile_error() {
         "the if-then-else Error must have at least one DiagnosticLabel"
     );
 
-    // The label's span must overlap the `if` keyword in the source.
-    // Source layout: the `let body = if ...` starts after the params, so the
-    // `if` offset is somewhere in the middle of the source string.
+    // The label's span must start exactly at the `if` keyword and extend at
+    // least to the end of the else-branch `box(...)` call.  The parser sets
+    // the Conditional node's span to [start_of_if, end_of_else_branch), so
+    // these are deterministic byte offsets for this fixed source string.
     let if_offset = source.find(" if ").expect("source must contain ' if '") + 1;
-    assert!(
-        target_error.labels.iter().any(|l| {
-            let start = l.span.start as usize;
-            let end = l.span.end as usize;
-            // Label must overlap [if_offset, if_offset+2]
-            start <= if_offset + 2 && end >= if_offset
-        }),
-        "at least one label must overlap the 'if' keyword at offset {}, \
+    // End: byte past the closing `)` of `box(od, od, length)` in the else branch.
+    let else_end = source
+        .find("box(od, od, length)")
+        .expect("source must contain 'box(od, od, length)'")
+        + "box(od, od, length)".len();
+    assert!(!target_error.labels.is_empty(), "must have at least one label");
+    let label = &target_error.labels[0];
+    assert_eq!(
+        label.span.start as usize,
+        if_offset,
+        "label start must equal the byte offset of the 'if' keyword (offset {}); \
          got labels: {:?}",
         if_offset,
+        target_error
+            .labels
+            .iter()
+            .map(|l| (l.span.start, l.span.end, &l.message))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        label.span.end as usize,
+        else_end,
+        "label end must equal the byte past the closing ')' of the else-branch box \
+         call (offset {}); got labels: {:?}",
+        else_end,
         target_error
             .labels
             .iter()

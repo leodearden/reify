@@ -110,19 +110,18 @@ pub(crate) fn is_geometry_let(
         // expression is syntactically distinct from FunctionCall, so a user-defined
         // function cannot collide with a geometry let via this branch.
         reify_syntax::ExprKind::Ident(name) => known_geometry_lets.contains(name.as_str()),
-        // **`Conditional`** — `true` when EITHER branch (recursively) classifies as
-        // a geometry expression. The let is then routed to `compile_geometry_call`
-        // where it surfaces a clean compile-time Error explaining that
-        // geometry-typed if-then-else is not yet supported (see task 3395).
-        // Returning `false` here would leave the let as a plain value cell and
-        // silently produce the cryptic "unresolvable GeomRef::Step(0)" crash.
-        // "Either branch" is the right policy: mixed-type Conditionals are caught
-        // by the type system elsewhere; we just need any geometry-branch path to
-        // route through compile_geometry_call's new Error arm.
+        // Conditional — see rustdoc above for rationale (task 3395).
         reify_syntax::ExprKind::Conditional { then_branch, else_branch, .. } => {
             is_geometry_let(then_branch, functions, known_geometry_lets)
                 || is_geometry_let(else_branch, functions, known_geometry_lets)
         }
+        // NOTE: Block, Match, and other branching/wrapping ExprKinds that can
+        // yield a geometry-typed value are NOT handled here. A let whose
+        // initialiser is (e.g.) `{ box(...) }` will still fall through to the
+        // plain-value-cell path and may produce a cryptic "GeomRef::Step(0)"
+        // crash. Tracked as a follow-up to task 3395 — extend `is_geometry_let`
+        // + `compile_geometry_call` to cover Block, Match, and any future
+        // branching forms that the parser allows as let initialisers.
         _ => false,
     }
 }
@@ -2166,6 +2165,35 @@ mod tests {
         assert!(
             is_geometry_let(&box_num, &functions, &known),
             "Conditional with one geometry branch must classify as a geometry let"
+        );
+
+        // (d) Nested Conditional — geometry only in the inner else_branch;
+        // recursion must traverse the outer else_branch to find it.
+        let nested = make_conditional(
+            bool_cond.clone(),
+            num_literal.clone(),
+            make_conditional(
+                bool_cond.clone(),
+                make_call_with_arity("box", 3),
+                num_literal.clone(),
+            ),
+        );
+        assert!(
+            is_geometry_let(&nested, &functions, &known),
+            "Nested Conditional whose inner branch is geometry must classify as a geometry let"
+        );
+
+        // (e) Ident branch referencing a known geometry let — transitive recognition.
+        let mut known_with_g: HashSet<&str> = HashSet::new();
+        known_with_g.insert("g");
+        let ident_g = reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::Ident("g".to_string()),
+            span: reify_types::SourceSpan::new(0, 1),
+        };
+        let cond_ident = make_conditional(bool_cond.clone(), ident_g, num_literal.clone());
+        assert!(
+            is_geometry_let(&cond_ident, &functions, &known_with_g),
+            "Conditional with an Ident then-branch referencing a known geometry let must classify as a geometry let"
         );
     }
 }
