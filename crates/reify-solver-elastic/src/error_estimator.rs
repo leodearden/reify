@@ -1,8 +1,12 @@
-//! Zienkiewicz-Zhu superconvergent patch-recovery error estimator for
-//! tetrahedral P1 linear elastostatics.
+//! Z-Z-style energy-norm error indicator for tetrahedral P1 linear
+//! elastostatics.
 //!
-//! See PRD `docs/prds/v0_4/a-posteriori-error-estimation.md`, Resolved
-//! §"Error indicator" + Task decomposition #1 (task 2996).
+//! Uses volume-weighted average recovery for the nodal smoothing step — not
+//! the full superconvergent patch-recovery (SPR) least-squares fit over
+//! superconvergent sampling points. PRD §13 (`docs/prds/v0_4/a-posteriori-error-estimation.md`,
+//! Resolved §"Error indicator") explicitly permits either scheme; volume-weighted
+//! averaging is bit-deterministic and reuses [`crate::result::recover_nodal_stress_p1`]
+//! directly (Task decomposition #1, task 2996).
 //!
 //! # Scope
 //!
@@ -22,8 +26,7 @@ use crate::constitutive::IsotropicElastic;
 use crate::result::{StressElement, recover_nodal_stress_p1};
 use reify_types::VolumeMesh;
 
-/// Output of the Zienkiewicz-Zhu superconvergent patch-recovery error
-/// estimator.
+/// Output of the Z-Z-style energy-norm error indicator.
 ///
 /// Both fields are in plain-f64 kernel form. The lofty
 /// `Field<Element, ScalarPressure>` / `Number` wrappings belong at the
@@ -46,15 +49,17 @@ pub struct ZzIndicator {
     pub global_relative_energy_error: f64,
 }
 
-/// Compute the Zienkiewicz-Zhu superconvergent patch-recovery error indicator
-/// over a per-element stress field.
+/// Compute the Z-Z-style energy-norm error indicator over a per-element stress
+/// field.
 ///
 /// # Algorithm
 ///
 /// (a) For each node n, gather patch P_n = elements containing n (from
 ///     `el.connectivity`).
-/// (b) Compute smoothed nodal stress σ_n* = volume-weighted average of σ_e
-///     for e ∈ P_n via [`crate::result::recover_nodal_stress_p1`].
+/// (b) Compute smoothed nodal stress σ_n* = **volume-weighted average** of σ_e
+///     for e ∈ P_n via [`crate::result::recover_nodal_stress_p1`]. This is
+///     simple averaging, not the full Z-Z least-squares SPR fit; PRD §13
+///     permits either scheme.
 /// (c) For each element e, interpolate σ_n* back to the element centroid:
 ///     for P1 tets, barycentric coords at the centroid are (1/4,…,1/4), so
 ///     σ̄_e* = (1/N) Σ_{n ∈ conn(e)} σ_n*.
@@ -99,6 +104,15 @@ pub fn compute_zz_indicator(
 
     for el in elements {
         let n = el.connectivity.len();
+        // Centroid interpolation assumes uniform barycentric coords (1/N, …, 1/N),
+        // which is only correct for P1 tets (N=4). Guard against silent misuse
+        // by callers passing P2 or higher-order connectivity.
+        debug_assert_eq!(
+            n,
+            4,
+            "compute_zz_indicator currently supports P1 tets only; \
+             got connectivity of length {n}",
+        );
 
         // Step (c): interpolate smoothed stress back to the element centroid.
         // For P1 tets, barycentric coords at the centroid are (1/N, …, 1/N),
@@ -254,21 +268,47 @@ mod tests {
         }
     }
 
-    /// Surface compile pin — confirms that `ZzIndicator` is constructible as
-    /// a struct literal and that `compute_zz_indicator` has the expected
-    /// function-item signature. Mirrors the doctest in `lib.rs` (Task 2996
-    /// block) so any signature drift trips both the doctest and this test.
+    /// Round-trip check: `compliance_matrix(m) · d_matrix() ≈ I₆`.
+    ///
+    /// Detects swapped off-diagonal signs (-ν/E vs +ν/E), incorrect shear-block
+    /// factor (1/G vs 1/(2G) — a common Voigt-convention bug), or any other
+    /// construction error in the private `compliance_matrix` helper.  Tested
+    /// for `ν = 0.3` (steel-like) and `ν = 0.0` (cross-coupling sanity check).
     #[test]
-    fn surface_compile_pin_for_zz_indicator_struct_and_compute_function() {
-        let _zz = ZzIndicator {
-            per_element: vec![0.5_f64],
-            global_relative_energy_error: 0.05_f64,
-        };
-        let _: fn(
-            &[StressElement<'_>],
-            &reify_types::VolumeMesh,
-            &IsotropicElastic,
-        ) -> ZzIndicator = compute_zz_indicator;
+    fn compliance_matrix_times_d_matrix_is_identity() {
+        fn check(mat: &IsotropicElastic) {
+            let s = compliance_matrix(mat);
+            let d = mat.d_matrix();
+            // Multiply s · d → should be identity.
+            let mut sd = [[0.0_f64; 6]; 6];
+            for i in 0..6 {
+                for j in 0..6 {
+                    for k in 0..6 {
+                        sd[i][j] += s[i][k] * d[k][j];
+                    }
+                }
+            }
+            let tol = 1e-12;
+            for i in 0..6 {
+                for j in 0..6 {
+                    let expected = if i == j { 1.0 } else { 0.0 };
+                    assert!(
+                        (sd[i][j] - expected).abs() < tol,
+                        "S·D[{i}][{j}] = {} (expected {expected}) for material E={}, ν={}",
+                        sd[i][j],
+                        mat.youngs_modulus,
+                        mat.poisson_ratio,
+                    );
+                }
+            }
+        }
+
+        // Engineering-realistic case: E=200e9, ν=0.3 (steel).
+        check(&IsotropicElastic { youngs_modulus: 200e9, poisson_ratio: 0.3 });
+        // No cross-coupling: ν=0.
+        check(&IsotropicElastic { youngs_modulus: 1.0, poisson_ratio: 0.0 });
+        // Dimensionless fixture used across other tests.
+        check(&dimensionless_steel_like());
     }
 
     /// Global relative energy error on the same two-tet fan as the per-element
@@ -448,6 +488,18 @@ mod tests {
         let eta_hot = result.per_element[0];
         let eta_cold0 = result.per_element[1];
         let eta_cold1 = result.per_element[2];
+
+        // Lock in that cold elements have non-trivial indicators (diff = σ_hot/12),
+        // so the ratio comparison is meaningful and would catch a regression that
+        // drove η_cold → 0 (e.g. a patch-average bug that collapsed cold diffs).
+        assert!(
+            eta_cold0 > 0.0,
+            "cold element 0 must have a non-zero indicator; got η_cold0={eta_cold0}",
+        );
+        assert!(
+            eta_cold1 > 0.0,
+            "cold element 1 must have a non-zero indicator; got η_cold1={eta_cold1}",
+        );
 
         // Conservative threshold: actual ratio = 2.0, threshold = 1.5.
         let threshold = 1.5;
