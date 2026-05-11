@@ -2,9 +2,9 @@ use std::collections::HashMap;
 use std::fmt;
 
 use reify_types::{
-    CompiledExpr, ConstraintNodeId, ContentHash, DeterminacyState, Freshness, GeometryHandleId,
-    OpaqueState, RealizationNodeId, ResolutionNodeId, ResultRef, Satisfaction, Value, ValueCellId,
-    ValueMap, VersionId,
+    CompiledExpr, ComputeNodeId, ConstraintNodeId, ContentHash, DeterminacyState, Freshness,
+    GeometryHandleId, OpaqueState, RealizationNodeId, ResolutionNodeId, ResultRef, Satisfaction,
+    Value, ValueCellId, ValueMap, VersionId,
 };
 
 use crate::deps::DependencyTrace;
@@ -17,6 +17,11 @@ pub enum NodeId {
     Constraint(ConstraintNodeId),
     Realization(RealizationNodeId),
     Resolution(ResolutionNodeId),
+    /// P3.3: a ComputeNode (e.g. an @optimized FEA/solver computation).
+    /// Added so the reverse-dependency index can register VC→Compute and
+    /// Realization→Compute edges as `Set<NodeId>` dependents, and so the
+    /// dirty-cone / freshness walks can propagate through ComputeNodes.
+    Compute(ComputeNodeId),
 }
 
 impl From<ValueCellId> for NodeId {
@@ -43,6 +48,12 @@ impl From<ResolutionNodeId> for NodeId {
     }
 }
 
+impl From<ComputeNodeId> for NodeId {
+    fn from(id: ComputeNodeId) -> Self {
+        NodeId::Compute(id)
+    }
+}
+
 impl fmt::Display for NodeId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -50,6 +61,7 @@ impl fmt::Display for NodeId {
             NodeId::Constraint(c) => c.fmt(f),
             NodeId::Realization(r) => r.fmt(f),
             NodeId::Resolution(s) => s.fmt(f),
+            NodeId::Compute(c) => c.fmt(f),
         }
     }
 }

@@ -106,6 +106,18 @@ impl DemandRegistry {
                         Vec::new()
                     }
                 }
+                NodeId::Compute(cnid) => {
+                    // P3.3: ComputeNode demand surfaces its declared
+                    // `value_inputs` into the VC-keyed backward BFS. The
+                    // `realization_inputs` are NOT VCs — they would need a
+                    // sibling Realization-keyed backward walk that does not
+                    // yet exist on this code path and is out of P3.3 scope.
+                    if let Some(cn) = graph.compute_nodes.get(cnid) {
+                        cn.value_inputs.clone()
+                    } else {
+                        Vec::new()
+                    }
+                }
             };
 
             // Convert dependencies to NodeId::Value and enqueue

@@ -2117,6 +2117,7 @@ impl Engine {
                             new_snapshot.graph.realizations.contains_key(rid)
                         }
                         NodeId::Resolution(_) => false, // TODO(resolution-diff)
+                        NodeId::Compute(cnid) => new_snapshot.graph.compute_nodes.contains_key(cnid),
                     };
                     if still_present {
                         dirty_cone.insert(dep.clone());
