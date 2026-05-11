@@ -827,6 +827,61 @@ mod tests {
         assert!(out.normals.is_none());
     }
 
+    // ── task 3362 step-1: SolverNotConverged regression via elasticity_morph_with_cg_opts ──
+
+    /// Regression guard for `SolverNotConverged` via `elasticity_morph_with_cg_opts`.
+    ///
+    /// Uses the same 4-tet cone fixture as
+    /// `elasticity_morph_with_rigid_translation_on_cone_*` (5 nodes, four
+    /// surface nodes a/b/c/d pinned to a rigid translation, interior node p
+    /// free). With `CgSolverOptions { max_iter: 1, tolerance: 1e-20 }`, a
+    /// single CG iteration cannot drive the relative residual below 1e-20 for
+    /// this 3-DOF post-Dirichlet system — guaranteed cap-out.
+    ///
+    /// Asserts `Err(ElasticityFailure::SolverNotConverged { iterations: 1 })`,
+    /// exercising the variant-construction path at elasticity.rs:221-223 with
+    /// a realistic (non-trivial) FEA system.
+    #[test]
+    fn elasticity_morph_with_cg_opts_drives_cg_to_capout_returns_solver_not_converged() {
+        let mesh = VolumeMesh {
+            vertices: vec![
+                0.0_f32, 0.0, 0.0, // 0: a
+                1.0, 0.0, 0.0, // 1: b
+                0.0, 1.0, 0.0, // 2: c
+                0.0, 0.0, 1.0, // 3: d
+                0.25, 0.25, 0.25, // 4: p (interior)
+            ],
+            tet_indices: vec![
+                0, 1, 2, 4, // a, b, c, p
+                0, 1, 3, 4, // a, b, d, p
+                0, 2, 3, 4, // a, c, d, p
+                1, 2, 3, 4, // b, c, d, p
+            ],
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+        let delta = [0.5_f64, 0.7, -0.3];
+        let prescribed = vec![
+            (0_u32, [0.0 + delta[0], 0.0 + delta[1], 0.0 + delta[2]]),
+            (1, [1.0 + delta[0], 0.0 + delta[1], 0.0 + delta[2]]),
+            (2, [0.0 + delta[0], 1.0 + delta[1], 0.0 + delta[2]]),
+            (3, [0.0 + delta[0], 0.0 + delta[1], 1.0 + delta[2]]),
+        ];
+
+        let result = elasticity_morph_with_cg_opts(
+            &mesh,
+            &prescribed,
+            &crate::MorphOptions::default(),
+            CgSolverOptions { tolerance: 1e-20, max_iter: 1 },
+        );
+        match result {
+            Err(ElasticityFailure::SolverNotConverged { iterations }) => {
+                assert_eq!(iterations, 1, "expected iterations == 1 (max_iter), got {iterations}");
+            }
+            other => panic!("expected Err(SolverNotConverged {{ iterations: 1 }}), got: {other:?}"),
+        }
+    }
+
     // ── Step-3: P2 element order rejection ────────────────────────────────────
 
     /// P2 element order must be rejected with
