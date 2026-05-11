@@ -2860,6 +2860,58 @@ pub structure Outer {
         );
     }
 
+    /// `try_emit_cross_sub_geometry` must panic (not silently fall back) when
+    /// `sub_realization_names` contains an entry for a sub but `sub_component_types`
+    /// does not — in **all** build modes (debug and release).
+    ///
+    /// ## What this test pins
+    ///
+    /// `.expect("…task-3420…")` enforces the `sub_realization_names ⊂
+    /// sub_component_types` invariant in both debug and release, unlike the
+    /// previous `debug_assert!` + `.unwrap_or(sub_name)` combination which only
+    /// caught violations in debug builds and silently mis-named the child structure
+    /// in release.
+    ///
+    /// ## Why this test is NOT `#[cfg(debug_assertions)]`-gated
+    ///
+    /// The explicit goal of task-3431 is to make the enforcement active in **release**
+    /// builds too. Gating the test on `debug_assertions` would only verify debug-only
+    /// behavior — exactly the gap this task closes. Omitting the gate ensures the
+    /// `#[should_panic]` assertion is checked in both profiles.
+    ///
+    /// ## Why this test calls `try_emit_cross_sub_geometry` directly
+    ///
+    /// The invariant-violating state (a sub in `sub_realization_names` with no
+    /// corresponding entry in `sub_component_types`) is unreachable via the public
+    /// compile API — `entity.rs` always populates both maps together. The helper
+    /// must be called directly to reach the panicking code path.
+    ///
+    /// ## Why `expected = "task-3420"` rather than the full panic message
+    ///
+    /// The stable reference tag `"task-3420"` is baked into the `.expect()` argument
+    /// and is unlikely to change during future rewordings of the prose. Coupling only
+    /// to the tag minimises test-maintenance churn while still verifying the correct
+    /// code site panicked.
+    #[test]
+    #[should_panic(expected = "task-3420")]
+    fn try_emit_cross_sub_geometry_panics_on_invariant_violation_in_all_builds() {
+        use std::collections::BTreeSet;
+        let mut scope = CompilationScope::new("Outer");
+        // Populate sub_realization_names["inner"] = {"body"} but deliberately leave
+        // sub_component_types empty — this violates the invariant and must panic.
+        scope
+            .sub_realization_names
+            .insert("inner".to_string(), BTreeSet::from(["body".to_string()]));
+        // sub_component_types intentionally not populated.
+        try_emit_cross_sub_geometry(
+            &scope,
+            "inner",
+            "body",
+            reify_types::SourceSpan::prelude(),
+            &mut Vec::new(),
+        );
+    }
+
     /// `resolve_cluster_inner_member` must NOT panic when called with an empty
     /// `per_arm` slice (review-cycle-1 robustness fix; task 2373 step-21/22).
     ///
