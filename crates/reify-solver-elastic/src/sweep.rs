@@ -594,6 +594,55 @@ mod tests {
         assert!(matches!(r, Err(SweepError::DegenerateMagnitude)), "got: {r:?}");
     }
 
+    // step-9: Extrude single CCW unit-triangle, K=1
+
+    #[test]
+    fn extrude_unit_triangle_k1() {
+        let mesh2d = unit_triangle();
+        let params = SweepParams::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: 0.5,
+        };
+        let mesh = sweep_2d_mesh_to_3d(&mesh2d, &params, 1).expect("should succeed");
+
+        assert_eq!(mesh.layers, 1);
+        // 2 layers × 3 base verts × 3 coords = 18
+        assert_eq!(mesh.vertices.len(), 18, "vertices.len()");
+
+        // Bottom layer at z=0
+        let eps = 1e-6_f32;
+        // node 0: (0,0,0)
+        assert!((mesh.vertices[0] - 0.0).abs() < eps);
+        assert!((mesh.vertices[1] - 0.0).abs() < eps);
+        assert!((mesh.vertices[2] - 0.0).abs() < eps);
+        // node 1: (1,0,0)
+        assert!((mesh.vertices[3] - 1.0).abs() < eps);
+        assert!((mesh.vertices[4] - 0.0).abs() < eps);
+        assert!((mesh.vertices[5] - 0.0).abs() < eps);
+        // node 2: (0,1,0)
+        assert!((mesh.vertices[6] - 0.0).abs() < eps);
+        assert!((mesh.vertices[7] - 1.0).abs() < eps);
+        assert!((mesh.vertices[8] - 0.0).abs() < eps);
+
+        // Top layer at z=0.5
+        // node 3: (0,0,0.5)
+        assert!((mesh.vertices[9] - 0.0).abs() < eps);
+        assert!((mesh.vertices[10] - 0.0).abs() < eps);
+        assert!((mesh.vertices[11] - 0.5).abs() < eps);
+        // node 5: (0,1,0.5)
+        assert!((mesh.vertices[15] - 0.0).abs() < eps);
+        assert!((mesh.vertices[16] - 1.0).abs() < eps);
+        assert!((mesh.vertices[17] - 0.5).abs() < eps);
+
+        // Connectivity: one wedge [0,1,2, 3,4,5]
+        match &mesh.connectivity {
+            SweptConnectivity::Wedge { indices } => {
+                assert_eq!(indices, &vec![0_u32, 1, 2, 3, 4, 5]);
+            }
+            other => panic!("expected Wedge, got {other:?}"),
+        }
+    }
+
     // step-5: check_sweep_through_thickness unit tests
 
     #[test]
