@@ -35,6 +35,7 @@ pub mod realization_cache;
 pub mod snapshot;
 pub mod source_location;
 pub use source_location::resolve_entity_source_location;
+pub use source_location::resolve_entity_at_source_position;
 pub mod field_import_provenance;
 pub mod morph_stage_b;
 pub(crate) mod engine_hash_algo;

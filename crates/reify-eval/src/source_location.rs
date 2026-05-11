@@ -18,6 +18,141 @@
 use reify_compiler::CompiledModule;
 use reify_types::SourceLocationInfo;
 
+/// Resolve the entity (and optionally member) at a given 1-based `(line, col)`
+/// source position within `source`.
+///
+/// Uses the compiled module's value-cell spans to approximate each template's
+/// source range (`[min(cell.span.start), max(cell.span.end))`).  Within the
+/// matching template, narrows to the smallest value cell whose span contains
+/// the offset.
+///
+/// Returns:
+/// - `Some("Entity.member")` when the cursor is inside a value cell's span.
+/// - `Some("Entity")` when the cursor is inside the template's approximate
+///   span but outside any specific value cell (e.g. a constraint line).
+/// - `None` when `line` or `col` is 0, when the position is outside every
+///   template's approximate span, or when the position is past the end of
+///   `source`.
+pub fn resolve_entity_at_source_position(
+    compiled: &CompiledModule,
+    source: &str,
+    line: u32,
+    col: u32,
+) -> Option<String> {
+    // 1-based coordinate guard: zero line or col is out-of-range.
+    if line == 0 || col == 0 {
+        return None;
+    }
+
+    // Convert (line, col) → byte offset using a simple newline walk.
+    let offset = line_col_to_byte_offset(source, line, col)?;
+
+    // Walk templates and find the one whose approximate span contains the offset.
+    //
+    // The approximate span is derived from the union of all member spans:
+    // value_cells, constraints, realizations, and sub_components.  This covers
+    // positions in constraint lines, geometry body cells, and sub-component
+    // declarations — all of which live inside the structure body but may fall
+    // between value-cell spans.
+    //
+    // The approximation is [min(all_member.span.start), max(all_member.span.end)).
+    // Templates with no spanned members are skipped.
+    let mut best_template: Option<&reify_compiler::TopologyTemplate> = None;
+    let mut best_span_size = usize::MAX;
+
+    for template in &compiled.templates {
+        // Collect span bounds from all member kinds that carry source spans.
+        let mut min_start = usize::MAX;
+        let mut max_end = 0usize;
+
+        for vc in &template.value_cells {
+            min_start = min_start.min(vc.span.start as usize);
+            max_end = max_end.max(vc.span.end as usize);
+        }
+        for c in &template.constraints {
+            min_start = min_start.min(c.span.start as usize);
+            max_end = max_end.max(c.span.end as usize);
+        }
+        for r in &template.realizations {
+            min_start = min_start.min(r.span.start as usize);
+            max_end = max_end.max(r.span.end as usize);
+        }
+        for sc in &template.sub_components {
+            min_start = min_start.min(sc.span.start as usize);
+            max_end = max_end.max(sc.span.end as usize);
+        }
+
+        if min_start == usize::MAX {
+            // No spanned members — skip this template.
+            continue;
+        }
+
+        if offset >= min_start && offset < max_end {
+            let size = max_end - min_start;
+            if size < best_span_size {
+                best_template = Some(template);
+                best_span_size = size;
+            }
+        }
+    }
+
+    let template = best_template?;
+
+    // Within this template, find the value cell whose span contains the offset.
+    // Span is a half-open interval [start, end): start ≤ offset < end.
+    let matching_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| offset >= vc.span.start as usize && offset < vc.span.end as usize);
+
+    if let Some(cell) = matching_cell {
+        Some(format!("{}.{}", template.name, cell.id.member))
+    } else {
+        Some(template.name.clone())
+    }
+}
+
+/// Convert a 1-based `(line, col)` pair to a byte offset by walking the source
+/// character by character.
+///
+/// Returns `None` when `line` exceeds the number of lines in `source`, or when
+/// `col` exceeds the length of the target line (col is clamped to line end).
+/// Returns `Some(source.len())` only when `line` exactly equals the number of
+/// lines + 1 (i.e., one past the end), matching the behaviour of
+/// `line_col_to_byte_offset_with_offsets`.
+fn line_col_to_byte_offset(source: &str, line: u32, col: u32) -> Option<usize> {
+    debug_assert!(line > 0 && col > 0, "caller must guard zero inputs");
+
+    let mut cur_line = 1u32;
+    let mut cur_col = 1u32;
+
+    for (i, ch) in source.char_indices() {
+        if cur_line == line && cur_col == col {
+            return Some(i);
+        }
+        if cur_line > line {
+            // We have passed the target line without matching — col was past end.
+            // Clamp: return the byte just before the newline that ended the line.
+            return Some(i);
+        }
+        if ch == '\n' {
+            cur_line += 1;
+            cur_col = 1;
+        } else {
+            cur_col += 1;
+        }
+    }
+
+    // We reached the end of the source.  Two cases:
+    // 1. We are exactly at (line, col) at the end of source → return source.len().
+    // 2. line > cur_line → position is past end of source → return None.
+    if cur_line == line && cur_col == col {
+        Some(source.len())
+    } else {
+        None
+    }
+}
+
 /// Resolve source location for `entity_path` against `compiled`.
 ///
 /// Accepts two forms:
@@ -82,7 +217,7 @@ pub fn resolve_entity_source_location(
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_entity_source_location;
+    use super::{resolve_entity_source_location, resolve_entity_at_source_position};
     use reify_types::ModulePath;
 
     /// Build a CompiledModule from bracket_source() using the stdlib pipeline.
@@ -248,5 +383,134 @@ mod tests {
                 loc
             );
         }
+    }
+
+    // ---- resolve_entity_at_source_position tests ----
+
+    // (a) cursor mid-"width" identifier → Some("Bracket.width")
+    //     bracket_source() line 2: "    param width: Scalar = 80mm"
+    //     col 11 (1-based) = 'w' in "width" — inside the width cell span.
+    #[test]
+    fn entity_at_source_position_width_cell_returns_bracket_width() {
+        let compiled = bracket_compiled();
+        let source = reify_test_support::bracket_source();
+        let result = resolve_entity_at_source_position(&compiled, source, 2, 11);
+        assert_eq!(
+            result,
+            Some("Bracket.width".to_string()),
+            "cursor at (2, 11) should resolve to Bracket.width"
+        );
+    }
+
+    // (b) cursor mid-"thickness" identifier → Some("Bracket.thickness")
+    //     bracket_source() line 4: "    param thickness: Scalar = 5mm"
+    //     col 11 (1-based) = 't' in "thickness" — inside the thickness cell span.
+    #[test]
+    fn entity_at_source_position_thickness_cell_returns_bracket_thickness() {
+        let compiled = bracket_compiled();
+        let source = reify_test_support::bracket_source();
+        let result = resolve_entity_at_source_position(&compiled, source, 4, 11);
+        assert_eq!(
+            result,
+            Some("Bracket.thickness".to_string()),
+            "cursor at (4, 11) should resolve to Bracket.thickness"
+        );
+    }
+
+    // (c) cursor on a constraint line (inside structure body, outside any value cell)
+    //     → Some("Bracket").
+    //     bracket_source() line 10: "    constraint thickness > 2mm"
+    //     col 5 is 'c' in "constraint" — inside Bracket's approximate span (between
+    //     the first and last value cell spans) but not within any value cell.
+    #[test]
+    fn entity_at_source_position_constraint_line_returns_template_name() {
+        let compiled = bracket_compiled();
+        let source = reify_test_support::bracket_source();
+        let result = resolve_entity_at_source_position(&compiled, source, 10, 5);
+        assert_eq!(
+            result,
+            Some("Bracket".to_string()),
+            "cursor on constraint line at (10, 5) should resolve to Bracket (template name)"
+        );
+    }
+
+    // (d) cursor before any value cell (line 16, col 1) → None.
+    //     bracket_source() has 15 lines; line 16 is past the end of the source.
+    //     The resulting byte offset equals source.len(), which is outside every
+    //     template's approximate span → None.
+    #[test]
+    fn entity_at_source_position_past_end_of_source_returns_none() {
+        let compiled = bracket_compiled();
+        let source = reify_test_support::bracket_source();
+        let result = resolve_entity_at_source_position(&compiled, source, 16, 1);
+        assert!(
+            result.is_none(),
+            "cursor past end of source at (16, 1) should return None, got {:?}",
+            result
+        );
+    }
+
+    // (e) zero line or zero col → None.
+    //     Both are documented out-of-range guards (1-based coordinate system).
+    #[test]
+    fn entity_at_source_position_zero_line_or_col_returns_none() {
+        let compiled = bracket_compiled();
+        let source = reify_test_support::bracket_source();
+        assert!(
+            resolve_entity_at_source_position(&compiled, source, 0, 1).is_none(),
+            "zero line should return None"
+        );
+        assert!(
+            resolve_entity_at_source_position(&compiled, source, 1, 0).is_none(),
+            "zero col should return None"
+        );
+        assert!(
+            resolve_entity_at_source_position(&compiled, source, 0, 0).is_none(),
+            "zero line and col should return None"
+        );
+    }
+
+    // (f) cursor at exact start byte of the width cell span → Some("Bracket.width").
+    //     Uses the forward lookup to obtain (line, col) of span.start and verifies
+    //     the reverse function returns the same cell.
+    #[test]
+    fn entity_at_source_position_at_cell_span_start_returns_cell() {
+        let compiled = bracket_compiled();
+        let source = reify_test_support::bracket_source();
+        let loc = resolve_entity_source_location(&compiled, source, "bracket.ri", "Bracket.width")
+            .expect("forward lookup for Bracket.width must succeed");
+        // loc.line and loc.column are 1-based and map to span.start of width cell.
+        let result =
+            resolve_entity_at_source_position(&compiled, source, loc.line, loc.column);
+        assert_eq!(
+            result,
+            Some("Bracket.width".to_string()),
+            "cursor at span.start (line={}, col={}) should resolve to Bracket.width",
+            loc.line,
+            loc.column
+        );
+    }
+
+    // (g) cursor at end byte (exclusive) of the width cell span → NOT "Bracket.width".
+    //     The end byte is exclusive: the cursor sits in the gap between cells (or in
+    //     the next cell's space), but never inside the width cell itself.
+    //     Per plan: "returns the enclosing template, not the cell."
+    #[test]
+    fn entity_at_source_position_at_cell_span_end_does_not_return_that_cell() {
+        let compiled = bracket_compiled();
+        let source = reify_test_support::bracket_source();
+        let loc = resolve_entity_source_location(&compiled, source, "bracket.ri", "Bracket.width")
+            .expect("forward lookup for Bracket.width must succeed");
+        // loc.end_line and loc.end_col map to span.end (exclusive upper bound).
+        let result =
+            resolve_entity_at_source_position(&compiled, source, loc.end_line, loc.end_column);
+        // Must NOT return the width cell — the position at span.end is outside it.
+        assert_ne!(
+            result,
+            Some("Bracket.width".to_string()),
+            "cursor at span.end (exclusive) (line={}, col={}) must NOT resolve to Bracket.width",
+            loc.end_line,
+            loc.end_column
+        );
     }
 }
