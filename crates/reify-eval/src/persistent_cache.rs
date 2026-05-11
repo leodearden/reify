@@ -2616,6 +2616,69 @@ mod tests {
         assert_eq!(hit2, Some(original), "phase 2: read must succeed even if sidecar was pre-deleted");
     }
 
+    /// Helper: write a raw CacheEntryHeader (and nothing else) to the .bin path
+    /// for a given key in `root`. The caller controls the header fields, allowing
+    /// sub-tests to inject mismatched echoes or other corruption.
+    fn write_raw_header_to_bin(
+        root: &Path,
+        eng: &str,
+        inp: &str,
+        header: &CacheEntryHeader,
+    ) {
+        let sd = shard_dir(root, eng, inp);
+        std::fs::create_dir_all(&sd).unwrap();
+        let mut f = std::fs::File::create(entry_bin_path(root, eng, inp)).unwrap();
+        header.write_to(&mut f).unwrap();
+    }
+
+    #[test]
+    fn read_entry_returns_ok_none_when_header_echo_fields_do_not_match_path_components() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // Sub-scenario (a): engine_version_hash echo is wrong.
+        {
+            let eng = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1";
+            let inp = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb22";
+            let wrong_engine_bytes = *b"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz";
+            let h = CacheEntryHeader {
+                format_version: ENTRY_FORMAT_VERSION,
+                engine_version_hash: wrong_engine_bytes,
+                input_hash: *inp.as_bytes().first_chunk::<32>().unwrap(),
+                solve_time_ms: 0,
+                byte_size: 0,
+                written_at: 0,
+            };
+            write_raw_header_to_bin(root, eng, inp, &h);
+            let result = read_entry::<ElasticResult>(root, eng, inp).unwrap();
+            assert_eq!(
+                result, None,
+                "engine_version_hash echo mismatch must be treated as cache miss"
+            );
+        }
+
+        // Sub-scenario (b): input_hash echo is wrong.
+        {
+            let eng = "cccccccccccccccccccccccccccccc33";
+            let inp = "dddddddddddddddddddddddddddddd44";
+            let wrong_input_bytes = *b"yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy";
+            let h = CacheEntryHeader {
+                format_version: ENTRY_FORMAT_VERSION,
+                engine_version_hash: *eng.as_bytes().first_chunk::<32>().unwrap(),
+                input_hash: wrong_input_bytes,
+                solve_time_ms: 0,
+                byte_size: 0,
+                written_at: 0,
+            };
+            write_raw_header_to_bin(root, eng, inp, &h);
+            let result = read_entry::<ElasticResult>(root, eng, inp).unwrap();
+            assert_eq!(
+                result, None,
+                "input_hash echo mismatch must be treated as cache miss"
+            );
+        }
+    }
+
     #[test]
     fn read_entry_returns_ok_none_when_header_format_version_does_not_match_expected() {
         let tmp = tempfile::TempDir::new().unwrap();
