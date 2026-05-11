@@ -81,18 +81,20 @@ export function createEditorSelectionSync(opts: EditorSelectionSyncOptions): voi
     // the setTimeout callback so the cross-input race guard treats the entire
     // request lifetime — debounce window AND in-flight bridge call — as the
     // protected window during which any non-editor mutation wins.
+    // Refreshed on every cursor-change re-run, so a viewport click followed by
+    // another cursor move resets the snapshot and lets the editor win.
     const selectionAtCursorChange = untrack(() => selectionStore.state.selectedEntity);
 
     timerId = setTimeout(async () => {
       timerId = null;
-      // Capture (do not increment) the current token before the await
-      const token = latestRequestToken;
 
       // Early-exit: if selection changed during the debounce window, the bridge
       // result will be discarded anyway by the cross-input race guard — skip the
       // round-trip entirely.
       if (untrack(() => selectionStore.state.selectedEntity) !== selectionAtCursorChange) return;
 
+      // Capture (do not increment) the current token before the await
+      const token = latestRequestToken;
       const result = await getEntityAtSourceLocation(line, column);
 
       // Discard stale results: a newer cursor-move fired while this was in flight
