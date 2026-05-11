@@ -904,7 +904,23 @@ pub fn read_entry<V: PersistentlyCacheable>(
         return Ok(None);
     }
 
-    let value = V::deserialize_from_reader(&mut f)?;
+    // Body-decode errors (bad zstd frame, truncated slab, bincode schema drift)
+    // are treated as cache miss per PRD corruption-recovery policy. Only genuine
+    // I/O infrastructure errors before the header read (e.g. EACCES on file open)
+    // surface as Err — those are not corruption, they are infrastructure problems.
+    let value = match V::deserialize_from_reader(&mut f) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(
+                ?e,
+                cache_root = %cache_root.display(),
+                engine_version_hash,
+                input_hash,
+                "cache entry rejected: body decode failed (treating as miss)"
+            );
+            return Ok(None);
+        }
+    };
 
     // Update the sidecar mtime as the LRU last-access signal. touch_sidecar
     // already absorbs NotFound as Ok(()) (handles the GC-evicts-between-read-
