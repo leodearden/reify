@@ -288,18 +288,16 @@ pub fn elasticity_morph_with_cg_opts(
         // The single shared IsotropicElastic from task #7 is replaced by a
         // per-tet construct; only E changes per element, ν stays uniform.
         //
-        // For `Uniform`, bypass per-element geometry entirely — zero extra
-        // computation cost, bit-identical to the task-#7 baseline. For the
-        // spatially-varying rules, compute element-local E from tet geometry.
-        let e_e = if options.stiffness_rule == StiffnessRule::Uniform {
-            options.fictitious_youngs_modulus_base
-        } else {
-            per_element_youngs_modulus(
-                options.stiffness_rule,
-                &phys,
-                options.fictitious_youngs_modulus_base,
-            )
-        };
+        // The dispatch is unconditional: per_element_youngs_modulus (#[inline])
+        // handles all three rules including `Uniform → e_base` via its match
+        // arm (a single-instruction return, zero extra computation). The no-op-
+        // for-Uniform property is pinned by the task-3422 unit test
+        // `per_element_youngs_modulus_with_uniform_rule_returns_e_base_unchanged_regardless_of_geometry`.
+        let e_e = per_element_youngs_modulus(
+            options.stiffness_rule,
+            &phys,
+            options.fictitious_youngs_modulus_base,
+        );
         let material_e = IsotropicElastic {
             youngs_modulus: e_e,
             poisson_ratio: options.fictitious_poisson_ratio,
