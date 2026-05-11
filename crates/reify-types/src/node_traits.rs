@@ -234,9 +234,7 @@ impl NodeArchKind {
             NodeArchKind::RealizationNode => {
                 NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE)
             }
-            NodeArchKind::ComputeNode => {
-                NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE)
-            }
+            NodeArchKind::ComputeNode => NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE),
             NodeArchKind::ConstraintNode => NodeTraits::empty(),
         }
     }

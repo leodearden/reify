@@ -15,7 +15,11 @@ fn parse_module(source: &str) -> ParsedModule {
 fn parse_bare_module_pragma() {
     let source = "#optimize\nstructure S { param x: Real }";
     let module = parse_module(source);
-    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert!(
+        module.errors.is_empty(),
+        "parse errors: {:?}",
+        module.errors
+    );
     assert_eq!(
         module.pragmas.len(),
         1,
@@ -36,12 +40,21 @@ fn parse_bare_module_pragma() {
 fn parse_bare_value_pragma_args() {
     let source = "#feature(sse2, avx)\nstructure S {}";
     let module = parse_module(source);
-    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert!(
+        module.errors.is_empty(),
+        "parse errors: {:?}",
+        module.errors
+    );
     assert_eq!(module.pragmas.len(), 1, "expected 1 pragma");
 
     let pragma = &module.pragmas[0];
     assert_eq!(pragma.name, "feature");
-    assert_eq!(pragma.args.len(), 2, "expected 2 args, got {:?}", pragma.args);
+    assert_eq!(
+        pragma.args.len(),
+        2,
+        "expected 2 args, got {:?}",
+        pragma.args
+    );
 
     match &pragma.args[0] {
         PragmaArg::Bare(PragmaValue::Ident(s)) => assert_eq!(s, "sse2"),
@@ -60,12 +73,21 @@ fn parse_bare_value_pragma_args() {
 fn parse_mixed_pragma_args() {
     let source = "#config(debug, level=2, name=\"prod\")\nstructure S {}";
     let module = parse_module(source);
-    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert!(
+        module.errors.is_empty(),
+        "parse errors: {:?}",
+        module.errors
+    );
     assert_eq!(module.pragmas.len(), 1, "expected 1 pragma");
 
     let pragma = &module.pragmas[0];
     assert_eq!(pragma.name, "config");
-    assert_eq!(pragma.args.len(), 3, "expected 3 args, got {:?}", pragma.args);
+    assert_eq!(
+        pragma.args.len(),
+        3,
+        "expected 3 args, got {:?}",
+        pragma.args
+    );
 
     match &pragma.args[0] {
         PragmaArg::Bare(PragmaValue::Ident(s)) => assert_eq!(s, "debug"),
@@ -95,7 +117,11 @@ fn parse_mixed_pragma_args() {
 fn parse_multiple_module_pragmas() {
     let source = "#optimize\n#config(level=3)\nstructure S {}";
     let module = parse_module(source);
-    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert!(
+        module.errors.is_empty(),
+        "parse errors: {:?}",
+        module.errors
+    );
     assert_eq!(
         module.pragmas.len(),
         2,
@@ -114,7 +140,11 @@ fn parse_multiple_module_pragmas() {
 fn parse_block_pragma_in_structure() {
     let source = "structure S { #internal\nparam x: Real }";
     let module = parse_module(source);
-    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert!(
+        module.errors.is_empty(),
+        "parse errors: {:?}",
+        module.errors
+    );
 
     // Module-level pragmas should be empty
     assert!(
@@ -147,8 +177,15 @@ fn parse_block_pragma_in_structure() {
 fn parse_block_pragma_in_occurrence() {
     let source = "occurrence P { #temporal\nparam t: Real }";
     let module = parse_module(source);
-    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
-    assert!(module.pragmas.is_empty(), "expected no module-level pragmas");
+    assert!(
+        module.errors.is_empty(),
+        "parse errors: {:?}",
+        module.errors
+    );
+    assert!(
+        module.pragmas.is_empty(),
+        "expected no module-level pragmas"
+    );
 
     let p = module.declarations.iter().find_map(|d| {
         if let reify_syntax::Declaration::Occurrence(p) = d {
@@ -173,8 +210,15 @@ fn parse_block_pragma_in_occurrence() {
 fn parse_block_pragma_in_trait() {
     let source = "trait R { #required\nparam mass: Real }";
     let module = parse_module(source);
-    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
-    assert!(module.pragmas.is_empty(), "expected no module-level pragmas");
+    assert!(
+        module.errors.is_empty(),
+        "parse errors: {:?}",
+        module.errors
+    );
+    assert!(
+        module.pragmas.is_empty(),
+        "expected no module-level pragmas"
+    );
 
     let r = module.declarations.iter().find_map(|d| {
         if let reify_syntax::Declaration::Trait(r) = d {
@@ -199,7 +243,11 @@ fn parse_block_pragma_in_trait() {
 fn parse_pragma_scoping_isolation() {
     let source = "#module_level\nstructure S { #block_level\nparam x: Real }";
     let module = parse_module(source);
-    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert!(
+        module.errors.is_empty(),
+        "parse errors: {:?}",
+        module.errors
+    );
 
     // Module-level pragma: only "module_level"
     assert_eq!(
@@ -234,12 +282,21 @@ fn parse_pragma_scoping_isolation() {
 fn parse_pragma_bool_and_number_values() {
     let source = "#feature(enabled=true, count=42)\nstructure S {}";
     let module = parse_module(source);
-    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert!(
+        module.errors.is_empty(),
+        "parse errors: {:?}",
+        module.errors
+    );
     assert_eq!(module.pragmas.len(), 1, "expected 1 pragma");
 
     let pragma = &module.pragmas[0];
     assert_eq!(pragma.name, "feature");
-    assert_eq!(pragma.args.len(), 2, "expected 2 args, got {:?}", pragma.args);
+    assert_eq!(
+        pragma.args.len(),
+        2,
+        "expected 2 args, got {:?}",
+        pragma.args
+    );
 
     match &pragma.args[0] {
         PragmaArg::KeyValue { key, value } => {
@@ -264,7 +321,11 @@ fn parse_pragma_bool_and_number_values() {
 fn parse_block_pragma_in_purpose() {
     let source = "purpose Optimize(s : Structure) { #solver\nconstraint s.x > 0 }";
     let module = parse_module(source);
-    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert!(
+        module.errors.is_empty(),
+        "parse errors: {:?}",
+        module.errors
+    );
 
     // Module-level pragmas should be empty
     assert!(
@@ -301,7 +362,11 @@ fn parse_block_pragma_in_purpose() {
 fn parse_block_pragma_in_constraint() {
     let source = "constraint def Positive { #validate\nparam x: Real\nx > 0 }";
     let module = parse_module(source);
-    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert!(
+        module.errors.is_empty(),
+        "parse errors: {:?}",
+        module.errors
+    );
 
     // Module-level pragmas should be empty
     assert!(
@@ -338,12 +403,21 @@ fn parse_block_pragma_in_constraint() {
 fn parse_pragma_with_quantity_metres_value() {
     let source = "#precision(0.001m)\nstructure S {}";
     let module = parse_module(source);
-    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert!(
+        module.errors.is_empty(),
+        "parse errors: {:?}",
+        module.errors
+    );
     assert_eq!(module.pragmas.len(), 1, "expected 1 pragma");
 
     let pragma = &module.pragmas[0];
     assert_eq!(pragma.name, "precision");
-    assert_eq!(pragma.args.len(), 1, "expected 1 arg, got {:?}", pragma.args);
+    assert_eq!(
+        pragma.args.len(),
+        1,
+        "expected 1 arg, got {:?}",
+        pragma.args
+    );
 
     match &pragma.args[0] {
         PragmaArg::Bare(PragmaValue::Quantity { value, unit }) => {
@@ -358,12 +432,21 @@ fn parse_pragma_with_quantity_metres_value() {
 fn parse_pragma_with_quantity_mm_value() {
     let source = "#precision(1mm)\nstructure S {}";
     let module = parse_module(source);
-    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert!(
+        module.errors.is_empty(),
+        "parse errors: {:?}",
+        module.errors
+    );
     assert_eq!(module.pragmas.len(), 1, "expected 1 pragma");
 
     let pragma = &module.pragmas[0];
     assert_eq!(pragma.name, "precision");
-    assert_eq!(pragma.args.len(), 1, "expected 1 arg, got {:?}", pragma.args);
+    assert_eq!(
+        pragma.args.len(),
+        1,
+        "expected 1 arg, got {:?}",
+        pragma.args
+    );
 
     match &pragma.args[0] {
         PragmaArg::Bare(PragmaValue::Quantity { value, unit }) => {
@@ -380,12 +463,21 @@ fn parse_pragma_with_quantity_mm_value() {
 fn parse_key_value_pragma_args() {
     let source = "#config(level=3, name=\"test\")\nstructure S {}";
     let module = parse_module(source);
-    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert!(
+        module.errors.is_empty(),
+        "parse errors: {:?}",
+        module.errors
+    );
     assert_eq!(module.pragmas.len(), 1, "expected 1 pragma");
 
     let pragma = &module.pragmas[0];
     assert_eq!(pragma.name, "config");
-    assert_eq!(pragma.args.len(), 2, "expected 2 args, got {:?}", pragma.args);
+    assert_eq!(
+        pragma.args.len(),
+        2,
+        "expected 2 args, got {:?}",
+        pragma.args
+    );
 
     // First arg: level=3
     match &pragma.args[0] {

@@ -401,7 +401,9 @@ fn no_prelude_on_structure_emits_module_only_warning() {
         warnings_only(&module)
     );
     assert!(
-        warns.iter().any(|d| d.message.contains("only valid at module level")),
+        warns
+            .iter()
+            .any(|d| d.message.contains("only valid at module level")),
         "expected warning to mention 'only valid at module level', got: {:?}",
         warns
     );
@@ -445,12 +447,20 @@ fn module_pragma_change_changes_module_content_hash() {
 
     let source_a = "#precision(value=32)\nstructure S { param x : Real }";
     let parsed_a = reify_syntax::parse(source_a, path.clone());
-    assert!(parsed_a.errors.is_empty(), "parse errors in a: {:?}", parsed_a.errors);
+    assert!(
+        parsed_a.errors.is_empty(),
+        "parse errors in a: {:?}",
+        parsed_a.errors
+    );
     let compiled_a = reify_compiler::compile(&parsed_a);
 
     let source_b = "#precision(value=64)\nstructure S { param x : Real }";
     let parsed_b = reify_syntax::parse(source_b, path.clone());
-    assert!(parsed_b.errors.is_empty(), "parse errors in b: {:?}", parsed_b.errors);
+    assert!(
+        parsed_b.errors.is_empty(),
+        "parse errors in b: {:?}",
+        parsed_b.errors
+    );
     let compiled_b = reify_compiler::compile(&parsed_b);
 
     assert_ne!(
@@ -486,12 +496,20 @@ fn block_pragma_change_changes_module_content_hash() {
 
     let source_a = "structure S { #precision(bits=32) param x : Real }";
     let parsed_a = reify_syntax::parse(source_a, path.clone());
-    assert!(parsed_a.errors.is_empty(), "parse errors in a: {:?}", parsed_a.errors);
+    assert!(
+        parsed_a.errors.is_empty(),
+        "parse errors in a: {:?}",
+        parsed_a.errors
+    );
     let compiled_a = reify_compiler::compile(&parsed_a);
 
     let source_b = "structure S { #precision(bits=64) param x : Real }";
     let parsed_b = reify_syntax::parse(source_b, path.clone());
-    assert!(parsed_b.errors.is_empty(), "parse errors in b: {:?}", parsed_b.errors);
+    assert!(
+        parsed_b.errors.is_empty(),
+        "parse errors in b: {:?}",
+        parsed_b.errors
+    );
     let compiled_b = reify_compiler::compile(&parsed_b);
 
     assert_ne!(
@@ -586,8 +604,7 @@ structure S { param x : Real }"#,
 /// No implementation change needed — this guards existing behavior.
 #[test]
 fn occurrence_pragma_propagated_to_topology_template() {
-    let module =
-        compile_source(r#"occurrence def O { #solver(backend="ipopt") param x : Real }"#);
+    let module = compile_source(r#"occurrence def O { #solver(backend="ipopt") param x : Real }"#);
     assert!(
         errors_only(&module).is_empty(),
         "unexpected errors: {:?}",
@@ -634,8 +651,7 @@ fn occurrence_pragma_propagated_to_topology_template() {
 /// no_prelude_suppresses_stdlib_units) with a storage assertion. Guards ctx.rs:161.
 #[test]
 fn no_prelude_is_stored_on_compiled_module_pragmas() {
-    let module =
-        compile_source_with_stdlib("#no_prelude\nstructure S { param x : Real = 1.0 }");
+    let module = compile_source_with_stdlib("#no_prelude\nstructure S { param x : Real = 1.0 }");
     assert!(
         module.pragmas.iter().any(|p| p.name == "no_prelude"),
         "expected #no_prelude in module.pragmas, got: {:?}",
@@ -713,9 +729,8 @@ fn precision_pragma_with_cm_unit_converts_to_metres() {
 /// exactly one warning indicating it is ignored.
 #[test]
 fn multiple_module_level_precision_pragmas_first_wins() {
-    let module = compile_source(
-        "#precision(0.001m)\n#precision(0.002m)\nstructure S { param x : Real }",
-    );
+    let module =
+        compile_source("#precision(0.001m)\n#precision(0.002m)\nstructure S { param x : Real }");
     assert!(
         errors_only(&module).is_empty(),
         "unexpected errors: {:?}",
@@ -756,9 +771,8 @@ fn multiple_module_level_precision_pragmas_first_wins() {
 /// a duplicate ("subsequent #precision pragma ignored; first one wins").
 #[test]
 fn malformed_then_valid_precision_pragmas_recover() {
-    let module = compile_source(
-        "#precision(0.001s)\n#precision(0.001m)\nstructure S { param x : Real }",
-    );
+    let module =
+        compile_source("#precision(0.001s)\n#precision(0.001m)\nstructure S { param x : Real }");
 
     // (a) The well-formed second pragma must be stored.
     assert_eq!(
@@ -939,9 +953,7 @@ fn precision_pragma_with_keyvalue_arg_warns_unrecognised_form() {
 
 /// Helper: filter warnings that match the block-level "deferred to v0.2"
 /// shape — message contains "ignored in v0.1" AND ("v0.2" OR "per-block").
-fn deferred_v02_warnings(
-    module: &reify_compiler::CompiledModule,
-) -> Vec<&reify_types::Diagnostic> {
+fn deferred_v02_warnings(module: &reify_compiler::CompiledModule) -> Vec<&reify_types::Diagnostic> {
     warnings_only(module)
         .into_iter()
         .filter(|d| {
@@ -1106,8 +1118,7 @@ fn precision_pragma_with_zero_args_warns_and_does_not_set_tolerance() {
 /// single-Quantity arm above it.
 #[test]
 fn precision_pragma_with_multiple_args_warns_and_does_not_set_tolerance() {
-    let module =
-        compile_source("#precision(0.001m, 0.002m)\nstructure S { param x : Real }");
+    let module = compile_source("#precision(0.001m, 0.002m)\nstructure S { param x : Real }");
     assert!(
         errors_only(&module).is_empty(),
         "unexpected errors: {:?}",
@@ -1606,13 +1617,14 @@ fn version_pragma_too_old_emits_warning_predates_stable() {
 /// `multiple_module_level_precision_pragmas_first_wins` test above.
 #[test]
 fn multiple_version_pragmas_emit_error_at_most_one() {
-    let module = compile_source(
-        "#version(0.1)\n#version(0.1)\nstructure S { param x : Real }",
-    );
+    let module = compile_source("#version(0.1)\n#version(0.1)\nstructure S { param x : Real }");
 
     let at_most_errs: Vec<_> = errors_only(&module)
         .into_iter()
-        .filter(|d| d.message.contains("at most one #version declaration per module"))
+        .filter(|d| {
+            d.message
+                .contains("at most one #version declaration per module")
+        })
         .collect();
     assert_eq!(
         at_most_errs.len(),
@@ -1647,9 +1659,7 @@ fn multiple_version_pragmas_emit_error_at_most_one() {
 /// duplicate ("at most one #version declaration per module" error).
 #[test]
 fn malformed_then_valid_version_pragmas_recover() {
-    let module = compile_source(
-        "#version(\"foo\")\n#version(1.2)\nstructure S { param x : Real }",
-    );
+    let module = compile_source("#version(\"foo\")\n#version(1.2)\nstructure S { param x : Real }");
 
     // (a) The well-formed second pragma's tuple must be stored.
     assert_eq!(
@@ -1697,7 +1707,10 @@ fn malformed_then_valid_version_pragmas_recover() {
     // the valid second pragma must NOT be flagged as a duplicate.
     let at_most_errs: Vec<_> = errors_only(&module)
         .into_iter()
-        .filter(|d| d.message.contains("at most one #version declaration per module"))
+        .filter(|d| {
+            d.message
+                .contains("at most one #version declaration per module")
+        })
         .collect();
     assert!(
         at_most_errs.is_empty(),
@@ -1718,13 +1731,28 @@ fn malformed_then_valid_version_pragmas_recover() {
 fn version_pragma_malformed_args_emit_warning_and_leave_declared_version_none() {
     let cases: &[(&str, &str)] = &[
         // (source, label-for-failure-message)
-        ("#version(\"foo\")\nstructure S { param x : Real }", "string-no-dot"),
-        ("#version(\"0.1.2\")\nstructure S { param x : Real }", "three-component-string"),
-        ("#version(\"a.b\")\nstructure S { param x : Real }", "non-numeric-components"),
+        (
+            "#version(\"foo\")\nstructure S { param x : Real }",
+            "string-no-dot",
+        ),
+        (
+            "#version(\"0.1.2\")\nstructure S { param x : Real }",
+            "three-component-string",
+        ),
+        (
+            "#version(\"a.b\")\nstructure S { param x : Real }",
+            "non-numeric-components",
+        ),
         ("#version\nstructure S { param x : Real }", "no-args"),
         ("#version(true)\nstructure S { param x : Real }", "bool-arg"),
-        ("#version(value=0.1)\nstructure S { param x : Real }", "key-value-arg"),
-        ("#version(0.001m)\nstructure S { param x : Real }", "quantity-arg"),
+        (
+            "#version(value=0.1)\nstructure S { param x : Real }",
+            "key-value-arg",
+        ),
+        (
+            "#version(0.001m)\nstructure S { param x : Real }",
+            "quantity-arg",
+        ),
     ];
 
     for (source, label) in cases {
@@ -1938,9 +1966,8 @@ fn solver_pragma_malformed_args_emit_warning_and_leave_solver_pragma_none() {
 /// `multiple_module_level_precision_pragmas_first_wins`.
 #[test]
 fn multiple_module_level_solver_pragmas_first_wins() {
-    let module = compile_source(
-        "#solver(libslvs)\n#solver(argmin)\nstructure S { param x : Real }",
-    );
+    let module =
+        compile_source("#solver(libslvs)\n#solver(argmin)\nstructure S { param x : Real }");
     assert!(
         errors_only(&module).is_empty(),
         "unexpected errors: {:?}",
@@ -1981,9 +2008,7 @@ fn multiple_module_level_solver_pragmas_first_wins() {
 /// duplicate ("subsequent #solver pragma ignored; first one wins").
 #[test]
 fn malformed_then_valid_solver_pragmas_recover() {
-    let module = compile_source(
-        "#solver(42)\n#solver(libslvs)\nstructure S { param x : Real }",
-    );
+    let module = compile_source("#solver(42)\n#solver(libslvs)\nstructure S { param x : Real }");
 
     // (a) The well-formed second pragma must be stored.
     let solver_pragma = module
@@ -2309,9 +2334,7 @@ fn kernel_pragma_with_v02_known_idents_set_kernel_pragma() {
             .filter(|d| {
                 let m = d.message.to_lowercase();
                 m.contains("#kernel")
-                    && (m.contains("expected")
-                        || m.contains("ignored")
-                        || m.contains("unknown"))
+                    && (m.contains("expected") || m.contains("ignored") || m.contains("unknown"))
             })
             .collect();
         assert!(
@@ -2414,10 +2437,7 @@ fn kernel_pragma_malformed_args_emit_warning_and_leave_kernel_pragma_none() {
     let cases: &[(&str, &str)] = &[
         // (source, label-for-failure-message)
         ("#kernel(42)\nstructure S { param x : Real }", "bare-number"),
-        (
-            "#kernel(true)\nstructure S { param x : Real }",
-            "bare-bool",
-        ),
+        ("#kernel(true)\nstructure S { param x : Real }", "bare-bool"),
         (
             "#kernel(\"occt\")\nstructure S { param x : Real }",
             "bare-string",

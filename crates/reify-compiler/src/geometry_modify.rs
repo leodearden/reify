@@ -361,7 +361,13 @@ mod tests {
             compiled.diagnostics
         );
         let ops = &compiled.templates[0].realizations[0].operations;
-        assert_eq!(ops.len(), 1, "{}(): expected 1 op, got {}", fn_name, ops.len());
+        assert_eq!(
+            ops.len(),
+            1,
+            "{}(): expected 1 op, got {}",
+            fn_name,
+            ops.len()
+        );
         match &ops[0] {
             CompiledGeometryOp::Modify {
                 kind: op_kind,
@@ -369,12 +375,9 @@ mod tests {
                 ..
             } => {
                 assert_eq!(
-                    *op_kind,
-                    kind,
+                    *op_kind, kind,
                     "{}(): expected {:?}, got {:?}",
-                    fn_name,
-                    kind,
-                    op_kind
+                    fn_name, kind, op_kind
                 );
                 assert_eq!(
                     *op_target,
@@ -384,7 +387,10 @@ mod tests {
                     op_target
                 );
             }
-            other => panic!("{}(): expected Modify({:?}), got {:?}", fn_name, kind, other),
+            other => panic!(
+                "{}(): expected Modify({:?}), got {:?}",
+                fn_name, kind, other
+            ),
         }
     }
 
@@ -402,7 +408,8 @@ mod tests {
     /// compile error (caught at `cargo check`) to add a variant without also extending `CASES`.
     /// The pattern follows `crates/reify-kernel-occt/src/lib.rs:36` which uses the same idiom to
     /// pin a Rust/C++ floor-constant invariant.
-    fn single_geom_target_kinds() -> &'static [(ModifyKind, &'static str, &'static [&'static str])] {
+    fn single_geom_target_kinds() -> &'static [(ModifyKind, &'static str, &'static [&'static str])]
+    {
         static CASES: &[(ModifyKind, &str, &[&str])] = &[
             (ModifyKind::Chamfer, "chamfer", &["distance"]),
             (ModifyKind::Fillet, "fillet", &["radius"]),
@@ -500,12 +507,9 @@ mod tests {
                 ..
             } => {
                 assert_eq!(
-                    *op_kind,
-                    kind,
+                    *op_kind, kind,
                     "{}(): expected {:?} at ops[1], got {:?}",
-                    fn_name,
-                    kind,
-                    op_kind
+                    fn_name, kind, op_kind
                 );
                 assert_eq!(
                     *op_target,
@@ -552,8 +556,8 @@ mod tests {
     }
 
     #[test]
-    fn compile_modify_op_non_geometry_target_fallback_step_offset_nonzero_all_single_geom_target_kinds(
-    ) {
+    fn compile_modify_op_non_geometry_target_fallback_step_offset_nonzero_all_single_geom_target_kinds()
+     {
         // Regression-lock for all 5 single-geometry-target modify kinds — proves each
         // uses step_offset from context rather than a hardcoded 0 (task-612/task-1732).
         for &(kind, fn_name, tail) in single_geom_target_kinds() {

@@ -4,7 +4,7 @@
 
 use reify_kernel_occt::OcctKernel;
 use reify_kernel_occt::RUST_GUARD_MARKER;
-use reify_types::{GeometryError, GeometryOp, BRepKind};
+use reify_types::{BRepKind, GeometryError, GeometryOp};
 
 // --- LineSegment ---
 
@@ -12,8 +12,12 @@ use reify_types::{GeometryError, GeometryOp, BRepKind};
 fn line_segment_creates_wire() {
     let mut kernel = OcctKernel::new();
     let result = kernel.execute(&GeometryOp::LineSegment {
-        x1: 0.0, y1: 0.0, z1: 0.0,
-        x2: 1.0, y2: 0.0, z2: 0.0,
+        x1: 0.0,
+        y1: 0.0,
+        z1: 0.0,
+        x2: 1.0,
+        y2: 0.0,
+        z2: 0.0,
     });
     let handle = result.expect("line_segment should succeed");
     assert_eq!(handle.repr, Some(BRepKind::Wire));
@@ -23,8 +27,12 @@ fn line_segment_creates_wire() {
 fn line_segment_coincident_points_returns_error() {
     let mut kernel = OcctKernel::new();
     let result = kernel.execute(&GeometryOp::LineSegment {
-        x1: 1.0, y1: 2.0, z1: 3.0,
-        x2: 1.0, y2: 2.0, z2: 3.0,
+        x1: 1.0,
+        y1: 2.0,
+        z1: 3.0,
+        x2: 1.0,
+        y2: 2.0,
+        z2: 3.0,
     });
     match result {
         Err(GeometryError::OperationFailed(msg)) => {
@@ -184,7 +192,8 @@ fn nurbs_curve_mismatched_weights_returns_error() {
         Err(GeometryError::OperationFailed(msg)) => {
             assert!(
                 msg.contains("weights count must equal control points count"),
-                "expected weights mismatch message, got: {}", msg,
+                "expected weights mismatch message, got: {}",
+                msg,
             );
         }
         Ok(_) => panic!("expected error for mismatched weights/control_points, got Ok"),

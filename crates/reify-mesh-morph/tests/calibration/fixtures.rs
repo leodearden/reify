@@ -167,9 +167,7 @@ pub fn box_mesh(outer: f64, wall_thickness: f64, n: usize) -> (VolumeMesh, Vec<u
                     compact[&(ci, cj + 1, ck + 1)],
                 ];
                 for tet in &HEX_TO_6TETS {
-                    tet_indices.extend_from_slice(&[
-                        c[tet[0]], c[tet[1]], c[tet[2]], c[tet[3]],
-                    ]);
+                    tet_indices.extend_from_slice(&[c[tet[0]], c[tet[1]], c[tet[2]], c[tet[3]]]);
                 }
             }
         }
@@ -249,7 +247,9 @@ pub fn plate_with_hole(
     };
 
     // Pre-compute angles + per-angle outer square radii.
-    let theta: Vec<f64> = (0..n_theta).map(|t| t as f64 * TAU / n_theta as f64).collect();
+    let theta: Vec<f64> = (0..n_theta)
+        .map(|t| t as f64 * TAU / n_theta as f64)
+        .collect();
     let r_sq: Vec<f64> = theta.iter().map(|&th| square_radius(side, th)).collect();
 
     // Emit vertices in (k, r, t) order to match vertex_idx.
@@ -279,19 +279,17 @@ pub fn plate_with_hole(
                 // face directly above — matches HEX_TO_6TETS's right-handed
                 // canonical layout).
                 let c = [
-                    vertex_idx(r,     t,      k),     // 0
-                    vertex_idx(r + 1, t,      k),     // 1
+                    vertex_idx(r, t, k),              // 0
+                    vertex_idx(r + 1, t, k),          // 1
                     vertex_idx(r + 1, t_next, k),     // 2
-                    vertex_idx(r,     t_next, k),     // 3
-                    vertex_idx(r,     t,      k + 1), // 4
-                    vertex_idx(r + 1, t,      k + 1), // 5
+                    vertex_idx(r, t_next, k),         // 3
+                    vertex_idx(r, t, k + 1),          // 4
+                    vertex_idx(r + 1, t, k + 1),      // 5
                     vertex_idx(r + 1, t_next, k + 1), // 6
-                    vertex_idx(r,     t_next, k + 1), // 7
+                    vertex_idx(r, t_next, k + 1),     // 7
                 ];
                 for tet in &HEX_TO_6TETS {
-                    tet_indices.extend_from_slice(&[
-                        c[tet[0]], c[tet[1]], c[tet[2]], c[tet[3]],
-                    ]);
+                    tet_indices.extend_from_slice(&[c[tet[0]], c[tet[1]], c[tet[2]], c[tet[3]]]);
                 }
             }
         }
@@ -457,9 +455,8 @@ pub fn bracket(
             thickness
         }
     };
-    let x_arm1 = |i: usize| -> f64 {
-        thickness + (i as f64) * (arm_length - thickness) / n_arm as f64
-    };
+    let x_arm1 =
+        |i: usize| -> f64 { thickness + (i as f64) * (arm_length - thickness) / n_arm as f64 };
     for kz in 0..=n_z {
         let z = z_at(kz);
         for i in 0..=n_arm {
@@ -487,9 +484,8 @@ pub fn bracket(
             thickness
         }
     };
-    let y_arm2 = |j: usize| -> f64 {
-        thickness + (j as f64) * (arm_length - thickness) / n_arm as f64
-    };
+    let y_arm2 =
+        |j: usize| -> f64 { thickness + (j as f64) * (arm_length - thickness) / n_arm as f64 };
     for kz in 0..=n_z {
         let z = z_at(kz);
         for j in 0..=n_arm {
@@ -513,9 +509,9 @@ pub fn bracket(
     // `&mut compact` borrow so the read-only `look` closure can borrow it.
 
     let look = |label: (&'static str, usize, usize)| -> u32 {
-        *compact.get(&label).unwrap_or_else(|| {
-            panic!("bracket: vertex label {label:?} not found (logic bug)")
-        })
+        *compact
+            .get(&label)
+            .unwrap_or_else(|| panic!("bracket: vertex label {label:?} not found (logic bug)"))
     };
 
     // ── Tetrahedra ───────────────────────────────────────────────────────────
@@ -551,9 +547,7 @@ pub fn bracket(
                 let c7 = look(polar_label(kz + 1, a + 1, k_r));
                 let c = [c0, c1, c2, c3, c4, c5, c6, c7];
                 for tet in &HEX_TO_6TETS {
-                    tet_indices.extend_from_slice(&[
-                        c[tet[0]], c[tet[1]], c[tet[2]], c[tet[3]],
-                    ]);
+                    tet_indices.extend_from_slice(&[c[tet[0]], c[tet[1]], c[tet[2]], c[tet[3]]]);
                 }
             }
         }
@@ -596,9 +590,7 @@ pub fn bracket(
                 let c7 = look(arm1_label(kz + 1, i, j + 1));
                 let c = [c0, c1, c2, c3, c4, c5, c6, c7];
                 for tet in &HEX_TO_6TETS {
-                    tet_indices.extend_from_slice(&[
-                        c[tet[0]], c[tet[1]], c[tet[2]], c[tet[3]],
-                    ]);
+                    tet_indices.extend_from_slice(&[c[tet[0]], c[tet[1]], c[tet[2]], c[tet[3]]]);
                 }
             }
         }
@@ -641,9 +633,7 @@ pub fn bracket(
                 let c7 = look(arm2_label(kz + 1, i, j + 1));
                 let c = [c0, c1, c2, c3, c4, c5, c6, c7];
                 for tet in &HEX_TO_6TETS {
-                    tet_indices.extend_from_slice(&[
-                        c[tet[0]], c[tet[1]], c[tet[2]], c[tet[3]],
-                    ]);
+                    tet_indices.extend_from_slice(&[c[tet[0]], c[tet[1]], c[tet[2]], c[tet[3]]]);
                 }
             }
         }

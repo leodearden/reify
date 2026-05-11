@@ -1695,7 +1695,11 @@ fn compile_project_with_entry_source_uses_in_memory_source_not_disk() {
 
     // The in-memory source defines TopMem; the disk file defines Top.
     // If the compiler used the disk file we'd see Top here, not TopMem.
-    let template_names: Vec<&str> = entry_module.templates.iter().map(|t| t.name.as_str()).collect();
+    let template_names: Vec<&str> = entry_module
+        .templates
+        .iter()
+        .map(|t| t.name.as_str())
+        .collect();
     assert!(
         template_names.contains(&"TopMem"),
         "expected template 'TopMem' from in-memory source, got {:?}",
@@ -1727,8 +1731,7 @@ fn compile_project_with_entry_source_parity_with_compile_project_when_source_mat
 
     let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
 
-    let disk_result =
-        reify_compiler::module_dag::compile_project(&dir.join("entry.ri"), &resolver);
+    let disk_result = reify_compiler::module_dag::compile_project(&dir.join("entry.ri"), &resolver);
     let mem_result = reify_compiler::module_dag::compile_project_with_entry_source(
         &dir.join("entry.ri"),
         entry_source,
@@ -1784,13 +1787,23 @@ fn compile_project_with_entry_source_parity_with_compile_project_when_source_mat
                 dt.sub_components.len(),
                 mt.sub_components.len(),
                 "sub_component count differs at module {}, template {} ('{}'): disk={} mem={}",
-                i, j, dt.name, dt.sub_components.len(), mt.sub_components.len()
+                i,
+                j,
+                dt.name,
+                dt.sub_components.len(),
+                mt.sub_components.len()
             );
 
-            let disk_sub_names: Vec<&str> =
-                dt.sub_components.iter().map(|s| s.structure_name.as_str()).collect();
-            let mem_sub_names: Vec<&str> =
-                mt.sub_components.iter().map(|s| s.structure_name.as_str()).collect();
+            let disk_sub_names: Vec<&str> = dt
+                .sub_components
+                .iter()
+                .map(|s| s.structure_name.as_str())
+                .collect();
+            let mem_sub_names: Vec<&str> = mt
+                .sub_components
+                .iter()
+                .map(|s| s.structure_name.as_str())
+                .collect();
             assert_eq!(
                 disk_sub_names, mem_sub_names,
                 "sub_component structure names differ at module {}, template {} ('{}'): disk={:?} mem={:?}",

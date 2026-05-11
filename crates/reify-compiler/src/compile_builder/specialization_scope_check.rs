@@ -72,8 +72,8 @@ pub(crate) fn validate_module(parsed: &ParsedModule, diagnostics: &mut Vec<Diagn
 fn forbidden_decl_info(member: &MemberDecl) -> Option<(&'static str, &str, SourceSpan)> {
     match member {
         MemberDecl::Param(p) => Some(("param", &p.name, p.span)),
-        MemberDecl::Port(p)  => Some(("port",  &p.name, p.span)),
-        MemberDecl::Sub(s)   => Some(("sub",   &s.name, s.span)),
+        MemberDecl::Port(p) => Some(("port", &p.name, p.span)),
+        MemberDecl::Sub(s) => Some(("sub", &s.name, s.span)),
         // LOAD-BEARING: this wildcard arm must stay `None`. A future
         // MemberDecl variant that should be *permitted* must NOT get an arm
         // returning `Some` here — the test
@@ -166,8 +166,8 @@ where
 mod tests {
     use super::*;
     use reify_syntax::{GuardedGroupDecl, MemberDecl};
-    use reify_types::{Diagnostic, DiagnosticCode, ModulePath, Severity};
     use reify_test_support::specialization_fixtures::*;
+    use reify_types::{Diagnostic, DiagnosticCode, ModulePath, Severity};
 
     fn parse_module(source: &str) -> ParsedModule {
         reify_syntax::parse(source, ModulePath::single("test"))
@@ -206,8 +206,8 @@ mod tests {
     /// `members` branch and the `else_members` branch must each fire a
     /// diagnostic.
     #[test]
-    fn validate_module_emits_diagnostic_for_forbidden_decl_in_guarded_group_inside_specialization_scope(
-    ) {
+    fn validate_module_emits_diagnostic_for_forbidden_decl_in_guarded_group_inside_specialization_scope()
+     {
         let members_param_span = param_span();
         let else_members_port_span = port_span();
         // Structure S {
@@ -222,9 +222,11 @@ mod tests {
             span: dummy_span(),
             content_hash: dummy_hash(),
         });
-        let parsed = parsed_module_with_structure_members(
-            vec![make_sub_with_body("scope", dummy_span(), vec![guarded])],
-        );
+        let parsed = parsed_module_with_structure_members(vec![make_sub_with_body(
+            "scope",
+            dummy_span(),
+            vec![guarded],
+        )]);
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         validate_module(&parsed, &mut diagnostics);
 
@@ -261,17 +263,15 @@ mod tests {
         let po_span = port_span();
         let s_span = sub_span();
         // Structure S { sub scope : Foo { param x; port p; sub child : Foo } }
-        let parsed = parsed_module_with_structure_members(
-            vec![make_sub_with_body(
-                "scope",
-                dummy_span(),
-                vec![
-                    make_param("x", p_span),
-                    make_port("p", po_span),
-                    make_sub_bare("child", s_span),
-                ],
-            )],
-        );
+        let parsed = parsed_module_with_structure_members(vec![make_sub_with_body(
+            "scope",
+            dummy_span(),
+            vec![
+                make_param("x", p_span),
+                make_port("p", po_span),
+                make_sub_bare("child", s_span),
+            ],
+        )]);
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         validate_module(&parsed, &mut diagnostics);
 
@@ -308,9 +308,11 @@ mod tests {
             inner_sub_span,
             vec![make_param("x", leaf_param_span)],
         );
-        let parsed = parsed_module_with_structure_members(
-            vec![make_sub_with_body("outer", dummy_span(), vec![inner_sub])],
-        );
+        let parsed = parsed_module_with_structure_members(vec![make_sub_with_body(
+            "outer",
+            dummy_span(),
+            vec![inner_sub],
+        )]);
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         validate_module(&parsed, &mut diagnostics);
 
@@ -335,8 +337,7 @@ mod tests {
             d0.message
         );
         assert_eq!(
-            d0.labels[0].span,
-            inner_sub_span,
+            d0.labels[0].span, inner_sub_span,
             "first diagnostic span must equal inner SubDecl's span"
         );
 
@@ -355,8 +356,7 @@ mod tests {
             d1.message
         );
         assert_eq!(
-            d1.labels[0].span,
-            leaf_param_span,
+            d1.labels[0].span, leaf_param_span,
             "second diagnostic span must equal leaf ParamDecl's span"
         );
     }
@@ -372,9 +372,11 @@ mod tests {
     /// impl in place, this test passes immediately.
     #[test]
     fn validate_module_emits_no_diagnostic_for_permitted_decls_inside_specialization_scope() {
-        let parsed = parsed_module_with_structure_members(
-            vec![make_sub_with_body("scope", dummy_span(), vec![make_let("v"), make_constraint()])],
-        );
+        let parsed = parsed_module_with_structure_members(vec![make_sub_with_body(
+            "scope",
+            dummy_span(),
+            vec![make_let("v"), make_constraint()],
+        )]);
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         validate_module(&parsed, &mut diagnostics);
         assert!(
@@ -394,13 +396,19 @@ mod tests {
     #[test]
     fn validate_module_emits_forbidden_decl_diagnostic_for_bare_sub_inside_specialization_scope() {
         let s_span = sub_span();
-        let parsed = parsed_module_with_structure_members(
-            vec![make_sub_with_body("scope", dummy_span(), vec![make_sub_bare("child", s_span)])],
-        );
+        let parsed = parsed_module_with_structure_members(vec![make_sub_with_body(
+            "scope",
+            dummy_span(),
+            vec![make_sub_bare("child", s_span)],
+        )]);
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         validate_module(&parsed, &mut diagnostics);
 
-        assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic, got: {diagnostics:?}");
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic, got: {diagnostics:?}"
+        );
         let d = &diagnostics[0];
         assert_eq!(d.severity, Severity::Error);
         assert_eq!(d.code, Some(DiagnosticCode::SpecializationForbiddenDecl));
@@ -416,8 +424,7 @@ mod tests {
         );
         assert!(!d.labels.is_empty());
         assert_eq!(
-            d.labels[0].span,
-            s_span,
+            d.labels[0].span, s_span,
             "primary label span must equal the SubDecl's span"
         );
     }
@@ -431,13 +438,19 @@ mod tests {
     #[test]
     fn validate_module_emits_forbidden_decl_diagnostic_for_port_inside_specialization_scope() {
         let p_span = port_span();
-        let parsed = parsed_module_with_structure_members(
-            vec![make_sub_with_body("scope", dummy_span(), vec![make_port("p", p_span)])],
-        );
+        let parsed = parsed_module_with_structure_members(vec![make_sub_with_body(
+            "scope",
+            dummy_span(),
+            vec![make_port("p", p_span)],
+        )]);
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         validate_module(&parsed, &mut diagnostics);
 
-        assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic, got: {diagnostics:?}");
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic, got: {diagnostics:?}"
+        );
         let d = &diagnostics[0];
         assert_eq!(d.severity, Severity::Error);
         assert_eq!(d.code, Some(DiagnosticCode::SpecializationForbiddenDecl));
@@ -452,7 +465,10 @@ mod tests {
             d.message
         );
         assert!(!d.labels.is_empty());
-        assert_eq!(d.labels[0].span, p_span, "primary label span must equal the PortDecl's span");
+        assert_eq!(
+            d.labels[0].span, p_span,
+            "primary label span must equal the PortDecl's span"
+        );
     }
 
     // ── step-3: Param inside specialization scope ────────────────────────────
@@ -465,15 +481,25 @@ mod tests {
     fn validate_module_emits_forbidden_decl_diagnostic_for_param_inside_specialization_scope() {
         let p_span = param_span();
         // Structure S { sub scope : Foo { param x } }  (hand-built)
-        let parsed = parsed_module_with_structure_members(
-            vec![make_sub_with_body("scope", dummy_span(), vec![make_param("x", p_span)])],
-        );
+        let parsed = parsed_module_with_structure_members(vec![make_sub_with_body(
+            "scope",
+            dummy_span(),
+            vec![make_param("x", p_span)],
+        )]);
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         validate_module(&parsed, &mut diagnostics);
 
-        assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic, got: {diagnostics:?}");
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic, got: {diagnostics:?}"
+        );
         let d = &diagnostics[0];
-        assert_eq!(d.severity, Severity::Error, "diagnostic must be Error severity");
+        assert_eq!(
+            d.severity,
+            Severity::Error,
+            "diagnostic must be Error severity"
+        );
         assert_eq!(
             d.code,
             Some(DiagnosticCode::SpecializationForbiddenDecl),
@@ -489,10 +515,12 @@ mod tests {
             "message must contain \"'x'\", got: {:?}",
             d.message
         );
-        assert!(!d.labels.is_empty(), "diagnostic must have at least one label");
+        assert!(
+            !d.labels.is_empty(),
+            "diagnostic must have at least one label"
+        );
         assert_eq!(
-            d.labels[0].span,
-            p_span,
+            d.labels[0].span, p_span,
             "primary label span must equal the ParamDecl's span"
         );
         assert!(

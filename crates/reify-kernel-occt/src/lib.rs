@@ -244,8 +244,8 @@ fn centroid_json(p: ffi::ffi::Point3) -> String {
 // callers that already import from this crate; new call sites should prefer
 // `reify_types::{BooleanOpHistoryRecords, HistoryRecord, DeletedRecord}`.
 pub use reify_types::{
-    AttributeHistory, BooleanOpHistoryRecords, DeletedRecord, HistoryRecord,
-    LoftOpHistoryRecords, SweepOpHistoryRecords,
+    AttributeHistory, BooleanOpHistoryRecords, DeletedRecord, HistoryRecord, LoftOpHistoryRecords,
+    SweepOpHistoryRecords,
 };
 
 /// History records emitted by a local-feature operation (fillet or chamfer)
@@ -622,8 +622,8 @@ impl OcctKernel {
             let shape = self
                 .get_shape(handle)
                 .map_err(|_| QueryError::InvalidHandle(handle))?;
-            let vec = ffi::ffi::get_edges(shape)
-                .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+            let vec =
+                ffi::ffi::get_edges(shape).map_err(|e| QueryError::QueryFailed(e.to_string()))?;
             let len = ffi::ffi::shape_vec_len(&vec);
             let mut buf = Vec::with_capacity(len);
             for i in 0..len {
@@ -665,8 +665,8 @@ impl OcctKernel {
             let shape = self
                 .get_shape(handle)
                 .map_err(|_| QueryError::InvalidHandle(handle))?;
-            let vec = ffi::ffi::get_faces(shape)
-                .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+            let vec =
+                ffi::ffi::get_faces(shape).map_err(|e| QueryError::QueryFailed(e.to_string()))?;
             let len = ffi::ffi::shape_vec_len(&vec);
             let mut buf = Vec::with_capacity(len);
             for i in 0..len {
@@ -715,8 +715,7 @@ impl OcctKernel {
         let s2 = self
             .get_shape(b)
             .map_err(|_| QueryError::InvalidHandle(b))?;
-        ffi::ffi::shapes_intersect(s1, s2)
-            .map_err(|e| QueryError::QueryFailed(e.to_string()))
+        ffi::ffi::shapes_intersect(s1, s2).map_err(|e| QueryError::QueryFailed(e.to_string()))
     }
 
     /// Minimum BREP distance between two shapes via BRepExtrema_DistShapeShape.
@@ -739,8 +738,7 @@ impl OcctKernel {
         let s2 = self
             .get_shape(b)
             .map_err(|_| QueryError::InvalidHandle(b))?;
-        ffi::ffi::min_clearance(s1, s2)
-            .map_err(|e| QueryError::QueryFailed(e.to_string()))
+        ffi::ffi::min_clearance(s1, s2).map_err(|e| QueryError::QueryFailed(e.to_string()))
     }
 
     /// Return the closest point on the shape identified by `handle` to the
@@ -820,8 +818,7 @@ impl OcctKernel {
         let s2 = self
             .get_shape(face_b)
             .map_err(|_| QueryError::InvalidHandle(face_b))?;
-        ffi::ffi::surface_angle(s1, s2)
-            .map_err(|e| QueryError::QueryFailed(e.to_string()))
+        ffi::ffi::surface_angle(s1, s2).map_err(|e| QueryError::QueryFailed(e.to_string()))
     }
 
     /// Unit outward normal at the parametric point `(u, v)` on `face`.
@@ -888,8 +885,8 @@ impl OcctKernel {
             .get_shape(handle)
             .map_err(|_| QueryError::InvalidHandle(handle))?;
         validate_uv_finite(u, v)?;
-        let c = ffi::ffi::curvature_at(s, u, v)
-            .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+        let c =
+            ffi::ffi::curvature_at(s, u, v).map_err(|e| QueryError::QueryFailed(e.to_string()))?;
         Ok(Curvature {
             gaussian: c.gaussian,
             mean: c.mean,
@@ -1023,7 +1020,7 @@ impl OcctKernel {
             Some(other) => {
                 return Err(GeometryError::OperationFailed(format!(
                     "local-feature operation requires a BRepKind::Solid input shape, got {other:?}"
-                )))
+                )));
             }
             // `repr_of` returns `None` iff `shape_id` is unknown to this kernel.
             // The "repr-lost-but-shape-present" case is unreachable: `store_with_repr`
@@ -1036,8 +1033,8 @@ impl OcctKernel {
         }
         let (result_shape, records) = {
             let shape = self.get_shape(shape_id)?;
-            let history = build(shape)
-                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+            let history =
+                build(shape).map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
             decode_six_buffer_history(history, &LOCAL_FEATURE_OP_ACCESSORS)
         };
         let handle = self.store_with_repr(result_shape, BRepKind::Solid);
@@ -1128,9 +1125,8 @@ impl OcctKernel {
         }
         let (result_shape, records) = {
             let profile_shape = self.get_shape(profile_id)?;
-            let mut history =
-                ffi::ffi::make_prism_with_history(profile_shape, 0.0, 0.0, distance)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+            let mut history = ffi::ffi::make_prism_with_history(profile_shape, 0.0, 0.0, distance)
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
             let face_modified =
                 decode_history_records(ffi::ffi::sweep_op_history_face_modified(&history));
             let face_generated =
@@ -1154,8 +1150,7 @@ impl OcctKernel {
                 ffi::ffi::sweep_op_history_unsynthesized_profile_edge_count(&history);
             let duplicate_parent_subshape_index_count =
                 ffi::ffi::sweep_op_history_duplicate_parent_subshape_index_count(&history);
-            let silent_drop_count =
-                ffi::ffi::sweep_op_history_silent_drop_count(&history);
+            let silent_drop_count = ffi::ffi::sweep_op_history_silent_drop_count(&history);
             // Take the result shape last, after all record buffers have
             // been read off — `take_result_shape` leaves `history` with
             // an empty result pointer, but the record buffers are still
@@ -1214,9 +1209,7 @@ impl OcctKernel {
         // `execute` so direct callers (integration tests, future inherent
         // dispatchers) get the same descriptive errors with stricter
         // thresholds than the C++ FFI safety net.
-        if !axis_origin[0].is_finite()
-            || !axis_origin[1].is_finite()
-            || !axis_origin[2].is_finite()
+        if !axis_origin[0].is_finite() || !axis_origin[1].is_finite() || !axis_origin[2].is_finite()
         {
             return Err(GeometryError::OperationFailed(format!(
                 "revolve axis_origin must be finite: [{}, {}, {}]",
@@ -1284,8 +1277,7 @@ impl OcctKernel {
                 ffi::ffi::sweep_op_history_unsynthesized_profile_edge_count(&history);
             let duplicate_parent_subshape_index_count =
                 ffi::ffi::sweep_op_history_duplicate_parent_subshape_index_count(&history);
-            let silent_drop_count =
-                ffi::ffi::sweep_op_history_silent_drop_count(&history);
+            let silent_drop_count = ffi::ffi::sweep_op_history_silent_drop_count(&history);
             // Take the result shape last, after all record buffers have
             // been read off — `take_result_shape` leaves `history` with
             // an empty result pointer, but the record buffers are still
@@ -1367,8 +1359,7 @@ impl OcctKernel {
                 ffi::ffi::sweep_op_history_unsynthesized_profile_edge_count(&history);
             let duplicate_parent_subshape_index_count =
                 ffi::ffi::sweep_op_history_duplicate_parent_subshape_index_count(&history);
-            let silent_drop_count =
-                ffi::ffi::sweep_op_history_silent_drop_count(&history);
+            let silent_drop_count = ffi::ffi::sweep_op_history_silent_drop_count(&history);
             // Take the result shape last, after all record buffers have
             // been read off (mirrors extrude/revolve pattern).
             let result_shape = ffi::ffi::sweep_op_history_take_result_shape(history.pin_mut());
@@ -1452,14 +1443,12 @@ impl OcctKernel {
                 decode_history_records(ffi::ffi::loft_op_history_edge_generated(&history));
             let edge_deleted =
                 decode_deleted_records(ffi::ffi::loft_op_history_edge_deleted(&history));
-            let start_cap_face_indices =
-                ffi::ffi::loft_op_history_start_cap_face_indices(&history)
-                    .into_iter()
-                    .collect();
-            let end_cap_face_indices =
-                ffi::ffi::loft_op_history_end_cap_face_indices(&history)
-                    .into_iter()
-                    .collect();
+            let start_cap_face_indices = ffi::ffi::loft_op_history_start_cap_face_indices(&history)
+                .into_iter()
+                .collect();
+            let end_cap_face_indices = ffi::ffi::loft_op_history_end_cap_face_indices(&history)
+                .into_iter()
+                .collect();
             // Take the result shape last, after all record buffers have
             // been read off (mirrors extrude/revolve/sweep pattern).
             let result_shape = ffi::ffi::loft_op_history_take_result_shape(history.pin_mut());
@@ -1556,8 +1545,7 @@ impl OcctKernel {
                 // so `>=` is unambiguous here (no NaN possible).
                 if inner >= outer {
                     return Err(GeometryError::OperationFailed(
-                        "tube inner radius must be strictly less than outer radius"
-                            .into(),
+                        "tube inner radius must be strictly less than outer radius".into(),
                     ));
                 }
                 // Compose: outer cylinder - inner cylinder via boolean_cut.
@@ -1967,7 +1955,12 @@ impl OcctKernel {
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
             GeometryOp::LineSegment {
-                x1, y1, z1, x2, y2, z2,
+                x1,
+                y1,
+                z1,
+                x2,
+                y2,
+                z2,
             } => {
                 crate::floor_constants::line_segment_rust_guard(x2 - x1, y2 - y1, z2 - z1)
                     .map_err(GeometryError::OperationFailed)?;
@@ -1976,7 +1969,11 @@ impl OcctKernel {
                 return Ok(self.store_with_repr(shape, BRepKind::Wire));
             }
             GeometryOp::Arc {
-                center, radius, start_angle, end_angle, axis,
+                center,
+                radius,
+                start_angle,
+                end_angle,
+                axis,
             } => {
                 if !radius.is_finite() || *radius <= 0.0 {
                     return Err(GeometryError::OperationFailed(
@@ -1990,15 +1987,24 @@ impl OcctKernel {
                     ));
                 }
                 let shape = ffi::ffi::make_arc_wire(
-                    center[0], center[1], center[2],
+                    center[0],
+                    center[1],
+                    center[2],
                     *radius,
-                    *start_angle, *end_angle,
-                    axis[0], axis[1], axis[2],
+                    *start_angle,
+                    *end_angle,
+                    axis[0],
+                    axis[1],
+                    axis[2],
                 )
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
                 return Ok(self.store_with_repr(shape, BRepKind::Wire));
             }
-            GeometryOp::Helix { radius, pitch, height } => {
+            GeometryOp::Helix {
+                radius,
+                pitch,
+                height,
+            } => {
                 if !radius.is_finite() || *radius <= 0.0 {
                     return Err(GeometryError::OperationFailed(
                         "helix radius must be finite and positive".into(),
@@ -2035,13 +2041,19 @@ impl OcctKernel {
                         "bezier_curve requires at least 2 control points".into(),
                     ));
                 }
-                let coords: Vec<f64> = control_points.iter().flat_map(|p| p.iter().copied()).collect();
+                let coords: Vec<f64> = control_points
+                    .iter()
+                    .flat_map(|p| p.iter().copied())
+                    .collect();
                 let shape = ffi::ffi::make_bezier_curve(&coords, control_points.len())
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
                 return Ok(self.store_with_repr(shape, BRepKind::Wire));
             }
             GeometryOp::NurbsCurve {
-                control_points, weights, knots, degree,
+                control_points,
+                weights,
+                knots,
+                degree,
             } => {
                 if control_points.len() < 2 {
                     return Err(GeometryError::OperationFailed(
@@ -2065,17 +2077,21 @@ impl OcctKernel {
                 }
                 let expected_knots = control_points.len() + degree + 1;
                 if knots.len() != expected_knots {
-                    return Err(GeometryError::OperationFailed(
-                        format!(
-                            "nurbs_curve: expected {} knots (n_points + degree + 1), got {}",
-                            expected_knots, knots.len(),
-                        ),
-                    ));
+                    return Err(GeometryError::OperationFailed(format!(
+                        "nurbs_curve: expected {} knots (n_points + degree + 1), got {}",
+                        expected_knots,
+                        knots.len(),
+                    )));
                 }
-                let coords: Vec<f64> = control_points.iter().flat_map(|p| p.iter().copied()).collect();
+                let coords: Vec<f64> = control_points
+                    .iter()
+                    .flat_map(|p| p.iter().copied())
+                    .collect();
                 let shape = ffi::ffi::make_nurbs_curve(
-                    &coords, control_points.len(),
-                    weights, knots,
+                    &coords,
+                    control_points.len(),
+                    weights,
+                    knots,
                     *degree as i32,
                 )
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
@@ -2136,10 +2152,7 @@ impl OcctKernel {
                 )
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
-            GeometryOp::ArbitraryPattern {
-                target,
-                transforms,
-            } => {
+            GeometryOp::ArbitraryPattern { target, transforms } => {
                 let shape = self.get_shape(*target)?;
                 if transforms.is_empty() {
                     return Err(GeometryError::OperationFailed(
@@ -2355,9 +2368,7 @@ impl OcctKernel {
                 let [x, y, z] = self.face_outward_unit_normal(*id)?;
                 // Encode as the same JSON-string format as Centroid so
                 // downstream filters share a single parse routine.
-                Ok(Value::String(format!(
-                    "{{\"x\":{x},\"y\":{y},\"z\":{z}}}"
-                )))
+                Ok(Value::String(format!("{{\"x\":{x},\"y\":{y},\"z\":{z}}}")))
             }
             GeometryQuery::FaceSurfaceKind(id) => {
                 let shape = self
@@ -2396,10 +2407,7 @@ impl OcctKernel {
                 let parents = ffi::ffi::ancestor_faces_of_edge(s, idx_u32)
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::List(
-                    parents
-                        .into_iter()
-                        .map(|i| Value::Int(i as i64))
-                        .collect(),
+                    parents.into_iter().map(|i| Value::Int(i as i64)).collect(),
                 ))
             }
             GeometryQuery::OwnerBody(id) => {
@@ -2414,20 +2422,13 @@ impl OcctKernel {
                 })?;
                 Ok(Value::Int(parent.0 as i64))
             }
-            GeometryQuery::ClosestPointOnShape {
-                handle,
-                px,
-                py,
-                pz,
-            } => {
+            GeometryQuery::ClosestPointOnShape { handle, px, py, pz } => {
                 // Reuse the direct-method wrapper for InvalidHandle / QueryFailed
                 // surfacing, then re-encode the [f64; 3] as JSON-Point3 so the wire
                 // format matches Centroid / FaceNormal / EdgeTangent — the
                 // eval-side dispatcher reuses `parse_xyz_value` on this string.
                 let [x, y, z] = self.closest_point_on_shape(*handle, *px, *py, *pz)?;
-                Ok(Value::String(format!(
-                    "{{\"x\":{x},\"y\":{y},\"z\":{z}}}"
-                )))
+                Ok(Value::String(format!("{{\"x\":{x},\"y\":{y},\"z\":{z}}}")))
             }
             GeometryQuery::PointOnShape {
                 handle,
@@ -2438,9 +2439,9 @@ impl OcctKernel {
             } => self
                 .point_on_shape(*handle, *px, *py, *pz, *tolerance)
                 .map(Value::Bool),
-            GeometryQuery::SurfaceAngle { face_a, face_b } => self
-                .surface_angle(*face_a, *face_b)
-                .map(Value::Real),
+            GeometryQuery::SurfaceAngle { face_a, face_b } => {
+                self.surface_angle(*face_a, *face_b).map(Value::Real)
+            }
         }
     }
 
@@ -2460,8 +2461,8 @@ impl OcctKernel {
         let s = self
             .get_shape(id)
             .map_err(|_| QueryError::InvalidHandle(id))?;
-        let p = ffi::ffi::query_face_normal(s)
-            .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+        let p =
+            ffi::ffi::query_face_normal(s).map_err(|e| QueryError::QueryFailed(e.to_string()))?;
         Ok([p.x, p.y, p.z])
     }
 
@@ -2818,8 +2819,7 @@ impl OcctKernel {
     /// `conformance_integration` tests to exercise the `TopAbs_EDGE`
     /// short-circuit path in `is_watertight`.
     pub fn store_edge_for_test(&mut self) -> GeometryHandleId {
-        let shape = ffi::ffi::make_edge_for_test()
-            .expect("make_edge_for_test should succeed");
+        let shape = ffi::ffi::make_edge_for_test().expect("make_edge_for_test should succeed");
         let h = self.store(shape);
         h.id
     }
@@ -2830,8 +2830,7 @@ impl OcctKernel {
     /// `conformance_integration` tests to exercise the `TopAbs_VERTEX`
     /// short-circuit path in `is_watertight`.
     pub fn store_vertex_for_test(&mut self) -> GeometryHandleId {
-        let shape = ffi::ffi::make_vertex_for_test()
-            .expect("make_vertex_for_test should succeed");
+        let shape = ffi::ffi::make_vertex_for_test().expect("make_vertex_for_test should succeed");
         let h = self.store(shape);
         h.id
     }
@@ -2842,8 +2841,8 @@ impl OcctKernel {
     /// passes the shape-type guard in `is_watertight` and reaches
     /// `BRepCheck_Analyzer::IsValid()`. Used by `conformance_integration` tests.
     pub fn store_compsolid_for_test(&mut self) -> GeometryHandleId {
-        let shape = ffi::ffi::make_compsolid_for_test()
-            .expect("make_compsolid_for_test should succeed");
+        let shape =
+            ffi::ffi::make_compsolid_for_test().expect("make_compsolid_for_test should succeed");
         let h = self.store(shape);
         h.id
     }
@@ -2875,8 +2874,9 @@ impl OcctKernel {
         let src = self
             .get_shape(src_handle)
             .expect("store_placed_for_test: src_handle must be valid");
-        let placed = ffi::ffi::apply_test_placement_for_test(src, ax, ay, az, angle_rad, dx, dy, dz)
-            .expect("apply_test_placement_for_test should succeed");
+        let placed =
+            ffi::ffi::apply_test_placement_for_test(src, ax, ay, az, angle_rad, dx, dy, dz)
+                .expect("apply_test_placement_for_test should succeed");
         let h = self.store(placed);
         h.id
     }
@@ -2981,14 +2981,16 @@ mod tests {
     fn parse_centroid_json(s: &str) -> (f64, f64, f64) {
         let parse_field = |field: &str| -> f64 {
             let needle = format!("\"{field}\":");
-            let start = s.find(needle.as_str()).unwrap_or_else(|| {
-                panic!("field {field} not found in centroid JSON: {s:?}")
-            }) + needle.len();
+            let start = s
+                .find(needle.as_str())
+                .unwrap_or_else(|| panic!("field {field} not found in centroid JSON: {s:?}"))
+                + needle.len();
             let rest = &s[start..];
             let end = rest.find([',', '}']).unwrap_or(rest.len());
-            rest[..end].trim().parse::<f64>().unwrap_or_else(|e| {
-                panic!("failed to parse {field} in centroid JSON: {s:?}: {e}")
-            })
+            rest[..end]
+                .trim()
+                .parse::<f64>()
+                .unwrap_or_else(|e| panic!("failed to parse {field} in centroid JSON: {s:?}: {e}"))
         };
         (parse_field("x"), parse_field("y"), parse_field("z"))
     }
@@ -3008,7 +3010,13 @@ mod tests {
         for (i, row) in rows.iter().enumerate() {
             let cols = match row {
                 Value::List(cols) => {
-                    assert_eq!(cols.len(), 3, "row {} expected 3 cols, got {}", i, cols.len());
+                    assert_eq!(
+                        cols.len(),
+                        3,
+                        "row {} expected 3 cols, got {}",
+                        i,
+                        cols.len()
+                    );
                     cols
                 }
                 other => panic!("row {} expected Value::List, got {:?}", i, other),
@@ -3213,7 +3221,9 @@ mod tests {
         );
 
         // 4. Round-trip.
-        let state = kernel_a.warm_state().expect("kernel should have warm state");
+        let state = kernel_a
+            .warm_state()
+            .expect("kernel should have warm state");
         let mut kernel_b = OcctKernel::new();
         kernel_b.with_warm_state(state);
 
@@ -3590,7 +3600,10 @@ mod tests {
         });
         match result {
             Err(GeometryError::OperationFailed(msg)) => {
-                assert_eq!(msg, BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, "box-dimensions rejection must emit the byte-identical shared const; got {msg:?}");
+                assert_eq!(
+                    msg, BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE,
+                    "box-dimensions rejection must emit the byte-identical shared const; got {msg:?}"
+                );
             }
             Err(other) => panic!("expected OperationFailed, got {:?}", other),
             Ok(_) => panic!("expected error for zero-width box"),
@@ -3607,7 +3620,10 @@ mod tests {
         });
         match result {
             Err(GeometryError::OperationFailed(msg)) => {
-                assert_eq!(msg, BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, "box-dimensions rejection must emit the byte-identical shared const; got {msg:?}");
+                assert_eq!(
+                    msg, BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE,
+                    "box-dimensions rejection must emit the byte-identical shared const; got {msg:?}"
+                );
             }
             Err(other) => panic!("expected OperationFailed, got {:?}", other),
             Ok(_) => panic!("expected error for negative-width box"),
@@ -3650,7 +3666,10 @@ mod tests {
         });
         match result {
             Err(GeometryError::OperationFailed(msg)) => {
-                assert_eq!(msg, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE, "sphere-radius rejection must emit the byte-identical shared const; got {msg:?}");
+                assert_eq!(
+                    msg, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE,
+                    "sphere-radius rejection must emit the byte-identical shared const; got {msg:?}"
+                );
             }
             Err(other) => panic!("expected OperationFailed, got {:?}", other),
             Ok(_) => panic!("expected error for zero-radius sphere"),
@@ -3665,7 +3684,10 @@ mod tests {
         });
         match result {
             Err(GeometryError::OperationFailed(msg)) => {
-                assert_eq!(msg, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE, "sphere-radius rejection must emit the byte-identical shared const; got {msg:?}");
+                assert_eq!(
+                    msg, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE,
+                    "sphere-radius rejection must emit the byte-identical shared const; got {msg:?}"
+                );
             }
             Err(other) => panic!("expected OperationFailed, got {:?}", other),
             Ok(_) => panic!("expected error for negative-radius sphere"),
@@ -3706,7 +3728,10 @@ mod tests {
         });
         match result {
             Err(GeometryError::OperationFailed(msg)) => {
-                assert_eq!(msg, BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, "box-dimensions rejection must emit the byte-identical shared const; got {msg:?}");
+                assert_eq!(
+                    msg, BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE,
+                    "box-dimensions rejection must emit the byte-identical shared const; got {msg:?}"
+                );
             }
             Err(other) => panic!("expected OperationFailed, got {:?}", other),
             Ok(_) => panic!("expected error for NaN-width box"),
@@ -3723,7 +3748,10 @@ mod tests {
         });
         match result {
             Err(GeometryError::OperationFailed(msg)) => {
-                assert_eq!(msg, BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, "box-dimensions rejection must emit the byte-identical shared const; got {msg:?}");
+                assert_eq!(
+                    msg, BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE,
+                    "box-dimensions rejection must emit the byte-identical shared const; got {msg:?}"
+                );
             }
             Err(other) => panic!("expected OperationFailed, got {:?}", other),
             Ok(_) => panic!("expected error for infinity-width box"),
@@ -3740,7 +3768,10 @@ mod tests {
         });
         match result {
             Err(GeometryError::OperationFailed(msg)) => {
-                assert_eq!(msg, BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, "box-dimensions rejection must emit the byte-identical shared const; got {msg:?}");
+                assert_eq!(
+                    msg, BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE,
+                    "box-dimensions rejection must emit the byte-identical shared const; got {msg:?}"
+                );
             }
             Err(other) => panic!("expected OperationFailed, got {:?}", other),
             Ok(_) => panic!("expected error for neg-infinity-width box"),
@@ -3783,7 +3814,10 @@ mod tests {
         });
         match result {
             Err(GeometryError::OperationFailed(msg)) => {
-                assert_eq!(msg, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE, "sphere-radius rejection must emit the byte-identical shared const; got {msg:?}");
+                assert_eq!(
+                    msg, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE,
+                    "sphere-radius rejection must emit the byte-identical shared const; got {msg:?}"
+                );
             }
             Err(other) => panic!("expected OperationFailed, got {:?}", other),
             Ok(_) => panic!("expected error for NaN-radius sphere"),
@@ -3798,7 +3832,10 @@ mod tests {
         });
         match result {
             Err(GeometryError::OperationFailed(msg)) => {
-                assert_eq!(msg, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE, "sphere-radius rejection must emit the byte-identical shared const; got {msg:?}");
+                assert_eq!(
+                    msg, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE,
+                    "sphere-radius rejection must emit the byte-identical shared const; got {msg:?}"
+                );
             }
             Err(other) => panic!("expected OperationFailed, got {:?}", other),
             Ok(_) => panic!("expected error for infinity-radius sphere"),
@@ -3973,7 +4010,9 @@ mod tests {
                     );
                 }
                 Err(other) => panic!("fillet {label}: expected OperationFailed, got {:?}", other),
-                Ok(_) => panic!("fillet {label}: expected error for {label}-radius fillet_with_history"),
+                Ok(_) => {
+                    panic!("fillet {label}: expected error for {label}-radius fillet_with_history")
+                }
             }
         }
     }
@@ -3998,7 +4037,9 @@ mod tests {
                     );
                 }
                 Err(other) => panic!("chamfer {label}: expected OperationFailed, got {:?}", other),
-                Ok(_) => panic!("chamfer {label}: expected error for {label}-distance chamfer_with_history"),
+                Ok(_) => panic!(
+                    "chamfer {label}: expected error for {label}-distance chamfer_with_history"
+                ),
             }
         }
     }
@@ -4466,11 +4507,7 @@ mod tests {
         let pattern_h = kernel
             .execute(&GeometryOp::ArbitraryPattern {
                 target: box_h.id,
-                transforms: vec![
-                    [20.0, 0.0, 0.0],
-                    [0.0, 20.0, 0.0],
-                    [20.0, 20.0, 0.0],
-                ],
+                transforms: vec![[20.0, 0.0, 0.0], [0.0, 20.0, 0.0], [20.0, 20.0, 0.0]],
             })
             .unwrap();
         // Volume should be approximately 4 * 1000 = 4000 (original + 3 copies)
@@ -4573,7 +4610,10 @@ mod tests {
                     "error should mention direction1, got: {msg}"
                 );
             }
-            other => panic!("expected OperationFailed for NaN direction1, got {:?}", other),
+            other => panic!(
+                "expected OperationFailed for NaN direction1, got {:?}",
+                other
+            ),
         }
         // Inf in direction2 should fail
         let result = kernel.execute(&GeometryOp::LinearPattern2D {
@@ -4592,7 +4632,10 @@ mod tests {
                     "error should mention direction2, got: {msg}"
                 );
             }
-            other => panic!("expected OperationFailed for Inf direction2, got {:?}", other),
+            other => panic!(
+                "expected OperationFailed for Inf direction2, got {:?}",
+                other
+            ),
         }
     }
 
@@ -6244,8 +6287,7 @@ mod tests {
             .query(&GeometryQuery::Volume(handle.id))
             .expect("Volume query should succeed");
         let v = vol.as_f64().expect("Volume should be numeric");
-        let expected =
-            std::f64::consts::PI * (0.010_f64.powi(2) - 0.005_f64.powi(2)) * 0.020;
+        let expected = std::f64::consts::PI * (0.010_f64.powi(2) - 0.005_f64.powi(2)) * 0.020;
         let rel_err = (v - expected).abs() / expected;
         assert!(
             rel_err < 0.01,
@@ -6311,8 +6353,12 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let wire_handle = kernel
             .execute(&GeometryOp::LineSegment {
-                x1: 0.0, y1: 0.0, z1: 0.0,
-                x2: 0.0, y2: 0.0, z2: 0.020,
+                x1: 0.0,
+                y1: 0.0,
+                z1: 0.0,
+                x2: 0.0,
+                y2: 0.0,
+                z2: 0.020,
             })
             .expect("LineSegment execute should succeed");
         let pipe_handle = kernel
@@ -6351,8 +6397,12 @@ mod tests {
             let mut kernel = OcctKernel::new();
             let wire_handle = kernel
                 .execute(&GeometryOp::LineSegment {
-                    x1: 0.0, y1: 0.0, z1: 0.0,
-                    x2: 0.0, y2: 0.0, z2: 0.020,
+                    x1: 0.0,
+                    y1: 0.0,
+                    z1: 0.0,
+                    x2: 0.0,
+                    y2: 0.0,
+                    z2: 0.020,
                 })
                 .expect("LineSegment execute should succeed");
             let result = kernel.execute(&GeometryOp::Pipe {
@@ -6401,15 +6451,23 @@ mod tests {
             (
                 "+X line segment",
                 GeometryOp::LineSegment {
-                    x1: 0.0, y1: 0.0, z1: 0.0,
-                    x2: 0.020, y2: 0.0, z2: 0.0,
+                    x1: 0.0,
+                    y1: 0.0,
+                    z1: 0.0,
+                    x2: 0.020,
+                    y2: 0.0,
+                    z2: 0.0,
                 },
             ),
             (
                 "+Y line segment",
                 GeometryOp::LineSegment {
-                    x1: 0.0, y1: 0.0, z1: 0.0,
-                    x2: 0.0, y2: 0.020, z2: 0.0,
+                    x1: 0.0,
+                    y1: 0.0,
+                    z1: 0.0,
+                    x2: 0.0,
+                    y2: 0.020,
+                    z2: 0.0,
                 },
             ),
             (
@@ -6425,8 +6483,12 @@ mod tests {
             (
                 "-Z line segment",
                 GeometryOp::LineSegment {
-                    x1: 0.0, y1: 0.0, z1: 0.0,
-                    x2: 0.0, y2: 0.0, z2: -0.020,
+                    x1: 0.0,
+                    y1: 0.0,
+                    z1: 0.0,
+                    x2: 0.0,
+                    y2: 0.0,
+                    z2: -0.020,
                 },
             ),
         ];
@@ -6451,9 +6513,21 @@ mod tests {
         // Calls the pure helper directly with NaN / Infinity inputs and
         // asserts each non-finite component produces a "non-finite" error.
         let non_finite_cases = [
-            ffi::ffi::Point3 { x: f64::NAN,       y: 0.0,            z: 1.0 },
-            ffi::ffi::Point3 { x: 0.0,            y: f64::INFINITY,  z: 1.0 },
-            ffi::ffi::Point3 { x: 0.0,            y: 0.0,            z: f64::NEG_INFINITY },
+            ffi::ffi::Point3 {
+                x: f64::NAN,
+                y: 0.0,
+                z: 1.0,
+            },
+            ffi::ffi::Point3 {
+                x: 0.0,
+                y: f64::INFINITY,
+                z: 1.0,
+            },
+            ffi::ffi::Point3 {
+                x: 0.0,
+                y: 0.0,
+                z: f64::NEG_INFINITY,
+            },
         ];
         for t in non_finite_cases {
             let coords = (t.x, t.y, t.z);
@@ -6465,9 +6539,7 @@ mod tests {
                         "expected error containing 'non-finite' for {coords:?}, got: {msg}"
                     );
                 }
-                Ok(()) => panic!(
-                    "expected Err for non-finite tangent ({coords:?}), got Ok"
-                ),
+                Ok(()) => panic!("expected Err for non-finite tangent ({coords:?}), got Ok"),
                 Err(other) => panic!(
                     "expected OperationFailed for non-finite tangent ({coords:?}), got {:?}",
                     other
@@ -6484,7 +6556,11 @@ mod tests {
         // incorrectly accept -Z. Asserts both the "start-tangent" substring
         // (correct branch) and negative-z evidence in the reported coordinates
         // so that a wrong-branch rejection would surface immediately.
-        let t = ffi::ffi::Point3 { x: 0.0, y: 0.0, z: -1.0 };
+        let t = ffi::ffi::Point3 {
+            x: 0.0,
+            y: 0.0,
+            z: -1.0,
+        };
         match super::validate_pipe_start_tangent(t) {
             Err(GeometryError::OperationFailed(msg)) => {
                 assert!(
@@ -6508,8 +6584,16 @@ mod tests {
         // Covers the NaN-in-y case ({0, NaN, 0}) which is absent from
         // validate_pipe_start_tangent_rejects_non_finite_components.
         let nan_cases = [
-            ffi::ffi::Point3 { x: f64::NAN, y: 0.0,      z: 1.0 },
-            ffi::ffi::Point3 { x: 0.0,      y: f64::NAN, z: 0.0 },
+            ffi::ffi::Point3 {
+                x: f64::NAN,
+                y: 0.0,
+                z: 1.0,
+            },
+            ffi::ffi::Point3 {
+                x: 0.0,
+                y: f64::NAN,
+                z: 0.0,
+            },
         ];
         for t in nan_cases {
             let coords = (t.x, t.y, t.z);
@@ -6521,9 +6605,7 @@ mod tests {
                         "expected error containing 'non-finite' for NaN tangent {coords:?}, got: {msg}"
                     );
                 }
-                Ok(()) => panic!(
-                    "expected Err for NaN tangent ({coords:?}), got Ok"
-                ),
+                Ok(()) => panic!("expected Err for NaN tangent ({coords:?}), got Ok"),
                 Err(other) => panic!(
                     "expected OperationFailed for NaN tangent ({coords:?}), got {:?}",
                     other
@@ -6537,7 +6619,11 @@ mod tests {
         // Guards the upper-bound: a finite t.z far above 1.0 (e.g. 1e100) is not
         // a unit vector. The two-sided comparator rejects t.z outside
         // [1 - PIPE_START_TANGENT_Z_EPSILON, 1 + PIPE_START_TANGENT_Z_EPSILON].
-        let t = ffi::ffi::Point3 { x: 0.0, y: 0.0, z: 1e100 };
+        let t = ffi::ffi::Point3 {
+            x: 0.0,
+            y: 0.0,
+            z: 1e100,
+        };
         match super::validate_pipe_start_tangent(t) {
             Err(GeometryError::OperationFailed(_)) => {}
             Ok(()) => panic!("expected Err for oversize-z tangent (z=1e100), got Ok"),
@@ -6691,7 +6777,9 @@ mod tests {
         let result = ffi::ffi::make_line_wire(0.0, 0.0, 0.0, 5e-6, 0.0, 0.0);
         // Use .err().expect(...) instead of unwrap_err() because UniquePtr<OcctShape>
         // doesn't implement Debug, so unwrap_err()'s panic message can't format the Ok arm.
-        let err = result.err().expect("make_line_wire with 5µm segment should return Err, got Ok");
+        let err = result
+            .err()
+            .expect("make_line_wire with 5µm segment should return Err, got Ok");
         let msg = format!("{:?}", err);
         assert!(
             msg.contains("distinct"),
@@ -6738,8 +6826,12 @@ mod tests {
         );
         let mut kernel = OcctKernel::new();
         let above_result = kernel.execute(&GeometryOp::LineSegment {
-            x1: 0.0, y1: 0.0, z1: 0.0,
-            x2: above_dx, y2: 0.0, z2: 0.0,
+            x1: 0.0,
+            y1: 0.0,
+            z1: 0.0,
+            x2: above_dx,
+            y2: 0.0,
+            z2: 0.0,
         });
         match above_result {
             Err(GeometryError::OperationFailed(msg)) => {
@@ -6777,7 +6869,6 @@ mod tests {
                 dz: 0.0,
             })
             .unwrap();
-
 
         // Query with density 100.0.
         let result_100 = kernel
@@ -6822,7 +6913,10 @@ mod tests {
     fn center_of_mass_invalid_handle_returns_invalid_handle_err() {
         let kernel = OcctKernel::new();
         let bad_id = GeometryHandleId(9999);
-        let result = kernel.query(&GeometryQuery::CenterOfMass { handle: bad_id, density: 1.0 });
+        let result = kernel.query(&GeometryQuery::CenterOfMass {
+            handle: bad_id,
+            density: 1.0,
+        });
         match result {
             Err(QueryError::InvalidHandle(id)) => {
                 assert_eq!(
@@ -6855,7 +6949,10 @@ mod tests {
     fn inertia_tensor_invalid_handle_returns_invalid_handle_err() {
         let kernel = OcctKernel::new();
         let bad_id = GeometryHandleId(9999);
-        let result = kernel.query(&GeometryQuery::InertiaTensor { handle: bad_id, density: 1.0 });
+        let result = kernel.query(&GeometryQuery::InertiaTensor {
+            handle: bad_id,
+            density: 1.0,
+        });
         match result {
             Err(QueryError::InvalidHandle(id)) => {
                 assert_eq!(
@@ -6890,16 +6987,21 @@ mod tests {
         // A line segment of length 10 — well above any minimum-length floor.
         let wire_h = kernel
             .execute(&GeometryOp::LineSegment {
-                x1: 0.0, y1: 0.0, z1: 0.0,
-                x2: 10.0, y2: 0.0, z2: 0.0,
+                x1: 0.0,
+                y1: 0.0,
+                z1: 0.0,
+                x2: 10.0,
+                y2: 0.0,
+                z2: 0.0,
             })
             .expect("LineSegment must succeed");
-        let result = kernel
-            .query(&GeometryQuery::CenterOfMass { handle: wire_h.id, density: 1.0 });
+        let result = kernel.query(&GeometryQuery::CenterOfMass {
+            handle: wire_h.id,
+            density: 1.0,
+        });
         // (a) must not panic, must not return Err — the kernel is permissive for non-solids.
-        let value = result.expect(
-            "CenterOfMass on a non-solid wire must not return Err (kernel is permissive)"
-        );
+        let value = result
+            .expect("CenterOfMass on a non-solid wire must not return Err (kernel is permissive)");
         // (b) result must be a JSON-encoded centroid string.
         let (x, y, z) = match &value {
             Value::String(s) => parse_centroid_json(s),
@@ -6907,9 +7009,18 @@ mod tests {
         };
         // (c) OCCT returns mass=0 for non-solids → CentreOfMass defaults to origin.
         let tol = 1e-6;
-        assert!(x.abs() < tol, "centroid x expected ≈0 for non-solid wire, got {x}");
-        assert!(y.abs() < tol, "centroid y expected ≈0 for non-solid wire, got {y}");
-        assert!(z.abs() < tol, "centroid z expected ≈0 for non-solid wire, got {z}");
+        assert!(
+            x.abs() < tol,
+            "centroid x expected ≈0 for non-solid wire, got {x}"
+        );
+        assert!(
+            y.abs() < tol,
+            "centroid y expected ≈0 for non-solid wire, got {y}"
+        );
+        assert!(
+            z.abs() < tol,
+            "centroid z expected ≈0 for non-solid wire, got {z}"
+        );
     }
 
     /// Query InertiaTensor on a non-solid wire (a line segment).
@@ -6926,15 +7037,20 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let wire_h = kernel
             .execute(&GeometryOp::LineSegment {
-                x1: 0.0, y1: 0.0, z1: 0.0,
-                x2: 10.0, y2: 0.0, z2: 0.0,
+                x1: 0.0,
+                y1: 0.0,
+                z1: 0.0,
+                x2: 10.0,
+                y2: 0.0,
+                z2: 0.0,
             })
             .expect("LineSegment must succeed");
-        let result = kernel
-            .query(&GeometryQuery::InertiaTensor { handle: wire_h.id, density: 1.0 });
-        let value = result.expect(
-            "InertiaTensor on a non-solid wire must not return Err (kernel is permissive)"
-        );
+        let result = kernel.query(&GeometryQuery::InertiaTensor {
+            handle: wire_h.id,
+            density: 1.0,
+        });
+        let value = result
+            .expect("InertiaTensor on a non-solid wire must not return Err (kernel is permissive)");
         let entries = extract_3x3_tensor_entries(&value);
         let tol = 1e-9;
         for i in 0..3 {
@@ -6978,7 +7094,10 @@ mod tests {
             .iter()
             .map(|&d| {
                 kernel
-                    .query(&GeometryQuery::CenterOfMass { handle: box_h.id, density: d })
+                    .query(&GeometryQuery::CenterOfMass {
+                        handle: box_h.id,
+                        density: d,
+                    })
                     .unwrap_or_else(|e| {
                         panic!("CenterOfMass with density={d} must not return Err: {e:?}")
                     })
@@ -7007,19 +7126,28 @@ mod tests {
                 (x - x0).abs() <= abs_tol,
                 "CenterOfMass density-independence: x differs between density={} and \
                  density={}: {} vs {}",
-                densities[i], densities[0], x, x0
+                densities[i],
+                densities[0],
+                x,
+                x0
             );
             assert!(
                 (y - y0).abs() <= abs_tol,
                 "CenterOfMass density-independence: y differs between density={} and \
                  density={}: {} vs {}",
-                densities[i], densities[0], y, y0
+                densities[i],
+                densities[0],
+                y,
+                y0
             );
             assert!(
                 (z - z0).abs() <= abs_tol,
                 "CenterOfMass density-independence: z differs between density={} and \
                  density={}: {} vs {}",
-                densities[i], densities[0], z, z0
+                densities[i],
+                densities[0],
+                z,
+                z0
             );
         }
     }
@@ -7113,13 +7241,19 @@ mod tests {
 
         // Baseline: ρ = 2.0.
         let result_baseline = kernel
-            .query(&GeometryQuery::InertiaTensor { handle: box_h_id, density: 2.0 })
+            .query(&GeometryQuery::InertiaTensor {
+                handle: box_h_id,
+                density: 2.0,
+            })
             .expect("InertiaTensor with density=2.0 must not return Err");
         let baseline = extract_3x3_tensor_entries(&result_baseline);
 
         // Edge case 1: ρ = 0.0 → zero tensor.
         let result_zero = kernel
-            .query(&GeometryQuery::InertiaTensor { handle: box_h_id, density: 0.0 })
+            .query(&GeometryQuery::InertiaTensor {
+                handle: box_h_id,
+                density: 0.0,
+            })
             .expect("InertiaTensor with density=0.0 must not return Err (kernel is permissive)");
         let zero_entries = extract_3x3_tensor_entries(&result_zero);
         for i in 0..3 {
@@ -7135,7 +7269,10 @@ mod tests {
 
         // Edge case 2: ρ = -2.0 → negated baseline tensor.
         let result_neg = kernel
-            .query(&GeometryQuery::InertiaTensor { handle: box_h_id, density: -2.0 })
+            .query(&GeometryQuery::InertiaTensor {
+                handle: box_h_id,
+                density: -2.0,
+            })
             .expect("InertiaTensor with density=-2.0 must not return Err (kernel is permissive)");
         let neg_entries = extract_3x3_tensor_entries(&result_neg);
         // Each entry must equal the negation of the baseline within an absolute tolerance.
@@ -7150,7 +7287,8 @@ mod tests {
                     (neg_entries[i][j] - expected).abs() < tol,
                     "entry [{i}][{j}] with density=-2.0 expected ≈{expected:.4} \
                      (negation of baseline {:.4}), got {}, diff {}",
-                    baseline[i][j], neg_entries[i][j],
+                    baseline[i][j],
+                    neg_entries[i][j],
                     (neg_entries[i][j] - expected).abs()
                 );
             }
@@ -7187,7 +7325,13 @@ mod tests {
         for (i, row) in rows.iter().enumerate() {
             let cols = match row {
                 Value::List(cols) => {
-                    assert_eq!(cols.len(), 3, "row {} expected 3 cols, got {}", i, cols.len());
+                    assert_eq!(
+                        cols.len(),
+                        3,
+                        "row {} expected 3 cols, got {}",
+                        i,
+                        cols.len()
+                    );
                     cols
                 }
                 other => panic!("row {} expected Value::List, got {:?}", i, other),
@@ -7203,24 +7347,26 @@ mod tests {
         // (c) diagonal entries
         assert!(
             (entries[0][0] - 20833.33).abs() < tol,
-            "I_xx expected ~20833.33, got {}", entries[0][0]
+            "I_xx expected ~20833.33, got {}",
+            entries[0][0]
         );
         assert!(
             (entries[1][1] - 70833.33).abs() < tol,
-            "I_yy expected ~70833.33, got {}", entries[1][1]
+            "I_yy expected ~70833.33, got {}",
+            entries[1][1]
         );
         assert!(
             (entries[2][2] - 83333.33).abs() < tol,
-            "I_zz expected ~83333.33, got {}", entries[2][2]
+            "I_zz expected ~83333.33, got {}",
+            entries[2][2]
         );
         // (d) off-diagonal entries all near zero
-        let off_diag_pairs = [
-            (0, 1), (0, 2), (1, 0), (1, 2), (2, 0), (2, 1),
-        ];
+        let off_diag_pairs = [(0, 1), (0, 2), (1, 0), (1, 2), (2, 0), (2, 1)];
         for (i, j) in off_diag_pairs {
             assert!(
                 entries[i][j].abs() < tol,
-                "off-diagonal [{i}][{j}] expected ~0, got {}", entries[i][j]
+                "off-diagonal [{i}][{j}] expected ~0, got {}",
+                entries[i][j]
             );
         }
 
@@ -7249,7 +7395,10 @@ mod tests {
                 assert_eq!(rows.len(), 3);
                 rows
             }
-            other => panic!("translated box: expected Value::List(rows), got {:?}", other),
+            other => panic!(
+                "translated box: expected Value::List(rows), got {:?}",
+                other
+            ),
         };
         let mut entries_t = [[0.0f64; 3]; 3];
         for (i, row) in rows_t.iter().enumerate() {
@@ -7263,7 +7412,10 @@ mod tests {
             for (j, col) in cols.iter().enumerate() {
                 entries_t[i][j] = match col {
                     Value::Real(v) => *v,
-                    other => panic!("translated [{i}][{j}] expected Value::Real, got {:?}", other),
+                    other => panic!(
+                        "translated [{i}][{j}] expected Value::Real, got {:?}",
+                        other
+                    ),
                 };
             }
         }
@@ -7271,17 +7423,20 @@ mod tests {
         assert!(
             (entries_t[0][0] - entries[0][0]).abs() < tol,
             "translated I_xx should equal origin I_xx ({:.2}), got {:.2}",
-            entries[0][0], entries_t[0][0]
+            entries[0][0],
+            entries_t[0][0]
         );
         assert!(
             (entries_t[1][1] - entries[1][1]).abs() < tol,
             "translated I_yy should equal origin I_yy ({:.2}), got {:.2}",
-            entries[1][1], entries_t[1][1]
+            entries[1][1],
+            entries_t[1][1]
         );
         assert!(
             (entries_t[2][2] - entries[2][2]).abs() < tol,
             "translated I_zz should equal origin I_zz ({:.2}), got {:.2}",
-            entries[2][2], entries_t[2][2]
+            entries[2][2],
+            entries_t[2][2]
         );
     }
 
@@ -7326,7 +7481,13 @@ mod tests {
         for (i, row) in rows.iter().enumerate() {
             let cols = match row {
                 Value::List(cols) => {
-                    assert_eq!(cols.len(), 3, "row {} expected 3 cols, got {}", i, cols.len());
+                    assert_eq!(
+                        cols.len(),
+                        3,
+                        "row {} expected 3 cols, got {}",
+                        i,
+                        cols.len()
+                    );
                     cols
                 }
                 other => panic!("row {} expected Value::List, got {:?}", i, other),
@@ -7481,7 +7642,8 @@ mod tests {
             (entries[0][1].abs() - i_xy_expected).abs() / i_xy_expected < rel_tol,
             "I_xy magnitude expected ≈{i_xy_expected:.6e} (analytic), got {} (|val|={}), \
              relative error {}",
-            entries[0][1], entries[0][1].abs(),
+            entries[0][1],
+            entries[0][1].abs(),
             (entries[0][1].abs() - i_xy_expected).abs() / i_xy_expected
         );
         // Sign check: I'_xy = sin·cos·(I_xx − I_yy) > 0 since I_xx > I_yy for this box.
@@ -7499,7 +7661,9 @@ mod tests {
         //   I'_yy = s²·I_xx_local + c²·I_yy_local = 0.25·3.5417e14 + 0.75·1.0417e14 ≈ 1.6667e14
         //   I'_zz = I_zz_local = m/12·(w²+h²) = 1e9/12·(1e6+4e6) ≈ 4.1667e14 (Z invariant)
         let m = 1.0e9_f64;
-        let w = 1000.0_f64; let h = 2000.0_f64; let d = 500.0_f64;
+        let w = 1000.0_f64;
+        let h = 2000.0_f64;
+        let d = 500.0_f64;
         let i_xx_local = m / 12.0 * (h * h + d * d);
         let i_yy_local = m / 12.0 * (w * w + d * d);
         let i_zz_local = m / 12.0 * (w * w + h * h);
@@ -7508,7 +7672,7 @@ mod tests {
         let diag_expected = [
             c2 * i_xx_local + s2 * i_yy_local, // I'_xx ≈ 2.9167e14
             s2 * i_xx_local + c2 * i_yy_local, // I'_yy ≈ 1.6667e14
-            i_zz_local,                          // I'_zz ≈ 4.1667e14
+            i_zz_local,                        // I'_zz ≈ 4.1667e14
         ];
         for i in 0..3 {
             let expected = diag_expected[i];
@@ -7577,5 +7741,4 @@ mod tests {
              Precision::Confusion() ({occt}) within 4 ULPs"
         );
     }
-
 }

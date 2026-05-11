@@ -121,78 +121,73 @@ pub(super) fn check_phase_resolve_structure_members(
     // `type_args`, so `param x : Option<Pressure>` on a conforming structure was rejected
     // as "unresolved type" even though the same shape worked elsewhere. Mirrors the
     // parallel fix in `traits.rs` (commit 10481423b2).
-    let resolve_member_annotation_type =
-        |te: &reify_syntax::TypeExpr, diagnostics: &mut Vec<Diagnostic>| -> Type {
-            match &te.kind {
-                reify_syntax::TypeExprKind::DimensionalOp { .. } => {
-                    diagnostics.push(
-                        Diagnostic::error(format!(
-                            "unresolved type in conformance check: {}",
-                            te
-                        ))
+    let resolve_member_annotation_type = |te: &reify_syntax::TypeExpr,
+                                          diagnostics: &mut Vec<Diagnostic>|
+     -> Type {
+        match &te.kind {
+            reify_syntax::TypeExprKind::DimensionalOp { .. } => {
+                diagnostics.push(
+                    Diagnostic::error(format!("unresolved type in conformance check: {}", te))
                         .with_label(DiagnosticLabel::new(
                             te.span,
                             "unexpected dimensional expression",
                         )),
-                    );
-                    return Type::Error;
-                }
-                reify_syntax::TypeExprKind::IntegerLiteral(_) => {
-                    // Let the resolver emit its specific "integer literal N is only
-                    // allowed as a type argument of Tensor or Matrix" diagnostic by
-                    // calling it once for its side effect, then return Error without
-                    // adding a second cascade diagnostic.
-                    let _ = resolve_type_expr_with_aliases(
-                        te,
-                        &empty_params,
-                        alias_registry,
-                        diagnostics,
-                        structure_names,
-                        trait_names,
-                    );
-                    return Type::Error;
-                }
-                _ => {}
+                );
+                return Type::Error;
             }
-            match resolve_type_expr_with_aliases(
-                te,
-                &empty_params,
-                alias_registry,
-                diagnostics,
-                structure_names,
-                trait_names,
-            ) {
-                Some(t) => t,
-                None => {
-                    if let reify_syntax::TypeExprKind::Named { name, type_args } = &te.kind
-                        && enum_names.contains(name.as_str())
-                    {
-                        if !type_args.is_empty() {
-                            diagnostics.push(
-                                Diagnostic::error(format!(
-                                    "enum `{}` does not accept type arguments",
-                                    name
-                                ))
-                                .with_label(DiagnosticLabel::new(
-                                    te.span,
-                                    "enum types are not generic",
-                                )),
-                            );
-                        }
-                        Type::Enum(name.to_string())
-                    } else {
+            reify_syntax::TypeExprKind::IntegerLiteral(_) => {
+                // Let the resolver emit its specific "integer literal N is only
+                // allowed as a type argument of Tensor or Matrix" diagnostic by
+                // calling it once for its side effect, then return Error without
+                // adding a second cascade diagnostic.
+                let _ = resolve_type_expr_with_aliases(
+                    te,
+                    &empty_params,
+                    alias_registry,
+                    diagnostics,
+                    structure_names,
+                    trait_names,
+                );
+                return Type::Error;
+            }
+            _ => {}
+        }
+        match resolve_type_expr_with_aliases(
+            te,
+            &empty_params,
+            alias_registry,
+            diagnostics,
+            structure_names,
+            trait_names,
+        ) {
+            Some(t) => t,
+            None => {
+                if let reify_syntax::TypeExprKind::Named { name, type_args } = &te.kind
+                    && enum_names.contains(name.as_str())
+                {
+                    if !type_args.is_empty() {
                         diagnostics.push(
                             Diagnostic::error(format!(
-                                "unresolved type in conformance check: {}",
-                                te
+                                "enum `{}` does not accept type arguments",
+                                name
                             ))
-                            .with_label(DiagnosticLabel::new(te.span, "unknown type name")),
+                            .with_label(DiagnosticLabel::new(
+                                te.span,
+                                "enum types are not generic",
+                            )),
                         );
-                        Type::Error
                     }
+                    Type::Enum(name.to_string())
+                } else {
+                    diagnostics.push(
+                        Diagnostic::error(format!("unresolved type in conformance check: {}", te))
+                            .with_label(DiagnosticLabel::new(te.span, "unknown type name")),
+                    );
+                    Type::Error
                 }
             }
-        };
+        }
+    };
 
     // Build separate maps for param and let members so phase 5 can perform
     // kind-aware lookups: a `param` requirement must be satisfied by a structure

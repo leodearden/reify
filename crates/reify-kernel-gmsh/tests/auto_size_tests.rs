@@ -8,7 +8,7 @@
 //! explicit `MeshingOptions.mesh_size` override at the dispatcher level; this
 //! function returns only the auto-derived default.
 
-use reify_kernel_gmsh::auto_size::{auto_mesh_size_from_features, AutoSizeConfig, AutoSizeError};
+use reify_kernel_gmsh::auto_size::{AutoSizeConfig, AutoSizeError, auto_mesh_size_from_features};
 use reify_types::Mesh;
 
 /// With the default multiplier (1.0), the returned size equals the smallest
@@ -108,8 +108,7 @@ fn empty_indices_returns_zero_fallback() {
          the early-return short-circuit fires before validation or iteration",
     );
     assert_eq!(
-        size,
-        0.0,
+        size, 0.0,
         "empty indices must yield exactly 0.0 fallback per documented contract; \
          callers treat 0.0 as 'auto-size unavailable' and fall back to a configured default"
     );
@@ -125,12 +124,9 @@ fn does_not_use_overall_bounding_box() {
     let mesh = Mesh {
         vertices: vec![
             // Triangle 0 — big
-            0.0, 0.0, 0.0,
-            1.0, 0.0, 0.0,
-            0.0, 1.0, 0.0,
+            0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0,
             // Triangle 1 — tiny edge somewhere in the same body
-            5.0, 5.0, 5.0,
-            5.001, 5.0, 5.0, // 1mm edge with v3 (1e-3)
+            5.0, 5.0, 5.0, 5.001, 5.0, 5.0, // 1mm edge with v3 (1e-3)
             5.0, 5.001, 5.0, // 1mm edge with v3
         ],
         indices: vec![0, 1, 2, 3, 4, 5],

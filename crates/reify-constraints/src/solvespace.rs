@@ -950,11 +950,13 @@ impl ConstraintSolver for SolveSpaceSolver {
                 }
             }
             SlvsSolveResult::Inconsistent { failed_ids } => SolveResult::Infeasible {
-                diagnostics: vec![Diagnostic::error(format!(
+                diagnostics: vec![
+                    Diagnostic::error(format!(
                         "geometric constraints are inconsistent ({} failed)",
                         failed_ids.len()
                     ))
-                    .with_code(DiagnosticCode::ConstraintUnsatisfiable)],
+                    .with_code(DiagnosticCode::ConstraintUnsatisfiable),
+                ],
             },
             SlvsSolveResult::DidntConverge => SolveResult::NoProgress {
                 reason: "SolveSpace solver did not converge".to_string(),

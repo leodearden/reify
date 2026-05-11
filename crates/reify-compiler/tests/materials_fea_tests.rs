@@ -161,7 +161,11 @@ fn elastic_material_trait_has_four_dimensioned_members() {
         .unwrap_or_else(|| {
             panic!(
                 "expected 'ElasticMaterial' trait in std/materials/fea, got traits: {:?}",
-                module.trait_defs.iter().map(|t| &t.name).collect::<Vec<_>>()
+                module
+                    .trait_defs
+                    .iter()
+                    .map(|t| &t.name)
+                    .collect::<Vec<_>>()
             )
         });
 
@@ -298,7 +302,9 @@ structure def Conformer : ElasticMaterial {
         .expect("expected Conformer template in compiled module");
 
     assert!(
-        conformer.trait_bounds.contains(&"ElasticMaterial".to_string()),
+        conformer
+            .trait_bounds
+            .contains(&"ElasticMaterial".to_string()),
         "Conformer should carry 'ElasticMaterial' trait bound, got: {:?}",
         conformer.trait_bounds
     );
@@ -482,7 +488,9 @@ fn assert_fea_material_template_shape(name: &str) {
     let template = find_structure(name);
 
     assert!(
-        template.trait_bounds.contains(&"ElasticMaterial".to_string()),
+        template
+            .trait_bounds
+            .contains(&"ElasticMaterial".to_string()),
         "{} should carry 'ElasticMaterial' trait bound, got: {:?}",
         name,
         template.trait_bounds
@@ -588,13 +596,7 @@ fn steel_aisi_1045_structure_conforms_with_correct_property_values_and_provenanc
     // The SI check guards against `kPa` vs `GPa` etc. unit-prefix typos
     // that the shape check (which only verifies dimension == PRESSURE)
     // cannot detect.
-    assert_fea_material_property_values(
-        "Steel_AISI_1045",
-        205.0e9,
-        0.29,
-        7850.0,
-        Some(310.0e6),
-    );
+    assert_fea_material_property_values("Steel_AISI_1045", 205.0e9, 0.29, 7850.0, Some(310.0e6));
 }
 
 // ─── step-11: Aluminium_6061_T6 starter material ─────────────────────────────
@@ -610,13 +612,7 @@ fn steel_aisi_1045_structure_conforms_with_correct_property_values_and_provenanc
 fn aluminium_6061_t6_structure_conforms_with_correct_property_values_and_provenance() {
     assert_fea_material_template_shape("Aluminium_6061_T6");
     // matweb-equivalent SI values: 68.9 GPa, 0.33, 2700 kg/m³, 276 MPa.
-    assert_fea_material_property_values(
-        "Aluminium_6061_T6",
-        68.9e9,
-        0.33,
-        2700.0,
-        Some(276.0e6),
-    );
+    assert_fea_material_property_values("Aluminium_6061_T6", 68.9e9, 0.33, 2700.0, Some(276.0e6));
 }
 
 // ─── step-13: Titanium_Ti6Al4V starter material ──────────────────────────────
@@ -634,13 +630,7 @@ fn aluminium_6061_t6_structure_conforms_with_correct_property_values_and_provena
 fn titanium_ti6al4v_structure_conforms_with_correct_property_values_and_provenance() {
     assert_fea_material_template_shape("Titanium_Ti6Al4V");
     // matweb / ASM Handbook SI values: 113.8 GPa, 0.342, 4430 kg/m³, 880 MPa.
-    assert_fea_material_property_values(
-        "Titanium_Ti6Al4V",
-        113.8e9,
-        0.342,
-        4430.0,
-        Some(880.0e6),
-    );
+    assert_fea_material_property_values("Titanium_Ti6Al4V", 113.8e9, 0.342, 4430.0, Some(880.0e6));
 }
 
 // ─── step-15: ABS_Plastic starter material ───────────────────────────────────
@@ -661,13 +651,7 @@ fn abs_plastic_structure_conforms_with_correct_property_values_and_provenance() 
     assert_fea_material_template_shape("ABS_Plastic");
     // matweb SI values: 2.3 GPa, 0.35, 1050 kg/m³, ~40 MPa (approximate
     // due to ABS's strain-rate-dependent ductile-to-brittle transition).
-    assert_fea_material_property_values(
-        "ABS_Plastic",
-        2.3e9,
-        0.35,
-        1050.0,
-        Some(40.0e6),
-    );
+    assert_fea_material_property_values("ABS_Plastic", 2.3e9, 0.35, 1050.0, Some(40.0e6));
 }
 
 // ─── step-17: module summary regression test ─────────────────────────────────
@@ -707,7 +691,10 @@ fn std_materials_fea_module_summary_has_one_trait_one_provenance_struct_and_four
         trait_names
     );
     assert!(
-        module.trait_defs.iter().any(|t| t.name == "ElasticMaterial"),
+        module
+            .trait_defs
+            .iter()
+            .any(|t| t.name == "ElasticMaterial"),
         "std/materials/fea should contain the 'ElasticMaterial' trait, got: {:?}",
         trait_names
     );
@@ -757,7 +744,9 @@ fn std_materials_fea_module_summary_has_one_trait_one_provenance_struct_and_four
     for material in &material_names {
         let template = find_structure(material);
         assert!(
-            template.trait_bounds.contains(&"ElasticMaterial".to_string()),
+            template
+                .trait_bounds
+                .contains(&"ElasticMaterial".to_string()),
             "{} should carry 'ElasticMaterial' trait bound, got: {:?}",
             material,
             template.trait_bounds

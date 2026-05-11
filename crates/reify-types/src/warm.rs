@@ -11,7 +11,6 @@ pub struct OpaqueState {
     estimated_size: usize,
 }
 
-
 impl fmt::Debug for OpaqueState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("OpaqueState")
@@ -124,8 +123,7 @@ mod tests {
 
     impl WarmStartable for MockWarmStartable {
         fn warm_state(&self) -> Option<OpaqueState> {
-            self.stored_i32
-                .map(|v| OpaqueState::new(v, 4)) // i32 is 4 bytes
+            self.stored_i32.map(|v| OpaqueState::new(v, 4)) // i32 is 4 bytes
         }
 
         fn with_warm_state(&mut self, state: OpaqueState) {

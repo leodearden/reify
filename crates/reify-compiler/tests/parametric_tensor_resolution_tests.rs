@@ -108,9 +108,13 @@ fn tensor_2_3_moment_of_inertia_resolves_to_typed_tensor() {
 #[test]
 fn matrix_3_2_length_resolves_to_typed_matrix() {
     let (_, _, transform) = compile_acceptance();
-    let expected = Type::matrix(3, 2, Type::Scalar {
-        dimension: DimensionVector::LENGTH,
-    });
+    let expected = Type::matrix(
+        3,
+        2,
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+    );
     assert_eq!(
         transform, expected,
         "Matrix<3, 2, Length> must resolve to Type::Matrix {{ m: 3, n: 2, \

@@ -86,19 +86,30 @@ pub fn through_thickness_check(
     //     thickness axis (smallest dim).
     // -----------------------------------------------------------------
     let (mut min_x, mut min_y, mut min_z) = (f64::INFINITY, f64::INFINITY, f64::INFINITY);
-    let (mut max_x, mut max_y, mut max_z) = (f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+    let (mut max_x, mut max_y, mut max_z) =
+        (f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
     for v in surface.vertices.chunks_exact(3) {
         let (x, y, z) = (v[0] as f64, v[1] as f64, v[2] as f64);
-        min_x = min_x.min(x); min_y = min_y.min(y); min_z = min_z.min(z);
-        max_x = max_x.max(x); max_y = max_y.max(y); max_z = max_z.max(z);
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        min_z = min_z.min(z);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+        max_z = max_z.max(z);
     }
     let dx = max_x - min_x;
     let dy = max_y - min_y;
     let dz = max_z - min_z;
     let mut thickness = dx;
     let mut axis: usize = 0;
-    if dy < thickness { thickness = dy; axis = 1; }
-    if dz < thickness { thickness = dz; axis = 2; }
+    if dy < thickness {
+        thickness = dy;
+        axis = 1;
+    }
+    if dz < thickness {
+        thickness = dz;
+        axis = 2;
+    }
 
     // -----------------------------------------------------------------
     // (2) Project tet centroids onto the thickness axis, then count

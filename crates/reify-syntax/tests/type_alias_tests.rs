@@ -59,10 +59,8 @@ fn assert_no_valid_binop_recovery(decls: &[Declaration]) {
         _ => None,
     }) {
         assert_eq!(ta.name, "Foo");
-        let looks_like_valid_binop = matches!(
-            &ta.type_expr.kind,
-            TypeExprKind::DimensionalOp { .. }
-        );
+        let looks_like_valid_binop =
+            matches!(&ta.type_expr.kind, TypeExprKind::DimensionalOp { .. });
         assert!(
             !looks_like_valid_binop,
             "malformed input should not produce well-formed dimensional binary op, got {:?}",
@@ -262,8 +260,12 @@ unit mm : Length = 0.001
         Declaration::TypeAlias(ta) => {
             assert_eq!(ta.name, "Pressure");
             assert!(
-                matches!(&ta.type_expr.kind, TypeExprKind::DimensionalOp { op: DimOp::Div, .. }),
-                "expected DimensionalOp(Div), got {:?}", ta.type_expr.kind
+                matches!(
+                    &ta.type_expr.kind,
+                    TypeExprKind::DimensionalOp { op: DimOp::Div, .. }
+                ),
+                "expected DimensionalOp(Div), got {:?}",
+                ta.type_expr.kind
             );
         }
         other => panic!("expected Declaration::TypeAlias, got {:?}", other),

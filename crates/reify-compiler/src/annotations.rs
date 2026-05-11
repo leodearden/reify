@@ -101,14 +101,19 @@ pub(crate) fn validate_annotations(
                 // Structure/occurrence remain in the allow-list to avoid a
                 // breaking change; a follow-up may add a distinct
                 // 'annotation has no effect here' warning or remove them entirely.
-                if !matches!(context, "structure" | "occurrence" | "constraint_def" | "function") {
+                if !matches!(
+                    context,
+                    "structure" | "occurrence" | "constraint_def" | "function"
+                ) {
                     diagnostics.push(
                         Diagnostic::warning(format!(
                             "annotation @optimized is not valid on {context} declarations"
                         ))
                         .with_label(DiagnosticLabel::new(ann.span, "@optimized")),
                     );
-                } else if matches!(context, "constraint_def" | "function") && !is_valid_optimized(ann) {
+                } else if matches!(context, "constraint_def" | "function")
+                    && !is_valid_optimized(ann)
+                {
                     // @optimized without a string-literal target on a constraint_def or
                     // function silently routes to the language-level checker, which
                     // confuses users who think they wired up an optimized impl. Warn
@@ -152,7 +157,10 @@ pub(crate) fn validate_annotations(
                     // thickness from medial-axis analysis (not yet implemented).
                     match ann.args.as_slice() {
                         [] => {} // bare @shell — defer thickness to medial analysis.
-                        [reify_types::AnnotationArg::Int(_) | reify_types::AnnotationArg::Real(_)] => {}
+                        [
+                            reify_types::AnnotationArg::Int(_)
+                            | reify_types::AnnotationArg::Real(_),
+                        ] => {}
                         [_] => {
                             diagnostics.push(
                                 Diagnostic::warning(
@@ -160,7 +168,10 @@ pub(crate) fn validate_annotations(
                                      e.g. @shell(0.5)"
                                         .to_string(),
                                 )
-                                .with_label(DiagnosticLabel::new(ann.span, "non-numeric thickness")),
+                                .with_label(DiagnosticLabel::new(
+                                    ann.span,
+                                    "non-numeric thickness",
+                                )),
                             );
                         }
                         _ => {
@@ -595,7 +606,10 @@ mod tests {
     /// PreferredStrategy hints are exempt from collection name validation.
     #[test]
     fn validate_collections_skips_preferred_strategy() {
-        let hints = vec![make_hint(SolverHintKind::PreferredStrategy, "bogus_xyz_strategy")];
+        let hints = vec![make_hint(
+            SolverHintKind::PreferredStrategy,
+            "bogus_xyz_strategy",
+        )];
         let scope = CompilationScope::new("Test");
         let functions: &[CompiledFunction] = &[];
         let mut diagnostics = Vec::new();
@@ -674,10 +688,7 @@ mod tests {
     fn shell_valid_arg_shapes_on_entity_contexts() {
         let cases = [
             (vec![], "structure"),
-            (
-                vec![reify_types::AnnotationArg::Real(0.5)],
-                "structure",
-            ),
+            (vec![reify_types::AnnotationArg::Real(0.5)], "structure"),
             (vec![reify_types::AnnotationArg::Int(2)], "occurrence"),
         ];
         for (args, context) in cases {
@@ -700,7 +711,9 @@ mod tests {
         validate_annotations(&anns, "function", &mut diagnostics);
         assert_eq!(diagnostics.len(), 1);
         assert!(
-            diagnostics[0].message.contains("@shell is not valid on function"),
+            diagnostics[0]
+                .message
+                .contains("@shell is not valid on function"),
             "unexpected message: {}",
             diagnostics[0].message
         );
@@ -795,7 +808,9 @@ mod tests {
             diagnostics
         );
         assert!(
-            diagnostics[0].message.contains("@solid is not valid on function"),
+            diagnostics[0]
+                .message
+                .contains("@solid is not valid on function"),
             "unexpected message: {}",
             diagnostics[0].message
         );
@@ -823,7 +838,9 @@ mod tests {
             diagnostics
         );
         assert!(
-            diagnostics[0].message.contains("@solid is not valid on function"),
+            diagnostics[0]
+                .message
+                .contains("@solid is not valid on function"),
             "expected context-mismatch message, got: {}",
             diagnostics[0].message
         );
@@ -839,12 +856,24 @@ mod tests {
     #[test]
     fn solid_with_any_arg_warns() {
         let arg_shapes: &[(&str, Vec<reify_types::AnnotationArg>)] = &[
-            ("Real(0.5)",   vec![reify_types::AnnotationArg::Real(0.5)]),
-            ("Int(2)",      vec![reify_types::AnnotationArg::Int(2)]),
-            ("String(foo)", vec![reify_types::AnnotationArg::String("foo".into())]),
-            ("Bool(true)",  vec![reify_types::AnnotationArg::Bool(true)]),
-            ("Ident(id)",   vec![reify_types::AnnotationArg::Ident("ident".into())]),
-            ("two reals",   vec![reify_types::AnnotationArg::Real(0.5), reify_types::AnnotationArg::Real(0.6)]),
+            ("Real(0.5)", vec![reify_types::AnnotationArg::Real(0.5)]),
+            ("Int(2)", vec![reify_types::AnnotationArg::Int(2)]),
+            (
+                "String(foo)",
+                vec![reify_types::AnnotationArg::String("foo".into())],
+            ),
+            ("Bool(true)", vec![reify_types::AnnotationArg::Bool(true)]),
+            (
+                "Ident(id)",
+                vec![reify_types::AnnotationArg::Ident("ident".into())],
+            ),
+            (
+                "two reals",
+                vec![
+                    reify_types::AnnotationArg::Real(0.5),
+                    reify_types::AnnotationArg::Real(0.6),
+                ],
+            ),
         ];
         for (label, args) in arg_shapes {
             let anns = vec![ann(reify_types::SOLID_ANNOTATION, args.clone())];

@@ -55,7 +55,9 @@ fn make_function_call(name: &str, args: Vec<CompiledExpr>, result_type: Type) ->
 /// scalar codomain (the documented `displacement` field codomain on
 /// the `ElasticResult` struct).
 fn make_displacement_field(name: &str, data: Vec<f64>) -> Value {
-    let length = Type::Scalar { dimension: DimensionVector::LENGTH };
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
     let sf = SampledField {
         name: name.to_string(),
         kind: SampledGridKind::Regular1D,
@@ -120,10 +122,7 @@ fn make_displacement_extractor_lambda() -> Value {
             // result_type comment below).
             Type::Map(Box::new(Type::String), Box::new(Type::Real)),
         ),
-        CompiledExpr::literal(
-            Value::String("displacement".to_string()),
-            Type::String,
-        ),
+        CompiledExpr::literal(Value::String("displacement".to_string()), Type::String),
         // Documentary result type: actual runtime shape is Field<Real, Length>
         // (the displacement Field codomain). IndexAccess does not consult
         // `result_type` at runtime, so this is a documentary annotation only.
@@ -147,18 +146,9 @@ fn make_displacement_extractor_lambda() -> Value {
 fn worst_case_with_displacement_extractor_lambda_returns_dominant_case_name() {
     // Three cases with distinct max displacements (50 / 200 / 100 over a
     // shared 3-grid axis). Per-case max = trailing element by construction.
-    let case_a = make_elastic_result_map(make_displacement_field(
-        "a",
-        vec![10.0, 30.0, 50.0],
-    ));
-    let case_b = make_elastic_result_map(make_displacement_field(
-        "b",
-        vec![100.0, 150.0, 200.0],
-    ));
-    let case_c = make_elastic_result_map(make_displacement_field(
-        "c",
-        vec![20.0, 60.0, 100.0],
-    ));
+    let case_a = make_elastic_result_map(make_displacement_field("a", vec![10.0, 30.0, 50.0]));
+    let case_b = make_elastic_result_map(make_displacement_field("b", vec![100.0, 150.0, 200.0]));
+    let case_c = make_elastic_result_map(make_displacement_field("c", vec![20.0, 60.0, 100.0]));
     let mcr = make_multi_case_result(&[
         ("operating", case_a),
         ("overload", case_b),
@@ -194,18 +184,12 @@ fn worst_case_with_displacement_extractor_lambda_returns_dominant_case_name() {
 #[test]
 fn worst_case_with_displacement_extractor_lambda_tie_breaks_lex_smaller_case() {
     // "alpha" and "beta" both peak at 100; "gamma" peaks at 50.
-    let case_alpha = make_elastic_result_map(make_displacement_field(
-        "alpha",
-        vec![10.0, 50.0, 100.0],
-    ));
-    let case_beta = make_elastic_result_map(make_displacement_field(
-        "beta",
-        vec![10.0, 50.0, 100.0],
-    ));
-    let case_gamma = make_elastic_result_map(make_displacement_field(
-        "gamma",
-        vec![10.0, 30.0, 50.0],
-    ));
+    let case_alpha =
+        make_elastic_result_map(make_displacement_field("alpha", vec![10.0, 50.0, 100.0]));
+    let case_beta =
+        make_elastic_result_map(make_displacement_field("beta", vec![10.0, 50.0, 100.0]));
+    let case_gamma =
+        make_elastic_result_map(make_displacement_field("gamma", vec![10.0, 30.0, 50.0]));
     let mcr = make_multi_case_result(&[
         ("alpha", case_alpha),
         ("beta", case_beta),

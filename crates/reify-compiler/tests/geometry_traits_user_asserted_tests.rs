@@ -13,7 +13,9 @@
 //! - Mixed bounds: only geometry marker bounds trip the lint.
 //! - Parametric: every stdlib geometry marker name triggers exactly one warning.
 
-use reify_test_support::{compile_source_with_stdlib, errors_only, warnings_only, EXPECTED_GEOMETRY_TRAITS};
+use reify_test_support::{
+    EXPECTED_GEOMETRY_TRAITS, compile_source_with_stdlib, errors_only, warnings_only,
+};
 use reify_types::{DiagnosticCode, Severity};
 
 /// A structure with a single Watertight bound must emit exactly one
@@ -195,7 +197,12 @@ structure def Shell : Closed + Manifold {
 
     // Each warning must have exactly one label with a non-empty span.
     for w in &asserted {
-        assert_eq!(w.labels.len(), 1, "each warning must have 1 label, got: {:#?}", w.labels);
+        assert_eq!(
+            w.labels.len(),
+            1,
+            "each warning must have 1 label, got: {:#?}",
+            w.labels
+        );
         assert!(
             !w.labels[0].span.is_empty(),
             "label span must be non-empty, got: {:?}",
@@ -205,8 +212,7 @@ structure def Shell : Closed + Manifold {
 
     // The two label spans must be distinct (each bound has its own source position).
     assert_ne!(
-        asserted[0].labels[0].span,
-        asserted[1].labels[0].span,
+        asserted[0].labels[0].span, asserted[1].labels[0].span,
         "Closed and Manifold bounds must have distinct label spans"
     );
 }

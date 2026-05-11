@@ -70,9 +70,17 @@ fn compound_money_per_mass_via_inline_user_unit_decl() {
     assert_eq!(*op, BinOp::Div, "expected Div op");
     let (lsi, ldim) = expect_scalar(left);
     let (rsi, rdim) = expect_scalar(right);
-    assert!((lsi - 25.0).abs() < UNIT_EPSILON, "left si_value {} ≠ 25.0", lsi);
+    assert!(
+        (lsi - 25.0).abs() < UNIT_EPSILON,
+        "left si_value {} ≠ 25.0",
+        lsi
+    );
     assert_eq!(ldim, DimensionVector::MONEY);
-    assert!((rsi - 1.0).abs() < UNIT_EPSILON, "right si_value {} ≠ 1.0", rsi);
+    assert!(
+        (rsi - 1.0).abs() < UNIT_EPSILON,
+        "right si_value {} ≠ 1.0",
+        rsi
+    );
     assert_eq!(rdim, DimensionVector::MASS);
 }
 
@@ -132,7 +140,11 @@ fn money_per_mass_times_mass_cancels_to_money_at_compile_time() {
     assert_eq!(*left_op, BinOp::Div, "inner-left op should be Div");
 
     let (rsi, rdim) = expect_scalar(right);
-    assert!((rsi - 2.0).abs() < UNIT_EPSILON, "right si_value {} ≠ 2.0", rsi);
+    assert!(
+        (rsi - 2.0).abs() < UNIT_EPSILON,
+        "right si_value {} ≠ 2.0",
+        rsi
+    );
     assert_eq!(rdim, DimensionVector::MASS);
 }
 
@@ -202,7 +214,11 @@ fn gbp_quantity_literal_resolves_via_user_factor() {
         "5GBP si_value should be 6.25 (5 * 1.25), got {}",
         si
     );
-    assert_eq!(dim, DimensionVector::MONEY, "5GBP dimension should be MONEY");
+    assert_eq!(
+        dim,
+        DimensionVector::MONEY,
+        "5GBP dimension should be MONEY"
+    );
 }
 
 // ─── test 5: cross-currency `5GBP + 5USD` compiles with MONEY dim ────────────

@@ -17,8 +17,8 @@ use std::collections::HashSet;
 
 use reify_types::value::SampledField;
 
-use crate::grid_validation::{validate_regular3d, GridValidationError};
-use crate::medial::{sample_at_index, MedialMask};
+use crate::grid_validation::{GridValidationError, validate_regular3d};
+use crate::medial::{MedialMask, sample_at_index};
 
 /// Triangle mesh representing the mid-surface of a thin solid.
 ///
@@ -826,18 +826,16 @@ mod tests {
             origin: [0.0, 0.0, 0.0],
             voxels: vec![],
         };
-        let mesh: MidSurfaceMesh =
-            extract_mid_surface(&sdf, &mask, &MidSurfaceOptions::default())
-                .expect("empty mask on valid 3D SDF should return empty mesh");
+        let mesh: MidSurfaceMesh = extract_mid_surface(&sdf, &mask, &MidSurfaceOptions::default())
+            .expect("empty mask on valid 3D SDF should return empty mesh");
         assert!(
             mesh.vertices.is_empty() && mesh.triangles.is_empty() && mesh.thickness.is_empty(),
             "empty mask must produce empty mid-surface mesh"
         );
 
         // Compile-test: error type and wrapper variant are publicly named.
-        let _: MidSurfaceError = MidSurfaceError::GridValidation(
-            GridValidationError::EmptyAxisGrid { axis: 0 },
-        );
+        let _: MidSurfaceError =
+            MidSurfaceError::GridValidation(GridValidationError::EmptyAxisGrid { axis: 0 });
     }
 
     // ── Step 3: kind-check rejection tests ───────────────────────────────────
@@ -1097,7 +1095,10 @@ mod tests {
             "thickness vector must be non-empty on a non-empty mask"
         );
         for &t in &mesh.thickness {
-            assert!(t > 0.0, "all per-vertex thickness values must be positive (got {t})");
+            assert!(
+                t > 0.0,
+                "all per-vertex thickness values must be positive (got {t})"
+            );
             assert!(
                 (t - expected).abs() < 0.5,
                 "per-vertex thickness {t} is too far from expected {expected} \

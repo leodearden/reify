@@ -85,7 +85,8 @@ pub(crate) fn phase_aliases(
             // parametric-prelude Info hint. This matches user-shadows-prelude
             // precedence applied elsewhere.
             if !user_alias_names.contains(pa.name.as_str()) {
-                ctx.alias_registry.mark_skipped_parametric_prelude(pa.name.clone());
+                ctx.alias_registry
+                    .mark_skipped_parametric_prelude(pa.name.clone());
             }
             continue;
         }

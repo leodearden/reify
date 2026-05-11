@@ -141,11 +141,7 @@ use faer::sparse::SparseRowMat;
 ///   increasing. **Release builds silently produce wrong results** (binary
 ///   search on unsorted data returns unspecified Ok/Err — sort col_idx, e.g.
 ///   via `try_new_from_triplets`, before calling).
-pub fn apply_mpc_row_elimination(
-    k: &mut SparseRowMat<usize, f64>,
-    f: &mut [f64],
-    rows: &[MpcRow],
-) {
+pub fn apply_mpc_row_elimination(k: &mut SparseRowMat<usize, f64>, f: &mut [f64], rows: &[MpcRow]) {
     // --- Contract checks ---
     assert_eq!(
         f.len(),
@@ -259,7 +255,9 @@ pub fn apply_mpc_row_elimination(
             let start = row_ptr[j];
             let end = row_ptr[j + 1];
             // Find K[j][p].  None → no stored entry → skip entirely.
-            let Some(kjp_store_idx) = find_in_row(col_idx, start, end, p) else { continue };
+            let Some(kjp_store_idx) = find_in_row(col_idx, start, end, p) else {
+                continue;
+            };
             let kjp = vals[kjp_store_idx];
             // K[j][p] IS stored (possibly as a structural zero).  Run the
             // redistribution-target lookup regardless of kjp's value so that
@@ -279,7 +277,9 @@ pub fn apply_mpc_row_elimination(
                     None => panic!(
                         "MpcRow apply: missing K[{}][{}] entry — required for redistribution \
                          K[j][dofs[{}]] += K[j][p]·α; ensure assembly pre-allocates this entry",
-                        j, di, i + 1,
+                        j,
+                        di,
+                        i + 1,
                     ),
                 }
             }
@@ -306,7 +306,8 @@ pub fn apply_mpc_row_elimination(
                 None => panic!(
                     "MpcRow apply: missing K[{p}][{}] entry — required to set pivot equation \
                      K[p][dofs[{}]] = -αᵢ; ensure assembly pre-allocates this entry",
-                    di, i + 1,
+                    di,
+                    i + 1,
                 ),
             }
         }
@@ -322,7 +323,10 @@ pub fn apply_mpc_row_elimination(
 /// the row (faer `SymbolicSparseRowMat` soft invariant).
 #[inline]
 fn find_in_row(col_idx: &[usize], start: usize, end: usize, target: usize) -> Option<usize> {
-    col_idx[start..end].binary_search(&target).ok().map(|rel| start + rel)
+    col_idx[start..end]
+        .binary_search(&target)
+        .ok()
+        .map(|rel| start + rel)
 }
 
 /// One linear multi-point constraint row of the form
@@ -463,9 +467,9 @@ impl MpcRow {
         // (sign: ε_012=+1, ε_102=−1, ε_120=+1, ε_201=+1, ε_021=−1, ε_210=−1)
         let rot_data: [(usize, usize, f64, usize, usize, f64); 3] = [
             // (b1, c1, sign1, b2, c2, sign2) — sign_i = ε_{a,bi,ci}
-            (1, 2,  1.0, 2, 1, -1.0), // a=0: ε_012=+1, ε_021=−1
-            (0, 2, -1.0, 2, 0,  1.0), // a=1: ε_102=−1, ε_120=+1
-            (0, 1,  1.0, 1, 0, -1.0), // a=2: ε_201=+1, ε_210=−1
+            (1, 2, 1.0, 2, 1, -1.0), // a=0: ε_012=+1, ε_021=−1
+            (0, 2, -1.0, 2, 0, 1.0), // a=1: ε_102=−1, ε_120=+1
+            (0, 1, 1.0, 1, 0, -1.0), // a=2: ε_201=+1, ε_210=−1
         ];
 
         for (a, &(b1, c1, sign1, b2, c2, sign2)) in rot_data.iter().enumerate() {
@@ -630,14 +634,15 @@ mod tests {
         let mut f: Vec<f64> = (1..=5).map(|i| i as f64).collect();
 
         // Snapshot K and f
-        let k_before: Vec<Vec<f64>> =
-            (0..n).map(|i| (0..n).map(|j| read_k(&k, i, j)).collect()).collect();
+        let k_before: Vec<Vec<f64>> = (0..n)
+            .map(|i| (0..n).map(|j| read_k(&k, i, j)).collect())
+            .collect();
         let f_before = f.clone();
 
         // MpcRow: pivot p=0, d1=2, d2=4; coeffs=[2.0, -1.0, 1.0], rhs=0
         // α_1 = -(-1.0)/2.0 = 0.5, α_2 = -(1.0)/2.0 = -0.5, β = 0/2 = 0
         let row = MpcRow::new(vec![0, 2, 4], vec![2.0, -1.0, 1.0], 0.0);
-        let alpha_1 = 0.5_f64;  // -coeffs[1]/c0
+        let alpha_1 = 0.5_f64; // -coeffs[1]/c0
         let alpha_2 = -0.5_f64; // -coeffs[2]/c0
 
         apply_mpc_row_elimination(&mut k, &mut f, &[row]);
@@ -647,7 +652,11 @@ mod tests {
         let d2 = 4usize;
 
         // (a) Pivot row
-        assert_eq!(read_k(&k, p, p).to_bits(), 1.0_f64.to_bits(), "K[0][0] must be 1.0");
+        assert_eq!(
+            read_k(&k, p, p).to_bits(),
+            1.0_f64.to_bits(),
+            "K[0][0] must be 1.0"
+        );
         assert_eq!(
             read_k(&k, p, d1).to_bits(),
             (-alpha_1).to_bits(),
@@ -668,7 +677,11 @@ mod tests {
 
         // (b) Non-pivot rows
         for j in 1..n {
-            assert_eq!(read_k(&k, j, p), 0.0, "K[{j}][0] should be 0 (column p eliminated)");
+            assert_eq!(
+                read_k(&k, j, p),
+                0.0,
+                "K[{j}][0] should be 0 (column p eliminated)"
+            );
             let expected_d1 = k_before[j][d1] + k_before[j][p] * alpha_1;
             assert_eq!(
                 read_k(&k, j, d1).to_bits(),
@@ -737,8 +750,9 @@ mod tests {
             SparseRowMat::try_new_from_triplets(n, n, &triplets).unwrap();
         let mut f: Vec<f64> = (1..=5).map(|i| i as f64).collect();
 
-        let k_before: Vec<Vec<f64>> =
-            (0..n).map(|i| (0..n).map(|j| read_k(&k, i, j)).collect()).collect();
+        let k_before: Vec<Vec<f64>> = (0..n)
+            .map(|i| (0..n).map(|j| read_k(&k, i, j)).collect())
+            .collect();
         let f_before = f.clone();
 
         // rhs=1.5 → β=1.5/2.0=0.75, α_1=0.5, α_2=-0.5 (same as step-3)
@@ -770,16 +784,22 @@ mod tests {
         }
 
         // (c) Pivot row: K[0][0]=1, K[0][2]=-α_1=-0.5, K[0][4]=-α_2=+0.5, rest zero
-        assert_eq!(read_k(&k, p, p).to_bits(), 1.0_f64.to_bits(), "K[0][0] must be 1.0");
+        assert_eq!(
+            read_k(&k, p, p).to_bits(),
+            1.0_f64.to_bits(),
+            "K[0][0] must be 1.0"
+        );
         assert_eq!(
             read_k(&k, p, d1).to_bits(),
             (-alpha_1).to_bits(),
-            "K[0][2] must be -α_1={}", -alpha_1
+            "K[0][2] must be -α_1={}",
+            -alpha_1
         );
         assert_eq!(
             read_k(&k, p, d2).to_bits(),
             (-alpha_2).to_bits(),
-            "K[0][4] must be -α_2={}", -alpha_2
+            "K[0][4] must be -α_2={}",
+            -alpha_2
         );
         for j in 0..n {
             if j != p && j != d1 && j != d2 {
@@ -789,7 +809,11 @@ mod tests {
 
         // (d) Same K redistribution as homogeneous (αᵢ don't depend on rhs)
         for j in 1..n {
-            assert_eq!(read_k(&k, j, p), 0.0, "K[{j}][0] should be 0 (column p eliminated)");
+            assert_eq!(
+                read_k(&k, j, p),
+                0.0,
+                "K[{j}][0] should be 0 (column p eliminated)"
+            );
             let expected_d1 = k_before[j][d1] + k_before[j][p] * alpha_1;
             assert_eq!(
                 read_k(&k, j, d1).to_bits(),
@@ -982,8 +1006,9 @@ mod tests {
             SparseRowMat::try_new_from_triplets(n, n, &triplets).unwrap();
         let mut f: Vec<f64> = (1..=n).map(|i| i as f64).collect();
 
-        let k_before: Vec<Vec<f64>> =
-            (0..n).map(|i| (0..n).map(|j| read_k(&k, i, j)).collect()).collect();
+        let k_before: Vec<Vec<f64>> = (0..n)
+            .map(|i| (0..n).map(|j| read_k(&k, i, j)).collect())
+            .collect();
         let f_before = f.clone();
 
         apply_mpc_row_elimination(&mut k, &mut f, &[]);
@@ -1032,13 +1057,13 @@ mod tests {
     #[test]
     fn shell_tet_tying_with_z_normal_produces_six_canonical_constraint_rows() {
         let rows = MpcRow::shell_tet_tying(
-            [0, 1, 2],   // shell_disp
-            [3, 4, 5],   // shell_rot
-            [6, 7, 8],   // tet_top
-            [9, 10, 11], // tet_mid
-            [12, 13, 14],// tet_bot
+            [0, 1, 2],       // shell_disp
+            [3, 4, 5],       // shell_rot
+            [6, 7, 8],       // tet_top
+            [9, 10, 11],     // tet_mid
+            [12, 13, 14],    // tet_bot
             [0.0, 0.0, 1.0], // normal = z
-            1.0,         // h = 1
+            1.0,             // h = 1
         );
         assert_eq!(rows.len(), 6, "shell_tet_tying must produce 6 rows");
 
@@ -1091,11 +1116,11 @@ mod tests {
     #[test]
     fn shell_tet_tying_with_x_normal_swaps_drilling_axis() {
         let rows = MpcRow::shell_tet_tying(
-            [0, 1, 2],   // shell_disp
-            [3, 4, 5],   // shell_rot
-            [6, 7, 8],   // tet_top
-            [9, 10, 11], // tet_mid
-            [12, 13, 14],// tet_bot
+            [0, 1, 2],       // shell_disp
+            [3, 4, 5],       // shell_rot
+            [6, 7, 8],       // tet_top
+            [9, 10, 11],     // tet_mid
+            [12, 13, 14],    // tet_bot
             [1.0, 0.0, 0.0], // normal = x
             1.0,
         );
@@ -1108,7 +1133,11 @@ mod tests {
 
         // Row 3 — axis 0 is the drilling axis (parallel to normal=[1,0,0]):
         // tet-only fallback u_top_x - u_bot_x = 0, pivot = tet_top[0]=6
-        assert_eq!(rows[3].dofs, vec![6, 12], "row 3: drilling fallback for axis 0");
+        assert_eq!(
+            rows[3].dofs,
+            vec![6, 12],
+            "row 3: drilling fallback for axis 0"
+        );
         assert_eq!(rows[3].coeffs, vec![1.0, -1.0], "row 3: coeffs");
 
         // Row 4 — axis 1 (y): pivot = shell_rot[2]=5 (b2=2, largest |coeff| for n_x=1)
@@ -1160,13 +1189,13 @@ mod tests {
     fn shell_tet_tying_with_oblique_normal_produces_three_four_term_rotation_rows() {
         let inv_sqrt3 = 1.0_f64 / 3.0_f64.sqrt();
         let rows = MpcRow::shell_tet_tying(
-            [0, 1, 2],    // shell_disp
-            [3, 4, 5],    // shell_rot
-            [6, 7, 8],    // tet_top
-            [9, 10, 11],  // tet_mid
-            [12, 13, 14], // tet_bot
+            [0, 1, 2],                         // shell_disp
+            [3, 4, 5],                         // shell_rot
+            [6, 7, 8],                         // tet_top
+            [9, 10, 11],                       // tet_mid
+            [12, 13, 14],                      // tet_bot
             [inv_sqrt3, inv_sqrt3, inv_sqrt3], // oblique unit normal
-            1.0,          // h = 1
+            1.0,                               // h = 1
         );
         assert_eq!(rows.len(), 6, "shell_tet_tying must produce 6 rows");
 
@@ -1183,10 +1212,26 @@ mod tests {
         // dofs = [shell_rot[1]=4, shell_rot[2]=5, tet_top[0]=6, tet_bot[0]=12]
         assert_eq!(rows[3].dofs, vec![4, 5, 6, 12], "row 3 dofs");
         assert_eq!(rows[3].coeffs.len(), 4, "row 3 must be four-term");
-        assert_eq!(rows[3].coeffs[0].to_bits(), (-inv_sqrt3).to_bits(), "row 3 pivot_coeff");
-        assert_eq!(rows[3].coeffs[1].to_bits(), inv_sqrt3.to_bits(), "row 3 other_coeff");
-        assert_eq!(rows[3].coeffs[2].to_bits(), 1.0_f64.to_bits(), "row 3 tet_top coeff");
-        assert_eq!(rows[3].coeffs[3].to_bits(), (-1.0_f64).to_bits(), "row 3 tet_bot coeff");
+        assert_eq!(
+            rows[3].coeffs[0].to_bits(),
+            (-inv_sqrt3).to_bits(),
+            "row 3 pivot_coeff"
+        );
+        assert_eq!(
+            rows[3].coeffs[1].to_bits(),
+            inv_sqrt3.to_bits(),
+            "row 3 other_coeff"
+        );
+        assert_eq!(
+            rows[3].coeffs[2].to_bits(),
+            1.0_f64.to_bits(),
+            "row 3 tet_top coeff"
+        );
+        assert_eq!(
+            rows[3].coeffs[3].to_bits(),
+            (-1.0_f64).to_bits(),
+            "row 3 tet_bot coeff"
+        );
         assert_eq!(rows[3].rhs.to_bits(), 0.0_f64.to_bits(), "row 3 rhs");
 
         // ── Rotation row 4 (a=1): rot_data (0,2,-1, 2,0,+1) ────────────────
@@ -1195,10 +1240,26 @@ mod tests {
         // dofs = [shell_rot[0]=3, shell_rot[2]=5, tet_top[1]=7, tet_bot[1]=13]
         assert_eq!(rows[4].dofs, vec![3, 5, 7, 13], "row 4 dofs");
         assert_eq!(rows[4].coeffs.len(), 4, "row 4 must be four-term");
-        assert_eq!(rows[4].coeffs[0].to_bits(), inv_sqrt3.to_bits(), "row 4 pivot_coeff");
-        assert_eq!(rows[4].coeffs[1].to_bits(), (-inv_sqrt3).to_bits(), "row 4 other_coeff");
-        assert_eq!(rows[4].coeffs[2].to_bits(), 1.0_f64.to_bits(), "row 4 tet_top coeff");
-        assert_eq!(rows[4].coeffs[3].to_bits(), (-1.0_f64).to_bits(), "row 4 tet_bot coeff");
+        assert_eq!(
+            rows[4].coeffs[0].to_bits(),
+            inv_sqrt3.to_bits(),
+            "row 4 pivot_coeff"
+        );
+        assert_eq!(
+            rows[4].coeffs[1].to_bits(),
+            (-inv_sqrt3).to_bits(),
+            "row 4 other_coeff"
+        );
+        assert_eq!(
+            rows[4].coeffs[2].to_bits(),
+            1.0_f64.to_bits(),
+            "row 4 tet_top coeff"
+        );
+        assert_eq!(
+            rows[4].coeffs[3].to_bits(),
+            (-1.0_f64).to_bits(),
+            "row 4 tet_bot coeff"
+        );
         assert_eq!(rows[4].rhs.to_bits(), 0.0_f64.to_bits(), "row 4 rhs");
 
         // ── Rotation row 5 (a=2): rot_data (0,1,+1, 1,0,-1) ────────────────
@@ -1207,10 +1268,26 @@ mod tests {
         // dofs = [shell_rot[0]=3, shell_rot[1]=4, tet_top[2]=8, tet_bot[2]=14]
         assert_eq!(rows[5].dofs, vec![3, 4, 8, 14], "row 5 dofs");
         assert_eq!(rows[5].coeffs.len(), 4, "row 5 must be four-term");
-        assert_eq!(rows[5].coeffs[0].to_bits(), (-inv_sqrt3).to_bits(), "row 5 pivot_coeff");
-        assert_eq!(rows[5].coeffs[1].to_bits(), inv_sqrt3.to_bits(), "row 5 other_coeff");
-        assert_eq!(rows[5].coeffs[2].to_bits(), 1.0_f64.to_bits(), "row 5 tet_top coeff");
-        assert_eq!(rows[5].coeffs[3].to_bits(), (-1.0_f64).to_bits(), "row 5 tet_bot coeff");
+        assert_eq!(
+            rows[5].coeffs[0].to_bits(),
+            (-inv_sqrt3).to_bits(),
+            "row 5 pivot_coeff"
+        );
+        assert_eq!(
+            rows[5].coeffs[1].to_bits(),
+            inv_sqrt3.to_bits(),
+            "row 5 other_coeff"
+        );
+        assert_eq!(
+            rows[5].coeffs[2].to_bits(),
+            1.0_f64.to_bits(),
+            "row 5 tet_top coeff"
+        );
+        assert_eq!(
+            rows[5].coeffs[3].to_bits(),
+            (-1.0_f64).to_bits(),
+            "row 5 tet_bot coeff"
+        );
         assert_eq!(rows[5].rhs.to_bits(), 0.0_f64.to_bits(), "row 5 rhs");
     }
 
@@ -1230,7 +1307,7 @@ mod tests {
     ///   |Σᵢ row.coeffs[i] · u[row.dofs[i]] − row.rhs| < 1e-9.
     #[test]
     fn shell_tet_tying_constraints_compose_with_apply_mpc_row_elimination_to_satisfy_constraint_after_solve()
-    {
+     {
         use faer::linalg::solvers::Solve;
         use faer::sparse::{SparseRowMat, Triplet};
 
@@ -1277,7 +1354,9 @@ mod tests {
 
         // Verify each constraint Σ coeffs[i] · u[dofs[i]] = rhs
         for (k_idx, row) in mpc_rows.iter().enumerate() {
-            let residual: f64 = row.coeffs.iter()
+            let residual: f64 = row
+                .coeffs
+                .iter()
                 .zip(row.dofs.iter())
                 .map(|(&c, &d)| c * u[d])
                 .sum::<f64>()
@@ -1350,8 +1429,9 @@ mod tests {
         let mut f: Vec<f64> = (1..=5).map(|i| i as f64).collect();
 
         // Snapshot K and f before applying the MPC.
-        let k_before: Vec<Vec<f64>> =
-            (0..n).map(|i| (0..n).map(|j| read_k(&k, i, j)).collect()).collect();
+        let k_before: Vec<Vec<f64>> = (0..n)
+            .map(|i| (0..n).map(|j| read_k(&k, i, j)).collect())
+            .collect();
         let f_before = f.clone();
 
         // MPC: pivot p=0, other dofs d1=2, d2=4; coeffs=[2.0, -1.0, 1.0], rhs=0.0
@@ -1379,16 +1459,22 @@ mod tests {
         assert_eq!(
             read_k(&k, 0, d1).to_bits(),
             (-alpha_1).to_bits(),
-            "K[0][2] must be -α_1 = {}", -alpha_1
+            "K[0][2] must be -α_1 = {}",
+            -alpha_1
         );
         assert_eq!(
             read_k(&k, 0, d2).to_bits(),
             (-alpha_2).to_bits(),
-            "K[0][4] must be -α_2 = {}", -alpha_2
+            "K[0][4] must be -α_2 = {}",
+            -alpha_2
         );
         // K[0][1] not stored; K[0][3] was 0.3 but step-2 zero clears it.
         assert_eq!(read_k(&k, 0, 1), 0.0, "K[0][1] must be 0.0");
-        assert_eq!(read_k(&k, 0, 3), 0.0, "K[0][3] must be 0.0 (step-2 cleared)");
+        assert_eq!(
+            read_k(&k, 0, 3),
+            0.0,
+            "K[0][3] must be 0.0 (step-2 cleared)"
+        );
 
         // ── Row 2: Err-arm skip (K[2][0] absent) ────────────────────────────
         for col in 0..n {
@@ -1418,14 +1504,18 @@ mod tests {
             read_k(&k, 3, d1).to_bits(),
             expected_32.to_bits(),
             "K[3][2]: expected {expected_32} = {} + {} * {}",
-            k_before[3][d1], k_before[3][p], alpha_1,
+            k_before[3][d1],
+            k_before[3][p],
+            alpha_1,
         );
         let expected_34 = k_before[3][d2] + k_before[3][p] * alpha_2;
         assert_eq!(
             read_k(&k, 3, d2).to_bits(),
             expected_34.to_bits(),
             "K[3][4]: expected {expected_34} = {} + {} * {}",
-            k_before[3][d2], k_before[3][p], alpha_2,
+            k_before[3][d2],
+            k_before[3][p],
+            alpha_2,
         );
 
         // ── f unchanged (β = 0 → no subtract from f[j]) ─────────────────────

@@ -460,10 +460,7 @@ fn get_selection_returns_selected_entities_list() {
         .expect("should succeed");
 
     assert_eq!(result["selected_entity"], "a");
-    assert_eq!(
-        result["selected_entities"],
-        serde_json::json!(["a", "b"])
-    );
+    assert_eq!(result["selected_entities"], serde_json::json!(["a", "b"]));
 }
 
 // === reify_get_source_location ===

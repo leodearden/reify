@@ -110,7 +110,10 @@ fn batch_independent_results() {
     values.insert(vcid("Bracket", "width"), mm(80.0));
 
     let input = ConstraintInput {
-        constraints: Cow::Owned(vec![(cnid("Bracket", 0), &expr1), (cnid("Bracket", 1), &expr2)]),
+        constraints: Cow::Owned(vec![
+            (cnid("Bracket", 0), &expr1),
+            (cnid("Bracket", 1), &expr2),
+        ]),
         values: &values,
         functions: &[],
         determinacy: None,

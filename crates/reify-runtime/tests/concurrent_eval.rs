@@ -8,9 +8,9 @@ use reify_eval::deps::{DependencyTrace, ReverseDependencyIndex};
 use reify_eval::graph::EvaluationGraph;
 use reify_eval::{ConcurrentEditSetup, Engine};
 use reify_runtime::concurrent::{AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler};
-use reify_runtime::concurrent_eval::{ConcurrentEvalAdapter, edit_param_concurrent};
 #[cfg(feature = "test-utils")]
 use reify_runtime::concurrent_eval::poison_fields;
+use reify_runtime::concurrent_eval::{ConcurrentEvalAdapter, edit_param_concurrent};
 use reify_test_support::TopologyTemplateBuilder;
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_types::{
@@ -1730,9 +1730,7 @@ fn assert_poison_recovers<T: Send + 'static>(
 ) -> T {
     use std::panic::catch_unwind;
     let (subscriber, capture) = warn_capturing_subscriber();
-    let result = tracing::subscriber::with_default(subscriber, || {
-        catch_unwind(action)
-    });
+    let result = tracing::subscriber::with_default(subscriber, || catch_unwind(action));
     assert!(
         result.is_ok(),
         "action panicked when poison recovery was expected — catch_unwind returned Err"
@@ -1784,7 +1782,6 @@ fn assert_poison_recovers<T: Send + 'static>(
     result.unwrap()
 }
 
-
 #[cfg(feature = "test-utils")]
 mod poison_recovery {
     use super::*;
@@ -1804,7 +1801,10 @@ mod poison_recovery {
         let values = assert_poison_recovers(
             || adapter.values(),
             1,
-            &[("lock", poison_fields::LOCK_VALUES), ("access", poison_fields::ACCESS_READ)],
+            &[
+                ("lock", poison_fields::LOCK_VALUES),
+                ("access", poison_fields::ACCESS_READ),
+            ],
         );
         // Verify exact values from simple_setup: T.a=Real(10.0), T.b=Real(10.0)
         assert_eq!(
@@ -1834,9 +1834,16 @@ mod poison_recovery {
         let results = assert_poison_recovers(
             || adapter.take_results(),
             1,
-            &[("lock", poison_fields::LOCK_RESULTS), ("access", poison_fields::ACCESS_EXCLUSIVE)],
+            &[
+                ("lock", poison_fields::LOCK_RESULTS),
+                ("access", poison_fields::ACCESS_EXCLUSIVE),
+            ],
         );
-        assert_eq!(results.len(), 0, "results should be empty after poison recovery");
+        assert_eq!(
+            results.len(),
+            0,
+            "results should be empty after poison recovery"
+        );
     }
 
     /// snapshot_values() recovers gracefully from a poisoned snapshot_values RwLock:
@@ -1855,7 +1862,10 @@ mod poison_recovery {
         let sv = assert_poison_recovers(
             || adapter.snapshot_values(),
             1,
-            &[("lock", poison_fields::LOCK_SNAPSHOT_VALUES), ("access", poison_fields::ACCESS_READ)],
+            &[
+                ("lock", poison_fields::LOCK_SNAPSHOT_VALUES),
+                ("access", poison_fields::ACCESS_READ),
+            ],
         );
         // Verify exact (Value, DeterminacyState) tuples from simple_setup
         assert_eq!(
@@ -1887,7 +1897,10 @@ mod poison_recovery {
         assert_poison_recovers(
             || adapter.build_result_shared(&eval_set, HashSet::new()),
             1,
-            &[("lock", poison_fields::LOCK_SNAPSHOT_VALUES), ("access", poison_fields::ACCESS_READ)],
+            &[
+                ("lock", poison_fields::LOCK_SNAPSHOT_VALUES),
+                ("access", poison_fields::ACCESS_READ),
+            ],
         );
     }
 
@@ -2208,7 +2221,10 @@ mod poison_recovery_extended {
         let edit_result = poison_and_recover!(
             poison_values,
             build_result_shared,
-            &[("lock", poison_fields::LOCK_VALUES), ("access", poison_fields::ACCESS_READ)]
+            &[
+                ("lock", poison_fields::LOCK_VALUES),
+                ("access", poison_fields::ACCESS_READ)
+            ]
         );
         // Verify both T.a and T.b are present with exact values from simple_setup
         assert_eq!(
@@ -2235,7 +2251,10 @@ mod poison_recovery_extended {
         let edit_result = poison_and_recover!(
             poison_snapshot_values,
             build_result_shared,
-            &[("lock", poison_fields::LOCK_SNAPSHOT_VALUES), ("access", poison_fields::ACCESS_READ)]
+            &[
+                ("lock", poison_fields::LOCK_SNAPSHOT_VALUES),
+                ("access", poison_fields::ACCESS_READ)
+            ]
         );
         // Verify exact (Value, DeterminacyState) tuples from simple_setup
         assert_eq!(
@@ -2254,8 +2273,14 @@ mod poison_recovery_extended {
     /// node_results should be empty because no evaluations occurred.
     #[test]
     fn build_result_shared_recovers_from_poisoned_results_lock() {
-        let edit_result =
-            poison_and_recover!(poison_results, build_result_shared, &[("lock", poison_fields::LOCK_RESULTS), ("access", poison_fields::ACCESS_EXCLUSIVE)]);
+        let edit_result = poison_and_recover!(
+            poison_results,
+            build_result_shared,
+            &[
+                ("lock", poison_fields::LOCK_RESULTS),
+                ("access", poison_fields::ACCESS_EXCLUSIVE)
+            ]
+        );
         assert!(
             edit_result.node_results.is_empty(),
             "node_results should be empty (no evaluations occurred) after poison recovery"
@@ -2266,8 +2291,14 @@ mod poison_recovery_extended {
     /// Verifies exact values for T.a and T.b from simple_setup.
     #[test]
     fn into_result_recovers_from_poisoned_values_lock() {
-        let edit_result =
-            poison_and_recover!(poison_values, into_result, &[("lock", poison_fields::LOCK_VALUES), ("path", poison_fields::PATH_INTO_INNER)]);
+        let edit_result = poison_and_recover!(
+            poison_values,
+            into_result,
+            &[
+                ("lock", poison_fields::LOCK_VALUES),
+                ("path", poison_fields::PATH_INTO_INNER)
+            ]
+        );
         assert_eq!(
             edit_result.values.get(&ValueCellId::new("T", "a")),
             Some(&Value::Real(10.0)),
@@ -2287,7 +2318,10 @@ mod poison_recovery_extended {
         let edit_result = poison_and_recover!(
             poison_snapshot_values,
             into_result,
-            &[("lock", poison_fields::LOCK_SNAPSHOT_VALUES), ("path", poison_fields::PATH_INTO_INNER)]
+            &[
+                ("lock", poison_fields::LOCK_SNAPSHOT_VALUES),
+                ("path", poison_fields::PATH_INTO_INNER)
+            ]
         );
         assert_eq!(
             edit_result.snapshot_values.get(&ValueCellId::new("T", "a")),
@@ -2300,8 +2334,14 @@ mod poison_recovery_extended {
     /// node_results should be empty because no evaluations occurred.
     #[test]
     fn into_result_recovers_from_poisoned_results_lock() {
-        let edit_result =
-            poison_and_recover!(poison_results, into_result, &[("lock", poison_fields::LOCK_RESULTS), ("path", poison_fields::PATH_INTO_INNER)]);
+        let edit_result = poison_and_recover!(
+            poison_results,
+            into_result,
+            &[
+                ("lock", poison_fields::LOCK_RESULTS),
+                ("path", poison_fields::PATH_INTO_INNER)
+            ]
+        );
         assert!(
             edit_result.node_results.is_empty(),
             "node_results should be empty (no evaluations occurred) after poison recovery"
@@ -2358,7 +2398,10 @@ mod poison_shared_fallback {
         shared_fallback_recover!(
             values_arc,
             poison_values,
-            &[("lock", poison_fields::LOCK_VALUES), ("path", poison_fields::PATH_SHARED_FALLBACK)]
+            &[
+                ("lock", poison_fields::LOCK_VALUES),
+                ("path", poison_fields::PATH_SHARED_FALLBACK)
+            ]
         );
     }
 
@@ -2370,7 +2413,10 @@ mod poison_shared_fallback {
         let edit_result = shared_fallback_recover!(
             values_arc,
             poison_values,
-            &[("lock", poison_fields::LOCK_VALUES), ("path", poison_fields::PATH_SHARED_FALLBACK)]
+            &[
+                ("lock", poison_fields::LOCK_VALUES),
+                ("path", poison_fields::PATH_SHARED_FALLBACK)
+            ]
         );
         assert_eq!(
             edit_result.values.get(&ValueCellId::new("T", "a")),
@@ -2393,7 +2439,10 @@ mod poison_shared_fallback {
         shared_fallback_recover!(
             snapshot_values_arc,
             poison_snapshot_values,
-            &[("lock", poison_fields::LOCK_SNAPSHOT_VALUES), ("path", poison_fields::PATH_SHARED_FALLBACK)]
+            &[
+                ("lock", poison_fields::LOCK_SNAPSHOT_VALUES),
+                ("path", poison_fields::PATH_SHARED_FALLBACK)
+            ]
         );
     }
 
@@ -2405,7 +2454,10 @@ mod poison_shared_fallback {
         let edit_result = shared_fallback_recover!(
             snapshot_values_arc,
             poison_snapshot_values,
-            &[("lock", poison_fields::LOCK_SNAPSHOT_VALUES), ("path", poison_fields::PATH_SHARED_FALLBACK)]
+            &[
+                ("lock", poison_fields::LOCK_SNAPSHOT_VALUES),
+                ("path", poison_fields::PATH_SHARED_FALLBACK)
+            ]
         );
         assert_eq!(
             edit_result.snapshot_values.get(&ValueCellId::new("T", "a")),
@@ -2433,7 +2485,10 @@ mod poison_shared_fallback {
         shared_fallback_recover!(
             results_arc,
             poison_results,
-            &[("lock", poison_fields::LOCK_RESULTS), ("path", poison_fields::PATH_SHARED_FALLBACK)]
+            &[
+                ("lock", poison_fields::LOCK_RESULTS),
+                ("path", poison_fields::PATH_SHARED_FALLBACK)
+            ]
         );
     }
 
@@ -2445,7 +2500,10 @@ mod poison_shared_fallback {
         let edit_result = shared_fallback_recover!(
             results_arc,
             poison_results,
-            &[("lock", poison_fields::LOCK_RESULTS), ("path", poison_fields::PATH_SHARED_FALLBACK)]
+            &[
+                ("lock", poison_fields::LOCK_RESULTS),
+                ("path", poison_fields::PATH_SHARED_FALLBACK)
+            ]
         );
         assert!(
             edit_result.node_results.is_empty(),
@@ -2500,12 +2558,18 @@ mod poison_shared_fallback {
         capture.assert_count(3);
 
         // (3) All 3 distinct shared-fallback lock events present (by structured fields).
-        capture.assert_any_event_has_fields(&[("lock", poison_fields::LOCK_VALUES), ("path", poison_fields::PATH_SHARED_FALLBACK)]);
+        capture.assert_any_event_has_fields(&[
+            ("lock", poison_fields::LOCK_VALUES),
+            ("path", poison_fields::PATH_SHARED_FALLBACK),
+        ]);
         capture.assert_any_event_has_fields(&[
             ("lock", poison_fields::LOCK_SNAPSHOT_VALUES),
             ("path", poison_fields::PATH_SHARED_FALLBACK),
         ]);
-        capture.assert_any_event_has_fields(&[("lock", poison_fields::LOCK_RESULTS), ("path", poison_fields::PATH_SHARED_FALLBACK)]);
+        capture.assert_any_event_has_fields(&[
+            ("lock", poison_fields::LOCK_RESULTS),
+            ("path", poison_fields::PATH_SHARED_FALLBACK),
+        ]);
 
         // (4) T.a = Real(10.0) from simple_setup.
         assert_eq!(
@@ -2790,7 +2854,9 @@ mod execute_with_config_tests {
     //! Tests for execute_with_config: priority, commitment, overrides.
     use super::*;
     use reify_runtime::Priority;
-    use reify_runtime::commitment::{CommitmentPolicy, CommitmentTracker, NodeCommitmentOverride, NodeKind, NodePolicyOverrides};
+    use reify_runtime::commitment::{
+        CommitmentPolicy, CommitmentTracker, NodeCommitmentOverride, NodeKind, NodePolicyOverrides,
+    };
     use reify_runtime::concurrent::{SchedulerConfig, SchedulerError};
     use reify_runtime::priority_promotion::SharedPriorityPromoter;
     use std::sync::Mutex;
@@ -2890,7 +2956,7 @@ mod execute_with_config_tests {
     /// (vacuously runnable), so node_a should be in result.changed.
     #[tokio::test]
     async fn test_only_run_on_final_inputs_skipped() {
-        use reify_eval::cache::{CachedResult, CacheStore, NodeCache};
+        use reify_eval::cache::{CacheStore, CachedResult, NodeCache};
         use reify_types::{DeterminacyState, Freshness, Value, VersionId};
 
         let e = "SKIP";
@@ -2915,7 +2981,9 @@ mod execute_with_config_tests {
             NodeCache::new(
                 CachedResult::Value(Value::Real(0.0), DeterminacyState::Determined),
                 Freshness::Final,
-                DependencyTrace { reads: vec![upstream.clone()] },
+                DependencyTrace {
+                    reads: vec![upstream.clone()],
+                },
                 VersionId(1),
             ),
         );
@@ -3399,7 +3467,10 @@ mod execute_with_config_tests {
 
         // node_b has AlwaysCancelWhenStale override
         let mut node_overrides = NodePolicyOverrides::new();
-        node_overrides.set_instance(node_b.clone(), NodeCommitmentOverride::AlwaysCancelWhenStale);
+        node_overrides.set_instance(
+            node_b.clone(),
+            NodeCommitmentOverride::AlwaysCancelWhenStale,
+        );
 
         let config = SchedulerConfig {
             commitment_tracker: Some(Arc::clone(&tracker)),
@@ -3486,7 +3557,10 @@ mod execute_with_config_tests {
 
         // slow_node has AlwaysCancelWhenStale override
         let mut node_overrides = NodePolicyOverrides::new();
-        node_overrides.set_instance(slow_node.clone(), NodeCommitmentOverride::AlwaysCancelWhenStale);
+        node_overrides.set_instance(
+            slow_node.clone(),
+            NodeCommitmentOverride::AlwaysCancelWhenStale,
+        );
 
         let config = SchedulerConfig {
             commitment_tracker: Some(Arc::clone(&tracker)),
@@ -3614,7 +3688,7 @@ mod execute_with_config_tests {
     /// for `cache: Some(&cs)` + all-Final + OnlyRunOnFinalInputs.
     #[tokio::test]
     async fn test_only_run_on_final_inputs_runs_when_final_with_cache() {
-        use reify_eval::cache::{CachedResult, CacheStore, NodeCache};
+        use reify_eval::cache::{CacheStore, CachedResult, NodeCache};
         use reify_types::{DeterminacyState, Freshness, Value, VersionId};
 
         let e = "FINAL_CACHE";
@@ -3639,7 +3713,9 @@ mod execute_with_config_tests {
             NodeCache::new(
                 CachedResult::Value(Value::Real(0.0), DeterminacyState::Determined),
                 Freshness::Final,
-                DependencyTrace { reads: vec![upstream.clone()] },
+                DependencyTrace {
+                    reads: vec![upstream.clone()],
+                },
                 VersionId(1),
             ),
         );
@@ -3711,7 +3787,7 @@ mod execute_with_config_tests {
     /// proving the scheduler honours type-level overrides after migration.
     #[tokio::test]
     async fn test_type_level_override_routes_through_resolve() {
-        use reify_eval::cache::{CachedResult, CacheStore, NodeCache};
+        use reify_eval::cache::{CacheStore, CachedResult, NodeCache};
         use reify_types::{DeterminacyState, Freshness, Value, VersionId};
 
         let e = "TYPE_OVERRIDE";
@@ -3736,7 +3812,9 @@ mod execute_with_config_tests {
                 NodeCache::new(
                     CachedResult::Value(Value::Real(0.0), DeterminacyState::Determined),
                     Freshness::Final,
-                    DependencyTrace { reads: vec![upstream.clone()] },
+                    DependencyTrace {
+                        reads: vec![upstream.clone()],
+                    },
                     VersionId(1),
                 ),
             );
@@ -3749,7 +3827,10 @@ mod execute_with_config_tests {
 
         // Set type-level override for all Value nodes — no instance overrides
         let mut node_overrides = NodePolicyOverrides::new();
-        node_overrides.set_type(NodeKind::Value, NodeCommitmentOverride::OnlyRunOnFinalInputs);
+        node_overrides.set_type(
+            NodeKind::Value,
+            NodeCommitmentOverride::OnlyRunOnFinalInputs,
+        );
 
         let config = SchedulerConfig {
             node_overrides,
@@ -3964,6 +4045,9 @@ mod poison_fields_constants {
         assert_eq!(poison_fields::ACCESS_EXCLUSIVE, "exclusive");
         assert_eq!(poison_fields::PATH_INTO_INNER, "into_inner");
         assert_eq!(poison_fields::PATH_SHARED_FALLBACK, "shared_fallback");
-        assert_eq!(poison_fields::MSG_LOCK_POISONED, "lock poisoned, recovering");
+        assert_eq!(
+            poison_fields::MSG_LOCK_POISONED,
+            "lock poisoned, recovering"
+        );
     }
 } // mod poison_fields_constants

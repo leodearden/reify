@@ -11,7 +11,9 @@
 
 #![cfg(has_occt)]
 
-use reify_kernel_occt::{DeletedRecord, HistoryRecord, LocalFeatureOpHistoryRecords, OcctKernelHandle};
+use reify_kernel_occt::{
+    DeletedRecord, HistoryRecord, LocalFeatureOpHistoryRecords, OcctKernelHandle,
+};
 use reify_types::{GeometryError, GeometryHandleId, GeometryOp, GeometryQuery, Value};
 
 /// Private trait implemented by both [`HistoryRecord`] and [`DeletedRecord`]
@@ -115,8 +117,7 @@ pub fn assert_local_feature_history_well_formed(
     //     every Modified/Generated child must be resolvable in the result map.
     //     Mirrors the same invariant in boolean_op_history_integration.rs.
     assert_eq!(
-        history.silent_drop_count,
-        0,
+        history.silent_drop_count, 0,
         "{op_name} should not silently drop any history record on a clean 10mm-box op; \
          got {} drops",
         history.silent_drop_count
@@ -145,7 +146,13 @@ pub fn assert_local_feature_history_well_formed(
         generated_edge_parents.len(),
         history.face_generated.len()
     );
-    assert_records_in_range(&history.face_generated, 12, op_name, "face_generated", "12-edge box");
+    assert_records_in_range(
+        &history.face_generated,
+        12,
+        op_name,
+        "face_generated",
+        "12-edge box",
+    );
 
     // (h) Derive result_edge_count for index-bounds checks.
     let result_edges = kernel
@@ -157,7 +164,13 @@ pub fn assert_local_feature_history_well_formed(
     // No non-empty assertion: for a fully-filleted/chamfered box, OCCT may route
     // parent edges through Generated() or IsDeleted() rather than Modified()
     // (see plan design decision).
-    assert_records_in_range(&history.edge_modified, 12, op_name, "edge_modified", "12-edge box");
+    assert_records_in_range(
+        &history.edge_modified,
+        12,
+        op_name,
+        "edge_modified",
+        "12-edge box",
+    );
     for r in &history.edge_modified {
         assert!(
             r.result_subshape_index < result_edge_count,
@@ -171,7 +184,13 @@ pub fn assert_local_feature_history_well_formed(
     // parent_subshape_index is into the VERTEX map (box has 8 vertices), not
     // the edge map, because edge_generated is populated via
     // emit_sweep_generated_cross_type(shape_vertex_map, result_edge_map, TopAbs_EDGE).
-    assert_records_in_range(&history.edge_generated, 8, op_name, "edge_generated", "8-vertex box; edge_generated is keyed by parent VERTEX");
+    assert_records_in_range(
+        &history.edge_generated,
+        8,
+        op_name,
+        "edge_generated",
+        "8-vertex box; edge_generated is keyed by parent VERTEX",
+    );
     for r in &history.edge_generated {
         assert!(
             r.result_subshape_index < result_edge_count,
@@ -198,7 +217,13 @@ pub fn assert_local_feature_history_well_formed(
         "{op_name} edge_deleted must be non-empty: OCCT marks all parent edges IsDeleted(); \
          got 0 records (regression in edge-deleted emit loop?)"
     );
-    assert_records_in_range(&history.edge_deleted, 12, op_name, "edge_deleted", "12-edge box");
+    assert_records_in_range(
+        &history.edge_deleted,
+        12,
+        op_name,
+        "edge_deleted",
+        "12-edge box",
+    );
 }
 
 /// Run the full face-records integration test body for a local-feature operation
@@ -233,7 +258,10 @@ pub fn run_local_feature_reports_face_records<F>(
     op: F,
     op_name: &str,
 ) where
-    F: FnOnce(GeometryHandleId, f64) -> Result<(GeometryHandleId, LocalFeatureOpHistoryRecords), GeometryError>,
+    F: FnOnce(
+        GeometryHandleId,
+        f64,
+    ) -> Result<(GeometryHandleId, LocalFeatureOpHistoryRecords), GeometryError>,
 {
     const BOX_SIDE_M: f64 = 10.0e-3;
 
@@ -257,9 +285,7 @@ pub fn run_local_feature_reports_face_records<F>(
         .expect("box should build");
 
     let (result_id, history) = op(box_handle.id, param_m).unwrap_or_else(|e| {
-        panic!(
-            "{op_name}_with_history({param_m:.4e} m) should succeed for a 10mm box: {e:?}"
-        )
+        panic!("{op_name}_with_history({param_m:.4e} m) should succeed for a 10mm box: {e:?}")
     });
 
     // (a) Result volume is positive and strictly less than the original box.
@@ -267,9 +293,7 @@ pub fn run_local_feature_reports_face_records<F>(
     let orig_vol = BOX_SIDE_M * BOX_SIDE_M * BOX_SIDE_M;
     let vol = kernel
         .query(&GeometryQuery::Volume(result_id))
-        .unwrap_or_else(|e| {
-            panic!("volume query on the {op_name} result should succeed: {e:?}")
-        });
+        .unwrap_or_else(|e| panic!("volume query on the {op_name} result should succeed: {e:?}"));
     let vol_si = vol.as_f64().expect("volume value should be numeric");
     assert!(
         vol_si > 0.0,
@@ -304,7 +328,11 @@ pub fn run_local_feature_reports_face_records<F>(
     );
 
     // (d) Every record has parent_index == 0 (single parent: the box).
-    for r in history.face_modified.iter().chain(history.face_generated.iter()) {
+    for r in history
+        .face_modified
+        .iter()
+        .chain(history.face_generated.iter())
+    {
         assert_eq!(
             r.parent_index, 0,
             "{op_name} face records always have parent_index=0, got {}",
@@ -335,9 +363,7 @@ pub fn run_local_feature_reports_face_records<F>(
     // (g) Every result_subshape_index is in-range for the result shape's face list.
     let result_faces = kernel
         .extract_faces(result_id)
-        .unwrap_or_else(|e| {
-            panic!("extract_faces on the {op_name} result should succeed: {e:?}")
-        });
+        .unwrap_or_else(|e| panic!("extract_faces on the {op_name} result should succeed: {e:?}"));
     let result_face_count = result_faces.len() as u32;
     for r in history
         .face_modified
@@ -432,9 +458,9 @@ pub fn assert_local_feature_rejects_non_solid_input<T>(
 ) {
     let err = match result {
         Err(e) => e,
-        Ok(_) => panic!(
-            "{op_name} should have rejected a {kind_label} input handle but returned Ok"
-        ),
+        Ok(_) => {
+            panic!("{op_name} should have rejected a {kind_label} input handle but returned Ok")
+        }
     };
     match &err {
         GeometryError::OperationFailed(msg) => {

@@ -212,7 +212,10 @@ pub struct ComputeNodeId {
 
 impl ComputeNodeId {
     pub fn new(entity: impl Into<String>, index: u32) -> Self {
-        Self { entity: entity.into(), index }
+        Self {
+            entity: entity.into(),
+            index,
+        }
     }
 }
 

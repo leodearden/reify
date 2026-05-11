@@ -161,6 +161,12 @@ pub enum SweepParams {
     /// which are geometrically identical to [`SweepParams::Extrude`]. The
     /// variant is kept distinct to preserve diagnostic-routing contracts
     /// (PRD task #11 emits different fallback messages per variant).
+    ///
+    /// # Phase A contract pin
+    ///
+    /// The byte-identity of `SweepLinear` and `Extrude` at integration mesh
+    /// density is pinned by the `simple_linear_sweep_*` test in:
+    /// `crates/reify-solver-elastic/tests/hex_wedge_quality.rs`
     SweepLinear {
         /// Direction of travel (any non-zero vector).
         axis: [f64; 3],
@@ -310,7 +316,9 @@ fn validate_sweep_inputs(
             }
             Ok([axis[0] / norm, axis[1] / norm, axis[2] / norm])
         }
-        SweepParams::Revolve { axis_dir, angle, .. } => {
+        SweepParams::Revolve {
+            axis_dir, angle, ..
+        } => {
             let norm = norm3(*axis_dir);
             if norm < DEGENERATE_TOL {
                 return Err(SweepError::DegenerateAxis);
@@ -408,7 +416,9 @@ fn build_vertices(
                 }
             }
         }
-        SweepParams::Revolve { axis_origin, angle, .. } => {
+        SweepParams::Revolve {
+            axis_origin, angle, ..
+        } => {
             let [kx, ky, kz] = *unit_axis;
             let [ox, oy, oz] = *axis_origin;
             // pz is constant: the 2D mesh sits at z=0 in the profile frame.
@@ -431,12 +441,12 @@ fn build_vertices(
                     let py = verts2d[i * 2 + 1] as f64 - oy;
                     let kdotp = kx * px + ky * py + kz * pz_const;
                     // Rodrigues: R(θ) p = p cosθ + (k × p) sinθ + k (k·p)(1 − cosθ)
-                    let cx = px * cos_t + (ky * pz_const - kz * py) * sin_t
-                        + kx * kdotp * one_m_cos;
-                    let cy = py * cos_t + (kz * px - kx * pz_const) * sin_t
-                        + ky * kdotp * one_m_cos;
-                    let cz = pz_const * cos_t + (kx * py - ky * px) * sin_t
-                        + kz * kdotp * one_m_cos;
+                    let cx =
+                        px * cos_t + (ky * pz_const - kz * py) * sin_t + kx * kdotp * one_m_cos;
+                    let cy =
+                        py * cos_t + (kz * px - kx * pz_const) * sin_t + ky * kdotp * one_m_cos;
+                    let cz =
+                        pz_const * cos_t + (kx * py - ky * px) * sin_t + kz * kdotp * one_m_cos;
                     out.push((cx + ox) as f32);
                     out.push((cy + oy) as f32);
                     out.push((cz + oz) as f32);
@@ -516,8 +526,14 @@ mod tests {
     #[test]
     fn sweep_rejects_empty_vertices() {
         // (a) empty vertices → EmptyMesh2d
-        let empty_verts = Mesh2d::Triangle { vertices: vec![], indices: vec![] };
-        let params = SweepParams::Extrude { axis: [0.0, 0.0, 1.0], length: 1.0 };
+        let empty_verts = Mesh2d::Triangle {
+            vertices: vec![],
+            indices: vec![],
+        };
+        let params = SweepParams::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: 1.0,
+        };
         let r = sweep_2d_mesh_to_3d(&empty_verts, &params, 1);
         assert!(matches!(r, Err(SweepError::EmptyMesh2d)), "got: {r:?}");
     }
@@ -529,7 +545,10 @@ mod tests {
             vertices: vec![0.0_f32, 0.0, 1.0, 0.0, 0.0, 1.0],
             indices: vec![],
         };
-        let params = SweepParams::Extrude { axis: [0.0, 0.0, 1.0], length: 1.0 };
+        let params = SweepParams::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: 1.0,
+        };
         let r = sweep_2d_mesh_to_3d(&no_faces, &params, 1);
         assert!(matches!(r, Err(SweepError::EmptyMesh2d)), "got: {r:?}");
     }
@@ -537,15 +556,24 @@ mod tests {
     #[test]
     fn sweep_rejects_zero_layers() {
         // (c) layers=0 → InvalidLayerCount
-        let params = SweepParams::Extrude { axis: [0.0, 0.0, 1.0], length: 1.0 };
+        let params = SweepParams::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: 1.0,
+        };
         let r = sweep_2d_mesh_to_3d(&unit_triangle(), &params, 0);
-        assert!(matches!(r, Err(SweepError::InvalidLayerCount)), "got: {r:?}");
+        assert!(
+            matches!(r, Err(SweepError::InvalidLayerCount)),
+            "got: {r:?}"
+        );
     }
 
     #[test]
     fn sweep_rejects_zero_axis() {
         // (d) Extrude zero axis → DegenerateAxis
-        let params = SweepParams::Extrude { axis: [0.0, 0.0, 0.0], length: 1.0 };
+        let params = SweepParams::Extrude {
+            axis: [0.0, 0.0, 0.0],
+            length: 1.0,
+        };
         let r = sweep_2d_mesh_to_3d(&unit_triangle(), &params, 1);
         assert!(matches!(r, Err(SweepError::DegenerateAxis)), "got: {r:?}");
     }
@@ -553,17 +581,29 @@ mod tests {
     #[test]
     fn sweep_rejects_zero_length() {
         // (e) Extrude zero length → DegenerateMagnitude
-        let params = SweepParams::Extrude { axis: [0.0, 0.0, 1.0], length: 0.0 };
+        let params = SweepParams::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: 0.0,
+        };
         let r = sweep_2d_mesh_to_3d(&unit_triangle(), &params, 1);
-        assert!(matches!(r, Err(SweepError::DegenerateMagnitude)), "got: {r:?}");
+        assert!(
+            matches!(r, Err(SweepError::DegenerateMagnitude)),
+            "got: {r:?}"
+        );
     }
 
     #[test]
     fn sweep_rejects_nan_length() {
         // (f) Extrude NaN length → DegenerateMagnitude
-        let params = SweepParams::Extrude { axis: [0.0, 0.0, 1.0], length: f64::NAN };
+        let params = SweepParams::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: f64::NAN,
+        };
         let r = sweep_2d_mesh_to_3d(&unit_triangle(), &params, 1);
-        assert!(matches!(r, Err(SweepError::DegenerateMagnitude)), "got: {r:?}");
+        assert!(
+            matches!(r, Err(SweepError::DegenerateMagnitude)),
+            "got: {r:?}"
+        );
     }
 
     #[test]
@@ -587,7 +627,10 @@ mod tests {
             angle: 0.0,
         };
         let r = sweep_2d_mesh_to_3d(&unit_triangle(), &params, 1);
-        assert!(matches!(r, Err(SweepError::DegenerateMagnitude)), "got: {r:?}");
+        assert!(
+            matches!(r, Err(SweepError::DegenerateMagnitude)),
+            "got: {r:?}"
+        );
     }
 
     // step-15: Revolve around y-axis by π/2 with K=2
@@ -614,11 +657,27 @@ mod tests {
 
         // Bottom layer (θ=0): nodes match input (x, y, 0)
         // node 0: (1,0,0)
-        assert!((mesh.vertices[0] - 1.0).abs() < eps, "bot node0 x={}", mesh.vertices[0]);
-        assert!((mesh.vertices[1] - 0.0).abs() < eps, "bot node0 y={}", mesh.vertices[1]);
-        assert!((mesh.vertices[2] - 0.0).abs() < eps, "bot node0 z={}", mesh.vertices[2]);
+        assert!(
+            (mesh.vertices[0] - 1.0).abs() < eps,
+            "bot node0 x={}",
+            mesh.vertices[0]
+        );
+        assert!(
+            (mesh.vertices[1] - 0.0).abs() < eps,
+            "bot node0 y={}",
+            mesh.vertices[1]
+        );
+        assert!(
+            (mesh.vertices[2] - 0.0).abs() < eps,
+            "bot node0 z={}",
+            mesh.vertices[2]
+        );
         // node 1: (2,0,0)
-        assert!((mesh.vertices[3] - 2.0).abs() < eps, "bot node1 x={}", mesh.vertices[3]);
+        assert!(
+            (mesh.vertices[3] - 2.0).abs() < eps,
+            "bot node1 x={}",
+            mesh.vertices[3]
+        );
         assert!((mesh.vertices[4] - 0.0).abs() < eps);
         assert!((mesh.vertices[5] - 0.0).abs() < eps);
         // node 2: (1,1,0)
@@ -668,10 +727,10 @@ mod tests {
         let extrude_params = SweepParams::Extrude { axis, length };
         let linear_params = SweepParams::SweepLinear { axis, length };
 
-        let extrude_mesh = sweep_2d_mesh_to_3d(&mesh2d, &extrude_params, 3)
-            .expect("Extrude should succeed");
-        let linear_mesh = sweep_2d_mesh_to_3d(&mesh2d, &linear_params, 3)
-            .expect("SweepLinear should succeed");
+        let extrude_mesh =
+            sweep_2d_mesh_to_3d(&mesh2d, &extrude_params, 3).expect("Extrude should succeed");
+        let linear_mesh =
+            sweep_2d_mesh_to_3d(&mesh2d, &linear_params, 3).expect("SweepLinear should succeed");
 
         // Vertices must be byte-identical (same f32 arithmetic from identical inputs).
         assert_eq!(
@@ -686,7 +745,10 @@ mod tests {
 
         // Connectivity indices must be byte-identical.
         match (&extrude_mesh.connectivity, &linear_mesh.connectivity) {
-            (SweptConnectivity::Wedge { indices: ei }, SweptConnectivity::Wedge { indices: li }) => {
+            (
+                SweptConnectivity::Wedge { indices: ei },
+                SweptConnectivity::Wedge { indices: li },
+            ) => {
                 assert_eq!(ei, li, "SweepLinear wedge indices must match Extrude");
             }
             _ => panic!("expected Wedge connectivity for both Extrude and SweepLinear"),
@@ -832,7 +894,11 @@ mod tests {
         assert_eq!(w.min_layers, 2);
         assert!(w.message.contains("1"), "message: {}", w.message);
         assert!(w.message.contains("mesh_size"), "message: {}", w.message);
-        assert!(w.message.contains("sweep_subdivisions"), "message: {}", w.message);
+        assert!(
+            w.message.contains("sweep_subdivisions"),
+            "message: {}",
+            w.message
+        );
         // (d) layers=0 → Some warning
         let w0 = check_sweep_through_thickness(0, 2).expect("should warn on zero layers");
         assert_eq!(w0.layer_count, 0);
@@ -881,7 +947,10 @@ mod tests {
         assert_eq!(derive_layer_count(1.0e25, 1.0, 2), super::MAX_LAYERS);
 
         // (b) +∞ raw (f64::MAX / f64::MIN_POSITIVE overflows to +∞) → clamped to MAX_LAYERS.
-        assert_eq!(derive_layer_count(f64::MAX, f64::MIN_POSITIVE, 2), super::MAX_LAYERS);
+        assert_eq!(
+            derive_layer_count(f64::MAX, f64::MIN_POSITIVE, 2),
+            super::MAX_LAYERS
+        );
 
         // (c) raw > MAX_LAYERS by a large factor (2^25 > 2^20) → clamped to MAX_LAYERS.
         assert_eq!(
@@ -923,7 +992,10 @@ mod tests {
             vertices: vec![0.0_f32, 0.0, 1.0, 0.0, 0.0, 1.0, 0.5, 0.5],
             indices: vec![0, 1, 2, 3],
         };
-        let params = SweepParams::Extrude { axis: [0.0, 0.0, 1.0], length: 1.0 };
+        let params = SweepParams::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: 1.0,
+        };
         let _ = sweep_2d_mesh_to_3d(&mesh, &params, 1);
     }
 
@@ -940,7 +1012,10 @@ mod tests {
             vertices: vec![0.0_f32, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.5, 0.5],
             indices: vec![0, 1, 2, 3, 4],
         };
-        let params = SweepParams::Extrude { axis: [0.0, 0.0, 1.0], length: 1.0 };
+        let params = SweepParams::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: 1.0,
+        };
         let _ = sweep_2d_mesh_to_3d(&mesh, &params, 1);
     }
 
@@ -956,7 +1031,10 @@ mod tests {
             vertices: vec![0.0_f32, 0.0, 1.0],
             indices: vec![0, 1, 2],
         };
-        let params = SweepParams::Extrude { axis: [0.0, 0.0, 1.0], length: 1.0 };
+        let params = SweepParams::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: 1.0,
+        };
         let _ = sweep_2d_mesh_to_3d(&mesh, &params, 1);
     }
 
@@ -972,7 +1050,10 @@ mod tests {
             vertices: vec![0.0_f32, 0.0, 1.0, 0.0, 1.0],
             indices: vec![0, 1, 2, 3],
         };
-        let params = SweepParams::Extrude { axis: [0.0, 0.0, 1.0], length: 1.0 };
+        let params = SweepParams::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: 1.0,
+        };
         let _ = sweep_2d_mesh_to_3d(&mesh, &params, 1);
     }
 }

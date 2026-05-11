@@ -9,9 +9,8 @@ use reify_types::{DiagnosticCode, FIELD_ENTITY_PREFIX, ValueCellId};
 
 #[test]
 fn compile_field_analytical() {
-    let module = compile_source(
-        "field def temp : Point3 -> Scalar { source = analytical { |p| 1.0m } }",
-    );
+    let module =
+        compile_source("field def temp : Point3 -> Scalar { source = analytical { |p| 1.0m } }");
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -141,8 +140,7 @@ fn compile_field_sampled_rejects_missing_data_key() {
         data_errs.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
     assert!(
-        data_errs[0].message.contains("missing")
-            || data_errs[0].message.contains("required"),
+        data_errs[0].message.contains("missing") || data_errs[0].message.contains("required"),
         "expected the error message to indicate `data` is missing/required, got: {}",
         data_errs[0].message
     );
@@ -153,7 +151,10 @@ fn compile_field_sampled_rejects_missing_data_key() {
         errors_only(&module).len(),
         1,
         "expected exactly one total error, got: {:?}",
-        errors_only(&module).iter().map(|d| &d.message).collect::<Vec<_>>()
+        errors_only(&module)
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -178,8 +179,7 @@ fn compile_field_sampled_rejects_missing_bounds_key() {
         bounds_errs.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
     assert!(
-        bounds_errs[0].message.contains("missing")
-            || bounds_errs[0].message.contains("required"),
+        bounds_errs[0].message.contains("missing") || bounds_errs[0].message.contains("required"),
         "expected the error message to indicate `bounds` is missing/required, got: {}",
         bounds_errs[0].message
     );
@@ -187,7 +187,10 @@ fn compile_field_sampled_rejects_missing_bounds_key() {
         errors_only(&module).len(),
         1,
         "expected exactly one total error, got: {:?}",
-        errors_only(&module).iter().map(|d| &d.message).collect::<Vec<_>>()
+        errors_only(&module)
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -212,8 +215,7 @@ fn compile_field_sampled_rejects_missing_spacing_key() {
         spacing_errs.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
     assert!(
-        spacing_errs[0].message.contains("missing")
-            || spacing_errs[0].message.contains("required"),
+        spacing_errs[0].message.contains("missing") || spacing_errs[0].message.contains("required"),
         "expected the error message to indicate `spacing` is missing/required, got: {}",
         spacing_errs[0].message
     );
@@ -221,7 +223,10 @@ fn compile_field_sampled_rejects_missing_spacing_key() {
         errors_only(&module).len(),
         1,
         "expected exactly one total error, got: {:?}",
-        errors_only(&module).iter().map(|d| &d.message).collect::<Vec<_>>()
+        errors_only(&module)
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -254,7 +259,10 @@ fn compile_field_sampled_rejects_unknown_key() {
         errors_only(&module).len(),
         1,
         "expected exactly one total error, got: {:?}",
-        errors_only(&module).iter().map(|d| &d.message).collect::<Vec<_>>()
+        errors_only(&module)
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -274,7 +282,10 @@ fn compile_field_sampled_unknown_key_with_broken_value_does_not_cascade() {
         errors_only(&module).len(),
         1,
         "expected only the unknown-key error (no cascade from compiling the dropped value), got: {:?}",
-        errors_only(&module).iter().map(|d| &d.message).collect::<Vec<_>>()
+        errors_only(&module)
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
     assert!(
         errors_only(&module)[0].message.contains("unknown")
@@ -297,7 +308,10 @@ fn compile_field_sampled_duplicate_key_with_broken_value_does_not_cascade() {
         errors_only(&module).len(),
         1,
         "expected only the duplicate-key error (no cascade from compiling the dropped value), got: {:?}",
-        errors_only(&module).iter().map(|d| &d.message).collect::<Vec<_>>()
+        errors_only(&module)
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
     assert!(
         errors_only(&module)[0].message.contains("duplicate")
@@ -334,7 +348,10 @@ fn compile_field_sampled_rejects_duplicate_grid_key() {
         errors_only(&module).len(),
         1,
         "expected exactly one total error, got: {:?}",
-        errors_only(&module).iter().map(|d| &d.message).collect::<Vec<_>>()
+        errors_only(&module)
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -504,12 +521,16 @@ fn compile_field_analytical_codomain_dimension_mismatch_emits_diagnostic() {
         .find(|d| d.code == Some(DiagnosticCode::FieldCodomainMismatch))
         .unwrap();
     assert!(
-        mismatch_diag.message.contains("declared codomain `Scalar[m]`"),
+        mismatch_diag
+            .message
+            .contains("declared codomain `Scalar[m]`"),
         "expected message to contain 'declared codomain `Scalar[m]`', got: {}",
         mismatch_diag.message
     );
     assert!(
-        mismatch_diag.message.contains("lambda body produces `Real`"),
+        mismatch_diag
+            .message
+            .contains("lambda body produces `Real`"),
         "expected message to contain 'lambda body produces `Real`', got: {}",
         mismatch_diag.message
     );
@@ -552,9 +573,7 @@ fn compile_field_analytical_int_body_widens_to_real_codomain() {
     // the *only* thing that keeps this source valid. Removing that arm would
     // cause field_codomain_compatible to return false and emit
     // DiagnosticCode::FieldCodomainMismatch, making this test fail.
-    let module = compile_source(
-        "field def f : Real -> Real { source = analytical { |x| 1 } }",
-    );
+    let module = compile_source("field def f : Real -> Real { source = analytical { |x| 1 } }");
 
     let has_mismatch = module
         .diagnostics

@@ -136,27 +136,23 @@
 //!     MedialError::GridValidation(GridValidationError::EmptyAxisGrid { axis: 0 });
 //! ```
 
+pub(crate) mod grid_validation;
 pub mod medial;
 pub mod mesher;
 pub mod mid_surface;
 pub mod mid_surface_naming;
 pub mod pruning;
 pub mod segmentation;
-pub(crate) mod grid_validation;
 
 pub use grid_validation::GridValidationError;
 pub use medial::{MedialError, MedialMask, MedialOptions, compute_medial_mask};
-pub use mesher::{
-    mesh_mid_surface, MesherError, MesherOptions, MesherResult, QualityMetrics,
-};
-pub use mid_surface::{
-    MidSurfaceError, MidSurfaceMesh, MidSurfaceOptions, extract_mid_surface,
-};
+pub use mesher::{MesherError, MesherOptions, MesherResult, QualityMetrics, mesh_mid_surface};
+pub use mid_surface::{MidSurfaceError, MidSurfaceMesh, MidSurfaceOptions, extract_mid_surface};
 pub use mid_surface_naming::{
-    populate_mid_surface_attributes, MidSurfaceAttributes, MidSurfaceEdgeRecord,
+    MidSurfaceAttributes, MidSurfaceEdgeRecord, populate_mid_surface_attributes,
 };
-pub use pruning::{prune_branches, PruneError, PruneMetrics, PruneOptions, PruneResult};
+pub use pruning::{PruneError, PruneMetrics, PruneOptions, PruneResult, prune_branches};
 pub use segmentation::{
-    segment_regions, RegionClassification, RegionInfo, SegmentationError, SegmentationOptions,
-    SegmentationResult, SingleBodyMask,
+    RegionClassification, RegionInfo, SegmentationError, SegmentationOptions, SegmentationResult,
+    SingleBodyMask, segment_regions,
 };

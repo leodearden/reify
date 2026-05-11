@@ -7,15 +7,14 @@
 use std::fs;
 use std::path::PathBuf;
 
-use reify_config::cache::{load_cache_config_from_path, CacheConfig, CacheError};
+use reify_config::cache::{CacheConfig, CacheError, load_cache_config_from_path};
 use tempfile::TempDir;
 
 #[test]
 fn load_cache_config_from_path_reads_valid_document() {
     let dir = TempDir::new().expect("create temp dir");
     let path = dir.path().join("config.toml");
-    fs::write(&path, "[cache]\ndir = \"/foo\"\nmax_bytes = 99\n")
-        .expect("write cache config");
+    fs::write(&path, "[cache]\ndir = \"/foo\"\nmax_bytes = 99\n").expect("write cache config");
 
     let cfg = load_cache_config_from_path(&path).expect("config should load");
     assert_eq!(
@@ -47,8 +46,7 @@ fn load_cache_config_from_path_propagates_parse_errors_with_diagnostic() {
     // syntax error with line/col context preserved.
     fs::write(&path, "[cache\ndir = \"/foo\"\n").expect("write malformed config");
 
-    let err = load_cache_config_from_path(&path)
-        .expect_err("malformed TOML should be rejected");
+    let err = load_cache_config_from_path(&path).expect_err("malformed TOML should be rejected");
     match err {
         CacheError::Parse(msg) => {
             assert!(

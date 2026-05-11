@@ -78,7 +78,7 @@ pub mod quality;
 pub mod types;
 
 pub use boundary::{
-    BoundaryAssociation, NodeAttachment, ProjectionFailure, ProjectorPayload, Projector,
+    BoundaryAssociation, NodeAttachment, ProjectionFailure, Projector, ProjectorPayload,
     compute_dirichlet_bcs,
 };
 pub use elasticity::{ElasticityFailure, elasticity_morph, elasticity_morph_with_cg_opts};
@@ -149,11 +149,11 @@ pub fn morph(
     let _ = options;
     match eligibility::morph_eligible(old_brep, new_brep) {
         Eligibility::Ineligible(reason) => Err(MorphFailure::Ineligible(reason)),
-        Eligibility::Eligible(_correspondence_map) => Err(MorphFailure::SolverError(
-            SolverErrorPayload::new(
+        Eligibility::Eligible(_correspondence_map) => {
+            Err(MorphFailure::SolverError(SolverErrorPayload::new(
                 "engine not yet implemented (PRD docs/prds/v0_3/mesh-morphing.md tasks #5-#9)",
-            ),
-        )),
+            )))
+        }
     }
 }
 
@@ -320,10 +320,11 @@ mod tests {
     // no runtime assertions, just type-check guarantees.
     const _: fn() = || {
         use crate::{
-            BoundaryAssociation, NodeAttachment, ProjectionFailure, ProjectorPayload, Projector,
+            BoundaryAssociation, NodeAttachment, ProjectionFailure, Projector, ProjectorPayload,
             compute_dirichlet_bcs,
         };
-        #[allow(clippy::type_complexity)] // pinning the full public signature is the point of the fence
+        #[allow(clippy::type_complexity)]
+        // pinning the full public signature is the point of the fence
         let _fn_ref: fn(
             &reify_types::VolumeMesh,
             &BoundaryAssociation,
@@ -343,7 +344,8 @@ mod tests {
     // compile if a re-export drops or the public signature drifts.
     const _: fn() = || {
         use crate::{LaplacianFailure, laplacian_smooth};
-        #[allow(clippy::type_complexity)] // pinning the full public signature is the point of the fence
+        #[allow(clippy::type_complexity)]
+        // pinning the full public signature is the point of the fence
         let _fn_ref: fn(
             &reify_types::VolumeMesh,
             &[(u32, [f64; 3])],
@@ -372,13 +374,15 @@ mod tests {
             &[(u32, [f64; 3])],
             &MorphOptions,
         ) -> Result<reify_types::VolumeMesh, ElasticityFailure> = elasticity_morph;
-        #[allow(clippy::type_complexity)] // pinning the full public signature is the point of the fence
+        #[allow(clippy::type_complexity)]
+        // pinning the full public signature is the point of the fence
         let _fn_with_opts: fn(
             &reify_types::VolumeMesh,
             &[(u32, [f64; 3])],
             &MorphOptions,
             CgSolverOptions,
-        ) -> Result<reify_types::VolumeMesh, ElasticityFailure> = elasticity_morph_with_cg_opts;
+        )
+            -> Result<reify_types::VolumeMesh, ElasticityFailure> = elasticity_morph_with_cg_opts;
         let _ = _fn_with_opts;
         // Variant mentions force the enum's variant set into the fence —
         // adding or removing a variant under the same names elsewhere would
@@ -406,18 +410,16 @@ mod tests {
         ) -> QualityVerdict = quality_check;
         // Variant mentions — exhaustive constructor coverage:
         let _: QualityVerdict = QualityVerdict::Pass;
-        let _: QualityVerdict =
-            QualityVerdict::HardFail(crate::types::InversionDetails {
-                element_index: 0,
-                jacobian: -0.5,
-            });
-        let _: QualityVerdict =
-            QualityVerdict::SoftFail(crate::types::SoftFailDetails {
-                min_scaled_jacobian: None,
-                pct_below_025: None,
-                max_aspect_ratio_factor: None,
-                degenerate_morphed_element: None,
-            });
+        let _: QualityVerdict = QualityVerdict::HardFail(crate::types::InversionDetails {
+            element_index: 0,
+            jacobian: -0.5,
+        });
+        let _: QualityVerdict = QualityVerdict::SoftFail(crate::types::SoftFailDetails {
+            min_scaled_jacobian: None,
+            pct_below_025: None,
+            max_aspect_ratio_factor: None,
+            degenerate_morphed_element: None,
+        });
     };
 
     // ── task 2945: lib re-export + variant fence for StiffnessRule ───────────
@@ -500,7 +502,10 @@ mod tests {
         let options = MorphOptions::default();
         let result = morph(&mesh, old_brep, new_brep, &options);
         assert!(
-            matches!(result, Err(MorphFailure::Ineligible(Reason::BijectionFailure(_)))),
+            matches!(
+                result,
+                Err(MorphFailure::Ineligible(Reason::BijectionFailure(_)))
+            ),
             "Stage-B CountMismatch should project to MorphFailure::Ineligible(BijectionFailure), got: {result:?}"
         );
     }

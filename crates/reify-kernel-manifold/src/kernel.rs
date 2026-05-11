@@ -38,9 +38,9 @@ use std::collections::HashMap;
 
 use manifold3d::Manifold;
 use reify_types::{
-    ExportError, ExportFormat, FeatureId, GeometryError, GeometryHandle,
-    GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook,
-    KernelAttributeOutcome, Mesh, QueryError, TessError, TopologyAttributeTable, Value,
+    ExportError, ExportFormat, FeatureId, GeometryError, GeometryHandle, GeometryHandleId,
+    GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, KernelAttributeOutcome, Mesh,
+    QueryError, TessError, TopologyAttributeTable, Value,
 };
 
 /// Error message used by the v0.2 stub paths (`query`/`export`) that
@@ -128,14 +128,11 @@ impl ManifoldKernel {
     /// integration tests in `tests/` (which set the `test-fixtures` feature
     /// via the self-dev-dep in `Cargo.toml`).
     #[cfg(any(test, feature = "test-fixtures"))]
-    pub fn store_mesh_for_test(
-        &mut self,
-        mesh: &Mesh,
-    ) -> Result<GeometryHandleId, GeometryError> {
+    pub fn store_mesh_for_test(&mut self, mesh: &Mesh) -> Result<GeometryHandleId, GeometryError> {
         let vert_props_f64: Vec<f64> = mesh.vertices.iter().map(|&v| v as f64).collect();
         let tri_indices_u64: Vec<u64> = mesh.indices.iter().map(|&i| i as u64).collect();
-        let manifold = Manifold::from_mesh_f64(&vert_props_f64, 3, &tri_indices_u64)
-            .map_err(|e| {
+        let manifold =
+            Manifold::from_mesh_f64(&vert_props_f64, 3, &tri_indices_u64).map_err(|e| {
                 GeometryError::OperationFailed(format!(
                     "store_mesh_for_test: input Mesh must be a valid manifold; \
                      manifold3d::from_mesh_f64 reported: {e:?}"
@@ -407,10 +404,7 @@ mod tests {
             .store_mesh_for_test(&unit_cube_mesh([0.5, 0.0, 0.0]))
             .expect("unit_cube_mesh fixture must be a valid manifold");
 
-        let result = kernel.execute(&GeometryOp::Union {
-            left: l,
-            right: r,
-        });
+        let result = kernel.execute(&GeometryOp::Union { left: l, right: r });
 
         assert_ok_handle(result, "Union");
     }
@@ -434,10 +428,7 @@ mod tests {
             .store_mesh_for_test(&unit_cube_mesh([0.5, 0.0, 0.0]))
             .expect("unit_cube_mesh fixture must be a valid manifold");
 
-        let result = kernel.execute(&GeometryOp::Difference {
-            left: l,
-            right: r,
-        });
+        let result = kernel.execute(&GeometryOp::Difference { left: l, right: r });
 
         assert_ok_handle(result, "Difference");
     }
@@ -470,10 +461,7 @@ mod tests {
             .store_mesh_for_test(&unit_cube_mesh([0.5, 0.0, 0.0]))
             .expect("unit_cube_mesh fixture must be a valid manifold");
 
-        let result = kernel.execute(&GeometryOp::Intersection {
-            left: l,
-            right: r,
-        });
+        let result = kernel.execute(&GeometryOp::Intersection { left: l, right: r });
 
         assert_ok_handle(result, "Intersection");
     }
@@ -505,18 +493,13 @@ mod tests {
             .expect("unit_cube_mesh fixture must be a valid manifold");
 
         let intersection_handle = kernel
-            .execute(&GeometryOp::Intersection {
-                left: l,
-                right: r,
-            })
+            .execute(&GeometryOp::Intersection { left: l, right: r })
             .expect("Intersection of two valid (disjoint) cubes must Ok-return a handle");
 
-        let mesh = kernel
-            .tessellate(intersection_handle.id, 0.0)
-            .expect(
-                "tessellate of empty/degenerate Manifold must Ok-return an empty Mesh, \
+        let mesh = kernel.tessellate(intersection_handle.id, 0.0).expect(
+            "tessellate of empty/degenerate Manifold must Ok-return an empty Mesh, \
                  not panic via the divide-by-zero short-circuit guard",
-            );
+        );
 
         assert!(
             mesh.vertices.is_empty(),
@@ -613,10 +596,7 @@ mod tests {
             .expect("unit_cube_mesh fixture must be a valid manifold");
 
         let union_handle = kernel
-            .execute(&GeometryOp::Union {
-                left: l,
-                right: r,
-            })
+            .execute(&GeometryOp::Union { left: l, right: r })
             .expect("Union of two valid cubes must succeed");
 
         let mesh = kernel
@@ -817,8 +797,8 @@ mod tests {
         let bad_mesh = Mesh {
             vertices: vec![
                 0.0_f32, 0.0, 0.0, // v0
-                1.0, 0.0, 0.0,     // v1
-                0.0, 1.0, 0.0,     // v2
+                1.0, 0.0, 0.0, // v1
+                0.0, 1.0, 0.0, // v2
             ],
             indices: vec![0, 1, 2],
             normals: None,

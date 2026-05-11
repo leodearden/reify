@@ -143,10 +143,7 @@ pub fn laplacian_smooth(
         // returning a failure here.
         for &i in tet {
             for &j in tet {
-                if i != j
-                    && (i as usize) < vertex_count
-                    && (j as usize) < vertex_count
-                {
+                if i != j && (i as usize) < vertex_count && (j as usize) < vertex_count {
                     adjacency[i as usize].insert(j);
                 }
             }
@@ -461,14 +458,7 @@ mod tests {
         let d = [20.0, 0.0, 0.0];
         let e = [0.0, 20.0, 0.0];
         let f = [0.0, 0.0, 20.0];
-        let prescribed = vec![
-            (0_u32, a),
-            (1, b),
-            (2, c),
-            (5, d),
-            (6, e),
-            (7, f),
-        ];
+        let prescribed = vec![(0_u32, a), (1, b), (2, c), (5, d), (6, e), (7, f)];
 
         // Initial interior positions (cast from the f32 mesh).
         let p0 = [1.0_f64, 1.0, 1.0];
@@ -707,7 +697,11 @@ mod tests {
                 1.0, 1.0, 0.0, // normal for node 3
             ]),
         };
-        let prescribed = vec![(0_u32, [0.0_f64, 0.0, 0.0]), (1, [1.0, 0.0, 0.0]), (2, [0.0, 1.0, 0.0])];
+        let prescribed = vec![
+            (0_u32, [0.0_f64, 0.0, 0.0]),
+            (1, [1.0, 0.0, 0.0]),
+            (2, [0.0, 1.0, 0.0]),
+        ];
         let out = laplacian_smooth(&mesh, &prescribed, 1).unwrap();
         assert!(
             out.normals.is_none(),

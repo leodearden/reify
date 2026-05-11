@@ -322,7 +322,10 @@ fn parse_mixed_auto_and_auto_free() {
     };
     assert_eq!(a.name, "a");
     assert!(
-        matches!(a.default.as_ref().unwrap().kind, ExprKind::Auto { free: false }),
+        matches!(
+            a.default.as_ref().unwrap().kind,
+            ExprKind::Auto { free: false }
+        ),
         "expected Auto {{ free: false }}, got {:?}",
         a.default.as_ref().unwrap().kind
     );
@@ -334,7 +337,10 @@ fn parse_mixed_auto_and_auto_free() {
     };
     assert_eq!(b.name, "b");
     assert!(
-        matches!(b.default.as_ref().unwrap().kind, ExprKind::Auto { free: true }),
+        matches!(
+            b.default.as_ref().unwrap().kind,
+            ExprKind::Auto { free: true }
+        ),
         "expected Auto {{ free: true }}, got {:?}",
         b.default.as_ref().unwrap().kind
     );
@@ -376,7 +382,9 @@ fn parse_auto_unrecognized_modifier_is_error() {
     // `str::find` avoids hard-coded magic byte offsets that would silently
     // become wrong if the source fixture changes.
     let token = "auto(constrained)";
-    let auto_start = source.find(token).expect("fixture must contain 'auto(constrained)'") as u32;
+    let auto_start = source
+        .find(token)
+        .expect("fixture must contain 'auto(constrained)'") as u32;
     let auto_end = auto_start + token.len() as u32;
     let has_overlapping_error = module
         .errors

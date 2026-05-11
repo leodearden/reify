@@ -56,15 +56,8 @@ pub mod ffi {
         fn grid_name(h: &OpenVdbGridHandle) -> String;
 
         // File I/O — throw std::runtime_error on failure; cxx maps to Err.
-        fn write_vdb_grid_ffi(
-            h: &OpenVdbGridHandle,
-            path: &str,
-            grid_name: &str,
-        ) -> Result<()>;
-        fn read_vdb_grid_ffi(
-            path: &str,
-            grid_name: &str,
-        ) -> Result<UniquePtr<OpenVdbGridHandle>>;
+        fn write_vdb_grid_ffi(h: &OpenVdbGridHandle, path: &str, grid_name: &str) -> Result<()>;
+        fn read_vdb_grid_ffi(path: &str, grid_name: &str) -> Result<UniquePtr<OpenVdbGridHandle>>;
 
         // Densify active voxels into flat row-major f32 buffer (axis-0 = X
         // outermost). The Rust caller derives per-axis dimensions from the

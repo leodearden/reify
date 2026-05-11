@@ -316,11 +316,9 @@ fn elastic_options_param_defaults_match_spec() {
     // max_iter = 1000
     let max_iter_default = require_default(template, "max_iter");
     match &max_iter_default.kind {
-        CompiledExprKind::Literal(Value::Int(v)) => assert_eq!(
-            *v, 1000,
-            "max_iter default should be 1000, got: {}",
-            v
-        ),
+        CompiledExprKind::Literal(Value::Int(v)) => {
+            assert_eq!(*v, 1000, "max_iter default should be 1000, got: {}", v)
+        }
         other => panic!(
             "max_iter default should be Literal(Value::Int(1000)), got: {:?}",
             other
@@ -367,11 +365,9 @@ fn elastic_options_param_defaults_match_spec() {
     // "promotion is automatic when detection succeeds" policy)
     let force_tet_default = require_default(template, "force_tet");
     match &force_tet_default.kind {
-        CompiledExprKind::Literal(Value::Bool(v)) => assert!(
-            !v,
-            "force_tet default should be false, got: {}",
-            v
-        ),
+        CompiledExprKind::Literal(Value::Bool(v)) => {
+            assert!(!v, "force_tet default should be false, got: {}", v)
+        }
         other => panic!(
             "force_tet default should be Literal(Value::Bool(false)), got: {:?}",
             other
@@ -383,11 +379,9 @@ fn elastic_options_param_defaults_match_spec() {
     // "promotion is automatic when detection succeeds" policy)
     let require_hex_wedge_default = require_default(template, "require_hex_wedge");
     match &require_hex_wedge_default.kind {
-        CompiledExprKind::Literal(Value::Bool(v)) => assert!(
-            !v,
-            "require_hex_wedge default should be false, got: {}",
-            v
-        ),
+        CompiledExprKind::Literal(Value::Bool(v)) => {
+            assert!(!v, "require_hex_wedge default should be false, got: {}", v)
+        }
         other => panic!(
             "require_hex_wedge default should be Literal(Value::Bool(false)), got: {:?}",
             other
@@ -556,7 +550,12 @@ fn elastic_options_constrains_positivity_invariants() {
         template.constraints.len()
     );
 
-    for required in &["max_iter", "cg_tolerance", "shell_threshold", "shell_branch_prune_ratio"] {
+    for required in &[
+        "max_iter",
+        "cg_tolerance",
+        "shell_threshold",
+        "shell_branch_prune_ratio",
+    ] {
         let matched = template.constraints.iter().any(|c| {
             // Check the constraint expression is a `>` BinOp with a ValueRef
             // to the required member on the left side and the literal `0` on
@@ -570,9 +569,7 @@ fn elastic_options_constrains_positivity_invariants() {
             // emit `Real(0.0)` here.
             match &c.expr.kind {
                 CompiledExprKind::BinOp { op, left, right } => {
-                    if *op != BinOp::Gt
-                        || !collect_value_ref_members(left).contains(required)
-                    {
+                    if *op != BinOp::Gt || !collect_value_ref_members(left).contains(required) {
                         return false;
                     }
                     match &right.kind {
@@ -634,9 +631,7 @@ fn elastic_options_caps_cg_tolerance_below_one() {
         // but the name + op check still passes.
         match &c.expr.kind {
             CompiledExprKind::BinOp { op, left, right } => {
-                if *op != BinOp::Lt
-                    || !collect_value_ref_members(left).contains(&"cg_tolerance")
-                {
+                if *op != BinOp::Lt || !collect_value_ref_members(left).contains(&"cg_tolerance") {
                     return false;
                 }
                 match &right.kind {
@@ -679,8 +674,7 @@ fn elastic_options_constrains_shell_threshold_below_one() {
         // future numeric-promotion change could legitimately emit Real(1.0).
         match &c.expr.kind {
             CompiledExprKind::BinOp { op, left, right } => {
-                if *op != BinOp::Lt
-                    || !collect_value_ref_members(left).contains(&"shell_threshold")
+                if *op != BinOp::Lt || !collect_value_ref_members(left).contains(&"shell_threshold")
                 {
                     return false;
                 }
@@ -824,9 +818,7 @@ fn elastic_result_constrains_iterations_and_max_von_mises_nonneg() {
             // changed to a negative value but the name + op check still passes.
             match &c.expr.kind {
                 CompiledExprKind::BinOp { op, left, right } => {
-                    if *op != BinOp::Ge
-                        || !collect_value_ref_members(left).contains(required)
-                    {
+                    if *op != BinOp::Ge || !collect_value_ref_members(left).contains(required) {
                         return false;
                     }
                     match &right.kind {

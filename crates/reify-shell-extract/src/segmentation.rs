@@ -76,7 +76,9 @@ pub struct SegmentationOptions {
 
 impl Default for SegmentationOptions {
     fn default() -> Self {
-        Self { shell_threshold: 0.2 }
+        Self {
+            shell_threshold: 0.2,
+        }
     }
 }
 
@@ -317,8 +319,12 @@ pub fn segment_regions(
         let mut idx_max = voxels[0];
         for &v in voxels.iter().skip(1) {
             for a in 0..3 {
-                if v[a] < idx_min[a] { idx_min[a] = v[a]; }
-                if v[a] > idx_max[a] { idx_max[a] = v[a]; }
+                if v[a] < idx_min[a] {
+                    idx_min[a] = v[a];
+                }
+                if v[a] > idx_max[a] {
+                    idx_max[a] = v[a];
+                }
             }
         }
         let extent = (0..3usize)
@@ -340,9 +346,7 @@ pub fn segment_regions(
             continue;
         }
         // Fractional voxel index along each axis.
-        let f: [f64; 3] = std::array::from_fn(|a| {
-            (world[a] - mask.origin[a]) / mask.spacing[a]
-        });
+        let f: [f64; 3] = std::array::from_fn(|a| (world[a] - mask.origin[a]) / mask.spacing[a]);
         // Enumerate unique floor/ceil corner candidates (1–8 per vertex).
         // Integer-aligned axes yield one candidate; fractional axes yield two.
         'candidate: for dz in axis_floor_ceil_unique(f[2]) {
@@ -394,11 +398,12 @@ pub fn segment_regions(
             // conservatively classified as TetEligible: a 0.0 mean_thickness would
             // otherwise produce ratio = 0.0 < threshold → ShellEligible, which is
             // misleading when the classification is based on absent mesh data.
-            let classification = if has_vertex_data && thickness_extent_ratio < options.shell_threshold {
-                RegionClassification::ShellEligible
-            } else {
-                RegionClassification::TetEligible
-            };
+            let classification =
+                if has_vertex_data && thickness_extent_ratio < options.shell_threshold {
+                    RegionClassification::ShellEligible
+                } else {
+                    RegionClassification::TetEligible
+                };
             RegionInfo {
                 label,
                 voxels,
@@ -487,10 +492,11 @@ pub fn segment_regions(
 /// **development-time backstop**: if a future refactor introduces a call path
 /// that bypasses the upstream guard, debug builds will panic loudly instead of
 /// silently casting NaN to 0 (Rust 1.45+ saturating semantics).
-fn axis_floor_ceil_unique(
-    coord: f64,
-) -> impl Iterator<Item = i32> {
-    debug_assert!(coord.is_finite(), "axis_floor_ceil_unique: coord must be finite (got {coord})");
+fn axis_floor_ceil_unique(coord: f64) -> impl Iterator<Item = i32> {
+    debug_assert!(
+        coord.is_finite(),
+        "axis_floor_ceil_unique: coord must be finite (got {coord})"
+    );
     let floor = coord.floor() as i32;
     let ceil = coord.ceil() as i32;
     std::iter::once(floor).chain((floor != ceil).then_some(ceil))
@@ -501,10 +507,10 @@ mod tests {
     use super::axis_floor_ceil_unique;
     use std::collections::HashSet;
 
-    use crate::mid_surface::{extract_mid_surface, MidSurfaceOptions};
+    use crate::mid_surface::{MidSurfaceOptions, extract_mid_surface};
     use crate::{
-        segment_regions, MedialMask, MidSurfaceMesh, RegionClassification, RegionInfo,
-        SegmentationError, SegmentationOptions, SegmentationResult, SingleBodyMask,
+        MedialMask, MidSurfaceMesh, RegionClassification, RegionInfo, SegmentationError,
+        SegmentationOptions, SegmentationResult, SingleBodyMask, segment_regions,
     };
     use reify_types::value::{InterpolationKind, SampledField, SampledGridKind};
     use std::sync::atomic::AtomicBool;
@@ -575,12 +581,21 @@ mod tests {
             triangles: vec![],
             thickness: vec![],
         };
-        let result: SegmentationResult =
-            segment_regions(&SingleBodyMask::new(mask), &mesh, &SegmentationOptions::default())
-                .expect("empty mask + empty mesh should return Ok");
+        let result: SegmentationResult = segment_regions(
+            &SingleBodyMask::new(mask),
+            &mesh,
+            &SegmentationOptions::default(),
+        )
+        .expect("empty mask + empty mesh should return Ok");
         assert!(result.regions.is_empty(), "empty mask → no regions");
-        assert!(result.vertex_labels.is_empty(), "empty mesh → no vertex labels");
-        assert!(result.triangle_labels.is_empty(), "empty mesh → no triangle labels");
+        assert!(
+            result.vertex_labels.is_empty(),
+            "empty mesh → no vertex labels"
+        );
+        assert!(
+            result.triangle_labels.is_empty(),
+            "empty mesh → no triangle labels"
+        );
         // Compile-probes: error type and subtypes are reachable.
         let _: SegmentationError = SegmentationError::InvalidThreshold { value: 0.0 };
         let _: Option<RegionInfo> = None;
@@ -606,7 +621,9 @@ mod tests {
             segment_regions(
                 &SingleBodyMask::new(mask.clone()),
                 &mesh,
-                &SegmentationOptions { shell_threshold: 0.0 }
+                &SegmentationOptions {
+                    shell_threshold: 0.0
+                }
             ),
             Err(SegmentationError::InvalidThreshold { value: 0.0 }),
             "zero threshold must be rejected"
@@ -615,7 +632,9 @@ mod tests {
             segment_regions(
                 &SingleBodyMask::new(mask.clone()),
                 &mesh,
-                &SegmentationOptions { shell_threshold: -0.1 }
+                &SegmentationOptions {
+                    shell_threshold: -0.1
+                }
             ),
             Err(SegmentationError::InvalidThreshold { value: -0.1 }),
             "negative threshold must be rejected"
@@ -638,7 +657,11 @@ mod tests {
             thickness: vec![1.0, 2.0], // length 2 ≠ vertices length 3
         };
         assert_eq!(
-            segment_regions(&SingleBodyMask::new(mask), &mesh, &SegmentationOptions::default()),
+            segment_regions(
+                &SingleBodyMask::new(mask),
+                &mesh,
+                &SegmentationOptions::default()
+            ),
             Err(SegmentationError::MeshLengthMismatch {
                 vertices_len: 3,
                 thickness_len: 2
@@ -657,9 +680,12 @@ mod tests {
         let mesh = extract_mid_surface(&sdf, &mask, &MidSurfaceOptions::default())
             .expect("T2 extraction should succeed");
 
-        let result =
-            segment_regions(&SingleBodyMask::new(mask.clone()), &mesh, &SegmentationOptions::default())
-                .expect("segment_regions should succeed on slab");
+        let result = segment_regions(
+            &SingleBodyMask::new(mask.clone()),
+            &mesh,
+            &SegmentationOptions::default(),
+        )
+        .expect("segment_regions should succeed on slab");
 
         assert_eq!(result.regions.len(), 1, "one connected component");
         assert_eq!(result.regions[0].label, 0);
@@ -669,10 +695,12 @@ mod tests {
             "region contains all mask voxels"
         );
         // Exact set equality.
-        let region_set: HashSet<[i32; 3]> =
-            result.regions[0].voxels.iter().copied().collect();
+        let region_set: HashSet<[i32; 3]> = result.regions[0].voxels.iter().copied().collect();
         let mask_set: HashSet<[i32; 3]> = mask.voxels.iter().copied().collect();
-        assert_eq!(region_set, mask_set, "region voxel set equals mask voxel set");
+        assert_eq!(
+            region_set, mask_set,
+            "region voxel set equals mask voxel set"
+        );
     }
 
     // ── Step 9: two disjoint slabs → two CCs ─────────────────────────────────
@@ -693,7 +721,11 @@ mod tests {
             .collect();
         let mut voxels = cluster_a.clone();
         voxels.extend_from_slice(&cluster_b);
-        let mask = MedialMask { spacing, origin, voxels };
+        let mask = MedialMask {
+            spacing,
+            origin,
+            voxels,
+        };
 
         // Minimal mesh consistent with validation (length-3 thickness for 3 vertices).
         let mesh = MidSurfaceMesh {
@@ -702,11 +734,18 @@ mod tests {
             thickness: vec![1.0, 1.0, 1.0],
         };
 
-        let result =
-            segment_regions(&SingleBodyMask::new(mask.clone()), &mesh, &SegmentationOptions::default())
-                .expect("segment_regions should succeed");
+        let result = segment_regions(
+            &SingleBodyMask::new(mask.clone()),
+            &mesh,
+            &SegmentationOptions::default(),
+        )
+        .expect("segment_regions should succeed");
 
-        assert_eq!(result.regions.len(), 2, "two disjoint clusters → two regions");
+        assert_eq!(
+            result.regions.len(),
+            2,
+            "two disjoint clusters → two regions"
+        );
         // Labels are in {0, 1}.
         let labels: HashSet<u32> = result.regions.iter().map(|r| r.label).collect();
         assert_eq!(labels, HashSet::from([0, 1]));
@@ -716,17 +755,37 @@ mod tests {
         let region_a = result
             .regions
             .iter()
-            .find(|r| r.voxels.iter().copied().collect::<HashSet<_>>().contains(&[0i32, 0, 4]))
+            .find(|r| {
+                r.voxels
+                    .iter()
+                    .copied()
+                    .collect::<HashSet<_>>()
+                    .contains(&[0i32, 0, 4])
+            })
             .expect("region containing cluster-A representative voxel [0,0,4] must exist");
         let region_b = result
             .regions
             .iter()
-            .find(|r| r.voxels.iter().copied().collect::<HashSet<_>>().contains(&[0i32, 0, 12]))
+            .find(|r| {
+                r.voxels
+                    .iter()
+                    .copied()
+                    .collect::<HashSet<_>>()
+                    .contains(&[0i32, 0, 12])
+            })
             .expect("region containing cluster-B representative voxel [0,0,12] must exist");
 
         // Each cluster is an 8×8 z-plane → 64 voxels.
-        assert_eq!(region_a.voxels.len(), 64, "cluster A must have 64 voxels (8×8 z-plane)");
-        assert_eq!(region_b.voxels.len(), 64, "cluster B must have 64 voxels (8×8 z-plane)");
+        assert_eq!(
+            region_a.voxels.len(),
+            64,
+            "cluster A must have 64 voxels (8×8 z-plane)"
+        );
+        assert_eq!(
+            region_b.voxels.len(),
+            64,
+            "cluster B must have 64 voxels (8×8 z-plane)"
+        );
 
         // In-plane bounding-box extent = max(i-span, j-span, k-span).
         // i-span = 7, j-span = 7, k-span = 0 (single z-plane) → extent = 7.0.
@@ -761,9 +820,12 @@ mod tests {
         let mesh = extract_mid_surface(&sdf, &mask, &MidSurfaceOptions::default())
             .expect("T2 extraction should succeed");
 
-        let result =
-            segment_regions(&SingleBodyMask::new(mask), &mesh, &SegmentationOptions::default())
-                .expect("segment_regions should succeed");
+        let result = segment_regions(
+            &SingleBodyMask::new(mask),
+            &mesh,
+            &SegmentationOptions::default(),
+        )
+        .expect("segment_regions should succeed");
 
         let region = &result.regions[0];
         assert_eq!(
@@ -820,9 +882,12 @@ mod tests {
             thickness: vec![3.0],
         };
 
-        let result =
-            segment_regions(&SingleBodyMask::new(mask), &mesh, &SegmentationOptions::default())
-                .expect("segment_regions should succeed");
+        let result = segment_regions(
+            &SingleBodyMask::new(mask),
+            &mesh,
+            &SegmentationOptions::default(),
+        )
+        .expect("segment_regions should succeed");
 
         assert_eq!(result.regions.len(), 1);
         let region = &result.regions[0];
@@ -872,8 +937,12 @@ mod tests {
             thickness: vec![1.0, 2.0, 3.0],
         };
 
-        let result = segment_regions(&SingleBodyMask::new(mask), &mesh, &SegmentationOptions::default())
-            .expect("segment_regions should succeed");
+        let result = segment_regions(
+            &SingleBodyMask::new(mask),
+            &mesh,
+            &SegmentationOptions::default(),
+        )
+        .expect("segment_regions should succeed");
 
         assert_eq!(result.regions.len(), 1, "collinear voxels → one component");
         let region = &result.regions[0];
@@ -931,9 +1000,12 @@ mod tests {
             thickness: vec![2.0, 3.0],
         };
 
-        let result =
-            segment_regions(&SingleBodyMask::new(mask), &mesh, &SegmentationOptions::default())
-                .expect("segment_regions should succeed");
+        let result = segment_regions(
+            &SingleBodyMask::new(mask),
+            &mesh,
+            &SegmentationOptions::default(),
+        )
+        .expect("segment_regions should succeed");
 
         assert_eq!(result.regions.len(), 2);
 
@@ -983,7 +1055,9 @@ mod tests {
         let result = segment_regions(
             &SingleBodyMask::new(mask),
             &mesh,
-            &SegmentationOptions { shell_threshold: 0.001 },
+            &SegmentationOptions {
+                shell_threshold: 0.001,
+            },
         )
         .expect("segment_regions should succeed");
 
@@ -1040,10 +1114,26 @@ mod tests {
             n
         }
 
-        assert_eq!(count_candidates([0.0, 0.0, 0.0]), 1, "all-integer → 1 candidate");
-        assert_eq!(count_candidates([0.5, 0.0, 0.0]), 2, "one-fractional → 2 candidates");
-        assert_eq!(count_candidates([0.5, 0.5, 0.0]), 4, "two-fractional → 4 candidates");
-        assert_eq!(count_candidates([0.5, 0.5, 0.5]), 8, "all-fractional → 8 candidates");
+        assert_eq!(
+            count_candidates([0.0, 0.0, 0.0]),
+            1,
+            "all-integer → 1 candidate"
+        );
+        assert_eq!(
+            count_candidates([0.5, 0.0, 0.0]),
+            2,
+            "one-fractional → 2 candidates"
+        );
+        assert_eq!(
+            count_candidates([0.5, 0.5, 0.0]),
+            4,
+            "two-fractional → 4 candidates"
+        );
+        assert_eq!(
+            count_candidates([0.5, 0.5, 0.5]),
+            8,
+            "all-fractional → 8 candidates"
+        );
     }
 
     /// Regression: a vertex whose world position maps to an integer voxel index
@@ -1065,8 +1155,12 @@ mod tests {
             triangles: vec![],
             thickness: vec![1.0],
         };
-        let result = segment_regions(&SingleBodyMask::new(mask), &mesh, &SegmentationOptions::default())
-            .expect("single voxel + single vertex → Ok");
+        let result = segment_regions(
+            &SingleBodyMask::new(mask),
+            &mesh,
+            &SegmentationOptions::default(),
+        )
+        .expect("single voxel + single vertex → Ok");
         assert_eq!(
             result.vertex_labels,
             vec![0],
@@ -1105,11 +1199,11 @@ mod tests {
         let neg_inf = f64::NEG_INFINITY;
         let mesh = MidSurfaceMesh {
             vertices: vec![
-                [0.0, 0.0, 0.0],        // 0: finite → must label 0
-                [nan, 0.0, 0.0],         // 1: NaN x-component
-                [0.0, nan, 0.0],         // 2: NaN y-component
-                [0.0, 0.0, nan],         // 3: NaN z-component
-                [inf, neg_inf, nan],     // 4: all non-finite
+                [0.0, 0.0, 0.0],     // 0: finite → must label 0
+                [nan, 0.0, 0.0],     // 1: NaN x-component
+                [0.0, nan, 0.0],     // 2: NaN y-component
+                [0.0, 0.0, nan],     // 3: NaN z-component
+                [inf, neg_inf, nan], // 4: all non-finite
             ],
             // tri 0: all three vertices non-finite → triangle must receive u32::MAX
             // tri 1: one finite vertex (0) + two non-finite (1, 2) → inherits label 0
@@ -1117,13 +1211,16 @@ mod tests {
             thickness: vec![1.0; 5],
         };
 
-        let result = segment_regions(&SingleBodyMask::new(mask), &mesh, &SegmentationOptions::default())
-            .expect("segment_regions must not error or panic on non-finite vertex coords");
+        let result = segment_regions(
+            &SingleBodyMask::new(mask),
+            &mesh,
+            &SegmentationOptions::default(),
+        )
+        .expect("segment_regions must not error or panic on non-finite vertex coords");
 
         // ── vertex labels ────────────────────────────────────────────────────
         assert_eq!(
-            result.vertex_labels[0],
-            0,
+            result.vertex_labels[0], 0,
             "finite vertex [0.0, 0.0, 0.0] must be labelled with region 0"
         );
         assert_eq!(
@@ -1160,8 +1257,7 @@ mod tests {
         // A triangle with at least one finite vertex must inherit that vertex's
         // region label, even when the others carry the sentinel.
         assert_eq!(
-            result.triangle_labels[1],
-            0,
+            result.triangle_labels[1], 0,
             "triangle [0, 1, 2] — finite vertex 0 (label 0) + two non-finite — must label 0"
         );
     }
@@ -1175,8 +1271,7 @@ mod tests {
         // field is added, removed, or renamed — catching drift at compile time.
         let SegmentationOptions { shell_threshold } = SegmentationOptions::default();
         assert_eq!(
-            shell_threshold,
-            0.2,
+            shell_threshold, 0.2,
             "shell_threshold default must match PRD ElasticOptions.shell_threshold (L/t > 5)"
         );
     }

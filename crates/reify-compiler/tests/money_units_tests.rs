@@ -47,7 +47,11 @@ fn stdlib_USD_is_publicly_visible_in_prelude() {
 fn stdlib_USD_quantity_literal_resolves_to_money_scalar() {
     let (v, d) = stdlib_param_si_value("Money", "25USD");
     assert_eq_rel(v, 25.0, 1e-12, "25USD should be 25.0 in SI (Money)");
-    assert_eq!(d, DimensionVector::MONEY, "25USD should have MONEY dimension");
+    assert_eq!(
+        d,
+        DimensionVector::MONEY,
+        "25USD should have MONEY dimension"
+    );
 }
 
 // ─── (d) USD/kg compound resolves to Money/Mass ──────────────────────────────
@@ -151,4 +155,3 @@ fn stdlib_USD_per_kg_compound_resolves_to_money_per_mass() {
         other => panic!("expected BinOp{{Div, _, _}}, got {:?}", other),
     }
 }
-

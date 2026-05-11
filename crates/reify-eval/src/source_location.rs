@@ -232,7 +232,7 @@ pub fn resolve_entity_source_location(
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_entity_source_location, resolve_entity_at_source_position};
+    use super::{resolve_entity_at_source_position, resolve_entity_source_location};
     use reify_types::ModulePath;
 
     /// Build a CompiledModule from bracket_source() using the stdlib pipeline.
@@ -495,8 +495,7 @@ mod tests {
         let loc = resolve_entity_source_location(&compiled, source, "bracket.ri", "Bracket.width")
             .expect("forward lookup for Bracket.width must succeed");
         // loc.line and loc.column are 1-based and map to span.start of width cell.
-        let result =
-            resolve_entity_at_source_position(&compiled, source, loc.line, loc.column);
+        let result = resolve_entity_at_source_position(&compiled, source, loc.line, loc.column);
         assert_eq!(
             result,
             Some("Bracket.width".to_string()),

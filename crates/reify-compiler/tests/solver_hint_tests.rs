@@ -75,7 +75,10 @@ fn solver_hint_prefer_stock_compiles() {
         cell.solver_hints[0].kind,
         reify_compiler::SolverHintKind::PreferStock
     );
-    assert_eq!(cell.solver_hints[0].collection, "standard_sheet_thicknesses");
+    assert_eq!(
+        cell.solver_hints[0].collection,
+        "standard_sheet_thicknesses"
+    );
 }
 
 // ── Step 11: @solver_hint on let member compiles ────────────────────────────
@@ -239,7 +242,10 @@ fn solver_hint_in_guarded_block_compiles() {
         width_cell.solver_hints[0].kind,
         reify_compiler::SolverHintKind::DiscreteSet
     );
-    assert_eq!(width_cell.solver_hints[0].collection, "standard_bolt_lengths");
+    assert_eq!(
+        width_cell.solver_hints[0].collection,
+        "standard_bolt_lengths"
+    );
 }
 
 // ── Step 19: multiple @solver_hint on same param ───────────────────────────
@@ -275,7 +281,10 @@ fn solver_hint_multiple_on_same_param() {
         cell.solver_hints[1].kind,
         reify_compiler::SolverHintKind::PreferStock
     );
-    assert_eq!(cell.solver_hints[1].collection, "standard_sheet_thicknesses");
+    assert_eq!(
+        cell.solver_hints[1].collection,
+        "standard_sheet_thicknesses"
+    );
 }
 
 // ── Task 2339: preferred_strategy accepts any ident — table-driven ──────────
@@ -314,8 +323,7 @@ fn solver_hint_preferred_strategy_accepts_any_ident() {
             "{ident}: unexpected kind"
         );
         assert_eq!(
-            cell.solver_hints[0].collection,
-            ident,
+            cell.solver_hints[0].collection, ident,
             "{ident}: unexpected collection value"
         );
     }

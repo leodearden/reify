@@ -25,7 +25,7 @@
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_eval::Engine;
-use reify_test_support::{errors_only, parse_and_compile_with_stdlib, MockGeometryKernel};
+use reify_test_support::{MockGeometryKernel, errors_only, parse_and_compile_with_stdlib};
 use reify_types::{ExportFormat, GeometryOp, ModulePath, Value, ValueCellId};
 
 const BLOCK_INERTIA_PATH: &str = concat!(
@@ -273,10 +273,7 @@ fn fillet_top_edges_evals_to_solid_via_topology_walk() {
     );
 
     assert!(
-        matches!(
-            ops.last().map(|r| &r.op),
-            Some(GeometryOp::Fillet { .. })
-        ),
+        matches!(ops.last().map(|r| &r.op), Some(GeometryOp::Fillet { .. })),
         "expected last recorded op to be GeometryOp::Fillet, got: {:?}",
         ops.last().map(|r| r.op.kind_name())
     );

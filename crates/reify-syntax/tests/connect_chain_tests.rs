@@ -239,7 +239,9 @@ fn parse_connect_mixed_params_and_mappings() {
     );
     assert_eq!(connect.params[0].0, "grade");
     match &connect.params[0].1.kind {
-        ExprKind::NumberLiteral { value: n, .. } => assert!((*n - 8.8).abs() < 1e-10, "expected 8.8, got {}", n),
+        ExprKind::NumberLiteral { value: n, .. } => {
+            assert!((*n - 8.8).abs() < 1e-10, "expected 8.8, got {}", n)
+        }
         other => panic!("expected NumberLiteral(8.8), got {:?}", other),
     }
 
@@ -342,7 +344,9 @@ fn parse_connect_trailing_comma() {
     );
     assert_eq!(connect.params[0].0, "grade");
     match &connect.params[0].1.kind {
-        ExprKind::NumberLiteral { value: n, .. } => assert!((*n - 8.8).abs() < 1e-10, "expected 8.8, got {}", n),
+        ExprKind::NumberLiteral { value: n, .. } => {
+            assert!((*n - 8.8).abs() < 1e-10, "expected 8.8, got {}", n)
+        }
         other => panic!("expected NumberLiteral(8.8), got {:?}", other),
     }
 
@@ -385,7 +389,9 @@ fn parse_connect_mapping_before_param() {
     );
     assert_eq!(connect.params[0].0, "grade");
     match &connect.params[0].1.kind {
-        ExprKind::NumberLiteral { value: n, .. } => assert!((*n - 8.8).abs() < 1e-10, "expected 8.8, got {}", n),
+        ExprKind::NumberLiteral { value: n, .. } => {
+            assert!((*n - 8.8).abs() < 1e-10, "expected 8.8, got {}", n)
+        }
         other => panic!("expected NumberLiteral(8.8), got {:?}", other),
     }
 

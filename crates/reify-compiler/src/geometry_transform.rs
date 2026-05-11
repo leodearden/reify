@@ -72,7 +72,13 @@ pub(crate) fn compile_transform_op(
         }
         // rotate_around(target, px, py, pz, ax, ay, az, angle)
         "rotate_around" => {
-            if !check_arg_count_exact("rotate_around", compiled_args.len(), 8, expr_span, diagnostics) {
+            if !check_arg_count_exact(
+                "rotate_around",
+                compiled_args.len(),
+                8,
+                expr_span,
+                diagnostics,
+            ) {
                 return None;
             }
             let mut it = compiled_args.into_iter();

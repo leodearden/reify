@@ -14,7 +14,7 @@
 #![cfg(has_occt)]
 
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
-use reify_types::{GeometryQuery};
+use reify_types::GeometryQuery;
 
 /// 10×10mm rectangular face profile, expressed in SI metres.
 const RECT_WIDTH_M: f64 = 10.0e-3;

@@ -2080,7 +2080,11 @@ fn from_compiled_for_prelude_populates_shared_fields_and_prelude_defaults() {
     assert_eq!(entry.name, "newton");
     assert!(entry.is_pub);
     assert_eq!(entry.dimension, DimensionVector::FORCE);
-    assert!((entry.factor - 1.5).abs() < 1e-12, "factor mismatch: {}", entry.factor);
+    assert!(
+        (entry.factor - 1.5).abs() < 1e-12,
+        "factor mismatch: {}",
+        entry.factor
+    );
     assert_eq!(entry.offset, Some(2.5));
     assert_eq!(entry.content_hash, hash);
     assert!(entry.span.is_prelude(), "span must be the prelude sentinel");
@@ -2116,10 +2120,7 @@ fn seeded_prelude_unit_carries_prelude_span_and_module_through_registry() {
     );
 
     // User module re-declares `foo`, triggering a registry collision.
-    let user_parsed = reify_syntax::parse(
-        "unit foo : Length = 2.0",
-        ModulePath::single("user"),
-    );
+    let user_parsed = reify_syntax::parse("unit foo : Length = 2.0", ModulePath::single("user"));
     assert!(
         user_parsed.errors.is_empty(),
         "parse errors in user: {:?}",

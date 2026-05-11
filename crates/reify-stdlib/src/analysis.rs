@@ -56,11 +56,10 @@ pub(crate) fn compute_von_mises_3x3(d: &[f64]) -> f64 {
     let syz = d[5];
     let sxz = d[2];
 
-    (0.5
-        * ((sxx - syy).powi(2)
-            + (syy - szz).powi(2)
-            + (szz - sxx).powi(2)
-            + 6.0 * (sxy.powi(2) + syz.powi(2) + sxz.powi(2))))
+    (0.5 * ((sxx - syy).powi(2)
+        + (syy - szz).powi(2)
+        + (szz - sxx).powi(2)
+        + 6.0 * (sxy.powi(2) + syz.powi(2) + sxz.powi(2))))
     .sqrt()
 }
 

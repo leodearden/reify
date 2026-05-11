@@ -32,8 +32,8 @@ fn cli_build_with_primitive_box_produces_step_output() {
         result.output_path.exists(),
         "output STEP file should be written for bracket.ri build"
     );
-    let content = std::fs::read(&result.output_path)
-        .expect("should be able to read output STEP file");
+    let content =
+        std::fs::read(&result.output_path).expect("should be able to read output STEP file");
     assert!(
         !content.is_empty(),
         "output STEP file should be non-empty (OCCT kernel must have fired)"

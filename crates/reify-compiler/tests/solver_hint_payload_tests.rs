@@ -42,7 +42,10 @@ fn solver_hint_discrete_set_standard_bolt_lengths_end_to_end() {
 
     // (c) solver_hints is correct
     let template = &module.templates[0];
-    assert!(!template.value_cells.is_empty(), "expected at least one value cell");
+    assert!(
+        !template.value_cells.is_empty(),
+        "expected at least one value cell"
+    );
     let cell = &template.value_cells[0];
     assert_eq!(
         cell.solver_hints.len(),
@@ -86,7 +89,10 @@ fn solver_hint_prefer_stock_standard_sheet_thicknesses_end_to_end() {
 
     // (c) solver_hints is correct
     let template = &module.templates[0];
-    assert!(!template.value_cells.is_empty(), "expected at least one value cell");
+    assert!(
+        !template.value_cells.is_empty(),
+        "expected at least one value cell"
+    );
     let cell = &template.value_cells[0];
     assert_eq!(
         cell.solver_hints.len(),
@@ -127,9 +133,9 @@ fn solver_hint_unresolved_collection_produces_error() {
         "expected at least one error for unresolved hint collection, got none"
     );
 
-    let has_unresolved_name = errors
-        .iter()
-        .any(|d| d.message.contains("unresolved name") && d.message.contains("standard_doesnotexist"));
+    let has_unresolved_name = errors.iter().any(|d| {
+        d.message.contains("unresolved name") && d.message.contains("standard_doesnotexist")
+    });
     assert!(
         has_unresolved_name,
         "expected an error containing 'unresolved name' and 'standard_doesnotexist', got: {:?}",

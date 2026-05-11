@@ -33,7 +33,9 @@ use reify_types::{
 };
 
 use crate::EvalContext;
-use crate::interp::{InterpolationMethod, InterpolationResult, interpolate_1d, interpolate_2d, interpolate_3d};
+use crate::interp::{
+    InterpolationMethod, InterpolationResult, interpolate_1d, interpolate_2d, interpolate_3d,
+};
 
 /// Map a language-level [`InterpolationKind`] to the algorithmic-core
 /// [`InterpolationMethod`]. RBF and Kriging map directly so `interp::resolve_method`

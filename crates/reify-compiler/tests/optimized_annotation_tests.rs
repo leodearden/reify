@@ -653,8 +653,7 @@ fn optimized_target_field_on_compiled_function() {
     // Clone round-trip: the field must survive Clone.
     let cloned = annotated_fn.clone();
     assert_eq!(
-        cloned.optimized_target,
-        annotated_fn.optimized_target,
+        cloned.optimized_target, annotated_fn.optimized_target,
         "optimized_target must survive Clone"
     );
 

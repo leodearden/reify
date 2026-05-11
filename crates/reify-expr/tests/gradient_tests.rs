@@ -178,11 +178,7 @@ fn test_assert_gradient_vector_accepts_within_tolerance() {
 #[test]
 #[should_panic(expected = "differs from expected")]
 fn test_assert_gradient_vector_panics_on_out_of_tolerance() {
-    let result = Value::Vector(vec![
-        Value::Real(1.001),
-        Value::Real(2.0),
-        Value::Real(3.0),
-    ]);
+    let result = Value::Vector(vec![Value::Real(1.001), Value::Real(2.0), Value::Real(3.0)]);
     assert_gradient_vector(&result, &[1.0, 2.0, 3.0], 1e-4, "out of tolerance");
 }
 
@@ -206,11 +202,7 @@ fn test_assert_gradient_vector_panics_on_length_mismatch() {
 #[test]
 #[should_panic(expected = "should be numeric")]
 fn test_assert_gradient_vector_panics_on_non_numeric_component() {
-    let result = Value::Vector(vec![
-        Value::Undef,
-        Value::Real(2.0),
-        Value::Real(3.0),
-    ]);
+    let result = Value::Vector(vec![Value::Undef, Value::Real(2.0), Value::Real(3.0)]);
     assert_gradient_vector(&result, &[1.0, 2.0, 3.0], 1e-4, "non-numeric component");
 }
 
@@ -2873,11 +2865,7 @@ fn test_make_gradient_field_produces_field() {
                 vec![
                     CompiledExpr::value_ref(p_id, Type::point3(Type::Real)),
                     CompiledExpr::literal(
-                        Value::Point(vec![
-                            Value::Real(1.0),
-                            Value::Real(2.0),
-                            Value::Real(3.0),
-                        ]),
+                        Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]),
                         Type::point3(Type::Real),
                     ),
                 ],
@@ -3769,11 +3757,21 @@ fn gradient_codomain_type_nonlinear_dimensioned_domain() {
     let dim_mass_per_length = dim_mass.div(&dim_length);
     let dim_mass_per_length_sq = dim_mass.div(&dim_length_sq);
 
-    let scalar_length = Type::Scalar { dimension: dim_length };
-    let scalar_length_sq = Type::Scalar { dimension: dim_length_sq };
-    let scalar_mass = Type::Scalar { dimension: dim_mass };
-    let scalar_mass_per_length = Type::Scalar { dimension: dim_mass_per_length };
-    let scalar_mass_per_length_sq = Type::Scalar { dimension: dim_mass_per_length_sq };
+    let scalar_length = Type::Scalar {
+        dimension: dim_length,
+    };
+    let scalar_length_sq = Type::Scalar {
+        dimension: dim_length_sq,
+    };
+    let scalar_mass = Type::Scalar {
+        dimension: dim_mass,
+    };
+    let scalar_mass_per_length = Type::Scalar {
+        dimension: dim_mass_per_length,
+    };
+    let scalar_mass_per_length_sq = Type::Scalar {
+        dimension: dim_mass_per_length_sq,
+    };
 
     // Lambda: |x| k * (x * x), k = Scalar{2.0, MASS/LENGTH²}
     // x is Scalar[LENGTH], x*x = Scalar[LENGTH²], k*(x*x) = Scalar[MASS].

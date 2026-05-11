@@ -11,8 +11,8 @@
 
 use reify_kernel_gmsh::GMSH_AVAILABLE;
 use reify_solver_elastic::mesher::{
-    mesh_swept_profile_2d, recombine_quality_ok, Mesh2d, Mesh2dError, Mesh2dOptions,
-    ProfileBoundary, SweepElementTarget,
+    Mesh2d, Mesh2dError, Mesh2dOptions, ProfileBoundary, SweepElementTarget, mesh_swept_profile_2d,
+    recombine_quality_ok,
 };
 
 fn unit_square_boundary() -> ProfileBoundary {
@@ -46,9 +46,7 @@ fn mesh_swept_profile_2d_wedge_target_unit_square_returns_triangles() {
         // orchestrator maps to Mesh2dError::GmshUnavailable.
         match result {
             Err(Mesh2dError::GmshUnavailable) => {}
-            other => panic!(
-                "stub build: expected Err(GmshUnavailable), got {other:?}",
-            ),
+            other => panic!("stub build: expected Err(GmshUnavailable), got {other:?}",),
         }
         return;
     }
@@ -125,9 +123,7 @@ fn mesh_swept_profile_2d_hex_preferred_unit_square_recombines_cleanly() {
     if !GMSH_AVAILABLE {
         match result {
             Err(Mesh2dError::GmshUnavailable) => {}
-            other => panic!(
-                "stub build: expected Err(GmshUnavailable), got {other:?}",
-            ),
+            other => panic!("stub build: expected Err(GmshUnavailable), got {other:?}",),
         }
         return;
     }
@@ -151,12 +147,11 @@ fn mesh_swept_profile_2d_hex_preferred_unit_square_recombines_cleanly() {
     // independently returns true at the π/4 threshold.
     match report.mesh {
         Mesh2d::Quad { vertices, indices } => {
-            assert!(!indices.is_empty(), "HexPreferred quad indices must be non-empty");
-            assert_eq!(
-                indices.len() % 4,
-                0,
-                "quad indices must be stride-4",
+            assert!(
+                !indices.is_empty(),
+                "HexPreferred quad indices must be non-empty"
             );
+            assert_eq!(indices.len() % 4, 0, "quad indices must be stride-4",);
             assert_eq!(
                 vertices.len() % 2,
                 0,
@@ -198,7 +193,10 @@ fn assert_triangle_fallback(report: reify_solver_elastic::mesher::Mesh2dReport, 
     );
     match report.mesh {
         Mesh2d::Triangle { vertices, indices } => {
-            assert!(!indices.is_empty(), "{label}: triangle indices must be non-empty");
+            assert!(
+                !indices.is_empty(),
+                "{label}: triangle indices must be non-empty"
+            );
             assert_eq!(
                 indices.len() % 3,
                 0,
@@ -236,9 +234,7 @@ fn mesh_swept_profile_2d_hex_preferred_pointy_triangle_falls_back_to_triangles()
     if !GMSH_AVAILABLE {
         match result {
             Err(Mesh2dError::GmshUnavailable) => {}
-            other => panic!(
-                "stub build: expected Err(GmshUnavailable), got {other:?}",
-            ),
+            other => panic!("stub build: expected Err(GmshUnavailable), got {other:?}",),
         }
         return;
     }
@@ -264,14 +260,11 @@ fn mesh_swept_profile_2d_hex_preferred_tight_threshold_falls_back_to_triangles()
     if !GMSH_AVAILABLE {
         match result {
             Err(Mesh2dError::GmshUnavailable) => {}
-            other => panic!(
-                "stub build: expected Err(GmshUnavailable), got {other:?}",
-            ),
+            other => panic!("stub build: expected Err(GmshUnavailable), got {other:?}",),
         }
         return;
     }
 
-    let report =
-        result.expect("HexPreferred mesh_swept_profile_2d should fall back, not error");
+    let report = result.expect("HexPreferred mesh_swept_profile_2d should fall back, not error");
     assert_triangle_fallback(report, "tight threshold");
 }

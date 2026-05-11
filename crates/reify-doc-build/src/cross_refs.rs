@@ -80,7 +80,11 @@ mod tests {
         let result = build_cross_refs(&[bolt, spring]);
 
         // (a) BTreeMap key order: alphabetical
-        let keys: Vec<&str> = result.trait_to_conformers.keys().map(|s| s.as_str()).collect();
+        let keys: Vec<&str> = result
+            .trait_to_conformers
+            .keys()
+            .map(|s| s.as_str())
+            .collect();
         assert_eq!(keys, vec!["Fastener", "Rigid"]);
 
         // (b) Fastener has only Bolt
@@ -118,7 +122,11 @@ mod tests {
         let result = build_cross_refs(&[robot, arm]);
 
         // (a) BTreeMap key order: alphabetical
-        let keys: Vec<&str> = result.entity_to_containers.keys().map(|s| s.as_str()).collect();
+        let keys: Vec<&str> = result
+            .entity_to_containers
+            .keys()
+            .map(|s| s.as_str())
+            .collect();
         assert_eq!(keys, vec!["Arm", "Joint", "Wheel"]);
 
         // (b) Arm is contained by Robot
@@ -153,10 +161,18 @@ mod tests {
         // Two identical Bolt templates (same name, same trait) and two identical
         // Robot templates (same name, same sub-component).  Each template name
         // must appear exactly once in the output despite appearing twice in input.
-        let bolt_a = TopologyTemplateBuilder::new("Bolt").trait_bound("Rigid").build();
-        let bolt_b = TopologyTemplateBuilder::new("Bolt").trait_bound("Rigid").build();
-        let robot_a = TopologyTemplateBuilder::new("Robot").sub_component("arm", "Arm", vec![]).build();
-        let robot_b = TopologyTemplateBuilder::new("Robot").sub_component("arm", "Arm", vec![]).build();
+        let bolt_a = TopologyTemplateBuilder::new("Bolt")
+            .trait_bound("Rigid")
+            .build();
+        let bolt_b = TopologyTemplateBuilder::new("Bolt")
+            .trait_bound("Rigid")
+            .build();
+        let robot_a = TopologyTemplateBuilder::new("Robot")
+            .sub_component("arm", "Arm", vec![])
+            .build();
+        let robot_b = TopologyTemplateBuilder::new("Robot")
+            .sub_component("arm", "Arm", vec![])
+            .build();
 
         let result = build_cross_refs(&[bolt_a, bolt_b, robot_a, robot_b]);
 

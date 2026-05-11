@@ -9,16 +9,16 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
+use reify_kernel_gmsh::MeshingOptions;
 use reify_kernel_gmsh::auto_size::AutoSizeConfig;
 use reify_kernel_gmsh::mesh_volume::{
     apply_repair_if_requested, compute_thickness_warnings, resolve_mesh_size,
 };
 use reify_kernel_gmsh::repair::RepairConfig;
 use reify_kernel_gmsh::through_thickness::ThroughThicknessConfig;
-use reify_kernel_gmsh::MeshingOptions;
 use reify_types::{ElementOrderTag, GeometryError, Mesh, VolumeMesh};
 
 // ---------------------------------------------------------------------------
@@ -153,8 +153,7 @@ fn resolve_mesh_size_no_caller_no_auto_returns_none() {
     let result = resolve_mesh_size(&mesh, &options, None);
     let size = result.expect("none/none: must succeed");
     assert_eq!(
-        size,
-        None,
+        size, None,
         "no caller override + no auto_size_cfg must return Ok(None)"
     );
 }
@@ -168,9 +167,15 @@ fn resolve_mesh_size_auto_fires_when_caller_unset() {
     // Triangle with all edges exactly 0.5 m long.
     let mesh = Mesh {
         vertices: vec![
-            0.0, 0.0, 0.0, // v0
-            0.5, 0.0, 0.0, // v1 — edge v0→v1 = 0.5
-            0.25, 0.4330127_f32, 0.0, // v2 — equilateral (approx, f32-precision √3/4)
+            0.0,
+            0.0,
+            0.0, // v0
+            0.5,
+            0.0,
+            0.0, // v1 — edge v0→v1 = 0.5
+            0.25,
+            0.4330127_f32,
+            0.0, // v2 — equilateral (approx, f32-precision √3/4)
         ],
         indices: vec![0, 1, 2],
         normals: None,
@@ -199,8 +204,7 @@ fn resolve_mesh_size_empty_indices_collapses_to_none() {
     let result = resolve_mesh_size(&mesh, &options, Some(AutoSizeConfig::default()));
     let size = result.expect("empty-indices collapse: must succeed");
     assert_eq!(
-        size,
-        None,
+        size, None,
         "auto returns 0.0 for empty-indices mesh; wrapper must collapse to Ok(None)"
     );
 }
@@ -238,7 +242,11 @@ fn resolve_mesh_size_propagates_auto_size_error_and_suppresses_debug_event() {
     let debug_arc = Arc::clone(&counters[&tracing::Level::DEBUG]);
 
     let result = tracing::subscriber::with_default(subscriber, || {
-        resolve_mesh_size(&mesh, &MeshingOptions::default(), Some(AutoSizeConfig::default()))
+        resolve_mesh_size(
+            &mesh,
+            &MeshingOptions::default(),
+            Some(AutoSizeConfig::default()),
+        )
     });
 
     // (a) Verify error variant and message prefix.
@@ -276,24 +284,18 @@ fn resolve_mesh_size_propagates_auto_size_error_and_suppresses_debug_event() {
 /// Inline duplicate of `through_thickness_tests.rs::slab_surface_mesh`.
 fn slab_surface_mesh() -> Mesh {
     let v = vec![
-        0.0, 0.0, 0.0,
-        10.0, 0.0, 0.0,
-        10.0, 10.0, 0.0,
-        0.0, 10.0, 0.0,
-        0.0, 0.0, 0.5,
-        10.0, 0.0, 0.5,
-        10.0, 10.0, 0.5,
-        0.0, 10.0, 0.5,
+        0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 10.0, 10.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 0.5, 10.0, 0.0,
+        0.5, 10.0, 10.0, 0.5, 0.0, 10.0, 0.5,
     ];
     let i = vec![
-        0, 2, 1, 0, 3, 2,
-        4, 5, 6, 4, 6, 7,
-        0, 1, 5, 0, 5, 4,
-        1, 2, 6, 1, 6, 5,
-        2, 3, 7, 2, 7, 6,
+        0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7, 0, 1, 5, 0, 5, 4, 1, 2, 6, 1, 6, 5, 2, 3, 7, 2, 7, 6,
         3, 0, 4, 3, 4, 7,
     ];
-    Mesh { vertices: v, indices: i, normals: None }
+    Mesh {
+        vertices: v,
+        indices: i,
+        normals: None,
+    }
 }
 
 /// Single-tet volume mesh that spans the slab thickness (mirrors the
@@ -301,10 +303,10 @@ fn slab_surface_mesh() -> Mesh {
 fn single_tet_slab_volume() -> VolumeMesh {
     VolumeMesh {
         vertices: vec![
-            0.0, 0.0, 0.0,   // 0
-            10.0, 0.0, 0.0,  // 1
+            0.0, 0.0, 0.0, // 0
+            10.0, 0.0, 0.0, // 1
             10.0, 10.0, 0.5, // 2
-            0.0, 10.0, 0.5,  // 3
+            0.0, 10.0, 0.5, // 3
         ],
         tet_indices: vec![0, 1, 2, 3],
         element_order: ElementOrderTag::P1,
@@ -334,15 +336,15 @@ fn compute_thickness_warnings_none_returns_empty() {
 fn compute_thickness_warnings_some_delegates_to_through_thickness_check() {
     let surface = slab_surface_mesh();
     let volume = single_tet_slab_volume();
-    let warnings = compute_thickness_warnings(&volume, &surface, Some(ThroughThicknessConfig::default()));
+    let warnings =
+        compute_thickness_warnings(&volume, &surface, Some(ThroughThicknessConfig::default()));
     assert!(
         !warnings.is_empty(),
         "Some(cfg) must delegate to through_thickness_check; \
          single-tet slab should produce at least one warning"
     );
     assert_eq!(
-        warnings[0].element_count,
-        1,
+        warnings[0].element_count, 1,
         "single-tet slab must be detected as 1-element-thick; got {}",
         warnings[0].element_count
     );
@@ -431,7 +433,8 @@ struct DebugFieldVisitor {
 impl tracing::field::Visit for DebugFieldVisitor {
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
         if field.name() != "message" {
-            self.fields.insert(field.name().to_owned(), value.to_owned());
+            self.fields
+                .insert(field.name().to_owned(), value.to_owned());
         }
     }
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn fmt::Debug) {
@@ -453,7 +456,9 @@ impl tracing::Subscriber for DebugFieldCapturingSubscriber {
     fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
     fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
     fn event(&self, event: &tracing::Event<'_>) {
-        let mut v = DebugFieldVisitor { fields: HashMap::new() };
+        let mut v = DebugFieldVisitor {
+            fields: HashMap::new(),
+        };
         event.record(&mut v);
         self.fields.lock().unwrap().push(v.fields);
     }
@@ -483,8 +488,7 @@ fn resolve_mesh_size_emits_debug_event_recording_source_and_value() {
     let cube = unit_cube_mesh();
 
     // --- (a) caller branch: mesh_size=Some(0.42) → source="caller" ---
-    let fields_a: Arc<Mutex<Vec<HashMap<String, String>>>> =
-        Arc::new(Mutex::new(Vec::new()));
+    let fields_a: Arc<Mutex<Vec<HashMap<String, String>>>> = Arc::new(Mutex::new(Vec::new()));
     let sub_a = DebugFieldCapturingSubscriber {
         fields: Arc::clone(&fields_a),
         target_prefix: "reify_kernel_gmsh::mesh_volume",
@@ -493,7 +497,10 @@ fn resolve_mesh_size_emits_debug_event_recording_source_and_value() {
     let result_a = tracing::subscriber::with_default(sub_a, || {
         resolve_mesh_size(
             &cube,
-            &MeshingOptions { mesh_size: Some(0.42), ..Default::default() },
+            &MeshingOptions {
+                mesh_size: Some(0.42),
+                ..Default::default()
+            },
             None,
         )
     });
@@ -501,8 +508,10 @@ fn resolve_mesh_size_emits_debug_event_recording_source_and_value() {
     {
         let events_a = fields_a.lock().unwrap();
         assert_eq!(
-            events_a.len(), 1,
-            "caller branch must emit exactly 1 DEBUG event; got {}", events_a.len()
+            events_a.len(),
+            1,
+            "caller branch must emit exactly 1 DEBUG event; got {}",
+            events_a.len()
         );
         assert_eq!(
             events_a[0].get("source").map(|s| s.as_str()),
@@ -513,8 +522,7 @@ fn resolve_mesh_size_emits_debug_event_recording_source_and_value() {
     }
 
     // --- (b) kernel_default branch: mesh_size=None, auto_cfg=None → source="kernel_default" ---
-    let fields_b: Arc<Mutex<Vec<HashMap<String, String>>>> =
-        Arc::new(Mutex::new(Vec::new()));
+    let fields_b: Arc<Mutex<Vec<HashMap<String, String>>>> = Arc::new(Mutex::new(Vec::new()));
     let sub_b = DebugFieldCapturingSubscriber {
         fields: Arc::clone(&fields_b),
         target_prefix: "reify_kernel_gmsh::mesh_volume",
@@ -527,8 +535,10 @@ fn resolve_mesh_size_emits_debug_event_recording_source_and_value() {
     {
         let events_b = fields_b.lock().unwrap();
         assert_eq!(
-            events_b.len(), 1,
-            "kernel_default branch must emit exactly 1 DEBUG event; got {}", events_b.len()
+            events_b.len(),
+            1,
+            "kernel_default branch must emit exactly 1 DEBUG event; got {}",
+            events_b.len()
         );
         assert_eq!(
             events_b[0].get("source").map(|s| s.as_str()),
@@ -540,22 +550,27 @@ fn resolve_mesh_size_emits_debug_event_recording_source_and_value() {
 
     // --- (c) auto branch: mesh_size=None, auto_cfg=Some → source="auto" ---
     // unit_cube_mesh() has non-zero auto-derived size → "auto" (not "auto_collapsed_to_kernel_default").
-    let fields_c: Arc<Mutex<Vec<HashMap<String, String>>>> =
-        Arc::new(Mutex::new(Vec::new()));
+    let fields_c: Arc<Mutex<Vec<HashMap<String, String>>>> = Arc::new(Mutex::new(Vec::new()));
     let sub_c = DebugFieldCapturingSubscriber {
         fields: Arc::clone(&fields_c),
         target_prefix: "reify_kernel_gmsh::mesh_volume",
         span_counter: AtomicU64::new(1),
     };
     let result_c = tracing::subscriber::with_default(sub_c, || {
-        resolve_mesh_size(&cube, &MeshingOptions::default(), Some(AutoSizeConfig::default()))
+        resolve_mesh_size(
+            &cube,
+            &MeshingOptions::default(),
+            Some(AutoSizeConfig::default()),
+        )
     });
     assert!(result_c.is_ok(), "auto branch must succeed");
     {
         let events_c = fields_c.lock().unwrap();
         assert_eq!(
-            events_c.len(), 1,
-            "auto branch must emit exactly 1 DEBUG event; got {}", events_c.len()
+            events_c.len(),
+            1,
+            "auto branch must emit exactly 1 DEBUG event; got {}",
+            events_c.len()
         );
         assert_eq!(
             events_c[0].get("source").map(|s| s.as_str()),
@@ -575,8 +590,7 @@ fn resolve_mesh_size_emits_debug_event_recording_source_and_value() {
         indices: vec![], // no triangles → auto_mesh_size_from_features returns Ok(0.0)
         normals: None,
     };
-    let fields_d: Arc<Mutex<Vec<HashMap<String, String>>>> =
-        Arc::new(Mutex::new(Vec::new()));
+    let fields_d: Arc<Mutex<Vec<HashMap<String, String>>>> = Arc::new(Mutex::new(Vec::new()));
     let sub_d = DebugFieldCapturingSubscriber {
         fields: Arc::clone(&fields_d),
         target_prefix: "reify_kernel_gmsh::mesh_volume",
@@ -589,13 +603,18 @@ fn resolve_mesh_size_emits_debug_event_recording_source_and_value() {
             Some(AutoSizeConfig::default()),
         )
     });
-    assert!(result_d.is_ok(), "auto_collapsed_to_kernel_default branch must succeed");
+    assert!(
+        result_d.is_ok(),
+        "auto_collapsed_to_kernel_default branch must succeed"
+    );
     {
         let events_d = fields_d.lock().unwrap();
         assert_eq!(
-            events_d.len(), 1,
+            events_d.len(),
+            1,
             "auto_collapsed_to_kernel_default branch must emit exactly 1 DEBUG event; \
-             got {}", events_d.len()
+             got {}",
+            events_d.len()
         );
         assert_eq!(
             events_d[0].get("source").map(|s| s.as_str()),
@@ -615,11 +634,11 @@ fn resolve_mesh_size_emits_debug_event_recording_source_and_value() {
 mod with_libgmsh {
     use super::{slab_surface_mesh, unit_cube_mesh};
 
+    use reify_kernel_gmsh::MeshingOptions;
     use reify_kernel_gmsh::auto_size::AutoSizeConfig;
     use reify_kernel_gmsh::mesh_volume::mesh_surface_to_volume_with_diagnostics;
     use reify_kernel_gmsh::repair::RepairConfig;
     use reify_kernel_gmsh::through_thickness::ThroughThicknessConfig;
-    use reify_kernel_gmsh::MeshingOptions;
     use reify_types::ElementOrderTag;
 
     /// All diagnostic stages skipped (all `None` configs). Must produce a
@@ -645,7 +664,11 @@ mod with_libgmsh {
         assert!(
             report.through_thickness_warnings.is_empty(),
             "all-None wrapper must produce no through-thickness warnings; got {:?}",
-            report.through_thickness_warnings.iter().map(|w| &w.message).collect::<Vec<_>>()
+            report
+                .through_thickness_warnings
+                .iter()
+                .map(|w| &w.message)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -667,7 +690,10 @@ mod with_libgmsh {
         // Run A: no explicit mesh_size — auto fires, derives ≈ 1.0 → coarse mesh.
         let report_a = mesh_surface_to_volume_with_diagnostics(
             &cube,
-            &MeshingOptions { mesh_size: None, ..Default::default() },
+            &MeshingOptions {
+                mesh_size: None,
+                ..Default::default()
+            },
             ElementOrderTag::P1,
             None,
             Some(AutoSizeConfig::default()),
@@ -680,7 +706,11 @@ mod with_libgmsh {
         // the tets_b == tets_c comparison below is not fragile across runs.
         let report_b = mesh_surface_to_volume_with_diagnostics(
             &cube,
-            &MeshingOptions { mesh_size: Some(0.25), deterministic: true, ..Default::default() },
+            &MeshingOptions {
+                mesh_size: Some(0.25),
+                deterministic: true,
+                ..Default::default()
+            },
             ElementOrderTag::P1,
             None,
             Some(AutoSizeConfig::default()),
@@ -695,7 +725,11 @@ mod with_libgmsh {
         // deterministic=true must match run B's options so the gmsh state is identical.
         let report_c = mesh_surface_to_volume_with_diagnostics(
             &cube,
-            &MeshingOptions { mesh_size: Some(0.25), deterministic: true, ..Default::default() },
+            &MeshingOptions {
+                mesh_size: Some(0.25),
+                deterministic: true,
+                ..Default::default()
+            },
             ElementOrderTag::P1,
             None,
             None, // no auto_size_cfg — pure caller-explicit path

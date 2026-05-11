@@ -126,7 +126,10 @@ structure def TitaniumImplant : Biocompatible + CorrosionResistant {
     });
     enum_accesses.sort();
     let mut expected: Vec<(String, String)> = vec![
-        ("BiocompatibilityClass".to_string(), "USP_Class_VI".to_string()),
+        (
+            "BiocompatibilityClass".to_string(),
+            "USP_Class_VI".to_string(),
+        ),
         ("CorrosionClass".to_string(), "C5".to_string()),
     ];
     expected.sort();

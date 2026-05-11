@@ -22,12 +22,12 @@ pub use decompose::{SubProblem, decompose_into_components};
 // primitives).  These re-exports preserve the original
 // `reify_constraints::{NewtonConfig, ...}` paths so downstream callers
 // (reify-eval tests, reify-constraints integration tests) compile unchanged.
+pub use registry::SolverRegistry;
 pub use reify_stdlib::loop_closure_solver::{
     LoopClosureChain, LoopClosureReport, NewtonConfig, NewtonOutcome, StartStrategy,
     mechanism_loop_closure_chains, newton_solve, solve_loop_closure,
     solve_loop_closure_with_diagnostics,
 };
-pub use registry::SolverRegistry;
 pub use solver::DimensionalSolver;
 pub use solvespace::SolveSpaceSolver;
 
@@ -61,28 +61,34 @@ impl ConstraintChecker for SimpleConstraintChecker {
                     Value::Bool(false) => (
                         Satisfaction::Violated,
                         ConstraintDiagnostics {
-                            messages: vec![Diagnostic::error(format!("constraint {} violated", id))
-                                .with_code(DiagnosticCode::ConstraintViolated)],
+                            messages: vec![
+                                Diagnostic::error(format!("constraint {} violated", id))
+                                    .with_code(DiagnosticCode::ConstraintViolated),
+                            ],
                         },
                     ),
                     Value::Undef => (
                         Satisfaction::Indeterminate,
                         ConstraintDiagnostics {
-                            messages: vec![Diagnostic::warning(format!(
+                            messages: vec![
+                                Diagnostic::warning(format!(
                                     "constraint {} indeterminate: undefined inputs",
                                     id
                                 ))
-                                .with_code(DiagnosticCode::ConstraintIndeterminate)],
+                                .with_code(DiagnosticCode::ConstraintIndeterminate),
+                            ],
                         },
                     ),
                     _ => (
                         Satisfaction::Violated,
                         ConstraintDiagnostics {
-                            messages: vec![Diagnostic::error(format!(
+                            messages: vec![
+                                Diagnostic::error(format!(
                                     "constraint {} evaluated to non-boolean value",
                                     id
                                 ))
-                                .with_code(DiagnosticCode::ConstraintViolated)],
+                                .with_code(DiagnosticCode::ConstraintViolated),
+                            ],
                         },
                     ),
                 };
@@ -228,7 +234,10 @@ mod tests {
         values.insert(vcid("Bracket", "width"), mm(80.0));
 
         let input = ConstraintInput {
-            constraints: Cow::Owned(vec![(cnid("Bracket", 0), &expr1), (cnid("Bracket", 1), &expr2)]),
+            constraints: Cow::Owned(vec![
+                (cnid("Bracket", 0), &expr1),
+                (cnid("Bracket", 1), &expr2),
+            ]),
             values: &values,
             functions: &[],
             determinacy: None,
@@ -312,10 +321,7 @@ mod tests {
         let results = checker.check(&input);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].satisfaction, Satisfaction::Violated);
-        assert_eq!(
-            results[0].diagnostics.messages[0].severity,
-            Severity::Error,
-        );
+        assert_eq!(results[0].diagnostics.messages[0].severity, Severity::Error,);
         assert_eq!(
             results[0].diagnostics.messages[0].code,
             Some(DiagnosticCode::ConstraintViolated),
@@ -339,10 +345,7 @@ mod tests {
         let results = checker.check(&input);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].satisfaction, Satisfaction::Violated);
-        assert_eq!(
-            results[0].diagnostics.messages[0].severity,
-            Severity::Error,
-        );
+        assert_eq!(results[0].diagnostics.messages[0].severity, Severity::Error,);
         assert_eq!(
             results[0].diagnostics.messages[0].code,
             Some(DiagnosticCode::ConstraintViolated),

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_types::{
-    ContentHash, ConstraintNodeId, Diagnostic, Freshness, ModulePath, Satisfaction, SourceSpan,
+    ConstraintNodeId, ContentHash, Diagnostic, Freshness, ModulePath, Satisfaction, SourceSpan,
     VersionId,
 };
 use tower_lsp::lsp_types::{self, Url};
@@ -140,8 +140,7 @@ pub fn compute_diagnostics_with_state(
         // constructs this state to verify the cold-start branch is taken; the right
         // response is to handle it correctly (which we do below) and warn.
         #[cfg(debug_assertions)]
-        if state.last_content_hash == Some(compiled.content_hash)
-            && !state.is_engine_initialized()
+        if state.last_content_hash == Some(compiled.content_hash) && !state.is_engine_initialized()
         {
             eprintln!(
                 "[reify-lsp] WARNING: content_hash matched but engine was uninitialized \
@@ -193,7 +192,10 @@ pub fn compute_diagnostics_with_state(
         .filter(|e| e.satisfaction == Satisfaction::Violated)
         .flat_map(|e| {
             let id_msg = format!("constraint {} violated", e.id);
-            let label_msg = e.label.as_deref().map(|l| format!("constraint {} violated", l));
+            let label_msg = e
+                .label
+                .as_deref()
+                .map(|l| format!("constraint {} violated", l));
             std::iter::once(id_msg).chain(label_msg)
         })
         .collect();
@@ -278,7 +280,10 @@ pub fn compute_diagnostics_with_state(
     // freshness state to report and this block is intentionally absent there.
     for template in &compiled.templates {
         for vc in &template.value_cells {
-            match state.engine.freshness(&reify_eval::cache::NodeId::Value(vc.id.clone())) {
+            match state
+                .engine
+                .freshness(&reify_eval::cache::NodeId::Value(vc.id.clone()))
+            {
                 Freshness::Failed { error } => {
                     let range = convert::span_to_range(source, vc.span);
                     diagnostics.push(lsp_types::Diagnostic {
@@ -298,17 +303,15 @@ pub fn compute_diagnostics_with_state(
                     // cause is present we embed it in the message so the user sees
                     // which upstream cell failed. Falls back to the historic static
                     // string when None (bulk mark_pending path, cache.rs:482-513).
-                    let cause = state.engine.pending_cause(
-                        &reify_eval::cache::NodeId::Value(vc.id.clone()),
-                    );
+                    let cause = state
+                        .engine
+                        .pending_cause(&reify_eval::cache::NodeId::Value(vc.id.clone()));
                     let message = match cause {
                         Some(node) => format!(
                             "computation pending: upstream dependency failed (because {} failed)",
                             node
                         ),
-                        None => {
-                            "computation pending: upstream dependency failed".to_string()
-                        }
+                        None => "computation pending: upstream dependency failed".to_string(),
                     };
                     diagnostics.push(lsp_types::Diagnostic {
                         range,
@@ -382,7 +385,10 @@ mod tests {
     // Additional imports for the eval-diagnostics regression-lock cluster.
     use reify_test_support::MockConstraintSolver;
     use reify_types::{DimensionVector, Severity, Value, ValueCellId};
-    use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     fn test_uri() -> Url {
         Url::parse("file:///test.ri").unwrap()
@@ -494,8 +500,7 @@ structure S {
         let deep_dot_chain_diags: Vec<_> = diags
             .iter()
             .filter(|d| {
-                d.severity == Some(DiagnosticSeverity::WARNING)
-                    && d.message.contains("a.b.c.d.e.f")
+                d.severity == Some(DiagnosticSeverity::WARNING) && d.message.contains("a.b.c.d.e.f")
             })
             .collect();
 
@@ -927,11 +932,17 @@ structure S {
         // (1) First call: cold-start
         let mut state = EvalState::new();
         compute_diagnostics_with_state(&mut state, source, &uri);
-        assert_eq!(state.version_counter, 1, "version_counter should be 1 after first call");
+        assert_eq!(
+            state.version_counter, 1,
+            "version_counter should be 1 after first call"
+        );
 
         // (2) Second call with identical source: should use eval_cached path
         compute_diagnostics_with_state(&mut state, source, &uri);
-        assert_eq!(state.version_counter, 2, "version_counter should be 2 after second call");
+        assert_eq!(
+            state.version_counter, 2,
+            "version_counter should be 2 after second call"
+        );
 
         // (3) Inspect cache: basis_version of Bracket.width should be > 0
         //     eval_cached passes VersionId(state.version_counter) which is VersionId(2) at call time
@@ -1243,7 +1254,9 @@ structure S {
         // Substring discriminator: ensures the right emitter fired (the counter contract is
         // anchored at `crates/reify-eval/tests/eval_instrumentation_counters.rs`).
         assert!(
-            diags.iter().any(|d| d.message.contains("type-kind mismatch")),
+            diags
+                .iter()
+                .any(|d| d.message.contains("type-kind mismatch")),
             "param_override_type_kind: expected a diagnostic containing 'type-kind mismatch'; \
              got: {:#?}",
             diags
@@ -1277,7 +1290,9 @@ structure S {
         // Substring discriminator: ensures the right emitter fired (the counter contract is
         // anchored at `crates/reify-eval/tests/eval_instrumentation_counters.rs`).
         assert!(
-            diags.iter().any(|d| d.message.contains("dimension mismatch")),
+            diags
+                .iter()
+                .any(|d| d.message.contains("dimension mismatch")),
             "param_override_dimension: expected a diagnostic containing 'dimension mismatch'; \
              got: {:#?}",
             diags
@@ -1312,9 +1327,8 @@ structure S {
         // Substring discriminator: ensures the right emitter fired (the counter contract is
         // anchored at `crates/reify-eval/tests/eval_instrumentation_counters.rs`).
         assert!(
-            diags
-                .iter()
-                .any(|d| d.message.contains("sub-component") && d.message.contains("references unknown structure")),
+            diags.iter().any(|d| d.message.contains("sub-component")
+                && d.message.contains("references unknown structure")),
             "sub_component_unknown: expected a diagnostic containing both 'sub-component' and \
              'references unknown structure'; got: {:#?}",
             diags
@@ -1478,8 +1492,7 @@ structure S {
             covers_volume,
             "expected a 'computation-failed' diagnostic anchored at Bracket.volume's range \
              ({:?}); failed diagnostics: {:#?}",
-            volume_range,
-            failed_diags
+            volume_range, failed_diags
         );
         assert_eq!(
             failed_diags
@@ -1669,10 +1682,12 @@ structure S {
         let freshness_diags: Vec<_> = result
             .diagnostics
             .iter()
-            .filter(|d| matches!(&d.code,
-                Some(lsp_types::NumberOrString::String(s))
-                    if s == "computation-failed" || s == "computation-pending"
-            ))
+            .filter(|d| {
+                matches!(&d.code,
+                    Some(lsp_types::NumberOrString::String(s))
+                        if s == "computation-failed" || s == "computation-pending"
+                )
+            })
             .collect();
 
         assert!(
@@ -1825,12 +1840,14 @@ structure S {
         body: Vec<reify_syntax::MemberDecl>,
         expected: &[(&str, &str, lsp_types::Position)],
     ) {
-        use reify_test_support::specialization_fixtures::*;
         use lsp_types::{DiagnosticSeverity, NumberOrString};
+        use reify_test_support::specialization_fixtures::*;
 
-        let parsed = parsed_module_with_structure_members(
-            vec![make_sub_with_body("scope", dummy_span(), body)],
-        );
+        let parsed = parsed_module_with_structure_members(vec![make_sub_with_body(
+            "scope",
+            dummy_span(),
+            body,
+        )]);
         let compiled = reify_compiler::compile_with_stdlib(&parsed);
         let source = source_stub();
         let uri = test_uri();
@@ -1878,19 +1895,15 @@ structure S {
                 "expected source 'reify'; diagnostic: {d:#?}"
             );
             assert_eq!(
-                d.range.start,
-                *expected_pos,
+                d.range.start, *expected_pos,
                 "range.start must equal expected Position; \
                  got {:?}, want {:?}; diagnostic: {d:#?}",
-                d.range.start,
-                expected_pos
+                d.range.start, expected_pos
             );
             assert_ne!(
-                d.range.start,
-                d.range.end,
+                d.range.start, d.range.end,
                 "range must be non-degenerate; got start={:?} end={:?}",
-                d.range.start,
-                d.range.end
+                d.range.start, d.range.end
             );
         }
     }
@@ -1903,13 +1916,10 @@ structure S {
     /// surface this code, regardless of what unrelated diagnostics the compile
     /// pipeline emits (those are ignored by the code filter).
     #[test]
-    fn lsp_compute_diagnostics_emits_no_specialization_forbidden_decl_for_permitted_only_spec_scope(
-    ) {
+    fn lsp_compute_diagnostics_emits_no_specialization_forbidden_decl_for_permitted_only_spec_scope()
+     {
         use reify_test_support::specialization_fixtures::*;
-        assert_specialization_forbidden(
-            vec![make_let("m"), make_constraint()],
-            &[],
-        );
+        assert_specialization_forbidden(vec![make_let("m"), make_constraint()], &[]);
     }
 
     /// LSP regression lock (task 2371, step-9): a specialization scope with three
@@ -1935,8 +1945,8 @@ structure S {
                 make_sub_bare("child", sub_span()),
             ],
             &[
-                ("param", "x", Position::new(0, 30)),   // param_span = SourceSpan::new(30, 50)
-                ("port", "p", Position::new(0, 60)),    // port_span  = SourceSpan::new(60, 80)
+                ("param", "x", Position::new(0, 30)), // param_span = SourceSpan::new(30, 50)
+                ("port", "p", Position::new(0, 60)),  // port_span  = SourceSpan::new(60, 80)
                 ("sub", "child", Position::new(0, 90)), // sub_span   = SourceSpan::new(90, 110)
             ],
         );
@@ -1994,5 +2004,4 @@ structure S {
             computation_failed_diags
         );
     }
-
 }

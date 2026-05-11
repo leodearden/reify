@@ -135,7 +135,10 @@ mod annotation_tests {
     #[test]
     fn compiled_purpose_builder_annotation_with_args() {
         let p = CompiledPurposeBuilder::new("p")
-            .annotation(annotation_with_args(DEPRECATED_ANNOTATION, vec![ann_str("use q")]))
+            .annotation(annotation_with_args(
+                DEPRECATED_ANNOTATION,
+                vec![ann_str("use q")],
+            ))
             .build();
         assert_eq!(p.annotations.len(), 1);
         assert_eq!(p.annotations[0].args.len(), 1);

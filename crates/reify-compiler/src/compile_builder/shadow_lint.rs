@@ -273,11 +273,7 @@ fn collect_body_frame(members: &[reify_syntax::MemberDecl]) -> Frame {
     frame
 }
 
-fn collect_body_frame_into(
-    members: &[reify_syntax::MemberDecl],
-    frame: &mut Frame,
-    depth: usize,
-) {
+fn collect_body_frame_into(members: &[reify_syntax::MemberDecl], frame: &mut Frame, depth: usize) {
     use reify_syntax::MemberDecl;
     if depth > reify_syntax::MAX_MEMBER_NESTING_DEPTH {
         return;
@@ -486,7 +482,9 @@ fn walk_members_depth(
                     },
                 );
             }
-            MemberDecl::AssociatedType(_) | MemberDecl::MetaBlock(_) | MemberDecl::MatchArmDeclGroup(_) => {}
+            MemberDecl::AssociatedType(_)
+            | MemberDecl::MetaBlock(_)
+            | MemberDecl::MatchArmDeclGroup(_) => {}
         }
     }
 }
@@ -508,8 +506,7 @@ fn walk_expr_depth(
             "shadow_lint walk_expr_depth exceeded MAX_EXPR_DEPTH = {} (depth = {}); \
              shadow lint coverage truncated at this subtree — likely upstream parser \
              bug or fuzzer input producing pathologically deep AST",
-            MAX_EXPR_DEPTH,
-            depth
+            MAX_EXPR_DEPTH, depth
         );
         return;
     }
@@ -768,6 +765,9 @@ fn push_shadow_diagnostic(
             child_span,
             "shadows the enclosing declaration",
         ))
-        .with_label(DiagnosticLabel::new(parent_span, "originally declared here")),
+        .with_label(DiagnosticLabel::new(
+            parent_span,
+            "originally declared here",
+        )),
     );
 }

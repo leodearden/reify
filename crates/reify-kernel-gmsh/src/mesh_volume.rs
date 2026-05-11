@@ -22,10 +22,12 @@ use std::borrow::Cow;
 
 use reify_types::Mesh;
 
-use crate::auto_size::{auto_mesh_size_from_features, AutoSizeConfig};
+use crate::auto_size::{AutoSizeConfig, auto_mesh_size_from_features};
 use crate::options::MeshingOptions;
-use crate::repair::{repair_surface_mesh, RepairConfig};
-use crate::through_thickness::{through_thickness_check, ThroughThicknessConfig, ThroughThicknessWarning};
+use crate::repair::{RepairConfig, repair_surface_mesh};
+use crate::through_thickness::{
+    ThroughThicknessConfig, ThroughThicknessWarning, through_thickness_check,
+};
 
 // ---------------------------------------------------------------------------
 // Output type

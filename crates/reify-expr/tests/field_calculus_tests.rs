@@ -4406,11 +4406,7 @@ fn curl_result_arc_shares_source_lambda() {
 /// no deep copy of the compiled expression tree occurs.
 #[test]
 fn laplacian_result_arc_shares_source_lambda() {
-    assert_unary_op_shares_source_lambda(
-        "laplacian",
-        Type::Real,
-        make_trivial_3d_scalar_lambda(),
-    );
+    assert_unary_op_shares_source_lambda("laplacian", Type::Real, make_trivial_3d_scalar_lambda());
 }
 
 /// Meta-test: asserts that every `#[ignore = "..."]` attribute in this file

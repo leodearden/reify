@@ -1,8 +1,8 @@
 use super::*;
+use crate::compile_builder::hash::hash_pragma;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashSet;
-use crate::compile_builder::hash::hash_pragma;
 
 /// Shared reference to entity definition fields (used by both StructureDef and OccurrenceDef).
 pub(crate) struct EntityDefRef<'a> {
@@ -68,7 +68,10 @@ pub(crate) fn substitute_expr(
     let span = expr.span;
     let new_kind = match &expr.kind {
         // Leaf variants — no sub-expressions to recurse into.
-        ExprKind::NumberLiteral { value, is_real } => ExprKind::NumberLiteral { value: *value, is_real: *is_real },
+        ExprKind::NumberLiteral { value, is_real } => ExprKind::NumberLiteral {
+            value: *value,
+            is_real: *is_real,
+        },
         ExprKind::QuantityLiteral { value, unit } => ExprKind::QuantityLiteral {
             value: *value,
             unit: unit.clone(),
@@ -509,13 +512,13 @@ pub(crate) fn compile_entity(
                     known_geometry_lets.insert(param.name.as_str());
                 }
                 scope.register(&param.name, ty);
-                outside_decl_spans.entry(param.name.clone()).or_insert(param.span);
+                outside_decl_spans
+                    .entry(param.name.clone())
+                    .or_insert(param.span);
                 // Reverse-direction collision (task 2375): if this Param's name
                 // was already registered as a match-arm cluster, emit the collision
                 // diagnostic. The cluster is suppressed; the Param is kept.
-                if let Some(&cluster_span) =
-                    match_arm_cluster_logical_names.get(&param.name)
-                {
+                if let Some(&cluster_span) = match_arm_cluster_logical_names.get(&param.name) {
                     emit_outside_match_collision(
                         diagnostics,
                         &param.name,
@@ -539,13 +542,13 @@ pub(crate) fn compile_entity(
                     // We'll update this after the expression is compiled.
                     scope.register(&let_decl.name, Type::Real);
                 }
-                outside_decl_spans.entry(let_decl.name.clone()).or_insert(let_decl.span);
+                outside_decl_spans
+                    .entry(let_decl.name.clone())
+                    .or_insert(let_decl.span);
                 // Reverse-direction collision (task 2375): if this Let's name
                 // was already registered as a match-arm cluster, emit the collision
                 // diagnostic. The cluster is suppressed; the Let is kept.
-                if let Some(&cluster_span) =
-                    match_arm_cluster_logical_names.get(&let_decl.name)
-                {
+                if let Some(&cluster_span) = match_arm_cluster_logical_names.get(&let_decl.name) {
                     emit_outside_match_collision(
                         diagnostics,
                         &let_decl.name,
@@ -597,8 +600,7 @@ pub(crate) fn compile_entity(
                 // Compute logical name once; shared by duplicate-check and
                 // collision-check below. When None (unsupported arm kind), both
                 // checks are bypassed — pass 2 diagnoses unsupported member kinds.
-                let maybe_logical_name =
-                    m.arms.first().and_then(|a| arm_member_name(&a.member));
+                let maybe_logical_name = m.arms.first().and_then(|a| arm_member_name(&a.member));
 
                 if let Some(logical_name) = maybe_logical_name {
                     // Duplicate cluster — skip pre-pass; pass 2 normally emits the
@@ -829,19 +831,21 @@ pub(crate) fn compile_entity(
                             }
                             clusters.push((group.clone(), per_arm));
                         }
-                        scope.sub_match_arm_groups.insert(sub.name.clone(), clusters);
+                        scope
+                            .sub_match_arm_groups
+                            .insert(sub.name.clone(), clusters);
                     }
                 }
                 if sub.is_collection {
                     scope.collection_sub_names.insert(sub.name.clone());
                 }
-                outside_decl_spans.entry(sub.name.clone()).or_insert(sub.span);
+                outside_decl_spans
+                    .entry(sub.name.clone())
+                    .or_insert(sub.span);
                 // Reverse-direction collision (task 2375): if this Sub's name
                 // was already registered as a match-arm cluster, emit the collision
                 // diagnostic. The cluster is suppressed; the Sub is kept.
-                if let Some(&cluster_span) =
-                    match_arm_cluster_logical_names.get(&sub.name)
-                {
+                if let Some(&cluster_span) = match_arm_cluster_logical_names.get(&sub.name) {
                     emit_outside_match_collision(
                         diagnostics,
                         &sub.name,
@@ -999,7 +1003,14 @@ pub(crate) fn compile_entity(
                 let cell_type = scope
                     .resolve(&param.name)
                     .map(|(_, ty)| ty.clone())
-                    .unwrap_or_else(|| emit_ice_unresolved(UnresolvedKind::Name, &param.name, param.span, diagnostics));
+                    .unwrap_or_else(|| {
+                        emit_ice_unresolved(
+                            UnresolvedKind::Name,
+                            &param.name,
+                            param.span,
+                            diagnostics,
+                        )
+                    });
 
                 // Solid-typed params with a geometry-call default are lowered as
                 // realizations (third pass), not as scalar ValueCellDecls.
@@ -1418,7 +1429,14 @@ pub(crate) fn compile_entity(
                             let cell_type = scope
                                 .resolve(&composite_name)
                                 .map(|(_, ty)| ty.clone())
-                                .unwrap_or_else(|| emit_ice_unresolved(UnresolvedKind::Name, &composite_name, param.span, diagnostics));
+                                .unwrap_or_else(|| {
+                                    emit_ice_unresolved(
+                                        UnresolvedKind::Name,
+                                        &composite_name,
+                                        param.span,
+                                        diagnostics,
+                                    )
+                                });
 
                             let auto_free = param.default.as_ref().and_then(extract_auto_free);
 
@@ -2156,14 +2174,16 @@ pub(crate) fn compile_entity(
             // Lengths-equal + every key in `groups` present in `per_arm` ⇒ same key set
             // (pigeonhole; HashMap forbids duplicate keys). Avoids the dual HashSet<&str>
             // allocation the symmetric-difference check would have performed every call.
-            groups.len() == per_arm.len()
-                && groups.keys().all(|k| per_arm.contains_key(k))
+            groups.len() == per_arm.len() && groups.keys().all(|k| per_arm.contains_key(k))
         },
         "match_arm_groups vs match_arm_group_arm_member_types key-set mismatch in entity '{}': \
          groups={:?} per_arm={:?} (orphan per-arm entries indicate a producer-side bug — task 2872)",
         entity_name,
         scope.match_arm_groups.keys().collect::<Vec<_>>(),
-        scope.match_arm_group_arm_member_types.keys().collect::<Vec<_>>(),
+        scope
+            .match_arm_group_arm_member_types
+            .keys()
+            .collect::<Vec<_>>(),
     );
 
     TopologyTemplate {
@@ -2227,9 +2247,7 @@ fn member_type_map_from_template(tmpl: &TopologyTemplate) -> BTreeMap<String, Ty
 /// Called side-by-side with `member_type_map_from_template` in the two Sub
 /// pre-pass sites (regular Sub at entity.rs ~line 766; match-arm Sub at ~line
 /// 671), following the single-source-of-truth pattern of that helper.
-fn realization_name_set_from_template(
-    tmpl: &TopologyTemplate,
-) -> BTreeSet<String> {
+fn realization_name_set_from_template(tmpl: &TopologyTemplate) -> BTreeSet<String> {
     tmpl.realizations
         .iter()
         .filter_map(|r| r.name.clone())
@@ -2272,39 +2290,35 @@ fn compile_match_arm_decl_group(
     // Resolve the discriminant's enum type.  Only simple `Ident` discriminants
     // are supported in this task; complex expressions are deferred to task 2373.
     let (discriminant_cell_id, enum_type_name) = match &m.discriminant.kind {
-        reify_syntax::ExprKind::Ident(name) => {
-            match scope.resolve(name) {
-                Some((cell_id, Type::Enum(enum_name))) => {
-                    (cell_id.clone(), enum_name.clone())
-                }
-                Some((_, other_ty)) => {
-                    diagnostics.push(
-                        Diagnostic::error(format!(
-                            "match-arm discriminant '{}' has type {}, expected an enum",
-                            name, other_ty
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            m.discriminant.span,
-                            "discriminant must be an enum-typed param or let",
-                        )),
-                    );
-                    return;
-                }
-                None => {
-                    diagnostics.push(
-                        Diagnostic::error(format!(
-                            "match-arm discriminant '{}' not found in scope",
-                            name
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            m.discriminant.span,
-                            "unresolved identifier",
-                        )),
-                    );
-                    return;
-                }
+        reify_syntax::ExprKind::Ident(name) => match scope.resolve(name) {
+            Some((cell_id, Type::Enum(enum_name))) => (cell_id.clone(), enum_name.clone()),
+            Some((_, other_ty)) => {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "match-arm discriminant '{}' has type {}, expected an enum",
+                        name, other_ty
+                    ))
+                    .with_label(DiagnosticLabel::new(
+                        m.discriminant.span,
+                        "discriminant must be an enum-typed param or let",
+                    )),
+                );
+                return;
             }
-        }
+            None => {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "match-arm discriminant '{}' not found in scope",
+                        name
+                    ))
+                    .with_label(DiagnosticLabel::new(
+                        m.discriminant.span,
+                        "unresolved identifier",
+                    )),
+                );
+                return;
+            }
+        },
         _ => {
             diagnostics.push(
                 Diagnostic::error(
@@ -2328,7 +2342,10 @@ fn compile_match_arm_decl_group(
                     Diagnostic::error(
                         "match-arm member must be a named declaration (param, let, or sub)",
                     )
-                    .with_label(DiagnosticLabel::new(m.span, "unsupported member kind in arm")),
+                    .with_label(DiagnosticLabel::new(
+                        m.span,
+                        "unsupported member kind in arm",
+                    )),
                 );
                 return;
             }
@@ -2362,10 +2379,7 @@ fn compile_match_arm_decl_group(
                          expected '{}', found '{}'",
                         logical_name, name
                     ))
-                    .with_label(DiagnosticLabel::new(
-                        arm.span,
-                        "mismatched arm name",
-                    )),
+                    .with_label(DiagnosticLabel::new(arm.span, "mismatched arm name")),
                 );
                 return;
             }
@@ -2413,10 +2427,7 @@ fn compile_match_arm_decl_group(
                             "match-arm pattern '{}' is not a variant of enum '{}'",
                             pat, enum_type_name
                         ))
-                        .with_label(DiagnosticLabel::new(
-                            arm.span,
-                            "unknown enum variant",
-                        )),
+                        .with_label(DiagnosticLabel::new(arm.span, "unknown enum variant")),
                     );
                 }
             }
@@ -2442,7 +2453,11 @@ fn compile_match_arm_decl_group(
                 Diagnostic::error(format!(
                     "non-exhaustive match on '{}': missing variant(s) {}",
                     enum_type_name,
-                    missing.iter().map(|v| format!("'{v}'")).collect::<Vec<_>>().join(", ")
+                    missing
+                        .iter()
+                        .map(|v| format!("'{v}'"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ))
                 .with_label(DiagnosticLabel::new(m.span, "missing variants")),
             );
@@ -2660,7 +2675,9 @@ fn arm_member_type(
             scope
                 .resolve(&p.name)
                 .map(|(_, ty)| ty.clone())
-                .unwrap_or_else(|| emit_ice_unresolved(UnresolvedKind::Name, &p.name, span, diagnostics))
+                .unwrap_or_else(|| {
+                    emit_ice_unresolved(UnresolvedKind::Name, &p.name, span, diagnostics)
+                })
         }
         reify_syntax::MemberDecl::Let(l) => {
             // Same pass-1 registration invariant as the Param arm above; the ICE guards
@@ -2668,17 +2685,16 @@ fn arm_member_type(
             scope
                 .resolve(&l.name)
                 .map(|(_, ty)| ty.clone())
-                .unwrap_or_else(|| emit_ice_unresolved(UnresolvedKind::Name, &l.name, span, diagnostics))
+                .unwrap_or_else(|| {
+                    emit_ice_unresolved(UnresolvedKind::Name, &l.name, span, diagnostics)
+                })
         }
         _ => {
             // Unhandled MemberDecl variant: emit a diagnostic so the caller gets explicit
             // feedback rather than a silently-wrong Type::Real.
             diagnostics.push(
                 Diagnostic::error("unsupported member kind in match arm")
-                    .with_label(DiagnosticLabel::new(
-                        span,
-                        "expected param, let, or sub",
-                    )),
+                    .with_label(DiagnosticLabel::new(span, "expected param, let, or sub")),
             );
             Type::Real
         }
@@ -3215,8 +3231,7 @@ pub(crate) fn expand_constraint_inst(
     // directly per predicate rather than creating an extra intermediate clone.
     for (pred_idx, predicate) in def.predicates.iter().enumerate() {
         let substituted = substitute_expr(predicate, &arg_map);
-        let compiled_expr =
-            compile_expr(&substituted, scope, enum_defs, functions, diagnostics);
+        let compiled_expr = compile_expr(&substituted, scope, enum_defs, functions, diagnostics);
 
         let id = ConstraintNodeId::new(entity_name, *constraint_index);
         let base_label = format!("{}#{}[{}]", ci.name, inst_idx, pred_idx);
@@ -3311,7 +3326,11 @@ mod tests {
             let mut diagnostics: Vec<Diagnostic> = Vec::new();
             let ty = arm_member_type(member, &scope, &mut diagnostics, span);
 
-            assert_eq!(ty, Type::Real, "[{label}] fallback type should be Type::Real");
+            assert_eq!(
+                ty,
+                Type::Real,
+                "[{label}] fallback type should be Type::Real"
+            );
             assert_eq!(
                 diagnostics.len(),
                 1,
@@ -3319,11 +3338,13 @@ mod tests {
             );
             assert!(
                 diagnostics[0].message.contains("internal compiler error"),
-                "[{label}] expected ICE diagnostic, got: {:?}", diagnostics[0].message,
+                "[{label}] expected ICE diagnostic, got: {:?}",
+                diagnostics[0].message,
             );
             assert!(
                 diagnostics[0].message.contains("unresolved name"),
-                "[{label}] expected UnresolvedKind::Name ICE, got: {:?}", diagnostics[0].message,
+                "[{label}] expected UnresolvedKind::Name ICE, got: {:?}",
+                diagnostics[0].message,
             );
         }
     }

@@ -1745,9 +1745,9 @@ pub(crate) fn try_eval_topology_selector(
                     };
                     dispatch_point_on_shape(kernel, &query, &function.name, diagnostics)
                 }
-                TopologySelectorHelper::AngleBetweenSurfaces => unreachable!(
-                    "angle_between_surfaces is handled in the outer match"
-                ),
+                TopologySelectorHelper::AngleBetweenSurfaces => {
+                    unreachable!("angle_between_surfaces is handled in the outer match")
+                }
             }
         }
         TopologySelectorHelper::AngleBetweenSurfaces => {
@@ -6222,13 +6222,7 @@ mod tests {
         // The debug_assert! in dispatch_surface_angle's Scalar arm must panic
         // with a message containing "expected ANGLE". No assert_eq! after this
         // call — the #[should_panic] attribute drives the assertion.
-        super::try_eval_topology_selector(
-            &expr,
-            &named_steps,
-            &values,
-            &kernel,
-            &mut diagnostics,
-        );
+        super::try_eval_topology_selector(&expr, &named_steps, &values, &kernel, &mut diagnostics);
     }
 
     #[test]

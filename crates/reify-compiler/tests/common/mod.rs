@@ -137,7 +137,11 @@ pub fn units_module() -> &'static CompiledModule {
 #[allow(dead_code)] // used by some, but not all, test binaries that include this module
 pub fn assert_eq_rel(a: f64, b: f64, rel_tol: f64, msg: &str) {
     let scale = a.abs().max(b.abs());
-    let tol = if scale == 0.0 { rel_tol } else { scale * rel_tol };
+    let tol = if scale == 0.0 {
+        rel_tol
+    } else {
+        scale * rel_tol
+    };
     assert!(
         (a - b).abs() < tol,
         "{}: expected {} ≈ {} (tol {})",

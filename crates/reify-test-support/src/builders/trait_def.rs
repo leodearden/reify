@@ -470,7 +470,10 @@ mod trait_def_annotation_tests {
     #[test]
     fn trait_def_builder_annotation_with_args() {
         let t = TraitDefBuilder::new("T")
-            .annotation(annotation_with_args(DEPRECATED_ANNOTATION, vec![ann_str("use Bar")]))
+            .annotation(annotation_with_args(
+                DEPRECATED_ANNOTATION,
+                vec![ann_str("use Bar")],
+            ))
             .build();
         assert_eq!(t.annotations.len(), 1);
         assert_eq!(t.annotations[0].args.len(), 1);
@@ -514,7 +517,10 @@ mod compiled_trait_annotation_tests {
     #[test]
     fn compiled_trait_builder_annotation_with_args() {
         let t = CompiledTraitBuilder::new("T")
-            .annotation(annotation_with_args(DEPRECATED_ANNOTATION, vec![ann_str("use Foo")]))
+            .annotation(annotation_with_args(
+                DEPRECATED_ANNOTATION,
+                vec![ann_str("use Foo")],
+            ))
             .build();
         assert_eq!(t.annotations.len(), 1);
         assert_eq!(t.annotations[0].name, DEPRECATED_ANNOTATION);

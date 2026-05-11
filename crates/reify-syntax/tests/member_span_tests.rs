@@ -258,9 +258,7 @@ fn find_named_member_span_hand_constructed_else_only_found() {
     // "target" in `else_members`. Complements the existing parsed-source
     // `guarded_group_else_members_found` test by isolating the else
     // recursion on a hand-constructed slice.
-    use reify_syntax::{
-        Expr, ExprKind, GuardedGroupDecl, MemberDecl, ParamDecl,
-    };
+    use reify_syntax::{Expr, ExprKind, GuardedGroupDecl, MemberDecl, ParamDecl};
     use reify_types::{ContentHash, SourceSpan};
 
     let param_span = SourceSpan::new(42, 77);
@@ -329,4 +327,3 @@ fn find_named_member_span_hand_constructed_both_branches_empty_returns_none() {
         "empty GuardedGroup in both branches should return None"
     );
 }
-

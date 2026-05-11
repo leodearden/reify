@@ -68,7 +68,9 @@ pub(crate) fn eval_complex_method(obj: &Value, method: &str, args: &[Value]) -> 
             match obj {
                 Value::Complex { re, im, dimension } => {
                     let component = if method == "re" { *re } else { *im };
-                    Some(sanitize_value(Value::from_real_scalar(component, *dimension)))
+                    Some(sanitize_value(Value::from_real_scalar(
+                        component, *dimension,
+                    )))
                 }
                 _ => Some(Value::Undef),
             }
@@ -101,7 +103,11 @@ mod tests {
         method: &str,
         ret_ty: Type,
     ) -> Value {
-        let complex_val = Value::Complex { re, im, dimension: dim };
+        let complex_val = Value::Complex {
+            re,
+            im,
+            dimension: dim,
+        };
         let expr = CompiledExpr::method_call(
             lit(complex_val, Type::complex(elem_ty)),
             method.to_string(),
@@ -151,7 +157,15 @@ mod tests {
     fn re_nan_dimensioned_returns_undef() {
         // Complex{re:NaN, im:1.0, LENGTH}.re → Undef (dimensioned Scalar path)
         assert!(
-            call_complex_method(f64::NAN, 1.0, DimensionVector::LENGTH, Type::length(), "re", Type::length()).is_undef(),
+            call_complex_method(
+                f64::NAN,
+                1.0,
+                DimensionVector::LENGTH,
+                Type::length(),
+                "re",
+                Type::length()
+            )
+            .is_undef(),
             "z.re with NaN real part (dimensioned) should return Undef"
         );
     }
@@ -171,7 +185,15 @@ mod tests {
         // Mirrors re_nan_dimensioned_returns_undef but for NEG_INFINITY to lock
         // the Scalar{si_value: -Inf} → Undef path in sanitize_value.
         assert!(
-            call_complex_method(f64::NEG_INFINITY, 1.0, DimensionVector::LENGTH, Type::length(), "re", Type::length()).is_undef(),
+            call_complex_method(
+                f64::NEG_INFINITY,
+                1.0,
+                DimensionVector::LENGTH,
+                Type::length(),
+                "re",
+                Type::length()
+            )
+            .is_undef(),
             "z.re with NEG_INFINITY real part (dimensioned) should return Undef"
         );
     }
@@ -200,7 +222,15 @@ mod tests {
     fn im_nan_dimensioned_returns_undef() {
         // Complex{re:1.0, im:NaN, LENGTH}.im → Undef (dimensioned Scalar path)
         assert!(
-            call_complex_method(1.0, f64::NAN, DimensionVector::LENGTH, Type::length(), "im", Type::length()).is_undef(),
+            call_complex_method(
+                1.0,
+                f64::NAN,
+                DimensionVector::LENGTH,
+                Type::length(),
+                "im",
+                Type::length()
+            )
+            .is_undef(),
             "z.im with NaN imaginary part (dimensioned) should return Undef"
         );
     }
@@ -220,7 +250,15 @@ mod tests {
         // Mirrors im_nan_dimensioned_returns_undef but for NEG_INFINITY to lock
         // the Scalar{si_value: -Inf} → Undef path in sanitize_value.
         assert!(
-            call_complex_method(1.0, f64::NEG_INFINITY, DimensionVector::LENGTH, Type::length(), "im", Type::length()).is_undef(),
+            call_complex_method(
+                1.0,
+                f64::NEG_INFINITY,
+                DimensionVector::LENGTH,
+                Type::length(),
+                "im",
+                Type::length()
+            )
+            .is_undef(),
             "z.im with NEG_INFINITY imaginary part (dimensioned) should return Undef"
         );
     }
@@ -249,7 +287,15 @@ mod tests {
     fn magnitude_nan_dimensioned_returns_undef() {
         // Complex{re:NaN, im:1.0, LENGTH}.magnitude → Undef (dimensioned path)
         assert!(
-            call_complex_method(f64::NAN, 1.0, DimensionVector::LENGTH, Type::length(), "magnitude", Type::length()).is_undef(),
+            call_complex_method(
+                f64::NAN,
+                1.0,
+                DimensionVector::LENGTH,
+                Type::length(),
+                "magnitude",
+                Type::length()
+            )
+            .is_undef(),
             "z.magnitude with NaN (dimensioned) should return Undef"
         );
     }
@@ -288,7 +334,15 @@ mod tests {
         // Complex{re:1.0, im:NaN, LENGTH}.magnitude → Undef (dimensioned im path)
         // hypot propagates NaN; sanitize_value Scalar arm catches non-finite si_value
         assert!(
-            call_complex_method(1.0, f64::NAN, DimensionVector::LENGTH, Type::length(), "magnitude", Type::length()).is_undef(),
+            call_complex_method(
+                1.0,
+                f64::NAN,
+                DimensionVector::LENGTH,
+                Type::length(),
+                "magnitude",
+                Type::length()
+            )
+            .is_undef(),
             "z.magnitude with NaN imaginary part (dimensioned) should return Undef"
         );
     }
@@ -298,7 +352,15 @@ mod tests {
         // Complex{re:1.0, im:+Inf, LENGTH}.magnitude → Undef (dimensioned im path)
         // hypot(1.0, +Inf) = +Inf; sanitize_value Scalar arm catches non-finite si_value
         assert!(
-            call_complex_method(1.0, f64::INFINITY, DimensionVector::LENGTH, Type::length(), "magnitude", Type::length()).is_undef(),
+            call_complex_method(
+                1.0,
+                f64::INFINITY,
+                DimensionVector::LENGTH,
+                Type::length(),
+                "magnitude",
+                Type::length()
+            )
+            .is_undef(),
             "z.magnitude with +Inf imaginary part (dimensioned) should return Undef"
         );
     }
@@ -319,7 +381,10 @@ mod tests {
             "magnitude",
             Type::length(),
         ) {
-            Value::Scalar { si_value, dimension } => {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
                 assert!(
                     si_value.abs() < 1e-15,
                     "expected si_value=0.0, got {}",
@@ -434,7 +499,15 @@ mod tests {
         // Complex{re:NaN, im:1.0, DIMENSIONLESS}.phase → Undef
         // atan2(1.0, NaN) = NaN; phase should return Undef
         assert!(
-            call_complex_method(f64::NAN, 1.0, DimensionVector::DIMENSIONLESS, Type::Real, "phase", Type::angle()).is_undef(),
+            call_complex_method(
+                f64::NAN,
+                1.0,
+                DimensionVector::DIMENSIONLESS,
+                Type::Real,
+                "phase",
+                Type::angle()
+            )
+            .is_undef(),
             "z.phase with NaN real part should return Undef"
         );
     }
@@ -444,7 +517,15 @@ mod tests {
         // Complex{re:1.0, im:NaN, DIMENSIONLESS}.phase → Undef
         // atan2(NaN, 1.0) = NaN; phase should return Undef
         assert!(
-            call_complex_method(1.0, f64::NAN, DimensionVector::DIMENSIONLESS, Type::Real, "phase", Type::angle()).is_undef(),
+            call_complex_method(
+                1.0,
+                f64::NAN,
+                DimensionVector::DIMENSIONLESS,
+                Type::Real,
+                "phase",
+                Type::angle()
+            )
+            .is_undef(),
             "z.phase with NaN imaginary part should return Undef"
         );
     }
@@ -455,7 +536,15 @@ mod tests {
         // Note: atan2(1.0, +Inf) = 0.0 which is finite — sanitize_value alone
         // would NOT catch this Inf input. The pre-guard is what correctly rejects it.
         assert!(
-            call_complex_method(f64::INFINITY, 1.0, DimensionVector::DIMENSIONLESS, Type::Real, "phase", Type::angle()).is_undef(),
+            call_complex_method(
+                f64::INFINITY,
+                1.0,
+                DimensionVector::DIMENSIONLESS,
+                Type::Real,
+                "phase",
+                Type::angle()
+            )
+            .is_undef(),
             "z.phase with +Inf real part should return Undef"
         );
     }
@@ -466,7 +555,15 @@ mod tests {
         // Note: atan2(+Inf, 1.0) = π/2 which is finite — sanitize_value alone
         // would NOT catch this Inf input. The pre-guard is what correctly rejects it.
         assert!(
-            call_complex_method(1.0, f64::INFINITY, DimensionVector::DIMENSIONLESS, Type::Real, "phase", Type::angle()).is_undef(),
+            call_complex_method(
+                1.0,
+                f64::INFINITY,
+                DimensionVector::DIMENSIONLESS,
+                Type::Real,
+                "phase",
+                Type::angle()
+            )
+            .is_undef(),
             "z.phase with +Inf imaginary part should return Undef"
         );
     }
@@ -480,7 +577,15 @@ mod tests {
         // The pre-guard (!re.is_finite() || !im.is_finite()) is what correctly
         // rejects this case. This test locks that behaviour as a regression guard.
         assert!(
-            call_complex_method(1.0, f64::NEG_INFINITY, DimensionVector::DIMENSIONLESS, Type::Real, "phase", Type::angle()).is_undef(),
+            call_complex_method(
+                1.0,
+                f64::NEG_INFINITY,
+                DimensionVector::DIMENSIONLESS,
+                Type::Real,
+                "phase",
+                Type::angle()
+            )
+            .is_undef(),
             "z.phase with -Inf imaginary part should return Undef (atan2(-Inf,1.0)=-π/2 is finite, \
              so the pre-guard, not sanitize_value, is what catches this)"
         );
@@ -495,7 +600,15 @@ mod tests {
         // The pre-guard (!re.is_finite() || !im.is_finite()) is what correctly
         // rejects this case. This test locks that behaviour as a regression guard.
         assert!(
-            call_complex_method(f64::NEG_INFINITY, 1.0, DimensionVector::DIMENSIONLESS, Type::Real, "phase", Type::angle()).is_undef(),
+            call_complex_method(
+                f64::NEG_INFINITY,
+                1.0,
+                DimensionVector::DIMENSIONLESS,
+                Type::Real,
+                "phase",
+                Type::angle()
+            )
+            .is_undef(),
             "z.phase with -Inf real part should return Undef (atan2(1.0,-Inf)=π is finite, \
              so the pre-guard, not sanitize_value, is what catches this)"
         );
@@ -513,7 +626,15 @@ mod tests {
         // omitted the pre-guard on one branch, this test would catch the regression.
         // Mirrors re_nan_dimensioned_returns_undef for parity across complex methods.
         assert!(
-            call_complex_method(1.0, f64::NAN, DimensionVector::LENGTH, Type::length(), "phase", Type::angle()).is_undef(),
+            call_complex_method(
+                1.0,
+                f64::NAN,
+                DimensionVector::LENGTH,
+                Type::length(),
+                "phase",
+                Type::angle()
+            )
+            .is_undef(),
             "z.phase with NaN imaginary part (dimensioned) should return Undef"
         );
     }
@@ -531,7 +652,15 @@ mod tests {
         // fast/slow split accidentally omitting the pre-guard. Mirrors
         // im_neg_inf_dimensioned_returns_undef and re_neg_inf_dimensioned_returns_undef.
         assert!(
-            call_complex_method(1.0, f64::NEG_INFINITY, DimensionVector::LENGTH, Type::length(), "phase", Type::angle()).is_undef(),
+            call_complex_method(
+                1.0,
+                f64::NEG_INFINITY,
+                DimensionVector::LENGTH,
+                Type::length(),
+                "phase",
+                Type::angle()
+            )
+            .is_undef(),
             "z.phase with -Inf imaginary part (dimensioned) should return Undef"
         );
     }
@@ -547,7 +676,15 @@ mod tests {
         // undefined phase of the zero vector. This test locks that guard as a
         // regression guard.
         assert!(
-            call_complex_method(0.0, 0.0, DimensionVector::DIMENSIONLESS, Type::Real, "phase", Type::angle()).is_undef(),
+            call_complex_method(
+                0.0,
+                0.0,
+                DimensionVector::DIMENSIONLESS,
+                Type::Real,
+                "phase",
+                Type::angle()
+            )
+            .is_undef(),
             "z.phase with zero vector should return Undef (atan2(0.0,0.0)=0.0 is finite, \
              so the zero-vector guard, not sanitize_value, is what catches this)"
         );
@@ -568,17 +705,41 @@ mod tests {
         // that swapped `==` for a bit-pattern check (e.g. `to_bits() == 0`), which
         // would silently break mixed-sign cases.
         assert!(
-            call_complex_method(-0.0, -0.0, DimensionVector::DIMENSIONLESS, Type::Real, "phase", Type::angle()).is_undef(),
+            call_complex_method(
+                -0.0,
+                -0.0,
+                DimensionVector::DIMENSIONLESS,
+                Type::Real,
+                "phase",
+                Type::angle()
+            )
+            .is_undef(),
             "z.phase with signed-zero vector (-0.0,-0.0) should return Undef \
              (IEEE-754: -0.0 == 0.0, so the zero-vector guard catches this too)"
         );
         assert!(
-            call_complex_method(0.0, -0.0, DimensionVector::DIMENSIONLESS, Type::Real, "phase", Type::angle()).is_undef(),
+            call_complex_method(
+                0.0,
+                -0.0,
+                DimensionVector::DIMENSIONLESS,
+                Type::Real,
+                "phase",
+                Type::angle()
+            )
+            .is_undef(),
             "z.phase with mixed-sign zero vector (0.0,-0.0) should return Undef \
              (IEEE-754: -0.0 == 0.0, so the zero-vector guard catches this too)"
         );
         assert!(
-            call_complex_method(-0.0, 0.0, DimensionVector::DIMENSIONLESS, Type::Real, "phase", Type::angle()).is_undef(),
+            call_complex_method(
+                -0.0,
+                0.0,
+                DimensionVector::DIMENSIONLESS,
+                Type::Real,
+                "phase",
+                Type::angle()
+            )
+            .is_undef(),
             "z.phase with mixed-sign zero vector (-0.0,0.0) should return Undef \
              (IEEE-754: -0.0 == 0.0, so the zero-vector guard catches this too)"
         );
@@ -594,7 +755,15 @@ mod tests {
         // invariant that a future refactor which added a dimension-aware fast path
         // cannot silently drop the zero-vector guard on one branch.
         assert!(
-            call_complex_method(0.0, 0.0, DimensionVector::LENGTH, Type::length(), "phase", Type::angle()).is_undef(),
+            call_complex_method(
+                0.0,
+                0.0,
+                DimensionVector::LENGTH,
+                Type::length(),
+                "phase",
+                Type::angle()
+            )
+            .is_undef(),
             "z.phase with dimensioned zero vector (LENGTH) should return Undef"
         );
     }
@@ -674,8 +843,18 @@ mod tests {
         // Complex{re:1.0, im:1.0, LENGTH}.phase → Scalar{π/4, ANGLE}
         // The phase method ignores the dimension of the Complex components and always
         // returns a dimensionless angle — this test locks that contract.
-        match call_complex_method(1.0, 1.0, DimensionVector::LENGTH, Type::length(), "phase", Type::angle()) {
-            Value::Scalar { si_value, dimension } => {
+        match call_complex_method(
+            1.0,
+            1.0,
+            DimensionVector::LENGTH,
+            Type::length(),
+            "phase",
+            Type::angle(),
+        ) {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
                 let expected = std::f64::consts::FRAC_PI_4;
                 assert!(
                     (si_value - expected).abs() < 1e-12,
@@ -688,5 +867,4 @@ mod tests {
             other => panic!("expected Scalar{{π/4, ANGLE}}, got {:?}", other),
         }
     }
-
 }

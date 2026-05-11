@@ -7,13 +7,13 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use reify_compiler::{CompiledModule, ValueCellDecl, ValueCellKind, find_template};
+use reify_types::sampled::{LinspaceError, linspace_inclusive};
 use reify_types::{
     AutoParam, CompiledFunction, DeterminacyState, Diagnostic, DiagnosticCode, ErrorRef,
     FIELD_ENTITY_PREFIX, Freshness, InterpolationKind, PersistentMap, ResolutionProblem,
     SampledField, SampledGridKind, SnapshotId, SnapshotProvenance, SolveResult, Value, ValueCellId,
     ValueMap, VersionId,
 };
-use reify_types::sampled::{LinspaceError, linspace_inclusive};
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
 use crate::demand::DemandRegistry;
@@ -878,9 +878,7 @@ fn build_sampled_field(
                          can represent \
                          (bounds_min={} bounds_max={} spacing={}); \
                          reduce the span or increase the spacing",
-                        bounds_min[i],
-                        bounds_max[i],
-                        spacing[i],
+                        bounds_min[i], bounds_max[i], spacing[i],
                     ),
                 );
                 return None;

@@ -227,9 +227,9 @@ pub fn populate_mid_surface_attributes(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::geometry::{FeatureId, Role};
     use crate::mid_surface::MidSurfaceMesh;
     use crate::segmentation::{RegionClassification, RegionInfo, SegmentationResult};
+    use reify_types::geometry::{FeatureId, Role};
 
     #[test]
     fn populate_mid_surface_attributes_returns_empty_records_when_segmentation_has_no_regions() {
@@ -270,8 +270,8 @@ mod tests {
     }
 
     #[test]
-    fn populate_emits_one_edge_record_per_unique_inter_region_adjacency_with_canonical_min_max_pair_ordering(
-    ) {
+    fn populate_emits_one_edge_record_per_unique_inter_region_adjacency_with_canonical_min_max_pair_ordering()
+     {
         // Two triangles sharing edge (1,2): triangle 0 = (0,1,2),
         // triangle 1 = (0,2,3). Triangle labels live in two different
         // regions; the shared mesh-edge is therefore an inter-region
@@ -279,7 +279,12 @@ mod tests {
         // (min, max) ordering — i.e. (5, 7) regardless of which triangle
         // carries label 5 vs 7.
         let mesh = MidSurfaceMesh {
-            vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]],
+            vertices: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
             triangles: vec![[0, 1, 2], [0, 2, 3]],
             thickness: vec![1.0, 1.0, 1.0, 1.0],
         };
@@ -382,7 +387,12 @@ mod tests {
         // filter; it will fail (RED) only if a future refactor strips
         // it, behaviorally locking in the contract.
         let mesh = MidSurfaceMesh {
-            vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]],
+            vertices: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
             triangles: vec![[0, 1, 2], [0, 2, 3]],
             thickness: vec![1.0, 1.0, 1.0, 1.0],
         };
@@ -516,7 +526,12 @@ mod tests {
         // label_b`; will fail RED only if a future refactor strips that
         // guard, behaviorally locking the intra-region exclusion contract.
         let mesh = MidSurfaceMesh {
-            vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]],
+            vertices: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
             triangles: vec![[0, 1, 2], [0, 2, 3]],
             thickness: vec![1.0, 1.0, 1.0, 1.0],
         };
@@ -538,15 +553,14 @@ mod tests {
             "face emission is independent of edge filtering — one face per region"
         );
         assert_eq!(
-            attrs.face_records[0].local_index,
-            3,
+            attrs.face_records[0].local_index, 3,
             "face_records[0].local_index must equal the region label"
         );
     }
 
     #[test]
-    fn populate_emits_one_face_record_per_region_with_derived_feature_id_role_and_local_index_eq_region_label(
-    ) {
+    fn populate_emits_one_face_record_per_region_with_derived_feature_id_role_and_local_index_eq_region_label()
+     {
         let mesh = MidSurfaceMesh {
             vertices: vec![],
             triangles: vec![],

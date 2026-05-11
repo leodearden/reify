@@ -1,11 +1,14 @@
-use crate::kernel_status::{KernelStatus, kernel_status_for, KERNEL_UNAVAILABLE_MESSAGE};
+use crate::kernel_status::{KERNEL_UNAVAILABLE_MESSAGE, KernelStatus, kernel_status_for};
 
 #[test]
 fn kernel_status_for_true_returns_available() {
     let status = kernel_status_for(true);
     assert_eq!(
         status,
-        KernelStatus { available: true, message: None }
+        KernelStatus {
+            available: true,
+            message: None
+        }
     );
 }
 
@@ -40,10 +43,7 @@ mod gui_tests {
         let status = kernel_status::current_kernel_status();
         assert_eq!(status.available, OCCT_AVAILABLE);
         if !OCCT_AVAILABLE {
-            assert_eq!(
-                status.message.as_deref(),
-                Some(KERNEL_UNAVAILABLE_MESSAGE)
-            );
+            assert_eq!(status.message.as_deref(), Some(KERNEL_UNAVAILABLE_MESSAGE));
         } else {
             assert!(status.message.is_none());
         }
@@ -103,8 +103,7 @@ mod gui_tests {
         use crate::engine::EngineSession;
         use reify_constraints::SimpleConstraintChecker;
         use reify_types::ExportFormat;
-        let mut session =
-            EngineSession::with_registered_kernel(Box::new(SimpleConstraintChecker));
+        let mut session = EngineSession::with_registered_kernel(Box::new(SimpleConstraintChecker));
         session
             .load_from_source(
                 "structure S { let b = box(10mm, 10mm, 10mm) }",

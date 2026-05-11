@@ -46,9 +46,8 @@ structure S {
     let stub_errors: Vec<_> = errors
         .iter()
         .filter(|d| {
-            d.message.contains(
-                "forall connect/chain statements in guarded blocks are not yet supported",
-            )
+            d.message
+                .contains("forall connect/chain statements in guarded blocks are not yet supported")
         })
         .collect();
 

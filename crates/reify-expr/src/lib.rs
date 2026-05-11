@@ -107,10 +107,7 @@ impl<'a> EvalContext<'a> {
     /// Attach a runtime diagnostics sink. Warnings emitted during
     /// `eval_expr` (e.g. `W_FIELD_OUT_OF_BOUNDS` from sampled-field OOB
     /// queries) are pushed into the `RefCell` for the caller to drain.
-    pub fn with_runtime_diagnostics(
-        mut self,
-        sink: &'a RefCell<Vec<Diagnostic>>,
-    ) -> Self {
+    pub fn with_runtime_diagnostics(mut self, sink: &'a RefCell<Vec<Diagnostic>>) -> Self {
         self.diagnostics = Some(sink);
         self
     }
@@ -168,22 +165,13 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     {
                         match (lambda.as_ref(), source) {
                             (Value::Lambda { .. }, _) => {
-                                apply_lambda_with_point_unpacking(
-                                    lambda,
-                                    &evaluated_args[1],
-                                    ctx,
-                                )
+                                apply_lambda_with_point_unpacking(lambda, &evaluated_args[1], ctx)
                             }
                             // Sampled-field dispatch (task 2341): runtime
                             // helper extracts query coords, detects OOB,
                             // and dispatches to interp::interpolate_Nd.
                             (Value::SampledField(sf), FieldSourceKind::Sampled) => {
-                                sampled::sample_at_point(
-                                    sf,
-                                    &evaluated_args[1],
-                                    codomain_type,
-                                    ctx,
-                                )
+                                sampled::sample_at_point(sf, &evaluated_args[1], codomain_type, ctx)
                             }
                             // Derived-field case: lambda slot contains the original field.
                             // Pass codomain_type (the derived field's already-divided codomain,
@@ -368,23 +356,27 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 // unchanged) and `argcount_gating_*_field_then_extra_arg_*`
                 // (4 tests, step-19) in
                 // `crates/reify-expr/tests/field_reductions_tests.rs`.
-                "max" if evaluated_args.len() == 1
-                    && matches!(&evaluated_args[0], Value::Field { .. }) =>
+                "max"
+                    if evaluated_args.len() == 1
+                        && matches!(&evaluated_args[0], Value::Field { .. }) =>
                 {
                     field_reductions::compute_max(&evaluated_args[0])
                 }
-                "min" if evaluated_args.len() == 1
-                    && matches!(&evaluated_args[0], Value::Field { .. }) =>
+                "min"
+                    if evaluated_args.len() == 1
+                        && matches!(&evaluated_args[0], Value::Field { .. }) =>
                 {
                     field_reductions::compute_min(&evaluated_args[0])
                 }
-                "argmax" if evaluated_args.len() == 1
-                    && matches!(&evaluated_args[0], Value::Field { .. }) =>
+                "argmax"
+                    if evaluated_args.len() == 1
+                        && matches!(&evaluated_args[0], Value::Field { .. }) =>
                 {
                     field_reductions::compute_argmax(&evaluated_args[0])
                 }
-                "argmin" if evaluated_args.len() == 1
-                    && matches!(&evaluated_args[0], Value::Field { .. }) =>
+                "argmin"
+                    if evaluated_args.len() == 1
+                        && matches!(&evaluated_args[0], Value::Field { .. }) =>
                 {
                     field_reductions::compute_argmin(&evaluated_args[0])
                 }
@@ -404,8 +396,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                         (Value::List(items), lambda @ Value::Lambda { .. }) => {
                             let mut out: Vec<Value> = Vec::with_capacity(items.len());
                             for item in items {
-                                let r =
-                                    apply_lambda(lambda, std::slice::from_ref(item), ctx);
+                                let r = apply_lambda(lambda, std::slice::from_ref(item), ctx);
                                 match r {
                                     Value::List(sub) => out.extend(sub),
                                     _ => return Value::Undef,
@@ -461,11 +452,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     if let Value::Field { lambda, .. } = &candidate
                         && evaluated_args.len() == 1
                     {
-                        return apply_lambda_with_point_unpacking(
-                            lambda,
-                            &evaluated_args[0],
-                            ctx,
-                        );
+                        return apply_lambda_with_point_unpacking(lambda, &evaluated_args[0], ctx);
                     }
                     reify_stdlib::eval_builtin(&function.name, &evaluated_args)
                 }
@@ -994,7 +981,9 @@ fn eval_worst_case_dispatch(args: &[Value], ctx: &EvalContext) -> Value {
     // otherwise index-out-of-bounds on the element access below. Mirrors
     // the `apply_lambda` arity-guard pattern. Pinned by
     // `eval_worst_case_dispatch_wrong_arity_returns_undef` in mod tests.
-    let [first, second] = args else { return Value::Undef; };
+    let [first, second] = args else {
+        return Value::Undef;
+    };
     // Guard: first arg must be a Map (the MultiCaseResult shape). Pinned by
     // `worst_case_non_map_first_arg_returns_undef`.
     let outer = match first {
@@ -3065,10 +3054,7 @@ mod tests {
         let body = CompiledExpr::value_ref(x_id.clone(), Type::Int);
         let lambda = lambda_lit(vec![("x", x_id)], body, ValueMap::new());
         let list = CompiledExpr::list_literal(
-            vec![
-                lit(Value::Int(1), Type::Int),
-                lit(Value::Int(2), Type::Int),
-            ],
+            vec![lit(Value::Int(1), Type::Int), lit(Value::Int(2), Type::Int)],
             Type::List(Box::new(Type::Int)),
         );
         let expr = flat_map_call(list, lambda);
@@ -3212,10 +3198,7 @@ mod tests {
         );
         let lambda = lambda_lit(vec![("x", x_id)], body, ValueMap::new());
         let list = CompiledExpr::list_literal(
-            vec![
-                lit(Value::Int(1), Type::Int),
-                lit(Value::Undef, Type::Int),
-            ],
+            vec![lit(Value::Int(1), Type::Int), lit(Value::Undef, Type::Int)],
             Type::List(Box::new(Type::Int)),
         );
         let expr = flat_map_call(list, lambda);
@@ -4557,7 +4540,10 @@ mod tests {
         let result = eval_expr(&call, &EvalContext::simple(&values));
         match result {
             Value::Real(v) => assert!((v - 3.0).abs() < 1e-12),
-            other => panic!("expected Real(3.0) (eval_builtin fallthrough), got {:?}", other),
+            other => panic!(
+                "expected Real(3.0) (eval_builtin fallthrough), got {:?}",
+                other
+            ),
         }
     }
 
@@ -4589,5 +4575,4 @@ mod tests {
             );
         }
     }
-
 }

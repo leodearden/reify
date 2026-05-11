@@ -218,7 +218,11 @@ pub(crate) fn compile_trait(
         name: trait_decl.name.clone(),
         is_pub: trait_decl.is_pub,
         type_params,
-        refinements: trait_decl.refinements.iter().map(|r| r.name.clone()).collect(),
+        refinements: trait_decl
+            .refinements
+            .iter()
+            .map(|r| r.name.clone())
+            .collect(),
         required_members,
         defaults,
         content_hash,

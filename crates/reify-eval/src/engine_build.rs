@@ -4,7 +4,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Instant;
 
 use reify_compiler::CompiledModule;
-use reify_solver_elastic::{Mesh2d, Mesh2dError, Mesh2dReport, SweepError, SweepParams, SweptMesh3d};
+use reify_solver_elastic::{
+    Mesh2d, Mesh2dError, Mesh2dReport, SweepError, SweepParams, SweptMesh3d,
+};
 use reify_types::{
     AttributeHistory, CapabilityDescriptor, CompiledFunction, Diagnostic, DiagnosticLabel,
     ErrorRef, ExportFormat, FeatureId, FeatureTag, FeatureTagTable, Freshness, GeometryError,
@@ -20,7 +22,9 @@ use crate::geometry_ops::compile_geometry_op;
 use crate::journal::{EvalEvent, EventJournal, EventKind};
 use crate::primitive_attribute_seed::seed_primitive_attributes_for_handle;
 use crate::realization_cache::RealizationCache;
-use crate::sweep_classifier::{SweptKind, SweptKindTable, classify_swept_body, swept_kind_to_sweep_params};
+use crate::sweep_classifier::{
+    SweptKind, SweptKindTable, classify_swept_body, swept_kind_to_sweep_params,
+};
 use crate::topology_attribute_propagation::{
     LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M, detect_local_index_reassignment_diagnostics,
     populate_extrude_attributes, populate_loft_attributes, populate_revolve_attributes,
@@ -1227,9 +1231,7 @@ impl Engine {
             .map(|t| {
                 t.realizations
                     .iter()
-                    .map(|r| {
-                        self.demanded_tolerance_for_output(&t.name, &r.id.entity)
-                    })
+                    .map(|r| self.demanded_tolerance_for_output(&t.name, &r.id.entity))
                     .collect()
             })
             .collect()
@@ -2458,7 +2460,6 @@ where
         Err(_) => tet_path().map(VolumeMeshOutcome::Tet),
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -3983,7 +3984,9 @@ mod tests {
     ///     required or present in the production code.
     #[test]
     fn compute_demanded_tols_returns_positionally_indexed_vec_of_vec() {
-        use reify_test_support::{CompiledModuleBuilder, MockConstraintChecker, TopologyTemplateBuilder};
+        use reify_test_support::{
+            CompiledModuleBuilder, MockConstraintChecker, TopologyTemplateBuilder,
+        };
         use reify_types::ModulePath;
 
         let checker = MockConstraintChecker::new();
@@ -4008,7 +4011,11 @@ mod tests {
         // ── (a) shape + all-None ─────────────────────────────────────────────
         let result: Vec<Vec<Option<f64>>> = engine.compute_demanded_tols(&module);
 
-        assert_eq!(result.len(), 2, "outer Vec must have one entry per template");
+        assert_eq!(
+            result.len(),
+            2,
+            "outer Vec must have one entry per template"
+        );
         assert_eq!(result[0].len(), 1, "template A has 1 realization");
         assert_eq!(result[1].len(), 2, "template B has 2 realizations");
         assert!(
@@ -4035,8 +4042,12 @@ mod tests {
         // as `Some(_)` through that function directly.  This test pins
         // (i) that the entry surfaces as `Some(_)` via the production path,
         // and (ii) correct positional alignment.
-        engine.active_tolerance_scope.insert("EntityA".to_string(), 1e-5_f64);
-        engine.active_tolerance_scope.insert("EntityB_0".to_string(), 2e-5_f64);
+        engine
+            .active_tolerance_scope
+            .insert("EntityA".to_string(), 1e-5_f64);
+        engine
+            .active_tolerance_scope
+            .insert("EntityB_0".to_string(), 2e-5_f64);
         // "EntityB_1" is intentionally left unset → result[1][1] stays None.
 
         let positive: Vec<Vec<Option<f64>>> = engine.compute_demanded_tols(&module);
@@ -4082,7 +4093,9 @@ mod tests {
     ///     demand through `compute_realization_tolerance_budget` unchanged.
     #[test]
     fn compute_tessellation_budgets_returns_positionally_indexed_vec_of_vec() {
-        use reify_test_support::{CompiledModuleBuilder, MockConstraintChecker, TopologyTemplateBuilder};
+        use reify_test_support::{
+            CompiledModuleBuilder, MockConstraintChecker, TopologyTemplateBuilder,
+        };
         use reify_types::ModulePath;
 
         let checker = MockConstraintChecker::new();
@@ -4106,9 +4119,14 @@ mod tests {
 
         // ── (a) no demanded tol → fallback path ─────────────────────────────
         let demanded = engine.compute_demanded_tols(&module);
-        let budgets: Vec<Vec<f64>> = engine.compute_tessellation_budgets(&module, &demanded, &registry);
+        let budgets: Vec<Vec<f64>> =
+            engine.compute_tessellation_budgets(&module, &demanded, &registry);
 
-        assert_eq!(budgets.len(), 1, "outer Vec must have one entry per template");
+        assert_eq!(
+            budgets.len(),
+            1,
+            "outer Vec must have one entry per template"
+        );
         assert_eq!(budgets[0].len(), 1, "template A has 1 realization");
         assert_eq!(
             budgets[0][0],
@@ -4127,7 +4145,9 @@ mod tests {
         // single-kernel registry the dispatcher returns a 0-conversion
         // DispatchPlan, so `per_stage_tolerance_for_plan` passes the demanded
         // tolerance through unchanged — budget == demanded bit-exactly.
-        engine.active_tolerance_scope.insert("EntityA".to_string(), 5e-7_f64);
+        engine
+            .active_tolerance_scope
+            .insert("EntityA".to_string(), 5e-7_f64);
 
         let demanded_b = engine.compute_demanded_tols(&module);
         let budgets_b: Vec<Vec<f64>> =
@@ -4140,8 +4160,7 @@ mod tests {
              (precondition for the Some-branch budget assertion below)",
         );
         assert_eq!(
-            budgets_b[0][0],
-            5e-7,
+            budgets_b[0][0], 5e-7,
             "0-conversion DispatchPlan: compute_realization_tolerance_budget must \
              pass the demanded tolerance through unchanged (bit-exact). \
              Demand: 5e-7",
@@ -4257,8 +4276,7 @@ mod tests {
         use reify_test_support::mocks::MockGeometryKernel;
 
         let module = module_with_one_box_realization();
-        let mut kernel: Option<Box<dyn GeometryKernel>> =
-            Some(Box::new(MockGeometryKernel::new()));
+        let mut kernel: Option<Box<dyn GeometryKernel>> = Some(Box::new(MockGeometryKernel::new()));
         let mut values = ValueMap::new();
         let functions: Vec<CompiledFunction> = vec![];
         let mut diagnostics: Vec<Diagnostic> = vec![];
@@ -4284,8 +4302,8 @@ mod tests {
             &mut topology_attribute_table,
             &mut swept_kind_table,
             &mut realization_cache,
-            &[],                    // ← OOB: empty demanded_tols
-            &[vec![1e-4_f64]],     // correctly shaped tessellation_budgets
+            &[],               // ← OOB: empty demanded_tols
+            &[vec![1e-4_f64]], // correctly shaped tessellation_budgets
         );
     }
 
@@ -4305,8 +4323,7 @@ mod tests {
         use reify_test_support::mocks::MockGeometryKernel;
 
         let module = module_with_one_box_realization();
-        let mut kernel: Option<Box<dyn GeometryKernel>> =
-            Some(Box::new(MockGeometryKernel::new()));
+        let mut kernel: Option<Box<dyn GeometryKernel>> = Some(Box::new(MockGeometryKernel::new()));
         let mut values = ValueMap::new();
         let functions: Vec<CompiledFunction> = vec![];
         let mut diagnostics: Vec<Diagnostic> = vec![];
@@ -4332,8 +4349,8 @@ mod tests {
             &mut topology_attribute_table,
             &mut swept_kind_table,
             &mut realization_cache,
-            &[vec![None]],      // correctly shaped demanded_tols
-            &[],                // ← OOB: empty tessellation_budgets
+            &[vec![None]], // correctly shaped demanded_tols
+            &[],           // ← OOB: empty tessellation_budgets
         );
     }
 
@@ -4379,11 +4396,8 @@ mod tests {
             .unwrap_err()
             .to_string();
 
-        let (centroids, diagnostics) = collect_centroids_with_failure_summary(
-            &realization_attrs,
-            &kernel,
-            &realization_id,
-        );
+        let (centroids, diagnostics) =
+            collect_centroids_with_failure_summary(&realization_attrs, &kernel, &realization_id);
 
         assert!(
             centroids.is_empty(),
@@ -4415,7 +4429,8 @@ mod tests {
         // Assert the first error's text is preserved verbatim using the sentinel
         // captured above — decoupled from the mock's internal format.
         assert!(
-            diag.message.contains(&format!("(first: {expected_first_err}")),
+            diag.message
+                .contains(&format!("(first: {expected_first_err}")),
             "message must embed the first error text, got: {}",
             diag.message
         );
@@ -4456,11 +4471,8 @@ mod tests {
             .with_centroid_result(h0, Value::Real(0.0))
             .with_centroid_result(h1, Value::Real(0.0));
 
-        let (centroids, diagnostics) = collect_centroids_with_failure_summary(
-            &realization_attrs,
-            &kernel,
-            &realization_id,
-        );
+        let (centroids, diagnostics) =
+            collect_centroids_with_failure_summary(&realization_attrs, &kernel, &realization_id);
 
         assert!(
             centroids.is_empty(),
@@ -4513,8 +4525,8 @@ mod tests {
     ///   - the parse-fail warning does NOT appear in the query-fail warning
     ///     and vice-versa (classes are separated)
     #[test]
-    fn collect_centroids_with_failure_summary_separates_failure_classes_and_preserves_first_message(
-    ) {
+    fn collect_centroids_with_failure_summary_separates_failure_classes_and_preserves_first_message()
+     {
         use reify_test_support::mocks::MockGeometryKernel;
         use reify_types::{Role, Severity, Value};
 
@@ -4555,11 +4567,8 @@ mod tests {
             .unwrap_err()
             .to_string();
 
-        let (centroids, diagnostics) = collect_centroids_with_failure_summary(
-            &realization_attrs,
-            &kernel,
-            &realization_id,
-        );
+        let (centroids, diagnostics) =
+            collect_centroids_with_failure_summary(&realization_attrs, &kernel, &realization_id);
 
         // Success handle returns the parsed xyz.
         assert_eq!(
@@ -4581,9 +4590,7 @@ mod tests {
             diagnostics.len()
         );
         assert!(
-            diagnostics
-                .iter()
-                .all(|d| d.severity == Severity::Warning),
+            diagnostics.iter().all(|d| d.severity == Severity::Warning),
             "all diagnostics must be Warnings, got: {diagnostics:?}"
         );
 
@@ -4630,7 +4637,9 @@ mod tests {
             parse_warn.message
         );
         assert!(
-            parse_warn.message.contains("local_index_reassignment_centroid"),
+            parse_warn
+                .message
+                .contains("local_index_reassignment_centroid"),
             "parse-fail first-error must name the query label, got: {}",
             parse_warn.message
         );
@@ -4642,8 +4651,10 @@ mod tests {
 #[cfg(test)]
 mod dispatch_volume_mesh_tests {
     use super::*;
+    use reify_solver_elastic::{
+        Mesh2d, Mesh2dError, Mesh2dReport, SweepError, SweepParams, SweptMesh3d,
+    };
     use reify_types::{ElementOrderTag, GeometryError, VolumeMesh};
-    use reify_solver_elastic::{Mesh2d, Mesh2dError, Mesh2dReport, SweepError, SweepParams, SweptMesh3d};
 
     fn make_empty_volume_mesh() -> VolumeMesh {
         VolumeMesh {
@@ -4665,7 +4676,10 @@ mod dispatch_volume_mesh_tests {
 
     fn make_mesh2d_report() -> Mesh2dReport {
         Mesh2dReport {
-            mesh: Mesh2d::Triangle { vertices: vec![], indices: vec![] },
+            mesh: Mesh2d::Triangle {
+                vertices: vec![],
+                indices: vec![],
+            },
             recombine_attempted: false,
             recombine_quality_ok: true,
         }
@@ -4692,10 +4706,10 @@ mod dispatch_volume_mesh_tests {
         let kind = extrude_kind();
         let result = dispatch_volume_mesh(
             Some(&kind),
-            true,  // force_tet
-            true,  // require_hex_wedge (should be ignored when force_tet)
-            &[],   // ops — not reached before force_tet short-circuit
-            &[],   // handles
+            true, // force_tet
+            true, // require_hex_wedge (should be ignored when force_tet)
+            &[],  // ops — not reached before force_tet short-circuit
+            &[],  // handles
             |_swept| unreachable!("gmsh_2d must not be called when force_tet=true"),
             |_params, _mesh| unreachable!("sweep_step must not be called when force_tet=true"),
             || Ok(make_empty_volume_mesh()),
@@ -4784,7 +4798,10 @@ mod dispatch_volume_mesh_tests {
         );
         match result {
             Ok(VolumeMeshOutcome::Swept(mesh3d)) => {
-                assert_eq!(mesh3d.layers, 2, "swept mesh must have the layers returned by sweep_step");
+                assert_eq!(
+                    mesh3d.layers, 2,
+                    "swept mesh must have the layers returned by sweep_step"
+                );
             }
             other => panic!("expected Ok(Swept(mesh3d)) with layers=2, got {other:?}"),
         }
@@ -4801,7 +4818,8 @@ mod dispatch_volume_mesh_tests {
             Some(&kind),
             false,
             false,
-            &[], &[], // ops, handles
+            &[],
+            &[], // ops, handles
             |_swept| Err(Mesh2dError::DegenerateBoundary),
             |_params, _mesh| unreachable!("sweep_step must not be called when gmsh_2d fails"),
             || Ok(make_empty_volume_mesh()),
@@ -4816,7 +4834,8 @@ mod dispatch_volume_mesh_tests {
             Some(&kind),
             false,
             false,
-            &[], &[], // ops, handles
+            &[],
+            &[], // ops, handles
             |_swept| Ok(make_mesh2d_report()),
             |_params, _mesh| Err(SweepError::DegenerateAxis),
             || Ok(make_empty_volume_mesh()),
@@ -4838,7 +4857,8 @@ mod dispatch_volume_mesh_tests {
             Some(&kind),
             false,
             true, // require_hex_wedge
-            &[], &[], // ops, handles
+            &[],
+            &[], // ops, handles
             |_swept| Err(Mesh2dError::DegenerateBoundary),
             |_params, _mesh| unreachable!("sweep_step must not be called when gmsh_2d fails"),
             || unreachable!("tet_path must not be called when require_hex_wedge errors"),
@@ -4858,7 +4878,8 @@ mod dispatch_volume_mesh_tests {
             Some(&kind),
             false,
             true, // require_hex_wedge
-            &[], &[], // ops, handles
+            &[],
+            &[], // ops, handles
             |_swept| Ok(make_mesh2d_report()),
             |_params, _mesh| Err(SweepError::DegenerateMagnitude),
             || unreachable!("tet_path must not be called when require_hex_wedge errors"),

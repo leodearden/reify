@@ -346,8 +346,7 @@ fn exists_kleene_truth_table_over_list_and_set() {
             let values = ValueMap::new();
             let result = eval_expr(&expr, &EvalContext::simple(&values));
             assert_eq!(
-                result,
-                *expected,
+                result, *expected,
                 "exists({kind:?}, row={name}): expected {expected:?}",
             );
         }
@@ -443,14 +442,12 @@ fn forall_kleene_truth_table_over_list_and_set() {
                 Type::Bool,
             );
 
-            let expr =
-                make_quantifier(QuantifierKind::ForAll, "x", x_id, collection, predicate);
+            let expr = make_quantifier(QuantifierKind::ForAll, "x", x_id, collection, predicate);
 
             let values = ValueMap::new();
             let result = eval_expr(&expr, &EvalContext::simple(&values));
             assert_eq!(
-                result,
-                *expected,
+                result, *expected,
                 "forall({kind:?}, row={name}): expected {expected:?}",
             );
         }
@@ -576,22 +573,19 @@ fn forall_cell_iteration_with_determinacy_predicate_returns_false_when_one_undet
     );
 
     // Predicate: determined($loop_var)
-    let predicate = CompiledExpr::determinacy_predicate(
-        DeterminacyPredicateKind::Determined,
-        loop_var.clone(),
-    );
+    let predicate =
+        CompiledExpr::determinacy_predicate(DeterminacyPredicateKind::Determined, loop_var.clone());
 
-    let expr =
-        make_quantifier(QuantifierKind::ForAll, "p", loop_var, collection, predicate);
+    let expr = make_quantifier(QuantifierKind::ForAll, "p", loop_var, collection, predicate);
 
     // Determinacy snapshot: (E,a) determined, (E,b) undetermined.
     let snapshot = make_determinacy_snapshot(&[
-        (cell_a.clone(), Value::Real(1.0), DeterminacyState::Determined),
         (
-            cell_b.clone(),
-            Value::Undef,
-            DeterminacyState::Undetermined,
+            cell_a.clone(),
+            Value::Real(1.0),
+            DeterminacyState::Determined,
         ),
+        (cell_b.clone(), Value::Undef, DeterminacyState::Undetermined),
     ]);
 
     // Provide the same values in the value map so that any value-iteration
@@ -633,21 +627,18 @@ fn exists_cell_iteration_with_determinacy_predicate_returns_true_when_one_determ
         Type::List(Box::new(Type::Real)),
     );
 
-    let predicate = CompiledExpr::determinacy_predicate(
-        DeterminacyPredicateKind::Determined,
-        loop_var.clone(),
-    );
+    let predicate =
+        CompiledExpr::determinacy_predicate(DeterminacyPredicateKind::Determined, loop_var.clone());
 
-    let expr =
-        make_quantifier(QuantifierKind::Exists, "p", loop_var, collection, predicate);
+    let expr = make_quantifier(QuantifierKind::Exists, "p", loop_var, collection, predicate);
 
     let snapshot = make_determinacy_snapshot(&[
-        (cell_a.clone(), Value::Real(1.0), DeterminacyState::Determined),
         (
-            cell_b.clone(),
-            Value::Undef,
-            DeterminacyState::Undetermined,
+            cell_a.clone(),
+            Value::Real(1.0),
+            DeterminacyState::Determined,
         ),
+        (cell_b.clone(), Value::Undef, DeterminacyState::Undetermined),
     ]);
 
     let mut values = ValueMap::new();
@@ -699,13 +690,7 @@ fn forall_user_written_list_of_value_refs_with_arithmetic_predicate_works() {
         Type::Bool,
     );
 
-    let expr = make_quantifier(
-        QuantifierKind::ForAll,
-        "p",
-        loop_var,
-        collection,
-        predicate,
-    );
+    let expr = make_quantifier(QuantifierKind::ForAll, "p", loop_var, collection, predicate);
 
     let mut values = ValueMap::new();
     values.insert(cell_x.clone(), Value::Real(1.5));
@@ -727,10 +712,7 @@ fn forall_user_written_list_of_value_refs_with_arithmetic_predicate_works() {
 
     let predicate2 = CompiledExpr::binop(
         BinOp::Gt,
-        CompiledExpr::value_ref(
-            ValueCellId::new("$quant0.S", "p"),
-            Type::Real,
-        ),
+        CompiledExpr::value_ref(ValueCellId::new("$quant0.S", "p"), Type::Real),
         CompiledExpr::literal(Value::Real(0.0), Type::Real),
         Type::Bool,
     );
@@ -789,10 +771,8 @@ fn forall_user_written_value_ref_list_uses_value_iteration_not_cell_iteration() 
     //   (both Determined) → Bool(true).
     // - Value-iteration: $loop_var is left intact; snapshot lookup finds
     //   Undetermined → Bool(false).
-    let predicate = CompiledExpr::determinacy_predicate(
-        DeterminacyPredicateKind::Determined,
-        loop_var.clone(),
-    );
+    let predicate =
+        CompiledExpr::determinacy_predicate(DeterminacyPredicateKind::Determined, loop_var.clone());
 
     let expr = make_quantifier(
         QuantifierKind::ForAll,
@@ -805,11 +785,23 @@ fn forall_user_written_value_ref_list_uses_value_iteration_not_cell_iteration() 
     // Determinacy snapshot: Bracket.x and Bracket.y are Determined;
     // $loop_var.p is the path-divergence witness — planted as Undetermined.
     let snapshot = make_determinacy_snapshot(&[
-        (cell_x.clone(), Value::Real(1.0), DeterminacyState::Determined),
-        (cell_y.clone(), Value::Real(2.0), DeterminacyState::Determined),
+        (
+            cell_x.clone(),
+            Value::Real(1.0),
+            DeterminacyState::Determined,
+        ),
+        (
+            cell_y.clone(),
+            Value::Real(2.0),
+            DeterminacyState::Determined,
+        ),
         // The witness: value-iteration will evaluate determined($loop_var)
         // with this cell intact; it finds Undetermined → false.
-        (loop_var.clone(), Value::Undef, DeterminacyState::Undetermined),
+        (
+            loop_var.clone(),
+            Value::Undef,
+            DeterminacyState::Undetermined,
+        ),
     ]);
 
     let mut values = ValueMap::new();

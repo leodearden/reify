@@ -226,7 +226,10 @@ structure def CeramicLiner : Refractory {
     ];
     for cell_name in &expected_cells {
         assert!(
-            template.value_cells.iter().any(|vc| vc.id.member == *cell_name),
+            template
+                .value_cells
+                .iter()
+                .any(|vc| vc.id.member == *cell_name),
             "CeramicLiner template missing value cell '{}', cells: {:?}",
             cell_name,
             template

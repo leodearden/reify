@@ -65,10 +65,10 @@ pub mod kernel;
 
 // Single public `GmshKernel` ident regardless of build mode (mirrors the
 // pattern in crates/reify-kernel-openvdb/src/lib.rs:55-58).
-#[cfg(has_gmsh)]
-pub use kernel_real::GmshKernel;
 #[cfg(not(has_gmsh))]
 pub use kernel::GmshKernel;
+#[cfg(has_gmsh)]
+pub use kernel_real::GmshKernel;
 
 pub use cache_key::volume_mesh_cache_key;
 // MeshSurfaceToVolumeReport is the return type of the cfg(has_gmsh)-gated
@@ -83,7 +83,7 @@ pub use cache_key::volume_mesh_cache_key;
 // mesh_surface_to_volume_with_diagnostics depends on GmshKernel::mesh_to_volume
 // which only exists in the real FFI build (kernel_real.rs, cfg(has_gmsh)).
 #[cfg(has_gmsh)]
-pub use mesh_volume::{mesh_surface_to_volume_with_diagnostics, MeshSurfaceToVolumeReport};
+pub use mesh_volume::{MeshSurfaceToVolumeReport, mesh_surface_to_volume_with_diagnostics};
 // 2D plane-surface meshing primitive added by task 2987 — uniform signature
 // across both `cfg(has_gmsh)` (real FFI) and `cfg(not(has_gmsh))` (stub
 // returning `GeometryError::OperationFailed` containing
@@ -92,7 +92,7 @@ pub use mesh_volume::{mesh_surface_to_volume_with_diagnostics, MeshSurfaceToVolu
 // cfg gate needed on the type either. `STUB_UNAVAILABLE_MARKER` is exported
 // at the crate root so downstream orchestrators can pattern-match the stub
 // error without re-declaring the literal.
-pub use mesh_profile_2d::{mesh_plane_2d, MeshPlane2dResult, STUB_UNAVAILABLE_MARKER};
+pub use mesh_profile_2d::{MeshPlane2dResult, STUB_UNAVAILABLE_MARKER, mesh_plane_2d};
 pub use options::MeshingOptions;
 
 /// `true` when this crate was compiled with libgmsh detected at build time

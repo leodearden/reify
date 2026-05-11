@@ -188,7 +188,10 @@ mod tests {
         // Cold call: prior = None.
         let (result, fresh) =
             solve_cg_with_warm_state(&k, &f, None, opts.clone(), SolverMode::Deterministic);
-        assert!(result.converged, "cold solve_cg_with_warm_state must converge");
+        assert!(
+            result.converged,
+            "cold solve_cg_with_warm_state must converge"
+        );
         assert_eq!(
             fresh.u, result.u,
             "fresh warm state must wrap the result's displacement"
@@ -196,18 +199,16 @@ mod tests {
 
         // Re-solve with prior = Some(&fresh) on the same (k, f) — already at
         // the exact solution, so the early-exit fires.
-        let (result_warm, _fresh2) = solve_cg_with_warm_state(
-            &k,
-            &f,
-            Some(&fresh),
-            opts,
-            SolverMode::Deterministic,
-        );
+        let (result_warm, _fresh2) =
+            solve_cg_with_warm_state(&k, &f, Some(&fresh), opts, SolverMode::Deterministic);
         assert_eq!(
             result_warm.iterations, 0,
             "warm at exact solution must return 0 iterations, got {}",
             result_warm.iterations
         );
-        assert!(result_warm.converged, "warm at exact solution must report converged");
+        assert!(
+            result_warm.converged,
+            "warm at exact solution must report converged"
+        );
     }
 }

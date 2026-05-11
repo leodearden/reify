@@ -1794,7 +1794,10 @@ fn scalar_plus_int_type_error() {
                                 span: SourceSpan::new(30, 35),
                             }),
                             right: Box::new(Expr {
-                                kind: ExprKind::NumberLiteral { value: 5.0, is_real: false },
+                                kind: ExprKind::NumberLiteral {
+                                    value: 5.0,
+                                    is_real: false,
+                                },
                                 span: SourceSpan::new(38, 39),
                             }),
                         },

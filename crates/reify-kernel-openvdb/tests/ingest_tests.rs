@@ -14,7 +14,9 @@ use reify_kernel_openvdb::ingest::{
     IngestError, IngestOutcome, OpenVdbGridKind, OpenVdbGridSource, OpenVdbInterpolation,
     lower_to_sampled, read_vdb_file,
 };
-use reify_types::{DiagnosticCode, DimensionVector, InterpolationKind, SampledGridKind, Severity, Type};
+use reify_types::{
+    DiagnosticCode, DimensionVector, InterpolationKind, SampledGridKind, Severity, Type,
+};
 
 /// Step-1 happy path: a 1D `Length` grid lowered with linear interpolation
 /// produces a `SampledField` whose semantic content (kind, bounds, spacing,
@@ -163,9 +165,7 @@ fn validate_grid_units_mismatched_dimension_returns_unit_mismatch() {
             assert_eq!(found_dimension, DimensionVector::LENGTH);
             assert_eq!(found_unit, "m");
         }
-        other => panic!(
-            "expected Err(IngestError::UnitMismatch {{ … }}), got {other:?}"
-        ),
+        other => panic!("expected Err(IngestError::UnitMismatch {{ … }}), got {other:?}"),
     }
 }
 
@@ -193,9 +193,7 @@ fn validate_grid_units_unsupported_codomain_returns_error() {
         Err(IngestError::UnsupportedCodomain { type_repr }) => {
             assert_eq!(type_repr, "Bool");
         }
-        other => panic!(
-            "expected Err(IngestError::UnsupportedCodomain {{ … }}), got {other:?}"
-        ),
+        other => panic!("expected Err(IngestError::UnsupportedCodomain {{ … }}), got {other:?}"),
     }
 }
 
@@ -336,9 +334,7 @@ fn lower_to_sampled_data_shape_mismatch_returns_data_shape_mismatch() {
             assert_eq!(actual, 5);
             assert_eq!(shape, "4");
         }
-        other => panic!(
-            "expected Err(IngestError::DataShapeMismatch {{ … }}), got {other:?}"
-        ),
+        other => panic!("expected Err(IngestError::DataShapeMismatch {{ … }}), got {other:?}"),
     }
 }
 
@@ -368,9 +364,7 @@ fn lower_to_sampled_2d_data_shape_mismatch_renders_axis_count() {
             assert_eq!(actual, 10);
             assert_eq!(shape, "3×4");
         }
-        other => panic!(
-            "expected Err(IngestError::DataShapeMismatch {{ … }}), got {other:?}"
-        ),
+        other => panic!("expected Err(IngestError::DataShapeMismatch {{ … }}), got {other:?}"),
     }
 }
 
@@ -395,9 +389,7 @@ fn lower_to_sampled_non_positive_spacing_returns_invalid_spacing() {
             assert_eq!(axis, 0);
             assert_eq!(value, 0.0);
         }
-        other => panic!(
-            "expected Err(IngestError::InvalidSpacing {{ … }}), got {other:?}"
-        ),
+        other => panic!("expected Err(IngestError::InvalidSpacing {{ … }}), got {other:?}"),
     }
 }
 
@@ -429,9 +421,7 @@ fn lower_to_sampled_axis_length_mismatch_returns_structured_error() {
             assert_eq!(bounds_max_len, 1);
             assert_eq!(spacing_len, 1);
         }
-        other => panic!(
-            "expected Err(IngestError::AxisLengthMismatch {{ … }}), got {other:?}"
-        ),
+        other => panic!("expected Err(IngestError::AxisLengthMismatch {{ … }}), got {other:?}"),
     }
 }
 
@@ -458,9 +448,7 @@ fn lower_to_sampled_inverted_bounds_returns_invalid_bounds() {
             assert_eq!(min, 3.0);
             assert_eq!(max, 0.0);
         }
-        other => panic!(
-            "expected Err(IngestError::InvalidBounds {{ … }}), got {other:?}"
-        ),
+        other => panic!("expected Err(IngestError::InvalidBounds {{ … }}), got {other:?}"),
     }
 }
 
@@ -483,9 +471,7 @@ fn lower_to_sampled_non_finite_bounds_returns_invalid_bounds() {
         Err(IngestError::InvalidBounds { axis, .. }) => {
             assert_eq!(axis, 0);
         }
-        other => panic!(
-            "expected Err(IngestError::InvalidBounds {{ … }}), got {other:?}"
-        ),
+        other => panic!("expected Err(IngestError::InvalidBounds {{ … }}), got {other:?}"),
     }
 }
 
@@ -535,9 +521,7 @@ fn lower_to_sampled_degenerate_axis_returns_degenerate_axis() {
             assert_eq!(bounds_max, 0.0);
             assert_eq!(spacing, 1.0);
         }
-        other => panic!(
-            "expected Err(IngestError::DegenerateAxis {{ … }}), got {other:?}"
-        ),
+        other => panic!("expected Err(IngestError::DegenerateAxis {{ … }}), got {other:?}"),
     }
 }
 
@@ -577,9 +561,7 @@ fn lower_to_sampled_spacing_exceeds_span_returns_degenerate_axis() {
             assert_eq!(bounds_max, 0.4);
             assert_eq!(spacing, 1.0);
         }
-        other => panic!(
-            "expected Err(IngestError::DegenerateAxis {{ … }}), got {other:?}"
-        ),
+        other => panic!("expected Err(IngestError::DegenerateAxis {{ … }}), got {other:?}"),
     }
 }
 
@@ -628,9 +610,7 @@ fn lower_to_sampled_excessive_axis_returns_excessive_axis_length() {
                 n_intervals
             );
         }
-        other => panic!(
-            "expected Err(IngestError::ExcessiveAxisLength {{ … }}), got {other:?}"
-        ),
+        other => panic!("expected Err(IngestError::ExcessiveAxisLength {{ … }}), got {other:?}"),
     }
 }
 
@@ -701,9 +681,7 @@ fn read_vdb_file_returns_ffi_not_implemented_with_path() {
             assert_eq!(path, "path/to/example.vdb");
             IngestError::FfiNotImplemented { path }
         }
-        other => panic!(
-            "expected Err(IngestError::FfiNotImplemented {{ path }}), got {other:?}"
-        ),
+        other => panic!("expected Err(IngestError::FfiNotImplemented {{ path }}), got {other:?}"),
     };
 
     // Pin only the structural payload of the Display: the path. Prose is
@@ -826,9 +804,7 @@ fn lower_to_sampled_real_codomain_with_meter_grid_returns_unit_mismatch() {
             assert_eq!(found_dimension, DimensionVector::LENGTH);
             assert_eq!(found_unit, "m");
         }
-        other => panic!(
-            "expected Err(IngestError::UnitMismatch {{ … }}), got {other:?}"
-        ),
+        other => panic!("expected Err(IngestError::UnitMismatch {{ … }}), got {other:?}"),
     }
 }
 

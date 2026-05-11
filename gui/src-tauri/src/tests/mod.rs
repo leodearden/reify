@@ -1,9 +1,9 @@
 mod claude_bridge_tests;
-mod engine_lock_tests;
-mod kernel_status_tests;
 mod commands_tests;
 mod diff_tests;
+mod engine_lock_tests;
 mod engine_tests;
+mod kernel_status_tests;
 mod lsp_bridge_tests;
 mod mcp_context_tests;
 mod mcp_dispatch_tests;
@@ -34,7 +34,9 @@ pub(crate) fn make_test_engine() -> Arc<Mutex<EngineSession>> {
 
 /// Compile-time assertion that a type satisfies the full GUI IPC contract:
 /// serializable, deserializable (owned), cloneable, debuggable, and comparable.
-fn assert_ipc_contract<T: serde::Serialize + serde::de::DeserializeOwned + Clone + std::fmt::Debug + PartialEq>() {
+fn assert_ipc_contract<
+    T: serde::Serialize + serde::de::DeserializeOwned + Clone + std::fmt::Debug + PartialEq,
+>() {
 }
 
 // Step 11: Module structure verification — importing all public types.

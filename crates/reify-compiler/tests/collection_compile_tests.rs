@@ -381,8 +381,7 @@ fn compile_single_infers_element_type() {
 /// `List<Int>` (which would happen via the first-arg fallback).
 #[test]
 fn compile_flat_map_infers_lambda_return_type_bool() {
-    let compiled =
-        parse_and_compile("structure S { let xs = flat_map([1, 2, 3], |x| [x > 0]) }");
+    let compiled = parse_and_compile("structure S { let xs = flat_map([1, 2, 3], |x| [x > 0]) }");
     let expr = get_cell_expr(&compiled, "xs");
     assert_eq!(
         expr.result_type,
@@ -402,8 +401,7 @@ fn compile_flat_map_infers_lambda_return_type_bool() {
 /// out-of-scope for task 2698 per the design decisions.)
 #[test]
 fn compile_flat_map_infers_lambda_return_type_real() {
-    let compiled =
-        parse_and_compile("structure S { let xs = flat_map([1, 2, 3], |x| [x, x]) }");
+    let compiled = parse_and_compile("structure S { let xs = flat_map([1, 2, 3], |x| [x, x]) }");
     let expr = get_cell_expr(&compiled, "xs");
     assert_eq!(
         expr.result_type,

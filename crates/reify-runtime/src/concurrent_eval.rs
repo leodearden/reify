@@ -392,7 +392,6 @@ impl AsyncNodeEvaluator for ConcurrentEvalAdapter {
             && (cell_node.kind == ValueCellKind::Let || cell_node.kind.is_auto())
             && let Some(expr) = cell_node.default_expr.as_ref()
         {
-
             // Read current values (brief read lock)
             let current_values = { self.read_values().clone() };
 

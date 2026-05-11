@@ -51,19 +51,46 @@ fn fidget_capability_descriptor_lists_sdf_booleans() {
     );
 
     // Negative pins — Fidget does NOT handle B-rep Booleans (OCCT's domain).
-    assert!(!descriptor.supports(Operation::BooleanUnion,        ReprKind::BRep), "Fidget must NOT declare (BooleanUnion, BRep) — B-rep Booleans are OCCT's domain");
-    assert!(!descriptor.supports(Operation::BooleanDifference,   ReprKind::BRep), "Fidget must NOT declare (BooleanDifference, BRep) — B-rep Booleans are OCCT's domain");
-    assert!(!descriptor.supports(Operation::BooleanIntersection, ReprKind::BRep), "Fidget must NOT declare (BooleanIntersection, BRep) — B-rep Booleans are OCCT's domain");
+    assert!(
+        !descriptor.supports(Operation::BooleanUnion, ReprKind::BRep),
+        "Fidget must NOT declare (BooleanUnion, BRep) — B-rep Booleans are OCCT's domain"
+    );
+    assert!(
+        !descriptor.supports(Operation::BooleanDifference, ReprKind::BRep),
+        "Fidget must NOT declare (BooleanDifference, BRep) — B-rep Booleans are OCCT's domain"
+    );
+    assert!(
+        !descriptor.supports(Operation::BooleanIntersection, ReprKind::BRep),
+        "Fidget must NOT declare (BooleanIntersection, BRep) — B-rep Booleans are OCCT's domain"
+    );
 
     // Negative pins — Fidget does NOT handle Mesh Booleans (Manifold's domain).
-    assert!(!descriptor.supports(Operation::BooleanUnion,        ReprKind::Mesh), "Fidget must NOT declare (BooleanUnion, Mesh) — Mesh Booleans are Manifold's domain");
-    assert!(!descriptor.supports(Operation::BooleanDifference,   ReprKind::Mesh), "Fidget must NOT declare (BooleanDifference, Mesh) — Mesh Booleans are Manifold's domain");
-    assert!(!descriptor.supports(Operation::BooleanIntersection, ReprKind::Mesh), "Fidget must NOT declare (BooleanIntersection, Mesh) — Mesh Booleans are Manifold's domain");
+    assert!(
+        !descriptor.supports(Operation::BooleanUnion, ReprKind::Mesh),
+        "Fidget must NOT declare (BooleanUnion, Mesh) — Mesh Booleans are Manifold's domain"
+    );
+    assert!(
+        !descriptor.supports(Operation::BooleanDifference, ReprKind::Mesh),
+        "Fidget must NOT declare (BooleanDifference, Mesh) — Mesh Booleans are Manifold's domain"
+    );
+    assert!(
+        !descriptor.supports(Operation::BooleanIntersection, ReprKind::Mesh),
+        "Fidget must NOT declare (BooleanIntersection, Mesh) — Mesh Booleans are Manifold's domain"
+    );
 
     // Negative pins — Fidget does NOT handle Voxel Booleans (OpenVDB's domain).
-    assert!(!descriptor.supports(Operation::BooleanUnion,        ReprKind::Voxel), "Fidget must NOT declare (BooleanUnion, Voxel) — Voxel Booleans are OpenVDB's domain");
-    assert!(!descriptor.supports(Operation::BooleanDifference,   ReprKind::Voxel), "Fidget must NOT declare (BooleanDifference, Voxel) — Voxel Booleans are OpenVDB's domain");
-    assert!(!descriptor.supports(Operation::BooleanIntersection, ReprKind::Voxel), "Fidget must NOT declare (BooleanIntersection, Voxel) — Voxel Booleans are OpenVDB's domain");
+    assert!(
+        !descriptor.supports(Operation::BooleanUnion, ReprKind::Voxel),
+        "Fidget must NOT declare (BooleanUnion, Voxel) — Voxel Booleans are OpenVDB's domain"
+    );
+    assert!(
+        !descriptor.supports(Operation::BooleanDifference, ReprKind::Voxel),
+        "Fidget must NOT declare (BooleanDifference, Voxel) — Voxel Booleans are OpenVDB's domain"
+    );
+    assert!(
+        !descriptor.supports(Operation::BooleanIntersection, ReprKind::Voxel),
+        "Fidget must NOT declare (BooleanIntersection, Voxel) — Voxel Booleans are OpenVDB's domain"
+    );
 }
 
 /// Fidget submits exactly one `KernelRegistration` named `"fidget"` into
@@ -116,7 +143,10 @@ fn fidget_kernel_registration_appears_in_inventory_iter() {
     // order-insensitive) as defence-in-depth for the case where fn pointers
     // diverge but happen to produce equivalent content.
     let inventory_supports: std::collections::HashSet<(Operation, ReprKind)> =
-        (fidget_entries[0].descriptor)().supports.into_iter().collect();
+        (fidget_entries[0].descriptor)()
+            .supports
+            .into_iter()
+            .collect();
     let direct_supports: std::collections::HashSet<(Operation, ReprKind)> =
         reify_kernel_fidget::register::fidget_capability_descriptor()
             .supports

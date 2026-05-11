@@ -173,7 +173,11 @@ fn get_entity_tree_impl_returns_err_on_poisoned_mutex() {
 
     let engine = make_poisoned_engine();
     let result = get_entity_tree_impl(&engine);
-    assert!(result.is_err(), "expected Err on poisoned mutex, got {:?}", result);
+    assert!(
+        result.is_err(),
+        "expected Err on poisoned mutex, got {:?}",
+        result
+    );
     assert!(
         result.unwrap_err().contains("Lock error"),
         "error message should contain 'Lock error'"
@@ -190,7 +194,10 @@ fn get_entity_tree_impl_returns_ok_on_healthy_mutex() {
     let result = get_entity_tree_impl(&engine);
     assert!(result.is_ok(), "expected Ok on healthy mutex");
     let tree = result.unwrap();
-    assert!(!tree.is_empty(), "entity tree should be non-empty for a loaded module");
+    assert!(
+        !tree.is_empty(),
+        "entity tree should be non-empty for a loaded module"
+    );
 }
 
 #[test]
@@ -199,7 +206,11 @@ fn get_entity_identity_map_impl_returns_err_on_poisoned_mutex() {
 
     let engine = make_poisoned_engine();
     let result = get_entity_identity_map_impl(&engine);
-    assert!(result.is_err(), "expected Err on poisoned mutex, got {:?}", result);
+    assert!(
+        result.is_err(),
+        "expected Err on poisoned mutex, got {:?}",
+        result
+    );
     assert!(
         result.unwrap_err().contains("Lock error"),
         "error message should contain 'Lock error'"
@@ -216,7 +227,10 @@ fn get_entity_identity_map_impl_returns_ok_on_healthy_mutex() {
     let result = get_entity_identity_map_impl(&engine);
     assert!(result.is_ok(), "expected Ok on healthy mutex");
     let map = result.unwrap();
-    assert!(!map.is_empty(), "entity identity map should be non-empty for a loaded module");
+    assert!(
+        !map.is_empty(),
+        "entity identity map should be non-empty for a loaded module"
+    );
 }
 
 #[test]
@@ -227,7 +241,11 @@ fn get_entity_tree_impl_returns_ok_empty_when_no_module_loaded() {
     let engine = Mutex::new(session);
 
     let result = get_entity_tree_impl(&engine);
-    assert!(result.is_ok(), "expected Ok with no module loaded, got {:?}", result);
+    assert!(
+        result.is_ok(),
+        "expected Ok with no module loaded, got {:?}",
+        result
+    );
     assert!(
         result.unwrap().is_empty(),
         "entity tree should be empty when no module is loaded"
@@ -242,7 +260,11 @@ fn get_entity_identity_map_impl_returns_ok_empty_when_no_module_loaded() {
     let engine = Mutex::new(session);
 
     let result = get_entity_identity_map_impl(&engine);
-    assert!(result.is_ok(), "expected Ok with no module loaded, got {:?}", result);
+    assert!(
+        result.is_ok(),
+        "expected Ok with no module loaded, got {:?}",
+        result
+    );
     assert!(
         result.unwrap().is_empty(),
         "entity identity map should be empty when no module is loaded"
@@ -255,7 +277,11 @@ fn get_containing_definition_impl_returns_err_on_poisoned_mutex() {
 
     let engine = make_poisoned_engine();
     let result = get_containing_definition_impl(&engine, 1, 1);
-    assert!(result.is_err(), "expected Err on poisoned mutex, got {:?}", result);
+    assert!(
+        result.is_err(),
+        "expected Err on poisoned mutex, got {:?}",
+        result
+    );
     assert!(
         result.unwrap_err().contains("Lock error"),
         "error message should contain 'Lock error'"
@@ -295,7 +321,11 @@ fn get_entity_at_source_location_impl_returns_err_on_poisoned_mutex() {
 
     let engine = make_poisoned_engine();
     let result = get_entity_at_source_location_impl(&engine, 2, 11);
-    assert!(result.is_err(), "expected Err on poisoned mutex, got {:?}", result);
+    assert!(
+        result.is_err(),
+        "expected Err on poisoned mutex, got {:?}",
+        result
+    );
     assert!(
         result.unwrap_err().contains("Lock error"),
         "error message should contain 'Lock error'"
@@ -466,7 +496,10 @@ fn get_mechanism_descriptors_impl_round_trips() {
 
     // Sanity: the fixture has m0 (0 bodies) and m1 (1 body); both are mechanisms, so 2 descriptors.
     // The impl should return at least one descriptor with bodies_count=1.
-    assert!(!actual.is_empty(), "expected at least one mechanism descriptor");
+    assert!(
+        !actual.is_empty(),
+        "expected at least one mechanism descriptor"
+    );
 
     // Find the descriptor for m1 (1-body mechanism) — same approach as the engine_tests step-11.
     let m1_desc = actual
@@ -487,7 +520,11 @@ fn get_mechanism_descriptors_impl_returns_err_on_poisoned_mutex() {
 
     let engine = make_poisoned_engine();
     let result = get_mechanism_descriptors_impl(&engine);
-    assert!(result.is_err(), "expected Err on poisoned mutex, got {:?}", result);
+    assert!(
+        result.is_err(),
+        "expected Err on poisoned mutex, got {:?}",
+        result
+    );
     assert!(
         result.unwrap_err().contains("Lock error"),
         "error message should contain 'Lock error'"
@@ -541,7 +578,10 @@ fn write_view_sidecar_creates_file_next_to_ri_with_pretty_json() {
 
     let content = std::fs::read_to_string(&sidecar_path).unwrap();
     // Pretty JSON contains newlines and the version field.
-    assert!(content.contains('\n'), "pretty JSON should contain newlines");
+    assert!(
+        content.contains('\n'),
+        "pretty JSON should contain newlines"
+    );
     assert!(
         content.contains("\"version\""),
         "pretty JSON should contain version key"
