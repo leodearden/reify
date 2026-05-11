@@ -181,8 +181,14 @@ fn plate_with_hole_fixture_returns_valid_p1_mesh_with_hole_at_center_and_positiv
             saw_inner_rim = true;
         }
     }
-    assert!(saw_outer_rim, "surface_node_indices must include outer-rim nodes");
-    assert!(saw_inner_rim, "surface_node_indices must include inner-rim (hole) nodes");
+    assert!(
+        saw_outer_rim,
+        "surface_node_indices must include outer-rim nodes"
+    );
+    assert!(
+        saw_inner_rim,
+        "surface_node_indices must include inner-rim (hole) nodes"
+    );
 }
 
 // ── Step-7: bracket fixture validity ─────────────────────────────────────────
@@ -521,9 +527,7 @@ fn plate_hole_diameter_sweep_obeys_materially_better_rule_with_calibrated_defaul
     // values are an empirical fit, not a closed-form invariant.
     let base_param = 0.30_f64;
     let target_params = [0.31_f64, 0.35, 0.40, 0.50, 0.60];
-    let fixture = |hole_diameter: f64| {
-        fixtures::plate_with_hole(1.0, hole_diameter, 0.1, 4, 2)
-    };
+    let fixture = |hole_diameter: f64| fixtures::plate_with_hole(1.0, hole_diameter, 0.1, 4, 2);
     // See `calibration_sweep_options` for the rationale on the override.
     let options = calibration_sweep_options();
 

@@ -10,9 +10,13 @@ use reify_lsp::test_support::RecordingSink;
 #[tokio::test]
 async fn lsp_bridge_can_be_constructed_and_initialized() {
     let bridge = LspBridge::new();
-    let result = lsp_request_impl(&bridge, "initialize", reify_test_support::MINIMAL_INIT_PARAMS_JSON.to_string())
-        .await
-        .expect("initialize should succeed");
+    let result = lsp_request_impl(
+        &bridge,
+        "initialize",
+        reify_test_support::MINIMAL_INIT_PARAMS_JSON.to_string(),
+    )
+    .await
+    .expect("initialize should succeed");
 
     // Parse the response — should contain capabilities
     let parsed: serde_json::Value =
@@ -25,9 +29,13 @@ async fn lsp_bridge_can_be_constructed_and_initialized() {
 
 /// Helper: initialize the bridge and open a document with bracket source.
 async fn setup_bridge_with_document(bridge: &LspBridge) {
-    lsp_request_impl(bridge, "initialize", reify_test_support::MINIMAL_INIT_PARAMS_JSON.to_string())
-        .await
-        .expect("initialize");
+    lsp_request_impl(
+        bridge,
+        "initialize",
+        reify_test_support::MINIMAL_INIT_PARAMS_JSON.to_string(),
+    )
+    .await
+    .expect("initialize");
     lsp_request_impl(bridge, "initialized", "{}".to_string())
         .await
         .expect("initialized");
@@ -82,9 +90,13 @@ async fn lsp_request_impl_completion_returns_items() {
 async fn lsp_bridge_diagnostics_after_syntax_error() {
     let bridge = LspBridge::new();
 
-    lsp_request_impl(&bridge, "initialize", reify_test_support::MINIMAL_INIT_PARAMS_JSON.to_string())
-        .await
-        .expect("initialize");
+    lsp_request_impl(
+        &bridge,
+        "initialize",
+        reify_test_support::MINIMAL_INIT_PARAMS_JSON.to_string(),
+    )
+    .await
+    .expect("initialize");
     lsp_request_impl(&bridge, "initialized", "{}".to_string())
         .await
         .expect("initialized");
@@ -138,9 +150,13 @@ async fn lsp_bridge_with_sink_routes_diagnostics() {
     let sink = Arc::new(RecordingSink::default());
     let bridge = LspBridge::with_sink(sink.clone());
 
-    lsp_request_impl(&bridge, "initialize", reify_test_support::MINIMAL_INIT_PARAMS_JSON.to_string())
-        .await
-        .expect("initialize");
+    lsp_request_impl(
+        &bridge,
+        "initialize",
+        reify_test_support::MINIMAL_INIT_PARAMS_JSON.to_string(),
+    )
+    .await
+    .expect("initialize");
     lsp_request_impl(&bridge, "initialized", "{}".to_string())
         .await
         .expect("initialized");

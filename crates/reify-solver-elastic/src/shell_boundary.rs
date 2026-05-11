@@ -213,8 +213,7 @@ mod tests {
     /// returns `(Vec::new(), Ok)`.
     #[test]
     fn build_support_bcs_shell_fixed_emits_six_bcs_per_node() {
-        let (bcs, compat) =
-            build_support_bcs(&[2, 5], SupportKind::Fixed, SupportBodyKind::Shell);
+        let (bcs, compat) = build_support_bcs(&[2, 5], SupportKind::Fixed, SupportBodyKind::Shell);
 
         // 2 nodes × 6 DOFs each
         assert_eq!(bcs.len(), 12, "expected 12 BCs for 2 shell nodes (Fixed)");
@@ -222,7 +221,11 @@ mod tests {
         // DOFs: 6*2 + {0..5}, then 6*5 + {0..5}
         let expected_dofs: Vec<usize> = vec![12, 13, 14, 15, 16, 17, 30, 31, 32, 33, 34, 35];
         for (i, (bc, &exp_dof)) in bcs.iter().zip(expected_dofs.iter()).enumerate() {
-            assert_eq!(bc.dof, exp_dof, "bcs[{i}].dof: expected {exp_dof}, got {}", bc.dof);
+            assert_eq!(
+                bc.dof, exp_dof,
+                "bcs[{i}].dof: expected {exp_dof}, got {}",
+                bc.dof
+            );
             assert_eq!(
                 bc.value.to_bits(),
                 0.0_f64.to_bits(),
@@ -246,8 +249,7 @@ mod tests {
     /// `[0, 1, 2, 18, 19, 20]` (translational only; rotational 3..6 absent).
     #[test]
     fn build_support_bcs_shell_pinned_emits_three_translational_bcs_per_node() {
-        let (bcs, compat) =
-            build_support_bcs(&[0, 3], SupportKind::Pinned, SupportBodyKind::Shell);
+        let (bcs, compat) = build_support_bcs(&[0, 3], SupportKind::Pinned, SupportBodyKind::Shell);
 
         // 2 nodes × 3 translational DOFs each
         assert_eq!(bcs.len(), 6, "expected 6 BCs for 2 shell nodes (Pinned)");
@@ -255,7 +257,11 @@ mod tests {
         // DOFs: 6*0 + {0,1,2}, then 6*3 + {0,1,2}
         let expected_dofs: Vec<usize> = vec![0, 1, 2, 18, 19, 20];
         for (i, (bc, &exp_dof)) in bcs.iter().zip(expected_dofs.iter()).enumerate() {
-            assert_eq!(bc.dof, exp_dof, "bcs[{i}].dof: expected {exp_dof}, got {}", bc.dof);
+            assert_eq!(
+                bc.dof, exp_dof,
+                "bcs[{i}].dof: expected {exp_dof}, got {}",
+                bc.dof
+            );
             assert_eq!(
                 bc.value.to_bits(),
                 0.0_f64.to_bits(),
@@ -282,8 +288,7 @@ mod tests {
     /// `[3, 4, 5, 12, 13, 14]` (3-stride: `3*N + {0,1,2}` per node).
     #[test]
     fn build_support_bcs_tet_fixed_emits_three_bcs_per_node_with_3_stride() {
-        let (bcs, compat) =
-            build_support_bcs(&[1, 4], SupportKind::Fixed, SupportBodyKind::Tet);
+        let (bcs, compat) = build_support_bcs(&[1, 4], SupportKind::Fixed, SupportBodyKind::Tet);
 
         // 2 nodes × 3 DOFs each
         assert_eq!(bcs.len(), 6, "expected 6 BCs for 2 tet nodes (Fixed)");
@@ -291,14 +296,22 @@ mod tests {
         // DOFs: 3*1 + {0,1,2} = [3,4,5], then 3*4 + {0,1,2} = [12,13,14]
         let expected_dofs: Vec<usize> = vec![3, 4, 5, 12, 13, 14];
         for (i, (bc, &exp_dof)) in bcs.iter().zip(expected_dofs.iter()).enumerate() {
-            assert_eq!(bc.dof, exp_dof, "bcs[{i}].dof: expected {exp_dof}, got {}", bc.dof);
+            assert_eq!(
+                bc.dof, exp_dof,
+                "bcs[{i}].dof: expected {exp_dof}, got {}",
+                bc.dof
+            );
             assert_eq!(
                 bc.value.to_bits(),
                 0.0_f64.to_bits(),
                 "bcs[{i}].value must be 0.0"
             );
         }
-        assert_eq!(compat, SupportCompatibility::Ok, "compat must be Ok for (Tet, Fixed)");
+        assert_eq!(
+            compat,
+            SupportCompatibility::Ok,
+            "compat must be Ok for (Tet, Fixed)"
+        );
     }
 
     // ------------------------------------------------------------------
@@ -348,7 +361,10 @@ mod tests {
         let (empty_bcs, empty_compat) =
             build_support_bcs(&[], SupportKind::Pinned, SupportBodyKind::Tet);
         assert!(empty_bcs.is_empty());
-        assert_eq!(empty_compat, SupportCompatibility::PinnedOnTetEquivalentToFixed);
+        assert_eq!(
+            empty_compat,
+            SupportCompatibility::PinnedOnTetEquivalentToFixed
+        );
     }
 
     // ------------------------------------------------------------------
@@ -369,8 +385,9 @@ mod tests {
         let mut f: Vec<f64> = (1..=18).map(|i| i as f64).collect();
 
         // Snapshot K and f before BC application.
-        let k_before: Vec<Vec<f64>> =
-            (0..18).map(|i| (0..18).map(|j| read(&k, i, j)).collect()).collect();
+        let k_before: Vec<Vec<f64>> = (0..18)
+            .map(|i| (0..18).map(|j| read(&k, i, j)).collect())
+            .collect();
         let f_before = f.clone();
 
         // Build Fixed BCs for node 0 (DOFs 0..6) and apply.
@@ -454,8 +471,9 @@ mod tests {
         let mut f: Vec<f64> = (1..=18).map(|i| i as f64).collect();
 
         // Snapshot K and f before BC application.
-        let k_before: Vec<Vec<f64>> =
-            (0..18).map(|i| (0..18).map(|j| read(&k, i, j)).collect()).collect();
+        let k_before: Vec<Vec<f64>> = (0..18)
+            .map(|i| (0..18).map(|j| read(&k, i, j)).collect())
+            .collect();
         let f_before = f.clone();
 
         // Build Pinned BCs for node 0 (DOFs 0..3 only) and apply.
@@ -476,7 +494,11 @@ mod tests {
 
         // (b) Row i in 0..3: diagonal = 1.0, all off-diagonals = 0.0.
         for i in 0..3 {
-            assert_eq!(read(&k, i, i), 1.0, "K[{i}][{i}] must be 1.0 (translational row)");
+            assert_eq!(
+                read(&k, i, i),
+                1.0,
+                "K[{i}][{i}] must be 1.0 (translational row)"
+            );
             for j in 0..18 {
                 if j != i {
                     assert_eq!(

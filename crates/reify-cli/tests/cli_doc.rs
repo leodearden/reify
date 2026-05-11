@@ -510,7 +510,12 @@ fn doc_split_markdown_writes_files_to_directory() {
     );
     let entries: Vec<String> = std::fs::read_dir(dir.path())
         .expect("read tmp dir")
-        .map(|e| e.expect("read entry").file_name().to_string_lossy().into_owned())
+        .map(|e| {
+            e.expect("read entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
         .collect();
     // Minimal placeholder DocModel has zero items, so render_split emits
     // only `index.md` (matches fmt_markdown::render_split's known

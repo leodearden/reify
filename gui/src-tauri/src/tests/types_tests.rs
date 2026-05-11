@@ -576,7 +576,10 @@ fn serialize_finite_f32_vec_nan_causes_error_with_non_finite_and_nan() {
     };
     let err = serde_json::to_value(&mesh).unwrap_err();
     let msg = err.to_string();
-    assert!(msg.contains("non-finite"), "expected 'non-finite' in: {msg}");
+    assert!(
+        msg.contains("non-finite"),
+        "expected 'non-finite' in: {msg}"
+    );
     assert!(msg.contains("NaN"), "expected 'NaN' in: {msg}");
 }
 
@@ -592,7 +595,10 @@ fn serialize_finite_f32_vec_infinity_causes_error_with_non_finite_and_inf() {
     };
     let err = serde_json::to_value(&mesh).unwrap_err();
     let msg = err.to_string();
-    assert!(msg.contains("non-finite"), "expected 'non-finite' in: {msg}");
+    assert!(
+        msg.contains("non-finite"),
+        "expected 'non-finite' in: {msg}"
+    );
     assert!(msg.contains("inf"), "expected 'inf' in: {msg}");
 }
 
@@ -608,7 +614,10 @@ fn serialize_finite_f32_vec_neg_infinity_causes_error_with_non_finite_and_neg_in
     };
     let err = serde_json::to_value(&mesh).unwrap_err();
     let msg = err.to_string();
-    assert!(msg.contains("non-finite"), "expected 'non-finite' in: {msg}");
+    assert!(
+        msg.contains("non-finite"),
+        "expected 'non-finite' in: {msg}"
+    );
     assert!(msg.contains("-inf"), "expected '-inf' in: {msg}");
 }
 
@@ -626,7 +635,10 @@ fn serialize_finite_f32_vec_nan_in_normals_causes_error() {
     };
     let err = serde_json::to_value(&mesh).unwrap_err();
     let msg = err.to_string();
-    assert!(msg.contains("non-finite"), "expected 'non-finite' in: {msg}");
+    assert!(
+        msg.contains("non-finite"),
+        "expected 'non-finite' in: {msg}"
+    );
     assert!(msg.contains("NaN"), "expected 'NaN' in: {msg}");
 }
 
@@ -651,7 +663,10 @@ fn serialize_finite_f32_vec_non_finite_at_later_position_still_causes_error() {
     };
     let err = serde_json::to_value(&mesh).unwrap_err();
     let msg = err.to_string();
-    assert!(msg.contains("non-finite"), "expected 'non-finite' in: {msg}");
+    assert!(
+        msg.contains("non-finite"),
+        "expected 'non-finite' in: {msg}"
+    );
 }
 
 // --- PersistentViewState serde tests (step-7) ---
@@ -715,12 +730,27 @@ fn persistent_view_state_json_uses_camel_case_keys() {
 
     let v = serde_json::to_value(&state).expect("serialise should succeed");
     // Keys must be camelCase to match the TypeScript PersistentViewState interface.
-    assert!(v.get("activeViewId").is_some(), "activeViewId key must be present");
-    assert!(v.get("userViews").is_some(), "userViews key must be present");
-    assert!(v.get("viewportCameras").is_some(), "viewportCameras key must be present");
+    assert!(
+        v.get("activeViewId").is_some(),
+        "activeViewId key must be present"
+    );
+    assert!(
+        v.get("userViews").is_some(),
+        "userViews key must be present"
+    );
+    assert!(
+        v.get("viewportCameras").is_some(),
+        "viewportCameras key must be present"
+    );
     // Snake_case equivalents must NOT appear.
-    assert!(v.get("active_view_id").is_none(), "snake_case active_view_id must not appear");
-    assert!(v.get("user_views").is_none(), "snake_case user_views must not appear");
+    assert!(
+        v.get("active_view_id").is_none(),
+        "snake_case active_view_id must not appear"
+    );
+    assert!(
+        v.get("user_views").is_none(),
+        "snake_case user_views must not appear"
+    );
 }
 
 #[test]
@@ -816,8 +846,8 @@ fn format_freshness_returns_lowercase_strings() {
 
 #[test]
 fn mechanism_descriptor_ipc_contract() {
-    use crate::types::{JointDescriptor, MechanismDescriptor};
     use super::assert_ipc_contract;
+    use crate::types::{JointDescriptor, MechanismDescriptor};
     assert_ipc_contract::<MechanismDescriptor>();
     assert_ipc_contract::<JointDescriptor>();
 }
@@ -850,17 +880,32 @@ fn mechanism_descriptor_round_trips_through_serde_json_with_snake_case_keys() {
     // Snake-case keys must be present
     assert!(v.get("cell_id").is_some(), "expected 'cell_id' key");
     assert!(v.get("entity_path").is_some(), "expected 'entity_path' key");
-    assert!(v.get("bodies_count").is_some(), "expected 'bodies_count' key");
+    assert!(
+        v.get("bodies_count").is_some(),
+        "expected 'bodies_count' key"
+    );
     assert!(v.get("joints").is_some(), "expected 'joints' key");
 
     let joints_arr = v["joints"].as_array().expect("joints is array");
     assert_eq!(joints_arr.len(), 1);
     let j = &joints_arr[0];
     assert!(j.get("joint_index").is_some(), "expected 'joint_index' key");
-    assert!(j.get("range_lower_si").is_some(), "expected 'range_lower_si' key");
-    assert!(j.get("range_upper_si").is_some(), "expected 'range_upper_si' key");
-    assert!(j.get("driving_param_cell_id").is_some(), "expected 'driving_param_cell_id' key");
-    assert!(j.get("current_value_si").is_some(), "expected 'current_value_si' key");
+    assert!(
+        j.get("range_lower_si").is_some(),
+        "expected 'range_lower_si' key"
+    );
+    assert!(
+        j.get("range_upper_si").is_some(),
+        "expected 'range_upper_si' key"
+    );
+    assert!(
+        j.get("driving_param_cell_id").is_some(),
+        "expected 'driving_param_cell_id' key"
+    );
+    assert!(
+        j.get("current_value_si").is_some(),
+        "expected 'current_value_si' key"
+    );
 
     // Round-trip
     let back: MechanismDescriptor = serde_json::from_value(v).expect("deserialize");
@@ -892,11 +937,23 @@ fn joint_descriptor_optional_fields_serialize_as_null() {
     };
 
     let v = serde_json::to_value(&joint).expect("serialize");
-    assert!(v["range_lower_si"].is_null(), "range_lower_si should be null when None");
-    assert!(v["range_upper_si"].is_null(), "range_upper_si should be null when None");
+    assert!(
+        v["range_lower_si"].is_null(),
+        "range_lower_si should be null when None"
+    );
+    assert!(
+        v["range_upper_si"].is_null(),
+        "range_upper_si should be null when None"
+    );
     assert!(v["axis"].is_null(), "axis should be null when None");
-    assert!(v["driving_param_cell_id"].is_null(), "driving_param_cell_id should be null when None");
-    assert!(v["current_value_si"].is_null(), "current_value_si should be null when None");
+    assert!(
+        v["driving_param_cell_id"].is_null(),
+        "driving_param_cell_id should be null when None"
+    );
+    assert!(
+        v["current_value_si"].is_null(),
+        "current_value_si should be null when None"
+    );
 }
 
 // --- scalar_channels IPC wire tests (task 2959, step-1) ---
@@ -923,9 +980,13 @@ fn mesh_data_scalar_channels_round_trips() {
     let v = serde_json::to_value(&mesh).expect("serialize should succeed");
 
     // (a) JSON must contain a scalar_channels object with key "vonMises"
-    let sc = v.get("scalar_channels").expect("scalar_channels must be present");
+    let sc = v
+        .get("scalar_channels")
+        .expect("scalar_channels must be present");
     assert!(sc.is_object(), "scalar_channels must be a JSON object");
-    let arr = sc["vonMises"].as_array().expect("vonMises must be an array");
+    let arr = sc["vonMises"]
+        .as_array()
+        .expect("vonMises must be an array");
     assert_eq!(arr.len(), 3, "vonMises array must have 3 elements");
     assert_eq!(arr[0].as_f64().unwrap(), 10.0);
     assert_eq!(arr[1].as_f64().unwrap(), 20.0);
@@ -934,7 +995,10 @@ fn mesh_data_scalar_channels_round_trips() {
     // (b) Deserializing back yields the same struct
     let back: MeshData = serde_json::from_value(v).expect("deserialize should succeed");
     assert_eq!(back.entity_path, "Test.body");
-    assert_eq!(back.scalar_channels.get("vonMises").unwrap(), &vec![10.0_f32, 20.0, 30.0]);
+    assert_eq!(
+        back.scalar_channels.get("vonMises").unwrap(),
+        &vec![10.0_f32, 20.0, 30.0]
+    );
 }
 
 /// A `MeshData` with an empty `scalar_channels` HashMap must omit the field
@@ -1069,8 +1133,12 @@ fn mesh_data_displaced_positions_some_serializes_to_array() {
     };
 
     let v = serde_json::to_value(&mesh).expect("serialize should succeed");
-    let arr = v.get("displaced_positions").expect("displaced_positions must be present");
-    let arr = arr.as_array().expect("displaced_positions must be an array");
+    let arr = v
+        .get("displaced_positions")
+        .expect("displaced_positions must be present");
+    let arr = arr
+        .as_array()
+        .expect("displaced_positions must be an array");
     assert_eq!(arr.len(), 3);
     assert_eq!(arr[0].as_f64().unwrap(), 1.0);
     assert_eq!(arr[1].as_f64().unwrap(), 2.0);
@@ -1123,11 +1191,11 @@ fn mesh_data_displaced_positions_round_trips() {
 fn mesh_data_displaced_positions_nan_causes_error() {
     let mesh = MeshData {
         entity_path: "test".to_string(),
-        vertices: vec![0.0, 0.0, 0.0],   // 1 vertex → 3 floats
+        vertices: vec![0.0, 0.0, 0.0], // 1 vertex → 3 floats
         indices: vec![],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
-        displaced_positions: Some(vec![f32::NAN, 0.0, 0.0]),  // 3 floats, length matches
+        displaced_positions: Some(vec![f32::NAN, 0.0, 0.0]), // 3 floats, length matches
     };
 
     let err = serde_json::to_value(&mesh).unwrap_err();

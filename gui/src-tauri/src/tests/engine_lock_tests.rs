@@ -11,7 +11,11 @@ fn make_engine() -> Arc<std::sync::Mutex<EngineSession>> {
 fn with_engine_lock_returns_ok_for_successful_closure() {
     let engine = make_engine();
     let result = engine_lock::with_engine_lock(&engine, |s| s.is_idle());
-    assert_eq!(result, Ok(true), "successful closure should return Ok(true)");
+    assert_eq!(
+        result,
+        Ok(true),
+        "successful closure should return Ok(true)"
+    );
 }
 
 #[test]
@@ -22,9 +26,7 @@ fn with_engine_lock_returns_err_when_closure_panics() {
     // return Err (i.e., catch_unwind should NOT fire — if it does, the helper
     // let the panic escape, which is the regression we're detecting).
     let outer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        engine_lock::with_engine_lock(&engine, |_s: &mut EngineSession| -> bool {
-            panic!("boom")
-        })
+        engine_lock::with_engine_lock(&engine, |_s: &mut EngineSession| -> bool { panic!("boom") })
     }));
     // If the helper worked correctly, the inner with_engine_lock returned Err
     // and catch_unwind saw Ok(Err(...)).
@@ -38,7 +40,9 @@ fn with_engine_lock_returns_err_when_closure_panics() {
             );
         }
         Err(_) => {
-            panic!("with_engine_lock let the closure panic escape to the caller — expected Err return instead");
+            panic!(
+                "with_engine_lock let the closure panic escape to the caller — expected Err return instead"
+            );
         }
     }
 }
@@ -47,9 +51,8 @@ fn with_engine_lock_returns_err_when_closure_panics() {
 fn panicking_closure_does_not_poison_mutex() {
     let engine = make_engine();
     // First call: closure panics — must return Err
-    let first = engine_lock::with_engine_lock(&engine, |_s: &mut EngineSession| -> bool {
-        panic!("boom")
-    });
+    let first =
+        engine_lock::with_engine_lock(&engine, |_s: &mut EngineSession| -> bool { panic!("boom") });
     assert!(first.is_err(), "panicking closure must return Err");
 
     // Second call: mutex must still be usable (not poisoned)
@@ -92,10 +95,9 @@ fn pre_poisoned_mutex_is_recovered() {
 #[test]
 fn panic_payload_string_appears_in_error_message() {
     let engine = make_engine();
-    let result =
-        engine_lock::with_engine_lock(&engine, |_s: &mut EngineSession| -> bool {
-            panic!("my-marker-7e9c")
-        });
+    let result = engine_lock::with_engine_lock(&engine, |_s: &mut EngineSession| -> bool {
+        panic!("my-marker-7e9c")
+    });
     let err = result.expect_err("panicking closure must return Err");
     assert!(
         err.contains("panic in engine"),
@@ -113,10 +115,9 @@ fn panic_payload_owned_string_appears_in_error_message() {
     // panic!("{}", x) produces a String payload (not &'static str).
     let engine = make_engine();
     let marker = "string-arm-marker".to_string();
-    let result =
-        engine_lock::with_engine_lock(&engine, |_s: &mut EngineSession| -> bool {
-            panic!("{}", marker)
-        });
+    let result = engine_lock::with_engine_lock(&engine, |_s: &mut EngineSession| -> bool {
+        panic!("{}", marker)
+    });
     let err = result.expect_err("panicking closure must return Err");
     assert!(
         err.contains("panic in engine"),
@@ -133,10 +134,9 @@ fn panic_payload_non_string_falls_back_to_placeholder() {
     // Covers the fallback branch in panic_message:
     // panic_any(42_i32) produces an i32 payload that neither downcast branch handles.
     let engine = make_engine();
-    let result =
-        engine_lock::with_engine_lock(&engine, |_s: &mut EngineSession| -> bool {
-            std::panic::panic_any(42_i32)
-        });
+    let result = engine_lock::with_engine_lock(&engine, |_s: &mut EngineSession| -> bool {
+        std::panic::panic_any(42_i32)
+    });
     let err = result.expect_err("panicking closure must return Err");
     assert!(
         err.contains("panic in engine"),

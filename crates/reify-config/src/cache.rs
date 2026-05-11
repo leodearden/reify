@@ -80,8 +80,7 @@ pub fn parse_cache_config(s: &str) -> Result<CacheConfig, CacheError> {
     // and storing the rendered form keeps the toml-crate type out of
     // `CacheError`'s public surface (matching the `ManifestError::Parse`
     // convention).
-    let raw: ConfigFileRaw =
-        toml::from_str(s).map_err(|e| CacheError::Parse(e.to_string()))?;
+    let raw: ConfigFileRaw = toml::from_str(s).map_err(|e| CacheError::Parse(e.to_string()))?;
     // Reject semantically nonsensical values before lifting to the public
     // type. This mirrors the `deny_unknown_fields` philosophy: loud
     // misconfiguration over silent fall-through.
@@ -207,15 +206,9 @@ pub fn resolve_cache(inputs: &CacheResolverInputs<'_>) -> Result<CacheResolution
         // convention) — fall through to the next layer rather than
         // forcing the cache to "" (CWD).
         (PathBuf::from(env), CacheDirSource::EnvVar)
-    } else if let Some(user_dir) = inputs
-        .user_config
-        .and_then(|c| c.dir.as_ref())
-    {
+    } else if let Some(user_dir) = inputs.user_config.and_then(|c| c.dir.as_ref()) {
         (user_dir.clone(), CacheDirSource::UserConfig)
-    } else if let Some(project_dir) = inputs
-        .project_config
-        .and_then(|c| c.dir.as_ref())
-    {
+    } else if let Some(project_dir) = inputs.project_config.and_then(|c| c.dir.as_ref()) {
         (project_dir.clone(), CacheDirSource::ProjectConfig)
     } else {
         (
@@ -225,28 +218,26 @@ pub fn resolve_cache(inputs: &CacheResolverInputs<'_>) -> Result<CacheResolution
     };
     // max_bytes ladder, parallel to dir but minus the CLI layer (the PRD
     // does not define a CLI flag for max-bytes).
-    let (max_bytes, max_bytes_source) = if let Some(env) = inputs
-        .env_max_bytes
-        .filter(|s| !s.is_empty())
-    {
-        // Empty-string env vars are treated as unset (XDG / POSIX
-        // convention, matching env_dir). On parse failure surface
-        // `CacheError::InvalidMaxBytes` so callers can render the
-        // offending input back to the user.
-        let n: u64 = env
-            .parse()
-            .map_err(|_| CacheError::InvalidMaxBytes(env.to_string()))?;
-        if n == 0 {
-            return Err(CacheError::ZeroEnvMaxBytes);
-        }
-        (n, CacheMaxBytesSource::EnvVar)
-    } else if let Some(user_n) = inputs.user_config.and_then(|c| c.max_bytes) {
-        (user_n, CacheMaxBytesSource::UserConfig)
-    } else if let Some(project_n) = inputs.project_config.and_then(|c| c.max_bytes) {
-        (project_n, CacheMaxBytesSource::ProjectConfig)
-    } else {
-        (DEFAULT_CACHE_MAX_BYTES, CacheMaxBytesSource::Default)
-    };
+    let (max_bytes, max_bytes_source) =
+        if let Some(env) = inputs.env_max_bytes.filter(|s| !s.is_empty()) {
+            // Empty-string env vars are treated as unset (XDG / POSIX
+            // convention, matching env_dir). On parse failure surface
+            // `CacheError::InvalidMaxBytes` so callers can render the
+            // offending input back to the user.
+            let n: u64 = env
+                .parse()
+                .map_err(|_| CacheError::InvalidMaxBytes(env.to_string()))?;
+            if n == 0 {
+                return Err(CacheError::ZeroEnvMaxBytes);
+            }
+            (n, CacheMaxBytesSource::EnvVar)
+        } else if let Some(user_n) = inputs.user_config.and_then(|c| c.max_bytes) {
+            (user_n, CacheMaxBytesSource::UserConfig)
+        } else if let Some(project_n) = inputs.project_config.and_then(|c| c.max_bytes) {
+            (project_n, CacheMaxBytesSource::ProjectConfig)
+        } else {
+            (DEFAULT_CACHE_MAX_BYTES, CacheMaxBytesSource::Default)
+        };
     Ok(CacheResolution {
         dir,
         max_bytes,
@@ -312,11 +303,9 @@ impl fmt::Display for CacheError {
         match self {
             CacheError::Parse(msg) => write!(f, "failed to parse cache config: {}", msg),
             CacheError::Io(err) => write!(f, "failed to read cache config: {}", err),
-            CacheError::InvalidMaxBytes(input) => write!(
-                f,
-                "REIFY_CACHE_MAX_BYTES is not a valid u64: '{}'",
-                input
-            ),
+            CacheError::InvalidMaxBytes(input) => {
+                write!(f, "REIFY_CACHE_MAX_BYTES is not a valid u64: '{}'", input)
+            }
             CacheError::EmptyDir => write!(
                 f,
                 "[cache].dir is set to the empty string; \

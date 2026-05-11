@@ -126,7 +126,10 @@ mod annotation_tests {
         let field =
             CompiledFieldBuilder::new("f", reify_types::Type::Geometry, reify_types::Type::Real)
                 .imported()
-                .annotation(annotation_with_args(DEPRECATED_ANNOTATION, vec![ann_str("use bar")]))
+                .annotation(annotation_with_args(
+                    DEPRECATED_ANNOTATION,
+                    vec![ann_str("use bar")],
+                ))
                 .build();
         assert_eq!(field.annotations.len(), 1);
         assert_eq!(field.annotations[0].args.len(), 1);

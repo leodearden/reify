@@ -332,8 +332,7 @@ pub(crate) fn compile_field(
             // emitted in a fixed order (grid, bounds, spacing, interpolation,
             // data) after the walk so that diagnostics referencing the same
             // source span are grouped together.
-            const REQUIRED_KEYS: [&str; 5] =
-                ["grid", "bounds", "spacing", "interpolation", "data"];
+            const REQUIRED_KEYS: [&str; 5] = ["grid", "bounds", "spacing", "interpolation", "data"];
             let mut compiled_config: Vec<(String, reify_types::CompiledExpr)> = Vec::new();
             let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
             for (key, expr) in config {
@@ -357,20 +356,16 @@ pub(crate) fn compile_field(
                 }
                 if !seen.insert(key_str) {
                     diagnostics.push(
-                        Diagnostic::error(format!(
-                            "duplicate sampled-field config key: '{}'",
-                            key
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            expr.span,
-                            "duplicate sampled config key",
-                        )),
+                        Diagnostic::error(format!("duplicate sampled-field config key: '{}'", key))
+                            .with_label(DiagnosticLabel::new(
+                                expr.span,
+                                "duplicate sampled config key",
+                            )),
                     );
                     // Drop the duplicate; the first-seen entry is kept.
                     continue;
                 }
-                let compiled_expr =
-                    compile_expr(expr, &scope, enum_defs, functions, diagnostics);
+                let compiled_expr = compile_expr(expr, &scope, enum_defs, functions, diagnostics);
                 compiled_config.push((key.clone(), compiled_expr));
             }
             // Emit one error per missing required key, in declaration order

@@ -670,11 +670,13 @@ fn solve_core(problem: &ResolutionProblem, initial: &[f64]) -> SolveResult {
             };
         }
         return SolveResult::Infeasible {
-            diagnostics: vec![reify_types::Diagnostic::error(format!(
+            diagnostics: vec![
+                reify_types::Diagnostic::error(format!(
                     "constraints could not be satisfied (max absolute residual: {:.2e})",
                     final_max_residual
                 ))
-                .with_code(DiagnosticCode::ConstraintUnsatisfiable)],
+                .with_code(DiagnosticCode::ConstraintUnsatisfiable),
+            ],
         };
     }
 
@@ -877,12 +879,14 @@ impl ConstraintSolver for DimensionalSolver {
                         // perturbation-based check found a different solution,
                         // indicating the problem is underdetermined.
                         SolveResult::Infeasible {
-                            diagnostics: vec![reify_types::Diagnostic::error(
+                            diagnostics: vec![
+                                reify_types::Diagnostic::error(
                                     "strict auto parameter resolution is not uniquely \
                                           determined \u{2014} consider using auto(free) \
                                           for exploration",
                                 )
-                                .with_code(DiagnosticCode::ConstraintNonUnique)],
+                                .with_code(DiagnosticCode::ConstraintNonUnique),
+                            ],
                         }
                     }
                 } else {
@@ -902,7 +906,9 @@ impl ConstraintSolver for DimensionalSolver {
 
 #[cfg(test)]
 mod tests {
-    use reify_types::{ConstraintSolver, ResolutionProblem, SolveResult, TAG_CONDITIONAL, ValueMap};
+    use reify_types::{
+        ConstraintSolver, ResolutionProblem, SolveResult, TAG_CONDITIONAL, ValueMap,
+    };
 
     // ---- shared solver test helpers ----
 

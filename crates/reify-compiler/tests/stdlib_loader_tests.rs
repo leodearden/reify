@@ -222,8 +222,7 @@ fn module_with_no_prelude(dotted: &str) -> reify_compiler::CompiledModule {
         args: vec![],
         span: SourceSpan::new(0, 0),
     };
-    let mut module =
-        CompiledModuleBuilder::new(ModulePath::from_dotted(dotted).unwrap()).build();
+    let mut module = CompiledModuleBuilder::new(ModulePath::from_dotted(dotted).unwrap()).build();
     module.pragmas.push(no_prelude);
     module
 }
@@ -299,9 +298,9 @@ fn bootstrap_module_missing_no_prelude_pragma_panics() {
 #[test]
 fn multiple_non_bootstrap_modules_with_no_prelude_pragma_all_named_in_panic() {
     let modules = vec![
-        module_with_no_prelude("std.units"),            // bootstrap target, pragma OK
+        module_with_no_prelude("std.units"), // bootstrap target, pragma OK
         module_with_no_prelude("std.materials.thermal"), // non-bootstrap violation #1
-        module_with_no_prelude("std.geometry.traits"),   // non-bootstrap violation #2
+        module_with_no_prelude("std.geometry.traits"), // non-bootstrap violation #2
     ];
     let targets = ["std/units"];
 

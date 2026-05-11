@@ -45,57 +45,43 @@ fn extract_number_literal(source: &str) -> f64 {
 
 #[test]
 fn negative_exponent_1e_minus_6() {
-    let v = extract_number_literal(
-        "structure S {\n  let x: Real = 1e-6\n}",
-    );
+    let v = extract_number_literal("structure S {\n  let x: Real = 1e-6\n}");
     assert_eq!(v, 1e-6_f64, "1e-6 should lower to 1e-6_f64");
 }
 
 #[test]
 fn uppercase_e_1e_minus_6() {
-    let v = extract_number_literal(
-        "structure S {\n  let x: Real = 1E-6\n}",
-    );
+    let v = extract_number_literal("structure S {\n  let x: Real = 1E-6\n}");
     assert_eq!(v, 1E-6_f64, "1E-6 should lower to 1E-6_f64");
 }
 
 #[test]
 fn positive_exponent_1e_plus_6() {
-    let v = extract_number_literal(
-        "structure S {\n  let x: Real = 1e+6\n}",
-    );
+    let v = extract_number_literal("structure S {\n  let x: Real = 1e+6\n}");
     assert_eq!(v, 1e+6_f64, "1e+6 should lower to 1e+6_f64");
 }
 
 #[test]
 fn bare_positive_exponent_1e6() {
-    let v = extract_number_literal(
-        "structure S {\n  let x: Real = 1e6\n}",
-    );
+    let v = extract_number_literal("structure S {\n  let x: Real = 1e6\n}");
     assert_eq!(v, 1e6_f64, "1e6 should lower to 1e6_f64");
 }
 
 #[test]
 fn decimal_mantissa_1_5e2() {
-    let v = extract_number_literal(
-        "structure S {\n  let x: Real = 1.5e2\n}",
-    );
+    let v = extract_number_literal("structure S {\n  let x: Real = 1.5e2\n}");
     assert_eq!(v, 1.5e2_f64, "1.5e2 should lower to 1.5e2_f64");
 }
 
 #[test]
 fn large_negative_exponent_1_0e_minus_300() {
-    let v = extract_number_literal(
-        "structure S {\n  let x: Real = 1.0e-300\n}",
-    );
+    let v = extract_number_literal("structure S {\n  let x: Real = 1.0e-300\n}");
     assert_eq!(v, 1.0e-300_f64, "1.0e-300 should lower to 1.0e-300_f64");
 }
 
 #[test]
 fn zero_exponent_1e0() {
-    let v = extract_number_literal(
-        "structure S {\n  let x: Real = 1e0\n}",
-    );
+    let v = extract_number_literal("structure S {\n  let x: Real = 1e0\n}");
     assert_eq!(v, 1e0_f64, "1e0 should lower to 1e0_f64 (== 1.0)");
 }
 
@@ -105,9 +91,7 @@ fn zero_exponent_1e0() {
 /// to 0.000001 (the workaround noted in crates/reify-compiler/stdlib/solver_elastic.ri:33-34).
 #[test]
 fn cg_tolerance_acceptance_scenario() {
-    let v = extract_number_literal(
-        "structure S {\n  let cg_tolerance: Real = 1e-6\n}",
-    );
+    let v = extract_number_literal("structure S {\n  let cg_tolerance: Real = 1e-6\n}");
     assert_eq!(
         v, 1e-6_f64,
         "cg_tolerance = 1e-6 should lower to f64 value 1e-6"
@@ -204,7 +188,10 @@ fn extract_number_literal_with_flag(source: &str) -> (f64, bool) {
     };
     match let_decl.value.kind {
         ExprKind::NumberLiteral { value, is_real } => (value, is_real),
-        ref other => panic!("expected NumberLiteral {{ value, is_real }}, got {:?}", other),
+        ref other => panic!(
+            "expected NumberLiteral {{ value, is_real }}, got {:?}",
+            other
+        ),
     }
 }
 
@@ -214,11 +201,12 @@ fn extract_number_literal_with_flag(source: &str) -> (f64, bool) {
 /// as Real in the AST.
 #[test]
 fn int_literal_42_has_is_real_false() {
-    let (value, is_real) = extract_number_literal_with_flag(
-        "structure S {\n  let x: Real = 42\n}",
-    );
+    let (value, is_real) = extract_number_literal_with_flag("structure S {\n  let x: Real = 42\n}");
     assert_eq!(value, 42.0_f64, "value should be 42.0");
-    assert!(!is_real, "42 (no decimal, no exponent) should have is_real = false");
+    assert!(
+        !is_real,
+        "42 (no decimal, no exponent) should have is_real = false"
+    );
 }
 
 /// `1.0` (whole-number decimal literal) must record `is_real = true`.
@@ -229,11 +217,13 @@ fn int_literal_42_has_is_real_false() {
 /// After the fix, the `is_real` flag preserves the author's intent.
 #[test]
 fn whole_number_real_literal_1_0_has_is_real_true() {
-    let (value, is_real) = extract_number_literal_with_flag(
-        "structure S {\n  let x: Real = 1.0\n}",
-    );
+    let (value, is_real) =
+        extract_number_literal_with_flag("structure S {\n  let x: Real = 1.0\n}");
     assert_eq!(value, 1.0_f64, "value should be 1.0");
-    assert!(is_real, "1.0 (has decimal point) should have is_real = true");
+    assert!(
+        is_real,
+        "1.0 (has decimal point) should have is_real = true"
+    );
 }
 
 /// `2.5` (fractional decimal literal) must record `is_real = true`.
@@ -241,11 +231,13 @@ fn whole_number_real_literal_1_0_has_is_real_true() {
 /// carry `is_real = true`.
 #[test]
 fn fractional_literal_2_5_has_is_real_true() {
-    let (value, is_real) = extract_number_literal_with_flag(
-        "structure S {\n  let x: Real = 2.5\n}",
-    );
+    let (value, is_real) =
+        extract_number_literal_with_flag("structure S {\n  let x: Real = 2.5\n}");
     assert_eq!(value, 2.5_f64, "value should be 2.5");
-    assert!(is_real, "2.5 (has decimal point) should have is_real = true");
+    assert!(
+        is_real,
+        "2.5 (has decimal point) should have is_real = true"
+    );
 }
 
 /// `1e6` (scientific notation) must record `is_real = true`.
@@ -256,11 +248,13 @@ fn fractional_literal_2_5_has_is_real_true() {
 /// would silently emit `Int(1000000)` via the value-based heuristic.
 #[test]
 fn scientific_literal_1e6_has_is_real_true() {
-    let (value, is_real) = extract_number_literal_with_flag(
-        "structure S {\n  let x: Real = 1e6\n}",
-    );
+    let (value, is_real) =
+        extract_number_literal_with_flag("structure S {\n  let x: Real = 1e6\n}");
     assert_eq!(value, 1e6_f64, "value should be 1e6");
-    assert!(is_real, "1e6 (has exponent suffix) should have is_real = true");
+    assert!(
+        is_real,
+        "1e6 (has exponent suffix) should have is_real = true"
+    );
 }
 
 // ── Unit-suffix fallback disambiguation ─────────────────────────────────────
@@ -289,8 +283,14 @@ fn disambiguation_5e_parses_as_quantity_literal() {
     match &let_decl.value.kind {
         ExprKind::QuantityLiteral { value, unit } => {
             assert_eq!(*value, 5.0_f64, "quantity value should be 5.0");
-            assert_eq!(unit, "e", "unit should be 'e' (unregistered, but parses cleanly)");
+            assert_eq!(
+                unit, "e",
+                "unit should be 'e' (unregistered, but parses cleanly)"
+            );
         }
-        other => panic!("expected QuantityLiteral {{ value: 5.0, unit: \"e\" }}, got {:?}", other),
+        other => panic!(
+            "expected QuantityLiteral {{ value: 5.0, unit: \"e\" }}, got {:?}",
+            other
+        ),
     }
 }

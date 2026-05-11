@@ -47,7 +47,9 @@ structure S {
                 ExprKind::BinOp { op, left, right } => {
                     assert_eq!(op, ">");
                     assert!(matches!(&left.kind, ExprKind::Ident(n) if n == "x"));
-                    assert!(matches!(&right.kind, ExprKind::NumberLiteral { value: v, .. } if *v == 0.0));
+                    assert!(
+                        matches!(&right.kind, ExprKind::NumberLiteral { value: v, .. } if *v == 0.0)
+                    );
                 }
                 other => panic!("expected BinOp(>), got {:?}", other),
             }

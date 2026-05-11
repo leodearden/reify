@@ -146,7 +146,9 @@ pub fn linspace_inclusive(start: f64, stop: f64, spacing: f64) -> Result<Vec<f64
     if n_intervals > LINSPACE_MAX_INTERVALS {
         return Err(LinspaceError::Excessive { n_intervals });
     }
-    Ok((0..=n_intervals).map(|i| start + (i as f64) * spacing).collect())
+    Ok((0..=n_intervals)
+        .map(|i| start + (i as f64) * spacing)
+        .collect())
 }
 
 #[cfg(test)]
@@ -211,8 +213,7 @@ mod tests {
         match linspace_inclusive(0.0, expected as f64, 1.0) {
             Err(LinspaceError::Excessive { n_intervals }) => {
                 assert_eq!(
-                    n_intervals,
-                    expected,
+                    n_intervals, expected,
                     "n_intervals should be the exact finite count {expected}, not a sentinel"
                 );
             }

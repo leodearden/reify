@@ -26,11 +26,7 @@ use reify_types::{GeometryError, GeometryHandleId, GeometryOp, GeometryQuery, Va
 
 /// Build a closed circular wire profile of the given radius at the given
 /// z height (centred on the Z-axis) via `GeometryOp::Arc` (full 2π).
-fn make_circle_profile(
-    kernel: &mut OcctKernelHandle,
-    radius: f64,
-    z: f64,
-) -> GeometryHandleId {
+fn make_circle_profile(kernel: &mut OcctKernelHandle, radius: f64, z: f64) -> GeometryHandleId {
     kernel
         .execute(&GeometryOp::Arc {
             center: [0.0, 0.0, z],

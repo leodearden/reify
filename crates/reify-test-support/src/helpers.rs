@@ -564,9 +564,9 @@ pub fn run_modify_pipeline(
         .realization(&entity_name, 0, vec![box_op, modify_op])
         .build();
 
-    let module = crate::builders::CompiledModuleBuilder::new(
-        reify_types::ModulePath::single(format!("test_{}", entity_name.to_lowercase())),
-    )
+    let module = crate::builders::CompiledModuleBuilder::new(reify_types::ModulePath::single(
+        format!("test_{}", entity_name.to_lowercase()),
+    ))
     .template(template)
     .build();
 
@@ -613,9 +613,9 @@ pub fn get_let_expr_in<'a>(
         .unwrap_or_else(|| {
             panic!("no value cell named '{cell_name}' in template '{template_name}'")
         });
-    cell.default_expr
-        .as_ref()
-        .unwrap_or_else(|| panic!("value cell '{cell_name}' in '{template_name}' has no default expr"))
+    cell.default_expr.as_ref().unwrap_or_else(|| {
+        panic!("value cell '{cell_name}' in '{template_name}' has no default expr")
+    })
 }
 
 /// Retrieve the compiled `default_expr` of a let binding by name from the first template.
@@ -677,10 +677,7 @@ pub fn get_let_expr<'a>(
 /// - `"expected root-cause error matching one of ..."` if no error matches any fragment.
 /// - `"unexpected cascade errors ..."` if any error matches no fragment.
 #[track_caller]
-pub fn assert_no_type_cascade(
-    diagnostics: &[Diagnostic],
-    expected_root_fragments: &[&str],
-) {
+pub fn assert_no_type_cascade(diagnostics: &[Diagnostic], expected_root_fragments: &[&str]) {
     let errors: Vec<_> = diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
@@ -693,10 +690,7 @@ pub fn assert_no_type_cascade(
         "expected root-cause error matching one of {expected_root_fragments:?}; got: {errors:?}",
     );
 
-    let unexpected: Vec<_> = errors
-        .iter()
-        .filter(|d| !matches_any(&d.message))
-        .collect();
+    let unexpected: Vec<_> = errors.iter().filter(|d| !matches_any(&d.message)).collect();
 
     assert!(
         unexpected.is_empty(),
@@ -953,7 +947,12 @@ mod tests {
         );
         // All returned diagnostics must be Error severity.
         for d in &errors {
-            assert_eq!(d.severity, Severity::Error, "collect_errors returned non-Error: {:?}", d);
+            assert_eq!(
+                d.severity,
+                Severity::Error,
+                "collect_errors returned non-Error: {:?}",
+                d
+            );
         }
     }
 
@@ -1022,7 +1021,12 @@ mod tests {
             "warnings_only should return warning diagnostics for warn source"
         );
         for d in &warnings {
-            assert_eq!(d.severity, Severity::Warning, "warnings_only returned non-Warning: {:?}", d);
+            assert_eq!(
+                d.severity,
+                Severity::Warning,
+                "warnings_only returned non-Warning: {:?}",
+                d
+            );
         }
     }
 
@@ -1515,7 +1519,11 @@ mod tests {
     fn visit_structure_member_root_exprs_visits_param_default() {
         let source = "structure S { param x: Real = 1.5 }";
         let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
-        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+        assert!(
+            module.errors.is_empty(),
+            "parse errors: {:?}",
+            module.errors
+        );
         let mut visited: Vec<reify_syntax::Expr> = vec![];
         super::visit_structure_member_root_exprs(&module, |expr| {
             visited.push(expr.clone());
@@ -1527,7 +1535,10 @@ mod tests {
             visited.len()
         );
         assert!(
-            matches!(visited[0].kind, reify_syntax::ExprKind::NumberLiteral { .. }),
+            matches!(
+                visited[0].kind,
+                reify_syntax::ExprKind::NumberLiteral { .. }
+            ),
             "expected NumberLiteral kind for param default, got {:?}",
             visited[0].kind
         );
@@ -1540,7 +1551,11 @@ mod tests {
     fn visit_structure_member_root_exprs_visits_let_value() {
         let source = r#"structure S { let x = "hello" }"#;
         let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
-        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+        assert!(
+            module.errors.is_empty(),
+            "parse errors: {:?}",
+            module.errors
+        );
         let mut visited: Vec<reify_syntax::Expr> = vec![];
         super::visit_structure_member_root_exprs(&module, |expr| {
             visited.push(expr.clone());
@@ -1564,14 +1579,17 @@ mod tests {
     fn visit_structure_member_root_exprs_skips_param_without_default() {
         let source = "structure S { param x: Real }";
         let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
-        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+        assert!(
+            module.errors.is_empty(),
+            "parse errors: {:?}",
+            module.errors
+        );
         let mut call_count = 0usize;
         super::visit_structure_member_root_exprs(&module, |_expr| {
             call_count += 1;
         });
         assert_eq!(
-            call_count,
-            0,
+            call_count, 0,
             "expected no visits for param without default"
         );
     }
@@ -1582,9 +1600,14 @@ mod tests {
     /// NumberLiteral values match in source order.
     #[test]
     fn visit_structure_member_root_exprs_visits_each_member_in_declaration_order() {
-        let source = "structure S {\n    param a: Real = 1.0\n    let b = 2.0\n    param c: Real = 3.0\n}";
+        let source =
+            "structure S {\n    param a: Real = 1.0\n    let b = 2.0\n    param c: Real = 3.0\n}";
         let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
-        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+        assert!(
+            module.errors.is_empty(),
+            "parse errors: {:?}",
+            module.errors
+        );
         let mut values: Vec<f64> = vec![];
         super::visit_structure_member_root_exprs(&module, |expr| {
             if let reify_syntax::ExprKind::NumberLiteral { value: v, .. } = &expr.kind {
@@ -1597,9 +1620,18 @@ mod tests {
             "expected 3 visits (2 param defaults + 1 let value), got {:?}",
             values
         );
-        assert_eq!(values[0], 1.0, "first visited expr must be param a default (1.0)");
-        assert_eq!(values[1], 2.0, "second visited expr must be let b value (2.0)");
-        assert_eq!(values[2], 3.0, "third visited expr must be param c default (3.0)");
+        assert_eq!(
+            values[0], 1.0,
+            "first visited expr must be param a default (1.0)"
+        );
+        assert_eq!(
+            values[1], 2.0,
+            "second visited expr must be let b value (2.0)"
+        );
+        assert_eq!(
+            values[2], 3.0,
+            "third visited expr must be param c default (3.0)"
+        );
     }
 
     /// visit_structure_member_root_exprs is a no-op (visitor never called) when
@@ -1608,14 +1640,17 @@ mod tests {
     fn visit_structure_member_root_exprs_no_op_when_module_has_no_structure() {
         let source = "enum Foo { Bar }";
         let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
-        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+        assert!(
+            module.errors.is_empty(),
+            "parse errors: {:?}",
+            module.errors
+        );
         let mut call_count = 0usize;
         super::visit_structure_member_root_exprs(&module, |_expr| {
             call_count += 1;
         });
         assert_eq!(
-            call_count,
-            0,
+            call_count, 0,
             "expected no visits for module with no Structure declarations"
         );
     }
@@ -1629,14 +1664,17 @@ mod tests {
         // param has no default → skipped; constraint → skipped; let → visited.
         let source = "structure S {\n    param x : Real\n    constraint x > 0\n    let y = 2.0\n}";
         let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
-        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+        assert!(
+            module.errors.is_empty(),
+            "parse errors: {:?}",
+            module.errors
+        );
         let mut call_count = 0usize;
         super::visit_structure_member_root_exprs(&module, |_expr| {
             call_count += 1;
         });
         assert_eq!(
-            call_count,
-            1,
+            call_count, 1,
             "expected exactly 1 visit (let value only; constraint and no-default param are skipped)"
         );
     }

@@ -1674,10 +1674,8 @@ mod tests {
 
     #[test]
     fn multi_case_result_value_inner_keyed_by_value_string_with_per_case_values() {
-        let v = multi_case_result_value(&[
-            ("operating", Value::Int(42)),
-            ("overload", Value::Int(99)),
-        ]);
+        let v =
+            multi_case_result_value(&[("operating", Value::Int(42)), ("overload", Value::Int(99))]);
         match v {
             Value::Map(outer) => {
                 assert_eq!(outer.len(), 1, "outer map should have exactly one key");

@@ -7,7 +7,9 @@
 //! See `crates/reify-eval/src/sweep_classifier.rs` for the pure classifier
 //! plus its unit tests; this file pins the engine wire-up that calls it.
 
-use reify_compiler::{CompiledGeometryOp, CurveKind, GeomRef, ModifyKind, PrimitiveKind, SweepKind};
+use reify_compiler::{
+    CompiledGeometryOp, CurveKind, GeomRef, ModifyKind, PrimitiveKind, SweepKind,
+};
 use reify_eval::SweptKind;
 use reify_test_support::*;
 use reify_types::{ExportFormat, Type, Value};
@@ -133,10 +135,9 @@ fn engine_swept_kind_table_empty_for_realization_with_modify_after_extrude() {
         .realization(e, 0, vec![sphere_op, extrude_op, fillet_op])
         .build();
 
-    let module =
-        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_swept_modified"))
-            .template(template)
-            .build();
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_swept_modified"))
+        .template(template)
+        .build();
 
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
@@ -233,8 +234,7 @@ fn engine_swept_kind_table_resets_between_builds() {
     let _result_1 = engine.build(&module_1, ExportFormat::Step);
     let len_after_build_1 = engine.swept_kind_table().len();
     assert_eq!(
-        len_after_build_1,
-        1,
+        len_after_build_1, 1,
         "after build #1 (single Extrude realization), swept_kind_table must contain exactly one entry, got len() == {}",
         len_after_build_1
     );
@@ -315,10 +315,9 @@ fn engine_swept_kind_table_records_revolve_realization() {
         .realization(e, 0, vec![sphere_op, revolve_op])
         .build();
 
-    let module =
-        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_swept_revolve"))
-            .template(template)
-            .build();
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_swept_revolve"))
+        .template(template)
+        .build();
 
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();

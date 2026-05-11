@@ -31,8 +31,7 @@ use reify_config::{
 /// consume via `Manifest::auto_type_params().max_depth`.
 #[test]
 fn default_max_depth_is_six_when_section_omitted() {
-    let manifest =
-        Manifest::from_toml_str("").expect("empty manifest must parse to defaults");
+    let manifest = Manifest::from_toml_str("").expect("empty manifest must parse to defaults");
     assert_eq!(
         manifest.auto_type_params().max_depth,
         6,
@@ -66,9 +65,8 @@ fn custom_max_depth_round_trips() {
 /// task 2662 cross-product hard cap.
 #[test]
 fn custom_max_cross_product_size_round_trips() {
-    let manifest =
-        Manifest::from_toml_str("[auto_type_params]\nmax_cross_product_size = 200000\n")
-            .expect("manifest with auto_type_params section must parse");
+    let manifest = Manifest::from_toml_str("[auto_type_params]\nmax_cross_product_size = 200000\n")
+        .expect("manifest with auto_type_params section must parse");
     assert_eq!(
         manifest.auto_type_params().max_cross_product_size,
         200_000,
@@ -89,8 +87,7 @@ fn custom_max_cross_product_size_round_trips() {
 /// cross-product hard cap.
 #[test]
 fn default_max_cross_product_size_is_100k_when_section_omitted() {
-    let manifest =
-        Manifest::from_toml_str("").expect("empty manifest must parse to defaults");
+    let manifest = Manifest::from_toml_str("").expect("empty manifest must parse to defaults");
     assert_eq!(
         manifest.auto_type_params().max_cross_product_size,
         100_000,

@@ -119,7 +119,10 @@ structure S {
     };
 
     assert!(constraint.label.is_none(), "label should be None");
-    assert!(constraint.where_clause.is_none(), "where_clause should be None");
+    assert!(
+        constraint.where_clause.is_none(),
+        "where_clause should be None"
+    );
 
     // expr: v.mass < 50
     match &constraint.expr.kind {
@@ -184,7 +187,10 @@ structure S {
 
     let ci = match &decl.body {
         ForallConstraintBody::Instantiation(ci) => ci,
-        other => panic!("expected ForallConstraintBody::Instantiation, got {:?}", other),
+        other => panic!(
+            "expected ForallConstraintBody::Instantiation, got {:?}",
+            other
+        ),
     };
 
     assert_eq!(ci.name, "MinDistance");
@@ -346,7 +352,11 @@ structure S {
         other => panic!("expected GuardedGroup, got {:?}", other),
     };
 
-    assert_eq!(group.members.len(), 1, "guarded group should have one member");
+    assert_eq!(
+        group.members.len(),
+        1,
+        "guarded group should have one member"
+    );
 
     match &group.members[0] {
         MemberDecl::ForallConnect(d) => {
@@ -356,7 +366,10 @@ structure S {
                 "expected collection Ident(vents)"
             );
         }
-        other => panic!("expected ForallConnect inside guarded block, got {:?}", other),
+        other => panic!(
+            "expected ForallConnect inside guarded block, got {:?}",
+            other
+        ),
     }
 }
 
@@ -381,7 +394,11 @@ structure S {
 "#;
     let (members, errors) = parse_members(source);
     assert!(errors.is_empty(), "parse errors: {:?}", errors);
-    assert_eq!(members.len(), 2, "expected exactly two members (param + forall)");
+    assert_eq!(
+        members.len(),
+        2,
+        "expected exactly two members (param + forall)"
+    );
 
     let decl = match &members[1] {
         MemberDecl::ForallConstraint(d) => d,

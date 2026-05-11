@@ -46,11 +46,14 @@
 // and their transitive use statements (std::path::{Path, PathBuf},
 // xxhash_rust::xxh3::xxh3_128) from the single shared source file.
 // There is NO duplicate algorithm here.
-include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/engine_hash_algo.rs"));
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/engine_hash_algo.rs"
+));
 
 fn main() {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
-        .expect("CARGO_MANIFEST_DIR must be set by cargo");
+    let manifest_dir =
+        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR must be set by cargo");
     let manifest_path = Path::new(&manifest_dir);
 
     // Re-run this build script whenever it changes itself.

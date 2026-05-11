@@ -41,7 +41,7 @@ pub fn element_stiffness_wedge_p1(
 mod tests {
     use super::*;
     use crate::assembly::test_support::{
-        self, dimensionless_steel_like, scaled_unit_wedge_phys_nodes, ElementStiffnessTestSpec,
+        self, ElementStiffnessTestSpec, dimensionless_steel_like, scaled_unit_wedge_phys_nodes,
     };
 
     #[test]

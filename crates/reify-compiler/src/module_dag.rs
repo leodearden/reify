@@ -324,7 +324,9 @@ impl ModuleDag {
                 if self.stdlib_mode == Some(StdlibMode::Embedded) {
                     return Err(vec![partial_overlay_diag(
                         module_path,
-                        OverlayDirection::FsOverEmbedded { commit_site: CommitSite::Entry },
+                        OverlayDirection::FsOverEmbedded {
+                            commit_site: CommitSite::Entry,
+                        },
                         &resolver.stdlib_root,
                     )]);
                 }
@@ -374,9 +376,7 @@ impl ModuleDag {
                     // the invariant explicit in code.
                     let start = (0..=idx)
                         .rev()
-                        .find(|&j| {
-                            self.modules.contains_key(&stdlib[j].path.0.join("."))
-                        })
+                        .find(|&j| self.modules.contains_key(&stdlib[j].path.0.join(".")))
                         .map(|j| j + 1)
                         .unwrap_or(0);
                     for embedded in &stdlib[start..=idx] {
@@ -441,7 +441,8 @@ impl ModuleDag {
                 let preludes: Vec<&CompiledModule> = import_paths
                     .iter()
                     .map(|p| {
-                        self.modules.get(p.as_str())
+                        self.modules
+                            .get(p.as_str())
                             .expect("invariant: import compiled before prelude collection")
                     })
                     .collect();
@@ -473,7 +474,9 @@ impl ModuleDag {
             if self.stdlib_mode == Some(StdlibMode::Embedded) {
                 return Err(vec![partial_overlay_diag(
                     module_path,
-                    OverlayDirection::FsOverEmbedded { commit_site: CommitSite::Transitive },
+                    OverlayDirection::FsOverEmbedded {
+                        commit_site: CommitSite::Transitive,
+                    },
                     &resolver.stdlib_root,
                 )]);
             }
@@ -520,28 +523,36 @@ mod tests {
         // Entry variant
         let entry_diag = partial_overlay_diag(
             "std.foo",
-            OverlayDirection::FsOverEmbedded { commit_site: CommitSite::Entry },
+            OverlayDirection::FsOverEmbedded {
+                commit_site: CommitSite::Entry,
+            },
             &stdlib_root,
         );
-        assert_fs_over_embedded(&entry_diag, "(fs-over-embedded/entry)", "(fs-over-embedded/transitive)");
+        assert_fs_over_embedded(
+            &entry_diag,
+            "(fs-over-embedded/entry)",
+            "(fs-over-embedded/transitive)",
+        );
 
         // Transitive variant
         let transitive_diag = partial_overlay_diag(
             "std.foo",
-            OverlayDirection::FsOverEmbedded { commit_site: CommitSite::Transitive },
+            OverlayDirection::FsOverEmbedded {
+                commit_site: CommitSite::Transitive,
+            },
             &stdlib_root,
         );
-        assert_fs_over_embedded(&transitive_diag, "(fs-over-embedded/transitive)", "(fs-over-embedded/entry)");
+        assert_fs_over_embedded(
+            &transitive_diag,
+            "(fs-over-embedded/transitive)",
+            "(fs-over-embedded/entry)",
+        );
     }
 
     #[test]
     fn partial_overlay_diag_embedded_over_fs_format() {
         let stdlib_root = std::path::PathBuf::from("/tmp/stdlib");
-        let diag = partial_overlay_diag(
-            "std.bar",
-            OverlayDirection::EmbeddedOverFs,
-            &stdlib_root,
-        );
+        let diag = partial_overlay_diag("std.bar", OverlayDirection::EmbeddedOverFs, &stdlib_root);
         assert!(diag.message.contains("std.bar"));
         assert!(diag.message.contains("/tmp/stdlib"));
         assert!(diag.message.contains("not found on the filesystem"));
@@ -653,7 +664,8 @@ pub fn compile_project_with_entry_source(
                 }
             })
             .map(|import| {
-                dag.modules.get(&import.path)
+                dag.modules
+                    .get(&import.path)
                     .expect("invariant: import compiled before entry prelude collection")
             })
             .collect();

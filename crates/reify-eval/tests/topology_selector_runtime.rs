@@ -59,9 +59,7 @@ fn compile_no_errors(source: &str) -> reify_compiler::CompiledModule {
 /// calls).  The first `execute` call on the mock kernel allocates
 /// `GeometryHandleId(1)`, so any `let body = box(...)` in the fixture
 /// resolves to handle id 1 — pre-configure the mock kernel accordingly.
-fn engine_with_mock_kernel(
-    setup: impl FnOnce(MockGeometryKernel) -> MockGeometryKernel,
-) -> Engine {
+fn engine_with_mock_kernel(setup: impl FnOnce(MockGeometryKernel) -> MockGeometryKernel) -> Engine {
     let kernel = setup(MockGeometryKernel::new());
     let checker = reify_constraints::SimpleConstraintChecker;
     Engine::new(Box::new(checker), Some(Box::new(kernel)))

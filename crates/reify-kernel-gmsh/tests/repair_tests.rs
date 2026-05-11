@@ -9,7 +9,7 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use reify_kernel_gmsh::repair::{repair_surface_mesh, RepairConfig};
+use reify_kernel_gmsh::repair::{RepairConfig, repair_surface_mesh};
 use reify_types::Mesh;
 
 /// Sliver triangles below the area threshold are collapsed. The output
@@ -55,11 +55,7 @@ fn sliver_triangles_below_area_threshold_are_collapsed() {
     // dropped the well-formed triangle and kept the sliver. Look up each
     // surviving index in the (compacted) vertices array and assert the
     // triple matches the well-formed triangle's coordinates.
-    let expected: [(f32, f32, f32); 3] = [
-        (0.0, 0.0, 0.0),
-        (1.0, 0.0, 0.0),
-        (0.5, 0.866, 0.0),
-    ];
+    let expected: [(f32, f32, f32); 3] = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.5, 0.866, 0.0)];
     let tol: f32 = 1e-6;
     for (slot, &idx) in repaired.indices.iter().enumerate() {
         let off = (idx as usize) * 3;
@@ -93,10 +89,10 @@ fn near_coincident_vertices_are_merged() {
     // triangle's three indices include the survivor instead.
     let mesh = Mesh {
         vertices: vec![
-            0.0, 0.0, 0.0,    // v0
-            1e-13, 0.0, 0.0,  // v1 (1e-13 from v0 — should merge into v0)
-            1.0, 0.0, 0.0,    // v2 (far)
-            0.5, 1.0, 0.0,    // v3 (far)
+            0.0, 0.0, 0.0, // v0
+            1e-13, 0.0, 0.0, // v1 (1e-13 from v0 — should merge into v0)
+            1.0, 0.0, 0.0, // v2 (far)
+            0.5, 1.0, 0.0, // v3 (far)
         ],
         // Triangle (v1, v2, v3) — v1 should re-index to v0 after merging.
         indices: vec![1, 2, 3],
@@ -184,9 +180,8 @@ fn large_vertex_count_emits_warn_does_not_panic() {
 
     // (a) Must NOT panic — reaching the assertion below proves the function
     //     returned normally rather than crashing via debug_assert!.
-    let _repaired = tracing::subscriber::with_default(subscriber, || {
-        repair_surface_mesh(&mesh, cfg)
-    });
+    let _repaired =
+        tracing::subscriber::with_default(subscriber, || repair_surface_mesh(&mesh, cfg));
 
     // (b) Exactly one WARN event must be emitted at the
     //     reify_kernel_gmsh::repair target with reason="large_mesh_perf".
@@ -228,7 +223,7 @@ fn chain_merge_collapses_via_intermediate_vertex() {
     // the sliver_area_threshold of 1e-12.
     let mesh = Mesh {
         vertices: vec![
-            0.0_f32,  0.0, 0.0, // v0 = A
+            0.0_f32, 0.0, 0.0, // v0 = A
             1e-9_f32, 0.0, 0.0, // v1 = B  (1e-9 from A, within epsilon 1.5e-9)
             2e-9_f32, 0.0, 0.0, // v2 = C  (1e-9 from B; 2e-9 from A: no direct A↔C merge)
             10.0_f32, 0.0, 0.0, // v3 = D

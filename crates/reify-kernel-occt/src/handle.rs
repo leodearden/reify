@@ -78,9 +78,8 @@ enum OcctRequest {
     FilletWithHistory {
         shape: GeometryHandleId,
         radius: f64,
-        reply: oneshot::Sender<
-            Result<(GeometryHandle, LocalFeatureOpHistoryRecords), GeometryError>,
-        >,
+        reply:
+            oneshot::Sender<Result<(GeometryHandle, LocalFeatureOpHistoryRecords), GeometryError>>,
     },
     /// v0.2 persistent-naming-v2 local-feature history: apply
     /// `BRepFilletAPI_MakeChamfer` to every edge of `shape` with the given
@@ -89,9 +88,8 @@ enum OcctRequest {
     ChamferWithHistory {
         shape: GeometryHandleId,
         distance: f64,
-        reply: oneshot::Sender<
-            Result<(GeometryHandle, LocalFeatureOpHistoryRecords), GeometryError>,
-        >,
+        reply:
+            oneshot::Sender<Result<(GeometryHandle, LocalFeatureOpHistoryRecords), GeometryError>>,
     },
     /// v0.2 persistent-naming-v2 sweep history: dispatches per-op to a
     /// kernel-side history-aware primitive (Extrude → `extrude_with_history`,
@@ -877,9 +875,7 @@ impl OcctKernelHandle {
                             // Default arm: no history-aware primitive yet for
                             // this op. Forward to plain `execute` and emit
                             // `AttributeHistory::None`.
-                            _ => kernel
-                                .execute(&op)
-                                .map(|h| (h, AttributeHistory::None)),
+                            _ => kernel.execute(&op).map(|h| (h, AttributeHistory::None)),
                         };
                         let _ = reply.send(result);
                     }
@@ -915,8 +911,7 @@ impl OcctKernelHandle {
                         cy,
                         reply,
                     } => {
-                        let id =
-                            kernel.store_triangle_face_at_for_test(x1, z1, x2, z2, x3, z3, cy);
+                        let id = kernel.store_triangle_face_at_for_test(x1, z1, x2, z2, x3, z3, cy);
                         let _ = reply.send(id);
                     }
                     #[cfg(feature = "test-fixtures")]
@@ -1290,7 +1285,7 @@ impl GeometryKernel for OcctKernelHandle {
 
 #[cfg(all(test, has_occt))]
 mod tests {
-    use reify_types::{GeometryHandleId, GeometryOp, GeometryQuery, BRepKind, Value};
+    use reify_types::{BRepKind, GeometryHandleId, GeometryOp, GeometryQuery, Value};
 
     /// Compile-time assertion: OcctKernelHandle must be Send + Sync.
     const _: fn() = || {

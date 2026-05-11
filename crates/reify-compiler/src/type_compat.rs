@@ -139,16 +139,26 @@ pub fn implicitly_converts_to(from: &Type, to: &Type) -> bool {
         // Compound/aggregate types are excluded: the spec's "Q is a single value" framing
         // covers only leaf kinds (Bool, Int, Real, String, Scalar, Enum, TypeParam,
         // StructureRef, TraitObject, Geometry). Rule 2c (above) handles Tensor<0>↔Tensor<0>.
-        (from_ty, Type::Tensor { rank: 0, quantity: tq, .. })
-            if is_scalar_like_leaf(from_ty)
-            => from_ty == tq.as_ref(),
+        (
+            from_ty,
+            Type::Tensor {
+                rank: 0,
+                quantity: tq,
+                ..
+            },
+        ) if is_scalar_like_leaf(from_ty) => from_ty == tq.as_ref(),
 
         // Rule 2b: Tensor<0,_,Q> -> Q  (N is irrelevant for rank-0)
         //
         // Guard: `to_ty` must be a scalar-like leaf type — see `is_scalar_like_leaf`.
-        (Type::Tensor { rank: 0, quantity: tq, .. }, to_ty)
-            if is_scalar_like_leaf(to_ty)
-            => tq.as_ref() == to_ty,
+        (
+            Type::Tensor {
+                rank: 0,
+                quantity: tq,
+                ..
+            },
+            to_ty,
+        ) if is_scalar_like_leaf(to_ty) => tq.as_ref() == to_ty,
 
         // Rule 3: Tensor<2,N,Q> -> Matrix<N,N,Q>  (one-way, square matrices only)
         // Note: Matrix->Tensor is NOT allowed; the default `false` arm handles that.
@@ -315,20 +325,21 @@ pub(crate) fn format_dimension_mismatch_diagnostic(
 ) -> Diagnostic {
     // Compute the optional secondary label before building the diagnostic so
     // there is a single exit point and no early return.
-    let secondary: Option<DiagnosticLabel> = if let (
-        Type::Scalar { dimension: ldim },
-        Type::Scalar { dimension: rdim },
-    ) = (left_ty, right_ty)
-        && let (Some(lname), Some(rname)) = (ldim.canonical_name(), rdim.canonical_name())
-        && lname != rname
-    {
-        Some(DiagnosticLabel::new(
-            span,
-            format!("{lname} and {rname} are different dimensions and cannot be combined directly"),
-        ))
-    } else {
-        None
-    };
+    let secondary: Option<DiagnosticLabel> =
+        if let (Type::Scalar { dimension: ldim }, Type::Scalar { dimension: rdim }) =
+            (left_ty, right_ty)
+            && let (Some(lname), Some(rname)) = (ldim.canonical_name(), rdim.canonical_name())
+            && lname != rname
+        {
+            Some(DiagnosticLabel::new(
+                span,
+                format!(
+                    "{lname} and {rname} are different dimensions and cannot be combined directly"
+                ),
+            ))
+        } else {
+            None
+        };
 
     let mut d = Diagnostic::error(format!(
         "dimension mismatch in {op_name}: {left_ty} vs {right_ty}"
@@ -481,60 +492,107 @@ mod tests {
     }
 
     fn money_ty() -> Type {
-        Type::Scalar { dimension: DimensionVector::MONEY }
+        Type::Scalar {
+            dimension: DimensionVector::MONEY,
+        }
     }
 
     fn force_ty() -> Type {
-        Type::Scalar { dimension: DimensionVector::FORCE }
+        Type::Scalar {
+            dimension: DimensionVector::FORCE,
+        }
     }
 
     fn length_ty() -> Type {
-        Type::Scalar { dimension: DimensionVector::LENGTH }
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        }
     }
 
     fn mass_ty() -> Type {
-        Type::Scalar { dimension: DimensionVector::MASS }
+        Type::Scalar {
+            dimension: DimensionVector::MASS,
+        }
     }
 
     /// (a) Money-vs-Force produces a secondary label naming both dimensions.
     #[test]
     fn fmt_dim_mismatch_money_vs_force_has_secondary_label() {
-        let d = format_dimension_mismatch_diagnostic("addition", &money_ty(), &force_ty(), test_span());
+        let d =
+            format_dimension_mismatch_diagnostic("addition", &money_ty(), &force_ty(), test_span());
         assert_eq!(d.severity, Severity::Error);
         assert_eq!(d.code, Some(DiagnosticCode::DimensionMismatch));
-        assert!(d.message.contains("dimension mismatch in addition:"),
-            "message was: {}", d.message);
-        assert!(d.labels.len() >= 2, "expected at least 2 labels, got {}", d.labels.len());
-        let has_canonical_hint = d.labels.iter().any(|l| l.message.contains("Money") && l.message.contains("Force"));
-        assert!(has_canonical_hint, "no label mentions both 'Money' and 'Force'; labels: {:?}", d.labels.iter().map(|l| &l.message).collect::<Vec<_>>());
+        assert!(
+            d.message.contains("dimension mismatch in addition:"),
+            "message was: {}",
+            d.message
+        );
+        assert!(
+            d.labels.len() >= 2,
+            "expected at least 2 labels, got {}",
+            d.labels.len()
+        );
+        let has_canonical_hint = d
+            .labels
+            .iter()
+            .any(|l| l.message.contains("Money") && l.message.contains("Force"));
+        assert!(
+            has_canonical_hint,
+            "no label mentions both 'Money' and 'Force'; labels: {:?}",
+            d.labels.iter().map(|l| &l.message).collect::<Vec<_>>()
+        );
     }
 
     /// (b) Reverse polarity (Force on left, Money on right) produces the same secondary label.
     #[test]
     fn fmt_dim_mismatch_force_vs_money_has_secondary_label() {
-        let d = format_dimension_mismatch_diagnostic("addition", &force_ty(), &money_ty(), test_span());
+        let d =
+            format_dimension_mismatch_diagnostic("addition", &force_ty(), &money_ty(), test_span());
         assert_eq!(d.code, Some(DiagnosticCode::DimensionMismatch));
-        let has_canonical_hint = d.labels.iter().any(|l| l.message.contains("Money") && l.message.contains("Force"));
-        assert!(has_canonical_hint, "no label mentions both 'Money' and 'Force'; labels: {:?}", d.labels.iter().map(|l| &l.message).collect::<Vec<_>>());
+        let has_canonical_hint = d
+            .labels
+            .iter()
+            .any(|l| l.message.contains("Money") && l.message.contains("Force"));
+        assert!(
+            has_canonical_hint,
+            "no label mentions both 'Money' and 'Force'; labels: {:?}",
+            d.labels.iter().map(|l| &l.message).collect::<Vec<_>>()
+        );
     }
 
     /// (c) Length-vs-Mass produces secondary label naming both.
     #[test]
     fn fmt_dim_mismatch_length_vs_mass_has_secondary_label() {
-        let d = format_dimension_mismatch_diagnostic("addition", &length_ty(), &mass_ty(), test_span());
-        let has_canonical_hint = d.labels.iter().any(|l| l.message.contains("Length") && l.message.contains("Mass"));
-        assert!(has_canonical_hint, "no label mentions both 'Length' and 'Mass'; labels: {:?}", d.labels.iter().map(|l| &l.message).collect::<Vec<_>>());
+        let d =
+            format_dimension_mismatch_diagnostic("addition", &length_ty(), &mass_ty(), test_span());
+        let has_canonical_hint = d
+            .labels
+            .iter()
+            .any(|l| l.message.contains("Length") && l.message.contains("Mass"));
+        assert!(
+            has_canonical_hint,
+            "no label mentions both 'Length' and 'Mass'; labels: {:?}",
+            d.labels.iter().map(|l| &l.message).collect::<Vec<_>>()
+        );
     }
 
     /// (d) Composite-vs-named produces ONLY the primary "incompatible dimensions" label (no canonical-names hint),
     /// but still attaches the code.
     #[test]
     fn fmt_dim_mismatch_composite_vs_named_no_secondary_label() {
-        let composite = Type::Scalar { dimension: DimensionVector::MONEY.div(&DimensionVector::MASS) };
-        let d = format_dimension_mismatch_diagnostic("addition", &composite, &force_ty(), test_span());
+        let composite = Type::Scalar {
+            dimension: DimensionVector::MONEY.div(&DimensionVector::MASS),
+        };
+        let d =
+            format_dimension_mismatch_diagnostic("addition", &composite, &force_ty(), test_span());
         assert_eq!(d.code, Some(DiagnosticCode::DimensionMismatch));
         // There should be exactly one label (the primary "incompatible dimensions" label).
-        assert_eq!(d.labels.len(), 1, "expected exactly 1 label for composite-vs-named, got {}", d.labels.len());
+        assert_eq!(
+            d.labels.len(),
+            1,
+            "expected exactly 1 label for composite-vs-named, got {}",
+            d.labels.len()
+        );
         assert_eq!(d.labels[0].message, "incompatible dimensions");
     }
 
@@ -544,17 +602,20 @@ mod tests {
     #[test]
     fn fmt_dim_mismatch_non_scalar_does_not_panic() {
         // Left non-Scalar, right Scalar
-        let d = format_dimension_mismatch_diagnostic("addition", &Type::Real, &force_ty(), test_span());
+        let d =
+            format_dimension_mismatch_diagnostic("addition", &Type::Real, &force_ty(), test_span());
         assert_eq!(d.severity, Severity::Error);
         assert_eq!(d.code, Some(DiagnosticCode::DimensionMismatch));
 
         // Left Scalar, right non-Scalar
-        let d = format_dimension_mismatch_diagnostic("addition", &money_ty(), &Type::Real, test_span());
+        let d =
+            format_dimension_mismatch_diagnostic("addition", &money_ty(), &Type::Real, test_span());
         assert_eq!(d.severity, Severity::Error);
         assert_eq!(d.code, Some(DiagnosticCode::DimensionMismatch));
 
         // Both non-Scalar
-        let d = format_dimension_mismatch_diagnostic("addition", &Type::Real, &Type::Real, test_span());
+        let d =
+            format_dimension_mismatch_diagnostic("addition", &Type::Real, &Type::Real, test_span());
         assert_eq!(d.severity, Severity::Error);
         assert_eq!(d.code, Some(DiagnosticCode::DimensionMismatch));
     }

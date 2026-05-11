@@ -17,7 +17,7 @@ use axum::response::IntoResponse;
 use axum::routing::post;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::debug::DebugBridge;
 use crate::engine::EngineSession;
@@ -322,8 +322,8 @@ where
         // so f() panicking will not leave the mutex poisoned for future callers.
         // The user closure f returns Result<T, String>, so with_engine_lock
         // wraps it in another Result layer — flatten with and_then(identity).
-        let result = crate::engine_lock::with_engine_lock(&engine, f)
-            .and_then(std::convert::identity);
+        let result =
+            crate::engine_lock::with_engine_lock(&engine, f).and_then(std::convert::identity);
         let _ = tx.send(result);
     });
     rx.await.map_err(|_| "engine thread died".to_string())?
@@ -422,8 +422,8 @@ async fn handle_open_file(state: &DebugServerState, params: Value) -> Result<Val
     .await?;
 
     // Serialize GUI state for the frontend
-    let gui_state_json = serde_json::to_value(&gui_state)
-        .map_err(|e| format!("serialize gui_state failed: {e}"))?;
+    let gui_state_json =
+        serde_json::to_value(&gui_state).map_err(|e| format!("serialize gui_state failed: {e}"))?;
 
     // Tell frontend to open file and init engine state
     let file_data = json!({
@@ -498,9 +498,7 @@ async fn handle_mcp(
                         && let Some(data) = result.get("data").and_then(|d| d.as_str())
                     {
                         // Strip data URL prefix if present
-                        let base64 = data
-                            .strip_prefix("data:image/png;base64,")
-                            .unwrap_or(data);
+                        let base64 = data.strip_prefix("data:image/png;base64,").unwrap_or(data);
                         return Json(JsonRpcResponse::ok(
                             id,
                             json!({
@@ -554,11 +552,7 @@ async fn handle_rest(
 ) -> impl IntoResponse {
     match dispatch_tool(&state, &command, params).await {
         Ok(result) => (StatusCode::OK, Json(result)).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": e})),
-        )
-            .into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e}))).into_response(),
     }
 }
 
@@ -638,7 +632,10 @@ mod tests {
             panic!("from-closure")
         })
         .await;
-        assert!(first.is_err(), "panicking closure must produce Err from run_on_engine");
+        assert!(
+            first.is_err(),
+            "panicking closure must produce Err from run_on_engine"
+        );
 
         // Second call: mutex must be usable (not poisoned after the first call).
         let second = run_on_engine(&engine, |s| Ok(s.is_idle())).await;

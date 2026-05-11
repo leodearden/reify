@@ -52,10 +52,10 @@ pub mod kernel;
 
 // Single public `OpenVdbKernel` ident regardless of build mode (mirrors OCCT's
 // pub use pattern from crates/reify-kernel-occt/src/lib.rs).
-#[cfg(has_openvdb)]
-pub use kernel_real::OpenVdbKernel;
 #[cfg(not(has_openvdb))]
 pub use kernel::OpenVdbKernel;
+#[cfg(has_openvdb)]
+pub use kernel_real::OpenVdbKernel;
 
 pub use ingest::{
     IngestError, IngestOutcome, KNOWN_UNITS, OpenVdbGridKind, OpenVdbGridSource,

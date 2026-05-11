@@ -46,7 +46,8 @@ fn field_clone_shares_lambda_via_arc() {
 
     // Destructure both to get the lambda Arcs.
     let Value::Field {
-        lambda: orig_lambda, ..
+        lambda: orig_lambda,
+        ..
     } = &original
     else {
         panic!("original must be a Field");

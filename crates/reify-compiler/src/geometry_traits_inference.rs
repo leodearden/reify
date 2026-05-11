@@ -414,7 +414,11 @@ fn infer_op(
     match op {
         CompiledGeometryOp::Primitive { kind, .. } => infer_primitive(*kind),
 
-        CompiledGeometryOp::Boolean { op: bool_op, left, right } => {
+        CompiledGeometryOp::Boolean {
+            op: bool_op,
+            left,
+            right,
+        } => {
             let a = infer_geom_ref(left, ops, current_position);
             let b = infer_geom_ref(right, ops, current_position);
             match bool_op {
@@ -484,7 +488,10 @@ fn infer_geom_ref(
             // so ops.get(*idx) is always Some(_) here. The unwrap_or is a
             // redundant safety net — it can no longer be reached through
             // well-typed call paths but is kept as defense-in-depth.
-            debug_assert!(*idx < ops.len(), "cycle guard should have caught idx >= current_position");
+            debug_assert!(
+                *idx < ops.len(),
+                "cycle guard should have caught idx >= current_position"
+            );
             ops.get(*idx)
                 .map(|op| infer_op(op, ops, *idx))
                 .unwrap_or(InferredTraits::all())
@@ -565,9 +572,7 @@ pub fn try_infer_traits_for_function_call_in_env(
         // to `all()` (defensive — well-formed source always supplies at
         // least one argument).
         "union_all" => Some(fold_geometry_args_in_env(args, combine_union, env)),
-        "intersection_all" => {
-            Some(fold_geometry_args_in_env(args, combine_intersection, env))
-        }
+        "intersection_all" => Some(fold_geometry_args_in_env(args, combine_intersection, env)),
 
         // ─── Transform combinators → recurse + combine_transform ────────
         "translate" | "rotate" | "scale" | "rotate_around" => {
@@ -582,18 +587,15 @@ pub fn try_infer_traits_for_function_call_in_env(
         }
 
         // ─── Pattern combinators → recurse + combine_pattern ────────────
-        "linear_pattern"
-        | "circular_pattern"
-        | "mirror"
-        | "linear_pattern_2d"
+        "linear_pattern" | "circular_pattern" | "mirror" | "linear_pattern_2d"
         | "arbitrary_pattern" => {
             let t = first_geometry_arg_in_env(args, env);
             Some(combine_pattern(t))
         }
 
         // ─── Sweep combinators → recurse + combine_sweep ────────────────
-        "extrude" | "extrude_symmetric" | "revolve" | "revolve_full" | "sweep"
-        | "sweep_guided" | "loft" | "loft_guided" | "pipe" => {
+        "extrude" | "extrude_symmetric" | "revolve" | "revolve_full" | "sweep" | "sweep_guided"
+        | "loft" | "loft_guided" | "pipe" => {
             let t = first_geometry_arg_in_env(args, env);
             Some(combine_sweep(t))
         }

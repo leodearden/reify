@@ -179,7 +179,10 @@ impl TypeAliasRegistry {
     /// the user module's `type_aliases` field.
     ///
     /// Returns `Err(entry)` if the name is already registered (collision).
-    pub(crate) fn register_as_prelude_seed(&mut self, entry: TypeAliasEntry) -> Result<(), Box<TypeAliasEntry>> {
+    pub(crate) fn register_as_prelude_seed(
+        &mut self,
+        entry: TypeAliasEntry,
+    ) -> Result<(), Box<TypeAliasEntry>> {
         if self.entries.contains_key(&entry.name) {
             Err(Box::new(entry))
         } else {
@@ -200,7 +203,9 @@ impl TypeAliasRegistry {
     /// the module's content hash — changes to prelude aliases must not invalidate
     /// the content hash of user modules that don't declare or redeclare them.
     pub(crate) fn iter(&self) -> impl Iterator<Item = &TypeAliasEntry> {
-        self.entries.values().filter(|e| !self.seeded_names.contains(&e.name))
+        self.entries
+            .values()
+            .filter(|e| !self.seeded_names.contains(&e.name))
     }
 
     /// Consume the registry, returning compiled entries for user-declared aliases only.
@@ -237,7 +242,10 @@ pub(crate) fn resolve_dimension_type(
         reify_syntax::TypeExprKind::IntegerLiteral(_) => return None,
     };
     // Scan the shared table (name → dimension direction).
-    if let Some((dim, _)) = reify_types::NAMED_DIMENSIONS.iter().find(|(_, n)| *n == name) {
+    if let Some((dim, _)) = reify_types::NAMED_DIMENSIONS
+        .iter()
+        .find(|(_, n)| *n == name)
+    {
         return Some(*dim);
     }
     // "Dimensionless" is intentionally absent from NAMED_DIMENSIONS (canonical_name returns
@@ -816,7 +824,10 @@ pub(crate) fn resolve_type_alias_expr_to_dimension(
                     "integer literal `{}` cannot appear as a dimension type",
                     n
                 ))
-                .with_label(DiagnosticLabel::new(type_expr.span, "expected a dimension name")),
+                .with_label(DiagnosticLabel::new(
+                    type_expr.span,
+                    "expected a dimension name",
+                )),
             );
             None
         }
@@ -1254,34 +1265,26 @@ pub(crate) fn resolve_parameterized_builtin_type(
         }
         "Scalar" if type_args.len() == 1 => {
             // Scalar<Q>: resolve Q to a DimensionVector and wrap.
-            let dim = resolve_type_alias_expr_to_dimension(
-                &type_args[0],
-                alias_registry,
-                diagnostics,
-            )?;
+            let dim =
+                resolve_type_alias_expr_to_dimension(&type_args[0], alias_registry, diagnostics)?;
             Some(Type::Scalar { dimension: dim })
         }
         "Vector3" if type_args.len() == 1 => {
             // Vector3<Q>: resolve Q to a DimensionVector and wrap as a 3D vector.
-            let dim = resolve_type_alias_expr_to_dimension(
-                &type_args[0],
-                alias_registry,
-                diagnostics,
-            )?;
+            let dim =
+                resolve_type_alias_expr_to_dimension(&type_args[0], alias_registry, diagnostics)?;
             Some(Type::vec3(Type::Scalar { dimension: dim }))
         }
         "Point3" if type_args.len() == 1 => {
             // Point3<Q>: resolve Q to a DimensionVector and wrap as a 3D point.
-            let dim = resolve_type_alias_expr_to_dimension(
-                &type_args[0],
-                alias_registry,
-                diagnostics,
-            )?;
+            let dim =
+                resolve_type_alias_expr_to_dimension(&type_args[0], alias_registry, diagnostics)?;
             Some(Type::point3(Type::Scalar { dimension: dim }))
         }
         "Tensor" if type_args.len() == 3 => {
             // Tensor<rank, n, Q>: two integer literals + a quantity type.
-            let rank = expect_integer_literal_type_arg(&type_args[0], "Tensor", "rank", diagnostics)?;
+            let rank =
+                expect_integer_literal_type_arg(&type_args[0], "Tensor", "rank", diagnostics)?;
             let n = expect_integer_literal_type_arg(&type_args[1], "Tensor", "n", diagnostics)?;
             let quantity = resolve_type_expr_with_aliases(
                 &type_args[2],
@@ -1369,7 +1372,10 @@ fn expect_integer_literal_type_arg(
                     "`{}` expects an integer literal for `{}`, found `{}`",
                     constructor, slot, type_expr
                 ))
-                .with_label(DiagnosticLabel::new(type_expr.span, "expected integer literal")),
+                .with_label(DiagnosticLabel::new(
+                    type_expr.span,
+                    "expected integer literal",
+                )),
             );
             None
         }
@@ -1476,7 +1482,8 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
             Some(Type::point3(Type::Scalar { dimension: dim }))
         }
         "Tensor" if type_args.len() == 3 => {
-            let rank = expect_integer_literal_type_arg(&type_args[0], "Tensor", "rank", diagnostics)?;
+            let rank =
+                expect_integer_literal_type_arg(&type_args[0], "Tensor", "rank", diagnostics)?;
             let n = expect_integer_literal_type_arg(&type_args[1], "Tensor", "n", diagnostics)?;
             let quantity = resolve_type_alias_expr_with_subst(
                 &type_args[2],
@@ -1583,7 +1590,10 @@ pub(crate) fn resolve_type_alias_expr_to_dim_with_subst(
                     "integer literal `{}` cannot appear as a dimension type",
                     n
                 ))
-                .with_label(DiagnosticLabel::new(type_expr.span, "expected a dimension name")),
+                .with_label(DiagnosticLabel::new(
+                    type_expr.span,
+                    "expected a dimension name",
+                )),
             );
             None
         }
@@ -1816,7 +1826,11 @@ mod tests {
         let mut diagnostics = Vec::new();
         let result = resolve_dimension_type(&te, &mut diagnostics);
         assert_eq!(result, Some(DimensionVector::MONEY));
-        assert!(diagnostics.is_empty(), "unexpected diagnostic: {:?}", diagnostics);
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostic: {:?}",
+            diagnostics
+        );
     }
 
     #[test]
@@ -1977,8 +1991,7 @@ mod tests {
             .collect();
 
         assert_eq!(
-            listed_names,
-            expected_names,
+            listed_names, expected_names,
             "diagnostic.candidates does not exactly match NAMED_DIMENSIONS + Dimensionless"
         );
     }

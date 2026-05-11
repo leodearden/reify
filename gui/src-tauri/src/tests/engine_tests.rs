@@ -1,18 +1,18 @@
 use std::path::Path;
 use std::sync::atomic::Ordering;
 
+use reify_compiler::find_template;
 use reify_constraints::SimpleConstraintChecker;
 use reify_test_support::{
     CountingSubscriberBuilder, FailingMockGeometryKernel, MockGeometryKernel, bracket_source,
     bracket_source_violating, bracket_source_with_width, warn_source_with_unknown_port_type,
     warn_source_with_unknown_port_type_with_width,
 };
-use reify_compiler::find_template;
 use reify_types::ExportFormat;
 
 use reify_types::{DiagnosticInfo, SourceLocationInfo, ValueCellId};
 
-use reify_test_support::{TopologyTemplateBuilder, CompiledModuleBuilder};
+use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
 
 use crate::engine::{EngineSession, build_template_node, module_key, parse_value_string};
 use crate::types::EntityTreeNode;
@@ -247,7 +247,9 @@ fn get_mechanism_descriptors_extracts_prismatic_and_revolute_joints() {
         Some(0.0),
         "prismatic lower bound should be 0.0 m"
     );
-    let upper = prismatic.range_upper_si.expect("prismatic upper_si should be Some");
+    let upper = prismatic
+        .range_upper_si
+        .expect("prismatic upper_si should be Some");
     assert!(
         (upper - 1.0).abs() < 1e-9,
         "prismatic upper bound should be 1.0 m (1000mm), got {upper}"
@@ -272,7 +274,9 @@ fn get_mechanism_descriptors_extracts_prismatic_and_revolute_joints() {
         Some(0.0),
         "revolute lower bound should be 0.0 rad"
     );
-    let upper_rev = revolute.range_upper_si.expect("revolute upper_si should be Some");
+    let upper_rev = revolute
+        .range_upper_si
+        .expect("revolute upper_si should be Some");
     // Test fixture's .ri source uses the literal 3.14, not std::f64::consts::PI.
     #[allow(clippy::approx_constant)]
     let expected_upper = 3.14_f64;
@@ -335,7 +339,9 @@ fn get_mechanism_descriptors_filters_errored_mechanisms() {
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(DUPLICATE_SOLID_SOURCE, "kinematic")
-        .expect("load_from_source should not fail for duplicate-solid (error is at eval, not compile)");
+        .expect(
+            "load_from_source should not fail for duplicate-solid (error is at eval, not compile)",
+        );
 
     let descriptors = session.get_mechanism_descriptors();
     assert!(
@@ -1052,9 +1058,8 @@ fn resolve_driving_params_emits_debug_for_param_checked_match() {
         .target_prefix("reify_gui::engine::param_resolution")
         .build();
 
-    let descriptors = tracing::subscriber::with_default(subscriber, || {
-        session.get_mechanism_descriptors()
-    });
+    let descriptors =
+        tracing::subscriber::with_default(subscriber, || session.get_mechanism_descriptors());
 
     // Sanity: the match path must have actually executed.
     let m1_desc = descriptors
@@ -1266,10 +1271,24 @@ fn get_source_location_accepts_template_name_returns_first_cell_span() {
         loc_name.file_path, "bracket.ri",
         "file_path must be 'bracket.ri'"
     );
-    assert!(loc_name.line >= 1, "line must be >= 1, got {}", loc_name.line);
+    assert!(
+        loc_name.line >= 1,
+        "line must be >= 1, got {}",
+        loc_name.line
+    );
     assert_eq!(
-        (loc_name.line, loc_name.column, loc_name.end_line, loc_name.end_column),
-        (loc_width.line, loc_width.column, loc_width.end_line, loc_width.end_column),
+        (
+            loc_name.line,
+            loc_name.column,
+            loc_name.end_line,
+            loc_name.end_column
+        ),
+        (
+            loc_width.line,
+            loc_width.column,
+            loc_width.end_line,
+            loc_width.end_column
+        ),
         "template-name resolution must proxy to the first value cell (width)"
     );
 }
@@ -1666,9 +1685,7 @@ fn parse_value_string_unit_table_ordering_invariant() {
 fn unit_table_ordering_invariant_holds() {
     use crate::engine::UNIT_TABLE;
 
-    let sorted = UNIT_TABLE
-        .windows(2)
-        .all(|w| w[0].0.len() >= w[1].0.len());
+    let sorted = UNIT_TABLE.windows(2).all(|w| w[0].0.len() >= w[1].0.len());
     assert!(
         sorted,
         "UNIT_TABLE entries must be sorted by descending suffix length (longest first). \
@@ -2545,7 +2562,11 @@ fn offset_to_line_col_fast_prelude_sentinel_returns_fallback() {
     let source = "abc\ndef\nghi";
     let offsets = build_line_offsets(source);
     assert_eq!(
-        offset_to_line_col_fast(source, &offsets, reify_types::SourceSpan::PRELUDE_SENTINEL_OFFSET),
+        offset_to_line_col_fast(
+            source,
+            &offsets,
+            reify_types::SourceSpan::PRELUDE_SENTINEL_OFFSET
+        ),
         (1, 1),
         "prelude sentinel must return (1, 1), not a past-last-line value"
     );
@@ -3172,11 +3193,17 @@ fn get_source_location_file_key_updates_after_update_source() {
         loc_before.file_path, "initial.ri",
         "before update: file_path should be 'initial.ri'"
     );
-    assert!(loc_before.line > 0, "sanity: line should be positive for a real span");
+    assert!(
+        loc_before.line > 0,
+        "sanity: line should be positive for a real span"
+    );
 
     // Update with the same source but a different module name.
     session
-        .update_source("updated.ri", warn_source_with_unknown_port_type_with_width())
+        .update_source(
+            "updated.ri",
+            warn_source_with_unknown_port_type_with_width(),
+        )
         .expect("update_source should succeed");
 
     // After update: file_path must reflect the new module name "updated".
@@ -3291,7 +3318,9 @@ fn get_entity_tree_bracket_returns_single_root_node() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
-    session.load_from_source(bracket_source(), "bracket").expect("load");
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load");
 
     let tree = session.get_entity_tree();
     assert_eq!(tree.len(), 1, "bracket has one root template");
@@ -3304,7 +3333,9 @@ fn get_entity_tree_bracket_children_have_correct_kinds() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
-    session.load_from_source(bracket_source(), "bracket").expect("load");
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load");
 
     let tree = session.get_entity_tree();
     let root = &tree[0];
@@ -3313,10 +3344,18 @@ fn get_entity_tree_bracket_children_have_correct_kinds() {
     let params: Vec<_> = root.children.iter().filter(|c| c.kind == "param").collect();
     let lets: Vec<_> = root.children.iter().filter(|c| c.kind == "let").collect();
 
-    assert_eq!(params.len(), 5, "5 param cells: width, height, thickness, fillet_radius, hole_diameter");
+    assert_eq!(
+        params.len(),
+        5,
+        "5 param cells: width, height, thickness, fillet_radius, hole_diameter"
+    );
     // `let body = box(...)` compiles into a realization (geometry op), not a ValueCellDecl.
     // Only `let volume = ...` is a let-binding value cell.
-    assert_eq!(lets.len(), 1, "1 let cell: volume (body is a realization, not a let)");
+    assert_eq!(
+        lets.len(),
+        1,
+        "1 let cell: volume (body is a realization, not a let)"
+    );
 }
 
 #[test]
@@ -3324,12 +3363,17 @@ fn get_entity_tree_bracket_param_entity_paths_correct() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
-    session.load_from_source(bracket_source(), "bracket").expect("load");
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load");
 
     let tree = session.get_entity_tree();
     let root = &tree[0];
 
-    let width_node = root.children.iter().find(|c| c.entity_path == "Bracket.width");
+    let width_node = root
+        .children
+        .iter()
+        .find(|c| c.entity_path == "Bracket.width");
     assert!(width_node.is_some(), "should have Bracket.width child node");
     assert_eq!(width_node.unwrap().kind, "param");
 }
@@ -3339,7 +3383,9 @@ fn get_entity_tree_has_mesh_true_when_realization_exists() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
-    session.load_from_source(bracket_source(), "bracket").expect("load");
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load");
 
     let tree = session.get_entity_tree();
     let root = &tree[0];
@@ -3353,7 +3399,9 @@ fn get_entity_tree_no_realization_has_mesh_false() {
     let mut session = EngineSession::new(Box::new(checker), None);
 
     // Load a module with no realizations via source (no geometry ops)
-    session.load_from_source("structure Simple { param x: Scalar = 1mm }", "simple").expect("load");
+    session
+        .load_from_source("structure Simple { param x: Scalar = 1mm }", "simple")
+        .expect("load");
     let tree = session.get_entity_tree();
     let root = &tree[0];
     assert!(!root.has_mesh, "Simple with no realization has_mesh=false");
@@ -3367,19 +3415,26 @@ fn get_entity_tree_sub_component_produces_nested_node() {
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
 
-    session.load_from_source(
-        r#"structure Bolt { param mass: Scalar = 1 }
+    session
+        .load_from_source(
+            r#"structure Bolt { param mass: Scalar = 1 }
 structure Assembly { sub bolt = Bolt() }"#,
-        "test",
-    ).expect("load");
+            "test",
+        )
+        .expect("load");
 
     let tree = session.get_entity_tree();
 
     // Find Assembly root
-    let assembly = tree.iter().find(|n| n.entity_path == "Assembly")
+    let assembly = tree
+        .iter()
+        .find(|n| n.entity_path == "Assembly")
         .expect("Assembly root should exist");
 
-    let sub_node = assembly.children.iter().find(|c| c.kind == "sub")
+    let sub_node = assembly
+        .children
+        .iter()
+        .find(|c| c.kind == "sub")
         .expect("Assembly should have a 'sub' child node");
 
     assert_eq!(sub_node.entity_path, "Assembly.bolt");
@@ -3388,9 +3443,11 @@ structure Assembly { sub bolt = Bolt() }"#,
 
 #[test]
 fn get_entity_tree_collection_sub_has_list_type_name() {
-    use reify_types::{ModulePath, Type, DimensionVector};
+    use reify_types::{DimensionVector, ModulePath, Type};
 
-    let mass_type = Type::Scalar { dimension: DimensionVector::MASS };
+    let mass_type = Type::Scalar {
+        dimension: DimensionVector::MASS,
+    };
 
     let bolt_template = TopologyTemplateBuilder::new("Bolt")
         .param("Bolt", "mass", mass_type, None)
@@ -3411,8 +3468,15 @@ fn get_entity_tree_collection_sub_has_list_type_name() {
 
     // Verify the compiled module sub is marked as collection
     let assembly = find_template(&compiled.templates, "Assembly").unwrap();
-    let bolts_sub = assembly.sub_components.iter().find(|s| s.name == "bolts").unwrap();
-    assert!(bolts_sub.is_collection, "collection sub should have is_collection=true");
+    let bolts_sub = assembly
+        .sub_components
+        .iter()
+        .find(|s| s.name == "bolts")
+        .unwrap();
+    assert!(
+        bolts_sub.is_collection,
+        "collection sub should have is_collection=true"
+    );
     assert_eq!(bolts_sub.structure_name, "Bolt");
 
     // Build tree manually via get_entity_tree — we need a session with this module.
@@ -3432,18 +3496,30 @@ fn get_entity_tree_value_cell_type_name_from_cell_type() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
-    session.load_from_source(bracket_source(), "bracket").expect("load");
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load");
 
     let tree = session.get_entity_tree();
     let root = &tree[0];
 
-    let width_node = root.children.iter().find(|c| c.entity_path == "Bracket.width")
+    let width_node = root
+        .children
+        .iter()
+        .find(|c| c.entity_path == "Bracket.width")
         .expect("should have Bracket.width node");
 
     // width is `param width: Scalar = 80mm` → type is Scalar[LENGTH]
     // cell_type.to_string() for a Length scalar should contain "Scalar"
-    let type_name = width_node.type_name.as_ref().expect("width should have type_name");
-    assert!(type_name.contains("Scalar"), "width type_name '{}' should contain 'Scalar'", type_name);
+    let type_name = width_node
+        .type_name
+        .as_ref()
+        .expect("width should have type_name");
+    assert!(
+        type_name.contains("Scalar"),
+        "width type_name '{}' should contain 'Scalar'",
+        type_name
+    );
 }
 
 #[test]
@@ -3451,20 +3527,30 @@ fn get_entity_tree_sub_node_type_name_from_structure_name() {
     // Load source with a sub-component, verify type_name = structure_name
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
-    session.load_from_source(
-        r#"structure Bolt { param mass: Scalar = 1 }
+    session
+        .load_from_source(
+            r#"structure Bolt { param mass: Scalar = 1 }
 structure Assembly { sub bolt = Bolt() }"#,
-        "test",
-    ).expect("load");
+            "test",
+        )
+        .expect("load");
 
     let tree = session.get_entity_tree();
-    let assembly = tree.iter().find(|n| n.entity_path == "Assembly")
+    let assembly = tree
+        .iter()
+        .find(|n| n.entity_path == "Assembly")
         .expect("Assembly root should exist");
-    let sub_node = assembly.children.iter().find(|c| c.kind == "sub")
+    let sub_node = assembly
+        .children
+        .iter()
+        .find(|c| c.kind == "sub")
         .expect("should have sub node");
 
-    assert_eq!(sub_node.type_name.as_deref(), Some("Bolt"),
-        "sub node type_name should be structure_name");
+    assert_eq!(
+        sub_node.type_name.as_deref(),
+        Some("Bolt"),
+        "sub node type_name should be structure_name"
+    );
 }
 
 // ---- Step 7: EntityIdentity and get_entity_identity_map() tests ----
@@ -3479,8 +3565,7 @@ fn entity_identity_serialization_roundtrip() {
         source_span: Some(SourceSpanInfo { start: 10, end: 50 }),
     };
     let json = serde_json::to_string(&identity).expect("serialize should succeed");
-    let back: EntityIdentity =
-        serde_json::from_str(&json).expect("deserialize should succeed");
+    let back: EntityIdentity = serde_json::from_str(&json).expect("deserialize should succeed");
     assert_eq!(identity, back);
 }
 
@@ -3494,16 +3579,15 @@ fn entity_identity_source_span_none_serialization() {
         source_span: None,
     };
     let json = serde_json::to_string(&identity).expect("serialize should succeed");
-    let back: EntityIdentity =
-        serde_json::from_str(&json).expect("deserialize should succeed");
+    let back: EntityIdentity = serde_json::from_str(&json).expect("deserialize should succeed");
     assert_eq!(back.source_span, None);
 }
 
 /// No module loaded → get_entity_identity_map returns empty map.
 #[test]
 fn get_entity_identity_map_no_module_returns_empty() {
-    use std::collections::HashMap;
     use crate::types::EntityIdentity;
+    use std::collections::HashMap;
     let checker = SimpleConstraintChecker;
     let session = EngineSession::new(Box::new(checker), None);
     let map: HashMap<String, EntityIdentity> = session.get_entity_identity_map();
@@ -3514,8 +3598,8 @@ fn get_entity_identity_map_no_module_returns_empty() {
 /// a "Bracket.width" value-cell entry.
 #[test]
 fn get_entity_identity_map_bracket_has_expected_keys() {
-    use std::collections::HashMap;
     use crate::types::EntityIdentity;
+    use std::collections::HashMap;
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
@@ -3540,8 +3624,8 @@ fn get_entity_identity_map_bracket_has_expected_keys() {
 /// (it wraps a u128 formatted as {:032x}).
 #[test]
 fn get_entity_identity_map_content_hash_is_hex_string() {
-    use std::collections::HashMap;
     use crate::types::EntityIdentity;
+    use std::collections::HashMap;
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
@@ -3557,7 +3641,11 @@ fn get_entity_identity_map_content_hash_is_hex_string() {
         "content_hash must be all hex digits: '{}'",
         hash
     );
-    assert_eq!(hash.len(), 32, "ContentHash::to_string() emits 32 hex chars");
+    assert_eq!(
+        hash.len(),
+        32,
+        "ContentHash::to_string() emits 32 hex chars"
+    );
 }
 
 /// Bracket root structural_fingerprint has format '{type}:{parent}:{child_count}:{hash}'.
@@ -3571,8 +3659,8 @@ fn get_entity_identity_map_content_hash_is_hex_string() {
 /// - hash = non-empty hex string from children content hashes
 #[test]
 fn get_entity_identity_map_root_structural_fingerprint_format() {
-    use std::collections::HashMap;
     use crate::types::EntityIdentity;
+    use std::collections::HashMap;
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
@@ -3585,12 +3673,16 @@ fn get_entity_identity_map_root_structural_fingerprint_format() {
     // Format: '{type}:{parent}:{child_count}:{hash}' — 4 colon-separated parts
     let parts: Vec<&str> = fp.splitn(4, ':').collect();
     assert_eq!(
-        parts.len(), 4,
+        parts.len(),
+        4,
         "fingerprint must have 4 colon-separated parts; got: '{}'",
         fp
     );
     assert_eq!(parts[0], "structure", "first part is entity kind");
-    assert_eq!(parts[1], "<root>", "parent of root template is '<root>' sentinel");
+    assert_eq!(
+        parts[1], "<root>",
+        "parent of root template is '<root>' sentinel"
+    );
     let child_count: usize = parts[2]
         .parse()
         .expect("third part (child_count) must be a non-negative integer");
@@ -3601,8 +3693,8 @@ fn get_entity_identity_map_root_structural_fingerprint_format() {
 /// Bracket.width value-cell fingerprint format: '{cell_kind}:{parent}:{child_count}:{hash}'.
 #[test]
 fn get_entity_identity_map_value_cell_structural_fingerprint_format() {
-    use std::collections::HashMap;
     use crate::types::EntityIdentity;
+    use std::collections::HashMap;
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
@@ -3610,10 +3702,17 @@ fn get_entity_identity_map_value_cell_structural_fingerprint_format() {
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
     let map: HashMap<String, EntityIdentity> = session.get_entity_identity_map();
-    let width_identity = map.get("Bracket.width").expect("Bracket.width should be in map");
+    let width_identity = map
+        .get("Bracket.width")
+        .expect("Bracket.width should be in map");
     let fp = &width_identity.structural_fingerprint;
     let parts: Vec<&str> = fp.splitn(4, ':').collect();
-    assert_eq!(parts.len(), 4, "fingerprint must have 4 parts; got: '{}'", fp);
+    assert_eq!(
+        parts.len(),
+        4,
+        "fingerprint must have 4 parts; got: '{}'",
+        fp
+    );
     assert_eq!(parts[0], "param", "Bracket.width is a param cell");
     assert_eq!(parts[1], "Bracket", "parent template is 'Bracket'");
     assert_eq!(parts[2], "0", "value cell has no sub-children");
@@ -3623,8 +3722,8 @@ fn get_entity_identity_map_value_cell_structural_fingerprint_format() {
 /// Value-cell entries carry a source_span with end > start.
 #[test]
 fn get_entity_identity_map_value_cell_has_source_span() {
-    use std::collections::HashMap;
     use crate::types::EntityIdentity;
+    use std::collections::HashMap;
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
@@ -3632,7 +3731,9 @@ fn get_entity_identity_map_value_cell_has_source_span() {
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
     let map: HashMap<String, EntityIdentity> = session.get_entity_identity_map();
-    let width_identity = map.get("Bracket.width").expect("Bracket.width should be in map");
+    let width_identity = map
+        .get("Bracket.width")
+        .expect("Bracket.width should be in map");
     let span = width_identity
         .source_span
         .as_ref()
@@ -3643,8 +3744,8 @@ fn get_entity_identity_map_value_cell_has_source_span() {
 /// Root template entries have source_span = None (TopologyTemplate has no span field).
 #[test]
 fn get_entity_identity_map_root_template_has_no_source_span() {
-    use std::collections::HashMap;
     use crate::types::EntityIdentity;
+    use std::collections::HashMap;
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
@@ -3778,11 +3879,7 @@ fn get_def_preview_unknown_name_returns_error() {
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
     let result = session.get_def_preview("NonExistentDef");
-    assert!(
-        result.is_err(),
-        "unknown def name → Err, got: {:?}",
-        result
-    );
+    assert!(result.is_err(), "unknown def name → Err, got: {:?}", result);
 }
 
 /// Valid definition name → get_def_preview returns Ok(GuiState) with values.
@@ -3885,9 +3982,7 @@ fn get_def_preview_cache_invalidated_on_reload() {
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load");
-    let before = session
-        .get_def_preview("Bracket")
-        .expect("initial preview");
+    let before = session.get_def_preview("Bracket").expect("initial preview");
 
     // Reload with a different width default.
     let checker2 = SimpleConstraintChecker;
@@ -3928,8 +4023,8 @@ fn get_def_preview_cache_invalidated_on_reload() {
 /// so they must agree.
 #[test]
 fn entity_tree_and_identity_map_entity_paths_are_consistent() {
-    use std::collections::HashMap;
     use crate::types::EntityIdentity;
+    use std::collections::HashMap;
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
@@ -3959,10 +4054,13 @@ fn entity_tree_and_identity_map_entity_paths_are_consistent() {
     // Realizations are surfaced in the tree purely for visibility control.
     let queue_kinds: std::collections::HashMap<String, String> = {
         let mut m = std::collections::HashMap::new();
-        let mut q: std::collections::VecDeque<&crate::types::EntityTreeNode> = tree.iter().collect();
+        let mut q: std::collections::VecDeque<&crate::types::EntityTreeNode> =
+            tree.iter().collect();
         while let Some(node) = q.pop_front() {
             m.insert(node.entity_path.clone(), node.kind.clone());
-            for c in &node.children { q.push_back(c); }
+            for c in &node.children {
+                q.push_back(c);
+            }
         }
         m
     };
@@ -4017,8 +4115,8 @@ fn build_template_node_self_reference_does_not_stack_overflow() {
         .template(template_a)
         .build();
 
-    let a_template = find_template(&compiled.templates, "A")
-        .expect("template A must be in the module");
+    let a_template =
+        find_template(&compiled.templates, "A").expect("template A must be in the module");
 
     // BEFORE step-16 fix: this call recurses infinitely → stack overflow.
     // AFTER step-16 fix: the is_recursive check stops recursion and returns
@@ -4118,8 +4216,7 @@ fn build_template_node_non_recursive_parent_stops_at_recursive_child() {
         .template(template_a)
         .build();
 
-    let container_template = find_template(&compiled.templates, "Container")
-        .unwrap();
+    let container_template = find_template(&compiled.templates, "Container").unwrap();
 
     // BEFORE step-16 fix: Container → A → A → … stack overflow.
     // AFTER step-16 fix: Container expands normally, Container.a (pointing to
@@ -4151,8 +4248,8 @@ fn build_template_node_non_recursive_parent_stops_at_recursive_child() {
 /// returns a sensible result type for the bracket fixture.
 #[test]
 fn all_new_commands_callable_on_bracket_fixture() {
-    use std::collections::HashMap;
     use crate::types::EntityIdentity;
+    use std::collections::HashMap;
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
@@ -4163,11 +4260,17 @@ fn all_new_commands_callable_on_bracket_fixture() {
 
     // get_entity_tree
     let tree = session.get_entity_tree();
-    assert!(!tree.is_empty(), "get_entity_tree should return non-empty tree");
+    assert!(
+        !tree.is_empty(),
+        "get_entity_tree should return non-empty tree"
+    );
 
     // get_entity_identity_map
     let map: HashMap<String, EntityIdentity> = session.get_entity_identity_map();
-    assert!(!map.is_empty(), "get_entity_identity_map should return non-empty map");
+    assert!(
+        !map.is_empty(),
+        "get_entity_identity_map should return non-empty map"
+    );
 
     // get_containing_definition — position at (1,1) is inside the Bracket def.
     let def = session.get_containing_definition(1, 1);
@@ -4195,9 +4298,9 @@ fn all_new_commands_callable_on_bracket_fixture() {
 /// surfacing the semantic change immediately.
 #[test]
 fn get_entity_identity_map_value_cell_content_hash_is_identity_hash() {
-    use std::collections::HashMap;
     use crate::types::EntityIdentity;
     use reify_types::ContentHash;
+    use std::collections::HashMap;
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
@@ -4206,7 +4309,9 @@ fn get_entity_identity_map_value_cell_content_hash_is_identity_hash() {
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
     let map: HashMap<String, EntityIdentity> = session.get_entity_identity_map();
-    let width_identity = map.get("Bracket.width").expect("Bracket.width should be in map");
+    let width_identity = map
+        .get("Bracket.width")
+        .expect("Bracket.width should be in map");
     let expected = ContentHash::of_str("Bracket.width").to_string();
     assert_eq!(
         width_identity.content_hash, expected,
@@ -4323,7 +4428,10 @@ fn commit_state_populates_parsed_cache() {
             false
         }
     });
-    assert!(has_bracket, "parsed cache should contain the Bracket structure declaration");
+    assert!(
+        has_bracket,
+        "parsed cache should contain the Bracket structure declaration"
+    );
 }
 
 /// Fresh session returns None from line_offsets_cache_for_test.
@@ -4415,7 +4523,10 @@ fn commit_state_refreshes_caches_on_update_source() {
     assert_eq!(decl_count_1, 1, "source1 should have exactly 1 declaration");
     assert_eq!(offsets_len_1, 0, "source1 has no newlines");
     // source2: 2 structures, 1 newline.
-    assert_eq!(decl_count_2, 2, "source2 should have exactly 2 declarations");
+    assert_eq!(
+        decl_count_2, 2,
+        "source2 should have exactly 2 declarations"
+    );
     assert_eq!(offsets_len_2, 1, "source2 has exactly 1 newline");
 }
 
@@ -4537,8 +4648,7 @@ fn consumed_idents_cache_lifecycle() {
     let expected_consumed: std::collections::HashSet<String> =
         ["m0", "m1"].iter().map(|s| s.to_string()).collect();
     assert_eq!(
-        *kinematic_consumed,
-        expected_consumed,
+        *kinematic_consumed, expected_consumed,
         "Kinematic's consumed set should be {{m0, m1}}"
     );
 
@@ -4719,8 +4829,7 @@ fn get_mechanism_descriptors_warns_once_when_parsed_cache_missing_with_multiple_
 
     let warn_count = counters[&tracing::Level::WARN].load(Ordering::Acquire);
     assert_eq!(
-        warn_count,
-        1,
+        warn_count, 1,
         "expected exactly 1 WARN per get_mechanism_descriptors call when parsed_cache is None; \
          got {} (should fire once per call, not once per template)",
         warn_count
@@ -4993,7 +5102,11 @@ fn freshness_wires_through_build_gui_state_for_failed_value_cell() {
         "expected at least one Violated constraint from bracket_source_violating; \
          got {} constraints: {:?}",
         state.constraints.len(),
-        state.constraints.iter().map(|c| &c.status).collect::<Vec<_>>()
+        state
+            .constraints
+            .iter()
+            .map(|c| &c.status)
+            .collect::<Vec<_>>()
     );
 
     // For every cell referenced by a violated constraint, check that its
@@ -5050,8 +5163,10 @@ fn freshness_wires_through_get_entity_tree_for_realization_failure() {
 
     session
         .load_from_source(bracket_source(), "bracket")
-        .expect("load_from_source should succeed even with failing kernel \
-                 (tessellation errors are captured, not returned as Err)");
+        .expect(
+            "load_from_source should succeed even with failing kernel \
+                 (tessellation errors are captured, not returned as Err)",
+        );
 
     // tessellate_snapshot (called inside build_gui_state / load_from_source)
     // does NOT propagate kernel errors into Freshness::Failed — that is wired
@@ -5235,9 +5350,9 @@ fn extract_joints_from_mechanism_skips_non_map_at_value() {
     // Step 8 RED: hand-construct a mechanism Map whose single body has a
     // non-Map "at" value (Value::String("not-a-map")).  extract_joints_from_mechanism
     // must return empty (joints, seen_joints) — no phantom row, no panic.
-    use std::collections::BTreeMap;
-    use reify_types::Value;
     use crate::engine::extract_joints_from_mechanism;
+    use reify_types::Value;
+    use std::collections::BTreeMap;
 
     let mut body_map: BTreeMap<Value, Value> = BTreeMap::new();
     body_map.insert(
@@ -5275,9 +5390,9 @@ fn extract_joints_from_mechanism_handles_malformed_axis_length() {
     // "axis" Vector has length 2 (malformed — extract_axis requires length 3).
     // The descriptor must still be produced (kind=="prismatic", dimension=="length")
     // but axis must be None.
-    use std::collections::BTreeMap;
-    use reify_types::Value;
     use crate::engine::extract_joints_from_mechanism;
+    use reify_types::Value;
+    use std::collections::BTreeMap;
 
     // Build the joint map with a 2-element axis vector.
     let mut joint_map: BTreeMap<Value, Value> = BTreeMap::new();
@@ -5292,10 +5407,7 @@ fn extract_joints_from_mechanism_handles_malformed_axis_length() {
 
     // Build the body map referencing the joint.
     let mut body_map: BTreeMap<Value, Value> = BTreeMap::new();
-    body_map.insert(
-        Value::String("at".to_string()),
-        Value::Map(joint_map),
-    );
+    body_map.insert(Value::String("at".to_string()), Value::Map(joint_map));
 
     // Build the mechanism map.
     let mut mech_map: BTreeMap<Value, Value> = BTreeMap::new();
@@ -5310,10 +5422,23 @@ fn extract_joints_from_mechanism_handles_malformed_axis_length() {
 
     let (joints, _seen_joints) = extract_joints_from_mechanism(&mech_map);
 
-    assert_eq!(joints.len(), 1, "expected 1 joint descriptor; got {:?}", joints);
+    assert_eq!(
+        joints.len(),
+        1,
+        "expected 1 joint descriptor; got {:?}",
+        joints
+    );
     let jd = &joints[0];
-    assert_eq!(jd.kind, "prismatic", "kind should be prismatic; got {}", jd.kind);
-    assert_eq!(jd.dimension, "length", "dimension should be length; got {}", jd.dimension);
+    assert_eq!(
+        jd.kind, "prismatic",
+        "kind should be prismatic; got {}",
+        jd.kind
+    );
+    assert_eq!(
+        jd.dimension, "length",
+        "dimension should be length; got {}",
+        jd.dimension
+    );
     assert!(
         jd.axis.is_none(),
         "malformed axis (length!=3) must produce axis==None; got {:?}",
@@ -5364,8 +5489,8 @@ fn is_idle_returns_true_after_load_from_source() {
 ///    payload contains a Warning DiagnosticInfo with the unknown-port-type message.
 #[test]
 fn compile_diagnostics_full_pipeline_engine_to_event() {
-    use std::sync::Mutex;
     use crate::diff::{compute_delta, delta_to_events};
+    use std::sync::Mutex;
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
@@ -5416,9 +5541,9 @@ fn compile_diagnostics_full_pipeline_engine_to_event() {
         "compile-diagnostics event payload must be non-empty"
     );
 
-    let warning = diags
-        .iter()
-        .find(|d| d.severity == "Warning" && d.message.to_lowercase().contains("unknown port type"));
+    let warning = diags.iter().find(|d| {
+        d.severity == "Warning" && d.message.to_lowercase().contains("unknown port type")
+    });
     assert!(
         warning.is_some(),
         "expected a Warning with 'unknown port type' in the compile-diagnostics event payload; got: {:?}",
@@ -5544,8 +5669,16 @@ fn load_file_solo_helper_no_imports_works() {
         .find(|v| v.name == "x" && v.entity_path == "Helper")
         .expect("should find parameter 'x' on entity 'Helper'");
 
-    assert_eq!(x_val.unit, "mm", "Helper.x unit should be mm; got '{}'", x_val.unit);
-    assert_eq!(x_val.value, "10", "Helper.x value should be 10; got '{}'", x_val.value);
+    assert_eq!(
+        x_val.unit, "mm",
+        "Helper.x unit should be mm; got '{}'",
+        x_val.unit
+    );
+    assert_eq!(
+        x_val.value, "10",
+        "Helper.x value should be 10; got '{}'",
+        x_val.value
+    );
 }
 
 /// Regression: loading a .ri file whose import cannot be resolved must return
@@ -5627,7 +5760,10 @@ fn update_source_after_load_file_preserves_multi_file_imports() {
         .load_file(&dir.path().join("main.ri"))
         .expect("load_file should succeed with resolved import");
     assert!(
-        load_state.values.iter().any(|v| v.name == "x" && v.entity_path == "Helper"),
+        load_state
+            .values
+            .iter()
+            .any(|v| v.name == "x" && v.entity_path == "Helper"),
         "load_file should produce Helper.x value cell"
     );
 
@@ -5636,7 +5772,8 @@ fn update_source_after_load_file_preserves_multi_file_imports() {
     let main_path_str = main_path.to_str().unwrap();
     let update_result = session.update_source(main_path_str, main_content);
 
-    let state = update_result.expect("update_source after load_file should return Ok (import resolved)");
+    let state =
+        update_result.expect("update_source after load_file should return Ok (import resolved)");
 
     assert!(
         !state.values.is_empty(),
@@ -5789,9 +5926,7 @@ fn find_collision_warning<'a>(
     name: &str,
 ) -> Option<&'a DiagnosticInfo> {
     state.compile_diagnostics.iter().find(|d| {
-        d.severity == "Warning"
-            && d.message.contains(name)
-            && d.message.contains("first-wins")
+        d.severity == "Warning" && d.message.contains(name) && d.message.contains("first-wins")
     })
 }
 
@@ -5819,11 +5954,7 @@ fn assert_first_wins_warning(state: &crate::types::GuiState, name: &str) {
 ///
 /// so that an incidental occurrence of a common fragment (e.g. `"main"` inside
 /// `"domain"` or `"remain"`) cannot produce a false-positive match.
-fn assert_collision_warning_mentions(
-    state: &crate::types::GuiState,
-    name: &str,
-    origins: &[&str],
-) {
+fn assert_collision_warning_mentions(state: &crate::types::GuiState, name: &str, origins: &[&str]) {
     // Soft check first — panics with a descriptive message if the warning is missing.
     assert_first_wins_warning(state, name);
     let w = find_collision_warning(state, name)
@@ -5950,7 +6081,9 @@ fn load_file_three_imports_same_pub_structure_emits_two_collision_diagnostics() 
     let warnings: Vec<_> = state
         .compile_diagnostics
         .iter()
-        .filter(|d| d.severity == "Warning" && d.message.contains("Foo") && d.message.contains("first-wins"))
+        .filter(|d| {
+            d.severity == "Warning" && d.message.contains("Foo") && d.message.contains("first-wins")
+        })
         .collect();
     assert_eq!(
         warnings.len(),
@@ -6034,8 +6167,16 @@ fn load_file_with_std_import_does_not_double_seed_stdlib() {
         .find(|v| v.name == "w" && v.entity_path == "Top")
         .expect("should find parameter 'w' on entity 'Top'");
 
-    assert_eq!(w_val.unit, "mm", "Top.w unit should be mm; got '{}'", w_val.unit);
-    assert_eq!(w_val.value, "5", "Top.w value should be 5; got '{}'", w_val.value);
+    assert_eq!(
+        w_val.unit, "mm",
+        "Top.w unit should be mm; got '{}'",
+        w_val.unit
+    );
+    assert_eq!(
+        w_val.value, "5",
+        "Top.w value should be 5; got '{}'",
+        w_val.value
+    );
 }
 
 // ---- fatal parse/compile diagnostics surfacing tests (task 3351) -----------
@@ -6374,8 +6515,8 @@ fn build_gui_state_surfaces_live_compile_failure_after_failed_load_from_source_w
 /// Pins the invariant introduced in task 3386: live compile failures on the single-file
 /// path are routed to `live_compile_diagnostics` and surfaced via `build_gui_state`.
 #[test]
-fn build_gui_state_surfaces_live_compile_failure_after_failed_update_source_single_file_with_prior_compile(
-) {
+fn build_gui_state_surfaces_live_compile_failure_after_failed_update_source_single_file_with_prior_compile()
+ {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
@@ -6435,8 +6576,8 @@ fn build_gui_state_surfaces_live_compile_failure_after_failed_update_source_sing
 /// Pins the invariant introduced in task 3386: live compile failures on the multi-file
 /// path are routed to `live_compile_diagnostics` and surfaced via `build_gui_state`.
 #[test]
-fn build_gui_state_surfaces_live_compile_failure_after_failed_update_source_multi_file_with_prior_compile(
-) {
+fn build_gui_state_surfaces_live_compile_failure_after_failed_update_source_multi_file_with_prior_compile()
+ {
     let dir = tempfile::tempdir().expect("tempdir should be created");
     let file_path = dir.path().join("main.ri");
     // Write valid bracket source to disk so load_file succeeds.

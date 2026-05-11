@@ -239,10 +239,7 @@ fn corrosion_resistant_refines_material_spec_with_enum_param() {
             "corrosion_class should be Enum(CorrosionClass), got {:?}",
             ty
         ),
-        other => panic!(
-            "corrosion_class should be Param, got {:?}",
-            other
-        ),
+        other => panic!("corrosion_class should be Param, got {:?}", other),
     }
 }
 
@@ -289,10 +286,7 @@ fn biocompatible_refines_material_spec_with_enum_param() {
             "biocompatibility_class should be Enum(BiocompatibilityClass), got {:?}",
             ty
         ),
-        other => panic!(
-            "biocompatibility_class should be Param, got {:?}",
-            other
-        ),
+        other => panic!("biocompatibility_class should be Param, got {:?}", other),
     }
 }
 

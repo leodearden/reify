@@ -563,11 +563,7 @@ structure S {
     param x: Real = 0
 }
 "#;
-    assert_deep_chain_warning_count(
-        source,
-        1,
-        "Declaration::Structure.annotations[*].args",
-    );
+    assert_deep_chain_warning_count(source, 1, "Declaration::Structure.annotations[*].args");
 }
 
 /// Position 16: `MemberDecl::Param.annotations[*].args` — deep chain inside a
@@ -585,11 +581,7 @@ structure S {
     param x: Real = 0
 }
 "#;
-    assert_deep_chain_warning_count(
-        source,
-        1,
-        "MemberDecl::Param.annotations[*].args",
-    );
+    assert_deep_chain_warning_count(source, 1, "MemberDecl::Param.annotations[*].args");
 }
 
 /// Position 17: `MemberDecl::Let.annotations[*].args` — deep chain inside a
@@ -609,11 +601,7 @@ structure S {
     let v = 0
 }
 "#;
-    assert_deep_chain_warning_count(
-        source,
-        1,
-        "MemberDecl::Let.annotations[*].args",
-    );
+    assert_deep_chain_warning_count(source, 1, "MemberDecl::Let.annotations[*].args");
 }
 
 /// Position 18: `Declaration::Function.annotations[*].args` — deep chain
@@ -628,11 +616,7 @@ fn walker_visits_function_decl_annotation_arg() {
 @deprecated(a.b.c.d.e)
 fn my_fn(w: Real) -> Real { w }
 "#;
-    assert_deep_chain_warning_count(
-        source,
-        1,
-        "Declaration::Function.annotations[*].args",
-    );
+    assert_deep_chain_warning_count(source, 1, "Declaration::Function.annotations[*].args");
 }
 
 /// Position 19: `Declaration::Field.annotations[*].args` — deep chain inside
@@ -648,11 +632,7 @@ fn walker_visits_field_decl_annotation_arg() {
 @deprecated(a.b.c.d.e)
 field def my_field : Real -> Real { source = analytical { |p| p } }
 "#;
-    assert_deep_chain_warning_count(
-        source,
-        1,
-        "Declaration::Field.annotations[*].args",
-    );
+    assert_deep_chain_warning_count(source, 1, "Declaration::Field.annotations[*].args");
 }
 
 /// Position 20: `Declaration::Unit.annotations[*].args` — deep chain inside
@@ -667,11 +647,7 @@ fn walker_visits_unit_decl_annotation_arg() {
 @deprecated(a.b.c.d.e)
 unit meter : Length
 "#;
-    assert_deep_chain_warning_count(
-        source,
-        1,
-        "Declaration::Unit.annotations[*].args",
-    );
+    assert_deep_chain_warning_count(source, 1, "Declaration::Unit.annotations[*].args");
 }
 
 /// Position 21: `Declaration::Enum.annotations[*].args` — deep chain inside
@@ -687,11 +663,7 @@ fn walker_visits_enum_decl_annotation_arg() {
 @deprecated(a.b.c.d.e)
 enum Dir { In, Out }
 "#;
-    assert_deep_chain_warning_count(
-        source,
-        1,
-        "Declaration::Enum.annotations[*].args",
-    );
+    assert_deep_chain_warning_count(source, 1, "Declaration::Enum.annotations[*].args");
 }
 
 /// Position 22: `Declaration::Import.annotations[*].args` — deep chain
@@ -704,11 +676,7 @@ enum Dir { In, Out }
 #[test]
 fn walker_visits_import_decl_annotation_arg() {
     let source = r#"@deprecated(a.b.c.d.e) import std.math"#;
-    assert_deep_chain_warning_count(
-        source,
-        1,
-        "Declaration::Import.annotations[*].args",
-    );
+    assert_deep_chain_warning_count(source, 1, "Declaration::Import.annotations[*].args");
 }
 
 /// Position 23: `Declaration::TypeAlias.annotations[*].args` — deep chain
@@ -722,11 +690,7 @@ fn walker_visits_import_decl_annotation_arg() {
 #[test]
 fn walker_visits_type_alias_decl_annotation_arg() {
     let source = r#"@deprecated(a.b.c.d.e) type Pressure = Force / Area"#;
-    assert_deep_chain_warning_count(
-        source,
-        1,
-        "Declaration::TypeAlias.annotations[*].args",
-    );
+    assert_deep_chain_warning_count(source, 1, "Declaration::TypeAlias.annotations[*].args");
 }
 
 /// Position 24: `Declaration::Occurrence.annotations[*].args` — deep chain
@@ -745,11 +709,7 @@ occurrence def Op {
     param p: Real = 0
 }
 "#;
-    assert_deep_chain_warning_count(
-        source,
-        1,
-        "Declaration::Occurrence.annotations[*].args",
-    );
+    assert_deep_chain_warning_count(source, 1, "Declaration::Occurrence.annotations[*].args");
 }
 
 /// Position 25: `Declaration::Trait.annotations[*].args` — deep chain inside
@@ -768,11 +728,7 @@ trait MyTrait {
     param p: Real
 }
 "#;
-    assert_deep_chain_warning_count(
-        source,
-        1,
-        "Declaration::Trait.annotations[*].args",
-    );
+    assert_deep_chain_warning_count(source, 1, "Declaration::Trait.annotations[*].args");
 }
 
 /// Position 26: `Declaration::Purpose.annotations[*].args` — deep chain inside
@@ -793,11 +749,7 @@ purpose my_purpose(subject: Structure) {
     let v = 0
 }
 "#;
-    assert_deep_chain_warning_count(
-        source,
-        1,
-        "Declaration::Purpose.annotations[*].args",
-    );
+    assert_deep_chain_warning_count(source, 1, "Declaration::Purpose.annotations[*].args");
 }
 
 /// Position 27: `Declaration::Constraint.annotations[*].args` — deep chain
@@ -817,9 +769,5 @@ constraint def MyConstraint {
     param x: Real
 }
 "#;
-    assert_deep_chain_warning_count(
-        source,
-        1,
-        "Declaration::Constraint.annotations[*].args",
-    );
+    assert_deep_chain_warning_count(source, 1, "Declaration::Constraint.annotations[*].args");
 }

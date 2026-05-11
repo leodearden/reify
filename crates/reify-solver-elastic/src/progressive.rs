@@ -157,10 +157,7 @@ pub struct PartialElasticResult {
 /// // Above threshold (195 MPa >= 180 MPa) → true.
 /// assert!(near_constraint_boundary(&make_r(195e6), &opts));
 /// ```
-pub fn near_constraint_boundary(
-    result: &PartialElasticResult,
-    opts: &ProgressiveOptions,
-) -> bool {
+pub fn near_constraint_boundary(result: &PartialElasticResult, opts: &ProgressiveOptions) -> bool {
     debug_assert!(
         opts.target_tolerance > 0.0,
         "target_tolerance must be positive, got {}",
@@ -177,9 +174,7 @@ pub fn near_constraint_boundary(
         return false;
     }
     match opts.yield_stress {
-        Some(yield_stress) => {
-            result.max_von_mises >= (1.0 - opts.near_boundary_pct) * yield_stress
-        }
+        Some(yield_stress) => result.max_von_mises >= (1.0 - opts.near_boundary_pct) * yield_stress,
         None => false,
     }
 }
@@ -344,7 +339,10 @@ mod tests {
 
     #[test]
     fn near_constraint_boundary_returns_false_when_yield_stress_is_none() {
-        let opts = ProgressiveOptions { yield_stress: None, ..Default::default() };
+        let opts = ProgressiveOptions {
+            yield_stress: None,
+            ..Default::default()
+        };
         let result = make_result(1e30);
         assert!(
             !near_constraint_boundary(&result, &opts),
@@ -354,32 +352,69 @@ mod tests {
 
     #[test]
     fn refinement_pass_tuning_halves_mesh_and_tenths_cg_per_level() {
-        let opts = ProgressiveOptions { target_tolerance: 0.05, ..Default::default() };
+        let opts = ProgressiveOptions {
+            target_tolerance: 0.05,
+            ..Default::default()
+        };
         // level=1: mesh_tol = 0.05 × 4 × 0.5 = 0.10, cg_tol = 1e-3 × 0.1 = 1e-4
         let pt1 = refinement_pass_tuning(&opts, 1);
-        assert!((pt1.mesh_tol - 0.10).abs() < 1e-15, "level=1 mesh_tol={}", pt1.mesh_tol);
-        assert!((pt1.cg_tol - 1e-4).abs() < 1e-15, "level=1 cg_tol={}", pt1.cg_tol);
+        assert!(
+            (pt1.mesh_tol - 0.10).abs() < 1e-15,
+            "level=1 mesh_tol={}",
+            pt1.mesh_tol
+        );
+        assert!(
+            (pt1.cg_tol - 1e-4).abs() < 1e-15,
+            "level=1 cg_tol={}",
+            pt1.cg_tol
+        );
         // level=2: mesh_tol = 0.05 × 4 × 0.25 = 0.05, cg_tol = 1e-5
         let pt2 = refinement_pass_tuning(&opts, 2);
-        assert!((pt2.mesh_tol - 0.05).abs() < 1e-15, "level=2 mesh_tol={}", pt2.mesh_tol);
-        assert!((pt2.cg_tol - 1e-5).abs() < 1e-15, "level=2 cg_tol={}", pt2.cg_tol);
+        assert!(
+            (pt2.mesh_tol - 0.05).abs() < 1e-15,
+            "level=2 mesh_tol={}",
+            pt2.mesh_tol
+        );
+        assert!(
+            (pt2.cg_tol - 1e-5).abs() < 1e-15,
+            "level=2 cg_tol={}",
+            pt2.cg_tol
+        );
         // level=3: mesh_tol = 0.05 × 4 × 0.125 = 0.025, cg_tol = 1e-6
         let pt3 = refinement_pass_tuning(&opts, 3);
-        assert!((pt3.mesh_tol - 0.025).abs() < 1e-15, "level=3 mesh_tol={}", pt3.mesh_tol);
-        assert!((pt3.cg_tol - 1e-6).abs() < 1e-15, "level=3 cg_tol={}", pt3.cg_tol);
+        assert!(
+            (pt3.mesh_tol - 0.025).abs() < 1e-15,
+            "level=3 mesh_tol={}",
+            pt3.mesh_tol
+        );
+        assert!(
+            (pt3.cg_tol - 1e-6).abs() < 1e-15,
+            "level=3 cg_tol={}",
+            pt3.cg_tol
+        );
     }
 
     #[test]
     fn coarse_pass_tuning_returns_4x_mesh_and_loose_cg() {
-        let opts = ProgressiveOptions { target_tolerance: 0.05, ..Default::default() };
+        let opts = ProgressiveOptions {
+            target_tolerance: 0.05,
+            ..Default::default()
+        };
         let pt = coarse_pass_tuning(&opts);
         assert_eq!(pt.mesh_tol, 0.20, "mesh_tol must be target_tolerance × 4");
         assert_eq!(pt.cg_tol, 1e-3, "cg_tol must be 1e-3 for coarse pass");
 
         // Different tolerance — defeats hardcoded-constant returns.
-        let opts2 = ProgressiveOptions { target_tolerance: 0.01, ..Default::default() };
+        let opts2 = ProgressiveOptions {
+            target_tolerance: 0.01,
+            ..Default::default()
+        };
         let pt2 = coarse_pass_tuning(&opts2);
-        assert!((pt2.mesh_tol - 0.04).abs() < 1e-15, "mesh_tol for 0.01 must be 0.04, got {}", pt2.mesh_tol);
+        assert!(
+            (pt2.mesh_tol - 0.04).abs() < 1e-15,
+            "mesh_tol for 0.01 must be 0.04, got {}",
+            pt2.mesh_tol
+        );
         assert_eq!(pt2.cg_tol, 1e-3);
     }
 
@@ -393,7 +428,10 @@ mod tests {
             iterations: 7,
         };
         let cloned = original.clone();
-        assert_eq!(original, cloned, "PartialElasticResult must round-trip through Clone+PartialEq");
+        assert_eq!(
+            original, cloned,
+            "PartialElasticResult must round-trip through Clone+PartialEq"
+        );
         assert_eq!(cloned.displacement, vec![1.0, -2.0]);
         assert_eq!(cloned.stress, vec![100e6, -50e6]);
         assert_eq!(cloned.max_von_mises, 100e6);
@@ -459,7 +497,10 @@ mod tests {
     #[test]
     fn should_refine_terminates_when_budget_exhausted() {
         // max_refinements = 3, current_level = 3 → budget exhausted, even with More demand.
-        let opts = ProgressiveOptions { max_refinements: 3, ..Default::default() };
+        let opts = ProgressiveOptions {
+            max_refinements: 3,
+            ..Default::default()
+        };
         let result = make_result(0.0);
         assert_eq!(
             should_refine(&opts, 3, &result, RefinementDemand::More),
@@ -492,13 +533,19 @@ mod tests {
     #[test]
     fn progressive_options_default_has_sane_values() {
         let opts = ProgressiveOptions::default();
-        assert!(opts.target_tolerance > 0.0, "target_tolerance must be positive");
+        assert!(
+            opts.target_tolerance > 0.0,
+            "target_tolerance must be positive"
+        );
         assert!(opts.max_refinements > 0, "max_refinements must be > 0");
         assert!(
             opts.near_boundary_pct > 0.0 && opts.near_boundary_pct < 1.0,
             "near_boundary_pct must be in (0, 1), got {}",
             opts.near_boundary_pct
         );
-        assert!(opts.yield_stress.is_none(), "yield_stress default must be None");
+        assert!(
+            opts.yield_stress.is_none(),
+            "yield_stress default must be None"
+        );
     }
 }

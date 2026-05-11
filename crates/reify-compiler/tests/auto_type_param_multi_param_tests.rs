@@ -28,7 +28,10 @@ use reify_compiler::auto_type_param::{
 };
 use reify_compiler::{CompiledModule, CompiledTrait, TopologyTemplate};
 use reify_test_support::{MockConstraintChecker, TopologyTemplateBuilder, parse_and_compile};
-use reify_types::{CompiledExpr, CompiledFunction, ConstraintNodeId, DiagnosticCode, Satisfaction, Severity, SourceSpan, Value};
+use reify_types::{
+    CompiledExpr, CompiledFunction, ConstraintNodeId, DiagnosticCode, Satisfaction, Severity,
+    SourceSpan, Value,
+};
 
 /// Build a Reify source with `trait Seal {}` and `count` structures
 /// `S00`..`S{count-1}` each declaring `: Seal`. Zero-padded to two digits
@@ -160,7 +163,10 @@ structure def ORingSeal : Seal {
     assert_eq!(
         outcome,
         MultiParamResolutionOutcome {
-            per_param: vec![("T".to_string(), SelectionResult::Selected("ORingSeal".to_string()))],
+            per_param: vec![(
+                "T".to_string(),
+                SelectionResult::Selected("ORingSeal".to_string())
+            )],
             substitution: vec![("T".to_string(), "ORingSeal".to_string())],
         },
         "single-param happy path must produce Selected(ORingSeal)"
@@ -232,8 +238,14 @@ structure def AirCooled : Cooled {
         outcome,
         MultiParamResolutionOutcome {
             per_param: vec![
-                ("T".to_string(), SelectionResult::Selected("ORingSeal".to_string())),
-                ("U".to_string(), SelectionResult::Selected("AirCooled".to_string())),
+                (
+                    "T".to_string(),
+                    SelectionResult::Selected("ORingSeal".to_string())
+                ),
+                (
+                    "U".to_string(),
+                    SelectionResult::Selected("AirCooled".to_string())
+                ),
             ],
             substitution: vec![
                 ("T".to_string(), "ORingSeal".to_string()),
@@ -307,7 +319,10 @@ fn overflow_on_first_param_halts_and_does_not_enumerate_second_param() {
         "overflow on first param must halt: per_param must have exactly 1 entry, got: {:?}",
         outcome.per_param
     );
-    assert_eq!(outcome.per_param[0].0, "T", "first per_param entry must be for param 'T'");
+    assert_eq!(
+        outcome.per_param[0].0, "T",
+        "first per_param entry must be for param 'T'"
+    );
     assert!(
         matches!(outcome.per_param[0].1, SelectionResult::Ambiguous(_)),
         "overflow maps to Ambiguous; got: {:?}",
@@ -495,13 +510,13 @@ structure def AirCooled : Cooled {
         "ambiguous on first param must halt: per_param must have exactly 1 entry, got: {:?}",
         outcome.per_param
     );
-    assert_eq!(outcome.per_param[0].0, "T", "first per_param entry must be for param 'T'");
+    assert_eq!(
+        outcome.per_param[0].0, "T",
+        "first per_param entry must be for param 'T'"
+    );
     assert_eq!(
         outcome.per_param[0].1,
-        SelectionResult::Ambiguous(vec![
-            "GraphiteSeal".to_string(),
-            "ORingSeal".to_string(),
-        ]),
+        SelectionResult::Ambiguous(vec!["GraphiteSeal".to_string(), "ORingSeal".to_string(),]),
         "strict ≥2 feasible candidates must produce Ambiguous([lex_first, lex_second])"
     );
     assert!(
@@ -592,12 +607,13 @@ structure def ORingSeal : Seal {
         outcome,
         MultiParamResolutionOutcome {
             per_param: vec![
-                ("T".to_string(), SelectionResult::Selected("ORingSeal".to_string())),
+                (
+                    "T".to_string(),
+                    SelectionResult::Selected("ORingSeal".to_string())
+                ),
                 ("U".to_string(), SelectionResult::NoCandidate),
             ],
-            substitution: vec![
-                ("T".to_string(), "ORingSeal".to_string()),
-            ],
+            substitution: vec![("T".to_string(), "ORingSeal".to_string()),],
         },
         "mid-list failure: per_param must carry both entries (T:Selected, U:NoCandidate); \
          substitution must carry only T:ORingSeal"
@@ -655,7 +671,7 @@ structure def ORingSeal : Seal {
 
     let param_a = AutoTypeParam {
         name: "A".to_string(),
-        bounds: vec!["Seal".to_string()],   // one candidate → Selected
+        bounds: vec!["Seal".to_string()], // one candidate → Selected
         free: false,
         use_site_span: SourceSpan::new(10, 20),
     };
@@ -698,8 +714,15 @@ structure def ORingSeal : Seal {
     ));
     assert_eq!(outcome_ab.per_param[1].0, "B");
     assert_eq!(outcome_ab.per_param[1].1, SelectionResult::NoCandidate);
-    assert_eq!(diag_ab.len(), 1, "[A,B] order: exactly one diagnostic expected");
-    assert_eq!(diag_ab[0].code, Some(DiagnosticCode::AutoTypeParamNoCandidate));
+    assert_eq!(
+        diag_ab.len(),
+        1,
+        "[A,B] order: exactly one diagnostic expected"
+    );
+    assert_eq!(
+        diag_ab[0].code,
+        Some(DiagnosticCode::AutoTypeParamNoCandidate)
+    );
 
     // ── Run 2: order [B, A] ──────────────────────────────────────────────────
     let mut diag_ba = Vec::new();
@@ -728,8 +751,15 @@ structure def ORingSeal : Seal {
     );
     assert_eq!(outcome_ba.per_param[0].0, "B");
     assert_eq!(outcome_ba.per_param[0].1, SelectionResult::NoCandidate);
-    assert_eq!(diag_ba.len(), 1, "[B,A] order: exactly one diagnostic expected");
-    assert_eq!(diag_ba[0].code, Some(DiagnosticCode::AutoTypeParamNoCandidate));
+    assert_eq!(
+        diag_ba.len(),
+        1,
+        "[B,A] order: exactly one diagnostic expected"
+    );
+    assert_eq!(
+        diag_ba[0].code,
+        Some(DiagnosticCode::AutoTypeParamNoCandidate)
+    );
 }
 
 // ─── step-17: per-param `free` flag is honored independently ─────────────────
@@ -781,14 +811,14 @@ structure def ORingSeal2 : Polished {
     let params = vec![
         AutoTypeParam {
             name: "T".to_string(),
-            bounds: vec!["Seal".to_string()],     // one candidate → Selected, no diag
-            free: false,                            // strict
+            bounds: vec!["Seal".to_string()], // one candidate → Selected, no diag
+            free: false,                      // strict
             use_site_span: SourceSpan::new(10, 20),
         },
         AutoTypeParam {
             name: "U".to_string(),
-            bounds: vec!["Polished".to_string()],  // two candidates → NonUnique + Selected(lex-first)
-            free: true,                             // free
+            bounds: vec!["Polished".to_string()], // two candidates → NonUnique + Selected(lex-first)
+            free: true,                           // free
             use_site_span: SourceSpan::new(30, 40),
         },
     ];
@@ -808,8 +838,14 @@ structure def ORingSeal2 : Polished {
         outcome,
         MultiParamResolutionOutcome {
             per_param: vec![
-                ("T".to_string(), SelectionResult::Selected("ORingSeal".to_string())),
-                ("U".to_string(), SelectionResult::Selected("GraphiteSeal2".to_string())),
+                (
+                    "T".to_string(),
+                    SelectionResult::Selected("ORingSeal".to_string())
+                ),
+                (
+                    "U".to_string(),
+                    SelectionResult::Selected("GraphiteSeal2".to_string())
+                ),
             ],
             substitution: vec![
                 ("T".to_string(), "ORingSeal".to_string()),
@@ -989,11 +1025,9 @@ structure def ORingSeal : Seal {
         "diagnostic must have at least one label"
     );
     assert_eq!(
-        diagnostics[0].labels[0].span,
-        use_site_span,
+        diagnostics[0].labels[0].span, use_site_span,
         "label span must equal use_site_span ({:?}); got: {:?}",
-        use_site_span,
-        diagnostics[0].labels[0].span
+        use_site_span, diagnostics[0].labels[0].span
     );
 }
 

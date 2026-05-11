@@ -82,9 +82,7 @@ pub fn mesh_plane_2d(
     // Recover from a poisoned lock rather than propagating: every call begins
     // with `ffi::clear()` immediately below, which wipes any half-built model
     // state left over from a panicked prior call. Mirrors `mesh_to_volume`.
-    let _guard = init::GMSH_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     init::ensure_initialized();
     ffi::clear()?;
     ffi::option_set_number("General.Terminal", 0.0)?;

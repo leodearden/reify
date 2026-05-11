@@ -154,7 +154,10 @@ fn is_editor_debris(file_name: &OsStr) -> bool {
     }
 
     // Exact-name matches (case-insensitive).
-    if matches!(name_lower.as_str(), ".ds_store" | "thumbs.db" | "desktop.ini") {
+    if matches!(
+        name_lower.as_str(),
+        ".ds_store" | "thumbs.db" | "desktop.ini"
+    ) {
         return true;
     }
 
@@ -316,10 +319,7 @@ fn walk_recursive(label: &str, root: &Path, path: &Path, walk: &mut ContributorW
                 label.as_bytes().to_vec()
             } else {
                 // File within a directory: use "{label}/{relative_path}".
-                let rel = path
-                    .strip_prefix(root)
-                    .unwrap_or(path)
-                    .to_string_lossy();
+                let rel = path.strip_prefix(root).unwrap_or(path).to_string_lossy();
                 format!("{label}/{rel}").into_bytes()
             };
             let file_bytes = std::fs::read(path).unwrap_or_else(|e| {

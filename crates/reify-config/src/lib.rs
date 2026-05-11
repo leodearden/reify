@@ -325,8 +325,7 @@ impl fmt::Display for ManifestError {
                 write!(f, "failed to parse reify.toml: {}", msg)
             }
             ManifestError::UnknownKernel(key) => {
-                let expected: Vec<String> =
-                    KernelId::ALL.iter().map(|id| id.to_string()).collect();
+                let expected: Vec<String> = KernelId::ALL.iter().map(|id| id.to_string()).collect();
                 write!(
                     f,
                     "unknown kernel id '{}' in [kernels] (expected one of: {})",
@@ -577,8 +576,7 @@ mod tests {
             "OCCT",   // upper-case
             "Fidget", // capitalised
             "truck",  // dropped from v0.2
-            "open_vdb",
-            "open-vdb",
+            "open_vdb", "open-vdb",
         ];
         for s in invalid {
             assert!(
@@ -609,10 +607,9 @@ mod tests {
         // options (e.g. `tolerance`) must extend the schema explicitly.
         // Silently accepting and discarding unknown keys would be worse than
         // rejecting them.
-        let err = Manifest::from_toml_str(
-            "[kernels.occt]\nversion = \"7.7.0\"\nfeature = \"foo\"\n",
-        )
-        .expect_err("unknown fields in pin table should be rejected");
+        let err =
+            Manifest::from_toml_str("[kernels.occt]\nversion = \"7.7.0\"\nfeature = \"foo\"\n")
+                .expect_err("unknown fields in pin table should be rejected");
         match err {
             ManifestError::Parse(_) => {}
             other => panic!("expected ManifestError::Parse(_), got {:?}", other),

@@ -409,7 +409,11 @@ structure def WorstCaseNegativesFixture {
 /// permanent Undef stub.
 #[test]
 fn worst_case_arity_one_returns_undef() {
-    check_worst_case_negative(WORST_CASE_ARITY_ONE_SOURCE, "arity_one", "worst_case(mcr) — 1 arg");
+    check_worst_case_negative(
+        WORST_CASE_ARITY_ONE_SOURCE,
+        "arity_one",
+        "worst_case(mcr) — 1 arg",
+    );
 }
 
 /// Reify source for the `arity_three` negative: `worst_case(mcr, |f| f, |f| f)`
@@ -429,7 +433,11 @@ structure def WorstCaseNegativesFixture {
 /// dispatch arm requires exactly 2 evaluated args.
 #[test]
 fn worst_case_arity_three_returns_undef() {
-    check_worst_case_negative(WORST_CASE_ARITY_THREE_SOURCE, "arity_three", "worst_case(mcr, |f| f, |f| f) — 3 args");
+    check_worst_case_negative(
+        WORST_CASE_ARITY_THREE_SOURCE,
+        "arity_three",
+        "worst_case(mcr, |f| f, |f| f) — 3 args",
+    );
 }
 
 /// Reify source for the `non_map_first` negative: `worst_case(42, |f| f)` passes
@@ -446,7 +454,11 @@ structure def WorstCaseNegativesFixture {
 /// pattern match requires `Value::Map`.
 #[test]
 fn worst_case_non_map_first_arg_returns_undef() {
-    check_worst_case_negative(WORST_CASE_NON_MAP_FIRST_SOURCE, "non_map_first", "worst_case(42, |f| f) — non-Map first arg");
+    check_worst_case_negative(
+        WORST_CASE_NON_MAP_FIRST_SOURCE,
+        "non_map_first",
+        "worst_case(42, |f| f) — non-Map first arg",
+    );
 }
 
 /// Reify source for the `non_lambda_second` negative: `worst_case(mcr, 42)` passes
@@ -467,7 +479,11 @@ structure def WorstCaseNegativesFixture {
 /// check requires `Value::Lambda { .. }`.
 #[test]
 fn worst_case_non_lambda_second_arg_returns_undef() {
-    check_worst_case_negative(WORST_CASE_NON_LAMBDA_SECOND_SOURCE, "non_lambda_second", "worst_case(mcr, 42) — non-Lambda second arg");
+    check_worst_case_negative(
+        WORST_CASE_NON_LAMBDA_SECOND_SOURCE,
+        "non_lambda_second",
+        "worst_case(mcr, 42) — non-Lambda second arg",
+    );
 }
 
 /// Reify source for the `no_cases_key` negative: `worst_case(map{"foo" => 1}, |f| f)`
@@ -484,7 +500,11 @@ structure def WorstCaseNegativesFixture {
 /// `outer.get(&Value::String("cases"))` returns `None`.
 #[test]
 fn worst_case_missing_cases_key_returns_undef() {
-    check_worst_case_negative(WORST_CASE_MISSING_CASES_KEY_SOURCE, "no_cases_key", "worst_case(map{\"foo\" => 1}, |f| f) — missing \"cases\" key");
+    check_worst_case_negative(
+        WORST_CASE_MISSING_CASES_KEY_SOURCE,
+        "no_cases_key",
+        "worst_case(map{\"foo\" => 1}, |f| f) — missing \"cases\" key",
+    );
 }
 
 /// Reify source for the `cases_not_map` negative:
@@ -502,7 +522,11 @@ structure def WorstCaseNegativesFixture {
 /// the `cases` match arm requires `Some(Value::Map(c))` and `42` is not a Map.
 #[test]
 fn worst_case_cases_value_not_map_returns_undef() {
-    check_worst_case_negative(WORST_CASE_CASES_VALUE_NOT_MAP_SOURCE, "cases_not_map", "worst_case(map{\"cases\" => 42}, |f| f) — cases not a Map");
+    check_worst_case_negative(
+        WORST_CASE_CASES_VALUE_NOT_MAP_SOURCE,
+        "cases_not_map",
+        "worst_case(map{\"cases\" => 42}, |f| f) — cases not a Map",
+    );
 }
 
 /// Reify source for the `lambda_non_field` negative: `worst_case(mcr, |f| 42)`
@@ -527,7 +551,11 @@ structure def WorstCaseNegativesFixture {
 /// `Value::Undef`.
 #[test]
 fn worst_case_lambda_returns_non_field_returns_undef() {
-    check_worst_case_negative(WORST_CASE_LAMBDA_NON_FIELD_SOURCE, "lambda_non_field", "worst_case(mcr, |f| 42) — lambda returns non-Field");
+    check_worst_case_negative(
+        WORST_CASE_LAMBDA_NON_FIELD_SOURCE,
+        "lambda_non_field",
+        "worst_case(mcr, |f| 42) — lambda returns non-Field",
+    );
 }
 
 /// Stage-2 readiness probe: verify that the `MultiCaseResult(...)` and
@@ -596,9 +624,9 @@ structure def SmokeFixture {
     match lc {
         Value::Map(outer) => match outer.get(&Value::String("name".to_string())) {
             Some(Value::String(name)) if name == "tracking" => {}
-            Some(other) => panic!(
-                "lc[\"name\"] should be Value::String(\"tracking\"), got: {other:?}"
-            ),
+            Some(other) => {
+                panic!("lc[\"name\"] should be Value::String(\"tracking\"), got: {other:?}")
+            }
             None => panic!("lc should have a \"name\" key, got: {lc:?}"),
         },
         _ => panic!("lc (LoadCase ctor) should be Value::Map, got: {lc:?}"),

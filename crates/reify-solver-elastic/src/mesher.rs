@@ -414,8 +414,7 @@ pub fn mesh_swept_profile_2d(
             )
             .map_err(map_geometry_error)?;
 
-            let vertices: Vec<f32> =
-                result.vertices_xy.iter().map(|&v| v as f32).collect();
+            let vertices: Vec<f32> = result.vertices_xy.iter().map(|&v| v as f32).collect();
             Ok(Mesh2dReport {
                 mesh: Mesh2d::Triangle {
                     vertices,
@@ -437,8 +436,7 @@ pub fn mesh_swept_profile_2d(
             )
             .map_err(map_geometry_error)?;
 
-            let vertices: Vec<f32> =
-                result.vertices_xy.iter().map(|&v| v as f32).collect();
+            let vertices: Vec<f32> = result.vertices_xy.iter().map(|&v| v as f32).collect();
 
             // Happy path: a "clean" recombine produced quads only (no
             // leftover triangles from a partial recombination) AND every
@@ -452,9 +450,8 @@ pub fn mesh_swept_profile_2d(
                 &result.quad_indices,
                 options.recombine_skew_threshold,
             );
-            let clean_recombine = !result.quad_indices.is_empty()
-                && result.triangle_indices.is_empty()
-                && quality_ok;
+            let clean_recombine =
+                !result.quad_indices.is_empty() && result.triangle_indices.is_empty() && quality_ok;
             if clean_recombine {
                 return Ok(Mesh2dReport {
                     mesh: Mesh2d::Quad {
@@ -506,8 +503,7 @@ pub fn mesh_swept_profile_2d(
                 options.deterministic,
             )
             .map_err(map_geometry_error)?;
-            let fb_vertices: Vec<f32> =
-                fb.vertices_xy.iter().map(|&v| v as f32).collect();
+            let fb_vertices: Vec<f32> = fb.vertices_xy.iter().map(|&v| v as f32).collect();
             Ok(Mesh2dReport {
                 mesh: Mesh2d::Triangle {
                     vertices: fb_vertices,
@@ -593,7 +589,12 @@ mod tests {
     fn profile_boundary_accepts_2d_points() {
         let pb = ProfileBoundary {
             outer: vec![[0.0_f64, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
-            holes: vec![vec![[0.25_f64, 0.25], [0.75, 0.25], [0.75, 0.75], [0.25, 0.75]]],
+            holes: vec![vec![
+                [0.25_f64, 0.25],
+                [0.75, 0.25],
+                [0.75, 0.75],
+                [0.25, 0.75],
+            ]],
         };
         assert_eq!(pb.outer.len(), 4);
         assert_eq!(pb.holes.len(), 1);
@@ -714,10 +715,14 @@ mod tests {
         let cos30 = (30.0_f64).to_radians().cos();
         let sin30 = (30.0_f64).to_radians().sin();
         let vertices: Vec<f32> = vec![
-            0.0, 0.0,                       // 0 — sharp corner
-            1.0, 0.0,                       // 1
-            (1.0 + cos30) as f32, sin30 as f32, // 2
-            cos30 as f32, sin30 as f32,     // 3
+            0.0,
+            0.0, // 0 — sharp corner
+            1.0,
+            0.0, // 1
+            (1.0 + cos30) as f32,
+            sin30 as f32, // 2
+            cos30 as f32,
+            sin30 as f32, // 3
         ];
         let quad_indices: Vec<u32> = vec![0, 1, 2, 3];
         assert!(!recombine_quality_ok(

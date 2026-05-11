@@ -125,10 +125,7 @@ fn select_returns_ambiguous_for_two_strict_feasible_candidates() {
 
     assert_eq!(
         result,
-        SelectionResult::Ambiguous(vec![
-            "GraphiteSeal".to_string(),
-            "ORingSeal".to_string()
-        ]),
+        SelectionResult::Ambiguous(vec!["GraphiteSeal".to_string(), "ORingSeal".to_string()]),
         "≥2 feasible under strict must return Ambiguous with all feasible FQNs"
     );
     assert_eq!(diagnostics.len(), 1, "exactly one ambiguous diagnostic");
@@ -144,7 +141,10 @@ fn select_returns_ambiguous_for_two_strict_feasible_candidates() {
         !d.labels.is_empty(),
         "diagnostic must carry at least one label at the use-site span"
     );
-    assert_eq!(d.labels[0].span, use_site_span, "label span = use-site span");
+    assert_eq!(
+        d.labels[0].span, use_site_span,
+        "label span = use-site span"
+    );
 }
 
 // ─── Ambiguous message — lex-first explicit-substitution hint ──
@@ -396,7 +396,10 @@ fn select_returns_lex_first_for_two_free_feasible_candidates_and_emits_warning()
         !d.labels.is_empty(),
         "diagnostic must carry at least one label at the use-site span"
     );
-    assert_eq!(d.labels[0].span, use_site_span, "label span = use-site span");
+    assert_eq!(
+        d.labels[0].span, use_site_span,
+        "label span = use-site span"
+    );
 }
 
 // ─── single-feasible is independent of `free` flag ──────────────

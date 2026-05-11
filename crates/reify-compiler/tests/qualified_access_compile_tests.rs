@@ -296,4 +296,3 @@ structure def Outer {
             .collect::<Vec<_>>()
     );
 }
-

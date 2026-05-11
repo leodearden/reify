@@ -377,9 +377,7 @@ impl ReifyToolContext for CliToolContext {
                 ToolError::EngineError(format!("active_file {file_path} not in files map"))
             })?;
         reify_eval::resolve_entity_source_location(compiled, source, file_path, entity_path)
-            .ok_or_else(|| {
-                ToolError::EngineError(format!("entity not found: {entity_path}"))
-            })
+            .ok_or_else(|| ToolError::EngineError(format!("entity not found: {entity_path}")))
     }
 
     fn update_source(&self, file_path: &str, content: &str) -> Result<UpdateResult, ToolError> {
@@ -665,10 +663,14 @@ mod tests {
     use super::*;
 
     const BRACKET_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/bracket.ri");
-    const BRACKET_COMPILE_ERROR_PATH: &str =
-        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/bracket_compile_error.ri");
-    const BRACKET_PARSE_ERROR_PATH: &str =
-        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/bracket_parse_error.ri");
+    const BRACKET_COMPILE_ERROR_PATH: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/bracket_compile_error.ri"
+    );
+    const BRACKET_PARSE_ERROR_PATH: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/bracket_parse_error.ri"
+    );
 
     /// Obviously-nonsense Reify source: a single top-level `{` with no matching
     /// close brace.  No token in the Reify grammar begins a top-level declaration
@@ -920,9 +922,18 @@ mod tests {
             .clone();
 
         // Sanity: overrides must differ from module defaults.
-        assert_ne!(overridden_width, default_width, "width override must differ from default");
-        assert_ne!(overridden_height, default_height, "height override must differ from default");
-        assert_ne!(overridden_thickness, default_thickness, "thickness override must differ from default");
+        assert_ne!(
+            overridden_width, default_width,
+            "width override must differ from default"
+        );
+        assert_ne!(
+            overridden_height, default_height,
+            "height override must differ from default"
+        );
+        assert_ne!(
+            overridden_thickness, default_thickness,
+            "thickness override must differ from default"
+        );
 
         // Topology-preserving update: append trailing whitespace.  `Engine::eval`
         // re-applies all three entries from its internal `param_overrides` map;
@@ -1190,7 +1201,10 @@ mod tests {
         let update = ctx
             .update_source(BRACKET_PATH, &source)
             .expect("update_source should succeed with valid content");
-        assert!(update.success, "update_source must succeed so compiled=Some is set");
+        assert!(
+            update.success,
+            "update_source must succeed so compiled=Some is set"
+        );
         // No load_file / open_file — update_source alone must enable get_source_location.
         let loc = ctx
             .get_source_location("Bracket")
@@ -1201,7 +1215,11 @@ mod tests {
             loc.file_path
         );
         assert!(loc.line >= 1, "line must be 1-based, got {}", loc.line);
-        assert!(loc.column >= 1, "column must be 1-based, got {}", loc.column);
+        assert!(
+            loc.column >= 1,
+            "column must be 1-based, got {}",
+            loc.column
+        );
     }
 
     /// Happy-path counter-case: `get_source_location` must return `Ok` with a
@@ -1221,7 +1239,11 @@ mod tests {
             loc.file_path
         );
         assert!(loc.line >= 1, "line must be 1-based, got {}", loc.line);
-        assert!(loc.column >= 1, "column must be 1-based, got {}", loc.column);
+        assert!(
+            loc.column >= 1,
+            "column must be 1-based, got {}",
+            loc.column
+        );
     }
 
     /// Positive guard: `update_source` on a fresh context (no prior `load_file` /
@@ -1241,7 +1263,10 @@ mod tests {
         let update = ctx
             .update_source(BRACKET_COMPILE_ERROR_PATH, &source)
             .expect("update_source should succeed with valid content");
-        assert!(update.success, "update_source must succeed so compiled=Some is set");
+        assert!(
+            update.success,
+            "update_source must succeed so compiled=Some is set"
+        );
         // No load_file / open_file — update_source alone must enable get_diagnostics.
         let diags = ctx
             .get_diagnostics()
@@ -1263,7 +1288,10 @@ mod tests {
             has_matching_path,
             "at least one diagnostic must have file_path={:?}; got {:?}",
             expected_path,
-            diags.iter().map(|d| d.file_path.as_str()).collect::<Vec<_>>()
+            diags
+                .iter()
+                .map(|d| d.file_path.as_str())
+                .collect::<Vec<_>>()
         );
     }
 
@@ -1289,7 +1317,10 @@ mod tests {
         let update = ctx
             .update_source(BRACKET_COMPILE_ERROR_PATH, &source)
             .expect("update_source should succeed for bracket_compile_error.ri");
-        assert!(update.success, "update_source must succeed so compiled=Some is set");
+        assert!(
+            update.success,
+            "update_source must succeed so compiled=Some is set"
+        );
 
         // Use get_source(None) to read back the exact path update_source stored,
         // rather than re-deriving it via std::fs::canonicalize — which may produce a
@@ -1321,9 +1352,14 @@ mod tests {
         // from `state.active_file`, so comparing them would be tautological — the
         // filename suffix is a third independent oracle.
         assert!(
-            diags.iter().all(|d| d.file_path.ends_with("/bracket_compile_error.ri")),
+            diags
+                .iter()
+                .all(|d| d.file_path.ends_with("/bracket_compile_error.ri")),
             "all diagnostics must carry b.ri's path (ends_with bracket_compile_error.ri), got: {:?}",
-            diags.iter().map(|d| d.file_path.as_str()).collect::<Vec<_>>()
+            diags
+                .iter()
+                .map(|d| d.file_path.as_str())
+                .collect::<Vec<_>>()
         );
     }
 
@@ -1465,7 +1501,10 @@ mod tests {
         let update2 = ctx
             .update_source(BRACKET_PATH, &content_a)
             .expect("update_source back to bracket.ri should succeed");
-        assert!(update2.success, "update_source back to bracket.ri must succeed");
+        assert!(
+            update2.success,
+            "update_source back to bracket.ri must succeed"
+        );
 
         assert_eq!(
             ctx.get_open_files().unwrap().len(),
@@ -1480,7 +1519,9 @@ mod tests {
             open_files2[0].path
         );
 
-        let err2 = ctx.get_source(Some(BRACKET_COMPILE_ERROR_PATH)).unwrap_err();
+        let err2 = ctx
+            .get_source(Some(BRACKET_COMPILE_ERROR_PATH))
+            .unwrap_err();
         let err2_str = err2.to_string();
         assert!(
             err2_str.contains("file not open"),
@@ -1604,7 +1645,9 @@ mod tests {
             "surviving entry must be bracket.ri after switching back; got {:?}",
             open_files2[0].path
         );
-        let err2 = ctx.get_source(Some(BRACKET_COMPILE_ERROR_PATH)).unwrap_err();
+        let err2 = ctx
+            .get_source(Some(BRACKET_COMPILE_ERROR_PATH))
+            .unwrap_err();
         let err2_str = err2.to_string();
         assert!(
             err2_str.contains("file not open"),
@@ -1631,8 +1674,7 @@ mod tests {
     fn load_file_drops_prior_files_map_entries() {
         let ctx = fresh_ctx();
         assert_singleton_files_invariant(&ctx, |ctx, path| {
-            ctx.load_file(path)
-                .expect("load_file should succeed");
+            ctx.load_file(path).expect("load_file should succeed");
         });
     }
 
@@ -1649,8 +1691,7 @@ mod tests {
     fn open_file_drops_prior_files_map_entries() {
         let ctx = fresh_ctx();
         assert_singleton_files_invariant(&ctx, |ctx, path| {
-            ctx.open_file(path)
-                .expect("open_file should succeed");
+            ctx.open_file(path).expect("open_file should succeed");
         });
     }
 

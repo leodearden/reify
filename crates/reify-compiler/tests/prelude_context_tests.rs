@@ -6,7 +6,10 @@
 //!   step-5: compile_with_prelude_context parity with compile_with_prelude
 //!   step-7: load_stdlib_context caching (pointer stability + enum parity)
 
-use reify_compiler::{CompiledModule, CompiledTypeAlias, PreludeContext, compile_with_prelude, compile_with_prelude_context, compile_with_stdlib, stdlib_loader};
+use reify_compiler::{
+    CompiledModule, CompiledTypeAlias, PreludeContext, compile_with_prelude,
+    compile_with_prelude_context, compile_with_stdlib, stdlib_loader,
+};
 use reify_test_support::CompiledModuleBuilder;
 use reify_types::{ContentHash, DimensionVector, EnumDef, ModulePath, SourceSpan, Type};
 
@@ -136,19 +139,28 @@ fn new_two_module_prelude_preserves_enum_order() {
 /// `content_hash` alone captures full content; the structural checks below
 /// guard against subtle mismatches that might not surface in the hash
 /// (e.g. wrong number of outputs even with matching hash).
-fn assert_compiled_module_parity(actual: &reify_compiler::CompiledModule, expected: &reify_compiler::CompiledModule, label: &str) {
+fn assert_compiled_module_parity(
+    actual: &reify_compiler::CompiledModule,
+    expected: &reify_compiler::CompiledModule,
+    label: &str,
+) {
     assert_eq!(
         actual.content_hash, expected.content_hash,
         "{label}: content_hash must match"
     );
     assert_eq!(
-        actual.diagnostics.len(), expected.diagnostics.len(),
+        actual.diagnostics.len(),
+        expected.diagnostics.len(),
         "{label}: diagnostics count must match"
     );
-    let actual_error_count = actual.diagnostics.iter()
+    let actual_error_count = actual
+        .diagnostics
+        .iter()
         .filter(|d| d.severity == reify_types::Severity::Error)
         .count();
-    let expected_error_count = expected.diagnostics.iter()
+    let expected_error_count = expected
+        .diagnostics
+        .iter()
         .filter(|d| d.severity == reify_types::Severity::Error)
         .count();
     assert_eq!(
@@ -159,14 +171,20 @@ fn assert_compiled_module_parity(actual: &reify_compiler::CompiledModule, expect
         actual.enum_defs, expected.enum_defs,
         "{label}: enum_defs must match"
     );
-    let actual_template_names: Vec<&str> = actual.templates.iter().map(|t| t.name.as_str()).collect();
-    let expected_template_names: Vec<&str> = expected.templates.iter().map(|t| t.name.as_str()).collect();
+    let actual_template_names: Vec<&str> =
+        actual.templates.iter().map(|t| t.name.as_str()).collect();
+    let expected_template_names: Vec<&str> =
+        expected.templates.iter().map(|t| t.name.as_str()).collect();
     assert_eq!(
         actual_template_names, expected_template_names,
         "{label}: template names must match"
     );
     let actual_trait_names: Vec<&str> = actual.trait_defs.iter().map(|t| t.name.as_str()).collect();
-    let expected_trait_names: Vec<&str> = expected.trait_defs.iter().map(|t| t.name.as_str()).collect();
+    let expected_trait_names: Vec<&str> = expected
+        .trait_defs
+        .iter()
+        .map(|t| t.name.as_str())
+        .collect();
     assert_eq!(
         actual_trait_names, expected_trait_names,
         "{label}: trait_def names must match"
@@ -189,7 +207,11 @@ structure def S {
 }
 "#;
     let parsed = reify_syntax::parse(source, ModulePath::single("parity_empty"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let expected = compile_with_prelude(&parsed, &[]);
     let ctx = PreludeContext::from_slice(&[]);
@@ -230,7 +252,11 @@ structure def Widget {
 }
 "#;
     let parsed = reify_syntax::parse(source, ModulePath::single("parity_two_module"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let expected = compile_with_prelude(&parsed, &prelude);
     let ctx = PreludeContext::from_slice(&prelude);
@@ -322,7 +348,11 @@ fn compile_with_prelude_context_parity_no_prelude_pragma() {
     // Module with #no_prelude pragma — prelude enums must not affect output.
     let source = "#no_prelude\nstructure def Isolated {\n    param value : Int = 0\n}\n";
     let parsed = reify_syntax::parse(source, ModulePath::single("no_prelude_parity"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let expected = compile_with_prelude(&parsed, &prelude);
     let ctx = PreludeContext::from_slice(&prelude);
@@ -345,7 +375,11 @@ structure def Beam {
 }
 "#;
     let parsed = reify_syntax::parse(source, ModulePath::single("stdlib_parity_e2e"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let expected = compile_with_prelude(&parsed, stdlib_loader::load_stdlib());
     let actual = compile_with_stdlib(&parsed);
@@ -371,15 +405,33 @@ fn make_alias(name: &str, resolved_type: Option<Type>, is_pub: bool) -> Compiled
 #[test]
 fn pub_aliases_flattens_pub_entries_in_source_order() {
     // m1 carries two aliases: pub Stress and non-pub Internal
-    let stress = make_alias("Stress", Some(Type::Scalar { dimension: DimensionVector::PRESSURE }), true);
-    let internal = make_alias("Internal", Some(Type::Scalar { dimension: DimensionVector::LENGTH }), false);
+    let stress = make_alias(
+        "Stress",
+        Some(Type::Scalar {
+            dimension: DimensionVector::PRESSURE,
+        }),
+        true,
+    );
+    let internal = make_alias(
+        "Internal",
+        Some(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        }),
+        false,
+    );
     let m1 = CompiledModuleBuilder::new(ModulePath::single("alias_m1"))
         .type_alias(stress)
         .type_alias(internal)
         .build();
 
     // m2 carries one pub alias: Strain
-    let strain = make_alias("Strain", Some(Type::Scalar { dimension: DimensionVector::DIMENSIONLESS }), true);
+    let strain = make_alias(
+        "Strain",
+        Some(Type::Scalar {
+            dimension: DimensionVector::DIMENSIONLESS,
+        }),
+        true,
+    );
     let m2 = CompiledModuleBuilder::new(ModulePath::single("alias_m2"))
         .type_alias(strain)
         .build();
@@ -387,10 +439,24 @@ fn pub_aliases_flattens_pub_entries_in_source_order() {
     let ctx = PreludeContext::new(&[&m1, &m2]);
     let aliases = ctx.pub_aliases();
 
-    assert_eq!(aliases.len(), 2, "expected exactly 2 pub aliases (Internal filtered), got: {:?}", aliases.iter().map(|a| &a.name).collect::<Vec<_>>());
-    assert_eq!(aliases[0].name, "Stress", "first alias must be Stress from m1");
-    assert_eq!(aliases[1].name, "Strain", "second alias must be Strain from m2");
-    assert!(!aliases.iter().any(|a| a.name == "Internal"), "non-pub Internal must be filtered out");
+    assert_eq!(
+        aliases.len(),
+        2,
+        "expected exactly 2 pub aliases (Internal filtered), got: {:?}",
+        aliases.iter().map(|a| &a.name).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        aliases[0].name, "Stress",
+        "first alias must be Stress from m1"
+    );
+    assert_eq!(
+        aliases[1].name, "Strain",
+        "second alias must be Strain from m2"
+    );
+    assert!(
+        !aliases.iter().any(|a| a.name == "Internal"),
+        "non-pub Internal must be filtered out"
+    );
 }
 
 /// pub_aliases() on a context built from an empty prelude returns an empty slice.
@@ -435,7 +501,11 @@ fn compile_with_prelude_context_parity_two_module_prelude_with_alias() {
     // User module that references the prelude alias as a param type.
     let source = "structure def W {\n    param p : Foo\n}\n";
     let parsed = reify_syntax::parse(source, ModulePath::single("alias_parity_user"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let expected = compile_with_prelude(&parsed, &prelude);
     let ctx = PreludeContext::from_slice(&prelude);

@@ -41,37 +41,37 @@ pub use diagnostics::{
 pub use dimension::{DimensionVector, NAMED_DIMENSIONS, Rational};
 pub use expr::{
     BinOp, CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction, CompiledMatchArm,
-    DeterminacyPredicateKind, QuantifierKind, ResolvedFunction, SelectorKind, UnOp,
-    TAG_AD_HOC_SELECTOR, TAG_BIN_OP, TAG_CONDITIONAL, TAG_DETERMINACY_PREDICATE,
-    TAG_FUNCTION_CALL, TAG_INDEX_ACCESS, TAG_LAMBDA, TAG_LIST_LITERAL, TAG_LITERAL,
-    TAG_MAP_LITERAL, TAG_MATCH, TAG_META_ACCESS, TAG_METHOD_CALL, TAG_OPTION_NONE,
-    TAG_OPTION_SOME, TAG_QUANTIFIER, TAG_RANGE_CONSTRUCTOR, TAG_SET_LITERAL,
-    TAG_REFLECTIVE_CELL_LIST, TAG_UN_OP, TAG_USER_FUNCTION_CALL, TAG_VALUE_REF,
+    DeterminacyPredicateKind, QuantifierKind, ResolvedFunction, SelectorKind, TAG_AD_HOC_SELECTOR,
+    TAG_BIN_OP, TAG_CONDITIONAL, TAG_DETERMINACY_PREDICATE, TAG_FUNCTION_CALL, TAG_INDEX_ACCESS,
+    TAG_LAMBDA, TAG_LIST_LITERAL, TAG_LITERAL, TAG_MAP_LITERAL, TAG_MATCH, TAG_META_ACCESS,
+    TAG_METHOD_CALL, TAG_OPTION_NONE, TAG_OPTION_SOME, TAG_QUANTIFIER, TAG_RANGE_CONSTRUCTOR,
+    TAG_REFLECTIVE_CELL_LIST, TAG_SET_LITERAL, TAG_UN_OP, TAG_USER_FUNCTION_CALL, TAG_VALUE_REF,
+    UnOp,
 };
 pub use geometry::{
-    AttributeHistory, BooleanOpHistoryRecords, BooleanOpParents, BooleanOpParentsError,
+    AttributeHistory, BRepKind, BooleanOpHistoryRecords, BooleanOpParents, BooleanOpParentsError,
     CapKind, CapabilityDescriptor, DEFAULT_POINT_ON_SHAPE_TOLERANCE_M, DeletedRecord,
-    EdgeCurveKind, ElementOrderTag, ExportError,
-    ExportFormat, FaceSurfaceKind, FeatureId,
+    EdgeCurveKind, ElementOrderTag, ExportError, ExportFormat, FaceSurfaceKind, FeatureId,
     FeatureTag, FeatureTagTable, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
     GeometryOp, GeometryQuery, HistoryRecord, KernelAttributeHook, KernelAttributeOutcome,
-    KernelRegistration, LoftOpHistoryRecords, Mesh,
-    ModEntry, Operation, QueryError, BRepKind, ReprKind, Role, StepKind, SweepOpHistoryRecords,
-    TessError, TopologyAttribute, TopologyAttributeTable, VolumeMesh,
-    debug_assert_query_many_invariant,
+    KernelRegistration, LoftOpHistoryRecords, Mesh, ModEntry, Operation, QueryError, ReprKind,
+    Role, StepKind, SweepOpHistoryRecords, TessError, TopologyAttribute, TopologyAttributeTable,
+    VolumeMesh, debug_assert_query_many_invariant,
 };
 pub use hash::ContentHash;
 pub use identity::*;
-pub use kernel_validation::{BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE};
+pub use kernel_validation::{
+    BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE,
+};
 pub use node_traits::{NodeArchKind, NodeTraits};
 pub use persistent::PersistentMap;
 pub use provenance::{FieldImportProvenance, SnapshotProvenance};
+pub use source_location::{SourceLocationInfo, byte_offset_to_line_col};
+pub use spanned_ident::SpannedIdent;
 pub use traits::{EnumDef, PortDirection, TraitBound, TraitDef, TraitMember, TraitRef, TypeParam};
 pub use ty::Type;
 pub use value::{
     DeterminacyState, ErrorRef, EvalError, FieldSourceKind, Freshness, InterpolationKind,
     ResultRef, SampledField, SampledGridKind, Satisfaction, Value, ValueMap, quaternion_is_finite,
 };
-pub use source_location::{SourceLocationInfo, byte_offset_to_line_col};
-pub use spanned_ident::SpannedIdent;
 pub use warm::{OpaqueState, WarmStartable};

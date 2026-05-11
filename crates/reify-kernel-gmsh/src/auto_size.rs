@@ -124,7 +124,10 @@ pub fn auto_mesh_size_from_features(
     let n_vertices = mesh.vertices.len() / 3;
     for &idx in &mesh.indices {
         if idx as usize >= n_vertices {
-            return Err(AutoSizeError::IndexOutOfBounds { index: idx, n_vertices });
+            return Err(AutoSizeError::IndexOutOfBounds {
+                index: idx,
+                n_vertices,
+            });
         }
     }
 

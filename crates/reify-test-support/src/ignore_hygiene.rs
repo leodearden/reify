@@ -587,9 +587,10 @@ mod tests {
         // fired — not a different guard — pinning which guard rejects the `//` line.
         // Source assembled at runtime to avoid self-triggering.
         let src = ["// regular comment: ", "#[", "ignore]\n"].concat();
-        let err = check_ignore_reasons(&src)
-            .expect_err("expected bare-ignore inside a regular // comment to be rejected \
-                         (// comments are not skipped; only /// and //! are)");
+        let err = check_ignore_reasons(&src).expect_err(
+            "expected bare-ignore inside a regular // comment to be rejected \
+                         (// comments are not skipped; only /// and //! are)",
+        );
         assert!(
             err.contains("bare"),
             "expected the bare-ignore guard (guard 1) to fire, not a different guard: {err:?}",
@@ -624,9 +625,9 @@ mod tests {
         // Sources assembled at runtime so this file does not contain the guarded adjacent
         // sequences and does not self-trigger the meta-test scanner.
         let non_canonical_forms = [
-            ["#[", "ignore=\"not a known bug: test\"]"].concat(),   // no spaces around =
-            ["#[", "ignore =\"not a known bug: test\"]"].concat(),  // space before = only
-            ["#[", "ignore= \"not a known bug: test\"]"].concat(),  // space after = only
+            ["#[", "ignore=\"not a known bug: test\"]"].concat(), // no spaces around =
+            ["#[", "ignore =\"not a known bug: test\"]"].concat(), // space before = only
+            ["#[", "ignore= \"not a known bug: test\"]"].concat(), // space after = only
         ];
         for src in &non_canonical_forms {
             assert!(
@@ -764,8 +765,7 @@ mod tests {
             "expected violation to mention the alpha test file: {violations:?}"
         );
         assert!(
-            combined.contains("crates/beta/tests/bar.rs")
-                || combined.contains("beta/tests/bar.rs"),
+            combined.contains("crates/beta/tests/bar.rs") || combined.contains("beta/tests/bar.rs"),
             "expected violation to mention the beta test file: {violations:?}"
         );
     }
@@ -815,12 +815,12 @@ mod tests {
         ];
         // Files that should NOT be returned
         let excluded = [
-            "crates/foo/src/lib.rs",                       // no "tests" component
-            "target/tests/skipme.rs",                      // root-level "target" dir excluded
-            "crates/foo/target/tests/skip_nested.rs",      // nested "target" dir also excluded
-            ".git/tests/skip.rs",                          // dot-dir excluded
-            "node_modules/tests/skip_nm.rs",               // node_modules dir excluded
-            "vendor/tests/skip_vendor.rs",                 // vendor dir excluded
+            "crates/foo/src/lib.rs",                  // no "tests" component
+            "target/tests/skipme.rs",                 // root-level "target" dir excluded
+            "crates/foo/target/tests/skip_nested.rs", // nested "target" dir also excluded
+            ".git/tests/skip.rs",                     // dot-dir excluded
+            "node_modules/tests/skip_nm.rs",          // node_modules dir excluded
+            "vendor/tests/skip_vendor.rs",            // vendor dir excluded
         ];
 
         for rel in included.iter().chain(excluded.iter()) {

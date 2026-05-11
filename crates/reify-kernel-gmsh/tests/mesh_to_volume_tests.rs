@@ -382,7 +382,7 @@ fn empty_surface_mesh_errors() {
 fn out_of_bounds_index_errors() {
     let bad = reify_types::Mesh {
         vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0], // 3 vertices
-        indices: vec![0, 1, 99],                                    // 99 ≥ 3
+        indices: vec![0, 1, 99],                                     // 99 ≥ 3
         normals: None,
     };
     let kernel = GmshKernel::new();

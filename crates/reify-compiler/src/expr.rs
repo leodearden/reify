@@ -1047,9 +1047,7 @@ pub(crate) fn compile_expr_guarded(
                             .expect("is_geometry_topology_selector implies result type")
                     } else if is_geometry_function(name) {
                         Type::dimensionless_scalar()
-                    } else if let Some(t) =
-                        infer_list_helper_return_type(name, &compiled_args)
-                    {
+                    } else if let Some(t) = infer_list_helper_return_type(name, &compiled_args) {
                         t
                     } else {
                         compiled_args
@@ -1439,8 +1437,7 @@ pub(crate) fn compile_expr_guarded(
                     // Fractional or negative: fall through for a consistent error.
                 } else {
                     let i = *n as i64;
-                    let scoped_entity =
-                        format!("{}.{}[{}]", scope.entity_name, col_sub_name, i);
+                    let scoped_entity = format!("{}.{}[{}]", scope.entity_name, col_sub_name, i);
                     return resolve_cluster_inner_member(
                         per_arm,
                         member,
@@ -1473,13 +1470,9 @@ pub(crate) fn compile_expr_guarded(
                     Some(ty) => ty,
                     None => {
                         // Check for geometry realization member (task-3397).
-                        if let Some(e) = try_emit_cross_sub_geometry(
-                            scope,
-                            name,
-                            member,
-                            expr.span,
-                            diagnostics,
-                        ) {
+                        if let Some(e) =
+                            try_emit_cross_sub_geometry(scope, name, member, expr.span, diagnostics)
+                        {
                             return e;
                         }
                         // Anti-cascade (task-448/task-1921): return poison early rather than
@@ -1507,10 +1500,8 @@ pub(crate) fn compile_expr_guarded(
                     if !n.is_finite() || *n >= i64::MAX as f64 {
                         return make_poison_literal(
                             diagnostics,
-                            Diagnostic::error(
-                                "collection index is out of range or non-finite",
-                            )
-                            .with_label(DiagnosticLabel::new(expr.span, "invalid index")),
+                            Diagnostic::error("collection index is out of range or non-finite")
+                                .with_label(DiagnosticLabel::new(expr.span, "invalid index")),
                         );
                     }
                     if n.fract() != 0.0 || *n < 0.0 {
@@ -1714,13 +1705,12 @@ pub(crate) fn compile_expr_guarded(
                         // Port/sub members are valid member kinds even if their type
                         // resolution is not yet implemented — only truly undeclared
                         // names get a "has no member" diagnostic.
-                        let member_known =
-                            template.value_cells.iter().any(|vc| vc.id.member == *member)
-                                || template.ports.iter().any(|p| p.name == *member)
-                                || template
-                                    .sub_components
-                                    .iter()
-                                    .any(|sc| sc.name == *member);
+                        let member_known = template
+                            .value_cells
+                            .iter()
+                            .any(|vc| vc.id.member == *member)
+                            || template.ports.iter().any(|p| p.name == *member)
+                            || template.sub_components.iter().any(|sc| sc.name == *member);
                         if !member_known {
                             return make_poison_literal(
                                 diagnostics,
@@ -1728,10 +1718,7 @@ pub(crate) fn compile_expr_guarded(
                                     "structure '{}' has no member '{}'",
                                     struct_name, member
                                 ))
-                                .with_label(DiagnosticLabel::new(
-                                    expr.span,
-                                    "unknown member",
-                                )),
+                                .with_label(DiagnosticLabel::new(expr.span, "unknown member")),
                             );
                         }
                     }

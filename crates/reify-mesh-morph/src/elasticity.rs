@@ -24,8 +24,8 @@ use reify_solver_elastic::{
 };
 use reify_types::{ElementOrderTag, VolumeMesh};
 
-use crate::options::StiffnessRule;
 use crate::MorphOptions;
+use crate::options::StiffnessRule;
 
 // ── Spatially-varying stiffness helpers ───────────────────────────────────────
 
@@ -355,12 +355,7 @@ pub fn elasticity_morph_with_cg_opts(
     // opts (tolerance 1e-8, max_iter 1000) are calibrated for general FEA
     // workloads. Custom opts (e.g. tight tolerance + max_iter=1) let tests
     // exercise the SolverNotConverged path without a pathological mesh.
-    let cg_result = solve_cg(
-        &k_global,
-        &f,
-        cg_opts,
-        SolverMode::Deterministic,
-    );
+    let cg_result = solve_cg(&k_global, &f, cg_opts, SolverMode::Deterministic);
     if !cg_result.converged {
         return Err(ElasticityFailure::SolverNotConverged {
             iterations: cg_result.iterations,
@@ -396,7 +391,12 @@ pub fn elasticity_morph(
     prescribed_positions: &[(u32, [f64; 3])],
     options: &MorphOptions,
 ) -> Result<VolumeMesh, ElasticityFailure> {
-    elasticity_morph_with_cg_opts(old_mesh, prescribed_positions, options, CgSolverOptions::default())
+    elasticity_morph_with_cg_opts(
+        old_mesh,
+        prescribed_positions,
+        options,
+        CgSolverOptions::default(),
+    )
 }
 
 #[cfg(test)]
@@ -447,7 +447,11 @@ mod tests {
             element_order: ElementOrderTag::P1,
             normals: None,
         };
-        let result = elasticity_morph(&mesh, &[(5, [9.0, 9.0, 9.0])], &crate::MorphOptions::default());
+        let result = elasticity_morph(
+            &mesh,
+            &[(5, [9.0, 9.0, 9.0])],
+            &crate::MorphOptions::default(),
+        );
         match result {
             Err(ElasticityFailure::InvalidNodeIndex(idx)) => {
                 assert_eq!(idx, 5);
@@ -487,8 +491,7 @@ mod tests {
             (3, [0.0, 0.0, 1.0]),
         ];
 
-        let out =
-            elasticity_morph(&mesh, &prescribed, &crate::MorphOptions::default()).unwrap();
+        let out = elasticity_morph(&mesh, &prescribed, &crate::MorphOptions::default()).unwrap();
 
         let tol = 1e-6_f32;
         let expected: [f32; 12] = [
@@ -564,8 +567,7 @@ mod tests {
             (3, [0.0 + delta[0], 0.0 + delta[1], 1.0 + delta[2]]),
         ];
 
-        let out =
-            elasticity_morph(&mesh, &prescribed, &crate::MorphOptions::default()).unwrap();
+        let out = elasticity_morph(&mesh, &prescribed, &crate::MorphOptions::default()).unwrap();
 
         // p_new = p_old + delta (rigid-body translation is in the kernel of
         // K, so the elastic-equilibrium displacement field IS the rigid
@@ -621,8 +623,7 @@ mod tests {
             (2, [0.0, 1.0, 0.0]),
             (3, [0.0, 0.0, 1.0]),
         ];
-        let out =
-            elasticity_morph(&mesh, &prescribed, &crate::MorphOptions::default()).unwrap();
+        let out = elasticity_morph(&mesh, &prescribed, &crate::MorphOptions::default()).unwrap();
         assert!(
             out.normals.is_none(),
             "expected normals: None, got: {:?}",
@@ -668,10 +669,8 @@ mod tests {
             (3, [0.0 + delta[0], 0.0 + delta[1], 1.0 + delta[2]]),
         ];
 
-        let out_a =
-            elasticity_morph(&mesh, &prescribed, &crate::MorphOptions::default()).unwrap();
-        let out_b =
-            elasticity_morph(&mesh, &prescribed, &crate::MorphOptions::default()).unwrap();
+        let out_a = elasticity_morph(&mesh, &prescribed, &crate::MorphOptions::default()).unwrap();
+        let out_b = elasticity_morph(&mesh, &prescribed, &crate::MorphOptions::default()).unwrap();
 
         assert_eq!(out_a.vertices, out_b.vertices);
         assert_eq!(out_a.tet_indices, out_b.tet_indices);
@@ -690,11 +689,11 @@ mod tests {
     fn asymmetric_cone_fixture() -> (reify_types::VolumeMesh, Vec<(u32, [f64; 3])>) {
         let mesh = reify_types::VolumeMesh {
             vertices: vec![
-                0.0_f32, 0.0, 0.0,  // 0: a
-                1.0, 0.0, 0.0,       // 1: b
-                0.0, 1.0, 0.0,       // 2: c
-                0.0, 0.0, 1.0,       // 3: d
-                0.05, 0.05, 0.05,    // 4: p (near a → three small tets, one large)
+                0.0_f32, 0.0, 0.0, // 0: a
+                1.0, 0.0, 0.0, // 1: b
+                0.0, 1.0, 0.0, // 2: c
+                0.0, 0.0, 1.0, // 3: d
+                0.05, 0.05, 0.05, // 4: p (near a → three small tets, one large)
             ],
             tet_indices: vec![
                 0, 1, 2, 4, // a, b, c, p  — small vol
@@ -777,7 +776,7 @@ mod tests {
     /// two rules into one or break determinism for non-Uniform paths.
     #[test]
     fn elasticity_morph_inverse_edge_length_squared_rule_is_distinct_from_uniform_and_inverse_volume_and_is_deterministic()
-    {
+     {
         let (mesh, prescribed) = asymmetric_cone_fixture();
 
         let opts_uniform = crate::MorphOptions {
@@ -793,8 +792,8 @@ mod tests {
             ..crate::MorphOptions::default()
         };
 
-        let out_uniform = elasticity_morph(&mesh, &prescribed, &opts_uniform)
-            .expect("Uniform should succeed");
+        let out_uniform =
+            elasticity_morph(&mesh, &prescribed, &opts_uniform).expect("Uniform should succeed");
         let out_inv_vol = elasticity_morph(&mesh, &prescribed, &opts_inv_vol)
             .expect("InverseVolume should succeed");
         let out_inv_edge = elasticity_morph(&mesh, &prescribed, &opts_inv_edge)
@@ -853,7 +852,13 @@ mod tests {
         let invalid_tet = ElasticityFailure::InvalidTetIndex(7);
         let no_elements = ElasticityFailure::NoElementsForPrescribedDisplacements;
 
-        for failure in [&invalid, &unsupported, &not_converged, &invalid_tet, &no_elements] {
+        for failure in [
+            &invalid,
+            &unsupported,
+            &not_converged,
+            &invalid_tet,
+            &no_elements,
+        ] {
             match failure {
                 ElasticityFailure::InvalidNodeIndex(idx) => {
                     assert_eq!(*idx, 5);
@@ -925,7 +930,7 @@ mod tests {
     /// than silently discarding user intent.
     #[test]
     fn elasticity_morph_with_non_empty_prescribed_positions_but_empty_tet_indices_returns_no_elements_for_prescribed_displacements()
-    {
+     {
         // 2 valid nodes → n_nodes == 2; node index 0 is in-range.
         let mesh = VolumeMesh {
             vertices: vec![0.0_f32, 0.0, 0.0, 1.0, 1.0, 1.0],
@@ -943,9 +948,7 @@ mod tests {
         );
         match result {
             Err(ElasticityFailure::NoElementsForPrescribedDisplacements) => {}
-            other => panic!(
-                "expected Err(NoElementsForPrescribedDisplacements), got: {other:?}"
-            ),
+            other => panic!("expected Err(NoElementsForPrescribedDisplacements), got: {other:?}"),
         }
     }
 
@@ -994,11 +997,17 @@ mod tests {
             &mesh,
             &prescribed,
             &crate::MorphOptions::default(),
-            CgSolverOptions { tolerance: 1e-20, max_iter: 1 },
+            CgSolverOptions {
+                tolerance: 1e-20,
+                max_iter: 1,
+            },
         );
         match result {
             Err(ElasticityFailure::SolverNotConverged { iterations }) => {
-                assert_eq!(iterations, 1, "expected iterations == 1 (max_iter), got {iterations}");
+                assert_eq!(
+                    iterations, 1,
+                    "expected iterations == 1 (max_iter), got {iterations}"
+                );
             }
             other => panic!("expected Err(SolverNotConverged {{ iterations: 1 }}), got: {other:?}"),
         }
@@ -1036,7 +1045,10 @@ mod tests {
         );
         match result {
             Err(ElasticityFailure::InvalidTetIndex(idx)) => {
-                assert_eq!(idx, 99, "expected InvalidTetIndex(99), got InvalidTetIndex({idx})");
+                assert_eq!(
+                    idx, 99,
+                    "expected InvalidTetIndex(99), got InvalidTetIndex({idx})"
+                );
             }
             other => panic!("expected Err(InvalidTetIndex(99)), got: {other:?}"),
         }
@@ -1080,16 +1092,16 @@ mod tests {
     /// change this semantics and this test would catch it.
     #[test]
     fn elasticity_morph_with_out_of_range_index_in_non_multiple_of_4_tail_returns_invalid_tet_index()
-    {
+     {
         // 4 nodes → n_nodes == 4.
         // tet_indices = [0, 1, 2, 3, 99]: one complete tet (indices 0..3)
         // plus a stray tail entry (index 99 >= 4) — len % 4 == 1.
         let mesh = VolumeMesh {
             vertices: vec![
                 0.0_f32, 0.0, 0.0, // node 0
-                1.0, 0.0, 0.0,     // node 1
-                0.0, 1.0, 0.0,     // node 2
-                0.0, 0.0, 1.0,     // node 3
+                1.0, 0.0, 0.0, // node 1
+                0.0, 1.0, 0.0, // node 2
+                0.0, 0.0, 1.0, // node 3
             ],
             tet_indices: vec![0, 1, 2, 3, 99], // valid tet + stray tail index 99
             element_order: ElementOrderTag::P1,
@@ -1100,7 +1112,10 @@ mod tests {
         let result = elasticity_morph(&mesh, &[], &crate::MorphOptions::default());
         match result {
             Err(ElasticityFailure::InvalidTetIndex(idx)) => {
-                assert_eq!(idx, 99, "expected InvalidTetIndex(99), got InvalidTetIndex({idx})");
+                assert_eq!(
+                    idx, 99,
+                    "expected InvalidTetIndex(99), got InvalidTetIndex({idx})"
+                );
             }
             other => panic!("expected Err(InvalidTetIndex(99)), got: {other:?}"),
         }

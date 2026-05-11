@@ -877,10 +877,7 @@ mod tests {
         let det = q[0][0] * (q[1][1] * q[2][2] - q[1][2] * q[2][1])
             - q[0][1] * (q[1][0] * q[2][2] - q[1][2] * q[2][0])
             + q[0][2] * (q[1][0] * q[2][1] - q[1][1] * q[2][0]);
-        assert!(
-            (det - 1.0).abs() < 1e-12,
-            "det(Q) = {det} (expected +1.0)"
-        );
+        assert!((det - 1.0).abs() < 1e-12, "det(Q) = {det} (expected +1.0)");
     }
 
     // --- Frame covariance (step 21) ---

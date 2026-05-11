@@ -140,8 +140,7 @@ fn occt_kernel_registration_appears_in_inventory_iter() {
     // Neither the `name` pin above nor the `descriptor` pin catches this
     // because those fields live independently.
     let inventory_factory = occt_entries[0].factory;
-    let direct_factory: fn() -> Box<dyn GeometryKernel> =
-        reify_kernel_occt::register::occt_factory;
+    let direct_factory: fn() -> Box<dyn GeometryKernel> = reify_kernel_occt::register::occt_factory;
     // `std::ptr::fn_addr_eq` is documented to permit false negatives: codegen
     // deduplication or inlining can assign the same source-level function to
     // distinct addresses, so a future build configuration could trip a
@@ -173,7 +172,10 @@ fn occt_kernel_registration_appears_in_inventory_iter() {
     // order-insensitive) as a defence-in-depth check for the case where
     // the fn pointers diverge but happen to produce equivalent content.
     let inventory_supports: std::collections::HashSet<(Operation, ReprKind)> =
-        (occt_entries[0].descriptor)().supports.into_iter().collect();
+        (occt_entries[0].descriptor)()
+            .supports
+            .into_iter()
+            .collect();
     let direct_supports: std::collections::HashSet<(Operation, ReprKind)> =
         reify_kernel_occt::register::occt_capability_descriptor()
             .supports

@@ -33,8 +33,8 @@
 
 use reify_kernel_occt::OcctKernel;
 use reify_types::{
-    GeometryHandleId, GeometryOp, GeometryQuery, QueryError, Value,
-    DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
+    DEFAULT_POINT_ON_SHAPE_TOLERANCE_M, GeometryHandleId, GeometryOp, GeometryQuery, QueryError,
+    Value,
 };
 
 // ---------------------------------------------------------------------------
@@ -219,9 +219,9 @@ fn point_on_shape_zero_tolerance_exact_face_point_returns_true() {
     let (kernel, box_id) = box_kernel();
     match kernel.point_on_shape(box_id, 5.0, 0.0, 0.0, 0.0) {
         Ok(true) => {}
-        Ok(false) => panic!(
-            "expected true for exact face-center point (5,0,0) with tol=0.0, got false"
-        ),
+        Ok(false) => {
+            panic!("expected true for exact face-center point (5,0,0) with tol=0.0, got false")
+        }
         Err(e) => panic!("expected Ok(true), got Err({e:?})"),
     }
 }
@@ -243,7 +243,13 @@ fn point_on_shape_zero_tolerance_exact_face_point_returns_true() {
 #[test]
 fn point_on_shape_off_face_coplanar_point_returns_false() {
     let (kernel, box_id) = box_kernel();
-    match kernel.point_on_shape(box_id, 5.0, 100.0, 100.0, DEFAULT_POINT_ON_SHAPE_TOLERANCE_M) {
+    match kernel.point_on_shape(
+        box_id,
+        5.0,
+        100.0,
+        100.0,
+        DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
+    ) {
         Ok(false) => {}
         Ok(true) => panic!(
             "expected false for coplanar-but-off-face point (5,100,100) with tol=DEFAULT_POINT_ON_SHAPE_TOLERANCE_M, got true"
@@ -302,12 +308,12 @@ fn point_on_shape_negative_tolerance_returns_error() {
     let result = kernel.point_on_shape(box_id, 5.0, 0.0, 0.0, -1.0);
     match result {
         Err(QueryError::QueryFailed(_)) => {}
-        Ok(v) => panic!(
-            "expected Err(QueryError::QueryFailed(_)) for tolerance=-1.0, got Ok({v:?})"
-        ),
-        Err(e) => panic!(
-            "expected Err(QueryError::QueryFailed(_)) for tolerance=-1.0, got Err({e:?})"
-        ),
+        Ok(v) => {
+            panic!("expected Err(QueryError::QueryFailed(_)) for tolerance=-1.0, got Ok({v:?})")
+        }
+        Err(e) => {
+            panic!("expected Err(QueryError::QueryFailed(_)) for tolerance=-1.0, got Err({e:?})")
+        }
     }
 }
 
@@ -330,12 +336,12 @@ fn point_on_shape_nan_tolerance_returns_error() {
     let result = kernel.point_on_shape(box_id, 5.0, 0.0, 0.0, f64::NAN);
     match result {
         Err(QueryError::QueryFailed(_)) => {}
-        Ok(v) => panic!(
-            "expected Err(QueryError::QueryFailed(_)) for tolerance=NaN, got Ok({v:?})"
-        ),
-        Err(e) => panic!(
-            "expected Err(QueryError::QueryFailed(_)) for tolerance=NaN, got Err({e:?})"
-        ),
+        Ok(v) => {
+            panic!("expected Err(QueryError::QueryFailed(_)) for tolerance=NaN, got Ok({v:?})")
+        }
+        Err(e) => {
+            panic!("expected Err(QueryError::QueryFailed(_)) for tolerance=NaN, got Err({e:?})")
+        }
     }
 }
 
@@ -358,12 +364,10 @@ fn point_on_shape_infinite_tolerance_returns_error() {
     let result = kernel.point_on_shape(box_id, 5.0, 0.0, 0.0, f64::INFINITY);
     match result {
         Err(QueryError::QueryFailed(_)) => {}
-        Ok(v) => panic!(
-            "expected Err(QueryError::QueryFailed(_)) for tolerance=+∞, got Ok({v:?})"
-        ),
-        Err(e) => panic!(
-            "expected Err(QueryError::QueryFailed(_)) for tolerance=+∞, got Err({e:?})"
-        ),
+        Ok(v) => panic!("expected Err(QueryError::QueryFailed(_)) for tolerance=+∞, got Ok({v:?})"),
+        Err(e) => {
+            panic!("expected Err(QueryError::QueryFailed(_)) for tolerance=+∞, got Err({e:?})")
+        }
     }
 }
 

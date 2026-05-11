@@ -291,10 +291,7 @@ fn walk_members(
 /// expressions), so they require the same chain-detection pass as any other
 /// expression-bearing position. Depth-bounding is inherited for free from the
 /// existing [`walk_expr`] → [`walk_expr_depth`] entry point.
-fn walk_annotations(
-    annotations: &[reify_syntax::Annotation],
-    diagnostics: &mut Vec<Diagnostic>,
-) {
+fn walk_annotations(annotations: &[reify_syntax::Annotation], diagnostics: &mut Vec<Diagnostic>) {
     for ann in annotations {
         for arg in &ann.args {
             // Each annotation arg is an independent expression root:
@@ -337,8 +334,7 @@ fn walk_expr_depth(expr: &Expr, diagnostics: &mut Vec<Diagnostic>, depth: usize)
              dot-chain lint coverage truncated at this subtree — likely \
              upstream parser bug or fuzzer input producing pathologically \
              deep AST",
-            MAX_EXPR_DEPTH,
-            depth
+            MAX_EXPR_DEPTH, depth
         );
         return;
     }
@@ -619,7 +615,10 @@ mod tests {
 
         fn shallow_leaf(span: SourceSpan) -> Expr {
             Expr {
-                kind: ExprKind::NumberLiteral { value: 0.0, is_real: false },
+                kind: ExprKind::NumberLiteral {
+                    value: 0.0,
+                    is_real: false,
+                },
                 span,
             }
         }
@@ -746,12 +745,8 @@ mod tests {
                     name: "f".to_string(),
                     args: vec![shallow_leaf(span), leaf],
                 },
-                ArmKind::ListLiteralSecond => {
-                    ExprKind::ListLiteral(vec![shallow_leaf(span), leaf])
-                }
-                ArmKind::SetLiteralSecond => {
-                    ExprKind::SetLiteral(vec![shallow_leaf(span), leaf])
-                }
+                ArmKind::ListLiteralSecond => ExprKind::ListLiteral(vec![shallow_leaf(span), leaf]),
+                ArmKind::SetLiteralSecond => ExprKind::SetLiteral(vec![shallow_leaf(span), leaf]),
                 ArmKind::MapLiteralSecondKey => ExprKind::MapLiteral(vec![
                     (shallow_leaf(span), shallow_leaf(span)),
                     (leaf, shallow_leaf(span)),
@@ -867,7 +862,10 @@ mod tests {
             );
 
             let mut expr = Expr {
-                kind: ExprKind::NumberLiteral { value: 0.0, is_real: false },
+                kind: ExprKind::NumberLiteral {
+                    value: 0.0,
+                    is_real: false,
+                },
                 span,
             };
             for _ in 0..(MAX_EXPR_DEPTH / depth_per_layer(arm) + 1) {
@@ -967,11 +965,9 @@ mod tests {
         // members_outer_to_inner = ["e", "d", "c"] → output is "_.c.d.e"
         let result = render_chain_text(&root, &["e", "d", "c"]);
         assert_eq!(
-            result,
-            "_.c.d.e",
+            result, "_.c.d.e",
             "render_chain_text must fall back to `_` for a BinOp root, got: {:?}",
             result
         );
     }
-
 }

@@ -969,7 +969,10 @@ mod tests {
         assert!(data.opaque_state.is_none());
         assert!(data.running.is_none());
         assert_eq!(data.output_value_cells.len(), 1);
-        assert_eq!(data.output_value_cells[0], ValueCellId::new("Bracket", "stress"));
+        assert_eq!(
+            data.output_value_cells[0],
+            ValueCellId::new("Bracket", "stress")
+        );
 
         let debug = format!("{:?}", data);
         assert!(debug.contains("ComputeNodeData"));
@@ -1002,7 +1005,10 @@ mod tests {
         // Other fields are preserved
         assert_eq!(cloned.computation_id, ComputeNodeId::new("Bracket", 0));
         assert_eq!(cloned.target, "solver::elastic_static");
-        assert_eq!(cloned.value_inputs, vec![ValueCellId::new("Bracket", "load")]);
+        assert_eq!(
+            cloned.value_inputs,
+            vec![ValueCellId::new("Bracket", "load")]
+        );
         assert_eq!(cloned.options_hash, ContentHash::of_str("opts"));
         assert_eq!(cloned.cache_key, ContentHash::of_str("ck"));
     }
@@ -1106,7 +1112,11 @@ mod tests {
     fn evaluation_graph_get_compute_node_missing_returns_none() {
         use reify_types::ComputeNodeId;
         let graph = EvaluationGraph::default();
-        assert!(graph.get_compute_node(&ComputeNodeId::new("Nope", 99)).is_none());
+        assert!(
+            graph
+                .get_compute_node(&ComputeNodeId::new("Nope", 99))
+                .is_none()
+        );
     }
 
     #[test]
@@ -1142,8 +1152,14 @@ mod tests {
         });
 
         assert_eq!(graph.compute_nodes.len(), 2);
-        assert_eq!(graph.get_compute_node(&id_a).unwrap().target, "solver::elastic_static");
-        assert_eq!(graph.get_compute_node(&id_b).unwrap().target, "solver::modal");
+        assert_eq!(
+            graph.get_compute_node(&id_a).unwrap().target,
+            "solver::elastic_static"
+        );
+        assert_eq!(
+            graph.get_compute_node(&id_b).unwrap().target,
+            "solver::modal"
+        );
     }
 
     #[test]
@@ -1212,7 +1228,11 @@ mod tests {
             });
         }
 
-        let targets: HashSet<String> = graph.compute_nodes.values().map(|n| n.target.clone()).collect();
+        let targets: HashSet<String> = graph
+            .compute_nodes
+            .values()
+            .map(|n| n.target.clone())
+            .collect();
         assert_eq!(
             targets,
             ["solver::a", "solver::b", "solver::c"]

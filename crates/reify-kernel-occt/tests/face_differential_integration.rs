@@ -47,7 +47,6 @@ fn cylinder_kernel(radius: f64, height: f64) -> (OcctKernel, GeometryHandleId) {
     (kernel, handle.id)
 }
 
-
 // ---------------------------------------------------------------------------
 // surface_normal_at — happy-path: sphere
 // ---------------------------------------------------------------------------
@@ -151,9 +150,9 @@ fn surface_normal_at_unknown_handle_returns_invalid_handle() {
     let unknown = GeometryHandleId(9999);
     match kernel.surface_normal_at(unknown, 0.0, 0.0) {
         Err(QueryError::InvalidHandle(id)) if id == unknown => {}
-        Err(QueryError::InvalidHandle(id)) => panic!(
-            "expected InvalidHandle({unknown:?}), got InvalidHandle({id:?})"
-        ),
+        Err(QueryError::InvalidHandle(id)) => {
+            panic!("expected InvalidHandle({unknown:?}), got InvalidHandle({id:?})")
+        }
         other => panic!("expected Err(InvalidHandle({unknown:?})), got {other:?}"),
     }
 }
@@ -237,9 +236,9 @@ fn face_outward_unit_normal_for_test_unknown_handle_returns_invalid_handle() {
     let unknown = GeometryHandleId(9999);
     match kernel.face_outward_unit_normal_for_test(unknown) {
         Err(QueryError::InvalidHandle(id)) if id == unknown => {}
-        Err(QueryError::InvalidHandle(id)) => panic!(
-            "expected InvalidHandle({unknown:?}), got InvalidHandle({id:?})"
-        ),
+        Err(QueryError::InvalidHandle(id)) => {
+            panic!("expected InvalidHandle({unknown:?}), got InvalidHandle({id:?})")
+        }
         other => panic!("expected Err(InvalidHandle({unknown:?})), got {other:?}"),
     }
 }
@@ -250,9 +249,7 @@ fn face_outward_unit_normal_for_test_non_face_shape_returns_query_failed() {
     // cyl_id is the solid handle, not a face.
     match kernel.face_outward_unit_normal_for_test(cyl_id) {
         Err(QueryError::QueryFailed(_)) => {}
-        other => panic!(
-            "expected Err(QueryFailed(_)) for solid handle, got {other:?}"
-        ),
+        other => panic!("expected Err(QueryFailed(_)) for solid handle, got {other:?}"),
     }
 }
 
@@ -377,12 +374,10 @@ fn curvature_at_on_sphere_face_yields_constant_k_and_h() {
     );
 
     // Principal directions must be unit length (per the Curvature doc contract).
-    let dir_min_mag_sq = c.dir_min[0] * c.dir_min[0]
-        + c.dir_min[1] * c.dir_min[1]
-        + c.dir_min[2] * c.dir_min[2];
-    let dir_max_mag_sq = c.dir_max[0] * c.dir_max[0]
-        + c.dir_max[1] * c.dir_max[1]
-        + c.dir_max[2] * c.dir_max[2];
+    let dir_min_mag_sq =
+        c.dir_min[0] * c.dir_min[0] + c.dir_min[1] * c.dir_min[1] + c.dir_min[2] * c.dir_min[2];
+    let dir_max_mag_sq =
+        c.dir_max[0] * c.dir_max[0] + c.dir_max[1] * c.dir_max[1] + c.dir_max[2] * c.dir_max[2];
     assert!(
         (dir_min_mag_sq - 1.0).abs() < 1e-9,
         "sphere dir_min should be unit length: |dir_min|² = {dir_min_mag_sq}"
@@ -394,9 +389,8 @@ fn curvature_at_on_sphere_face_yields_constant_k_and_h() {
 
     // Principal directions must be mutually orthogonal (OCCT picks an
     // orthonormal pair at umbilical points; both lie in the tangent plane).
-    let dot_dirs = c.dir_min[0] * c.dir_max[0]
-        + c.dir_min[1] * c.dir_max[1]
-        + c.dir_min[2] * c.dir_max[2];
+    let dot_dirs =
+        c.dir_min[0] * c.dir_max[0] + c.dir_min[1] * c.dir_max[1] + c.dir_min[2] * c.dir_max[2];
     assert!(
         dot_dirs.abs() < 1e-9,
         "sphere dir_min and dir_max should be mutually orthogonal: dot = {dot_dirs}"
@@ -486,12 +480,10 @@ fn curvature_at_on_cylinder_side_face_yields_developable_curvature() {
     );
 
     // Both principal directions must be unit length (per the Curvature doc contract).
-    let dir_min_mag_sq = c.dir_min[0] * c.dir_min[0]
-        + c.dir_min[1] * c.dir_min[1]
-        + c.dir_min[2] * c.dir_min[2];
-    let dir_max_mag_sq = c.dir_max[0] * c.dir_max[0]
-        + c.dir_max[1] * c.dir_max[1]
-        + c.dir_max[2] * c.dir_max[2];
+    let dir_min_mag_sq =
+        c.dir_min[0] * c.dir_min[0] + c.dir_min[1] * c.dir_min[1] + c.dir_min[2] * c.dir_min[2];
+    let dir_max_mag_sq =
+        c.dir_max[0] * c.dir_max[0] + c.dir_max[1] * c.dir_max[1] + c.dir_max[2] * c.dir_max[2];
     assert!(
         (dir_min_mag_sq - 1.0).abs() < 1e-9,
         "cylinder dir_min should be unit length: |dir_min|² = {dir_min_mag_sq}"
@@ -502,9 +494,8 @@ fn curvature_at_on_cylinder_side_face_yields_developable_curvature() {
     );
 
     // Mutually orthogonal.
-    let dot_dirs = c.dir_min[0] * c.dir_max[0]
-        + c.dir_min[1] * c.dir_max[1]
-        + c.dir_min[2] * c.dir_max[2];
+    let dot_dirs =
+        c.dir_min[0] * c.dir_max[0] + c.dir_min[1] * c.dir_max[1] + c.dir_min[2] * c.dir_max[2];
     assert!(
         dot_dirs.abs() < 1e-9,
         "cylinder dir_min and dir_max should be mutually orthogonal: dot = {dot_dirs}"
@@ -544,11 +535,7 @@ fn curvature_at_on_cylinder_cap_face_yields_zero_curvature() {
         "cap Gaussian: expected 0, got {}",
         c.gaussian
     );
-    assert!(
-        c.mean.abs() < tol,
-        "cap mean: expected 0, got {}",
-        c.mean
-    );
+    assert!(c.mean.abs() < tol, "cap mean: expected 0, got {}", c.mean);
     assert!(
         c.kappa_min.abs() < tol,
         "cap κ_min: expected 0, got {}",
@@ -615,9 +602,9 @@ fn curvature_at_on_reversed_inner_cylinder_face_pairs_directions_with_min_max() 
         .iter()
         .copied()
         .find(|&f| {
-            kernel.surface_normal_at(f, PI / 2.0, 5.0).is_ok_and(|n| {
-                n[2].abs() < 0.5 && n[1] < -0.5
-            })
+            kernel
+                .surface_normal_at(f, PI / 2.0, 5.0)
+                .is_ok_and(|n| n[2].abs() < 0.5 && n[1] < -0.5)
         })
         .expect(
             "hollow cylinder should have an inner cylindrical face whose \
@@ -682,9 +669,9 @@ fn curvature_at_unknown_handle_returns_invalid_handle() {
     let unknown = GeometryHandleId(9999);
     match kernel.curvature_at(unknown, 0.0, 0.0) {
         Err(QueryError::InvalidHandle(id)) if id == unknown => {}
-        Err(QueryError::InvalidHandle(id)) => panic!(
-            "expected InvalidHandle({unknown:?}), got InvalidHandle({id:?})"
-        ),
+        Err(QueryError::InvalidHandle(id)) => {
+            panic!("expected InvalidHandle({unknown:?}), got InvalidHandle({id:?})")
+        }
         other => panic!("expected Err(InvalidHandle({unknown:?})), got {other:?}"),
     }
 }
@@ -746,9 +733,13 @@ fn curvature_at_on_placed_cylinder_side_axial_principal_direction_aligns_with_ro
     // Rotate around X-axis by π/4, then translate to (2, 3, -1). Copy=false.
     let placed = kernel.store_placed_for_test(
         cyl.id,
-        1.0, 0.0, 0.0, // rotation axis: X
-        PI / 4.0,       // rotation angle
-        2.0, 3.0, -1.0, // translation
+        1.0,
+        0.0,
+        0.0,      // rotation axis: X
+        PI / 4.0, // rotation angle
+        2.0,
+        3.0,
+        -1.0, // translation
     );
 
     let faces = kernel
@@ -790,21 +781,27 @@ fn curvature_at_on_placed_cylinder_side_axial_principal_direction_aligns_with_ro
     // (a) Developable: K = 0.
     assert!(
         c.gaussian.abs() < tol,
-        "placed cylinder side K: expected 0, got {}", c.gaussian
+        "placed cylinder side K: expected 0, got {}",
+        c.gaussian
     );
     // (b) H = -1/(2r).
     assert!(
         (c.mean + 1.0 / (2.0 * r)).abs() < tol,
-        "placed cylinder side H: expected {}, got {}", -1.0 / (2.0 * r), c.mean
+        "placed cylinder side H: expected {}, got {}",
+        -1.0 / (2.0 * r),
+        c.mean
     );
     // (c) κ_min = -1/r (circumferential), κ_max = 0 (axial).
     assert!(
         (c.kappa_min + 1.0 / r).abs() < tol,
-        "placed cylinder side κ_min: expected {}, got {}", -1.0 / r, c.kappa_min
+        "placed cylinder side κ_min: expected {}, got {}",
+        -1.0 / r,
+        c.kappa_min
     );
     assert!(
         c.kappa_max.abs() < tol,
-        "placed cylinder side κ_max: expected 0, got {}", c.kappa_max
+        "placed cylinder side κ_max: expected 0, got {}",
+        c.kappa_max
     );
 
     // (d) dir_max (paired with κ_max=0) must align with the ROTATED cylinder
@@ -812,14 +809,15 @@ fn curvature_at_on_placed_cylinder_side_axial_principal_direction_aligns_with_ro
     //     if curvature_at used the old BRep_Tool::Surface path with baked
     //     geometry, the axis direction would agree, but using non-baked
     //     (Copy=false) placement ensures we exercise TopoLoc_Location.
-    let dot_axial = c.dir_max[0] * rot_axis[0]
-        + c.dir_max[1] * rot_axis[1]
-        + c.dir_max[2] * rot_axis[2];
+    let dot_axial =
+        c.dir_max[0] * rot_axis[0] + c.dir_max[1] * rot_axis[1] + c.dir_max[2] * rot_axis[2];
     assert!(
         (dot_axial.abs() - 1.0).abs() < tol,
         "placed cylinder dir_max should align with rotated axis (0, -{:.4}, {:.4}), \
          got dir_max = {:?}, |dot| = {dot_axial:.9}",
-        (PI / 4.0).sin(), (PI / 4.0).cos(), c.dir_max
+        (PI / 4.0).sin(),
+        (PI / 4.0).cos(),
+        c.dir_max
     );
 
     // (e) Both principal directions lie in the tangent plane.
@@ -835,12 +833,10 @@ fn curvature_at_on_placed_cylinder_side_axial_principal_direction_aligns_with_ro
     );
 
     // (f) Unit length and mutually orthogonal.
-    let dmin_mag_sq = c.dir_min[0] * c.dir_min[0]
-        + c.dir_min[1] * c.dir_min[1]
-        + c.dir_min[2] * c.dir_min[2];
-    let dmax_mag_sq = c.dir_max[0] * c.dir_max[0]
-        + c.dir_max[1] * c.dir_max[1]
-        + c.dir_max[2] * c.dir_max[2];
+    let dmin_mag_sq =
+        c.dir_min[0] * c.dir_min[0] + c.dir_min[1] * c.dir_min[1] + c.dir_min[2] * c.dir_min[2];
+    let dmax_mag_sq =
+        c.dir_max[0] * c.dir_max[0] + c.dir_max[1] * c.dir_max[1] + c.dir_max[2] * c.dir_max[2];
     assert!(
         (dmin_mag_sq - 1.0).abs() < 1e-9,
         "placed cylinder dir_min not unit length: |dir_min|² = {dmin_mag_sq}"
@@ -849,9 +845,8 @@ fn curvature_at_on_placed_cylinder_side_axial_principal_direction_aligns_with_ro
         (dmax_mag_sq - 1.0).abs() < 1e-9,
         "placed cylinder dir_max not unit length: |dir_max|² = {dmax_mag_sq}"
     );
-    let dot_dirs = c.dir_min[0] * c.dir_max[0]
-        + c.dir_min[1] * c.dir_max[1]
-        + c.dir_min[2] * c.dir_max[2];
+    let dot_dirs =
+        c.dir_min[0] * c.dir_max[0] + c.dir_min[1] * c.dir_max[1] + c.dir_min[2] * c.dir_max[2];
     assert!(
         dot_dirs.abs() < 1e-9,
         "placed cylinder dir_min and dir_max should be orthogonal: dot = {dot_dirs}"
@@ -891,15 +886,22 @@ fn curvature_at_on_placed_sphere_principal_directions_perpendicular_to_world_nor
     // then translate to (10, 2, -3)). Copy=false → TopLoc_Location, not baked.
     let placed = kernel.store_placed_for_test(
         sphere.id,
-        0.0, 1.0, 0.0,  // rotation axis: Y
-        PI / 3.0,        // rotation angle
-        10.0, 2.0, -3.0, // translation
+        0.0,
+        1.0,
+        0.0,      // rotation axis: Y
+        PI / 3.0, // rotation angle
+        10.0,
+        2.0,
+        -3.0, // translation
     );
 
     let faces = kernel
         .extract_faces(placed)
         .expect("extract_faces should succeed for placed sphere");
-    assert!(!faces.is_empty(), "placed sphere should have at least one face");
+    assert!(
+        !faces.is_empty(),
+        "placed sphere should have at least one face"
+    );
     let face = faces[0];
 
     // At (u=π, v=0) — safe interior point, away from the poles.
@@ -921,28 +923,34 @@ fn curvature_at_on_placed_sphere_principal_directions_perpendicular_to_world_nor
     let tol = 1e-6;
     assert!(
         (c.gaussian - 1.0 / (r * r)).abs() < tol,
-        "placed sphere K: expected {}, got {}", 1.0 / (r * r), c.gaussian
+        "placed sphere K: expected {}, got {}",
+        1.0 / (r * r),
+        c.gaussian
     );
     assert!(
         (c.mean + 1.0 / r).abs() < tol,
-        "placed sphere H: expected {}, got {}", -1.0 / r, c.mean
+        "placed sphere H: expected {}, got {}",
+        -1.0 / r,
+        c.mean
     );
     assert!(
         (c.kappa_min + 1.0 / r).abs() < tol,
-        "placed sphere κ_min: expected {}, got {}", -1.0 / r, c.kappa_min
+        "placed sphere κ_min: expected {}, got {}",
+        -1.0 / r,
+        c.kappa_min
     );
     assert!(
         (c.kappa_max + 1.0 / r).abs() < tol,
-        "placed sphere κ_max: expected {}, got {}", -1.0 / r, c.kappa_max
+        "placed sphere κ_max: expected {}, got {}",
+        -1.0 / r,
+        c.kappa_max
     );
 
     // (c) Principal directions unit length.
-    let dmin_mag_sq = c.dir_min[0] * c.dir_min[0]
-        + c.dir_min[1] * c.dir_min[1]
-        + c.dir_min[2] * c.dir_min[2];
-    let dmax_mag_sq = c.dir_max[0] * c.dir_max[0]
-        + c.dir_max[1] * c.dir_max[1]
-        + c.dir_max[2] * c.dir_max[2];
+    let dmin_mag_sq =
+        c.dir_min[0] * c.dir_min[0] + c.dir_min[1] * c.dir_min[1] + c.dir_min[2] * c.dir_min[2];
+    let dmax_mag_sq =
+        c.dir_max[0] * c.dir_max[0] + c.dir_max[1] * c.dir_max[1] + c.dir_max[2] * c.dir_max[2];
     assert!(
         (dmin_mag_sq - 1.0).abs() < 1e-9,
         "placed sphere dir_min not unit length: |dir_min|² = {dmin_mag_sq}"
@@ -953,9 +961,8 @@ fn curvature_at_on_placed_sphere_principal_directions_perpendicular_to_world_nor
     );
 
     // (c) Principal directions mutually orthogonal.
-    let dot_dirs = c.dir_min[0] * c.dir_max[0]
-        + c.dir_min[1] * c.dir_max[1]
-        + c.dir_min[2] * c.dir_max[2];
+    let dot_dirs =
+        c.dir_min[0] * c.dir_max[0] + c.dir_min[1] * c.dir_max[1] + c.dir_min[2] * c.dir_max[2];
     assert!(
         dot_dirs.abs() < 1e-9,
         "placed sphere dir_min and dir_max should be orthogonal: dot = {dot_dirs}"
@@ -1112,9 +1119,13 @@ fn curvature_at_on_placed_reversed_inner_cylinder_face_pairs_directions_with_rot
     // Rotate around Y-axis by π/4, then translate to (3, -2, 5). Copy=false.
     let placed = kernel.store_placed_for_test(
         hollow.id,
-        0.0, 1.0, 0.0, // rotation axis: Y
-        PI / 4.0,       // rotation angle
-        3.0, -2.0, 5.0, // translation
+        0.0,
+        1.0,
+        0.0,      // rotation axis: Y
+        PI / 4.0, // rotation angle
+        3.0,
+        -2.0,
+        5.0, // translation
     );
 
     let faces = kernel
@@ -1172,9 +1183,8 @@ fn curvature_at_on_placed_reversed_inner_cylinder_face_pairs_directions_with_rot
 
     // (d) dir_min (paired with κ_min=0, axial) must align with the ROTATED axis —
     //     not world Z. This is the key check for REVERSED + non-identity location.
-    let dot_axial = c.dir_min[0] * rot_axis[0]
-        + c.dir_min[1] * rot_axis[1]
-        + c.dir_min[2] * rot_axis[2];
+    let dot_axial =
+        c.dir_min[0] * rot_axis[0] + c.dir_min[1] * rot_axis[1] + c.dir_min[2] * rot_axis[2];
     assert!(
         (dot_axial.abs() - 1.0).abs() < tol,
         "placed reversed cylinder dir_min (κ_min=0) should align with rotated axis \
@@ -1200,12 +1210,10 @@ fn curvature_at_on_placed_reversed_inner_cylinder_face_pairs_directions_with_rot
     );
 
     // (e) Unit length and mutually orthogonal.
-    let dmin_mag_sq = c.dir_min[0] * c.dir_min[0]
-        + c.dir_min[1] * c.dir_min[1]
-        + c.dir_min[2] * c.dir_min[2];
-    let dmax_mag_sq = c.dir_max[0] * c.dir_max[0]
-        + c.dir_max[1] * c.dir_max[1]
-        + c.dir_max[2] * c.dir_max[2];
+    let dmin_mag_sq =
+        c.dir_min[0] * c.dir_min[0] + c.dir_min[1] * c.dir_min[1] + c.dir_min[2] * c.dir_min[2];
+    let dmax_mag_sq =
+        c.dir_max[0] * c.dir_max[0] + c.dir_max[1] * c.dir_max[1] + c.dir_max[2] * c.dir_max[2];
     assert!(
         (dmin_mag_sq - 1.0).abs() < 1e-9,
         "placed reversed cylinder dir_min not unit length: |dir_min|² = {dmin_mag_sq}"
@@ -1214,9 +1222,8 @@ fn curvature_at_on_placed_reversed_inner_cylinder_face_pairs_directions_with_rot
         (dmax_mag_sq - 1.0).abs() < 1e-9,
         "placed reversed cylinder dir_max not unit length: |dir_max|² = {dmax_mag_sq}"
     );
-    let dot_dirs = c.dir_min[0] * c.dir_max[0]
-        + c.dir_min[1] * c.dir_max[1]
-        + c.dir_min[2] * c.dir_max[2];
+    let dot_dirs =
+        c.dir_min[0] * c.dir_max[0] + c.dir_min[1] * c.dir_max[1] + c.dir_min[2] * c.dir_max[2];
     assert!(
         dot_dirs.abs() < 1e-9,
         "placed reversed cylinder dir_min and dir_max should be orthogonal: dot = {dot_dirs}"

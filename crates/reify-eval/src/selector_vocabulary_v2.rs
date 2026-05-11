@@ -422,19 +422,16 @@ pub fn extremal_by_bbox<K: GeometryKernel + ?Sized>(
     }
     // Find the global extreme; an empty `candidates` was short-circuited
     // above, so `metrics` is non-empty.
-    let extreme = metrics
-        .iter()
-        .copied()
-        .fold(
-            match sense {
-                ExtremalSense::Max => f64::NEG_INFINITY,
-                ExtremalSense::Min => f64::INFINITY,
-            },
-            |acc, v| match sense {
-                ExtremalSense::Max => acc.max(v),
-                ExtremalSense::Min => acc.min(v),
-            },
-        );
+    let extreme = metrics.iter().copied().fold(
+        match sense {
+            ExtremalSense::Max => f64::NEG_INFINITY,
+            ExtremalSense::Min => f64::INFINITY,
+        },
+        |acc, v| match sense {
+            ExtremalSense::Max => acc.max(v),
+            ExtremalSense::Min => acc.min(v),
+        },
+    );
     // Walk candidates in input order, emitting any whose metric is
     // within `tol_m` of `extreme`. Dedup-on-first-seen mirrors the
     // combinator discipline.
@@ -519,19 +516,16 @@ pub fn extremal_by_centroid<K: GeometryKernel + ?Sized>(
         ));
     }
     // Find the global extreme; non-empty since `candidates` is non-empty.
-    let extreme = metrics
-        .iter()
-        .copied()
-        .fold(
-            match sense {
-                ExtremalSense::Max => f64::NEG_INFINITY,
-                ExtremalSense::Min => f64::INFINITY,
-            },
-            |acc, v| match sense {
-                ExtremalSense::Max => acc.max(v),
-                ExtremalSense::Min => acc.min(v),
-            },
-        );
+    let extreme = metrics.iter().copied().fold(
+        match sense {
+            ExtremalSense::Max => f64::NEG_INFINITY,
+            ExtremalSense::Min => f64::INFINITY,
+        },
+        |acc, v| match sense {
+            ExtremalSense::Max => acc.max(v),
+            ExtremalSense::Min => acc.min(v),
+        },
+    );
     let mut seen: HashSet<GeometryHandleId> = HashSet::with_capacity(candidates.len());
     let mut out: Vec<GeometryHandleId> = Vec::new();
     for (id, metric) in candidates.iter().zip(metrics.iter()) {

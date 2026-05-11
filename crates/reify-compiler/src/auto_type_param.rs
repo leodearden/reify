@@ -920,8 +920,7 @@ pub fn select_candidate(
                 emit_no_candidate_zero_rejections(bounds, use_site_span, diagnostics);
             } else {
                 let (joined_bounds, label_message) = render_auto_type_param_label(bounds);
-                let rejected_names: Vec<String> =
-                    rejected.iter().map(|r| r.name.clone()).collect();
+                let rejected_names: Vec<String> = rejected.iter().map(|r| r.name.clone()).collect();
                 let message = format!(
                     "auto type parameter has no feasible candidates for bound '{bounds_str}': {summary}",
                     bounds_str = joined_bounds,
@@ -1212,15 +1211,11 @@ fn emit_fallback_warning_and_delegate_to_bfs(
     functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
 ) -> MultiParamResolutionOutcome {
-    let (_joined_bounds, label_message) =
-        render_auto_type_param_label(&params[0].bounds);
+    let (_joined_bounds, label_message) = render_auto_type_param_label(&params[0].bounds);
     diagnostics.push(
         Diagnostic::warning(message)
             .with_code(code)
-            .with_label(DiagnosticLabel::new(
-                params[0].use_site_span,
-                label_message,
-            )),
+            .with_label(DiagnosticLabel::new(params[0].use_site_span, label_message)),
     );
     resolve_auto_type_params(
         params,
@@ -1414,11 +1409,7 @@ pub fn resolve_auto_type_params_with_backtracking(
                 // enumeration is up-front), so the outcome's
                 // per_param/substitution shape is identical to BFS's by
                 // construction.
-                emit_no_candidate_zero_rejections(
-                    &param.bounds,
-                    param.use_site_span,
-                    diagnostics,
-                );
+                emit_no_candidate_zero_rejections(&param.bounds, param.use_site_span, diagnostics);
                 return MultiParamResolutionOutcome {
                     per_param: vec![(param.name.clone(), SelectionResult::NoCandidate)],
                     substitution: vec![],
@@ -1438,10 +1429,7 @@ pub fn resolve_auto_type_params_with_backtracking(
                 // `enumerate_candidates` already pushed
                 // `AutoTypeParamPoolOverflow`.
                 return MultiParamResolutionOutcome {
-                    per_param: vec![(
-                        param.name.clone(),
-                        SelectionResult::Ambiguous(overflow_vec),
-                    )],
+                    per_param: vec![(param.name.clone(), SelectionResult::Ambiguous(overflow_vec))],
                     substitution: vec![],
                 };
             }
@@ -1480,10 +1468,8 @@ pub fn resolve_auto_type_params_with_backtracking(
         .map(|v| v.len())
         .fold(1usize, |acc, n| acc.saturating_mul(n));
     if cross_product_size > max_cross_product_size {
-        let param_names: Vec<&str> =
-            params.iter().map(|p| p.name.as_str()).collect();
-        let candidate_counts: Vec<usize> =
-            per_param_candidates.iter().map(|v| v.len()).collect();
+        let param_names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
+        let candidate_counts: Vec<usize> = per_param_candidates.iter().map(|v| v.len()).collect();
         let message = format!(
             "auto type-parameter cross-product search exceeded size cap: \
              {n} auto-type-params declared ({names}) with per-param candidate counts {counts:?} \
@@ -1706,10 +1692,7 @@ pub fn resolve_auto_type_params_with_backtracking(
                 diagnostics.push(
                     Diagnostic::error(message)
                         .with_code(DiagnosticCode::AutoTypeParamAmbiguous)
-                        .with_label(DiagnosticLabel::new(
-                            params[0].use_site_span,
-                            label_message,
-                        ))
+                        .with_label(DiagnosticLabel::new(params[0].use_site_span, label_message))
                         .with_candidates(feasible_assignments[0].clone()),
                 );
                 MultiParamResolutionOutcome {
@@ -1764,10 +1747,7 @@ pub fn resolve_auto_type_params_with_backtracking(
                 diagnostics.push(
                     Diagnostic::warning(message)
                         .with_code(DiagnosticCode::AutoTypeParamNonUnique)
-                        .with_label(DiagnosticLabel::new(
-                            params[0].use_site_span,
-                            label_message,
-                        ))
+                        .with_label(DiagnosticLabel::new(params[0].use_site_span, label_message))
                         .with_candidates(feasible_assignments[0].clone()),
                 );
                 // Success shape (mirrors `1 =>` arm): full length-N per_param and
@@ -1840,7 +1820,10 @@ fn collect_type_param_names_from_type(t: &Type, out: &mut BTreeSet<String>) {
         Type::TypeParam(name) => {
             out.insert(name.clone());
         }
-        Type::List(inner) | Type::Set(inner) | Type::Option(inner) | Type::Complex(inner)
+        Type::List(inner)
+        | Type::Set(inner)
+        | Type::Option(inner)
+        | Type::Complex(inner)
         | Type::Range(inner) => {
             collect_type_param_names_from_type(inner, out);
         }
@@ -1848,7 +1831,10 @@ fn collect_type_param_names_from_type(t: &Type, out: &mut BTreeSet<String>) {
             collect_type_param_names_from_type(k, out);
             collect_type_param_names_from_type(v, out);
         }
-        Type::Function { params, return_type } => {
+        Type::Function {
+            params,
+            return_type,
+        } => {
             for p in params {
                 collect_type_param_names_from_type(p, out);
             }
@@ -2027,7 +2013,11 @@ enum DfsControl {
 fn build_constraints_template(
     template: &TopologyTemplate,
 ) -> Vec<(ConstraintNodeId, &reify_types::CompiledExpr)> {
-    template.constraints.iter().map(|c| (c.id.clone(), &c.expr)).collect()
+    template
+        .constraints
+        .iter()
+        .map(|c| (c.id.clone(), &c.expr))
+        .collect()
 }
 
 /// Single-call leaf check that surfaces both feasibility and violated IDs.
@@ -2074,7 +2064,10 @@ fn check_constraints_leaf(
         .map(|r| r.id)
         .collect();
     let feasible = violated_constraints.is_empty();
-    LeafVerdict { feasible, violated_constraints }
+    LeafVerdict {
+        feasible,
+        violated_constraints,
+    }
 }
 
 /// Compute the deepest (max-index) blamed param level from a set of violated
@@ -2199,8 +2192,12 @@ fn dfs_search(
         // Backtracking is driven by the same `Satisfaction::Violated`
         // discriminator as v0.1 BFS; `Indeterminate` counts as feasible
         // per arch §2.5's monotonic-feasible rule.
-        let verdict =
-            check_constraints_leaf(constraints_template, constraint_checker, functions, leaf_values);
+        let verdict = check_constraints_leaf(
+            constraints_template,
+            constraint_checker,
+            functions,
+            leaf_values,
+        );
         if verdict.feasible {
             feasible_assignments.push(current.clone());
             // Early-terminate once the requested feasible count is reached:
@@ -2274,7 +2271,10 @@ fn dfs_search(
 
 #[cfg(test)]
 mod helper_tests {
-    use super::{AutoTypeParam, build_constraint_blame_map, build_constraints_template, check_constraints_leaf, dfs_search};
+    use super::{
+        AutoTypeParam, build_constraint_blame_map, build_constraints_template,
+        check_constraints_leaf, dfs_search,
+    };
     use reify_test_support::MockConstraintChecker;
     use reify_types::{CompiledFunction, ConstraintNodeId, Satisfaction, Type, Value};
 
@@ -2456,17 +2456,19 @@ mod helper_tests {
         let pairs = build_constraints_template(&template);
 
         // (a) one pair per constraint
-        assert_eq!(pairs.len(), 2, "must return one pair per template constraint");
+        assert_eq!(
+            pairs.len(),
+            2,
+            "must return one pair per template constraint"
+        );
 
         // (b) order preserved — entry 0 matches template.constraints[0]
         assert_eq!(
-            pairs[0].0,
-            template.constraints[0].id,
+            pairs[0].0, template.constraints[0].id,
             "entry 0 id must match template.constraints[0].id"
         );
         assert_eq!(
-            pairs[1].0,
-            template.constraints[1].id,
+            pairs[1].0, template.constraints[1].id,
             "entry 1 id must match template.constraints[1].id"
         );
 
@@ -2490,8 +2492,8 @@ mod helper_tests {
     /// is still in place; step-6's switch to `Cow::Borrowed` makes it `true`.
     #[test]
     fn check_constraints_leaf_passes_constraints_as_cow_borrowed() {
-        use std::sync::atomic::{AtomicBool, Ordering};
         use reify_types::{ConstraintChecker, ConstraintInput, ConstraintResult};
+        use std::sync::atomic::{AtomicBool, Ordering};
 
         struct BorrowAssertingChecker {
             saw_borrowed: AtomicBool,
@@ -2507,11 +2509,14 @@ mod helper_tests {
 
         let expr0 = literal_expr();
         let expr1 = reify_types::CompiledExpr::literal(Value::Bool(false), Type::Bool);
-        let constraints: Vec<(ConstraintNodeId, &reify_types::CompiledExpr)> =
-            vec![(ConstraintNodeId::new("C0", 0), &expr0),
-                 (ConstraintNodeId::new("C1", 1), &expr1)];
+        let constraints: Vec<(ConstraintNodeId, &reify_types::CompiledExpr)> = vec![
+            (ConstraintNodeId::new("C0", 0), &expr0),
+            (ConstraintNodeId::new("C1", 1), &expr1),
+        ];
 
-        let checker = BorrowAssertingChecker { saw_borrowed: AtomicBool::new(false) };
+        let checker = BorrowAssertingChecker {
+            saw_borrowed: AtomicBool::new(false),
+        };
         let functions: &[CompiledFunction] = &[];
         let values = reify_types::ValueMap::new();
 
@@ -2592,8 +2597,8 @@ mod helper_tests {
     ///
     #[test]
     fn build_constraint_blame_map_returns_param_indices_referenced_by_constraint_expression() {
-        use std::collections::BTreeSet;
         use reify_types::{BinOp, SourceSpan, ValueCellId};
+        use std::collections::BTreeSet;
 
         let field_t = ValueCellId::new("Coupling", "field_t");
         let field_u = ValueCellId::new("Coupling", "field_u");
@@ -2626,16 +2631,14 @@ mod helper_tests {
                     span: SourceSpan::new(0, 0),
                 },
             ],
-            vec![
-                crate::CompiledConstraint {
-                    id: ConstraintNodeId::new("Coupling", 0),
-                    label: None,
-                    expr,
-                    span: SourceSpan::new(0, 0),
-                    domain: None,
-                    optimized_target: None,
-                },
-            ],
+            vec![crate::CompiledConstraint {
+                id: ConstraintNodeId::new("Coupling", 0),
+                label: None,
+                expr,
+                span: SourceSpan::new(0, 0),
+                domain: None,
+                optimized_target: None,
+            }],
             b"test-coupling-blame",
         );
 
@@ -2697,10 +2700,8 @@ mod helper_tests {
         let field_z = ValueCellId::new("Coupling", "field_z");
 
         // c0: ValueRef of field_z (typed TypeParam("Z"), out-of-scope)
-        let expr_c0 = reify_types::CompiledExpr::value_ref(
-            field_z.clone(),
-            Type::TypeParam("Z".into()),
-        );
+        let expr_c0 =
+            reify_types::CompiledExpr::value_ref(field_z.clone(), Type::TypeParam("Z".into()));
         // c1: literal Bool(true) — no ValueRef, no TypeParam
         let expr_c1 = reify_types::CompiledExpr::literal(Value::Bool(true), Type::Bool);
 

@@ -35,9 +35,7 @@ use reify_types::Severity;
 /// Returns true if the message contains at least one of the "not yet" / "v0.1" /
 /// "not supported" keywords indicating the geometry-specific diagnostic.
 fn has_deferred_keyword(msg: &str) -> bool {
-    msg.contains("not yet")
-        || msg.contains("v0.1")
-        || msg.contains("not supported")
+    msg.contains("not yet") || msg.contains("v0.1") || msg.contains("not supported")
 }
 
 // ─── step-1: param body : Solid cross-sub access ─────────────────────────────
@@ -76,9 +74,9 @@ pub structure Outer {
     );
 
     // (b) The message should contain "geometry" AND a "not yet"/"v0.1"/"not supported" keyword.
-    let has_geometry_diagnostic = errors.iter().any(|d| {
-        d.message.contains("geometry") && has_deferred_keyword(&d.message)
-    });
+    let has_geometry_diagnostic = errors
+        .iter()
+        .any(|d| d.message.contains("geometry") && has_deferred_keyword(&d.message));
     assert!(
         has_geometry_diagnostic,
         "expected a diagnostic containing 'geometry' and ('not yet' | 'v0.1' | 'not supported'); \
@@ -146,9 +144,9 @@ pub structure Outer {
         "expected at least one Error diagnostic for `self.inner.body` (geometry let access)"
     );
 
-    let has_geometry_diagnostic = errors.iter().any(|d| {
-        d.message.contains("geometry") && has_deferred_keyword(&d.message)
-    });
+    let has_geometry_diagnostic = errors
+        .iter()
+        .any(|d| d.message.contains("geometry") && has_deferred_keyword(&d.message));
     assert!(
         has_geometry_diagnostic,
         "expected geometry-specific diagnostic for let-body cross-sub access; \
@@ -225,9 +223,9 @@ structure Outer {
     );
 
     // (c) Must NOT contain "geometry" or "v0.1" — this is not a geometry member.
-    let has_geometry_path = errors.iter().any(|d| {
-        d.message.contains("geometry") || d.message.contains("v0.1")
-    });
+    let has_geometry_path = errors
+        .iter()
+        .any(|d| d.message.contains("geometry") || d.message.contains("v0.1"));
     assert!(
         !has_geometry_path,
         "non-existent scalar member must NOT trigger geometry-specific diagnostic; \
@@ -263,9 +261,9 @@ pub structure Rack {
         "expected at least one Error for indexed collection-sub geometry access"
     );
 
-    let has_geometry_diagnostic = errors.iter().any(|d| {
-        d.message.contains("geometry") && has_deferred_keyword(&d.message)
-    });
+    let has_geometry_diagnostic = errors
+        .iter()
+        .any(|d| d.message.contains("geometry") && has_deferred_keyword(&d.message));
     assert!(
         has_geometry_diagnostic,
         "expected geometry-specific diagnostic for bolts[0].body; got: {:?}",
@@ -310,9 +308,9 @@ pub structure Rack {
         "expected at least one Error for bare collection-sub geometry access"
     );
 
-    let has_geometry_diagnostic = errors.iter().any(|d| {
-        d.message.contains("geometry") && has_deferred_keyword(&d.message)
-    });
+    let has_geometry_diagnostic = errors
+        .iter()
+        .any(|d| d.message.contains("geometry") && has_deferred_keyword(&d.message));
     assert!(
         has_geometry_diagnostic,
         "expected geometry-specific diagnostic for self.bolts.body; got: {:?}",
@@ -357,9 +355,9 @@ pub structure Outer {
         .collect();
 
     // (a) The geometry-cross-sub diagnostic must fire at least once.
-    let has_geometry_diagnostic = errors.iter().any(|d| {
-        d.message.contains("geometry") && has_deferred_keyword(&d.message)
-    });
+    let has_geometry_diagnostic = errors
+        .iter()
+        .any(|d| d.message.contains("geometry") && has_deferred_keyword(&d.message));
     assert!(
         has_geometry_diagnostic,
         "expected geometry-specific diagnostic to fire; got: {:?}",

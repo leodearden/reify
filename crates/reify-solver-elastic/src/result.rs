@@ -375,11 +375,11 @@ mod tests {
         // tet1: shares that face; the fourth vertex sits on the other
         //   side of that plane, e.g. (1,1,1).
         let nodes = [
-            [0.0_f64, 0.0, 0.0],   // 0
-            [1.0, 0.0, 0.0],       // 1
-            [0.0, 1.0, 0.0],       // 2
-            [0.0, 0.0, 1.0],       // 3
-            [1.0, 1.0, 1.0],       // 4
+            [0.0_f64, 0.0, 0.0], // 0
+            [1.0, 0.0, 0.0],     // 1
+            [0.0, 1.0, 0.0],     // 2
+            [0.0, 0.0, 1.0],     // 3
+            [1.0, 1.0, 1.0],     // 4
         ];
         let tet0_nodes = [nodes[0], nodes[1], nodes[2], nodes[3]];
         let tet1_nodes = [nodes[1], nodes[2], nodes[3], nodes[4]];

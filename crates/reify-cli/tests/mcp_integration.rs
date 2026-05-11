@@ -852,8 +852,9 @@ fn mcp_server_get_source_location_accepts_template_name_and_cell_id() {
         let text = content[0]["text"]
             .as_str()
             .unwrap_or_else(|| panic!("{label}: expected content[0].text string"));
-        serde_json::from_str(text)
-            .unwrap_or_else(|e| panic!("{label}: content[0].text is not valid JSON: {e}\nraw: {text}"))
+        serde_json::from_str(text).unwrap_or_else(|e| {
+            panic!("{label}: content[0].text is not valid JSON: {e}\nraw: {text}")
+        })
     };
 
     let loc_name = parse_loc(&responses[1], "entity_path='Bracket'");
@@ -876,7 +877,10 @@ fn mcp_server_get_source_location_accepts_template_name_and_cell_id() {
             "{label}: end_line ({end_line}) must be >= line ({line})"
         );
         let end_column = loc["end_column"].as_u64().unwrap_or(0);
-        assert!(end_column >= 1, "{label}: end_column must be >= 1, got {end_column}");
+        assert!(
+            end_column >= 1,
+            "{label}: end_column must be >= 1, got {end_column}"
+        );
     }
 
     // Template-name proxy must return identical span to the first cell (width).

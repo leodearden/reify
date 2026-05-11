@@ -267,9 +267,13 @@ fn apply_precision_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
         match pragma.args.as_slice() {
             [PragmaArg::Bare(PragmaValue::Quantity { value, unit })] => {
                 match unit_to_scalar(*value, unit) {
-                    Some((Value::Scalar { si_value, dimension }, _))
-                        if dimension == DimensionVector::LENGTH =>
-                    {
+                    Some((
+                        Value::Scalar {
+                            si_value,
+                            dimension,
+                        },
+                        _,
+                    )) if dimension == DimensionVector::LENGTH => {
                         // Range gate: tolerance must be finite, > 0, and within
                         // a sane upper bound. Out-of-range values leave
                         // default_tolerance unset so the engine falls back to
@@ -282,10 +286,8 @@ fn apply_precision_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
                         // user mistakes rather than internal invariant violations.
                         if !si_value.is_finite() {
                             module.diagnostics.push(
-                                Diagnostic::error(
-                                    "#precision: tolerance is not finite; ignored",
-                                )
-                                .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
+                                Diagnostic::error("#precision: tolerance is not finite; ignored")
+                                    .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
                             );
                         } else if si_value < 0.0 {
                             module.diagnostics.push(

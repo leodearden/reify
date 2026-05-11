@@ -119,8 +119,8 @@ fn kinematic_singularity_round_trips_via_warning_with_code() {
 /// `Diagnostic::error(...).with_code(...)`.
 #[test]
 fn kinematic_overconstrained_round_trips_via_error_with_code() {
-    let d = Diagnostic::error("over-constrained")
-        .with_code(DiagnosticCode::KinematicOverconstrained);
+    let d =
+        Diagnostic::error("over-constrained").with_code(DiagnosticCode::KinematicOverconstrained);
     assert_eq!(d.severity, Severity::Error);
     assert_eq!(d.code, Some(DiagnosticCode::KinematicOverconstrained));
 }
@@ -249,7 +249,10 @@ fn solve_loop_closure_with_diagnostics_emits_overconstrained_for_one_dof() {
         "over-constrained short-circuit must return NotConverged, got {:?}",
         report.outcome
     );
-    assert!(!report.is_singular(), "no Newton run → is_singular must stay false");
+    assert!(
+        !report.is_singular(),
+        "no Newton run → is_singular must stay false"
+    );
 }
 
 // ── Step-7: under-constrained pre-check (free_b.len() > 6) ──────────────
@@ -311,8 +314,7 @@ fn solve_loop_closure_with_diagnostics_emits_underconstrained_for_seven_dofs() {
     );
     assert!(
         report.diagnostics.iter().any(|d| {
-            d.severity == Severity::Warning
-                && d.code == Some(DiagnosticCode::KinematicSingularity)
+            d.severity == Severity::Warning && d.code == Some(DiagnosticCode::KinematicSingularity)
         }),
         "missing KinematicSingularity warning in {:?}",
         report.diagnostics
@@ -380,9 +382,9 @@ fn solve_loop_closure_with_diagnostics_emits_singularity_for_rank_one_chain() {
                 x.len()
             );
         }
-        other => panic!(
-            "expected NewtonOutcome::Singular from rank-deficient Jacobian, got {other:?}"
-        ),
+        other => {
+            panic!("expected NewtonOutcome::Singular from rank-deficient Jacobian, got {other:?}")
+        }
     }
 
     // Exactly one diagnostic, and it MUST be the singularity warning — no
@@ -445,7 +447,10 @@ fn solve_loop_closure_with_diagnostics_overconstrained_midpoint_uses_joint_midpo
     let d = &report.diagnostics[0];
     assert_eq!(d.severity, Severity::Error);
     assert_eq!(d.code, Some(DiagnosticCode::KinematicOverconstrained));
-    assert!(!report.is_singular(), "no Newton run → is_singular must stay false");
+    assert!(
+        !report.is_singular(),
+        "no Newton run → is_singular must stay false"
+    );
     match &report.outcome {
         NewtonOutcome::NotConverged { x, residual_norm } => {
             assert_eq!(x.len(), 1, "x must align positionally with free_b");
@@ -646,8 +651,7 @@ fn solve_loop_closure_with_diagnostics_emits_underconstrained_with_full_rank_jac
     match &report.outcome {
         NewtonOutcome::Converged { iters, .. } => {
             assert_eq!(
-                *iters,
-                0,
+                *iters, 0,
                 "zero-residual setup must short-circuit before LDLᵀ runs \
                  (vals_a == vals_b_initial → identity twist → Converged at iter 0); \
                  a regression that broke the short-circuit and proceeded to LDLᵀ \

@@ -17,8 +17,8 @@
 //! coverage) build on this AST contract.
 
 use reify_syntax::{
-    ConstraintDecl, Declaration, Expr, ExprKind, GuardedGroupDecl, LetDecl, MAX_MEMBER_NESTING_DEPTH,
-    MemberDecl, ParamDecl, SubDecl, walk_specialization_scope_members,
+    ConstraintDecl, Declaration, Expr, ExprKind, GuardedGroupDecl, LetDecl,
+    MAX_MEMBER_NESTING_DEPTH, MemberDecl, ParamDecl, SubDecl, walk_specialization_scope_members,
 };
 use reify_types::{ContentHash, ModulePath, SourceSpan};
 
@@ -223,10 +223,7 @@ fn walker_does_not_recurse_when_nested_sub_body_is_none() {
 
 // ── (d) walker recurses into GuardedGroup branches ──────────────────────
 
-fn make_guarded_group(
-    members: Vec<MemberDecl>,
-    else_members: Vec<MemberDecl>,
-) -> MemberDecl {
+fn make_guarded_group(members: Vec<MemberDecl>, else_members: Vec<MemberDecl>) -> MemberDecl {
     MemberDecl::GuardedGroup(GuardedGroupDecl {
         condition: dummy_expr(),
         members,

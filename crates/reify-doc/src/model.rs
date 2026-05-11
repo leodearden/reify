@@ -1197,5 +1197,4 @@ mod tests {
         let back: ItemDoc = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(item, back);
     }
-
 }

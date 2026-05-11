@@ -492,7 +492,12 @@ pub fn faces_by_normal<K: GeometryKernel + ?Sized>(
     target: [f64; 3],
     angular_tol_rad: f64,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
-    validate_angular_tol("faces_by_normal", angular_tol_rad, std::f64::consts::PI, "π")?;
+    validate_angular_tol(
+        "faces_by_normal",
+        angular_tol_rad,
+        std::f64::consts::PI,
+        "π",
+    )?;
     let target = normalize3(target).ok_or_else(|| {
         QueryError::QueryFailed(
             "faces_by_normal: target direction must be non-zero and finite".into(),
@@ -901,10 +906,7 @@ pub(crate) fn parse_bbox_axis_extents_json(s: &str, axis: u8) -> Option<(f64, f6
         } else if key == max_key {
             max_v = Some(num);
             true
-        } else if matches!(
-            key,
-            "xmin" | "xmax" | "ymin" | "ymax" | "zmin" | "zmax"
-        ) {
+        } else if matches!(key, "xmin" | "xmax" | "ymin" | "ymax" | "zmin" | "zmax") {
             // Other-axis extents are part of the well-formed payload
             // but not needed for this caller; tolerate them silently.
             true

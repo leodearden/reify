@@ -1,9 +1,9 @@
 use reify_compiler::{CompiledModule, RequirementKind, ValueCellDecl, ValueCellKind, Visibility};
 use reify_syntax::ParsedModule;
 use reify_types::{
-    BinOp, ContentHash, ConstraintSolver, DimensionVector, ModulePath, SolveResult, SourceSpan,
-    Type, Value, ValueCellId, DEPRECATED_ANNOTATION, OPTIMIZED_ANNOTATION, SOLVER_HINT_ANNOTATION,
-    TEST_ANNOTATION,
+    BinOp, ConstraintSolver, ContentHash, DEPRECATED_ANNOTATION, DimensionVector, ModulePath,
+    OPTIMIZED_ANNOTATION, SOLVER_HINT_ANNOTATION, SolveResult, SourceSpan, TEST_ANNOTATION, Type,
+    Value, ValueCellId,
 };
 
 use crate::builders::{
@@ -91,7 +91,10 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 name: "width".into(),
                 doc: None,
                 type_expr: Some(TypeExpr {
-                    kind: TypeExprKind::Named { name: "Scalar".into(), type_args: vec![] },
+                    kind: TypeExprKind::Named {
+                        name: "Scalar".into(),
+                        type_args: vec![],
+                    },
                     span: SourceSpan::new(29, 35),
                 }),
                 default: Some(Expr {
@@ -110,7 +113,10 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 name: "height".into(),
                 doc: None,
                 type_expr: Some(TypeExpr {
-                    kind: TypeExprKind::Named { name: "Scalar".into(), type_args: vec![] },
+                    kind: TypeExprKind::Named {
+                        name: "Scalar".into(),
+                        type_args: vec![],
+                    },
                     span: SourceSpan::new(60, 66),
                 }),
                 default: Some(Expr {
@@ -129,7 +135,10 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 name: "thickness".into(),
                 doc: None,
                 type_expr: Some(TypeExpr {
-                    kind: TypeExprKind::Named { name: "Scalar".into(), type_args: vec![] },
+                    kind: TypeExprKind::Named {
+                        name: "Scalar".into(),
+                        type_args: vec![],
+                    },
                     span: SourceSpan::new(95, 101),
                 }),
                 default: Some(Expr {
@@ -148,7 +157,10 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 name: "fillet_radius".into(),
                 doc: None,
                 type_expr: Some(TypeExpr {
-                    kind: TypeExprKind::Named { name: "Scalar".into(), type_args: vec![] },
+                    kind: TypeExprKind::Named {
+                        name: "Scalar".into(),
+                        type_args: vec![],
+                    },
                     span: SourceSpan::new(132, 138),
                 }),
                 default: Some(Expr {
@@ -167,7 +179,10 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 name: "hole_diameter".into(),
                 doc: None,
                 type_expr: Some(TypeExpr {
-                    kind: TypeExprKind::Named { name: "Scalar".into(), type_args: vec![] },
+                    kind: TypeExprKind::Named {
+                        name: "Scalar".into(),
+                        type_args: vec![],
+                    },
                     span: SourceSpan::new(169, 175),
                 }),
                 default: Some(Expr {
@@ -256,7 +271,10 @@ pub fn bracket_parsed_module() -> ParsedModule {
                                     span: SourceSpan::new(286, 291),
                                 }),
                                 right: Box::new(Expr {
-                                    kind: ExprKind::NumberLiteral { value: 4.0, is_real: false },
+                                    kind: ExprKind::NumberLiteral {
+                                        value: 4.0,
+                                        is_real: false,
+                                    },
                                     span: SourceSpan::new(294, 295),
                                 }),
                             },
@@ -286,7 +304,10 @@ pub fn bracket_parsed_module() -> ParsedModule {
                                     span: SourceSpan::new(327, 336),
                                 }),
                                 right: Box::new(Expr {
-                                    kind: ExprKind::NumberLiteral { value: 2.0, is_real: false },
+                                    kind: ExprKind::NumberLiteral {
+                                        value: 2.0,
+                                        is_real: false,
+                                    },
                                     span: SourceSpan::new(339, 340),
                                 }),
                             },
@@ -1050,7 +1071,12 @@ pub fn wave2_flip_fixture() -> Wave2FlipFixture {
         let guard_expr = gt(value_ref("S", "x"), literal(crate::mm(5.0)));
         TopologyTemplateBuilder::new("S")
             // x: structure_controlling (guard depends on x) AND read by the constraint
-            .param("S", "x", Type::length(), Some(literal(crate::mm(x_default_mm))))
+            .param(
+                "S",
+                "x",
+                Type::length(),
+                Some(literal(crate::mm(x_default_mm))),
+            )
             // depth: auto param resolved by the solver
             .auto_param("S", "depth", Type::length())
             // constraint reads both depth and x → dirty when x changes → solver re-runs
@@ -1086,11 +1112,25 @@ pub fn wave2_flip_fixture() -> Wave2FlipFixture {
     let mut solved2 = HashMap::new();
     solved2.insert(depth_id.clone(), crate::mm(3.0));
     let solver = Box::new(SequencedMockConstraintSolver::new(vec![
-        SolveResult::Solved { values: solved1, unique: true },
-        SolveResult::Solved { values: solved2, unique: true },
+        SolveResult::Solved {
+            values: solved1,
+            unique: true,
+        },
+        SolveResult::Solved {
+            values: solved2,
+            unique: true,
+        },
     ])) as Box<dyn ConstraintSolver>;
 
-    Wave2FlipFixture { module_initial, module_edited, x_id, depth_id, guard_id, m_id, solver }
+    Wave2FlipFixture {
+        module_initial,
+        module_edited,
+        x_id,
+        depth_id,
+        guard_id,
+        m_id,
+        solver,
+    }
 }
 
 #[cfg(test)]
@@ -1281,7 +1321,10 @@ mod tests {
         assert_eq!(bolt.name, "Bolt");
         assert_eq!(bolt.annotations.len(), 2);
         let ann_names: Vec<&str> = bolt.annotations.iter().map(|a| a.name.as_str()).collect();
-        assert!(ann_names.contains(&TEST_ANNOTATION), "expected @test annotation");
+        assert!(
+            ann_names.contains(&TEST_ANNOTATION),
+            "expected @test annotation"
+        );
         assert!(
             ann_names.contains(&OPTIMIZED_ANNOTATION),
             "expected @optimized annotation"

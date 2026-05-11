@@ -641,7 +641,10 @@ mod tests {
         let m = make_node("m"); // same kind (Value), different node
 
         // (a) Set a type override for Value kind and an instance override for n
-        overrides.set_type(NodeKind::Value, NodeCommitmentOverride::OnlyRunOnFinalInputs);
+        overrides.set_type(
+            NodeKind::Value,
+            NodeCommitmentOverride::OnlyRunOnFinalInputs,
+        );
         overrides.set_instance(n.clone(), NodeCommitmentOverride::AlwaysCancelWhenStale);
 
         // instance override wins over type override for n
@@ -688,7 +691,10 @@ mod tests {
         let value_node = make_node("v");
         let constraint_node = make_constraint_node("E", 0);
 
-        overrides.set_type(NodeKind::Value, NodeCommitmentOverride::OnlyRunOnFinalInputs);
+        overrides.set_type(
+            NodeKind::Value,
+            NodeCommitmentOverride::OnlyRunOnFinalInputs,
+        );
 
         // Value node should pick up the type override
         assert_eq!(
@@ -723,7 +729,10 @@ mod tests {
         let node_a = make_node("a");
         let node_b = make_node("b");
 
-        overrides.set_instance(node_a.clone(), NodeCommitmentOverride::AlwaysCancelWhenStale);
+        overrides.set_instance(
+            node_a.clone(),
+            NodeCommitmentOverride::AlwaysCancelWhenStale,
+        );
 
         // node_a should return the set value
         assert_eq!(

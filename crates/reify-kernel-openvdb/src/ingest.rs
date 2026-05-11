@@ -26,11 +26,11 @@
 //! - [`lower_to_sampled`] — orchestrates the in-memory lowering pipeline.
 //! - [`read_vdb_file`] — v0.2 stub that returns `FfiNotImplemented`.
 
+use reify_types::sampled::{LINSPACE_MAX_INTERVALS, LinspaceError, linspace_inclusive};
 use reify_types::{
     Diagnostic, DiagnosticCode, DimensionVector, InterpolationKind, SampledField, SampledGridKind,
     Type,
 };
-use reify_types::sampled::{LINSPACE_MAX_INTERVALS, LinspaceError, linspace_inclusive};
 
 /// Spatial-grid shape of an OpenVDB source grid.
 ///
@@ -347,10 +347,7 @@ pub fn lower_to_sampled(
     }
     for (i, s) in grid.spacing.iter().enumerate() {
         if !(*s > 0.0 && s.is_finite()) {
-            return Err(IngestError::InvalidSpacing {
-                axis: i,
-                value: *s,
-            });
+            return Err(IngestError::InvalidSpacing { axis: i, value: *s });
         }
     }
     for i in 0..axis_count {
@@ -372,7 +369,10 @@ pub fn lower_to_sampled(
         match linspace_inclusive(grid.bounds_min[i], grid.bounds_max[i], grid.spacing[i]) {
             Ok(g) => axis_grids.push(g),
             Err(LinspaceError::Excessive { n_intervals }) => {
-                return Err(IngestError::ExcessiveAxisLength { axis: i, n_intervals });
+                return Err(IngestError::ExcessiveAxisLength {
+                    axis: i,
+                    n_intervals,
+                });
             }
             Err(LinspaceError::Overflow) => {
                 return Err(IngestError::OverflowingAxisLength { axis: i });
@@ -500,11 +500,10 @@ pub fn validate_grid_units(
         // path which has no unit metadata at all).
         return Ok(());
     };
-    let found_dimension = lookup_unit_dimension(unit_str).ok_or_else(|| {
-        IngestError::UnknownUnit {
+    let found_dimension =
+        lookup_unit_dimension(unit_str).ok_or_else(|| IngestError::UnknownUnit {
             unit: unit_str.to_string(),
-        }
-    })?;
+        })?;
     if found_dimension != expected_dimension {
         return Err(IngestError::UnitMismatch {
             expected_dimension,
@@ -587,11 +586,12 @@ pub fn read_vdb_file(
     crate::init::ensure_initialized();
 
     // Open and read the named FloatGrid from the .vdb file.
-    let grid_handle = openvdb_ffi::read_vdb_grid_ffi(path, grid_name)
-        .map_err(|e| IngestError::FileReadError {
+    let grid_handle = openvdb_ffi::read_vdb_grid_ffi(path, grid_name).map_err(|e| {
+        IngestError::FileReadError {
             path: path.to_string(),
             detail: e.to_string(),
-        })?;
+        }
+    })?;
 
     // Extract grid metadata via FFI accessors.
     //
@@ -616,11 +616,12 @@ pub fn read_vdb_file(
     // `GRID_DENSIFY_MAX_VOXELS` (~256M voxels ≈ 1 GiB) by throwing a
     // `std::runtime_error`; cxx maps it to `Err(cxx::Exception)` which we
     // surface as `IngestError::FileReadError`.
-    let raw_buffer: Vec<f32> = openvdb_ffi::grid_densify_to_buffer(&grid_handle)
-        .map_err(|e| IngestError::FileReadError {
+    let raw_buffer: Vec<f32> = openvdb_ffi::grid_densify_to_buffer(&grid_handle).map_err(|e| {
+        IngestError::FileReadError {
             path: path.to_string(),
             detail: e.to_string(),
-        })?;
+        }
+    })?;
     // `into_iter()` (consuming) — not `iter()` (borrowing) — so the f32
     // buffer is freed as soon as the f64 collect finishes.  At the C++-side
     // cap (~256M voxels = 1 GiB f32) the long-lived storage paid by
@@ -678,10 +679,9 @@ impl std::fmt::Display for IngestError {
                 "field codomain type '{type_repr}' is not a meaningful \
                  numeric codomain for OpenVDB-imported data"
             ),
-            IngestError::EmptyGrid => write!(
-                f,
-                "OpenVDB grid carries no data values (empty data buffer)"
-            ),
+            IngestError::EmptyGrid => {
+                write!(f, "OpenVDB grid carries no data values (empty data buffer)")
+            }
             IngestError::DataShapeMismatch {
                 expected,
                 actual,
@@ -734,10 +734,9 @@ impl std::fmt::Display for IngestError {
                 "OpenVDB grid axis {axis} requires more intervals than usize can represent; \
                  reduce the axis span or increase the spacing"
             ),
-            IngestError::FileReadError { path, detail } => write!(
-                f,
-                "OpenVDB file read failed for '{path}': {detail}"
-            ),
+            IngestError::FileReadError { path, detail } => {
+                write!(f, "OpenVDB file read failed for '{path}': {detail}")
+            }
         }
     }
 }
@@ -905,10 +904,7 @@ mod tests {
             format_type_repr(&Type::Complex(Box::new(Type::Real))),
             "Complex"
         );
-        assert_eq!(
-            format_type_repr(&Type::Range(Box::new(Type::Int))),
-            "Range"
-        );
+        assert_eq!(format_type_repr(&Type::Range(Box::new(Type::Int))), "Range");
         assert_eq!(format_type_repr(&Type::Orientation(3)), "Orientation");
         assert_eq!(format_type_repr(&Type::Frame(3)), "Frame");
         assert_eq!(format_type_repr(&Type::Transform(3)), "Transform");

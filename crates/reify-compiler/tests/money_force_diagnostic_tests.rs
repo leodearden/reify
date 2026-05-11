@@ -79,7 +79,10 @@ structure def S {
     assert!(
         has_money_and_force_label(&errors),
         "expected a label containing both 'Money' and 'Force' for 25USD + 5N, labels: {:?}",
-        errors.iter().flat_map(|d| d.labels.iter().map(|l| &l.message)).collect::<Vec<_>>()
+        errors
+            .iter()
+            .flat_map(|d| d.labels.iter().map(|l| &l.message))
+            .collect::<Vec<_>>()
     );
 
     assert!(
@@ -114,7 +117,10 @@ structure def S {
     let module = compile_source_with_stdlib(source);
     let errors = errors_only(&module);
 
-    assert!(!errors.is_empty(), "expected at least one error for 25USD - 5N");
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error for 25USD - 5N"
+    );
     assert!(
         has_dimension_mismatch_code(&errors),
         "expected DimensionMismatch code for 25USD - 5N"
@@ -141,7 +147,10 @@ structure def S {
     let module = compile_source_with_stdlib(source);
     let errors = errors_only(&module);
 
-    assert!(!errors.is_empty(), "expected at least one error for 5N + 25USD");
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error for 5N + 25USD"
+    );
     assert!(
         has_dimension_mismatch_code(&errors),
         "expected DimensionMismatch code for 5N + 25USD"
@@ -178,7 +187,9 @@ structure def S {
     );
 
     assert!(
-        errors.iter().any(|d| d.message.contains("dimension mismatch in range")),
+        errors
+            .iter()
+            .any(|d| d.message.contains("dimension mismatch in range")),
         "expected 'dimension mismatch in range' message for 25USD..5N, got: {:?}",
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
@@ -192,7 +203,10 @@ structure def S {
     assert!(
         has_money_and_force_label(&errors),
         "expected a label containing both 'Money' and 'Force' for 25USD..5N, labels: {:?}",
-        errors.iter().flat_map(|d| d.labels.iter().map(|l| &l.message)).collect::<Vec<_>>()
+        errors
+            .iter()
+            .flat_map(|d| d.labels.iter().map(|l| &l.message))
+            .collect::<Vec<_>>()
     );
 
     assert!(

@@ -274,9 +274,18 @@ fn sample_one_param_lambda_binds_entire_point_as_single_value() {
     // Inline verification: identity body with x = Point3(1m, 2m, 3m) returns
     // the Point unchanged.  Self-contained; no dependency on other test files.
     let point3_val = Value::Point(vec![
-        Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
-        Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
-        Value::Scalar { si_value: 3.0, dimension: DimensionVector::LENGTH },
+        Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        Value::Scalar {
+            si_value: 2.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        Value::Scalar {
+            si_value: 3.0,
+            dimension: DimensionVector::LENGTH,
+        },
     ]);
     let mut body_check = ValueMap::new();
     body_check.insert(x_id.clone(), point3_val.clone());
@@ -318,8 +327,7 @@ fn sample_one_param_lambda_binds_entire_point_as_single_value() {
     let values = ValueMap::new();
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
     assert_eq!(
-        sample_result,
-        point3_val,
+        sample_result, point3_val,
         "sample of 1-param field with 3-element Point must bind the entire Point \
          to x and return it (identity body); Undef would indicate arity mismatch \
          from incorrect decomposition"
@@ -671,8 +679,7 @@ fn sample_one_param_lambda_binds_entire_vector_as_single_value() {
     let values = ValueMap::new();
     let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
     assert_eq!(
-        result,
-        vector_val,
+        result, vector_val,
         "sample() of a 1-param field with a Vector must bind the entire Vector to x \
          and return it unchanged (no unpacking); Undef would indicate incorrect decomposition"
     );
@@ -1158,7 +1165,11 @@ fn xyz_sum_field_helper_returns_expected_structure() {
             source,
             ..
         } => {
-            assert_eq!(d, &Type::point3(Type::Real), "domain_type must be point3(Real)");
+            assert_eq!(
+                d,
+                &Type::point3(Type::Real),
+                "domain_type must be point3(Real)"
+            );
             assert_eq!(c, &Type::Real, "codomain_type must be Real");
             assert_eq!(
                 source,
@@ -1316,7 +1327,11 @@ fn sample_propagates_undef_from_lambda_body_division_by_zero() {
                 CompiledExpr::value_ref(x_id2.clone(), Type::Real),
                 Type::Real,
             );
-            Arc::new(make_value_lambda(vec![("x", x_id2)], body2, ValueMap::new()))
+            Arc::new(make_value_lambda(
+                vec![("x", x_id2)],
+                body2,
+                ValueMap::new(),
+            ))
         },
     };
     let field2_type = Type::Field {

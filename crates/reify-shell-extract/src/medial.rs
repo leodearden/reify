@@ -33,7 +33,7 @@
 
 use reify_types::value::SampledField;
 
-use crate::grid_validation::{validate_regular3d, GridValidationError};
+use crate::grid_validation::{GridValidationError, validate_regular3d};
 
 /// Sparse voxel mask: indices `(i, j, k)` of every voxel tagged as medial
 /// by [`compute_medial_mask`].
@@ -223,9 +223,8 @@ impl std::fmt::Display for MedialError {
                 bounds_max,
             } => {
                 let sp_bad = !(spacing.is_finite() && *spacing > 0.0);
-                let bn_bad = !bounds_min.is_finite()
-                    || !bounds_max.is_finite()
-                    || bounds_min > bounds_max;
+                let bn_bad =
+                    !bounds_min.is_finite() || !bounds_max.is_finite() || bounds_min > bounds_max;
                 match (sp_bad, bn_bad) {
                     (true, true) => write!(
                         f,
@@ -400,8 +399,7 @@ pub fn compute_medial_mask(
                 // filter rejects ≥95% of voxels in typical slab/sphere fixtures,
                 // so this starting capacity avoids most reallocations without
                 // over-allocating.
-                let mut local: Vec<[i32; 3]> =
-                    Vec::with_capacity(chunk.len() * ny * nz / 32);
+                let mut local: Vec<[i32; 3]> = Vec::with_capacity(chunk.len() * ny * nz / 32);
                 for &i in chunk {
                     for j in 0..ny {
                         for k in 0..nz {
@@ -429,10 +427,8 @@ pub fn compute_medial_mask(
                                  |phi|={phi} > band_width={band_width}"
                             );
                             let grad = gradient_grid_ref[i * ny * nz + j * nz + k];
-                            let gnorm = (grad[0] * grad[0]
-                                + grad[1] * grad[1]
-                                + grad[2] * grad[2])
-                                .sqrt();
+                            let gnorm =
+                                (grad[0] * grad[0] + grad[1] * grad[1] + grad[2] * grad[2]).sqrt();
                             if gnorm < GRADIENT_EPSILON {
                                 continue;
                             }
@@ -454,8 +450,12 @@ pub fn compute_medial_mask(
                             // normals).
                             let gp_raw = gradient_at_world(sdf, hit_plus);
                             let gm_raw = gradient_at_world(sdf, hit_minus);
-                            let Some(gp) = normalize3(gp_raw) else { continue };
-                            let Some(gm) = normalize3(gm_raw) else { continue };
+                            let Some(gp) = normalize3(gp_raw) else {
+                                continue;
+                            };
+                            let Some(gm) = normalize3(gm_raw) else {
+                                continue;
+                            };
 
                             // (e) gradient-discontinuity test: opposing-face
                             // hits have antiparallel normals (dot near -1).
@@ -785,8 +785,7 @@ pub(crate) fn precompute_gradient_grid(sdf: &SampledField, band_width: f64) -> V
                     for j in 0..ny {
                         for k in 0..nz {
                             if sample_at_index(sdf, [i, j, k]).abs() <= band_width {
-                                dst[idx * ny * nz + j * nz + k] =
-                                    gradient_at_index(sdf, [i, j, k]);
+                                dst[idx * ny * nz + j * nz + k] = gradient_at_index(sdf, [i, j, k]);
                             }
                             // else: out-of-band; slot stays at the [0.0; 3]
                             // sentinel from the initial vec! allocation.
@@ -1031,9 +1030,8 @@ mod tests {
         // Reach the error type and wrapper variant from the crate root too
         // — sanity-checks that `MedialError` and `GridValidationError` are
         // publicly named.
-        let _: MedialError = MedialError::GridValidation(
-            GridValidationError::EmptyAxisGrid { axis: 0 },
-        );
+        let _: MedialError =
+            MedialError::GridValidation(GridValidationError::EmptyAxisGrid { axis: 0 });
     }
 
     /// Build a Regular1D `SampledField` with three nodes along x. The
@@ -1116,9 +1114,7 @@ mod tests {
         let bounds_min = -half_extent;
         let bounds_max = half_extent;
 
-        let axis_grid: Vec<f64> = (0..n)
-            .map(|i| bounds_min + (i as f64) * spacing)
-            .collect();
+        let axis_grid: Vec<f64> = (0..n).map(|i| bounds_min + (i as f64) * spacing).collect();
         // Row-major flat layout: data[i*n*n + j*n + k] at index (i,j,k).
         let mut data = Vec::with_capacity(n * n * n);
         for &_x in &axis_grid {
@@ -1129,9 +1125,7 @@ mod tests {
             }
         }
         SampledField {
-            name: format!(
-                "slab-3d-h{half_thickness_voxels}-n{voxel_count}"
-            ),
+            name: format!("slab-3d-h{half_thickness_voxels}-n{voxel_count}"),
             kind: SampledGridKind::Regular3D,
             bounds_min: vec![bounds_min, bounds_min, bounds_min],
             bounds_max: vec![bounds_max, bounds_max, bounds_max],
@@ -1155,8 +1149,8 @@ mod tests {
     fn compute_medial_mask_flags_slab_centerline_voxels() {
         let n = 16usize;
         let sdf = slab_sdf_3d(3.0, n);
-        let mask = compute_medial_mask(&sdf, &MedialOptions::default())
-            .expect("slab compute succeeds");
+        let mask =
+            compute_medial_mask(&sdf, &MedialOptions::default()).expect("slab compute succeeds");
 
         // (a) non-empty
         assert!(
@@ -1200,9 +1194,7 @@ mod tests {
         let bounds_min = -half_extent;
         let bounds_max = half_extent;
 
-        let axis_grid: Vec<f64> = (0..n)
-            .map(|i| bounds_min + (i as f64) * spacing)
-            .collect();
+        let axis_grid: Vec<f64> = (0..n).map(|i| bounds_min + (i as f64) * spacing).collect();
         // Row-major flat layout: data[i*n*n + j*n + k] at index (i,j,k).
         // Note `x` is now the OUTER loop variable so the φ value
         // depends on the leading index i — the algorithm must walk in
@@ -1216,9 +1208,7 @@ mod tests {
             }
         }
         SampledField {
-            name: format!(
-                "slab-x-3d-h{half_thickness_voxels}-n{voxel_count}"
-            ),
+            name: format!("slab-x-3d-h{half_thickness_voxels}-n{voxel_count}"),
             kind: SampledGridKind::Regular3D,
             bounds_min: vec![bounds_min, bounds_min, bounds_min],
             bounds_max: vec![bounds_max, bounds_max, bounds_max],
@@ -1256,8 +1246,8 @@ mod tests {
     fn compute_medial_mask_flags_slab_centerline_voxels_along_x_axis() {
         let n = 16usize;
         let sdf = slab_sdf_3d_along_x(3.0, n);
-        let mask = compute_medial_mask(&sdf, &MedialOptions::default())
-            .expect("x-slab compute succeeds");
+        let mask =
+            compute_medial_mask(&sdf, &MedialOptions::default()).expect("x-slab compute succeeds");
 
         // (a) non-empty
         assert!(
@@ -1301,9 +1291,7 @@ mod tests {
         let bounds_min = -half_extent;
         let bounds_max = half_extent;
 
-        let axis_grid: Vec<f64> = (0..n)
-            .map(|i| bounds_min + (i as f64) * spacing)
-            .collect();
+        let axis_grid: Vec<f64> = (0..n).map(|i| bounds_min + (i as f64) * spacing).collect();
         // Row-major flat layout: data[i*n*n + j*n + k] at index (i,j,k).
         let mut data = Vec::with_capacity(n * n * n);
         for &x in &axis_grid {
@@ -1357,8 +1345,8 @@ mod tests {
     fn compute_medial_mask_on_sphere_admits_no_far_voxels() {
         let n = 16usize;
         let sdf = sphere_sdf_3d(5.0, n);
-        let mask = compute_medial_mask(&sdf, &MedialOptions::default())
-            .expect("sphere compute succeeds");
+        let mask =
+            compute_medial_mask(&sdf, &MedialOptions::default()).expect("sphere compute succeeds");
 
         // Every voxel in the mask (if any) must be within 2 voxels of
         // the grid center. The grid center for n=16 is between indices
@@ -1433,16 +1421,17 @@ mod tests {
     /// Euclidean-distance SDF would only differ near corners/edges where
     /// the mask should be empty regardless.
     fn thick_block_sdf_3d(half_size_voxels: f64, voxel_count: usize) -> SampledField {
-        assert!(voxel_count >= 2, "thick block grid needs ≥ 2 voxels per axis");
+        assert!(
+            voxel_count >= 2,
+            "thick block grid needs ≥ 2 voxels per axis"
+        );
         let n = voxel_count;
         let spacing: f64 = 1.0;
         let half_extent = (n as f64 - 1.0) / 2.0;
         let bounds_min = -half_extent;
         let bounds_max = half_extent;
 
-        let axis_grid: Vec<f64> = (0..n)
-            .map(|i| bounds_min + (i as f64) * spacing)
-            .collect();
+        let axis_grid: Vec<f64> = (0..n).map(|i| bounds_min + (i as f64) * spacing).collect();
         // Row-major flat layout: data[i*n*n + j*n + k] at index (i,j,k).
         let mut data = Vec::with_capacity(n * n * n);
         for &x in &axis_grid {
@@ -1624,9 +1613,9 @@ mod tests {
         let sdf = SampledField {
             name: "test-axis-len-mismatch".to_string(),
             kind: SampledGridKind::Regular3D,
-            bounds_min: vec![0.0],               // length 1 — mismatch
-            bounds_max: vec![0.0, 0.0, 0.0],     // length 3
-            spacing: vec![1.0, 1.0, 1.0],        // length 3
+            bounds_min: vec![0.0],           // length 1 — mismatch
+            bounds_max: vec![0.0, 0.0, 0.0], // length 3
+            spacing: vec![1.0, 1.0, 1.0],    // length 3
             axis_grids: vec![vec![0.0], vec![0.0], vec![0.0]], // length 3
             interpolation: InterpolationKind::Linear,
             data: vec![1.0],
@@ -1728,11 +1717,7 @@ mod tests {
     /// OOB. The new check rejects it up front with a typed error.
     #[test]
     fn compute_medial_mask_rejects_zero_spacing() {
-        let sdf = geometry_test_field(
-            [0.0, 1.0, 1.0],
-            [0.0, 0.0, 0.0],
-            [1.0, 1.0, 1.0],
-        );
+        let sdf = geometry_test_field([0.0, 1.0, 1.0], [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
         let err = compute_medial_mask(&sdf, &MedialOptions::default())
             .expect_err("zero spacing must be rejected");
         assert_eq!(
@@ -1751,11 +1736,7 @@ mod tests {
     /// interpolation, producing silent geometric nonsense.
     #[test]
     fn compute_medial_mask_rejects_negative_spacing() {
-        let sdf = geometry_test_field(
-            [-1.0, 1.0, 1.0],
-            [0.0, 0.0, 0.0],
-            [1.0, 1.0, 1.0],
-        );
+        let sdf = geometry_test_field([-1.0, 1.0, 1.0], [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
         let err = compute_medial_mask(&sdf, &MedialOptions::default())
             .expect_err("negative spacing must be rejected");
         assert_eq!(
@@ -1774,18 +1755,12 @@ mod tests {
     /// under IEEE-754 defeats `assert_eq!` on the derived `PartialEq`.
     #[test]
     fn compute_medial_mask_rejects_nan_spacing() {
-        let sdf = geometry_test_field(
-            [f64::NAN, 1.0, 1.0],
-            [0.0, 0.0, 0.0],
-            [1.0, 1.0, 1.0],
-        );
+        let sdf = geometry_test_field([f64::NAN, 1.0, 1.0], [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
         let err = compute_medial_mask(&sdf, &MedialOptions::default())
             .expect_err("NaN spacing must be rejected");
         match err {
             MedialError::InvalidAxisGeometry {
-                axis: 0,
-                spacing,
-                ..
+                axis: 0, spacing, ..
             } if spacing.is_nan() => {}
             other => panic!(
                 "expected InvalidAxisGeometry {{ axis: 0, spacing: NaN, .. }}, got {other:?}"
@@ -1837,8 +1812,8 @@ mod tests {
     #[test]
     fn compute_medial_mask_voxels_are_sorted_in_lex_order_on_slab() {
         let sdf = slab_sdf_3d(3.0, 16);
-        let mask = compute_medial_mask(&sdf, &MedialOptions::default())
-            .expect("slab compute succeeds");
+        let mask =
+            compute_medial_mask(&sdf, &MedialOptions::default()).expect("slab compute succeeds");
 
         // The slab fixture produces at least `SLAB_16_MIN_MEDIAL_VOXELS` medial
         // voxels (see `compute_medial_mask_flags_slab_centerline_voxels` part (c)),
@@ -2015,8 +1990,7 @@ mod tests {
                     } else {
                         out_of_band_count += 1;
                         assert_eq!(
-                            slot,
-                            [0.0_f64; 3],
+                            slot, [0.0_f64; 3],
                             "out-of-band slot at ({i},{j},{k}) should be \
                              sentinel [0.0; 3], got {slot:?}"
                         );
@@ -2061,7 +2035,6 @@ mod tests {
             }
         );
     }
-
 
     /// Characterization — asymmetric-extents DataLengthMismatch: 3×4×5 grid
     /// (nx*ny*nz = 60) with only 59 data elements.
@@ -2108,11 +2081,7 @@ mod tests {
     /// regress ±Inf handling.
     #[test]
     fn compute_medial_mask_rejects_positive_infinity_spacing() {
-        let sdf = geometry_test_field(
-            [f64::INFINITY, 1.0, 1.0],
-            [0.0, 0.0, 0.0],
-            [1.0, 1.0, 1.0],
-        );
+        let sdf = geometry_test_field([f64::INFINITY, 1.0, 1.0], [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
         let err = compute_medial_mask(&sdf, &MedialOptions::default())
             .expect_err("+Inf spacing must be rejected");
         assert_eq!(
@@ -2150,11 +2119,7 @@ mod tests {
     /// Characterization — +Inf bounds_max on axis 0 is rejected via `bmax.is_finite()`.
     #[test]
     fn compute_medial_mask_rejects_positive_infinity_bounds_max() {
-        let sdf = geometry_test_field(
-            [1.0, 1.0, 1.0],
-            [0.0, 0.0, 0.0],
-            [f64::INFINITY, 1.0, 1.0],
-        );
+        let sdf = geometry_test_field([1.0, 1.0, 1.0], [0.0, 0.0, 0.0], [f64::INFINITY, 1.0, 1.0]);
         let err = compute_medial_mask(&sdf, &MedialOptions::default())
             .expect_err("+Inf bounds_max must be rejected");
         assert_eq!(
@@ -2257,9 +2222,7 @@ mod tests {
                 assert_eq!(ny, n, "AxisExtentsOverflow must carry ny");
                 assert_eq!(nz, n, "AxisExtentsOverflow must carry nz");
             }
-            other => panic!(
-                "expected AxisExtentsOverflow, got {other:?}"
-            ),
+            other => panic!("expected AxisExtentsOverflow, got {other:?}"),
         }
 
         // (c) DataLengthMismatch when the product is valid but data_len differs.
@@ -2297,5 +2260,4 @@ mod tests {
             "AxisExtentsOverflow Display must include nz=5000000: {msg}"
         );
     }
-
 }

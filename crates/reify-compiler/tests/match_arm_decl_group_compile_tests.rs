@@ -14,7 +14,7 @@
 use reify_compiler::GuardedDeclGroup;
 use reify_syntax::{
     Declaration, EnumDecl, Expr, ExprKind, LetDecl, MatchArmDeclArmDecl, MatchArmDeclGroupDecl,
-    MemberDecl, ParsedModule, ParamDecl, StructureDef, SubDecl, TypeExpr, TypeExprKind,
+    MemberDecl, ParamDecl, ParsedModule, StructureDef, SubDecl, TypeExpr, TypeExprKind,
 };
 use reify_types::{ContentHash, ModulePath, SourceSpan, Type};
 
@@ -766,10 +766,10 @@ fn match_arm_decl_group_param_arm_emits_unsupported_diagnostic() {
     // Suggestion 2: the pre-pass emits the first diagnostic and compile_match_arm_decl_group
     // now skips non-Sub arms, so the second "could not resolve type for match-arm param"
     // diagnostic should NOT be emitted.
-    let has_second_diag = compiled
-        .diagnostics
-        .iter()
-        .any(|d| d.message.contains("could not resolve type for match-arm param"));
+    let has_second_diag = compiled.diagnostics.iter().any(|d| {
+        d.message
+            .contains("could not resolve type for match-arm param")
+    });
     assert!(
         !has_second_diag,
         "expected no second 'could not resolve type' diagnostic for Param arm, got: {:#?}",
@@ -1154,9 +1154,10 @@ fn match_arm_decl_group_non_exhaustive_arms_emits_diagnostic_and_skips_cluster()
     let compiled = reify_compiler::compile(&parsed);
 
     // (a) A "non-exhaustive match" diagnostic naming "Button" must be emitted.
-    let has_exhaustive_diag = compiled.diagnostics.iter().any(|d| {
-        d.message.contains("non-exhaustive match") && d.message.contains("Button")
-    });
+    let has_exhaustive_diag = compiled
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("non-exhaustive match") && d.message.contains("Button"));
     assert!(
         has_exhaustive_diag,
         "expected a 'non-exhaustive match' diagnostic naming 'Button', got: {:#?}",
@@ -1251,9 +1252,10 @@ fn match_arm_decl_group_non_exhaustive_pipe_arm_emits_diagnostic() {
     let compiled = reify_compiler::compile(&parsed);
 
     // (a) Diagnostic must name both "non-exhaustive match" and "Button".
-    let has_exhaustive_diag = compiled.diagnostics.iter().any(|d| {
-        d.message.contains("non-exhaustive match") && d.message.contains("Button")
-    });
+    let has_exhaustive_diag = compiled
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("non-exhaustive match") && d.message.contains("Button"));
     assert!(
         has_exhaustive_diag,
         "expected 'non-exhaustive match' diagnostic naming 'Button' (pipe arm Hex|Socket \
@@ -1520,10 +1522,10 @@ fn duplicate_match_cluster_does_not_pollute_first_cluster_sub_member_types() {
     // Pre-fix this fires because sub_member_types["head"] = HeadB1's members = {second_only},
     //   so self.head.first_only → "unknown member 'first_only' on sub 'head'".
     // Post-fix sub_member_types["head"] = HeadA1's members = {first_only}, lookup succeeds.
-    let has_unknown_member_diag = compiled
-        .diagnostics
-        .iter()
-        .any(|d| d.message.contains("unknown member 'first_only' on sub 'head'"));
+    let has_unknown_member_diag = compiled.diagnostics.iter().any(|d| {
+        d.message
+            .contains("unknown member 'first_only' on sub 'head'")
+    });
     assert!(
         !has_unknown_member_diag,
         "regression: unexpected 'unknown member first_only on sub head' diagnostic — \
@@ -1583,7 +1585,11 @@ fn match_arm_decl_group_outside_sub_before_match_emits_collision_diagnostic() {
         type_params: vec![],
         trait_bounds: vec![],
         // outside Sub precedes the match block in source order.
-        members: vec![param_member("head_type", "HeadType"), outside_sub, match_group],
+        members: vec![
+            param_member("head_type", "HeadType"),
+            outside_sub,
+            match_group,
+        ],
         span: zero_span(),
         content_hash: ContentHash(0),
         pragmas: vec![],
@@ -1692,7 +1698,11 @@ fn match_arm_decl_group_outside_sub_after_match_emits_collision_diagnostic() {
         type_params: vec![],
         trait_bounds: vec![],
         // outside Sub follows the match block in source order.
-        members: vec![param_member("head_type", "HeadType"), match_group, outside_sub],
+        members: vec![
+            param_member("head_type", "HeadType"),
+            match_group,
+            outside_sub,
+        ],
         span: zero_span(),
         content_hash: ContentHash(0),
         pragmas: vec![],
@@ -1793,7 +1803,11 @@ fn match_arm_decl_group_outside_param_collision_emits_diagnostic() {
         type_params: vec![],
         trait_bounds: vec![],
         // outside Param precedes the match block.
-        members: vec![outside_param, param_member("head_type", "HeadType"), match_group],
+        members: vec![
+            outside_param,
+            param_member("head_type", "HeadType"),
+            match_group,
+        ],
         span: zero_span(),
         content_hash: ContentHash(0),
         pragmas: vec![],
@@ -1880,7 +1894,10 @@ fn match_arm_decl_group_outside_let_collision_emits_diagnostic() {
         is_pub: false,
         type_expr: None,
         value: Expr {
-            kind: ExprKind::NumberLiteral { value: 1.0, is_real: false },
+            kind: ExprKind::NumberLiteral {
+                value: 1.0,
+                is_real: false,
+            },
             span: zero_span(),
         },
         where_clause: None,
@@ -1906,7 +1923,11 @@ fn match_arm_decl_group_outside_let_collision_emits_diagnostic() {
         type_params: vec![],
         trait_bounds: vec![],
         // outside Let precedes the match block.
-        members: vec![outside_let, param_member("head_type", "HeadType"), match_group],
+        members: vec![
+            outside_let,
+            param_member("head_type", "HeadType"),
+            match_group,
+        ],
         span: zero_span(),
         content_hash: ContentHash(0),
         pragmas: vec![],
@@ -1997,7 +2018,11 @@ fn match_arm_decl_group_outside_collision_suppresses_cluster_registration() {
         type_params: vec![],
         trait_bounds: vec![],
         // outside Sub precedes the match block in source order (forward direction).
-        members: vec![param_member("head_type", "HeadType"), outside_sub, match_group],
+        members: vec![
+            param_member("head_type", "HeadType"),
+            outside_sub,
+            match_group,
+        ],
         span: zero_span(),
         content_hash: ContentHash(0),
         pragmas: vec![],
@@ -2099,7 +2124,11 @@ fn match_arm_decl_group_reverse_collision_suppresses_cluster_registration() {
         type_params: vec![],
         trait_bounds: vec![],
         // outside Sub follows the match block in source order (reverse direction).
-        members: vec![param_member("head_type", "HeadType"), match_group, outside_sub],
+        members: vec![
+            param_member("head_type", "HeadType"),
+            match_group,
+            outside_sub,
+        ],
         span: zero_span(),
         content_hash: ContentHash(0),
         pragmas: vec![],
@@ -2445,7 +2474,11 @@ fn match_arm_decl_group_outside_sub_before_and_after_match_emits_single_collisio
     // The single diagnostic is the forward-direction one: labels[1] points at the
     // before-Sub (span 1..5), not the after-Sub (span 30..35).
     let diag = &collision_diags[0];
-    assert_eq!(diag.labels.len(), 2, "collision diagnostic must have exactly two labels");
+    assert_eq!(
+        diag.labels.len(),
+        2,
+        "collision diagnostic must have exactly two labels"
+    );
     assert_eq!(
         diag.labels[0].span, cluster_span,
         "first label must point to the cluster"
@@ -2538,8 +2571,7 @@ fn match_arm_decl_group_outside_sub_with_different_name_emits_no_collision() {
         .diagnostics
         .iter()
         .filter(|d| {
-            d.message.contains("match-arm cluster")
-                && d.message.contains("outside the match block")
+            d.message.contains("match-arm cluster") && d.message.contains("outside the match block")
         })
         .collect();
     assert!(
@@ -2556,7 +2588,10 @@ fn match_arm_decl_group_outside_sub_with_different_name_emits_no_collision() {
         .find(|t| t.name == "Bolt")
         .expect("Bolt template should be compiled");
     assert!(
-        bolt_template.match_arm_groups.iter().any(|g| g.name == "head"),
+        bolt_template
+            .match_arm_groups
+            .iter()
+            .any(|g| g.name == "head"),
         "expected 'head' cluster in match_arm_groups (no collision suppression), got: {:#?}",
         bolt_template.match_arm_groups
     );
@@ -2633,9 +2668,10 @@ fn match_arm_decl_group_unknown_enum_discriminant_emits_no_spurious_non_exhausti
     let compiled = reify_compiler::compile(&parsed);
 
     // (a) The unresolved-type diagnostic must be present.
-    let has_unresolved = compiled.diagnostics.iter().any(|d| {
-        d.message.contains("unresolved type") || d.message.contains("MissingEnum")
-    });
+    let has_unresolved = compiled
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("unresolved type") || d.message.contains("MissingEnum"));
     assert!(
         has_unresolved,
         "expected a diagnostic containing 'unresolved type' or 'MissingEnum', got: {:#?}",
@@ -2797,7 +2833,10 @@ fn match_arm_decl_group_duplicate_outside_let_anchors_to_first_decl() {
         is_pub: false,
         type_expr: None,
         value: Expr {
-            kind: ExprKind::NumberLiteral { value: 1.0, is_real: false },
+            kind: ExprKind::NumberLiteral {
+                value: 1.0,
+                is_real: false,
+            },
             span: zero_span(),
         },
         where_clause: None,
@@ -2812,7 +2851,10 @@ fn match_arm_decl_group_duplicate_outside_let_anchors_to_first_decl() {
         is_pub: false,
         type_expr: None,
         value: Expr {
-            kind: ExprKind::NumberLiteral { value: 2.0, is_real: false },
+            kind: ExprKind::NumberLiteral {
+                value: 2.0,
+                is_real: false,
+            },
             span: zero_span(),
         },
         where_clause: None,

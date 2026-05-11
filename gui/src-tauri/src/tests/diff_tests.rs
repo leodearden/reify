@@ -537,7 +537,13 @@ fn delta_to_events_multiple_failures_warn_for_each() {
 fn push_serialized_event_pushes_update_on_ok() {
     let mut events: Vec<(String, serde_json::Value)> = Vec::new();
     let val = serde_json::json!({"x": 1});
-    push_serialized_event(&mut events, "mesh-update", "mesh", "A.body", Ok(val.clone()));
+    push_serialized_event(
+        &mut events,
+        "mesh-update",
+        "mesh",
+        "A.body",
+        Ok(val.clone()),
+    );
     assert_eq!(events.len(), 1, "expected exactly one event");
     assert_eq!(events[0].0, "mesh-update");
     assert_eq!(events[0].1, val);
@@ -554,7 +560,11 @@ fn push_serialized_event_pushes_error_and_warns_on_err() {
         push_serialized_event(&mut events, "value-update", "value", "V.x", Err(err));
     });
     reify_test_support::assert_warn_count(&warn_count, 1, "expected exactly 1 warn");
-    assert_eq!(events.len(), 1, "expected exactly one serialization-error event");
+    assert_eq!(
+        events.len(),
+        1,
+        "expected exactly one serialization-error event"
+    );
     let (name, payload) = &events[0];
     assert_eq!(name, "serialization-error");
     assert_eq!(payload["item_type"], "value", "item_type must be \"value\"");
@@ -743,9 +753,7 @@ fn diff_emits_compile_diagnostics_when_changed() {
         tessellation_diagnostics: vec![],
         compile_diagnostics: vec![],
     };
-    let new_diags = vec![
-        sample_diagnostic("Warning", "unknown port type 'Foo'"),
-    ];
+    let new_diags = vec![sample_diagnostic("Warning", "unknown port type 'Foo'")];
     let new = GuiState {
         meshes: vec![],
         values: vec![],

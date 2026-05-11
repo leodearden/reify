@@ -108,8 +108,7 @@ pub fn compute_zz_indicator(
         // which is only correct for P1 tets (N=4). Guard against silent misuse
         // by callers passing P2 or higher-order connectivity.
         debug_assert_eq!(
-            n,
-            4,
+            n, 4,
             "compute_zz_indicator currently supports P1 tets only; \
              got connectivity of length {n}",
         );
@@ -197,9 +196,15 @@ fn compliance_matrix(material: &IsotropicElastic) -> [[f64; 6]; 6] {
 
     let mut s = [[0.0_f64; 6]; 6];
     // Normal-stress block (rows/cols 0..3): diagonal = 1/E, off-diagonal = -ν/E.
-    s[0][0] = inv_e;          s[0][1] = neg_nu_over_e; s[0][2] = neg_nu_over_e;
-    s[1][0] = neg_nu_over_e; s[1][1] = inv_e;          s[1][2] = neg_nu_over_e;
-    s[2][0] = neg_nu_over_e; s[2][1] = neg_nu_over_e; s[2][2] = inv_e;
+    s[0][0] = inv_e;
+    s[0][1] = neg_nu_over_e;
+    s[0][2] = neg_nu_over_e;
+    s[1][0] = neg_nu_over_e;
+    s[1][1] = inv_e;
+    s[1][2] = neg_nu_over_e;
+    s[2][0] = neg_nu_over_e;
+    s[2][1] = neg_nu_over_e;
+    s[2][2] = inv_e;
     // Shear-stress block (rows/cols 3..6) — diagonal 1/G, off-diagonal 0.
     s[3][3] = inv_g;
     s[4][4] = inv_g;
@@ -304,9 +309,15 @@ mod tests {
         }
 
         // Engineering-realistic case: E=200e9, ν=0.3 (steel).
-        check(&IsotropicElastic { youngs_modulus: 200e9, poisson_ratio: 0.3 });
+        check(&IsotropicElastic {
+            youngs_modulus: 200e9,
+            poisson_ratio: 0.3,
+        });
         // No cross-coupling: ν=0.
-        check(&IsotropicElastic { youngs_modulus: 1.0, poisson_ratio: 0.0 });
+        check(&IsotropicElastic {
+            youngs_modulus: 1.0,
+            poisson_ratio: 0.0,
+        });
         // Dimensionless fixture used across other tests.
         check(&dimensionless_steel_like());
     }
@@ -333,8 +344,16 @@ mod tests {
         let sigma_a = [[100.0_f64, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]];
         let sigma_b = [[0.0_f64; 3]; 3];
         let elements = [
-            StressElement { connectivity: &conn0, stress: sigma_a, volume: v },
-            StressElement { connectivity: &conn1, stress: sigma_b, volume: v },
+            StressElement {
+                connectivity: &conn0,
+                stress: sigma_a,
+                volume: v,
+            },
+            StressElement {
+                connectivity: &conn1,
+                stress: sigma_b,
+                volume: v,
+            },
         ];
         let mesh = two_tet_fan_mesh();
 
@@ -375,8 +394,16 @@ mod tests {
         // Non-trivial uniform stress across both elements.
         let sigma = [[100.0_f64, 0.0, 0.0], [0.0, 50.0, 0.0], [0.0, 0.0, 25.0]];
         let elements = [
-            StressElement { connectivity: &conn0, stress: sigma, volume: v },
-            StressElement { connectivity: &conn1, stress: sigma, volume: v },
+            StressElement {
+                connectivity: &conn0,
+                stress: sigma,
+                volume: v,
+            },
+            StressElement {
+                connectivity: &conn1,
+                stress: sigma,
+                volume: v,
+            },
         ];
         let mesh = two_tet_fan_mesh();
 
@@ -415,16 +442,30 @@ mod tests {
         let conn1 = [1_usize, 2, 3, 4];
         let sigma_zero = [[0.0_f64; 3]; 3];
         let elements = [
-            StressElement { connectivity: &conn0, stress: sigma_zero, volume: v },
-            StressElement { connectivity: &conn1, stress: sigma_zero, volume: v },
+            StressElement {
+                connectivity: &conn0,
+                stress: sigma_zero,
+                volume: v,
+            },
+            StressElement {
+                connectivity: &conn1,
+                stress: sigma_zero,
+                volume: v,
+            },
         ];
         let mesh = two_tet_fan_mesh();
 
         let result = compute_zz_indicator(&elements, &mesh, &mat);
 
         assert_eq!(result.per_element.len(), 2);
-        assert_eq!(result.per_element[0], 0.0, "zero-stress per_element[0] must be 0.0");
-        assert_eq!(result.per_element[1], 0.0, "zero-stress per_element[1] must be 0.0");
+        assert_eq!(
+            result.per_element[0], 0.0,
+            "zero-stress per_element[0] must be 0.0"
+        );
+        assert_eq!(
+            result.per_element[1], 0.0,
+            "zero-stress per_element[1] must be 0.0"
+        );
         assert_eq!(
             result.global_relative_energy_error, 0.0,
             "zero-energy guard must return 0.0, not NaN",
@@ -471,9 +512,21 @@ mod tests {
         let sigma_hot = [[1000.0_f64, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]];
         let sigma_cold = [[0.0_f64; 3]; 3];
         let elements = [
-            StressElement { connectivity: &conn_hot, stress: sigma_hot, volume: v },
-            StressElement { connectivity: &conn_cold0, stress: sigma_cold, volume: v },
-            StressElement { connectivity: &conn_cold1, stress: sigma_cold, volume: v },
+            StressElement {
+                connectivity: &conn_hot,
+                stress: sigma_hot,
+                volume: v,
+            },
+            StressElement {
+                connectivity: &conn_cold0,
+                stress: sigma_cold,
+                volume: v,
+            },
+            StressElement {
+                connectivity: &conn_cold1,
+                stress: sigma_cold,
+                volume: v,
+            },
         ];
         let mesh = VolumeMesh {
             vertices: vec![0.0_f32; 30], // 10 nodes × 3 coords
@@ -547,8 +600,16 @@ mod tests {
         let sigma_a = [[100.0_f64, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]];
         let sigma_b = [[0.0_f64; 3]; 3];
         let elements = [
-            StressElement { connectivity: &conn0, stress: sigma_a, volume: v },
-            StressElement { connectivity: &conn1, stress: sigma_b, volume: v },
+            StressElement {
+                connectivity: &conn0,
+                stress: sigma_a,
+                volume: v,
+            },
+            StressElement {
+                connectivity: &conn1,
+                stress: sigma_b,
+                volume: v,
+            },
         ];
         let mesh = two_tet_fan_mesh();
 
@@ -557,7 +618,11 @@ mod tests {
         // Closed-form: η_e = sqrt(V · (37.5)² / E) = sqrt((1/6) · 1406.25)
         //                   = sqrt(234.375) ≈ 15.30931...
         let expected_eta = ((1.0 / 6.0) * 37.5_f64 * 37.5 / mat.youngs_modulus).sqrt();
-        assert_eq!(result.per_element.len(), 2, "must have 2 per-element entries");
+        assert_eq!(
+            result.per_element.len(),
+            2,
+            "must have 2 per-element entries"
+        );
         let rel_tol = 1e-9;
         assert!(
             (result.per_element[0] - expected_eta).abs() < rel_tol * expected_eta,

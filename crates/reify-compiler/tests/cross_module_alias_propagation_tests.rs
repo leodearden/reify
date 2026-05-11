@@ -6,9 +6,13 @@
 //!   step-7: exclusion tests (#no_prelude, non-pub, parametric skip)
 //!   step-9: stdlib safety-net
 
-use reify_compiler::{CompiledTypeAlias, compile_with_prelude, compile_with_stdlib, parse_with_stdlib};
+use reify_compiler::{
+    CompiledTypeAlias, compile_with_prelude, compile_with_stdlib, parse_with_stdlib,
+};
 use reify_test_support::CompiledModuleBuilder;
-use reify_types::{ContentHash, DimensionVector, ModulePath, Severity, SourceSpan, Type, TypeParam};
+use reify_types::{
+    ContentHash, DimensionVector, ModulePath, Severity, SourceSpan, Type, TypeParam,
+};
 
 fn make_pub_alias(name: &str, resolved_type: Type) -> CompiledTypeAlias {
     CompiledTypeAlias {
@@ -62,7 +66,11 @@ fn pub_prelude_alias_resolves_in_user_module() {
 
     let source = "structure def Beam { param yield : Stress }";
     let parsed = reify_syntax::parse(source, ModulePath::single("user_beam"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = compile_with_prelude(&parsed, &[prelude_a]);
 
@@ -116,7 +124,11 @@ fn pub_prelude_alias_strain_resolves_to_dimensionless() {
 
     let source = "structure def Bar { param elongation : Strain }";
     let parsed = reify_syntax::parse(source, ModulePath::single("user_bar"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = compile_with_prelude(&parsed, &[prelude_b]);
 
@@ -162,7 +174,9 @@ fn user_alias_shadows_prelude_without_diagnostic() {
     // Prelude declares pub type Foo = Length
     let prelude_alias = make_alias_with_pub(
         "Foo",
-        Type::Scalar { dimension: DimensionVector::LENGTH },
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
         true,
     );
     let prelude_m = CompiledModuleBuilder::new(ModulePath::single("shadow_prelude"))
@@ -172,7 +186,11 @@ fn user_alias_shadows_prelude_without_diagnostic() {
     // User module declares `type Foo = Mass` — must shadow the prelude's Length.
     let source = "type Foo = Mass\nstructure def S { param p : Foo }";
     let parsed = reify_syntax::parse(source, ModulePath::single("shadow_user"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = compile_with_prelude(&parsed, &[prelude_m]);
 
@@ -201,7 +219,9 @@ fn user_alias_shadows_prelude_without_diagnostic() {
         .expect("value cell `p` not found on `S`");
     assert_eq!(
         p_cell.cell_type,
-        Type::Scalar { dimension: DimensionVector::MASS },
+        Type::Scalar {
+            dimension: DimensionVector::MASS
+        },
         "param `p : Foo` must resolve to MASS (user alias wins over prelude's LENGTH)"
     );
 }
@@ -213,7 +233,9 @@ fn prelude_alias_visible_when_user_does_not_shadow() {
     // Prelude declares pub type Foo = Length
     let prelude_alias = make_alias_with_pub(
         "Foo",
-        Type::Scalar { dimension: DimensionVector::LENGTH },
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
         true,
     );
     let prelude_m = CompiledModuleBuilder::new(ModulePath::single("visible_prelude"))
@@ -223,7 +245,11 @@ fn prelude_alias_visible_when_user_does_not_shadow() {
     // User module does NOT declare type Foo — must pick it up from prelude.
     let source = "structure def S { param p : Foo }";
     let parsed = reify_syntax::parse(source, ModulePath::single("visible_user"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = compile_with_prelude(&parsed, &[prelude_m]);
 
@@ -250,7 +276,9 @@ fn prelude_alias_visible_when_user_does_not_shadow() {
         .expect("value cell `p` not found on `S`");
     assert_eq!(
         p_cell.cell_type,
-        Type::Scalar { dimension: DimensionVector::LENGTH },
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH
+        },
         "param `p : Foo` must resolve to LENGTH from prelude alias"
     );
 }
@@ -264,7 +292,9 @@ fn non_pub_prelude_alias_invisible_in_user_module() {
     // Prelude has a non-pub alias: type Bar = Length (is_pub: false)
     let non_pub_alias = CompiledTypeAlias {
         name: "Bar".to_string(),
-        resolved_type: Some(Type::Scalar { dimension: DimensionVector::LENGTH }),
+        resolved_type: Some(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        }),
         type_params: vec![],
         is_pub: false, // NOT exported
         span: SourceSpan::new(0, 0),
@@ -276,7 +306,11 @@ fn non_pub_prelude_alias_invisible_in_user_module() {
 
     let source = "structure def S { param p : Bar }";
     let parsed = reify_syntax::parse(source, ModulePath::single("nonpub_user"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = compile_with_prelude(&parsed, &[prelude_m]);
 
@@ -295,7 +329,12 @@ fn non_pub_prelude_alias_invisible_in_user_module() {
 /// suppresses units, enums, traits, and functions.
 #[test]
 fn no_prelude_pragma_suppresses_alias_seeding() {
-    let pub_alias = make_pub_alias("Foo", Type::Scalar { dimension: DimensionVector::LENGTH });
+    let pub_alias = make_pub_alias(
+        "Foo",
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+    );
     let prelude_m = CompiledModuleBuilder::new(ModulePath::single("nop_prelude"))
         .type_alias(pub_alias)
         .build();
@@ -303,7 +342,11 @@ fn no_prelude_pragma_suppresses_alias_seeding() {
     // #no_prelude + reference to prelude alias → must be unresolved
     let source = "#no_prelude\nstructure def S { param p : Foo }";
     let parsed = reify_syntax::parse(source, ModulePath::single("nop_user"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = compile_with_prelude(&parsed, &[prelude_m]);
 
@@ -327,7 +370,11 @@ fn parametric_pub_prelude_alias_skipped_with_no_panic() {
     let parametric_alias = CompiledTypeAlias {
         name: "Vec".to_string(),
         resolved_type: None,
-        type_params: vec![TypeParam { name: "T".to_string(), bounds: vec![], default: None }],
+        type_params: vec![TypeParam {
+            name: "T".to_string(),
+            bounds: vec![],
+            default: None,
+        }],
         is_pub: true,
         span: SourceSpan::new(0, 0),
         content_hash: ContentHash::of_str("Vec_T"),
@@ -342,7 +389,11 @@ fn parametric_pub_prelude_alias_skipped_with_no_panic() {
     // is skipped by phase_aliases, leaving `Vec` unresolved at the use site.
     let source = "structure def S { param p : Vec }";
     let parsed = reify_syntax::parse(source, ModulePath::single("param_user"));
-    assert!(parsed.errors.is_empty(), "parse must succeed for bare Vec reference: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse must succeed for bare Vec reference: {:?}",
+        parsed.errors
+    );
 
     let compiled = compile_with_prelude(&parsed, &[prelude_m]);
 
@@ -378,7 +429,11 @@ fn parametric_pub_prelude_alias_skipped_with_no_panic() {
 fn compile_with_stdlib_unaffected_for_module_without_alias_use() {
     let source = "structure def S { param x : Length = 1m }";
     let parsed = parse_with_stdlib(source, ModulePath::single("safety_net_module"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = compile_with_stdlib(&parsed);
 
@@ -429,7 +484,9 @@ fn compile_with_stdlib_unaffected_for_module_without_alias_use() {
 fn prelude_alias_not_re_exported_in_user_module_type_aliases() {
     let stress = make_pub_alias(
         "Stress",
-        Type::Scalar { dimension: DimensionVector::PRESSURE },
+        Type::Scalar {
+            dimension: DimensionVector::PRESSURE,
+        },
     );
     let prelude_a = CompiledModuleBuilder::new(ModulePath::single("re_export_prelude"))
         .type_alias(stress)
@@ -438,7 +495,11 @@ fn prelude_alias_not_re_exported_in_user_module_type_aliases() {
     // User module references the prelude alias but does NOT declare it.
     let source = "structure def Beam { param yield : Stress }";
     let parsed = reify_syntax::parse(source, ModulePath::single("re_export_user"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = compile_with_prelude(&parsed, &[prelude_a]);
 
@@ -446,7 +507,11 @@ fn prelude_alias_not_re_exported_in_user_module_type_aliases() {
         error_count(&compiled),
         0,
         "must compile without errors; got: {:?}",
-        compiled.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect::<Vec<_>>()
+        compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect::<Vec<_>>()
     );
 
     // The user module has no type alias declarations of its own — the prelude
@@ -455,7 +520,11 @@ fn prelude_alias_not_re_exported_in_user_module_type_aliases() {
         compiled.type_aliases.is_empty(),
         "user module must not re-export prelude aliases through type_aliases; \
          expected empty, got: {:?}",
-        compiled.type_aliases.iter().map(|a| &a.name).collect::<Vec<_>>()
+        compiled
+            .type_aliases
+            .iter()
+            .map(|a| &a.name)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -466,8 +535,18 @@ fn prelude_alias_not_re_exported_in_user_module_type_aliases() {
 /// the first prelude module's definition is used for resolution.
 #[test]
 fn cross_prelude_alias_collision_emits_warning() {
-    let foo_from_a = make_pub_alias("Foo", Type::Scalar { dimension: DimensionVector::LENGTH });
-    let foo_from_b = make_pub_alias("Foo", Type::Scalar { dimension: DimensionVector::MASS });
+    let foo_from_a = make_pub_alias(
+        "Foo",
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+    );
+    let foo_from_b = make_pub_alias(
+        "Foo",
+        Type::Scalar {
+            dimension: DimensionVector::MASS,
+        },
+    );
     let prelude_a = CompiledModuleBuilder::new(ModulePath::single("collision_prelude_a"))
         .type_alias(foo_from_a)
         .build();
@@ -477,7 +556,11 @@ fn cross_prelude_alias_collision_emits_warning() {
 
     let source = "structure def S { param p : Foo }";
     let parsed = reify_syntax::parse(source, ModulePath::single("collision_user"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = compile_with_prelude(&parsed, &[prelude_a, prelude_b]);
 
@@ -504,15 +587,27 @@ fn cross_prelude_alias_collision_emits_warning() {
         error_count(&compiled),
         0,
         "must compile without errors (first-wins resolution); got: {:?}",
-        compiled.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect::<Vec<_>>()
+        compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect::<Vec<_>>()
     );
-    let s_template = compiled.templates.iter().find(|t| t.name == "S")
+    let s_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
         .expect("template `S` not found");
-    let p_cell = s_template.value_cells.iter().find(|c| c.id.member == "p")
+    let p_cell = s_template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "p")
         .expect("value cell `p` not found on `S`");
     assert_eq!(
         p_cell.cell_type,
-        Type::Scalar { dimension: DimensionVector::LENGTH },
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH
+        },
         "first-wins: p must resolve to LENGTH (from collision_prelude_a)"
     );
 }
@@ -524,7 +619,11 @@ fn make_parametric_pub_alias(name: &str, param_name: &str) -> CompiledTypeAlias 
     CompiledTypeAlias {
         name: name.to_string(),
         resolved_type: None,
-        type_params: vec![TypeParam { name: param_name.to_string(), bounds: vec![], default: None }],
+        type_params: vec![TypeParam {
+            name: param_name.to_string(),
+            bounds: vec![],
+            default: None,
+        }],
         is_pub: true,
         span: SourceSpan::new(0, 0),
         content_hash: ContentHash::of_str(&format!("{}_{}", name, param_name)),
@@ -548,7 +647,11 @@ fn parametric_form_use_emits_info_diagnostic() {
     // the skipped-parametric-prelude Info emission path.
     let source = "structure def S { param p : Vec<Float> }";
     let parsed = reify_syntax::parse(source, ModulePath::single("param_info_user"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = compile_with_prelude(&parsed, &[prelude_m]);
 
@@ -609,7 +712,11 @@ fn user_shadowed_parametric_prelude_alias_emits_no_info_diagnostic() {
     // User module shadows the parametric prelude Vec with a non-parametric alias.
     let source = "type Vec = Real\nstructure def S { param p : Vec }";
     let parsed = reify_syntax::parse(source, ModulePath::single("shadow_param_user"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = compile_with_prelude(&parsed, &[prelude_m]);
 
@@ -669,7 +776,11 @@ fn unrelated_unresolved_no_info_emitted() {
 
     let source = "structure def S { param p : NotADeclaredType }";
     let parsed = reify_syntax::parse(source, ModulePath::single("noinfo_user"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = compile_with_prelude(&parsed, &[prelude_m]);
 
@@ -744,7 +855,11 @@ fn parametric_prelude_let_none_emits_single_info_diagnostic() {
     // skipped-parametric-prelude Info-emit branch in resolve_type_expr_with_aliases.
     let source = "structure def S { let x : Vec<Real> = none }";
     let parsed = reify_syntax::parse(source, ModulePath::single("param_let_info_user"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = compile_with_prelude(&parsed, &[prelude_m]);
 

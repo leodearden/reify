@@ -24,8 +24,8 @@ use reify_test_support::{
 };
 #[allow(unused_imports)]
 use reify_types::{
-    CapabilityDescriptor, CompiledExpr, DiagnosticCode, ExportFormat, GeometryHandleId,
-    ModulePath, Operation, ReprKind, Severity, Type, Value, ValueCellId,
+    CapabilityDescriptor, CompiledExpr, DiagnosticCode, ExportFormat, GeometryHandleId, ModulePath,
+    Operation, ReprKind, Severity, Type, Value, ValueCellId,
 };
 #[allow(unused_imports)]
 use std::collections::{BTreeMap, HashSet};
@@ -961,7 +961,9 @@ fn edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_bu
         "test_edit_source_clears_realization_cache_v1".to_string(),
     ]))
     .template(step_output_template(1e-6))
-    .template(my_design_template_with_box_realization_dims(10.0, 20.0, 5.0))
+    .template(my_design_template_with_box_realization_dims(
+        10.0, 20.0, 5.0,
+    ))
     .compiled_purpose(manufacturing_purpose("manufacturing", 1e-6))
     .build();
 
@@ -995,7 +997,9 @@ fn edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_bu
         "test_edit_source_clears_realization_cache_v2".to_string(),
     ]))
     .template(step_output_template(1e-6))
-    .template(my_design_template_with_box_realization_dims(15.0, 25.0, 7.5))
+    .template(my_design_template_with_box_realization_dims(
+        15.0, 25.0, 7.5,
+    ))
     .compiled_purpose(manufacturing_purpose("manufacturing", 1e-6))
     .build();
     let _diff = engine
@@ -1178,7 +1182,6 @@ fn eval_then_activate_purpose_then_build_preserves_tolerance_scope_across_intern
          purposes between every build"
     );
 }
-
 
 /// Task 3176, step-1 (RED) — pins that an anonymous realization (one whose
 /// `RealizationDecl.name == None`, constructed via

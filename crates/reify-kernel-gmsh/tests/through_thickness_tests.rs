@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use reify_kernel_gmsh::through_thickness::{
-    through_thickness_check, ThroughThicknessConfig, ThroughThicknessWarning,
+    ThroughThicknessConfig, ThroughThicknessWarning, through_thickness_check,
 };
 use reify_types::{ElementOrderTag, Mesh, VolumeMesh};
 
@@ -19,15 +19,9 @@ use reify_types::{ElementOrderTag, Mesh, VolumeMesh};
 fn slab_surface_mesh() -> Mesh {
     let v = vec![
         // Bottom face Z=0 (4 verts: 0..3)
-        0.0, 0.0, 0.0,
-        10.0, 0.0, 0.0,
-        10.0, 10.0, 0.0,
-        0.0, 10.0, 0.0,
+        0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 10.0, 10.0, 0.0, 0.0, 10.0, 0.0,
         // Top face Z=0.5 (4 verts: 4..7)
-        0.0, 0.0, 0.5,
-        10.0, 0.0, 0.5,
-        10.0, 10.0, 0.5,
-        0.0, 10.0, 0.5,
+        0.0, 0.0, 0.5, 10.0, 0.0, 0.5, 10.0, 10.0, 0.5, 0.0, 10.0, 0.5,
     ];
     let i = vec![
         // Bottom (CCW from below)
@@ -57,10 +51,10 @@ fn single_layer_tet_through_thin_region_emits_warning() {
     // the thinnest axis, and one tet means one layer.
     let volume = VolumeMesh {
         vertices: vec![
-            0.0, 0.0, 0.0,    // 0
-            10.0, 0.0, 0.0,   // 1
-            10.0, 10.0, 0.5,  // 2
-            0.0, 10.0, 0.5,   // 3
+            0.0, 0.0, 0.0, // 0
+            10.0, 0.0, 0.0, // 1
+            10.0, 10.0, 0.5, // 2
+            0.0, 10.0, 0.5, // 3
         ],
         tet_indices: vec![0, 1, 2, 3],
         element_order: ElementOrderTag::P1,
@@ -99,25 +93,13 @@ fn well_resolved_thickness_emits_no_warning() {
     let volume = VolumeMesh {
         vertices: vec![
             // Tet 0: Z 0.0..0.125
-            0.0, 0.0, 0.0,
-            10.0, 0.0, 0.0,
-            10.0, 10.0, 0.125,
-            0.0, 10.0, 0.125,
+            0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 10.0, 10.0, 0.125, 0.0, 10.0, 0.125,
             // Tet 1: Z 0.125..0.25
-            0.0, 0.0, 0.125,
-            10.0, 0.0, 0.125,
-            10.0, 10.0, 0.25,
-            0.0, 10.0, 0.25,
+            0.0, 0.0, 0.125, 10.0, 0.0, 0.125, 10.0, 10.0, 0.25, 0.0, 10.0, 0.25,
             // Tet 2: Z 0.25..0.375
-            0.0, 0.0, 0.25,
-            10.0, 0.0, 0.25,
-            10.0, 10.0, 0.375,
-            0.0, 10.0, 0.375,
+            0.0, 0.0, 0.25, 10.0, 0.0, 0.25, 10.0, 10.0, 0.375, 0.0, 10.0, 0.375,
             // Tet 3: Z 0.375..0.5
-            0.0, 0.0, 0.375,
-            10.0, 0.0, 0.375,
-            10.0, 10.0, 0.5,
-            0.0, 10.0, 0.5,
+            0.0, 0.0, 0.375, 10.0, 0.0, 0.375, 10.0, 10.0, 0.5, 0.0, 10.0, 0.5,
         ],
         tet_indices: vec![
             0, 1, 2, 3, //
@@ -163,17 +145,10 @@ fn p2_element_order_uses_corners_only_for_centroid() {
     let volume = VolumeMesh {
         vertices: vec![
             // Corner 0..3 (the only ones the centroid should sum)
-            0.0, 0.0, 0.0,
-            10.0, 0.0, 0.0,
-            10.0, 10.0, 0.5,
-            0.0, 10.0, 0.5,
+            0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 10.0, 10.0, 0.5, 0.0, 10.0, 0.5,
             // Edge midpoints 4..9 — deliberately offset along Z so a bug
             // that included them in the centroid would visibly shift it.
-            5.0, 0.0, 100.0,
-            10.0, 5.0, -100.0,
-            5.0, 10.0, 100.0,
-            0.0, 5.0, -100.0,
-            5.0, 5.0, 100.0,
+            5.0, 0.0, 100.0, 10.0, 5.0, -100.0, 5.0, 10.0, 100.0, 0.0, 5.0, -100.0, 5.0, 5.0, 100.0,
             7.5, 7.5, -100.0,
         ],
         // Single P2 tet: 4 corner + 6 midpoint indices.
@@ -228,25 +203,13 @@ fn non_uniform_tet_extents_along_thickness_does_not_collapse_distinct_layers() {
     let volume = VolumeMesh {
         vertices: vec![
             // Tet 0: Z 0.0..0.05
-            0.0, 0.0, 0.0,
-            10.0, 0.0, 0.0,
-            10.0, 10.0, 0.05,
-            0.0, 10.0, 0.05,
+            0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 10.0, 10.0, 0.05, 0.0, 10.0, 0.05,
             // Tet 1: Z 0.05..0.20
-            0.0, 0.0, 0.05,
-            10.0, 0.0, 0.05,
-            10.0, 10.0, 0.20,
-            0.0, 10.0, 0.20,
+            0.0, 0.0, 0.05, 10.0, 0.0, 0.05, 10.0, 10.0, 0.20, 0.0, 10.0, 0.20,
             // Tet 2: Z 0.20..0.35
-            0.0, 0.0, 0.20,
-            10.0, 0.0, 0.20,
-            10.0, 10.0, 0.35,
-            0.0, 10.0, 0.35,
+            0.0, 0.0, 0.20, 10.0, 0.0, 0.20, 10.0, 10.0, 0.35, 0.0, 10.0, 0.35,
             // Tet 3: Z 0.35..0.50
-            0.0, 0.0, 0.35,
-            10.0, 0.0, 0.35,
-            10.0, 10.0, 0.50,
-            0.0, 10.0, 0.50,
+            0.0, 0.0, 0.35, 10.0, 0.0, 0.35, 10.0, 10.0, 0.50, 0.0, 10.0, 0.50,
         ],
         tet_indices: vec![
             0, 1, 2, 3, //
@@ -281,18 +244,14 @@ fn warning_includes_face_or_region_identifier() {
     let surface = slab_surface_mesh();
     let volume = VolumeMesh {
         vertices: vec![
-            0.0, 0.0, 0.0,
-            10.0, 0.0, 0.0,
-            10.0, 10.0, 0.5,
-            0.0, 10.0, 0.5,
+            0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 10.0, 10.0, 0.5, 0.0, 10.0, 0.5,
         ],
         tet_indices: vec![0, 1, 2, 3],
         element_order: ElementOrderTag::P1,
         normals: None,
     };
     let cfg = ThroughThicknessConfig::default();
-    let warnings: Vec<ThroughThicknessWarning> =
-        through_thickness_check(&volume, &surface, cfg);
+    let warnings: Vec<ThroughThicknessWarning> = through_thickness_check(&volume, &surface, cfg);
     assert!(
         !warnings.is_empty(),
         "expected at least one warning to inspect its region_index"
@@ -410,10 +369,7 @@ fn assert_non_finite_first_vertex_returns_empty(coord: f32) {
     // Vertex 0 is the pathological one; vertices 1..3 are finite slab corners.
     let volume = VolumeMesh {
         vertices: vec![
-            coord, coord, coord,
-            10.0, 0.0, 0.0,
-            10.0, 10.0, 0.5,
-            0.0, 10.0, 0.5,
+            coord, coord, coord, 10.0, 0.0, 0.0, 10.0, 10.0, 0.5, 0.0, 10.0, 0.5,
         ],
         tet_indices: vec![0, 1, 2, 3],
         element_order: ElementOrderTag::P1,

@@ -18,9 +18,7 @@
 //! is still computed under the caller-supplied `options` so the verdict
 //! reflects production thresholds.
 
-use reify_mesh_morph::{
-    MorphOptions, QualityVerdict, elasticity_morph, quality_check,
-};
+use reify_mesh_morph::{MorphOptions, QualityVerdict, elasticity_morph, quality_check};
 use reify_types::VolumeMesh;
 
 /// Canonical materiality factor for the "morph rejected only when from-scratch
@@ -170,14 +168,13 @@ where
         })
         .collect();
 
-    let morphed = elasticity_morph(&source, &prescribed_positions, options)
-        .unwrap_or_else(|e| {
-            panic!(
-                "run_sweep: elasticity_morph failed ({:?}) at base={base_param}, \
+    let morphed = elasticity_morph(&source, &prescribed_positions, options).unwrap_or_else(|e| {
+        panic!(
+            "run_sweep: elasticity_morph failed ({:?}) at base={base_param}, \
                  target={target_param}",
-                e
-            )
-        });
+            e
+        )
+    });
 
     let morph_verdict = quality_check(&morphed, &source, options);
     let (morph_min_scaled_j, morph_max_ar_factor) = extract_metrics(&morphed, &source);

@@ -310,8 +310,7 @@ pub fn quality_check(
             // is_finite() already excludes NaN, so the redundant !is_nan() check
             // is dropped. Order: is_finite() first short-circuits the > 0.0 compare
             // on the rare NaN/Inf input.
-            if source_ar.is_finite() && source_ar > 0.0 && morphed_ar.is_finite()
-            {
+            if source_ar.is_finite() && source_ar > 0.0 && morphed_ar.is_finite() {
                 let ratio = morphed_ar / source_ar;
                 if ratio > max_ar_ratio {
                     max_ar_ratio = ratio;
@@ -401,8 +400,8 @@ mod tests {
     // ── Step-3: single inverted tet → HardFail ───────────────────────────────
 
     #[test]
-    fn quality_check_with_single_inverted_tet_returns_hard_fail_with_element_index_and_negative_jacobian(
-    ) {
+    fn quality_check_with_single_inverted_tet_returns_hard_fail_with_element_index_and_negative_jacobian()
+     {
         // Left-handed tet: swap nodes 2 and 3 of the canonical right-handed tet
         // (0,0,0),(1,0,0),(0,1,0),(0,0,1) → (0,0,0),(1,0,0),(0,0,1),(0,1,0).
         // Corner-0 determinant = det(e1,e2,e3) where e1=(1,0,0), e2=(0,0,1),
@@ -469,8 +468,8 @@ mod tests {
     // ── Step-5b: near-degenerate tet → SoftFail(min_scaled_jacobian=Some) ────
 
     #[test]
-    fn quality_check_with_near_degenerate_tet_returns_soft_fail_with_min_scaled_jacobian_populated(
-    ) {
+    fn quality_check_with_near_degenerate_tet_returns_soft_fail_with_min_scaled_jacobian_populated()
+    {
         // Three nearly-coplanar edges: nodes 0,1,2 form a nearly degenerate
         // triangle (node 2 very close to the line 0-1), node 3 is also nearly
         // coplanar. The min corner scaled Jacobian will be << 0.15.
@@ -512,10 +511,7 @@ mod tests {
                 let observed = metrics
                     .min_scaled_jacobian
                     .expect("min_scaled_jacobian should be Some");
-                assert!(
-                    observed < 0.15,
-                    "expected observed < 0.15, got {observed}"
-                );
+                assert!(observed < 0.15, "expected observed < 0.15, got {observed}");
             }
             other => panic!("expected SoftFail, got: {other:?}"),
         }
@@ -524,8 +520,8 @@ mod tests {
     // ── Step-7: pct_below_025 soft-fail threshold ─────────────────────────────
 
     #[test]
-    fn quality_check_with_more_than_threshold_pct_of_elements_below_025_returns_soft_fail_with_pct_below_025_populated(
-    ) {
+    fn quality_check_with_more_than_threshold_pct_of_elements_below_025_returns_soft_fail_with_pct_below_025_populated()
+     {
         // 4 independent tets: 1 regular unit tet (min scaled J ≈ 0.707) and
         // 3 mildly-degraded tets with min scaled J in (0.15, 0.25).
         //
@@ -595,9 +591,7 @@ mod tests {
                      got {:?}",
                     metrics.min_scaled_jacobian
                 );
-                let pct = metrics
-                    .pct_below_025
-                    .expect("pct_below_025 should be Some");
+                let pct = metrics.pct_below_025.expect("pct_below_025 should be Some");
                 assert!(
                     (0.7..=0.8).contains(&pct),
                     "expected pct in [0.7, 0.8], got {pct}"
@@ -614,8 +608,8 @@ mod tests {
     // ── Step-9: max_aspect_ratio_factor soft-fail threshold ──────────────────
 
     #[test]
-    fn quality_check_with_morphed_aspect_ratio_more_than_threshold_x_source_returns_soft_fail_with_max_aspect_ratio_factor_populated(
-    ) {
+    fn quality_check_with_morphed_aspect_ratio_more_than_threshold_x_source_returns_soft_fail_with_max_aspect_ratio_factor_populated()
+     {
         // source: regular unit tet (0,0,0),(1,0,0),(0,1,0),(0,0,1)
         //   AR_source ≈ max_edge / min_height
         //   max_edge = sqrt(2) ≈ 1.414, min_height = 1/sqrt(3) * 3 ≈ 1/sqrt(3)
@@ -868,13 +862,11 @@ mod tests {
                     "degenerate coplanar tet must surface as degenerate_morphed_element=Some(0)"
                 );
                 assert_eq!(
-                    metrics.max_aspect_ratio_factor,
-                    None,
+                    metrics.max_aspect_ratio_factor, None,
                     "AR comparison must be skipped for degenerate morphed tet (task-3172 contract)"
                 );
                 assert_eq!(
-                    metrics.min_scaled_jacobian,
-                    None,
+                    metrics.min_scaled_jacobian, None,
                     "min_scaled_jacobian must be None — proves floor=0.0 disabling is the regime"
                 );
             }
@@ -1093,7 +1085,9 @@ mod tests {
                 );
             }
             QualityVerdict::SoftFail(_) => {
-                panic!("expected HardFail, got SoftFail — HardFail must preempt degenerate_morphed_element");
+                panic!(
+                    "expected HardFail, got SoftFail — HardFail must preempt degenerate_morphed_element"
+                );
             }
             QualityVerdict::Pass => {
                 panic!("expected HardFail, got Pass");
@@ -1172,6 +1166,4 @@ mod tests {
             }
         }
     }
-
 }
-

@@ -715,7 +715,9 @@ fn get_source_location_through_mcp_dispatch_accepts_template_name_and_cell_id() 
         serde_json::json!({"entity_path": "Bracket"}),
         &ctx,
     )
-    .expect("mcp_tool_call_impl('reify_get_source_location', {entity_path:'Bracket'}) must succeed");
+    .expect(
+        "mcp_tool_call_impl('reify_get_source_location', {entity_path:'Bracket'}) must succeed",
+    );
 
     // (2) full cell ID
     let loc_width = mcp_tool_call_impl(

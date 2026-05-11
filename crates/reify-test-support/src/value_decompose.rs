@@ -67,9 +67,18 @@ mod tests {
     #[test]
     fn decompose_point3_three_length_scalars_returns_si_array() {
         let v = Value::Point(vec![
-            Value::Scalar { si_value: 0.001, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 0.002, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 0.003, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 0.001,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.002,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.003,
+                dimension: DimensionVector::LENGTH,
+            },
         ]);
         assert_eq!(decompose_point3(&v, "pt"), [0.001, 0.002, 0.003]);
     }

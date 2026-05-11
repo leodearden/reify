@@ -199,11 +199,7 @@ fn argmax_argmin_index(data: &[f64], find_min: bool) -> Option<usize> {
             None => best = Some((i, v)),
             Some((_, b)) => {
                 let cmp = v.total_cmp(&b);
-                let take = if find_min {
-                    cmp.is_lt()
-                } else {
-                    cmp.is_gt()
-                };
+                let take = if find_min { cmp.is_lt() } else { cmp.is_gt() };
                 if take {
                     best = Some((i, v));
                 }

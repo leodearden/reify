@@ -398,11 +398,8 @@ async fn claude_send_message(
         .unwrap_or_else(|_| std::path::PathBuf::from("reify-sidecar"));
 
     // Resolve the writable workspace directory for the landlock sandbox.
-    let initial_file_opt: Option<std::path::PathBuf> = state
-        .initial_file
-        .lock()
-        .ok()
-        .and_then(|g| g.clone());
+    let initial_file_opt: Option<std::path::PathBuf> =
+        state.initial_file.lock().ok().and_then(|g| g.clone());
     let fallback_cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let workspace = reify_gui::claude_bridge::resolve_workspace_dir(
         context.as_ref(),
@@ -553,9 +550,7 @@ fn main() {
             app.manage(lsp_bridge);
 
             // Always create DebugBridge (inert when debug disabled — no JS listener, no HTTP server)
-            let debug_bridge = Arc::new(reify_gui::debug::DebugBridge::new(
-                app.handle().clone(),
-            ));
+            let debug_bridge = Arc::new(reify_gui::debug::DebugBridge::new(app.handle().clone()));
             app.manage(debug_bridge.clone());
 
             // Spawn the debug HTTP/MCP server when REIFY_DEBUG=1

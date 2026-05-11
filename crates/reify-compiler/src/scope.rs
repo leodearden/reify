@@ -272,7 +272,10 @@ mod tests {
         let group = make_test_group("head");
         scope.register_match_arm_group("head", group.clone());
         let retrieved = scope.resolve_match_arm_group("head");
-        assert!(retrieved.is_some(), "group should be retrievable after registration");
+        assert!(
+            retrieved.is_some(),
+            "group should be retrievable after registration"
+        );
         assert_eq!(retrieved.unwrap().name, "head");
         assert_eq!(retrieved.unwrap().arms.len(), 1);
     }

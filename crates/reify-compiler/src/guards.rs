@@ -719,7 +719,10 @@ mod narrow_arms_under_guard_tests {
     /// Step-15 case 1: `current_guard == arm[0].guard_value_cell` → `[arm[0]]`.
     #[test]
     fn narrow_arms_collapses_to_arm_when_guard_matches_arm_cell() {
-        let arms = vec![make_arm("__guard_0", "HexHead"), make_arm("__guard_1", "SocketHead")];
+        let arms = vec![
+            make_arm("__guard_0", "HexHead"),
+            make_arm("__guard_1", "SocketHead"),
+        ];
         let parent_chain: HashMap<ValueCellId, Option<ValueCellId>> = HashMap::new();
         let current = arms[0].guard_value_cell.clone();
         let result = narrow_arms_under_guard(&arms, Some(&current), &parent_chain);
@@ -730,7 +733,10 @@ mod narrow_arms_under_guard_tests {
     /// Step-15 case 2: `current_guard == None` → all arms.
     #[test]
     fn narrow_arms_returns_all_when_no_guard() {
-        let arms = vec![make_arm("__guard_0", "HexHead"), make_arm("__guard_1", "SocketHead")];
+        let arms = vec![
+            make_arm("__guard_0", "HexHead"),
+            make_arm("__guard_1", "SocketHead"),
+        ];
         let parent_chain: HashMap<ValueCellId, Option<ValueCellId>> = HashMap::new();
         let result = narrow_arms_under_guard(&arms, None, &parent_chain);
         assert_eq!(result.len(), 2);
@@ -740,7 +746,10 @@ mod narrow_arms_under_guard_tests {
     /// `arm[1].guard_value_cell` → `[arm[1]]`.
     #[test]
     fn narrow_arms_walks_parent_chain_to_match_arm() {
-        let arms = vec![make_arm("__guard_0", "HexHead"), make_arm("__guard_1", "SocketHead")];
+        let arms = vec![
+            make_arm("__guard_0", "HexHead"),
+            make_arm("__guard_1", "SocketHead"),
+        ];
         let nested = ValueCellId::new("Bolt", "__guard_2");
         // nested's parent is arm[1].guard_value_cell (which is itself a "top-level" guard for the
         // parent_chain — its own entry is None).

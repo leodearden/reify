@@ -294,7 +294,11 @@ mod tests {
     fn point_load_three_args_returns_undef() {
         let force = make_scalar_vec3([1.0, 0.0, 0.0], DimensionVector::FORCE);
         assert!(
-            eval_builtin("point_load", &[selector_stub("point_stub"), force.clone(), force]).is_undef(),
+            eval_builtin(
+                "point_load",
+                &[selector_stub("point_stub"), force.clone(), force]
+            )
+            .is_undef(),
             "three args should return Undef"
         );
     }
@@ -303,7 +307,11 @@ mod tests {
     fn point_load_force_with_length_dim_returns_undef() {
         let wrong_dim_force = make_scalar_vec3([1.0, 0.0, 0.0], DimensionVector::LENGTH);
         assert!(
-            eval_builtin("point_load", &[selector_stub("point_stub"), wrong_dim_force]).is_undef(),
+            eval_builtin(
+                "point_load",
+                &[selector_stub("point_stub"), wrong_dim_force]
+            )
+            .is_undef(),
             "force with LENGTH dimension should return Undef"
         );
     }
@@ -541,7 +549,11 @@ mod tests {
             dimension: DimensionVector::FORCE, // wrong: should be PRESSURE
         };
         assert!(
-            eval_builtin("pressure_load", &[selector_stub("face_stub"), force_dim_mag]).is_undef(),
+            eval_builtin(
+                "pressure_load",
+                &[selector_stub("face_stub"), force_dim_mag]
+            )
+            .is_undef(),
             "magnitude with FORCE dimension should return Undef"
         );
     }
@@ -775,7 +787,11 @@ mod tests {
     #[test]
     fn traction_load_traction_real_returns_undef() {
         assert!(
-            eval_builtin("traction_load", &[selector_stub("face_stub"), Value::Real(1.0)]).is_undef(),
+            eval_builtin(
+                "traction_load",
+                &[selector_stub("face_stub"), Value::Real(1.0)]
+            )
+            .is_undef(),
             "traction = Real → Undef"
         );
     }

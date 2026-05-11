@@ -207,7 +207,8 @@ fn deprecated_trait_used_as_refinement_emits_warning() {
 #[test]
 fn deprecated_trait_used_as_refinement_warning_points_at_refinement() {
     // Same fixture as deprecated_trait_used_as_refinement_emits_warning above.
-    let source = "@deprecated\ntrait Base { param x : Real }\n\ntrait Derived : Base { param y : Real }";
+    let source =
+        "@deprecated\ntrait Base { param x : Real }\n\ntrait Derived : Base { param y : Real }";
     let module = compile_source(source);
     assert!(
         errors_only(&module).is_empty(),
