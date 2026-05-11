@@ -4915,3 +4915,41 @@ mod dispatch_volume_mesh_tests {
         let _: DispatchVolumeMeshFn = dispatch_volume_mesh::<_, _, _>;
     }
 }
+
+// ── p2_substitution_diagnostic unit tests ────────────────────────────────────
+
+#[cfg(test)]
+mod p2_substitution_diagnostic_tests {
+    use super::*;
+    use reify_types::{ElementOrderTag, Severity};
+
+    fn extrude_kind() -> crate::sweep_classifier::SweptKind {
+        use reify_types::Value;
+        crate::sweep_classifier::SweptKind::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: Value::length(0.01),
+        }
+    }
+
+    #[test]
+    fn p2_substitution_happy_path_extrude_emits_info_diagnostic() {
+        let kind = extrude_kind();
+        let result = p2_substitution_diagnostic(
+            Some(&kind),
+            false, // force_tet
+            ElementOrderTag::P2,
+            "B1",
+        );
+        let diag = result.expect("expected Some(Diagnostic) for qualifying body with P2");
+        assert_eq!(
+            diag.severity,
+            Severity::Info,
+            "diagnostic must have Info severity"
+        );
+        assert_eq!(
+            diag.message,
+            "Body B1 qualified for hex/wedge meshing; P1 hex used despite `element_order = P2` (P2 hex deferred). Accuracy for thin geometry is comparable to P2 tet.",
+            "diagnostic message must match PRD wording verbatim"
+        );
+    }
+}
