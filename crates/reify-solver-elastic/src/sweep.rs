@@ -41,12 +41,20 @@
 ///
 /// Not exploitable via PRD task #9's `ElasticOptions` wiring today — this is
 /// defense-in-depth at the public boundary of [`derive_layer_count`].
+///
+/// Note: this clamp bounds only the K (layer) axis.  `n_base` flows through
+/// from the upstream 2D mesher and is not capped here, so callers feeding a
+/// very large 2D mesh (e.g. `n_base ≳ 10⁴`) can still allocate proportionally
+/// — defence-in-depth here is K-axis only.
 const MAX_LAYERS: usize = 1 << 20;
 
 /// Derive the number of element layers from the sweep distance and element size.
 ///
-/// Returns `round(sweep_distance / mesh_size).max(min_layers)`, clamped to
-/// [`MAX_LAYERS`] to prevent `usize::MAX` saturation on pathological inputs.
+/// Returns `round(sweep_distance / mesh_size)`, clamped to [`MAX_LAYERS`], then
+/// floored by `min_layers`.  The clamp prevents `usize::MAX` saturation on
+/// pathological inputs; the floor is applied after so an explicit
+/// caller-requested `min_layers > MAX_LAYERS` is passed through unchanged
+/// (pinned by `derive_layer_count_clamps_pathological_inputs` case (e)).
 ///
 /// # Defensive handling
 ///
