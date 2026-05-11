@@ -4939,6 +4939,15 @@ mod dispatch_volume_mesh_tests {
 /// The helper is stateless. "One diagnostic per body" is enforced at the call
 /// site — each realization-final body handle invokes this helper exactly once,
 /// matching the `swept_kind_table.record(handle, kind)` per-handle pattern.
+///
+/// # Variant invariance
+///
+/// The message wording is variant-invariant per PRD task #10 — it does not
+/// distinguish hex vs wedge meshing outcomes (that is determined downstream by
+/// the gmsh recombine path, not by the sweep classifier variant). All three
+/// `SweptKind` variants (Extrude, Revolve, SweepLinear) produce the same
+/// message text when the three emission conditions hold; only the body label
+/// differs.
 pub(crate) fn p2_substitution_diagnostic(
     swept_kind: Option<&SweptKind>,
     force_tet: bool,
