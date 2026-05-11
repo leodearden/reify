@@ -173,11 +173,11 @@ fn make_cross_sub_geometry_error(
 /// together in `entity.rs` (regular Sub pre-pass and match-arm Sub pre-pass)
 /// inside the same `if let Some(child_tmpl) = find_template(...)` guard, with
 /// `sub_component_types` written unconditionally before the template lookup.
-/// A `debug_assert!` before the lookup below enforces the invariant in
-/// debug/test builds so a future code path that populates
-/// `sub_realization_names` without `sub_component_types` is caught loudly
-/// rather than silently producing a diagnostic that names the sub instance
-/// instead of its child structure.
+/// An `.expect(...)` on the `sub_component_types.get(sub_name)` lookup below
+/// enforces the invariant in **all** build modes (debug and release; task-3431)
+/// so a future code path that populates `sub_realization_names` without
+/// `sub_component_types` panics loudly rather than silently producing a
+/// diagnostic that names the sub instance instead of its child structure.
 fn try_emit_cross_sub_geometry(
     scope: &CompilationScope<'_>,
     sub_name: &str,
@@ -190,18 +190,11 @@ fn try_emit_cross_sub_geometry(
         .get(sub_name)
         .is_some_and(|s| s.contains(member))
     {
-        debug_assert!(
-            scope.sub_component_types.contains_key(sub_name),
-            "sub_realization_names ⊂ sub_component_types invariant violated: \
-             sub '{}' has realization entries but no structure-name entry — \
-             check entity.rs Sub/match-arm pre-passes",
-            sub_name,
-        );
         let child_struct = scope
             .sub_component_types
             .get(sub_name)
-            .map(|s| s.as_str())
-            .unwrap_or(sub_name);
+            .expect("sub_realization_names ⊂ sub_component_types invariant (task-3420)")
+            .as_str();
         Some(make_cross_sub_geometry_error(
             diagnostics,
             member,
