@@ -1700,4 +1700,32 @@ mod tests {
         // (entry-header layout vs. body encoding).
         assert_eq!(ENTRY_FORMAT_VERSION, 1);
     }
+
+    #[test]
+    fn cache_entry_header_round_trips_all_six_fields() {
+        // Forces `CacheEntryHeader` + `write_to`/`read_from` to exist and
+        // validates that all six fields survive a bincode round-trip.
+        // Uses non-zero, distinct-per-field values so any field aliasing
+        // or field-swap bug surfaces immediately.
+        let engine_hash = [0xABu8; 32];
+        let input_hash  = [0xCDu8; 32];
+        let original = CacheEntryHeader {
+            format_version:       1,
+            engine_version_hash:  engine_hash,
+            input_hash,
+            solve_time_ms:        1234,
+            byte_size:            5_678_901,
+            written_at:           1_700_000_000_000,
+        };
+        let mut buf: Vec<u8> = Vec::new();
+        original.write_to(&mut buf).expect("write_to must succeed");
+        let decoded = CacheEntryHeader::read_from(&mut &buf[..])
+            .expect("read_from must succeed");
+        assert_eq!(decoded.format_version,      original.format_version);
+        assert_eq!(decoded.engine_version_hash, original.engine_version_hash);
+        assert_eq!(decoded.input_hash,          original.input_hash);
+        assert_eq!(decoded.solve_time_ms,       original.solve_time_ms);
+        assert_eq!(decoded.byte_size,           original.byte_size);
+        assert_eq!(decoded.written_at,          original.written_at);
+    }
 }
