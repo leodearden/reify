@@ -336,3 +336,12 @@ pub use interpolation::{
 pub use result::{StressElement, element_stress_p1, recover_nodal_stress_p1, tet_volume_p1};
 pub use solver::{CgResult, CgSolverOptions, SolverMode, solve_cg, solve_cg_warm};
 pub use warm_state::{CgWarmState, solve_cg_with_warm_state};
+// Task 2987: 2D cross-section meshing surface for the hex/wedge swept-body
+// pipeline. Re-export the typed orchestrator (`mesh_swept_profile_2d`), its
+// input/output types, and the pure quality + auto-size helpers so callers
+// (task 2988 sweep step, task 2989 eval-side wiring) can reach them via
+// `reify_solver_elastic::*` without descending into the `mesher` module.
+pub use mesher::{
+    auto_mesh_size_from_boundary, compute_quad_skew, mesh_swept_profile_2d, recombine_quality_ok,
+    Mesh2d, Mesh2dError, Mesh2dOptions, Mesh2dReport, ProfileBoundary, SweepElementTarget,
+};

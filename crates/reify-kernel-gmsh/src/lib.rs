@@ -84,6 +84,12 @@ pub use cache_key::volume_mesh_cache_key;
 // which only exists in the real FFI build (kernel_real.rs, cfg(has_gmsh)).
 #[cfg(has_gmsh)]
 pub use mesh_volume::{mesh_surface_to_volume_with_diagnostics, MeshSurfaceToVolumeReport};
+// 2D plane-surface meshing primitive added by task 2987 — uniform signature
+// across both `cfg(has_gmsh)` (real FFI) and `cfg(not(has_gmsh))` (stub
+// returning `GeometryError::OperationFailed("Gmsh not available …")`), so the
+// re-export is unconditional. `MeshPlane2dResult` is defined unconditionally
+// in `mesh_profile_2d` — no cfg gate needed on the type either.
+pub use mesh_profile_2d::{mesh_plane_2d, MeshPlane2dResult};
 pub use options::MeshingOptions;
 
 /// `true` when this crate was compiled with libgmsh detected at build time
