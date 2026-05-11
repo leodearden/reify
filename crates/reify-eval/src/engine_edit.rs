@@ -774,6 +774,35 @@ where
 /// (1) donates any cached warm state to `pool` (when present), then
 /// (2) invalidates the cache entry.
 ///
+/// Membership predicate used by `edit_source`'s step (6) to gate inclusion
+/// of dependents-of-removed-cells in the dirty cone. Given a `NodeId` from
+/// the OLD reverse index, returns true iff the same NodeId is still present
+/// in the new graph (i.e., it was not itself removed by this edit).
+///
+/// See the block comment at step (6) for the full rationale on why we
+/// consult the OLD reverse index here (it is the authoritative source for
+/// "what used to read this cell") and why the membership gate is necessary
+/// (a dependent might also have been deleted in the same edit, in which
+/// case it does not belong in the dirty cone). This helper exists so the
+/// predicate is unit-testable in isolation and so any future `NodeId`
+/// variant addition is a single-site change (matching the pattern of
+/// `donate_warm_state_and_invalidate`).
+///
+/// The `Resolution` arm intentionally returns `false`: Resolution nodes are
+/// live in the graph but are not yet wired through `diff_*` helpers nor
+/// the `add_demand` path in `eval()` / `edit_source()`. The moment
+/// Resolution demand lands, this arm becomes a latent staleness hazard;
+/// see `TODO(resolution-diff)` at step (6).
+fn dependent_still_present_in_graph(dep: &NodeId, new_graph: &EvaluationGraph) -> bool {
+    match dep {
+        NodeId::Value(vcid) => new_graph.value_cells.contains_key(vcid),
+        NodeId::Constraint(cid) => new_graph.constraints.contains_key(cid),
+        NodeId::Realization(rid) => new_graph.realizations.contains_key(rid),
+        NodeId::Resolution(_) => false, // TODO(resolution-diff): see step (6)
+        NodeId::Compute(cnid) => new_graph.compute_nodes.contains_key(cnid),
+    }
+}
+
 /// Used by `edit_source` step (9) for the `removed` / `removed_constraints` /
 /// `removed_realizations` sets. A future `NodeId` variant slots in as a single
 /// additional call.
@@ -2121,16 +2150,7 @@ impl Engine {
             let old_reverse_index = &eval_state.reverse_index;
             for id in &removed {
                 for dep in old_reverse_index.dependents_of(id) {
-                    let still_present = match dep {
-                        NodeId::Value(vcid) => new_snapshot.graph.value_cells.contains_key(vcid),
-                        NodeId::Constraint(cid) => new_snapshot.graph.constraints.contains_key(cid),
-                        NodeId::Realization(rid) => {
-                            new_snapshot.graph.realizations.contains_key(rid)
-                        }
-                        NodeId::Resolution(_) => false, // TODO(resolution-diff)
-                        NodeId::Compute(cnid) => new_snapshot.graph.compute_nodes.contains_key(cnid),
-                    };
-                    if still_present {
+                    if dependent_still_present_in_graph(dep, &new_snapshot.graph) {
                         dirty_cone.insert(dep.clone());
                     }
                 }
@@ -5062,6 +5082,62 @@ mod tests {
         assert!(
             pool.checkout(&node_z).is_some(),
             "Z must remain (just donated)"
+        );
+    }
+
+    /// Amendment (Sugg 6): regression for the `Compute` arm of
+    /// `dependent_still_present_in_graph`. Pins the contract that when an
+    /// `edit_source` edit removes a ComputeNode from the graph (e.g. an
+    /// `@optimized` block deleted from source), step (6)'s filter keeps the
+    /// stale `NodeId::Compute(cn_id)` out of the new dirty cone — the
+    /// helper returns `false` against the new graph.
+    ///
+    /// This was the only `NodeId` variant added to the predicate by P3.3
+    /// without an isolated regression test; the Value/Constraint/Realization
+    /// arms are exercised end-to-end by the broader `edit_source` suite via
+    /// real source-level deletions, but ComputeNodes are not yet wired
+    /// through source syntax, so the round-trip on the helper itself is the
+    /// only available coverage until P3.4+.
+    #[test]
+    fn dependent_still_present_in_graph_filters_removed_compute_node() {
+        use crate::cache::NodeId;
+        use crate::graph::ComputeNodeData;
+        use reify_types::{ComputeNodeId, ContentHash};
+
+        // Old graph contains Compute C.
+        let mut old_graph = EvaluationGraph::default();
+        let cn_id = ComputeNodeId::new("E", 0);
+        old_graph.insert_compute_node(ComputeNodeData {
+            computation_id: cn_id.clone(),
+            target: "fea".to_string(),
+            value_inputs: vec![],
+            realization_inputs: vec![],
+            options_hash: ContentHash::of_str("opt"),
+            cache_key: ContentHash::of_str("ck"),
+            cached_result: None,
+            result_content_hash: None,
+            opaque_state: None,
+            running: None,
+            output_value_cells: vec![],
+        });
+
+        let compute_node = NodeId::Compute(cn_id.clone());
+
+        // Control: helper returns true against the OLD graph.
+        assert!(
+            super::dependent_still_present_in_graph(&compute_node, &old_graph),
+            "Compute(C) must be reported as still-present against the graph that contains it"
+        );
+
+        // The actual contract under test: removing C from the new graph
+        // makes the helper return false, gating Compute(C) out of the
+        // dirty cone seeded by step (6) over the OLD reverse index.
+        let new_graph = EvaluationGraph::default();
+        assert!(
+            !super::dependent_still_present_in_graph(&compute_node, &new_graph),
+            "Compute(C) must be filtered out when C is absent from the new graph — \
+             this is the regression lock for step (6)'s membership check on the \
+             P3.3-added Compute(_) NodeId variant"
         );
     }
 }
