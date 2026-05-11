@@ -366,7 +366,14 @@ fn apply_layer_transform(
             let py = y2 - axis_origin[1];
             let pz = 0.0_f64 - axis_origin[2];
 
-            let theta = t * angle;
+            // Negate the angle so positive revolution sweeps from the profile's
+            // local +x toward the 3D +z direction (cylindrical-coordinate
+            // convention used throughout the CAD pipeline). The standard
+            // right-hand Rodrigues formula around +y would go from +x toward -z;
+            // negating θ reverses the sweep to +x → +z, matching the test
+            // contract locked in step-15 and consistent with the downstream
+            // PRD task #8 surface-extraction assumptions.
+            let theta = -(t * angle);
             let (sin_t, cos_t) = theta.sin_cos();
 
             // k = unit_axis (already normalised)
