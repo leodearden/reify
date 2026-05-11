@@ -1179,4 +1179,41 @@ mod tests {
             other => panic!("expected Err(InvalidTetIndex(99)), got: {other:?}"),
         }
     }
+
+    // ── task 3449: surface non-multiple-of-4 tet_indices length as MalformedTetIndices ──
+
+    /// Pins that a non-multiple-of-4 `tet_indices` length is rejected upfront
+    /// as a structured failure rather than being silently truncated by the FEA
+    /// pipeline's `chunks_exact(4)` loop.
+    ///
+    /// All indices are in-range (0..=3 with 4 nodes), so this case is NOT
+    /// caught by the existing bounds-check — it would silently drop the
+    /// trailing 3 entries before this fix. Mirrors the structured-failure
+    /// pattern of `NoElementsForPrescribedDisplacements`: don't silently drop
+    /// user input.
+    #[test]
+    fn elasticity_morph_with_malformed_tet_indices_length_returns_malformed_tet_indices() {
+        // 4 nodes → n_nodes == 4.
+        // tet_indices = [0, 1, 2, 3, 0, 1, 2]: one valid tet + 3-entry in-range
+        // tail — len == 7, 7 % 4 == 3.
+        // All indices are in-range (< 4), so the existing bounds-check would NOT
+        // catch this — chunks_exact(4) would silently discard the trailing triple.
+        let mesh = VolumeMesh {
+            vertices: vec![
+                0.0_f32, 0.0, 0.0, // node 0
+                1.0, 0.0, 0.0,     // node 1
+                0.0, 1.0, 0.0,     // node 2
+                0.0, 0.0, 1.0,     // node 3
+            ],
+            tet_indices: vec![0, 1, 2, 3, 0, 1, 2], // valid tet + in-range tail
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+        let result = elasticity_morph(&mesh, &[], &crate::MorphOptions::default());
+        assert_eq!(
+            result,
+            Err(ElasticityFailure::MalformedTetIndices { len: 7 }),
+            "expected MalformedTetIndices {{ len: 7 }}, got: {result:?}",
+        );
+    }
 }
