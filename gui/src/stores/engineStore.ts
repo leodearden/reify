@@ -138,8 +138,24 @@ export function createEngineStore(options?: EngineStoreOptions) {
     setState('autoResolve', { active: true, iterations: [] });
   }
 
-  /** Append one iteration snapshot to the accumulating iterations array. */
+  /**
+   * Append one iteration snapshot to the accumulating iterations array.
+   *
+   * Enforces the AutoResolveIteration invariant: `driving_metric` must be
+   * consistent across all iterations in a single loop. If the incoming
+   * iteration's `driving_metric` conflicts with the canonical metric (the
+   * first iteration in the array that declares one), the iteration is dropped
+   * with a `console.warn` rather than corrupting the chart data series.
+   */
   function applyAutoResolveIteration(iter: AutoResolveIteration) {
+    const canonical = state.autoResolve.iterations.find((it) => it.driving_metric)?.driving_metric;
+    if (canonical !== undefined && iter.driving_metric !== undefined && iter.driving_metric !== canonical) {
+      console.warn('[auto-resolve-iteration] driving_metric mismatch; dropping iteration', {
+        canonical,
+        received: iter.driving_metric,
+      });
+      return;
+    }
     setState(produce((s) => { s.autoResolve.iterations.push(iter); }));
   }
 
