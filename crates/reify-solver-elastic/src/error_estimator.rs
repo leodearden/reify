@@ -58,85 +58,30 @@ pub struct ZzIndicator {
 /// (c) For each element e, interpolate σ_n* back to the element centroid:
 ///     for P1 tets, barycentric coords at the centroid are (1/4,…,1/4), so
 ///     σ̄_e* = (1/N) Σ_{n ∈ conn(e)} σ_n*.
-/// (d) Compute per-element indicator: η_e = √(V_e · diff_voigt · D⁻¹ ·
-///     diff_voigt) where diff = σ_e − σ̄_e*.
-/// (e) Compute global: η_global = √(Σ η_e² / U_solution) with
-///     `U_solution = Σ_e V_e · σ_e_voigt · D⁻¹ · σ_e_voigt`.
+/// (d) Per-element: `η_e = √(V_e · energy_density_voigt(σ_e − σ̄_e*, D⁻¹))`.
+/// (e) Global: `η_global = √(Σ η_e² / U_solution)` where
+///     `U_solution = Σ_e V_e · energy_density_voigt(σ_e, D⁻¹)`.
 ///
 /// # Zero-energy guard
 ///
-/// When all element stresses are zero, `U_solution == 0`. Returning 0.0 in
-/// that case (rather than NaN from 0/0) is consistent with
+/// When all element stresses are zero, `U_solution == 0`. Returning `0.0`
+/// (rather than NaN from `0/0`) is consistent with
 /// `recover_nodal_stress_p1`'s "no incident elements → zero tensor"
 /// convention (`result.rs`). The auto-refinement loop receives a sensible
 /// signal ("no error, no refinement needed") rather than NaN propagation.
-/// Compute the compliance matrix `S = D⁻¹` for an isotropic linear-elastic
-/// material in engineering-shear Voigt order
-/// `[σ_xx, σ_yy, σ_zz, σ_xy, σ_yz, σ_xz]`.
+/// Pinned by
+/// `tests::zero_stress_field_yields_zero_indicator_and_zero_global_error_without_dividing_by_zero`.
 ///
-/// The analytical closed form (6×6 symmetric) is:
+/// # Behavioural tests
 ///
-/// ```text
-/// S = [ 1/E   −ν/E  −ν/E   0    0    0  ]
-///     [ −ν/E   1/E  −ν/E   0    0    0  ]
-///     [ −ν/E  −ν/E   1/E   0    0    0  ]
-///     [  0     0     0    1/G   0    0  ]
-///     [  0     0     0     0   1/G   0  ]
-///     [  0     0     0     0    0   1/G ]
-/// ```
-///
-/// where `G = E / (2(1+ν))`. This mirrors the convention in
-/// [`crate::constitutive::IsotropicElastic::d_matrix`] — that function uses
-/// engineering-shear strains (`γ_ij = 2ε_ij`), so the shear diagonal of D
-/// is `G` (not `2G`). Inverting that convention yields `1/G` on the shear
-/// diagonal here.
-///
-/// Private to this module; kept local per the established pattern of
-/// `inverse_transpose_3x3` in `result.rs` and `interpolation.rs`.
-fn compliance_matrix(material: &IsotropicElastic) -> [[f64; 6]; 6] {
-    let e = material.youngs_modulus;
-    let nu = material.poisson_ratio;
-    let inv_e = 1.0 / e;
-    let neg_nu_over_e = -nu / e;
-    let g = e / (2.0 * (1.0 + nu));
-    let inv_g = 1.0 / g;
-
-    let mut s = [[0.0_f64; 6]; 6];
-    // Normal-stress block (rows/cols 0..3).
-    for i in 0..3 {
-        for j in 0..3 {
-            s[i][j] = if i == j { inv_e } else { neg_nu_over_e };
-        }
-    }
-    // Shear-stress block (rows/cols 3..6) — diagonal 1/G, off-diagonal 0.
-    for k in 3..6 {
-        s[k][k] = inv_g;
-    }
-    s
-}
-
-/// Pack a symmetric 3×3 stress tensor into the engineering-shear Voigt vector
-/// `[σ_xx, σ_yy, σ_zz, σ_xy, σ_yz, σ_xz]`.
-#[inline]
-fn pack_voigt(t: &[[f64; 3]; 3]) -> [f64; 6] {
-    [t[0][0], t[1][1], t[2][2], t[0][1], t[1][2], t[0][2]]
-}
-
-/// Compute the bilinear form `v · S · v` for a Voigt vector `v` and a
-/// symmetric compliance matrix `S` (6×6).
-#[inline]
-fn voigt_bilinear(v: &[f64; 6], s: &[[f64; 6]; 6]) -> f64 {
-    let mut result = 0.0;
-    for i in 0..6 {
-        let mut sv_i = 0.0;
-        for j in 0..6 {
-            sv_i += s[i][j] * v[j];
-        }
-        result += v[i] * sv_i;
-    }
-    result
-}
-
+/// - `tests::per_element_indicator_two_tet_fan_nonuniform_stress_closed_form`
+///   — closed-form pin for per-element η_e on a 2-tet fan.
+/// - `tests::global_relative_energy_error_two_tet_fan_nonuniform_stress_closed_form`
+///   — closed-form pin for η_global on the same fixture.
+/// - `tests::uniform_stress_field_yields_zero_per_element_indicator_and_zero_global_error`
+///   — Zienkiewicz textbook patch test (uniform σ → η = 0 everywhere).
+/// - `tests::l_corner_style_hot_element_localisation_dominates_uniform_neighbours`
+///   — qualitative localisation pin (η_hot > 1.5 × η_cold on a 3-tet fan).
 pub fn compute_zz_indicator(
     elements: &[StressElement<'_>],
     mesh: &VolumeMesh,
@@ -181,15 +126,12 @@ pub fn compute_zz_indicator(
                 diff[i][j] = el.stress[i][j] - sigma_bar[i][j];
             }
         }
-        let diff_voigt = pack_voigt(&diff);
-        let eta_sq_density = voigt_bilinear(&diff_voigt, &compliance);
-        let eta_sq = el.volume * eta_sq_density;
+        let eta_sq = el.volume * energy_density_voigt(&diff, &compliance);
         per_element.push(eta_sq.sqrt());
         sum_eta_sq += eta_sq;
 
         // Accumulate solution strain energy: V_e · σ_e · S · σ_e.
-        let sigma_voigt = pack_voigt(&el.stress);
-        sum_energy_sq += el.volume * voigt_bilinear(&sigma_voigt, &compliance);
+        sum_energy_sq += el.volume * energy_density_voigt(&el.stress, &compliance);
     }
 
     // Step (e): global relative energy error.
@@ -206,6 +148,72 @@ pub fn compute_zz_indicator(
         per_element,
         global_relative_energy_error,
     }
+}
+
+/// Compute the compliance matrix `S = D⁻¹` for an isotropic linear-elastic
+/// material in engineering-shear Voigt order
+/// `[σ_xx, σ_yy, σ_zz, σ_xy, σ_yz, σ_xz]`.
+///
+/// The analytical closed form (6×6 symmetric) is:
+///
+/// ```text
+/// S = [ 1/E   −ν/E  −ν/E   0    0    0  ]
+///     [ −ν/E   1/E  −ν/E   0    0    0  ]
+///     [ −ν/E  −ν/E   1/E   0    0    0  ]
+///     [  0     0     0    1/G   0    0  ]
+///     [  0     0     0     0   1/G   0  ]
+///     [  0     0     0     0    0   1/G ]
+/// ```
+///
+/// where `G = E / (2(1+ν))`. This mirrors the convention in
+/// [`crate::constitutive::IsotropicElastic::d_matrix`] — that function uses
+/// engineering-shear strains (`γ_ij = 2ε_ij`), so the shear diagonal of `D`
+/// is `G` (not `2G`). Inverting that convention yields `1/G` on the shear
+/// diagonal here.
+///
+/// Private to this module; kept local per the established pattern of
+/// `inverse_transpose_3x3` in `result.rs` and `interpolation.rs`.
+fn compliance_matrix(material: &IsotropicElastic) -> [[f64; 6]; 6] {
+    let e = material.youngs_modulus;
+    let nu = material.poisson_ratio;
+    let inv_e = 1.0 / e;
+    let neg_nu_over_e = -nu / e;
+    let g = e / (2.0 * (1.0 + nu));
+    let inv_g = 1.0 / g;
+
+    let mut s = [[0.0_f64; 6]; 6];
+    // Normal-stress block (rows/cols 0..3).
+    for i in 0..3 {
+        for j in 0..3 {
+            s[i][j] = if i == j { inv_e } else { neg_nu_over_e };
+        }
+    }
+    // Shear-stress block (rows/cols 3..6) — diagonal 1/G, off-diagonal 0.
+    for k in 3..6 {
+        s[k][k] = inv_g;
+    }
+    s
+}
+
+/// Pack a symmetric 3×3 stress tensor and compute `t_voigt · S · t_voigt`.
+///
+/// Canonical bilinear form shared by the per-element indicator (step d) and
+/// the solution strain-energy accumulator (step e). Keeping both consumers on
+/// one code path prevents divergence if the Voigt ordering ever changes.
+///
+/// Voigt order: `[σ_xx, σ_yy, σ_zz, σ_xy, σ_yz, σ_xz]` (engineering shear).
+#[inline]
+fn energy_density_voigt(t: &[[f64; 3]; 3], s: &[[f64; 6]; 6]) -> f64 {
+    let v = [t[0][0], t[1][1], t[2][2], t[0][1], t[1][2], t[0][2]];
+    let mut result = 0.0;
+    for i in 0..6 {
+        let mut sv_i = 0.0;
+        for j in 0..6 {
+            sv_i += s[i][j] * v[j];
+        }
+        result += v[i] * sv_i;
+    }
+    result
 }
 
 #[cfg(test)]
