@@ -817,8 +817,9 @@ mod tests {
         let invalid = ElasticityFailure::InvalidNodeIndex(5);
         let unsupported = ElasticityFailure::UnsupportedElementOrder(ElementOrderTag::P2);
         let not_converged = ElasticityFailure::SolverNotConverged { iterations: 1000 };
+        let invalid_tet = ElasticityFailure::InvalidTetIndex(7);
 
-        for failure in [&invalid, &unsupported, &not_converged] {
+        for failure in [&invalid, &unsupported, &not_converged, &invalid_tet] {
             match failure {
                 ElasticityFailure::InvalidNodeIndex(idx) => {
                     assert_eq!(*idx, 5);
@@ -828,6 +829,9 @@ mod tests {
                 }
                 ElasticityFailure::SolverNotConverged { iterations } => {
                     assert_eq!(*iterations, 1000);
+                }
+                ElasticityFailure::InvalidTetIndex(idx) => {
+                    assert_eq!(*idx, 7);
                 }
             }
         }
@@ -919,6 +923,44 @@ mod tests {
                 assert_eq!(iterations, 1, "expected iterations == 1 (max_iter), got {iterations}");
             }
             other => panic!("expected Err(SolverNotConverged {{ iterations: 1 }}), got: {other:?}"),
+        }
+    }
+
+    // ── task 3362 step-3: InvalidTetIndex structured failure ─────────────────
+
+    /// A tet mesh where `tet_indices` contains an out-of-range index (index 99
+    /// when `n_nodes == 4`) must return
+    /// `Err(ElasticityFailure::InvalidTetIndex(99))`.
+    ///
+    /// The prescribed_positions has a single valid entry `(0, [0,0,0])` so the
+    /// prescribed-positions validation passes (node 0 is in-range for 4 nodes)
+    /// and the new upfront tet_indices validation fires first.
+    #[test]
+    fn elasticity_morph_with_out_of_range_tet_index_returns_invalid_tet_index() {
+        // 4 nodes → n_nodes == 4; tet_index 99 >= 4 triggers InvalidTetIndex.
+        let mesh = VolumeMesh {
+            vertices: vec![
+                0.0_f32, 0.0, 0.0, // node 0
+                1.0, 0.0, 0.0, // node 1
+                0.0, 1.0, 0.0, // node 2
+                0.0, 0.0, 1.0, // node 3
+            ],
+            tet_indices: vec![0, 1, 2, 99], // index 99 >= n_nodes (4)
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+        // Prescribed node 0 is valid (index 0 < 4); passes the prescribed-
+        // positions validation gate so the tet_indices upfront check fires.
+        let result = elasticity_morph(
+            &mesh,
+            &[(0_u32, [0.0_f64, 0.0, 0.0])],
+            &crate::MorphOptions::default(),
+        );
+        match result {
+            Err(ElasticityFailure::InvalidTetIndex(idx)) => {
+                assert_eq!(idx, 99, "expected InvalidTetIndex(99), got InvalidTetIndex({idx})");
+            }
+            other => panic!("expected Err(InvalidTetIndex(99)), got: {other:?}"),
         }
     }
 
