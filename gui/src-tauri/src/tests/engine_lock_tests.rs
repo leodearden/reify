@@ -51,3 +51,21 @@ fn with_engine_lock_returns_err_when_closure_panics() {
         }
     }
 }
+
+#[test]
+fn panicking_closure_does_not_poison_mutex() {
+    let engine = make_engine();
+    // First call: closure panics — must return Err
+    let first = engine_lock::with_engine_lock(&engine, |_s: &mut EngineSession| -> bool {
+        panic!("boom")
+    });
+    assert!(first.is_err(), "panicking closure must return Err");
+
+    // Second call: mutex must still be usable (not poisoned)
+    let second = engine_lock::with_engine_lock(&engine, |s| s.is_idle());
+    assert_eq!(
+        second,
+        Ok(true),
+        "mutex must be usable after a panicking closure (not poisoned)"
+    );
+}
