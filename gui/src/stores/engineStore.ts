@@ -151,6 +151,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
     const canonical = state.autoResolve.iterations.find((it) => it.driving_metric)?.driving_metric;
     if (canonical !== undefined && iter.driving_metric !== undefined && iter.driving_metric !== canonical) {
       console.warn('[auto-resolve-iteration] driving_metric mismatch; dropping iteration', {
+        iteration: iter.iteration,
         canonical,
         received: iter.driving_metric,
       });

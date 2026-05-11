@@ -1102,7 +1102,14 @@ describe('engineStore autoResolve driving_metric invariance', () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const mismatchedIter = { ...sampleIteration, iteration: 2, driving_metric: 'displacement', driving_metric_value: 1.5 };
       applyAutoResolveIteration(mismatchedIter);
-      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('driving_metric mismatch'),
+        expect.objectContaining({
+          iteration: 2,
+          canonical: 'max_von_mises',
+          received: 'displacement',
+        }),
+      );
       expect(state.autoResolve.iterations).toHaveLength(1);
       warnSpy.mockRestore();
       dispose();
