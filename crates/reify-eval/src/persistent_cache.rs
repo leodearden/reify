@@ -866,7 +866,21 @@ pub fn read_entry<V: PersistentlyCacheable>(
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e),
     };
-    let _header = CacheEntryHeader::read_from(&mut f)?;
+    let header = CacheEntryHeader::read_from(&mut f)?;
+
+    // Check format_version BEFORE body decode — a stale-format entry must never
+    // advance to the more expensive decompression path.
+    if let Err(e) = header.verify_format_version() {
+        tracing::warn!(
+            ?e,
+            cache_root = %cache_root.display(),
+            engine_version_hash,
+            input_hash,
+            "cache entry rejected: format_version mismatch (treating as miss)"
+        );
+        return Ok(None);
+    }
+
     let value = V::deserialize_from_reader(&mut f)?;
 
     // Update the sidecar mtime as the LRU last-access signal. touch_sidecar
