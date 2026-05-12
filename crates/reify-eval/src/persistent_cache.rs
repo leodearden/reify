@@ -766,11 +766,12 @@ impl PersistentlyCacheable for ElasticResult {
     }
 
     fn uncompressed_byte_size(&self) -> u64 {
-        // The uncompressed body is a zstd frame wrapping:
+        // After zstd decompression, the body is:
         //   1. bincode 1.3 fixint-LE encoded ElasticResultHeader (37 bytes; pinned
         //      by `elastic_result_header_bincode_encoding_matches_pinned_hex_literal`).
         //   2. displacement slab: displacement.len() * 8 bytes (little-endian f64).
         //   3. stress slab: stress.len() * 8 bytes (little-endian f64).
+        // This method returns that total uncompressed length.
         //
         // `bincode::serialized_size` is used rather than a hardcoded 37-byte
         // magic constant so that future ElasticResultHeader field additions
@@ -796,8 +797,16 @@ impl PersistentlyCacheable for ElasticResult {
     }
 }
 
-/// Convert a 32-character ASCII `&str` key component (hex string) into a
-/// fixed `[u8; 32]` byte array for storage in [`CacheEntryHeader`] echo fields.
+/// Convert a 32-character ASCII `&str` cache key component into a fixed
+/// `[u8; 32]` byte array for storage in [`CacheEntryHeader`] echo fields.
+///
+/// # Contract
+///
+/// Validates **length only** (exactly 32 bytes), not hex-ness — the caller
+/// may pass any 32-character ASCII string and this function will accept it.
+/// The name reflects the actual contract: the echo fields hold arbitrary
+/// length-32 ASCII cache key slices, not decoded hex values. The hex format
+/// is a convention at the call site, not a constraint enforced here.
 ///
 /// Used by both [`write_entry`] (to populate the header echoes) and
 /// [`read_entry`] (to compute the expected echoes for verification against the
@@ -807,7 +816,7 @@ impl PersistentlyCacheable for ElasticResult {
 ///
 /// The `debug_assert!` in [`shard_dir`] only guards `len >= 2`; this function
 /// enforces the stricter `len == 32` requirement that the echo fields demand.
-fn hex_str_to_ascii_32(s: &str) -> io::Result<[u8; 32]> {
+fn cache_key_to_ascii_32(s: &str) -> io::Result<[u8; 32]> {
     s.as_bytes().try_into().map_err(|_| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -877,8 +886,8 @@ pub fn write_entry<V: PersistentlyCacheable>(
     let mut body_buf: Vec<u8> = Vec::new();
     value.serialize_to_writer(&mut body_buf)?;
 
-    let engine_bytes: [u8; 32] = hex_str_to_ascii_32(engine_version_hash)?;
-    let input_bytes: [u8; 32] = hex_str_to_ascii_32(input_hash)?;
+    let engine_bytes: [u8; 32] = cache_key_to_ascii_32(engine_version_hash)?;
+    let input_bytes: [u8; 32] = cache_key_to_ascii_32(input_hash)?;
 
     let written_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -951,8 +960,8 @@ pub fn read_entry<V: PersistentlyCacheable>(
 
     // Verify that the header's echo fields match the key components from the
     // path. A mismatch indicates corruption (misplaced or bit-flipped .bin).
-    let expected_engine = hex_str_to_ascii_32(engine_version_hash)?;
-    let expected_input  = hex_str_to_ascii_32(input_hash)?;
+    let expected_engine = cache_key_to_ascii_32(engine_version_hash)?;
+    let expected_input  = cache_key_to_ascii_32(input_hash)?;
     if let Err(e) = header.verify_field_echoes(&expected_engine, &expected_input) {
         tracing::warn!(
             ?e,
