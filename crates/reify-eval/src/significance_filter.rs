@@ -1,0 +1,749 @@
+//! Output significance filter for ComputeNode results.
+//!
+//! # PRD reference
+//!
+//! `docs/prds/v0_3/compute-node-infrastructure.md §P3.6`
+//!
+//! # Opt-in contract
+//!
+//! Only compute targets explicitly opted in (see [`is_opted_in`]) have their
+//! outputs compared with per-purpose length tolerance. Unknown targets return
+//! [`FilterOutcome::NotOptedIn`], which the caller (P3.3 task 3382, the
+//! freshness-walk hook) treats identically to [`FilterOutcome::Different`]
+//! (normal invalidation). Keeping the two variants distinct lets telemetry
+//! and integration tests distinguish "filter declined" from "filter ran and
+//! found a material difference".
+//!
+//! Current v1 allowlist: `"solver::elastic_static"` only.
+//!
+//! # Per-field policy (v1)
+//!
+//! The per-purpose length tolerance applies only to the `displacement` field
+//! (Length-valued). `stress`, `max_von_mises`, `converged`, and `iterations`
+//! use exact equality — no Pressure tolerance class exists today; the
+//! conservative over-invalidation posture is correct per task 3385 scope.
+//!
+//! # Conservative-fallback policy
+//!
+//! Any departure from the expected ElasticResult Map shape (see
+//! `crates/reify-stdlib/src/fea.rs`) or a missing/invalid tolerance returns
+//! [`FilterOutcome::Different`] — over-invalidate rather than under-invalidate.
+//! This includes mismatched sampling geometry on the `displacement` field:
+//! identical data values at physically different grid locations are always a
+//! material change (see [`sampled_field_grid_metadata_eq`]).
+//!
+//! # NaN handling
+//!
+//! Non-finite values (`NaN`, `±Inf`) in the `displacement` data yield
+//! [`FilterOutcome::Different`] when `prev` and `new` are not bit-equal.
+//! If both `prev` and `new` carry identical bit-pattern NaN (e.g. the solver
+//! returned NaN twice in a row without change), the bit-equality shortcut fires
+//! first and returns [`FilterOutcome::Equivalent`].
+//! Effective contract: *NaN propagates as Different only when prev and new are
+//! not bit-equal.*
+//!
+//! # Integration contract
+//!
+//! `length_tolerance_si: Option<f64>` is resolved by the caller via
+//! `Engine::active_tolerance_for(subject_entity_ref)` (task 3382 / P3.3).
+//! The filter itself is engine-free (pure function).
+
+/// The three-variant outcome of the output significance filter.
+///
+/// `NotOptedIn` and `Different` both signal "proceed with normal invalidation"
+/// at the call site; the distinction lets observability surfaces
+/// (logs, telemetry, integration tests) tell "filter declined" from
+/// "filter ran and disagreed".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilterOutcome {
+    /// Previous and new result are within per-purpose tolerance — downstream
+    /// output ValueCells need NOT be marked dirty.
+    Equivalent,
+    /// Previous and new result differ materially (or tolerance is unknown) —
+    /// proceed with normal invalidation.
+    Different,
+    /// Target is not in the opt-in allowlist — filter did not run.
+    /// Caller should proceed with normal invalidation.
+    NotOptedIn,
+}
+
+/// Returns `true` if `target` has opted into significance filtering.
+///
+/// v1 allowlist: only `"solver::elastic_static"` opts in. Switching to a
+/// registry-based or annotation-driven mechanism is a non-breaking internal
+/// refactor — the function signature absorbs the lookup mechanism.
+pub fn is_opted_in(target: &str) -> bool {
+    matches!(target, "solver::elastic_static")
+}
+
+/// Key for the displacement field in an ElasticResult Map.
+const DISPLACEMENT_KEY: &str = "displacement";
+
+/// Non-displacement field keys compared for exact equality in an ElasticResult Map.
+///
+/// v1 policy: `stress`, `max_von_mises`, `converged`, and `iterations` are
+/// compared bit-exactly — no Pressure tolerance class exists today.
+const NON_DISPLACEMENT_KEYS: [&str; 4] = ["stress", "max_von_mises", "converged", "iterations"];
+
+/// Compare all grid-metadata fields of two [`reify_types::SampledField`]s,
+/// excluding `data` (the value payload) and `oob_emitted` (runtime flag).
+///
+/// Returns `false` if any spatial-geometry field differs — different grids mean
+/// samples at physically different locations, which is always a material change
+/// regardless of whether the numerical data values happen to fall within
+/// tolerance. This mirrors the same bit-exact `f64` comparisons used in
+/// `SampledField`'s own `PartialEq` implementation but skips the `data` slice.
+fn sampled_field_grid_metadata_eq(
+    a: &reify_types::SampledField,
+    b: &reify_types::SampledField,
+) -> bool {
+    if a.name != b.name || a.kind != b.kind || a.interpolation != b.interpolation {
+        return false;
+    }
+    let vecs_bit_eq = |xs: &[f64], ys: &[f64]| -> bool {
+        xs.len() == ys.len()
+            && xs
+                .iter()
+                .zip(ys.iter())
+                .all(|(x, y)| x.to_bits() == y.to_bits())
+    };
+    if !vecs_bit_eq(&a.bounds_min, &b.bounds_min)
+        || !vecs_bit_eq(&a.bounds_max, &b.bounds_max)
+        || !vecs_bit_eq(&a.spacing, &b.spacing)
+    {
+        return false;
+    }
+    if a.axis_grids.len() != b.axis_grids.len() {
+        return false;
+    }
+    a.axis_grids
+        .iter()
+        .zip(b.axis_grids.iter())
+        .all(|(ag, bg)| vecs_bit_eq(ag, bg))
+}
+
+/// Compare a compute node's previous and new result with per-purpose tolerance.
+///
+/// # Arguments
+///
+/// - `target`: the compute target string (e.g. `"solver::elastic_static"`).
+///   See [`is_opted_in`] for the opt-in mechanism.
+/// - `prev`: the previously-cached result value.
+/// - `new`: the newly-computed result value.
+/// - `length_tolerance_si`: SI-metre tolerance from
+///   `Engine::active_tolerance_for(subject_entity_ref)` (task 3382 / P3.3).
+///   `None` triggers the conservative `Different` fallback.
+///
+/// # Return value
+///
+/// | Outcome      | Meaning |
+/// |--------------|---------|
+/// | `Equivalent` | Delta within tolerance — MAY skip marking output ValueCells dirty |
+/// | `Different`  | Material change / unknown tolerance — MUST mark dirty |
+/// | `NotOptedIn` | Target not in allowlist — MUST mark dirty |
+pub fn significance_filter(
+    target: &str,
+    prev: &reify_types::Value,
+    new: &reify_types::Value,
+    length_tolerance_si: Option<f64>,
+) -> FilterOutcome {
+    // Opt-in guard: unknown targets never reach comparison logic.
+    if !is_opted_in(target) {
+        return FilterOutcome::NotOptedIn;
+    }
+
+    // Bit-equality shortcut: identical Values are Equivalent without consulting
+    // the Map shape or tolerance. This is the steady-state-cheap path.
+    // Note: bit-identical NaN values in displacement.data return Equivalent here
+    // (SampledField::PartialEq uses to_bits(), so same-bit NaN == same-bit NaN).
+    // The effective NaN contract is: "NaN propagates as Different only when prev
+    // and new are not bit-equal" — see the element-wise loop below. Relies on
+    // Value::PartialEq (value.rs:1573).
+    // Exercises: significance_filter_returns_equivalent_for_bit_equal_results
+    //            significance_filter_does_not_false_positive_on_bit_equal_with_zero_tolerance
+    if prev == new {
+        return FilterOutcome::Equivalent;
+    }
+
+    // Missing/invalid tolerance guard: conservative fallback.
+    // Collapses None and any malformed tolerance (NaN/Inf/negative) into
+    // Different via the same gate as tolerance_scope.rs:151.
+    // Exercises: significance_filter_returns_different_when_tolerance_missing
+    let tol_si = match length_tolerance_si {
+        Some(t) if crate::tolerance_gate::is_valid_tolerance_si(t) => t,
+        _ => return FilterOutcome::Different,
+    };
+
+    // Map-shape guard: non-Map inputs are malformed — conservative fallback.
+    // Exercises: significance_filter_returns_different_for_malformed_shapes (a)
+    let (prev_map, new_map) = match (prev, new) {
+        (reify_types::Value::Map(p), reify_types::Value::Map(n)) => (p, n),
+        _ => return FilterOutcome::Different,
+    };
+
+    // Pre-build all BTreeMap key Values once — avoids re-allocation per lookup.
+    // BTreeMap::get<Q> requires K: Borrow<Q>; since Value: Borrow<Value> (blanket
+    // impl), passing &Value directly is valid. This builds 5 strings once per
+    // call rather than inside the loop body.
+    let non_disp_key_values: [reify_types::Value; 4] =
+        NON_DISPLACEMENT_KEYS.map(|k| reify_types::Value::String(k.to_string()));
+    let disp_key = reify_types::Value::String(DISPLACEMENT_KEY.to_string());
+
+    // Non-displacement keys: require exact Value equality.
+    // Any mismatch (including a key present in one map but absent in the other)
+    // returns Different. v1 policy: no Pressure tolerance class exists today.
+    // Exercises: significance_filter_returns_different_for_non_displacement_field_changes
+    for key_val in &non_disp_key_values {
+        if prev_map.get(key_val) != new_map.get(key_val) {
+            return FilterOutcome::Different;
+        }
+    }
+
+    // Displacement extraction: missing key is malformed — conservative fallback.
+    // Exercises: significance_filter_returns_different_for_malformed_shapes (b)
+    let (prev_disp, new_disp) = match (prev_map.get(&disp_key), new_map.get(&disp_key)) {
+        (Some(p), Some(n)) => (p, n),
+        _ => return FilterOutcome::Different,
+    };
+
+    // Displacement must be a Sampled Field wrapping a SampledField payload.
+    // Any other variant (Analytical, Real, missing lambda, …) is malformed.
+    // Exercises: significance_filter_returns_different_for_malformed_shapes (c), (d)
+    use reify_types::FieldSourceKind;
+    let (prev_sf, new_sf) = match (prev_disp, new_disp) {
+        (
+            reify_types::Value::Field {
+                source: FieldSourceKind::Sampled,
+                lambda: prev_lambda,
+                ..
+            },
+            reify_types::Value::Field {
+                source: FieldSourceKind::Sampled,
+                lambda: new_lambda,
+                ..
+            },
+        ) => match (prev_lambda.as_ref(), new_lambda.as_ref()) {
+            (reify_types::Value::SampledField(p), reify_types::Value::SampledField(n)) => (p, n),
+            _ => return FilterOutcome::Different,
+        },
+        _ => return FilterOutcome::Different,
+    };
+
+    // Data-length guard: mismatched DOF counts are malformed.
+    // Exercises: significance_filter_returns_different_for_malformed_shapes (e)
+    if prev_sf.data.len() != new_sf.data.len() {
+        return FilterOutcome::Different;
+    }
+
+    // Grid-metadata guard: mismatched sampling geometry is always Different —
+    // identical data values at different spatial coordinates are semantically
+    // different results. Compares kind, name, bounds, spacing, axis_grids, and
+    // interpolation (everything except data and oob_emitted).
+    // Exercises: significance_filter_returns_different_for_shifted_grid_metadata
+    if !sampled_field_grid_metadata_eq(prev_sf, new_sf) {
+        return FilterOutcome::Different;
+    }
+
+    // Element-wise absolute-delta comparison with per-purpose length tolerance.
+    // Non-finite values (NaN, ±Inf) in EITHER operand yield Different when prev
+    // and new are not bit-equal (the bit-equality shortcut above handles the
+    // bit-identical NaN case). Effective contract: NaN propagates as Different
+    // only when prev != new. NaN comparisons are always false in IEEE 754, so we
+    // guard with is_finite() before the subtraction.
+    // Strict-greater-than: delta == tol_si is Equivalent (not Different).
+    // step-12 confirmed: (p - n).abs() > tol_si covers over-tolerance with strict-gt.
+    // Exercises: significance_filter_returns_different_for_nan_in_displacement
+    //            significance_filter_returns_different_for_over_tolerance_displacement_delta
+    //            significance_filter_returns_equivalent_for_sub_tolerance_displacement_delta
+    for (&p, &n) in prev_sf.data.iter().zip(new_sf.data.iter()) {
+        if !p.is_finite() || !n.is_finite() || (p - n).abs() > tol_si {
+            return FilterOutcome::Different;
+        }
+    }
+
+    FilterOutcome::Equivalent
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FilterOutcome, is_opted_in, significance_filter};
+    use reify_types::{
+        FieldSourceKind, InterpolationKind, SampledField, SampledGridKind, Type, Value,
+    };
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+
+    // ── Test helper: ElasticResult-shaped Value::Map ──────────────────────────
+    //
+    // Matches the stdlib shape documented in crates/reify-stdlib/src/fea.rs:
+    //   "displacement" → Value::Field { source: Sampled, lambda: Value::SampledField }
+    //   "stress"       → Value::Field { source: Sampled, lambda: Value::SampledField }
+    //   "max_von_mises"→ Value::Real
+    //   "converged"    → Value::Bool
+    //   "iterations"   → Value::Int
+
+    fn make_sampled_field(name: &str, data: &[f64]) -> Value {
+        Value::Field {
+            domain_type: Type::Real,
+            codomain_type: Type::Real,
+            source: FieldSourceKind::Sampled,
+            lambda: Arc::new(Value::SampledField(SampledField {
+                name: name.to_string(),
+                kind: SampledGridKind::Regular1D,
+                bounds_min: vec![0.0],
+                bounds_max: vec![1.0],
+                spacing: vec![0.5],
+                axis_grids: vec![(0..data.len()).map(|i| i as f64).collect()],
+                interpolation: InterpolationKind::Linear,
+                data: data.to_vec(),
+                oob_emitted: AtomicBool::new(false),
+            })),
+        }
+    }
+
+    /// Build a synthesised ElasticResult-shaped Value::Map for use in
+    /// significance_filter unit tests. Matches the stdlib fea.rs output shape.
+    fn make_elastic_result_value(
+        displacement_data: &[f64],
+        stress_data: &[f64],
+        max_vm: f64,
+        converged: bool,
+        iters: u32,
+    ) -> Value {
+        let mut map = BTreeMap::new();
+        map.insert(
+            Value::String("displacement".to_string()),
+            make_sampled_field("displacement", displacement_data),
+        );
+        map.insert(
+            Value::String("stress".to_string()),
+            make_sampled_field("stress", stress_data),
+        );
+        map.insert(
+            Value::String("max_von_mises".to_string()),
+            Value::Real(max_vm),
+        );
+        map.insert(
+            Value::String("converged".to_string()),
+            Value::Bool(converged),
+        );
+        map.insert(
+            Value::String("iterations".to_string()),
+            Value::Int(iters as i64),
+        );
+        Value::Map(map)
+    }
+
+    // ── Step-1: is_opted_in allowlist tests ──────────────────────────────────
+
+    #[test]
+    fn is_opted_in_returns_true_for_elastic_static() {
+        assert!(
+            is_opted_in("solver::elastic_static"),
+            "\"solver::elastic_static\" must be in the v1 opt-in allowlist"
+        );
+    }
+
+    #[test]
+    fn is_opted_in_returns_false_for_modal_and_arbitrary() {
+        assert!(
+            !is_opted_in("solver::modal"),
+            "\"solver::modal\" must NOT be in the opt-in allowlist"
+        );
+        assert!(
+            !is_opted_in("foo::bar"),
+            "arbitrary strings must NOT be in the opt-in allowlist"
+        );
+    }
+
+    // ── Step-3: significance_filter opt-in guard (non-opted-in target) ───────
+
+    /// Pins that an unknown target returns NotOptedIn BEFORE any comparison logic
+    /// runs — even when prev/new differ, the filter declines rather than comparing.
+    #[test]
+    fn significance_filter_returns_not_opted_in_for_unknown_target() {
+        let v1 = Value::Real(0.0);
+        let v2 = Value::Real(1.0);
+        assert_eq!(
+            significance_filter("solver::modal", &v1, &v2, Some(1e-6)),
+            FilterOutcome::NotOptedIn,
+            "\"solver::modal\" is not opted in — filter must return NotOptedIn",
+        );
+        // Arbitrary string also returns NotOptedIn.
+        assert_eq!(
+            significance_filter("foo::bar", &v1, &v2, Some(1e-6)),
+            FilterOutcome::NotOptedIn,
+            "\"foo::bar\" is not opted in — filter must return NotOptedIn",
+        );
+    }
+
+    // ── Step-5: bit-equality shortcut ────────────────────────────────────────
+
+    /// Bit-equal Values → Equivalent, regardless of Map shape or tolerance.
+    /// Pins the shortcut: identical Values short-circuit before any tolerance
+    /// branch or Map extraction.
+    #[test]
+    fn significance_filter_returns_equivalent_for_bit_equal_results() {
+        let val = make_elastic_result_value(&[0.0, 0.001], &[0.0, 0.001], 1e8, true, 5);
+        assert_eq!(
+            significance_filter("solver::elastic_static", &val, &val.clone(), Some(1e-6)),
+            FilterOutcome::Equivalent,
+            "bit-equal Values must short-circuit to Equivalent before Map extraction",
+        );
+    }
+
+    // ── Step-9: ε-equivalent displacement delta test ─────────────────────────
+
+    /// Displacement delta within tolerance → Equivalent.
+    /// prev.displacement.data = [0.0, 0.001]; new adds 1e-12 to each sample.
+    /// tolerance = 1e-6 > 1e-12 → delta is sub-threshold → Equivalent.
+    /// Other fields (stress, max_von_mises, converged, iterations) are bit-equal.
+    #[test]
+    fn significance_filter_returns_equivalent_for_sub_tolerance_displacement_delta() {
+        let v1 = make_elastic_result_value(&[0.0, 0.001], &[0.0, 0.001], 1e8, true, 5);
+        let v2 =
+            make_elastic_result_value(&[0.0 + 1e-12, 0.001 + 1e-12], &[0.0, 0.001], 1e8, true, 5);
+        assert_ne!(
+            v1, v2,
+            "test fixture: v1 and v2 must be distinct (not bit-equal)"
+        );
+        assert_eq!(
+            significance_filter("solver::elastic_static", &v1, &v2, Some(1e-6)),
+            FilterOutcome::Equivalent,
+            "displacement delta 1e-12 < tolerance 1e-6 must yield Equivalent",
+        );
+    }
+
+    // ── Step-11: over-tolerance displacement delta ────────────────────────────
+
+    /// Large displacement delta (1.0 m) >>> tolerance (1e-6 m) → Different.
+    /// Also pins the strict-greater-than semantics: a delta EQUAL to tol_si
+    /// is NOT Different (the comparison is `> tol_si`, not `>= tol_si`).
+    #[test]
+    fn significance_filter_returns_different_for_over_tolerance_displacement_delta() {
+        let v1 = make_elastic_result_value(&[0.0, 0.001], &[0.0, 0.001], 1e8, true, 5);
+
+        // Clear over-threshold: delta = 1.0 m >> tol_si = 1e-6 m.
+        let v2 = make_elastic_result_value(&[0.0 + 1.0, 0.001 + 1.0], &[0.0, 0.001], 1e8, true, 5);
+        assert_eq!(
+            significance_filter("solver::elastic_static", &v1, &v2, Some(1e-6)),
+            FilterOutcome::Different,
+            "displacement delta 1.0 m >> tol 1e-6 m must yield Different",
+        );
+
+        // Boundary: delta == tol_si → Equivalent (strict > semantics).
+        let tol = 1e-6_f64;
+        let v3 = make_elastic_result_value(&[0.0, 0.001], &[0.0, 0.001], 1e8, true, 5);
+        let v4 = make_elastic_result_value(&[0.0 + tol, 0.001], &[0.0, 0.001], 1e8, true, 5);
+        assert_eq!(
+            significance_filter("solver::elastic_static", &v3, &v4, Some(tol)),
+            FilterOutcome::Equivalent,
+            "displacement delta == tol_si must be Equivalent (strict-gt: delta > tol is false)",
+        );
+    }
+
+    // ── Step-13: NaN / ±Inf in displacement always signals Different ──────────
+
+    /// NaN or ±Inf in a displacement sample always yields Different (when prev
+    /// and new are not bit-equal). Pins the task spec contract:
+    /// "NaN propagates as Different only when prev and new are not bit-equal."
+    /// f64::is_finite() uniformly covers NaN, +Inf, and -Inf.
+    #[test]
+    fn significance_filter_returns_different_for_nan_in_displacement() {
+        let v_prev = make_elastic_result_value(&[0.0, 0.0], &[0.0, 0.0], 1e8, true, 5);
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let v_new = make_elastic_result_value(&[0.0, bad], &[0.0, 0.0], 1e8, true, 5);
+            assert_eq!(
+                significance_filter("solver::elastic_static", &v_prev, &v_new, Some(1e-6)),
+                FilterOutcome::Different,
+                "non-finite displacement value {bad} must yield Different",
+            );
+        }
+    }
+
+    // ── Step-7: missing-tolerance conservative fallback ───────────────────────
+
+    /// When length_tolerance_si is None, the filter returns Different
+    /// (conservative: over-invalidate rather than under-invalidate).
+    /// Pins the contract that no per-purpose tolerance → Different regardless
+    /// of whether the actual displacement delta would be within any bound.
+    #[test]
+    fn significance_filter_returns_different_when_tolerance_missing() {
+        let v1 = make_elastic_result_value(&[0.0, 0.001], &[0.0, 0.001], 1e8, true, 5);
+        // 1 ULP difference in one displacement sample (not bit-equal).
+        let disp2 = vec![0.0_f64, f64::from_bits(0.001_f64.to_bits() + 1)];
+        let v2 = make_elastic_result_value(&disp2, &[0.0, 0.001], 1e8, true, 5);
+        assert_ne!(
+            v1, v2,
+            "test fixture: v1 and v2 must be distinct (not bit-equal)"
+        );
+        assert_eq!(
+            significance_filter("solver::elastic_static", &v1, &v2, None),
+            FilterOutcome::Different,
+            "None tolerance must produce Different (conservative fallback)",
+        );
+    }
+
+    // ── Step-15: non-displacement field changes always yield Different ─────────
+
+    /// Any change to a non-displacement field (stress, max_von_mises, converged,
+    /// iterations) must return Different, regardless of displacement delta.
+    /// v1 per-field policy: no Pressure tolerance class — exact equality only.
+    #[test]
+    fn significance_filter_returns_different_for_non_displacement_field_changes() {
+        let baseline = make_elastic_result_value(&[0.0, 0.001], &[0.0, 0.001], 1e8, true, 5);
+
+        // stress: different stress data (displacement identical).
+        let stress_changed = make_elastic_result_value(&[0.0, 0.001], &[0.0, 1.0], 1e8, true, 5);
+        assert_eq!(
+            significance_filter(
+                "solver::elastic_static",
+                &baseline,
+                &stress_changed,
+                Some(1e-6)
+            ),
+            FilterOutcome::Different,
+            "stress field change must yield Different",
+        );
+
+        // max_von_mises: change by 1 ULP.
+        let mvm_ulp = f64::from_bits(1e8_f64.to_bits() + 1);
+        let mvm_changed = make_elastic_result_value(&[0.0, 0.001], &[0.0, 0.001], mvm_ulp, true, 5);
+        assert_eq!(
+            significance_filter(
+                "solver::elastic_static",
+                &baseline,
+                &mvm_changed,
+                Some(1e-6)
+            ),
+            FilterOutcome::Different,
+            "max_von_mises ULP change must yield Different",
+        );
+
+        // converged: true vs false.
+        let conv_changed = make_elastic_result_value(&[0.0, 0.001], &[0.0, 0.001], 1e8, false, 5);
+        assert_eq!(
+            significance_filter(
+                "solver::elastic_static",
+                &baseline,
+                &conv_changed,
+                Some(1e-6)
+            ),
+            FilterOutcome::Different,
+            "converged flip (true→false) must yield Different",
+        );
+
+        // iterations: 5 vs 6.
+        let iters_changed = make_elastic_result_value(&[0.0, 0.001], &[0.0, 0.001], 1e8, true, 6);
+        assert_eq!(
+            significance_filter(
+                "solver::elastic_static",
+                &baseline,
+                &iters_changed,
+                Some(1e-6)
+            ),
+            FilterOutcome::Different,
+            "iterations change (5→6) must yield Different",
+        );
+    }
+
+    // ── Step-17: malformed Value shapes always yield Different ────────────────
+
+    /// All departures from the documented ElasticResult Map shape must return
+    /// Different — never Equivalent. Conservative-fallback policy.
+    #[test]
+    fn significance_filter_returns_different_for_malformed_shapes() {
+        let valid = make_elastic_result_value(&[0.0, 0.001], &[0.0, 0.001], 1e8, true, 5);
+
+        // (a) prev is not a Map at all.
+        let not_map = Value::Real(0.0);
+        assert_eq!(
+            significance_filter("solver::elastic_static", &not_map, &valid, Some(1e-6)),
+            FilterOutcome::Different,
+            "(a) non-Map prev must yield Different",
+        );
+
+        // (b) new is a Map missing the "displacement" key.
+        let mut no_disp = BTreeMap::new();
+        no_disp.insert(
+            Value::String("stress".to_string()),
+            make_sampled_field("stress", &[0.0, 0.001]),
+        );
+        no_disp.insert(Value::String("max_von_mises".to_string()), Value::Real(1e8));
+        no_disp.insert(Value::String("converged".to_string()), Value::Bool(true));
+        no_disp.insert(Value::String("iterations".to_string()), Value::Int(5));
+        let new_no_disp = Value::Map(no_disp);
+        assert_eq!(
+            significance_filter("solver::elastic_static", &valid, &new_no_disp, Some(1e-6)),
+            FilterOutcome::Different,
+            "(b) Map missing displacement key must yield Different",
+        );
+
+        // (c) new's displacement value is Value::Real (not a Field).
+        let mut wrong_disp = BTreeMap::new();
+        wrong_disp.insert(Value::String("displacement".to_string()), Value::Real(0.0));
+        wrong_disp.insert(
+            Value::String("stress".to_string()),
+            make_sampled_field("stress", &[0.0, 0.001]),
+        );
+        wrong_disp.insert(Value::String("max_von_mises".to_string()), Value::Real(1e8));
+        wrong_disp.insert(Value::String("converged".to_string()), Value::Bool(true));
+        wrong_disp.insert(Value::String("iterations".to_string()), Value::Int(5));
+        let new_wrong_disp = Value::Map(wrong_disp);
+        assert_eq!(
+            significance_filter(
+                "solver::elastic_static",
+                &valid,
+                &new_wrong_disp,
+                Some(1e-6)
+            ),
+            FilterOutcome::Different,
+            "(c) displacement = Real (not Field) must yield Different",
+        );
+
+        // (d) new's displacement Field has source: Analytical (not Sampled).
+        let analytical_field = Value::Field {
+            domain_type: reify_types::ty::Type::Real,
+            codomain_type: reify_types::ty::Type::Real,
+            source: FieldSourceKind::Analytical,
+            lambda: Arc::new(Value::Undef),
+        };
+        let mut analytical_map = BTreeMap::new();
+        analytical_map.insert(Value::String("displacement".to_string()), analytical_field);
+        analytical_map.insert(
+            Value::String("stress".to_string()),
+            make_sampled_field("stress", &[0.0, 0.001]),
+        );
+        analytical_map.insert(Value::String("max_von_mises".to_string()), Value::Real(1e8));
+        analytical_map.insert(Value::String("converged".to_string()), Value::Bool(true));
+        analytical_map.insert(Value::String("iterations".to_string()), Value::Int(5));
+        let new_analytical = Value::Map(analytical_map);
+        assert_eq!(
+            significance_filter(
+                "solver::elastic_static",
+                &valid,
+                &new_analytical,
+                Some(1e-6)
+            ),
+            FilterOutcome::Different,
+            "(d) displacement Field with Analytical source must yield Different",
+        );
+
+        // (e) displacement data vectors have mismatched lengths (3 vs 4).
+        let v_len3 = make_elastic_result_value(&[0.0, 0.001, 0.002], &[0.0, 0.001], 1e8, true, 5);
+        let v_len4 =
+            make_elastic_result_value(&[0.0, 0.001, 0.002, 0.003], &[0.0, 0.001], 1e8, true, 5);
+        assert_eq!(
+            significance_filter("solver::elastic_static", &v_len3, &v_len4, Some(1e-6)),
+            FilterOutcome::Different,
+            "(e) mismatched displacement data lengths must yield Different",
+        );
+    }
+
+    // ── Step-19: bit-equality shortcut precedes ALL other guards ─────────────
+
+    /// bit-equal values must return Equivalent even when tolerance is 0.0 or
+    /// None — the shortcut runs immediately after the opt-in guard, before the
+    /// tolerance guard. Pins the documented invariant:
+    /// "bit-equality declares Equivalent regardless of whether tolerance is supplied."
+    #[test]
+    fn significance_filter_does_not_false_positive_on_bit_equal_with_zero_tolerance() {
+        let v = make_elastic_result_value(&[0.0, 0.001], &[0.0, 0.001], 1e8, true, 5);
+
+        // Some(0.0) tolerance — shortcut must run before the tolerance gate.
+        assert_eq!(
+            significance_filter("solver::elastic_static", &v, &v.clone(), Some(0.0)),
+            FilterOutcome::Equivalent,
+            "bit-equal values must be Equivalent even when tolerance is Some(0.0)",
+        );
+
+        // None tolerance — shortcut must run before the tolerance guard.
+        assert_eq!(
+            significance_filter("solver::elastic_static", &v, &v.clone(), None),
+            FilterOutcome::Equivalent,
+            "bit-equal values must be Equivalent even when tolerance is None",
+        );
+    }
+
+    // ── Amendment: grid-metadata inequality always yields Different ──────────
+
+    /// If two displacement SampledFields have identical data values within
+    /// tol_si but different axis_grids/bounds, the filter must return Different.
+    /// Identical data at different physical locations is a semantically material
+    /// change — same conservative posture as the missing-tolerance fallback.
+    ///
+    /// Pins the `sampled_field_grid_metadata_eq` check added in the amendment
+    /// pass: the filter compares grid geometry (kind, name, bounds, spacing,
+    /// axis_grids, interpolation) before the element-wise data comparison, so
+    /// a shifted grid cannot sneak through as Equivalent.
+    #[test]
+    fn significance_filter_returns_different_for_shifted_grid_metadata() {
+        // Build a displacement field with a spatially-shifted grid.
+        fn make_shifted_disp(data: &[f64], grid_offset: f64) -> Value {
+            let n = data.len();
+            Value::Field {
+                domain_type: Type::Real,
+                codomain_type: Type::Real,
+                source: FieldSourceKind::Sampled,
+                lambda: Arc::new(Value::SampledField(SampledField {
+                    name: "displacement".to_string(),
+                    kind: SampledGridKind::Regular1D,
+                    bounds_min: vec![grid_offset],
+                    bounds_max: vec![grid_offset + 1.0],
+                    spacing: vec![if n > 1 { 1.0 / (n as f64 - 1.0) } else { 1.0 }],
+                    axis_grids: vec![(0..n).map(|i| grid_offset + i as f64).collect()],
+                    interpolation: InterpolationKind::Linear,
+                    data: data.to_vec(),
+                    oob_emitted: AtomicBool::new(false),
+                })),
+            }
+        }
+
+        // prev: displacement data [0.0, 1e-12], grid at offset 0.0
+        // new:  displacement data [0.0, 2e-12], grid at offset 1.0
+        // data delta (1e-12) is well below tol_si (1e-6), so without the
+        // grid-metadata check the filter would incorrectly declare Equivalent.
+        let mut map_prev = BTreeMap::new();
+        map_prev.insert(
+            Value::String("displacement".to_string()),
+            make_shifted_disp(&[0.0, 1e-12], 0.0),
+        );
+        map_prev.insert(
+            Value::String("stress".to_string()),
+            make_sampled_field("stress", &[0.0, 0.001]),
+        );
+        map_prev.insert(Value::String("max_von_mises".to_string()), Value::Real(1e8));
+        map_prev.insert(Value::String("converged".to_string()), Value::Bool(true));
+        map_prev.insert(Value::String("iterations".to_string()), Value::Int(5));
+        let v_prev = Value::Map(map_prev);
+
+        let mut map_new = BTreeMap::new();
+        map_new.insert(
+            Value::String("displacement".to_string()),
+            // Same data length, sub-tolerance data delta, but axis_grids/bounds shifted.
+            make_shifted_disp(&[0.0, 2e-12], 1.0),
+        );
+        map_new.insert(
+            Value::String("stress".to_string()),
+            make_sampled_field("stress", &[0.0, 0.001]),
+        );
+        map_new.insert(Value::String("max_von_mises".to_string()), Value::Real(1e8));
+        map_new.insert(Value::String("converged".to_string()), Value::Bool(true));
+        map_new.insert(Value::String("iterations".to_string()), Value::Int(5));
+        let v_new = Value::Map(map_new);
+
+        // Sanity: confirm data delta is sub-tolerance (only grid metadata differs).
+        assert!(
+            (1e-12_f64 - 2e-12_f64).abs() < 1e-6,
+            "fixture: data delta must be sub-tolerance so only grid metadata triggers Different"
+        );
+        assert_ne!(v_prev, v_new, "fixture: values must be distinct");
+
+        assert_eq!(
+            significance_filter("solver::elastic_static", &v_prev, &v_new, Some(1e-6)),
+            FilterOutcome::Different,
+            "different axis_grids/bounds must yield Different even when data delta < tol_si",
+        );
+    }
+}

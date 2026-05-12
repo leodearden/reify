@@ -42,6 +42,7 @@ pub(crate) mod engine_hash_algo;
 pub mod field_import_provenance;
 pub mod morph_stage_b;
 pub mod persistent_cache;
+pub mod significance_filter;
 pub mod test_runner;
 pub mod tolerance_bucket;
 pub mod tolerance_budget;

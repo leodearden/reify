@@ -373,8 +373,7 @@ mod tests {
         let key_value = compute_cache_key(&node_value, &graph);
         let key_real = compute_cache_key(&node_real, &graph);
         assert_ne!(
-            key_value,
-            key_real,
+            key_value, key_real,
             "domain separation: a value-input hash and a realization-input hash with the \
              same ContentHash must not produce the same cache key — they occupy different \
              positions in the outer combine_all in compute_cache_key"
@@ -430,8 +429,7 @@ mod tests {
         let key_one = compute_cache_key(&node_one, &graph);
         let key_two = compute_cache_key(&node_two, &graph);
         assert_ne!(
-            key_one,
-            key_two,
+            key_one, key_two,
             "adding a value input must change the cache key: [a] and [a, b] must produce \
              distinct keys"
         );
@@ -458,8 +456,7 @@ mod tests {
         let key_one = compute_cache_key(&node_one, &graph);
         let key_two = compute_cache_key(&node_two, &graph);
         assert_ne!(
-            key_one,
-            key_two,
+            key_one, key_two,
             "adding a realization input must change the cache key: [real_0] and \
              [real_0, real_1] must produce distinct keys"
         );
