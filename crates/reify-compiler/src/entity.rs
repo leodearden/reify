@@ -1119,10 +1119,39 @@ pub(crate) fn compile_entity(
                 // create a value cell for `x`) and by
                 // `crates/reify-eval/tests/cross_sub_geometry_e2e.rs::bare_cross_sub_geometry_access_is_documented_v01_value_cell_only`
                 // (must NOT create a value cell for `copy`).
+                //
+                // Task 3454: emit a Warning at the drop site so the user knows
+                // the binding is a no-op.  Dual regression guards:
+                // - `cross_sub_geometry_diagnostic_tests.rs::bare_cross_sub_geometry_let_emits_v01_no_op_warning`
+                //   (compiler-side; asserts Warning severity + keywords)
+                // - `cross_sub_geometry_e2e.rs::bare_cross_sub_geometry_access_is_documented_v01_value_cell_only`
+                //   (eval-side; filters by Severity::Error only — Warning is invisible to it)
                 if compiled_expr.result_type == Type::Geometry
                     && let reify_types::CompiledExprKind::ValueRef(vid) = &compiled_expr.kind
                     && vid.entity.contains('.')
                 {
+                    // Extract `<sub>` from the synthetic entity stamp `"<parent>.<sub>"`.
+                    // Entity names cannot contain '.' (the parser's identifier rule rejects
+                    // dots), so split_once is unambiguous and is guaranteed to succeed
+                    // because the outer guard already asserts `vid.entity.contains('.')`.
+                    let sub_name = vid
+                        .entity
+                        .split_once('.')
+                        .map(|(_, s)| s)
+                        .unwrap_or(&vid.entity);
+                    diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "bare `let {} = self.{}.{}` produces no value cell in v0.1 \
+                             (cross-sub geometry must be used inside a geometry call — \
+                             wrap with translate/union/etc., or move the alias into the \
+                             child template's body)",
+                            let_decl.name, sub_name, vid.member
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            let_decl.span,
+                            "no-op in v0.1; binding silently dropped",
+                        )),
+                    );
                     continue;
                 }
 
