@@ -131,7 +131,11 @@ impl Engine {
         // Compute dirty cone and eval set
         let mut changed_set = HashSet::new();
         changed_set.insert(cell.clone());
-        let dirty_cone = crate::dirty::compute_dirty_cone(&changed_set, &state.reverse_index);
+        let dirty_cone = crate::dirty::compute_dirty_cone(
+            &changed_set,
+            &state.reverse_index,
+            &state.snapshot.graph,
+        );
         let eval_set = crate::dirty::compute_eval_set(&dirty_cone, &self.demand, &state.trace_map);
 
         // Build the full ValueMap from snapshot values.
@@ -356,7 +360,11 @@ impl Engine {
             }
 
             // Compute dirty cone from changed cells
-            let dirty_cone = crate::dirty::compute_dirty_cone(&setup.changed_cells, reverse_index);
+            let dirty_cone = crate::dirty::compute_dirty_cone(
+                &setup.changed_cells,
+                reverse_index,
+                &setup.graph,
+            );
 
             // Union of all resolved auto param IDs across groups for second wave
             let mut all_resolved_ids: HashSet<ValueCellId> = HashSet::new();
@@ -459,7 +467,7 @@ impl Engine {
             // depending on them may NOT be in the original dirty cone.
             if !all_resolved_ids.is_empty() {
                 let wave2_dirty =
-                    crate::dirty::compute_dirty_cone(&all_resolved_ids, reverse_index);
+                    crate::dirty::compute_dirty_cone(&all_resolved_ids, reverse_index, &setup.graph);
                 let wave2_eval =
                     crate::dirty::compute_eval_set(&wave2_dirty, &self.demand, trace_map);
 

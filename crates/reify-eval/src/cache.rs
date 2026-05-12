@@ -2,9 +2,9 @@ use std::collections::HashMap;
 use std::fmt;
 
 use reify_types::{
-    CompiledExpr, ConstraintNodeId, ContentHash, DeterminacyState, Freshness, GeometryHandleId,
-    OpaqueState, RealizationNodeId, ResolutionNodeId, ResultRef, Satisfaction, Value, ValueCellId,
-    ValueMap, VersionId,
+    CompiledExpr, ComputeNodeId, ConstraintNodeId, ContentHash, DeterminacyState, Freshness,
+    GeometryHandleId, OpaqueState, RealizationNodeId, ResolutionNodeId, ResultRef, Satisfaction,
+    Value, ValueCellId, ValueMap, VersionId,
 };
 
 use crate::deps::DependencyTrace;
@@ -17,6 +17,11 @@ pub enum NodeId {
     Constraint(ConstraintNodeId),
     Realization(RealizationNodeId),
     Resolution(ResolutionNodeId),
+    /// P3.3: a ComputeNode (e.g. an @optimized FEA/solver computation).
+    /// Added so the reverse-dependency index can register VC→Compute and
+    /// Realization→Compute edges as `Set<NodeId>` dependents, and so the
+    /// dirty-cone / freshness walks can propagate through ComputeNodes.
+    Compute(ComputeNodeId),
 }
 
 impl From<ValueCellId> for NodeId {
@@ -43,6 +48,12 @@ impl From<ResolutionNodeId> for NodeId {
     }
 }
 
+impl From<ComputeNodeId> for NodeId {
+    fn from(id: ComputeNodeId) -> Self {
+        NodeId::Compute(id)
+    }
+}
+
 impl fmt::Display for NodeId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -50,6 +61,7 @@ impl fmt::Display for NodeId {
             NodeId::Constraint(c) => c.fmt(f),
             NodeId::Realization(r) => r.fmt(f),
             NodeId::Resolution(s) => s.fmt(f),
+            NodeId::Compute(c) => c.fmt(f),
         }
     }
 }
@@ -1276,6 +1288,55 @@ mod tests {
         // From<ResolutionNodeId> conversion
         let from_node: NodeId = NodeId::from(res_id.clone());
         assert_eq!(from_node, res_node);
+    }
+
+    /// P3.3 step-1: Pin the new `NodeId::Compute(ComputeNodeId)` variant.
+    ///
+    /// Mirrors `node_id_resolution_variant`. Asserts:
+    ///   (a) construction + equality/hash round-trip via `HashMap` key
+    ///   (b) `From<ComputeNodeId> for NodeId` produces `NodeId::Compute(_)`
+    ///   (c) the variant differs from every existing variant even with
+    ///       overlapping entity strings
+    #[test]
+    fn node_id_compute_variant() {
+        use reify_types::{ComputeNodeId, ResolutionNodeId};
+
+        let cn_id = ComputeNodeId::new("E", 0);
+        let cn_node = NodeId::Compute(cn_id.clone());
+
+        // (a) Equality with itself
+        assert_eq!(cn_node, NodeId::Compute(ComputeNodeId::new("E", 0)));
+
+        // (a) Hash round-trip through HashMap (mirrors node_id_hash_as_map_key)
+        let mut map = HashMap::new();
+        map.insert(cn_node.clone(), "compute");
+        assert_eq!(map.get(&NodeId::Compute(cn_id.clone())), Some(&"compute"));
+
+        // (c) Differs from other variants
+        assert_ne!(cn_node, NodeId::Value(ValueCellId::new("E", "x")));
+        assert_ne!(cn_node, NodeId::Constraint(ConstraintNodeId::new("E", 0)));
+        assert_ne!(cn_node, NodeId::Realization(RealizationNodeId::new("E", 0)));
+        assert_ne!(cn_node, NodeId::Resolution(ResolutionNodeId::new("E", 0)));
+
+        // (b) From<ComputeNodeId> conversion
+        let from_node: NodeId = NodeId::from(cn_id.clone());
+        assert_eq!(from_node, cn_node);
+    }
+
+    /// P3.3 step-1: Pin `Display for NodeId::Compute(id)` forwarding to
+    /// `id.fmt(f)`. The contract this test enforces is delegation: the
+    /// wrapper's Display impl must produce the same bytes as the inner
+    /// `ComputeNodeId`'s impl. We deliberately do NOT pin the literal
+    /// format produced by `ComputeNodeId::fmt` here — that lives in
+    /// reify_types and may be retuned independently of NodeId's
+    /// pass-through contract.
+    #[test]
+    fn node_id_display_compute_forwards_to_inner_variant() {
+        use reify_types::ComputeNodeId;
+
+        let inner = ComputeNodeId::new("E", 0);
+        let node = NodeId::Compute(inner.clone());
+        assert_eq!(format!("{}", node), format!("{}", inner));
     }
 
     #[test]

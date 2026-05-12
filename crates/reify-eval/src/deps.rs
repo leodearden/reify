@@ -10,7 +10,7 @@
 //! (Adapton-style) tracing in a pure language.
 
 use crate::cache::NodeId;
-use reify_types::{CompiledExpr, ValueCellId};
+use reify_types::{CompiledExpr, RealizationNodeId, ValueCellId};
 use std::collections::{HashMap, HashSet};
 
 /// Statically extracted value cell dependencies for a node.
@@ -47,9 +47,16 @@ pub(crate) fn take_trace(
 ///
 /// This enables forward propagation: when a cell changes, look up which nodes
 /// need to be re-evaluated. Built from graph structure (expressions), not runtime traces.
+///
+/// P3.3: a sibling `realization_index` map captures the edge #10 reverse
+/// (Realization → consuming ComputeNodes). Keyed by `RealizationNodeId` —
+/// the existing `index` field's `ValueCellId` key cannot represent that
+/// edge. Same public API shape: an `add_realization`/`realization_dependents_of`
+/// pair mirrors `add`/`dependents_of`.
 #[derive(Clone, Debug)]
 pub struct ReverseDependencyIndex {
     index: HashMap<ValueCellId, HashSet<NodeId>>,
+    realization_index: HashMap<RealizationNodeId, HashSet<NodeId>>,
 }
 
 /// Empty set constant for returning references to unknown cells.
@@ -66,6 +73,7 @@ impl ReverseDependencyIndex {
     pub fn new() -> Self {
         Self {
             index: HashMap::new(),
+            realization_index: HashMap::new(),
         }
     }
 
@@ -78,6 +86,24 @@ impl ReverseDependencyIndex {
     /// Returns an empty set for unknown cells.
     pub fn dependents_of(&self, cell: &ValueCellId) -> &HashSet<NodeId> {
         self.index.get(cell).unwrap_or(&EMPTY_SET)
+    }
+
+    /// P3.3 edge #10: register that `rid` is read by `dependent` (typically
+    /// a `NodeId::Compute(...)` whose `realization_inputs` includes `rid`).
+    /// Sibling of [`Self::add`] for the realization-keyed reverse map.
+    pub fn add_realization(&mut self, rid: RealizationNodeId, dependent: NodeId) {
+        self.realization_index
+            .entry(rid)
+            .or_default()
+            .insert(dependent);
+    }
+
+    /// P3.3 edge #10: return the set of NodeIds that consume the given
+    /// Realization (i.e. ComputeNodes with `rid` in their
+    /// `realization_inputs`). Returns the static empty set for unknown
+    /// RealizationNodeIds, matching the [`Self::dependents_of`] contract.
+    pub fn realization_dependents_of(&self, rid: &RealizationNodeId) -> &HashSet<NodeId> {
+        self.realization_index.get(rid).unwrap_or(&EMPTY_SET)
     }
 
     /// Build a reverse dependency index from an EvaluationGraph.
@@ -146,6 +172,25 @@ impl ReverseDependencyIndex {
             let node_id = NodeId::Resolution(res_node.id.clone());
             for param in &res_node.auto_params {
                 index.add(param.clone(), node_id.clone());
+            }
+        }
+
+        // ComputeNodes:
+        //   Edge #6  (P3.3 step-4): VC → ComputeNode reverse edge. Each
+        //     entry in `value_inputs` is a VC the ComputeNode reads, so
+        //     the ComputeNode becomes a dependent of that VC.
+        //   Edge #10 (P3.3 step-6): Realization → ComputeNode reverse edge.
+        //     Each entry in `realization_inputs` is a Realization whose
+        //     output the ComputeNode consumes, so the ComputeNode becomes
+        //     a dependent of that Realization in the sibling
+        //     `realization_index` map (key type differs from `index`).
+        for (_, cnode) in graph.compute_nodes.iter() {
+            let node_id = NodeId::Compute(cnode.computation_id.clone());
+            for vc in &cnode.value_inputs {
+                index.add(vc.clone(), node_id.clone());
+            }
+            for rid in &cnode.realization_inputs {
+                index.add_realization(rid.clone(), node_id.clone());
             }
         }
 
@@ -318,6 +363,132 @@ mod tests {
         assert!(deps.contains(&node_a));
         assert!(deps.contains(&node_b));
         assert!(deps.contains(&node_c));
+    }
+
+    /// P3.3 step-5: Edge #10 — Realization → ComputeNode reverse-index
+    /// registration. ComputeNodes consume Realization outputs via the
+    /// `realization_inputs` declaration; the reverse-index must surface
+    /// each consumer Compute as a dependent of every input Realization.
+    ///
+    /// Build an EvaluationGraph with one Realization `R0` and one Compute
+    /// `C` whose `realization_inputs = [R0.id.clone()]`. Assert the new
+    /// `realization_dependents_of(&R0.id)` returns a set containing
+    /// `NodeId::Compute(C.computation_id.clone())`.
+    #[test]
+    fn reverse_index_realization_dependents_of_returns_compute_consumers() {
+        use crate::graph::{ComputeNodeData, EvaluationGraph, RealizationNodeData};
+        use reify_types::{ComputeNodeId, ContentHash, RealizationNodeId};
+
+        let mut graph = EvaluationGraph::default();
+        let e = "E";
+
+        // Realization R0 (operations irrelevant for reverse index).
+        let r0_id = RealizationNodeId::new(e, 0);
+        graph.realizations.insert(
+            r0_id.clone(),
+            RealizationNodeData {
+                id: r0_id.clone(),
+                operations: vec![],
+                content_hash: ContentHash::of_str("r0"),
+            },
+        );
+
+        // Compute C with realization_inputs=[R0].
+        let c_id = ComputeNodeId::new(e, 0);
+        graph.insert_compute_node(ComputeNodeData {
+            computation_id: c_id.clone(),
+            target: "fea".to_string(),
+            value_inputs: vec![],
+            realization_inputs: vec![r0_id.clone()],
+            options_hash: ContentHash::of_str("opt"),
+            cache_key: ContentHash::of_str("ck"),
+            cached_result: None,
+            result_content_hash: None,
+            opaque_state: None,
+            running: None,
+            output_value_cells: vec![],
+        });
+
+        let index = ReverseDependencyIndex::build_from_graph(&graph);
+
+        let r0_deps = index.realization_dependents_of(&r0_id);
+        assert!(
+            r0_deps.contains(&NodeId::Compute(c_id.clone())),
+            "realization_dependents_of(R0) should include Compute({:?}), got: {:?}",
+            c_id,
+            r0_deps
+        );
+    }
+
+    /// P3.3 step-5: default-empty-set contract for the realization index.
+    /// Mirrors `reverse_index_dependents_of_unknown_cell_is_empty` — an
+    /// unknown RealizationNodeId returns the static empty set rather than
+    /// None / panicking, matching the existing dependents_of contract.
+    #[test]
+    fn reverse_index_realization_dependents_of_unknown_returns_empty() {
+        use reify_types::RealizationNodeId;
+
+        let index = ReverseDependencyIndex::new();
+        let unknown = RealizationNodeId::new("Z", 99);
+        let deps = index.realization_dependents_of(&unknown);
+        assert!(deps.is_empty());
+    }
+
+    /// P3.3 step-3: Edge #6 — VC → ComputeNode reverse-index registration.
+    ///
+    /// Build an EvaluationGraph with one ValueCell `load` and one
+    /// ComputeNode `C` whose `value_inputs = [load]`. Assert that
+    /// `dependents_of(&load)` includes `NodeId::Compute(C.computation_id)`.
+    /// This is the static counterpart of the spec's edge #6 (consumer-Compute
+    /// reads producer-VC). Pins build_from_graph_and_fields' new compute_nodes
+    /// loop landed in step-4.
+    #[test]
+    fn reverse_index_registers_value_input_edge_for_each_compute_node() {
+        use crate::graph::{ComputeNodeData, EvaluationGraph, ValueCellNode};
+        use reify_compiler::ValueCellKind;
+        use reify_types::{ComputeNodeId, ContentHash, Type};
+
+        let mut graph = EvaluationGraph::default();
+        let e = "E";
+
+        // ValueCell `load` (a param — kind/value irrelevant for reverse index).
+        let load = ValueCellId::new(e, "load");
+        graph.value_cells.insert(
+            load.clone(),
+            ValueCellNode {
+                id: load.clone(),
+                kind: ValueCellKind::Param,
+                cell_type: Type::Real,
+                default_expr: None,
+                content_hash: ContentHash::of_str("load"),
+            },
+        );
+
+        // ComputeNode C with value_inputs=[load].
+        let c_id = ComputeNodeId::new(e, 0);
+        graph.insert_compute_node(ComputeNodeData {
+            computation_id: c_id.clone(),
+            target: "fea".to_string(),
+            value_inputs: vec![load.clone()],
+            realization_inputs: vec![],
+            options_hash: ContentHash::of_str("opt"),
+            cache_key: ContentHash::of_str("ck"),
+            cached_result: None,
+            result_content_hash: None,
+            opaque_state: None,
+            running: None,
+            output_value_cells: vec![],
+        });
+
+        let index = ReverseDependencyIndex::build_from_graph(&graph);
+
+        let load_deps = index.dependents_of(&load);
+        assert!(
+            load_deps.contains(&NodeId::Compute(c_id.clone())),
+            "dependents_of('load') should include Compute({:?}), got: {:?}",
+            c_id,
+            load_deps
+        );
     }
 
     #[test]

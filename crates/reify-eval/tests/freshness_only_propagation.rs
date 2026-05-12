@@ -134,6 +134,15 @@ fn walk_over_engine_propagates_intermediate_to_final_without_value_recomputation
         .expect("eval_state populated by Engine::eval")
         .reverse_index
         .clone();
+    // P3.3 step-16: clone the graph as well so the walk can look up
+    // `compute_nodes[cn_id].output_value_cells` for edge #12 fan-out.
+    // Same borrow-checker rationale as the reverse_index clone above.
+    let graph_clone = engine
+        .eval_state()
+        .expect("eval_state populated by Engine::eval")
+        .snapshot
+        .graph
+        .clone();
 
     let mut changed = HashSet::new();
     changed.insert(a_id.clone());
@@ -141,6 +150,7 @@ fn walk_over_engine_propagates_intermediate_to_final_without_value_recomputation
     let updated = freshness_walk::propagate_freshness_only(
         engine.cache_store_mut(),
         &reverse_index_clone,
+        &graph_clone,
         &changed,
         1,
     );
@@ -249,6 +259,15 @@ fn walk_over_engine_propagates_failed_upstream_to_pending_with_cause() {
         .expect("eval_state populated by Engine::eval")
         .reverse_index
         .clone();
+    // P3.3 step-16: clone the graph as well so the walk can look up
+    // `compute_nodes[cn_id].output_value_cells` for edge #12 fan-out.
+    // Same borrow-checker rationale as the reverse_index clone above.
+    let graph_clone = engine
+        .eval_state()
+        .expect("eval_state populated by Engine::eval")
+        .snapshot
+        .graph
+        .clone();
 
     let mut changed = HashSet::new();
     changed.insert(a_id.clone());
@@ -256,6 +275,7 @@ fn walk_over_engine_propagates_failed_upstream_to_pending_with_cause() {
     let updated = freshness_walk::propagate_freshness_only(
         engine.cache_store_mut(),
         &reverse_index_clone,
+        &graph_clone,
         &changed,
         1,
     );
@@ -371,6 +391,15 @@ fn walk_over_engine_forwards_pending_cause_through_chain() {
         .expect("eval_state populated by Engine::eval")
         .reverse_index
         .clone();
+    // P3.3 step-16: clone the graph as well so the walk can look up
+    // `compute_nodes[cn_id].output_value_cells` for edge #12 fan-out.
+    // Same borrow-checker rationale as the reverse_index clone above.
+    let graph_clone = engine
+        .eval_state()
+        .expect("eval_state populated by Engine::eval")
+        .snapshot
+        .graph
+        .clone();
 
     let mut changed = HashSet::new();
     changed.insert(a_id.clone());
@@ -378,6 +407,7 @@ fn walk_over_engine_forwards_pending_cause_through_chain() {
     let updated = freshness_walk::propagate_freshness_only(
         engine.cache_store_mut(),
         &reverse_index_clone,
+        &graph_clone,
         &changed,
         1,
     );

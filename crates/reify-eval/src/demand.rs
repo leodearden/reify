@@ -106,6 +106,35 @@ impl DemandRegistry {
                         Vec::new()
                     }
                 }
+                NodeId::Compute(cnid) => {
+                    // P3.3: ComputeNode demand surfaces its declared
+                    // `value_inputs` into the VC-keyed backward BFS.
+                    //
+                    // Amendment (Sugg 4): also pull each `realization_inputs`
+                    // entry into the demand cone. Realizations are NodeIds,
+                    // not ValueCellIds, so they bypass the post-match
+                    // VC-to-Value conversion loop and go directly onto the
+                    // queue as `NodeId::Realization`. The next BFS iteration
+                    // processes them via the `NodeId::Realization` arm above,
+                    // which surfaces the VCs read by the realization's
+                    // operations. Without this push, a ComputeNode that
+                    // consumes a Realization but has no value_inputs (e.g. a
+                    // pure post-process of a meshed geometry) would not pull
+                    // its producing Realization into the demand cone — the
+                    // eval-set intersection (dirty ∩ demand) would then drop
+                    // a Realization that drives a demanded ComputeNode.
+                    if let Some(cn) = graph.compute_nodes.get(cnid) {
+                        for rid in &cn.realization_inputs {
+                            let realization_node = NodeId::Realization(rid.clone());
+                            if !self.demand_cone.contains(&realization_node) {
+                                queue.push_back(realization_node);
+                            }
+                        }
+                        cn.value_inputs.clone()
+                    } else {
+                        Vec::new()
+                    }
+                }
             };
 
             // Convert dependencies to NodeId::Value and enqueue
@@ -460,5 +489,100 @@ mod tests {
         // c reads a and b → both are demanded (depth-2 transitive)
         assert!(reg.is_demanded(&NodeId::Value(ValueCellId::new(e, "a"))));
         assert!(reg.is_demanded(&NodeId::Value(ValueCellId::new(e, "b"))));
+    }
+
+    /// Amendment (Sugg 4): demanding a ComputeNode with `realization_inputs`
+    /// but NO `value_inputs` must still pull the producing Realization (and
+    /// transitively the VCs it reads) into the demand cone. Without the
+    /// realization-input enqueue in the Compute arm of `rebuild_cone`, the
+    /// Realization-keyed dependency edge #10 would be silently dropped on
+    /// the demand side, and the eval-set intersection would exclude any
+    /// Realization that drives a demanded post-process Compute (e.g. an
+    /// FEA pass over a meshed geometry).
+    #[test]
+    fn rebuild_cone_compute_with_realization_input_pulls_in_realization_and_its_reads() {
+        use crate::graph::{
+            ComputeNodeData, EvaluationGraph, RealizationNodeData, ValueCellNode,
+        };
+        use reify_compiler::{CompiledGeometryOp, PrimitiveKind, ValueCellKind};
+        use reify_types::{
+            CompiledExpr, ComputeNodeId, ContentHash, RealizationNodeId, Type, Value,
+        };
+
+        let mut graph = EvaluationGraph::default();
+        let e = "E";
+
+        // Param `width` — read by the realization's Box op.
+        let width = ValueCellId::new(e, "width");
+        graph.value_cells.insert(
+            width.clone(),
+            ValueCellNode {
+                id: width.clone(),
+                kind: ValueCellKind::Param,
+                cell_type: Type::length(),
+                default_expr: Some(CompiledExpr::literal(
+                    Value::length(0.08),
+                    Type::length(),
+                )),
+                content_hash: ContentHash::of_str("width"),
+            },
+        );
+
+        // Realization R0 with a Box primitive that reads `width`.
+        let r0_id = RealizationNodeId::new(e, 0);
+        let r0_ops = vec![CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![(
+                "width".to_string(),
+                CompiledExpr::value_ref(width.clone(), Type::length()),
+            )],
+        }];
+        graph.realizations.insert(
+            r0_id.clone(),
+            RealizationNodeData {
+                id: r0_id.clone(),
+                operations: r0_ops,
+                content_hash: ContentHash::of_str("r0"),
+            },
+        );
+
+        // Compute C with realization_inputs=[R0] and NO value_inputs. The
+        // important property: without the demand-side realization push,
+        // demanding C alone would leave R0 outside the cone, and the BFS
+        // would never reach `width` either.
+        let c_id = ComputeNodeId::new(e, 0);
+        graph.insert_compute_node(ComputeNodeData {
+            computation_id: c_id.clone(),
+            target: "fea".to_string(),
+            value_inputs: vec![],
+            realization_inputs: vec![r0_id.clone()],
+            options_hash: ContentHash::of_str("opt"),
+            cache_key: ContentHash::of_str("ck"),
+            cached_result: None,
+            result_content_hash: None,
+            opaque_state: None,
+            running: None,
+            output_value_cells: vec![],
+        });
+
+        let c_node = NodeId::Compute(c_id);
+        let mut reg = DemandRegistry::new();
+        reg.add_demand(c_node.clone());
+        reg.rebuild_cone(&graph);
+
+        // C is demanded (root).
+        assert!(reg.is_demanded(&c_node));
+        // R0 is demanded via C's realization_inputs (edge #10 on the
+        // demand side — the amendment under test).
+        assert!(
+            reg.is_demanded(&NodeId::Realization(r0_id)),
+            "Realization R0 must be in the demand cone when a demanded \
+             ComputeNode lists it under realization_inputs"
+        );
+        // width is demanded transitively (R0's Box op reads it).
+        assert!(
+            reg.is_demanded(&NodeId::Value(width)),
+            "`width` must be in the demand cone via R0 → Box(width)"
+        );
     }
 }

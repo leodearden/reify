@@ -100,6 +100,13 @@ fn progressive_node_emits_one_intermediate_then_final_propagates_to_downstream()
         .expect("eval_state populated by Engine::eval")
         .reverse_index
         .clone();
+    // P3.3 step-16: clone the graph for edge #12 fan-out (Compute → output VCs).
+    let graph = engine
+        .eval_state()
+        .expect("eval_state populated by Engine::eval")
+        .snapshot
+        .graph
+        .clone();
 
     // ── Emission step 1: a → Intermediate{1} ─────────────────────────────
     assert!(
@@ -115,6 +122,7 @@ fn progressive_node_emits_one_intermediate_then_final_propagates_to_downstream()
     let updated_1 = freshness_walk::propagate_freshness_only(
         engine.cache_store_mut(),
         &reverse_index,
+        &graph,
         &changed,
         1,
     );
@@ -144,6 +152,7 @@ fn progressive_node_emits_one_intermediate_then_final_propagates_to_downstream()
     let updated_2 = freshness_walk::propagate_freshness_only(
         engine.cache_store_mut(),
         &reverse_index,
+        &graph,
         &changed,
         2,
     );
@@ -194,6 +203,13 @@ fn progressive_node_emits_three_intermediates_then_final_transitions_downstream(
         .expect("eval_state populated by Engine::eval")
         .reverse_index
         .clone();
+    // P3.3 step-16: clone the graph for edge #12 fan-out.
+    let graph = engine
+        .eval_state()
+        .expect("eval_state populated by Engine::eval")
+        .snapshot
+        .graph
+        .clone();
 
     let mut changed = HashSet::new();
     changed.insert(a_id.clone());
@@ -212,6 +228,7 @@ fn progressive_node_emits_three_intermediates_then_final_transitions_downstream(
         let updated = freshness_walk::propagate_freshness_only(
             engine.cache_store_mut(),
             &reverse_index,
+            &graph,
             &changed,
             g,
         );
@@ -244,6 +261,7 @@ fn progressive_node_emits_three_intermediates_then_final_transitions_downstream(
     let updated_final = freshness_walk::propagate_freshness_only(
         engine.cache_store_mut(),
         &reverse_index,
+        &graph,
         &changed,
         4,
     );
@@ -323,6 +341,13 @@ fn progressive_emission_does_not_recompute_downstream_value() {
         .expect("eval_state populated by Engine::eval")
         .reverse_index
         .clone();
+    // P3.3 step-16: clone the graph for edge #12 fan-out.
+    let graph = engine
+        .eval_state()
+        .expect("eval_state populated by Engine::eval")
+        .snapshot
+        .graph
+        .clone();
 
     let mut changed = HashSet::new();
     changed.insert(a_id.clone());
@@ -339,6 +364,7 @@ fn progressive_emission_does_not_recompute_downstream_value() {
         freshness_walk::propagate_freshness_only(
             engine.cache_store_mut(),
             &reverse_index,
+            &graph,
             &changed,
             g,
         );
@@ -350,7 +376,13 @@ fn progressive_emission_does_not_recompute_downstream_value() {
             .set_freshness(&a_node, Freshness::Final),
         "a must still be in the cache"
     );
-    freshness_walk::propagate_freshness_only(engine.cache_store_mut(), &reverse_index, &changed, 4);
+    freshness_walk::propagate_freshness_only(
+        engine.cache_store_mut(),
+        &reverse_index,
+        &graph,
+        &changed,
+        4,
+    );
 
     // ── "No value recomputation" witness ──────────────────────────────────
     // Snapshot b's entry AFTER the full emission cycle.

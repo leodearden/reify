@@ -311,7 +311,7 @@ mod tests {
         // 4. Simulate width change
         let mut changed_cells = HashSet::new();
         changed_cells.insert(ValueCellId::new(e, "width"));
-        let dirty = compute_dirty_cone(&changed_cells, &index);
+        let dirty = compute_dirty_cone(&changed_cells, &index, &graph);
 
         // Verify dirty cone: volume, c1, and the realization (depends on width)
         assert!(dirty.contains(&NodeId::Value(ValueCellId::new(e, "volume"))));
