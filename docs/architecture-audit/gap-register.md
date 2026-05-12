@@ -125,9 +125,9 @@ Contract document authored 2026-05-12: `docs/prds/v0_3/structure-instance-runtim
 | Evidence | `findings/persistent-naming-v2.md` M-013/M-014/M-019/M-022; `findings/topology-selectors.md` M-003; `findings/match-block-decls.md` M-012; `findings/node-trait-composition.md` M-010; `findings/auto-type-param-resolution.md` M-009/M-016 |
 | Cited by PRDs | persistent-naming-v2, topology-selectors, match-block-decls, node-trait-composition, auto-type-param-resolution |
 | Blocks tasks | Per cluster C-04; intersects task 2652 ("done" library-only) |
-| Disposition | **investigate-further** — symptom of a process gap (many "done" tasks discovered to be library-only). Cross-cluster with C-07 (task-marked-done pattern). Needs Leo decision on whether to retroactively widen "definition of done = user-observable" or to file targeted per-resolver follow-ups. Phase-3 scaffold-pattern critique classifies the missing-consumer half as Type A (scaffold-without-caller) — the dominant audit shape. |
+| Disposition | **fix-now (residuals) + accept process trajectory** — 2026-05-12 investigate-further triage resolved: Leo directed "sweep all currently-done C-04 tasks; file targeted tasks for anything without a consumer and also not explicitly handled by sibling clusters." /prd's G1 consumer-named gate (preferences-implementation-chain-portfolio approach A) prevents recurrence going forward; today's residuals filed below. The blanket policy ("definition of done = user-observable") is the implicit norm now per [[feedback-task-chain-user-observable]]. |
 | Discovered | 2026-05-12 architecture audit |
-| Notes | Several of the cluster's specific Rust pubs are addressed by sibling clusters (selector_vocabulary_v2 → GR-013/C-10; resolve_unique_by_attribute → fix-now batch via 3466 in the C-10 entry). The remaining cluster surface (ad-hoc `@face("name")` evaluator, NodePolicyOverrides) is what awaits the policy decision. |
+| Notes | Sibling-cluster handling: selector_vocabulary_v2 → GR-013/C-10; resolve_unique_by_attribute → 3466 (in C-10 entry). Residuals filed 2026-05-12 via fused-memory submit_task (tickets pending curator at session close): (1) `tkt_0RNVPZERQVAE6SQFSBTB1AMSGM` — Wire AdHocSelector engine-side evaluator (@face("name") → handle); reopens phantom-done Task 250's M-022 root cause. (2) `tkt_0RNVQ0MQMVRKAA3PB6W8TP2324` — Wire NodePolicyOverrides config-file ingestion (reify.toml [node_overrides]); satisfies node-trait-composition acceptance #3. (3) `tkt_0RNVQ26ARAN08H900XE501NZG5` — Wire resolve_unique_by_tag through DSL-side dispatch (W_TOPOLOGY_TAG_STALE end-to-end). Grammar-gated holdout: `narrow_arms_under_guard` (match-block-decls M-012) call-site wiring is structurally complete but requires decl-level `match` grammar landing (cluster C-06) — tracked there. Filing log: `docs/architecture-audit/phase-3-investigate-further-triage-log.md`. |
 
 ### GR-008 — Auto-resolve / type-param resolver compile-pipeline call site (cluster C-05)
 
@@ -279,9 +279,9 @@ Contract document authored 2026-05-12: `docs/prds/v0_3/structure-instance-runtim
 | Evidence | `findings/geometry-traits.md` M-006/M-009; `findings/topology-selectors.md` M-016 |
 | Cited by PRDs | geometry-traits, topology-selectors |
 | Blocks tasks | Per cluster C-15 |
-| Disposition | **investigate-further** — small surface, but conceptually coupled to several follow-ups (stdlib-trait-breadth M-013 "Solid as trait-bound-bearing value", and any future infinite-half-space ops). Needs Leo decision: do we (a) ship half_space/extrude_infinite to vindicate the diagnostic infrastructure, or (b) retire the diagnostic infrastructure as YAGNI? |
+| Disposition | **fix-now — ship producers (vindicate the diagnostic infra).** 2026-05-12 investigate-further triage resolved: Leo chose "ship producers." Diagnostic infrastructure stays; `half_space` and `extrude_infinite` filed as sibling fix-now tasks. |
 | Discovered | 2026-05-12 architecture audit |
-| Notes | Phase-3 synthesis classified this under "Clusters fitting NO Phase-2 pattern" — the "loaded gun, no target" shape is genuinely novel and underargues either direction. |
+| Notes | Phase-3 synthesis classified this under "Clusters fitting NO Phase-2 pattern" — the "loaded gun, no target" shape. Tickets filed 2026-05-12 via fused-memory submit_task (pending curator at session close): `tkt_0RNVQ2E62WDXJ76QX594YKQHKT` (half_space) and `tkt_0RNVQ2KTNNR3EAN7N2A7KDB0W3` (extrude_infinite). Both name the `E_GEOMETRY_UNBOUNDED` diagnostic consumer + integration-test signal. Filing log: `docs/architecture-audit/phase-3-investigate-further-triage-log.md`. |
 
 ### GR-019 — Material starter library (stdlib structures unevaluable) (cluster C-16)
 
@@ -321,7 +321,7 @@ Contract document authored 2026-05-12: `docs/prds/v0_3/structure-instance-runtim
 | Evidence | `findings/structural-analysis-shells.md` M-018/M-019/M-020/M-022/M-023; `findings/fea-gui-rendering-shells.md` M-002/M-004/M-014; `findings/varying-thickness-shells.md` M-001; `findings/composite-laminated-shells.md` M-005/M-006 |
 | Cited by PRDs | structural-analysis-shells, fea-gui-rendering-shells, varying-thickness-shells, composite-laminated-shells |
 | Blocks tasks | Per cluster C-19 |
-| Disposition | **PRD-shape work — shell-extract engine integration PRD.** Specific case of the engine-integration norm (GR-017); shells is large enough to warrant its own PRD slot. Also intersects GR-016 (GUI event channel) on the IPC half. **Resolution mechanism: `docs/prds/v0_4/shell-extract-engine-bridge.md`** (authored 2026-05-12) — vertical-slice decomposition under B+H discipline; supersedes parent shells PRD T18/T19/T23 (tasks 3031/3032/3036) and completes the engine-side fold-in half of T20 (3033). Plugs into landed seams GR-001 (struct-instance runtime), GR-002 (ComputeNode contract via `shell-extract::extract` target), GR-016 (MeshData payload extension per §2.4 delegation). |
+| Disposition | **PRD-shape work — shell-extract engine integration PRD.** Specific case of the engine-integration norm (GR-017); shells is large enough to warrant its own PRD slot. Also intersects GR-016 (GUI event channel) on the IPC half. **Resolution mechanism: `docs/prds/v0_4/shell-extract-engine-bridge.md`** (authored 2026-05-12) — vertical-slice decomposition under B+H discipline; supersedes parent shells PRD T18/T19/T23 (tasks 3031/3032/3036) and completes the engine-side fold-in half of T20 (3033). Plugs into landed seams GR-001 (struct-instance runtime), GR-002 (ComputeNode contract via `shell-extract::extract` target = engine-integration-norm §3.4), GR-016 (MeshData payload extension per §2.4 delegation), GR-017 (G1-checklist conformant; §3.4-only seam coverage — no new §3.2 realization-kind dispatcher). |
 | Discovered | 2026-05-12 architecture audit |
 | Notes | Mid-surface naming (Role::MidSurfaceEdge + FeatureId::derived_mid_surface) is wired in `reify-types`; the missing piece is plumbing through the kernel→engine→solver/GUI seams. Producer half (mid-surface + segmentation + thickness + naming records) ships in `reify-shell-extract` with synthetic-input testing; consumer-side bridge for FEA `ElasticResult { shell_channels: Option<ShellChannels> }` + GUI `MeshData { element_kind, region_tags, vector_channels }` is the PRD's deliverable. |
 
@@ -349,9 +349,9 @@ Contract document authored 2026-05-12: `docs/prds/v0_3/structure-instance-runtim
 | Evidence | `findings/mesh-morphing.md` M-002; transitively `findings/persistent-naming-v2.md` |
 | Cited by PRDs | mesh-morphing, persistent-naming-v2 (transitive) |
 | Blocks tasks | Per cluster C-21 |
-| Disposition | **investigate-further** — Leo decides between (a) "restrict morph eligibility" (document vertex-coincidence as a morph precondition) and (b) "fill the bijection" (compute vertex_to_vertex during attribute propagation). Both are bounded; both are real options. |
+| Disposition | **PRD-shape — escalate to mesh-morph PRD revisit.** 2026-05-12 investigate-further triage resolved: Leo chose "fill the bijection (tag-based)" but bundled with the sibling mesh-morph engine-seam gaps (M-005 BoundaryAssociation producer, M-006 OCCT-backed Projector, task 2947 engine wire). Filling `vertex_to_vertex` standalone leaves morph broken on three other axes; the cluster wants a coordinated PRD revisit. NO task filed today. |
 | Discovered | 2026-05-12 architecture audit |
-| Notes | Phase-3 synthesis classified this under "Clusters fitting NO Phase-2 pattern" — the "known-empty hole in shipped data structure" shape. Reciprocal mesh-morph ↔ PNv2 audit cite (synthesis §3) — both audits surface it without contradiction. |
+| Notes | Phase-3 synthesis classified this under "Clusters fitting NO Phase-2 pattern" — "known-empty hole in shipped data structure." Reciprocal mesh-morph ↔ PNv2 audit cite. **Action item for follow-up session:** author `docs/architecture-audit/gr023-mesh-morph-prd-revisit-session-prompt.md` and run /prd. Scope to include: (a) GR-023 vertex_to_vertex (tag-based, requires PNv2 attribute-table widening to vertices), (b) M-005 Gmsh producer of NodeAttachment, (c) M-006 OCCT-backed Projector via BRepExtrema_DistShapeShape, (d) engine-wire 2947 as integration gate. Cross-PRD seam ownership (portfolio approach E): PNv2 owns vertex-side attribute table; mesh-morphing PRD owns the rest. |
 
 ### GR-024 — Eigenvalue solver + geometric stiffness K_g (cluster C-22)
 
@@ -505,7 +505,7 @@ Contract document authored 2026-05-12: `docs/prds/v0_3/structure-instance-runtim
 | Blocks tasks | Per cluster C-32 |
 | Disposition | **folded into GR-020 — resolution mechanism `docs/prds/v0_3/multi-kernel-phase-3.md` §8 task ρ (Phase 8 — Long-chain diagnostic wiring).** Once the multi-kernel Phase 3 dispatcher fan-out lands (§8 tasks ε, ι), `is_long_chain_realization` + `long_chain_diagnostic` get called from `execute_realization_ops` with wall-time bracketing. `per_stage_tolerance_for_plan` becomes meaningful because real multi-stage chains exist. Not separately fix-now-able; rides with GR-020. |
 | Discovered | 2026-05-12 architecture audit |
-| Notes | Cascading downstream of GR-020; resolution ships in the same PRD (`multi-kernel-phase-3.md`) at §8 task ρ. |
+| Notes | Cascading downstream of GR-020; resolution ships in the same PRD (`multi-kernel-phase-3.md`) at §8 task ρ. 2026-05-12 investigate-further triage confirmed: GR-020 was decomposed and queued by Leo earlier same day; task ρ's observable signal (synthetic 3-stage chain fixture; 1-stage chain at same wall time does NOT emit) satisfies the user-observable-leaf gate. PRD §9 open question #6 (wall-time vs CPU-time) is decided in-task. |
 
 ### GR-035 — Cancellation handle placeholder type (cluster C-33)
 
@@ -545,9 +545,9 @@ Contract document authored 2026-05-12: `docs/prds/v0_3/structure-instance-runtim
 | Evidence | `findings/per-purpose-tolerance.md` M-001; transitively `findings/structural-analysis-fea.md` (FEA bracket.fea_subject usage candidate) |
 | Cited by PRDs | per-purpose-tolerance, structural-analysis-fea (transitive) |
 | Blocks tasks | Per cluster C-35 |
-| Disposition | **investigate-further** — design-open whether to widen the recognizer to accept member-access subjects or to document the MVP scope as the v0.1 contract. FEA's likely consumer pattern (`bracket.fea_subject`) tilts toward widening. |
+| Disposition | **fix-now — widen recognizer.** 2026-05-12 investigate-further triage resolved: Leo chose to widen `RepresentationWithin(subject, tol)` to accept member-access subjects (`subject.head`-style) with a named FEA consumer fixture (`bracket.fea_subject` pattern). Ticket filed below. |
 | Discovered | 2026-05-12 architecture audit |
-| Notes | Phase-3 synthesis classified this under "MVP scope clip silently drops downstream cases" — needs a Leo decision before any code change. |
+| Notes | Phase-3 synthesis classified this under "MVP scope clip silently drops downstream cases." Ticket filed 2026-05-12 via fused-memory submit_task (pending curator at session close): `tkt_0RNVQ2W0KGY8ZFBR9794XN4406` — widen recognizer + symmetric input-promise widening; FEA bracket fixture is the named consumer. Filing log: `docs/architecture-audit/phase-3-investigate-further-triage-log.md`. |
 
 ### GR-038 — NodeTraits + scheduler dispatch never bridge (cluster C-36)
 
@@ -559,9 +559,9 @@ Contract document authored 2026-05-12: `docs/prds/v0_3/structure-instance-runtim
 | Evidence | `findings/node-trait-composition.md` M-002, M-003, M-005, M-008, M-009, M-011 |
 | Cited by PRDs | node-trait-composition |
 | Blocks tasks | Per cluster C-36 |
-| Disposition | **investigate-further** — Leo decides between "merge taxonomies" (NodeTraits bitflags become scheduler input + retire NodeKind enum, or vice versa) and "rename/retire one" (acknowledge that the two taxonomies are answering different questions and disambiguate). Phase-3 synthesis flagged this as a new pattern: "two parallel taxonomies that don't compose." |
+| Disposition | **PRD-shape — escalate to NodeTraits unification PRD.** 2026-05-12 investigate-further triage resolved: Leo chose "merge taxonomies." Substantial design call requiring its own PRD-authoring session — NOT authored here. NO task filed today. |
 | Discovered | 2026-05-12 architecture audit |
-| Notes | Synthesis §3 new-pattern-B example. The other instance (Load/Support nominal vs kind-tagged) is GR-011 / cluster C-08; that one resolves under GR-001. This one is orthogonal — needs its own decision. |
+| Notes | Synthesis §3 new-pattern-B canonical instance. The other new-pattern-B occurrence (Load/Support nominal vs kind-tagged, GR-011 / cluster C-08) resolves under GR-001 — orthogonal mechanism. **Action item for follow-up session:** author `docs/architecture-audit/gr038-nodetraits-unification-session-prompt.md` and run /prd. Scope: design call on which direction wins (NodeTraits bitflags + NodeArchKind feed scheduler, vs NodePolicyOverrides + NodeKind absorb the bitflag surface), retire the obsolete taxonomy, wire the chosen direction through scheduler dispatch with boundary tests against existing fixtures. Resolution mode per portfolio: H (design-first + interface contracts + two-way boundary tests). |
 
 ### GR-039 — Kinematic singularity surfacing (cluster C-37)
 
@@ -629,9 +629,9 @@ Contract document authored 2026-05-12: `docs/prds/v0_3/structure-instance-runtim
 | Evidence | `findings/warm-state-eviction.md` M-004, M-005 |
 | Cited by PRDs | warm-state-eviction |
 | Blocks tasks | Per cluster C-42 |
-| Disposition | **investigate-further** — flip comparator + wire cold-compute timing. Phase-3 synthesis §3 new-pattern-A example: this is the canonical "active drift pin — test cements PRD violation" case. Closing the gap requires explicit test removal/replacement, not just code change. Needs Leo decision before touching the test. |
+| Disposition | **fix-now — flip comparator + replace pinning test.** 2026-05-12 investigate-further triage resolved: Leo chose "flip comparator + replace test." Ticket filed below; deliberate contract change. |
 | Discovered | 2026-05-12 architecture audit |
-| Notes | The test name `cost_per_byte_does_not_alter_lru_eviction_order` is a verbatim contract that v0.1 ships pure LRU. Phase-3 marked this as a representative of the "drift pin" anti-pattern. |
+| Notes | Phase-3 synthesis §3 new-pattern-A canonical instance ("active drift pin — test cements PRD violation"). Ticket filed 2026-05-12 via fused-memory submit_task (pending curator at session close): `tkt_0RNVQ35E9X59VSEA90DQH5VZ7X` — wires cost_per_byte into the comparator, DELETES `cost_per_byte_does_not_alter_lru_eviction_order` pinning test, ADDS `cost_per_byte_alters_lru_eviction_order` replacement, instruments ComputeNode cold-compute timing so the field is populated in production. Filing log: `docs/architecture-audit/phase-3-investigate-further-triage-log.md`. |
 
 ### GR-044 — Warm-state pool: drain_events to journal never wired (cluster C-43)
 
