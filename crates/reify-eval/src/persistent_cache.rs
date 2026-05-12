@@ -835,6 +835,8 @@ fn cache_key_to_ascii_32(s: &str) -> io::Result<[u8; 32]> {
 /// that `CacheEntryHeader::byte_size` is known without seeking. After
 /// `sync_all` for durability, `tempfile::NamedTempFile::persist` performs a
 /// POSIX `rename(2)` — atomic and last-writer-wins under concurrent writers.
+/// The shard directory is fsynced after the rename to ensure the directory
+/// entry (dirent) is durable on the same flush cycle as the file data.
 /// The sidecar `.meta` file is written AFTER the rename so a failed rename
 /// never leaves an orphan sidecar pointing at a non-existent `.bin`.
 ///
@@ -848,9 +850,11 @@ fn cache_key_to_ascii_32(s: &str) -> io::Result<[u8; 32]> {
 /// PRD's convention for orphan identification, so the future startup-sweep task
 /// can glob `**/.tmp.*` to find and remove any temp files left behind by a
 /// writer killed between creation and rename. `sync_all()` before `persist()`
-/// is the durability guarantee — a crash between `persist()` and the sidecar
-/// write leaves the `.bin` consistent (last atomic rename wins) but the sidecar
-/// absent; the next `read_entry` tolerates an absent sidecar gracefully.
+/// makes the file *content* crash-durable; the subsequent directory `sync_all()`
+/// makes the directory *entry* crash-durable. A crash between `persist()` and
+/// the sidecar write leaves the `.bin` consistent (last atomic rename wins) but
+/// the sidecar absent; the next `read_entry` tolerates an absent sidecar
+/// gracefully via sidecar recreation on hit.
 ///
 /// Pinned by test
 /// `concurrent_write_entry_calls_for_same_input_both_succeed_and_final_read_entry_decodes_to_original_value`.
@@ -909,11 +913,23 @@ pub fn write_entry<V: PersistentlyCacheable>(
     let bin_path = entry_bin_path(cache_root, engine_version_hash, input_hash);
     temp.persist(&bin_path).map_err(|e| e.error)?;
 
-    // Write the sidecar AFTER the atomic rename so a failed rename never
-    // leaves an orphan sidecar pointing at a non-existent .bin. write_sidecar
-    // (not touch_sidecar) is used here because the .meta may not exist yet on
-    // the first write of a fresh entry — write_sidecar creates-or-overwrites,
-    // which covers both the absent and already-present cases.
+    // fsync the shard directory so the directory entry pointing at the newly
+    // renamed `.bin` is durable on the same flush cycle as the file data.
+    // Without this, a kernel crash between persist() and the next filesystem
+    // sync could lose the dirent even though the `.bin` data is on disk
+    // (the file content is durable from sync_all() above, but the directory
+    // inode update from rename(2) may still be in the page cache).
+    // Impact is bounded — a missing entry is a cache miss — but GC eviction
+    // policy depends on the sidecar being co-located with the .bin, so
+    // entries that vanish post-crash without their sidecar being cleaned up
+    // could linger as orphan sidecars. The directory fsync avoids this.
+    std::fs::File::open(&sd)?.sync_all()?;
+
+    // Write the sidecar AFTER the atomic rename (and after the dir fsync) so
+    // a failed rename or crash never leaves an orphan sidecar pointing at a
+    // non-existent .bin. write_sidecar (not touch_sidecar) is used here
+    // because the .meta may not exist yet on the first write of a fresh entry
+    // — write_sidecar creates-or-overwrites, covering both cases.
     write_sidecar(&entry_meta_path(cache_root, engine_version_hash, input_hash))?;
 
     Ok(())
@@ -996,18 +1012,38 @@ pub fn read_entry<V: PersistentlyCacheable>(
         }
     };
 
-    // Update the sidecar mtime as the LRU last-access signal. touch_sidecar
-    // already absorbs NotFound as Ok(()) (handles the GC-evicts-between-read-
-    // and-touch race per PRD). Any other error (e.g. EACCES on a read-only
-    // mount) is logged at debug level only — the cache hit is valid regardless
-    // of whether the LRU signal update succeeded.
-    if let Err(e) = touch_sidecar(&entry_meta_path(cache_root, engine_version_hash, input_hash)) {
+    // Update the sidecar mtime as the LRU last-access signal.
+    //
+    // The sidecar may be absent if write_entry was killed (or errored) between
+    // persist() and write_sidecar(), leaving the .bin on disk with no companion
+    // .meta. In that case we recreate the sidecar via write_sidecar so the
+    // entry gets a proper LRU signal and is visible to GC cost-weighted
+    // eviction. Without recreation, the orphan .bin would have no LRU signal
+    // and GC would be unable to evict it under the cost-weighted policy.
+    //
+    // Branch on a metadata probe (TOCTOU-tolerant: both paths are safe):
+    //   - .meta exists  → touch_sidecar (update mtime only, preserve magic byte)
+    //   - .meta absent  → write_sidecar (create-or-overwrite with magic byte)
+    //
+    // Any other error (e.g. EACCES on a read-only mount) is logged at debug
+    // level only — the cache hit is valid regardless of whether the LRU signal
+    // update succeeded.
+    let meta_path = entry_meta_path(cache_root, engine_version_hash, input_hash);
+    let sidecar_result = match std::fs::metadata(&meta_path) {
+        Ok(_) => touch_sidecar(&meta_path),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            // Recreate the missing sidecar so this .bin gets an LRU signal.
+            write_sidecar(&meta_path)
+        }
+        Err(e) => Err(e),
+    };
+    if let Err(e) = sidecar_result {
         tracing::debug!(
             ?e,
             cache_root = %cache_root.display(),
             engine_version_hash,
             input_hash,
-            "touch_sidecar failed on cache hit; LRU signal will be stale"
+            "sidecar update failed on cache hit; LRU signal will be stale"
         );
     }
 
