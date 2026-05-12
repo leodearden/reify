@@ -47,17 +47,9 @@
 //! - **plate hole-diameter sweep** — polar-radial grid with hex-to-6-tet
 //!   decomposition; intrinsic min-scaled-J ≈ 0.022 at small steps.
 //! - **bracket fillet-radius sweep** — L-bracket with parametric inner
-//!   fillet; the discriminating sweep — traverses both Pass and Reject
-//!   ([`QualityVerdict::SoftFail`] or [`QualityVerdict::HardFail`]) branches
-//!   across the parameter range, pinned by an explicit verdict-mix
-//!   assertion at the end of the test.
-//!
-//! (A third box wall-thickness sweep was prototyped during calibration but
-//! dropped: the hollow-box fixture has zero interior vertices, so morphing
-//! reduces to an identity assignment and the materially-better rule holds
-//! trivially without exercising the thresholds. The plate and bracket
-//! sweeps both have non-trivial interior coupling and carry the calibration
-//! regression-guard signal.)
+//!   fillet; the discriminating fixture in calibration coverage — exercises
+//!   both well-conditioned and near-degenerate fillet radii so the
+//!   calibrated thresholds are stressed across the parameter range.
 //!
 //! The calibration rule: morph is rejected only when a from-scratch remesh
 //! is *materially better* (> 20 % improvement on the relevant metric). This
