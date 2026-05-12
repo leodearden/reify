@@ -41,6 +41,10 @@ Add `Value::StructureInstance { type_id: StructureTypeId, fields: PersistentMap<
 
 The follow-up PRD covers: the `Value::StructureInstance` variant addition and all Value-match-site adapters; rewriting the existing builtin-dispatch callers as stdlib structure_defs; the PascalCase naming sweep; updates to `value_type_kind_matches`, `entity::satisfies_trait_bound` (no semantic change — only new arm for typed instances), persistent cache key composition, and the ComputeNode trampoline signature; an `examples/structure-instance.ri` demonstrating runtime user-observable construction. Decomposition (and the user-observable leaves) belong in that PRD's own DAG, not in this session.
 
+#### Follow-up PRD: `structure-instance-runtime.md`
+
+Contract document authored 2026-05-12: `docs/prds/v0_3/structure-instance-runtime.md`. Operationalizes Option B: `Value::StructureInstance { type_id: StructureTypeId (opaque per-Engine u32), fields: PersistentMap<String, Value> }` + per-Engine `StructureRegistry` side-table carrying declared bounds / version / source-loc; `@version(N)` annotation on `structure def` for cache-key versioning; compile-time-only conformance with debug-build runtime invariant; persistent cache key = `("si", name, version, sorted-field-hash)` (name-stable across Engine restarts; per-Engine `StructureTypeId` u32 is NOT in the cache key); first vertical slice rewrites three builtins (Steel_AISI_1045 + PointLoad + FixedSupport — one per cluster sub-shape) plus declares stdlib `trait Load` and `trait Support`; `examples/structure-instance.ri` demonstrates both flat and nested compositional construction. Foundation slice (task SIR-α) is one wide-lock high-priority task per `feedback_orchestrator_narrow_locks_favor_upfront_design`; remaining ctor rewrites and gap-register companion edits decompose in §8 of the PRD. Filing happens in a separate session after this PRD is committed (per `feedback_commit_prds_before_referencing_tasks`).
+
 ### GR-002 — `@optimized fn` ComputeNode dispatch chain (cluster C-02)
 
 | Field | Value |
@@ -151,7 +155,7 @@ The follow-up PRD covers: the `Value::StructureInstance` variant addition and al
 | Blocks tasks | Per cluster C-06 (13 PRDs affected) |
 | Disposition | **process + per-PRD remediation — addressed via grammar-fiction triage sweep 2026-05-12 + `feedback_prd_grammar_gate` policy.** Phase-3 supervisor logged remediation in `phase-3-grammar-fiction-triage-log.md`; the policy gate ("PRD authors must confirm grammar+parser+lowering before signing the PRD") is the durable preventative. |
 | Discovered | 2026-05-12 architecture audit |
-| Notes | This is the highest-cardinality grammar drift cluster in the audit; the policy gate is meant to stop the bleeding, but the existing 13 PRDs still each need a targeted edit (some via accept-and-document, some via filing replacement-syntax follow-ups). Specific items may also surface inside other clusters (e.g. RegularGrid struct ctor folds under GR-001/structure-instance-runtime). |
+| Notes | This is the highest-cardinality grammar drift cluster in the audit; the policy gate is meant to stop the bleeding, but the existing 13 PRDs still each need a targeted edit (some via accept-and-document, some via filing replacement-syntax follow-ups). Specific items may also surface inside other clusters (e.g. RegularGrid struct ctor folds under GR-001/structure-instance-runtime). **Annotation-args sub-cluster resolved 2026-05-12 by `docs/prds/annotation-args.md`** — covers `@shell(thickness = linear_taper(...))` Expr annotation arg AND `@allow(shadowing)` (the `#[allow(shadowing)]` Rust-bracket form was respelled `@allow(shadowing)` in the A6 triage sweep; this is the parser/lowering/consumer chain). Annotation-args PRD's §8 DAG ships flag-form in Phase 1 (consumer-only — grammar+lowering already shipped) and named-arg + Expr lowering in Phases 2-3 (foundation for v0.5 varying-thickness-shells). Other C-06 fictions (`auto:`, `sub name : Type { body }`, decl-level `match`, etc.) remain tracked per `phase-3-grammar-fiction-triage-log.md` B1-B3 chains. |
 
 ### GR-010 — Task-marked-done pattern (cluster C-07)
 
@@ -179,7 +183,7 @@ The follow-up PRD covers: the `Value::StructureInstance` variant addition and al
 | Blocks tasks | Per cluster C-08 (7+ transitive consumers) |
 | Disposition | **PRD-shape work — folded into structure-instance-runtime PRD (per GR-001 §"Resolution").** The Option B typed-Value-variant resolution makes `Load` / `Support` nominal traits authored as `trait def Load { ... }` declarations; existing `point_load(...)` / `FixedSupport(...)` Rust-side dispatch rewrites as stdlib `.ri` `structure_def` declarations producing `Value::StructureInstance` — automatically consolidating snake_case/PascalCase on PascalCase. |
 | Discovered | 2026-05-12 architecture audit |
-| Notes | Pure subcase of C-01 from a structural standpoint; surfaced as own cluster because the cardinality (7 PRDs leaning on Load/Support) deserves explicit tracking. Resolved on the same PRD as C-01/GR-001. |
+| Notes | Pure subcase of C-01 from a structural standpoint; surfaced as own cluster because the cardinality (7 PRDs leaning on Load/Support) deserves explicit tracking. Resolved on the same PRD as C-01/GR-001. **Resolution mechanism: `docs/prds/v0_3/structure-instance-runtime.md`** (authored 2026-05-12). SIR-α foundation slice declares `trait Load` + `trait Support` + first PointLoad/FixedSupport rewrites (snake_case → PascalCase consolidation); SIR-β-load / SIR-β-sup wave-2 tasks (PressureLoad rewrite, PinnedSupport rewrite, etc.) close the cluster fully. |
 
 ### GR-012 — Diagnostic-code naming DRIFT (W_X vs PascalCase) (cluster C-09)
 
@@ -291,7 +295,7 @@ The follow-up PRD covers: the `Value::StructureInstance` variant addition and al
 | Blocks tasks | Per cluster C-16 |
 | Disposition | **PRD-shape work — folded into structure-instance-runtime PRD (per GR-001 §"Resolution").** Pure subcase of GR-001; surfaced as own cluster because the cardinality (5 PRDs + FEA-stack centrality) deserves explicit tracking. |
 | Discovered | 2026-05-12 architecture audit |
-| Notes | Once GR-001 Option B lands, every starter-library `StructureName(...)` evaluates to `Value::StructureInstance` and the FEA-stack chain unblocks. The material library itself is then a stdlib `.ri` authoring task. |
+| Notes | Once GR-001 Option B lands, every starter-library `StructureName(...)` evaluates to `Value::StructureInstance` and the FEA-stack chain unblocks. The material library itself is then a stdlib `.ri` authoring task. **Resolution mechanism: `docs/prds/v0_3/structure-instance-runtime.md`** (authored 2026-05-12). SIR-α foundation slice makes `Steel_AISI_1045()` reachable through the new ctor lowering path (the existing `structure def Steel_AISI_1045 : ElasticMaterial { ... }` at `materials_fea.ri:132` becomes evaluable); SIR-β-mat wave-2 task closes the remaining three materials (`Aluminium_6061_T6`, `Titanium_Ti6Al4V`, `ABS_Plastic` — also already declared but unreachable today). |
 
 ### GR-020 — Kernel/eval ReprKind chain coverage gaps (cluster C-18)
 
@@ -459,7 +463,7 @@ The follow-up PRD covers: the `Value::StructureInstance` variant addition and al
 | Blocks tasks | Per cluster C-29; **task #3468 filed** |
 | Disposition | **fix-now → task #3468 filed**, BUT functional completion depends on **GR-001** (structure-instance-runtime PRD) because the typed-envelope helpers need `Value::StructureInstance` for ShellStress/LaminateStress frames. The helpers themselves are mechanical; the type-system surface they consume is GR-001 work. |
 | Discovered | 2026-05-12 architecture audit |
-| Notes | Captured in synthesis §1 as "depends on C-01" — the leaf is small and fix-now, the dependency chain is structural. |
+| Notes | Captured in synthesis §1 as "depends on C-01" — the leaf is small and fix-now, the dependency chain is structural. **Functional unblock mechanism: `docs/prds/v0_3/structure-instance-runtime.md`** (authored 2026-05-12). Task 3468 (already filed) executes against this PRD's SIR-α foundation slice — once Value::StructureInstance is live, the typed-envelope helpers consume it for ShellStress/LaminateStress frames per the existing task scope. |
 
 ### GR-032 — Local-disk NFS detection + cache GC + cache CLI surface (cluster C-30)
 

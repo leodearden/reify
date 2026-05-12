@@ -4,19 +4,25 @@ Status: stub — deferred, candidate v0.5+. Sibling to v0.4 `structural-analysis
 
 > **2026-05-12 grammar-fiction sweep** (docs/architecture-audit/phase-3-grammar-fiction-triage-log.md):
 > The PRD's user-specification surface `@shell(thickness = linear_taper(...))`
-> requires **three** new language surfaces at once: (a) keyword/named-argument
-> annotation args, (b) function-call / Expr annotation args, and (c) a defined
-> evaluation timing for runtime-evaluable annotation arguments. None of these
-> exist in v0.1: `AnnotationArg` (`crates/reify-types/src/annotation.rs:77`)
-> is a closed enum `{String|Int|Real|Bool|Ident}`, and `@shell` is hardcoded
-> to accept only `[]` or `[Int|Real]` positional thickness
-> (`crates/reify-compiler/src/annotations.rs:154-176`). The surface syntax
-> sketches below are aspirational; per Leo's 2026-05-12 implementation-chain
-> portfolio (preferences-implementation-chain-portfolio.md), surface syntax
-> design must be co-designed with grammar + lowering + producer fns before
-> any v0.5+ task can claim done. The annotation-grammar redesign is **not**
-> in this PRD's scope; activation gates on a separate annotation-args
-> expansion PRD landing first (filed only when v0.5 activation begins).
+> requires three new language surfaces (named/keyword annotation args,
+> Expr annotation args, defined eval timing). The audit originally flagged
+> these as undesigned grammar fictions.
+>
+> **2026-05-12 annotation-args PRD landed** (`docs/prds/annotation-args.md`):
+> The three surfaces are now designed under a unified contract. Phase
+> mapping into this PRD's pre-conditions:
+> - Named-arg grammar (`thickness = ...`) — annotation-args §8 task ζ (Phase 3).
+> - Lowering wires (`Annotation.args[i].name = Some("thickness")`) — annotation-args §8 task η.
+> - Expr-typed annotation arg + materialization-time eval — annotation-args §8 tasks δ + ε.
+> - `@shell` schema extension to `thickness?: Length | Field<Point3, Length>` — annotation-args §8 task ι (LEAF; lives in **this PRD's** DAG when v0.5 activates).
+>
+> The surface syntax sketches below are no longer grammar-fictions —
+> they are designed-pending-activation. Activation still gates on (a)
+> v0.4 shells PRD shipped, (b) `Field<X,Y>` in param position
+> (GR-006 / task #3117), (c) `linear_taper` stdlib field-producer,
+> (d) GR-001 resolution for any non-trivial stdlib field-producer
+> Value types. See annotation-args.md §10 cross-PRD relationship row
+> for this PRD.
 
 ## Goal
 
@@ -54,7 +60,7 @@ The v0.4 shells PRD assumes a single thickness per body (or per `@shell(thicknes
 
 - v0.4 `structural-analysis-shells.md` shipped (constant-thickness path stable, validation suite passing).
 - Stdlib field-producer infrastructure for thickness specification (`linear_taper`, `radial_thickening`, `imported_thickness_map`, etc.) — these are **not** "small additions"; they require typed `Field<Point3, Length>` producer fns and may compose with `imported-field-source-hdf5-csv.md`.
-- **Annotation-args expansion shipped** — `@shell(thickness = linear_taper(...))` requires keyword annotation args + function-call annotation args + a defined evaluation timing. See 2026-05-12 grammar-fiction sweep note above. File a separate annotation-args PRD with grammar + parser + lowering chain at v0.5 activation.
+- **Annotation-args framework shipped** — `@shell(thickness = linear_taper(...))` is designed under `docs/prds/annotation-args.md`. Pre-condition: annotation-args §8 tasks δ + ε + ζ + η complete (positional-Expr lowering, materialization-time eval driver, named-arg grammar, lowering of named args). Task ι (the `@shell` schema extension itself) is owned by **this PRD's** DAG and named in annotation-args.md §8 Phase 4.
 - A concrete user need (tapered flexure, pressure vessel with local thickening, blade design) documented.
 
 ## Open design questions
