@@ -4948,6 +4948,7 @@ mod dispatch_volume_mesh_tests {
 /// `SweptKind` variants (Extrude, Revolve, SweepLinear) produce the same
 /// message text when the three emission conditions hold; only the body label
 /// differs.
+#[allow(dead_code)] // production wiring deferred to task 2989 (volume-mesh integration)
 pub(crate) fn p2_substitution_diagnostic(
     swept_kind: Option<&SweptKind>,
     force_tet: bool,
@@ -4958,9 +4959,7 @@ pub(crate) fn p2_substitution_diagnostic(
     // 1. swept_kind=None: body didn't qualify for hex/wedge promotion.
     // 2. force_tet: hex/wedge was suppressed upstream; no substitution occurs.
     // 3. element_order=P1: user didn't request P2, nothing to warn about.
-    if swept_kind.is_none() {
-        return None;
-    }
+    swept_kind?;
     if force_tet {
         return None;
     }
