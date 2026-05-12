@@ -208,14 +208,14 @@ pub fn refine_volume_with_size_field(
     for &corner_tag in &corner_tags {
         // Each 0D entity holds exactly one mesh node — the corner node whose
         // 1-indexed tag maps to a 0-indexed entry in vertex_sizes.
-        if let Ok((node_tags_at_corner, _coords)) = ffi::get_nodes_at_entity(0, corner_tag) {
-            if let Some(&node_tag) = node_tags_at_corner.first() {
-                let v_idx = (node_tag as usize).saturating_sub(1);
-                if v_idx < vertex_sizes.len() {
-                    // Best-effort: ignore set-size errors (defensive against
-                    // gmsh internals; entities that exist should always accept).
-                    let _ = ffi::mesh_set_size_at_entity(0, corner_tag, vertex_sizes[v_idx]);
-                }
+        if let Ok((node_tags_at_corner, _coords)) = ffi::get_nodes_at_entity(0, corner_tag)
+            && let Some(&node_tag) = node_tags_at_corner.first()
+        {
+            let v_idx = (node_tag as usize).saturating_sub(1);
+            if v_idx < vertex_sizes.len() {
+                // Best-effort: ignore set-size errors (defensive against
+                // gmsh internals; entities that exist should always accept).
+                let _ = ffi::mesh_set_size_at_entity(0, corner_tag, vertex_sizes[v_idx]);
             }
         }
     }
