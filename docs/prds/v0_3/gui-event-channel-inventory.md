@@ -10,7 +10,7 @@ This PRD owns:
 1. The inventory document (this file's §2 table + per-channel specs in `docs/gui-event-channels/*.md`).
 2. The convention rules (§3 naming/payload, §4 versioning, §5 error semantics, §6 test discipline, §7 subscription pattern).
 3. The convention's shared infrastructure (§3.4 typed-emit Rust helper, §3.5 frontend `listen<T>` + `validatePayload` discipline, §6.3 mock-emitter test utility).
-4. **All currently-absent backend emitter wiring** for true C-13 channels — the per-channel emitter task lives in this PRD's decomposition, gated on its upstream data source via cross-PRD metadata dependency (per memory `preferences_cross_prd_deps_metadata_not_edges`).
+4. **All currently-absent backend emitter wiring** for true C-13 channels — the per-channel emitter task lives in this PRD's decomposition, gated on its upstream data source via real `add_dependency` edges set at decompose time as soon as the prereq task ID is known (per memory `preferences_cross_prd_deps_real_edges`, reversed 2026-05-12 — the orchestrator scheduler reads dep edges only, not metadata).
 
 This PRD does **not** own:
 - Payload-shape extensions to existing channels (e.g., adding `top/mid/bottom` stress keys to `mesh-update.scalar_channels`) — those stay with their citing PRDs as ordinary kernel/IPC-types work.
@@ -290,7 +290,7 @@ Decomposition style: **B (vertical slice) + H (design-first / interface contract
 
 - **Task ζ** — Emit `solver-progress` from FEA solver iteration callback; new `SolverProgressOverlay`.
   - **Observable signal:** Open a large FEA model (≥10K dofs) in dev-mode GUI; trigger `solve_elastic_static`; overlay renders live CG iter + residual + ETA; cancel button cancels the solve within 2× poll budget (per ComputeNode contract §2 SLA).
-  - **Prereqs:** α, β, γ. Plus task 2923 (FEA progressive framework — currently pending) AND task 2965 (overlay component — currently pending). Cross-PRD dep edges via metadata.
+  - **Prereqs:** α, β, γ. Plus task 2923 (FEA progressive framework — currently pending) AND task 2965 (overlay component — currently pending). Cross-PRD dep edges set via `add_dependency` at decompose time per `preferences_cross_prd_deps_real_edges`.
   - **Crates touched:** `reify-solver-elastic` (iteration callback), `gui/src/panels/SolverProgressOverlay.tsx` (new), `gui/src-tauri/src/commands.rs` (`cancel_solve` command exposing CancellationHandle).
 
 - **Task η** — Emit `fea-case-changed` for multi-load case discrimination; new `FeaCasePickerDropdown`.
