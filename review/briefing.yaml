@@ -43,6 +43,24 @@ references:
   language_spec: docs/reify-language-spec.md
   stdlib_reference: docs/reify-stdlib-reference.md
 
+# Tools the /review skill should invoke during Phase 2 (architectural
+# coherence). Each entry is a command + a short description of what
+# the tool detects and how to interpret its output.
+phase2_scanners:
+  - name: "G-tool: orphan-producer audit (Portfolio approach G)"
+    command: "./scripts/audit-orphan-producers.sh --format markdown"
+    detects: >
+      Public functions in crates/reify-*/src/ whose only callers are
+      tests, the defining file, comments, or pub-use re-exports —
+      "Type A" producer-orphans per phase-3-scaffold-pattern-critique.md.
+      Corpus-level only; never run per-task (anti-gaming).
+    baseline: docs/architecture-audit/g-tool-baseline-report.md
+    triage: >
+      For each orphan, file a follow-up task to wire a production
+      consumer OR remove the function OR add `// G-allow: <reason>` on
+      the preceding line if it's a load-bearing library API. Diff
+      against the baseline to spot regressions or remediation.
+
 subprojects:
   language-pipeline:
     purpose: >

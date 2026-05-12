@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# cargo-audit-orphans — cargo subcommand wrapper for the G-tool.
+#
+# Cargo auto-discovers `cargo-<NAME>` binaries on PATH and exposes them
+# as `cargo <NAME>`. Symlink or copy this into ~/.cargo/bin/ to enable:
+#
+#   ln -s "$PWD/scripts/cargo-audit-orphans" ~/.cargo/bin/cargo-audit-orphans
+#
+# Then run anywhere inside the workspace:
+#
+#   cargo audit-orphans                  # markdown report to stdout
+#   cargo audit-orphans --format json    # JSON for tooling
+#   cargo audit-orphans --strict         # exit 1 if any non-allow-listed orphans
+#
+# See docs/architecture-audit/g-tool-baseline-report.md for what this
+# tool measures and how to allow-list intentional library API.
+
+set -euo pipefail
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+exec "$REPO_ROOT/scripts/audit-orphan-producers.sh" "$@"
