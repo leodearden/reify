@@ -875,17 +875,6 @@ pub fn write_entry<V: PersistentlyCacheable>(
         .prefix(".tmp.")
         .tempfile_in(&sd)?;
 
-    // Pre-buffer the compressed body so we can bulk-write it in one syscall
-    // after the header.
-    //
-    // NOTE: header.byte_size is the UNCOMPRESSED body byte count (per
-    // CacheEntryHeader doc, lines 195-196 / 210-211), supplied by
-    // value.uncompressed_byte_size() — NOT body_buf.len(), which is the
-    // compressed length and would make the field redundant with
-    // `file_size - ENTRY_HEADER_ENCODED_LEN`.
-    let mut body_buf: Vec<u8> = Vec::new();
-    value.serialize_to_writer(&mut body_buf)?;
-
     let engine_bytes: [u8; 32] = cache_key_to_ascii_32(engine_version_hash)?;
     let input_bytes: [u8; 32] = cache_key_to_ascii_32(input_hash)?;
 
@@ -899,12 +888,22 @@ pub fn write_entry<V: PersistentlyCacheable>(
         engine_version_hash: engine_bytes,
         input_hash: input_bytes,
         solve_time_ms: value.solve_time_ms(),
+        // byte_size is the UNCOMPRESSED body byte count (per CacheEntryHeader
+        // doc, lines 195-196 / 210-211), supplied by uncompressed_byte_size()
+        // — NOT the compressed length, which would make the field redundant
+        // with `file_size - ENTRY_HEADER_ENCODED_LEN`.
         byte_size: value.uncompressed_byte_size(),
         written_at,
     };
 
+    // Write the header then stream the compressed body directly into the
+    // tempfile. No intermediate Vec<u8> buffer is needed: byte_size is known
+    // from value.uncompressed_byte_size() before serialization, so there is
+    // no chicken-and-egg ordering constraint. Avoiding the buffer saves a
+    // peak transient allocation of tens of MiB for large FEA results
+    // (displacement+stress up to 128 MiB uncompressed).
     header.write_to(&mut temp)?;
-    temp.write_all(&body_buf)?;
+    value.serialize_to_writer(&mut temp)?;
     temp.as_file().sync_all()?;
 
     let bin_path = entry_bin_path(cache_root, engine_version_hash, input_hash);
@@ -934,15 +933,21 @@ pub fn read_entry<V: PersistentlyCacheable>(
     input_hash: &str,
 ) -> io::Result<Option<V>> {
     use std::fs::File;
+    use std::io::BufReader;
 
     let bin_path = entry_bin_path(cache_root, engine_version_hash, input_hash);
     // NotFound is the cache-miss signal per PRD; any other Err is an
     // infrastructure problem the caller must know about.
-    let mut f = match File::open(&bin_path) {
+    let f = match File::open(&bin_path) {
         Ok(f) => f,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e),
     };
+    // BufReader amortizes the many small read(2) syscalls that bincode's
+    // fixed-int decoder would otherwise issue for the 92-byte header fields.
+    // zstd::Decoder downstream does its own internal buffering, so this
+    // BufReader primarily benefits the header decode path on every cache hit.
+    let mut f = BufReader::new(f);
     let header = CacheEntryHeader::read_from(&mut f)?;
 
     // Check format_version BEFORE body decode — a stale-format entry must never
