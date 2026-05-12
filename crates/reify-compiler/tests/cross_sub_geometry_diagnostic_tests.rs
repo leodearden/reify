@@ -562,3 +562,125 @@ pub structure Outer {
         warnings_param.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
+
+// ─── task 3454: downstream-use UX regression guard ───────────────────────────
+
+/// Regression guard for the full user-visible scenario: the user writes
+/// `let copy = self.inner.body` intending to alias the geometry, then uses
+/// `copy` downstream in `translate(copy, ...)`.
+///
+/// Key finding (task 3454): the entity compiler pre-pass registers ALL let
+/// names in scope with a placeholder type before the value-cell pass runs.
+/// As a result, `copy` IS visible to subsequent `compile_expr` calls (with
+/// Type::Real) even though no value cell was created for it — so there is
+/// NO compile-time "unresolved name: copy" Error.  The downstream translate
+/// silently compiles with a fallback `GeomRef::Step(0)` target; any
+/// type mismatch surfaces at eval time, not compile time.
+///
+/// Therefore the v0.1 bare-let Warning is the ONLY compile-time signal the
+/// user receives, making it essential.  This test pins that invariant:
+///
+/// (a) The v0.1 bare-let Warning IS present (the user's only actionable hint).
+/// (b) NO Error-severity diagnostics fire at compile time — the translate
+///     compiles silently with a wrong target (future eval-side failure).
+///
+/// This test GREENs immediately after step-2's implementation with no
+/// additional code change — it's a regression guard, not a driver for new
+/// implementation.  Also includes the `param body : Solid` sibling variant.
+///
+/// Added by task 3454 (step-3).
+#[test]
+fn bare_cross_sub_geometry_let_with_downstream_translate_surfaces_v01_hint() {
+    // ── Case A: child-side `let body = box(...)` with downstream translate ──
+    let source = r#"pub structure Inner {
+    let body = box(10mm, 20mm, 30mm)
+}
+pub structure Outer {
+    sub inner = Inner()
+    let copy = self.inner.body
+    let placed = translate(copy, 10mm, 0mm, 0mm)
+}"#;
+    let compiled = compile_source(source);
+
+    // (a) The v0.1 bare-let Warning must be present — it is the ONLY
+    //     compile-time signal the user receives in this scenario.
+    let has_v01_warning = compiled.diagnostics.iter().any(|d| {
+        d.severity == Severity::Warning
+            && d.message.contains("copy")
+            && d.message.contains("inner")
+            && d.message.contains("body")
+            && d.message.contains("v0.1")
+            && d.message.contains("no value cell")
+    });
+    assert!(
+        has_v01_warning,
+        "Case A: expected v0.1 bare-let Warning naming copy/inner/body; \
+         got diagnostics: {:?}",
+        compiled
+            .diagnostics
+            .iter()
+            .map(|d| (&d.severity, &d.message))
+            .collect::<Vec<_>>()
+    );
+
+    // (b) No Error-severity diagnostics at compile time: the translate
+    //     compiles silently (copy is registered in scope as Type::Real by
+    //     the pre-pass; the geometry target falls back to GeomRef::Step(0)).
+    //     Any runtime mismatch surfaces at eval, not compile, time.
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "Case A: expected no compile-time Error diagnostics (downstream translate \
+         compiles silently); got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // ── Case B: child-side `param body : Solid = box(...)` with downstream translate ──
+    let source_param = r#"pub structure Inner {
+    param body : Solid = box(10mm, 20mm, 30mm)
+}
+pub structure Outer {
+    sub inner = Inner()
+    let copy = self.inner.body
+    let placed = translate(copy, 10mm, 0mm, 0mm)
+}"#;
+    let compiled_param = compile_source(source_param);
+
+    let has_v01_warning_param = compiled_param.diagnostics.iter().any(|d| {
+        d.severity == Severity::Warning
+            && d.message.contains("copy")
+            && d.message.contains("inner")
+            && d.message.contains("body")
+            && d.message.contains("v0.1")
+            && d.message.contains("no value cell")
+    });
+    assert!(
+        has_v01_warning_param,
+        "Case B: expected v0.1 bare-let Warning naming copy/inner/body (param variant); \
+         got diagnostics: {:?}",
+        compiled_param
+            .diagnostics
+            .iter()
+            .map(|d| (&d.severity, &d.message))
+            .collect::<Vec<_>>()
+    );
+
+    let errors_param: Vec<_> = compiled_param
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors_param.is_empty(),
+        "Case B: expected no compile-time Error diagnostics (param variant); got: {:?}",
+        errors_param
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+}
