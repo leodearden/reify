@@ -4948,6 +4948,12 @@ mod dispatch_volume_mesh_tests {
 /// `SweptKind` variants (Extrude, Revolve, SweepLinear) produce the same
 /// message text when the three emission conditions hold; only the body label
 /// differs.
+// Task 2989 follow-up (integration test): once this helper is wired into the
+// engine's realization pipeline, add an end-to-end test that runs a P2 elastic
+// solve on a scene with at least two qualifying swept bodies and asserts exactly
+// one `Severity::Info` diagnostic per body (not zero, not two). The unit tests
+// below exercise the helper's contract but cannot verify the one-shot guarantee
+// at the call-site level.
 #[allow(dead_code)] // production wiring deferred to task 2989 (volume-mesh integration)
 pub(crate) fn p2_substitution_diagnostic(
     swept_kind: Option<&SweptKind>,
@@ -5061,6 +5067,18 @@ mod p2_substitution_diagnostic_tests {
             path: GeometryHandleId(1),
         };
 
+        // Compute expected message per PRD task #10 — identical wording for all
+        // variants (only the body label differs). Using a closure rather than a
+        // const so we can substitute the label while keeping the format string
+        // in one place; any future drift in `p2_substitution_diagnostic`'s
+        // wording will fail both assertions simultaneously.
+        let expected_msg = |label: &str| -> String {
+            format!(
+                "Body {label} qualified for hex/wedge meshing; P1 hex used despite \
+`element_order = P2` (P2 hex deferred). Accuracy for thin geometry is comparable to P2 tet."
+            )
+        };
+
         // Revolve variant.
         let revolve_result = p2_substitution_diagnostic(
             Some(&revolve_kind),
@@ -5071,10 +5089,10 @@ mod p2_substitution_diagnostic_tests {
         let revolve_diag =
             revolve_result.expect("Revolve variant must emit Some(Diagnostic) with P2");
         assert_eq!(revolve_diag.severity, Severity::Info);
-        assert!(
-            revolve_diag.message.contains("Body RevolvedDisc"),
-            "Revolve diagnostic must contain body label; got: {}",
-            revolve_diag.message
+        assert_eq!(
+            revolve_diag.message,
+            expected_msg("RevolvedDisc"),
+            "Revolve diagnostic must match PRD wording verbatim"
         );
 
         // SweepLinear variant.
@@ -5087,10 +5105,10 @@ mod p2_substitution_diagnostic_tests {
         let sweep_diag =
             sweep_result.expect("SweepLinear variant must emit Some(Diagnostic) with P2");
         assert_eq!(sweep_diag.severity, Severity::Info);
-        assert!(
-            sweep_diag.message.contains("Body SweptBar"),
-            "SweepLinear diagnostic must contain body label; got: {}",
-            sweep_diag.message
+        assert_eq!(
+            sweep_diag.message,
+            expected_msg("SweptBar"),
+            "SweepLinear diagnostic must match PRD wording verbatim"
         );
     }
 }
