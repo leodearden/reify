@@ -401,7 +401,8 @@ fn compile_entry_with_imports(
     // already exists in `compiled.templates` (either declared by the entry or
     // merged from an earlier import), and emit a Diagnostic::warning so the user
     // sees the shadowing instead of a silent skip.  Mirrors the compiler's
-    // cross-prelude alias collision policy at reify-compiler/src/lib.rs:281-292.
+    // cross-prelude alias collision policy — see the `pub_alias_collision_warnings`
+    // loop inside `compile_with_prelude_context` in reify-compiler/src/lib.rs.
     //
     // `templates_origin` maps each template name to the module path that first
     // declared it.  It is pre-seeded with the entry's already-compiled templates
@@ -429,7 +430,8 @@ fn compile_entry_with_imports(
                 }
                 if let Some(prior_origin) = templates_origin.get(&template.name) {
                     // Collision: emit a warning naming both the prior declarer and the
-                    // colliding import, mirroring lib.rs:283-291 wording.
+                    // colliding import, mirroring the `pub_alias_collision_warnings`
+                    // wording inside `compile_with_prelude_context`.
                     //
                     // The `templates_origin` invariant guarantees every name present in
                     // `compiled.templates` is also present in the map (seeded from entry

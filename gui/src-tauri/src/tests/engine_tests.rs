@@ -5918,9 +5918,8 @@ fn setup_collision_session() -> EngineSession {
 }
 
 /// Return the first Warning diagnostic whose `message` mentions both `name` and
-/// `"first-wins"`, or `None` if no such diagnostic exists. Centralises the
-/// predicate so `assert_first_wins_warning` and `assert_collision_warning_mentions`
-/// share a single definition rather than copy-pasting the filter closure.
+/// `"first-wins"`, or `None` if no such diagnostic exists. Backs
+/// `assert_collision_warning_mentions`.
 fn find_collision_warning<'a>(
     state: &'a crate::types::GuiState,
     name: &str,
@@ -5928,19 +5927,6 @@ fn find_collision_warning<'a>(
     state.compile_diagnostics.iter().find(|d| {
         d.severity == "Warning" && d.message.contains(name) && d.message.contains("first-wins")
     })
-}
-
-/// Assert that `state.compile_diagnostics` contains at least one Warning whose
-/// `message` mentions both `name` and the substring `"first-wins"`, mirroring
-/// the compiler's cross-prelude alias collision policy wording.
-fn assert_first_wins_warning(state: &crate::types::GuiState, name: &str) {
-    assert!(
-        find_collision_warning(state, name).is_some(),
-        "expected a Warning diagnostic mentioning '{}' and 'first-wins', \
-         but state.compile_diagnostics = {:?}",
-        name,
-        state.compile_diagnostics
-    );
 }
 
 /// Assert that the collision Warning for structure `name` exists AND that each
@@ -5955,10 +5941,13 @@ fn assert_first_wins_warning(state: &crate::types::GuiState, name: &str) {
 /// so that an incidental occurrence of a common fragment (e.g. `"main"` inside
 /// `"domain"` or `"remain"`) cannot produce a false-positive match.
 fn assert_collision_warning_mentions(state: &crate::types::GuiState, name: &str, origins: &[&str]) {
-    // Soft check first — panics with a descriptive message if the warning is missing.
-    assert_first_wins_warning(state, name);
-    let w = find_collision_warning(state, name)
-        .expect("collision warning must exist (already verified by assert_first_wins_warning)");
+    let w = find_collision_warning(state, name).unwrap_or_else(|| {
+        panic!(
+            "expected a Warning diagnostic mentioning '{}' and 'first-wins', \
+             but state.compile_diagnostics = {:?}",
+            name, state.compile_diagnostics
+        )
+    });
     for origin in origins {
         let quoted = format!("'{}'", origin);
         assert!(
