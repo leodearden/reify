@@ -50,6 +50,8 @@
 //!   fillet; the discriminating fixture in calibration coverage — exercises
 //!   both well-conditioned and near-degenerate fillet radii so the
 //!   calibrated thresholds are stressed across the parameter range.
+//!   Pinned by an explicit Pass/Reject verdict-mix assertion at the end of
+//!   the test.
 //!
 //! The calibration rule: morph is rejected only when a from-scratch remesh
 //! is *materially better* (> 20 % improvement on the relevant metric). This

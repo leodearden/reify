@@ -321,6 +321,9 @@ fn sweep_runner_returns_morph_and_from_scratch_quality_metrics_for_single_param_
     //   `morphed`, `from_scratch`: full VolumeMesh outputs for downstream
     //     inspection / debugging.
     let _verdict: &reify_mesh_morph::QualityVerdict = &report.morph_verdict;
+    // Verdict here will be SoftFail under production defaults — only the
+    // field-surface populated-ness is contracted by this test; calibration
+    // sweeps gate verdict semantics.
     assert!(
         report.morph_min_scaled_j.is_finite(),
         "morph_min_scaled_j must be a finite f64, got {}",
