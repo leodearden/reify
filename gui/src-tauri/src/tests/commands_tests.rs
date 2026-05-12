@@ -167,6 +167,24 @@ fn make_poisoned_engine() -> Arc<Mutex<EngineSession>> {
     engine
 }
 
+/// Poison an existing `Arc<Mutex<EngineSession>>` and return it.
+///
+/// Used by Group-B tests to poison an already-loaded session so recovery
+/// tests can verify that the impl proceeds with a consistent inner state.
+fn poison_engine(engine: Arc<Mutex<EngineSession>>) -> Arc<Mutex<EngineSession>> {
+    let engine_clone = Arc::clone(&engine);
+    let join_result = std::thread::spawn(move || {
+        let _guard = engine_clone.lock().unwrap();
+        panic!("poison the mutex");
+    })
+    .join();
+    assert!(
+        join_result.is_err(),
+        "thread should have panicked to poison the mutex"
+    );
+    engine
+}
+
 #[test]
 fn get_entity_tree_impl_recovers_from_poisoned_mutex() {
     use crate::commands::get_entity_tree_impl;
@@ -659,4 +677,102 @@ fn view_sidecar_roundtrip() {
         .expect("should load state");
 
     assert_eq!(loaded, state, "round-trip should preserve all fields");
+}
+
+// --- Mutex-poison recovery tests for mutating/Result-returning impls (step-3) ---
+
+#[test]
+fn get_initial_state_impl_recovers_from_poisoned_mutex() {
+    use crate::commands::get_initial_state_impl;
+
+    let engine = poison_engine(Arc::new(Mutex::new(make_loaded_session())));
+    let result = get_initial_state_impl(&engine);
+    assert!(
+        result.is_ok(),
+        "expected Ok recovery from poisoned mutex, got {:?}",
+        result
+    );
+}
+
+#[test]
+fn set_parameter_impl_recovers_from_poisoned_mutex() {
+    use crate::commands::set_parameter_impl;
+
+    let engine = poison_engine(Arc::new(Mutex::new(make_loaded_session())));
+    let result = set_parameter_impl(&engine, "Bracket.thickness", "5mm");
+    assert!(
+        result.is_ok(),
+        "expected Ok recovery from poisoned mutex, got {:?}",
+        result
+    );
+}
+
+#[test]
+fn update_source_impl_recovers_from_poisoned_mutex() {
+    use crate::commands::update_source_impl;
+
+    let engine = poison_engine(Arc::new(Mutex::new(make_loaded_session())));
+    let result = update_source_impl(&engine, "bracket", bracket_source());
+    assert!(
+        result.is_ok(),
+        "expected Ok recovery from poisoned mutex, got {:?}",
+        result
+    );
+}
+
+#[test]
+fn export_impl_recovers_from_poisoned_mutex() {
+    use crate::commands::export_impl;
+
+    let engine = poison_engine(Arc::new(Mutex::new(make_loaded_session())));
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("recovery_test.step");
+    let result = export_impl(&engine, "step", path.to_str().unwrap());
+    assert!(
+        result.is_ok(),
+        "expected Ok recovery from poisoned mutex, got {:?}",
+        result
+    );
+}
+
+#[test]
+fn get_source_location_impl_recovers_from_poisoned_mutex() {
+    use crate::commands::get_source_location_impl;
+
+    let engine = poison_engine(Arc::new(Mutex::new(make_loaded_session())));
+    let result = get_source_location_impl(&engine, "Bracket.width");
+    assert!(
+        result.is_ok(),
+        "expected Ok recovery from poisoned mutex, got {:?}",
+        result
+    );
+}
+
+#[test]
+fn open_file_engine_impl_recovers_from_poisoned_mutex() {
+    use crate::commands::open_file_engine_impl;
+
+    let engine = poison_engine(Arc::new(Mutex::new(make_session())));
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("bracket.ri");
+    std::fs::write(&path, bracket_source()).unwrap();
+    let result = open_file_engine_impl(&engine, path.to_str().unwrap());
+    assert!(
+        result.is_ok(),
+        "expected Ok recovery from poisoned mutex, got {:?}",
+        result
+    );
+}
+
+#[test]
+fn get_def_preview_impl_recovers_from_poisoned_mutex() {
+    use crate::commands::get_def_preview_impl;
+
+    let engine = poison_engine(Arc::new(Mutex::new(make_loaded_session())));
+    let result = get_def_preview_impl(&engine, "Bracket");
+    assert!(
+        result.is_ok(),
+        "expected Ok recovery from poisoned mutex, got {:?}",
+        result
+    );
 }
