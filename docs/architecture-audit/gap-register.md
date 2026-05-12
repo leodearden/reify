@@ -69,9 +69,9 @@ Contract document authored 2026-05-12: `docs/prds/v0_3/structure-instance-runtim
 | Evidence | `findings/imported-field-source.md` M-007..M-011/M-013, `findings/imported-field-source-hdf5-csv.md` M-001/M-004/M-005, `findings/multi-kernel.md` M-011, `findings/structural-analysis-shells.md` M-025 (voxel realization), `findings/varying-thickness-shells.md` M-006 |
 | Cited by PRDs | imported-field-source, imported-field-source-hdf5-csv, multi-kernel, structural-analysis-shells, varying-thickness-shells, field-source-kinds |
 | Blocks tasks | Per cluster C-17 (`phase-3-files-synthesis.md` §1) |
-| Disposition | **Ownership → multi-kernel.** Reciprocal contested edge (each PRD said the OTHER owns) per `phase-3-breadcrumb-map.md` §3 / §4 Cluster D. Multi-kernel hosts the kernel inventory + dispatcher abstraction, so it owns wiring `reify-eval → reify-kernel-openvdb` and the `elaborate_field` consumer arm. Confirmed by Leo 2026-05-12. Cluster C-17 disposed by this entry. |
+| Disposition | **Ownership → multi-kernel; resolution mechanism `docs/prds/v0_3/multi-kernel-phase-3.md` §8 task θ (Phase 4 — OpenVDB consumer wired).** Reciprocal contested edge (each PRD said the OTHER owns) per `phase-3-breadcrumb-map.md` §3 / §4 Cluster D. Multi-kernel hosts the kernel inventory + dispatcher abstraction, so it owns wiring `reify-eval → reify-kernel-openvdb` and the `elaborate_field` consumer arm. Confirmed by Leo 2026-05-12; folded into the multi-kernel Phase 3 PRD's DAG (§8 task θ replaces the `Value::Undef` at `engine_eval.rs:621` with a `reify-kernel-openvdb::ingest` consumer). Cluster C-17 disposed by this entry. |
 | Discovered | 2026-05-12 architecture audit (Phase 2 breadcrumbs) |
-| Notes | A small focused PRD-shape effort under `multi-kernel`'s remit; not a separate PRD. HDF5/CSV (cluster C-17 sibling) extends this contract once OpenVDB lands. |
+| Notes | Folded into multi-kernel Phase 3 PRD's §8 task θ — not a separate PRD. HDF5/CSV (cluster C-17 sibling) extends this contract once OpenVDB lands, per `docs/prds/v0_3/imported-field-source-hdf5-csv.md`. |
 
 ### GR-004 — Manifold `propagate_attributes` / MeshGL walk
 
@@ -307,9 +307,9 @@ Contract document authored 2026-05-12: `docs/prds/v0_3/structure-instance-runtim
 | Evidence | `findings/multi-kernel.md` M-007/M-009/M-010/M-011/M-014/M-015; `findings/hex-wedge-meshing.md` M-024; `findings/structural-analysis-shells.md` M-025 |
 | Cited by PRDs | multi-kernel, hex-wedge-meshing, structural-analysis-shells |
 | Blocks tasks | Per cluster C-18 |
-| Disposition | **PRD-shape work — Phase 3 of multi-kernel PRD.** The ReprKind / dispatcher contract is multi-kernel's native domain; this cluster is its Phase-3 decomposition. Adjacent to GR-002 ComputeNode contract for the cache-key piece — cross-PRD coordination point. |
+| Disposition | **PRD-shape work — resolved 2026-05-12 via `docs/prds/v0_3/multi-kernel-phase-3.md`.** The ReprKind / dispatcher contract is multi-kernel's native domain; the PRD ships Phase 3 as B+H decomposition (§8 nine-phase DAG). Cross-PRD coordination with `compute-node-contract.md` settled at §6: separate dispatch surfaces meeting at the cache-key boundary (`RealizationCacheKey.options_hash` ⟶ `ComputeNodeData.options_hash` transitivity). Folds in **GR-034** (long-chain diagnostic wiring at §8 task ρ) and the OpenVDB consumer half of **GR-003** (§8 task θ — `engine_eval.rs:621 CompiledFieldSource::Imported` arm). |
 | Discovered | 2026-05-12 architecture audit |
-| Notes | The OpenVDB sub-case is GR-003. HDF5/CSV ingest extends after OpenVDB. Engine integration (GR-017) and dispatcher wiring overlap here on the "execute_realization_ops doesn't call dispatcher::dispatch" finding. |
+| Notes | The OpenVDB sub-case (GR-003) is folded in here per the 2026-05-12 contested-ownership disposition. HDF5/CSV ingest extends after OpenVDB lands (PRD §10 out-of-scope). Engine integration (GR-017) and dispatcher wiring overlap here on the "execute_realization_ops doesn't call dispatcher::dispatch" finding — PRD §8 task ε resolves it. |
 
 ### GR-021 — Mid-surface / shell-extract → engine bridge (cluster C-19)
 
@@ -503,9 +503,9 @@ Contract document authored 2026-05-12: `docs/prds/v0_3/structure-instance-runtim
 | Evidence | `findings/per-purpose-tolerance.md` M-008, M-011; `findings/multi-kernel.md` M-017 |
 | Cited by PRDs | per-purpose-tolerance, multi-kernel |
 | Blocks tasks | Per cluster C-32 |
-| Disposition | **investigate-further** — gated on multi-kernel dispatch landing (GR-020 / cluster C-18). Once the dispatcher fan-out lands, `n_stages` becomes meaningful and the long-chain diagnostic gains callers. Not separately fix-now-able. |
+| Disposition | **folded into GR-020 — resolution mechanism `docs/prds/v0_3/multi-kernel-phase-3.md` §8 task ρ (Phase 8 — Long-chain diagnostic wiring).** Once the multi-kernel Phase 3 dispatcher fan-out lands (§8 tasks ε, ι), `is_long_chain_realization` + `long_chain_diagnostic` get called from `execute_realization_ops` with wall-time bracketing. `per_stage_tolerance_for_plan` becomes meaningful because real multi-stage chains exist. Not separately fix-now-able; rides with GR-020. |
 | Discovered | 2026-05-12 architecture audit |
-| Notes | Cascading downstream of GR-020; will resolve when multi-kernel dispatcher Phase 3 lands. |
+| Notes | Cascading downstream of GR-020; resolution ships in the same PRD (`multi-kernel-phase-3.md`) at §8 task ρ. |
 
 ### GR-035 — Cancellation handle placeholder type (cluster C-33)
 
