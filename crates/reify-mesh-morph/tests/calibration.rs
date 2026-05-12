@@ -353,18 +353,21 @@ fn bracket_fixture_returns_valid_p1_mesh_with_fillet_radius_respected_and_positi
 fn sweep_runner_returns_morph_and_from_scratch_quality_metrics_for_single_param_step() {
     use reify_mesh_morph::MorphOptions;
 
-    // Use box_mesh as the fixture: wall_thickness is the swept parameter,
-    // outer=1.0 and n=3 are fixed so the fixture closure has a single-f64
-    // signature matching `sweep::run_sweep`'s `Fn(f64) -> (VolumeMesh, Vec<u32>)`.
-    let fixture = |wall_thickness: f64| fixtures::box_mesh(1.0, wall_thickness, 3);
+    // Use plate_with_hole as the fixture: hole_diameter is the swept parameter,
+    // outer=1.0, thickness=0.1, n_theta=4, n_radial=2 are fixed so the fixture
+    // closure has a single-f64 signature matching `sweep::run_sweep`'s
+    // `Fn(f64) -> (VolumeMesh, Vec<u32>)`. The plate fixture has non-trivial
+    // interior coupling (inner-rim vertices move; outer boundary is pinned),
+    // making the elasticity solve meaningful.
+    let fixture = |hole_diameter: f64| fixtures::plate_with_hole(1.0, hole_diameter, 0.1, 4, 2);
     let options = MorphOptions::default();
 
-    // A tiny step (0.10 → 0.105) — well within the elasticity solver's
-    // operating range, so the morph should produce a mesh whose connectivity
-    // matches the from-scratch target mesh. The numeric values themselves are
-    // not asserted here (calibration sweeps in step-11/13/15 do that); this
-    // step pins only the public signature and the SweepReport field surface.
-    let report = sweep::run_sweep(fixture, 0.10, 0.105, &options);
+    // A tiny step (0.30 → 0.31) — matching the step-13 plate-sweep base/first
+    // target, well within the elasticity solver's calibrated operating range.
+    // The numeric values themselves are not asserted here (calibration sweeps
+    // in step-11/13/15 do that); this step pins only the public signature and
+    // the SweepReport field surface.
+    let report = sweep::run_sweep(fixture, 0.30, 0.31, &options);
 
     // SweepReport surface contract — every field must be populated.
     //   `morph_verdict`: QualityVerdict produced by quality_check on the
