@@ -456,6 +456,21 @@ fn assert_materially_better_rule_holds(
 /// calibration sweep's assumed threshold visible so that a future task that
 /// adjusts the production default forces a reviewer to decide whether the
 /// calibration sweep should follow, rather than silently inheriting the change.
+///
+/// ## When NOT to reuse
+///
+/// This relaxation is tuned for the procedural hex-to-6-tet fixtures
+/// (`plate_with_hole`, `bracket`) whose from_scratch baseline pct distribution
+/// falls in [0.74, 0.99] (task #3451 empirical capture, 2026-05-11). Do NOT
+/// blindly reuse for a sweep test of a fundamentally different fixture (e.g. a
+/// fixture with a different element-shape distribution) without first
+/// re-capturing that fixture's baseline pct and confirming the 0.99 ceiling
+/// still admits real morph distortion rather than fixture-intrinsic geometry.
+/// The pct override IS NOT a generic test-time relaxation — it is a
+/// fixture-specific calibration shim for the structured hex-to-6-tet pct
+/// skew. A fixture with a different element distribution could have a baseline
+/// pct well below 0.99, in which case the 0.99 override would be vacuous and
+/// the sweep test would lose discrimination power without any visible signal.
 fn calibration_sweep_options() -> reify_mesh_morph::MorphOptions {
     reify_mesh_morph::MorphOptions {
         quality_floor_pct_below_025: 0.99,
