@@ -55,6 +55,48 @@ The follow-up PRD covers: the `Value::StructureInstance` variant addition and al
 | Discovered | 2026-05-12 architecture audit (Phase 2 findings on compute-node-infrastructure + 13 downstream PRDs) |
 | Notes | The four contract questions Q-CN1..Q-CN4 (cancellation type, pending lifecycle, dispatch-registry scope, OpaqueState transfer rules) and the cross-cutting consumer policy Q-POL (which features route through ComputeNode vs bypass) are resolved in the contract document. Producer-side foundation tasks 3380/3381/3382/3385 are done; 3379/3383/3384 pending. Existing tasks 3379/3383/3384 are likely to be **superseded** by the contract's vertical-slice DAG rather than continued in-place; final task disposition pending Leo approval of the DAG sketch in §8 of the contract doc. |
 
+### GR-003 — OpenVDB sub-kernel dispatcher / consumer boundary
+
+| Field | Value |
+|---|---|
+| Mechanism | OpenVDB ingestion path through `reify-kernel-openvdb` + dispatcher routing in `elaborate_field`'s `CompiledFieldSource::Imported` arm |
+| State | **FICTION** (consumer half — `elaborate_field` returns `Value::Undef`; `reify-eval` does not depend on `reify-kernel-openvdb`) |
+| Failure mode | F1 (compile-time contract → no runtime backing) |
+| Evidence | `findings/imported-field-source.md` M-007..M-011/M-013, `findings/imported-field-source-hdf5-csv.md` M-001/M-004/M-005, `findings/multi-kernel.md` M-011, `findings/structural-analysis-shells.md` M-025 (voxel realization), `findings/varying-thickness-shells.md` M-006 |
+| Cited by PRDs | imported-field-source, imported-field-source-hdf5-csv, multi-kernel, structural-analysis-shells, varying-thickness-shells, field-source-kinds |
+| Blocks tasks | Per cluster C-17 (`phase-3-files-synthesis.md` §1) |
+| Disposition | **Ownership → multi-kernel.** Reciprocal contested edge (each PRD said the OTHER owns) per `phase-3-breadcrumb-map.md` §3 / §4 Cluster D. Multi-kernel hosts the kernel inventory + dispatcher abstraction, so it owns wiring `reify-eval → reify-kernel-openvdb` and the `elaborate_field` consumer arm. Confirmed by Leo 2026-05-12. Cluster C-17 disposed by this entry. |
+| Discovered | 2026-05-12 architecture audit (Phase 2 breadcrumbs) |
+| Notes | A small focused PRD-shape effort under `multi-kernel`'s remit; not a separate PRD. HDF5/CSV (cluster C-17 sibling) extends this contract once OpenVDB lands. |
+
+### GR-004 — Manifold `propagate_attributes` / MeshGL walk
+
+| Field | Value |
+|---|---|
+| Mechanism | `KernelAttributeHook::propagate_attributes` for the Manifold kernel + the MeshGL walk that produces `AttributeHistory` variants |
+| State | **FICTION** (stub returns `Discarded` with `tracing::warn!(reason="task_9_pending")`) |
+| Failure mode | F1 |
+| Evidence | `findings/persistent-naming-v2.md` M-018, `findings/multi-kernel.md` M-018; also touches cluster C-39 (fix-now) per `phase-3-files-synthesis.md` |
+| Cited by PRDs | persistent-naming-v2, multi-kernel |
+| Blocks tasks | Per cluster C-39 |
+| Disposition | **Ownership → persistent-naming-v2.** Reciprocal contested edge per `phase-3-breadcrumb-map.md` §3. PNv2 owns the propagation contract (`AttributeHistory` shape, propagator semantics); multi-kernel hosts the kernel binary but does not define what attributes propagate. Confirmed by Leo 2026-05-12. Cluster C-39 fix-now task should land under this owner. |
+| Discovered | 2026-05-12 architecture audit |
+| Notes | Related fix-now task should be filed under PNv2 ownership (cross-check `phase-3-fixnow-filing-log.md` for C-39 disposition). |
+
+### GR-005 — `try_eval_topology_selector` missing dispatch arms (11)
+
+| Field | Value |
+|---|---|
+| Mechanism | Eval-side dispatch arms in `try_eval_topology_selector` for the 11 selector v2 vocabulary names registered in `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` but absent from the eval switch |
+| State | **FICTION** (Rust `pub fn` definitions exist in `selector_vocabulary_v2.rs`; none in dispatch) |
+| Failure mode | F1 |
+| Evidence | `findings/topology-selectors.md` M-003 + task 2699 `reopen_reason`; `findings/persistent-naming-v2.md` M-013/M-019/M-022 |
+| Cited by PRDs | topology-selectors, persistent-naming-v2 |
+| Blocks tasks | 2699 (reopen_reason from 2026-05-09 listing 11 missing arms), plus cluster C-10 fix-now consumers |
+| Disposition | **Ownership → topology-selectors.** Reciprocal contested edge (neither PRD volunteered) per `phase-3-breadcrumb-map.md` §3. Selector vocabulary is topology-selectors' native domain; PNv2 only consumes via fallback. Assigned by Leo 2026-05-12. Cluster C-10 fix-now task (register names in dispatch table) is the unblocking action under this owner. |
+| Discovered | 2026-05-12 architecture audit |
+| Notes | Cluster C-10 fix-now should be cross-linked when filed (see `phase-3-fixnow-filing-log.md`). Task 2699's `reopen_reason` should be resolved as part of the same work. |
+
 ## Pending mergers from Phase 2
 
-(Phase 2 agents wrote to `findings/<prd-slug>.md` + fused-memory under `agent_id="audit-<prd-slug>"`. Phase 3 promotes each gap entry here, dedup'ing where the same mechanism surfaces from multiple PRDs. C-01 → GR-001 resolved. C-02 → GR-002 resolved. Remaining clusters C-03..C-44 await separate Phase-3-register sessions; see `phase-3-files-synthesis.md` §1 for the cluster table and §4 for candidate dispositions.)
+(Phase 2 agents wrote to `findings/<prd-slug>.md` + fused-memory under `agent_id="audit-<prd-slug>"`. Phase 3 promotes each gap entry here, dedup'ing where the same mechanism surfaces from multiple PRDs. C-01 → GR-001 resolved. C-02 → GR-002 resolved. Contested-ownership records GR-003 / GR-004 / GR-005 added. Remaining clusters C-03..C-44 await a Phase-3-register sweep session; see `phase-3-files-synthesis.md` §1 for the cluster table and §4 for candidate dispositions.)

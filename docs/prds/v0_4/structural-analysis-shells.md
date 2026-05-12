@@ -2,6 +2,10 @@
 
 Status: design resolved + decomposed (2026-05-05) — deferred, candidate v0.4. Sibling to v0.3 linear-elastostatic FEA. Filed 2026-05-02 from FEA PRD spillover.
 
+## Updates
+
+- **2026-05-12 (audit cluster C-20):** The v0.4 element-formulation contract is downgraded from MITC3+ to **bare MITC3 on flat-facet triangles**. Empirical and theoretical work under task 3349 established that the MITC3+ cubic-bubble enrichment is mathematically inert on flat-facet elements (`K_NB ≡ 0` by the divergence theorem for the standard `ξη(1−ξ−η)` bubble; shear-B-matrix routing reproduces bare-MITC3 results bit-identically). True MITC3+ requires a curved-element formulation with a position-dependent Jacobian; that work is filed as task **3392** (curved-element shell formulation, pending, future enhancement — not a v0.4 deliverable). The benchmark suite (task 3034) now ships with widened pass bands that reflect bare-MITC3 reality on curved-shell tests (pinched cylinder, Scordelis-Lo, hemisphere); the widened bands are the v0.4 contract, not a defect. Locking-class accuracy on curved shells returns when 3392 lands.
+
 ## Goal
 
 Add 2D shell elements to Reify's structural-analysis stack so that thin bodies — flexures, sheet metal, panels, casings — solve accurately and cheaply. Tet-only FEA underperforms badly here; shells are the conventional answer in commercial CAD-FEA. The defining UX commitment for v0.4 shells: **the user does not annotate thin features**. Reify auto-detects, extracts the mid-surface, picks the right element formulation, and reports through-thickness stress correctly — including for bodies buried in libraries whose thinness depends on parameters resolved at evaluation time.
@@ -30,7 +34,7 @@ Five logically separable pieces:
 
 1. **Voxel/medial mid-surface extraction.** Realize the body as `ReprKind::Voxel` via the v0.2 multi-kernel dispatcher (sparse narrow-band OpenVDB). Compute a medial-surface mask: voxels where two opposing nearest-surface points lie at approximately equal distance. Extract iso-surface of mask → triangle mid-surface mesh; per-vertex thickness = 2 × SDF at corresponding voxel (free byproduct).
 2. **Per-region auto-classification.** Per body, the medial mask either (a) covers the whole body with consistent thickness/extent ratio → shell, (b) is empty / thickness/extent ratio too high → tet, (c) covers part of the body → mixed shell + tet. Classification determines the meshing and element-kernel route. No user annotation required for the common case.
-3. **Shell element formulation.** MITC3+ Reissner-Mindlin triangle elements (3-node, 6 DOFs/node, mixed-interpolation strain to eliminate transverse-shear locking). P1 only for v0.4; P2 deferred unless demand surfaces. Reuses isotropic constitutive law from v0.3.
+3. **Shell element formulation.** Bare MITC3 Reissner-Mindlin triangle elements (3-node, 6 DOFs/node, mixed-interpolation strain to eliminate transverse-shear locking) on flat-facet triangles. P1 only for v0.4; P2 deferred unless demand surfaces. MITC3+ cubic-bubble enrichment for curved-element accuracy is filed as a future enhancement (task 3392) — see Updates above. Reuses isotropic constitutive law from v0.3.
 4. **Shell/tet coupling.** MPC (multi-point constraint) tying at interfaces. Three tying points across thickness on the tet side; constrain shell rotational DOFs to displacement gradients on the tet side. Reuses the v0.3 row-elimination machinery built for Dirichlet BCs.
 5. **Annotation surface for explicit overrides.** `@shell(thickness = ...)` to force shell treatment with optional thickness override (extracted otherwise); `@solid` to force tet treatment. Both validate against medial extraction and error when the geometry is incompatible.
 
@@ -55,7 +59,7 @@ User-visible result type: `ElasticResult.stress` becomes a structured field with
 
 Cost picture: OpenVDB sparse narrow-band only allocates voxels near the surface (~10⁷ active voxels for a 1m part with 0.1mm voxels and 0.1m² of thin-sheet surface — orders of magnitude smaller than dense or uniform-octree). Resolution defaults to thickness/3 for the thinnest expected feature; user-overridable via `ElasticOptions.shell_voxel_size`.
 
-**Element formulation: MITC3+ triangles, P1 only.** Reasons: (a) MITC3+ valid range (L/t > ~3) overlaps tet valid range (L/t < ~10) so there's no error-gap in the auto-classification dichotomy; (b) DKT's silent inaccuracy in the L/t = 5–20 marginal-thickness regime is a credibility-killing bug class, not worth the simpler kernel; (c) quad shells deferred because mid-surface quad meshing is uneven on curvy mid-surfaces and no v0.4 use case demands it.
+**Element formulation: bare MITC3 triangles on flat facets, P1 only, with a future MITC3+ curved-element enhancement (task 3392).** Reasons for the family choice over alternatives like DKT: (a) the MITC3 family's valid range (L/t > ~3) overlaps tet valid range (L/t < ~10) so there's no error-gap in the auto-classification dichotomy; (b) DKT's silent inaccuracy in the L/t = 5–20 marginal-thickness regime is a credibility-killing bug class, not worth the simpler kernel; (c) quad shells deferred because mid-surface quad meshing is uneven on curvy mid-surfaces and no v0.4 use case demands it. The v0.4 deliverable is bare MITC3 on flat-facet triangles: the MITC3+ cubic-bubble enrichment is mathematically inert for flat facets (see Updates above), so curved-shell locking returns on coarse meshes — pinched cylinder, Scordelis-Lo, and hemisphere tests under-predict published references by 21–2200× at the resolutions used in the validation suite. The fix path is curved-element MITC3+ with a position-dependent Jacobian, queued as task 3392; v0.4 ships honest bare-MITC3 with widened benchmark bands rather than a credibility-killing accuracy claim.
 
 **Auto-classification by default. No annotation required for the common case.** The trichotomy (definitely-shell, definitely-tet, ambiguous error) collapses to a dichotomy via formulation-range overlap. Per-body procedure:
 
@@ -104,7 +108,7 @@ Twenty-three tasks. Voxel-medial extraction (T1-T4) and shell element kernel (T5
 
 **Shell element kernel (independent of mid-surface extraction; can be developed in parallel):**
 
-5. MITC3+ element formulation in `reify-solver-elastic`: shape functions, tying-point evaluation, mixed-strain interpolation for transverse shear. Reference element in local 2D frame.
+5. MITC3 element formulation in `reify-solver-elastic`: shape functions, tying-point evaluation, mixed-strain interpolation for transverse shear. Reference element in local 2D frame. Bare MITC3 on flat facets is the v0.4 contract; MITC3+ curved-element enhancement is the follow-up task 3392 (see Updates above).
 6. Shell stiffness assembly under isotropic linear-elastic constitutive law: through-thickness analytical integration (constant-thickness, isotropic D matrix), local-to-global transformation per element using mid-surface frame.
 7. Shell stress recovery: top/mid/bottom stress fields in local frame; per-element `frame` field for global-frame transformation. Sampling helpers for arbitrary mid-surface point queries.
 8. Shell BC application: Dirichlet on rotational DOFs (auto-clamp from `FixedSupport`); explicit `PinnedSupport` opt-out path. Reuses v0.3 row-elimination plumbing.
@@ -132,7 +136,7 @@ Twenty-three tasks. Voxel-medial extraction (T1-T4) and shell element kernel (T5
 
 **Validation & polish:**
 
-21. Shell benchmark suite: pinched cylinder, Scordelis-Lo roof, hemisphere with point loads, twisted beam. Reference solutions, locking-detection assertions, P1-MITC3+ accuracy comparisons against published values.
+21. Shell benchmark suite: pinched cylinder, Scordelis-Lo roof, hemisphere with point loads, twisted beam. Reference solutions, locking-detection assertions, P1-MITC3 accuracy comparisons against published values. Pass bands on the three curved-shell tests are widened to bracket bare-MITC3 under-prediction (~21–2200× on coarse meshes); the widened bands are the v0.4 contract, not a defect — tightening to published MacNeal-Harder references gates on the curved-element MITC3+ enhancement (task 3392).
 22. Mixed-region validation: flexure-on-block test case (canonical shell/tet coupling problem). Compares against published reference solution; verifies MPC tying gives smooth stress/displacement across the interface.
 23. End-to-end example: thin-walled bracket with `param thickness : Length = auto`, `minimize mass subject to max(stress.top.von_mises) < material.yield_stress`. Demonstrates auto-classification + shell-element FEA + auto-resolve loop closing the design loop on a thin-body design.
 
