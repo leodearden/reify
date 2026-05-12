@@ -33,7 +33,7 @@ See `references/author-mode.md`.
 
 ### Decompose mode
 
-Read a committed PRD, re-walk gates against it, then file tasks via fused-memory `submit_task` (planning_mode=True) + `resolve_ticket`. After the batch lands, wire dependencies, then flip the batch from `deferred` to `pending`.
+Read a committed PRD, re-walk gates against it, then file the whole task batch via fused-memory `submit_task` + `resolve_ticket` with **`planning_mode=True` on every task, no exceptions** (lands them as `deferred`). After the batch is filed, wire **all** dependencies, then flip the **entire batch** from `deferred` to `pending` in a single bulk `set_task_status` call. Finally, commit `.taskmaster/tasks/tasks.json` as the durable record of the batch.
 
 See `references/decompose-mode.md`.
 
@@ -68,13 +68,14 @@ See `references/grammar-gate.md` for fixture-extraction heuristics and the exact
 - **Committed to git** in the same skill turn, per memory `feedback_commit_prds_before_referencing_tasks`.
 
 **Decompose mode:**
-- A batch of tasks filed via `submit_task` with `planning_mode=True`. Each carries metadata fields:
+- A batch of tasks filed via `submit_task` with `planning_mode=True` (always, every task). Each carries metadata fields:
   - `user_observable_signal` (string): the CLI/viewport/LSP/example-`.ri` signal proving completion.
   - `consumer_ref` (string): the PRD or user surface that consumes this task's output.
   - `grammar_confirmed` (bool): true iff the task's mechanism uses existing grammar, false if it queues grammar work.
-- Dependencies wired via `add_dependency`.
-- After all submit_task calls resolve and dependencies are wired, the batch flips `deferred` → `pending` via `set_task_status`.
-- The orchestrator does **not** currently read these metadata fields. They are substrate for the F-infra follow-up session; surface this in the hand-back when decompose mode finishes.
+- All declared dependencies (intra-batch and out-of-batch, including cross-PRD per memory `preferences_cross_prd_deps_real_edges`) wired via `add_dependency` while the batch is still `deferred`.
+- The whole batch flipped `deferred` → `pending` together in a single bulk `set_task_status` call — never one-at-a-time.
+- A single tasks-only commit of `.taskmaster/tasks/tasks.json` recording the batch (decomposition is not "done" until this commit lands; the post-commit hook normalizes IDs automatically).
+- The orchestrator does **not** currently read the `user_observable_signal` / `consumer_ref` / `grammar_confirmed` metadata fields. They are substrate for the F-infra follow-up session; surface this in the hand-back when decompose mode finishes.
 
 ## Gold-standard exemplar
 

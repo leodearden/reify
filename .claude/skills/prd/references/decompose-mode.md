@@ -36,11 +36,11 @@ If any leaf task lacks a user-observable signal, **stop** and surface to Leo. Th
 
 If any intermediate task has no named downstream consumer, surface it. Producer-only intermediate tasks with nothing downstream are a smell — typically the decomposition is missing an integration-gate task.
 
-### Step 3 — File tasks via two-phase pattern
+### Step 3 — File tasks via two-phase pattern (ALWAYS planning_mode=True)
 
 Per memory `procedural_fused_memory_two_phase_writes`: use `submit_task` + `resolve_ticket`; on timeout, poll `get_task` rather than retrying.
 
-Per memory `feedback_planning_mode_scope`: PRD-decomposition batches are the canonical use case for `planning_mode=True`.
+Per memory `feedback_planning_mode_scope`: PRD-decomposition batches are the canonical use case for `planning_mode=True`. **Every task in the batch is filed with `planning_mode=True`, no exceptions.** This lands them as `deferred` so the scheduler doesn't pick anything up before the wiring is complete and the batch is flipped together in Step 5.
 
 For each task in the plan, in dependency order (roots first):
 
@@ -88,9 +88,9 @@ elif resolve["status"] == "failed":
 
 If `submit_task` itself times out (no ticket returned), **don't retry**; poll `get_task` to see whether the write landed asynchronously.
 
-### Step 4 — Wire dependencies
+### Step 4 — Wire ALL dependencies (still deferred)
 
-After all tasks have IDs (intra-batch and out-of-batch), wire deps:
+After all tasks have IDs (intra-batch and out-of-batch), wire **every** declared dependency before any status flip. Per memory `preferences_cross_prd_deps_real_edges`, all deps — including cross-PRD — must be real `add_dependency` edges; the scheduler doesn't read metadata.
 
 ```
 mcp__fused-memory__add_dependency(
@@ -104,21 +104,23 @@ Wire intra-batch (Greek-letter prereqs in the PRD map to task IDs you just got f
 
 If the decomposition specified `metadata.unblocks` reverse-deps, set those via `update_task`.
 
-### Step 5 — Flip deferred → pending
+Do **not** flip anything to `pending` until every edge in the batch is in. A partially-wired batch with some tasks already `pending` lets the scheduler grab a leaf whose real prereq hasn't been wired yet.
 
-Per memory `preferences_bookmark_task_pattern` (the converse of bookmark — bookmarks stay deferred, batch decomp ones get flipped pending after wiring lands):
+### Step 5 — Flip the whole batch deferred → pending in one call
 
-For every task in the batch in dependency-root order (or all at once; the scheduler handles unmet-deps tasks correctly — see memory `feedback_blocked_vs_pending_semantics`):
+Per memory `preferences_bookmark_task_pattern` (the converse of bookmark — bookmarks stay deferred, batch decomp ones get flipped pending after wiring lands) and `procedural_set_task_status_semantics` (set_task_status accepts comma-separated IDs).
+
+Flip **every task in the batch together** in a single call — never one-at-a-time, never in dependency-root order. The whole batch becomes schedulable in one atomic moment; the scheduler handles unmet-deps tasks correctly per memory `feedback_blocked_vs_pending_semantics`.
 
 ```
 mcp__fused-memory__set_task_status(
-    id="<task_id>",
+    id="<id1>,<id2>,<id3>,...",   # comma-separated, all batch IDs
     status="pending",
     project_root="/home/leo/src/reify",
 )
 ```
 
-`set_task_status` accepts comma-separated IDs per memory `procedural_set_task_status_semantics`. Batch them.
+If a single bulk call is rejected (e.g. payload-size cap), split into the smallest number of bulk calls that fit — still never one-at-a-time.
 
 ### Step 6 — Verify
 
@@ -136,7 +138,29 @@ Print a summary table to Leo:
 | β | <id> | <title> | α | <signal> |
 | … | | | | |
 
-### Step 7 — Hand-back
+### Step 7 — Commit tasks.json
+
+Decomposition writes through Taskmaster, so `.taskmaster/tasks/tasks.json` (tracked in git) now carries the new entries plus all the wired deps and the pending flips. Commit it as the durable record of the batch.
+
+```bash
+git status -- .taskmaster/tasks/tasks.json
+git diff --stat -- .taskmaster/tasks/tasks.json   # sanity-check size
+git add .taskmaster/tasks/tasks.json
+git commit -m "$(cat <<'EOF'
+chore(tasks): decompose <prd-slug> — N tasks queued
+
+PRD: docs/prds/<vM_N>/<slug>.md
+Tasks: <id1>..<idN> (N filed, M intra-batch deps, K out-of-batch deps)
+EOF
+)"
+```
+
+Notes:
+- The post-commit hook (`hooks/post-commit`) normalizes integer IDs in tasks.json automatically — let it run; don't bypass with `--no-verify`.
+- Only `tasks.json` should be in the diff. If unrelated files appear, something else is going on — surface to Leo before committing.
+- If `git status` shows tasks.json clean (no diff), something is wrong — fused-memory writes should have updated it. Investigate before declaring decompose done.
+
+### Step 8 — Hand-back
 
 State:
 - Number of tasks filed.
@@ -153,8 +177,10 @@ State:
 ## Anti-patterns
 
 - Don't directly edit `.taskmaster/tasks/tasks.db` (memory `feedback_no_direct_tasksdb_writes`).
-- Don't write to `tasks.json` (memory `feedback_no_direct_tasks_json_edits`).
+- Don't hand-edit `tasks.json` (memory `feedback_no_direct_tasks_json_edits`) — only `git add` it after fused-memory writes have updated it.
 - Don't use `planning_mode=False` for the batch and then individually flip statuses to bypass the curator — that's the gameable shortcut the curator exists to prevent. If the curator is wedged, escalate to Leo.
+- Don't flip tasks to `pending` one-at-a-time, or in waves as deps land. Wire **everything** first, then flip the **whole batch together** in a single bulk `set_task_status` call.
+- Don't skip the Step 7 commit. The tasks-only commit is the durable record of the decomposition; without it the batch is invisible to anyone who doesn't have the local sqlite state.
 - Don't file follow-up tasks for things the PRD already covers as Open Questions — those stay in §Open questions, not as queued tasks.
 
 ## Resumption (if decompose was started but didn't finish)
@@ -162,7 +188,9 @@ State:
 If a prior session's decompose mode crashed partway:
 1. Search fused-memory for any tasks already filed: `search(query="<prd-slug>", project_id="reify", include_planned=True)`.
 2. Match against the PRD's decomposition plan — what's already filed (by `prd_task_label` metadata or title match) and what's missing.
-3. Resume at the first missing task.
-4. Wire dependencies and flip pending at the end.
+3. Resume at the first missing task; new ones still go in `planning_mode=True` even if some siblings already exist.
+4. Wire **all** dependencies (including any that should have been wired by the previous session — re-add is idempotent) before flipping anything.
+5. Bulk-flip every batch task that's still `deferred` to `pending` in a single call.
+6. Commit `.taskmaster/tasks/tasks.json` per Step 7.
 
 Avoid double-filing. Curator-combining will catch most duplicates but cleanest is to detect existing entries first.
