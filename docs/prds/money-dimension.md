@@ -1,5 +1,14 @@
 # Money Dimension — PRD
 
+> **Updates**
+>
+> - **2026-05-12 grammar-fiction sweep (docs/architecture-audit/phase-3-grammar-fiction-triage-log.md):**
+>   Worked example in § Cost-aggregation previously used `sum(... for ... in ...)`
+>   generator-comprehension syntax that Reify does not have. Replaced with the
+>   shipped `[a, b].sum` list-literal aggregation idiom that the canonical
+>   `examples/cost_aggregation.ri` actually uses. Filename hyphen→underscore
+>   correction folded in.
+
 > **Scope** This document specifies the compile-time and runtime semantics of the
 > money dimension (slot 9 of `DimensionVector`) and its stdlib bindings.
 >
@@ -224,16 +233,19 @@ A `Buy` instance times a quantity yields `Scalar<Money>`; aggregation over a col
 of `Scalar<Money>` values yields total cost:
 
 ```
-// Given: a list of Buy occurrences, each with unit_cost and quantity
-let total_cost : Scalar<Money> = sum(buy.unit_cost * buy.quantity for buy in buys)
+// Given: a structure with sub bolts : List<BoltBuy> and sub mounts : List<MountBuy>,
+// each with a per-element let line_cost : Scalar<Money> (from the `Costed` trait).
+let total_cost : Scalar<Money> = [self.bolts.line_cost, self.mounts.line_cost].sum
 ```
 
-`unit_cost * quantity` has dimension `Money·Mass^-1 * Mass = Money`; `sum` over
+Reify does not have generator-comprehension syntax (`sum(... for ... in ...)` does not
+parse). The canonical aggregation idiom is list-literal `+` collection `.sum` — see
+`examples/cost_aggregation.ri`. Each `buy.line_cost` has dimension `Money·Mass^-1 * Mass = Money`; `sum` over
 `Scalar<Money>` stays `Scalar<Money>`.
 
 ### Target canonical-example file
 
-`examples/cost-aggregation.ri` (path to be confirmed by task 2381)
+`examples/cost_aggregation.ri` (underscore form; landed via task 2381)
 
 ### Implementation pointer table
 

@@ -2,6 +2,16 @@
 
 Status: design resolved + decomposed (2026-05-05) — deferred, candidate v0.3.x. Stdlib pattern over the v0.3 FEA kernel; no language-feature changes. Filed 2026-05-02 from FEA PRD spillover.
 
+> **2026-05-12 grammar-fiction sweep** (docs/architecture-audit/phase-3-grammar-fiction-triage-log.md):
+> Design-loop demo previously used `subject to` clause which is not in the
+> Reify grammar. Replaced with the shipped `where`-clause spelling of
+> `minimize` (per `crates/reify-syntax/src/ts_parser.rs`). `param thickness : Length = auto` retained — `auto` as a value-default keyword
+> is supported via `auto_keyword` in `tree-sitter-reify/grammar.js:430`. The
+> distinct gap of `auto:` in **type-arg position** is owned by the
+> auto-type-param-resolution PRD's grammar-chain follow-up. Also retired the
+> assumption of `sum(... for ... in ...)` comprehension; see money-dimension
+> PRD's parallel rewrite.
+
 ## Goal
 
 Make multi-load-case structural analysis ergonomic. Real designs are evaluated against multiple load conditions — operating, transport, accident — and the design constraint is typically "max von Mises across all cases < yield_stress." Currently this requires manual orchestration; should be a one-liner.
@@ -56,8 +66,13 @@ results = solve_load_cases(bracket, Steel_AISI_1045, [
     LoadCase{name: "transport", loads: [...], supports: [...]},
 ])
 
-minimize mass(bracket) subject to max(envelope_von_mises(results)) < material.yield_stress
+minimize mass(bracket) where max(envelope_von_mises(results)) < material.yield_stress
 ```
+
+> **Grammar note.** The `where`-clause spelling is what the current
+> `minimize` form (`crates/reify-syntax/src/ts_parser.rs::lower_minimize_decl`)
+> parses. An earlier draft of this PRD used `subject to` which is **not** in
+> the grammar; the rewrite preserves the design intent.
 
 ## Pre-conditions for activating
 
@@ -123,7 +138,7 @@ Ten tasks. All depend on v0.3 FEA kernel landing first; the GUI task additionall
 
 **End-to-end and documentation:**
 
-7. End-to-end example file: `examples/m6/multi_load_bracket.ri`. Bracket with three load cases (operating, overload, transport), `param thickness : Length = auto`, `minimize mass subject to max(envelope_von_mises(results)) < material.yield_stress`. Closes the design-loop demo from this PRD's Goal section. **Gate:** tasks 2 + 4 + #2929 (single-case bracket demo).
+7. End-to-end example file: `examples/m6/multi_load_bracket.ri`. Bracket with three load cases (operating, overload, transport), `param thickness : Length = auto` (the `auto` value-default keyword is in grammar.js:`auto_keyword`), `minimize mass(bracket) where max(envelope_von_mises(results)) < material.yield_stress`. Closes the design-loop demo from this PRD's Goal section. **Gate:** tasks 2 + 4 + #2929 (single-case bracket demo).
 8. PRD-aligned documentation: stdlib doc page on multi-load cases covering (a) the basic `solve_load_cases` pattern, (b) envelope construction with the convenience helpers and the compositional primitives, (c) `linear_combine` with the linear-elastic constraint and combination-sweep example, (d) per-case options compatibility matrix. **Gate:** tasks 1-7.
 
 **GUI integration (gates on FEA-GUI infrastructure):**

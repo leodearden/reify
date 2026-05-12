@@ -2,6 +2,33 @@
 
 Status: deferred to v0.3 per 2026-04-28 decision. Sibling task: 2392 (v0.2 OpenVDB-only narrowing).
 
+> **2026-05-12 grammar-fiction sweep** (docs/architecture-audit/phase-3-grammar-fiction-triage-log.md):
+> The sketches below assume **three grammar surfaces that are not in v0.1**:
+> (a) extended `imported`-block keys (`schema`, `dataset`, `axis_arrays`,
+> `value_attribute`, `units`, `interpolation`) — `FieldSource::Imported` in
+> `crates/reify-syntax/src/lib.rs:702-724` is a fixed three-field struct
+> `{path, format, grid}`, and the AST silently drops unknown keys; (b) the
+> inline schema block `schema = { x: Length(mm), y: Length(mm), ... }` — the
+> Reify grammar's only map literal is `map { k => v, ... }`
+> (`tree-sitter-reify/grammar.js:811`), and no `{ k: v }` record-literal
+> form exists; (c) the typed-column expression `Length(mm)` — `Length` is a
+> dimension, not a callable, and "type applied to unit" is not a Reify
+> expression form. The PRD's claim that `Length(mm)` "reuses the existing
+> unit-literal grammar" is **incorrect** as of 2026-05-12. None of these
+> grammar surfaces can be invented at decomposition time; each requires a
+> grammar + parser + lowering chain landing first, per Leo's
+> implementation-chain portfolio (preferences-implementation-chain-portfolio).
+>
+> **Disposition.** The base case (v0.2 OpenVDB importer) is itself still
+> not wired end-to-end (audit M-001; eval-side glue absent despite tasks
+> 2665-2669 done). v0.3 HDF5/CSV activation must wait for (i) the v0.2
+> OpenVDB glue to actually produce a `Value::Field`, and (ii) a separate
+> grammar PRD covering the three surfaces above. Until then, this PRD's
+> syntax sketches are design intent only; do **not** queue any
+> decomposition task that references the new keys or the schema-block
+> form. Anyone activating this PRD must first re-cost it after the v0.1
+> annotation-args / record-literal grammar work has landed.
+
 ## Goal
 
 Extend the v0.2 `imported` source kind (currently OpenVDB-only after the 2026-04-28 narrowing) to cover HDF5 datasets and CSV tables, completing the three-format spread originally envisaged in `docs/reify-language-spec.md` §4.1.4. The target is the same `source = imported { ... }` syntax block established in v0.2 so the user-facing surface is uniform across all three formats.

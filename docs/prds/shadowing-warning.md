@@ -1,5 +1,15 @@
 # PRD: Shadowing Warning
 
+> **2026-05-12 grammar-fiction sweep** (docs/architecture-audit/phase-3-grammar-fiction-triage-log.md):
+> Suppression syntax respelled `#[allow(shadowing)]` → `@allow(shadowing)`
+> to match the in-repo annotation framework (`@test`, `@optimized`,
+> `@solver_hint`, `@shell`, `@solid` — `crates/reify-compiler/src/annotations.rs`).
+> Rust-bracket form `#[...]` is not in Reify's grammar. Also dropped
+> "type aliases" from the scoped collision targets — `TypeAlias` is
+> only a top-level `Declaration` (`crates/reify-syntax/src/lib.rs:30`) and
+> has no nested decl form, so module-scope shadow detection has no
+> language position to fire from. No behavioural change.
+
 ## Goal
 
 Emit a compile-time warning whenever an inner-scope declaration uses the same name as a declaration visible from a parent scope, per spec §8.5. The shadow is permitted (the inner declaration takes precedence in the inner scope); we just want it surfaced as a diagnostic.
@@ -12,10 +22,10 @@ Emit a compile-time warning whenever an inner-scope declaration uses the same na
 
 ## Scope
 
-- A single-pass scope analyzer that, when registering a name in a child scope, walks parent scopes and checks for collision against parameters, ports, sub-entities, `let` bindings, and type aliases.
+- A single-pass scope analyzer that, when registering a name in a child scope, walks parent scopes and checks for collision against parameters, ports, sub-entities, and `let` bindings.
 - New diagnostic code (e.g. `W_SHADOW`) with: shadowed name, shadowing-site span, original-declaration span.
 - Apply to: structure / occurrence / constraint / field / trait / fn bodies, and nested specialization scopes.
-- Lint-style: warning by default, suppressible via `#[allow(shadowing)]` only if/when annotation framework lands; otherwise plain warning.
+- Lint-style: warning by default. Suppressible via `@allow(shadowing)` once the suppression-annotation key is added to the annotation framework (`@`-prefix, named-arg syntax matching `crates/reify-types/src/annotation.rs`); pending that, plain warning. Note: `#[allow(shadowing)]` Rust-bracket form is **not** Reify's annotation grammar.
 
 ## Out of scope
 

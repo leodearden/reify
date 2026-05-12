@@ -3,6 +3,13 @@
 Status: deferred to v0.2 per 2026-04-26 decision.
 Design resolved 2026-04-28 — see "Resolved design decisions" below.
 
+> **2026-05-12 grammar-fiction sweep** (docs/architecture-audit/phase-3-grammar-fiction-triage-log.md):
+> Corrected the "replace, not augment" decision to remove the false claim
+> that v0.1 has `name = "..."` syntax. The `user_label : Option<String>`
+> slot is reserved in the runtime data model but no parser path populates
+> it; the eventual user-controlled-naming DSL surface is a separate grammar
+> PRD. No semantic change to the v0.2 attribute model.
+
 ## Goal
 
 Replace or augment the v0.1 feature-tag persistent-naming scheme with an attribute-based scheme in the spirit of Solvespace: features attach stable IDs to the faces and edges they create, and the IDs survive most parameter changes and topology edits. This addresses architecture §16 open question #10 (geometric queries and selectors / persistent naming).
@@ -47,7 +54,7 @@ The interaction with multi-kernel dispatch (`multi-kernel.md`) is significant: e
 
 Backed by the 2026-04-28 reference-implementation study covering Solvespace, FreeCAD-RealThunder, OpenSCAD-CSG, CadQuery / build123d, OnShape, Parasolid, and the academic literature (Kripac 1995, Bidarra 2005, Kim et al. 2016, Marcheix & Pebay 2018, Manifold's MeshGL pattern).
 
-**Replace, not augment.** Pre-release means no source files to break. v0.2 absorbs the v0.1 `name = "..."` syntax as an additional attribute slot rather than maintaining a parallel scheme. One mechanism, one mental model.
+**Replace, not augment.** Pre-release means no source files to break. v0.2's `TopologyAttribute.user_label : Option<String>` slot is *reserved* for an eventual user-provided naming syntax — the runtime mechanism is wired (selectors prefer `user_label` over `(role, local_index)` when both apply) but **no v0.1 `name = "..."` syntax exists in the parser today** (2026-05-12 grammar-fiction sweep finding: the user_label slot is always `None` in shipped data; see docs/architecture-audit/findings/persistent-naming-v2.md M-015). When user-controlled face naming UX is prioritised, that surface syntax is a separate grammar PRD with its own grammar+parser+lowering chain ending at a user-observable `@face("name")` resolve; the persistent-naming-v2 PRD just guarantees a place for it to land. One mechanism, one mental model.
 
 **Attribute shape.** Each face/edge/vertex emitted by a constructive operation carries:
 ```

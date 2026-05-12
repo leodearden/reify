@@ -1,8 +1,23 @@
 # PRD: `forall` Statement Form (Per-Element `connect` / `constraint` Generation)
 
+> **2026-05-12 grammar-fiction sweep** (docs/architecture-audit/phase-3-grammar-fiction-triage-log.md):
+> Originally the audit flagged `chain` body as a grammar fiction; in fact
+> the inverse holds — grammar (`tree-sitter-reify/grammar.js:684`), AST
+> (`ForallConnectBody::Chain`), and compiler (`forall_elaborate.rs:781-838`)
+> all ship `chain` and `constraint_instantiation` as valid `forall`
+> statement-form bodies. This PRD originally limited statement scope to
+> `connect`/`constraint` per spec §5.4; updated below to legitimize the
+> shipped widening. See findings/forall-statement-form.md M-013.
+
 ## Goal
 
-Support the **statement form** of `forall` for generating per-element `connect` or `constraint` declarations, per spec §5.4. This is distinct from the **expression form** (`forall v in vents: v.spacing > 10mm` returning `Bool`) which already exists (#63 done).
+Support the **statement form** of `forall` for generating per-element
+`connect`, `chain`, or `constraint` declarations. The original v0.1 scope
+named `connect` and `constraint` per spec §5.4; the implementation also
+supports `chain` body (which desugars to pairwise `connect` semantics) and
+constraint-instantiation body, both shipped and tested. This is distinct
+from the **expression form** (`forall v in vents: v.spacing > 10mm`
+returning `Bool`) which already exists (#63 done).
 
 ## Background
 

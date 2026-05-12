@@ -2,6 +2,22 @@
 
 Status: stub — deferred, candidate v0.5+. Sibling to v0.4 `structural-analysis-shells.md`. Filed 2026-05-05 from shells PRD spillover.
 
+> **2026-05-12 grammar-fiction sweep** (docs/architecture-audit/phase-3-grammar-fiction-triage-log.md):
+> The PRD's user-specification surface `@shell(thickness = linear_taper(...))`
+> requires **three** new language surfaces at once: (a) keyword/named-argument
+> annotation args, (b) function-call / Expr annotation args, and (c) a defined
+> evaluation timing for runtime-evaluable annotation arguments. None of these
+> exist in v0.1: `AnnotationArg` (`crates/reify-types/src/annotation.rs:77`)
+> is a closed enum `{String|Int|Real|Bool|Ident}`, and `@shell` is hardcoded
+> to accept only `[]` or `[Int|Real]` positional thickness
+> (`crates/reify-compiler/src/annotations.rs:154-176`). The surface syntax
+> sketches below are aspirational; per Leo's 2026-05-12 implementation-chain
+> portfolio (preferences-implementation-chain-portfolio.md), surface syntax
+> design must be co-designed with grammar + lowering + producer fns before
+> any v0.5+ task can claim done. The annotation-grammar redesign is **not**
+> in this PRD's scope; activation gates on a separate annotation-args
+> expansion PRD landing first (filed only when v0.5 activation begins).
+
 ## Goal
 
 Support shell elements where thickness varies across the mid-surface — tapered flexures, draft-angle sheet metal, pressure-vessel walls with local thickening, blade-like profiles. The v0.4 shells PRD ships constant-thickness only; this PRD lifts that restriction.
@@ -37,7 +53,8 @@ The v0.4 shells PRD assumes a single thickness per body (or per `@shell(thicknes
 ## Pre-conditions for activating
 
 - v0.4 `structural-analysis-shells.md` shipped (constant-thickness path stable, validation suite passing).
-- Stdlib field-producer infrastructure for thickness specification (`linear_taper`, `radial_thickening`, `imported_thickness_map`, etc.) — small additions, can be defined alongside this PRD.
+- Stdlib field-producer infrastructure for thickness specification (`linear_taper`, `radial_thickening`, `imported_thickness_map`, etc.) — these are **not** "small additions"; they require typed `Field<Point3, Length>` producer fns and may compose with `imported-field-source-hdf5-csv.md`.
+- **Annotation-args expansion shipped** — `@shell(thickness = linear_taper(...))` requires keyword annotation args + function-call annotation args + a defined evaluation timing. See 2026-05-12 grammar-fiction sweep note above. File a separate annotation-args PRD with grammar + parser + lowering chain at v0.5 activation.
 - A concrete user need (tapered flexure, pressure vessel with local thickening, blade design) documented.
 
 ## Open design questions
