@@ -363,9 +363,9 @@ Contract document authored 2026-05-12: `docs/prds/v0_3/structure-instance-runtim
 | Evidence | `findings/structural-stability-buckling.md` M-006, M-007 |
 | Cited by PRDs | structural-stability-buckling, (modal-analysis future PRD — non-PRD breadcrumb) |
 | Blocks tasks | Per cluster C-22 |
-| Disposition | **PRD-shape work — buckling-specific decomposition once foundations land.** Blocked on FEA stack (#2924 in particular) reaching engine integration; until then the eigensolver has no caller. Naturally sequences after GR-001 + GR-002 land. |
+| Disposition | **PRD-shape work — resolved via `docs/prds/v0_5/buckling-eigensolver.md`** (authored 2026-05-12 in interactive `/prd` session under G1–G5+META gates). PRD owns: `solve_buckling` stdlib entry + trampoline, shift-invert Lanczos eigensolver on faer-rs `operator::self_adjoint_eigen` (with dense gevd fallback for tiny problems), P1-tet K_g element kernel + global assembly, `BucklingResult` / `Mode` / `BucklingOptions` / `MultiCaseBucklingResult` value shapes, GUI `mode-shape-frame` channel implementation (replaces GR-016 deferred bookmark task λ). Foundation gates: GR-001 (struct-instance runtime), GR-002 (ComputeNode contract, landed), FEA stack reaching ComputeNode integration. Shell K_g is out of scope for v0.5; trampoline emits `E_BucklingShellNotImplemented` citing task 3392. Decomposition is B+H (contract + cross-crate boundary tests) per `preferences_implementation_chain_portfolio`; vertical-slice DAG in §13 of the PRD with eleven phases, each leaf naming a user-observable signal. |
 | Discovered | 2026-05-12 architecture audit |
-| Notes | Modal analysis (unfiled future PRD) would share this infrastructure; worth noting in any eventual eigensolver decomposition that it should be generalized rather than buckling-specific. |
+| Notes | Modal analysis (unfiled future PRD) would share this infrastructure; the eigensolver crate-location decision in the PRD (`reify-solver-elastic/src/eigensolve.rs`) is deliberate so that mass-matrix `(K − ω²M)φ = 0` modal generalization is a sibling registration, not a re-architecture. PRD §5 notes the generalization-friendliness explicitly. |
 
 ### GR-025 — Failed/error event naming (PRD vs code drift) (cluster C-23)
 
