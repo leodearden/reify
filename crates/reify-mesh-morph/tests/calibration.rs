@@ -543,7 +543,15 @@ fn bracket_fillet_radius_sweep_obeys_materially_better_rule_with_calibrated_defa
     // (e.g. solver/fixture change that makes every step Pass) breaks the
     // test rather than silently invalidating the documented coverage.
     let base_param = 0.10_f64;
-    let target_params = [0.105_f64, 0.12, 0.15, 0.18, 0.19];
+    // Widened from [0.105, 0.12, 0.15, 0.18, 0.19] (task #3436):
+    //   0.05  — well-conditioned small fillet (Pass-end extreme; pushes deep
+    //           into the safe region so ~1e-6 Jacobian drift can't flip it)
+    //   0.195 — near-maximum fillet (`fillet_radius < thickness = 0.20`);
+    //           polar-wedge sensitivity peak (Reject-end extreme; similar
+    //           headroom on the other side of the discrimination boundary)
+    // Both extremes carry the verdict mix with substantial margin against
+    // numerical drift, unlike the mid-range targets they supplement.
+    let target_params = [0.05_f64, 0.105, 0.12, 0.15, 0.18, 0.19, 0.195];
     let fixture = |fillet_radius: f64| fixtures::bracket(1.0, 0.2, fillet_radius, 4);
     // See `calibration_sweep_options` for the rationale on the override.
     let options = calibration_sweep_options();
@@ -565,6 +573,15 @@ fn bracket_fillet_radius_sweep_obeys_materially_better_rule_with_calibrated_defa
     // (trivially) holds, but the calibration discrimination claim in
     // `lib.rs` becomes false — surface that failure here instead of
     // silently.
+    //
+    // ## Failure-mode playbook
+    //
+    // If a future change collapses this verdict mix (e.g. all-Pass or
+    // all-Reject across the widened target_params), the first action is to
+    // regenerate metric distributions locally and recalibrate
+    // `MorphOptions::default()` — do NOT silently tweak `target_params` to
+    // make CI green, as that would invalidate the documented Pass→Reject
+    // discrimination coverage.
     assert!(
         saw_pass,
         "bracket sweep must produce at least one Pass verdict across target_params={target_params:?} \
