@@ -241,18 +241,18 @@ fn project_volume_to_surface_vertices(
     let fallback = finite_min;
 
     let mut result = vec![fallback; n_surf];
-    for s in 0..n_surf {
+    for (s, result_slot) in result.iter_mut().enumerate() {
         let sx = surface.vertices[s * 3];
         let sy = surface.vertices[s * 3 + 1];
         let sz = surface.vertices[s * 3 + 2];
 
         let mut best_dist_sq = f32::INFINITY;
         let mut best_size = fallback;
-        for v in 0..n_vol {
+        for (v, &vol_size) in vol_vertex_sizes.iter().enumerate().take(n_vol) {
             // Skip orphaned nodes (not part of any tet) — they carry
             // f64::INFINITY and would pollute the result if chosen as the
             // nearest neighbour.
-            if !vol_vertex_sizes[v].is_finite() {
+            if !vol_size.is_finite() {
                 continue;
             }
             let vx = volume_mesh.vertices[v * 3];
@@ -262,10 +262,10 @@ fn project_volume_to_surface_vertices(
                 (sx - vx) * (sx - vx) + (sy - vy) * (sy - vy) + (sz - vz) * (sz - vz);
             if dist_sq < best_dist_sq {
                 best_dist_sq = dist_sq;
-                best_size = vol_vertex_sizes[v];
+                best_size = vol_size;
             }
         }
-        result[s] = best_size;
+        *result_slot = best_size;
     }
     result
 }
