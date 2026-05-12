@@ -787,7 +787,12 @@ impl PersistentlyCacheable for ElasticResult {
             displacement_len: self.displacement.len() as u64,
             stress_len: self.stress.len() as u64,
         };
-        let header_bytes = bincode::serialized_size(&header).unwrap_or(0);
+        let header_bytes = bincode::serialized_size(&header).expect(
+            "ElasticResultHeader has only fixed-size fields (u64, bool, u32, u64, u64, u64); \
+             bincode::serialized_size cannot fail. If a future field with variable-length \
+             encoding (String/Vec/Option) is added, this expect will fire — at which point \
+             byte_size accounting must be revisited.",
+        );
         let slab_bytes = 8 * (self.displacement.len() as u64 + self.stress.len() as u64);
         header_bytes + slab_bytes
     }
@@ -872,15 +877,20 @@ pub fn write_entry<V: PersistentlyCacheable>(
 ) -> io::Result<()> {
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    // Validate cache-key lengths BEFORE any filesystem side effects. `shard_dir`
+    // slices `&input_hash[..2]` and would panic on a string shorter than 2 ASCII
+    // bytes (or with a multi-byte UTF-8 char straddling that boundary); even for
+    // the common "31 chars" case, doing FS work before validation would leave an
+    // orphan shard dir and tempfile behind on `InvalidInput`.
+    let engine_bytes: [u8; 32] = cache_key_to_ascii_32(engine_version_hash)?;
+    let input_bytes: [u8; 32] = cache_key_to_ascii_32(input_hash)?;
+
     let sd = shard_dir(cache_root, engine_version_hash, input_hash);
     std::fs::create_dir_all(&sd)?;
 
     let mut temp = tempfile::Builder::new()
         .prefix(".tmp.")
         .tempfile_in(&sd)?;
-
-    let engine_bytes: [u8; 32] = cache_key_to_ascii_32(engine_version_hash)?;
-    let input_bytes: [u8; 32] = cache_key_to_ascii_32(input_hash)?;
 
     let written_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -951,6 +961,13 @@ pub fn read_entry<V: PersistentlyCacheable>(
     use std::fs::File;
     use std::io::BufReader;
 
+    // Validate cache-key lengths BEFORE constructing the bin path. `entry_bin_path`
+    // → `shard_dir` slices `&input_hash[..2]` and would panic on a short or
+    // non-ASCII-boundary input. Computing the expected echo bytes up front also
+    // means we never advance to file open with an unusable key.
+    let expected_engine = cache_key_to_ascii_32(engine_version_hash)?;
+    let expected_input  = cache_key_to_ascii_32(input_hash)?;
+
     let bin_path = entry_bin_path(cache_root, engine_version_hash, input_hash);
     // NotFound is the cache-miss signal per PRD; any other Err is an
     // infrastructure problem the caller must know about.
@@ -964,7 +981,29 @@ pub fn read_entry<V: PersistentlyCacheable>(
     // zstd::Decoder downstream does its own internal buffering, so this
     // BufReader primarily benefits the header decode path on every cache hit.
     let mut f = BufReader::new(f);
-    let header = CacheEntryHeader::read_from(&mut f)?;
+    // Truncated or otherwise corrupt headers (file shorter than the encoded
+    // length, or bincode decode failure) are treated as a cache miss per PRD
+    // corruption-recovery policy — same as the body-decode branch below. Only
+    // genuine infrastructure errors (e.g. EACCES on a read mid-header) propagate.
+    let header = match CacheEntryHeader::read_from(&mut f) {
+        Ok(h) => h,
+        Err(e)
+            if matches!(
+                e.kind(),
+                io::ErrorKind::UnexpectedEof | io::ErrorKind::InvalidData
+            ) =>
+        {
+            tracing::warn!(
+                ?e,
+                cache_root = %cache_root.display(),
+                engine_version_hash,
+                input_hash,
+                "cache entry rejected: header read failed (treating as miss)"
+            );
+            return Ok(None);
+        }
+        Err(e) => return Err(e),
+    };
 
     // Check format_version BEFORE body decode — a stale-format entry must never
     // advance to the more expensive decompression path.
@@ -981,8 +1020,6 @@ pub fn read_entry<V: PersistentlyCacheable>(
 
     // Verify that the header's echo fields match the key components from the
     // path. A mismatch indicates corruption (misplaced or bit-flipped .bin).
-    let expected_engine = cache_key_to_ascii_32(engine_version_hash)?;
-    let expected_input  = cache_key_to_ascii_32(input_hash)?;
     if let Err(e) = header.verify_field_echoes(&expected_engine, &expected_input) {
         tracing::warn!(
             ?e,
