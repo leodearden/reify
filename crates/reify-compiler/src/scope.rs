@@ -254,8 +254,9 @@ impl<'u> CompilationScope<'u> {
     /// * `has_realization` — `sub_realization_names[sub_name]` contains `member`.
     /// * `forward_declared` — the sub is registered in `sub_component_types`
     ///   but its `sub_member_types` entry has not yet been populated (parent
-    ///   template compiled before child template; see expr.rs:239-250 and
-    ///   geometry.rs:304-311 for the forward-declared optimism rationale).
+    ///   template compiled before child template; see the forward-declared
+    ///   optimism rationale in `try_resolve_cross_sub_geometry_value_ref` and
+    ///   `try_resolve_cross_sub_geom_ref`).
     ///
     /// Centralizes the predicate so the two compile-side call sites cannot
     /// drift apart:
@@ -419,6 +420,43 @@ mod tests {
         assert!(
             scope.sub_member_is_cross_sub_geometry_or_forward_declared("bolt", "body"),
             "should return true for forward-declared sub regardless of member name"
+        );
+    }
+
+    /// Returns true for the realization member and false for a scalar member when
+    /// both coexist on a fully-resolved sub.  This is the common production state:
+    /// a child template with mixed scalar params (`length`) and a geometry param
+    /// (`body`).  Ensures `has_realization` correctly wins for `body` and that
+    /// scalar members are NOT mistaken for geometry handles.
+    #[test]
+    fn sub_member_is_cross_sub_geometry_or_forward_declared_mixed_sub_realization_wins_scalars_do_not() {
+        let mut scope = CompilationScope::new("TestEntity");
+        scope
+            .sub_component_types
+            .insert("bolt".to_string(), "Bolt".to_string());
+        scope.sub_member_types.insert(
+            "bolt".to_string(),
+            BTreeMap::from([("length".to_string(), Type::length())]),
+        );
+        scope.sub_realization_names.insert(
+            "bolt".to_string(),
+            BTreeSet::from(["body".to_string()]),
+        );
+
+        // has_realization wins: "body" is in sub_realization_names.
+        assert!(
+            scope.sub_member_is_cross_sub_geometry_or_forward_declared("bolt", "body"),
+            "should return true for the geometry realization member"
+        );
+        // Scalar member — present in sub_member_types but NOT in sub_realization_names.
+        assert!(
+            !scope.sub_member_is_cross_sub_geometry_or_forward_declared("bolt", "length"),
+            "should return false for a scalar member (not a geometry realization)"
+        );
+        // Completely unknown member — absent from both maps.
+        assert!(
+            !scope.sub_member_is_cross_sub_geometry_or_forward_declared("bolt", "missing"),
+            "should return false for an unknown member on a fully-populated sub"
         );
     }
 
