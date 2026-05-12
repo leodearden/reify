@@ -138,29 +138,7 @@ Print a summary table to Leo:
 | β | <id> | <title> | α | <signal> |
 | … | | | | |
 
-### Step 7 — Commit tasks.json
-
-Decomposition writes through Taskmaster, so `.taskmaster/tasks/tasks.json` (tracked in git) now carries the new entries plus all the wired deps and the pending flips. Commit it as the durable record of the batch.
-
-```bash
-git status -- .taskmaster/tasks/tasks.json
-git diff --stat -- .taskmaster/tasks/tasks.json   # sanity-check size
-git add .taskmaster/tasks/tasks.json
-git commit -m "$(cat <<'EOF'
-chore(tasks): decompose <prd-slug> — N tasks queued
-
-PRD: docs/prds/<vM_N>/<slug>.md
-Tasks: <id1>..<idN> (N filed, M intra-batch deps, K out-of-batch deps)
-EOF
-)"
-```
-
-Notes:
-- The post-commit hook (`hooks/post-commit`) normalizes integer IDs in tasks.json automatically — let it run; don't bypass with `--no-verify`.
-- Only `tasks.json` should be in the diff. If unrelated files appear, something else is going on — surface to Leo before committing.
-- If `git status` shows tasks.json clean (no diff), something is wrong — fused-memory writes should have updated it. Investigate before declaring decompose done.
-
-### Step 8 — Hand-back
+### Step 7 — Hand-back
 
 State:
 - Number of tasks filed.
@@ -176,11 +154,9 @@ State:
 
 ## Anti-patterns
 
-- Don't directly edit `.taskmaster/tasks/tasks.db` (memory `feedback_no_direct_tasksdb_writes`).
-- Don't hand-edit `tasks.json` (memory `feedback_no_direct_tasks_json_edits`) — only `git add` it after fused-memory writes have updated it.
+- Don't peek behind fused-memory at any underlying storage (sqlite files, JSON dumps, etc.). Fused-memory is the only supported interface for task state. If you think you need to look at storage to debug, surface to Leo instead.
 - Don't use `planning_mode=False` for the batch and then individually flip statuses to bypass the curator — that's the gameable shortcut the curator exists to prevent. If the curator is wedged, escalate to Leo.
 - Don't flip tasks to `pending` one-at-a-time, or in waves as deps land. Wire **everything** first, then flip the **whole batch together** in a single bulk `set_task_status` call.
-- Don't skip the Step 7 commit. The tasks-only commit is the durable record of the decomposition; without it the batch is invisible to anyone who doesn't have the local sqlite state.
 - Don't file follow-up tasks for things the PRD already covers as Open Questions — those stay in §Open questions, not as queued tasks.
 
 ## Resumption (if decompose was started but didn't finish)
@@ -191,6 +167,5 @@ If a prior session's decompose mode crashed partway:
 3. Resume at the first missing task; new ones still go in `planning_mode=True` even if some siblings already exist.
 4. Wire **all** dependencies (including any that should have been wired by the previous session — re-add is idempotent) before flipping anything.
 5. Bulk-flip every batch task that's still `deferred` to `pending` in a single call.
-6. Commit `.taskmaster/tasks/tasks.json` per Step 7.
 
 Avoid double-filing. Curator-combining will catch most duplicates but cleanest is to detect existing entries first.

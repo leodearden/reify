@@ -33,7 +33,7 @@ See `references/author-mode.md`.
 
 ### Decompose mode
 
-Read a committed PRD, re-walk gates against it, then file the whole task batch via fused-memory `submit_task` + `resolve_ticket` with **`planning_mode=True` on every task, no exceptions** (lands them as `deferred`). After the batch is filed, wire **all** dependencies, then flip the **entire batch** from `deferred` to `pending` in a single bulk `set_task_status` call. Finally, commit `.taskmaster/tasks/tasks.json` as the durable record of the batch.
+Read a committed PRD, re-walk gates against it, then file the whole task batch via fused-memory `submit_task` + `resolve_ticket` with **`planning_mode=True` on every task, no exceptions** (lands them as `deferred`). After the batch is filed, wire **all** dependencies, then flip the **entire batch** from `deferred` to `pending` in a single bulk `set_task_status` call. Fused-memory owns persistence — no commit step.
 
 See `references/decompose-mode.md`.
 
@@ -74,7 +74,7 @@ See `references/grammar-gate.md` for fixture-extraction heuristics and the exact
   - `grammar_confirmed` (bool): true iff the task's mechanism uses existing grammar, false if it queues grammar work.
 - All declared dependencies (intra-batch and out-of-batch, including cross-PRD per memory `preferences_cross_prd_deps_real_edges`) wired via `add_dependency` while the batch is still `deferred`.
 - The whole batch flipped `deferred` → `pending` together in a single bulk `set_task_status` call — never one-at-a-time.
-- A single tasks-only commit of `.taskmaster/tasks/tasks.json` recording the batch (decomposition is not "done" until this commit lands; the post-commit hook normalizes IDs automatically).
+- Fused-memory owns task persistence: no git commit, no on-disk artifact to manage.
 - The orchestrator does **not** currently read the `user_observable_signal` / `consumer_ref` / `grammar_confirmed` metadata fields. They are substrate for the F-infra follow-up session; surface this in the hand-back when decompose mode finishes.
 
 ## Gold-standard exemplar
