@@ -544,14 +544,19 @@ fn bracket_fillet_radius_sweep_obeys_materially_better_rule_with_calibrated_defa
     // test rather than silently invalidating the documented coverage.
     let base_param = 0.10_f64;
     // Widened from [0.105, 0.12, 0.15, 0.18, 0.19] (task #3436):
-    //   0.05  — well-conditioned small fillet (Pass-end extreme; pushes deep
-    //           into the safe region so ~1e-6 Jacobian drift can't flip it)
     //   0.195 — near-maximum fillet (`fillet_radius < thickness = 0.20`);
-    //           polar-wedge sensitivity peak (Reject-end extreme; similar
-    //           headroom on the other side of the discrimination boundary)
-    // Both extremes carry the verdict mix with substantial margin against
-    // numerical drift, unlike the mid-range targets they supplement.
-    let target_params = [0.05_f64, 0.105, 0.12, 0.15, 0.18, 0.19, 0.195];
+    //           polar-wedge sensitivity peak (Reject-end extreme; provides
+    //           substantial headroom against numerical drift on the
+    //           Reject side of the discrimination boundary).
+    // A Pass-end extension to 0.05 was tried (task #3436, esc-3436-157) but
+    // rejected: targets below `base_param = 0.10` morph the fillet DOWN,
+    // compressing the polar-wedge zone — the elasticity morph degrades
+    // min_sj by ~38% there (0.038 vs 0.061 from-scratch), so the
+    // materially-better rule correctly fires (ratio ≈ 1.62 > 1.20). The
+    // existing Pass-end target 0.105 already passes reliably with ample
+    // margin; the genuine fragility was always Reject-side, addressed by
+    // 0.195 above.
+    let target_params = [0.105_f64, 0.12, 0.15, 0.18, 0.19, 0.195];
     let fixture = |fillet_radius: f64| fixtures::bracket(1.0, 0.2, fillet_radius, 4);
     // See `calibration_sweep_options` for the rationale on the override.
     let options = calibration_sweep_options();
