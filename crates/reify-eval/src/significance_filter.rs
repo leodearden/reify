@@ -85,6 +85,26 @@ const DISPLACEMENT_KEY: &str = "displacement";
 /// compared bit-exactly — no Pressure tolerance class exists today.
 const NON_DISPLACEMENT_KEYS: [&str; 4] = ["stress", "max_von_mises", "converged", "iterations"];
 
+/// Cached `Value::String` BTreeMap lookup key for the displacement field.
+///
+/// Process-lifetime singleton: allocated on first `significance_filter` call
+/// and reused for every subsequent invocation. Once task 3382 (P3.3
+/// freshness-walk hook) routes filter calls through per-ComputeNode recompute,
+/// this avoids one `String` allocation per recompute.
+static DISPLACEMENT_KEY_VALUE: std::sync::LazyLock<reify_types::Value> =
+    std::sync::LazyLock::new(|| reify_types::Value::String(DISPLACEMENT_KEY.to_string()));
+
+/// Cached `Value::String` BTreeMap lookup keys for the four non-displacement
+/// fields, in the same iteration order as [`NON_DISPLACEMENT_KEYS`].
+///
+/// See [`DISPLACEMENT_KEY_VALUE`] for the amortization rationale; this static
+/// caches the array of four keys (one allocation event per process instead of
+/// four per call).
+static NON_DISPLACEMENT_KEY_VALUES: std::sync::LazyLock<[reify_types::Value; 4]> =
+    std::sync::LazyLock::new(|| {
+        NON_DISPLACEMENT_KEYS.map(|k| reify_types::Value::String(k.to_string()))
+    });
+
 /// Compare all grid-metadata fields of two [`reify_types::SampledField`]s,
 /// excluding `data` (the value payload) and `oob_emitted` (runtime flag).
 ///
@@ -181,19 +201,17 @@ pub fn significance_filter(
         _ => return FilterOutcome::Different,
     };
 
-    // Pre-build all BTreeMap key Values once — avoids re-allocation per lookup.
-    // BTreeMap::get<Q> requires K: Borrow<Q>; since Value: Borrow<Value> (blanket
-    // impl), passing &Value directly is valid. This builds 5 strings once per
-    // call rather than inside the loop body.
-    let non_disp_key_values: [reify_types::Value; 4] =
-        NON_DISPLACEMENT_KEYS.map(|k| reify_types::Value::String(k.to_string()));
-    let disp_key = reify_types::Value::String(DISPLACEMENT_KEY.to_string());
+    // BTreeMap key Values are allocated exactly once per process via the
+    // module-level LazyLock statics DISPLACEMENT_KEY_VALUE and
+    // NON_DISPLACEMENT_KEY_VALUES. BTreeMap::get<Q> requires K: Borrow<Q>;
+    // since Value: Borrow<Value> (blanket impl), &Value is a valid argument.
+    // Deref coercion: &*LazyLock<T> → &T; &[T; N] coerces to &[T] for iteration.
 
     // Non-displacement keys: require exact Value equality.
     // Any mismatch (including a key present in one map but absent in the other)
     // returns Different. v1 policy: no Pressure tolerance class exists today.
     // Exercises: significance_filter_returns_different_for_non_displacement_field_changes
-    for key_val in &non_disp_key_values {
+    for key_val in &*NON_DISPLACEMENT_KEY_VALUES {
         if prev_map.get(key_val) != new_map.get(key_val) {
             return FilterOutcome::Different;
         }
@@ -201,7 +219,10 @@ pub fn significance_filter(
 
     // Displacement extraction: missing key is malformed — conservative fallback.
     // Exercises: significance_filter_returns_different_for_malformed_shapes (b)
-    let (prev_disp, new_disp) = match (prev_map.get(&disp_key), new_map.get(&disp_key)) {
+    let (prev_disp, new_disp) = match (
+        prev_map.get(&*DISPLACEMENT_KEY_VALUE),
+        new_map.get(&*DISPLACEMENT_KEY_VALUE),
+    ) {
         (Some(p), Some(n)) => (p, n),
         _ => return FilterOutcome::Different,
     };
