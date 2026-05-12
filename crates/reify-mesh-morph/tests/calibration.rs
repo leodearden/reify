@@ -495,9 +495,13 @@ fn plate_hole_diameter_sweep_obeys_materially_better_rule_with_calibrated_defaul
     // refactor that shifts a Jacobian by 1e-6 (e.g. vertex emission reorder)
     // can still flip a step's verdict and produce a confusing CI failure.
     // If that happens: regenerate the metric distributions locally and
-    // recalibrate either `calibration_sweep_options()` (test-only) or
-    // `MorphOptions::default()` (production) as appropriate — the calibrated
-    // values are an empirical fit, not a closed-form invariant.
+    // recalibrate the test-only `calibration_sweep_options()` (its pct
+    // override is what bounds the pct margin) and/or
+    // `sweep::MATERIALITY_FACTOR` (the AR materiality bar) — these are the
+    // bounds the described margins land near. The production
+    // `MorphOptions::default()` pct floor (0.01) is below every fixture's
+    // baseline pct distribution so it never bounds these sweep margins; do
+    // NOT recalibrate it as a fix for a sweep-test verdict flip.
     let base_param = 0.30_f64;
     // target=0.60 is dropped: the production proxy AR metric trips (~2.15 > 2.0)
     // but the materiality predicate (`from_scratch_max_ar_factor ≈ 1.18 < 1.20`,
