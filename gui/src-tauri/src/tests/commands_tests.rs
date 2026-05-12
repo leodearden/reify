@@ -168,19 +168,19 @@ fn make_poisoned_engine() -> Arc<Mutex<EngineSession>> {
 }
 
 #[test]
-fn get_entity_tree_impl_returns_err_on_poisoned_mutex() {
+fn get_entity_tree_impl_recovers_from_poisoned_mutex() {
     use crate::commands::get_entity_tree_impl;
 
     let engine = make_poisoned_engine();
     let result = get_entity_tree_impl(&engine);
     assert!(
-        result.is_err(),
-        "expected Err on poisoned mutex, got {:?}",
+        result.is_ok(),
+        "expected Ok recovery from poisoned mutex, got {:?}",
         result
     );
     assert!(
-        result.unwrap_err().contains("Lock error"),
-        "error message should contain 'Lock error'"
+        result.unwrap().is_empty(),
+        "no module loaded in poisoned session → empty tree"
     );
 }
 
@@ -201,19 +201,19 @@ fn get_entity_tree_impl_returns_ok_on_healthy_mutex() {
 }
 
 #[test]
-fn get_entity_identity_map_impl_returns_err_on_poisoned_mutex() {
+fn get_entity_identity_map_impl_recovers_from_poisoned_mutex() {
     use crate::commands::get_entity_identity_map_impl;
 
     let engine = make_poisoned_engine();
     let result = get_entity_identity_map_impl(&engine);
     assert!(
-        result.is_err(),
-        "expected Err on poisoned mutex, got {:?}",
+        result.is_ok(),
+        "expected Ok recovery from poisoned mutex, got {:?}",
         result
     );
     assert!(
-        result.unwrap_err().contains("Lock error"),
-        "error message should contain 'Lock error'"
+        result.unwrap().is_empty(),
+        "no module loaded in poisoned session → empty identity map"
     );
 }
 
@@ -272,19 +272,20 @@ fn get_entity_identity_map_impl_returns_ok_empty_when_no_module_loaded() {
 }
 
 #[test]
-fn get_containing_definition_impl_returns_err_on_poisoned_mutex() {
+fn get_containing_definition_impl_recovers_from_poisoned_mutex() {
     use crate::commands::get_containing_definition_impl;
 
     let engine = make_poisoned_engine();
-    let result = get_containing_definition_impl(&engine, 1, 1);
+    let result = get_containing_definition_impl(&engine, 16, 1);
     assert!(
-        result.is_err(),
-        "expected Err on poisoned mutex, got {:?}",
+        result.is_ok(),
+        "expected Ok recovery from poisoned mutex, got {:?}",
         result
     );
-    assert!(
-        result.unwrap_err().contains("Lock error"),
-        "error message should contain 'Lock error'"
+    assert_eq!(
+        result.unwrap(),
+        None,
+        "no module loaded in poisoned session → None for any position"
     );
 }
 
@@ -316,19 +317,20 @@ fn get_containing_definition_impl_returns_ok_on_healthy_mutex() {
 // --- get_entity_at_source_location_impl tests ---
 
 #[test]
-fn get_entity_at_source_location_impl_returns_err_on_poisoned_mutex() {
+fn get_entity_at_source_location_impl_recovers_from_poisoned_mutex() {
     use crate::commands::get_entity_at_source_location_impl;
 
     let engine = make_poisoned_engine();
-    let result = get_entity_at_source_location_impl(&engine, 2, 11);
+    let result = get_entity_at_source_location_impl(&engine, 16, 1);
     assert!(
-        result.is_err(),
-        "expected Err on poisoned mutex, got {:?}",
+        result.is_ok(),
+        "expected Ok recovery from poisoned mutex, got {:?}",
         result
     );
-    assert!(
-        result.unwrap_err().contains("Lock error"),
-        "error message should contain 'Lock error'"
+    assert_eq!(
+        result.unwrap(),
+        None,
+        "no module loaded in poisoned session → None for any position"
     );
 }
 
@@ -515,19 +517,19 @@ fn get_mechanism_descriptors_impl_round_trips() {
 }
 
 #[test]
-fn get_mechanism_descriptors_impl_returns_err_on_poisoned_mutex() {
+fn get_mechanism_descriptors_impl_recovers_from_poisoned_mutex() {
     use crate::commands::get_mechanism_descriptors_impl;
 
     let engine = make_poisoned_engine();
     let result = get_mechanism_descriptors_impl(&engine);
     assert!(
-        result.is_err(),
-        "expected Err on poisoned mutex, got {:?}",
+        result.is_ok(),
+        "expected Ok recovery from poisoned mutex, got {:?}",
         result
     );
     assert!(
-        result.unwrap_err().contains("Lock error"),
-        "error message should contain 'Lock error'"
+        result.unwrap().is_empty(),
+        "no module loaded in poisoned session → empty descriptor list"
     );
 }
 
