@@ -4902,7 +4902,7 @@ mod dispatch_volume_mesh_tests {
         let _: VolumeMeshOutcome = VolumeMeshOutcome::Swept(todo!());
         // Verify the full signature including the new ops/handles slice parameters
         // via function-item to function-pointer coercion.
-        let _: fn(
+        type DispatchVolumeMeshFn = fn(
             Option<&SweptKind>,
             bool,
             bool,
@@ -4911,6 +4911,7 @@ mod dispatch_volume_mesh_tests {
             fn(&SweptKind) -> Result<Mesh2dReport, Mesh2dError>,
             fn(&SweepParams, &Mesh2d) -> Result<SweptMesh3d, SweepError>,
             fn() -> Result<VolumeMesh, GeometryError>,
-        ) -> Result<VolumeMeshOutcome, GeometryError> = dispatch_volume_mesh::<_, _, _>;
+        ) -> Result<VolumeMeshOutcome, GeometryError>;
+        let _: DispatchVolumeMeshFn = dispatch_volume_mesh::<_, _, _>;
     }
 }

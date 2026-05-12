@@ -2287,9 +2287,7 @@ mod tests {
     /// must invalidate.
     #[test]
     fn contributors_relative_includes_workspace_cargo_lock_for_transitive_dep_invalidation() {
-        let found = crate::engine_hash_algo::CONTRIBUTORS_RELATIVE
-            .iter()
-            .any(|&p| p == "../../Cargo.lock");
+        let found = crate::engine_hash_algo::CONTRIBUTORS_RELATIVE.contains(&"../../Cargo.lock");
         assert!(
             found,
             "CONTRIBUTORS_RELATIVE must contain \"../../Cargo.lock\" so that any \
@@ -2416,7 +2414,7 @@ mod tests {
     #[test]
     fn touch_sidecar_updates_mtime_to_a_strictly_later_value_without_changing_content() {
         use std::fs::File;
-        use std::time::{Duration, SystemTime, UNIX_EPOCH};
+        use std::time::{Duration, UNIX_EPOCH};
 
         let tmpdir = tempfile::TempDir::new().expect("must create tempdir");
         let path = tmpdir.path().join("entry.meta");

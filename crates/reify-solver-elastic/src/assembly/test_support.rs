@@ -25,9 +25,9 @@ pub(crate) fn matvec(k: &ElementStiffness, u: &[f64]) -> Vec<f64> {
     assert_eq!(k.n_dofs, u.len());
     let n = k.n_dofs;
     let mut out = vec![0.0; n];
-    for i in 0..n {
-        for j in 0..n {
-            out[i] += k.get(i, j) * u[j];
+    for (i, out_i) in out.iter_mut().enumerate() {
+        for (j, &u_j) in u.iter().enumerate() {
+            *out_i += k.get(i, j) * u_j;
         }
     }
     out

@@ -32,7 +32,7 @@ fn mesh_plane_2d_triangle_path_unit_square_round_trip() {
 
     // (c) vertices_xy is a flat XY buffer (stride 2).
     assert!(
-        result.vertices_xy.len() % 2 == 0,
+        result.vertices_xy.len().is_multiple_of(2),
         "vertices_xy.len()={} not even (XY pairs expected)",
         result.vertices_xy.len(),
     );

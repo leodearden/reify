@@ -29,14 +29,16 @@ fn unit_square_boundary() -> ProfileBoundary {
 #[test]
 fn mesh_swept_profile_2d_wedge_target_unit_square_returns_triangles() {
     let boundary = unit_square_boundary();
-    let mut options = Mesh2dOptions::default();
-    // Force determinism so the test result is reproducible across runs.
-    options.deterministic = true;
-    // Use an explicit mesh size so auto-size derivation doesn't kick in
+    // Force determinism so the test result is reproducible across runs;
+    // use an explicit mesh size so auto-size derivation doesn't kick in
     // (auto-size for a unit-square outer ring is 1.0, which on its own
     // can yield a single triangle pair — still valid, but the explicit
     // 0.5 keeps the test aligned with the kernel smoke test).
-    options.mesh_size = Some(0.5);
+    let options = Mesh2dOptions {
+        deterministic: true,
+        mesh_size: Some(0.5),
+        ..Default::default()
+    };
 
     let result = mesh_swept_profile_2d(&boundary, SweepElementTarget::WedgeOnly, &options);
 
@@ -69,7 +71,7 @@ fn mesh_swept_profile_2d_wedge_target_unit_square_returns_triangles() {
     match report.mesh {
         Mesh2d::Triangle { vertices, indices } => {
             assert!(
-                indices.len() > 0,
+                !indices.is_empty(),
                 "WedgeOnly triangle indices must be non-empty",
             );
             assert_eq!(
@@ -94,7 +96,7 @@ fn mesh_swept_profile_2d_wedge_target_unit_square_returns_triangles() {
             for chunk in vertices.chunks_exact(2) {
                 let (x, y) = (chunk[0], chunk[1]);
                 assert!(
-                    x >= -1e-5 && x <= 1.0 + 1e-5 && y >= -1e-5 && y <= 1.0 + 1e-5,
+                    (-1e-5..=1.0 + 1e-5).contains(&x) && (-1e-5..=1.0 + 1e-5).contains(&y),
                     "vertex ({x}, {y}) outside unit square",
                 );
             }
@@ -114,9 +116,11 @@ fn mesh_swept_profile_2d_hex_preferred_unit_square_recombines_cleanly() {
     // perfectly-square quads. With the auto-derived size of 1.0, gmsh
     // subdivides interior edges and produces a quad with skew slightly
     // above π/4 — that fall-back behaviour is exercised in the next pair.
-    let mut options = Mesh2dOptions::default();
-    options.mesh_size = Some(2.0);
-    options.deterministic = true;
+    let options = Mesh2dOptions {
+        mesh_size: Some(2.0),
+        deterministic: true,
+        ..Default::default()
+    };
 
     let result = mesh_swept_profile_2d(&boundary, SweepElementTarget::HexPreferred, &options);
 
@@ -167,7 +171,7 @@ fn mesh_swept_profile_2d_hex_preferred_unit_square_recombines_cleanly() {
             for chunk in vertices.chunks_exact(2) {
                 let (x, y) = (chunk[0], chunk[1]);
                 assert!(
-                    x >= -1e-5 && x <= 1.0 + 1e-5 && y >= -1e-5 && y <= 1.0 + 1e-5,
+                    (-1e-5..=1.0 + 1e-5).contains(&x) && (-1e-5..=1.0 + 1e-5).contains(&y),
                     "vertex ({x}, {y}) outside unit square",
                 );
             }
@@ -225,9 +229,11 @@ fn mesh_swept_profile_2d_hex_preferred_pointy_triangle_falls_back_to_triangles()
         outer: vec![[0.0, 0.0], [1.0, 0.0], [0.5, 1.0]],
         holes: vec![],
     };
-    let mut options = Mesh2dOptions::default();
-    options.mesh_size = Some(0.5);
-    options.deterministic = true;
+    let options = Mesh2dOptions {
+        mesh_size: Some(0.5),
+        deterministic: true,
+        ..Default::default()
+    };
 
     let result = mesh_swept_profile_2d(&boundary, SweepElementTarget::HexPreferred, &options);
 
@@ -250,10 +256,11 @@ fn mesh_swept_profile_2d_hex_preferred_pointy_triangle_falls_back_to_triangles()
 #[test]
 fn mesh_swept_profile_2d_hex_preferred_tight_threshold_falls_back_to_triangles() {
     let boundary = unit_square_boundary();
-    let mut options = Mesh2dOptions::default();
-    options.mesh_size = Some(0.5);
-    options.deterministic = true;
-    options.recombine_skew_threshold = 0.01;
+    let options = Mesh2dOptions {
+        mesh_size: Some(0.5),
+        deterministic: true,
+        recombine_skew_threshold: 0.01,
+    };
 
     let result = mesh_swept_profile_2d(&boundary, SweepElementTarget::HexPreferred, &options);
 

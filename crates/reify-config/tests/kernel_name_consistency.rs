@@ -81,6 +81,5 @@ fn gmsh_kernel_name_const_matches_kernel_id_display() {
 /// tests.
 const _EXHAUSTIVENESS_PIN: fn(KernelId) = |id| match id {
     KernelId::Occt | KernelId::Manifold | KernelId::Fidget | KernelId::OpenVdb | KernelId::Gmsh => {
-        ()
     }
 };

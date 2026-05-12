@@ -992,7 +992,7 @@ mod tests {
             cached_result: Some(Value::Real(1.5)),
             result_content_hash: Some(ContentHash::of_str("rh")),
             opaque_state: Some(OpaqueState::new(42i32, 4)),
-            running: Some(CancellationHandle::default()),
+            running: Some(CancellationHandle),
             output_value_cells: vec![ValueCellId::new("Bracket", "stress")],
         };
 

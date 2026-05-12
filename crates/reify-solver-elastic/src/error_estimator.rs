@@ -299,13 +299,13 @@ mod tests {
                 }
             }
             let tol = 1e-12;
-            for i in 0..6 {
-                for j in 0..6 {
+            for (i, sd_row) in sd.iter().enumerate() {
+                for (j, &sd_ij) in sd_row.iter().enumerate() {
                     let expected = if i == j { 1.0 } else { 0.0 };
                     assert!(
-                        (sd[i][j] - expected).abs() < tol,
+                        (sd_ij - expected).abs() < tol,
                         "S·D[{i}][{j}] = {} (expected {expected}) for material E={}, ν={}",
-                        sd[i][j],
+                        sd_ij,
                         mat.youngs_modulus,
                         mat.poisson_ratio,
                     );

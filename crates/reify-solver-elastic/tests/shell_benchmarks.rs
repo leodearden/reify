@@ -461,7 +461,7 @@ fn pinched_cylinder_octant_smoke_test_radial_displacement_is_finite_and_inward()
          indicates a BC or load-direction bug"
     );
     assert!(
-        radial_disp >= LOWER && radial_disp <= UPPER,
+        (LOWER..=UPPER).contains(&radial_disp),
         "pinched cylinder: radial_disp = {radial_disp:.6e} \
          outside bare-MITC3 envelope [{LOWER:.0e}, {UPPER:.0e}] \
          (MacNeal-Harder reference {MACNEAL_HARDER_REF:.4e}; bare MITC3 ~76× under). \
