@@ -321,9 +321,9 @@ Contract document authored 2026-05-12: `docs/prds/v0_3/structure-instance-runtim
 | Evidence | `findings/structural-analysis-shells.md` M-018/M-019/M-020/M-022/M-023; `findings/fea-gui-rendering-shells.md` M-002/M-004/M-014; `findings/varying-thickness-shells.md` M-001; `findings/composite-laminated-shells.md` M-005/M-006 |
 | Cited by PRDs | structural-analysis-shells, fea-gui-rendering-shells, varying-thickness-shells, composite-laminated-shells |
 | Blocks tasks | Per cluster C-19 |
-| Disposition | **PRD-shape work — shell-extract engine integration PRD.** Specific case of the engine-integration norm (GR-017); shells is large enough to warrant its own PRD slot. Also intersects GR-016 (GUI event channel) on the IPC half. |
+| Disposition | **PRD-shape work — shell-extract engine integration PRD.** Specific case of the engine-integration norm (GR-017); shells is large enough to warrant its own PRD slot. Also intersects GR-016 (GUI event channel) on the IPC half. **Resolution mechanism: `docs/prds/v0_4/shell-extract-engine-bridge.md`** (authored 2026-05-12) — vertical-slice decomposition under B+H discipline; supersedes parent shells PRD T18/T19/T23 (tasks 3031/3032/3036) and completes the engine-side fold-in half of T20 (3033). Plugs into landed seams GR-001 (struct-instance runtime), GR-002 (ComputeNode contract via `shell-extract::extract` target), GR-016 (MeshData payload extension per §2.4 delegation). |
 | Discovered | 2026-05-12 architecture audit |
-| Notes | Mid-surface naming (Role::MidSurfaceEdge + FeatureId::derived_mid_surface) is wired in `reify-types`; the missing piece is plumbing through the kernel→engine→solver/GUI seams. |
+| Notes | Mid-surface naming (Role::MidSurfaceEdge + FeatureId::derived_mid_surface) is wired in `reify-types`; the missing piece is plumbing through the kernel→engine→solver/GUI seams. Producer half (mid-surface + segmentation + thickness + naming records) ships in `reify-shell-extract` with synthetic-input testing; consumer-side bridge for FEA `ElasticResult { shell_channels: Option<ShellChannels> }` + GUI `MeshData { element_kind, region_tags, vector_channels }` is the PRD's deliverable. |
 
 ### GR-022 — MITC3 vs MITC3+ DRIFT (shell accuracy benchmarks widened) (cluster C-20)
 
