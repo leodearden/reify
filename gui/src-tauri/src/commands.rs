@@ -109,8 +109,7 @@ pub fn open_file_engine_impl(
 ///
 /// Returns an empty vec when no module is loaded.
 pub fn get_entity_tree_impl(engine: &Mutex<EngineSession>) -> Result<Vec<EntityTreeNode>, String> {
-    let s = engine.lock().map_err(|e| format!("Lock error: {}", e))?;
-    Ok(s.get_entity_tree())
+    crate::engine_lock::with_engine_lock(engine, |s| s.get_entity_tree())
 }
 
 /// Return the entity identity map (entity_path → EntityIdentity) for the loaded module.
@@ -119,8 +118,7 @@ pub fn get_entity_tree_impl(engine: &Mutex<EngineSession>) -> Result<Vec<EntityT
 pub fn get_entity_identity_map_impl(
     engine: &Mutex<EngineSession>,
 ) -> Result<HashMap<String, EntityIdentity>, String> {
-    let s = engine.lock().map_err(|e| format!("Lock error: {}", e))?;
-    Ok(s.get_entity_identity_map())
+    crate::engine_lock::with_engine_lock(engine, |s| s.get_entity_identity_map())
 }
 
 /// Return a preview GuiState for a single named definition evaluated with its defaults.
@@ -192,8 +190,7 @@ pub fn get_containing_definition_impl(
     line: u32,
     col: u32,
 ) -> Result<Option<DefInfo>, String> {
-    let s = engine.lock().map_err(|e| format!("Lock error: {}", e))?;
-    Ok(s.get_containing_definition(line, col))
+    crate::engine_lock::with_engine_lock(engine, |s| s.get_containing_definition(line, col))
 }
 
 /// Return the entity (and optionally member) at the given 1-based `(line, col)` source position.
@@ -207,8 +204,7 @@ pub fn get_entity_at_source_location_impl(
     line: u32,
     col: u32,
 ) -> Result<Option<String>, String> {
-    let s = engine.lock().map_err(|e| format!("Lock error: {}", e))?;
-    Ok(s.get_entity_at_source_location(line, col))
+    crate::engine_lock::with_engine_lock(engine, |s| s.get_entity_at_source_location(line, col))
 }
 
 /// Return mechanism descriptors for all non-errored mechanisms in the loaded module.
@@ -223,6 +219,5 @@ pub fn get_entity_at_source_location_impl(
 pub fn get_mechanism_descriptors_impl(
     engine: &Mutex<EngineSession>,
 ) -> Result<Vec<MechanismDescriptor>, String> {
-    let mut s = engine.lock().map_err(|e| format!("Lock error: {}", e))?;
-    Ok(s.get_mechanism_descriptors())
+    crate::engine_lock::with_engine_lock(engine, |s| s.get_mechanism_descriptors())
 }
