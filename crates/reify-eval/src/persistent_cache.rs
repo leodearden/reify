@@ -425,6 +425,17 @@ pub trait PersistentlyCacheable: Sized {
     /// zeros for any `f64` fields).
     fn deserialize_from_reader(r: &mut impl Read) -> io::Result<Self>;
 
+    /// Uncompressed body byte count, used to populate
+    /// [`CacheEntryHeader::byte_size`] so the value is reportable by
+    /// `cache stats` without decompressing the body.
+    ///
+    /// MUST equal the number of bytes a caller would see after decompressing
+    /// the output of [`serialize_to_writer`](Self::serialize_to_writer).
+    ///
+    /// No default implementation — every cacheable type must answer. Pinned by
+    /// `write_entry_populates_byte_size_field_with_actually_uncompressed_body_byte_count`.
+    fn uncompressed_byte_size(&self) -> u64;
+
     /// Solve time in milliseconds, exposed to the cache layer for
     /// cost-weighted LRU eviction.
     fn solve_time_ms(&self) -> u64;
@@ -754,9 +765,326 @@ impl PersistentlyCacheable for ElasticResult {
         })
     }
 
+    fn uncompressed_byte_size(&self) -> u64 {
+        // After zstd decompression, the body is:
+        //   1. bincode 1.3 fixint-LE encoded ElasticResultHeader (37 bytes; pinned
+        //      by `elastic_result_header_bincode_encoding_matches_pinned_hex_literal`).
+        //   2. displacement slab: displacement.len() * 8 bytes (little-endian f64).
+        //   3. stress slab: stress.len() * 8 bytes (little-endian f64).
+        // This method returns that total uncompressed length.
+        //
+        // `bincode::serialized_size` is used rather than a hardcoded 37-byte
+        // magic constant so that future ElasticResultHeader field additions
+        // automatically update the uncompressed size without a manual edit.
+        // bincode 1.3 fixint-LE encoding of a struct with no variable-length fields
+        // cannot fail in practice — the `.unwrap_or(0)` is unreachable for the
+        // current struct shape (only fixed-size fields: u64, bool, u32, u64, u64, u64).
+        let header = ElasticResultHeader {
+            max_von_mises_bits: self.max_von_mises.to_bits(),
+            converged: self.converged,
+            iterations: self.iterations,
+            solve_time_ms: self.solve_time_ms,
+            displacement_len: self.displacement.len() as u64,
+            stress_len: self.stress.len() as u64,
+        };
+        let header_bytes = bincode::serialized_size(&header).expect(
+            "ElasticResultHeader has only fixed-size fields (u64, bool, u32, u64, u64, u64); \
+             bincode::serialized_size cannot fail. If a future field with variable-length \
+             encoding (String/Vec/Option) is added, this expect will fire — at which point \
+             byte_size accounting must be revisited.",
+        );
+        let slab_bytes = 8 * (self.displacement.len() as u64 + self.stress.len() as u64);
+        header_bytes + slab_bytes
+    }
+
     fn solve_time_ms(&self) -> u64 {
         self.solve_time_ms
     }
+}
+
+/// Convert a 32-character ASCII `&str` cache key component into a fixed
+/// `[u8; 32]` byte array for storage in [`CacheEntryHeader`] echo fields.
+///
+/// # Contract
+///
+/// Validates **length only** (exactly 32 bytes), not hex-ness — the caller
+/// may pass any 32-character ASCII string and this function will accept it.
+/// The name reflects the actual contract: the echo fields hold arbitrary
+/// length-32 ASCII cache key slices, not decoded hex values. The hex format
+/// is a convention at the call site, not a constraint enforced here.
+///
+/// Used by both [`write_entry`] (to populate the header echoes) and
+/// [`read_entry`] (to compute the expected echoes for verification against the
+/// on-disk header). A single helper keeps one source of truth for the
+/// conversion and ensures both sites produce the same `InvalidInput` error
+/// if a non-32-char string is accidentally passed.
+///
+/// The `debug_assert!` in [`shard_dir`] only guards `len >= 2`; this function
+/// enforces the stricter `len == 32` requirement that the echo fields demand.
+fn cache_key_to_ascii_32(s: &str) -> io::Result<[u8; 32]> {
+    s.as_bytes().try_into().map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "cache key must be exactly 32 ASCII chars, got {} chars: {:?}",
+                s.len(),
+                s
+            ),
+        )
+    })
+}
+
+/// Write a cache entry to disk atomically using a temp-file + rename approach.
+///
+/// The body is pre-buffered into a `Vec<u8>` before the header is written so
+/// that `CacheEntryHeader::byte_size` is known without seeking. After
+/// `sync_all` for durability, `tempfile::NamedTempFile::persist` performs a
+/// POSIX `rename(2)` — atomic and last-writer-wins under concurrent writers.
+/// The shard directory is fsynced after the rename to ensure the directory
+/// entry (dirent) is durable on the same flush cycle as the file data.
+/// The sidecar `.meta` file is written AFTER the rename so a failed rename
+/// never leaves an orphan sidecar pointing at a non-existent `.bin`.
+///
+/// # Concurrency
+///
+/// Per PRD `docs/prds/v0_3/persistent-fea-cache.md` §"Concurrency": two
+/// concurrent callers writing the same `(engine_version_hash, input_hash)` key
+/// both succeed without any lock. The `tempfile::Builder::new().prefix(".tmp.")`
+/// placement in the same shard directory satisfies the POSIX requirement for
+/// `rename(2)` atomicity (same filesystem). The `.tmp.` prefix also matches the
+/// PRD's convention for orphan identification, so the future startup-sweep task
+/// can glob `**/.tmp.*` to find and remove any temp files left behind by a
+/// writer killed between creation and rename. `sync_all()` before `persist()`
+/// makes the file *content* crash-durable; the subsequent directory `sync_all()`
+/// makes the directory *entry* crash-durable. A crash between `persist()` and
+/// the sidecar write leaves the `.bin` consistent (last atomic rename wins) but
+/// the sidecar absent; the next `read_entry` tolerates an absent sidecar
+/// gracefully via sidecar recreation on hit.
+///
+/// Pinned by test
+/// `concurrent_write_entry_calls_for_same_input_both_succeed_and_final_read_entry_decodes_to_original_value`.
+///
+/// # Errors
+///
+/// Propagates `io::Error` for unexpected I/O failures (directory creation,
+/// file creation, write errors, sync, rename). The caller is responsible for
+/// any higher-level retry or eviction logic.
+pub fn write_entry<V: PersistentlyCacheable>(
+    cache_root: &Path,
+    engine_version_hash: &str,
+    input_hash: &str,
+    value: &V,
+) -> io::Result<()> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    // Validate cache-key lengths BEFORE any filesystem side effects. `shard_dir`
+    // slices `&input_hash[..2]` and would panic on a string shorter than 2 ASCII
+    // bytes (or with a multi-byte UTF-8 char straddling that boundary); even for
+    // the common "31 chars" case, doing FS work before validation would leave an
+    // orphan shard dir and tempfile behind on `InvalidInput`.
+    let engine_bytes: [u8; 32] = cache_key_to_ascii_32(engine_version_hash)?;
+    let input_bytes: [u8; 32] = cache_key_to_ascii_32(input_hash)?;
+
+    let sd = shard_dir(cache_root, engine_version_hash, input_hash);
+    std::fs::create_dir_all(&sd)?;
+
+    let mut temp = tempfile::Builder::new()
+        .prefix(".tmp.")
+        .tempfile_in(&sd)?;
+
+    let written_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(-1);
+
+    let header = CacheEntryHeader {
+        format_version: ENTRY_FORMAT_VERSION,
+        engine_version_hash: engine_bytes,
+        input_hash: input_bytes,
+        solve_time_ms: value.solve_time_ms(),
+        // byte_size is the UNCOMPRESSED body byte count (per CacheEntryHeader
+        // doc, lines 195-196 / 210-211), supplied by uncompressed_byte_size()
+        // — NOT the compressed length, which would make the field redundant
+        // with `file_size - ENTRY_HEADER_ENCODED_LEN`.
+        byte_size: value.uncompressed_byte_size(),
+        written_at,
+    };
+
+    // Write the header then stream the compressed body directly into the
+    // tempfile. No intermediate Vec<u8> buffer is needed: byte_size is known
+    // from value.uncompressed_byte_size() before serialization, so there is
+    // no chicken-and-egg ordering constraint. Avoiding the buffer saves a
+    // peak transient allocation of tens of MiB for large FEA results
+    // (displacement+stress up to 128 MiB uncompressed).
+    header.write_to(&mut temp)?;
+    value.serialize_to_writer(&mut temp)?;
+    temp.as_file().sync_all()?;
+
+    let bin_path = entry_bin_path(cache_root, engine_version_hash, input_hash);
+    temp.persist(&bin_path).map_err(|e| e.error)?;
+
+    // fsync the shard directory so the directory entry pointing at the newly
+    // renamed `.bin` is durable on the same flush cycle as the file data.
+    // Without this, a kernel crash between persist() and the next filesystem
+    // sync could lose the dirent even though the `.bin` data is on disk
+    // (the file content is durable from sync_all() above, but the directory
+    // inode update from rename(2) may still be in the page cache).
+    // Impact is bounded — a missing entry is a cache miss — but GC eviction
+    // policy depends on the sidecar being co-located with the .bin, so
+    // entries that vanish post-crash without their sidecar being cleaned up
+    // could linger as orphan sidecars. The directory fsync avoids this.
+    std::fs::File::open(&sd)?.sync_all()?;
+
+    // Write the sidecar AFTER the atomic rename (and after the dir fsync) so
+    // a failed rename or crash never leaves an orphan sidecar pointing at a
+    // non-existent .bin. write_sidecar (not touch_sidecar) is used here
+    // because the .meta may not exist yet on the first write of a fresh entry
+    // — write_sidecar creates-or-overwrites, covering both cases.
+    write_sidecar(&entry_meta_path(cache_root, engine_version_hash, input_hash))?;
+
+    Ok(())
+}
+
+/// Read a cache entry from disk.
+///
+/// Returns `Ok(None)` on cache miss (file absent) or on a corrupt/stale
+/// entry (format-version mismatch, echo mismatch, body decode error — all
+/// treated as miss per PRD corruption-recovery policy). Returns
+/// `Ok(Some(value))` on a successful hit. Propagates `Err` only for genuine
+/// I/O infrastructure problems (e.g. EACCES on the `.bin` file) where the
+/// caller must be informed.
+pub fn read_entry<V: PersistentlyCacheable>(
+    cache_root: &Path,
+    engine_version_hash: &str,
+    input_hash: &str,
+) -> io::Result<Option<V>> {
+    use std::fs::File;
+    use std::io::BufReader;
+
+    // Validate cache-key lengths BEFORE constructing the bin path. `entry_bin_path`
+    // → `shard_dir` slices `&input_hash[..2]` and would panic on a short or
+    // non-ASCII-boundary input. Computing the expected echo bytes up front also
+    // means we never advance to file open with an unusable key.
+    let expected_engine = cache_key_to_ascii_32(engine_version_hash)?;
+    let expected_input  = cache_key_to_ascii_32(input_hash)?;
+
+    let bin_path = entry_bin_path(cache_root, engine_version_hash, input_hash);
+    // NotFound is the cache-miss signal per PRD; any other Err is an
+    // infrastructure problem the caller must know about.
+    let f = match File::open(&bin_path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    // BufReader amortizes the many small read(2) syscalls that bincode's
+    // fixed-int decoder would otherwise issue for the 92-byte header fields.
+    // zstd::Decoder downstream does its own internal buffering, so this
+    // BufReader primarily benefits the header decode path on every cache hit.
+    let mut f = BufReader::new(f);
+    // Truncated or otherwise corrupt headers (file shorter than the encoded
+    // length, or bincode decode failure) are treated as a cache miss per PRD
+    // corruption-recovery policy — same as the body-decode branch below. Only
+    // genuine infrastructure errors (e.g. EACCES on a read mid-header) propagate.
+    let header = match CacheEntryHeader::read_from(&mut f) {
+        Ok(h) => h,
+        Err(e)
+            if matches!(
+                e.kind(),
+                io::ErrorKind::UnexpectedEof | io::ErrorKind::InvalidData
+            ) =>
+        {
+            tracing::warn!(
+                ?e,
+                cache_root = %cache_root.display(),
+                engine_version_hash,
+                input_hash,
+                "cache entry rejected: header read failed (treating as miss)"
+            );
+            return Ok(None);
+        }
+        Err(e) => return Err(e),
+    };
+
+    // Check format_version BEFORE body decode — a stale-format entry must never
+    // advance to the more expensive decompression path.
+    if let Err(e) = header.verify_format_version() {
+        tracing::warn!(
+            ?e,
+            cache_root = %cache_root.display(),
+            engine_version_hash,
+            input_hash,
+            "cache entry rejected: format_version mismatch (treating as miss)"
+        );
+        return Ok(None);
+    }
+
+    // Verify that the header's echo fields match the key components from the
+    // path. A mismatch indicates corruption (misplaced or bit-flipped .bin).
+    if let Err(e) = header.verify_field_echoes(&expected_engine, &expected_input) {
+        tracing::warn!(
+            ?e,
+            cache_root = %cache_root.display(),
+            engine_version_hash,
+            input_hash,
+            "cache entry rejected: header echo mismatch (treating as miss)"
+        );
+        return Ok(None);
+    }
+
+    // Body-decode errors (bad zstd frame, truncated slab, bincode schema drift)
+    // are treated as cache miss per PRD corruption-recovery policy. Only genuine
+    // I/O infrastructure errors before the header read (e.g. EACCES on file open)
+    // surface as Err — those are not corruption, they are infrastructure problems.
+    let value = match V::deserialize_from_reader(&mut f) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(
+                ?e,
+                cache_root = %cache_root.display(),
+                engine_version_hash,
+                input_hash,
+                "cache entry rejected: body decode failed (treating as miss)"
+            );
+            return Ok(None);
+        }
+    };
+
+    // Update the sidecar mtime as the LRU last-access signal.
+    //
+    // The sidecar may be absent if write_entry was killed (or errored) between
+    // persist() and write_sidecar(), leaving the .bin on disk with no companion
+    // .meta. In that case we recreate the sidecar via write_sidecar so the
+    // entry gets a proper LRU signal and is visible to GC cost-weighted
+    // eviction. Without recreation, the orphan .bin would have no LRU signal
+    // and GC would be unable to evict it under the cost-weighted policy.
+    //
+    // Branch on a metadata probe (TOCTOU-tolerant: both paths are safe):
+    //   - .meta exists  → touch_sidecar (update mtime only, preserve magic byte)
+    //   - .meta absent  → write_sidecar (create-or-overwrite with magic byte)
+    //
+    // Any other error (e.g. EACCES on a read-only mount) is logged at debug
+    // level only — the cache hit is valid regardless of whether the LRU signal
+    // update succeeded.
+    let meta_path = entry_meta_path(cache_root, engine_version_hash, input_hash);
+    let sidecar_result = match std::fs::metadata(&meta_path) {
+        Ok(_) => touch_sidecar(&meta_path),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            // Recreate the missing sidecar so this .bin gets an LRU signal.
+            write_sidecar(&meta_path)
+        }
+        Err(e) => Err(e),
+    };
+    if let Err(e) = sidecar_result {
+        tracing::debug!(
+            ?e,
+            cache_root = %cache_root.display(),
+            engine_version_hash,
+            input_hash,
+            "sidecar update failed on cache hit; LRU signal will be stale"
+        );
+    }
+
+    Ok(Some(value))
 }
 
 #[cfg(test)]
@@ -2376,5 +2704,370 @@ mod tests {
         assert_eq!(decoded.solve_time_ms, original.solve_time_ms);
         assert_eq!(decoded.byte_size, original.byte_size);
         assert_eq!(decoded.written_at, original.written_at);
+    }
+
+    // ── write_entry / read_entry I/O tests ───────────────────────────────────
+
+    #[test]
+    fn write_entry_then_read_entry_round_trips_an_elastic_result_value() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "abcdef0123456789abcdef0123456789";
+        let inp = "fedcba9876543210fedcba9876543210";
+        let original = make_sample_result();
+        write_entry(root, eng, inp, &original).unwrap();
+        let read_back = read_entry::<ElasticResult>(root, eng, inp).unwrap();
+        assert_eq!(read_back, Some(original));
+    }
+
+    #[test]
+    fn write_entry_creates_meta_sidecar_with_magic_byte_in_same_shard_dir_as_bin() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "aabbccddeeff00112233445566778899";
+        let inp = "99887766554433221100ffeeddccbbaa";
+        let original = make_sample_result();
+
+        write_entry(root, eng, inp, &original).unwrap();
+
+        let meta_path = entry_meta_path(root, eng, inp);
+        let bin_path  = entry_bin_path(root, eng, inp);
+
+        // Sidecar must exist and contain exactly the magic byte.
+        assert!(
+            meta_path.exists(),
+            "write_entry must create the .meta sidecar; path: {}",
+            meta_path.display()
+        );
+        let content = std::fs::read(&meta_path).unwrap();
+        assert_eq!(
+            content,
+            vec![SIDECAR_MAGIC_BYTE],
+            ".meta sidecar must contain exactly [SIDECAR_MAGIC_BYTE=0xCA]"
+        );
+
+        // Structural invariant: both files live in the same shard dir.
+        assert_eq!(
+            meta_path.parent().unwrap(),
+            bin_path.parent().unwrap(),
+            ".meta and .bin must share the same parent shard directory"
+        );
+    }
+
+    #[test]
+    fn read_entry_advances_meta_sidecar_mtime_above_backdated_baseline_on_hit_and_succeeds_when_sidecar_pre_deleted() {
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "cccccccccccccccccccccccccccccccc";
+        let inp = "dddddddddddddddddddddddddddddddd";
+        let original = make_sample_result();
+
+        write_entry(root, eng, inp, &original).unwrap();
+
+        let meta_path = entry_meta_path(root, eng, inp);
+
+        // --- Phase 1: back-date the sidecar mtime to a known-old value ---
+        let old_mtime = UNIX_EPOCH + Duration::from_secs(1_000_000);
+        {
+            let f = std::fs::File::options()
+                .write(true)
+                .open(&meta_path)
+                .expect("must open sidecar for mtime back-dating");
+            f.set_times(std::fs::FileTimes::new().set_modified(old_mtime))
+                .expect("must set modified time to old_mtime");
+        }
+
+        // read_entry must succeed and return the value.
+        let hit = read_entry::<ElasticResult>(root, eng, inp).unwrap();
+        assert_eq!(hit, Some(original.clone()), "phase 1: cache hit must return the original value");
+
+        // Sidecar mtime must have advanced above the backdated baseline.
+        let new_mtime = std::fs::metadata(&meta_path)
+            .expect("sidecar must still exist after read_entry")
+            .modified()
+            .unwrap();
+        assert!(
+            new_mtime > old_mtime,
+            "read_entry must touch the sidecar mtime (LRU signal update); \
+             got new_mtime={new_mtime:?} <= old_mtime={old_mtime:?}"
+        );
+
+        // --- Phase 2: sidecar deleted before second read ---
+        // Simulates the GC evicting the sidecar between write and read;
+        // read_entry must still succeed (data is in the .bin).
+        std::fs::remove_file(&meta_path).unwrap();
+        let hit2 = read_entry::<ElasticResult>(root, eng, inp).unwrap();
+        assert_eq!(hit2, Some(original), "phase 2: read must succeed even if sidecar was pre-deleted");
+    }
+
+    #[test]
+    fn concurrent_write_entry_calls_for_same_input_both_succeed_and_final_read_entry_decodes_to_original_value() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "0011223344556677889900aabbccddee";
+        let inp = "ffeeddccbbaa99887766554433221100";
+        let original = make_sample_result();
+
+        // Compute the expected compressed body len from a single-writer reference.
+        let mut body_ref: Vec<u8> = Vec::new();
+        original.serialize_to_writer(&mut body_ref).unwrap();
+        let expected_file_size = ENTRY_HEADER_ENCODED_LEN + body_ref.len();
+
+        // Both concurrent writers must succeed without panicking or returning Err.
+        std::thread::scope(|s| {
+            let h1 = s.spawn(|| write_entry(root, eng, inp, &original));
+            let h2 = s.spawn(|| write_entry(root, eng, inp, &original));
+            h1.join().expect("writer thread 1 must not panic").unwrap();
+            h2.join().expect("writer thread 2 must not panic").unwrap();
+        });
+
+        // The final read must return the original value.
+        let hit = read_entry::<ElasticResult>(root, eng, inp).unwrap();
+        assert_eq!(
+            hit,
+            Some(original.clone()),
+            "concurrent writers must produce a valid, decodable entry"
+        );
+
+        // The .bin must be exactly ENTRY_HEADER_ENCODED_LEN + body_len bytes —
+        // no torn writes, no extra bytes from concurrent interleaving.
+        let actual_file_size = std::fs::metadata(entry_bin_path(root, eng, inp))
+            .unwrap()
+            .len() as usize;
+        assert_eq!(
+            actual_file_size,
+            expected_file_size,
+            "concurrent writers must produce a .bin of exactly \
+             ENTRY_HEADER_ENCODED_LEN({ENTRY_HEADER_ENCODED_LEN}) + body_len({}) = {expected_file_size} bytes; \
+             got {actual_file_size}",
+            body_ref.len()
+        );
+    }
+
+    /// Write a raw header plus `body_suffix` bytes to the .bin for a given key.
+    /// Useful for constructing corrupt-body .bin files in tests.
+    fn write_header_and_body_to_bin(
+        root: &Path,
+        eng: &str,
+        inp: &str,
+        header: &CacheEntryHeader,
+        body_suffix: &[u8],
+    ) {
+        let sd = shard_dir(root, eng, inp);
+        std::fs::create_dir_all(&sd).unwrap();
+        let mut f = std::fs::File::create(entry_bin_path(root, eng, inp)).unwrap();
+        header.write_to(&mut f).unwrap();
+        if !body_suffix.is_empty() {
+            use std::io::Write as _;
+            f.write_all(body_suffix).unwrap();
+        }
+    }
+
+    /// Build a CacheEntryHeader with correct echoes for the given key (for
+    /// tests that need a structurally valid header to get past echo verification).
+    fn make_correct_header(eng: &str, inp: &str) -> CacheEntryHeader {
+        CacheEntryHeader {
+            format_version: ENTRY_FORMAT_VERSION,
+            engine_version_hash: *eng.as_bytes().first_chunk::<32>().unwrap(),
+            input_hash:          *inp.as_bytes().first_chunk::<32>().unwrap(),
+            solve_time_ms: 0,
+            byte_size: 0,
+            written_at: 0,
+        }
+    }
+
+    #[test]
+    fn read_entry_returns_ok_none_when_compressed_body_is_corrupted_or_truncated() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // Sub-scenario (a): valid header + zero body bytes.
+        // zstd::Decoder::new will fail on the empty reader (no frame magic).
+        {
+            let eng = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeee55";
+            let inp = "ffffffffffffffffffffffffffff5566";
+            let h = make_correct_header(eng, inp);
+            write_header_and_body_to_bin(root, eng, inp, &h, &[]);
+            let result = read_entry::<ElasticResult>(root, eng, inp).unwrap();
+            assert_eq!(result, None, "zero body bytes must be treated as cache miss");
+        }
+
+        // Sub-scenario (b): valid header + 16 bytes of garbage.
+        // zstd will fail to parse the frame (bad magic number).
+        {
+            let eng = "aaaaaaaaaaaaaaaaaaaaaaaaaaaa7788";
+            let inp = "bbbbbbbbbbbbbbbbbbbbbbbbbbbb9900";
+            let h = make_correct_header(eng, inp);
+            let garbage = b"not-a-zstd-frame";
+            write_header_and_body_to_bin(root, eng, inp, &h, garbage);
+            let result = read_entry::<ElasticResult>(root, eng, inp).unwrap();
+            assert_eq!(result, None, "garbage body bytes must be treated as cache miss");
+        }
+    }
+
+    /// Helper: write a raw CacheEntryHeader (and nothing else) to the .bin path
+    /// for a given key in `root`. The caller controls the header fields, allowing
+    /// sub-tests to inject mismatched echoes or other corruption.
+    fn write_raw_header_to_bin(
+        root: &Path,
+        eng: &str,
+        inp: &str,
+        header: &CacheEntryHeader,
+    ) {
+        let sd = shard_dir(root, eng, inp);
+        std::fs::create_dir_all(&sd).unwrap();
+        let mut f = std::fs::File::create(entry_bin_path(root, eng, inp)).unwrap();
+        header.write_to(&mut f).unwrap();
+    }
+
+    #[test]
+    fn read_entry_returns_ok_none_when_header_echo_fields_do_not_match_path_components() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // Sub-scenario (a): engine_version_hash echo is wrong.
+        {
+            let eng = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1";
+            let inp = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb22";
+            let wrong_engine_bytes = *b"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz";
+            let h = CacheEntryHeader {
+                format_version: ENTRY_FORMAT_VERSION,
+                engine_version_hash: wrong_engine_bytes,
+                input_hash: *inp.as_bytes().first_chunk::<32>().unwrap(),
+                solve_time_ms: 0,
+                byte_size: 0,
+                written_at: 0,
+            };
+            write_raw_header_to_bin(root, eng, inp, &h);
+            let result = read_entry::<ElasticResult>(root, eng, inp).unwrap();
+            assert_eq!(
+                result, None,
+                "engine_version_hash echo mismatch must be treated as cache miss"
+            );
+        }
+
+        // Sub-scenario (b): input_hash echo is wrong.
+        {
+            let eng = "cccccccccccccccccccccccccccccc33";
+            let inp = "dddddddddddddddddddddddddddddd44";
+            let wrong_input_bytes = *b"yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy";
+            let h = CacheEntryHeader {
+                format_version: ENTRY_FORMAT_VERSION,
+                engine_version_hash: *eng.as_bytes().first_chunk::<32>().unwrap(),
+                input_hash: wrong_input_bytes,
+                solve_time_ms: 0,
+                byte_size: 0,
+                written_at: 0,
+            };
+            write_raw_header_to_bin(root, eng, inp, &h);
+            let result = read_entry::<ElasticResult>(root, eng, inp).unwrap();
+            assert_eq!(
+                result, None,
+                "input_hash echo mismatch must be treated as cache miss"
+            );
+        }
+    }
+
+    #[test]
+    fn read_entry_returns_ok_none_when_header_format_version_does_not_match_expected() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+        let inp = "ffffffffffffffffffffffffffffffff";
+
+        // Build a .bin with a mismatched format_version but correct echoes.
+        let sd = shard_dir(root, eng, inp);
+        std::fs::create_dir_all(&sd).unwrap();
+        let stale_header = CacheEntryHeader {
+            format_version: ENTRY_FORMAT_VERSION + 99,
+            engine_version_hash: *eng.as_bytes().first_chunk::<32>().unwrap(),
+            input_hash:          *inp.as_bytes().first_chunk::<32>().unwrap(),
+            solve_time_ms: 0,
+            byte_size: 0,
+            written_at: 0,
+        };
+        // Write header only — no body bytes follow (read_entry must reject on
+        // format_version before attempting body decode).
+        let mut bin_file = std::fs::File::create(entry_bin_path(root, eng, inp)).unwrap();
+        stale_header.write_to(&mut bin_file).unwrap();
+        drop(bin_file);
+
+        let result = read_entry::<ElasticResult>(root, eng, inp).unwrap();
+        assert_eq!(result, None, "format_version mismatch must be treated as cache miss");
+    }
+
+    #[test]
+    fn read_entry_returns_ok_none_when_bin_file_is_absent_even_with_orphaned_tempfile_in_shard_dir() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "1111111111111111111111111111111a";
+        let inp = "2222222222222222222222222222222b";
+
+        // Create the shard dir and drop a stray orphan tempfile (simulates
+        // a writer that was killed mid-write; the .bin was never renamed in).
+        let sd = shard_dir(root, eng, inp);
+        std::fs::create_dir_all(&sd).unwrap();
+        std::fs::write(sd.join(".tmp.orphan"), b"garbage bytes not a valid entry").unwrap();
+
+        // The .bin for this key does NOT exist; read_entry must return Ok(None).
+        let result = read_entry::<ElasticResult>(root, eng, inp).unwrap();
+        assert_eq!(result, None);
+    }
+
+    /// Pins that `CacheEntryHeader.byte_size` holds the *uncompressed* body byte
+    /// count, as documented in lines 195-196 and 210-211 of this file.
+    ///
+    /// The current `write_entry` impl stores `body_buf.len()` which is the
+    /// zstd-COMPRESSED length — this test must FAIL until step-18 fixes the impl
+    /// by computing the true uncompressed size via `value.uncompressed_byte_size()`.
+    ///
+    /// Asserts the semantic contract:
+    ///   `header.byte_size == decompressed.len() as u64`
+    ///
+    /// A "compressed < uncompressed" check is deliberately NOT included here: on
+    /// a tiny fixture like `make_sample_result` (~109 uncompressed bytes with
+    /// limited redundancy) zstd's frame/block framing overhead (~13–17 bytes)
+    /// can make the compressed body ≥ uncompressed, so such a check would be
+    /// fragile and zstd-version-dependent. The primary equality assertion fully
+    /// pins the contract — if the impl regresses to storing `body_buf.len()`
+    /// (the compressed length), the equality fails.
+    #[test]
+    fn write_entry_populates_byte_size_field_with_actually_uncompressed_body_byte_count() {
+        use std::fs::File;
+        use std::io::Read as _;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "deadbeef00112233deadbeef00112233";
+        let inp = "cafebabe44556677cafebabe44556677";
+        let original = make_sample_result();
+
+        write_entry(root, eng, inp, &original).unwrap();
+
+        // Read the on-disk header directly.
+        let bin_path = entry_bin_path(root, eng, inp);
+        let mut f = File::open(&bin_path).unwrap();
+        let header = CacheEntryHeader::read_from(&mut f).unwrap();
+
+        // Collect the compressed body bytes that follow the header.
+        let mut compressed_body: Vec<u8> = Vec::new();
+        f.read_to_end(&mut compressed_body).unwrap();
+
+        // Independently decompress to recover the raw (uncompressed) body.
+        let mut decoder = zstd::Decoder::new(&compressed_body[..]).unwrap();
+        let mut decompressed: Vec<u8> = Vec::new();
+        decoder.read_to_end(&mut decompressed).unwrap();
+
+        assert_eq!(
+            header.byte_size,
+            decompressed.len() as u64,
+            "byte_size must be the uncompressed body byte count per CacheEntryHeader doc \
+             (lines 195-196 / 210-211) — got {got}, expected {expected} (decompressed length). \
+             If the impl stores body_buf.len() (compressed size) instead, this fails.",
+            got = header.byte_size,
+            expected = decompressed.len() as u64,
+        );
     }
 }
