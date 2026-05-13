@@ -4,6 +4,7 @@ Status: design resolved + decomposed (2026-05-05) — deferred, candidate v0.4. 
 
 ## Updates
 
+- **2026-05-13 (PRD `shell-extract-engine-bridge`):** The engine-integration half of the original decomposition — T18 (auto-classification dispatch), T19 (shell extraction failure handling), T20 (persistent-naming for derived mid-surface entities, engine-side fold-in), and T23 (end-to-end thin-walled-bracket example) — has been re-filed under `docs/prds/v0_4/shell-extract-engine-bridge.md` (cluster C-19 / GR-021 disposition). Dispositions: tasks 3031 (T18) and 3032 (T19) cancelled with `reopen_reason` pointing to the bridge PRD; task 3036 (T23) cancelled with `reopen_reason` pointing to bridge PRD task ι; task 3033 (T20) producer-side stands (`done`), engine-side fold-in re-filed as bridge PRD task ζ. Reason for re-filing: original T18–T20 prose pre-dated GR-001 / GR-002 / GR-016 landing; the bridge PRD's vertical slices replace those tasks under post-2026-05-12 seam ownership.
 - **2026-05-12 (audit cluster C-20):** The v0.4 element-formulation contract is downgraded from MITC3+ to **bare MITC3 on flat-facet triangles**. Empirical and theoretical work under task 3349 established that the MITC3+ cubic-bubble enrichment is mathematically inert on flat-facet elements (`K_NB ≡ 0` by the divergence theorem for the standard `ξη(1−ξ−η)` bubble; shear-B-matrix routing reproduces bare-MITC3 results bit-identically). True MITC3+ requires a curved-element formulation with a position-dependent Jacobian; that work is filed as task **3392** (curved-element shell formulation, pending, future enhancement — not a v0.4 deliverable). The benchmark suite (task 3034) now ships with widened pass bands that reflect bare-MITC3 reality on curved-shell tests (pinched cylinder, Scordelis-Lo, hemisphere); the widened bands are the v0.4 contract, not a defect. Locking-class accuracy on curved shells returns when 3392 lands.
 
 ## Goal
@@ -99,6 +100,8 @@ The "ambiguous middle" error case essentially never fires in default operation. 
 
 Twenty-three tasks. Voxel-medial extraction (T1-T4) and shell element kernel (T5-T9) are independent and parallelisable. Mixed-element work (T10-T12) and engine integration (T18-T20) gate on both. All tasks queued with `planning_mode = true` (architect plans before implementation).
 
+**Supersession note (2026-05-13):** The engine-integration tasks T18, T19, T20 (engine-side fold-in), and T23 have been re-filed under `docs/prds/v0_4/shell-extract-engine-bridge.md` as the active source-of-truth for engine-side integration. Mappings: T18 → bridge task δ (task 3031 cancelled); T19 → bridge task ε (task 3032 cancelled); T23 → bridge task ι (task 3036 cancelled); T20 split — producer-side (populate mid-surface attribute records) done under task 3033, engine-side fold-in into `TopologyAttributeTable` re-filed as bridge task ζ. See §"Updates" above and the per-task annotations below.
+
 **Voxel-medial mid-surface extraction (depends on v0.2 OpenVDB):**
 
 1. `reify-shell-extract` crate skeleton + voxel-medial mask algorithm. Per-voxel bidirectional nearest-surface query via OpenVDB SDF, gradient-discontinuity detection, medial mask output as a sparse voxel grid. **Gate:** v0.2 OpenVDB Voxel ReprKind realizable from B-rep at thickness-relevant resolutions.
@@ -130,15 +133,15 @@ Twenty-three tasks. Voxel-medial extraction (T1-T4) and shell element kernel (T5
 
 **Engine integration (depends on extraction + kernel + stdlib):**
 
-18. Auto-classification dispatch: per-body, run voxel/medial extraction (cached as a ComputeNode keyed on geometry hash + extraction options); decide shell / tet / mixed per region; route to appropriate kernel path. Cache key includes extraction options so threshold changes invalidate cleanly.
-19. Shell extraction failure handling: hard-error on `@shell` annotated bodies, fallback-with-diagnostic on auto-classified bodies. Diagnostic mapping for common failures: no medial mask, inconsistent thickness, too-thick anywhere, multi-thickness step exceeds threshold, segmentation produced no clear regions.
-20. Persistent-naming for derived mid-surface entities: stable IDs for mid-surface faces and edges. Adds a derived-geometry naming sub-vocabulary on top of `persistent-naming-v2`. **Gate:** persistent-naming-v2 PRD shipped or its derived-geometry hook landed.
+18. Auto-classification dispatch: per-body, run voxel/medial extraction (cached as a ComputeNode keyed on geometry hash + extraction options); decide shell / tet / mixed per region; route to appropriate kernel path. Cache key includes extraction options so threshold changes invalidate cleanly. Superseded by `shell-extract-engine-bridge.md` task δ (task 3031 cancelled); the auto-classification dispatch now wires through a `shell-extract::extract` ComputeNode upstream of the FEA solve.
+19. Shell extraction failure handling: hard-error on `@shell` annotated bodies, fallback-with-diagnostic on auto-classified bodies. Diagnostic mapping for common failures: no medial mask, inconsistent thickness, too-thick anywhere, multi-thickness step exceeds threshold, segmentation produced no clear regions. Superseded by `shell-extract-engine-bridge.md` task ε (task 3032 cancelled); the seven-diagnostic vocabulary and `@shell`-hard-error / auto-fallback policy live there.
+20. Persistent-naming for derived mid-surface entities: stable IDs for mid-surface faces and edges. Adds a derived-geometry naming sub-vocabulary on top of `persistent-naming-v2`. **Gate:** persistent-naming-v2 PRD shipped or its derived-geometry hook landed. Producer-side landed under task 3033 (done); engine-side fold-in into `TopologyAttributeTable` re-filed as `shell-extract-engine-bridge.md` task ζ.
 
 **Validation & polish:**
 
 21. Shell benchmark suite: pinched cylinder, Scordelis-Lo roof, hemisphere with point loads, twisted beam. Reference solutions, locking-detection assertions, P1-MITC3 accuracy comparisons against published values. Pass bands on the three curved-shell tests are widened to bracket bare-MITC3 under-prediction (~21–2200× on coarse meshes); the widened bands are the v0.4 contract, not a defect — tightening to published MacNeal-Harder references gates on the curved-element MITC3+ enhancement (task 3392).
 22. Mixed-region validation: flexure-on-block test case (canonical shell/tet coupling problem). Compares against published reference solution; verifies MPC tying gives smooth stress/displacement across the interface.
-23. End-to-end example: thin-walled bracket with `param thickness : Length = auto`, `minimize mass subject to max(stress.top.von_mises) < material.yield_stress`. Demonstrates auto-classification + shell-element FEA + auto-resolve loop closing the design loop on a thin-body design.
+23. End-to-end example: thin-walled bracket with `param thickness : Length = auto`, `minimize mass subject to max(stress.top.von_mises) < material.yield_stress`. Demonstrates auto-classification + shell-element FEA + auto-resolve loop closing the design loop on a thin-body design. Superseded by `shell-extract-engine-bridge.md` task ι (task 3036 cancelled); the bridge PRD's ι ships a concrete-thickness end-to-end leaf, with the `param thickness = auto` auto-resolution variant deferred to the auto-resolution-backtracking PRD.
 
 ## Out of scope for this PRD
 
