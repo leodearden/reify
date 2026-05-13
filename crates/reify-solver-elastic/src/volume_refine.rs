@@ -322,6 +322,62 @@ mod tests {
         }
     }
 
+    // ---- step-11 pins: project_per_element_sizes_to_vertices ----
+
+    /// Conservative min projection over shared vertices.
+    ///
+    /// Two-tet bipyramid: vertices [0,1,2,3] in tet A (size 0.5), vertices
+    /// [0,1,2,4] in tet B (size 1.0). Shared vertices 0..=2 take
+    /// `min(0.5, 1.0) = 0.5`. Vertex 3 (only in A) stays 0.5. Vertex 4 (only
+    /// in B) stays 1.0.
+    ///
+    /// Relocated from `tests/volume_refine_tests.rs` after step-12 restricted
+    /// the projector to `pub(crate)` visibility.
+    #[test]
+    fn project_per_element_sizes_to_vertices_takes_min_over_incident_elements() {
+        let vm = two_tet_bipyramid();
+        let per_elem = [0.5_f64, 1.0_f64];
+
+        let result = super::project_per_element_sizes_to_vertices(&vm, &per_elem);
+
+        assert_eq!(
+            result.len(),
+            5,
+            "returned slice must have length = n_vertices = 5"
+        );
+        assert_eq!(
+            result,
+            vec![0.5, 0.5, 0.5, 0.5, 1.0],
+            "vertices 0-3 incident to tet A → min(0.5, 1.0) = 0.5; \
+             vertex 4 only in tet B → stays 1.0"
+        );
+    }
+
+    /// Caller contract: passing fewer `per_element_sizes` than the element
+    /// count MUST panic (unguarded indexing).
+    ///
+    /// This pin documents the projector's caller-validation contract: the
+    /// only safe caller is `refine_with_size_field`, which validates
+    /// `size_hints.len() == n_elements` up front (see lines 161-166). Future
+    /// authors who silently misbehave on short slices (e.g. via
+    /// `get(elem_idx).copied().unwrap_or(...)`) will see this test fail and
+    /// be forced to revisit the contract.
+    #[test]
+    fn project_panics_on_too_short_per_element_sizes() {
+        let vm = two_tet_bipyramid(); // 2 tets
+        let too_short = [0.5_f64]; // only 1 size for 2 elements
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            super::project_per_element_sizes_to_vertices(&vm, &too_short)
+        }));
+        assert!(
+            result.is_err(),
+            "project_per_element_sizes_to_vertices must panic on too-short \
+             per_element_sizes (got 1, expected 2); contract is documented \
+             as caller-validated indexing",
+        );
+    }
+
     // ---- step-9 pins: map_geometry_error routing ----
 
     #[test]

@@ -6,9 +6,7 @@
 //! `reify-solver-elastic` crate has no build.rs that propagates `has_gmsh`).
 
 use reify_kernel_gmsh::MeshingOptions;
-use reify_solver_elastic::volume_refine::{
-    project_per_element_sizes_to_vertices, refine_with_size_field, RefineError,
-};
+use reify_solver_elastic::volume_refine::{RefineError, refine_with_size_field};
 use reify_types::{ElementOrderTag, Mesh, VolumeMesh};
 
 // ---------------------------------------------------------------------------
@@ -50,60 +48,6 @@ fn unit_cube_mesh() -> Mesh {
         ],
         normals: None,
     }
-}
-
-/// Two-tet P1 bipyramid sharing vertices [0, 1, 2].
-///
-/// Tet A = [0, 1, 2, 3], Tet B = [0, 1, 2, 4].
-/// Vertices:
-///   0 = (0,0,0), 1 = (1,0,0), 2 = (0,1,0) — shared by both tets
-///   3 = (0,0,1)                              — only in tet A
-///   4 = (0,0,-1)                             — only in tet B
-fn two_tet_bipyramid_p1() -> VolumeMesh {
-    VolumeMesh {
-        vertices: vec![
-            0.0_f32, 0.0, 0.0, // 0
-            1.0, 0.0, 0.0, // 1
-            0.0, 1.0, 0.0, // 2
-            0.0, 0.0, 1.0, // 3
-            0.0, 0.0, -1.0, // 4
-        ],
-        tet_indices: vec![
-            0, 1, 2, 3, // tet A
-            0, 1, 2, 4, // tet B
-        ],
-        element_order: ElementOrderTag::P1,
-        normals: None,
-    }
-}
-
-// ---------------------------------------------------------------------------
-// step-1: project_per_element_sizes_to_vertices unit test
-// ---------------------------------------------------------------------------
-
-/// Conservative min projection over shared vertices.
-///
-/// Two-tet bipyramid: vertices [0,1,2,3] in tet A (size 0.5), vertices
-/// [0,1,2,4] in tet B (size 1.0). Shared vertices 0..=2 take min(0.5,1.0) =
-/// 0.5. Vertex 3 (only in A) stays 0.5. Vertex 4 (only in B) stays 1.0.
-#[test]
-fn project_per_element_sizes_to_vertices_takes_min_over_incident_elements() {
-    let vm = two_tet_bipyramid_p1();
-    let per_elem = [0.5_f64, 1.0_f64];
-
-    let result = project_per_element_sizes_to_vertices(&vm, &per_elem);
-
-    assert_eq!(
-        result.len(),
-        5,
-        "returned slice must have length = n_vertices = 5"
-    );
-    assert_eq!(
-        result,
-        vec![0.5, 0.5, 0.5, 0.5, 1.0],
-        "vertices 0-3 incident to tet A → min(0.5, 1.0) = 0.5; \
-         vertex 4 only in tet B → stays 1.0"
-    );
 }
 
 // ---------------------------------------------------------------------------
