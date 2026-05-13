@@ -52,8 +52,16 @@ verify_env:
 max_turns:
   architect: 120
 
+# Scheduler v2 — eager parks, cross-tier preemption, owner-state GC sweep.
+# Burn-in cycle complete in dark-factory; flipping on here to exercise the
+# new anti-starvation path against reify's larger task tree.
+fairness:
+  scheduler_v2: true
+
 # Usage cap / multi-account failover
-# 5 automation accounts (F→E→C→B→D); A reserved for interactive, G not in pool.
+# 6 automation accounts (G→F→E→C→B→D); A reserved for interactive (eval runners
+# inject A dynamically via USAGE_ACCOUNTS_FILE override). Authoritative pool list:
+# config/usage-accounts.yaml.
 # When one account hits its cap, UsageGate rotates to the next in list order.
 usage_cap:
   enabled: true
