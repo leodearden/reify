@@ -338,6 +338,13 @@ describe('DiagnosticsPanel', () => {
     expect(loadDiagnosticsPanelSize()).toEqual({ width: 950, height: 580 });
   });
 
+  it('capturedResizeCallback is reset to null between tests (isolation guard)', () => {
+    // No manual reset here — if beforeEach resets capturedResizeCallback to null,
+    // this passes. Under current code (no beforeEach reset), the previous test's
+    // render() leaves capturedResizeCallback set and this fails.
+    expect(capturedResizeCallback).toBeNull();
+  });
+
   it('dialog has no inline overflow style; relies on .dialog class for single vertical scroll axis', () => {
     // The .dialog CSS class provides overflow-y: auto (vertical scroll for the
     // full dialog content) and .list provides overflow-x: auto (horizontal scroll
