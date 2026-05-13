@@ -722,7 +722,7 @@ fn set_parameter_impl_recovers_from_poisoned_mutex() {
         state
             .values
             .iter()
-            .any(|v| v.cell_id == "Bracket.thickness" && v.value == "5mm"),
+            .any(|v| v.cell_id == "Bracket.thickness" && v.value == "5" && v.unit == "mm"),
         "set_parameter should have applied thickness=5mm after poison recovery"
     );
 }
