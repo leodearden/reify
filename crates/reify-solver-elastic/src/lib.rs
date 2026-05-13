@@ -330,6 +330,7 @@ pub mod shell_kinematics;
 pub mod shell_result;
 pub mod solver;
 pub mod sweep;
+pub mod volume_refine;
 pub mod warm_state;
 
 pub use assembly::{
@@ -388,3 +389,12 @@ pub use sweep::{
     SweepError, SweepParams, SweptConnectivity, SweptMesh3d, ThroughThicknessSweepWarning,
     check_sweep_through_thickness, derive_layer_count, sweep_2d_mesh_to_3d,
 };
+// Task 2999: a-posteriori volume mesh refinement driven by per-element size
+// hints (PRD docs/prds/v0_4/a-posteriori-error-estimation.md task #2).
+//
+// `project_per_element_sizes_to_vertices` is intentionally NOT re-exported:
+// it is `pub(crate)` because its caller-validation contract (`size_hints.len()
+// == n_elements`, see `volume_refine::refine_with_size_field` lines 161-166)
+// is enforced by the orchestrator, not by the projector itself. External
+// callers cannot misuse it with a short slice.
+pub use volume_refine::{RefineError, refine_with_size_field};

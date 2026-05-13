@@ -213,6 +213,20 @@ unsafe extern "C" {
 
     /// `void gmshModelMeshSetRecombine(int dim, int tag, double angle, int* ierr)`
     pub fn gmshModelMeshSetRecombine(dim: c_int, tag: c_int, angle: f64, ierr: *mut c_int);
+
+    /// `void gmshModelMeshSetSize(int* dimTags, size_t dimTags_n, double size, int* ierr)`
+    ///
+    /// Sets the characteristic mesh size associated with each (dim, tag) pair in
+    /// `dimTags`. The `dimTags` array is a flat list of `(dim, tag)` pairs, so
+    /// `dimTags_n` is twice the number of entities. With
+    /// `Mesh.MeshSizeFromPoints=1`, sizes set on 0D entities (dim=0) drive
+    /// interpolated mesh sizing across the entire domain.
+    pub fn gmshModelMeshSetSize(
+        dimTags: *const c_int,
+        dimTags_n: usize,
+        size: f64,
+        ierr: *mut c_int,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -757,4 +771,80 @@ pub fn mesh_set_recombine(dim: i32, tag: i32, angle: f64) -> Result<(), Geometry
         ierr,
         gmshModelMeshSetRecombine(dim, tag, angle, &mut ierr)
     )
+}
+
+/// Set the target characteristic mesh size for a single model entity
+/// identified by `(dim, tag)`.
+///
+/// With `Mesh.MeshSizeFromPoints=1`, sizes on 0D entities (dim=0) drive
+/// interpolated mesh sizing across the domain. Returns an error if gmsh
+/// rejects the entity (e.g. the entity doesn't exist in the current model).
+///
+/// Internally calls `gmshModelMeshSetSize` with a two-element flat
+/// `[dim, tag]` array — the same format as passing one entry to the
+/// vectorised API.
+pub fn mesh_set_size_at_entity(dim: i32, tag: i32, size: f64) -> Result<(), GeometryError> {
+    let dim_tags = [dim, tag];
+    let mut ierr: c_int = 0;
+    unsafe {
+        gmshModelMeshSetSize(dim_tags.as_ptr(), 2, size, &mut ierr);
+    }
+    check_ierr("gmshModelMeshSetSize", ierr)
+}
+
+/// Read the mesh nodes that belong to a specific model entity `(dim, tag)`.
+///
+/// `includeBoundary=0` — returns only nodes directly on this entity, not
+/// those inherited from lower-dimension boundary entities. For 0D entities
+/// (dim=0), this is exactly one node (the corner mesh node).
+///
+/// Returns `(node_tags, coords)` where `coords` is flat `[x0,y0,z0, …]`.
+/// Ownership is transferred from gmsh-allocated buffers to `Vec`; the raw
+/// buffers are freed via `gmshFree` before return.
+pub fn get_nodes_at_entity(dim: i32, tag: i32) -> Result<(Vec<u64>, Vec<f64>), GeometryError> {
+    let mut node_tags_ptr: *mut usize = ptr::null_mut();
+    let mut node_tags_n: usize = 0;
+    let mut coord_ptr: *mut f64 = ptr::null_mut();
+    let mut coord_n: usize = 0;
+    let mut param_ptr: *mut f64 = ptr::null_mut();
+    let mut param_n: usize = 0;
+    let mut ierr: c_int = 0;
+    unsafe {
+        gmshModelMeshGetNodes(
+            &mut node_tags_ptr,
+            &mut node_tags_n,
+            &mut coord_ptr,
+            &mut coord_n,
+            &mut param_ptr,
+            &mut param_n,
+            dim,
+            tag,
+            0, // includeBoundary=0: only nodes directly on this entity
+            0, // returnParametricCoord=0: skip parametric coordinates
+            &mut ierr,
+        );
+    }
+    let node_tags: Vec<u64> = if node_tags_ptr.is_null() || node_tags_n == 0 {
+        Vec::new()
+    } else {
+        unsafe { std::slice::from_raw_parts(node_tags_ptr as *const u64, node_tags_n) }.to_vec()
+    };
+    let coords: Vec<f64> = if coord_ptr.is_null() || coord_n == 0 {
+        Vec::new()
+    } else {
+        unsafe { std::slice::from_raw_parts(coord_ptr, coord_n) }.to_vec()
+    };
+    unsafe {
+        if !node_tags_ptr.is_null() {
+            gmshFree(node_tags_ptr as *mut c_void);
+        }
+        if !coord_ptr.is_null() {
+            gmshFree(coord_ptr as *mut c_void);
+        }
+        if !param_ptr.is_null() {
+            gmshFree(param_ptr as *mut c_void);
+        }
+    }
+    check_ierr("gmshModelMeshGetNodes(entity)", ierr)?;
+    Ok((node_tags, coords))
 }
