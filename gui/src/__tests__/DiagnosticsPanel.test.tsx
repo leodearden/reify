@@ -447,4 +447,32 @@ describe('DiagnosticsPanel', () => {
 
     expect(loadDiagnosticsPanelSize()).toEqual({ width: 1050, height: 620 });
   });
+
+  it('ResizeObserver: skips initial synchronous fire and persists subsequent user-driven resize', () => {
+    // beforeEach resets capturedResizeCallback — no manual null assignment needed.
+    render(() => (
+      <DiagnosticsPanel
+        open={true}
+        diagnostics={[]}
+        onClose={vi.fn()}
+        onNavigate={vi.fn()}
+      />
+    ));
+    const dialog = screen.getByTestId('diagnostics-dialog') as HTMLElement;
+
+    // (i) First callback: browser's synchronous initial fire on observe().
+    // Must NOT persist — persisting here would freeze the default size forever
+    // and bypass computeDefaultDialogSize on every subsequent open.
+    Object.defineProperty(dialog, 'offsetWidth', { value: 640, configurable: true });
+    Object.defineProperty(dialog, 'offsetHeight', { value: 480, configurable: true });
+    expect(capturedResizeCallback).not.toBeNull();
+    capturedResizeCallback!([], {} as ResizeObserver);
+    expect(loadDiagnosticsPanelSize()).toBeNull();
+
+    // (ii) Second callback: real user-driven resize.  Must persist.
+    Object.defineProperty(dialog, 'offsetWidth', { value: 1050, configurable: true });
+    Object.defineProperty(dialog, 'offsetHeight', { value: 620, configurable: true });
+    capturedResizeCallback!([], {} as ResizeObserver);
+    expect(loadDiagnosticsPanelSize()).toEqual({ width: 1050, height: 620 });
+  });
 });
