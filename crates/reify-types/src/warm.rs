@@ -6,6 +6,15 @@ use std::fmt;
 /// Wraps a `Box<dyn Any + Send + Sync>` with an estimated size hint, allowing
 /// evaluators to preserve opaque solver/kernel state across re-evaluations
 /// without the evaluation engine knowing the concrete type.
+///
+/// The inner bound is `Send + Sync` (not just `Send`) because
+/// `ComputeNodeData` holds `Option<OpaqueState>` and worker threads may
+/// observe that slot through a shared `&` snapshot of
+/// `EvaluationGraph::compute_nodes` — a `PersistentMap` whose `Sync` impl
+/// requires `V: Sync`. Out-of-tree producers carrying a `!Sync` payload
+/// (e.g. `Cell`, `RefCell`, `Rc`, non-`Sync` FFI handles) will no longer
+/// compile against this type. See
+/// `docs/prds/v0_3/compute-node-infrastructure.md`.
 pub struct OpaqueState {
     inner: Box<dyn Any + Send + Sync>,
     estimated_size: usize,
@@ -25,6 +34,9 @@ impl OpaqueState {
     /// `estimated_size_bytes` is a caller-provided hint of how much memory
     /// the value occupies (including heap allocations). Used by
     /// `WarmStatePool` for budget enforcement.
+    ///
+    /// `T: Sync` is required in addition to `Send`; see the struct-level
+    /// documentation for the cross-thread rationale.
     pub fn new<T: Any + Send + Sync>(value: T, estimated_size_bytes: usize) -> Self {
         Self {
             inner: Box::new(value),
@@ -92,6 +104,9 @@ mod tests {
     #[test]
     fn opaque_state_is_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
+        // Both bounds are intentional: worker threads share EvaluationGraph
+        // snapshots via `&`, so the `Option<OpaqueState>` slot inside
+        // `ComputeNodeData` must be `Sync`-safe, not just `Send`-safe.
         assert_send_sync::<OpaqueState>();
     }
 
