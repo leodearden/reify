@@ -202,3 +202,13 @@ Also references #318, #319 (existing selector FFI pattern) and #249
    wired the first three (`closest_point`, `is_on`, `angle_between_surfaces`);
    task 2699 wires the remaining eleven. Eval-side dispatch for the eleven
    new names (runtime/numeric coverage) is task 2691.
+
+   Design resolution + dispatch-arm template for the eleven names: see
+   `docs/design/topology-selectors-stdlib-registration.md` — the "Decisions
+   made (2026-05-08 post-design call)" panel resolves the §4.3 face-index
+   recovery question (Option A: reuse `selector_vocabulary_v2::adjacent_to_face`
+   + `OwnerBody` + `extract_faces` position-lookup; no new `GeometryQuery`
+   variant); §3 gives the worked-example template for one selector; §5
+   gives the 3-cluster sequencing (A: mut widening + 4 simplest names; B:
+   5 predicate-arg names; C: 2 topology-graph names) that the
+   dispatch-arm sweep is decomposed against.
