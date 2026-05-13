@@ -324,33 +324,6 @@ describe('DiagnosticsPanel', () => {
     expect(dialog.className).not.toContain('lineWrapOn');
   });
 
-  it('ResizeObserver callback persists current size to localStorage', () => {
-    capturedResizeCallback = null;
-    render(() => (
-      <DiagnosticsPanel
-        open={true}
-        diagnostics={[]}
-        onClose={vi.fn()}
-        onNavigate={vi.fn()}
-      />
-    ));
-    const dialog = screen.getByTestId('diagnostics-dialog') as HTMLElement;
-
-    // First callback simulates the browser's synchronous initial fire on
-    // observe() — should NOT persist (would freeze default size forever).
-    Object.defineProperty(dialog, 'offsetWidth', { value: 640, configurable: true });
-    Object.defineProperty(dialog, 'offsetHeight', { value: 480, configurable: true });
-    expect(capturedResizeCallback).not.toBeNull();
-    capturedResizeCallback!([], {} as ResizeObserver);
-
-    // Second callback simulates a real user-driven resize.
-    Object.defineProperty(dialog, 'offsetWidth', { value: 950, configurable: true });
-    Object.defineProperty(dialog, 'offsetHeight', { value: 580, configurable: true });
-    capturedResizeCallback!([], {} as ResizeObserver);
-
-    expect(loadDiagnosticsPanelSize()).toEqual({ width: 950, height: 580 });
-  });
-
   it('capturedResizeCallback is reset to null between tests (isolation guard)', () => {
     // No manual reset here — if beforeEach resets capturedResizeCallback to null,
     // this passes. Under current code (no beforeEach reset), the previous test's
@@ -414,38 +387,6 @@ describe('DiagnosticsPanel', () => {
     } finally {
       Object.defineProperty(window, 'innerWidth', { value: originalInnerWidth, writable: true, configurable: true });
     }
-  });
-
-  it('ignores the first (synchronous initial) ResizeObserver callback and persists only on subsequent user-driven resizes', () => {
-    capturedResizeCallback = null;
-    render(() => (
-      <DiagnosticsPanel
-        open={true}
-        diagnostics={[]}
-        onClose={vi.fn()}
-        onNavigate={vi.fn()}
-      />
-    ));
-    const dialog = screen.getByTestId('diagnostics-dialog') as HTMLElement;
-
-    // Simulate the browser's synchronous initial fire on observe() with the
-    // element's default-computed offsetWidth/offsetHeight.
-    Object.defineProperty(dialog, 'offsetWidth', { value: 640, configurable: true });
-    Object.defineProperty(dialog, 'offsetHeight', { value: 480, configurable: true });
-    expect(capturedResizeCallback).not.toBeNull();
-    capturedResizeCallback!([], {} as ResizeObserver);
-
-    // The default size from the initial fire must NOT be persisted: doing so
-    // would freeze the default forever and bypass computeDefaultDialogSize on
-    // every subsequent open.
-    expect(loadDiagnosticsPanelSize()).toBeNull();
-
-    // Now simulate a real user-driven resize (second callback).
-    Object.defineProperty(dialog, 'offsetWidth', { value: 1050, configurable: true });
-    Object.defineProperty(dialog, 'offsetHeight', { value: 620, configurable: true });
-    capturedResizeCallback!([], {} as ResizeObserver);
-
-    expect(loadDiagnosticsPanelSize()).toEqual({ width: 1050, height: 620 });
   });
 
   it('ResizeObserver: skips initial synchronous fire and persists subsequent user-driven resize', () => {
