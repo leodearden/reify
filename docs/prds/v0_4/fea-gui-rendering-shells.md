@@ -60,6 +60,7 @@ Visual regression baselines (under `gui/test/fixtures/fea-shells/`):
 ## Relationship to other PRDs and tasks
 
 - **Direct dependent of `structural-analysis-shells.md`** — needs shell kernel, ElasticResult extensions, and mid-surface extractor.
+- **IPC payload source `shell-extract-engine-bridge.md`** — §4 defines the `MeshData` extensions consumed by this PRD's rendering work: the `element_kind`, `region_tags`, and `vector_channels` fields, plus the `vonMises_top`, `vonMises_mid`, and `vonMises_bottom` `scalar_channels` keys. Future M-001/M-003/M-005/M-006/M-007/M-014 finding mappings in this PRD trace to these concrete payload elements.
 - **Direct extension of `fea-gui-rendering.md`** — adds shell-aware rendering on top of the v0.3 contour/probe/auto-resolve infrastructure. No restructuring; only additive.
 - **Composes with `varying-thickness-shells.md`** — thickness heat-map mode becomes meaningful when thickness varies; the rendering primitive ships in v0.4.
 - **Composes with `composite-laminated-shells.md`** — per-ply stress display extends the top/mid/bottom toggle into a per-ply selector; future v0.5+ extension.
