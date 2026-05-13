@@ -1,7 +1,13 @@
 # PRD: `imported` Field Source (OpenVDB / CSV / HDF5)
 
-Status: deferred to v0.2 per 2026-04-26 decision.
-Design resolved 2026-04-28 — see "Resolved design decisions" below. **v0.2 scope narrowed to OpenVDB only**; HDF5 and CSV deferred to a follow-on PRD.
+Status: **OpenVDB consumer arm folded into v0.3 via `docs/prds/v0_3/multi-kernel-phase-3.md` Phase 4 task θ** (2026-05-12 contested-ownership disposition, GR-003).
+Historical: deferred to v0.2 per 2026-04-26 decision; design resolved 2026-04-28 — see "Resolved design decisions" below. **v0.2 scope narrowed to OpenVDB only**; HDF5 and CSV deferred to a follow-on PRD.
+
+**Cross-reference — active owner (GR-003):** `docs/prds/v0_3/multi-kernel-phase-3.md`
+consumes this PRD's OpenVDB arm (symmetrical with multi-kernel-phase-3.md §11 "consumes" row):
+— §4 — cache-key composition / GR-003 wiring point: `RealizationCacheKey.options_hash` includes `MeshToVoxelOptions`; every call site passes actual `repr_kind` (not hard-coded `ReprKind::BRep`).
+— §8 Phase 4 task θ — operative consumer-arm slice: `engine_eval.rs:621` `CompiledFieldSource::Imported` arm replaced, routing through `reify-kernel-openvdb::ingest::load_field_from_path` (GR-003 resolution per 2026-05-12 disposition).
+The 5-task OpenVDB decomposition in this PRD is superseded by task θ. HDF5/CSV continues under `docs/prds/v0_3/imported-field-source-hdf5-csv.md` (multi-kernel-phase-3.md §11). See "Decomposition plan" below.
 
 ## Goal
 
@@ -57,7 +63,7 @@ Caching: imported data is content-hashed on file contents (not path) so the eval
 ## Pre-conditions for activating
 
 - v0.1 alpha has shipped and field-using examples are stable.
-- OpenVDB kernel work is in scope or already underway (`multi-kernel.md`).
+- OpenVDB kernel work is underway: `multi-kernel.md` Phases 1+2 shipped 2026-04-28; OpenVDB consumer wiring is Phase 4 task θ in `docs/prds/v0_3/multi-kernel-phase-3.md`.
 
 ## Resolved design decisions (2026-04-28)
 
@@ -74,6 +80,8 @@ Caching: imported data is content-hashed on file contents (not path) so the eval
 **Lowering to internal `sampled` representation.** Once ingested, an `imported` field is indistinguishable from a `sampled` field at the field-machinery level (interpolation, gradient, composition all work the same). The distinction lives at the source-declaration level only.
 
 ## Decomposition plan (5 tasks, gated on 2295's OpenVDB sub-kernel)
+
+> **Superseded (2026-05-12).** The OpenVDB consumer-arm work (tasks 1–5 below) has been re-homed as task θ in `docs/prds/v0_3/multi-kernel-phase-3.md` §8 Phase 4, per the 2026-05-12 contested-ownership disposition for GR-003. The 5-task list below is preserved for historical reference only — do not implement these tasks separately; implement task θ instead. The HDF5/CSV follow-on continues under `docs/prds/v0_3/imported-field-source-hdf5-csv.md` (listed in multi-kernel-phase-3.md §11 as blocked-on-θ).
 
 1. **`imported` source-kind grammar + parsing** — extends the `field def` source enum with the variant, parses `path` / `format = OpenVDB` / `grid = "..."` block.
 2. **OpenVDB ingestion** — file read, sample-buffer allocation, unit metadata validation, lowering to internal `sampled` representation.
