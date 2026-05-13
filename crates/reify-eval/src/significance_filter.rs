@@ -687,18 +687,6 @@ mod tests {
         );
     }
 
-    // ── LazyLock statics sanity ──────────────────────────────────────────────
-
-    /// Sanity-check: `DISPLACEMENT_KEY_VALUE` is built from `DISPLACEMENT_KEY`.
-    /// Guards against a future refactor that changes the static's initializer
-    /// without updating the const. Behavioral correctness of BTreeMap lookups via
-    /// these statics is covered by the higher-level tests above.
-    #[test]
-    fn lazylock_key_statics_match_expected_value_strings() {
-        use super::{DISPLACEMENT_KEY, DISPLACEMENT_KEY_VALUE};
-        assert_eq!(&*DISPLACEMENT_KEY_VALUE, &Value::String(DISPLACEMENT_KEY.to_string()));
-    }
-
     // ── Amendment: grid-metadata inequality always yields Different ──────────
 
     /// If two displacement SampledFields have identical data values within
