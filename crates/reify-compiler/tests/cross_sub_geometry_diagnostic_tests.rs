@@ -468,12 +468,18 @@ pub structure Outer {
 
 // ─── task 3454: bare let emits v0.1 no-value-cell warning ────────────────────
 
-/// Helper shared by the two task-3454 tests below.
+/// Helper used by `bare_cross_sub_geometry_let_emits_v01_no_op_warning`.
 ///
 /// Compiles `source` and asserts:
 /// - No Error-severity diagnostics.
-/// - At least one Warning whose message contains `"copy"`, `"inner"`,
-///   `"body"`, `"v0.1"`, and `"no value cell"`.
+/// - At least one Warning whose message contains the composite backtick-quoted
+///   prefix `` `let copy = self.inner.body` `` (pins all three interpolated
+///   identifiers together), `"v0.1"`, and `"no value cell"`.
+///
+/// Using the composite check rather than individual `contains("body")` etc.
+/// guards against false-positives: the static warning text also contains the
+/// word "body" in "child template's body", so a bare `contains("body")` would
+/// pass even if `vid.member` were interpolated incorrectly.
 ///
 /// `case_label` appears in assertion-failure messages for easy triage.
 fn assert_v01_bare_let_warning(source: &str, case_label: &str) {
@@ -492,16 +498,14 @@ fn assert_v01_bare_let_warning(source: &str, case_label: &str) {
 
     let has_warning = compiled.diagnostics.iter().any(|d| {
         d.severity == Severity::Warning
-            && d.message.contains("copy")
-            && d.message.contains("inner")
-            && d.message.contains("body")
+            && d.message.contains("`let copy = self.inner.body`")
             && d.message.contains("v0.1")
             && d.message.contains("no value cell")
     });
     assert!(
         has_warning,
-        "{case_label}: expected Warning naming 'copy', 'inner', 'body', 'v0.1', \
-         'no value cell'; got diagnostics: {:?}",
+        "{case_label}: expected Warning containing \"`let copy = self.inner.body`\", \
+         \"v0.1\", \"no value cell\"; got diagnostics: {:?}",
         compiled
             .diagnostics
             .iter()
@@ -564,20 +568,21 @@ pub structure Outer {
 /// Therefore the v0.1 bare-let Warning is the ONLY compile-time signal the
 /// user receives, making it essential.  This test pins that invariant:
 ///
-/// (a) The v0.1 bare-let Warning IS present (the user's only actionable hint).
-/// (b) NO Error-severity diagnostics fire at compile time — the translate
-///     compiles silently with a wrong target (future eval-side failure).
+/// (a) NO Error-severity diagnostics fire at compile time.
+/// (b) Exactly ONE v0.1 bare-let Warning fires — at the bare-let declaration,
+///     NOT once per downstream use of `copy`.  The companion test
+///     (`bare_cross_sub_geometry_let_emits_v01_no_op_warning`) checks "at
+///     least one" via the shared helper; this test closes that gap with
+///     `count() == 1`.
 ///
-/// This test GREENs immediately after step-2's implementation with no
-/// additional code change — it's a regression guard, not a driver for new
-/// implementation.  Also includes the `param body : Solid` sibling variant.
-///
-/// Added by task 3454 (step-3).
+/// Table-driven over two child-side shapes to mirror the companion test.
+/// Added by task 3454 (step-3); amended to assert exact count.
 #[test]
 fn bare_cross_sub_geometry_let_with_downstream_translate_surfaces_v01_hint() {
-    // Case A: child-side `let body = box(...)` with downstream translate
-    assert_v01_bare_let_warning(
-        r#"pub structure Inner {
+    for (label, source) in [
+        (
+            "Case A (let body, downstream translate)",
+            r#"pub structure Inner {
     let body = box(10mm, 20mm, 30mm)
 }
 pub structure Outer {
@@ -585,12 +590,10 @@ pub structure Outer {
     let copy = self.inner.body
     let placed = translate(copy, 10mm, 0mm, 0mm)
 }"#,
-        "Case A (let body, downstream translate)",
-    );
-
-    // Case B: child-side `param body : Solid = box(...)` with downstream translate
-    assert_v01_bare_let_warning(
-        r#"pub structure Inner {
+        ),
+        (
+            "Case B (param body : Solid, downstream translate)",
+            r#"pub structure Inner {
     param body : Solid = box(10mm, 20mm, 30mm)
 }
 pub structure Outer {
@@ -598,6 +601,44 @@ pub structure Outer {
     let copy = self.inner.body
     let placed = translate(copy, 10mm, 0mm, 0mm)
 }"#,
-        "Case B (param body : Solid, downstream translate)",
-    );
+        ),
+    ] {
+        let compiled = compile_source(source);
+
+        // (a) No Error-severity diagnostics.
+        let errors: Vec<_> = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "{label}: expected no Error diagnostics; got: {:?}",
+            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+
+        // (b) Exactly ONE v0.1 bare-let Warning — fires once at the
+        // declaration, NOT once per downstream use of `copy`.
+        let warn_count = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Severity::Warning
+                    && d.message.contains("`let copy = self.inner.body`")
+                    && d.message.contains("v0.1")
+                    && d.message.contains("no value cell")
+            })
+            .count();
+        assert_eq!(
+            warn_count,
+            1,
+            "{label}: expected exactly one v0.1 bare-let Warning (not one per \
+             downstream use of `copy`); got: {:?}",
+            compiled
+                .diagnostics
+                .iter()
+                .map(|d| (&d.severity, &d.message))
+                .collect::<Vec<_>>()
+        );
+    }
 }

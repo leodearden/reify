@@ -1132,12 +1132,11 @@ pub(crate) fn compile_entity(
                 {
                     // Extract `<sub>` from the synthetic entity stamp `"<parent>.<sub>"`.
                     // Entity names cannot contain '.' (the parser's identifier rule rejects
-                    // dots), so split_once is unambiguous.  The outer guard
-                    // `vid.entity.contains('.')` guarantees split_once succeeds here.
-                    let (_, sub_name) = vid
-                        .entity
-                        .split_once('.')
-                        .expect("vid.entity.contains('.') guard ensures split_once succeeds");
+                    // dots), so split_once is unambiguous for the current stamp format.
+                    // `unwrap_or` degrades gracefully if the stamp format ever changes
+                    // (e.g. a future task uses '::' as a separator) — the warning still
+                    // fires but names the full entity string instead of just the sub.
+                    let sub_name = vid.entity.split_once('.').map(|(_, s)| s).unwrap_or(&vid.entity);
                     diagnostics.push(
                         Diagnostic::warning(format!(
                             "bare `let {} = self.{}.{}` produces no value cell in v0.1 \
