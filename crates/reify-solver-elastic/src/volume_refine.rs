@@ -98,7 +98,27 @@ impl std::error::Error for RefineError {
 /// The min-projection ensures any element that wants a locally smaller mesh
 /// wins at its shared vertices. A mean would dilute the refinement signal at
 /// the boundary between a marked and an unmarked region.
-pub fn project_per_element_sizes_to_vertices(
+///
+/// # Caller contract
+///
+/// The caller MUST validate
+/// `per_element_sizes.len() == volume_mesh.tet_indices.len() / nodes_per_elem`
+/// BEFORE invoking. The implementation indexes `per_element_sizes[elem_idx]`
+/// without a bounds check; an out-of-bounds element will panic. The only
+/// safe caller is [`refine_with_size_field`], which performs this length
+/// validation up front (see lines 161-166).
+///
+/// The panic contract is pinned by the regression test
+/// `project_panics_on_too_short_per_element_sizes` in the in-module `tests`
+/// block — future authors who silently misbehave on short slices (e.g. via
+/// `get(elem_idx).copied().unwrap_or(...)`) will see that test fail.
+///
+/// Visibility is `pub(crate)` to prevent external callers from misusing the
+/// function with a short slice. The reviewer_comprehensive robustness
+/// finding (option (a)) chose visibility narrowing over a `Result`-typed
+/// length check; the up-front check in `refine_with_size_field` already
+/// covers the validation duty for in-tree callers.
+pub(crate) fn project_per_element_sizes_to_vertices(
     volume_mesh: &VolumeMesh,
     per_element_sizes: &[f64],
 ) -> Vec<f64> {
