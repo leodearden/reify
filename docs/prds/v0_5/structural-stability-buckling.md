@@ -27,6 +27,8 @@ This is a *separate analysis kind* from linear-elastostatic — different solver
 
 ## Sketch of approach
 
+The kernel-surface slice — eigensolver, P1-tet K_g, `solve_buckling` stdlib entry, `BucklingResult` shape, and the GUI mode-shape-frame implementation — is contracted in `docs/prds/v0_5/buckling-eigensolver.md` (commit 8059aa59ba). The bullets below describe the user-facing product surface; consult that PRD for the authoritative kernel contract.
+
 - **`solve_buckling(body, material, loads, supports, options) -> BucklingResult`** — separate stdlib kernel binding, sibling to `solve_elastic_static`. Internally runs a linear-static solve to compute pre-stress, assembles K_g, then eigenvalue-solves.
 - **`BucklingResult`:** ordered list of `Mode { eigenvalue, mode_shape: Field<Point3, Vector3<Length>> }`. Critical load = lowest eigenvalue × reference load magnitude.
 - **Eigenvalue solver:** Lanczos with shift-invert via faer-rs. Compute the lowest k modes (k user-specifiable, default 5). Geometric multiplicity handling for symmetric structures.
@@ -39,14 +41,15 @@ This is a *separate analysis kind* from linear-elastostatic — different solver
 - v0.3 `structural-analysis-fea.md` kernel shipped and validated.
 - v0.4 `structural-analysis-shells.md` shipped (most buckling cases are shell-dominated).
 - Documented user demand (column design, pressure-vessel external pressure, panel buckling under shear).
+- Technical foundation gates for the kernel-surface slice (GR-001 struct-ctor runtime, ComputeNode contract, FEA stack engine integration, GR-016 channel contract scaffold, plus forward-looking #3117 Field-in-param) are enumerated in `docs/prds/v0_5/buckling-eigensolver.md` §11.
 
 ## Open design questions
 
-- **Linear vs. non-linear buckling.** Linear (eigenvalue) buckling assumes small pre-buckling deformation; non-linear (Riks-arc-length) tracks the full load-deflection path through the buckling event and post-buckling. Linear is easier and standard for first-cut design; non-linear is more accurate but adds substantial solver surface. Lean: linear first (this PRD), non-linear as separate PRD if demand emerges.
-- **Number-of-modes default.** Lowest 5 is conventional; may be too few for symmetric structures with degenerate modes. Configurable; default 10 might be safer.
-- **Imperfection sensitivity.** Real shells buckle far below the linear-buckling eigenvalue because of geometric imperfections. Standard treatment: scale the first mode shape into the geometry at small amplitude and re-analyze. Worth providing as a stdlib helper but adds workflow complexity.
-- **Reference load magnitude.** Eigenvalue is a scalar multiplier on the reference load. User-experience question: do we ask for a "reference unit load" or scale automatically against actual applied load? Lean: just use applied load as reference — eigenvalue then directly = safety factor against buckling.
-- **Multi-step / load-following analyses.** Pressure vessels under combined internal pressure + external pressure need each load type as a separate eigenvalue problem; combination requires non-linear analysis.
+- **Linear vs. non-linear buckling.** Linear (eigenvalue) buckling assumes small pre-buckling deformation; non-linear (Riks-arc-length) tracks the full load-deflection path through the buckling event and post-buckling. Linear is easier and standard for first-cut design; non-linear is more accurate but adds substantial solver surface. Lean: linear first (this PRD), non-linear as separate PRD if demand emerges. Resolved (2026-05-12): Linear (eigenvalue) only for v0.5; non-linear deferred to a future PRD. See `docs/prds/v0_5/buckling-eigensolver.md` §3.
+- **Number-of-modes default.** Lowest 5 is conventional; may be too few for symmetric structures with degenerate modes. Configurable; default 10 might be safer. Resolved (2026-05-12): n_modes = 10. See `docs/prds/v0_5/buckling-eigensolver.md` §3.
+- **Imperfection sensitivity.** Real shells buckle far below the linear-buckling eigenvalue because of geometric imperfections. Standard treatment: scale the first mode shape into the geometry at small amplitude and re-analyze. Worth providing as a stdlib helper but adds workflow complexity. Resolved (2026-05-12): Out of scope for v0.5. See `docs/prds/v0_5/buckling-eigensolver.md` §3.
+- **Reference load magnitude.** Eigenvalue is a scalar multiplier on the reference load. User-experience question: do we ask for a "reference unit load" or scale automatically against actual applied load? Lean: just use applied load as reference — eigenvalue then directly = safety factor against buckling. Resolved (2026-05-12): λ *is* the safety factor; `applied_load` argument is informational. See `docs/prds/v0_5/buckling-eigensolver.md` §3.
+- **Multi-step / load-following analyses.** Pressure vessels under combined internal pressure + external pressure need each load type as a separate eigenvalue problem; combination requires non-linear analysis. Resolved (2026-05-12): Out of scope; per-case envelope handled by `MultiCaseBucklingResult`. See `docs/prds/v0_5/buckling-eigensolver.md` §3.
 
 ## Out of scope for this PRD
 
