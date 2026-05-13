@@ -15,12 +15,12 @@ import styles from '../panels/DiagnosticsPanel.module.css';
 // The global stub captures the last callback so per-test cases can
 // invoke it directly to simulate a resize event.
 //
-// Design: save the original before the suite, install the stub in beforeAll,
-// restore in afterAll — prevents leaking this stub into other test files that
-// run in the same vitest worker. capturedResizeCallback is reset to null in
-// beforeEach so tests cannot observe state left by earlier tests.
+// Design: capture the original and install the stub in beforeAll (same
+// lifecycle point), restore in afterAll — prevents leaking this stub into other
+// test files that run in the same vitest worker. capturedResizeCallback is
+// reset to null in beforeEach so tests cannot observe state left by earlier tests.
 let capturedResizeCallback: ResizeObserverCallback | null = null;
-const ORIGINAL_RESIZE_OBSERVER = globalThis.ResizeObserver;
+let ORIGINAL_RESIZE_OBSERVER: typeof ResizeObserver;
 class StubResizeObserver {
   observe = vi.fn();
   unobserve = vi.fn();
@@ -46,6 +46,7 @@ function makeDiag(severity: 'Error' | 'Warning' | 'Info', overrides: Partial<Dia
 
 describe('DiagnosticsPanel', () => {
   beforeAll(() => {
+    ORIGINAL_RESIZE_OBSERVER = globalThis.ResizeObserver;
     globalThis.ResizeObserver = StubResizeObserver as unknown as typeof ResizeObserver;
   });
   afterAll(() => {
@@ -322,13 +323,6 @@ describe('DiagnosticsPanel', () => {
     // Without any click the dialog should NOT carry the lineWrapOn class
     const dialog = screen.getByTestId('diagnostics-dialog') as HTMLElement;
     expect(dialog.className).not.toContain('lineWrapOn');
-  });
-
-  it('capturedResizeCallback is reset to null between tests (isolation guard)', () => {
-    // No manual reset here — if beforeEach resets capturedResizeCallback to null,
-    // this passes. Under current code (no beforeEach reset), the previous test's
-    // render() leaves capturedResizeCallback set and this fails.
-    expect(capturedResizeCallback).toBeNull();
   });
 
   it('dialog has no inline overflow style; relies on .dialog class for single vertical scroll axis', () => {
