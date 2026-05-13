@@ -1132,13 +1132,12 @@ pub(crate) fn compile_entity(
                 {
                     // Extract `<sub>` from the synthetic entity stamp `"<parent>.<sub>"`.
                     // Entity names cannot contain '.' (the parser's identifier rule rejects
-                    // dots), so split_once is unambiguous and is guaranteed to succeed
-                    // because the outer guard already asserts `vid.entity.contains('.')`.
-                    let sub_name = vid
+                    // dots), so split_once is unambiguous.  The outer guard
+                    // `vid.entity.contains('.')` guarantees split_once succeeds here.
+                    let (_, sub_name) = vid
                         .entity
                         .split_once('.')
-                        .map(|(_, s)| s)
-                        .unwrap_or(&vid.entity);
+                        .expect("vid.entity.contains('.') guard ensures split_once succeeds");
                     diagnostics.push(
                         Diagnostic::warning(format!(
                             "bare `let {} = self.{}.{}` produces no value cell in v0.1 \
