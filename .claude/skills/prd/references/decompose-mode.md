@@ -36,16 +36,16 @@ If any leaf task lacks a user-observable signal, **stop** and surface to Leo. Th
 
 If any intermediate task has no named downstream consumer, surface it. Producer-only intermediate tasks with nothing downstream are a smell — typically the decomposition is missing an integration-gate task.
 
-### Step 3 — File tasks via two-phase pattern (ALWAYS planning_mode=True)
-
-Per memory `procedural_fused_memory_two_phase_writes`: use `submit_task` + `resolve_ticket`; on timeout, poll `get_task` rather than retrying.
+### Step 3 — File tasks (ALWAYS planning_mode=True; synchronous, curator-bypassing)
 
 Per memory `feedback_planning_mode_scope`: PRD-decomposition batches are the canonical use case for `planning_mode=True`. **Every task in the batch is filed with `planning_mode=True`, no exceptions.** This lands them as `deferred` so the scheduler doesn't pick anything up before the wiring is complete and the batch is flipped together in Step 5.
+
+`planning_mode=True` is **synchronous** and **bypasses the curator**. `submit_task` returns `{task_id, status: "deferred", planning_mode: True}` directly — there is no ticket, no `resolve_ticket` follow-up, and no curator `combined` outcome. The two-phase `submit_task` + `resolve_ticket` pattern from `procedural_fused_memory_two_phase_writes` applies only to `planning_mode=False` (which decompose mode never uses).
 
 For each task in the plan, in dependency order (roots first):
 
 ```
-submit_result = mcp__fused-memory__submit_task(
+result = mcp__fused-memory__submit_task(
     title="<task title>",
     description="""<detailed description>
 
@@ -68,25 +68,10 @@ Crates touched: <list>
         "modules": ["<crate_path>", ...],
     },
 )
-ticket = submit_result["ticket"]
-
-resolve = mcp__fused-memory__resolve_ticket(
-    ticket=ticket,
-    project_root="/home/leo/src/reify",
-    timeout_seconds=600,
-)
-
-if resolve["status"] in ("created", "combined"):
-    task_id = resolve["task_id"]
-elif resolve["status"] == "failed":
-    # Surface to Leo, don't retry blindly
-    # See _shared/ticket-failure-handling.md in dark-factory if reason is R4
-    stop_and_escalate(resolve["reason"])
+task_id = result["task_id"]   # status == "deferred", planning_mode == True
 ```
 
-`combined` is normal — the curator may merge a new task into an existing one if the description is duplicative.
-
-If `submit_task` itself times out (no ticket returned), **don't retry**; poll `get_task` to see whether the write landed asynchronously.
+If `submit_task` itself times out (no `task_id` returned), **don't retry**; poll `get_task` (search by title, or by the most recent IDs above your last known one) to see whether the write landed asynchronously. Re-submitting on timeout risks double-filing — the curator-dedupe path is not active in planning_mode.
 
 ### Step 4 — Wire ALL dependencies (still deferred)
 
@@ -100,7 +85,7 @@ mcp__fused-memory__add_dependency(
 )
 ```
 
-Wire intra-batch (Greek-letter prereqs in the PRD map to task IDs you just got from resolve_ticket) and out-of-batch (PRD-declared prereqs to existing tasks elsewhere — e.g. "task 3117" or "compute-node-contract.md task η").
+Wire intra-batch (Greek-letter prereqs in the PRD map to task IDs you just got from `submit_task`) and out-of-batch (PRD-declared prereqs to existing tasks elsewhere — e.g. "task 3117" or "compute-node-contract.md task η").
 
 If the decomposition specified `metadata.unblocks` reverse-deps, set those via `update_task`.
 

@@ -33,7 +33,7 @@ See `references/author-mode.md`.
 
 ### Decompose mode
 
-Read a committed PRD, re-walk gates against it, then file the whole task batch via fused-memory `submit_task` + `resolve_ticket` with **`planning_mode=True` on every task, no exceptions** (lands them as `deferred`). After the batch is filed, wire **all** dependencies, then flip the **entire batch** from `deferred` to `pending` in a single bulk `set_task_status` call. Fused-memory owns persistence — no commit step.
+Read a committed PRD, re-walk gates against it, then file the whole task batch via fused-memory `submit_task` with **`planning_mode=True` on every task, no exceptions** (synchronous, curator-bypassing; lands them as `deferred`, returns `task_id` directly — no `resolve_ticket` round trip). After the batch is filed, wire **all** dependencies, then flip the **entire batch** from `deferred` to `pending` in a single bulk `set_task_status` call. Fused-memory owns persistence — no commit step.
 
 See `references/decompose-mode.md`.
 
@@ -102,7 +102,7 @@ Terse, technical. No preamble. Surface design choices as 2–4 way option menus 
 - `feedback_orchestrator_narrow_locks_favor_upfront_design` — why G5 tilts toward H.
 - `feedback_commit_prds_before_referencing_tasks` — author commits before decompose references.
 - `feedback_planning_mode_scope` — why decompose uses planning_mode=True.
-- `procedural_fused_memory_two_phase_writes` — submit_task + resolve_ticket pattern, do-not-retry-on-timeout.
+- `procedural_fused_memory_two_phase_writes` — submit_task + resolve_ticket pattern (applies to **non-**planning_mode only; decompose mode's planning_mode=True path is synchronous and skips the ticket round trip).
 - `preferences_bookmark_task_pattern` — bookmark/deferred-batch lifecycle.
 
 ## Audit foundation
