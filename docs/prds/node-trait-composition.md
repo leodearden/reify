@@ -1,5 +1,9 @@
 # Node-Trait Composition
 
+> **Superseded 2026-05-13** by [`docs/prds/v0_3/node-traits-unification.md`](v0_3/node-traits-unification.md) (GR-038 / cluster C-36 resolution under direction C′ — refined bridge).
+>
+> Acceptance criteria #1 (trait→priority mapping), #3 (config-file ingestion), and #5 (IMMEDIATE never-cancelled alignment) are absorbed and re-met under the unified surface. Tasks 2350 / 2353 / 2356 / 2358 / 2360 remain valid as foundation work this PRD originally produced; the parallel-taxonomies gap they left (`NodeArchKind` 7 variants vs `NodeKind` 5 variants; `NodeTraits` declarative-only) is closed by the unification PRD's bridges. This file remains as the foundation document; new work targets the v0_3 PRD.
+
 ## Goal
 
 Add the four declarative node traits specified in `reify-implementation-architecture.md` §7.6 (lines 803–816) — `immediate`, `warm_startable`, `progressive`, `committable` — and make them compose orthogonally with the existing priority system. Per-node policy overrides must be expressible (e.g. "FEA only on final inputs", "solver progressive emission"), settable per node instance or per node type. Traits inform priority assignment but do not replace it.
