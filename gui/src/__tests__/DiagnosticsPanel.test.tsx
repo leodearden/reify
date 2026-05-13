@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from 'vitest';
 import { render, screen, fireEvent } from '@solidjs/testing-library';
 import { createSignal } from 'solid-js';
 import { DiagnosticsPanel } from '../panels/DiagnosticsPanel';
@@ -14,15 +14,21 @@ import styles from '../panels/DiagnosticsPanel.module.css';
 // Stub ResizeObserver for jsdom (which doesn't support it).
 // The global stub captures the last callback so per-test cases can
 // invoke it directly to simulate a resize event.
+//
+// Design: save the original before the suite, install the stub in beforeAll,
+// restore in afterAll — prevents leaking this stub into other test files that
+// run in the same vitest worker. capturedResizeCallback is reset to null in
+// beforeEach so tests cannot observe state left by earlier tests.
 let capturedResizeCallback: ResizeObserverCallback | null = null;
-globalThis.ResizeObserver = class ResizeObserver {
+const ORIGINAL_RESIZE_OBSERVER = globalThis.ResizeObserver;
+class StubResizeObserver {
   observe = vi.fn();
   unobserve = vi.fn();
   disconnect = vi.fn();
   constructor(cb: ResizeObserverCallback) {
     capturedResizeCallback = cb;
   }
-};
+}
 
 function makeDiag(severity: 'Error' | 'Warning' | 'Info', overrides: Partial<DiagnosticInfo> = {}): DiagnosticInfo {
   return {
@@ -39,8 +45,15 @@ function makeDiag(severity: 'Error' | 'Warning' | 'Info', overrides: Partial<Dia
 }
 
 describe('DiagnosticsPanel', () => {
+  beforeAll(() => {
+    globalThis.ResizeObserver = StubResizeObserver as unknown as typeof ResizeObserver;
+  });
+  afterAll(() => {
+    globalThis.ResizeObserver = ORIGINAL_RESIZE_OBSERVER;
+  });
   beforeEach(() => {
     localStorage.clear();
+    capturedResizeCallback = null;
   });
 
   it('renders nothing when open=false', () => {
