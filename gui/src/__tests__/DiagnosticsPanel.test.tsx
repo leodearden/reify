@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from 'vitest';
 import { render, screen, fireEvent } from '@solidjs/testing-library';
 import { createSignal } from 'solid-js';
 import { DiagnosticsPanel } from '../panels/DiagnosticsPanel';
@@ -14,15 +14,21 @@ import styles from '../panels/DiagnosticsPanel.module.css';
 // Stub ResizeObserver for jsdom (which doesn't support it).
 // The global stub captures the last callback so per-test cases can
 // invoke it directly to simulate a resize event.
+//
+// Design: capture the original and install the stub in beforeAll (same
+// lifecycle point), restore in afterAll — prevents leaking this stub into other
+// test files that run in the same vitest worker. capturedResizeCallback is
+// reset to null in beforeEach so tests cannot observe state left by earlier tests.
 let capturedResizeCallback: ResizeObserverCallback | null = null;
-globalThis.ResizeObserver = class ResizeObserver {
+let ORIGINAL_RESIZE_OBSERVER: typeof ResizeObserver;
+class StubResizeObserver {
   observe = vi.fn();
   unobserve = vi.fn();
   disconnect = vi.fn();
   constructor(cb: ResizeObserverCallback) {
     capturedResizeCallback = cb;
   }
-};
+}
 
 function makeDiag(severity: 'Error' | 'Warning' | 'Info', overrides: Partial<DiagnosticInfo> = {}): DiagnosticInfo {
   return {
@@ -39,8 +45,16 @@ function makeDiag(severity: 'Error' | 'Warning' | 'Info', overrides: Partial<Dia
 }
 
 describe('DiagnosticsPanel', () => {
+  beforeAll(() => {
+    ORIGINAL_RESIZE_OBSERVER = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = StubResizeObserver as unknown as typeof ResizeObserver;
+  });
+  afterAll(() => {
+    globalThis.ResizeObserver = ORIGINAL_RESIZE_OBSERVER;
+  });
   beforeEach(() => {
     localStorage.clear();
+    capturedResizeCallback = null;
   });
 
   it('renders nothing when open=false', () => {
@@ -311,33 +325,6 @@ describe('DiagnosticsPanel', () => {
     expect(dialog.className).not.toContain('lineWrapOn');
   });
 
-  it('ResizeObserver callback persists current size to localStorage', () => {
-    capturedResizeCallback = null;
-    render(() => (
-      <DiagnosticsPanel
-        open={true}
-        diagnostics={[]}
-        onClose={vi.fn()}
-        onNavigate={vi.fn()}
-      />
-    ));
-    const dialog = screen.getByTestId('diagnostics-dialog') as HTMLElement;
-
-    // First callback simulates the browser's synchronous initial fire on
-    // observe() — should NOT persist (would freeze default size forever).
-    Object.defineProperty(dialog, 'offsetWidth', { value: 640, configurable: true });
-    Object.defineProperty(dialog, 'offsetHeight', { value: 480, configurable: true });
-    expect(capturedResizeCallback).not.toBeNull();
-    capturedResizeCallback!([], {} as ResizeObserver);
-
-    // Second callback simulates a real user-driven resize.
-    Object.defineProperty(dialog, 'offsetWidth', { value: 950, configurable: true });
-    Object.defineProperty(dialog, 'offsetHeight', { value: 580, configurable: true });
-    capturedResizeCallback!([], {} as ResizeObserver);
-
-    expect(loadDiagnosticsPanelSize()).toEqual({ width: 950, height: 580 });
-  });
-
   it('dialog has no inline overflow style; relies on .dialog class for single vertical scroll axis', () => {
     // The .dialog CSS class provides overflow-y: auto (vertical scroll for the
     // full dialog content) and .list provides overflow-x: auto (horizontal scroll
@@ -396,8 +383,8 @@ describe('DiagnosticsPanel', () => {
     }
   });
 
-  it('ignores the first (synchronous initial) ResizeObserver callback and persists only on subsequent user-driven resizes', () => {
-    capturedResizeCallback = null;
+  it('ResizeObserver: skips initial synchronous fire and persists subsequent user-driven resize', () => {
+    // beforeEach resets capturedResizeCallback — no manual null assignment needed.
     render(() => (
       <DiagnosticsPanel
         open={true}
@@ -408,23 +395,19 @@ describe('DiagnosticsPanel', () => {
     ));
     const dialog = screen.getByTestId('diagnostics-dialog') as HTMLElement;
 
-    // Simulate the browser's synchronous initial fire on observe() with the
-    // element's default-computed offsetWidth/offsetHeight.
+    // (i) First callback: browser's synchronous initial fire on observe().
+    // Must NOT persist — persisting here would freeze the default size forever
+    // and bypass computeDefaultDialogSize on every subsequent open.
     Object.defineProperty(dialog, 'offsetWidth', { value: 640, configurable: true });
     Object.defineProperty(dialog, 'offsetHeight', { value: 480, configurable: true });
     expect(capturedResizeCallback).not.toBeNull();
     capturedResizeCallback!([], {} as ResizeObserver);
-
-    // The default size from the initial fire must NOT be persisted: doing so
-    // would freeze the default forever and bypass computeDefaultDialogSize on
-    // every subsequent open.
     expect(loadDiagnosticsPanelSize()).toBeNull();
 
-    // Now simulate a real user-driven resize (second callback).
+    // (ii) Second callback: real user-driven resize.  Must persist.
     Object.defineProperty(dialog, 'offsetWidth', { value: 1050, configurable: true });
     Object.defineProperty(dialog, 'offsetHeight', { value: 620, configurable: true });
     capturedResizeCallback!([], {} as ResizeObserver);
-
     expect(loadDiagnosticsPanelSize()).toEqual({ width: 1050, height: 620 });
   });
 });
