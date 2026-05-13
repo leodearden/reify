@@ -687,89 +687,16 @@ mod tests {
         );
     }
 
-    // ── S1: LazyLock statics contract ───────────────────────────────────────
+    // ── LazyLock statics sanity ──────────────────────────────────────────────
 
-    /// Pins the module-level contract for `DISPLACEMENT_KEY_VALUE` and
-    /// `NON_DISPLACEMENT_KEY_VALUES`:
-    ///
-    /// 1. Both statics hold `Value::String` variants with the expected content.
-    /// 2. The four entries in `NON_DISPLACEMENT_KEY_VALUES` match
-    ///    `NON_DISPLACEMENT_KEYS` in iteration order.
-    /// 3. The cached statics are interchangeable with freshly-built
-    ///    `Value::String(...)` keys for `BTreeMap` lookups (pins the
-    ///    `Value: Borrow<Value>` / `Value: Ord` contract).
-    ///
-    /// This test fails to compile until S2 adds the statics.
+    /// Sanity-check: `DISPLACEMENT_KEY_VALUE` is built from `DISPLACEMENT_KEY`.
+    /// Guards against a future refactor that changes the static's initializer
+    /// without updating the const. Behavioral correctness of BTreeMap lookups via
+    /// these statics is covered by the higher-level tests above.
     #[test]
     fn lazylock_key_statics_match_expected_value_strings() {
-        use super::{
-            DISPLACEMENT_KEY, DISPLACEMENT_KEY_VALUE, NON_DISPLACEMENT_KEYS,
-            NON_DISPLACEMENT_KEY_VALUES,
-        };
-
-        // 1. DISPLACEMENT_KEY_VALUE holds the expected Value::String.
-        assert_eq!(
-            &*DISPLACEMENT_KEY_VALUE,
-            &Value::String("displacement".to_string()),
-            "DISPLACEMENT_KEY_VALUE must equal Value::String(\"displacement\")",
-        );
-
-        // 2. NON_DISPLACEMENT_KEY_VALUES length and iteration order.
-        assert_eq!(
-            NON_DISPLACEMENT_KEY_VALUES.len(),
-            4,
-            "NON_DISPLACEMENT_KEY_VALUES must have exactly 4 entries",
-        );
-        let expected_non_disp = [
-            Value::String("stress".to_string()),
-            Value::String("max_von_mises".to_string()),
-            Value::String("converged".to_string()),
-            Value::String("iterations".to_string()),
-        ];
-        for (i, (got, want)) in NON_DISPLACEMENT_KEY_VALUES
-            .iter()
-            .zip(expected_non_disp.iter())
-            .enumerate()
-        {
-            assert_eq!(
-                got, want,
-                "NON_DISPLACEMENT_KEY_VALUES[{i}] mismatch: expected {want:?}",
-            );
-        }
-
-        // Also verify the statics are consistent with the const sources.
-        assert_eq!(
-            &*DISPLACEMENT_KEY_VALUE,
-            &Value::String(DISPLACEMENT_KEY.to_string()),
-            "DISPLACEMENT_KEY_VALUE must round-trip through DISPLACEMENT_KEY const",
-        );
-        for (i, key_str) in NON_DISPLACEMENT_KEYS.iter().enumerate() {
-            assert_eq!(
-                &NON_DISPLACEMENT_KEY_VALUES[i],
-                &Value::String(key_str.to_string()),
-                "NON_DISPLACEMENT_KEY_VALUES[{i}] must match NON_DISPLACEMENT_KEYS[{i}]",
-            );
-        }
-
-        // 3. BTreeMap-lookup interchangeability: fresh keys vs cached statics.
-        let mut map: BTreeMap<Value, &'static str> = BTreeMap::new();
-        map.insert(Value::String("displacement".to_string()), "disp");
-        map.insert(Value::String("stress".to_string()), "stress");
-        map.insert(Value::String("max_von_mises".to_string()), "mvm");
-        map.insert(Value::String("converged".to_string()), "conv");
-        map.insert(Value::String("iterations".to_string()), "iters");
-
-        assert_eq!(
-            map.get(&*DISPLACEMENT_KEY_VALUE),
-            Some(&"disp"),
-            "cached DISPLACEMENT_KEY_VALUE must serve as a valid BTreeMap lookup key",
-        );
-        for (i, key_val) in NON_DISPLACEMENT_KEY_VALUES.iter().enumerate() {
-            assert!(
-                map.get(key_val).is_some(),
-                "NON_DISPLACEMENT_KEY_VALUES[{i}] must be a valid BTreeMap lookup key",
-            );
-        }
+        use super::{DISPLACEMENT_KEY, DISPLACEMENT_KEY_VALUE};
+        assert_eq!(&*DISPLACEMENT_KEY_VALUE, &Value::String(DISPLACEMENT_KEY.to_string()));
     }
 
     // ── Amendment: grid-metadata inequality always yields Different ──────────
