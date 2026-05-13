@@ -4915,3 +4915,200 @@ mod dispatch_volume_mesh_tests {
         let _: DispatchVolumeMeshFn = dispatch_volume_mesh::<_, _, _>;
     }
 }
+
+/// Produce an info-level diagnostic when a swept body is meshed with P1
+/// hex/wedge despite the user requesting `element_order = P2`.
+///
+/// P2 hex/wedge is deferred to v0.4+; the runtime silently produces P1 hex
+/// instead. This helper is the canonical source of that per-body diagnostic,
+/// cited by PRD `docs/prds/v0_3/hex-wedge-meshing.md` task #10.
+///
+/// # Contract
+///
+/// Returns `Some(Diagnostic::info(...))` only when ALL of the following hold:
+/// - `swept_kind` is `Some(_)` — the body qualified for hex/wedge promotion.
+/// - `force_tet` is `false` — hex/wedge meshing was not suppressed by the
+///   caller before we got here.
+/// - `element_order == ElementOrderTag::P2` — a substitution is actually
+///   happening (P1 is correct behaviour; only P2 triggers the warning).
+///
+/// Returns `None` in all other cases (no diagnostic to emit).
+///
+/// # One-shot guarantee
+///
+/// The helper is stateless. "One diagnostic per body" is enforced at the call
+/// site — each realization-final body handle invokes this helper exactly once,
+/// matching the `swept_kind_table.record(handle, kind)` per-handle pattern.
+///
+/// # Variant invariance
+///
+/// The message wording is variant-invariant per PRD task #10 — it does not
+/// distinguish hex vs wedge meshing outcomes (that is determined downstream by
+/// the gmsh recombine path, not by the sweep classifier variant). All three
+/// `SweptKind` variants (Extrude, Revolve, SweepLinear) produce the same
+/// message text when the three emission conditions hold; only the body label
+/// differs.
+// Task 2989 follow-up (integration test): once this helper is wired into the
+// engine's realization pipeline, add an end-to-end test that runs a P2 elastic
+// solve on a scene with at least two qualifying swept bodies and asserts exactly
+// one `Severity::Info` diagnostic per body (not zero, not two). The unit tests
+// below exercise the helper's contract but cannot verify the one-shot guarantee
+// at the call-site level.
+#[allow(dead_code)] // production wiring deferred to task 2989 (volume-mesh integration)
+pub(crate) fn p2_substitution_diagnostic(
+    swept_kind: Option<&SweptKind>,
+    force_tet: bool,
+    element_order: reify_types::ElementOrderTag,
+    body_label: &str,
+) -> Option<Diagnostic> {
+    // Three suppression guards — ordered cheapest first for short-circuit:
+    // 1. swept_kind=None: body didn't qualify for hex/wedge promotion.
+    // 2. force_tet: hex/wedge was suppressed upstream; no substitution occurs.
+    // 3. element_order=P1: user didn't request P2, nothing to warn about.
+    swept_kind?;
+    if force_tet {
+        return None;
+    }
+    if element_order != reify_types::ElementOrderTag::P2 {
+        return None;
+    }
+    Some(Diagnostic::info(format!(
+        "Body {body_label} qualified for hex/wedge meshing; P1 hex used despite \
+`element_order = P2` (P2 hex deferred). Accuracy for thin geometry is comparable to P2 tet."
+    )))
+}
+
+// ── p2_substitution_diagnostic unit tests ────────────────────────────────────
+
+#[cfg(test)]
+mod p2_substitution_diagnostic_tests {
+    use super::*;
+    use reify_types::{ElementOrderTag, Severity};
+
+    fn extrude_kind() -> crate::sweep_classifier::SweptKind {
+        use reify_types::Value;
+        crate::sweep_classifier::SweptKind::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: Value::length(0.01),
+        }
+    }
+
+    #[test]
+    fn p2_substitution_happy_path_extrude_emits_info_diagnostic() {
+        let kind = extrude_kind();
+        let result = p2_substitution_diagnostic(
+            Some(&kind),
+            false, // force_tet
+            ElementOrderTag::P2,
+            "B1",
+        );
+        let diag = result.expect("expected Some(Diagnostic) for qualifying body with P2");
+        assert_eq!(
+            diag.severity,
+            Severity::Info,
+            "diagnostic must have Info severity"
+        );
+        assert_eq!(
+            diag.message,
+            "Body B1 qualified for hex/wedge meshing; P1 hex used despite `element_order = P2` (P2 hex deferred). Accuracy for thin geometry is comparable to P2 tet.",
+            "diagnostic message must match PRD wording verbatim"
+        );
+    }
+
+    /// Suppression cases: each of the three gating conditions independently
+    /// disables diagnostic emission and returns `None`.
+    ///
+    /// (a) element_order = P1 — no substitution happening, nothing to warn about.
+    /// (b) force_tet = true — hex/wedge was suppressed by the caller; PRD states
+    ///     "Diagnostic is suppressed under `force_tet = true`".
+    /// (c) swept_kind = None — body doesn't qualify for hex/wedge promotion.
+    #[test]
+    fn p2_substitution_suppression_cases_return_none() {
+        let kind = extrude_kind();
+
+        // (a) P1 element order — no substitution, no diagnostic.
+        assert!(
+            p2_substitution_diagnostic(Some(&kind), false, ElementOrderTag::P1, "B_P1").is_none(),
+            "(a) element_order=P1 must return None"
+        );
+
+        // (b) force_tet=true — hex/wedge suppressed; diagnostic must not fire.
+        assert!(
+            p2_substitution_diagnostic(Some(&kind), true, ElementOrderTag::P2, "B_ForceTet")
+                .is_none(),
+            "(b) force_tet=true must return None"
+        );
+
+        // (c) swept_kind=None — body not hex/wedge-eligible; diagnostic must not fire.
+        assert!(
+            p2_substitution_diagnostic(None, false, ElementOrderTag::P2, "B_NoSweep").is_none(),
+            "(c) swept_kind=None must return None"
+        );
+    }
+
+    /// Variant invariance: Revolve and SweepLinear swept-body types both emit
+    /// the info diagnostic when the other conditions are met.
+    ///
+    /// This pins that the helper does NOT gate on a specific `SweptKind` variant
+    /// — any future refactor that accidentally adds a variant-specific branch
+    /// (e.g. only emitting for Extrude) will break this test.
+    #[test]
+    fn p2_substitution_variant_invariance_revolve_and_sweep_linear_emit() {
+        use std::f64::consts::FRAC_PI_2;
+
+        let revolve_kind = crate::sweep_classifier::SweptKind::Revolve {
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [0.0, 0.0, 1.0],
+            angle_rad: FRAC_PI_2,
+        };
+
+        let sweep_linear_kind = crate::sweep_classifier::SweptKind::SweepLinear {
+            profile: GeometryHandleId(0),
+            path: GeometryHandleId(1),
+        };
+
+        // Compute expected message per PRD task #10 — identical wording for all
+        // variants (only the body label differs). Using a closure rather than a
+        // const so we can substitute the label while keeping the format string
+        // in one place; any future drift in `p2_substitution_diagnostic`'s
+        // wording will fail both assertions simultaneously.
+        let expected_msg = |label: &str| -> String {
+            format!(
+                "Body {label} qualified for hex/wedge meshing; P1 hex used despite \
+`element_order = P2` (P2 hex deferred). Accuracy for thin geometry is comparable to P2 tet."
+            )
+        };
+
+        // Revolve variant.
+        let revolve_result = p2_substitution_diagnostic(
+            Some(&revolve_kind),
+            false,
+            ElementOrderTag::P2,
+            "RevolvedDisc",
+        );
+        let revolve_diag =
+            revolve_result.expect("Revolve variant must emit Some(Diagnostic) with P2");
+        assert_eq!(revolve_diag.severity, Severity::Info);
+        assert_eq!(
+            revolve_diag.message,
+            expected_msg("RevolvedDisc"),
+            "Revolve diagnostic must match PRD wording verbatim"
+        );
+
+        // SweepLinear variant.
+        let sweep_result = p2_substitution_diagnostic(
+            Some(&sweep_linear_kind),
+            false,
+            ElementOrderTag::P2,
+            "SweptBar",
+        );
+        let sweep_diag =
+            sweep_result.expect("SweepLinear variant must emit Some(Diagnostic) with P2");
+        assert_eq!(sweep_diag.severity, Severity::Info);
+        assert_eq!(
+            sweep_diag.message,
+            expected_msg("SweptBar"),
+            "SweepLinear diagnostic must match PRD wording verbatim"
+        );
+    }
+}
