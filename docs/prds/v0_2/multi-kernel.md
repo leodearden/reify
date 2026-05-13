@@ -2,6 +2,7 @@
 
 Status: deferred to v0.2 per 2026-04-26 decision.
 Design resolved 2026-04-28 — see "Resolved design decisions" below.
+Continues in v0.3 — see `docs/prds/v0_3/multi-kernel-phase-3.md` for the Phase 3 consumer-side dispatch contract.
 
 ## Goal
 
@@ -39,7 +40,7 @@ The patchwork pattern (§10.5 — heterogeneous reps in one assembly) requires t
 
 ## Resolved design decisions (2026-04-28)
 
-**ReprKind enum.** `BRep | Mesh | Sdf | Voxel` — four entries, semantic only, no kernel-discriminator suffix. Extensible in a non-breaking minor.
+**ReprKind enum.** `BRep | Mesh | Sdf | Voxel` — four entries at v0.2 resolution time, semantic only, no kernel-discriminator suffix. Extensible in a non-breaking minor. That provision was exercised in v0.3: `VolumeMesh` was appended as a fifth variant for Gmsh surface→volume tetrahedral meshing (FEA assembly), additively and ordering-preserving (audit finding M-001; see `docs/prds/v0_3/multi-kernel-phase-3.md`).
 
 **Cache key.** `(entity_id, repr_kind, tol: f64)`. Kernel identity is **not** in the key — the cache is in-memory only and lives for the life of one `Engine` (one loaded module, one process), so kernel selection per `ReprKind` is fixed for the life of the cache by compile-time features + project pin. See `per-purpose-tolerance.md` for tolerance lookup semantics (partial-order `<=`, not equality).
 
