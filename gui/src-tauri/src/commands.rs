@@ -35,8 +35,8 @@ pub struct AppState {
 
 /// Get the current GUI state.
 pub fn get_initial_state_impl(engine: &Mutex<EngineSession>) -> Result<GuiState, String> {
-    let mut session = engine.lock().map_err(|e| format!("Lock error: {}", e))?;
-    session.build_gui_state()
+    crate::engine_lock::with_engine_lock(engine, |s| s.build_gui_state())
+        .and_then(std::convert::identity)
 }
 
 /// Set a parameter value and return updated state.
@@ -45,8 +45,8 @@ pub fn set_parameter_impl(
     cell_id: &str,
     value: &str,
 ) -> Result<GuiState, String> {
-    let mut session = engine.lock().map_err(|e| format!("Lock error: {}", e))?;
-    session.set_parameter(cell_id, value)
+    crate::engine_lock::with_engine_lock(engine, |s| s.set_parameter(cell_id, value))
+        .and_then(std::convert::identity)
 }
 
 /// Update source code and return updated state.
@@ -55,8 +55,8 @@ pub fn update_source_impl(
     path: &str,
     content: &str,
 ) -> Result<GuiState, String> {
-    let mut session = engine.lock().map_err(|e| format!("Lock error: {}", e))?;
-    session.update_source(path, content)
+    crate::engine_lock::with_engine_lock(engine, |s| s.update_source(path, content))
+        .and_then(std::convert::identity)
 }
 
 /// Export geometry to a file.
@@ -66,8 +66,8 @@ pub fn export_impl(engine: &Mutex<EngineSession>, format: &str, path: &str) -> R
         "stl" => reify_types::ExportFormat::Stl,
         _ => return Err(format!("Unknown export format: {}", format)),
     };
-    let mut session = engine.lock().map_err(|e| format!("Lock error: {}", e))?;
-    session.export(export_format, Path::new(path))
+    crate::engine_lock::with_engine_lock(engine, |s| s.export(export_format, Path::new(path)))
+        .and_then(std::convert::identity)
 }
 
 /// Get source location for an entity path.
@@ -75,10 +75,11 @@ pub fn get_source_location_impl(
     engine: &Mutex<EngineSession>,
     entity_path: &str,
 ) -> Result<SourceLocationInfo, String> {
-    let session = engine.lock().map_err(|e| format!("Lock error: {}", e))?;
-    session
-        .get_source_location(entity_path)
-        .ok_or_else(|| format!("No source location found for '{}'", entity_path))
+    crate::engine_lock::with_engine_lock(engine, |s| {
+        s.get_source_location(entity_path)
+            .ok_or_else(|| format!("No source location found for '{}'", entity_path))
+    })
+    .and_then(std::convert::identity)
 }
 
 /// Open a file from disk (direct fs read, no engine involvement).
@@ -101,16 +102,15 @@ pub fn open_file_engine_impl(
     engine: &Mutex<EngineSession>,
     path: &str,
 ) -> Result<GuiState, String> {
-    let mut session = engine.lock().map_err(|e| format!("Lock error: {}", e))?;
-    session.load_file(Path::new(path))
+    crate::engine_lock::with_engine_lock(engine, |s| s.load_file(Path::new(path)))
+        .and_then(std::convert::identity)
 }
 
 /// Return the hierarchical entity tree for the currently loaded module.
 ///
 /// Returns an empty vec when no module is loaded.
 pub fn get_entity_tree_impl(engine: &Mutex<EngineSession>) -> Result<Vec<EntityTreeNode>, String> {
-    let s = engine.lock().map_err(|e| format!("Lock error: {}", e))?;
-    Ok(s.get_entity_tree())
+    crate::engine_lock::with_engine_lock(engine, |s| s.get_entity_tree())
 }
 
 /// Return the entity identity map (entity_path → EntityIdentity) for the loaded module.
@@ -119,8 +119,7 @@ pub fn get_entity_tree_impl(engine: &Mutex<EngineSession>) -> Result<Vec<EntityT
 pub fn get_entity_identity_map_impl(
     engine: &Mutex<EngineSession>,
 ) -> Result<HashMap<String, EntityIdentity>, String> {
-    let s = engine.lock().map_err(|e| format!("Lock error: {}", e))?;
-    Ok(s.get_entity_identity_map())
+    crate::engine_lock::with_engine_lock(engine, |s| s.get_entity_identity_map())
 }
 
 /// Return a preview GuiState for a single named definition evaluated with its defaults.
@@ -130,8 +129,8 @@ pub fn get_def_preview_impl(
     engine: &Mutex<EngineSession>,
     def_name: &str,
 ) -> Result<GuiState, String> {
-    let mut session = engine.lock().map_err(|e| format!("Lock error: {}", e))?;
-    session.get_def_preview(def_name)
+    crate::engine_lock::with_engine_lock(engine, |s| s.get_def_preview(def_name))
+        .and_then(std::convert::identity)
 }
 
 /// Read the view sidecar file for `ri_path`.
@@ -192,8 +191,7 @@ pub fn get_containing_definition_impl(
     line: u32,
     col: u32,
 ) -> Result<Option<DefInfo>, String> {
-    let s = engine.lock().map_err(|e| format!("Lock error: {}", e))?;
-    Ok(s.get_containing_definition(line, col))
+    crate::engine_lock::with_engine_lock(engine, |s| s.get_containing_definition(line, col))
 }
 
 /// Return the entity (and optionally member) at the given 1-based `(line, col)` source position.
@@ -207,8 +205,7 @@ pub fn get_entity_at_source_location_impl(
     line: u32,
     col: u32,
 ) -> Result<Option<String>, String> {
-    let s = engine.lock().map_err(|e| format!("Lock error: {}", e))?;
-    Ok(s.get_entity_at_source_location(line, col))
+    crate::engine_lock::with_engine_lock(engine, |s| s.get_entity_at_source_location(line, col))
 }
 
 /// Return mechanism descriptors for all non-errored mechanisms in the loaded module.
@@ -223,6 +220,5 @@ pub fn get_entity_at_source_location_impl(
 pub fn get_mechanism_descriptors_impl(
     engine: &Mutex<EngineSession>,
 ) -> Result<Vec<MechanismDescriptor>, String> {
-    let mut s = engine.lock().map_err(|e| format!("Lock error: {}", e))?;
-    Ok(s.get_mechanism_descriptors())
+    crate::engine_lock::with_engine_lock(engine, |s| s.get_mechanism_descriptors())
 }
