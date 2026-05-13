@@ -519,6 +519,14 @@ impl EvaluationGraph {
     /// composes `cache_key` and adds the fingerprint bucket; P3.4 wires
     /// `@optimized` lowering to call this method. See
     /// `docs/prds/v0_3/compute-node-infrastructure.md`.
+    ///
+    /// **Duplicate targets:** inserting a `ComputeNodeData` whose `target`
+    /// matches an already-present node's `target` does NOT error — the
+    /// underlying `PersistentMap` is keyed on `ComputeNodeId`, not on the
+    /// `target` string. Callers that require target uniqueness must
+    /// deduplicate before calling this method. P3.4's `@optimized` lowering
+    /// is the natural deduplication point; see
+    /// `docs/prds/v0_3/compute-node-infrastructure.md`.
     pub fn insert_compute_node(&mut self, data: ComputeNodeData) -> ComputeNodeId {
         let id = data.computation_id.clone();
         self.compute_nodes.insert(id.clone(), data);
