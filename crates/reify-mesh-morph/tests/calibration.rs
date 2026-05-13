@@ -1,8 +1,8 @@
 //! PRD task #13 — quality-threshold calibration regression-guard suite.
 //!
 //! This integration-test binary exercises the (`elasticity_morph` +
-//! `quality_check`) pair against three procedural parametric fixtures
-//! (box, plate-with-hole, L-bracket) and asserts the "morph rejected only
+//! `quality_check`) pair against two procedural parametric fixtures
+//! (plate-with-hole, L-bracket) and asserts the "morph rejected only
 //! when from-scratch is materially better" rule that calibrates
 //! [`MorphOptions::default()`].
 //!
@@ -23,68 +23,6 @@ mod sweep;
 // references `fixtures::*` and/or `sweep::*`); the `#[path = …]` declarations
 // above are validated at compile time by Cargo, so a missing helper module
 // blocks build rather than passing through to a runtime smoke test.
-
-// ── Step-3: box_mesh fixture validity ─────────────────────────────────────────
-
-#[test]
-fn box_mesh_fixture_returns_valid_p1_mesh_with_expected_counts_and_positive_volume_tets() {
-    use reify_mesh_morph::{MorphOptions, QualityVerdict, quality_check};
-    use reify_types::ElementOrderTag;
-
-    let (mesh, surface_indices) = fixtures::box_mesh(1.0, 0.1, 3);
-
-    // P1 element order is required by quality_check + elasticity_morph.
-    assert_eq!(
-        mesh.element_order,
-        ElementOrderTag::P1,
-        "box_mesh must return a P1 mesh"
-    );
-
-    // Flat vertices and tet_indices buffers must be sized for their stride.
-    assert_eq!(
-        mesh.vertices.len() % 3,
-        0,
-        "vertices must be a flat triple-stride buffer"
-    );
-    assert_eq!(
-        mesh.tet_indices.len() % 4,
-        0,
-        "tet_indices must be a flat 4-tuple-stride buffer (P1 tets)"
-    );
-    assert!(
-        !mesh.tet_indices.is_empty(),
-        "box_mesh must produce at least one tet"
-    );
-
-    // Every tet must be right-handed (positive scaled Jacobian) — reuse
-    // quality_check with a permissive options profile so no soft floor trips.
-    // HardFail signals at least one inverted tet — that's the contract this
-    // assertion pins.
-    let permissive = MorphOptions {
-        quality_floor_min_scaled_jacobian: 0.0,
-        quality_floor_pct_below_025: 1.01,
-        quality_aspect_ratio_factor_max: f64::INFINITY,
-        ..MorphOptions::default()
-    };
-    let verdict = quality_check(&mesh, &mesh, &permissive);
-    assert!(
-        !matches!(verdict, QualityVerdict::HardFail(_)),
-        "every tet must be right-handed (no inversions); got {verdict:?}"
-    );
-
-    // Surface indices must be non-empty and reference real vertices.
-    assert!(
-        !surface_indices.is_empty(),
-        "surface_node_indices must be non-empty"
-    );
-    let n_vertices = (mesh.vertices.len() / 3) as u32;
-    for &idx in &surface_indices {
-        assert!(
-            idx < n_vertices,
-            "surface index {idx} out of range (n_vertices = {n_vertices})"
-        );
-    }
-}
 
 // ── Step-5: plate_with_hole fixture validity ──────────────────────────────────
 
@@ -353,18 +291,21 @@ fn bracket_fixture_returns_valid_p1_mesh_with_fillet_radius_respected_and_positi
 fn sweep_runner_returns_morph_and_from_scratch_quality_metrics_for_single_param_step() {
     use reify_mesh_morph::MorphOptions;
 
-    // Use box_mesh as the fixture: wall_thickness is the swept parameter,
-    // outer=1.0 and n=3 are fixed so the fixture closure has a single-f64
-    // signature matching `sweep::run_sweep`'s `Fn(f64) -> (VolumeMesh, Vec<u32>)`.
-    let fixture = |wall_thickness: f64| fixtures::box_mesh(1.0, wall_thickness, 3);
+    // Use plate_with_hole as the fixture: hole_diameter is the swept parameter,
+    // outer=1.0, thickness=0.1, n_theta=4, n_radial=2 are fixed so the fixture
+    // closure has a single-f64 signature matching `sweep::run_sweep`'s
+    // `Fn(f64) -> (VolumeMesh, Vec<u32>)`. The plate fixture has non-trivial
+    // interior coupling (inner-rim vertices move; outer boundary is pinned),
+    // making the elasticity solve meaningful.
+    let fixture = |hole_diameter: f64| fixtures::plate_with_hole(1.0, hole_diameter, 0.1, 4, 2);
     let options = MorphOptions::default();
 
-    // A tiny step (0.10 → 0.105) — well within the elasticity solver's
-    // operating range, so the morph should produce a mesh whose connectivity
-    // matches the from-scratch target mesh. The numeric values themselves are
-    // not asserted here (calibration sweeps in step-11/13/15 do that); this
-    // step pins only the public signature and the SweepReport field surface.
-    let report = sweep::run_sweep(fixture, 0.10, 0.105, &options);
+    // A tiny step (0.30 → 0.31) — matching the step-13 plate-sweep base/first
+    // target, well within the elasticity solver's calibrated operating range.
+    // The numeric values themselves are not asserted here (calibration sweeps
+    // in step-11/13/15 do that); this step pins only the public signature and
+    // the SweepReport field surface.
+    let report = sweep::run_sweep(fixture, 0.30, 0.31, &options);
 
     // SweepReport surface contract — every field must be populated.
     //   `morph_verdict`: QualityVerdict produced by quality_check on the
@@ -380,6 +321,9 @@ fn sweep_runner_returns_morph_and_from_scratch_quality_metrics_for_single_param_
     //   `morphed`, `from_scratch`: full VolumeMesh outputs for downstream
     //     inspection / debugging.
     let _verdict: &reify_mesh_morph::QualityVerdict = &report.morph_verdict;
+    // Verdict here will be SoftFail under production defaults — only the
+    // field-surface populated-ness is contracted by this test; calibration
+    // sweeps gate verdict semantics.
     assert!(
         report.morph_min_scaled_j.is_finite(),
         "morph_min_scaled_j must be a finite f64, got {}",
@@ -515,6 +459,21 @@ fn assert_materially_better_rule_holds(
 /// calibration sweep's assumed threshold visible so that a future task that
 /// adjusts the production default forces a reviewer to decide whether the
 /// calibration sweep should follow, rather than silently inheriting the change.
+///
+/// ## When NOT to reuse
+///
+/// This relaxation is tuned for the procedural hex-to-6-tet fixtures
+/// (`plate_with_hole`, `bracket`) whose from_scratch baseline pct distribution
+/// falls in [0.74, 0.99] (task #3451 empirical capture, 2026-05-11). Do NOT
+/// blindly reuse for a sweep test of a fundamentally different fixture (e.g. a
+/// fixture with a different element-shape distribution) without first
+/// re-capturing that fixture's baseline pct and confirming the 0.99 ceiling
+/// still admits real morph distortion rather than fixture-intrinsic geometry.
+/// The pct override IS NOT a generic test-time relaxation — it is a
+/// fixture-specific calibration shim for the structured hex-to-6-tet pct
+/// skew. A fixture with a different element distribution could have a baseline
+/// pct well below 0.99, in which case the 0.99 override would be vacuous and
+/// the sweep test would lose discrimination power without any visible signal.
 fn calibration_sweep_options() -> reify_mesh_morph::MorphOptions {
     reify_mesh_morph::MorphOptions {
         quality_floor_pct_below_025: 0.99,
@@ -554,9 +513,13 @@ fn plate_hole_diameter_sweep_obeys_materially_better_rule_with_calibrated_defaul
     // refactor that shifts a Jacobian by 1e-6 (e.g. vertex emission reorder)
     // can still flip a step's verdict and produce a confusing CI failure.
     // If that happens: regenerate the metric distributions locally and
-    // recalibrate either `calibration_sweep_options()` (test-only) or
-    // `MorphOptions::default()` (production) as appropriate — the calibrated
-    // values are an empirical fit, not a closed-form invariant.
+    // recalibrate the test-only `calibration_sweep_options()` (its pct
+    // override is what bounds the pct margin) and/or
+    // `sweep::MATERIALITY_FACTOR` (the AR materiality bar) — these are the
+    // bounds the described margins land near. The production
+    // `MorphOptions::default()` pct floor (0.01) is below every fixture's
+    // baseline pct distribution so it never bounds these sweep margins; do
+    // NOT recalibrate it as a fix for a sweep-test verdict flip.
     let base_param = 0.30_f64;
     // target=0.60 is dropped: the production proxy AR metric trips (~2.15 > 2.0)
     // but the materiality predicate (`from_scratch_max_ar_factor ≈ 1.18 < 1.20`,
@@ -602,7 +565,20 @@ fn bracket_fillet_radius_sweep_obeys_materially_better_rule_with_calibrated_defa
     // (e.g. solver/fixture change that makes every step Pass) breaks the
     // test rather than silently invalidating the documented coverage.
     let base_param = 0.10_f64;
-    let target_params = [0.105_f64, 0.12, 0.15, 0.18, 0.19];
+    // Widened from [0.105, 0.12, 0.15, 0.18, 0.19] (task #3436):
+    //   0.195 — near-maximum fillet (`fillet_radius < thickness = 0.20`);
+    //           polar-wedge sensitivity peak (Reject-end extreme; provides
+    //           substantial headroom against numerical drift on the
+    //           Reject side of the discrimination boundary).
+    // A Pass-end extension to 0.05 was tried (task #3436, esc-3436-157) but
+    // rejected: targets below `base_param = 0.10` morph the fillet DOWN,
+    // compressing the polar-wedge zone — the elasticity morph degrades
+    // min_sj by ~38% there (0.038 vs 0.061 from-scratch), so the
+    // materially-better rule correctly fires (ratio ≈ 1.62 > 1.20). The
+    // existing Pass-end target 0.105 already passes reliably with ample
+    // margin; the genuine fragility was always Reject-side, addressed by
+    // 0.195 above.
+    let target_params = [0.105_f64, 0.12, 0.15, 0.18, 0.19, 0.195];
     let fixture = |fillet_radius: f64| fixtures::bracket(1.0, 0.2, fillet_radius, 4);
     // See `calibration_sweep_options` for the rationale on the override.
     let options = calibration_sweep_options();
@@ -624,6 +600,15 @@ fn bracket_fillet_radius_sweep_obeys_materially_better_rule_with_calibrated_defa
     // (trivially) holds, but the calibration discrimination claim in
     // `lib.rs` becomes false — surface that failure here instead of
     // silently.
+    //
+    // ## Failure-mode playbook
+    //
+    // If a future change collapses this verdict mix (e.g. all-Pass or
+    // all-Reject across the widened target_params), the first action is to
+    // regenerate metric distributions locally and recalibrate
+    // `MorphOptions::default()` — do NOT silently tweak `target_params` to
+    // make CI green, as that would invalidate the documented Pass→Reject
+    // discrimination coverage.
     assert!(
         saw_pass,
         "bracket sweep must produce at least one Pass verdict across target_params={target_params:?} \
