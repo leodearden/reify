@@ -149,22 +149,10 @@ fn export_writes_file() {
 
 /// Return an `Arc<Mutex<EngineSession>>` whose mutex has already been poisoned.
 ///
-/// Uses the standard technique: spawn a thread that panics while holding the lock,
-/// then join it. After the join the mutex is in a poisoned state.
+/// Delegates to `poison_engine` with an unloaded session; kept for backwards
+/// compat with tests that don't need a module loaded.
 fn make_poisoned_engine() -> Arc<Mutex<EngineSession>> {
-    let session = make_session();
-    let engine = Arc::new(Mutex::new(session));
-    let engine_clone = Arc::clone(&engine);
-    let join_result = std::thread::spawn(move || {
-        let _guard = engine_clone.lock().unwrap();
-        panic!("poison the mutex");
-    })
-    .join();
-    assert!(
-        join_result.is_err(),
-        "thread should have panicked to poison the mutex"
-    );
-    engine
+    poison_engine(Arc::new(Mutex::new(make_session())))
 }
 
 /// Poison an existing `Arc<Mutex<EngineSession>>` and return it.
@@ -189,7 +177,9 @@ fn poison_engine(engine: Arc<Mutex<EngineSession>>) -> Arc<Mutex<EngineSession>>
 fn get_entity_tree_impl_recovers_from_poisoned_mutex() {
     use crate::commands::get_entity_tree_impl;
 
-    let engine = make_poisoned_engine();
+    // Poison a *loaded* session — verifies that the session's data survives
+    // recovery, not just that an unloaded session returns an empty default.
+    let engine = poison_engine(Arc::new(Mutex::new(make_loaded_session())));
     let result = get_entity_tree_impl(&engine);
     assert!(
         result.is_ok(),
@@ -197,8 +187,8 @@ fn get_entity_tree_impl_recovers_from_poisoned_mutex() {
         result
     );
     assert!(
-        result.unwrap().is_empty(),
-        "no module loaded in poisoned session → empty tree"
+        !result.unwrap().is_empty(),
+        "loaded session entity tree should survive poison recovery"
     );
 }
 
@@ -222,7 +212,9 @@ fn get_entity_tree_impl_returns_ok_on_healthy_mutex() {
 fn get_entity_identity_map_impl_recovers_from_poisoned_mutex() {
     use crate::commands::get_entity_identity_map_impl;
 
-    let engine = make_poisoned_engine();
+    // Poison a *loaded* session — verifies that the session's data survives
+    // recovery, not just that an unloaded session returns an empty default.
+    let engine = poison_engine(Arc::new(Mutex::new(make_loaded_session())));
     let result = get_entity_identity_map_impl(&engine);
     assert!(
         result.is_ok(),
@@ -230,8 +222,8 @@ fn get_entity_identity_map_impl_recovers_from_poisoned_mutex() {
         result
     );
     assert!(
-        result.unwrap().is_empty(),
-        "no module loaded in poisoned session → empty identity map"
+        !result.unwrap().is_empty(),
+        "loaded session identity map should survive poison recovery"
     );
 }
 
@@ -293,17 +285,21 @@ fn get_entity_identity_map_impl_returns_ok_empty_when_no_module_loaded() {
 fn get_containing_definition_impl_recovers_from_poisoned_mutex() {
     use crate::commands::get_containing_definition_impl;
 
-    let engine = make_poisoned_engine();
-    let result = get_containing_definition_impl(&engine, 16, 1);
+    // Poison a *loaded* session — verifies that the session's source map
+    // survives recovery and an in-bounds position still resolves correctly.
+    let engine = poison_engine(Arc::new(Mutex::new(make_loaded_session())));
+    let result = get_containing_definition_impl(&engine, 1, 1);
     assert!(
         result.is_ok(),
         "expected Ok recovery from poisoned mutex, got {:?}",
         result
     );
+    let def_info = result
+        .unwrap()
+        .expect("position (1,1) should be inside the Bracket structure after poison recovery");
     assert_eq!(
-        result.unwrap(),
-        None,
-        "no module loaded in poisoned session → None for any position"
+        def_info.name, "Bracket",
+        "loaded session source map should survive poison recovery"
     );
 }
 
@@ -338,8 +334,10 @@ fn get_containing_definition_impl_returns_ok_on_healthy_mutex() {
 fn get_entity_at_source_location_impl_recovers_from_poisoned_mutex() {
     use crate::commands::get_entity_at_source_location_impl;
 
-    let engine = make_poisoned_engine();
-    let result = get_entity_at_source_location_impl(&engine, 16, 1);
+    // Poison a *loaded* session — verifies that the session's span map survives
+    // recovery and an in-bounds position still resolves to the expected entity.
+    let engine = poison_engine(Arc::new(Mutex::new(make_loaded_session())));
+    let result = get_entity_at_source_location_impl(&engine, 2, 11);
     assert!(
         result.is_ok(),
         "expected Ok recovery from poisoned mutex, got {:?}",
@@ -347,8 +345,8 @@ fn get_entity_at_source_location_impl_recovers_from_poisoned_mutex() {
     );
     assert_eq!(
         result.unwrap(),
-        None,
-        "no module loaded in poisoned session → None for any position"
+        Some("Bracket.width".to_string()),
+        "loaded session span map should survive poison recovery"
     );
 }
 
@@ -538,7 +536,16 @@ fn get_mechanism_descriptors_impl_round_trips() {
 fn get_mechanism_descriptors_impl_recovers_from_poisoned_mutex() {
     use crate::commands::get_mechanism_descriptors_impl;
 
-    let engine = make_poisoned_engine();
+    // Poison a *loaded* mechanism session — verifies that the session's
+    // descriptor data survives recovery, not just that an empty session returns
+    // an empty default.
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let kernel = reify_test_support::MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(MECHANISM_FIXTURE_SOURCE, "kinematic")
+        .expect("load mechanism fixture");
+    let engine = poison_engine(Arc::new(Mutex::new(session)));
     let result = get_mechanism_descriptors_impl(&engine);
     assert!(
         result.is_ok(),
@@ -546,8 +553,8 @@ fn get_mechanism_descriptors_impl_recovers_from_poisoned_mutex() {
         result
     );
     assert!(
-        result.unwrap().is_empty(),
-        "no module loaded in poisoned session → empty descriptor list"
+        !result.unwrap().is_empty(),
+        "loaded mechanism session descriptors should survive poison recovery"
     );
 }
 
@@ -692,6 +699,11 @@ fn get_initial_state_impl_recovers_from_poisoned_mutex() {
         "expected Ok recovery from poisoned mutex, got {:?}",
         result
     );
+    let state = result.unwrap();
+    assert!(
+        !state.values.is_empty(),
+        "get_initial_state should return bracket parameters after poison recovery"
+    );
 }
 
 #[test]
@@ -705,6 +717,14 @@ fn set_parameter_impl_recovers_from_poisoned_mutex() {
         "expected Ok recovery from poisoned mutex, got {:?}",
         result
     );
+    let state = result.unwrap();
+    assert!(
+        state
+            .values
+            .iter()
+            .any(|v| v.cell_id == "Bracket.thickness" && v.value == "5mm"),
+        "set_parameter should have applied thickness=5mm after poison recovery"
+    );
 }
 
 #[test]
@@ -717,6 +737,11 @@ fn update_source_impl_recovers_from_poisoned_mutex() {
         result.is_ok(),
         "expected Ok recovery from poisoned mutex, got {:?}",
         result
+    );
+    let state = result.unwrap();
+    assert!(
+        !state.values.is_empty(),
+        "update_source should have reloaded the bracket module after poison recovery"
     );
 }
 
@@ -733,6 +758,10 @@ fn export_impl_recovers_from_poisoned_mutex() {
         "expected Ok recovery from poisoned mutex, got {:?}",
         result
     );
+    assert!(
+        path.exists(),
+        "export should have written the file after poison recovery"
+    );
 }
 
 #[test]
@@ -745,6 +774,15 @@ fn get_source_location_impl_recovers_from_poisoned_mutex() {
         result.is_ok(),
         "expected Ok recovery from poisoned mutex, got {:?}",
         result
+    );
+    let loc = result.unwrap();
+    assert_eq!(
+        loc.file_path, "bracket.ri",
+        "source location should point to the correct file after poison recovery"
+    );
+    assert!(
+        loc.line >= 1,
+        "source location line should be 1-based after poison recovery"
     );
 }
 
@@ -762,6 +800,11 @@ fn open_file_engine_impl_recovers_from_poisoned_mutex() {
         "expected Ok recovery from poisoned mutex, got {:?}",
         result
     );
+    let state = result.unwrap();
+    assert!(
+        !state.values.is_empty(),
+        "open_file_engine should have loaded the bracket module after poison recovery"
+    );
 }
 
 #[test]
@@ -774,5 +817,10 @@ fn get_def_preview_impl_recovers_from_poisoned_mutex() {
         result.is_ok(),
         "expected Ok recovery from poisoned mutex, got {:?}",
         result
+    );
+    let state = result.unwrap();
+    assert!(
+        !state.values.is_empty(),
+        "get_def_preview should return Bracket parameters after poison recovery"
     );
 }
