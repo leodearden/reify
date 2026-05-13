@@ -202,22 +202,85 @@ pub fn refine_volume_with_size_field(
     ffi::option_set_number("Mesh.MeshSizeExtendFromBoundary", 0.0)?;
 
     // For each 0D corner entity created by classify_surfaces + create_geometry,
-    // query its single mesh node (whose 1-indexed tag corresponds directly to
-    // the surface-vertex index from add_nodes_2d) and set the target mesh size.
+    // map the corner back to its original input surface vertex by **coordinate
+    // proximity** (nearest-neighbour scan), then set the target mesh size from
+    // `vertex_sizes`.
+    //
+    // Why coord-based, not tag-based: `classify_surfaces` + `create_geometry`
+    // rebuild the discrete entity, and gmsh does not contractually preserve
+    // the original mesh-node tags pushed via `add_nodes_2d`. If gmsh ever does
+    // reassign tags, a tag-based lookup would silently skip every corner and
+    // the refine would return a baseline-looking unrefined mesh — a regression
+    // invisible to downstream callers and to the localized-refinement test in
+    // `volume_refine_tests.rs`. Coordinates are anchored to physical geometry
+    // and therefore robust under reclassification. This mirrors the same
+    // proximity-based mapping convention used by
+    // `reify_solver_elastic::volume_refine::project_volume_to_surface_vertices`.
+    //
+    // We track `applied` (corners that successfully received a SetSize call)
+    // and `skipped` (corners that failed at any step) so we can fail loudly
+    // when zero corners are assigned: a "successful" call without any size
+    // field application would silently degrade to the global default mesh
+    // size and downstream tests would mistake the result for a working refine.
     let corner_tags = ffi::get_entity_tags(0)?;
+    let mut applied: usize = 0;
+    let mut skipped: usize = 0;
     for &corner_tag in &corner_tags {
-        // Each 0D entity holds exactly one mesh node — the corner node whose
-        // 1-indexed tag maps to a 0-indexed entry in vertex_sizes.
-        if let Ok((node_tags_at_corner, _coords)) = ffi::get_nodes_at_entity(0, corner_tag)
-            && let Some(&node_tag) = node_tags_at_corner.first()
-        {
-            let v_idx = (node_tag as usize).saturating_sub(1);
-            if v_idx < vertex_sizes.len() {
-                // Best-effort: ignore set-size errors (defensive against
-                // gmsh internals; entities that exist should always accept).
-                let _ = ffi::mesh_set_size_at_entity(0, corner_tag, vertex_sizes[v_idx]);
+        let (corner_x, corner_y, corner_z) = match ffi::get_nodes_at_entity(0, corner_tag) {
+            Ok((_node_tags_at_corner, coords_at_corner)) => {
+                match coords_at_corner.chunks_exact(3).next() {
+                    Some(xyz) => (xyz[0], xyz[1], xyz[2]),
+                    None => {
+                        skipped += 1;
+                        continue;
+                    }
+                }
+            }
+            Err(_) => {
+                skipped += 1;
+                continue;
+            }
+        };
+        // Nearest-neighbour scan over input surface vertices. O(n_verts) per
+        // corner is acceptable here because n_corners is small (typically <=
+        // O(10s) for FEA geometries — one per "hard" feature vertex).
+        let mut best_idx: usize = 0;
+        let mut best_d2: f64 = f64::INFINITY;
+        for i in 0..n_verts {
+            let vx = surface.vertices[3 * i] as f64;
+            let vy = surface.vertices[3 * i + 1] as f64;
+            let vz = surface.vertices[3 * i + 2] as f64;
+            let dx = vx - corner_x;
+            let dy = vy - corner_y;
+            let dz = vz - corner_z;
+            let d2 = dx * dx + dy * dy + dz * dz;
+            if d2 < best_d2 {
+                best_d2 = d2;
+                best_idx = i;
             }
         }
+        match ffi::mesh_set_size_at_entity(0, corner_tag, vertex_sizes[best_idx]) {
+            Ok(()) => applied += 1,
+            Err(_) => skipped += 1,
+        }
+    }
+
+    if applied == 0 {
+        return Err(GeometryError::OperationFailed(format!(
+            "refine_volume_with_size_field: no corner sizes applied \
+             ({} corner entities found, {} skipped — size field would have no effect)",
+            corner_tags.len(),
+            skipped
+        )));
+    }
+    if skipped > 0 {
+        tracing::debug!(
+            target: "reify_kernel_gmsh::refine_volume",
+            applied = applied,
+            skipped = skipped,
+            total_corners = corner_tags.len(),
+            "some corner sizes were not applied"
+        );
     }
 
     // --- Tet meshing ---
