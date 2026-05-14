@@ -1,0 +1,65 @@
+================================================================================
+auto type-arg (strict)
+================================================================================
+
+fn f() -> Bearing<auto: Seal> { 0 }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_definition
+    name: (identifier)
+    return_type: (type_expr
+      (parameterized_type
+        name: (identifier)
+        type_args: (type_arg_list
+          (auto_type_arg
+            (auto_keyword)
+            bound: (identifier)))))
+    (fn_body
+      result: (number_literal))))
+
+================================================================================
+auto(free) type-arg
+================================================================================
+
+fn g() -> Bearing<auto(free): Seal> { 0 }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_definition
+    name: (identifier)
+    return_type: (type_expr
+      (parameterized_type
+        name: (identifier)
+        type_args: (type_arg_list
+          (auto_type_arg
+            (auto_keyword)
+            bound: (identifier)))))
+    (fn_body
+      result: (number_literal))))
+
+================================================================================
+multi-param auto type-args
+================================================================================
+
+fn h() -> Coupling<auto: A, auto: B> { 0 }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_definition
+    name: (identifier)
+    return_type: (type_expr
+      (parameterized_type
+        name: (identifier)
+        type_args: (type_arg_list
+          (auto_type_arg
+            (auto_keyword)
+            bound: (identifier))
+          (auto_type_arg
+            (auto_keyword)
+            bound: (identifier)))))
+    (fn_body
+      result: (number_literal))))
