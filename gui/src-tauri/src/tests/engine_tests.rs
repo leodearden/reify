@@ -6988,3 +6988,69 @@ fn get_entity_at_source_location_past_end_of_source_returns_none() {
         result
     );
 }
+
+// ---------------------------------------------------------------------------
+// Auto-resolve emitter tests (Task 3479)
+// ---------------------------------------------------------------------------
+
+/// Events recorded by [`RecordingEmitter`] for asserting the emit sequence.
+#[derive(Debug)]
+enum EmitEvent {
+    Start,
+    Iteration(crate::types::AutoResolveIteration),
+    Complete,
+}
+
+/// A recording AutoResolveEmitter that captures all events into an Arc<Mutex<Vec>>.
+///
+/// Shared via Arc so tests can hold an Arc::clone of the events handle and
+/// assert after the session call returns.
+struct RecordingEmitter {
+    events: std::sync::Arc<std::sync::Mutex<Vec<EmitEvent>>>,
+}
+
+impl RecordingEmitter {
+    fn new() -> Self {
+        Self {
+            events: std::sync::Arc::new(std::sync::Mutex::new(vec![])),
+        }
+    }
+}
+
+impl crate::engine::AutoResolveEmitter for RecordingEmitter {
+    fn start(&self) {
+        self.events.lock().unwrap().push(EmitEvent::Start);
+    }
+
+    fn iteration(&self, iter: crate::types::AutoResolveIteration) {
+        self.events.lock().unwrap().push(EmitEvent::Iteration(iter));
+    }
+
+    fn complete(&self) {
+        self.events.lock().unwrap().push(EmitEvent::Complete);
+    }
+}
+
+/// Step-4: No auto-resolve events should fire when the loaded source has no
+/// `auto` parameters — the emit-helper must guard on empty `resolved_params`.
+#[test]
+fn engine_session_no_auto_resolve_emission_when_no_auto_params() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let recorder = RecordingEmitter::new();
+    let events = std::sync::Arc::clone(&recorder.events);
+    session.set_auto_resolve_emitter(std::sync::Arc::new(recorder));
+
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+
+    let events = events.lock().unwrap();
+    assert!(
+        events.is_empty(),
+        "no auto-resolve events should fire when bracket has no auto params, got {} events",
+        events.len()
+    );
+}
