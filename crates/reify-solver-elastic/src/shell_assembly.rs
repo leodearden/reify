@@ -131,13 +131,13 @@ const KAPPA: f64 = 5.0 / 6.0;
 ///
 /// The shear term `(1−ν)/2 · E/(1−ν²) = E/(2(1+ν)) = G` uses the engineering
 /// shear strain convention, consistent with `IsotropicElastic::d_matrix`.
+///
+/// Validity is enforced by [`IsotropicElastic::debug_assert_valid`] — the
+/// single source of truth for Poisson-ratio bounds in this crate (`-1 < ν < 0.5`).
 pub fn plane_stress_d(material: &IsotropicElastic) -> [[f64; 3]; 3] {
+    material.debug_assert_valid();
     let e = material.youngs_modulus;
     let nu = material.poisson_ratio;
-    debug_assert!(
-        (0.0..0.5).contains(&nu),
-        "poisson_ratio must satisfy 0 ≤ ν < 0.5, got {nu}",
-    );
     let factor = e / (1.0 - nu * nu);
     [
         [factor, nu * factor, 0.0],
