@@ -1291,6 +1291,113 @@ fn gui_state_serializes_compile_diagnostics_field() {
     );
 }
 
+// --- AutoResolveIteration / AutoResolveParameterValue / AutoResolveConstraintProgress serde tests ---
+
+/// Step-1: pin the JSON key-set and nested value types for a fully-populated
+/// `AutoResolveIteration` with `driving_metric` and `driving_metric_value` present.
+#[test]
+fn auto_resolve_iteration_serializes_with_expected_field_set() {
+    use crate::types::{
+        AutoResolveConstraintProgress, AutoResolveIteration, AutoResolveParameterValue,
+    };
+    use std::collections::HashMap;
+
+    let mut parameters = HashMap::new();
+    parameters.insert(
+        "Bracket.thickness".to_string(),
+        AutoResolveParameterValue {
+            value: 4.2,
+            unit: "mm".to_string(),
+            display: "4.2mm".to_string(),
+        },
+    );
+
+    let mut constraints = HashMap::new();
+    constraints.insert(
+        "max_von_mises".to_string(),
+        AutoResolveConstraintProgress {
+            name: "max_von_mises".to_string(),
+            value: 180.0,
+            unit: Some("MPa".to_string()),
+            target_lower: None,
+            target_upper: Some(200.0),
+            satisfied: true,
+        },
+    );
+
+    let iter = AutoResolveIteration {
+        iteration: 0,
+        parameters,
+        constraints,
+        driving_metric: Some("max_von_mises".to_string()),
+        driving_metric_value: Some(180.0),
+    };
+
+    let v = serde_json::to_value(&iter).unwrap();
+
+    // Top-level keys must exist
+    assert!(v.get("iteration").is_some(), "iteration key must be present");
+    assert!(v.get("parameters").is_some(), "parameters key must be present");
+    assert!(v.get("constraints").is_some(), "constraints key must be present");
+    assert_eq!(
+        v["iteration"],
+        json!(0),
+        "iteration must be 0"
+    );
+    assert_eq!(
+        v["driving_metric"],
+        json!("max_von_mises"),
+        "driving_metric must be present"
+    );
+    assert_eq!(
+        v["driving_metric_value"],
+        json!(180.0),
+        "driving_metric_value must be present"
+    );
+
+    // parameters must be a JSON object
+    assert!(
+        v["parameters"].is_object(),
+        "parameters must be a JSON object"
+    );
+    let param = &v["parameters"]["Bracket.thickness"];
+    assert_eq!(param["value"], json!(4.2), "parameter value must be 4.2");
+    assert_eq!(param["unit"], json!("mm"), "parameter unit must be 'mm'");
+    assert_eq!(
+        param["display"],
+        json!("4.2mm"),
+        "parameter display must be '4.2mm'"
+    );
+
+    // constraints must be a JSON object
+    assert!(
+        v["constraints"].is_object(),
+        "constraints must be a JSON object"
+    );
+    let constraint = &v["constraints"]["max_von_mises"];
+    assert_eq!(
+        constraint["name"],
+        json!("max_von_mises"),
+        "constraint name must match"
+    );
+    assert_eq!(constraint["value"], json!(180.0), "constraint value must be 180.0");
+    assert_eq!(
+        constraint["unit"],
+        json!("MPa"),
+        "constraint unit must be 'MPa'"
+    );
+    assert_eq!(
+        constraint["target_upper"],
+        json!(200.0),
+        "constraint target_upper must be 200.0"
+    );
+    assert_eq!(
+        constraint["satisfied"],
+        json!(true),
+        "constraint satisfied must be true"
+    );
+}
+
 /// Positive case: a correct-length scalar_channels entry serializes successfully.
 #[test]
 fn meshdata_accepts_matching_scalar_channel_length() {
