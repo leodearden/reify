@@ -323,4 +323,97 @@ mod tests {
             entries
         );
     }
+
+    /// Models the convergent-fast-forward false-positive
+    /// (`~/.claude/projects/-home-leo-src-reify/memory/project_unblock_convergent_ff_worktree_reap.md`):
+    /// the task's branch tip got reaped after a sibling FF; the claimed
+    /// commit no longer reaches main, but `git log main --grep <task_id>`
+    /// finds the sibling commit whose diff covers all metadata.files.
+    /// Should downgrade to Severity::Low and cite the sibling SHA.
+    #[test]
+    fn convergent_fast_forward_downgrades_to_low() {
+        let conn = seed_db();
+        insert_run(&conn, "run-conv-ff");
+        insert_task_result(&conn, "run-conv-ff", "4000", "done");
+        insert_task_completed_event(&conn, "run-conv-ff", "4000");
+
+        let mut git = MockGitOps::new();
+        // Primary corroboration FAILS: the claimed branch tip diffs empty
+        // against main (worktree was reaped, branch tip no longer reachable).
+        git.set_diff_changed_paths("main", "old_branch_tip", vec![]);
+        // Sibling rescue: log_grep finds a parallel task's SHA whose diff
+        // covers both metadata.files entries.
+        let sibling = GitCommit {
+            sha: "sib_sha_aaaa".to_string(),
+            subject: "task 4000 — sibling fast-forward absorbed our work".to_string(),
+        };
+        git.set_log_grep("main", "4000", vec![sibling.clone()]);
+        git.set_diff_changed_paths(
+            "main",
+            "sib_sha_aaaa",
+            vec![
+                "crates/x/foo.rs".to_string(),
+                "crates/x/bar.rs".to_string(),
+            ],
+        );
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "4000".to_string(),
+            TaskMetadata {
+                task_id: "4000".to_string(),
+                status: "done".to_string(),
+                files: vec![
+                    "crates/x/foo.rs".to_string(),
+                    "crates/x/bar.rs".to_string(),
+                ],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("found_on_main".to_string()),
+                    commit: Some("old_branch_tip".to_string()),
+                    note: None,
+                }),
+            },
+        );
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+        };
+
+        let findings = p5_phantom_done::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly one finding (downgraded); got {:?}",
+            findings
+        );
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::P5PhantomDone);
+        assert_eq!(
+            f.severity,
+            Severity::Low,
+            "convergent-FF should downgrade to Low; got {:?}",
+            f.severity
+        );
+        let s = f.summary.to_lowercase();
+        assert!(
+            s.contains("convergent") || s.contains("sibling") || s.contains("fast-forward"),
+            "summary should mention convergent / sibling / fast-forward; got {:?}",
+            f.summary
+        );
+        // Evidence must cite the sibling commit SHA.
+        let cited_sibling = f.evidence.iter().any(|e| match e {
+            EvidenceRef::Commit { sha, .. } => sha == "sib_sha_aaaa",
+            _ => false,
+        });
+        assert!(
+            cited_sibling,
+            "expected EvidenceRef::Commit citing sib_sha_aaaa; got {:?}",
+            f.evidence
+        );
+    }
 }
