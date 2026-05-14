@@ -1,3 +1,10 @@
+<!-- 2026-05-14 RECOVERY AUDIT TRAIL
+This filing log was authored 2026-05-12. The task IDs referenced below (3491-3594, 3503/3504/3508/3510/3512, 3563-3574, etc.) were LOST in the 2026-05-13 fused-memory SIGABRT.
+The DAG was re-filed 2026-05-14 with NEW task IDs:
+ComputeNode contract DAG: α=3420 (was 3491), β=3421 (was 3492), γ=3422 (was 3493), δ=3423 (was 3494), ε=3424 (was 3495), ζ=3425 (was 3496), η=3426 (was 3497), θ=3427 (was 3498), ι=3428 (was 3499), κ=3429 (was 3500), μ=3430 (was 3501), ν=3431 (was 3502).
+The body of this log is preserved as historical record. Use docs/task-recovery-2026-05-13/id-map.json as the canonical translation table for live work.
+-->
+
 # ComputeNode contract §8 DAG — filing log
 
 Session: 2026-05-12 mechanical filing of the ComputeNode contract vertical-slice DAG into the task tracker.

@@ -1,3 +1,10 @@
+<!-- 2026-05-14 RECOVERY AUDIT TRAIL
+This filing log was authored 2026-05-12. The task IDs referenced below (3491-3594, 3503/3504/3508/3510/3512, 3563-3574, etc.) were LOST in the 2026-05-13 fused-memory SIGABRT.
+The DAG was re-filed 2026-05-14 with NEW task IDs:
+multi-kernel-phase-3 DAG: α=3432 (was 3526), β=3433 (was 3527), γ=3434 (was 3528), δ=3435 (was 3529), ε=3436 (was 3530), ζ=3437 (was 3531), η=3438 (was 3532), θ=3439 (was 3533), ι=3440 (was 3534), κ=3441 (was 3535), ξ=3442 (was 3536), ο=3443 (was 3537), π=3444 (was 3538), ρ=3445 (was 3539), μ=3446 (was 3540), ν=3447 (was 3541), τ=3448 (was 3542). Cross-PRD edge ξ→CN-η: 3442→3426.
+The body of this log is preserved as historical record. Use docs/task-recovery-2026-05-13/id-map.json as the canonical translation table for live work.
+-->
+
 # Multi-kernel Phase 3 §8 DAG — filing log
 
 Session: 2026-05-12 decompose-mode filing of `docs/prds/v0_3/multi-kernel-phase-3.md` (commit `e477a68d96`) into the task tracker.
