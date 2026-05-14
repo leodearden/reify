@@ -20,11 +20,11 @@
 //      `ElasticResult.displacement` and `ElasticResult.stress` outputs. Task
 //      3088 added the `Field<D, C>` arm to `resolve_parameterized_builtin_type`
 //      and its `_with_subst` mirror (`type_resolution.rs:1313` and `:1509`).
-//      Task 3117 confirmed the arm works in `param` positions via the probe
-//      test at `tests/field_param_probe.rs`; `displacement` and `stress` are
-//      now declared with their precise Field types. `frame` and `ShellStress`
-//      top/mid/bottom remain `Real` placeholders — tightening them is a clean
-//      follow-up outside the audit-doc-classified scope of task-G.
+//      Task 3117 confirmed the arm works in `param` positions (finding recorded
+//      in docs/notes/stdlib-real-placeholder-audit.md); `displacement` and
+//      `stress` are now declared with their precise Field types. `frame` and
+//      `ShellStress` top/mid/bottom remain `Real` placeholders — tightening
+//      is tracked as task #3641.
 //   2. PRD writes `mesh_size : Length = auto` and `threads : Integer = num_cpus::get()`.
 //      Reify has no `auto` literal and no `num_cpus::get()` — both encode as
 //      `Option<T> = none`, with the solver applying its own fallback when the
@@ -244,13 +244,12 @@ structure def ElasticOptions {
 // Resolution note (task 3117): the TODO above was stale. Task 3088 added the
 // `Field<D, C>` arm to `resolve_parameterized_builtin_type` (type_resolution.rs:1313)
 // and its `_with_subst` mirror (:1509); both arms accept `Field<X, Y>` in `param`
-// positions. Task 3117 confirmed this via the probe at `tests/field_param_probe.rs`
-// and tightened `displacement` and `stress` to their proper Field types.
+// positions. Task 3117 confirmed this and tightened `displacement` and `stress` to
+// their proper Field types (finding recorded in docs/notes/stdlib-real-placeholder-audit.md).
 //
 // Remaining Real placeholders: `frame`, `ShellStress.top/mid/bottom` — these were
-// added after the audit (docs/notes/stdlib-real-placeholder-audit.md) classified
-// only `displacement` and `stress` as task-G scope. The resolver supports Field for
-// these forms too; tightening them is a clean follow-up outside task-G.
+// added after the audit classified only `displacement` and `stress` as task-G scope.
+// The resolver supports Field for these forms too; tightening is tracked as task #3641.
 // Real-placeholder audit: docs/notes/stdlib-real-placeholder-audit.md
 //
 // Field semantics:
