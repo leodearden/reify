@@ -68,6 +68,13 @@ pub enum BRepKind {
     ///
     /// Distinct from `Shell` (which is a collection of faces, possibly closed).
     Face,
+    /// Single vertex — produced by `extract_vertices`.
+    ///
+    /// Distinct from `Wire`/`Shell`/`Solid` (higher-dimensional aggregates).
+    /// 0-dimensional analogue of `Edge` (1-D) / `Face` (2-D). Registered by
+    /// `OcctKernel::extract_vertices` (task B) for each `TopoDS_Vertex`
+    /// enumerated by `TopExp::MapShapes(.., TopAbs_VERTEX, ..)`.
+    Vertex,
 }
 
 /// Multi-kernel representation family classifier.
