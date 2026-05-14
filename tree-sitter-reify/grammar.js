@@ -599,14 +599,30 @@ module.exports = grammar({
     ),
 
     // type_arg_list: comma-separated list of type arguments. Each element is either
-    // a type expression (`Box<T>`, `Vec3<Force>`) or an integer literal — required
-    // for parametric types like `Tensor<rank, n, quantity>` and `Matrix<m, n, q>`.
+    // a type expression (`Box<T>`, `Vec3<Force>`), an integer literal — required
+    // for parametric types like `Tensor<rank, n, quantity>` and `Matrix<m, n, q>` —
+    // or an auto type-arg (`auto: Seal`, `auto(free): Seal`).
     // The integer-vs-float / non-negative-integer constraint is enforced at type
     // resolution, not at parse time.
     type_arg_list: $ => seq(
-      choice($.type_expr, $.number_literal),
-      repeat(seq(',', choice($.type_expr, $.number_literal))),
+      choice($.type_expr, $.number_literal, $.auto_type_arg),
+      repeat(seq(',', choice($.type_expr, $.number_literal, $.auto_type_arg))),
       optional(','),
+    ),
+
+    // auto_type_arg: solver-determined type argument with a trait/kind bound.
+    // `Bearing<auto: Seal>` and `Bearing<auto(free): Seal>` — the auto_keyword
+    // child carries the strict-vs-free flag via its `modifier` field (same
+    // mechanism used at param-default position, grammar.js:430-433).
+    // The `bound` field is the trait or kind identifier the candidate must
+    // satisfy. Composite bounds (`auto: A + B`) and parametric bounds
+    // (`auto: Container<T>`) are deferred — start with a bare identifier,
+    // widen to `$.trait_bound_list` in a follow-up when the PRD AC criterion
+    // 9 work needs it.
+    auto_type_arg: $ => seq(
+      $.auto_keyword,
+      ':',
+      field('bound', $.identifier),
     ),
 
     // Dimensional type expression: supports `*`, `/` binary ops on types.
