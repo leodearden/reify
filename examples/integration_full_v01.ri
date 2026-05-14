@@ -20,6 +20,7 @@
 //   @test structures (sub + self + constraint defs), purpose with forall.
 
 #version(0.1)
+#precision(0.001m)
 
 // ── Type alias ───────────────────────────────────────────────────────────────
 
