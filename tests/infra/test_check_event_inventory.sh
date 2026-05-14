@@ -320,5 +320,46 @@ assert "--bidirectional produces no warning for §2 fiction-channel" \
 assert "--bidirectional exits 0 when only §2 channel is unimplemented" \
     "$CHECK_SCRIPT" --repo-root "$_fix8dir" --bidirectional
 
+# ==============================================================================
+# Check 9: --bidirectional --strict exits non-zero on phantom
+# ==============================================================================
+echo ""
+echo "--- Check 9: --bidirectional --strict exits non-zero on phantom ---"
+
+# Reuse the Check 6 fixture (has phantom-channel with no source occurrence)
+assert "--bidirectional --strict exits non-zero on phantom channel" \
+    bash -c "! '$CHECK_SCRIPT' --repo-root '$_fix6dir' --bidirectional --strict"
+
+# ==============================================================================
+# Check 10: smoke --bidirectional against real worktree exits 0 (no phantoms)
+# ==============================================================================
+echo ""
+echo "--- Check 10: smoke --bidirectional against real worktree ---"
+
+_bidi_smoke_stderr="$_tmpdir/bidi_smoke_stderr.txt"
+"$CHECK_SCRIPT" --repo-root "$REPO_ROOT" --bidirectional 2>"$_bidi_smoke_stderr" || true
+
+assert "smoke --bidirectional exits 0 (no §1 phantoms in real worktree)" \
+    "$CHECK_SCRIPT" --repo-root "$REPO_ROOT" --bidirectional
+
+assert "smoke --bidirectional produces no phantom stderr lines" \
+    bash -c "! grep -q 'phantom' '$_bidi_smoke_stderr'"
+
+# ==============================================================================
+# Check 11: --help / -h output mentions --bidirectional
+# ==============================================================================
+echo ""
+echo "--- Check 11: --help output contains --bidirectional ---"
+
+_help_out="$_tmpdir/help_out.txt"
+"$CHECK_SCRIPT" --help 2>&1 | tee "$_help_out" > /dev/null || true
+"$CHECK_SCRIPT" --help > "$_help_out" 2>&1 || true
+
+assert "--help output contains --bidirectional" \
+    grep -q '\-\-bidirectional' "$_help_out"
+
+assert "--help output contains a description of --bidirectional" \
+    grep -q 'reverse pass\|§1\|bidirectional' "$_help_out"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
