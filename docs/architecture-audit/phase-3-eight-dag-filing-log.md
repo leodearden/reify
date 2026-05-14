@@ -110,3 +110,74 @@ These prior tasks remain readable for audit purposes; only 3379/3383/3384 are fl
 After this filing log, the session:
 1. Calls `commit_planning` on 3491,3492,3493,3494,3495,3496,3497,3498,3499,3500,3501,3502 (target_status=pending).
 2. Writes a summary memory under `observations_and_summaries` capturing the IDs + log location.
+
+## Audit confirmation (2026-05-14, post-SIGABRT recovery)
+
+**Confirmed by:** task ν, re-filed as task 3431 (was 3502 — see recovery banner at top of file).
+**Verification timestamp:** 2026-05-14 (recovery Phase 3, following 2026-05-13 fused-memory SIGABRT).
+
+### 1. Cancellation status — empirically verified
+
+`mcp__fused-memory__get_statuses(ids=["3379","3383","3384","3431"])` returned:
+
+```json
+{"3379": "cancelled", "3383": "cancelled", "3384": "cancelled", "3431": "in-progress"}
+```
+
+All three pre-DAG tasks are confirmed `cancelled`. Task 3431 (this audit-confirmation task) is `in-progress` at time of verification.
+
+### 2. Cancellation rationale (reopen_reason)
+
+The original 2026-05-12 `set_task_status → cancelled with reopen_reason` calls are recorded in
+§ "Task-state side effects" above (lines 86–88), citing supersession by the contract DAG.
+
+**Recovery note:** `get_task` on all three tasks (fetched 2026-05-14) does not show a `reopen_reason`
+field in the task API response — the SIGABRT recovery re-applied `cancelled` status but did not
+re-apply the `reopen_reason` metadata. The filing log (this document, §Task-state side effects) is
+therefore the authoritative record of the cancellation rationale. Escalation esc-3431-104 was filed
+for optional follow-up restoration of the field.
+
+The cancellation rationale per the original session:
+
+| Task | Superseded by | Rationale |
+|---|---|---|
+| 3379 | η (3426, was 3497) | Vertical slice owns trampoline registration; reify-solver-elastic API unchanged |
+| 3383 | γ (3422, was 3493) | Per-Engine dispatch registry + @optimized lowering |
+| 3384 | δ (3423, was 3494) + ε (3424, was 3495) | Split across Pending lifecycle + cooperative cancellation |
+
+Source: `docs/prds/v0_3/compute-node-contract.md §8` task ν spec.
+
+### 3. Orphaned worktree state — none
+
+`get_task` responses for 3379, 3383, and 3384 carry no `metadata.files` entry. No active worktree
+or in-progress implementation work was associated with these tasks at cancellation. No cleanup
+required.
+
+### 4. Supersession mapping (post-recovery IDs)
+
+Per the recovery banner at the top of this file (old → new ID translation):
+
+| Cancelled task | Superseded by (letter) | Post-recovery task ID | Was (lost ID) |
+|---|---|---|---|
+| 3379 | η | 3426 | 3497 |
+| 3383 | γ | 3422 | 3493 |
+| 3384 | δ + ε | 3423 + 3424 | 3494 + 3495 |
+
+Original supersession enumeration: § "Supersession provenance" above (lines 98–100).
+Contract source: `docs/prds/v0_3/compute-node-contract.md §8`.
+
+### 5. Cross-reference — recovery brief
+
+The 2026-05-13 SIGABRT investigation and recovery procedure are documented in
+`dark-factory/docs/task-recovery-2026-05-13/investigation.md` (sibling repo; not present in this
+repo). The canonical ID translation table is at `docs/task-recovery-2026-05-13/id-map.json` (also
+sibling repo), referenced by the recovery banner above. Per the recovery commit message (80f3d695a5),
+the re-filing of the contract DAG tasks and the re-application of 3379/3383/3384 cancellations were
+both executed in recovery Phase 3.
+
+### 6. Contract §8 closure
+
+This section closes contract §8 task ν (task 3431, was 3502). The three observable signals required
+by the spec — (a) cancelled status, (b) cancellation rationale documented, (c) no orphaned worktree
+state — are all confirmed above. The contract DAG (α through μ, tasks 3420–3430) proceeds
+unimpeded.
