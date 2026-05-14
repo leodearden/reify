@@ -1156,6 +1156,7 @@ mod tests {
         assert!(d[2][2] > 0.0, "shear term D[2][2] = {} should be positive", d[2][2]);
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "poisson_ratio")]
     fn plane_stress_d_panics_at_incompressible_limit() {
@@ -1165,6 +1166,7 @@ mod tests {
         });
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "poisson_ratio")]
     fn plane_stress_d_panics_at_auxetic_limit() {

@@ -380,6 +380,7 @@ mod tests {
         );
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "poisson_ratio")]
     fn d_matrix_panics_at_incompressible_upper_limit() {
@@ -390,6 +391,7 @@ mod tests {
         .d_matrix();
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "poisson_ratio")]
     fn d_matrix_panics_at_auxetic_lower_limit() {
@@ -400,6 +402,7 @@ mod tests {
         .d_matrix();
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "poisson_ratio")]
     fn d_matrix_panics_above_incompressible_limit() {
@@ -410,6 +413,7 @@ mod tests {
         .d_matrix();
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "poisson_ratio")]
     fn d_matrix_panics_below_auxetic_limit() {
