@@ -69,6 +69,40 @@ fn dense_recovers_known_spectrum_on_5x5_diagonal_pair() {
 }
 
 // ---------------------------------------------------------------------------
+// Fixture-B helpers: 50-DOF 1D-Laplacian pair
+// ---------------------------------------------------------------------------
+
+/// Build K = tridiag(-1, 2, -1) (50×50 Dirichlet Laplacian) and B = I (50×50).
+fn fixture_b() -> (SparseRowMat<usize, f64>, SparseRowMat<usize, f64>) {
+    let n = 50usize;
+    let mut k_trips = Vec::with_capacity(3 * n - 2);
+    for i in 0..n {
+        k_trips.push(Triplet::new(i, i, 2.0));
+        if i > 0 {
+            k_trips.push(Triplet::new(i, i - 1, -1.0));
+        }
+        if i + 1 < n {
+            k_trips.push(Triplet::new(i, i + 1, -1.0));
+        }
+    }
+    let b_trips: Vec<Triplet<usize, usize, f64>> =
+        (0..n).map(|i| Triplet::new(i, i, 1.0)).collect();
+    let k = SparseRowMat::try_new_from_triplets(n, n, &k_trips).unwrap();
+    let b = SparseRowMat::try_new_from_triplets(n, n, &b_trips).unwrap();
+    (k, b)
+}
+
+/// Closed-form smallest 5 eigenvalues of the 50-DOF Laplacian (Kφ = λBφ = λφ).
+/// λ_k = 2(1 − cos(kπ/51)) for k=1..=5.
+fn fixture_b_expected_5() -> [f64; 5] {
+    let n = 50usize;
+    std::array::from_fn(|i| {
+        let k = (i + 1) as f64;
+        2.0 * (1.0 - f64::cos(k * std::f64::consts::PI / (n as f64 + 1.0)))
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Step-3 test: shift-invert path, Fixture A
 // ---------------------------------------------------------------------------
 
@@ -94,6 +128,59 @@ fn shift_invert_recovers_smallest_on_5x5_diagonal_pair() {
             (got - exp).abs() < 1e-8,
             "eigenvalue[{i}]: got {got}, expected {exp}, diff = {:.3e}",
             (got - exp).abs(),
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Step-5 test: cross-path agreement on 50-DOF Laplacian (PRD §13 phase 2)
+// ---------------------------------------------------------------------------
+
+/// PRD §13 phase 2 observable signal: shift-invert Lanczos and the dense fallback
+/// agree to 8 digits on the 5 smallest eigenvalues of the 50-DOF Laplacian pair.
+#[test]
+fn shift_invert_and_dense_agree_on_50dof_synthetic_pair() {
+    let (k, b) = fixture_b();
+    let opts = EigenSolverOptions {
+        n_modes: 5,
+        tol: 1e-10,
+        max_iters: 1000,
+        sigma: 0.0,
+    };
+    let dense_result = solve_eigen_dense(&k, &b, opts.clone());
+    let si_result = solve_eigen_shift_invert(&k, &b, opts);
+
+    let expected = fixture_b_expected_5();
+
+    // (a) Dense path matches closed-form to 1e-10.
+    assert_eq!(
+        dense_result.eigenvalues.len(),
+        5,
+        "dense must return 5 eigenvalues",
+    );
+    for (i, (&got, &exp)) in dense_result.eigenvalues.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            (got - exp).abs() < 1e-10,
+            "dense eigenvalue[{i}]: got {got:.15}, expected {exp:.15}, diff = {:.3e}",
+            (got - exp).abs(),
+        );
+    }
+
+    // (b) Shift-invert converges and matches dense to 1e-8 (PRD §13 "8 digits").
+    assert!(
+        si_result.converged,
+        "shift-invert must converge on the 50-DOF Laplacian pair",
+    );
+    assert_eq!(
+        si_result.eigenvalues.len(),
+        5,
+        "shift-invert must return 5 eigenvalues",
+    );
+    for (i, (&si, &d)) in si_result.eigenvalues.iter().zip(dense_result.eigenvalues.iter()).enumerate() {
+        assert!(
+            (si - d).abs() < 1e-8,
+            "shift-invert eigenvalue[{i}]: got {si:.15}, dense {d:.15}, diff = {:.3e}",
+            (si - d).abs(),
         );
     }
 }
