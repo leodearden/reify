@@ -773,6 +773,17 @@ impl reify_eval::persistent_cache::PersistentlyCacheable for ShellExtractionResu
     /// with a `FORMAT_VERSION` bump in the same commit, mirroring
     /// `ELASTIC_RESULT_FORMAT_VERSION` (`persistent_cache.rs:296-313`).
     fn serialize_to_writer(&self, w: &mut impl Write) -> io::Result<()> {
+        // Level 0 selects zstd's default compression level (3 in zstd
+        // 0.13), which is byte-deterministic for identical input. Pinned
+        // explicitly — `zstd 0.13` does not currently expose a
+        // non-deterministic mode at this level, but byte-determinism is
+        // a hard requirement of the persistent-cache PRD. The pin is
+        // verified by `shell_extraction_result_serialization_is_byte_deterministic`
+        // and `shell_extraction_result_reserialize_after_deserialize_is_byte_identical`;
+        // bump the level if a future zstd release breaks default-level
+        // determinism. Mirrors the comment block at
+        // `persistent_cache.rs:700-710`.
+        // Single-threaded only — `Encoder::multithread()` breaks byte-determinism.
         let mut encoder = zstd::Encoder::new(w, 0)?;
 
         let header = ShellExtractionResultHeader {
@@ -1431,5 +1442,44 @@ mod tests {
         assert!(decoded.naming.edges.is_empty());
         assert_eq!(decoded.solve_time_ms, 0);
         assert!(decoded.diagnostics.is_empty());
+    }
+
+    // ---- step-7 byte-determinism pins ----
+
+    #[test]
+    fn shell_extraction_result_serialization_is_byte_deterministic() {
+        // Two independent serializations of the same fixture must produce
+        // byte-identical output. Mirrors
+        // `elastic_result_serialization_is_byte_deterministic` at
+        // `persistent_cache.rs:1152`. The contract holds because:
+        //   * zstd `Encoder::new(w, 0)` selects deterministic level-0;
+        //   * bincode 1.3 fixint-LE is byte-stable for the header;
+        //   * all Vec sources have stable insertion order (no HashMap
+        //     iteration in serialize_to_writer).
+        // If a future refactor swaps any of those for a non-deterministic
+        // source (e.g. iterating an `FxHashSet`), this test fails.
+        let a = make_round_trip_fixture();
+        let b = make_round_trip_fixture();
+        let mut buf_a: Vec<u8> = Vec::new();
+        let mut buf_b: Vec<u8> = Vec::new();
+        a.serialize_to_writer(&mut buf_a).unwrap();
+        b.serialize_to_writer(&mut buf_b).unwrap();
+        assert_eq!(buf_a, buf_b);
+    }
+
+    #[test]
+    fn shell_extraction_result_reserialize_after_deserialize_is_byte_identical() {
+        // Mirrors `elastic_result_reserialize_after_deserialize_is_byte_identical`
+        // at `persistent_cache.rs:1163`. Serialize → deserialize → reserialize
+        // must yield the same bytes; any field-shape drift in the wire
+        // mirror (e.g. an `Option<String>` reordered relative to a sibling
+        // field) would surface here as a mismatch.
+        let original = make_round_trip_fixture();
+        let mut bytes_a: Vec<u8> = Vec::new();
+        original.serialize_to_writer(&mut bytes_a).unwrap();
+        let decoded = ShellExtractionResult::deserialize_from_reader(&mut &bytes_a[..]).unwrap();
+        let mut bytes_b: Vec<u8> = Vec::new();
+        decoded.serialize_to_writer(&mut bytes_b).unwrap();
+        assert_eq!(bytes_a, bytes_b);
     }
 }
