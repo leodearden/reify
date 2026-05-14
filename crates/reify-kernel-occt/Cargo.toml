@@ -11,9 +11,25 @@ reify-types.workspace = true
 cxx = "1"
 inventory.workspace = true
 tokio = { workspace = true }
+# Optional dep behind the `mesh-morph` feature flag — gates the `OcctProjector`
+# impl of `reify_mesh_morph::Projector` in `src/projector_impl.rs`. Kept
+# optional (default-off) to preserve the adapter→eval dep-direction inversion
+# documented at `crates/reify-kernel-gmsh/Cargo.toml:28-43`:
+# adapter crates (occt/gmsh/manifold/fidget/openvdb) deliberately exclude
+# `reify-eval` from normal deps so `reify-eval` can depend on adapter crates
+# without a cycle. `reify-mesh-morph` deps `reify-eval` normally, so a
+# non-optional edge here would transitively pull eval into every consumer of
+# `reify-kernel-occt`. Engine wiring (task ε / 2947) enables this feature on
+# its own dep edge; in-crate integration tests opt in via the self-dev-dep.
+reify-mesh-morph = { workspace = true, optional = true }
 
 [features]
 test-fixtures = []
+# Compile in the `OcctProjector` impl (`src/projector_impl.rs`) of
+# `reify_mesh_morph::Projector`. Default-off; activated by the self-dev-dep
+# below for in-crate integration tests, and by engine wiring on its own dep
+# edge in production.
+mesh-morph = ["dep:reify-mesh-morph"]
 
 [build-dependencies]
 cxx-build = "1"
@@ -24,6 +40,6 @@ cc = "1"
 # methods, plus `revolve_synthesis_post_sort_for_test`) in integration tests;
 # see src/lib.rs. The gate hides the Rust wrapper only — the underlying
 # cxx-bridge symbols and C++ implementations are built unconditionally.
-reify-kernel-occt = { path = ".", features = ["test-fixtures"] }
+reify-kernel-occt = { path = ".", features = ["test-fixtures", "mesh-morph"] }
 reify-test-support.workspace = true
 serde_json = { workspace = true }
