@@ -130,7 +130,8 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       const { renderer, scene, camera } = vp;
       renderer.render(scene, camera);
       const dataUrl = await toPng(document.documentElement, { cacheBust: true });
-      if (dataUrl.length > MAX_SCREENSHOT_CHARS) return { error: 'screenshot too large' };
+      if (dataUrl.length > MAX_SCREENSHOT_CHARS)
+        return { error: 'screenshot too large', size: dataUrl.length, limit: MAX_SCREENSHOT_CHARS };
       return { data: dataUrl };
     },
 
