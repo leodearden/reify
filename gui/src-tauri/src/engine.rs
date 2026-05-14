@@ -521,20 +521,18 @@ impl EngineSession {
         self
     }
 
-    /// Run `engine.check(compiled)`, store the result, fire emit-helper, return result.
+    /// Run `engine.check(compiled)`, fire the emit-helper.
     ///
     /// Gives tests a single-call path that exercises the eval+emit pipeline without
     /// going through the full load_from_source / update_source plumbing.  Only for
     /// unit tests; not callable from production code.
+    ///
+    /// `CheckResult` does not implement `Clone`, so `last_check` is not updated by
+    /// this helper (the test only cares about emitted events, not stored state).
     #[cfg(test)]
-    pub(crate) fn check_and_emit_for_test(
-        &mut self,
-        compiled: &CompiledModule,
-    ) -> reify_eval::CheckResult {
+    pub(crate) fn check_and_emit_for_test(&mut self, compiled: &CompiledModule) {
         let r = self.engine.check(compiled);
-        self.last_check = Some(r.clone());
         self.emit_auto_resolve_if_any(&r);
-        r
     }
 
     /// Emit auto-resolve events if an emitter is installed and the check produced
