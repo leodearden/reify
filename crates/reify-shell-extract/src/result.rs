@@ -977,7 +977,96 @@ impl reify_eval::persistent_cache::PersistentlyCacheable for ShellExtractionResu
     }
 
     fn uncompressed_byte_size(&self) -> u64 {
-        unimplemented!("step-12 wires this up")
+        // After zstd decompression, the body layout is (in fixed order):
+        //   1. bincode 1.3 fixint-LE encoded `ShellExtractionResultHeader`
+        //      (variable size due to the embedded wire-shape mirror `Vec`s
+        //      — `regions`, `naming.face_records`, `naming.edges`,
+        //      `diagnostics` — each carrying nested `String`/`Vec`/`Option`).
+        //   2. f64×3 vertices slab: 24 bytes per vertex (3 × 8).
+        //   3. u32×3 triangles slab: 12 bytes per triangle (3 × 4).
+        //   4. f64 thickness slab: 8 bytes per element.
+        //   5. u32 vertex_labels slab: 4 bytes per element.
+        //   6. u32 triangle_labels slab: 4 bytes per element.
+        //   7. Per-region i32×3 voxels slabs: 12 bytes per voxel, summed.
+        //
+        // Pinned by
+        // `shell_extraction_result_uncompressed_byte_size_matches_actual_buffer_sum`.
+        //
+        // `bincode::serialized_size` is used rather than a hardcoded magic
+        // constant so that wire-shape mirror struct edits (e.g. adding a new
+        // `Diagnostic` field to `DiagnosticOnDisk`) automatically update the
+        // size accounting without a manual edit. Mirrors the `ElasticResult`
+        // discipline at `persistent_cache.rs:768-797`.
+        //
+        // The header build below mirrors `serialize_to_writer` byte-for-byte;
+        // intentional duplication so the impl's header construction is the
+        // single source of truth (the test computes its own expected header
+        // independently as a drift check).
+        let header = ShellExtractionResultHeader {
+            solve_time_ms: self.solve_time_ms,
+            vertices_len: self.mid_surface.vertices.len() as u64,
+            triangles_len: self.mid_surface.triangles.len() as u64,
+            thickness_len: self.mid_surface.thickness.len() as u64,
+            vertex_labels_len: self.segmentation.vertex_labels.len() as u64,
+            triangle_labels_len: self.segmentation.triangle_labels.len() as u64,
+            regions: self
+                .segmentation
+                .regions
+                .iter()
+                .map(|r| RegionInfoOnDisk {
+                    label: r.label,
+                    voxels_len: r.voxels.len() as u64,
+                    mean_thickness_bits: r.mean_thickness.to_bits(),
+                    extent_bits: r.extent.to_bits(),
+                    thickness_extent_ratio_bits: r.thickness_extent_ratio.to_bits(),
+                    classification: classification_to_u8(r.classification),
+                })
+                .collect(),
+            naming: MidSurfaceAttributesOnDisk {
+                face_records: self
+                    .naming
+                    .face_records
+                    .iter()
+                    .map(topology_attribute_to_disk)
+                    .collect(),
+                edges: self
+                    .naming
+                    .edges
+                    .iter()
+                    .map(|e| MidSurfaceEdgeRecordOnDisk {
+                        attribute: topology_attribute_to_disk(&e.attribute),
+                        region_pair_a: e.region_pair.0,
+                        region_pair_b: e.region_pair.1,
+                    })
+                    .collect(),
+            },
+            diagnostics: self.diagnostics.iter().map(diagnostic_to_disk).collect(),
+        };
+        let header_bytes = bincode::serialized_size(&header).expect(
+            "ShellExtractionResultHeader is composed entirely of serde-derived wire-shape \
+             mirrors over plain Vec/Option/String/u8/u32/u64 fields; bincode 1.3 fixint-LE \
+             serialization at the size-computation level cannot fail. If a future field with \
+             a custom serializer is added, this expect will fire — at which point byte_size \
+             accounting must be revisited.",
+        );
+        let vertices_bytes: u64 = 24 * self.mid_surface.vertices.len() as u64;
+        let triangles_bytes: u64 = 12 * self.mid_surface.triangles.len() as u64;
+        let thickness_bytes: u64 = 8 * self.mid_surface.thickness.len() as u64;
+        let vertex_labels_bytes: u64 = 4 * self.segmentation.vertex_labels.len() as u64;
+        let triangle_labels_bytes: u64 = 4 * self.segmentation.triangle_labels.len() as u64;
+        let voxel_bytes: u64 = self
+            .segmentation
+            .regions
+            .iter()
+            .map(|r| 12 * r.voxels.len() as u64)
+            .sum();
+        header_bytes
+            + vertices_bytes
+            + triangles_bytes
+            + thickness_bytes
+            + vertex_labels_bytes
+            + triangle_labels_bytes
+            + voxel_bytes
     }
 
     fn solve_time_ms(&self) -> u64 {
