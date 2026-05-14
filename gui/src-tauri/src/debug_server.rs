@@ -59,6 +59,11 @@ fn tool_defs() -> Vec<ToolDef> {
             input_schema: json!({"type": "object", "properties": {}}),
         },
         ToolDef {
+            name: "screenshot_window",
+            description: "Take a full-window screenshot including panels, overlays, and probe popups (DOM + WebGL composite via html-to-image). Returns a PNG image.",
+            input_schema: json!({"type": "object", "properties": {}}),
+        },
+        ToolDef {
             name: "store_state",
             description: "Snapshot of all Solid.js stores: engine (mesh keys, values, constraints, eval status), editor (open files, active file, cursor), selection, claude (session status, message count)",
             input_schema: json!({"type": "object", "properties": {}}),
@@ -287,6 +292,10 @@ struct DebugServerState {
     debug_bridge: Arc<DebugBridge>,
 }
 
+fn is_image_tool(name: &str) -> bool {
+    matches!(name, "screenshot" | "screenshot_window")
+}
+
 // --- Tool dispatch ---
 
 async fn dispatch_tool(
@@ -493,8 +502,8 @@ async fn handle_mcp(
 
             match dispatch_tool(&state, tool_name, tool_args).await {
                 Ok(result) => {
-                    // Check if this is a screenshot (contains base64 image data)
-                    if tool_name == "screenshot"
+                    // Check if this is an image tool (contains base64 image data)
+                    if is_image_tool(tool_name)
                         && let Some(data) = result.get("data").and_then(|d| d.as_str())
                     {
                         // Strip data URL prefix if present
@@ -713,6 +722,34 @@ mod tests {
             required.iter().any(|v| v.as_str() == Some("enabled")),
             "'enabled' must be listed in required"
         );
+    }
+
+    #[test]
+    fn tool_defs_includes_screenshot_window() {
+        let defs = tool_defs();
+        let entry = defs
+            .iter()
+            .find(|t| t.name == "screenshot_window")
+            .expect("screenshot_window must be present in tool_defs()");
+
+        let schema = &entry.input_schema;
+        assert_eq!(
+            schema["type"].as_str(),
+            Some("object"),
+            "input_schema.type must be 'object'"
+        );
+        assert!(
+            schema["properties"].is_object(),
+            "input_schema.properties must be an object"
+        );
+    }
+
+    #[test]
+    fn is_image_tool_recognizes_both_screenshot_variants() {
+        assert!(is_image_tool("screenshot"));
+        assert!(is_image_tool("screenshot_window"));
+        assert!(!is_image_tool("health"));
+        assert!(!is_image_tool(""));
     }
 
     #[test]

@@ -30,6 +30,7 @@
     "@reify/shared-utils": "^0.1.0",
     "@tauri-apps/api": "^2.0.0",
     "@tauri-apps/plugin-dialog": "^2.2.0",
+    "html-to-image": "^1.11.11",
     "solid-js": "^1.9.0",
     "three": "^0.183.2",
     "three-mesh-bvh": "^0.9.9"
