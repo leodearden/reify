@@ -1,3 +1,25 @@
+<!-- 2026-05-14 RECOVERY AUDIT TRAIL
+This filing log was authored 2026-05-12. The task IDs referenced below
+(3462-3474 fix-now batch) were LOST in the 2026-05-13 fused-memory SIGABRT.
+Full recovery in two passes:
+  Pass 1 — worktree_orphans (4 tasks with active worktrees at SIGABRT):
+    3465 (Auto-type-param resolver)            → 3522
+    3466 (Selector v2 vocabulary)              → 3523
+    3469 (Kinematic interferes/min_clearance)  → 3524
+    3472 (Manifold KernelAttributeHook MeshGL) → 3525
+  Pass 2 — agent re-file 2026-05-14 (the remaining 9 with no recovery trace):
+    3462 (Doc-tool: thread doc through compiler types) → 3557
+    3463 (reify doc: build_doc_model + render_html)    → 3562  [chain dep 3557]
+    3464 (reify doc --stdlib CLI surface)              → 3565  [chain dep 3562]
+    3467 (5 reify-config consumers)                    → 3572
+    3468 (to_global / envelope helpers)                → 3575  [dep 3540 SIR-α]
+    3470 (extract_input_tolerance_promise read fix)    → 3578
+    3471 (Kinematic singularity diagnostic)            → 3580
+    3473 (WarmStatePool drain_events)                  → 3582  [dep 3420 CN-α]
+    3474 (Stdlib shell ElasticResult alias)            → 3583  [dep 3540 SIR-α]
+Body preserved as historical record. See gap-register.md top banner.
+-->
+
 # Phase 3 Fix-Now Filing Log
 
 **Date:** 2026-05-12

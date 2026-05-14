@@ -1,3 +1,26 @@
+<!-- 2026-05-14 RECOVERY AUDIT TRAIL
+This sweep log was authored 2026-05-12. Task IDs filed below were
+recovered in two passes:
+  Pass 1 — worktree_orphans:
+    3479 (screenshot_window MCP)             → 3527
+    3482 (AdHocSelector engine evaluator)    → 3528 [later dedup'd]
+    3487 (stdlib-trait-audit doc refresh)    → 3529
+  Pass 2 — agent re-file 2026-05-14:
+    3484 (11 topology selectors eval dispatch)            → 3560
+    3489 (freshness propagate_freshness_only consumer)    → 3568
+    3490 (OpenVDB elaborate_field non-Undef e2e)          → 3576
+  Pass 2 also re-applied the branch-(b) done→deferred reopens that did NOT
+  survive recovery class_A (non-merge-commit status transitions reverted):
+    250  → deferred (dep 3463 — AdHocSelector survivor)
+    2954 → deferred (dep 3527 — screenshot_window)
+    2699 → deferred (dep 3560 — 11 topology selectors)
+  Plus: 2669 (sibling phantom-done noted in §3) → pending (dep 3576 — OpenVDB).
+AdHocSelector dedup: task 3528 (recovered from this log's 3482) was
+cancelled as a duplicate of 3463 (GR-007 ticket replay of old 3575);
+3528's @point/@edge dispatch scope was merged into 3463 before cancel.
+Body preserved as historical record. See gap-register.md top banner.
+-->
+
 # Phase 3 Reopen-and-Amend Sweep Log
 
 **Date:** 2026-05-12

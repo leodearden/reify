@@ -1,3 +1,22 @@
+<!-- 2026-05-14 RECOVERY AUDIT TRAIL
+This triage log was authored 2026-05-12. The (B) grammar-chain task IDs
+referenced below were LOST in the 2026-05-13 fused-memory SIGABRT.
+Full recovery in two passes:
+  Pass 1 — worktree_orphans: B1 grammar+fixture 3475 → 3526.
+  Pass 2 — agent re-file 2026-05-14:
+    B1 lowering    3477 → 3558  [dep 3526]
+    B1 e2e+LSP     3478 → 3559  [dep 3558]
+    B2 grammar     3480 → 3563
+    B2 lowering    3481 → 3564  [dep 3563]
+    B2 e2e+LSP     3483 → 3567  [dep 3564]
+    B3 grammar     3485 → 3569
+    B3 lowering    3486 → 3571  [dep 3569]
+    B3 e2e+LSP     3488 → 3573  [dep 3571]
+The (A) PRD-prose rewrites and (C) skip cases are filesystem edits and
+survived in git. Body preserved as historical record. See
+docs/architecture-audit/gap-register.md top banner.
+-->
+
 # Phase 3 — Grammar-Fiction Triage Log
 
 **Date:** 2026-05-12

@@ -3,7 +3,30 @@
 Master list of architecture gaps discovered across the Reify PRD corpus. Phase 3 maintains this; Phase 2 agents write to their own per-PRD files + fused-memory, and Phase 3 promotes findings into GR-IDs here.
 
 
-> **2026-05-14 recovery audit:** Original task IDs 3491-3502 (ComputeNode DAG), 3526-3542 (multi-kernel-phase-3 DAG), 3576-3594 (GR-024 buckling DAG), 3503/3504/3508/3510/3512 (SIR), 3563-3574 (GR-016), plus singleton IDs 3420-3461 + 3575/3578-3584 were lost in the 2026-05-13 fused-memory SIGABRT. This file has been rewritten with the NEW task IDs assigned during recovery. Canonical translation: `docs/task-recovery-2026-05-13/id-map.json` (and per-batch maps singletons-map.json + worktree-orphans-map.json). Forensic write-up: `docs/task-recovery-2026-05-13/investigation.md`.
+> **2026-05-14 WAL-recovery state.** The 2026-05-13 fused-memory SIGABRT discarded ~150 reify task rows (WAL uncheckpointed since 2026-05-11). Recovery splits into three classes:
+>
+> **Renumbered — originals lost, new IDs canonical:**
+> - ComputeNode DAG `3491-3502` → `3420-3431`
+> - multi-kernel-phase-3 DAG `3526-3542` → `3432-3448`
+> - GR-024 buckling DAG `3576-3594` → `3449-3462`
+> - structure-instance-runtime (GR-001) `3503/3504/3508/3510/3512` → `3540/3542/3544/3546/3549`
+> - GR-016 gui-event-channel `3563-3574` → `3536-3552`
+> - GR-007/018/037/043 ticket-replayed singletons `3575/3578-3584` → `3463-3468`
+> - 41 orchestrator-spawned singletons (originals `3420-3461`) → `3476-3516`
+> - 14 worktree-orphan tasks → `3522-3535` (partial recoveries from fix-now, grammar B1, reopen-amend, annotation-args, engine-integration-norm, etc.)
+>
+> **Shadow-paired — originals survived authoritatively:** Tasks 3413/3414 still authoritative (`done` / `pending` respectively); 3469/3470 are cancelled `audit_provenance` shadow rows from the ticket-replay process — do not cite them as renumberings. Tasks 3415-3419 are cancelled as singleton dupes.
+>
+> **Re-filed 2026-05-14 by agent team** (29 tasks + 3 reopens):
+> - Fix-now batch (was 3462/3463/3464/3467/3468/3470/3471/3473/3474) → `3557/3562/3565/3572/3575/3578/3580/3582/3583`. Doc-tool chain 3557→3562→3565 sequenced; cross-PRD deps on SIR-α (3540) and CN-α (3420).
+> - Grammar-fiction B-chains: B1 lowering+leaf (was 3477/3478) → `3558/3559` (deps on existing 3526); B2 trio (was 3480/3481/3483) → `3563/3564/3567`; B3 trio (was 3485/3486/3488) → `3569/3571/3573`.
+> - Reopen-amend missing 3 (was 3484/3489/3490) → `3560/3568/3576`. Reopens re-applied: 250 → deferred (dep 3463), 2954 → deferred (dep 3527), 2699 → deferred (dep 3560). 2669 → pending (dep 3576).
+> - GR-038 node-traits-unification DAG (was 3599-3607) → α=`3561`, β=`3566`, γ=`3570`, δ=`3574`, ε=`3577`, ζ=`3579` (wide_lock), η=`3581`, θ=`3584`, ι+κ=`3585`. Cross-PRD edge 3464→3574 wired.
+> - AdHocSelector dedup: `3463` survives (scope from 3528 merged in); `3528` cancelled.
+>
+> **NOT recovered — truly unrecoverable:** task 3548 only (worktree cleaned pre-SIGABRT).
+>
+> Canonical translation: `dark-factory/docs/task-recovery-2026-05-13/id-map.json` (121 mappings) + sibling `singletons-map.json` + `worktree-orphans-map.json`. Forensic write-up: `dark-factory/docs/task-recovery-2026-05-13/investigation.md`.
 
 ## How to read
 
