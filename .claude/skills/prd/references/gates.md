@@ -31,6 +31,22 @@ If no consumer can be named today, the PRD is incomplete by construction. Two va
 
 Do **not** accept "future consumer in an unfiled PRD" as a named consumer. That's the failure mode the gate exists to prevent.
 
+**Engine-integration sub-check.** If the mechanism is an in-engine seam (kernel module, dispatcher, walk, hook, runtime trampoline), the named consumer must plug into one of the 7 in-engine seams catalogued in `docs/prds/v0_3/engine-integration-norm.md` §3:
+
+| § | Seam |
+|---|---|
+| §3.1 | op-execute |
+| §3.2 | realization-kind dispatch |
+| §3.3 | multi-kernel dispatch |
+| §3.4 | ComputeNode dispatch (per `compute-node-contract.md`) |
+| §3.5 | ConstraintSolver |
+| §3.6 | freshness-only walk |
+| §3.7 | KernelAttributeHook |
+
+(§3.8 OptimizedImpl is deprecated; don't cite it for new work.)
+
+If the mechanism is a NEW seam not in the catalogue, that itself is the cross-PRD design question — author a norm extension first (or fold into G4). The norm exists to prevent kernel-module-callable-in-isolation drift (cluster C-14 / GR-017): producer surfaces that ship without any engine caller. Cite the relevant §3.N as the consumer in the PRD's "Sketch of approach" or "Cross-PRD relationship" section.
+
 **In author mode:** Conversational. Walk the PRD's introduced mechanisms one by one, ask Leo to name the consumer for each, push back on fictional / future consumers.
 
 **In decompose mode:** Re-check by reading the saved PRD. If a mechanism appears without a named consumer, escalate before queueing tasks.
