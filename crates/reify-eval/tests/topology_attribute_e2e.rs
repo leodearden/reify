@@ -984,15 +984,16 @@ struct ClusteringCoverage {
 /// changes after an edit purely due to ordering shuffle (i.e. not because
 /// of a split — splits are handled by mod_history)."
 ///
-/// **TODO (deferred follow-up to task #2654):** add an OCCT-gated test that
-/// drives `Engine::build` with a fillet-of-full-circle (or other symmetric-
-/// tiebreak primitive) so the engine-wiring branch in
-/// `engine_build.rs::execute_realization_ops` (per-realization filter,
-/// kernel.query loop, centroid-failure summary warning) is exercised
-/// end-to-end. Today the helper's contract is covered, the engine-wiring
-/// is uncovered. The follow-up requires identifying a stable OCCT op that
-/// reliably produces tied centroids in the v0.2 selector vocabulary; the
-/// existing e2e fixtures all produce well-separated centroids.
+/// **TODO (task #3629):** add an OCCT-gated test that drives `Engine::build`
+/// with a fillet-of-full-circle (or other symmetric-tiebreak primitive) so
+/// the engine-wiring branch in `engine_build.rs::execute_realization_ops`
+/// (per-realization filter, kernel.query loop, centroid-failure summary
+/// warning) is exercised end-to-end. Today the helper's contract is
+/// covered, the engine-wiring is uncovered. The follow-up requires
+/// identifying a stable OCCT op that reliably produces tied centroids in
+/// the v0.2 selector vocabulary; the existing e2e fixtures all produce
+/// well-separated centroids. (Originally a deferred follow-up to task
+/// #2654, which closed without adding this coverage.)
 #[test]
 fn local_index_reassignment_diagnostic_fires_for_geometrically_tied_faces() {
     // Two synthetic TopologyAttribute records in the same
@@ -1078,14 +1079,15 @@ fn local_index_reassignment_diagnostic_fires_for_geometrically_tied_faces() {
 /// EXACTLY TWO diagnostics — one per `(feature_id, role)` group — and
 /// each diagnostic names only its own feature_id, not the other one.
 ///
-/// **TODO (deferred follow-up to task #2654):** add an engine-driven
-/// OCCT test that exercises the engine_build.rs filter directly — i.e.
-/// build two realizations whose attributes share the realization-prefix
-/// pattern but with different feature_ids, then assert that the warning
-/// emitted during realization 1 doesn't reference handles from
-/// realization 0. That requires either an OCCT fixture that produces
-/// reliably tied centroids in two consecutive realizations, or a stub
-/// kernel injection — both larger than this amendment pass's scope.
+/// **TODO (task #3629):** add an engine-driven OCCT test that exercises
+/// the engine_build.rs filter directly — i.e. build two realizations
+/// whose attributes share the realization-prefix pattern but with
+/// different feature_ids, then assert that the warning emitted during
+/// realization 1 doesn't reference handles from realization 0. That
+/// requires either an OCCT fixture that produces reliably tied centroids
+/// in two consecutive realizations, or a stub kernel injection — both
+/// larger than this amendment pass's scope. (Originally a deferred
+/// follow-up to task #2654, which closed without adding this coverage.)
 #[test]
 fn local_index_reassignment_groups_independently_per_feature_id() {
     let f0 = FeatureId::new("Foo#realization[0]");
