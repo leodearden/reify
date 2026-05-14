@@ -716,6 +716,34 @@ mod tests {
     }
 
     #[test]
+    fn tool_defs_includes_screenshot_window() {
+        let defs = tool_defs();
+        let entry = defs
+            .iter()
+            .find(|t| t.name == "screenshot_window")
+            .expect("screenshot_window must be present in tool_defs()");
+
+        let schema = &entry.input_schema;
+        assert_eq!(
+            schema["type"].as_str(),
+            Some("object"),
+            "input_schema.type must be 'object'"
+        );
+        assert!(
+            schema["properties"].is_object(),
+            "input_schema.properties must be an object"
+        );
+    }
+
+    #[test]
+    fn is_image_tool_recognizes_both_screenshot_variants() {
+        assert!(is_image_tool("screenshot"));
+        assert!(is_image_tool("screenshot_window"));
+        assert!(!is_image_tool("health"));
+        assert!(!is_image_tool(""));
+    }
+
+    #[test]
     fn tool_defs_includes_wait_for_idle() {
         let defs = tool_defs();
         let entry = defs
