@@ -1482,4 +1482,92 @@ mod tests {
         decoded.serialize_to_writer(&mut bytes_b).unwrap();
         assert_eq!(bytes_a, bytes_b);
     }
+
+    // ---- step-9 invariant + truncation pins ----
+
+    /// Hand-build a zstd-framed bincode-encoded `ShellExtractionResultHeader`
+    /// so a test can simulate a tampered cache entry without going through
+    /// `serialize_to_writer`. Mirrors `encode_header` at
+    /// `persistent_cache.rs:1298`.
+    fn encode_header_only_for_test(header: &ShellExtractionResultHeader) -> Vec<u8> {
+        let mut buf: Vec<u8> = Vec::new();
+        let mut encoder = zstd::Encoder::new(&mut buf, 0).unwrap();
+        bincode::serialize_into(&mut encoder, header).unwrap();
+        encoder.finish().unwrap();
+        buf
+    }
+
+    #[test]
+    fn shell_extraction_result_deserialize_rejects_length_invariant_violation() {
+        // Tampered/corrupted entry: vertices_len = 4 but thickness_len = 3.
+        // The deserialization path must reject with `InvalidData` and a
+        // message mentioning the length mismatch BEFORE attempting any
+        // slab read — protecting consumers from a struct that the
+        // `new()` constructor would have rejected.
+        let header = ShellExtractionResultHeader {
+            solve_time_ms: 0,
+            vertices_len: 4,
+            triangles_len: 0,
+            thickness_len: 3,
+            vertex_labels_len: 0,
+            triangle_labels_len: 0,
+            regions: vec![],
+            naming: MidSurfaceAttributesOnDisk {
+                face_records: vec![],
+                edges: vec![],
+            },
+            diagnostics: vec![],
+        };
+        let buf = encode_header_only_for_test(&header);
+        let err = ShellExtractionResult::deserialize_from_reader(&mut &buf[..])
+            .expect_err("length-invariant violation must be rejected");
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::InvalidData,
+            "expected InvalidData, got {err:?}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("length-invariant violation") && msg.contains("vertices_len 4")
+                && msg.contains("thickness_len 3"),
+            "error message must explain the mismatch, got: {msg}"
+        );
+    }
+
+    /// Acceptable error kinds from a malformed/truncated input. Mirrors
+    /// `assert_decode_error` at `persistent_cache.rs:1231`.
+    fn assert_decode_error(label: &str, err: &io::Error) {
+        let kind = err.kind();
+        assert!(
+            matches!(
+                kind,
+                io::ErrorKind::UnexpectedEof | io::ErrorKind::InvalidData | io::ErrorKind::Other
+            ),
+            "{label}: unexpected io::ErrorKind {kind:?} (full error: {err:?})"
+        );
+    }
+
+    #[test]
+    fn shell_extraction_result_deserialize_from_truncated_reader_returns_io_error() {
+        // Six truncation points exercise distinct decode stages:
+        //   * 0 bytes → zstd::Decoder::new fails at frame magic
+        //   * 1, 4 bytes → partial frame magic / header
+        //   * len/4, len/2 → mid-bincode-header or mid-slab
+        //   * len-1 → one byte short of the final block
+        // Every offset must surface `Err(io::Error)` panic-free (mirrors
+        // `persistent_cache.rs:1243`).
+        let original = make_round_trip_fixture();
+        let mut buf: Vec<u8> = Vec::new();
+        original.serialize_to_writer(&mut buf).unwrap();
+        let len = buf.len();
+        let truncation_points: [usize; 6] = [0, 1, 4, len / 4, len / 2, len - 1];
+        for &n in &truncation_points {
+            let truncated = &buf[..n];
+            let label = format!("truncation @ {n}/{len} bytes");
+            let err = ShellExtractionResult::deserialize_from_reader(&mut &truncated[..])
+                .expect_err(&format!("{label}: must return Err"));
+            assert_decode_error(&label, &err);
+        }
+    }
+
 }

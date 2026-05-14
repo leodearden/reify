@@ -4638,8 +4638,13 @@ dependencies = [
 name = "reify-shell-extract"
 version = "0.1.0"
 dependencies = [
+ "bincode",
+ "bytemuck",
+ "reify-eval",
  "reify-types",
  "rustc-hash",
+ "serde",
+ "zstd",
 ]
 
 [[package]]
