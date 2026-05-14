@@ -75,7 +75,7 @@ The canonical machine-grep-friendly form lives at `docs/gui-event-channels.md` (
 | `solver-progress` | `{solver_kind: String, iter: u32, residual: f64, eta_ms: Option<u64>}` | `reify-solver-elastic` CG callback at iteration boundary | (new) `SolverProgressOverlay` | task 2923 (FEA progressive framework); task 2965 (overlay component) | Phase 3 |
 | `solver-cancel-request` | `{solver_kind: String, run_id: String}` | (frontend → backend) `cancel_solve` Tauri command, NOT an event — listed for documentation | `reify-solver-elastic` cancellation handle | tasks above | Phase 3 |
 | `fea-case-changed` | `{active_case_id: String, available_cases: Vec<String>}` | `reify-eval` multi-case ElasticResult dispatch at case-switch | (new) `FeaCasePickerDropdown` | task 3026 (multi-load case engine wiring) | Phase 3 |
-| `mode-shape-frame` | `{mode_index: u8, phase: f32, displaced_positions: Vec<f32>}` | buckling solver post-process animation feed | (new) `BucklingPanel` animator | structural-stability-buckling tasks (deferred v0.5+) | **DEFERRED v0.5+** (bookmark task per `preferences_bookmark_task_pattern`) |
+| `mode-shape-frame` | `{mode_index: u8, phase: f32, displaced_positions: Vec<f32>}` | buckling solver post-process animation feed | (new) `BucklingPanel` animator | `docs/prds/v0_5/buckling-eigensolver.md` §13 task ι (GR-024) | **ACTIVE** — owned by `docs/prds/v0_5/buckling-eigensolver.md` §13 task ι (GR-024 / Phase 9: backend emitter + BucklingPanel animator) |
 
 ### §2.3 — Debug-MCP RPCs (not fire-and-forget events; convention applies)
 
@@ -315,9 +315,10 @@ Decomposition style: **B (vertical slice) + H (design-first / interface contract
   - **Prereqs:** α (this PRD's path must exist for citation).
   - **Crates touched:** docs only.
 
-- **Task λ (DEFERRED bookmark per `preferences_bookmark_task_pattern`)** — Add `mode-shape-frame` channel + producer when buckling lands in v0.5+.
-  - **Observable signal:** (deferred).
-  - **Prereqs:** structural-stability-buckling decomposition activates.
+- **Task λ (SUPERSEDED by `docs/prds/v0_5/buckling-eigensolver.md` §13 task ι)** — `mode-shape-frame` channel + producer.
+  - GR-024's task ι (Phase 9 — backend `mode-shape-frame` emitter + frontend `BucklingPanel.tsx` animator) absorbed this bookmark when the buckling-eigensolver PRD was decomposed. See `docs/architecture-audit/gr024-buckling-eigensolver-filing-log.md` for the filing trail.
+  - **Observable signal:** (superseded — see `docs/prds/v0_5/buckling-eigensolver.md` §13 task ι for the active observable signal).
+  - **Prereqs:** (superseded).
 
 ### Phase 5 — Convention enforcement (optional; lower priority)
 
@@ -340,7 +341,7 @@ Decomposition style: **B (vertical slice) + H (design-first / interface contract
     
 ι (independent doc edit)
 κ (depends on α only)
-λ (bookmark; deferred to v0.5)
+λ (superseded by buckling-eigensolver.md §13 task ι)
 μ (depends on α; optional)
 ```
 
