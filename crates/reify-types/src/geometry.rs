@@ -1815,44 +1815,14 @@ impl From<&crate::identity::RealizationNodeId> for FeatureId {
 
 /// Per-axis sign discriminator for box-primitive corner vertices.
 ///
-/// `Pos` is the +X face, `Neg` is the −X face. Paired with `YFace`/`ZFace`
-/// in `Role::CornerVertex` to name each of a box's 8 corners as a sign
-/// triple. PRD `docs/prds/v0_3/mesh-morphing-phase-2.md` §3.1 (task α).
+/// `Pos` selects the positive face along an axis, `Neg` the negative face.
+/// Used for all three axes in `Role::CornerVertex { x, y, z }` to uniquely
+/// name each of a box's 8 corners as a sign triple.
+/// PRD `docs/prds/v0_3/mesh-morphing-phase-2.md` §3.1 (task α).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum XFace {
+pub enum AxisSign {
     Pos,
     Neg,
-}
-
-/// Per-axis sign discriminator for box-primitive corner vertices (Y axis).
-/// See [`XFace`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum YFace {
-    Pos,
-    Neg,
-}
-
-/// Per-axis sign discriminator for box-primitive corner vertices (Z axis).
-/// See [`XFace`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ZFace {
-    Pos,
-    Neg,
-}
-
-/// Cap-face discriminator for sweep-family cap corner vertices.
-///
-/// Mirrors `CapKind`'s four variants — `Top`/`Bottom` (extrude gravitational
-/// convention) and `Start`/`End` (revolve/sweep parametric convention) — but
-/// names the corner-vertex case rather than the cap face itself.
-/// Paired with `Role::CapCornerVertex` to name a corner where a cap face
-/// meets the lateral side. PRD `docs/prds/v0_3/mesh-morphing-phase-2.md` §3.1.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum CapFace {
-    Top,
-    Bottom,
-    Start,
-    End,
 }
 
 /// Cap orientation for the `Role::Cap` variant.
@@ -1974,14 +1944,14 @@ pub enum Role {
     /// values per box. Emitted by per-primitive vertex seeders (task C).
     ///
     /// PRD `docs/prds/v0_3/mesh-morphing-phase-2.md` §3.1 (task α).
-    CornerVertex { x_face: XFace, y_face: YFace, z_face: ZFace },
+    CornerVertex { x: AxisSign, y: AxisSign, z: AxisSign },
     /// A corner vertex of a swept solid where a cap face meets the lateral
     /// envelope. Emitted by per-op vertex seeders for extrude / revolve /
     /// sweep / loft (task C). `face` records which cap (top/bottom for
     /// gravitational sweeps; start/end for parametric sweeps).
     ///
     /// PRD `docs/prds/v0_3/mesh-morphing-phase-2.md` §3.1 (task α).
-    CapCornerVertex { face: CapFace },
+    CapCornerVertex { face: CapKind },
 }
 
 /// Per-topology-entity attribute record for v0.2 persistent naming.
@@ -3386,10 +3356,10 @@ mod tests {
     fn role_corner_vertex_distinguishes_all_eight_box_corners() {
         use std::collections::HashSet;
         let mut set: HashSet<Role> = HashSet::new();
-        for x in [XFace::Pos, XFace::Neg] {
-            for y in [YFace::Pos, YFace::Neg] {
-                for z in [ZFace::Pos, ZFace::Neg] {
-                    set.insert(Role::CornerVertex { x_face: x, y_face: y, z_face: z });
+        for x in [AxisSign::Pos, AxisSign::Neg] {
+            for y in [AxisSign::Pos, AxisSign::Neg] {
+                for z in [AxisSign::Pos, AxisSign::Neg] {
+                    set.insert(Role::CornerVertex { x, y, z });
                 }
             }
         }
@@ -3397,20 +3367,20 @@ mod tests {
 
         // Distinct from CapCornerVertex
         assert_ne!(
-            Role::CornerVertex { x_face: XFace::Pos, y_face: YFace::Pos, z_face: ZFace::Pos },
-            Role::CapCornerVertex { face: CapFace::Top },
+            Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Pos, z: AxisSign::Pos },
+            Role::CapCornerVertex { face: CapKind::Top },
         );
         // Distinct from pre-existing Role variants
         assert_ne!(
-            Role::CornerVertex { x_face: XFace::Pos, y_face: YFace::Pos, z_face: ZFace::Pos },
+            Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Pos, z: AxisSign::Pos },
             Role::Side,
         );
         assert_ne!(
-            Role::CornerVertex { x_face: XFace::Pos, y_face: YFace::Pos, z_face: ZFace::Pos },
+            Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Pos, z: AxisSign::Pos },
             Role::NewEdge,
         );
         assert_ne!(
-            Role::CornerVertex { x_face: XFace::Pos, y_face: YFace::Pos, z_face: ZFace::Pos },
+            Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Pos, z: AxisSign::Pos },
             Role::RevolvedFace,
         );
     }
@@ -3418,19 +3388,19 @@ mod tests {
     #[test]
     fn role_cap_corner_vertex_distinguishes_all_four_cap_faces() {
         use std::collections::HashSet;
-        let cap_faces = [CapFace::Top, CapFace::Bottom, CapFace::Start, CapFace::End];
-        let set: HashSet<Role> = cap_faces.iter().map(|f| Role::CapCornerVertex { face: *f }).collect();
-        assert_eq!(set.len(), 4, "4 CapFace variants must yield 4 distinct CapCornerVertex roles");
+        let cap_kinds = [CapKind::Top, CapKind::Bottom, CapKind::Start, CapKind::End];
+        let set: HashSet<Role> = cap_kinds.iter().map(|f| Role::CapCornerVertex { face: *f }).collect();
+        assert_eq!(set.len(), 4, "4 CapKind variants must yield 4 distinct CapCornerVertex roles");
 
         // Distinct from CornerVertex
         assert_ne!(
-            Role::CapCornerVertex { face: CapFace::Top },
-            Role::CornerVertex { x_face: XFace::Pos, y_face: YFace::Pos, z_face: ZFace::Pos },
+            Role::CapCornerVertex { face: CapKind::Top },
+            Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Pos, z: AxisSign::Pos },
         );
         // Distinct from pre-existing Role variants
-        assert_ne!(Role::CapCornerVertex { face: CapFace::Top }, Role::Side);
-        assert_ne!(Role::CapCornerVertex { face: CapFace::Top }, Role::NewEdge);
-        assert_ne!(Role::CapCornerVertex { face: CapFace::Top }, Role::RevolvedFace);
+        assert_ne!(Role::CapCornerVertex { face: CapKind::Top }, Role::Side);
+        assert_ne!(Role::CapCornerVertex { face: CapKind::Top }, Role::NewEdge);
+        assert_ne!(Role::CapCornerVertex { face: CapKind::Top }, Role::RevolvedFace);
     }
 
     #[test]
@@ -4993,25 +4963,18 @@ mod tests {
 
     /// Mirror of `extract_edges` / `extract_faces` default-impl test (PRD task α):
     /// any kernel that does NOT explicitly override `extract_vertices` must
-    /// inherit the trait default and return
-    /// `QueryError::QueryFailed("topology extraction not supported by this kernel")`.
-    /// Verifies the message substring `"topology extraction"` is stable so engine
-    /// callers can branch on it without parsing the full string.
+    /// inherit the trait default and return `Err(QueryError::QueryFailed(_))`.
+    /// The exact message text is informational and not part of the public contract —
+    /// callers that need to branch on "topology extraction unsupported" should use
+    /// a dedicated `QueryError` variant rather than substring matching.
     #[test]
     fn default_geometry_kernel_extract_vertices_returns_topology_not_supported_error() {
         let mut kernel = DefaultsOnlyKernel;
         let result = kernel.extract_vertices(GeometryHandleId(1));
-        match result {
-            Err(QueryError::QueryFailed(msg)) => {
-                assert!(
-                    msg.contains("topology extraction"),
-                    "expected message to contain 'topology extraction', got: {msg}"
-                );
-            }
-            other => panic!(
-                "expected Err(QueryError::QueryFailed(_)) with 'topology extraction' substring, got: {other:?}"
-            ),
-        }
+        assert!(
+            matches!(result, Err(QueryError::QueryFailed(_))),
+            "expected Err(QueryError::QueryFailed(_)), got: {result:?}",
+        );
     }
 
     /// Verify the v0.3 `VolumeMesh` struct and `ElementOrderTag` enum round-trip
