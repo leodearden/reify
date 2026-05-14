@@ -37,3 +37,11 @@ Warn at compile time when a member-access chain `a.b.c.d.e` exceeds a configurab
 1. Implement chain-depth counter on AST `MemberAccess` walker.
 2. Wire diagnostic code + format + LSP path.
 3. Tests: threshold boundary, mixed expression forms, multi-chain expressions in same line.
+
+## Note on AC #3 (mixed call+access) — GR-040, 2026-05-14
+
+The "mixed call+access" form `a.b.foo().c.d` referenced in AC #3 is not currently expressible in Reify source: `ExprKind::FunctionCall { name: String, args: Vec<Expr> }` takes a bare identifier as callee, so `a.foo()` doesn't parse. The lint passes vacuously on any "mixed call+access" input by construction — there are no inputs to assess. AC #3 remains correct as written ("does not trip the lint"), but the framing assumes a syntax that doesn't exist.
+
+If method-call syntax ever lands (UFCS sugar `a.foo(b) ⇔ foo(a, b)`, full method dispatch, or namespace-qualified calls `mod::foo()`), this lint's `MemberAccess`-only walker will need to be re-walked with real test cases to confirm chain counting still works across method-call segments. The minimal-cost option if Reify ever wants method-call syntax is UFCS sugar — additive, no method-resolution rules, gives readability wins on transform/builder chains without committing to OO dispatch semantics.
+
+See `docs/architecture-audit/gap-register.md` GR-040 for the audit-trail entry.

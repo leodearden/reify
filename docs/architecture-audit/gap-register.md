@@ -613,9 +613,9 @@ Contract document authored 2026-05-12: `docs/prds/v0_3/structure-instance-runtim
 | Evidence | `findings/deep-dot-chain.md` M-008 |
 | Cited by PRDs | deep-dot-chain |
 | Blocks tasks | Per cluster C-38 |
-| Disposition | **accept-and-document** — flag as language-design open. The lint passes vacuously (zero false-negatives but also zero coverage). If method-call syntax ever lands, the lint needs to be revisited with real `a.foo()` cases. Document as such; no fix-now. |
+| Disposition | **accept-and-document — APPLIED 2026-05-14** in `docs/prds/deep-dot-chain.md` (new section "Note on AC #3 (mixed call+access) — GR-040, 2026-05-14"). Flagged as language-design open: lint passes vacuously on `a.b.foo().c.d` because the syntax doesn't parse. UFCS sugar identified as the minimal-cost upgrade path if/when method-call syntax becomes valuable. No fix-now. |
 | Discovered | 2026-05-12 architecture audit |
-| Notes | Sibling to GR-009 (cluster C-06 grammar fictions); but unlike C-06's many small invented syntaxes, this is one feature that several future PRDs would benefit from. Defer to a language-design decision. |
+| Notes | Sibling to GR-009 (cluster C-06 grammar fictions); but unlike C-06's many small invented syntaxes, this is one feature that several future PRDs would benefit from (fluent transform chains, structure-instance methods, domain idiom `material.young_modulus()`). Reify's anti-thesis ("physical/mechanical nonsense should be hard to encode") doesn't lean OO, so method-call syntax is largely cosmetic. Disposition closed-out 2026-05-14; revisit if/when a PRD blocks on the syntax. |
 
 ### GR-041 — Composite / buckling / varying-thickness greenfield (cluster C-40)
 
