@@ -10,9 +10,12 @@ use reify_compiler::{CompiledModule, ValueCellKind, Visibility};
 use reify_eval::cache::NodeId;
 use reify_eval::{CheckResult, Engine};
 use reify_types::{
-    ConstraintChecker, ConstraintSolver, ContentHash, DeterminacyState, DimensionVector,
-    ExportFormat, GeometryKernel, ModulePath, Satisfaction, Severity, Value, ValueCellId,
+    ConstraintChecker, ContentHash, DeterminacyState, DimensionVector, ExportFormat, GeometryKernel,
+    ModulePath, Satisfaction, Severity, Value, ValueCellId,
 };
+
+#[cfg(test)]
+use reify_types::ConstraintSolver;
 
 use reify_types::{Diagnostic, DiagnosticInfo, DiagnosticLabel, SourceLocationInfo, SourceSpan};
 
