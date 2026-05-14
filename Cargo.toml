@@ -24,6 +24,7 @@ members = [
     "crates/reify-lsp",
     "crates/reify-mcp",
     "crates/reify-cli",
+    "crates/reify-audit",
     "crates/reify-test-support",
     "tree-sitter-reify",
     "gui/src-tauri",
@@ -57,6 +58,7 @@ reify-runtime = { path = "crates/reify-runtime" }
 reify-stdlib = { path = "crates/reify-stdlib" }
 reify-lsp = { path = "crates/reify-lsp" }
 reify-mcp = { path = "crates/reify-mcp" }
+reify-audit = { path = "crates/reify-audit" }
 reify-test-support = { path = "crates/reify-test-support" }
 
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
