@@ -325,10 +325,10 @@ enum Format {
 /// the full lowering pass that would walk `compiled.templates`,
 /// `compiled.functions`, etc.
 ///
-/// TODO(post-2361): replace with `reify_doc_build::build_doc_model` when
-/// slice 2 of the reify-doc PRD lands.  See `docs/prds/reify-doc-tool.md`
-/// and the `scope_caveat="build_doc_model_not_yet_implemented"` notes on
-/// sibling tasks 2351/2355/2357/2359.
+/// TODO(task-3562): replace with `reify_doc_build::build_doc_model` when
+/// it lands. See `docs/prds/reify-doc-tool.md`. Sibling tasks
+/// 2351/2355/2357/2359 all closed (done) without producing the symbol;
+/// task 3562 now tracks the actual implementation work.
 fn minimal_doc_model_from_compiled(
     compiled: &reify_compiler::CompiledModule,
 ) -> reify_doc::model::DocModel {
@@ -365,8 +365,9 @@ fn escape_html(s: &str) -> String {
 /// default has *some* HTML-shaped output end-to-end without preempting the
 /// real formatter.
 ///
-/// TODO(post-2361): replace with `reify_doc::fmt_html::render_html` when
-/// task 2359 lands the dedicated HTML formatter (`fmt_html.rs`).
+/// TODO(task-3562): replace with `reify_doc::fmt_html::render_html` once
+/// the dedicated HTML formatter (`fmt_html.rs`) is wired up. Task 2359
+/// closed (done) without producing it; task 3562 carries the rollup.
 fn render_html_stub(model: &reify_doc::model::DocModel) -> String {
     let md_body = match reify_doc::fmt_markdown::render_markdown(
         model,
@@ -528,7 +529,7 @@ fn cmd_doc(args: &[String]) -> ExitCode {
             write_single_file_or_stdout(output.as_deref(), &body, /*trailing_newline=*/ true)
         }
         Format::Markdown => {
-            // TODO(post-2361): once `reify_doc_build::build_doc_model`
+            // TODO(task-3562): once `reify_doc_build::build_doc_model`
             // lands, wire `reify_doc_build::cross_refs::build_cross_refs(
             // &compiled.templates)` here and pass `Some(&xrefs)` instead of
             // `None`.  With the placeholder empty `DocModel`, cross-refs

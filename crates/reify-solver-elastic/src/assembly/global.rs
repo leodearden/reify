@@ -224,17 +224,14 @@ pub fn assemble_global_stiffness(
     // tet-only nodes carry orphan rotation rows/cols of zero, which
     // downstream BC/MPC layers handle).
     //
-    // TODO(task-3020 / Shells T10): when `D > min(d_e)` (mixed
-    // tet+shell), nodes touched only by lower-`d_e` elements end up
-    // with structurally zero rows/cols at the extra DOFs (`α >= d_e`
-    // observed at that node). Stabilisation is delegated to T10's MPC
-    // tying + Task 2917's Dirichlet rotation auto-clamp; if a caller
+    // Design note: when `D > min(d_e)` (mixed tet+shell), nodes touched
+    // only by lower-`d_e` elements end up with structurally zero
+    // rows/cols at the extra DOFs (`α >= d_e` observed at that node).
+    // Stabilisation is provided by Shells T10's MPC tying (task 3020,
+    // landed) plus the Dirichlet rotation auto-clamp (task 2917,
+    // landed); the contract owner is the BC/MPC layer. If a caller
     // forgets to apply either, the failure surfaces deep in the linear
-    // solve as a singular K. A future amendment may surface a
-    // side-channel `OrphanDofs` summary (or a `debug_assert!`-guarded
-    // log warn) so callers/tests can assert orphans are stabilised
-    // before solve. The contract owner is the BC/MPC layer; this is a
-    // future-proofing pointer, not a T11 deliverable.
+    // solve as a singular K.
     let n_dofs_per_node: usize = elements
         .iter()
         .map(|e| e.k_e.n_dofs / e.connectivity.len())

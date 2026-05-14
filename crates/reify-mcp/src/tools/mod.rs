@@ -8,7 +8,7 @@ pub mod write;
 
 use crate::registry::ToolRegistry;
 
-/// Register all 16 MCP tools as stubs in the given registry.
+/// Register all 16 MCP tools in the given registry.
 pub fn register_all_tools(registry: &mut ToolRegistry) {
     read::register(registry);
     write::register(registry);
