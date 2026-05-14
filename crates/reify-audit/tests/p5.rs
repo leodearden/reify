@@ -241,4 +241,86 @@ mod tests {
             entries
         );
     }
+
+    /// Models the Cargo.lock-only false-positive
+    /// (`~/.claude/projects/-home-leo-src-reify/memory/project_post_merge_equivalence_false_positive_cargo_lock.md`):
+    /// every "real" metadata.files path is covered by the claimed commit's
+    /// diff; only Cargo.lock fell out because main absorbed an unrelated
+    /// dependency bump in the meantime. Should downgrade to Severity::Low
+    /// rather than scream Severity::High.
+    #[test]
+    fn cargo_lock_only_divergence_downgrades_to_low() {
+        let conn = seed_db();
+        insert_run(&conn, "run-cargo-lock");
+        insert_task_result(&conn, "run-cargo-lock", "2000", "done");
+        insert_task_completed_event(&conn, "run-cargo-lock", "2000");
+
+        let mut git = MockGitOps::new();
+        // Claimed commit's diff covers ONLY foo.rs — Cargo.lock is missing.
+        git.set_diff_changed_paths(
+            "main",
+            "def456",
+            vec!["crates/reify-x/src/foo.rs".to_string()],
+        );
+        // Sibling-FF rescue is irrelevant for the Cargo.lock case.
+        git.set_log_grep("main", "2000", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "2000".to_string(),
+            TaskMetadata {
+                task_id: "2000".to_string(),
+                status: "done".to_string(),
+                files: vec![
+                    "crates/reify-x/src/foo.rs".to_string(),
+                    "Cargo.lock".to_string(),
+                ],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("def456".to_string()),
+                    note: None,
+                }),
+            },
+        );
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+        };
+
+        let findings = p5_phantom_done::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly one finding (downgraded); got {:?}",
+            findings
+        );
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::P5PhantomDone);
+        assert_eq!(
+            f.severity,
+            Severity::Low,
+            "Cargo.lock-only divergence must downgrade to Low; got {:?}",
+            f.severity
+        );
+        assert!(
+            f.summary.to_lowercase().contains("cargo.lock"),
+            "summary should mention Cargo.lock; got {:?}",
+            f.summary
+        );
+        let metadata_files_evidence = f.evidence.iter().find_map(|e| match e {
+            EvidenceRef::MetadataFiles { entries } => Some(entries),
+            _ => None,
+        });
+        let entries = metadata_files_evidence.expect("MetadataFiles evidence present");
+        assert!(
+            entries.iter().any(|p| p == "Cargo.lock"),
+            "expected Cargo.lock in MetadataFiles evidence; got {:?}",
+            entries
+        );
+    }
 }
