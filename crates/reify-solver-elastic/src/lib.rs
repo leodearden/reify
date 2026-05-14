@@ -317,6 +317,7 @@
 pub mod assembly;
 pub mod boundary;
 pub mod constitutive;
+pub mod eigensolve;
 pub mod elements;
 pub mod error_estimator;
 pub mod interpolation;
