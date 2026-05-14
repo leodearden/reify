@@ -115,12 +115,60 @@ fn check_one(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Finding> {
     // task_completed event means the orchestrator never recorded the
     // completion at all — definitive phantom-done, no sibling rescue.
     // (Memory: procedural_runs_db_forensics.md.)
-    if kind == "merged" && !has_task_completed_event(ctx, &meta.task_id) {
-        return Some(build_high_finding(
-            meta,
-            &meta.files,
-            "metadata.status=done but no task_completed event in runs.db",
-        ));
+    //
+    // Three states:
+    //   Ok(true)  — event exists, proceed to git corroboration
+    //   Ok(false) — event genuinely missing → High, evidence=RunsDb row
+    //   Err(e)    — runs.db is unreadable (table missing, db locked,
+    //               permission denied, etc.). Operators need to distinguish
+    //               this from a real phantom-done, so emit a Medium finding
+    //               citing the unreadable runs.db rather than mass-flagging
+    //               every merged task as High.
+    if kind == "merged" {
+        match has_task_completed_event(ctx, &meta.task_id) {
+            Ok(true) => {}
+            Ok(false) => {
+                return Some(Finding {
+                    pattern: Pattern::P5PhantomDone,
+                    severity: Severity::High,
+                    task_id: meta.task_id.clone(),
+                    summary:
+                        "metadata.status=done but no task_completed event in runs.db".to_string(),
+                    evidence: vec![EvidenceRef::RunsDb {
+                        table: "events".to_string(),
+                        key: format!(
+                            "task_id={} AND event_type=task_completed",
+                            meta.task_id
+                        ),
+                    }],
+                });
+            }
+            Err(e) => {
+                // Surface a low-noise breadcrumb so operators aren't left
+                // wondering why nothing flagged — but only emit one finding
+                // per task, not a torrent of stderr lines.
+                eprintln!(
+                    "reify-audit: runs.db unreadable while checking task {}: {}",
+                    meta.task_id, e
+                );
+                return Some(Finding {
+                    pattern: Pattern::P5PhantomDone,
+                    severity: Severity::Medium,
+                    task_id: meta.task_id.clone(),
+                    summary: format!(
+                        "runs.db unreadable — cannot corroborate merged provenance for task {}: {}",
+                        meta.task_id, e
+                    ),
+                    evidence: vec![EvidenceRef::RunsDb {
+                        table: "events".to_string(),
+                        key: format!(
+                            "task_id={} AND event_type=task_completed",
+                            meta.task_id
+                        ),
+                    }],
+                });
+            }
+        }
     }
 
     // Corroboration (b) — primary git check. The claimed commit's diff
@@ -206,20 +254,28 @@ fn check_one(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Finding> {
     ))
 }
 
-/// Run the runs.db existence query: returns true iff at least one
-/// `task_completed` event exists for `task_id`.
-fn has_task_completed_event(ctx: &AuditContext, task_id: &str) -> bool {
-    let mut stmt = match ctx
-        .conn
-        .prepare("SELECT 1 FROM events WHERE task_id = ? AND event_type = 'task_completed' LIMIT 1")
-    {
-        Ok(s) => s,
-        // If the schema is missing, treat as "no corroborating event" — the
-        // detector's job is to flag, not to crash on a malformed runs.db.
-        Err(_) => return false,
-    };
-    stmt.query_row::<i64, _, _>(rusqlite::params![task_id], |row| row.get(0))
-        .is_ok()
+/// Run the runs.db existence query: returns `Ok(true)` if at least one
+/// `task_completed` event exists for `task_id`, `Ok(false)` if no row
+/// matches, and `Err` if the database itself can't be queried (missing
+/// table, locked file, permission denied, etc.).
+///
+/// The three-way return is load-bearing for [`check_one`]: a missing row
+/// is genuine evidence of phantom-done (High), but an unreadable database
+/// is a different operator-actionable signal (Medium "runs.db unreadable")
+/// — earlier versions collapsed both into `false` and risked mass-flagging
+/// every merged task on a malformed runs.db.
+fn has_task_completed_event(
+    ctx: &AuditContext,
+    task_id: &str,
+) -> Result<bool, rusqlite::Error> {
+    let mut stmt = ctx.conn.prepare(
+        "SELECT 1 FROM events WHERE task_id = ? AND event_type = 'task_completed' LIMIT 1",
+    )?;
+    match stmt.query_row::<i64, _, _>(rusqlite::params![task_id], |row| row.get(0)) {
+        Ok(_) => Ok(true),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
+        Err(e) => Err(e),
+    }
 }
 
 /// Returns the subset of `files` not present in `covered`.
