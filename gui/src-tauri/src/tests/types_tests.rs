@@ -1398,6 +1398,66 @@ fn auto_resolve_iteration_serializes_with_expected_field_set() {
     );
 }
 
+/// Step-2a: driving_metric and driving_metric_value must be ABSENT from JSON
+/// when set to None (validates #[serde(skip_serializing_if = "Option::is_none")]).
+#[test]
+fn auto_resolve_iteration_omits_optional_when_none() {
+    use crate::types::AutoResolveIteration;
+    use std::collections::HashMap;
+
+    let iter = AutoResolveIteration {
+        iteration: 0,
+        parameters: HashMap::new(),
+        constraints: HashMap::new(),
+        driving_metric: None,
+        driving_metric_value: None,
+    };
+
+    let v = serde_json::to_value(&iter).unwrap();
+    assert!(
+        v.get("driving_metric").is_none(),
+        "driving_metric must be absent from JSON when None"
+    );
+    assert!(
+        v.get("driving_metric_value").is_none(),
+        "driving_metric_value must be absent from JSON when None"
+    );
+}
+
+/// Step-2b: unit, target_lower, and target_upper must be ABSENT from JSON when
+/// set to None (validates #[serde(skip_serializing_if = "Option::is_none")]).
+#[test]
+fn auto_resolve_constraint_progress_omits_unset_targets_and_unit() {
+    use crate::types::AutoResolveConstraintProgress;
+
+    let c = AutoResolveConstraintProgress {
+        name: "stress_limit".to_string(),
+        value: 0.0,
+        unit: None,
+        target_lower: None,
+        target_upper: None,
+        satisfied: false,
+    };
+
+    let v = serde_json::to_value(&c).unwrap();
+    assert!(
+        v.get("unit").is_none(),
+        "unit must be absent from JSON when None"
+    );
+    assert!(
+        v.get("target_lower").is_none(),
+        "target_lower must be absent from JSON when None"
+    );
+    assert!(
+        v.get("target_upper").is_none(),
+        "target_upper must be absent from JSON when None"
+    );
+    // Required fields must still be present
+    assert_eq!(v["name"], json!("stress_limit"));
+    assert_eq!(v["value"], json!(0.0));
+    assert_eq!(v["satisfied"], json!(false));
+}
+
 /// Positive case: a correct-length scalar_channels entry serializes successfully.
 #[test]
 fn meshdata_accepts_matching_scalar_channel_length() {
