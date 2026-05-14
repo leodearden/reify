@@ -1607,6 +1607,25 @@ pub trait GeometryKernel: Send + Sync {
         ))
     }
 
+    /// Extract the unique vertices of a shape, storing each as a new handle.
+    ///
+    /// Returns a `Vec<GeometryHandleId>` where each id names a freshly-stored
+    /// vertex sub-shape (with `BRepKind::Vertex`). The ordering follows the
+    /// kernel's canonical `TopExp::MapShapes(.., TopAbs_VERTEX, ..)` enumeration,
+    /// deduplicated by `TopoDS_Shape::IsSame`.
+    ///
+    /// Default implementation returns
+    /// `Err(QueryError::QueryFailed("topology extraction not supported by this kernel"))`,
+    /// keeping non-OCCT kernels (mocks, stubs) compiling without per-impl edits.
+    fn extract_vertices(
+        &mut self,
+        _handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        Err(QueryError::QueryFailed(
+            "topology extraction not supported by this kernel".into(),
+        ))
+    }
+
     /// Optional best-effort `TopologyAttribute` propagation hook for non-OCCT
     /// kernels with native parent→child correspondence (e.g. Manifold's
     /// `MeshGL` merge vectors + per-triangle `faceID` / `originalID`).
