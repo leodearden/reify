@@ -848,6 +848,27 @@ impl OcctKernel {
         Ok([p.x, p.y, p.z])
     }
 
+    /// Read the geometric position of the `TopoDS_Vertex` named by `handle`
+    /// via `BRep_Tool::Pnt`. Direct accessor — does not invoke
+    /// `BRepExtrema_DistShapeShape`.
+    ///
+    /// Mandated by PRD `docs/prds/v0_3/mesh-morphing-phase-2.md` §3.4
+    /// `vertex_position` ("BRep_Tool::Pnt direct; no closest-point") and
+    /// consumed by `OcctProjector::vertex_position` in `projector_impl.rs`.
+    ///
+    /// Returns `Err(QueryError::InvalidHandle(handle))` if the handle is
+    /// unknown; `Err(QueryError::QueryFailed(...))` if the shape is not a
+    /// `TopoDS_Vertex` or the OCCT call fails. Return type is `[f64; 3]` for
+    /// the same stub-build reason as `closest_point_on_shape`.
+    pub fn vertex_point(&self, handle: GeometryHandleId) -> Result<[f64; 3], QueryError> {
+        let s = self
+            .get_shape(handle)
+            .map_err(|_| QueryError::InvalidHandle(handle))?;
+        let p =
+            ffi::ffi::vertex_point(s).map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+        Ok([p.x, p.y, p.z])
+    }
+
     /// Angle between the outward normals of the two faces (in radians),
     /// sampled at each face's surface centroid.
     ///
@@ -2898,6 +2919,18 @@ impl OcctKernel {
     /// short-circuit path in `is_watertight`.
     pub fn store_vertex_for_test(&mut self) -> GeometryHandleId {
         let shape = ffi::ffi::make_vertex_for_test().expect("make_vertex_for_test should succeed");
+        let h = self.store(shape);
+        h.id
+    }
+
+    /// Build a single vertex at `(x, y, z)` and store it.
+    ///
+    /// Parameterised companion to `store_vertex_for_test` for tests that need
+    /// to pin a non-origin location (e.g. `vertex_point` round-trip
+    /// verification in `tests/vertex_point_integration.rs`).
+    pub fn store_vertex_at_for_test(&mut self, x: f64, y: f64, z: f64) -> GeometryHandleId {
+        let shape = ffi::ffi::make_vertex_at_for_test(x, y, z)
+            .expect("make_vertex_at_for_test should succeed");
         let h = self.store(shape);
         h.id
     }

@@ -139,6 +139,13 @@ impl OcctKernel {
         Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
     }
 
+    /// Stub vertex-position probe — always errors because OCCT is unavailable.
+    /// Mirrors the real `OcctKernel::vertex_point` signature so call sites
+    /// compile under both `has_occt` and `!has_occt`.
+    pub fn vertex_point(&self, _handle: GeometryHandleId) -> Result<[f64; 3], QueryError> {
+        Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
+    }
+
     /// Stub surface-angle probe — always errors because OCCT is unavailable.
     /// Mirrors the real `OcctKernel::surface_angle` signature so call sites
     /// compile under both `has_occt` and `!has_occt`.

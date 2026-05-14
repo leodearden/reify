@@ -665,6 +665,12 @@ pub mod ffi {
         /// the input shape. Operand ordering matches `min_clearance` / `query_distance`.
         fn closest_point_on_shape(shape: &OcctShape, px: f64, py: f64, pz: f64) -> Result<Point3>;
 
+        /// Return the geometric position of `shape` (must be a `TopoDS_Vertex`)
+        /// via `BRep_Tool::Pnt`. Mandated by PRD `mesh-morphing-phase-2.md`
+        /// §3.4 `vertex_position`: snap to exact coordinates, no closest-point
+        /// computation. Errors if `shape.ShapeType() != TopAbs_VERTEX`.
+        fn vertex_point(shape: &OcctShape) -> Result<Point3>;
+
         /// Test whether the query point `(px, py, pz)` lies on the BREP boundary
         /// (face/edge/vertex) of `shape` within `tolerance`.
         ///
@@ -803,6 +809,15 @@ pub mod ffi {
 
         /// Single vertex at origin → TopAbs_VERTEX; type-guard fires for watertight.
         fn make_vertex_for_test() -> Result<UniquePtr<OcctShape>>;
+
+        /// Single vertex at (x, y, z) → TopAbs_VERTEX. Parameterised companion
+        /// to `make_vertex_for_test` for tests that need a pinned non-origin
+        /// location (e.g. `vertex_point` round-trip verification).
+        fn make_vertex_at_for_test(
+            x: f64,
+            y: f64,
+            z: f64,
+        ) -> Result<UniquePtr<OcctShape>>;
 
         /// CompSolid wrapping one 10×10×10 mm box → TopAbs_COMPSOLID; type-guard passes.
         fn make_compsolid_for_test() -> Result<UniquePtr<OcctShape>>;

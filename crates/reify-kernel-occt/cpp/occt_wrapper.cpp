@@ -2951,6 +2951,16 @@ Point3 closest_point_on_shape(const OcctShape& shape, double px, double py, doub
     });
 }
 
+Point3 vertex_point(const OcctShape& shape) {
+    return wrap_occt_call("vertex_point", [&]() {
+        if (shape.shape.ShapeType() != TopAbs_VERTEX) {
+            throw std::runtime_error("vertex_point: shape must be a TopoDS_Vertex");
+        }
+        gp_Pnt p = BRep_Tool::Pnt(TopoDS::Vertex(shape.shape));
+        return Point3{p.X(), p.Y(), p.Z()};
+    });
+}
+
 bool point_on_shape(const OcctShape& shape, double px, double py, double pz, double tolerance) {
     // Validate tolerance early: negative or non-finite values silently produce wrong results.
     // Negative → always false (dist >= 0 means dist <= negative is never true).
@@ -3346,6 +3356,20 @@ std::unique_ptr<OcctShape> make_vertex_for_test() {
         BRepBuilderAPI_MakeVertex vertex_maker(gp_Pnt(0.0, 0.0, 0.0));
         if (!vertex_maker.IsDone()) {
             throw std::runtime_error("make_vertex: vertex construction failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = vertex_maker.Vertex();
+        return result;
+    });
+}
+
+std::unique_ptr<OcctShape> make_vertex_at_for_test(double x, double y, double z) {
+    // Parameterised companion to make_vertex_for_test for tests that need a
+    // pinned non-origin location (e.g. vertex_point round-trip verification).
+    return wrap_occt_call("make_vertex_at", [&]() {
+        BRepBuilderAPI_MakeVertex vertex_maker(gp_Pnt(x, y, z));
+        if (!vertex_maker.IsDone()) {
+            throw std::runtime_error("make_vertex_at: vertex construction failed");
         }
         auto result = std::make_unique<OcctShape>();
         result->shape = vertex_maker.Vertex();
