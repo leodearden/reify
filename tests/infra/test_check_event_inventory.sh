@@ -194,5 +194,48 @@ assert "dynamic emit produces no orphan warnings" \
 assert "dynamic emit exits 0" \
     "$CHECK_SCRIPT" --repo-root "$_fix5dir"
 
+# ==============================================================================
+# Check 6: --bidirectional flag accepted and detects §1 phantom channel
+# ==============================================================================
+echo ""
+echo "--- Check 6: --bidirectional flag accepted and detects §1 phantom ---"
+
+_fix6dir="$_tmpdir/fix6"
+mkdir -p "$_fix6dir/docs" "$_fix6dir/gui/src-tauri/src"
+
+cat > "$_fix6dir/docs/gui-event-channels.md" <<'INVENTORY'
+# GUI Event Channel Inventory
+
+## §1 — Wired channels (production today)
+
+| Channel | Notes |
+|---|---|
+| `mesh-update` | wired |
+| `phantom-channel` | wired |
+
+## §2 — Channels this PRD adds (FICTION → WIRED via GR-016 decomposition)
+
+| Channel | Notes |
+|---|---|
+INVENTORY
+
+cat > "$_fix6dir/gui/src-tauri/src/test_emit.rs" <<'RUST'
+fn emit_something(app: &AppHandle) {
+    app.emit("mesh-update", payload);
+}
+RUST
+
+_fix6_stderr="$_tmpdir/fix6_stderr.txt"
+"$CHECK_SCRIPT" --repo-root "$_fix6dir" --bidirectional 2>"$_fix6_stderr" || true
+
+assert "--bidirectional flag does not produce 'Unknown option' error" \
+    bash -c "! grep -q 'Unknown option' '$_fix6_stderr'"
+
+assert "--bidirectional emits phantom warning for phantom-channel" \
+    grep -q 'phantom-channel' "$_fix6_stderr"
+
+assert "--bidirectional exits 0 in warning mode with phantom present" \
+    "$CHECK_SCRIPT" --repo-root "$_fix6dir" --bidirectional
+
 # -- Summary ------------------------------------------------------------------
 test_summary
