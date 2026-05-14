@@ -12,6 +12,7 @@
 #![cfg(has_occt)]
 
 use reify_kernel_occt::OcctKernel;
+use reify_types::{GeometryHandleId, QueryError};
 
 /// `vertex_point` on a stored vertex returns the exact coordinates the
 /// fixture placed it at, within `1e-9` (FP round-trip through the C++ `gp_Pnt`
@@ -29,5 +30,22 @@ fn vertex_point_returns_exact_coordinates_of_stored_vertex() {
             assert!((z - 3.5).abs() < 1e-9, "expected z≈3.5, got {z}");
         }
         Err(e) => panic!("expected Ok([1.5, -2.5, 3.5]), got Err({e:?})"),
+    }
+}
+
+/// `vertex_point` on an unknown handle returns `QueryError::InvalidHandle`
+/// (not `QueryFailed`). Pins the `InvalidHandle` error-mapping branch in
+/// `OcctKernel::vertex_point` that the happy-path test in
+/// `vertex_point_returns_exact_coordinates_of_stored_vertex` doesn't cover.
+#[test]
+fn vertex_point_unknown_handle_returns_invalid_handle() {
+    let kernel = OcctKernel::new();
+    let unknown = GeometryHandleId(999);
+    match kernel.vertex_point(unknown) {
+        Err(QueryError::InvalidHandle(h)) => {
+            assert_eq!(h, unknown, "InvalidHandle should carry the queried id");
+        }
+        Ok(p) => panic!("expected Err(InvalidHandle(999)), got Ok({p:?})"),
+        Err(e) => panic!("expected Err(InvalidHandle(999)), got Err({e:?})"),
     }
 }
