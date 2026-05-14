@@ -337,8 +337,19 @@ pub fn solve_eigen_shift_invert(
     let v0 = Col::<f64>::from_fn(n, |_| 1.0 / (n as f64).sqrt());
 
     // Lanczos subspace dimensions.
+    // faer's partial_self_adjoint_eigen_imp requires max_dim < n strictly.
+    // When n_modes is large relative to n, the Krylov window would hit n,
+    // which causes a panic inside faer.  Fall back to the dense path in
+    // that situation — it is always correct and handles any (n_modes, n) pair.
     let min_dim = opts.n_modes;
     let max_dim = (2 * opts.n_modes).max(32).min(n);
+
+    if max_dim >= n {
+        // Problem too small for Lanczos; delegate to the direct dense solver.
+        // The dense result already satisfies the EigenSolverResult contract
+        // (converged=true, iterations=0, eigenvalues sorted ascending |λ|).
+        return solve_eigen_dense(k, b, opts);
+    }
 
     let params = PartialEigenParams {
         min_dim,

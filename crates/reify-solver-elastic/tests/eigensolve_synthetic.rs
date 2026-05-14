@@ -67,3 +67,33 @@ fn dense_recovers_known_spectrum_on_5x5_diagonal_pair() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Step-3 test: shift-invert path, Fixture A
+// ---------------------------------------------------------------------------
+
+#[test]
+fn shift_invert_recovers_smallest_on_5x5_diagonal_pair() {
+    let (k, b) = fixture_a();
+    let opts = EigenSolverOptions {
+        n_modes: 5,
+        tol: 1e-10,
+        max_iters: 1000,
+        sigma: 0.0,
+    };
+    let result = solve_eigen_shift_invert(&k, &b, opts);
+
+    assert!(result.converged, "shift-invert must converge on the 5×5 diagonal pair");
+    assert_eq!(result.eigenvalues.len(), 5, "must return 5 eigenvalues");
+    assert_eq!(result.eigenvectors.nrows(), 5, "eigenvectors must have n=5 rows");
+    assert_eq!(result.eigenvectors.ncols(), 5, "eigenvectors must have n_modes=5 cols");
+
+    let expected = fixture_a_expected();
+    for (i, (&got, &exp)) in result.eigenvalues.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            (got - exp).abs() < 1e-8,
+            "eigenvalue[{i}]: got {got}, expected {exp}, diff = {:.3e}",
+            (got - exp).abs(),
+        );
+    }
+}
