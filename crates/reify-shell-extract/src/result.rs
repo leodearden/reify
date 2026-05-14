@@ -188,6 +188,58 @@ impl ShellExtractionResult {
             diagnostics,
         })
     }
+
+    /// Build the on-disk header struct from `&self`. Single source of truth
+    /// for the wire-shape projection: called from both
+    /// `serialize_to_writer` (to feed bincode) and `uncompressed_byte_size`
+    /// (to feed `bincode::serialized_size`). Extracting this helper means a
+    /// future field addition only needs one edit on the impl side
+    /// (`ShellExtractionResultHeader` + this builder), not two. The
+    /// round-trip test still pins drift against the actually-serialized
+    /// bytes, so the previous "intentional duplication for drift check"
+    /// claim is subsumed by that pin.
+    fn build_on_disk_header(&self) -> ShellExtractionResultHeader {
+        ShellExtractionResultHeader {
+            solve_time_ms: self.solve_time_ms,
+            vertices_len: self.mid_surface.vertices.len() as u64,
+            triangles_len: self.mid_surface.triangles.len() as u64,
+            thickness_len: self.mid_surface.thickness.len() as u64,
+            vertex_labels_len: self.segmentation.vertex_labels.len() as u64,
+            triangle_labels_len: self.segmentation.triangle_labels.len() as u64,
+            regions: self
+                .segmentation
+                .regions
+                .iter()
+                .map(|r| RegionInfoOnDisk {
+                    label: r.label,
+                    voxels_len: r.voxels.len() as u64,
+                    mean_thickness_bits: r.mean_thickness.to_bits(),
+                    extent_bits: r.extent.to_bits(),
+                    thickness_extent_ratio_bits: r.thickness_extent_ratio.to_bits(),
+                    classification: classification_to_u8(r.classification),
+                })
+                .collect(),
+            naming: MidSurfaceAttributesOnDisk {
+                face_records: self
+                    .naming
+                    .face_records
+                    .iter()
+                    .map(topology_attribute_to_disk)
+                    .collect(),
+                edges: self
+                    .naming
+                    .edges
+                    .iter()
+                    .map(|e| MidSurfaceEdgeRecordOnDisk {
+                        attribute: topology_attribute_to_disk(&e.attribute),
+                        region_pair_a: e.region_pair.0,
+                        region_pair_b: e.region_pair.1,
+                    })
+                    .collect(),
+            },
+            diagnostics: self.diagnostics.iter().map(diagnostic_to_disk).collect(),
+        }
+    }
 }
 
 // ---- On-disk wire-shape mirrors ----
@@ -786,46 +838,7 @@ impl reify_eval::persistent_cache::PersistentlyCacheable for ShellExtractionResu
         // Single-threaded only — `Encoder::multithread()` breaks byte-determinism.
         let mut encoder = zstd::Encoder::new(w, 0)?;
 
-        let header = ShellExtractionResultHeader {
-            solve_time_ms: self.solve_time_ms,
-            vertices_len: self.mid_surface.vertices.len() as u64,
-            triangles_len: self.mid_surface.triangles.len() as u64,
-            thickness_len: self.mid_surface.thickness.len() as u64,
-            vertex_labels_len: self.segmentation.vertex_labels.len() as u64,
-            triangle_labels_len: self.segmentation.triangle_labels.len() as u64,
-            regions: self
-                .segmentation
-                .regions
-                .iter()
-                .map(|r| RegionInfoOnDisk {
-                    label: r.label,
-                    voxels_len: r.voxels.len() as u64,
-                    mean_thickness_bits: r.mean_thickness.to_bits(),
-                    extent_bits: r.extent.to_bits(),
-                    thickness_extent_ratio_bits: r.thickness_extent_ratio.to_bits(),
-                    classification: classification_to_u8(r.classification),
-                })
-                .collect(),
-            naming: MidSurfaceAttributesOnDisk {
-                face_records: self
-                    .naming
-                    .face_records
-                    .iter()
-                    .map(topology_attribute_to_disk)
-                    .collect(),
-                edges: self
-                    .naming
-                    .edges
-                    .iter()
-                    .map(|e| MidSurfaceEdgeRecordOnDisk {
-                        attribute: topology_attribute_to_disk(&e.attribute),
-                        region_pair_a: e.region_pair.0,
-                        region_pair_b: e.region_pair.1,
-                    })
-                    .collect(),
-            },
-            diagnostics: self.diagnostics.iter().map(diagnostic_to_disk).collect(),
-        };
+        let header = self.build_on_disk_header();
         bincode::serialize_into(&mut encoder, &header).map_err(io::Error::other)?;
 
         // Bulk slab writes in the fixed order pinned by the round-trip test.
@@ -998,50 +1011,11 @@ impl reify_eval::persistent_cache::PersistentlyCacheable for ShellExtractionResu
         // size accounting without a manual edit. Mirrors the `ElasticResult`
         // discipline at `persistent_cache.rs:768-797`.
         //
-        // The header build below mirrors `serialize_to_writer` byte-for-byte;
-        // intentional duplication so the impl's header construction is the
-        // single source of truth (the test computes its own expected header
-        // independently as a drift check).
-        let header = ShellExtractionResultHeader {
-            solve_time_ms: self.solve_time_ms,
-            vertices_len: self.mid_surface.vertices.len() as u64,
-            triangles_len: self.mid_surface.triangles.len() as u64,
-            thickness_len: self.mid_surface.thickness.len() as u64,
-            vertex_labels_len: self.segmentation.vertex_labels.len() as u64,
-            triangle_labels_len: self.segmentation.triangle_labels.len() as u64,
-            regions: self
-                .segmentation
-                .regions
-                .iter()
-                .map(|r| RegionInfoOnDisk {
-                    label: r.label,
-                    voxels_len: r.voxels.len() as u64,
-                    mean_thickness_bits: r.mean_thickness.to_bits(),
-                    extent_bits: r.extent.to_bits(),
-                    thickness_extent_ratio_bits: r.thickness_extent_ratio.to_bits(),
-                    classification: classification_to_u8(r.classification),
-                })
-                .collect(),
-            naming: MidSurfaceAttributesOnDisk {
-                face_records: self
-                    .naming
-                    .face_records
-                    .iter()
-                    .map(topology_attribute_to_disk)
-                    .collect(),
-                edges: self
-                    .naming
-                    .edges
-                    .iter()
-                    .map(|e| MidSurfaceEdgeRecordOnDisk {
-                        attribute: topology_attribute_to_disk(&e.attribute),
-                        region_pair_a: e.region_pair.0,
-                        region_pair_b: e.region_pair.1,
-                    })
-                    .collect(),
-            },
-            diagnostics: self.diagnostics.iter().map(diagnostic_to_disk).collect(),
-        };
+        // The on-disk header is built via `build_on_disk_header`, the same
+        // helper `serialize_to_writer` uses — so byte-shape drift between
+        // the size accounting and the actual serialization is impossible.
+        // The round-trip test pins drift end-to-end against the real bytes.
+        let header = self.build_on_disk_header();
         let header_bytes = bincode::serialized_size(&header).expect(
             "ShellExtractionResultHeader is composed entirely of serde-derived wire-shape \
              mirrors over plain Vec/Option/String/u8/u32/u64 fields; bincode 1.3 fixint-LE \
