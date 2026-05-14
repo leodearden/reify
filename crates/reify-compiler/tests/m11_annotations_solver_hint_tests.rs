@@ -50,17 +50,20 @@ fn m11_annotations_exercises_solver_hint_collection_payloads() {
             .collect::<Vec<_>>()
     );
 
-    // Flat-map all templates → value_cells to search for the expected hints.
-    // The BoltedPanel template's index in `module.templates` is not pinned,
-    // so we scan all templates rather than indexing into a known position.
-    let all_cells: Vec<&reify_compiler::ValueCellDecl> = module
+    // Locate the BoltedPanel template by name — scoping to the specific template
+    // produces clearer panic messages and guards against hints migrating to an
+    // unrelated template while still passing the broad at-least-one assertions.
+    let bolted_panel = module
         .templates
         .iter()
-        .flat_map(|t| t.value_cells.iter())
-        .collect();
+        .find(|t| t.name == "BoltedPanel")
+        .expect(
+            "BoltedPanel template should be present in the compiled module — \
+             did you forget to add the Feature 7 block to examples/m11_annotations.ri?"
+        );
 
-    // (3) At least one cell with DiscreteSet + standard_bolt_lengths.
-    let has_bolt_lengths = all_cells.iter().any(|cell| {
+    // (3) BoltedPanel has a cell with DiscreteSet + standard_bolt_lengths.
+    let has_bolt_lengths = bolted_panel.value_cells.iter().any(|cell| {
         cell.solver_hints.iter().any(|h| {
             h.kind == reify_compiler::SolverHintKind::DiscreteSet
                 && h.collection == "standard_bolt_lengths"
@@ -68,13 +71,12 @@ fn m11_annotations_exercises_solver_hint_collection_payloads() {
     });
     assert!(
         has_bolt_lengths,
-        "expected at least one ValueCellDecl with SolverHint {{ kind: DiscreteSet, \
-         collection: \"standard_bolt_lengths\" }} — did you forget to add the Feature 7 \
-         block to examples/m11_annotations.ri?"
+        "expected BoltedPanel to have a ValueCellDecl with SolverHint \
+         {{ kind: DiscreteSet, collection: \"standard_bolt_lengths\" }}"
     );
 
-    // (4) At least one cell with PreferStock + standard_sheet_thicknesses.
-    let has_sheet_thicknesses = all_cells.iter().any(|cell| {
+    // (4) BoltedPanel has a cell with PreferStock + standard_sheet_thicknesses.
+    let has_sheet_thicknesses = bolted_panel.value_cells.iter().any(|cell| {
         cell.solver_hints.iter().any(|h| {
             h.kind == reify_compiler::SolverHintKind::PreferStock
                 && h.collection == "standard_sheet_thicknesses"
@@ -82,8 +84,27 @@ fn m11_annotations_exercises_solver_hint_collection_payloads() {
     });
     assert!(
         has_sheet_thicknesses,
-        "expected at least one ValueCellDecl with SolverHint {{ kind: PreferStock, \
-         collection: \"standard_sheet_thicknesses\" }} — did you forget to add the Feature 7 \
-         block to examples/m11_annotations.ri?"
+        "expected BoltedPanel to have a ValueCellDecl with SolverHint \
+         {{ kind: PreferStock, collection: \"standard_sheet_thicknesses\" }}"
+    );
+
+    // Guard: the two hints must live on distinct cells.  A regression where both
+    // hints are mistakenly attached to the same cell (and the other cell loses its
+    // hint) would still satisfy each any() assertion above in isolation, so we
+    // explicitly reject that configuration here.
+    assert!(
+        !bolted_panel.value_cells.iter().any(|cell| {
+            let has_discrete = cell.solver_hints.iter().any(|h| {
+                h.kind == reify_compiler::SolverHintKind::DiscreteSet
+                    && h.collection == "standard_bolt_lengths"
+            });
+            let has_prefer = cell.solver_hints.iter().any(|h| {
+                h.kind == reify_compiler::SolverHintKind::PreferStock
+                    && h.collection == "standard_sheet_thicknesses"
+            });
+            has_discrete && has_prefer
+        }),
+        "DiscreteSet(standard_bolt_lengths) and PreferStock(standard_sheet_thicknesses) \
+         must be on distinct ValueCellDecl entries, not both on the same cell"
     );
 }

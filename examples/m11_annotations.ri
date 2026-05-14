@@ -20,6 +20,7 @@
 //   FAIL  TestColumnNegative       ← intentional violation
 //   PASS  TestAssemblyFits
 //   test result: FAIL. 3 passed; 2 failed; 1 indeterminate
+//   (Feature 7 BoltedPanel is non-@test and does not appear in the runner output.)
 
 // ── Shared constraint defs ─────────────────────────────────────────────────────
 
