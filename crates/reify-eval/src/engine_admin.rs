@@ -833,19 +833,17 @@ impl Engine {
         changed: &std::collections::HashSet<reify_types::ValueCellId>,
         generation: u64,
     ) -> std::collections::HashSet<crate::cache::NodeId> {
-        // Read-clone reverse_index and graph from eval_state so the
-        // immutable borrow drops before &mut self.cache takes the
-        // mutable borrow. Mirrors the pattern at
-        // `crates/reify-eval/tests/freshness_only_propagation.rs:116-145`.
+        // `eval_state` and `cache` are disjoint Engine fields, so the
+        // borrow checker accepts a simultaneous immutable borrow of
+        // `eval_state` and a mutable borrow of `cache` — no clone needed.
         // No-op when eval_state is None — there is no graph to walk.
-        let (reverse_index, graph) = match self.eval_state.as_ref() {
-            Some(state) => (state.reverse_index.clone(), state.snapshot.graph.clone()),
-            None => return std::collections::HashSet::new(),
+        let Some(state) = self.eval_state.as_ref() else {
+            return std::collections::HashSet::new();
         };
         crate::freshness_walk::propagate_freshness_only(
             &mut self.cache,
-            &reverse_index,
-            &graph,
+            &state.reverse_index,
+            &state.snapshot.graph,
             changed,
             generation,
         )
