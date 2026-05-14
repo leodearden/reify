@@ -96,3 +96,4 @@ Determinism is required end-to-end: same `.ri` input → same residual → same 
 - **Composes with `multi-load-case-fea.md`** — multi-load workflows want a way to compare results across cases; affects probe and overlay design.
 - **Will need extensions for `structural-analysis-shells.md`** — shell elements render differently (mid-surface + thickness extrusion); GUI needs awareness of element kind.
 - **Extends `prd-m6-gui.md`** — adds the field-rendering surface to the existing GUI architecture.
+- **Backend event channels seam-owned by `docs/prds/v0_3/gui-event-channel-inventory.md`** — this PRD's `AutoResolvePanel` consumes `auto-resolve-start`, `auto-resolve-iteration`, and `auto-resolve-complete` (Phase 2 proof slice); `SolverProgressOverlay` consumes `solver-progress` (Phase 3). The inventory PRD owns the channel contracts; emitter wiring is decomposed there. See also `docs/gui-event-channels.md` for the machine-grep-friendly table.
