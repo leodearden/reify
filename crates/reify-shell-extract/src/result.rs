@@ -26,9 +26,53 @@
 //! equivalent invariant is one thickness per vertex.
 
 use crate::mid_surface::MidSurfaceMesh;
-use crate::mid_surface_naming::MidSurfaceAttributes;
-use crate::segmentation::SegmentationResult;
-use reify_types::diagnostics::Diagnostic;
+use crate::mid_surface_naming::{MidSurfaceAttributes, MidSurfaceEdgeRecord};
+use crate::segmentation::{RegionClassification, RegionInfo, SegmentationResult};
+use reify_types::diagnostics::{Diagnostic, DiagnosticLabel, Severity, SourceSpan};
+use reify_types::geometry::{CapKind, FeatureId, ModEntry, Role, TopologyAttribute};
+use serde::{Deserialize, Serialize};
+use std::io::{self, Read, Write};
+
+// ---- Bounds on length-prefix fields read from the on-disk header ----
+//
+// These guards mirror `MAX_F64_ELEMENTS` at `persistent_cache.rs:362` and
+// prevent a corrupted or tampered cache entry from triggering a
+// gigabyte-scale `Vec::with_capacity` allocation during deserialization.
+// Sized for shell-extract producer outputs at workstation scale.
+
+/// Maximum number of vertices in a deserialized `MidSurfaceMesh`. Each
+/// vertex is 24 bytes on the slab (3 × `f64`), so 1 << 24 ≈ 16 M
+/// vertices ≈ 384 MiB. Mirrors `MAX_F64_ELEMENTS` rationale at
+/// `persistent_cache.rs:343-361`.
+const MAX_VERTICES: u64 = 1 << 24;
+/// Maximum number of triangles in a deserialized `MidSurfaceMesh`. Each
+/// triangle is 12 bytes on the slab (3 × `u32`), so 1 << 24 ≈ 16 M
+/// triangles ≈ 192 MiB.
+const MAX_TRIANGLES: u64 = 1 << 24;
+/// Maximum length of per-vertex `f64` slabs (`thickness`).
+const MAX_F64_ELEMENTS: u64 = 1 << 24;
+/// Maximum length of `u32` label slabs (`vertex_labels`, `triangle_labels`).
+const MAX_U32_ELEMENTS: u64 = 1 << 24;
+/// Maximum voxels per region. Each voxel is 12 bytes on the slab (3 × `i32`).
+const MAX_VOXELS_PER_REGION: u64 = 1 << 24;
+
+/// Convert a `u64` length prefix into a validated `usize`, returning
+/// `io::Error(InvalidData)` if it exceeds `max`. Mirrors
+/// `check_f64_vec_len` at `persistent_cache.rs:464`. The cast is safe
+/// post-check because all `MAX_*` constants are ≤ `1 << 26`, well within
+/// `u32`.
+fn check_len(field: &str, len: u64, max: u64) -> io::Result<usize> {
+    if len > max {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "ShellExtractionResult {field} length {len} exceeds limit {max} \
+                 (corrupted or tampered cache entry?)"
+            ),
+        ));
+    }
+    Ok(len as usize)
+}
 
 /// Bundled producer-half output of the shell-extract pipeline.
 ///
@@ -146,6 +190,552 @@ impl ShellExtractionResult {
     }
 }
 
+// ---- On-disk wire-shape mirrors ----
+//
+// `reify_types::Diagnostic`, `reify_types::DiagnosticLabel`,
+// `reify_types::geometry::TopologyAttribute`, etc. do not derive serde
+// unconditionally (only `Severity` is feature-gated). Adding crate-wide
+// serde derives would balloon the change beyond the α-task `crates touched`
+// list, so we define private mirrors here that carry the same field set in
+// a self-contained, serde-friendly shape. The mirrors are private to this
+// module — they ARE the on-disk wire format and must NOT be made public
+// without bumping `FORMAT_VERSION`.
+//
+// Lossy-by-design fields:
+//   * `Diagnostic::code` is dropped. Shell-specific `DiagnosticCode`
+//     variants (`E_SHELL_NO_VOXEL_GRID` etc.) don't exist yet (task ε
+//     owns them), so preserving the current `code` value would only round
+//     legacy non-shell variants — low signal. Round-trips to `None`.
+
+#[derive(Serialize, Deserialize)]
+struct ShellExtractionResultHeader {
+    solve_time_ms: u64,
+    vertices_len: u64,
+    triangles_len: u64,
+    thickness_len: u64,
+    vertex_labels_len: u64,
+    triangle_labels_len: u64,
+    regions: Vec<RegionInfoOnDisk>,
+    naming: MidSurfaceAttributesOnDisk,
+    diagnostics: Vec<DiagnosticOnDisk>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct RegionInfoOnDisk {
+    label: u32,
+    voxels_len: u64,
+    /// `f64` bit pattern of `RegionInfo::mean_thickness`. Stored as `u64`
+    /// (NOT `f64`) so NaN payloads, signaling-NaN bits, and signed zeros
+    /// survive serde NaN-normalization — same trick as
+    /// `ElasticResultHeader::max_von_mises_bits` at `persistent_cache.rs:385`.
+    mean_thickness_bits: u64,
+    extent_bits: u64,
+    /// `RegionInfo::thickness_extent_ratio` can be `f64::INFINITY` (per the
+    /// field docstring at `segmentation.rs:167`); the `u64`-bit-pattern
+    /// encoding preserves that exactly.
+    thickness_extent_ratio_bits: u64,
+    classification: u8,
+}
+
+#[derive(Serialize, Deserialize)]
+struct MidSurfaceAttributesOnDisk {
+    face_records: Vec<TopologyAttributeOnDisk>,
+    edges: Vec<MidSurfaceEdgeRecordOnDisk>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct TopologyAttributeOnDisk {
+    feature_id: String,
+    role: RoleOnDisk,
+    local_index: u32,
+    user_label: Option<String>,
+    mod_history: Vec<ModEntryOnDisk>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ModEntryOnDisk {
+    splitting_feature_id: String,
+    split_index: u32,
+}
+
+#[derive(Serialize, Deserialize)]
+enum RoleOnDisk {
+    Cap(CapKindOnDisk),
+    Side,
+    NewEdge,
+    RevolvedFace,
+    AxisFace,
+    SweptFace,
+    LoftedFace,
+    MidSurfaceFace,
+    MidSurfaceEdge,
+}
+
+#[derive(Serialize, Deserialize)]
+enum CapKindOnDisk {
+    Top,
+    Bottom,
+    Start,
+    End,
+}
+
+#[derive(Serialize, Deserialize)]
+struct MidSurfaceEdgeRecordOnDisk {
+    attribute: TopologyAttributeOnDisk,
+    region_pair_a: u32,
+    region_pair_b: u32,
+}
+
+#[derive(Serialize, Deserialize)]
+struct DiagnosticOnDisk {
+    /// 0 = `Severity::Info`, 1 = `Severity::Warning`, 2 = `Severity::Error`.
+    /// Unknown discriminants on read are rejected with `InvalidData`.
+    severity: u8,
+    message: String,
+    labels: Vec<DiagnosticLabelOnDisk>,
+    candidates: Vec<String>,
+    // `Diagnostic::code` is intentionally NOT carried — see module-level
+    // wire-shape mirror comment above and PRD §7 task-ε ownership note.
+}
+
+#[derive(Serialize, Deserialize)]
+struct DiagnosticLabelOnDisk {
+    span_start: u32,
+    span_end: u32,
+    message: String,
+}
+
+// ---- In-memory ↔ on-disk conversion helpers ----
+
+fn severity_to_u8(s: Severity) -> u8 {
+    match s {
+        Severity::Info => 0,
+        Severity::Warning => 1,
+        Severity::Error => 2,
+    }
+}
+
+fn severity_from_u8(b: u8) -> io::Result<Severity> {
+    match b {
+        0 => Ok(Severity::Info),
+        1 => Ok(Severity::Warning),
+        2 => Ok(Severity::Error),
+        other => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("ShellExtractionResult unknown Severity discriminant {other}"),
+        )),
+    }
+}
+
+fn classification_to_u8(c: RegionClassification) -> u8 {
+    match c {
+        RegionClassification::ShellEligible => 0,
+        RegionClassification::TetEligible => 1,
+        RegionClassification::MixedComponentOfBody => 2,
+    }
+}
+
+fn classification_from_u8(b: u8) -> io::Result<RegionClassification> {
+    match b {
+        0 => Ok(RegionClassification::ShellEligible),
+        1 => Ok(RegionClassification::TetEligible),
+        2 => Ok(RegionClassification::MixedComponentOfBody),
+        other => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("ShellExtractionResult unknown RegionClassification discriminant {other}"),
+        )),
+    }
+}
+
+fn cap_kind_to_disk(k: CapKind) -> CapKindOnDisk {
+    match k {
+        CapKind::Top => CapKindOnDisk::Top,
+        CapKind::Bottom => CapKindOnDisk::Bottom,
+        CapKind::Start => CapKindOnDisk::Start,
+        CapKind::End => CapKindOnDisk::End,
+    }
+}
+
+fn cap_kind_from_disk(k: &CapKindOnDisk) -> CapKind {
+    match k {
+        CapKindOnDisk::Top => CapKind::Top,
+        CapKindOnDisk::Bottom => CapKind::Bottom,
+        CapKindOnDisk::Start => CapKind::Start,
+        CapKindOnDisk::End => CapKind::End,
+    }
+}
+
+fn role_to_disk(r: Role) -> RoleOnDisk {
+    match r {
+        Role::Cap(k) => RoleOnDisk::Cap(cap_kind_to_disk(k)),
+        Role::Side => RoleOnDisk::Side,
+        Role::NewEdge => RoleOnDisk::NewEdge,
+        Role::RevolvedFace => RoleOnDisk::RevolvedFace,
+        Role::AxisFace => RoleOnDisk::AxisFace,
+        Role::SweptFace => RoleOnDisk::SweptFace,
+        Role::LoftedFace => RoleOnDisk::LoftedFace,
+        Role::MidSurfaceFace => RoleOnDisk::MidSurfaceFace,
+        Role::MidSurfaceEdge => RoleOnDisk::MidSurfaceEdge,
+    }
+}
+
+fn role_from_disk(r: &RoleOnDisk) -> Role {
+    match r {
+        RoleOnDisk::Cap(k) => Role::Cap(cap_kind_from_disk(k)),
+        RoleOnDisk::Side => Role::Side,
+        RoleOnDisk::NewEdge => Role::NewEdge,
+        RoleOnDisk::RevolvedFace => Role::RevolvedFace,
+        RoleOnDisk::AxisFace => Role::AxisFace,
+        RoleOnDisk::SweptFace => Role::SweptFace,
+        RoleOnDisk::LoftedFace => Role::LoftedFace,
+        RoleOnDisk::MidSurfaceFace => Role::MidSurfaceFace,
+        RoleOnDisk::MidSurfaceEdge => Role::MidSurfaceEdge,
+    }
+}
+
+fn topology_attribute_to_disk(t: &TopologyAttribute) -> TopologyAttributeOnDisk {
+    TopologyAttributeOnDisk {
+        feature_id: t.feature_id.to_string(),
+        role: role_to_disk(t.role),
+        local_index: t.local_index,
+        user_label: t.user_label.clone(),
+        mod_history: t
+            .mod_history
+            .iter()
+            .map(|m| ModEntryOnDisk {
+                splitting_feature_id: m.splitting_feature_id.to_string(),
+                split_index: m.split_index,
+            })
+            .collect(),
+    }
+}
+
+fn topology_attribute_from_disk(t: &TopologyAttributeOnDisk) -> TopologyAttribute {
+    TopologyAttribute {
+        feature_id: FeatureId::new(t.feature_id.clone()),
+        role: role_from_disk(&t.role),
+        local_index: t.local_index,
+        user_label: t.user_label.clone(),
+        mod_history: t
+            .mod_history
+            .iter()
+            .map(|m| ModEntry {
+                splitting_feature_id: FeatureId::new(m.splitting_feature_id.clone()),
+                split_index: m.split_index,
+            })
+            .collect(),
+    }
+}
+
+fn diagnostic_to_disk(d: &Diagnostic) -> DiagnosticOnDisk {
+    DiagnosticOnDisk {
+        severity: severity_to_u8(d.severity),
+        message: d.message.clone(),
+        labels: d
+            .labels
+            .iter()
+            .map(|l| DiagnosticLabelOnDisk {
+                span_start: l.span.start,
+                span_end: l.span.end,
+                message: l.message.clone(),
+            })
+            .collect(),
+        candidates: d.candidates.clone(),
+    }
+}
+
+fn diagnostic_from_disk(d: &DiagnosticOnDisk) -> io::Result<Diagnostic> {
+    let severity = severity_from_u8(d.severity)?;
+    let mut out = match severity {
+        Severity::Info => Diagnostic::info(d.message.clone()),
+        Severity::Warning => Diagnostic::warning(d.message.clone()),
+        Severity::Error => Diagnostic::error(d.message.clone()),
+    };
+    // `code` is documented-lossy → None (already None from Diagnostic::*
+    // builders). Field-mutation here keeps the wire-format restoration
+    // contained without exporting more builders from reify-types.
+    for ld in &d.labels {
+        out = out.with_label(DiagnosticLabel::new(
+            SourceSpan::new(ld.span_start, ld.span_end),
+            ld.message.clone(),
+        ));
+    }
+    out = out.with_candidates(d.candidates.clone());
+    Ok(out)
+}
+
+// ---- f64 / u32 / i32 slab read/write helpers ----
+//
+// Mirrors `write_f64_slab` / `read_f64_slab` at `persistent_cache.rs:492 /
+// :542`. On LE hosts a zero-copy `bytemuck::cast_slice` reinterprets the
+// typed slice as `&[u8]` without copying; on BE hosts a manual per-element
+// byte-swap path. Empty input produces zero bytes. On-disk format is
+// unconditionally LE regardless of host byte order.
+
+fn write_f64_slab<W: Write>(w: &mut W, slab: &[f64]) -> io::Result<()> {
+    #[cfg(target_endian = "little")]
+    {
+        w.write_all(bytemuck::cast_slice::<f64, u8>(slab))
+    }
+    #[cfg(target_endian = "big")]
+    {
+        let byte_count = slab.len() * 8;
+        let mut buf: Vec<u8> = Vec::new();
+        buf.try_reserve_exact(byte_count).map_err(io::Error::other)?;
+        for v in slab {
+            buf.extend_from_slice(&v.to_le_bytes());
+        }
+        w.write_all(&buf)
+    }
+}
+
+fn read_f64_slab<R: Read>(r: &mut R, len: usize) -> io::Result<Vec<f64>> {
+    let mut vec: Vec<f64> = Vec::new();
+    vec.try_reserve_exact(len).map_err(io::Error::other)?;
+    #[cfg(target_endian = "little")]
+    {
+        let spare = vec.spare_capacity_mut();
+        // SAFETY: MaybeUninit<f64> has the same size (8 bytes) and no
+        // stricter alignment than u8; from_raw_parts_mut covers the same
+        // memory region; u8 has no validity invariants so &mut [u8] on
+        // uninit memory is sound; read_exact overwrites every byte.
+        let byte_slice: &mut [u8] =
+            unsafe { std::slice::from_raw_parts_mut(spare.as_mut_ptr() as *mut u8, len * 8) };
+        r.read_exact(byte_slice)?;
+        // SAFETY: capacity >= len; all len*8 bytes initialised by
+        // read_exact; f64 is Pod so any bit pattern is valid.
+        unsafe {
+            vec.set_len(len);
+        }
+    }
+    #[cfg(target_endian = "big")]
+    {
+        let bytes = len
+            .checked_mul(8)
+            .ok_or_else(|| io::Error::other("BE read: f64 slab byte size overflow"))?;
+        let mut byte_buf: Vec<u8> = Vec::new();
+        byte_buf.try_reserve_exact(bytes).map_err(io::Error::other)?;
+        byte_buf.resize(bytes, 0u8);
+        r.read_exact(&mut byte_buf)?;
+        for chunk in byte_buf.chunks_exact(8) {
+            vec.push(f64::from_le_bytes(
+                chunk.try_into().expect("chunks_exact(8) yields 8-byte slices"),
+            ));
+        }
+    }
+    Ok(vec)
+}
+
+fn write_u32_slab<W: Write>(w: &mut W, slab: &[u32]) -> io::Result<()> {
+    #[cfg(target_endian = "little")]
+    {
+        w.write_all(bytemuck::cast_slice::<u32, u8>(slab))
+    }
+    #[cfg(target_endian = "big")]
+    {
+        let byte_count = slab.len() * 4;
+        let mut buf: Vec<u8> = Vec::new();
+        buf.try_reserve_exact(byte_count).map_err(io::Error::other)?;
+        for v in slab {
+            buf.extend_from_slice(&v.to_le_bytes());
+        }
+        w.write_all(&buf)
+    }
+}
+
+fn read_u32_slab<R: Read>(r: &mut R, len: usize) -> io::Result<Vec<u32>> {
+    let mut vec: Vec<u32> = Vec::new();
+    vec.try_reserve_exact(len).map_err(io::Error::other)?;
+    #[cfg(target_endian = "little")]
+    {
+        let spare = vec.spare_capacity_mut();
+        // SAFETY: see read_f64_slab; u32 is Pod, 4-byte aligned ≥ u8.
+        let byte_slice: &mut [u8] =
+            unsafe { std::slice::from_raw_parts_mut(spare.as_mut_ptr() as *mut u8, len * 4) };
+        r.read_exact(byte_slice)?;
+        // SAFETY: see read_f64_slab.
+        unsafe {
+            vec.set_len(len);
+        }
+    }
+    #[cfg(target_endian = "big")]
+    {
+        let bytes = len
+            .checked_mul(4)
+            .ok_or_else(|| io::Error::other("BE read: u32 slab byte size overflow"))?;
+        let mut byte_buf: Vec<u8> = Vec::new();
+        byte_buf.try_reserve_exact(bytes).map_err(io::Error::other)?;
+        byte_buf.resize(bytes, 0u8);
+        r.read_exact(&mut byte_buf)?;
+        for chunk in byte_buf.chunks_exact(4) {
+            vec.push(u32::from_le_bytes(
+                chunk.try_into().expect("chunks_exact(4) yields 4-byte slices"),
+            ));
+        }
+    }
+    Ok(vec)
+}
+
+/// `[u32; 3]` is Pod, so vertices/triangles flatten via bytemuck on LE.
+fn write_u32x3_slab<W: Write>(w: &mut W, slab: &[[u32; 3]]) -> io::Result<()> {
+    #[cfg(target_endian = "little")]
+    {
+        w.write_all(bytemuck::cast_slice::<[u32; 3], u8>(slab))
+    }
+    #[cfg(target_endian = "big")]
+    {
+        let byte_count = slab.len() * 12;
+        let mut buf: Vec<u8> = Vec::new();
+        buf.try_reserve_exact(byte_count).map_err(io::Error::other)?;
+        for v in slab {
+            buf.extend_from_slice(&v[0].to_le_bytes());
+            buf.extend_from_slice(&v[1].to_le_bytes());
+            buf.extend_from_slice(&v[2].to_le_bytes());
+        }
+        w.write_all(&buf)
+    }
+}
+
+fn read_u32x3_slab<R: Read>(r: &mut R, len: usize) -> io::Result<Vec<[u32; 3]>> {
+    let mut vec: Vec<[u32; 3]> = Vec::new();
+    vec.try_reserve_exact(len).map_err(io::Error::other)?;
+    #[cfg(target_endian = "little")]
+    {
+        let spare = vec.spare_capacity_mut();
+        // SAFETY: [u32;3] is Pod (12 bytes, 4-byte aligned); see read_f64_slab.
+        let byte_slice: &mut [u8] =
+            unsafe { std::slice::from_raw_parts_mut(spare.as_mut_ptr() as *mut u8, len * 12) };
+        r.read_exact(byte_slice)?;
+        // SAFETY: see read_f64_slab.
+        unsafe {
+            vec.set_len(len);
+        }
+    }
+    #[cfg(target_endian = "big")]
+    {
+        let bytes = len
+            .checked_mul(12)
+            .ok_or_else(|| io::Error::other("BE read: [u32;3] slab byte size overflow"))?;
+        let mut byte_buf: Vec<u8> = Vec::new();
+        byte_buf.try_reserve_exact(bytes).map_err(io::Error::other)?;
+        byte_buf.resize(bytes, 0u8);
+        r.read_exact(&mut byte_buf)?;
+        for chunk in byte_buf.chunks_exact(12) {
+            let a = u32::from_le_bytes(chunk[0..4].try_into().unwrap());
+            let b = u32::from_le_bytes(chunk[4..8].try_into().unwrap());
+            let c = u32::from_le_bytes(chunk[8..12].try_into().unwrap());
+            vec.push([a, b, c]);
+        }
+    }
+    Ok(vec)
+}
+
+fn write_f64x3_slab<W: Write>(w: &mut W, slab: &[[f64; 3]]) -> io::Result<()> {
+    #[cfg(target_endian = "little")]
+    {
+        w.write_all(bytemuck::cast_slice::<[f64; 3], u8>(slab))
+    }
+    #[cfg(target_endian = "big")]
+    {
+        let byte_count = slab.len() * 24;
+        let mut buf: Vec<u8> = Vec::new();
+        buf.try_reserve_exact(byte_count).map_err(io::Error::other)?;
+        for v in slab {
+            buf.extend_from_slice(&v[0].to_le_bytes());
+            buf.extend_from_slice(&v[1].to_le_bytes());
+            buf.extend_from_slice(&v[2].to_le_bytes());
+        }
+        w.write_all(&buf)
+    }
+}
+
+fn read_f64x3_slab<R: Read>(r: &mut R, len: usize) -> io::Result<Vec<[f64; 3]>> {
+    let mut vec: Vec<[f64; 3]> = Vec::new();
+    vec.try_reserve_exact(len).map_err(io::Error::other)?;
+    #[cfg(target_endian = "little")]
+    {
+        let spare = vec.spare_capacity_mut();
+        // SAFETY: [f64;3] is Pod (24 bytes, 8-byte aligned); see read_f64_slab.
+        let byte_slice: &mut [u8] =
+            unsafe { std::slice::from_raw_parts_mut(spare.as_mut_ptr() as *mut u8, len * 24) };
+        r.read_exact(byte_slice)?;
+        // SAFETY: see read_f64_slab.
+        unsafe {
+            vec.set_len(len);
+        }
+    }
+    #[cfg(target_endian = "big")]
+    {
+        let bytes = len
+            .checked_mul(24)
+            .ok_or_else(|| io::Error::other("BE read: [f64;3] slab byte size overflow"))?;
+        let mut byte_buf: Vec<u8> = Vec::new();
+        byte_buf.try_reserve_exact(bytes).map_err(io::Error::other)?;
+        byte_buf.resize(bytes, 0u8);
+        r.read_exact(&mut byte_buf)?;
+        for chunk in byte_buf.chunks_exact(24) {
+            let a = f64::from_le_bytes(chunk[0..8].try_into().unwrap());
+            let b = f64::from_le_bytes(chunk[8..16].try_into().unwrap());
+            let c = f64::from_le_bytes(chunk[16..24].try_into().unwrap());
+            vec.push([a, b, c]);
+        }
+    }
+    Ok(vec)
+}
+
+fn write_i32x3_slab<W: Write>(w: &mut W, slab: &[[i32; 3]]) -> io::Result<()> {
+    #[cfg(target_endian = "little")]
+    {
+        w.write_all(bytemuck::cast_slice::<[i32; 3], u8>(slab))
+    }
+    #[cfg(target_endian = "big")]
+    {
+        let byte_count = slab.len() * 12;
+        let mut buf: Vec<u8> = Vec::new();
+        buf.try_reserve_exact(byte_count).map_err(io::Error::other)?;
+        for v in slab {
+            buf.extend_from_slice(&v[0].to_le_bytes());
+            buf.extend_from_slice(&v[1].to_le_bytes());
+            buf.extend_from_slice(&v[2].to_le_bytes());
+        }
+        w.write_all(&buf)
+    }
+}
+
+fn read_i32x3_slab<R: Read>(r: &mut R, len: usize) -> io::Result<Vec<[i32; 3]>> {
+    let mut vec: Vec<[i32; 3]> = Vec::new();
+    vec.try_reserve_exact(len).map_err(io::Error::other)?;
+    #[cfg(target_endian = "little")]
+    {
+        let spare = vec.spare_capacity_mut();
+        // SAFETY: [i32;3] is Pod (12 bytes, 4-byte aligned); see read_f64_slab.
+        let byte_slice: &mut [u8] =
+            unsafe { std::slice::from_raw_parts_mut(spare.as_mut_ptr() as *mut u8, len * 12) };
+        r.read_exact(byte_slice)?;
+        // SAFETY: see read_f64_slab.
+        unsafe {
+            vec.set_len(len);
+        }
+    }
+    #[cfg(target_endian = "big")]
+    {
+        let bytes = len
+            .checked_mul(12)
+            .ok_or_else(|| io::Error::other("BE read: [i32;3] slab byte size overflow"))?;
+        let mut byte_buf: Vec<u8> = Vec::new();
+        byte_buf.try_reserve_exact(bytes).map_err(io::Error::other)?;
+        byte_buf.resize(bytes, 0u8);
+        r.read_exact(&mut byte_buf)?;
+        for chunk in byte_buf.chunks_exact(12) {
+            let a = i32::from_le_bytes(chunk[0..4].try_into().unwrap());
+            let b = i32::from_le_bytes(chunk[4..8].try_into().unwrap());
+            let c = i32::from_le_bytes(chunk[8..12].try_into().unwrap());
+            vec.push([a, b, c]);
+        }
+    }
+    Ok(vec)
+}
+
 // Compile-time assertion that `ShellExtractionResult: PersistentlyCacheable`.
 // Lives at module scope (outside `#[cfg(test)]`) so the trait-bound is
 // enforced on every build, not only when `cargo test` links. Mirrors
@@ -158,12 +748,221 @@ const _: fn() = || {
 impl reify_eval::persistent_cache::PersistentlyCacheable for ShellExtractionResult {
     const FORMAT_VERSION: u32 = 1;
 
-    fn serialize_to_writer(&self, _w: &mut impl std::io::Write) -> std::io::Result<()> {
-        unimplemented!("step-6 wires this up")
+    /// Encoding pipeline mirrors `ElasticResult::serialize_to_writer` at
+    /// `crates/reify-eval/src/persistent_cache.rs:700`:
+    ///
+    /// 1. `zstd::Encoder::new(w, 0)` — level 0 selects zstd's default level
+    ///    (3 in zstd 0.13), which is byte-deterministic for identical input.
+    ///    Single-threaded only — `Encoder::multithread()` would break
+    ///    byte-determinism. Pinned by
+    ///    `shell_extraction_result_serialization_is_byte_deterministic`
+    ///    (step-7).
+    /// 2. `bincode::serialize_into` (bincode 1.3 fixint-LE) for the
+    ///    `ShellExtractionResultHeader`. `f64` metric fields are stored as
+    ///    `u64` bit patterns so NaN payloads / signed zeros / `INFINITY`
+    ///    survive — pinned by
+    ///    `shell_extraction_result_serialize_deserialize_round_trip_preserves_all_buffers_bit_exact`
+    ///    (step-5).
+    /// 3. Raw little-endian slabs in fixed order: vertices, triangles,
+    ///    thickness, vertex_labels, triangle_labels, per-region voxels.
+    ///    On LE hosts the slabs go via `bytemuck::cast_slice` (zero-copy);
+    ///    on BE hosts a per-element `to_le_bytes()` fallback. See
+    ///    `write_f64x3_slab` etc. for the byte-order contract.
+    ///
+    /// Bumping `bincode` past `=1.3` or `zstd` past `0.13` must be paired
+    /// with a `FORMAT_VERSION` bump in the same commit, mirroring
+    /// `ELASTIC_RESULT_FORMAT_VERSION` (`persistent_cache.rs:296-313`).
+    fn serialize_to_writer(&self, w: &mut impl Write) -> io::Result<()> {
+        let mut encoder = zstd::Encoder::new(w, 0)?;
+
+        let header = ShellExtractionResultHeader {
+            solve_time_ms: self.solve_time_ms,
+            vertices_len: self.mid_surface.vertices.len() as u64,
+            triangles_len: self.mid_surface.triangles.len() as u64,
+            thickness_len: self.mid_surface.thickness.len() as u64,
+            vertex_labels_len: self.segmentation.vertex_labels.len() as u64,
+            triangle_labels_len: self.segmentation.triangle_labels.len() as u64,
+            regions: self
+                .segmentation
+                .regions
+                .iter()
+                .map(|r| RegionInfoOnDisk {
+                    label: r.label,
+                    voxels_len: r.voxels.len() as u64,
+                    mean_thickness_bits: r.mean_thickness.to_bits(),
+                    extent_bits: r.extent.to_bits(),
+                    thickness_extent_ratio_bits: r.thickness_extent_ratio.to_bits(),
+                    classification: classification_to_u8(r.classification),
+                })
+                .collect(),
+            naming: MidSurfaceAttributesOnDisk {
+                face_records: self
+                    .naming
+                    .face_records
+                    .iter()
+                    .map(topology_attribute_to_disk)
+                    .collect(),
+                edges: self
+                    .naming
+                    .edges
+                    .iter()
+                    .map(|e| MidSurfaceEdgeRecordOnDisk {
+                        attribute: topology_attribute_to_disk(&e.attribute),
+                        region_pair_a: e.region_pair.0,
+                        region_pair_b: e.region_pair.1,
+                    })
+                    .collect(),
+            },
+            diagnostics: self.diagnostics.iter().map(diagnostic_to_disk).collect(),
+        };
+        bincode::serialize_into(&mut encoder, &header).map_err(io::Error::other)?;
+
+        // Bulk slab writes in the fixed order pinned by the round-trip test.
+        write_f64x3_slab(&mut encoder, &self.mid_surface.vertices)?;
+        write_u32x3_slab(&mut encoder, &self.mid_surface.triangles)?;
+        write_f64_slab(&mut encoder, &self.mid_surface.thickness)?;
+        write_u32_slab(&mut encoder, &self.segmentation.vertex_labels)?;
+        write_u32_slab(&mut encoder, &self.segmentation.triangle_labels)?;
+        for region in &self.segmentation.regions {
+            write_i32x3_slab(&mut encoder, &region.voxels)?;
+        }
+
+        encoder.finish()?;
+        Ok(())
     }
 
-    fn deserialize_from_reader(_r: &mut impl std::io::Read) -> std::io::Result<Self> {
-        unimplemented!("step-6 wires this up")
+    /// Inverse of [`Self::serialize_to_writer`]. Error-propagation
+    /// discipline mirrors `ElasticResult::deserialize_from_reader` at
+    /// `persistent_cache.rs:730`:
+    ///   * `zstd::Decoder::new(r)?` — `zstd::Error: Into<io::Error>`.
+    ///   * `bincode::deserialize_from(...).map_err(io::Error::other)` —
+    ///     `bincode::Error` does NOT implement `Into<io::Error>`.
+    ///   * `check_len(...)` rejects oversize length-prefixes BEFORE any
+    ///     `Vec` reservation, defending against corrupted/tampered cache
+    ///     entries.
+    ///   * `read_exact` returns `Err(UnexpectedEof)` on a short slab,
+    ///     propagated via `?`.
+    fn deserialize_from_reader(r: &mut impl Read) -> io::Result<Self> {
+        let mut decoder = zstd::Decoder::new(r)?;
+        let header: ShellExtractionResultHeader =
+            bincode::deserialize_from(&mut decoder).map_err(io::Error::other)?;
+
+        // Bound length-prefix fields BEFORE allocating slabs. The
+        // bincode-managed Vecs (regions, naming.*, diagnostics, mod_history,
+        // labels, candidates) are already materialised by bincode at this
+        // point — bincode's varint/fixint length-prefix decoding errors out
+        // on UnexpectedEof if a corrupt header claims more bytes than the
+        // stream contains. The slab-length caps below provide additional
+        // defense for the bulk-allocation paths that follow.
+        let vertices_cap = check_len("vertices", header.vertices_len, MAX_VERTICES)?;
+        let triangles_cap = check_len("triangles", header.triangles_len, MAX_TRIANGLES)?;
+        let thickness_cap = check_len("thickness", header.thickness_len, MAX_F64_ELEMENTS)?;
+        let vertex_labels_cap =
+            check_len("vertex_labels", header.vertex_labels_len, MAX_U32_ELEMENTS)?;
+        let triangle_labels_cap = check_len(
+            "triangle_labels",
+            header.triangle_labels_len,
+            MAX_U32_ELEMENTS,
+        )?;
+
+        // Step-10 length-invariant check: enforce vertices.len() ==
+        // thickness.len() at the deserialization boundary. Mirrors the
+        // `ShellExtractionResult::new` check so a corrupted entry cannot
+        // produce an in-memory value that the constructor would have
+        // rejected. Pinned by
+        // `shell_extraction_result_deserialize_rejects_length_invariant_violation`
+        // (step-9 → step-10).
+        if header.vertices_len != header.thickness_len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "ShellExtractionResult length-invariant violation on cache read: \
+                     vertices_len {} != thickness_len {} (corrupted or tampered cache entry?)",
+                    header.vertices_len, header.thickness_len
+                ),
+            ));
+        }
+
+        // Pre-validate every per-region voxel slab cap before any slab read.
+        let mut per_region_voxel_caps: Vec<usize> = Vec::new();
+        per_region_voxel_caps
+            .try_reserve_exact(header.regions.len())
+            .map_err(io::Error::other)?;
+        for (i, ron) in header.regions.iter().enumerate() {
+            let cap = check_len(
+                &format!("regions[{i}].voxels"),
+                ron.voxels_len,
+                MAX_VOXELS_PER_REGION,
+            )?;
+            per_region_voxel_caps.push(cap);
+        }
+
+        // Bulk slab reads in the same fixed order as serialize_to_writer.
+        let vertices = read_f64x3_slab(&mut decoder, vertices_cap)?;
+        let triangles = read_u32x3_slab(&mut decoder, triangles_cap)?;
+        let thickness = read_f64_slab(&mut decoder, thickness_cap)?;
+        let vertex_labels = read_u32_slab(&mut decoder, vertex_labels_cap)?;
+        let triangle_labels = read_u32_slab(&mut decoder, triangle_labels_cap)?;
+
+        // Per-region voxel slabs + classification disambiguation.
+        let mut regions: Vec<RegionInfo> = Vec::new();
+        regions
+            .try_reserve_exact(header.regions.len())
+            .map_err(io::Error::other)?;
+        for (ron, voxel_cap) in header.regions.iter().zip(per_region_voxel_caps.iter()) {
+            let voxels = read_i32x3_slab(&mut decoder, *voxel_cap)?;
+            regions.push(RegionInfo {
+                label: ron.label,
+                voxels,
+                mean_thickness: f64::from_bits(ron.mean_thickness_bits),
+                extent: f64::from_bits(ron.extent_bits),
+                thickness_extent_ratio: f64::from_bits(ron.thickness_extent_ratio_bits),
+                classification: classification_from_u8(ron.classification)?,
+            });
+        }
+
+        // Reconstruct naming + diagnostics from the bincode-materialised
+        // wire-shape mirrors.
+        let naming = MidSurfaceAttributes {
+            face_records: header
+                .naming
+                .face_records
+                .iter()
+                .map(topology_attribute_from_disk)
+                .collect(),
+            edges: header
+                .naming
+                .edges
+                .iter()
+                .map(|eod| MidSurfaceEdgeRecord {
+                    attribute: topology_attribute_from_disk(&eod.attribute),
+                    region_pair: (eod.region_pair_a, eod.region_pair_b),
+                })
+                .collect(),
+        };
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        diagnostics
+            .try_reserve_exact(header.diagnostics.len())
+            .map_err(io::Error::other)?;
+        for d in &header.diagnostics {
+            diagnostics.push(diagnostic_from_disk(d)?);
+        }
+
+        Ok(ShellExtractionResult {
+            mid_surface: MidSurfaceMesh {
+                vertices,
+                triangles,
+                thickness,
+            },
+            segmentation: SegmentationResult {
+                regions,
+                vertex_labels,
+                triangle_labels,
+            },
+            naming,
+            solve_time_ms: header.solve_time_ms,
+            diagnostics,
+        })
     }
 
     fn uncompressed_byte_size(&self) -> u64 {
@@ -382,11 +1181,10 @@ mod tests {
     }
 
     // ---- step-5 round-trip pins ----
-
-    use crate::mid_surface_naming::MidSurfaceEdgeRecord;
-    use crate::segmentation::{RegionClassification, RegionInfo};
-    use reify_types::diagnostics::{Diagnostic, DiagnosticLabel, Severity, SourceSpan};
-    use reify_types::geometry::{CapKind, FeatureId, ModEntry, Role, TopologyAttribute};
+    // Diagnostic / DiagnosticLabel / SourceSpan / FeatureId / Role / etc.
+    // are already pulled in via `super::*`; only re-import the items not
+    // re-exported by super.
+    use reify_types::geometry::{CapKind, ModEntry};
 
     /// Build a non-trivial `ShellExtractionResult` exercising every wire-format
     /// path: special-value f64 components (NaN / ±Inf / -0.0), non-empty u32
