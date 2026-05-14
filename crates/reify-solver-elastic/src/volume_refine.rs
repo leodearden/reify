@@ -118,10 +118,10 @@ impl std::error::Error for RefineError {
 /// finding (option (a)) chose visibility narrowing over a `Result`-typed
 /// length check; the up-front check in `refine_with_size_field` already
 /// covers the validation duty for in-tree callers.
-// G-allow: at time of writing, consumed by same-file caller
-// `refine_with_size_field` (line ~199). The G-tool heuristic treats
-// same-file callers as "no external consumer" and reports this helper as
-// an orphan; the real call site is live.
+// At time of writing, consumed by same-file caller `refine_with_size_field`
+// (~line 199). The G-tool flags same-file callers as orphans; the call
+// site is live.
+// G-allow: same-file consumer `refine_with_size_field` (G-tool same-file-caller heuristic limitation).
 pub(crate) fn project_per_element_sizes_to_vertices(
     volume_mesh: &VolumeMesh,
     per_element_sizes: &[f64],
@@ -170,6 +170,14 @@ pub(crate) fn project_per_element_sizes_to_vertices(
 /// `size_hints.len() != element_count`, `RefineError::NonFiniteSize` on NaN
 /// or ±∞, `RefineError::NonPositiveSize` on `<= 0`, or kernel errors on
 /// Gmsh failures.
+// At time of writing, the intended production consumer is pending task
+// #2997 (a-posteriori-error-estimation PRD #2 — "Refinement loop control
+// + budget enforcement"). 2997's details reference calling this function
+// as "task A4" (the Gmsh size-field driver). This function is task #2999
+// (done); it landed ahead of its caller. Once 2997 lands the adaptive
+// refinement loop in `reify-solver-elastic::adaptive`, verify a non-test
+// caller of `refine_with_size_field` exists and this marker comes off.
+// G-allow: producer for pending task #2997 (a-posteriori-error-estimation PRD #2: adaptive refinement loop).
 pub fn refine_with_size_field(
     surface: &Mesh,
     volume_mesh: &VolumeMesh,
