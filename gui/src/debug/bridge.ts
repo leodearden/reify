@@ -12,6 +12,9 @@ import { testMode, setTestMode } from './testMode';
 import { toPng } from 'html-to-image';
 
 // Reject oversize payloads before they hit the Tauri IPC channel.
+// 16 MB ceiling is empirical: html-to-image silently truncates output above the
+// ~16 MB SVG foreignObject XML limit, and payloads beyond this also risk crashing
+// the Tauri WebView IPC channel (observed in task-3634 / commit 412aa4b8bd).
 // ascii base64 data URLs are 1 char ≈ 1 byte, so string length is a valid proxy.
 const MAX_SCREENSHOT_CHARS = 16 * 1024 * 1024;
 
