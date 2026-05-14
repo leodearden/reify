@@ -23,15 +23,15 @@ For the naming/payload convention governing new entries see §3 of the source PR
 | `focus-entity` | `String` (entity_path) | `focus_entity` command + MCP `focus_entity` tool | `onFocusEntity` | Bidirectional (UI ↔ MCP) |
 | `navigate-to-source` | `{file, line, column, end_line, end_column}` | MCP `navigate_to_source` tool | `onNavigateToSource` | MCP-driven |
 | `serialization-error` | `SerializationError` | `diff.rs::push_serialized_event` | `onSerializationError` | Replaces a payload that failed to serialize |
-| `claude-text-delta` | `{id, content}` | `claude_bridge.rs::spawn_sidecar_impl` | `subscribeToClaudeEvents` | Sidecar message stream |
-| `claude-thinking-delta` | `{id, content}` | same | same | |
-| `claude-tool-call` | `{id, tool_use_id, tool_name, tool_input}` | same | same | |
-| `claude-tool-result` | `{id, tool_name, result}` | same | same | |
-| `claude-done` | `{id}` | same | same | |
-| `claude-error` | `{id, message}` | same | same | |
-| `claude-notice` | `{id, code, message}` | same | same | |
-| `claude-ready` | `()` | same | same | |
-| `claude-permission-request` | `{id, request_id, tool_name, tool_input}` | same | same | |
+| `claude-text-delta` | `{id, content}` | `claude_bridge.rs::outbound_to_event` | `subscribeToClaudeEvents` | Channel name constructed at `claude_bridge.rs::outbound_to_event` (lines 1096, 1100, …); emitted at dynamic `app.emit(&event_name, …)` closure site in `main.rs` (line 438) — closure passed as `event_emitter` arg to `spawn_sidecar_impl`. Literal-string grep lands in `claude_bridge.rs`; `app.emit(…)` grep lands in `main.rs`. |
+| `claude-thinking-delta` | `{id, content}` | same | same | same |
+| `claude-tool-call` | `{id, tool_use_id, tool_name, tool_input}` | same | same | same |
+| `claude-tool-result` | `{id, tool_name, result}` | same | same | same |
+| `claude-done` | `{id}` | same | same | same |
+| `claude-error` | `{id, message}` | same | same | same |
+| `claude-notice` | `{id, code, message}` | same | same | same |
+| `claude-ready` | `()` | same | same | same |
+| `claude-permission-request` | `{id, request_id, tool_name, tool_input}` | same | same | same |
 | `claude-sidecar-crashed` | `{reason: String}` | `claude_bridge.rs` `on_exit` hook | `subscribeToSidecarCrashed` | |
 | `debug-request` | (variant; see `debug.rs`) | `debug.rs::emit` | `gui/src` debug-bridge | REIFY_DEBUG=1 only; internal Tauri-event-routed RPC pattern |
 
