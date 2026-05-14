@@ -766,6 +766,16 @@ Per-node policy overrides via dedicated UI widget:
 
 Overrides are settable per node instance or per node type.
 
+**Precedence chain (per `docs/prds/v0_3/node-traits-unification.md` §6).** `NodePolicyOverrides` composes ABOVE kind-derived defaults. Effective policy is resolved in this order:
+
+1. per-instance override (`NodePolicyOverrides::set_instance`)
+2. per-type override (`NodePolicyOverrides::set_type`)
+3. config-file override — `reify.toml [node_overrides]` (GR-007)
+4. kind+traits-derived default — `default_overrides(NodeKind, NodeTraits)` (bridge B3)
+5. hard default — `CommitIfSlow`
+
+Levels 1–2 are the per-instance / per-type widget; levels 3–4 add reify.toml ingestion and architecture-derived defaults so policy is always defined even when nothing is overridden.
+
 ### 7.4 Staleness Detection
 
 Uses persistent data structure structural sharing: if the subtree providing a node's input dependencies is the same structure (shared trie nodes) in the basis and current snapshot, the result is not stale. If subtrees differ, the result is stale. **No explicit diffing against dependency traces is needed** -- the immutable snapshot infrastructure provides this check for free.
@@ -798,6 +808,8 @@ Cooperative cancellation via tokens. Long-running computations check the token a
 | P1-slow | Cancelled if dirty cone includes this node; otherwise completes |
 | P3 (speculative) | Cancelled immediately when new snapshot arrives |
 
+The `IMMEDIATE → P0Interactive/P1Fast → never-cancelled` chain is now code-enforced (no longer doc-only) via bridge **B4** of `docs/prds/v0_3/node-traits-unification.md` §5: `CommitmentTracker::should_continue` returns `true` unconditionally when the effective `Priority` is `P0Interactive` or `P1Fast`, regardless of dirty-cone state. The trait-to-priority half of the chain is bridge B2 (`traits_to_priority`).
+
 Resolution and cancellation: a resolver mid-iteration is cancelled only if the edit changes a parameter within the resolver's scope.
 
 ### 7.6 Node Traits
@@ -814,6 +826,21 @@ Nodes carry declarative traits informing the scheduler and UI. Compose orthogona
 Traits are composable. Example: an FEA solver node might be `warm_startable + progressive + committable`.
 
 Traits inform priority assignment but do not replace it. Traits are static declarations on the node type; priority is a dynamic scheduling-time assignment.
+
+### 7.6.1 Trait/Policy Bridges (GR-038)
+
+Traits and per-instance policy are bridged to the scheduler by five named functions specified in `docs/prds/v0_3/node-traits-unification.md` §5. The canonical kind enum is `NodeKind` (mirrors `NodeId`'s 5 variants: `Value`, `Constraint`, `Realization`, `Resolution`, `Compute`); `default_traits` is keyed on `NodeKind` (the earlier `NodeArchKind`/`default_traits(NodeArchKind)` surface from `node-trait-composition.md` is retired under GR-038 direction C′).
+
+| Bridge | Symbol | Role |
+|---|---|---|
+| B1 | `NodeTraitsMap` (per-`NodeId` map with `set_instance` / `set_type` / kind-default fallback) | Resolves effective `NodeTraits` for a given `NodeId` along the precedence chain. |
+| B2 | `traits_to_priority(NodeTraits) -> Priority` | Maps trait set to scheduling priority (`IMMEDIATE → P1Fast`, `COMMITTABLE → P1Slow`, else `P3Speculative`). |
+| B3 | `default_overrides(NodeKind, NodeTraits) -> NodeCommitmentOverride` | Kind+traits-derived policy default (precedence level 4 of §7.3); encodes "absent `COMMITTABLE` → always cancellable" from the §7.6 table. |
+| B4 | `CommitmentTracker::should_continue` `P0Interactive`/`P1Fast` early-return | Enforces §7.5 "P0/P1-fast never cancelled" as code. |
+| B5 | `WarmStartableRegistry` + scheduler-init coextension assert | Debug-build invariant: `WARM_STARTABLE` declaration ↔ registered `WarmStartable` impl. |
+| B6 | `CacheStore::write_intermediate` PROGRESSIVE invariant guard | Debug-build invariant: only `PROGRESSIVE`-tagged nodes write `Freshness::Intermediate`; emits `W_PROGRESSIVE_INVARIANT_VIOLATED` diagnostic in release. |
+
+The trait resolution chain (per `NodeId`) is `instance > type > kind-default`; the policy chain is the 5-level chain enumerated in §7.3. The two chains run in parallel and do not interact except through B3, which reads the resolved trait set when computing the kind-derived policy default.
 
 ---
 

@@ -65,9 +65,11 @@ pub struct WarmStatePool {
     /// - **Release builds**: the oldest half of the buffer is auto-trimmed and
     ///   a single `tracing::warn!` is emitted per pool instance.
     ///
-    /// TODO(task-2345): verify engine wires `drain_events()` at every eval
-    /// boundary and add an integration test asserting the buffer stays near-empty
-    /// in steady state.
+    /// TODO(task-3582): wire `drain_events()` at the engine's eval boundary
+    /// and add an integration test asserting the buffer stays near-empty in
+    /// steady state. Task 2345 closed (done) without doing this wiring;
+    /// G-tool baseline cluster C-43 still flags `drain_events` as having
+    /// zero non-test callers. Task 3582 now tracks the work.
     events: Vec<WarmPoolEvent>,
     /// Guards the once-per-pool-instance `tracing::warn!` emitted when the
     /// events buffer overflows and is auto-trimmed in release builds.

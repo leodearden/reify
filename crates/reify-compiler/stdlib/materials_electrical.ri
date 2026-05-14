@@ -4,7 +4,7 @@
 // system extensions in a future task.
 //
 // Spec reference: docs/reify-stdlib-reference.md §6.4 lines 696-711.
-// Audit reference: docs/notes/stdlib-trait-audit.md §6.4 (all traits marked MISSING).
+// Audit reference: docs/notes/stdlib-trait-breadth-audit-v01.md §6.4 (CLOSED via task 2354).
 //
 // ── Decision #1: Real placeholder for dimensioned params ─────────────────────
 // Real-placeholder audit: see docs/notes/stdlib-real-placeholder-audit.md

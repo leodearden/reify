@@ -46,7 +46,12 @@ export function createScene(
   camera.position.set(5, 5, 5);
 
   // Renderer
-  const renderer = new WebGLRenderer({ antialias: true, canvas });
+  // preserveDrawingBuffer: html-to-image samples the canvas async after compositing;
+  // without this the browser may invalidate the GL back-buffer between render() and read.
+  // Accepted trade-off: small steady-state GPU fill-rate overhead (extra back-buffer copy) is
+  // preferable to the complexity of toggling the flag per-session (context-creation attribute,
+  // not a runtime toggle). The overhead is negligible for Reify's scene complexity.
+  const renderer = new WebGLRenderer({ antialias: true, canvas, preserveDrawingBuffer: true });
   renderer.setPixelRatio(window.devicePixelRatio ?? 1);
   renderer.setSize(width, height);
   renderer.setClearColor(new Color(THEME_TOKENS.viewportBg), 1);

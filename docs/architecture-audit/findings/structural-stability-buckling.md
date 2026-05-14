@@ -20,7 +20,7 @@
 
 - **State:** FICTION
 - **Failure mode:** F1 (compile-time contract → no runtime backing)
-- **Evidence:** No `fn solve_buckling` in any `.ri` under `crates/reify-compiler/stdlib/`. No grep hit for `solve_buckling` anywhere in the repo. PRD is the sole reference. Sibling `fn solve_elastic_static` is itself FICTION (task 3378 deferred; see `findings/structural-analysis-fea.md` M-001).
+- **Evidence:** No `fn solve_buckling` in any `.ri` under `crates/reify-compiler/stdlib/`. No grep hit for `solve_buckling` anywhere in the repo. PRD is the sole reference. Sibling `fn solve_elastic_static` is itself FICTION (task 3426 pending; see `findings/structural-analysis-fea.md` M-001).
 - **Blocks:** All downstream buckling mechanisms; transitively all PRD use cases.
 - **Note:** Identical shape to the FEA M-001 gap — same surface-absent failure. No task has been filed for the stdlib declaration. Decomposition for this PRD has not been performed; per `docs/architecture-audit/README.md` it is deferred to v0.5+.
 

@@ -2,13 +2,7 @@
 # Setup development dependencies for reify.
 # Idempotent — safe to re-run; skips already-installed components.
 #
-# Usage: ./scripts/setup-dev.sh [--with-orchestrator-hooks]
-#
-# Flags:
-#   --with-orchestrator-hooks   Configure git core.hooksPath -> hooks/.
-#                               Only needed if you run the dark-factory
-#                               orchestrator against this repo. Off by default
-#                               so alpha testers don't get tasks.json hooks.
+# Usage: ./scripts/setup-dev.sh
 set -euo pipefail
 
 info()  { printf '\033[1;34m[info]\033[0m  %s\n' "$*"; }
@@ -16,12 +10,10 @@ ok()    { printf '\033[1;32m[ok]\033[0m    %s\n' "$*"; }
 warn()  { printf '\033[1;33m[warn]\033[0m  %s\n' "$*"; }
 err()   { printf '\033[1;31m[error]\033[0m %s\n' "$*"; }
 
-with_orchestrator_hooks=false
 for arg in "$@"; do
     case "$arg" in
-        --with-orchestrator-hooks) with_orchestrator_hooks=true ;;
         -h|--help)
-            sed -n '2,11p' "$0"
+            sed -n '2,5p' "$0"
             exit 0
             ;;
         *)
@@ -81,21 +73,6 @@ else
     info "Installing clippy..."
     rustup component add clippy
     ok "clippy installed"
-fi
-
-# ---------- Git hooks (core.hooksPath) ----------
-#
-# The hooks/ directory contains orchestrator-specific automation
-# (tasks.json normalizer, etc.) that's only relevant to dark-factory
-# users. Off by default so alpha testers don't get surprised by hooks
-# requiring tools they don't have. Pass --with-orchestrator-hooks to opt in.
-
-if $with_orchestrator_hooks; then
-    info "Configuring git core.hooksPath → hooks/ (orchestrator hooks enabled)"
-    git config core.hooksPath hooks
-    ok "git hooks path configured"
-else
-    info "Skipping git core.hooksPath (use --with-orchestrator-hooks to enable)"
 fi
 
 # ---------- System packages (apt) ----------

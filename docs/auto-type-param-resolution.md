@@ -1,7 +1,7 @@
 # How `auto` Type-Parameter Resolution Works
 
 **Applies to:** Reify v0.1
-**Status:** Implemented
+**Status:** Library shipped; end-to-end surface gated on B1 grammar chain — see [Known gaps](#known-gaps)
 **Audience:** Language users and compiler contributors who need to understand how `Bearing<auto: Seal>` is resolved.
 **Not a PRD:** For the design rationale and acceptance criteria see `docs/prds/auto-type-param-resolution.md`.
 
@@ -145,6 +145,56 @@ existing "rejected because" reasons, deterministic lexicographic-first selection
 The v0.1 failure mode is graceful: the diagnostic lists candidates and rejection
 reasons so the user can see what went wrong and either constrain further or write
 the type explicitly.
+
+---
+
+## Known gaps
+
+The sections above describe the algorithm as designed. Several parts of the end-to-end
+surface are **not yet reachable from `.ri` source** due to pending B1-chain work. The
+gaps below are distinct from the v0.2 deferral above (cross-parameter backtracking is a
+narrower algorithmic extension; these are v0.1-surface gaps where the grammar or
+pipeline plumbing is not yet wired).
+
+1. **Parser-side `auto:` grammar — gated on task 3526.** `tree-sitter-reify/grammar.js`
+   `type_arg_list` (lines 606–610) accepts only `type_expr | number_literal`; no
+   `auto_type_arg` alternative exists. `Bearing<auto: Seal>` does not parse from `.ri`
+   source today. (Findings M-010.)
+
+2. **Compile-pipeline call-site — gated on task 3558.** `resolve_auto_type_params` has
+   zero non-test callers across the workspace; `CompiledModule.auto_type_substitution`
+   is default-initialised in `compile_builder/{ctx.rs, defs_phase.rs}` and never written
+   by production code. The producer side of the substitution pipeline is dark.
+   (Findings M-009.)
+
+3. **End-to-end fixture + LSP hover surface — gated on task 3559.** Determinism and LSP
+   hover leaves depend on 3526 + 3558 landing first. The LSP conversion layer is wired
+   but unreachable until the pipeline is live. (Findings M-016, M-015.)
+
+4. **Phase B type-substitution mechanics — code-documented TODO, no v0.1 task owner.**
+   `auto_type_param.rs:32–35, 84–86, 766–769` document that substituting
+   `Type::TypeParam(T) → Type::StructureRef(candidate)` into Phase B's `ValueMap` is
+   deferred. Phase B today returns the same feasibility verdict for every candidate;
+   candidate identity does not yet affect feasibility outcomes. The Phase B description
+   above is the target behaviour, not the current behaviour. (Findings M-013.)
+
+5. **Kind-bound `auto: Nat` (PRD criterion 8) — neither implemented nor explicitly gated
+   by a diagnostic.** `enumerate_candidates` dispatches through `satisfies_trait_bound`,
+   which silently returns `false` for `"Nat"`, producing a misleading
+   `E_AUTO_TYPE_PARAM_NO_CANDIDATE` instead of a purposeful
+   `E_AUTO_TYPE_PARAM_KIND_UNSUPPORTED`. The Phase A claim above that kind bounds are
+   "all supported" reflects the design intent, not current behaviour. (Findings M-011.)
+
+6. **`SchemaNode` naming drift.** This doc and the PRD reference "SchemaNode" (e.g. §6.2
+   "topology-change source"); the realised code uses
+   `EvaluationGraph::topology_fingerprint()` (see `crates/reify-eval/src/graph.rs:740–790`).
+   The topology contract is wired; only the name drifts. (Findings M-008.)
+
+Full evidence for each gap is in
+`docs/architecture-audit/findings/auto-type-param-resolution.md` (M-008 through M-016).
+The canonical B1 chain task mapping (3526 / 3558 / 3559) and the multi-PRD context
+(this surface is shared with `docs/prds/v0_2/auto-resolution-backtracking.md`) are in
+`docs/architecture-audit/phase-3-grammar-fiction-triage-log.md` §B1.
 
 ---
 

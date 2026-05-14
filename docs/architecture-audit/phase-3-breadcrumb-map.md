@@ -48,7 +48,7 @@ Sorted alphabetically by source PRD. Each row is a directed edge; bidirectional 
 | fea-gui-rendering | (non-PRD:) prd-m6-gui | Field-rendering surface this PRD extends | not audited here |
 | fea-gui-rendering-shells | fea-gui-rendering | Owns every reusable GUI primitive; 14/22 mechanisms not WIRED — additive framing assumes aspirational primitives | direct dep on its M-005/M-006/M-007/M-010/M-012 |
 | fea-gui-rendering-shells | structural-analysis-shells | Owns kernel-side shell solver, ShellStress.top/mid/bottom, ElasticResult.frame, MPC plumbing, mid-surface extractor, segmentation API | T18-T20 unshipped; this PRD is gating consumer |
-| fea-gui-rendering-shells | structural-analysis-fea | Owns ElasticResult, engine integration #2924, @optimized + ComputeNode dispatch | transitive GR-001 via 3378 |
+| fea-gui-rendering-shells | structural-analysis-fea | Owns ElasticResult, engine integration #2924, @optimized + ComputeNode dispatch | transitive GR-001 via 3426 |
 | fea-gui-rendering-shells | compute-node-infrastructure | Owns tasks 3377-3385 that 2924 chains through | |
 | fea-gui-rendering-shells | varying-thickness-shells | Thickness heat-map (M-008) becomes meaningful when thickness varies | v0.5 |
 | fea-gui-rendering-shells | composite-laminated-shells | Future per-ply stress display extends top/mid/bottom toggle into per-ply selector | out-of-scope here |
@@ -175,7 +175,7 @@ Sorted alphabetically by source PRD. Each row is a directed edge; bidirectional 
 | structural-analysis-fea | hex-wedge-meshing | P1 hex + P1 wedge elements landed in solver crate; force_tet/require_hex_wedge knobs added to ElasticOptions | same "landed ahead" observation |
 | structural-analysis-fea | (non-PRD:) Task #3117 (Field<X,Y> in param) | Umbrella for M-022 — touches all six field-slots in solver_elastic.ri | |
 | structural-analysis-shells | (non-PRD:) GR-001 | Gates runtime form of ElasticResult, ShellStress, ElasticOptions, ShellForce enum; Map-tagged builtin-ctor path is operational substitute | structure-def syntax parser-only |
-| structural-analysis-shells | structural-analysis-fea | Task 3378→2924 chain; M-018 routes through solve_elastic_static which has no stdlib fn decl; inherits FEA M-001 verbatim | |
+| structural-analysis-shells | structural-analysis-fea | Task 3426→2924 chain; M-018 routes through solve_elastic_static which has no stdlib fn decl; inherits FEA M-001 verbatim | |
 | structural-analysis-shells | compute-node-infrastructure | T18 extraction cached as ComputeNode keyed on geometry hash + extraction options; depends on @optimized→ComputeNode lowering for fn context that FEA M-002 says is PARTIAL | |
 | structural-analysis-shells | multi-kernel | Owns OpenVDB FFI follow-up M-025 depends on; PRD "Pre-conditions for activating" line 42 — gate is half-open | |
 | structural-analysis-shells | persistent-naming-v2 | M-020 mid-surface naming structurally ready but folding into OCCT-handle-keyed TopologyAttributeTable deferred to T18; Role::MidSurfaceEdge + FeatureId::derived_mid_surface present in reify-types | cross-PRD hook landed |
@@ -249,7 +249,7 @@ Pairs where BOTH directions of an edge exist in §1. These are highest-value for
 | PRD A | PRD B | A→B mechanism | B→A mechanism | Note |
 |---|---|---|---|---|
 | structural-analysis-fea | multi-load-case-fea | GR-001 transitively touches multi-load-case via ElasticMaterial/ElasticResult/LoadCase | Multi-load-case is strict consumer of FEA's solve_elastic_static / @optimized / ElasticResult / Field reductions | Mutual heavy dependence; multi-load-case is the downstream, FEA reverse-cites only because GR-001 propagates upward. Asymmetric but bidirectional. |
-| structural-analysis-fea | structural-analysis-shells | GR-001 transitively touches shells; "inversion of expected ordering" flagged (shells code landed ahead of solid-FEA validation) | Shells inherits FEA M-001 verbatim via task 3378→2924 chain | Strongest contested edge: each PRD audit notes the other should land first. Schedule ambiguity. |
+| structural-analysis-fea | structural-analysis-shells | GR-001 transitively touches shells; "inversion of expected ordering" flagged (shells code landed ahead of solid-FEA validation) | Shells inherits FEA M-001 verbatim via task 3426→2924 chain | Strongest contested edge: each PRD audit notes the other should land first. Schedule ambiguity. |
 | structural-analysis-fea | hex-wedge-meshing | P1 hex + P1 wedge already landed in solver crate ahead of FEA validation | Hex/wedge PRD assumes FEA owns the non-swept tet realization (M-018) — shared upstream gap | Both note the other's premature landing pattern |
 | structural-analysis-fea | mesh-morphing | GR-001 transitively touches mesh-morphing | Mesh-morphing does NOT block on GR-001 — composes solver primitives directly | One side asserts transitive block; the other explicitly denies. Mild contradiction worth Phase 3 resolution. |
 | structural-analysis-fea | a-posteriori-error-estimation | GR-001 transitively touches | A-posteriori M-002/5/11 hit same `TODO(field-in-param)` blocker as FEA's M-022 | Shared blocker, agreed |
@@ -328,7 +328,7 @@ Cited in:
 
 **Signal:** 3 PRDs converge on this. Less pervasive than GR-001 but same shape — a single language-feature gap blocking multiple downstream PRDs.
 
-### Cluster C: ComputeNode dispatch chain (tasks 3377-3385, FEA #2924, task 3378)
+### Cluster C: ComputeNode dispatch chain (tasks 3377-3385, FEA #2924, task 3426)
 
 Cited in:
 - a-posteriori-error-estimation (M-018 transitive)

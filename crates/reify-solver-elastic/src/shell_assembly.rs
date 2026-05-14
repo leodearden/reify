@@ -131,13 +131,13 @@ const KAPPA: f64 = 5.0 / 6.0;
 ///
 /// The shear term `(1−ν)/2 · E/(1−ν²) = E/(2(1+ν)) = G` uses the engineering
 /// shear strain convention, consistent with `IsotropicElastic::d_matrix`.
+///
+/// Validity is enforced by [`IsotropicElastic::debug_assert_valid`] — the
+/// single source of truth for Poisson-ratio bounds in this crate (`-1 < ν < 0.5`).
 pub fn plane_stress_d(material: &IsotropicElastic) -> [[f64; 3]; 3] {
+    material.debug_assert_valid();
     let e = material.youngs_modulus;
     let nu = material.poisson_ratio;
-    debug_assert!(
-        (0.0..0.5).contains(&nu),
-        "poisson_ratio must satisfy 0 ≤ ν < 0.5, got {nu}",
-    );
     let factor = e / (1.0 - nu * nu);
     [
         [factor, nu * factor, 0.0],
@@ -455,6 +455,28 @@ mod tests {
         IsotropicElastic {
             youngs_modulus: 200.0e9,
             poisson_ratio: 0.3,
+        }
+    }
+
+    /// Assert that an N×N matrix is entry-wise finite and symmetric.
+    ///
+    /// Symmetry tolerance: `|D[i][j] − D[j][i]| < 1e-9 · max(|D[i][j]|, |D[j][i]|, 1)`.
+    fn assert_symmetric_finite<const N: usize>(d: &[[f64; N]; N]) {
+        for i in 0..N {
+            for j in 0..N {
+                assert!(
+                    d[i][j].is_finite(),
+                    "D[{i}][{j}] = {} is not finite",
+                    d[i][j]
+                );
+                let lhs = d[i][j];
+                let rhs = d[j][i];
+                let scale = lhs.abs().max(rhs.abs()).max(1.0);
+                assert!(
+                    (lhs - rhs).abs() < 1e-9 * scale,
+                    "asymmetry at ({i},{j}): {lhs} vs {rhs}",
+                );
+            }
         }
     }
 
@@ -1106,6 +1128,57 @@ mod tests {
                 }
             }
         }
+    }
+
+    // --- plane_stress_d auxetic ν-range tests ---
+
+    #[test]
+    fn plane_stress_d_accepts_auxetic_poisson_ratio() {
+        // ν = -0.3 is inside the physical PD range (-1, 0.5).
+        // D_pl = E/(1-ν²) · [[1, ν, 0], [ν, 1, 0], [0, 0, (1-ν)/2]]
+        // All three diagonal entries are positive and finite for ν ∈ (-1, 0.5).
+        let e = 1.0_f64;
+        let nu = -0.3_f64;
+        let mat = IsotropicElastic {
+            youngs_modulus: e,
+            poisson_ratio: nu,
+        };
+
+        let d = plane_stress_d(&mat);
+
+        // Finite and symmetric.
+        assert_symmetric_finite(&d);
+
+        // Closed-form entries.
+        let factor = e / (1.0 - nu * nu);
+        let g = e / (2.0 * (1.0 + nu));
+        let tol = 1e-9 * factor.abs().max(1.0);
+        assert!((d[0][0] - factor).abs() < tol, "D[0][0] = {}", d[0][0]);
+        assert!((d[1][1] - factor).abs() < tol, "D[1][1] = {}", d[1][1]);
+        assert!((d[0][1] - nu * factor).abs() < tol, "D[0][1] = {}", d[0][1]);
+        assert!((d[1][0] - nu * factor).abs() < tol, "D[1][0] = {}", d[1][0]);
+        assert!((d[2][2] - g).abs() < tol, "D[2][2] = {} (expected G = {g})", d[2][2]);
+        assert!(d[2][2] > 0.0, "shear term D[2][2] = {} should be positive", d[2][2]);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "poisson_ratio")]
+    fn plane_stress_d_panics_at_incompressible_limit() {
+        plane_stress_d(&IsotropicElastic {
+            youngs_modulus: 1.0,
+            poisson_ratio: 0.5,
+        });
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "poisson_ratio")]
+    fn plane_stress_d_panics_at_auxetic_limit() {
+        plane_stress_d(&IsotropicElastic {
+            youngs_modulus: 1.0,
+            poisson_ratio: -1.0,
+        });
     }
 
     #[test]

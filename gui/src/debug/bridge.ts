@@ -117,6 +117,17 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       return { data: dataUrl };
     },
 
+    screenshot_window: async () => {
+      const vp = ctx.viewport;
+      if (!vp) return { error: 'viewport not ready' };
+
+      const { renderer, scene, camera } = vp;
+      renderer.render(scene, camera);
+      const { toPng } = await import('html-to-image');
+      const dataUrl = await toPng(document.documentElement, { cacheBust: true });
+      return { data: dataUrl };
+    },
+
     editor_content: () => {
       const { editor } = ctx.stores;
       const activeFile = editor.state.activeFile;

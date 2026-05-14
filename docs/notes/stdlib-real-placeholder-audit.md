@@ -3,7 +3,7 @@
 **Status:** Open — classification complete; dimensionless annotations applied (step-2); follow-up tasks filed (step-3)
 **Date:** 2026-05-07
 **Source:** Task 3090 (origin tasks: 2354 stdlib design, 2696 Density type, 2759 tensor literals)
-**Audit doc parallel:** `docs/notes/stdlib-trait-audit.md` (trait-breadth audit, task 2347)
+**Audit doc parallel:** `docs/notes/stdlib-trait-breadth-audit-v01.md` (trait-breadth audit, task 2347; refreshed 2026-05-14 via task 3529, formerly named `stdlib-trait-audit.md`)
 
 ---
 

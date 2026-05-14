@@ -51,20 +51,53 @@
 ///
 /// # Preconditions
 ///
-/// `0 ≤ ν < 0.5`. The strict upper bound excludes the incompressible limit
-/// where `factor` blows up; this matches the stdlib `ElasticMaterial`
-/// constraint at `crates/reify-compiler/stdlib/materials_fea.ri:97-103`.
-/// `youngs_modulus` should be positive (any consistent units — the D matrix
-/// is linear in `E`).
+/// `ν ∈ (-1, 0.5)` (open on both ends) — the mathematical range over which
+/// the isotropic linear-elastic D matrix is positive-definite:
+/// - `G = E / (2(1+ν)) > 0` requires `ν > -1` (auxetic lower limit).
+/// - `K = E / (3(1-2ν)) > 0` requires `ν < 0.5` (incompressible upper limit).
+///
+/// The stdlib `ElasticMaterial` trait at
+/// `crates/reify-compiler/stdlib/materials_fea.ri:94-103` keeps the stricter
+/// policy bound `[0, 0.5)` to exclude auxetic materials from the user-facing
+/// trait surface. This Rust struct accepts the full mathematical PD range;
+/// compiler-side enforcement via `ElasticMaterial` keeps user-visible
+/// constructions in the stricter range.
+///
+/// `youngs_modulus` must be positive (any consistent units — the D matrix is
+/// linear in `E`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct IsotropicElastic {
     /// Young's modulus `E` (any consistent unit; the D matrix is linear in `E`).
     pub youngs_modulus: f64,
-    /// Poisson's ratio `ν`. Must satisfy `0 ≤ ν < 0.5`.
+    /// Poisson's ratio `ν`. Must satisfy `-1 < ν < 0.5` (mathematical PD range).
     pub poisson_ratio: f64,
 }
 
 impl IsotropicElastic {
+    /// Assert the contract `E > 0` and `-1 < ν < 0.5` in debug builds.
+    ///
+    /// This is the single source of truth for Poisson-ratio validation in this
+    /// crate. Both [`Self::d_matrix`] and [`crate::shell_assembly::plane_stress_d`]
+    /// delegate here rather than carrying inline checks. A future hardening pass
+    /// (PRD task #21 diagnostics) may promote these to a fallible
+    /// `IsotropicElastic::new(e, nu) -> Result<Self, ConstitutiveError>`.
+    #[inline]
+    pub(crate) fn debug_assert_valid(&self) {
+        debug_assert!(
+            self.youngs_modulus > 0.0,
+            "IsotropicElastic.youngs_modulus must be positive, got {e}",
+            e = self.youngs_modulus,
+        );
+        debug_assert!(
+            self.poisson_ratio > -1.0 && self.poisson_ratio < 0.5,
+            "IsotropicElastic.poisson_ratio must satisfy -1 < ν < 0.5 \
+             (positive-definite isotropic D requires G = E/(2(1+ν)) > 0 and \
+             K = E/(3(1-2ν)) > 0; ν ≤ -1 is the auxetic limit, ν ≥ 0.5 is the \
+             incompressible limit), got {nu}",
+            nu = self.poisson_ratio,
+        );
+    }
+
     /// Return the 6×6 elasticity matrix `D` in engineering-strain Voigt form.
     ///
     /// See the type-level documentation for the Voigt component order
@@ -73,31 +106,19 @@ impl IsotropicElastic {
     ///
     /// # Contract
     ///
-    /// `youngs_modulus > 0` and `0 ≤ poisson_ratio < 0.5`. The stdlib
-    /// `ElasticMaterial` constructor enforces these upstream
+    /// `youngs_modulus > 0` and `-1 < poisson_ratio < 0.5` (mathematical PD
+    /// range). Validation is delegated to [`Self::debug_assert_valid`] — the
+    /// single source of truth for this crate. The stdlib `ElasticMaterial`
+    /// constructor enforces the stricter `[0, 0.5)` policy bound upstream
     /// (`crates/reify-compiler/stdlib/materials_fea.ri:97-103`), but this
-    /// struct is publicly constructible, so we re-check the contract here
-    /// in debug builds. Violations would either divide by zero (`ν = 0.5`)
-    /// or yield a non-physical, indefinite stiffness matrix (`ν > 0.5` or
-    /// `ν < 0`); a release-mode caller bypassing this gate is responsible
-    /// for the resulting non-finite / garbage output. A future hardening
-    /// pass (PRD task #21 diagnostics) may upgrade these to a fallible
-    /// `IsotropicElastic::new(e, nu) -> Result<Self, ConstitutiveError>`
-    /// constructor that enforces the contract at construction time.
+    /// struct is publicly constructible, so we re-check the contract here in
+    /// debug builds. A release-mode caller bypassing this gate is responsible
+    /// for the resulting non-finite / garbage output.
     #[allow(clippy::needless_range_loop)]
     pub fn d_matrix(&self) -> [[f64; 6]; 6] {
+        self.debug_assert_valid();
         let e = self.youngs_modulus;
         let nu = self.poisson_ratio;
-        debug_assert!(
-            e > 0.0,
-            "IsotropicElastic.youngs_modulus must be positive, got {e}",
-        );
-        debug_assert!(
-            (0.0..0.5).contains(&nu),
-            "IsotropicElastic.poisson_ratio must satisfy 0 ≤ ν < 0.5 (incompressible \
-             limit excluded; mirrors the stdlib `ElasticMaterial` constraint at \
-             `crates/reify-compiler/stdlib/materials_fea.ri:97-103`), got {nu}",
-        );
         let factor = e / ((1.0 + nu) * (1.0 - 2.0 * nu));
         let lambda = factor * nu;
         let two_mu = factor * (1.0 - 2.0 * nu);
@@ -136,6 +157,28 @@ mod tests {
         out
     }
 
+    /// Assert that an N×N matrix is entry-wise finite and symmetric.
+    ///
+    /// Symmetry tolerance: `|D[i][j] − D[j][i]| < 1e-9 · max(|D[i][j]|, |D[j][i]|, 1)`.
+    fn assert_symmetric_finite<const N: usize>(d: &[[f64; N]; N]) {
+        for i in 0..N {
+            for j in 0..N {
+                assert!(
+                    d[i][j].is_finite(),
+                    "D[{i}][{j}] = {} is not finite",
+                    d[i][j]
+                );
+                let lhs = d[i][j];
+                let rhs = d[j][i];
+                let scale = lhs.abs().max(rhs.abs()).max(1.0);
+                assert!(
+                    (lhs - rhs).abs() < 1e-9 * scale,
+                    "asymmetry at ({i},{j}): {lhs} vs {rhs}",
+                );
+            }
+        }
+    }
+
     /// Steel-like reference: E = 200 GPa, ν = 0.3 (Pa, dimensionless).
     fn steel_like() -> IsotropicElastic {
         IsotropicElastic {
@@ -146,18 +189,7 @@ mod tests {
 
     #[test]
     fn d_matrix_is_symmetric_for_steel_like_inputs() {
-        let d = steel_like().d_matrix();
-        for i in 0..6 {
-            for j in 0..6 {
-                let lhs = d[i][j];
-                let rhs = d[j][i];
-                let scale = lhs.abs().max(rhs.abs()).max(1.0);
-                assert!(
-                    (lhs - rhs).abs() < 1e-9 * scale,
-                    "asymmetry at ({i},{j}): {lhs} vs {rhs}",
-                );
-            }
-        }
+        assert_symmetric_finite(&steel_like().d_matrix());
     }
 
     #[test]
@@ -292,5 +324,97 @@ mod tests {
                 sigma[k]
             );
         }
+    }
+
+    // --- Auxetic (negative-ν) validity range tests ---
+
+    #[test]
+    fn d_matrix_accepts_auxetic_poisson_ratio_with_positive_bulk_and_shear_moduli() {
+        // ν = -0.5 is inside the physical PD range (-1, 0.5).
+        // K = E/(3(1−2ν)) = 1/(3·2) = 1/6 > 0;  G = E/(2(1+ν)) = 1/(2·0.5) = 1 > 0.
+        let e = 1.0_f64;
+        let nu = -0.5_f64;
+        let mat = IsotropicElastic {
+            youngs_modulus: e,
+            poisson_ratio: nu,
+        };
+
+        let d = mat.d_matrix();
+
+        // Finite and symmetric.
+        assert_symmetric_finite(&d);
+
+        // Hydrostatic strain → bulk modulus K > 0.
+        let bulk = e / (3.0 * (1.0 - 2.0 * nu));
+        assert!(bulk > 0.0, "K = {bulk} should be positive for ν = {nu}");
+        let eps_v = 1.0e-4_f64;
+        let strain_h = [eps_v, eps_v, eps_v, 0.0, 0.0, 0.0];
+        let sigma_h = matvec(&d, &strain_h);
+        let trace_sigma = sigma_h[0] + sigma_h[1] + sigma_h[2];
+        let mean_stress = trace_sigma / 3.0;
+        let expected_mean = bulk * (3.0 * eps_v);
+        let scale = expected_mean.abs().max(1.0);
+        assert!(
+            (mean_stress - expected_mean).abs() < 1e-9 * scale,
+            "mean stress: got {mean_stress}, expected {expected_mean}",
+        );
+
+        // Pure-shear strain → shear modulus G > 0.
+        let g = e / (2.0 * (1.0 + nu));
+        assert!(g > 0.0, "G = {g} should be positive for ν = {nu}");
+        let gamma = 1.0e-4_f64;
+        let strain_s = [0.0, 0.0, 0.0, gamma, 0.0, 0.0];
+        let sigma_s = matvec(&d, &strain_s);
+        let expected_shear = g * gamma;
+        let scale_s = expected_shear.abs().max(1.0);
+        assert!(
+            (sigma_s[3] - expected_shear).abs() < 1e-9 * scale_s,
+            "σ_xy: got {}, expected G·γ = {expected_shear}",
+            sigma_s[3],
+        );
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "poisson_ratio")]
+    fn d_matrix_panics_at_incompressible_upper_limit() {
+        IsotropicElastic {
+            youngs_modulus: 1.0,
+            poisson_ratio: 0.5,
+        }
+        .d_matrix();
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "poisson_ratio")]
+    fn d_matrix_panics_at_auxetic_lower_limit() {
+        IsotropicElastic {
+            youngs_modulus: 1.0,
+            poisson_ratio: -1.0,
+        }
+        .d_matrix();
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "poisson_ratio")]
+    fn d_matrix_panics_above_incompressible_limit() {
+        IsotropicElastic {
+            youngs_modulus: 1.0,
+            poisson_ratio: 0.6,
+        }
+        .d_matrix();
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "poisson_ratio")]
+    fn d_matrix_panics_below_auxetic_limit() {
+        IsotropicElastic {
+            youngs_modulus: 1.0,
+            poisson_ratio: -1.5,
+        }
+        .d_matrix();
     }
 }

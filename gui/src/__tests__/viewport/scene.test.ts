@@ -6,6 +6,7 @@ const mockSetClearColor = vi.fn();
 const mockSetSize = vi.fn();
 const mockSetPixelRatio = vi.fn();
 const mockRendererDispose = vi.fn();
+let lastRendererOpts: any;
 
 const mockSceneAdd = vi.fn();
 const mockSceneChildren: any[] = [];
@@ -57,7 +58,7 @@ vi.mock('three', () => {
     setPixelRatio = mockSetPixelRatio;
     dispose = mockRendererDispose;
     domElement = document.createElement('canvas');
-    constructor(_opts?: any) {}
+    constructor(opts?: any) { lastRendererOpts = opts; }
   }
 
   class MockAmbientLight {
@@ -124,6 +125,7 @@ import { createScene } from '../../viewport/scene';
 beforeEach(() => {
   vi.clearAllMocks();
   mockSceneChildren.length = 0;
+  lastRendererOpts = undefined;
 });
 
 describe('createScene', () => {
@@ -291,6 +293,12 @@ describe('createScene', () => {
     expect(result.grid.rotation.x).toBeCloseTo(Math.PI / 2);
     expect(result.grid.rotation.y).toBe(0);
     expect(result.grid.rotation.z).toBe(0);
+  });
+
+  it('constructs WebGLRenderer with preserveDrawingBuffer: true (required for html-to-image full-window capture)', () => {
+    setup();
+    expect(lastRendererOpts).toBeDefined();
+    expect(lastRendererOpts.preserveDrawingBuffer).toBe(true);
   });
 
   it('adjustClipping with empty bounds is a no-op (V-11)', () => {
