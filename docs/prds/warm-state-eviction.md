@@ -63,3 +63,7 @@ Implement a configurable, memory-budgeted, cost-per-byte LRU eviction policy for
 
 - Builds on #27 (existing `WarmStatePool`).
 - The realization-event hook (task 5) is independent of the freshness/event-journal PRD machinery; it can use the existing event-emission surface.
+
+## Relationship to other PRDs and tasks
+
+- **Backend event channel seam-owned by `docs/prds/v0_3/gui-event-channel-inventory.md`** — the `warm-pool-event` channel (consumed by `WarmPoolDebugPanel` in `gui/src/debug/`) is inventoried in inventory §2.2 Phase 3 task ε, with this PRD's M-010 (`drain_events` wiring from `WarmStatePool` to the eval-boundary journal translator) as the upstream data source. Emitter wiring is decomposed in the inventory PRD. See also `docs/gui-event-channels.md`.
