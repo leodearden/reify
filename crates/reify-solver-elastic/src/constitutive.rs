@@ -51,20 +51,53 @@
 ///
 /// # Preconditions
 ///
-/// `0 ≤ ν < 0.5`. The strict upper bound excludes the incompressible limit
-/// where `factor` blows up; this matches the stdlib `ElasticMaterial`
-/// constraint at `crates/reify-compiler/stdlib/materials_fea.ri:97-103`.
-/// `youngs_modulus` should be positive (any consistent units — the D matrix
-/// is linear in `E`).
+/// `ν ∈ (-1, 0.5)` (open on both ends) — the mathematical range over which
+/// the isotropic linear-elastic D matrix is positive-definite:
+/// - `G = E / (2(1+ν)) > 0` requires `ν > -1` (auxetic lower limit).
+/// - `K = E / (3(1-2ν)) > 0` requires `ν < 0.5` (incompressible upper limit).
+///
+/// The stdlib `ElasticMaterial` trait at
+/// `crates/reify-compiler/stdlib/materials_fea.ri:94-103` keeps the stricter
+/// policy bound `[0, 0.5)` to exclude auxetic materials from the user-facing
+/// trait surface. This Rust struct accepts the full mathematical PD range;
+/// compiler-side enforcement via `ElasticMaterial` keeps user-visible
+/// constructions in the stricter range.
+///
+/// `youngs_modulus` must be positive (any consistent units — the D matrix is
+/// linear in `E`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct IsotropicElastic {
     /// Young's modulus `E` (any consistent unit; the D matrix is linear in `E`).
     pub youngs_modulus: f64,
-    /// Poisson's ratio `ν`. Must satisfy `0 ≤ ν < 0.5`.
+    /// Poisson's ratio `ν`. Must satisfy `-1 < ν < 0.5` (mathematical PD range).
     pub poisson_ratio: f64,
 }
 
 impl IsotropicElastic {
+    /// Assert the contract `E > 0` and `-1 < ν < 0.5` in debug builds.
+    ///
+    /// This is the single source of truth for Poisson-ratio validation in this
+    /// crate. Both [`Self::d_matrix`] and [`crate::shell_assembly::plane_stress_d`]
+    /// delegate here rather than carrying inline checks. A future hardening pass
+    /// (PRD task #21 diagnostics) may promote these to a fallible
+    /// `IsotropicElastic::new(e, nu) -> Result<Self, ConstitutiveError>`.
+    #[inline]
+    pub(crate) fn debug_assert_valid(&self) {
+        debug_assert!(
+            self.youngs_modulus > 0.0,
+            "IsotropicElastic.youngs_modulus must be positive, got {e}",
+            e = self.youngs_modulus,
+        );
+        debug_assert!(
+            self.poisson_ratio > -1.0 && self.poisson_ratio < 0.5,
+            "IsotropicElastic.poisson_ratio must satisfy -1 < ν < 0.5 \
+             (positive-definite isotropic D requires G = E/(2(1+ν)) > 0 and \
+             K = E/(3(1-2ν)) > 0; ν ≤ -1 is the auxetic limit, ν ≥ 0.5 is the \
+             incompressible limit), got {nu}",
+            nu = self.poisson_ratio,
+        );
+    }
+
     /// Return the 6×6 elasticity matrix `D` in engineering-strain Voigt form.
     ///
     /// See the type-level documentation for the Voigt component order
@@ -73,31 +106,19 @@ impl IsotropicElastic {
     ///
     /// # Contract
     ///
-    /// `youngs_modulus > 0` and `0 ≤ poisson_ratio < 0.5`. The stdlib
-    /// `ElasticMaterial` constructor enforces these upstream
+    /// `youngs_modulus > 0` and `-1 < poisson_ratio < 0.5` (mathematical PD
+    /// range). Validation is delegated to [`Self::debug_assert_valid`] — the
+    /// single source of truth for this crate. The stdlib `ElasticMaterial`
+    /// constructor enforces the stricter `[0, 0.5)` policy bound upstream
     /// (`crates/reify-compiler/stdlib/materials_fea.ri:97-103`), but this
-    /// struct is publicly constructible, so we re-check the contract here
-    /// in debug builds. Violations would either divide by zero (`ν = 0.5`)
-    /// or yield a non-physical, indefinite stiffness matrix (`ν > 0.5` or
-    /// `ν < 0`); a release-mode caller bypassing this gate is responsible
-    /// for the resulting non-finite / garbage output. A future hardening
-    /// pass (PRD task #21 diagnostics) may upgrade these to a fallible
-    /// `IsotropicElastic::new(e, nu) -> Result<Self, ConstitutiveError>`
-    /// constructor that enforces the contract at construction time.
+    /// struct is publicly constructible, so we re-check the contract here in
+    /// debug builds. A release-mode caller bypassing this gate is responsible
+    /// for the resulting non-finite / garbage output.
     #[allow(clippy::needless_range_loop)]
     pub fn d_matrix(&self) -> [[f64; 6]; 6] {
+        self.debug_assert_valid();
         let e = self.youngs_modulus;
         let nu = self.poisson_ratio;
-        debug_assert!(
-            e > 0.0,
-            "IsotropicElastic.youngs_modulus must be positive, got {e}",
-        );
-        debug_assert!(
-            (0.0..0.5).contains(&nu),
-            "IsotropicElastic.poisson_ratio must satisfy 0 ≤ ν < 0.5 (incompressible \
-             limit excluded; mirrors the stdlib `ElasticMaterial` constraint at \
-             `crates/reify-compiler/stdlib/materials_fea.ri:97-103`), got {nu}",
-        );
         let factor = e / ((1.0 + nu) * (1.0 - 2.0 * nu));
         let lambda = factor * nu;
         let two_mu = factor * (1.0 - 2.0 * nu);
