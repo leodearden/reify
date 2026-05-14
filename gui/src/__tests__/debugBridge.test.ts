@@ -14,9 +14,13 @@ vi.mock('three', () => ({
   Box3: class { expandByObject() {} isEmpty() { return true; } },
   Vector3: class {},
 }));
+vi.mock('html-to-image', () => ({
+  toPng: vi.fn().mockResolvedValue('data:image/png;base64,STUB'),
+}));
 
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
+import { toPng } from 'html-to-image';
 import { initDebugBridge } from '../debug/bridge';
 import { setTestMode } from '../debug/testMode';
 import type { DebugStores } from '../debug/types';
@@ -662,6 +666,112 @@ describe('debug bridge set_test_mode', () => {
     expect(result.ok).toBe(true);
     // Regression lock-in: set_test_mode is CSS-only; it must never trigger a WebGL re-render
     expect(rendererRender).not.toHaveBeenCalled();
+  });
+});
+
+describe('debug bridge screenshot_window', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  function makeViewportStub() {
+    const rendererRender = vi.fn();
+    const renderer = {
+      render: rendererRender,
+      domElement: { toDataURL: vi.fn().mockReturnValue('data:image/png;base64,CANVAS') },
+    };
+    const scene = {} as any;
+    const camera = {} as any;
+    return { renderer, scene, camera, rendererRender };
+  }
+
+  async function dispatchScreenshotWindow(handler: DebugRequestHandler, id: number) {
+    vi.mocked(invoke).mockClear();
+    await handler({ payload: { id, command: 'screenshot_window', params: {} } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  it('returns { error: "viewport not ready" } when viewport is undefined', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    expect(capturedHandler).toBeDefined();
+
+    const result = await dispatchScreenshotWindow(capturedHandler!, 700);
+    expect(result).toEqual({ error: 'viewport not ready' });
+  });
+
+  it('happy path returns { data: <toPng dataUrl> }', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const stub = makeViewportStub();
+    window.__REIFY_DEBUG__!.viewport = {
+      scene: stub.scene,
+      camera: stub.camera,
+      renderer: stub.renderer as any,
+      getMeshes: vi.fn().mockReturnValue(new Map()),
+      getGhostMeshes: vi.fn().mockReturnValue(new Map()),
+      fitToView: vi.fn(),
+      flyToEntity: vi.fn(),
+    };
+
+    const result = await dispatchScreenshotWindow(capturedHandler!, 701);
+    expect(result).toEqual({ data: 'data:image/png;base64,STUB' });
+  });
+
+  it('calls renderer.render before html-to-image toPng', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const stub = makeViewportStub();
+    window.__REIFY_DEBUG__!.viewport = {
+      scene: stub.scene,
+      camera: stub.camera,
+      renderer: stub.renderer as any,
+      getMeshes: vi.fn().mockReturnValue(new Map()),
+      getGhostMeshes: vi.fn().mockReturnValue(new Map()),
+      fitToView: vi.fn(),
+      flyToEntity: vi.fn(),
+    };
+
+    await dispatchScreenshotWindow(capturedHandler!, 702);
+
+    expect(stub.rendererRender.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(toPng).mock.invocationCallOrder[0],
+    );
+  });
+
+  it('invokes toPng with (document.documentElement, { cacheBust: true })', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const stub = makeViewportStub();
+    window.__REIFY_DEBUG__!.viewport = {
+      scene: stub.scene,
+      camera: stub.camera,
+      renderer: stub.renderer as any,
+      getMeshes: vi.fn().mockReturnValue(new Map()),
+      getGhostMeshes: vi.fn().mockReturnValue(new Map()),
+      fitToView: vi.fn(),
+      flyToEntity: vi.fn(),
+    };
+
+    await dispatchScreenshotWindow(capturedHandler!, 703);
+
+    expect(vi.mocked(toPng).mock.calls[0][0]).toBe(document.documentElement);
+    expect(vi.mocked(toPng).mock.calls[0][1]).toEqual({ cacheBust: true });
   });
 });
 
