@@ -1,0 +1,118 @@
+//! Dedicated regression tests for `examples/multi_load_bracket.ri` (task 3587).
+//!
+//! Pins the four task-spec leaf signals from
+//! `docs/prds/v0_3/multi-load-case-fea.md` task #7:
+//!
+//!   1. The file parses with zero errors.
+//!   2. It compiles under the stdlib prelude with zero Error-severity diagnostics.
+//!   3. The compiled module exposes a `MultiLoadBracket` structure template.
+//!   4. The source demonstrates ≥2 `LoadCase(` instances, ≥1 `MultiCaseResult(`
+//!      envelope, bracket `box(` geometry, and at least one realistic-load
+//!      constructor (`point_load(`, `pressure_load(`, `traction_load(`,
+//!      `body_force(`, or `gravity(`).
+//!
+//! Mirrors the `cost_aggregation_example_compiles_under_stdlib_with_zero_errors`
+//! pattern at `cost_aggregation_tests.rs:218-283`.  The substring-marker
+//! assertions pin the *semantic purpose* of the example (demonstrating named
+//! stdlib API entry points), not prose wording — analogous to a unit test
+//! asserting that an "iterator example" actually calls `.iter()`.
+
+use reify_types::{ModulePath, Severity};
+
+// ─── examples/multi_load_bracket.ri compiles clean and pins leaf signals ─────
+
+/// The canonical example file `examples/multi_load_bracket.ri` must parse,
+/// compile under the stdlib prelude with zero Error diagnostics, expose a
+/// `MultiLoadBracket` template, and contain the four leaf-signal API markers
+/// mandated by the multi-load-case FEA PRD task #7.
+///
+/// Path resolution uses `CARGO_MANIFEST_DIR` so it works in any worktree.
+#[test]
+fn multi_load_bracket_example_compiles_under_stdlib_with_zero_errors() {
+    const EXAMPLE_PATH: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/multi_load_bracket.ri"
+    );
+
+    let src = std::fs::read_to_string(EXAMPLE_PATH).expect(
+        "failed to read examples/multi_load_bracket.ri — check CARGO_MANIFEST_DIR resolution",
+    );
+
+    // ── Parse ─────────────────────────────────────────────────────────────────
+
+    let parsed = reify_syntax::parse(&src, ModulePath::single("multi_load_bracket"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors in multi_load_bracket.ri: {:?}",
+        parsed.errors
+    );
+
+    // ── Compile ───────────────────────────────────────────────────────────────
+
+    let module = reify_compiler::compile_with_stdlib(&parsed);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected zero Error diagnostics compiling multi_load_bracket.ri under stdlib, got:\n{:#?}",
+        errors
+    );
+
+    // ── Template presence ────────────────────────────────────────────────────
+
+    let _multi_load_bracket = module
+        .templates
+        .iter()
+        .find(|t| t.name == "MultiLoadBracket")
+        .unwrap_or_else(|| {
+            panic!(
+                "MultiLoadBracket template should be present in compiled multi_load_bracket.ri; \
+                 found templates: {:?}",
+                module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
+            )
+        });
+
+    // ── Content-marker assertions (leaf-signal pinning) ───────────────────────
+    //
+    // Each assertion pins one task-spec leaf signal.  The markers are chosen to
+    // be the API entry points the PRD demands the example demonstrate; they are
+    // semantic-purpose pins, not docstring-prose pins.
+
+    let load_case_count = src.matches("LoadCase(").count();
+    assert!(
+        load_case_count >= 2,
+        "leaf signal '≥2 LoadCase instances': expected src to contain at least 2 occurrences \
+         of 'LoadCase(' but found {}",
+        load_case_count
+    );
+
+    let multi_case_result_count = src.matches("MultiCaseResult(").count();
+    assert!(
+        multi_case_result_count >= 1,
+        "leaf signal '≥1 MultiCaseResult envelope': expected src to contain at least 1 \
+         occurrence of 'MultiCaseResult(' but found {}",
+        multi_case_result_count
+    );
+
+    assert!(
+        src.contains("box("),
+        "leaf signal 'plausible bracket geometry': expected src to contain 'box(' \
+         (parametric box geometry for the bracket body)"
+    );
+
+    let has_realistic_load = src.contains("point_load(")
+        || src.contains("pressure_load(")
+        || src.contains("traction_load(")
+        || src.contains("body_force(")
+        || src.contains("gravity(");
+    assert!(
+        has_realistic_load,
+        "leaf signal 'realistic loads': expected src to contain at least one of \
+         point_load(, pressure_load(, traction_load(, body_force(, gravity( \
+         but none found"
+    );
+}
