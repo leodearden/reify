@@ -298,7 +298,13 @@ struct MidSurfaceAttributesOnDisk {
 #[derive(Serialize, Deserialize)]
 struct TopologyAttributeOnDisk {
     feature_id: String,
-    role: RoleOnDisk,
+    /// Explicit u8 wire tag for the in-memory `Role` (and its `CapKind`
+    /// payload). Decoupled from `Role`'s declaration order so that adding
+    /// a new variant in the middle of `Role` or `CapKind` cannot silently
+    /// shift any downstream tag's on-disk encoding. See
+    /// [`role_to_u8`] / [`role_from_u8`] for the pinned tag table. Unknown
+    /// discriminants on read are rejected with `InvalidData`.
+    role: u8,
     local_index: u32,
     user_label: Option<String>,
     mod_history: Vec<ModEntryOnDisk>,
@@ -310,26 +316,33 @@ struct ModEntryOnDisk {
     split_index: u32,
 }
 
-#[derive(Serialize, Deserialize)]
-enum RoleOnDisk {
-    Cap(CapKindOnDisk),
-    Side,
-    NewEdge,
-    RevolvedFace,
-    AxisFace,
-    SweptFace,
-    LoftedFace,
-    MidSurfaceFace,
-    MidSurfaceEdge,
-}
-
-#[derive(Serialize, Deserialize)]
-enum CapKindOnDisk {
-    Top,
-    Bottom,
-    Start,
-    End,
-}
+// ---- Pinned u8 wire tags for `Role` and its `CapKind` payload ----
+//
+// Rationale (review suggestion 1): a serde-derived `RoleOnDisk` /
+// `CapKindOnDisk` would encode variant tags by declaration order under
+// bincode, so adding a new variant in the middle of either enum could
+// silently shift every downstream tag — corrupting cache reads written
+// before the addition with no compile-time signal forcing a
+// `FORMAT_VERSION` bump. By contrast, explicit u8 constants and `match`-
+// based conversion (mirroring `severity_to_u8` / `classification_to_u8`)
+// make wire-tag stability independent of enum declaration order.
+//
+// Layout: the high nibble separates payload-bearing `Cap` variants
+// (`0x0X`) from unit variants (`0x1X`), so future additions in either
+// space don't collide. Bumping `FORMAT_VERSION` is required if any
+// existing tag value here is reassigned.
+const ROLE_TAG_CAP_TOP: u8 = 0x00;
+const ROLE_TAG_CAP_BOTTOM: u8 = 0x01;
+const ROLE_TAG_CAP_START: u8 = 0x02;
+const ROLE_TAG_CAP_END: u8 = 0x03;
+const ROLE_TAG_SIDE: u8 = 0x10;
+const ROLE_TAG_NEW_EDGE: u8 = 0x11;
+const ROLE_TAG_REVOLVED_FACE: u8 = 0x12;
+const ROLE_TAG_AXIS_FACE: u8 = 0x13;
+const ROLE_TAG_SWEPT_FACE: u8 = 0x14;
+const ROLE_TAG_LOFTED_FACE: u8 = 0x15;
+const ROLE_TAG_MID_SURFACE_FACE: u8 = 0x16;
+const ROLE_TAG_MID_SURFACE_EDGE: u8 = 0x17;
 
 #[derive(Serialize, Deserialize)]
 struct MidSurfaceEdgeRecordOnDisk {
@@ -399,56 +412,55 @@ fn classification_from_u8(b: u8) -> io::Result<RegionClassification> {
     }
 }
 
-fn cap_kind_to_disk(k: CapKind) -> CapKindOnDisk {
-    match k {
-        CapKind::Top => CapKindOnDisk::Top,
-        CapKind::Bottom => CapKindOnDisk::Bottom,
-        CapKind::Start => CapKindOnDisk::Start,
-        CapKind::End => CapKindOnDisk::End,
-    }
-}
-
-fn cap_kind_from_disk(k: &CapKindOnDisk) -> CapKind {
-    match k {
-        CapKindOnDisk::Top => CapKind::Top,
-        CapKindOnDisk::Bottom => CapKind::Bottom,
-        CapKindOnDisk::Start => CapKind::Start,
-        CapKindOnDisk::End => CapKind::End,
-    }
-}
-
-fn role_to_disk(r: Role) -> RoleOnDisk {
+/// Map `Role` (including its `CapKind` payload) to a pinned `u8` wire tag.
+/// The tag table is the explicit constant block above; the match-based
+/// projection is decoupled from `Role`'s declaration order so reordering
+/// the source enum cannot shift any tag.
+fn role_to_u8(r: Role) -> u8 {
     match r {
-        Role::Cap(k) => RoleOnDisk::Cap(cap_kind_to_disk(k)),
-        Role::Side => RoleOnDisk::Side,
-        Role::NewEdge => RoleOnDisk::NewEdge,
-        Role::RevolvedFace => RoleOnDisk::RevolvedFace,
-        Role::AxisFace => RoleOnDisk::AxisFace,
-        Role::SweptFace => RoleOnDisk::SweptFace,
-        Role::LoftedFace => RoleOnDisk::LoftedFace,
-        Role::MidSurfaceFace => RoleOnDisk::MidSurfaceFace,
-        Role::MidSurfaceEdge => RoleOnDisk::MidSurfaceEdge,
+        Role::Cap(CapKind::Top) => ROLE_TAG_CAP_TOP,
+        Role::Cap(CapKind::Bottom) => ROLE_TAG_CAP_BOTTOM,
+        Role::Cap(CapKind::Start) => ROLE_TAG_CAP_START,
+        Role::Cap(CapKind::End) => ROLE_TAG_CAP_END,
+        Role::Side => ROLE_TAG_SIDE,
+        Role::NewEdge => ROLE_TAG_NEW_EDGE,
+        Role::RevolvedFace => ROLE_TAG_REVOLVED_FACE,
+        Role::AxisFace => ROLE_TAG_AXIS_FACE,
+        Role::SweptFace => ROLE_TAG_SWEPT_FACE,
+        Role::LoftedFace => ROLE_TAG_LOFTED_FACE,
+        Role::MidSurfaceFace => ROLE_TAG_MID_SURFACE_FACE,
+        Role::MidSurfaceEdge => ROLE_TAG_MID_SURFACE_EDGE,
     }
 }
 
-fn role_from_disk(r: &RoleOnDisk) -> Role {
-    match r {
-        RoleOnDisk::Cap(k) => Role::Cap(cap_kind_from_disk(k)),
-        RoleOnDisk::Side => Role::Side,
-        RoleOnDisk::NewEdge => Role::NewEdge,
-        RoleOnDisk::RevolvedFace => Role::RevolvedFace,
-        RoleOnDisk::AxisFace => Role::AxisFace,
-        RoleOnDisk::SweptFace => Role::SweptFace,
-        RoleOnDisk::LoftedFace => Role::LoftedFace,
-        RoleOnDisk::MidSurfaceFace => Role::MidSurfaceFace,
-        RoleOnDisk::MidSurfaceEdge => Role::MidSurfaceEdge,
+/// Inverse of [`role_to_u8`]. Unknown discriminants are rejected with
+/// `io::ErrorKind::InvalidData`, mirroring `severity_from_u8` /
+/// `classification_from_u8`.
+fn role_from_u8(b: u8) -> io::Result<Role> {
+    match b {
+        ROLE_TAG_CAP_TOP => Ok(Role::Cap(CapKind::Top)),
+        ROLE_TAG_CAP_BOTTOM => Ok(Role::Cap(CapKind::Bottom)),
+        ROLE_TAG_CAP_START => Ok(Role::Cap(CapKind::Start)),
+        ROLE_TAG_CAP_END => Ok(Role::Cap(CapKind::End)),
+        ROLE_TAG_SIDE => Ok(Role::Side),
+        ROLE_TAG_NEW_EDGE => Ok(Role::NewEdge),
+        ROLE_TAG_REVOLVED_FACE => Ok(Role::RevolvedFace),
+        ROLE_TAG_AXIS_FACE => Ok(Role::AxisFace),
+        ROLE_TAG_SWEPT_FACE => Ok(Role::SweptFace),
+        ROLE_TAG_LOFTED_FACE => Ok(Role::LoftedFace),
+        ROLE_TAG_MID_SURFACE_FACE => Ok(Role::MidSurfaceFace),
+        ROLE_TAG_MID_SURFACE_EDGE => Ok(Role::MidSurfaceEdge),
+        other => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("ShellExtractionResult unknown Role wire tag {other:#04x}"),
+        )),
     }
 }
 
 fn topology_attribute_to_disk(t: &TopologyAttribute) -> TopologyAttributeOnDisk {
     TopologyAttributeOnDisk {
         feature_id: t.feature_id.to_string(),
-        role: role_to_disk(t.role),
+        role: role_to_u8(t.role),
         local_index: t.local_index,
         user_label: t.user_label.clone(),
         mod_history: t
@@ -462,10 +474,10 @@ fn topology_attribute_to_disk(t: &TopologyAttribute) -> TopologyAttributeOnDisk 
     }
 }
 
-fn topology_attribute_from_disk(t: &TopologyAttributeOnDisk) -> TopologyAttribute {
-    TopologyAttribute {
+fn topology_attribute_from_disk(t: &TopologyAttributeOnDisk) -> io::Result<TopologyAttribute> {
+    Ok(TopologyAttribute {
         feature_id: FeatureId::new(t.feature_id.clone()),
-        role: role_from_disk(&t.role),
+        role: role_from_u8(t.role)?,
         local_index: t.local_index,
         user_label: t.user_label.clone(),
         mod_history: t
@@ -476,7 +488,7 @@ fn topology_attribute_from_disk(t: &TopologyAttributeOnDisk) -> TopologyAttribut
                 split_index: m.split_index,
             })
             .collect(),
-    }
+    })
 }
 
 fn diagnostic_to_disk(d: &Diagnostic) -> DiagnosticOnDisk {
@@ -978,23 +990,29 @@ impl reify_eval::persistent_cache::PersistentlyCacheable for ShellExtractionResu
         }
 
         // Reconstruct naming + diagnostics from the bincode-materialised
-        // wire-shape mirrors.
+        // wire-shape mirrors. `topology_attribute_from_disk` now returns
+        // `io::Result` (Role wire-tag validation), so we propagate via `?`
+        // on each iteration rather than collecting into a Result directly.
+        let mut face_records: Vec<TopologyAttribute> = Vec::new();
+        face_records
+            .try_reserve_exact(header.naming.face_records.len())
+            .map_err(io::Error::other)?;
+        for tod in &header.naming.face_records {
+            face_records.push(topology_attribute_from_disk(tod)?);
+        }
+        let mut edges: Vec<MidSurfaceEdgeRecord> = Vec::new();
+        edges
+            .try_reserve_exact(header.naming.edges.len())
+            .map_err(io::Error::other)?;
+        for eod in &header.naming.edges {
+            edges.push(MidSurfaceEdgeRecord {
+                attribute: topology_attribute_from_disk(&eod.attribute)?,
+                region_pair: (eod.region_pair_a, eod.region_pair_b),
+            });
+        }
         let naming = MidSurfaceAttributes {
-            face_records: header
-                .naming
-                .face_records
-                .iter()
-                .map(topology_attribute_from_disk)
-                .collect(),
-            edges: header
-                .naming
-                .edges
-                .iter()
-                .map(|eod| MidSurfaceEdgeRecord {
-                    attribute: topology_attribute_from_disk(&eod.attribute),
-                    region_pair: (eod.region_pair_a, eod.region_pair_b),
-                })
-                .collect(),
+            face_records,
+            edges,
         };
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         diagnostics
@@ -1627,6 +1645,46 @@ mod tests {
                 && msg.contains("thickness_len 3"),
             "error message must explain the mismatch, got: {msg}"
         );
+    }
+
+    #[test]
+    fn role_from_u8_round_trips_every_known_variant_and_rejects_unknown() {
+        // Exhaustive round-trip across every `Role` variant — if a future
+        // refactor reorders `Role` or adds a variant, this test forces a
+        // deliberate update of the wire-tag table (no silent shift).
+        let all_roles = [
+            Role::Cap(CapKind::Top),
+            Role::Cap(CapKind::Bottom),
+            Role::Cap(CapKind::Start),
+            Role::Cap(CapKind::End),
+            Role::Side,
+            Role::NewEdge,
+            Role::RevolvedFace,
+            Role::AxisFace,
+            Role::SweptFace,
+            Role::LoftedFace,
+            Role::MidSurfaceFace,
+            Role::MidSurfaceEdge,
+        ];
+        for r in all_roles {
+            let tag = role_to_u8(r);
+            let decoded = role_from_u8(tag).expect("known tag must decode");
+            assert_eq!(decoded, r, "Role {r:?} round-trip via tag {tag:#04x}");
+        }
+        // Pin tag-table layout: Cap variants live at 0x00-0x03, unit variants
+        // at 0x10-0x17. Any change here forces a `FORMAT_VERSION` bump.
+        assert_eq!(role_to_u8(Role::Cap(CapKind::Top)), 0x00);
+        assert_eq!(role_to_u8(Role::Cap(CapKind::End)), 0x03);
+        assert_eq!(role_to_u8(Role::Side), 0x10);
+        assert_eq!(role_to_u8(Role::MidSurfaceEdge), 0x17);
+
+        // Unknown discriminants (gap in the table) must be rejected with
+        // `InvalidData` — mirrors `severity_from_u8` / `classification_from_u8`.
+        for unknown in [0x04u8, 0x0Fu8, 0x18u8, 0xFFu8] {
+            let err =
+                role_from_u8(unknown).expect_err(&format!("unknown tag {unknown:#04x} must fail"));
+            assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        }
     }
 
     #[test]
