@@ -307,7 +307,7 @@ Contract document authored 2026-05-12: `docs/prds/v0_3/structure-instance-runtim
 | Blocks tasks | Per cluster C-15 |
 | Disposition | **fix-now — ship producers (vindicate the diagnostic infra).** 2026-05-12 investigate-further triage resolved: Leo chose "ship producers." Diagnostic infrastructure stays; `half_space` and `extrude_infinite` filed as sibling fix-now tasks. |
 | Discovered | 2026-05-12 architecture audit |
-| Notes | Phase-3 synthesis classified this under "Clusters fitting NO Phase-2 pattern" — the "loaded gun, no target" shape. Tickets filed 2026-05-12; **curated to tasks 2026-05-13**: `tkt_0RNVQ2E62WDXJ76QX594YKQHKT` → **task 3579** (half_space) and `tkt_0RNVQ2KTNNR3EAN7N2A7KDB0W3` → **task 3580** (extrude_infinite). Both name the `E_GEOMETRY_UNBOUNDED` diagnostic consumer + integration-test signal. Filing log: `docs/architecture-audit/phase-3-investigate-further-triage-log.md`. |
+| Notes | Phase-3 synthesis classified this under "Clusters fitting NO Phase-2 pattern" — the "loaded gun, no target" shape. Tickets filed 2026-05-12; **curated to tasks 2026-05-13** then lost in the 2026-05-13 SIGABRT and **replayed 2026-05-14** to live IDs: `tkt_0RNVQ2E62WDXJ76QX594YKQHKT` → **task 3465** (half_space, was 3579) and `tkt_0RNVQ2KTNNR3EAN7N2A7KDB0W3` → **task 3466** (extrude_infinite, was 3580). Both name the `E_GEOMETRY_UNBOUNDED` diagnostic consumer + integration-test signal. Filing log: `docs/architecture-audit/phase-3-investigate-further-triage-log.md`. |
 
 ### GR-019 — Material starter library (stdlib structures unevaluable) (cluster C-16)
 
@@ -702,7 +702,7 @@ All clusters C-01 through C-44 promoted to GR entries during 2026-05-12 sweep.
 **Investigate-further tickets resolved (2026-05-13 curator pass):**
 
 - GR-007 → tasks 3575, 3578, plus combined to existing done task 2329.
-- GR-018 → tasks 3579, 3580.
+- GR-018 → tasks 3465, 3466 (originally 3579/3580; replayed 2026-05-14 post-SIGABRT).
 - GR-037 → task 3581.
 - GR-043 → task 3584.
 
