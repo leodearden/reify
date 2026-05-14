@@ -59,7 +59,7 @@
 
 - **State:** PARTIAL
 - **Failure mode:** F6 (infrastructure partly built; stdlib `fn` integration absent)
-- **Evidence:** `@optimized` mechanism exists (`crates/reify-eval/src/graph.rs:33`, `engine_admin.rs:398`, `optimized_registry_tests.rs`). ComputeNode-infrastructure PRD tasks 3379-3385 mostly done per audit-brief givens; 3377/3378/3383/3384 pending or deferred. Task 2924 (FEA #16) pending with full dependency chain.
+- **Evidence:** `@optimized` mechanism exists (`crates/reify-eval/src/graph.rs:33`, `engine_admin.rs:398`, `optimized_registry_tests.rs`). ComputeNode-infrastructure PRD tasks 3379-3385 mostly done per audit-brief givens; 3377 done, 3379/3383/3384 cancelled-as-superseded by compute-node-contract §8 DAG, 3426 (pending) supersedes 3378 (deferred). Task 2924 (FEA #16) pending with full dependency chain.
 - **Blocks:** 3005 (cache-reuse claim in PRD §"Cache reuse is the natural common case" relies on this for volume-mesh reuse), 3015
 - **Note:** Cross-PRD breadcrumb (see Phase 2 of compute-node-infrastructure PRD). The cache-key composition machinery `crates/reify-eval/src/compute_cache_key.rs` is partially in place.
 
