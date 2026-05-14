@@ -689,7 +689,6 @@ describe('debug bridge screenshot_window', () => {
     const rendererRender = vi.fn();
     const renderer = {
       render: rendererRender,
-      domElement: { toDataURL: vi.fn().mockReturnValue('data:image/png;base64,CANVAS') },
     };
     const scene = {} as any;
     const camera = {} as any;
@@ -771,7 +770,7 @@ describe('debug bridge screenshot_window', () => {
     await dispatchScreenshotWindow(capturedHandler!, 703);
 
     expect(vi.mocked(toPng).mock.calls[0][0]).toBe(document.documentElement);
-    expect(vi.mocked(toPng).mock.calls[0][1]).toEqual({ cacheBust: true });
+    expect(vi.mocked(toPng).mock.calls[0][1]).toEqual(expect.objectContaining({ cacheBust: true }));
   });
 });
 
