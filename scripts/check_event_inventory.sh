@@ -5,19 +5,31 @@
 # Policy: PRD §11 Q4 — start as warning; promote via --strict after
 #         one release cycle of observed drift.
 #
-# Extracts literal channel names from .emit("name", …) call sites under
-# gui/src-tauri/ and warns if any are absent from docs/gui-event-channels.md.
+# Forward pass: extracts literal channel names from .emit("name", …) call sites
+# under gui/src-tauri/ and warns if any are absent from docs/gui-event-channels.md.
+#
+# Reverse pass (--bidirectional, opt-in): for each §1-registered channel in the
+# inventory, verifies that a quoted string literal "channel-name" appears somewhere
+# in gui/src-tauri/**/*.rs. §1-only scoping: §2 (FICTION → WIRED) rows are
+# pre-implementation and intentionally excluded to avoid phantom-warning noise.
+# Permissive scan: searches for the channel name as a quoted literal anywhere in
+# *.rs, not just in .emit(…) form — this naturally covers dynamic-emit patterns
+# (e.g. delta_to_events constructs "mesh-update".to_string() in diff.rs;
+# outbound_to_event constructs "claude-text-delta".to_string() in claude_bridge.rs;
+# mcp_context.rs uses emitter("focus-entity", …)). No hardcoded allowlist needed.
+# Opt-in per esc-3552-52 reviewer note; default-on deferred pending §2 graduation.
 #
 # Dynamic emit-sites (app.emit(&name, …), app.emit(event_name, …)) are
-# intentionally skipped: their channel names live in delta_to_events / MCP
-# context emitters and are covered by the lockstep-commit convention (PRD §3.3),
-# not by this regex lint.
+# intentionally skipped by the forward pass: their channel names live in
+# delta_to_events / MCP context emitters and are covered by the lockstep-commit
+# convention (PRD §3.3), not by this regex lint. The reverse pass covers them
+# via the permissive literal scan.
 #
-# Usage: scripts/check_event_inventory.sh [--strict] [--repo-root <dir>]
+# Usage: scripts/check_event_inventory.sh [--strict] [--bidirectional] [--repo-root <dir>]
 #
 # Exit codes:
-#   0  always (warning mode) unless --strict is given and orphans are found
-#   1  only when --strict and at least one orphan channel is detected
+#   0  always (warning mode) unless --strict is given and orphans/phantoms are found
+#   1  only when --strict and at least one orphan or phantom channel is detected
 
 set -euo pipefail
 
@@ -26,19 +38,25 @@ usage() {
 Usage: scripts/check_event_inventory.sh [options]
 
 Options:
-  --strict         Exit 1 when any orphan channels are detected.
-                   Default: warning mode (always exits 0).
-  --repo-root DIR  Repository root (default: git rev-parse --show-toplevel).
-  -h, --help       Show this message.
+  --strict           Exit 1 when any orphan or phantom channels are detected.
+                     Default: warning mode (always exits 0).
+  --bidirectional    Run a second reverse pass — warn when a §1-registered
+                     channel has no literal occurrence in gui/src-tauri/*.rs.
+                     §1-scoped: §2 (FICTION → WIRED) rows are excluded pending
+                     §2 graduation. Opt-in per esc-3552-52 reviewer note.
+  --repo-root DIR    Repository root (default: git rev-parse --show-toplevel).
+  -h, --help         Show this message.
 USAGE
 }
 
 STRICT=0
+BIDIRECTIONAL=0
 REPO_ROOT=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --strict) STRICT=1; shift ;;
+        --bidirectional) BIDIRECTIONAL=1; shift ;;
         --repo-root) REPO_ROOT="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
@@ -94,6 +112,32 @@ done <<< "$emit_channels"
 
 if [[ $orphan_count -gt 0 ]]; then
     echo "$orphan_count orphan channel(s) found — add to docs/gui-event-channels.md" >&2
+fi
+
+# Reverse pass (--bidirectional): for each §1-registered channel, verify it has
+# at least one quoted string literal occurrence in gui/src-tauri/**/*.rs.
+# §1-only: awk extracts between ^## §1 and the next ^## §[0-9] heading.
+# Permissive scan: grep -F '"channel-name"' matches any literal occurrence,
+# not just .emit("…") form, so dynamic-emit patterns are naturally covered.
+phantom_count=0
+if [[ $BIDIRECTIONAL -eq 1 ]]; then
+    sec1_channels=$(
+        awk '/^## §1/{f=1;next} /^## §[0-9]/{f=0} f' "$INVENTORY" \
+        | grep -oP '\| `\K[a-z0-9-]+(?=` \|)' | sort -u || true
+    )
+    while IFS= read -r ch; do
+        [[ -z "$ch" ]] && continue
+        if ! grep -rqF "\"$ch\"" --include="*.rs" "$SRC_DIR" 2>/dev/null; then
+            phantom_count=$((phantom_count + 1))
+            echo "WARNING: phantom channel '$ch' registered in inventory but no source occurrence in gui/src-tauri/" >&2
+        fi
+    done <<< "$sec1_channels"
+    if [[ $phantom_count -gt 0 ]]; then
+        echo "$phantom_count phantom channel(s) found — verify source wiring or remove from docs/gui-event-channels.md §1" >&2
+    fi
+fi
+
+if [[ $((orphan_count + phantom_count)) -gt 0 ]]; then
     [[ $STRICT -eq 1 ]] && exit 1
 fi
 
