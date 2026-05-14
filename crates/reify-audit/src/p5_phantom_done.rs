@@ -94,10 +94,26 @@ fn check_one(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Finding> {
         return None;
     }
 
-    // TODO step-6: Cargo.lock-only divergence guard
-    //   (memory: project_post_merge_equivalence_false_positive_cargo_lock.md)
-    //   — if `missing == ["Cargo.lock"]`, downgrade to Severity::Low.
-    //
+    // Cargo.lock-only divergence guard. When the lone missing entry is
+    // Cargo.lock — and every other metadata.files path was corroborated by
+    // the claimed commit's diff — main has merely absorbed an unrelated
+    // dependency bump after our task wrote its lockfile. Not phantom-done.
+    // Memory: project_post_merge_equivalence_false_positive_cargo_lock.md.
+    if is_cargo_lock_only(&missing) {
+        return Some(Finding {
+            pattern: Pattern::P5PhantomDone,
+            severity: Severity::Low,
+            task_id: meta.task_id.clone(),
+            summary:
+                "Cargo.lock-only divergence: every other metadata.files entry corroborates; \
+                 main absorbed an unrelated lockfile change after this task merged"
+                    .to_string(),
+            evidence: vec![EvidenceRef::MetadataFiles {
+                entries: missing.clone(),
+            }],
+        });
+    }
+
     // TODO step-8: convergent-fast-forward guard
     //   (memory: project_unblock_convergent_ff_worktree_reap.md)
     //   — if `git.log_grep("main", task_id)` finds sibling commits whose
@@ -105,6 +121,10 @@ fn check_one(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Finding> {
     //   add EvidenceRef::Commit per contributing sibling.
 
     Some(build_high_finding(meta, &missing))
+}
+
+fn is_cargo_lock_only(missing: &[String]) -> bool {
+    missing.len() == 1 && missing[0] == "Cargo.lock"
 }
 
 /// Run the runs.db existence query: returns true iff at least one
