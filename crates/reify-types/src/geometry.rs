@@ -4972,6 +4972,29 @@ mod tests {
         );
     }
 
+    /// Mirror of `extract_edges` / `extract_faces` default-impl test (PRD task α):
+    /// any kernel that does NOT explicitly override `extract_vertices` must
+    /// inherit the trait default and return
+    /// `QueryError::QueryFailed("topology extraction not supported by this kernel")`.
+    /// Verifies the message substring `"topology extraction"` is stable so engine
+    /// callers can branch on it without parsing the full string.
+    #[test]
+    fn default_geometry_kernel_extract_vertices_returns_topology_not_supported_error() {
+        let mut kernel = DefaultsOnlyKernel;
+        let result = kernel.extract_vertices(GeometryHandleId(1));
+        match result {
+            Err(QueryError::QueryFailed(msg)) => {
+                assert!(
+                    msg.contains("topology extraction"),
+                    "expected message to contain 'topology extraction', got: {msg}"
+                );
+            }
+            other => panic!(
+                "expected Err(QueryError::QueryFailed(_)) with 'topology extraction' substring, got: {other:?}"
+            ),
+        }
+    }
+
     /// Verify the v0.3 `VolumeMesh` struct and `ElementOrderTag` enum round-trip
     /// through both P1 (4-node tetrahedron) and P2 (10-node tetrahedron) element
     /// orders, and that `Clone` + `Debug` derives are intact so the type can be
