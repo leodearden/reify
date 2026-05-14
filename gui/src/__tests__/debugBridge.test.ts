@@ -757,14 +757,19 @@ describe('debug bridge screenshot_window', () => {
     expect(vi.mocked(toPng).mock.calls[0][1]).toEqual(expect.objectContaining({ cacheBust: true }));
   });
 
-  it('returns { error: "screenshot too large" } when toPng output exceeds the 16 MB threshold', async () => {
+  it('returns { error, size, limit } when toPng output exceeds the 16 MB threshold', async () => {
     await setupWithViewport();
 
-    // Produce a payload 23 bytes over the 16 MB threshold (16,777,239 chars total)
+    // Produce a payload 23 bytes over the 16 MB threshold (16,777,239 chars total):
+    // 'data:image/png;base64,' prefix = 22 chars + 'A' * (16*1024*1024+1) = 16,777,217 chars
     vi.mocked(toPng).mockResolvedValueOnce('data:image/png;base64,' + 'A'.repeat(16 * 1024 * 1024 + 1));
 
     const result = await dispatchScreenshotWindow(capturedHandler!, 704);
-    expect(result).toEqual({ error: 'screenshot too large' });
+    expect(result).toEqual({
+      error: 'screenshot too large',
+      size: 16777239,
+      limit: 16 * 1024 * 1024,
+    });
   });
 
   it('returns { data } when toPng output is exactly at the 16 MB boundary (length === 16777216)', async () => {
