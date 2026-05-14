@@ -39,6 +39,13 @@ Classification therefore happens *after* the new B-rep is realized but *before* 
 
 The implementation cost is minimal because all the heavy primitives (assembly, sparse solve, Dirichlet application, warm start) ship with the FEA kernel. The morph is essentially `solve_elastic_static` called with `loads = []`, `supports = boundary_displacements`, and a fictitious material.
 
+**Two-axis ComputeNode routing (resolved 2026-05-12 by [`docs/prds/v0_3/compute-node-contract.md`](compute-node-contract.md) §6):**
+
+- **Axis-1 — Mesh-morph as ComputeNode:** yes. Morph routes through `Engine::insert_compute_node` at the VolumeMesh-realization dispatch point (`engine_build.rs::dispatch_volume_mesh`), wrapping the morph operation. It receives the cache / warm-state / cancellation / significance-filter machinery via the dispatch seam (compute-node-contract §2–§5). Engine-wiring slice: compute-node-contract §8 task κ (task 3429).
+- **Axis-2 — Morph's internal composition calls stdlib FEA-as-ComputeNode:** unchanged — no. The morph trampoline body does **not** invoke the stdlib `fn solve_elastic_static @optimized("solver::elastic_static")` ComputeNode. It composes `reify-solver-elastic` primitives directly (`element_stiffness`, `assemble_global_stiffness`, `apply_dirichlet_row_elimination`, `solve_cg`), sidestepping GR-001 (struct-ctor runtime eval) entirely — the morph does not need `Material`/`Load`/`Support` runtime ctors.
+
+These two axes are orthogonal. The "essentially `solve_elastic_static`" sentence above describes axis-2 algorithmic equivalence (same BVP, same primitives, different inputs) — not routing through the stdlib `solve_elastic_static` ComputeNode entry point.
+
 RBF morphing (thin-plate spline, Wendland C2) is *not* taken: it requires its own implementation effort and has no quality advantage over the elasticity morph. Pure Laplacian smoothing is *not* taken as the primary path: it degrades on boundary curvature changes and graded meshes — fine as a quick-pass for small changes but unsuitable as the general algorithm.
 
 **Spatially-varying fictitious stiffness.** Uniform fictitious stiffness causes the elasticity morph to "absorb" most boundary displacement near the largest elements, leaving the small-element regions overstrained. Standard mitigation: scale local stiffness inversely with element size (small elements → stiffer). One simple workable rule is `youngs_modulus_local ∝ 1 / element_volume` (or `1 / edge_length²` for tets). This preserves mesh gradation — small elements near features stay small, large elements in bulk regions absorb the bulk of the displacement.
