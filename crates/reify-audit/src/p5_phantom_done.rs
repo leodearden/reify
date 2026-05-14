@@ -9,26 +9,30 @@
 //! Reference: `docs/architecture-audit/f-infra-design.md` §10 (T-1) and §11
 //! (D-1 dependency row).
 
-use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity, TaskMetadata};
+use crate::{AuditContext, EvidenceRef, Finding, GitCommit, Pattern, Severity, TaskMetadata};
 
-/// The git ref the detector diffs claimed-merge commits *against*. Production
-/// runs against `main`; the integration tests configure their `MockGitOps`
-/// with this exact string so the keys line up.
+/// The git ref the detector diffs claimed commits *against*. Production runs
+/// against `main`; the integration tests configure their `MockGitOps` with
+/// this exact string so the keys line up.
 const MAIN_BASE: &str = "main";
 
 /// Run the P5 detector across every `status="done"` task in
 /// `ctx.task_metadata`. Returns one [`Finding`] per phantom-done task.
 ///
 /// Slice-1 corroboration logic, per `f-infra-design.md` §10:
-/// 1. For `kind="merged"`: confirm a `task_completed` event exists in
-///    runs.db AND `git diff main..<claimed_commit>` covers every path in
-///    `metadata.files`.
-/// 2. For `kind="found_on_main"`: confirm `git log main --grep <task_id>`
-///    returns ≥1 commit (the path coverage is checked by the same logic).
+/// 1. **Primary**: `git diff main..<claimed_commit>` must cover every path
+///    in `metadata.files`. For `kind="merged"`, runs.db must additionally
+///    contain a `task_completed` event for the task.
+/// 2. **Cargo.lock-only guard** (memory:
+///    `project_post_merge_equivalence_false_positive_cargo_lock.md`):
+///    if the lone missing entry is `Cargo.lock`, downgrade to Low.
+/// 3. **Convergent-FF rescue** (memory:
+///    `project_unblock_convergent_ff_worktree_reap.md`): if
+///    `git log main --grep <task_id>` returns sibling commits whose
+///    aggregated diff covers the entire missing set, downgrade to Low and
+///    cite each contributing sibling SHA via `EvidenceRef::Commit`.
 ///
-/// Mismatches produce `Severity::High` findings. The false-positive guards
-/// (steps 6/8/10 of T-1) downgrade to `Low` or emit a separate
-/// `Severity::Medium` gitignore-flag finding.
+/// Mismatches that survive both guards produce `Severity::High`.
 pub fn check(ctx: &AuditContext) -> Vec<Finding> {
     let mut findings = Vec::new();
 
@@ -54,50 +58,36 @@ fn check_one(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Finding> {
     let prov = meta.done_provenance.as_ref()?;
     let kind = prov.kind.as_deref().unwrap_or("");
 
-    // Compute "missing" — the metadata.files entries NOT covered by the
-    // primary corroborating diff. Empty missing = clean done.
-    let missing: Vec<String> = match kind {
-        "merged" => {
-            let commit = prov.commit.as_deref().unwrap_or("");
-            // Corroboration (a): runs.db has a task_completed event.
-            // (Memory: procedural_runs_db_forensics.md.) When the row is
-            // absent, ALL metadata.files count as un-corroborated — the
-            // phantom-done has no orchestrator-side trail at all.
-            if !has_task_completed_event(ctx, &meta.task_id) {
-                return Some(build_high_finding(meta, &meta.files));
-            }
-            // Corroboration (b): the claimed commit's diff covers
-            // every metadata.files path.
-            let diff = ctx.git.diff_changed_paths(MAIN_BASE, commit);
-            files_missing_from(&meta.files, &diff)
-        }
-        "found_on_main" => {
-            // Per design doc §10: a sibling commit must exist mentioning
-            // the task_id, and its diff must touch ≥1 metadata.files path.
-            let hits = ctx.git.log_grep(MAIN_BASE, &meta.task_id);
-            if hits.is_empty() {
-                return Some(build_high_finding(meta, &meta.files));
-            }
-            // Aggregate sibling diffs — any path covered by any hit counts.
-            let mut covered: Vec<String> = Vec::new();
-            for c in &hits {
-                covered.extend(ctx.git.diff_changed_paths(MAIN_BASE, &c.sha));
-            }
-            files_missing_from(&meta.files, &covered)
-        }
-        // Unknown / absent kind — leave to T-2/T-3 to refine. For slice-1,
-        // we don't second-guess; treat as corroborated.
-        _ => return None,
-    };
+    // Corroboration (a) — runs.db trail. For kind="merged", absence of a
+    // task_completed event means the orchestrator never recorded the
+    // completion at all — definitive phantom-done, no sibling rescue.
+    // (Memory: procedural_runs_db_forensics.md.)
+    if kind == "merged" && !has_task_completed_event(ctx, &meta.task_id) {
+        return Some(build_high_finding(
+            meta,
+            &meta.files,
+            "metadata.status=done but no task_completed event in runs.db",
+        ));
+    }
 
+    // Corroboration (b) — primary git check. The claimed commit's diff
+    // against main must cover every metadata.files entry. For
+    // kind="found_on_main" with no `commit` field (the work was discovered
+    // on main rather than merged through), the primary check yields
+    // "everything missing" and the sibling-rescue path takes over.
+    let primary_covered = match prov.commit.as_deref() {
+        Some(commit) => ctx.git.diff_changed_paths(MAIN_BASE, commit),
+        None => Vec::new(),
+    };
+    let missing = files_missing_from(&meta.files, &primary_covered);
     if missing.is_empty() {
         return None;
     }
 
     // Cargo.lock-only divergence guard. When the lone missing entry is
     // Cargo.lock — and every other metadata.files path was corroborated by
-    // the claimed commit's diff — main has merely absorbed an unrelated
-    // dependency bump after our task wrote its lockfile. Not phantom-done.
+    // the primary diff — main has merely absorbed an unrelated dependency
+    // bump after our task wrote its lockfile. Not phantom-done.
     // Memory: project_post_merge_equivalence_false_positive_cargo_lock.md.
     if is_cargo_lock_only(&missing) {
         return Some(Finding {
@@ -114,17 +104,53 @@ fn check_one(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Finding> {
         });
     }
 
-    // TODO step-8: convergent-fast-forward guard
-    //   (memory: project_unblock_convergent_ff_worktree_reap.md)
-    //   — if `git.log_grep("main", task_id)` finds sibling commits whose
-    //   diffs cover the entire missing set, downgrade to Severity::Low and
-    //   add EvidenceRef::Commit per contributing sibling.
+    // Convergent fast-forward / sibling-absorbed rescue. The task's branch
+    // may have been reaped after a sibling FF; `git log main --grep <id>`
+    // surfaces the actual landing commit(s). If the union of those sibling
+    // diffs covers every missing path, downgrade to Low and cite each
+    // contributing sibling SHA. Memory: project_unblock_convergent_ff_worktree_reap.md.
+    let siblings = ctx.git.log_grep(MAIN_BASE, &meta.task_id);
+    if !siblings.is_empty() {
+        let mut sibling_covered: Vec<String> = Vec::new();
+        let mut contributing: Vec<&GitCommit> = Vec::new();
+        for c in &siblings {
+            let diff = ctx.git.diff_changed_paths(MAIN_BASE, &c.sha);
+            // Only cite siblings that contribute to closing the missing set.
+            if diff.iter().any(|p| missing.contains(p)) {
+                contributing.push(c);
+            }
+            sibling_covered.extend(diff);
+        }
+        let still_missing = files_missing_from(&missing, &sibling_covered);
+        if still_missing.is_empty() {
+            let mut evidence: Vec<EvidenceRef> = contributing
+                .iter()
+                .map(|c| EvidenceRef::Commit {
+                    sha: c.sha.clone(),
+                    subject: c.subject.clone(),
+                })
+                .collect();
+            evidence.push(EvidenceRef::MetadataFiles {
+                entries: missing.clone(),
+            });
+            return Some(Finding {
+                pattern: Pattern::P5PhantomDone,
+                severity: Severity::Low,
+                task_id: meta.task_id.clone(),
+                summary:
+                    "convergent fast-forward: claimed commit not reachable but sibling commit(s) \
+                     on main cover every missing metadata.files entry"
+                        .to_string(),
+                evidence,
+            });
+        }
+    }
 
-    Some(build_high_finding(meta, &missing))
-}
-
-fn is_cargo_lock_only(missing: &[String]) -> bool {
-    missing.len() == 1 && missing[0] == "Cargo.lock"
+    Some(build_high_finding(
+        meta,
+        &missing,
+        "metadata.files mismatch / commit not reachable from main",
+    ))
 }
 
 /// Run the runs.db existence query: returns true iff at least one
@@ -152,14 +178,18 @@ fn files_missing_from(files: &[String], covered: &[String]) -> Vec<String> {
         .collect()
 }
 
+fn is_cargo_lock_only(missing: &[String]) -> bool {
+    missing.len() == 1 && missing[0] == "Cargo.lock"
+}
+
 /// Construct a `Severity::High` phantom-done finding listing the missing
 /// metadata.files entries as the primary evidence.
-fn build_high_finding(meta: &TaskMetadata, missing: &[String]) -> Finding {
+fn build_high_finding(meta: &TaskMetadata, missing: &[String], summary: &str) -> Finding {
     Finding {
         pattern: Pattern::P5PhantomDone,
         severity: Severity::High,
         task_id: meta.task_id.clone(),
-        summary: "metadata.files mismatch / commit not reachable from main".to_string(),
+        summary: summary.to_string(),
         evidence: vec![EvidenceRef::MetadataFiles {
             entries: missing.to_vec(),
         }],
