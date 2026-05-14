@@ -150,6 +150,12 @@ pub struct GitCommit {
     pub subject: String,
 }
 
+/// `git log --format=...` template used by [`RealGitOps::log_grep`] and
+/// referenced from the [`GitOps::log_grep`] trait doc so a second
+/// implementation (e.g. a future async / git2-based variant) follows the
+/// same wire format the parser expects: SHA, tab (`%x09` = `\t`), subject.
+pub const LOG_GREP_FORMAT: &str = "%H%x09%s";
+
 /// All git operations the detectors need. Production: [`RealGitOps`] shells
 /// out via [`std::process::Command`]. Tests: [`MockGitOps`] (gated behind
 /// `feature = "test-support"`) holds canned answers.
@@ -157,8 +163,13 @@ pub struct GitCommit {
 /// Object-safe by design — `AuditContext` holds `&'a dyn GitOps` so the
 /// production and mock impls coexist behind the same vtable.
 pub trait GitOps {
-    /// `git log <branch> --grep=<pattern> --format='%H%n%s'`. Returns one
-    /// [`GitCommit`] per matching commit, oldest-first per git's default.
+    /// Equivalent of `git log <branch> --grep=<pattern> --format=<F>` where
+    /// `F` is [`LOG_GREP_FORMAT`] (SHA, tab, subject). Returns one
+    /// [`GitCommit`] per matching commit in `git log`'s default order
+    /// (newest-first / reverse-chronological). The P5 detector unions all
+    /// returned commits' diffs and does not depend on the order; future
+    /// detectors that DO care about order must rely on this contract
+    /// explicitly.
     fn log_grep(&self, branch: &str, pattern: &str) -> Vec<GitCommit>;
 
     /// `git diff --name-only <from>..<to>`. Returns the set of paths
@@ -204,7 +215,7 @@ impl GitOps for RealGitOps {
             "log",
             branch,
             &format!("--grep={}", pattern),
-            "--format=%H%x09%s",
+            &format!("--format={}", LOG_GREP_FORMAT),
         ]) else {
             return vec![];
         };
