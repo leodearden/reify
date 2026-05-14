@@ -1479,7 +1479,11 @@ pub fn resolve_auto_type_params_with_backtracking(
             "auto type-parameter cross-product search exceeded size cap: \
              {n} auto-type-params declared ({names}) with per-param candidate counts {counts:?} \
              yielding cross-product size {size}, max_cross_product_size = {cap}; \
-             falling back to per-parameter BFS (v0.1 algorithm)",
+             falling back to per-parameter BFS (v0.1 algorithm). \
+             NOTE: BFS-fallback soundness is contingent on Type::TypeParam \u{2192} Type::StructureRef \
+             substitution remaining deferred; once the substitution pass lands, this fallback may \
+             silently pick wrong substitutions (audit: \
+             docs/architecture-audit/findings/auto-resolution-backtracking.md M-006).",
             n = params.len(),
             names = param_names.join(", "),
             counts = candidate_counts,
