@@ -9,6 +9,10 @@ import type { RawGuiState } from '../types';
 import { Box3, Vector3 } from 'three';
 import type { Mesh, BufferGeometry } from 'three';
 import { testMode, setTestMode } from './testMode';
+import { toPng } from 'html-to-image';
+
+// ~16 MB SVG foreignObject XML limit — html-to-image silently truncates above this
+const MAX_SCREENSHOT_BYTES = 16 * 1024 * 1024;
 
 type CommandHandler = (params: Record<string, unknown>) => unknown | Promise<unknown>;
 
@@ -123,8 +127,8 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
 
       const { renderer, scene, camera } = vp;
       renderer.render(scene, camera);
-      const { toPng } = await import('html-to-image');
       const dataUrl = await toPng(document.documentElement, { cacheBust: true });
+      if (dataUrl.length > MAX_SCREENSHOT_BYTES) return { error: 'screenshot too large' };
       return { data: dataUrl };
     },
 
