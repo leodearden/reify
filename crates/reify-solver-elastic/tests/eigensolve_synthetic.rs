@@ -10,8 +10,11 @@
 //!   Closed-form spectrum: ascending |λ| = [0.2, 0.25, 1/3, 0.5, 1.0].
 //! - **Fixture B** — 50-DOF 1D-Laplacian pair (K = tridiag(-1,2,-1), B = I)
 //!   Closed-form: λ_k = 2(1 − cos(kπ/51)) for k=1..50.
-//! - **Fixture C** — pathological budget (Fixture B + max_iters=1 + tol=1e-14)
-//!   for non-convergence signal.
+//!   Note: n=50 ≤ 64 (faer internal MIN_DIM=32 floor) so shift-invert falls back
+//!   to the dense path for this fixture; both paths always converge.
+//! - **Fixture C** — 80-DOF 1D-Laplacian pair (K = tridiag(-1,2,-1), B = I)
+//!   n=80 > 64 so faer's Lanczos actually runs; used for the non-convergence
+//!   signal (max_iters=1, tol=1e-14 — pathologically under-budgeted).
 
 use faer::sparse::{SparseRowMat, Triplet};
 use reify_solver_elastic::eigensolve::{EigenSolverOptions, solve_eigen_dense, solve_eigen_shift_invert};
@@ -183,4 +186,76 @@ fn shift_invert_and_dense_agree_on_50dof_synthetic_pair() {
             (si - d).abs(),
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Fixture-C helpers: 80-DOF Laplacian (n > 64 so Lanczos actually runs)
+// ---------------------------------------------------------------------------
+
+/// Build K = tridiag(-1,2,-1) (80×80) and B = I (80×80).
+/// n=80 > 64 so faer's effective_max_dim = min(max(32,64,10),80) = 64 < 80:
+/// partial_self_adjoint_eigen runs the Lanczos loop without the dense fallback.
+fn fixture_c() -> (SparseRowMat<usize, f64>, SparseRowMat<usize, f64>) {
+    let n = 80usize;
+    let mut k_trips = Vec::with_capacity(3 * n - 2);
+    for i in 0..n {
+        k_trips.push(Triplet::new(i, i, 2.0));
+        if i > 0 { k_trips.push(Triplet::new(i, i - 1, -1.0)); }
+        if i + 1 < n { k_trips.push(Triplet::new(i, i + 1, -1.0)); }
+    }
+    let b_trips: Vec<Triplet<usize, usize, f64>> =
+        (0..n).map(|i| Triplet::new(i, i, 1.0)).collect();
+    let k = SparseRowMat::try_new_from_triplets(n, n, &k_trips).unwrap();
+    let b = SparseRowMat::try_new_from_triplets(n, n, &b_trips).unwrap();
+    (k, b)
+}
+
+// ---------------------------------------------------------------------------
+// Step-7 test: non-convergence signal (Fixture C + pathological budget)
+// ---------------------------------------------------------------------------
+
+/// Pins PRD §5 "BucklingResult.converged = true iff all n_modes eigenvalues
+/// satisfy the tolerance criterion" at the kernel layer.
+///
+/// Uses Fixture C (80-DOF Laplacian, n=80 > 64) so the Lanczos path actually
+/// runs.  With tol=1e-300 (below f64 machine precision ≈ 1e-16) the residual
+/// check can never be satisfied — no mode locks regardless of max_iters=1 —
+/// so `n_converged_eigen = 0` → converged=false, empty result.
+///
+/// Note: 1e-300_f64 is finite and > 0.0 so it passes the contract guard;
+/// the impossibly tight tol is the "pathological" budget.
+#[test]
+fn shift_invert_reports_non_convergence_when_max_iters_too_low() {
+    let (k, b) = fixture_c();
+    let opts = EigenSolverOptions {
+        n_modes: 5,
+        tol: 1e-300, // below machine precision — Lanczos residuals never reach this
+        max_iters: 1,
+        sigma: 0.0,
+    };
+    let result = solve_eigen_shift_invert(&k, &b, opts);
+
+    assert!(
+        !result.converged,
+        "shift-invert must report converged=false when max_iters=1 and tol=1e-14 \
+         — got converged=true with {} eigenvalues",
+        result.eigenvalues.len(),
+    );
+    assert!(
+        result.eigenvalues.len() < 5,
+        "partial result must return fewer than n_modes=5 eigenvalues; \
+         got {}",
+        result.eigenvalues.len(),
+    );
+    assert_eq!(
+        result.eigenvalues.len(),
+        result.iterations,
+        "iterations must equal the number of converged eigenvalues returned",
+    );
+    assert_eq!(
+        result.eigenvectors.ncols(),
+        result.eigenvalues.len(),
+        "eigenvectors width must equal the number of returned eigenvalues",
+    );
+    // Must not panic — absence of panic IS the no-panic assertion.
 }
