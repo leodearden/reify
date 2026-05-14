@@ -287,8 +287,14 @@ fn files_missing_from(files: &[String], covered: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// True iff the sole missing entry is a `Cargo.lock` file (top-level or
+/// nested — e.g. `fuzz/Cargo.lock`, `examples/foo/Cargo.lock`). Matches by
+/// the path's final segment so nested lockfiles still benefit from the
+/// downgrade.
 fn is_cargo_lock_only(missing: &[String]) -> bool {
-    missing.len() == 1 && missing[0] == "Cargo.lock"
+    missing.len() == 1
+        && std::path::Path::new(&missing[0]).file_name()
+            == Some(std::ffi::OsStr::new("Cargo.lock"))
 }
 
 /// Construct a `Severity::High` phantom-done finding listing the missing
