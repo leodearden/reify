@@ -44,12 +44,40 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         if let Some(finding) = check_one(ctx, meta) {
             findings.push(finding);
         }
-        // TODO step-10: gitignore pre-pass adds a separate Severity::Medium
-        // finding here when any metadata.files entry is gitignored
-        // (memory: project_steward_metadata_files_gitignore_falsepositive.md).
+        if let Some(finding) = check_gitignored(ctx, meta) {
+            findings.push(finding);
+        }
     }
 
     findings
+}
+
+/// Independent pre-pass: any metadata.files entry that's gitignored gets
+/// flagged with one consolidated `Severity::Medium` finding per task. The
+/// corroboration check above doesn't filter these out because the
+/// gitignored path may legitimately appear in the diff (e.g. tree-sitter
+/// generated `parser.c` is committed at vendor sync time but ignored in
+/// normal workflow). Memory: project_steward_metadata_files_gitignore_falsepositive.md.
+fn check_gitignored(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Finding> {
+    let ignored: Vec<String> = meta
+        .files
+        .iter()
+        .filter(|p| ctx.git.is_gitignored(p))
+        .cloned()
+        .collect();
+    if ignored.is_empty() {
+        return None;
+    }
+    Some(Finding {
+        pattern: Pattern::P5PhantomDone,
+        severity: Severity::Medium,
+        task_id: meta.task_id.clone(),
+        summary:
+            "metadata.files contains gitignored entry — strip per \
+             project_steward_metadata_files_gitignore_falsepositive.md"
+                .to_string(),
+        evidence: vec![EvidenceRef::MetadataFiles { entries: ignored }],
+    })
 }
 
 /// Per-task corroboration. Returns `Some(Finding)` if the task is
