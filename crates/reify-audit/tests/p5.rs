@@ -4,12 +4,16 @@
 //! `docs/architecture-audit/f-infra-design.md` §10):
 //!   `cargo test -p reify-audit p5::tests`
 //!
-//! Cargo's test filter is a path-substring match. The integration-test path
-//! is `p5::tests::<name>` which contains the literal substring `p5::tests`,
-//! so this file is wrapped in `mod tests { ... }` to make the filter resolve.
+//! Cargo's test filter matches a path-substring against test paths
+//! *within* the integration-test binary (the binary's own filename is not
+//! part of those paths). To make the substring `p5::tests` resolve, the
+//! file body is wrapped in `mod p5 { mod tests { ... } }` so each test's
+//! path becomes `p5::tests::<name>`.
 //!
 //! All tests use in-memory rusqlite + MockGitOps so they remain hermetic
 //! (no real git repo, no real runs.db file).
+
+mod p5 {
 
 use reify_audit::{
     AuditContext, DoneProvenance, EvidenceRef, Finding, GitCommit, MockGitOps, Pattern, Severity,
@@ -597,3 +601,5 @@ mod tests {
         );
     }
 }
+
+} // mod p5

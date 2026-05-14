@@ -40,6 +40,11 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         if meta.status != "done" {
             continue;
         }
+        if let Some(target) = &ctx.target_task_id {
+            if &meta.task_id != target {
+                continue;
+            }
+        }
 
         if let Some(finding) = check_one(ctx, meta) {
             findings.push(finding);
@@ -50,6 +55,26 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
     }
 
     findings
+}
+
+/// Single-task entry point for the D-1 dark-factory pre-done hook
+/// (`docs/architecture-audit/f-infra-design.md` §3 + §11). Scopes the
+/// otherwise-identical [`check`] pass to one `task_id` so the orchestrator
+/// can call us synchronously before flipping a task to `done` without
+/// auditing its entire backlog.
+///
+/// Slice-1 ships the wrapper; T-4 will host the CLI subprocess that the
+/// hook actually invokes.
+pub fn check_pre_done(ctx: &AuditContext, task_id: &str) -> Vec<Finding> {
+    let scoped = AuditContext {
+        project_root: ctx.project_root.clone(),
+        conn: ctx.conn,
+        git: ctx.git,
+        task_metadata: ctx.task_metadata.clone(),
+        target_task_id: Some(task_id.to_string()),
+        window: ctx.window.clone(),
+    };
+    check(&scoped)
 }
 
 /// Independent pre-pass: any metadata.files entry that's gitignored gets
