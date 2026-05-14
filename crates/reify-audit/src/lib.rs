@@ -3,3 +3,300 @@
 //! This crate implements the F-infra detector core described in
 //! `docs/architecture-audit/f-infra-design.md`. Slice 1 (T-1) ships only the
 //! P5 phantom-done detector; P1/P2 follow in T-2/T-3.
+//!
+//! ## Design seams
+//!
+//! Per `f-infra-design.md` §3 ("pure logic; no scheduler, no MCP server")
+//! and §10 (T-1 single-crate, narrow-lock-friendly), all side effects are
+//! abstracted behind two seams:
+//!
+//! 1. **`&rusqlite::Connection`** — production opens
+//!    `data/orchestrator/runs.db`; tests use [`rusqlite::Connection::open_in_memory`]
+//!    seeded with the schema embedded in `tests/p5.rs`.
+//! 2. **[`GitOps`] trait** — production uses [`RealGitOps`] which shells out
+//!    to `git`; tests use [`MockGitOps`] (gated behind the `test-support`
+//!    feature) with HashMap-backed canned answers.
+//!
+//! Both seams let the integration tests in `tests/p5.rs` exercise every code
+//! path (happy path + four false-positive guards + `check_pre_done`
+//! filtering) without a real git repo or a real runs.db file.
+
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+pub mod p5_phantom_done;
+
+// -----------------------------------------------------------------------
+// Public surface — finding shape
+// -----------------------------------------------------------------------
+
+/// Severity ladder for findings emitted by any detector.
+///
+/// Per task description ("verified phantom-done → high"; the documented
+/// false-positive guards "downgrade to low"). `Medium` is reserved for
+/// metadata-cleanliness findings such as gitignored entries in
+/// `metadata.files` (see
+/// `~/.claude/projects/-home-leo-src-reify/memory/project_steward_metadata_files_gitignore_falsepositive.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Severity {
+    Low,
+    Medium,
+    High,
+}
+
+/// Detector pattern identifier. P1/P2 variants are reserved for T-2/T-3 of
+/// the F-infra rollout (`docs/architecture-audit/f-infra-design.md` §10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Pattern {
+    /// P5 — phantom-done: a task marked `status=done` whose claimed
+    /// provenance commit cannot be corroborated against runs.db /
+    /// `git log main`.
+    P5PhantomDone,
+}
+
+/// A pointer to forensic evidence supporting a [`Finding`]. Renders verbatim
+/// in the eventual `/audit` report; consumers may follow it back to the
+/// underlying source (file, commit, metadata blob, runs.db row).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EvidenceRef {
+    /// Filesystem path relative to `project_root`.
+    File { path: String },
+    /// A git commit by SHA + first-line subject.
+    Commit { sha: String, subject: String },
+    /// One or more entries from a task's `metadata.files`.
+    MetadataFiles { entries: Vec<String> },
+    /// A row in `data/orchestrator/runs.db`. `key` is a free-form locator
+    /// (e.g. `"task_id=3242"`) — humans, not parsers, consume this.
+    RunsDb { table: String, key: String },
+}
+
+/// A single forensic finding emitted by a detector.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Finding {
+    pub pattern: Pattern,
+    pub severity: Severity,
+    pub task_id: String,
+    pub summary: String,
+    pub evidence: Vec<EvidenceRef>,
+}
+
+// -----------------------------------------------------------------------
+// Public surface — input shape
+// -----------------------------------------------------------------------
+
+/// Subset of Taskmaster's `tasks.json` schema needed by P5.
+///
+/// Caller pre-loads this from fused-memory / Taskmaster (T-4 CLI will be the
+/// loader). Keeping the library decoupled from fused-memory's wire format
+/// makes the API stable and mocking trivial — see
+/// `f-infra-design.md` §3.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskMetadata {
+    pub task_id: String,
+    pub status: String,
+    pub files: Vec<String>,
+    pub done_provenance: Option<DoneProvenance>,
+}
+
+/// `metadata.done_provenance` payload as written by reify-orchestrator's
+/// resolution path. `kind` is one of `"merged"`, `"found_on_main"`,
+/// `"manual"`, etc.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DoneProvenance {
+    pub kind: Option<String>,
+    pub commit: Option<String>,
+    pub note: Option<String>,
+}
+
+/// Optional time window for narrowing detector scope (e.g. "audit only the
+/// last N hours"). Reserved for the periodic `/audit` sweep; the D-1
+/// pre-done hook path leaves this `None` and lets `target_task_id` do the
+/// scoping. Per `f-infra-design.md` §10.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TimeWindow {
+    /// ISO-8601 `since` bound (inclusive). `None` = unbounded.
+    pub since: Option<String>,
+    /// ISO-8601 `until` bound (exclusive). `None` = unbounded.
+    pub until: Option<String>,
+}
+
+/// Read-only execution context threaded into each detector's `check(...)`.
+///
+/// Borrowed from caller (D-1 hook path or periodic `/audit` sweep) so the
+/// crate never owns a connection or spawns processes itself.
+pub struct AuditContext<'a> {
+    pub project_root: PathBuf,
+    pub conn: &'a rusqlite::Connection,
+    pub git: &'a dyn GitOps,
+    pub task_metadata: HashMap<String, TaskMetadata>,
+    /// When `Some`, detectors restrict their work to that single task.
+    /// The D-1 pre-done hook sets this; the periodic `/audit` sweep leaves
+    /// it `None`.
+    pub target_task_id: Option<String>,
+    /// Reserved for periodic-sweep scoping. None of the slice-1 detector
+    /// paths consume this yet — see [`TimeWindow`].
+    pub window: Option<TimeWindow>,
+}
+
+// -----------------------------------------------------------------------
+// GitOps seam
+// -----------------------------------------------------------------------
+
+/// A git commit row (subject is the first line of the commit message).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitCommit {
+    pub sha: String,
+    pub subject: String,
+}
+
+/// All git operations the detectors need. Production: [`RealGitOps`] shells
+/// out via [`std::process::Command`]. Tests: [`MockGitOps`] (gated behind
+/// `feature = "test-support"`) holds canned answers.
+///
+/// Object-safe by design — `AuditContext` holds `&'a dyn GitOps` so the
+/// production and mock impls coexist behind the same vtable.
+pub trait GitOps {
+    /// `git log <branch> --grep=<pattern> --format='%H%n%s'`. Returns one
+    /// [`GitCommit`] per matching commit, oldest-first per git's default.
+    fn log_grep(&self, branch: &str, pattern: &str) -> Vec<GitCommit>;
+
+    /// `git diff --name-only <from>..<to>`. Returns the set of paths
+    /// changed between the two refs.
+    fn diff_changed_paths(&self, from: &str, to: &str) -> Vec<String>;
+
+    /// `git check-ignore <path>` — true iff `path` is gitignored
+    /// (or matches a negated rule that re-ignores).
+    fn is_gitignored(&self, path: &str) -> bool;
+}
+
+/// Production [`GitOps`] impl that shells out to `git`. Untested by the
+/// slice-1 integration suite (see `MockGitOps` for the test seam) — kept
+/// minimal so the eventual T-4 CLI can construct one and call
+/// [`p5_phantom_done::check_pre_done`].
+pub struct RealGitOps {
+    /// Working directory passed as `git -C <dir>` to every invocation.
+    pub project_root: PathBuf,
+}
+
+impl RealGitOps {
+    pub fn new(project_root: impl Into<PathBuf>) -> Self {
+        Self { project_root: project_root.into() }
+    }
+
+    fn run(&self, args: &[&str]) -> Option<String> {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&self.project_root)
+            .args(args)
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        String::from_utf8(out.stdout).ok()
+    }
+}
+
+impl GitOps for RealGitOps {
+    fn log_grep(&self, branch: &str, pattern: &str) -> Vec<GitCommit> {
+        let Some(stdout) = self.run(&[
+            "log",
+            branch,
+            &format!("--grep={}", pattern),
+            "--format=%H%x09%s",
+        ]) else {
+            return vec![];
+        };
+        stdout
+            .lines()
+            .filter_map(|l| {
+                let mut parts = l.splitn(2, '\t');
+                let sha = parts.next()?.to_string();
+                let subject = parts.next().unwrap_or("").to_string();
+                Some(GitCommit { sha, subject })
+            })
+            .collect()
+    }
+
+    fn diff_changed_paths(&self, from: &str, to: &str) -> Vec<String> {
+        let Some(stdout) = self.run(&["diff", "--name-only", &format!("{}..{}", from, to)]) else {
+            return vec![];
+        };
+        stdout
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    fn is_gitignored(&self, path: &str) -> bool {
+        // `git check-ignore` exit code 0 = ignored, 1 = not ignored.
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&self.project_root)
+            .args(["check-ignore", "--quiet", path])
+            .status()
+            .map(|s| s.code() == Some(0))
+            .unwrap_or(false)
+    }
+}
+
+// -----------------------------------------------------------------------
+// Test-support seam
+// -----------------------------------------------------------------------
+
+/// HashMap-backed [`GitOps`] for tests. Gated behind `feature = "test-support"`
+/// so it never pollutes the production public API. The crate self-pulls this
+/// feature in its own `[dev-dependencies]` so integration tests in
+/// `tests/p5.rs` see it; downstream crates wanting to construct one for
+/// their own tests should depend on `reify-audit` with the feature enabled.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Debug, Default)]
+pub struct MockGitOps {
+    log_grep: HashMap<(String, String), Vec<GitCommit>>,
+    diff_changed_paths: HashMap<(String, String), Vec<String>>,
+    is_gitignored: HashMap<String, bool>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl MockGitOps {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn set_log_grep(&mut self, branch: &str, pattern: &str, commits: Vec<GitCommit>) {
+        self.log_grep
+            .insert((branch.to_string(), pattern.to_string()), commits);
+    }
+
+    pub fn set_diff_changed_paths(&mut self, from: &str, to: &str, paths: Vec<String>) {
+        self.diff_changed_paths
+            .insert((from.to_string(), to.to_string()), paths);
+    }
+
+    pub fn set_is_gitignored(&mut self, path: &str, ignored: bool) {
+        self.is_gitignored.insert(path.to_string(), ignored);
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl GitOps for MockGitOps {
+    fn log_grep(&self, branch: &str, pattern: &str) -> Vec<GitCommit> {
+        self.log_grep
+            .get(&(branch.to_string(), pattern.to_string()))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn diff_changed_paths(&self, from: &str, to: &str) -> Vec<String> {
+        self.diff_changed_paths
+            .get(&(from.to_string(), to.to_string()))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn is_gitignored(&self, path: &str) -> bool {
+        self.is_gitignored.get(path).copied().unwrap_or(false)
+    }
+}

@@ -146,6 +146,7 @@ mod tests {
             git: &git,
             task_metadata,
             target_task_id: None,
+            window: None,
         };
 
         let findings = p5_phantom_done::check(&ctx);
