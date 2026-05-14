@@ -1338,7 +1338,12 @@ pub fn resolve_auto_type_params_with_backtracking(
     // strict `>`: params.len()==max_depth still runs DFS; only params.len()>max_depth falls back.
     if params.len() > max_depth {
         let message = format!(
-            "auto type-parameter search exceeded depth bound: {n} auto-type-params declared, max_depth = {m}; falling back to per-parameter BFS (v0.1 algorithm)",
+            "auto type-parameter search exceeded depth bound: {n} auto-type-params declared, \
+             max_depth = {m}; falling back to per-parameter BFS (v0.1 algorithm). \
+             NOTE: BFS-fallback soundness is contingent on Type::TypeParam \u{2192} Type::StructureRef \
+             substitution remaining deferred; once the substitution pass lands, this fallback may \
+             silently pick wrong substitutions (audit: \
+             docs/architecture-audit/findings/auto-resolution-backtracking.md M-005).",
             n = params.len(),
             m = max_depth,
         );
