@@ -306,11 +306,18 @@ impl CacheEntryHeader {
 /// constant in the same commit; otherwise cache entries written under the
 /// previous version will silently decode as garbage. The same logic applies to
 /// any bump of `zstd` past the `0.13` pin (e.g. 0.13 → 0.14 or 0.x → 1.x).
-/// Cross-checked by `elastic_result_format_version_is_one`, which forces any
+/// Cross-checked by `elastic_result_format_version_pinned`, which forces any
 /// FORMAT_VERSION bump to be deliberate. The `=1.3` pin blocks even minor
 /// bumps to `bincode`; `0.13` pins `zstd`'s 0.x line — both held in
 /// `Cargo.toml`.
-const ELASTIC_RESULT_FORMAT_VERSION: u32 = 1;
+///
+/// **v1 → v2 bump:** PRD `docs/prds/v0_4/shell-extract-engine-bridge.md`
+/// task β added an optional `shell_channels` tail (per-element top/bottom
+/// stress + element local→global frame) appended after the existing
+/// displacement+stress slabs. v2 readers detect a v1 stream by hitting EOF
+/// while probing for the `shell_channels_present` discriminator byte; v1
+/// entries are read with `shell_channels: None`.
+const ELASTIC_RESULT_FORMAT_VERSION: u32 = 2;
 
 /// Canonical engine-version hash for FEA persistent-cache keys. Baked at
 /// build time by `build.rs` over the contributor source files listed in
@@ -390,6 +397,110 @@ struct ElasticResultHeader {
     stress_len: u64,
 }
 
+/// v2 tail header (PRD `docs/prds/v0_4/shell-extract-engine-bridge.md` β).
+/// Always written/read in v2; absent in v1 entries (detected via probe-byte
+/// EOF in [`read_shell_channels_tail`]).
+///
+/// bincode 1.3 fixint-LE wire size: 1 (`bool`) + 24 (three `u64`) = 25 bytes.
+/// `top_len` / `bottom_len` / `frame_len` are zero when `present` is false;
+/// kept on the wire unconditionally so the trailer is a fixed 25 bytes
+/// regardless of the present flag (simplifies the decoder and keeps `byte_size`
+/// accounting agnostic to the discriminator).
+#[derive(Serialize, Deserialize)]
+struct ShellChannelsHeader {
+    present: bool,
+    top_len: u64,
+    bottom_len: u64,
+    frame_len: u64,
+}
+
+impl From<&Option<ShellChannels>> for ShellChannelsHeader {
+    fn from(opt: &Option<ShellChannels>) -> Self {
+        match opt {
+            None => ShellChannelsHeader {
+                present: false,
+                top_len: 0,
+                bottom_len: 0,
+                frame_len: 0,
+            },
+            Some(c) => ShellChannelsHeader {
+                present: true,
+                top_len: c.top.len() as u64,
+                bottom_len: c.bottom.len() as u64,
+                frame_len: c.frame.len() as u64,
+            },
+        }
+    }
+}
+
+/// Read the v2 shell-channels tail, dispatching on probe-byte EOF for
+/// backward-compat with v1 entries.
+///
+/// Strategy: read one byte. If EOF (0 bytes) → v1 stream → return `Ok(None)`.
+/// Otherwise that byte is the bincode-encoded `present` discriminator
+/// (bincode 1.3 fixint-LE encodes `bool` as `0x00` / `0x01`); decode the
+/// three trailing `u64` lens via `read_exact` of the remaining 24 bytes and
+/// conditionally read the top/bottom/frame slabs.
+///
+/// Returning `Ok(None)` on EOF is the v1→v2 backward-compat contract:
+/// pre-bump entries deserialize cleanly with `shell_channels: None`. Pinned
+/// by `elastic_result_deserialize_of_v1_format_bytes_yields_shell_channels_none`.
+fn read_shell_channels_tail<R: Read>(r: &mut R) -> io::Result<Option<ShellChannels>> {
+    let mut probe = [0u8; 1];
+    let probe_n = r.read(&mut probe)?;
+    if probe_n == 0 {
+        // v1 stream: nothing after the stress slab.
+        return Ok(None);
+    }
+    let present = match probe[0] {
+        0 => false,
+        1 => true,
+        b => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "ShellChannelsHeader.present must be 0 or 1, got {b} \
+                     (corrupted or tampered cache entry?)"
+                ),
+            ));
+        }
+    };
+    // Three u64 lens always follow the bool, even when present = false.
+    let mut len_buf = [0u8; 24];
+    r.read_exact(&mut len_buf)?;
+    let top_len = u64::from_le_bytes(len_buf[0..8].try_into().expect("8 bytes"));
+    let bottom_len = u64::from_le_bytes(len_buf[8..16].try_into().expect("8 bytes"));
+    let frame_len = u64::from_le_bytes(len_buf[16..24].try_into().expect("8 bytes"));
+    if !present {
+        // The three lens are reserved-zero when absent (defensive: a tampered
+        // entry could advertise a non-zero len with present=false; refuse it
+        // because no slabs follow and the decoder would otherwise read the
+        // next entry's bytes — or, more often, hit EOF mid-decode).
+        if top_len != 0 || bottom_len != 0 || frame_len != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "ShellChannelsHeader present=false but lens are non-zero \
+                     (top={top_len} bottom={bottom_len} frame={frame_len}); \
+                     corrupted or tampered cache entry?"
+                ),
+            ));
+        }
+        return Ok(None);
+    }
+    let top_cap = check_f64_vec_len("shell_channels.top", top_len)?;
+    let bottom_cap = check_f64_vec_len("shell_channels.bottom", bottom_len)?;
+    let frame_cap = check_f64_vec_len("shell_channels.frame", frame_len)?;
+    let top = read_f64_slab(r, top_cap)?;
+    let bottom = read_f64_slab(r, bottom_cap)?;
+    let frame = read_f64_slab(r, frame_cap)?;
+    Ok(Some(ShellChannels {
+        top,
+        bottom,
+        frame,
+    }))
+}
+
 /// Opt-in trait for `ComputeNode` output value types that may be persisted
 /// across sessions in the on-disk cache.
 ///
@@ -441,11 +552,40 @@ pub trait PersistentlyCacheable: Sized {
     fn solve_time_ms(&self) -> u64;
 }
 
+/// Per-element shell stress + local-frame channels for MITC3 shell elements.
+///
+/// Layout follows PRD `docs/prds/v0_4/shell-extract-engine-bridge.md` §3:
+/// `top` / `bottom` are flattened per-element scalar/vector layouts aligned
+/// with the existing `ElasticResult.stress` (which aliases the mid layer);
+/// `frame` is the per-element row-major 3×3 local→global rotation matrix,
+/// matching the [`shell_element_frame`] convention at
+/// `crates/reify-solver-elastic/src/shell_result.rs:41`.
+///
+/// PRD §11 OQ-1 (per-element vs per-vertex) is tactically resolved as
+/// per-element here; nodal conversion lives in PRD task θ (GUI populator).
+///
+/// [`shell_element_frame`]: ../../reify-solver-elastic/src/shell_result.rs
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShellChannels {
+    /// Per-element stress at z = +t/2 (outer fibre), flattened to match the
+    /// layout of `ElasticResult.stress` (the mid layer).
+    pub top: Vec<f64>,
+    /// Per-element stress at z = -t/2 (inner fibre), flattened.
+    pub bottom: Vec<f64>,
+    /// Per-element 3×3 local→global rotation matrix, row-major, flattened
+    /// (9 `f64` per element). Consumed by the GUI populator (PRD task θ)
+    /// to map local-frame channels into global coordinates.
+    pub frame: Vec<f64>,
+}
+
 /// Linear-elastostatic FEA solver output container.
 ///
 /// Field set is fixed by the PRD: per-DOF displacement and stress arrays,
 /// a `max_von_mises` scalar summary, a `converged` flag, an `iterations`
-/// count, and a `solve_time_ms` cost metric for cache eviction.
+/// count, a `solve_time_ms` cost metric for cache eviction, and an optional
+/// [`ShellChannels`] tail for shell-classified bodies (PRD
+/// `docs/prds/v0_4/shell-extract-engine-bridge.md` §3 — populated by the
+/// FEA trampoline in PRD task δ; absent / `None` for tet-only bodies).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ElasticResult {
     pub displacement: Vec<f64>,
@@ -454,6 +594,13 @@ pub struct ElasticResult {
     pub converged: bool,
     pub iterations: u32,
     pub solve_time_ms: u64,
+    /// Optional shell-element channels. `None` for tet-only bodies (the
+    /// historical / v1 case); `Some(_)` for shell-classified bodies whose
+    /// trampoline populates per-element top/bottom stress + local frames.
+    /// Tet-only consumers ignore this field; the `result.stress` alias
+    /// contract at stdlib `solver_elastic.ri:325-328`
+    /// (`ShellStress.homogeneous(field).mid`) is unchanged.
+    pub shell_channels: Option<ShellChannels>,
 }
 
 /// Validate a header-declared `Vec<f64>` length against [`MAX_F64_ELEMENTS`]
@@ -723,6 +870,18 @@ impl PersistentlyCacheable for ElasticResult {
         // the byte-order pin tests.
         write_f64_slab(&mut encoder, &self.displacement)?;
         write_f64_slab(&mut encoder, &self.stress)?;
+        // v2 tail (PRD `docs/prds/v0_4/shell-extract-engine-bridge.md` β):
+        // always-present `ShellChannelsHeader` (1 byte `present` + three u64
+        // lens = 25 bytes) followed by top/bottom/frame slabs when present.
+        // v1 readers stop after the stress slab and never see this; v2
+        // readers detect a v1 stream by hitting EOF on the probe byte.
+        let shell_header = ShellChannelsHeader::from(&self.shell_channels);
+        bincode::serialize_into(&mut encoder, &shell_header).map_err(io::Error::other)?;
+        if let Some(channels) = &self.shell_channels {
+            write_f64_slab(&mut encoder, &channels.top)?;
+            write_f64_slab(&mut encoder, &channels.bottom)?;
+            write_f64_slab(&mut encoder, &channels.frame)?;
+        }
         encoder.finish()?;
         Ok(())
     }
@@ -755,6 +914,12 @@ impl PersistentlyCacheable for ElasticResult {
         let displacement = read_f64_slab(&mut decoder, displacement_cap)?;
         let stress = read_f64_slab(&mut decoder, stress_cap)?;
 
+        // v2 tail dispatch: probe one byte. EOF → v1 stream (shell_channels =
+        // None). Non-EOF → decode the v2 `ShellChannelsHeader` (the probe byte
+        // is the `present` bool; bincode 1.3 fixint encodes bool as exactly
+        // 0x00 / 0x01), then conditionally read top/bottom/frame slabs.
+        let shell_channels = read_shell_channels_tail(&mut decoder)?;
+
         Ok(ElasticResult {
             displacement,
             stress,
@@ -762,6 +927,7 @@ impl PersistentlyCacheable for ElasticResult {
             converged: header.converged,
             iterations: header.iterations,
             solve_time_ms: header.solve_time_ms,
+            shell_channels,
         })
     }
 
@@ -771,14 +937,18 @@ impl PersistentlyCacheable for ElasticResult {
         //      by `elastic_result_header_bincode_encoding_matches_pinned_hex_literal`).
         //   2. displacement slab: displacement.len() * 8 bytes (little-endian f64).
         //   3. stress slab: stress.len() * 8 bytes (little-endian f64).
+        //   4. (v2) bincode 1.3 fixint-LE encoded ShellChannelsHeader (25 bytes —
+        //      `present` 1 byte + three u64 lens 24 bytes).
+        //   5. (v2, only when shell_channels.is_some()) top/bottom/frame slabs:
+        //      8 * (top.len() + bottom.len() + frame.len()) bytes.
         // This method returns that total uncompressed length.
         //
-        // `bincode::serialized_size` is used rather than a hardcoded 37-byte
-        // magic constant so that future ElasticResultHeader field additions
-        // automatically update the uncompressed size without a manual edit.
-        // bincode 1.3 fixint-LE encoding of a struct with no variable-length fields
-        // cannot fail in practice — the `.unwrap_or(0)` is unreachable for the
-        // current struct shape (only fixed-size fields: u64, bool, u32, u64, u64, u64).
+        // `bincode::serialized_size` is used rather than a hardcoded magic
+        // constant so that future header field additions automatically update
+        // the uncompressed size without a manual edit. bincode 1.3 fixint-LE
+        // encoding of a struct with no variable-length fields cannot fail in
+        // practice — the `.expect(...)` is unreachable for the current struct
+        // shapes (only fixed-size fields).
         let header = ElasticResultHeader {
             max_von_mises_bits: self.max_von_mises.to_bits(),
             converged: self.converged,
@@ -794,7 +964,16 @@ impl PersistentlyCacheable for ElasticResult {
              byte_size accounting must be revisited.",
         );
         let slab_bytes = 8 * (self.displacement.len() as u64 + self.stress.len() as u64);
-        header_bytes + slab_bytes
+        let shell_header = ShellChannelsHeader::from(&self.shell_channels);
+        let shell_header_bytes = bincode::serialized_size(&shell_header).expect(
+            "ShellChannelsHeader has only fixed-size fields (bool, u64, u64, u64); \
+             bincode::serialized_size cannot fail.",
+        );
+        let shell_slab_bytes = match &self.shell_channels {
+            None => 0,
+            Some(c) => 8 * (c.top.len() as u64 + c.bottom.len() as u64 + c.frame.len() as u64),
+        };
+        header_bytes + slab_bytes + shell_header_bytes + shell_slab_bytes
     }
 
     fn solve_time_ms(&self) -> u64 {
@@ -1099,16 +1278,17 @@ mod tests {
     // and the static assertion.
 
     #[test]
-    fn elastic_result_format_version_is_one() {
+    fn elastic_result_format_version_pinned() {
         // Read from the trait associated const directly — no instance needed,
         // demonstrating the cache-layer use case where `(TypeId, FORMAT_VERSION)`
-        // can be looked up before any value materialises. Pins the project
-        // convention that FORMAT_VERSION starts at 1 because 0 means
-        // "uninitialised / unknown" (see `ELASTIC_RESULT_FORMAT_VERSION` doc).
-        // An intentional format bump must touch this assertion — that is the
-        // point: it forces a deliberate acknowledgement that cached bytes from
-        // the previous version are now incompatible.
-        assert_eq!(<ElasticResult as PersistentlyCacheable>::FORMAT_VERSION, 1);
+        // can be looked up before any value materialises. Pins the current
+        // FORMAT_VERSION value. An intentional format bump must touch this
+        // assertion — that is the point: it forces a deliberate acknowledgement
+        // that cached bytes from the previous version are now incompatible.
+        // Bumped 1 → 2 in shell-extract-engine-bridge PRD task β, which added
+        // the optional `shell_channels` tail; the v2 reader still accepts v1
+        // bytes (pinned by elastic_result_deserialize_of_v1_format_bytes_yields_shell_channels_none).
+        assert_eq!(<ElasticResult as PersistentlyCacheable>::FORMAT_VERSION, 2);
     }
 
     #[test]
@@ -1120,6 +1300,7 @@ mod tests {
             converged: false,
             iterations: 0,
             solve_time_ms: 9999,
+            shell_channels: None,
         };
         assert_eq!(nine_thousand_nine_hundred_ninety_nine.solve_time_ms(), 9999);
 
@@ -1131,6 +1312,7 @@ mod tests {
             converged: false,
             iterations: 0,
             solve_time_ms: 0,
+            shell_channels: None,
         };
         assert_eq!(zero.solve_time_ms(), 0);
     }
@@ -1145,6 +1327,7 @@ mod tests {
             converged: true,
             iterations: 423,
             solve_time_ms: 1234,
+            shell_channels: None,
         }
     }
 
@@ -1179,6 +1362,7 @@ mod tests {
             converged: false,
             iterations: 0,
             solve_time_ms: 0,
+            shell_channels: None,
         };
         let mut buf: Vec<u8> = Vec::new();
         original.serialize_to_writer(&mut buf).unwrap();
@@ -1215,6 +1399,7 @@ mod tests {
             converged: false,
             iterations: 0,
             solve_time_ms: 0,
+            shell_channels: None,
         };
         let mut buf: Vec<u8> = Vec::new();
         original.serialize_to_writer(&mut buf).unwrap();
@@ -1390,11 +1575,170 @@ mod tests {
             converged: true,
             iterations: 423,
             solve_time_ms: 1234,
+            shell_channels: None,
         };
         let mut buf: Vec<u8> = Vec::new();
         original.serialize_to_writer(&mut buf).unwrap();
         let decoded = ElasticResult::deserialize_from_reader(&mut &buf[..]).unwrap();
         assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn elastic_result_round_trip_with_shell_channels_some_is_bit_exact() {
+        // PRD `docs/prds/v0_4/shell-extract-engine-bridge.md` task β
+        // contract (a): every f64 in shell_channels.top / .bottom / .frame
+        // survives a serialize → deserialize cycle with its raw bit pattern
+        // intact, including NaN payloads / Inf / signed-zero. Bit-scrambled
+        // payload (same idiom as the existing 1M-element test) ensures every
+        // byte of every f64 is non-trivial, so a native-byte or wrong-len
+        // regression in any of the three new slabs surfaces here rather than
+        // silently aliasing.
+        let mut top: Vec<f64> = (0..18u64)
+            .map(|i| f64::from_bits(i.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xABAD_1DEA_0BAD_F00D))
+            .collect();
+        // Sentinel non-canonical NaN payload pins that the slab path does not
+        // normalise NaN through f64 arithmetic.
+        top[0] = f64::from_bits(0x7FF8_DEAD_BEEF_CAFE);
+        let bottom: Vec<f64> = (0..18u64)
+            .map(|i| f64::from_bits(i.wrapping_mul(0x6C62_272E_07BB_0142) ^ 0xC0DE_FACE_DEAD_C0DE))
+            .collect();
+        // 9 f64 per element × 2 elements = 18 entries: row-major 3×3 frames.
+        let frame: Vec<f64> = (0..18u64)
+            .map(|i| f64::from_bits(i.wrapping_mul(0xD737_E5B5_2727_2727) ^ 0x1234_5678_9ABC_DEF0))
+            .collect();
+        let original = ElasticResult {
+            displacement: vec![1.0, -2.5, std::f64::consts::PI, 0.0, 1e-9],
+            stress: vec![100e6, -50e6, 0.0, 250e6, 75e6, -125e6],
+            max_von_mises: 250e6,
+            converged: true,
+            iterations: 17,
+            solve_time_ms: 4321,
+            shell_channels: Some(ShellChannels {
+                top: top.clone(),
+                bottom: bottom.clone(),
+                frame: frame.clone(),
+            }),
+        };
+        let mut buf: Vec<u8> = Vec::new();
+        original.serialize_to_writer(&mut buf).unwrap();
+        let decoded = ElasticResult::deserialize_from_reader(&mut &buf[..]).unwrap();
+        let decoded_channels = decoded
+            .shell_channels
+            .as_ref()
+            .expect("Some(_) round-trip must yield Some(_) on decode");
+        assert_eq!(decoded_channels.top.len(), top.len());
+        assert_eq!(decoded_channels.bottom.len(), bottom.len());
+        assert_eq!(decoded_channels.frame.len(), frame.len());
+        for (d, o) in decoded_channels.top.iter().zip(top.iter()) {
+            assert_eq!(
+                d.to_bits(),
+                o.to_bits(),
+                "shell_channels.top bit pattern drift"
+            );
+        }
+        for (d, o) in decoded_channels.bottom.iter().zip(bottom.iter()) {
+            assert_eq!(
+                d.to_bits(),
+                o.to_bits(),
+                "shell_channels.bottom bit pattern drift"
+            );
+        }
+        for (d, o) in decoded_channels.frame.iter().zip(frame.iter()) {
+            assert_eq!(
+                d.to_bits(),
+                o.to_bits(),
+                "shell_channels.frame bit pattern drift"
+            );
+        }
+    }
+
+    #[test]
+    fn elastic_result_round_trip_with_shell_channels_none_appends_25_byte_zero_trailer() {
+        // PRD `docs/prds/v0_4/shell-extract-engine-bridge.md` task β
+        // contract (b): a tet-only result with `shell_channels: None` round-trips
+        // identically AND its decompressed wire layout retains the pre-bump
+        // displacement+stress prefix bytewise — the only addition is a fixed
+        // 25-byte ShellChannelsHeader trailer with present=0 and zero lens
+        // (1-byte bool false + 3×8-byte u64 zero in bincode 1.3 fixint-LE
+        // = 25 zero bytes). Pins that the shell-channels-trailer addition
+        // does not perturb the existing tet-only on-disk byte layout other
+        // than appending the trailer.
+        let original = make_sample_result();
+        assert!(
+            original.shell_channels.is_none(),
+            "make_sample_result must yield shell_channels: None"
+        );
+        let mut compressed: Vec<u8> = Vec::new();
+        original.serialize_to_writer(&mut compressed).unwrap();
+        let decoded = ElasticResult::deserialize_from_reader(&mut &compressed[..]).unwrap();
+        // Identity round-trip.
+        assert_eq!(decoded, original);
+        assert!(decoded.shell_channels.is_none());
+
+        // Decompress and pin the trailing 25 bytes are exactly the
+        // present=false, zero-len trailer.
+        let mut zstd_dec = zstd::Decoder::new(&compressed[..]).unwrap();
+        let mut decompressed: Vec<u8> = Vec::new();
+        io::Read::read_to_end(&mut zstd_dec, &mut decompressed).unwrap();
+        assert!(
+            decompressed.len() >= 25,
+            "decompressed stream must include the 25-byte trailer"
+        );
+        let tail = &decompressed[decompressed.len() - 25..];
+        assert_eq!(
+            tail,
+            &[0u8; 25][..],
+            "shell_channels=None v2 trailer must be 25 zero bytes \
+             (present=0 + top_len=bottom_len=frame_len=0)"
+        );
+    }
+
+    #[test]
+    fn elastic_result_deserialize_of_v1_format_bytes_yields_shell_channels_none() {
+        // PRD `docs/prds/v0_4/shell-extract-engine-bridge.md` task β
+        // contract (c): a stream produced by the pre-bump (v1) serializer —
+        // which has no ShellChannelsHeader trailer — must deserialize cleanly
+        // under the v2 reader, producing `shell_channels: None`.
+        //
+        // Strategy: synthesize a v1 wire stream by zstd-encoding a manually
+        // concatenated header + displacement-slab + stress-slab (no trailer),
+        // then feed it through deserialize_from_reader. The v2 reader's
+        // read_shell_channels_tail probe must hit EOF on the 1-byte probe
+        // and return None.
+        let displacement = vec![1.0_f64, -2.5_f64, std::f64::consts::PI];
+        let stress = vec![100e6_f64, -50e6_f64];
+        let header = ElasticResultHeader {
+            max_von_mises_bits: 100e6_f64.to_bits(),
+            converged: true,
+            iterations: 7,
+            solve_time_ms: 999,
+            displacement_len: displacement.len() as u64,
+            stress_len: stress.len() as u64,
+        };
+        let mut compressed: Vec<u8> = Vec::new();
+        {
+            let mut encoder = zstd::Encoder::new(&mut compressed, 0).unwrap();
+            bincode::serialize_into(&mut encoder, &header).unwrap();
+            for v in &displacement {
+                io::Write::write_all(&mut encoder, &v.to_le_bytes()).unwrap();
+            }
+            for v in &stress {
+                io::Write::write_all(&mut encoder, &v.to_le_bytes()).unwrap();
+            }
+            // No trailer — this is the v1 shape.
+            encoder.finish().unwrap();
+        }
+        let decoded = ElasticResult::deserialize_from_reader(&mut &compressed[..]).unwrap();
+        assert_eq!(decoded.displacement, displacement);
+        assert_eq!(decoded.stress, stress);
+        assert_eq!(decoded.max_von_mises.to_bits(), 100e6_f64.to_bits());
+        assert!(decoded.converged);
+        assert_eq!(decoded.iterations, 7);
+        assert_eq!(decoded.solve_time_ms, 999);
+        assert!(
+            decoded.shell_channels.is_none(),
+            "v1-format bytes must deserialize to shell_channels: None"
+        );
     }
 
     #[test]
@@ -1430,6 +1774,7 @@ mod tests {
             converged: true,
             iterations: 1,
             solve_time_ms: 42,
+            shell_channels: None,
         };
         let mut buf: Vec<u8> = Vec::new();
         original.serialize_to_writer(&mut buf).unwrap();
@@ -1475,6 +1820,7 @@ mod tests {
             converged: true,
             iterations: 7,
             solve_time_ms: 999,
+            shell_channels: None,
         };
         let mut compressed: Vec<u8> = Vec::new();
         original.serialize_to_writer(&mut compressed).unwrap();
@@ -1503,12 +1849,31 @@ mod tests {
             expected.extend_from_slice(&v.to_le_bytes());
         }
 
+        // Post-bump (FORMAT_VERSION = 2) the slab section is followed by a
+        // fixed-size 25-byte ShellChannelsHeader trailer. For the
+        // `shell_channels: None` case the trailer is all-zero bytes (1-byte
+        // bool false + 3×8-byte u64 zero in bincode 1.3 fixint-LE). The
+        // little-endian slab contract applies to the slab section only, so
+        // assert it on the prefix and pin the trailer separately.
+        let slab_end = expected.len();
         assert_eq!(
-            slice,
+            slice.len(),
+            slab_end + 25,
+            "decompressed stream must be header + slabs + 25-byte v2 trailer"
+        );
+        assert_eq!(
+            &slice[..slab_end],
             expected.as_slice(),
             "slab section must be unconditionally little-endian on disk; \
              any regression to native-byte encoding on a big-endian host \
              or accidental to_ne_bytes() usage will fail this assertion"
+        );
+        assert_eq!(
+            &slice[slab_end..],
+            &[0u8; 25][..],
+            "v2 trailer for shell_channels=None must be 25 zero bytes \
+             (covered more thoroughly by \
+              elastic_result_round_trip_with_shell_channels_none_appends_25_byte_zero_trailer)"
         );
     }
 
