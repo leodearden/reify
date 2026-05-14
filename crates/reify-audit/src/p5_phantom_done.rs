@@ -40,10 +40,10 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         if meta.status != "done" {
             continue;
         }
-        if let Some(target) = &ctx.target_task_id {
-            if &meta.task_id != target {
-                continue;
-            }
+        if let Some(target) = &ctx.target_task_id
+            && &meta.task_id != target
+        {
+            continue;
         }
 
         if let Some(finding) = check_one(ctx, meta) {
