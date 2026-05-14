@@ -85,6 +85,42 @@ assert "exit 0 in warning mode with orphan present" \
     "$CHECK_SCRIPT" --repo-root "$_fix2dir"
 
 # ==============================================================================
+# Check 2b: multi-line emit form is also detected
+# — the perl -0777 slurp-mode contract must match .emit(\n    "name" too.
+# ==============================================================================
+echo ""
+echo "--- Check 2b: multi-line emit form detected ---"
+
+_fix2bdir="$_tmpdir/fix2b"
+mkdir -p "$_fix2bdir/docs" "$_fix2bdir/gui/src-tauri/src"
+
+cat > "$_fix2bdir/docs/gui-event-channels.md" <<'INVENTORY'
+# Event Channels
+
+| Channel | Notes |
+|---|---|
+| `mesh-update` | wired |
+INVENTORY
+
+cat > "$_fix2bdir/gui/src-tauri/src/test_multiline_emit.rs" <<'RUST'
+fn emit_multiline(app: &AppHandle) {
+    app.emit(
+        "multiline-orphan-fixture",
+        ()
+    ).ok();
+}
+RUST
+
+_fix2b_stderr="$_tmpdir/fix2b_stderr.txt"
+"$CHECK_SCRIPT" --repo-root "$_fix2bdir" 2>"$_fix2b_stderr" || true
+
+assert "multi-line orphan detected in stderr" \
+    grep -q 'multiline-orphan-fixture' "$_fix2b_stderr"
+
+assert "multi-line form exits 0 in warning mode" \
+    "$CHECK_SCRIPT" --repo-root "$_fix2bdir"
+
+# ==============================================================================
 # Check 3: --strict exits non-zero when orphans present
 # ==============================================================================
 echo ""

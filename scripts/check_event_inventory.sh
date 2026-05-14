@@ -64,8 +64,9 @@ fi
 
 # Build the set of registered channel names using the published grep contract:
 # | `channel-name` | — matches every event-channel row in §1 / §2.
-# §2a (Tauri commands) also matches but is a harmless superset: command names
-# won't appear at emit-sites in correct code, so no false positives result.
+# Per the inventory format, §2a command rows use **bold** formatting (not
+# backticks) and are mechanically outside this regex; no special-case handling
+# needed here.
 registered=$(grep -oP '\| `\K[a-z0-9-]+(?=` \|)' "$INVENTORY" | sort -u || true)
 
 # Extract literal channel names from .emit("name", …) call sites in Rust.
