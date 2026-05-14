@@ -788,7 +788,7 @@ where
 /// variant addition is a single-site change (matching the pattern of
 /// `donate_warm_state_and_invalidate`).
 ///
-/// All four `NodeId` variants (Value, Constraint, Realization, Resolution,
+/// All five `NodeId` variants (Value, Constraint, Realization, Resolution,
 /// Compute) are handled symmetrically: each arm checks the corresponding
 /// `PersistentMap` on `new_graph`. Resolution-demand seeding has not yet
 /// landed in `build_demand_for_graph` (only Value/Constraint/Realization are
