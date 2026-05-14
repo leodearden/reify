@@ -848,20 +848,21 @@ fn elastic_result_constrains_iterations_and_max_von_mises_nonneg() {
 /// `ElasticResult` is the FEA solver-output container. It must declare
 /// exactly six params with the canonical names and types:
 ///
-///   - `displacement  : Real`     (Real placeholder for Field<Point3<Length>, Vector3<Length>>)
-///   - `stress        : Real`     (Real placeholder for Field<Point3<Length>, Tensor<2,3,Pressure>>)
+///   - `displacement  : Field<Point3<Length>, Vector3<Length>>`
+///     (tightened from Real placeholder in task 3117; resolver arm at
+///     `type_resolution.rs:1313` confirmed to work in `param` positions)
+///   - `stress        : Field<Point3<Length>, Tensor<2,3,Pressure>>`
+///     (tightened from Real placeholder in task 3117; same resolver confirmation)
 ///   - `frame         : Real`     (Real placeholder for Field<Point3<Length>, Matrix<3,3,Real>>;
-///     per-element local-to-global rotation; T16)
+///     per-element local-to-global rotation; T16; follow-up tightening out of task-G scope)
 ///   - `max_von_mises : Pressure`
 ///   - `converged     : Bool`
 ///   - `iterations    : Int`
 ///
-/// `displacement`, `stress`, and `frame` use `Real` placeholders pending
-/// Field<X,Y> support in `param` positions (see the TODO(field-in-param,
-/// task #3117) block in `solver_elastic.ri`). The runtime FEA solver (PRD
-/// task #16) populates these as Field-typed Maps regardless of the static
-/// `param` annotation. This test pins the placeholder types so a future
-/// Field<X,Y> migration becomes a deliberate update rather than silent drift.
+/// `frame` remains a `Real` placeholder pending the follow-up tightening pass
+/// (added post-audit; outside task-G scope). The runtime FEA solver (PRD
+/// task #16) populates it as a Field-typed Map regardless of the static
+/// `param` annotation.
 ///
 /// `frame` is the per-element local-to-global rotation
 /// (`Field<Point3<Length>, Matrix<3,3,Real>>` at runtime):
@@ -887,8 +888,32 @@ fn elastic_result_struct_has_correct_param_shape() {
     );
 
     let expected: &[(&str, Type)] = &[
-        ("displacement", Type::Real),
-        ("stress", Type::Real),
+        (
+            "displacement",
+            Type::Field {
+                domain: Box::new(Type::point3(Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                })),
+                codomain: Box::new(Type::vec3(Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                })),
+            },
+        ),
+        (
+            "stress",
+            Type::Field {
+                domain: Box::new(Type::point3(Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                })),
+                codomain: Box::new(Type::tensor(
+                    2,
+                    3,
+                    Type::Scalar {
+                        dimension: DimensionVector::PRESSURE,
+                    },
+                )),
+            },
+        ),
         ("frame", Type::Real),
         (
             "max_von_mises",

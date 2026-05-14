@@ -15,17 +15,16 @@
 // stays in `std.materials.fea`; solver wiring lives here.
 //
 // Encoding deviations from the PRD:
-//   1. PRD uses `Field<Point3<Length>, Vector3<Length>>` and
+//   1. (Historical) PRD uses `Field<Point3<Length>, Vector3<Length>>` and
 //      `Field<Point3<Length>, Tensor<2, 3, Pressure>>` for the
-//      `ElasticResult.displacement` and `ElasticResult.stress` outputs. The
-//      Reify type resolver currently registers `Field` only as a top-level
-//      `field def` declaration, not as a parametric `param`-position type
-//      (see `crates/reify-compiler/src/type_resolution.rs:1340-1398`). So
-//      `displacement` and `stress` use `Real` placeholder types here, with
-//      the runtime FEA solver (PRD task #16) populating them as Field-typed
-//      Maps regardless of the static `param` annotation. Same precedent as
-//      `materials_mechanical.ri` ("All dimensioned quantities use Real
-//      pending dedicated type system extensions").
+//      `ElasticResult.displacement` and `ElasticResult.stress` outputs. Task
+//      3088 added the `Field<D, C>` arm to `resolve_parameterized_builtin_type`
+//      and its `_with_subst` mirror (`type_resolution.rs:1313` and `:1509`).
+//      Task 3117 confirmed the arm works in `param` positions via the probe
+//      test at `tests/field_param_probe.rs`; `displacement` and `stress` are
+//      now declared with their precise Field types. `frame` and `ShellStress`
+//      top/mid/bottom remain `Real` placeholders — tightening them is a clean
+//      follow-up outside the audit-doc-classified scope of task-G.
 //   2. PRD writes `mesh_size : Length = auto` and `threads : Integer = num_cpus::get()`.
 //      Reify has no `auto` literal and no `num_cpus::get()` — both encode as
 //      `Option<T> = none`, with the solver applying its own fallback when the
@@ -261,26 +260,21 @@ structure def ElasticOptions {
 // Real-placeholder audit: docs/notes/stdlib-real-placeholder-audit.md
 //
 // Field semantics:
-//   displacement  — per-mesh-node displacement vector, returned as a
-//                   `Field<Point3<Length>, Vector3<Length>>` at runtime.
-//                   Statically declared as `Real` because Reify's type
-//                   resolver does not (yet) accept `Field<X, Y>` in `param`
-//                   positions; PRD task #16 (the runtime solver) populates
-//                   the actual Field-typed value through the same Map-based
-//                   path that `loads.rs` and `supports.rs` use. See the
-//                   TODO(field-in-param) note above for the planned
-//                   tightening.
-//   stress        — per-mesh-node Cauchy stress tensor, returned as a
-//                   `Field<Point3<Length>, Tensor<2, 3, Pressure>>` at
-//                   runtime. Same Real-placeholder rationale as
-//                   `displacement` above; covered by the same
-//                   TODO(field-in-param).
+//   displacement  — per-mesh-node displacement vector. PRD task #16 (the
+//                   runtime solver) populates the Field-typed value through
+//                   the same Map-based path that `loads.rs` and `supports.rs`
+//                   use. Tightened from Real placeholder in task 3117 after
+//                   confirming the resolver arm at `type_resolution.rs:1313`
+//                   accepts `Field<X, Y>` in `param` positions.
+//   stress        — per-mesh-node Cauchy stress tensor. Same runtime
+//                   population path as `displacement`; tightened from Real
+//                   placeholder in task 3117.
 //   frame         — per-mesh-element local-to-global rotation matrix,
 //                   returned as a `Field<Point3<Length>, Matrix<3, 3, Real>>`
 //                   at runtime (one 3×3 orthogonal matrix per element).
-//                   Statically declared as `Real` — same placeholder
-//                   rationale and TODO(field-in-param) as `displacement` /
-//                   `stress` above.
+//                   Statically declared as `Real` — follow-up tightening
+//                   is outside task-G scope (added post-audit). See the
+//                   resolution note below for context.
 //                   Tet population convention: the engine sets
 //                   `frame = Value::Undef` because tet stress is already in
 //                   the global Cartesian frame — no per-element local frame
@@ -309,8 +303,8 @@ structure def ElasticOptions {
 //                   iters") and for tightening / relaxing `cg_tolerance`
 //                   on subsequent runs.
 structure def ElasticResult {
-    param displacement : Real
-    param stress : Real
+    param displacement : Field<Point3<Length>, Vector3<Length>>
+    param stress : Field<Point3<Length>, Tensor<2, 3, Pressure>>
     param frame : Real
     param max_von_mises : Pressure
     param converged : Bool
