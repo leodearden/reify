@@ -59,3 +59,36 @@ fn occt_projector_project_onto_face_returns_distance_5_witness_for_box_face() {
         }
     }
 }
+
+/// Every edge of a centred 10×10×10 box has its perpendicular foot from the
+/// origin landing on a corner-adjacent point at distance `√(5² + 5²) = 5√2 ≈
+/// 7.0710678`. Each box edge is parallel to one of the three axes; the
+/// perpendicular foot from the origin onto e.g. the edge `(5, 5, t)` for
+/// `t ∈ [-5, 5]` is the closest point on that edge, at `(5, 5, 0)` with
+/// distance `√50 = 5√2`. Test that `OcctProjector::project_onto_edge` returns
+/// such a witness for every edge — edge-id independent, TopExp-order robust.
+#[test]
+fn occt_projector_project_onto_edge_returns_distance_5_sqrt_2_witness_for_box_edge() {
+    let (mut kernel, box_id) = box_kernel();
+    let edges = kernel
+        .extract_edges(box_id)
+        .expect("extract_edges should succeed for a valid box");
+    assert_eq!(edges.len(), 12, "box should have 12 edges");
+
+    let expected = (50.0_f64).sqrt(); // 5√2
+    let projector = OcctProjector::new(&kernel);
+    for &eid in &edges {
+        match projector.project_onto_edge(eid, [0.0, 0.0, 0.0]) {
+            Ok([x, y, z]) => {
+                let dist = (x * x + y * y + z * z).sqrt();
+                assert!(
+                    (dist - expected).abs() < 1e-6,
+                    "every edge of a centred 10×10×10 box has its perpendicular foot \
+                     from the origin at distance 5√2≈{expected}; got ({x}, {y}, {z}), \
+                     dist={dist}"
+                );
+            }
+            Err(e) => panic!("project_onto_edge on a box edge should succeed, got Err({e:?})"),
+        }
+    }
+}
