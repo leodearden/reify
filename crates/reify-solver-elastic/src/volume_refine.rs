@@ -118,6 +118,10 @@ impl std::error::Error for RefineError {
 /// finding (option (a)) chose visibility narrowing over a `Result`-typed
 /// length check; the up-front check in `refine_with_size_field` already
 /// covers the validation duty for in-tree callers.
+// G-allow: at time of writing, consumed by same-file caller
+// `refine_with_size_field` (line ~199). The G-tool heuristic treats
+// same-file callers as "no external consumer" and reports this helper as
+// an orphan; the real call site is live.
 pub(crate) fn project_per_element_sizes_to_vertices(
     volume_mesh: &VolumeMesh,
     per_element_sizes: &[f64],

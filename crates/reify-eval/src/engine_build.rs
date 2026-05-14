@@ -4948,13 +4948,17 @@ mod dispatch_volume_mesh_tests {
 /// `SweptKind` variants (Extrude, Revolve, SweepLinear) produce the same
 /// message text when the three emission conditions hold; only the body label
 /// differs.
-// Task 2989 follow-up (integration test): once this helper is wired into the
-// engine's realization pipeline, add an end-to-end test that runs a P2 elastic
+// Task 2947 follow-up (integration test): once this helper is wired into the
+// engine's realization pipeline by VolumeMesh realization wiring (task 2947,
+// pending at time of writing), add an end-to-end test that runs a P2 elastic
 // solve on a scene with at least two qualifying swept bodies and asserts exactly
 // one `Severity::Info` diagnostic per body (not zero, not two). The unit tests
 // below exercise the helper's contract but cannot verify the one-shot guarantee
 // at the call-site level.
-#[allow(dead_code)] // production wiring deferred to task 2989 (volume-mesh integration)
+//
+// Previously cited task 2989 (volume-mesh integration); 2989 closed without
+// wiring this helper, so the live blocker is now 2947.
+#[allow(dead_code)] // production wiring blocked on task 2947 (VolumeMesh realization wiring, pending at time of writing)
 pub(crate) fn p2_substitution_diagnostic(
     swept_kind: Option<&SweptKind>,
     force_tet: bool,

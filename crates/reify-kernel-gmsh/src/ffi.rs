@@ -221,6 +221,11 @@ unsafe extern "C" {
     /// `dimTags_n` is twice the number of entities. With
     /// `Mesh.MeshSizeFromPoints=1`, sizes set on 0D entities (dim=0) drive
     /// interpolated mesh sizing across the entire domain.
+    // G-allow: at time of writing, consumed by same-file Rust wrapper
+    // `mesh_set_size_at_entity` (ffi.rs ~line 786), which is called from
+    // `refine_volume.rs:262` inside `reify_kernel_gmsh::refine_volume_with_size_field`.
+    // The G-tool heuristic treats same-file callers as "no external consumer"
+    // and reports this extern as an orphan; the real call chain is live.
     pub fn gmshModelMeshSetSize(
         dimTags: *const c_int,
         dimTags_n: usize,
