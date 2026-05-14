@@ -11,8 +11,9 @@ import type { Mesh, BufferGeometry } from 'three';
 import { testMode, setTestMode } from './testMode';
 import { toPng } from 'html-to-image';
 
-// ~16 MB SVG foreignObject XML limit — html-to-image silently truncates above this
-const MAX_SCREENSHOT_BYTES = 16 * 1024 * 1024;
+// Reject oversize payloads before they hit the Tauri IPC channel.
+// ascii base64 data URLs are 1 char ≈ 1 byte, so string length is a valid proxy.
+const MAX_SCREENSHOT_CHARS = 16 * 1024 * 1024;
 
 type CommandHandler = (params: Record<string, unknown>) => unknown | Promise<unknown>;
 
@@ -118,6 +119,7 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       // Force a render to ensure the canvas has current content
       renderer.render(scene, camera);
       const dataUrl = renderer.domElement.toDataURL('image/png');
+      // Canvas path: no size guard — the IPC limit is html-to-image-specific (SVG foreignObject).
       return { data: dataUrl };
     },
 
@@ -128,7 +130,7 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       const { renderer, scene, camera } = vp;
       renderer.render(scene, camera);
       const dataUrl = await toPng(document.documentElement, { cacheBust: true });
-      if (dataUrl.length > MAX_SCREENSHOT_BYTES) return { error: 'screenshot too large' };
+      if (dataUrl.length > MAX_SCREENSHOT_CHARS) return { error: 'screenshot too large' };
       return { data: dataUrl };
     },
 
