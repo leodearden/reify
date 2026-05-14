@@ -89,7 +89,7 @@ Each of these is exercised by an `.ri` example file in `examples/kernel_queries/
 - GR-030 Phase 4 — GHR-δ (task 3606) — freshness walk + lazy revalidation. Sub-handles constructed in this PRD's Phase 3 rely on the freshness machinery to invalidate when the parent realization changes.
 - GR-030 Phase 5 — GHR-ε (task 3607) — cache-key composition + significance filter. Sub-handles must compose cleanly into the cache key per §4 below.
 
-The Phase 2/3 decomposition tasks are filed as `pending` with `add_dependency` edges on GR-030's GHR-γ (task 3605) at minimum. Phase 5 Manifold-parity tasks add an edge on multi-kernel-phase-3 ε (task 3530 / multi-handle Engine).
+The Phase 2/3 decomposition tasks are filed as `pending` with `add_dependency` edges on GR-030's GHR-γ (task 3605) at minimum. Phase 5 Manifold-parity tasks add an edge on multi-kernel-phase-3 ε (task 3436 / multi-handle Engine).
 
 ## §4 — Contract: the dispatcher seam
 
@@ -373,7 +373,7 @@ This is where sub-handle construction (§4) lands. Each task wires one selector 
 - **Task KGQ-ξ** — `QueryCapability` enum + capability-kind table + dispatcher capability-gating logic.
   - **Crates touched:** `reify-types/src/geometry.rs` (enum + `capability_kind` method), `reify-eval/src/geometry_ops.rs` (read `parent.produced_repr`, consult capability, emit `Diagnostic::QueryNotSupportedOnRepr` for mismatches), `reify-types/src/diagnostics.rs` (new diagnostic code).
   - **Observable signal:** Smoke fixture: `curvature(mesh_realized_solid, p)` from `.ri` source produces the diagnostic; cell stays `Value::Undef`. Integration test pins.
-  - **Prereqs:** Multi-kernel-phase-3.md γ (task 3528, `produced_repr` tagging — verify ID at decompose-time).
+  - **Prereqs:** Multi-kernel-phase-3.md α (task 3432, `produced_repr` tagging on `RealizationNodeData`).
 
 - **Task KGQ-ο** — Manifold queries module: Distance, Contains, Intersects, GeoEquiv (the 4 Phase-2 queries that flag `BRepAndMesh`).
   - **Crates touched:** `crates/reify-kernel-manifold/src/queries.rs` (extends KGQ-α's skeleton), `crates/reify-kernel-manifold/src/lib.rs` (`query()` arms), `crates/reify-kernel-manifold/tests/queries.rs` (NEW).
@@ -425,7 +425,7 @@ GR-030 GHR-γ (3605) [Value::GeometryHandle lowered]
               ├──→ KGQ-μ (curvature curve+surface)
               └──→ KGQ-ν (length + perimeter)
 
-Multi-kernel-phase-3 γ (3528) [produced_repr tagging]
+Multi-kernel-phase-3 α (3432) [produced_repr tagging]
    │
    └──→ KGQ-ξ (capability enum + gating)
               │
