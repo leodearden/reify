@@ -428,4 +428,15 @@ mod tests {
         }
         .d_matrix();
     }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "youngs_modulus")]
+    fn d_matrix_panics_when_youngs_modulus_is_negative() {
+        IsotropicElastic {
+            youngs_modulus: -1.0,
+            poisson_ratio: 0.3,
+        }
+        .d_matrix();
+    }
 }
