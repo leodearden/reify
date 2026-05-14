@@ -788,17 +788,20 @@ where
 /// variant addition is a single-site change (matching the pattern of
 /// `donate_warm_state_and_invalidate`).
 ///
-/// The `Resolution` arm intentionally returns `false`: Resolution nodes are
-/// live in the graph but are not yet wired through `diff_*` helpers nor
-/// the `add_demand` path in `eval()` / `edit_source()`. The moment
-/// Resolution demand lands, this arm becomes a latent staleness hazard;
-/// see `TODO(resolution-diff)` at step (6).
+/// All four `NodeId` variants (Value, Constraint, Realization, Resolution,
+/// Compute) are handled symmetrically: each arm checks the corresponding
+/// `PersistentMap` on `new_graph`. Resolution-demand seeding has not yet
+/// landed in `build_demand_for_graph` (only Value/Constraint/Realization are
+/// seeded today), so the Resolution arm is currently unreachable end-to-end
+/// via the `eval_set = dirty ∩ demand` intersection in `edit_source`. A
+/// separate `diff_resolutions` helper gap (see the step-(6) block comment)
+/// remains outstanding as a sibling concern.
 fn dependent_still_present_in_graph(dep: &NodeId, new_graph: &EvaluationGraph) -> bool {
     match dep {
         NodeId::Value(vcid) => new_graph.value_cells.contains_key(vcid),
         NodeId::Constraint(cid) => new_graph.constraints.contains_key(cid),
         NodeId::Realization(rid) => new_graph.realizations.contains_key(rid),
-        NodeId::Resolution(_) => false, // TODO(resolution-diff): see step (6)
+        NodeId::Resolution(rid) => new_graph.resolutions.contains_key(rid),
         NodeId::Compute(cnid) => new_graph.compute_nodes.contains_key(cnid),
     }
 }
@@ -2133,19 +2136,21 @@ impl Engine {
         //     expressions happen to remain shape-compatible (e.g., a
         //     fallback branch).
         //
-        //     Resolution nodes are currently treated as not-still-present:
-        //     they are live in the graph (`deps.rs`, `cache.rs`), but the
-        //     eval() / edit_source() demand-seeding path does not
-        //     `add_demand` them, and edit_source has no `diff_resolutions`
-        //     helper yet. The moment Resolution demand is added, this arm
-        //     becomes a latent staleness hazard — a Resolution dependent of
-        //     a removed cell would silently retain a stale cached value.
+        //     `dependent_still_present_in_graph` now handles all five NodeId
+        //     variants symmetrically — including Resolution, which consults
+        //     `new_graph.resolutions.contains_key(rid)`. Resolution-demand
+        //     seeding has not yet landed in `build_demand_for_graph`, so the
+        //     Resolution arm is currently unreachable end-to-end: the
+        //     `eval_set = dirty_cone ∩ new_demand` intersection filters
+        //     Resolution out before any cached value can go stale.
         //
-        //     TODO(resolution-diff): add a `diff_resolutions` helper and
-        //     replace this `false` with a
-        //     `new_snapshot.graph.resolutions.contains_key(rid)` presence
-        //     check, symmetric with the other arms, once Resolution nodes
-        //     participate in the demand set.
+        //     Sibling concern (tracked separately): `edit_source` still lacks
+        //     a `diff_resolutions` helper parallel to `diff_value_cells` /
+        //     `diff_constraints` / `diff_realizations`. That gap means changed
+        //     or removed Resolution nodes are never seeded into `dirty_cone`
+        //     via the changed/added/removed diff paths (steps (3)-(5)/(9)).
+        //     This is a separate task; do not conflate it with the membership
+        //     check above, which is now correct.
         {
             let old_reverse_index = &eval_state.reverse_index;
             for id in &removed {
