@@ -4,15 +4,15 @@ use std::sync::atomic::Ordering;
 use reify_compiler::find_template;
 use reify_constraints::SimpleConstraintChecker;
 use reify_test_support::{
-    CountingSubscriberBuilder, FailingMockGeometryKernel, MockGeometryKernel, bracket_source,
-    bracket_source_violating, bracket_source_with_width, warn_source_with_unknown_port_type,
-    warn_source_with_unknown_port_type_with_width,
+    CountingSubscriberBuilder, FailingMockGeometryKernel, MockConstraintSolver, MockGeometryKernel,
+    bracket_source, bracket_source_violating, bracket_source_with_width,
+    warn_source_with_unknown_port_type, warn_source_with_unknown_port_type_with_width,
 };
 use reify_types::ExportFormat;
 
-use reify_types::{DiagnosticInfo, SourceLocationInfo, ValueCellId};
+use reify_types::{DiagnosticInfo, ModulePath, SourceLocationInfo, Type, ValueCellId};
 
-use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
+use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, gt, literal, mm, value_ref};
 
 use crate::engine::{CompileFailure, CompileFailureKind, EngineSession, build_template_node, module_key, parse_value_string};
 use crate::types::EntityTreeNode;
@@ -7053,4 +7053,70 @@ fn engine_session_no_auto_resolve_emission_when_no_auto_params() {
         "no auto-resolve events should fire when bracket has no auto params, got {} events",
         events.len()
     );
+}
+
+/// Step-6: With a solver-injected session loaded with an auto-param fixture,
+/// `check_and_emit_for_test` must fire exactly [Start, Iteration, Complete].
+#[test]
+fn engine_session_auto_resolve_emitter_fires_start_iter_complete_when_solver_resolves() {
+    use std::sync::Arc;
+
+    let thickness_id = ValueCellId::new("S", "thickness");
+    let mut solved = std::collections::HashMap::new();
+    solved.insert(thickness_id.clone(), mm(5.0));
+    let solver = MockConstraintSolver::new_solved(solved);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "thickness", Type::length())
+        .constraint(
+            "S",
+            0,
+            None,
+            gt(value_ref("S", "thickness"), literal(mm(2.0))),
+        )
+        .build();
+
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None)
+        .with_solver_for_test(Box::new(solver));
+
+    let recorder = RecordingEmitter::new();
+    let events = Arc::clone(&recorder.events);
+    session.set_auto_resolve_emitter(Arc::new(recorder));
+
+    session.check_and_emit_for_test(&compiled);
+
+    let events = events.lock().unwrap();
+    assert_eq!(
+        events.len(),
+        3,
+        "expected exactly 3 events (Start, Iteration, Complete), got {}",
+        events.len()
+    );
+    assert!(
+        matches!(events[0], EmitEvent::Start),
+        "event[0] must be Start"
+    );
+    assert!(
+        matches!(events[1], EmitEvent::Iteration(_)),
+        "event[1] must be Iteration"
+    );
+    assert!(
+        matches!(events[2], EmitEvent::Complete),
+        "event[2] must be Complete"
+    );
+
+    // Assert the iteration payload has the expected parameter
+    if let EmitEvent::Iteration(ref iter) = events[1] {
+        assert!(
+            iter.parameters.contains_key("S.thickness"),
+            "parameters must contain 'S.thickness', got keys: {:?}",
+            iter.parameters.keys().collect::<Vec<_>>()
+        );
+        assert!(!iter.constraints.is_empty(), "constraints must be non-empty");
+    }
 }
