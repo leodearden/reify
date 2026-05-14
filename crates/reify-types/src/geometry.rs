@@ -1794,6 +1794,48 @@ impl From<&crate::identity::RealizationNodeId> for FeatureId {
     }
 }
 
+/// Per-axis sign discriminator for box-primitive corner vertices.
+///
+/// `Pos` is the +X face, `Neg` is the −X face. Paired with `YFace`/`ZFace`
+/// in `Role::CornerVertex` to name each of a box's 8 corners as a sign
+/// triple. PRD `docs/prds/v0_3/mesh-morphing-phase-2.md` §3.1 (task α).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum XFace {
+    Pos,
+    Neg,
+}
+
+/// Per-axis sign discriminator for box-primitive corner vertices (Y axis).
+/// See [`XFace`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum YFace {
+    Pos,
+    Neg,
+}
+
+/// Per-axis sign discriminator for box-primitive corner vertices (Z axis).
+/// See [`XFace`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ZFace {
+    Pos,
+    Neg,
+}
+
+/// Cap-face discriminator for sweep-family cap corner vertices.
+///
+/// Mirrors `CapKind`'s four variants — `Top`/`Bottom` (extrude gravitational
+/// convention) and `Start`/`End` (revolve/sweep parametric convention) — but
+/// names the corner-vertex case rather than the cap face itself.
+/// Paired with `Role::CapCornerVertex` to name a corner where a cap face
+/// meets the lateral side. PRD `docs/prds/v0_3/mesh-morphing-phase-2.md` §3.1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CapFace {
+    Top,
+    Bottom,
+    Start,
+    End,
+}
+
 /// Cap orientation for the `Role::Cap` variant.
 ///
 /// Two semantic flavours of cap exist:
@@ -1908,6 +1950,19 @@ pub enum Role {
     /// `reify_shell_extract::populate_mid_surface_attributes` from PRD
     /// `docs/prds/v0_4/structural-analysis-shells.md` line 81 (T20).
     MidSurfaceEdge,
+    /// A corner vertex of a box primitive — uniquely identified by the
+    /// three face-signs (±X, ±Y, ±Z) that meet at it. Produces 8 distinct
+    /// values per box. Emitted by per-primitive vertex seeders (task C).
+    ///
+    /// PRD `docs/prds/v0_3/mesh-morphing-phase-2.md` §3.1 (task α).
+    CornerVertex { x_face: XFace, y_face: YFace, z_face: ZFace },
+    /// A corner vertex of a swept solid where a cap face meets the lateral
+    /// envelope. Emitted by per-op vertex seeders for extrude / revolve /
+    /// sweep / loft (task C). `face` records which cap (top/bottom for
+    /// gravitational sweeps; start/end for parametric sweeps).
+    ///
+    /// PRD `docs/prds/v0_3/mesh-morphing-phase-2.md` §3.1 (task α).
+    CapCornerVertex { face: CapFace },
 }
 
 /// Per-topology-entity attribute record for v0.2 persistent naming.

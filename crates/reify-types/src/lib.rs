@@ -50,13 +50,13 @@ pub use expr::{
 };
 pub use geometry::{
     AttributeHistory, BRepKind, BooleanOpHistoryRecords, BooleanOpParents, BooleanOpParentsError,
-    CapKind, CapabilityDescriptor, DEFAULT_POINT_ON_SHAPE_TOLERANCE_M, DeletedRecord,
+    CapFace, CapKind, CapabilityDescriptor, DEFAULT_POINT_ON_SHAPE_TOLERANCE_M, DeletedRecord,
     EdgeCurveKind, ElementOrderTag, ExportError, ExportFormat, FaceSurfaceKind, FeatureId,
     FeatureTag, FeatureTagTable, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
     GeometryOp, GeometryQuery, HistoryRecord, KernelAttributeHook, KernelAttributeOutcome,
     KernelRegistration, LoftOpHistoryRecords, Mesh, ModEntry, Operation, QueryError, ReprKind,
     Role, StepKind, SweepOpHistoryRecords, TessError, TopologyAttribute, TopologyAttributeTable,
-    VolumeMesh, debug_assert_query_many_invariant,
+    VolumeMesh, XFace, YFace, ZFace, debug_assert_query_many_invariant,
 };
 pub use hash::ContentHash;
 pub use identity::*;

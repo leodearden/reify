@@ -907,6 +907,8 @@ fn role_sort_key(role: &Role) -> (u32, &'static str) {
         Role::LoftedFace => (9, "LoftedFace"),
         Role::MidSurfaceFace => (10, "MidSurfaceFace"),
         Role::MidSurfaceEdge => (11, "MidSurfaceEdge"),
+        Role::CornerVertex { .. } => (12, "CornerVertex"),
+        Role::CapCornerVertex { .. } => (13, "CapCornerVertex"),
     }
 }
 
