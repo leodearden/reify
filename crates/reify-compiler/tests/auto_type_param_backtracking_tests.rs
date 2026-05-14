@@ -4910,3 +4910,99 @@ structure def S7 : T7 { param x : Real = 7.0 }
         extra.message
     );
 }
+
+// ─── BFS-fallback substitution-soundness caveat in cross-product-cap diagnostic (task 3637) ──
+
+/// Four `AutoTypeParam`s, each with 2 implementing structures (4 × 2 × 2 × 2 = 16
+/// cross-product). Calling DFS with `max_depth = 6` and `max_cross_product_size = 10`
+/// triggers the cap fallback and emits `AutoTypeParamCrossProductSizeExceeded`.
+///
+/// This test is the M-006 mirror of
+/// `dfs_above_max_depth_diagnostic_includes_substitution_soundness_caveat`
+/// (the M-005 test added in task 3637 step-1).
+///
+/// Pins task 3637 acceptance #2 (third OR-branch): the
+/// `AutoTypeParamCrossProductSizeExceeded` diagnostic message must contain an
+/// explicit substitution-soundness caveat so that future agents implementing
+/// `Type::TypeParam → Type::StructureRef` substitution see the hazard at the
+/// diagnostic-emission point (audit: docs/architecture-audit/findings/
+/// auto-resolution-backtracking.md M-006).
+///
+/// Pins that the `.message` field contains all three load-bearing substrings:
+/// - `"substitution"` — the caveat explicitly names the substitution pass
+/// - `"BFS"` — the fallback algorithm is named (already present; this assertion
+///   verifies the caveat addition did not break the canonical suffix)
+/// - `"soundness"` — the caveat explicitly mentions soundness
+#[test]
+fn dfs_above_max_cross_product_size_diagnostic_includes_substitution_soundness_caveat() {
+    // Four distinct traits, each with 2 implementing structures.
+    // Same fixture as `dfs_above_max_cross_product_size_emits_warning_and_falls_back_to_bfs`.
+    let source = r#"
+trait T1 {}
+trait T2 {}
+trait T3 {}
+trait T4 {}
+
+structure def S1A : T1 { param x : Real = 1.0 }
+structure def S1B : T1 { param x : Real = 1.5 }
+structure def S2A : T2 { param x : Real = 2.0 }
+structure def S2B : T2 { param x : Real = 2.5 }
+structure def S3A : T3 { param x : Real = 3.0 }
+structure def S3B : T3 { param x : Real = 3.5 }
+structure def S4A : T4 { param x : Real = 4.0 }
+structure def S4B : T4 { param x : Real = 4.5 }
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    let template = TopologyTemplateBuilder::new("Bearing").build();
+    let checker = MockConstraintChecker::new();
+    let functions: &[CompiledFunction] = &[];
+
+    let params: Vec<AutoTypeParam> = (1..=4)
+        .map(|i| AutoTypeParam {
+            name: format!("P{}", i),
+            bounds: vec![format!("T{}", i)],
+            free: false,
+            use_site_span: SourceSpan::new(10 * i, 10 * i + 5),
+        })
+        .collect();
+
+    // Run DFS with max_cross_product_size = 10 (cross-product 4×2×2×2 = 16 > 10 ⇒ cap fallback fires).
+    let mut diagnostics = Vec::new();
+    resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        10,
+        &mut diagnostics,
+    );
+
+    let extra = diagnostics
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::AutoTypeParamCrossProductSizeExceeded))
+        .expect(
+            "DFS must emit AutoTypeParamCrossProductSizeExceeded when \
+             cross_product_size > max_cross_product_size",
+        );
+
+    assert!(
+        extra.message.contains("BFS"),
+        "cap diagnostic must still contain 'BFS' (canonical suffix); got: {:?}",
+        extra.message
+    );
+    assert!(
+        extra.message.contains("substitution"),
+        "cap diagnostic must contain 'substitution' (soundness caveat, task 3637 M-006); got: {:?}",
+        extra.message
+    );
+    assert!(
+        extra.message.contains("soundness"),
+        "cap diagnostic must contain 'soundness' (explicit hazard label, task 3637 M-006); got: {:?}",
+        extra.message
+    );
+}
