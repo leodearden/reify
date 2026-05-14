@@ -380,4 +380,258 @@ mod tests {
         .unwrap();
         assert_eq!(zero.solve_time_ms(), 0);
     }
+
+    // ---- step-5 round-trip pins ----
+
+    use crate::mid_surface_naming::MidSurfaceEdgeRecord;
+    use crate::segmentation::{RegionClassification, RegionInfo};
+    use reify_types::diagnostics::{Diagnostic, DiagnosticLabel, Severity, SourceSpan};
+    use reify_types::geometry::{CapKind, FeatureId, ModEntry, Role, TopologyAttribute};
+
+    /// Build a non-trivial `ShellExtractionResult` exercising every wire-format
+    /// path: special-value f64 components (NaN / ±Inf / -0.0), non-empty u32
+    /// label slabs, per-region voxel slabs, region metric f64::INFINITY, a
+    /// `TopologyAttribute` with `Cap(Top)` role + `user_label = Some(...)` +
+    /// non-empty `mod_history`, a `MidSurfaceEdgeRecord` with `MidSurfaceEdge`
+    /// role + `user_label = Some(...)`, and a `Diagnostic` carrying a
+    /// `DiagnosticLabel` + non-empty `candidates`.
+    fn make_round_trip_fixture() -> ShellExtractionResult {
+        let mid_surface = MidSurfaceMesh {
+            vertices: vec![
+                [f64::NAN, 0.0, -0.0],
+                [f64::INFINITY, f64::NEG_INFINITY, std::f64::consts::PI],
+                [1.0, 2.0, 3.0],
+            ],
+            triangles: vec![[0, 1, 2], [2, 1, 0]],
+            thickness: vec![f64::NAN, 1.5, 0.0],
+        };
+        let region_a = RegionInfo {
+            label: 0,
+            voxels: vec![[0, 0, 0], [1, 0, 0], [2, 0, 0]],
+            mean_thickness: 0.25,
+            extent: 1.0,
+            thickness_extent_ratio: 0.25,
+            classification: RegionClassification::ShellEligible,
+        };
+        let region_b = RegionInfo {
+            label: 1,
+            voxels: vec![[5, 5, 5]],
+            mean_thickness: 1.0,
+            extent: 0.0,
+            thickness_extent_ratio: f64::INFINITY,
+            classification: RegionClassification::TetEligible,
+        };
+        let segmentation = SegmentationResult {
+            regions: vec![region_a, region_b],
+            vertex_labels: vec![0, 1, u32::MAX],
+            triangle_labels: vec![0, u32::MAX],
+        };
+        let parent = FeatureId::new("Bracket#realization[0]");
+        let derived = FeatureId::derived_mid_surface(&parent);
+        let face_record = TopologyAttribute {
+            feature_id: derived.clone(),
+            role: Role::Cap(CapKind::Top),
+            local_index: 7,
+            user_label: Some("user-face".to_string()),
+            mod_history: vec![ModEntry {
+                splitting_feature_id: parent.clone(),
+                split_index: 3,
+            }],
+        };
+        let edge_attr = TopologyAttribute {
+            feature_id: derived,
+            role: Role::MidSurfaceEdge,
+            local_index: 0,
+            user_label: Some("user-edge".to_string()),
+            mod_history: vec![],
+        };
+        let edge_record = MidSurfaceEdgeRecord {
+            attribute: edge_attr,
+            region_pair: (0, 1),
+        };
+        let naming = MidSurfaceAttributes {
+            face_records: vec![face_record],
+            edges: vec![edge_record],
+        };
+        let diagnostic = Diagnostic::warning("clipped mid-surface near domain boundary")
+            .with_label(DiagnosticLabel::new(
+                SourceSpan::new(10, 25),
+                "diagnostic-label-message",
+            ))
+            .with_candidates(vec!["cand-a".to_string(), "cand-b".to_string()]);
+        ShellExtractionResult {
+            mid_surface,
+            segmentation,
+            naming,
+            solve_time_ms: 4242,
+            diagnostics: vec![diagnostic],
+        }
+    }
+
+    /// Assert that two `f64` values share the exact same bit-pattern. Used
+    /// for NaN / Inf / signed-zero round-trip pinning where `PartialEq`
+    /// would fail (NaN != NaN) or silently accept sign-bit drift. Mirrors
+    /// `persistent_cache.rs:1192` (the ElasticResult NaN bit-pattern pin).
+    fn assert_f64_bits_eq(label: &str, a: f64, b: f64) {
+        assert_eq!(
+            a.to_bits(),
+            b.to_bits(),
+            "{label}: bit-pattern drift (a={a:?}, b={b:?})"
+        );
+    }
+
+    #[test]
+    fn shell_extraction_result_serialize_deserialize_round_trip_preserves_all_buffers_bit_exact() {
+        let original = make_round_trip_fixture();
+        let mut buf: Vec<u8> = Vec::new();
+        original.serialize_to_writer(&mut buf).unwrap();
+        let decoded = ShellExtractionResult::deserialize_from_reader(&mut &buf[..]).unwrap();
+
+        // (a) every f64 in mid_surface.vertices round-trips bit-exact.
+        assert_eq!(
+            decoded.mid_surface.vertices.len(),
+            original.mid_surface.vertices.len(),
+            "vertices length drift"
+        );
+        for (i, (d, o)) in decoded
+            .mid_surface
+            .vertices
+            .iter()
+            .zip(original.mid_surface.vertices.iter())
+            .enumerate()
+        {
+            for (axis, (dv, ov)) in d.iter().zip(o.iter()).enumerate() {
+                assert_f64_bits_eq(&format!("vertices[{i}][{axis}]"), *dv, *ov);
+            }
+        }
+
+        // (b) every f64 in mid_surface.thickness round-trips bit-exact.
+        assert_eq!(
+            decoded.mid_surface.thickness.len(),
+            original.mid_surface.thickness.len(),
+            "thickness length drift"
+        );
+        for (i, (d, o)) in decoded
+            .mid_surface
+            .thickness
+            .iter()
+            .zip(original.mid_surface.thickness.iter())
+            .enumerate()
+        {
+            assert_f64_bits_eq(&format!("thickness[{i}]"), *d, *o);
+        }
+
+        // (c) triangles, vertex_labels, triangle_labels round-trip element-equal.
+        assert_eq!(decoded.mid_surface.triangles, original.mid_surface.triangles);
+        assert_eq!(
+            decoded.segmentation.vertex_labels,
+            original.segmentation.vertex_labels
+        );
+        assert_eq!(
+            decoded.segmentation.triangle_labels,
+            original.segmentation.triangle_labels
+        );
+
+        // (d) per-region voxels round-trip element-equal.
+        // (e) per-region f64 metrics round-trip bit-exact (incl. INFINITY).
+        assert_eq!(
+            decoded.segmentation.regions.len(),
+            original.segmentation.regions.len()
+        );
+        for (i, (d, o)) in decoded
+            .segmentation
+            .regions
+            .iter()
+            .zip(original.segmentation.regions.iter())
+            .enumerate()
+        {
+            assert_eq!(d.label, o.label, "region[{i}].label");
+            assert_eq!(d.voxels, o.voxels, "region[{i}].voxels");
+            assert_f64_bits_eq(
+                &format!("region[{i}].mean_thickness"),
+                d.mean_thickness,
+                o.mean_thickness,
+            );
+            assert_f64_bits_eq(&format!("region[{i}].extent"), d.extent, o.extent);
+            assert_f64_bits_eq(
+                &format!("region[{i}].thickness_extent_ratio"),
+                d.thickness_extent_ratio,
+                o.thickness_extent_ratio,
+            );
+            assert_eq!(
+                d.classification, o.classification,
+                "region[{i}].classification"
+            );
+        }
+
+        // (f) solve_time_ms round-trips equal.
+        assert_eq!(decoded.solve_time_ms, original.solve_time_ms);
+
+        // (g) naming.face_records and naming.edges round-trip equal under PartialEq.
+        assert_eq!(decoded.naming.face_records, original.naming.face_records);
+        assert_eq!(decoded.naming.edges, original.naming.edges);
+
+        // (h) diagnostics: severity + message + candidates + labels round-trip;
+        // code is documented-lossy → None on round-trip.
+        assert_eq!(decoded.diagnostics.len(), original.diagnostics.len());
+        for (i, (d, o)) in decoded
+            .diagnostics
+            .iter()
+            .zip(original.diagnostics.iter())
+            .enumerate()
+        {
+            assert_eq!(d.severity, o.severity, "diagnostics[{i}].severity");
+            assert_eq!(d.message, o.message, "diagnostics[{i}].message");
+            assert_eq!(d.candidates, o.candidates, "diagnostics[{i}].candidates");
+            assert_eq!(
+                d.labels.len(),
+                o.labels.len(),
+                "diagnostics[{i}].labels length"
+            );
+            for (j, (dl, ol)) in d.labels.iter().zip(o.labels.iter()).enumerate() {
+                assert_eq!(dl.span, ol.span, "diagnostics[{i}].labels[{j}].span");
+                assert_eq!(dl.message, ol.message, "diagnostics[{i}].labels[{j}].message");
+            }
+            // `code` field is documented as lossy: shell-specific
+            // DiagnosticCode variants don't exist yet (task ε owns them),
+            // so the wire-shape mirror drops it. Round-trips to None.
+            assert_eq!(d.code, None, "diagnostics[{i}].code must round-trip to None");
+        }
+    }
+
+    #[test]
+    fn shell_extraction_result_round_trips_with_empty_buffers() {
+        // Pin that all-zero-length slabs and empty nested Vecs round-trip
+        // cleanly — the slab loops must not assume "at least one element"
+        // (cf. `elastic_result_round_trips_with_empty_field_arrays` at
+        // `persistent_cache.rs:1207`).
+        let original = ShellExtractionResult {
+            mid_surface: MidSurfaceMesh {
+                vertices: vec![],
+                triangles: vec![],
+                thickness: vec![],
+            },
+            segmentation: SegmentationResult {
+                regions: vec![],
+                vertex_labels: vec![],
+                triangle_labels: vec![],
+            },
+            naming: MidSurfaceAttributes::default(),
+            solve_time_ms: 0,
+            diagnostics: vec![],
+        };
+        let mut buf: Vec<u8> = Vec::new();
+        original.serialize_to_writer(&mut buf).unwrap();
+        let decoded = ShellExtractionResult::deserialize_from_reader(&mut &buf[..]).unwrap();
+        assert!(decoded.mid_surface.vertices.is_empty());
+        assert!(decoded.mid_surface.triangles.is_empty());
+        assert!(decoded.mid_surface.thickness.is_empty());
+        assert!(decoded.segmentation.regions.is_empty());
+        assert!(decoded.segmentation.vertex_labels.is_empty());
+        assert!(decoded.segmentation.triangle_labels.is_empty());
+        assert!(decoded.naming.face_records.is_empty());
+        assert!(decoded.naming.edges.is_empty());
+        assert_eq!(decoded.solve_time_ms, 0);
+        assert!(decoded.diagnostics.is_empty());
+    }
 }
