@@ -4818,3 +4818,95 @@ structure def WaterCooled : Cooled {
         diagnostics[0].candidates
     );
 }
+
+// ─── BFS-fallback substitution-soundness caveat in depth-bound diagnostic (task 3637) ──
+
+/// Seven `AutoTypeParam`s (one per distinct trait with one matching structure
+/// each). Calling DFS with `max_depth = 6` triggers the depth-bound fallback
+/// and emits `AutoTypeParamDepthBoundExceeded`.
+///
+/// This test pins task 3637 acceptance #2 (third OR-branch): the
+/// `AutoTypeParamDepthBoundExceeded` diagnostic message must contain an
+/// explicit substitution-soundness caveat so that future agents implementing
+/// `Type::TypeParam → Type::StructureRef` substitution see the hazard at the
+/// diagnostic-emission point (audit: docs/architecture-audit/findings/
+/// auto-resolution-backtracking.md M-005).
+///
+/// Pins that the `.message` field contains all three load-bearing substrings:
+/// - `"substitution"` — the caveat explicitly names the substitution pass
+/// - `"BFS"` — the fallback algorithm is named (already present; this assertion
+///   verifies the caveat addition did not break the canonical suffix)
+/// - `"soundness"` — the caveat explicitly mentions soundness so the hazard
+///   is self-documenting at the point of fallback
+#[test]
+fn dfs_above_max_depth_diagnostic_includes_substitution_soundness_caveat() {
+    // Seven distinct traits, each with a single implementing structure.
+    // Same fixture as `dfs_above_max_depth_emits_warning_and_falls_back_to_bfs`.
+    let source = r#"
+trait T1 {}
+trait T2 {}
+trait T3 {}
+trait T4 {}
+trait T5 {}
+trait T6 {}
+trait T7 {}
+
+structure def S1 : T1 { param x : Real = 1.0 }
+structure def S2 : T2 { param x : Real = 2.0 }
+structure def S3 : T3 { param x : Real = 3.0 }
+structure def S4 : T4 { param x : Real = 4.0 }
+structure def S5 : T5 { param x : Real = 5.0 }
+structure def S6 : T6 { param x : Real = 6.0 }
+structure def S7 : T7 { param x : Real = 7.0 }
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    let template = TopologyTemplateBuilder::new("Bearing").build();
+    let checker = MockConstraintChecker::new();
+    let functions: &[CompiledFunction] = &[];
+
+    let params: Vec<AutoTypeParam> = (1..=7)
+        .map(|i| AutoTypeParam {
+            name: format!("P{}", i),
+            bounds: vec![format!("T{}", i)],
+            free: false,
+            use_site_span: SourceSpan::new(10 * i, 10 * i + 5),
+        })
+        .collect();
+
+    // Run DFS with max_depth = 6 (7 params > 6 ⇒ depth-bound fallback fires).
+    let mut diagnostics = Vec::new();
+    resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        usize::MAX,
+        &mut diagnostics,
+    );
+
+    let extra = diagnostics
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::AutoTypeParamDepthBoundExceeded))
+        .expect("DFS must emit AutoTypeParamDepthBoundExceeded when params.len() > max_depth");
+
+    assert!(
+        extra.message.contains("BFS"),
+        "depth-bound diagnostic must still contain 'BFS' (canonical suffix); got: {:?}",
+        extra.message
+    );
+    assert!(
+        extra.message.contains("substitution"),
+        "depth-bound diagnostic must contain 'substitution' (soundness caveat, task 3637 M-005); got: {:?}",
+        extra.message
+    );
+    assert!(
+        extra.message.contains("soundness"),
+        "depth-bound diagnostic must contain 'soundness' (explicit hazard label, task 3637 M-005); got: {:?}",
+        extra.message
+    );
+}
