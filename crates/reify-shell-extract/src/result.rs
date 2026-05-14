@@ -73,11 +73,78 @@ pub struct ShellExtractionResult {
 /// deserialization path when an invariant is violated.
 ///
 /// `#[non_exhaustive]` lets future variants be added without breaking
-/// external match exhaustiveness; pre-step-4 the enum is empty as a
-/// forward-declaration placeholder.
+/// external match exhaustiveness.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
-pub enum ShellExtractionResultError {}
+pub enum ShellExtractionResultError {
+    /// `mid_surface.thickness.len()` must equal `mid_surface.vertices.len()`.
+    /// A mismatch indicates a caller-constructed (non-T2-produced) bundle
+    /// with inconsistent parallel arrays. Shape mirrors
+    /// [`crate::segmentation::SegmentationError::MeshLengthMismatch`] so
+    /// the contract is uniform across the crate.
+    ///
+    /// The PRD's literal "`vertices.len() == 3 * thickness.len()`" wording
+    /// is the flat-XYZ-coordinate interpretation; under the structured
+    /// `Vec<[f64; 3]>` shape used by
+    /// [`crate::mid_surface::MidSurfaceMesh`], the structurally equivalent
+    /// invariant is one thickness per vertex.
+    LengthInvariantViolation {
+        /// Number of vertices in the bundled mid-surface mesh.
+        vertices_len: usize,
+        /// Number of thickness entries in the bundled mid-surface mesh.
+        thickness_len: usize,
+    },
+}
+
+impl std::fmt::Display for ShellExtractionResultError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ShellExtractionResultError::LengthInvariantViolation {
+                vertices_len,
+                thickness_len,
+            } => write!(
+                f,
+                "mid_surface.thickness.len() ({thickness_len}) ≠ \
+                 mid_surface.vertices.len() ({vertices_len}); \
+                 the two parallel arrays must be the same length"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ShellExtractionResultError {}
+
+impl ShellExtractionResult {
+    /// Construct a `ShellExtractionResult`, enforcing the length invariant
+    /// `mid_surface.vertices.len() == mid_surface.thickness.len()`.
+    ///
+    /// Returns [`ShellExtractionResultError::LengthInvariantViolation`] if
+    /// the two parallel arrays disagree. Producer code (the future
+    /// shell-extract `ComputeNode`, task γ) should always route through
+    /// this constructor; test fixtures that need to bypass the check may
+    /// use direct field construction.
+    pub fn new(
+        mid_surface: MidSurfaceMesh,
+        segmentation: SegmentationResult,
+        naming: MidSurfaceAttributes,
+        solve_time_ms: u64,
+        diagnostics: Vec<Diagnostic>,
+    ) -> Result<Self, ShellExtractionResultError> {
+        if mid_surface.vertices.len() != mid_surface.thickness.len() {
+            return Err(ShellExtractionResultError::LengthInvariantViolation {
+                vertices_len: mid_surface.vertices.len(),
+                thickness_len: mid_surface.thickness.len(),
+            });
+        }
+        Ok(Self {
+            mid_surface,
+            segmentation,
+            naming,
+            solve_time_ms,
+            diagnostics,
+        })
+    }
+}
 
 // Compile-time assertion that `ShellExtractionResult: PersistentlyCacheable`.
 // Lives at module scope (outside `#[cfg(test)]`) so the trait-bound is
