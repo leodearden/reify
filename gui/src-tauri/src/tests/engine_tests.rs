@@ -7249,6 +7249,8 @@ fn engine_session_auto_resolve_emitter_fires_on_set_parameter_when_solver_presen
     solved.insert(thickness_id.clone(), mm(5.0));
     let solver = MockConstraintSolver::new_solved(solved);
 
+    // The constraint references S.x so that changing S.x makes the constraint
+    // dirty → solver re-runs → resolved_params non-empty → emission fires.
     let template = TopologyTemplateBuilder::new("S")
         .param("S", "x", Type::length(), Some(literal(mm(5.0))))
         .auto_param("S", "thickness", Type::length())
@@ -7256,7 +7258,7 @@ fn engine_session_auto_resolve_emitter_fires_on_set_parameter_when_solver_presen
             "S",
             0,
             None,
-            gt(value_ref("S", "thickness"), literal(mm(2.0))),
+            gt(value_ref("S", "thickness"), value_ref("S", "x")),
         )
         .build();
 
@@ -7272,14 +7274,14 @@ fn engine_session_auto_resolve_emitter_fires_on_set_parameter_when_solver_presen
     let events = Arc::clone(&recorder.events);
     session.set_auto_resolve_emitter(Arc::new(recorder));
 
-    // Initial check: gives engine a snapshot; drains 3 events.
+    // Initial check: gives engine a snapshot and fires 3 events.
     session.check_and_emit_for_test(&compiled);
     // Inject compiled so set_parameter can validate the cell exists.
     session.inject_compiled_for_test(compiled);
     // Drain recorder before the set_parameter call.
     events.lock().unwrap().clear();
 
-    // set_parameter("S.x", "10mm") → edit_check → solver fires → emit sequence
+    // Changing S.x dirties the constraint (which reads S.x) → solver re-runs → emit fires.
     session.set_parameter("S.x", "10mm").expect("set_parameter should succeed");
 
     let events = events.lock().unwrap();

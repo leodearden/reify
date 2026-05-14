@@ -707,6 +707,7 @@ impl EngineSession {
             .edit_check(cell_id, value)
             .map_err(|e| format!("Engine error: {}", e))?;
 
+        self.emit_auto_resolve_if_any(&check_result);
         self.last_check = Some(check_result);
         self.build_gui_state()
     }
