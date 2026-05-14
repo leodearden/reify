@@ -570,6 +570,62 @@ pub struct PersistentViewState {
     pub timestamp: String,
 }
 
+// ---------------------------------------------------------------------------
+// Auto-resolve loop event payload types (Task 3479)
+// ---------------------------------------------------------------------------
+
+/// A single resolved auto-parameter value with display-unit conversion applied.
+///
+/// Mirrors the TypeScript `AutoResolveParameterValue` interface in
+/// `gui/src/types.ts`.  `value` carries the display-unit numeric (e.g., 4.2
+/// for 4.2 mm), not the SI numeric.  `display` is the formatted string used
+/// for the trajectory label in the auto-resolve panel.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AutoResolveParameterValue {
+    pub value: f64,
+    pub unit: String,
+    pub display: String,
+}
+
+/// Per-constraint progress within an auto-resolve iteration.
+///
+/// Mirrors the TypeScript `AutoResolveConstraintProgress` interface in
+/// `gui/src/types.ts`.  Optional fields (`unit`, `target_lower`,
+/// `target_upper`) are omitted from the JSON wire when absent — the GUI panel
+/// renders gracefully without them, using `satisfied` + `name` for the
+/// indicator row.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AutoResolveConstraintProgress {
+    pub name: String,
+    pub value: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_lower: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_upper: Option<f64>,
+    pub satisfied: bool,
+}
+
+/// Payload for the `auto-resolve-iteration` Tauri event.
+///
+/// Emitted once per Engine::check call that produces non-empty `resolved_params`.
+/// `iteration` is 0-indexed; in the current single-iteration-per-pass model
+/// it is always 0.  `driving_metric` and `driving_metric_value` are omitted
+/// when no primary metric is declared (the GUI treats absence as no-metric).
+///
+/// Mirrors the TypeScript `AutoResolveIteration` interface in `gui/src/types.ts`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AutoResolveIteration {
+    pub iteration: u32,
+    pub parameters: HashMap<String, AutoResolveParameterValue>,
+    pub constraints: HashMap<String, AutoResolveConstraintProgress>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub driving_metric: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub driving_metric_value: Option<f64>,
+}
+
 #[cfg(test)]
 mod format_value_range_tests {
     use super::*;
