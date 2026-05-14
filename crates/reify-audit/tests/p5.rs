@@ -416,4 +416,92 @@ mod tests {
             f.evidence
         );
     }
+
+    /// Models the gitignored-metadata.files false-positive
+    /// (`~/.claude/projects/-home-leo-src-reify/memory/project_steward_metadata_files_gitignore_falsepositive.md`):
+    /// metadata.files contains a generated/gitignored path that "looks
+    /// missing" because it's not committed. Even when corroboration is
+    /// otherwise clean, flag a separate Severity::Medium finding so the
+    /// user knows to strip the gitignored entry.
+    #[test]
+    fn gitignored_metadata_files_flagged() {
+        let conn = seed_db();
+        insert_run(&conn, "run-gi");
+        insert_task_result(&conn, "run-gi", "6000", "done");
+        insert_task_completed_event(&conn, "run-gi", "6000");
+
+        let mut git = MockGitOps::new();
+        // Corroboration is otherwise clean: diff covers BOTH files.
+        git.set_diff_changed_paths(
+            "main",
+            "abc123",
+            vec![
+                "tree-sitter-reify/src/parser.c".to_string(),
+                "real/file.rs".to_string(),
+            ],
+        );
+        git.set_log_grep("main", "6000", vec![]);
+        // The generated parser.c is gitignored; real source isn't.
+        git.set_is_gitignored("tree-sitter-reify/src/parser.c", true);
+        git.set_is_gitignored("real/file.rs", false);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "6000".to_string(),
+            TaskMetadata {
+                task_id: "6000".to_string(),
+                status: "done".to_string(),
+                files: vec![
+                    "tree-sitter-reify/src/parser.c".to_string(),
+                    "real/file.rs".to_string(),
+                ],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("abc123".to_string()),
+                    note: None,
+                }),
+            },
+        );
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+        };
+
+        let findings = p5_phantom_done::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly one (gitignore) finding; got {:?}",
+            findings
+        );
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::P5PhantomDone);
+        assert_eq!(f.severity, Severity::Medium);
+        assert_eq!(f.task_id, "6000");
+        assert!(
+            f.summary.to_lowercase().contains("gitignored"),
+            "summary should mention gitignored entry; got {:?}",
+            f.summary
+        );
+        let metadata_files_evidence = f.evidence.iter().find_map(|e| match e {
+            EvidenceRef::MetadataFiles { entries } => Some(entries),
+            _ => None,
+        });
+        let entries = metadata_files_evidence.expect("MetadataFiles evidence present");
+        assert!(
+            entries.iter().any(|p| p == "tree-sitter-reify/src/parser.c"),
+            "expected parser.c in MetadataFiles evidence; got {:?}",
+            entries
+        );
+        assert!(
+            !entries.iter().any(|p| p == "real/file.rs"),
+            "real/file.rs is NOT gitignored — should not appear; got {:?}",
+            entries
+        );
+    }
 }
