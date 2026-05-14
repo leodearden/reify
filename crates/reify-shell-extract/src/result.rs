@@ -1570,4 +1570,126 @@ mod tests {
         }
     }
 
+    // ---- step-11 uncompressed_byte_size pin ----
+
+    #[test]
+    fn shell_extraction_result_uncompressed_byte_size_matches_actual_buffer_sum() {
+        // Build a fixture with definite sizes so the manual byte accounting
+        // is unambiguous:
+        //   * 4 vertices  → 4 × 24 = 96 raw slab bytes
+        //   * 2 triangles → 2 × 12 = 24
+        //   * 4 thickness → 4 × 8 = 32
+        //   * 4 vertex_labels → 16
+        //   * 2 triangle_labels → 8
+        //   * 2 regions × 3 voxels each → 2 × 36 = 72
+        //   * Total slab bytes = 96 + 24 + 32 + 16 + 8 + 72 = 248
+        let mid_surface = MidSurfaceMesh {
+            vertices: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            triangles: vec![[0, 1, 2], [0, 2, 3]],
+            thickness: vec![1.0, 2.0, 3.0, 4.0],
+        };
+        let region_a = RegionInfo {
+            label: 0,
+            voxels: vec![[0, 0, 0], [1, 0, 0], [0, 1, 0]],
+            mean_thickness: 1.5,
+            extent: 1.0,
+            thickness_extent_ratio: 1.5,
+            classification: RegionClassification::ShellEligible,
+        };
+        let region_b = RegionInfo {
+            label: 1,
+            voxels: vec![[5, 5, 5], [5, 5, 6], [5, 5, 7]],
+            mean_thickness: 2.5,
+            extent: 1.0,
+            thickness_extent_ratio: 2.5,
+            classification: RegionClassification::TetEligible,
+        };
+        let segmentation = SegmentationResult {
+            regions: vec![region_a, region_b],
+            vertex_labels: vec![0, 0, 1, 1],
+            triangle_labels: vec![0, 1],
+        };
+        let value = ShellExtractionResult {
+            mid_surface,
+            segmentation,
+            naming: MidSurfaceAttributes::default(),
+            solve_time_ms: 0,
+            diagnostics: vec![],
+        };
+
+        // Computed sum: header bincode size + slab bytes.
+        let header = ShellExtractionResultHeader {
+            solve_time_ms: value.solve_time_ms,
+            vertices_len: value.mid_surface.vertices.len() as u64,
+            triangles_len: value.mid_surface.triangles.len() as u64,
+            thickness_len: value.mid_surface.thickness.len() as u64,
+            vertex_labels_len: value.segmentation.vertex_labels.len() as u64,
+            triangle_labels_len: value.segmentation.triangle_labels.len() as u64,
+            regions: value
+                .segmentation
+                .regions
+                .iter()
+                .map(|r| RegionInfoOnDisk {
+                    label: r.label,
+                    voxels_len: r.voxels.len() as u64,
+                    mean_thickness_bits: r.mean_thickness.to_bits(),
+                    extent_bits: r.extent.to_bits(),
+                    thickness_extent_ratio_bits: r.thickness_extent_ratio.to_bits(),
+                    classification: classification_to_u8(r.classification),
+                })
+                .collect(),
+            naming: MidSurfaceAttributesOnDisk {
+                face_records: vec![],
+                edges: vec![],
+            },
+            diagnostics: vec![],
+        };
+        let header_bytes = bincode::serialized_size(&header).unwrap();
+        let slab_bytes: u64 = 96 + 24 + 32 + 16 + 8 + 72;
+        let expected = header_bytes + slab_bytes;
+        assert_eq!(
+            value.uncompressed_byte_size(),
+            expected,
+            "uncompressed_byte_size must match header bincode size + slab byte sum"
+        );
+
+        // Empty-case pin: an all-empty value reports the empty-header
+        // bincode size and nothing else.
+        let empty = ShellExtractionResult {
+            mid_surface: MidSurfaceMesh {
+                vertices: vec![],
+                triangles: vec![],
+                thickness: vec![],
+            },
+            segmentation: SegmentationResult {
+                regions: vec![],
+                vertex_labels: vec![],
+                triangle_labels: vec![],
+            },
+            naming: MidSurfaceAttributes::default(),
+            solve_time_ms: 0,
+            diagnostics: vec![],
+        };
+        let empty_header = ShellExtractionResultHeader {
+            solve_time_ms: 0,
+            vertices_len: 0,
+            triangles_len: 0,
+            thickness_len: 0,
+            vertex_labels_len: 0,
+            triangle_labels_len: 0,
+            regions: vec![],
+            naming: MidSurfaceAttributesOnDisk {
+                face_records: vec![],
+                edges: vec![],
+            },
+            diagnostics: vec![],
+        };
+        let empty_header_bytes = bincode::serialized_size(&empty_header).unwrap();
+        assert_eq!(empty.uncompressed_byte_size(), empty_header_bytes);
+    }
 }
