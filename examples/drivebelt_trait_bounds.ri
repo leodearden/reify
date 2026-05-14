@@ -1,7 +1,7 @@
 // DriveBelt composed-trait-bound integration example + §6.3-§6.6 gap-fill samples
 //
 // PRD reference:  docs/prds/stdlib-trait-breadth.md §worked-examples (task #4 integration target)
-// Audit gaps:     docs/notes/stdlib-trait-audit.md §6.3-§6.6 (all four modules marked MISSING)
+// Audit gaps:     docs/notes/stdlib-trait-breadth-audit-v01.md §6.3-§6.6 (now CLOSED via task 2354)
 //
 // This file exercises two concerns in one place:
 //

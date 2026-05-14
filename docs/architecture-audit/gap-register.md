@@ -439,7 +439,7 @@ Contract document authored 2026-05-12: `docs/prds/v0_3/structure-instance-runtim
 
 | Field | Value |
 |---|---|
-| Mechanism | `docs/notes/stdlib-trait-audit.md` pre-dates inheritance fixes; PRD-named example file `integration_full_v01.ri` missing `#precision(0.001m)`; example `multi_load_bracket.ri` doesn't exist; `examples/m11_annotations.ri` doesn't exercise solver_hint collections; PRD-named smoke test on `examples/m5_purpose.ri` doesn't exist; PRD-promised `stdlib-trait-breadth-audit-v01.md` deliverable absent; `docs/auto-type-param-resolution.md` completeness unverified |
+| Mechanism | **`docs/notes/stdlib-trait-audit.md` pre-dates inheritance fixes — RESOLVED 2026-05-14 (task 3529): renamed to `stdlib-trait-breadth-audit-v01.md` and refreshed; PRD-promised `stdlib-trait-breadth-audit-v01.md` deliverable now present at the named path**; PRD-named example file `integration_full_v01.ri` missing `#precision(0.001m)` (resolved by commit `7f01d82e9c`); example `multi_load_bracket.ri` doesn't exist; `examples/m11_annotations.ri` doesn't exercise solver_hint collections; PRD-named smoke test on `examples/m5_purpose.ri` doesn't exist; `docs/auto-type-param-resolution.md` completeness unverified |
 | State | **DRIFT / TODO** (PRD-named artifacts stale or absent) |
 | Failure mode | F5 |
 | Evidence | `findings/stdlib-trait-breadth.md` M-002; `findings/pragmas.md` M-018; `findings/multi-load-case-fea.md` M-015; `findings/solver-hint-payloads.md` M-012; `findings/freshness-4-variant.md` M-018; `findings/auto-type-param-resolution.md` M-014; `findings/structural-analysis-fea.md` M-027; `findings/structural-analysis-shells.md` M-023; `findings/hex-wedge-meshing.md` M-023 (validation suite) |

@@ -34,7 +34,7 @@
 // MaterialSpec; `density` and `name` are inherited transitively.  Consumer
 // structures should carry one `material : MaterialSpec` slot, not one per
 // capability trait.  (Elastic, Strong, Hard, Ductile remain free-standing;
-// see docs/notes/stdlib-trait-audit.md §6.2 audit gap (d).)
+// see docs/notes/stdlib-trait-breadth-audit-v01.md §"Summary" gap (d).)
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ── Base material trait ──────────────────────────────────────────────────────

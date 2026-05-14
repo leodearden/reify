@@ -8,7 +8,7 @@
 // (task #3115).
 //
 // Spec reference: docs/reify-stdlib-reference.md §6.3 lines 680-694.
-// Audit reference: docs/notes/stdlib-trait-audit.md §6.3 (all traits marked MISSING).
+// Audit reference: docs/notes/stdlib-trait-breadth-audit-v01.md §6.3 (CLOSED via task 2354).
 //
 // Note on parent trait name: the spec text says `: Material` but `Material` was
 // renamed to `MaterialSpec` in task 1876 (see BREAKING CHANGE block in

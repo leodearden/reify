@@ -6,6 +6,15 @@
 **Mechanism count:** 14
 **Gap count:** 7
 
+> **Resolution note (2026-05-14, task 3529):** M-002 is resolved.
+> `docs/notes/stdlib-trait-audit.md` has been renamed to
+> `docs/notes/stdlib-trait-breadth-audit-v01.md` to match the PRD-named path, and the
+> doc has been refreshed to reflect the trait-inheritance state on main (with explicit
+> DONE markers and task/commit refs for each resolved gap). The body of this finding
+> doc preserves the 2026-05-12 audit snapshot below as a historical record of the
+> pre-refresh state; all references to `stdlib-trait-audit.md` in the body should be
+> read as the file now at the PRD-named path.
+
 ## Top concerns
 
 - **This PRD is almost entirely about declaring trait names and inheritance edges in `.ri` source.** All four PRD tasks (2347/2349/2352/2354) are done; the six trait-bearing stdlib `.ri` files exist; ~3,600 lines of integration tests pass. The PRD explicitly says "v0.1 *declares* every named trait... but **does not** wire conformance machinery beyond trait existence — that's a v0.2 concern." So the local audit surface is narrow: most "mechanisms" are declarations, and almost everything is `WIRED`. The interesting gaps are about **how much the spec was watered down** to match the v0.1 declaration-only scope.
