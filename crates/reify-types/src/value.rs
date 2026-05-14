@@ -7641,4 +7641,129 @@ mod tests {
         let sf2 = Value::SampledField(sample_field_1d_fixture());
         assert_eq!(sf.content_hash(), sf2.content_hash());
     }
+
+    // --- SampledField::grid_metadata_eq unit tests (task 3515) ---
+
+    /// Identical fixtures compare as equal via `grid_metadata_eq`.
+    #[test]
+    fn sampled_field_grid_metadata_eq_identical_returns_true() {
+        let a = sample_field_1d_fixture();
+        let b = sample_field_1d_fixture();
+        assert!(
+            a.grid_metadata_eq(&b),
+            "identical SampledFields must return true from grid_metadata_eq"
+        );
+    }
+
+    /// Mutating `name` alone must yield false.
+    #[test]
+    fn sampled_field_grid_metadata_eq_name_change_returns_false() {
+        let a = sample_field_1d_fixture();
+        let mut b = sample_field_1d_fixture();
+        b.name = "g".to_string();
+        assert!(
+            !a.grid_metadata_eq(&b),
+            "different name must return false from grid_metadata_eq"
+        );
+    }
+
+    /// Mutating `kind` alone must yield false.
+    #[test]
+    fn sampled_field_grid_metadata_eq_kind_change_returns_false() {
+        let a = sample_field_1d_fixture();
+        let mut b = sample_field_1d_fixture();
+        b.kind = SampledGridKind::Regular2D;
+        assert!(
+            !a.grid_metadata_eq(&b),
+            "different kind must return false from grid_metadata_eq"
+        );
+    }
+
+    /// Mutating `bounds_min[0]` alone must yield false.
+    #[test]
+    fn sampled_field_grid_metadata_eq_bounds_min_change_returns_false() {
+        let a = sample_field_1d_fixture();
+        let mut b = sample_field_1d_fixture();
+        b.bounds_min[0] = -1.0;
+        assert!(
+            !a.grid_metadata_eq(&b),
+            "different bounds_min must return false from grid_metadata_eq"
+        );
+    }
+
+    /// Mutating `bounds_max[0]` alone must yield false.
+    #[test]
+    fn sampled_field_grid_metadata_eq_bounds_max_change_returns_false() {
+        let a = sample_field_1d_fixture();
+        let mut b = sample_field_1d_fixture();
+        b.bounds_max[0] = 2.0;
+        assert!(
+            !a.grid_metadata_eq(&b),
+            "different bounds_max must return false from grid_metadata_eq"
+        );
+    }
+
+    /// Mutating `spacing[0]` alone must yield false.
+    #[test]
+    fn sampled_field_grid_metadata_eq_spacing_change_returns_false() {
+        let a = sample_field_1d_fixture();
+        let mut b = sample_field_1d_fixture();
+        b.spacing[0] = 0.25;
+        assert!(
+            !a.grid_metadata_eq(&b),
+            "different spacing must return false from grid_metadata_eq"
+        );
+    }
+
+    /// Mutating `axis_grids[0][1]` alone must yield false.
+    #[test]
+    fn sampled_field_grid_metadata_eq_axis_grids_change_returns_false() {
+        let a = sample_field_1d_fixture();
+        let mut b = sample_field_1d_fixture();
+        b.axis_grids[0][1] = 0.75;
+        assert!(
+            !a.grid_metadata_eq(&b),
+            "different axis_grids must return false from grid_metadata_eq"
+        );
+    }
+
+    /// Changing `interpolation` (Linear → NearestNeighbor) must yield false.
+    #[test]
+    fn sampled_field_grid_metadata_eq_interpolation_change_returns_false() {
+        let a = sample_field_1d_fixture();
+        let mut b = sample_field_1d_fixture();
+        b.interpolation = InterpolationKind::NearestNeighbor;
+        assert!(
+            !a.grid_metadata_eq(&b),
+            "different interpolation must return false from grid_metadata_eq"
+        );
+    }
+
+    /// Replacing `data` (same length, different values) must still return true —
+    /// `grid_metadata_eq` deliberately skips the value payload.
+    #[test]
+    fn sampled_field_grid_metadata_eq_data_change_returns_true() {
+        let a = sample_field_1d_fixture();
+        let mut b = sample_field_1d_fixture();
+        b.data = vec![9.0, 8.0, 7.0];
+        assert!(
+            a.grid_metadata_eq(&b),
+            "different data must still return true from grid_metadata_eq (data is skipped)"
+        );
+    }
+
+    /// Flipping `oob_emitted` must still return true —
+    /// `grid_metadata_eq` deliberately skips the runtime-mutability flag,
+    /// mirroring the AtomicBool exclusion in PartialEq.
+    #[test]
+    fn sampled_field_grid_metadata_eq_oob_emitted_change_returns_true() {
+        use std::sync::atomic::Ordering;
+        let a = sample_field_1d_fixture();
+        let b = sample_field_1d_fixture();
+        b.oob_emitted.store(true, Ordering::Release);
+        assert!(
+            a.grid_metadata_eq(&b),
+            "different oob_emitted must still return true from grid_metadata_eq (flag is skipped)"
+        );
+    }
 }
