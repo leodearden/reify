@@ -7825,4 +7825,54 @@ mod tests {
             "different oob_emitted must still return true from grid_metadata_eq (flag is skipped)"
         );
     }
+
+    /// A length mismatch in a `Vec<f64>` geometry field must yield false.
+    ///
+    /// Pins the `xs.len() == ys.len()` length-prefix check inside the
+    /// `vecs_bit_eq` closure.  A 1D vs 2D field (different number of dimension
+    /// coordinates) must not compare as equal even if the shorter prefix matches.
+    #[test]
+    fn sampled_field_grid_metadata_eq_bounds_min_length_mismatch_returns_false() {
+        let a = sample_field_1d_fixture();
+        let mut b = sample_field_1d_fixture();
+        b.bounds_min.push(0.0); // now length 2 vs. a's length 1
+        assert!(
+            !a.grid_metadata_eq(&b),
+            "bounds_min length mismatch must return false from grid_metadata_eq"
+        );
+    }
+
+    /// An outer-length mismatch in `axis_grids` must yield false.
+    ///
+    /// Pins the `self.axis_grids.len() != other.axis_grids.len()` early return.
+    /// A field with one axis vs. two axes must not compare as equal.
+    #[test]
+    fn sampled_field_grid_metadata_eq_axis_grids_length_mismatch_returns_false() {
+        let a = sample_field_1d_fixture();
+        let mut b = sample_field_1d_fixture();
+        b.axis_grids.push(vec![0.0, 1.0]); // outer length 2 vs. a's outer length 1
+        assert!(
+            !a.grid_metadata_eq(&b),
+            "axis_grids outer length mismatch must return false from grid_metadata_eq"
+        );
+    }
+
+    /// `+0.0` and `-0.0` must compare as **different** via `grid_metadata_eq`.
+    ///
+    /// Pins the bit-equality semantics documented on the method: `f64::to_bits()`
+    /// distinguishes `+0.0` (bit pattern 0x0000…) from `-0.0` (bit pattern
+    /// 0x8000…), so a spacing of `+0.0` is treated as a physically distinct grid
+    /// from `-0.0`.  If a future contributor replaces `to_bits()` with plain `==`,
+    /// this test will catch the regression.
+    #[test]
+    fn sampled_field_grid_metadata_eq_positive_zero_vs_negative_zero_returns_false() {
+        let mut a = sample_field_1d_fixture();
+        let mut b = sample_field_1d_fixture();
+        a.spacing[0] = 0.0_f64;           // +0.0
+        b.spacing[0] = -0.0_f64;          // -0.0  (different bit pattern)
+        assert!(
+            !a.grid_metadata_eq(&b),
+            "+0.0 and -0.0 must compare as different (bit-equality semantics)"
+        );
+    }
 }
