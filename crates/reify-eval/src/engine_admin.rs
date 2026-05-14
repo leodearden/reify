@@ -804,6 +804,53 @@ impl Engine {
         self.cache.pending_cause(node)
     }
 
+    /// Drive a freshness-only propagation sweep from the supplied changed
+    /// ValueCells. This is the engine's production trigger surface for the
+    /// `freshness_walk::propagate_freshness_only` walk (arch §3.5 lines
+    /// 432-436): when upstream cells flip Pending/Intermediate → Final (or
+    /// any other freshness transition) WITHOUT a value change, callers
+    /// invoke this method so the freshness transition propagates through
+    /// the reverse-dependency graph WITHOUT firing any value evaluator.
+    ///
+    /// Intended consumers: a future kernel-completion handler that flips a
+    /// Compute or Realization node's freshness, GUI/LSP notifications,
+    /// async-job completion sinks, or any other site that observes an
+    /// upstream freshness transition (see audit M-013 in
+    /// `docs/architecture-audit/findings/freshness-4-variant.md`).
+    ///
+    /// Returns the set of [`NodeId`]s whose freshness was actually updated by
+    /// the walk; the early-cutoff gate prunes nodes whose derived freshness
+    /// matches their current freshness. Returns an empty set when no
+    /// `eval_state` is present (engine has not yet been initialised by a
+    /// successful `eval()` / `eval_cached()` / `edit_source()` call).
+    ///
+    /// The `generation` argument is forwarded verbatim to the §7.2 truth
+    /// table consulted by the walk — callers that care about Intermediate
+    /// fan-in should pass the current refinement generation; callers that
+    /// only care about Final propagation may pass any value.
+    pub fn propagate_freshness_only(
+        &mut self,
+        changed: &std::collections::HashSet<reify_types::ValueCellId>,
+        generation: u64,
+    ) -> std::collections::HashSet<crate::cache::NodeId> {
+        // Read-clone reverse_index and graph from eval_state so the
+        // immutable borrow drops before &mut self.cache takes the
+        // mutable borrow. Mirrors the pattern at
+        // `crates/reify-eval/tests/freshness_only_propagation.rs:116-145`.
+        // No-op when eval_state is None — there is no graph to walk.
+        let (reverse_index, graph) = match self.eval_state.as_ref() {
+            Some(state) => (state.reverse_index.clone(), state.snapshot.graph.clone()),
+            None => return std::collections::HashSet::new(),
+        };
+        crate::freshness_walk::propagate_freshness_only(
+            &mut self.cache,
+            &reverse_index,
+            &graph,
+            changed,
+            generation,
+        )
+    }
+
     /// **Test-instrumentation only — not a stable public metric.**
     ///
     /// Immutable access to the engine's warm-state pool. Per arch §4.3 / §6.4,
