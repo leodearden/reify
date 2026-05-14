@@ -2989,6 +2989,23 @@ mod tests {
     }
 
     #[test]
+    fn brep_kind_vertex_variant_is_pattern_matchable_and_distinct() {
+        let v = BRepKind::Vertex;
+        match v {
+            BRepKind::Vertex => {}
+            other => panic!("expected BRepKind::Vertex, got {:?}", other),
+        }
+
+        // Vertex must be distinguishable from all other BRepKind variants.
+        assert_ne!(BRepKind::Vertex, BRepKind::Edge);
+        assert_ne!(BRepKind::Vertex, BRepKind::Face);
+        assert_ne!(BRepKind::Vertex, BRepKind::Solid);
+        assert_ne!(BRepKind::Vertex, BRepKind::Shell);
+        assert_ne!(BRepKind::Vertex, BRepKind::Wire);
+        assert_ne!(BRepKind::Vertex, BRepKind::Compound);
+    }
+
+    #[test]
     fn closest_point_on_shape_variant_is_constructible_and_matchable() {
         // Pin the shape of the new ClosestPointOnShape variant — the eval-side
         // dispatcher (task 2324) builds and reads back exactly these fields.
