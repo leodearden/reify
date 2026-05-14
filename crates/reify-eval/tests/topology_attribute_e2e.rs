@@ -1099,7 +1099,7 @@ fn engine_with_occt_handle() -> reify_eval::Engine {
 /// The two coincident `box(10mm, 10mm, 10mm)` primitives are placed at the
 /// default origin, so corresponding face centroids coincide exactly. Each box
 /// seeds 6 `Role::Side` face attrs with `local_index` 0..5 under the same
-/// `S.body#realization[0]` feature_id; the tied-centroid pair triggers
+/// `S#realization[0]` feature_id; the tied-centroid pair triggers
 /// `DiagnosticCode::TopologyAttributeLocalIndexReassigned`.
 ///
 /// The auxiliary metadata warning MUST NOT regress the build to Failed.
@@ -1191,7 +1191,8 @@ fn engine_build_emits_local_index_reassignment_for_coincident_box_union() {
 /// (task #3629), which builds two realizations with distinct feature_ids
 /// (`S#realization[0]` and `S#realization[1]`) and asserts that the warning
 /// emitted during realization 1 does not reference realization 0's
-/// feature_id — directly pinning the filter at `engine_build.rs:1941-1945`.
+/// feature_id — directly pinning the per-realization filter in
+/// `execute_realization_ops`.
 /// This helper-level test continues to pin the grouping contract directly.
 #[test]
 fn local_index_reassignment_groups_independently_per_feature_id() {
@@ -1299,7 +1300,7 @@ fn local_index_reassignment_groups_independently_per_feature_id() {
     );
 }
 
-/// Engine-wiring coverage: per-realization filter at `engine_build.rs:1941-1945`.
+/// Engine-wiring coverage: per-realization filter in `execute_realization_ops`.
 ///
 /// Two `let` bindings in the same structure produce two realizations with
 /// distinct feature_ids (`S#realization[0]` and `S#realization[1]`).
@@ -1307,7 +1308,7 @@ fn local_index_reassignment_groups_independently_per_feature_id() {
 /// `TopologyAttributeLocalIndexReassigned` warning.
 ///
 /// The per-realization filter (`.filter(|(_, attr)| attr.feature_id ==
-/// realization_feature_id)` at `engine_build.rs:1941-1945`) scopes the
+/// realization_feature_id)` in `execute_realization_ops`) scopes the
 /// detector input to one realization's entries. A broken filter would cause
 /// realization 1's pass to re-see realization 0's still-resident table
 /// entries, emitting a second spurious warning naming `S#realization[0]`
@@ -1370,7 +1371,7 @@ fn engine_build_local_index_reassignment_warning_filters_cross_realization() {
         warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    // Cross-realization isolation: pins the filter at engine_build.rs:1941-1945.
+    // Cross-realization isolation: pins the per-realization filter in execute_realization_ops.
     // If the filter is broken, realization 1's detector pass would re-see
     // realization 0's table entries and emit duplicate S#realization[0] warnings
     // during realization 1's pass. The per-realization warning must name only
