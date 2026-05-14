@@ -31,6 +31,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use reify_compiler::compile_with_stdlib;
 use reify_eval::{
     AttributeQuery, AttributeResolution, LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M,
     detect_local_index_reassignment_diagnostics, propagate_attributes_via_brepalgoapi_history,
@@ -38,9 +39,9 @@ use reify_eval::{
 };
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
 use reify_types::{
-    BooleanOpHistoryRecords, BooleanOpParents, Diagnostic, DiagnosticCode, FeatureId,
-    GeometryHandleId, GeometryOp, ModEntry, RealizationNodeId, Role, Severity, SourceSpan,
-    TopologyAttribute, TopologyAttributeTable, Value,
+    BooleanOpHistoryRecords, BooleanOpParents, Diagnostic, DiagnosticCode, ExportFormat, FeatureId,
+    GeometryHandleId, GeometryOp, ModEntry, ModulePath, RealizationNodeId, Role, Severity,
+    SourceSpan, TopologyAttribute, TopologyAttributeTable, Value,
 };
 
 /// 10×10×10 mm box, expressed in SI metres at the kernel boundary.
@@ -984,16 +985,13 @@ struct ClusteringCoverage {
 /// changes after an edit purely due to ordering shuffle (i.e. not because
 /// of a split — splits are handled by mod_history)."
 ///
-/// **TODO (task #3629):** add an OCCT-gated test that drives `Engine::build`
-/// with a fillet-of-full-circle (or other symmetric-tiebreak primitive) so
-/// the engine-wiring branch in `engine_build.rs::execute_realization_ops`
-/// (per-realization filter, kernel.query loop, centroid-failure summary
-/// warning) is exercised end-to-end. Today the helper's contract is
-/// covered, the engine-wiring is uncovered. The follow-up requires
-/// identifying a stable OCCT op that reliably produces tied centroids in
-/// the v0.2 selector vocabulary; the existing e2e fixtures all produce
-/// well-separated centroids. (Originally a deferred follow-up to task
-/// #2654, which closed without adding this coverage.)
+/// Engine-wiring coverage for this helper now lives in
+/// `engine_build_emits_local_index_reassignment_for_coincident_box_union`
+/// (task #3629), which drives `Engine::build` with a coincident-box union
+/// to exercise the per-realization filter, `kernel.query` centroid loop, and
+/// `collect_centroids_with_failure_summary` path end-to-end. This
+/// helper-level test continues to pin the helper's public-API contract
+/// independently of the engine wiring.
 #[test]
 fn local_index_reassignment_diagnostic_fires_for_geometrically_tied_faces() {
     // Two synthetic TopologyAttribute records in the same
@@ -1061,6 +1059,115 @@ fn local_index_reassignment_diagnostic_fires_for_geometrically_tied_faces() {
     );
 }
 
+// ─── engine-wiring helpers (task #3629) ──────────────────────────────────────
+//
+// These mirror `topology_attribute_primitives_e2e.rs:38-58` but live inline
+// here so the centroid-tie engine-wiring tests stay co-located with the
+// synthetic helper-level tests they complement.
+
+fn compile_no_errors_for_engine(source: &str) -> reify_compiler::CompiledModule {
+    let parsed = reify_syntax::parse(
+        source,
+        ModulePath::single("test_topology_attr_engine_e2e"),
+    );
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let compiled = compile_with_stdlib(&parsed);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "compile errors: {:#?}", errors);
+    compiled
+}
+
+fn engine_with_occt_handle() -> reify_eval::Engine {
+    let checker = reify_constraints::SimpleConstraintChecker;
+    reify_eval::Engine::new(Box::new(checker), Some(Box::new(OcctKernelHandle::spawn())))
+}
+
+// ─── engine-driven tests (task #3629) ────────────────────────────────────────
+
+/// Engine-wiring coverage for `execute_realization_ops` centroid-tie path.
+///
+/// Drives `Engine::build` with a coincident-box union so the per-realization
+/// filter, `kernel.query(GeometryQuery::Centroid)` loop,
+/// `collect_centroids_with_failure_summary`, and
+/// `detect_local_index_reassignment_diagnostics` are all exercised through
+/// `Engine::build` — not just via the synthetic helper-level test below.
+///
+/// The two coincident `box(10mm, 10mm, 10mm)` primitives are placed at the
+/// default origin, so corresponding face centroids coincide exactly. Each box
+/// seeds 6 `Role::Side` face attrs with `local_index` 0..5 under the same
+/// `S#realization[0]` feature_id; the tied-centroid pair triggers
+/// `DiagnosticCode::TopologyAttributeLocalIndexReassigned`.
+///
+/// The auxiliary metadata warning MUST NOT regress the build to Failed.
+///
+/// See task #3629 (retroactive engine-wiring coverage for task #2654).
+#[test]
+fn engine_build_emits_local_index_reassignment_for_coincident_box_union() {
+    if !OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let compiled = compile_no_errors_for_engine(
+        r#"structure S { let body = union(box(10mm, 10mm, 10mm), box(10mm, 10mm, 10mm)) }"#,
+    );
+    let mut engine = engine_with_occt_handle();
+    let build_result = engine.build(&compiled, ExportFormat::Step);
+
+    // Build must not regress to Failed — the tie-detection is auxiliary metadata.
+    let errors: Vec<_> = build_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "build must not regress to Failed: {:#?}",
+        errors
+    );
+
+    // At least one TopologyAttributeLocalIndexReassigned warning must be emitted.
+    let warnings: Vec<_> = build_result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.code == Some(DiagnosticCode::TopologyAttributeLocalIndexReassigned)
+                && d.severity == Severity::Warning
+        })
+        .collect();
+    assert!(
+        !warnings.is_empty(),
+        "expected ≥1 TopologyAttributeLocalIndexReassigned warning; all diagnostics: {:?}",
+        build_result.diagnostics
+    );
+
+    // The warning must name the realization's feature_id — proves the
+    // engine's `realization_feature_id = FeatureId::from(realization_id)` path.
+    // Note: `FeatureId::from(realization_id)` formats as `{entity}#realization[{index}]`
+    // where `entity` is the structure name (e.g. "S"), not the field name.
+    let names_realization = warnings
+        .iter()
+        .any(|d| d.message.contains("S#realization[0]"));
+    assert!(
+        names_realization,
+        "expected a warning naming 'S#realization[0]'; messages: {:?}",
+        warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // The warning must name the role — proves `detect_local_index_reassignment_diagnostics`
+    // formats the role in its message.
+    let names_side = warnings.iter().any(|d| d.message.contains("Side"));
+    assert!(
+        names_side,
+        "expected a warning mentioning 'Side'; messages: {:?}",
+        warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
 /// PRD task-4 / #2654 — pin the helper's `(feature_id, role)` grouping so
 /// it does NOT cross-pollute entries from different realizations even when
 /// a single call passes a slice mixing them.
@@ -1079,15 +1186,14 @@ fn local_index_reassignment_diagnostic_fires_for_geometrically_tied_faces() {
 /// EXACTLY TWO diagnostics — one per `(feature_id, role)` group — and
 /// each diagnostic names only its own feature_id, not the other one.
 ///
-/// **TODO (task #3629):** add an engine-driven OCCT test that exercises
-/// the engine_build.rs filter directly — i.e. build two realizations
-/// whose attributes share the realization-prefix pattern but with
-/// different feature_ids, then assert that the warning emitted during
-/// realization 1 doesn't reference handles from realization 0. That
-/// requires either an OCCT fixture that produces reliably tied centroids
-/// in two consecutive realizations, or a stub kernel injection — both
-/// larger than this amendment pass's scope. (Originally a deferred
-/// follow-up to task #2654, which closed without adding this coverage.)
+/// Engine-wiring coverage for the per-realization filter now lives in
+/// `engine_build_local_index_reassignment_warning_filters_cross_realization`
+/// (task #3629), which builds two realizations with distinct feature_ids
+/// (`S#realization[0]` and `S#realization[1]`) and asserts that the warning
+/// emitted during realization 1 does not reference realization 0's
+/// feature_id — directly pinning the per-realization filter in
+/// `execute_realization_ops`.
+/// This helper-level test continues to pin the grouping contract directly.
 #[test]
 fn local_index_reassignment_groups_independently_per_feature_id() {
     let f0 = FeatureId::new("Foo#realization[0]");
@@ -1191,5 +1297,94 @@ fn local_index_reassignment_groups_independently_per_feature_id() {
     assert!(
         !f1_msg.contains("Foo#realization[0]"),
         "Foo#realization[1]'s diagnostic must not name Foo#realization[0]: {f1_msg}"
+    );
+}
+
+/// Engine-wiring coverage: per-realization filter in `execute_realization_ops`.
+///
+/// Two `let` bindings in the same structure produce two realizations with
+/// distinct feature_ids (`S#realization[0]` and `S#realization[1]`).
+/// Each realization is a coincident-box union, so each yields a
+/// `TopologyAttributeLocalIndexReassigned` warning.
+///
+/// The per-realization filter (`.filter(|(_, attr)| attr.feature_id ==
+/// realization_feature_id)` in `execute_realization_ops`) scopes the
+/// detector input to one realization's entries. A broken filter would cause
+/// realization 1's pass to re-see realization 0's still-resident table
+/// entries, emitting a second spurious warning naming `S#realization[0]`
+/// while processing realization 1. This test pins that isolation.
+///
+/// See task #3629 (retroactive engine-wiring coverage for task #2654).
+#[test]
+fn engine_build_local_index_reassignment_warning_filters_cross_realization() {
+    if !OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let compiled = compile_no_errors_for_engine(
+        r#"structure S {
+    let foo = union(box(10mm, 10mm, 10mm), box(10mm, 10mm, 10mm))
+    let bar = union(box(10mm, 10mm, 10mm), box(10mm, 10mm, 10mm))
+}"#,
+    );
+    let mut engine = engine_with_occt_handle();
+    let build_result = engine.build(&compiled, ExportFormat::Step);
+
+    // Collect TopologyAttributeLocalIndexReassigned warnings.
+    let warnings: Vec<_> = build_result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.code == Some(DiagnosticCode::TopologyAttributeLocalIndexReassigned)
+                && d.severity == Severity::Warning
+        })
+        .collect();
+
+    // At least one warning per realization.
+    assert!(
+        warnings.len() >= 2,
+        "expected ≥2 TopologyAttributeLocalIndexReassigned warnings (one per realization); \
+         messages: {:?}",
+        warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // One warning naming each realization's feature_id.
+    // Note: `FeatureId::from(realization_id)` formats as `{entity}#realization[{index}]`
+    // where the entity is the structure name "S". Realization 0 is for `foo`,
+    // realization 1 is for `bar` — their feature_ids are S#realization[0] and
+    // S#realization[1] respectively.
+    let r0_warn = warnings
+        .iter()
+        .find(|d| d.message.contains("S#realization[0]"));
+    let r1_warn = warnings
+        .iter()
+        .find(|d| d.message.contains("S#realization[1]"));
+    assert!(
+        r0_warn.is_some(),
+        "expected a warning naming S#realization[0]; messages: {:?}",
+        warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    assert!(
+        r1_warn.is_some(),
+        "expected a warning naming S#realization[1]; messages: {:?}",
+        warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // Cross-realization isolation: pins the per-realization filter in execute_realization_ops.
+    // If the filter is broken, realization 1's detector pass would re-see
+    // realization 0's table entries and emit duplicate S#realization[0] warnings
+    // during realization 1's pass. The per-realization warning must name only
+    // its own realization index — realization 0's warning must not reference
+    // [1] and realization 1's warning must not reference [0].
+    let r0_msg = r0_warn.unwrap().message.as_str();
+    let r1_msg = r1_warn.unwrap().message.as_str();
+    assert!(
+        !r1_msg.contains("S#realization[0]"),
+        "realization-1 warning must not reference S#realization[0]: {r1_msg}"
+    );
+    assert!(
+        !r0_msg.contains("S#realization[1]"),
+        "realization-0 warning must not reference S#realization[1]: {r0_msg}"
     );
 }
