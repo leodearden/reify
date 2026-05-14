@@ -59,6 +59,11 @@ fn tool_defs() -> Vec<ToolDef> {
             input_schema: json!({"type": "object", "properties": {}}),
         },
         ToolDef {
+            name: "screenshot_window",
+            description: "Take a full-window screenshot including panels, overlays, and probe popups (DOM + WebGL composite via html-to-image). Returns a PNG image.",
+            input_schema: json!({"type": "object", "properties": {}}),
+        },
+        ToolDef {
             name: "store_state",
             description: "Snapshot of all Solid.js stores: engine (mesh keys, values, constraints, eval status), editor (open files, active file, cursor), selection, claude (session status, message count)",
             input_schema: json!({"type": "object", "properties": {}}),
@@ -287,6 +292,10 @@ struct DebugServerState {
     debug_bridge: Arc<DebugBridge>,
 }
 
+fn is_image_tool(name: &str) -> bool {
+    matches!(name, "screenshot" | "screenshot_window")
+}
+
 // --- Tool dispatch ---
 
 async fn dispatch_tool(
@@ -493,8 +502,8 @@ async fn handle_mcp(
 
             match dispatch_tool(&state, tool_name, tool_args).await {
                 Ok(result) => {
-                    // Check if this is a screenshot (contains base64 image data)
-                    if tool_name == "screenshot"
+                    // Check if this is an image tool (contains base64 image data)
+                    if is_image_tool(tool_name)
                         && let Some(data) = result.get("data").and_then(|d| d.as_str())
                     {
                         // Strip data URL prefix if present
