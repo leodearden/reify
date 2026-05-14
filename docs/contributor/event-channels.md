@@ -19,4 +19,6 @@ This note covers what to do when you add a new Tauri event channel between the R
 
 `scripts/check_event_inventory.sh` greps `gui/src-tauri/` for literal `.emit("name", …)` call sites and warns if any name is absent from `docs/gui-event-channels.md`. It exits 0 by default (warning mode per [PRD §11 Q4](../prds/v0_3/gui-event-channel-inventory.md)). The `--strict` flag promotes it to exit 1, enabling future CI enforcement once a release cycle of drift observation has passed.
 
-Dynamic emit-sites (`app.emit(&name, …)`) are intentionally not checked — their channel names are validated by the lockstep-commit convention, not by this lint.
+Dynamic emit-sites (`app.emit(&name, …)`) are intentionally skipped by the forward pass — their channel names are validated by the lockstep-commit convention, not by this regex lint.
+
+Pass `--bidirectional` to also run a reverse pass: for each channel registered in §1 of the inventory, the script verifies that a quoted string literal `"channel-name"` appears somewhere in `gui/src-tauri/**/*.rs`. The scan is permissive (not restricted to `.emit("…")` form), so dynamic-emit channels whose names appear as `.to_string()` or `emitter("…")` literals are naturally covered without a hardcoded allowlist. The reverse pass is scoped to §1 only — §2 (FICTION → WIRED) rows are pre-implementation and would produce phantom-channel noise; they are excluded until they graduate to §1 (per esc-3552-52).
