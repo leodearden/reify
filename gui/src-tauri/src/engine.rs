@@ -10,8 +10,8 @@ use reify_compiler::{CompiledModule, ValueCellKind, Visibility};
 use reify_eval::cache::NodeId;
 use reify_eval::{CheckResult, Engine};
 use reify_types::{
-    ConstraintChecker, ContentHash, DeterminacyState, DimensionVector, ExportFormat,
-    GeometryKernel, ModulePath, Satisfaction, Severity, Value, ValueCellId,
+    ConstraintChecker, ConstraintSolver, ContentHash, DeterminacyState, DimensionVector,
+    ExportFormat, GeometryKernel, ModulePath, Satisfaction, Severity, Value, ValueCellId,
 };
 
 use reify_types::{Diagnostic, DiagnosticInfo, DiagnosticLabel, SourceLocationInfo, SourceSpan};
@@ -508,6 +508,33 @@ impl EngineSession {
     /// on the emitter.  Replaces any previously installed emitter.
     pub fn set_auto_resolve_emitter(&mut self, emitter: Arc<dyn AutoResolveEmitter>) {
         self.auto_resolve_emitter = Some(emitter);
+    }
+
+    /// Install a constraint solver into the underlying Engine for testing.
+    ///
+    /// Mirrors [`Engine::with_solver`] at the session level.  Keeps production
+    /// paths untouched — test-only (pub(crate)) so it cannot be called from
+    /// `main.rs` (solver installation in main.rs is a separate future task).
+    #[cfg(test)]
+    pub(crate) fn with_solver_for_test(mut self, solver: Box<dyn ConstraintSolver>) -> Self {
+        self.engine = self.engine.with_solver(solver);
+        self
+    }
+
+    /// Run `engine.check(compiled)`, store the result, fire emit-helper, return result.
+    ///
+    /// Gives tests a single-call path that exercises the eval+emit pipeline without
+    /// going through the full load_from_source / update_source plumbing.  Only for
+    /// unit tests; not callable from production code.
+    #[cfg(test)]
+    pub(crate) fn check_and_emit_for_test(
+        &mut self,
+        compiled: &CompiledModule,
+    ) -> reify_eval::CheckResult {
+        let r = self.engine.check(compiled);
+        self.last_check = Some(r.clone());
+        self.emit_auto_resolve_if_any(&r);
+        r
     }
 
     /// Emit auto-resolve events if an emitter is installed and the check produced
