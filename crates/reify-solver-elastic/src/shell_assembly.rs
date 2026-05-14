@@ -1108,6 +1108,72 @@ mod tests {
         }
     }
 
+    // --- plane_stress_d auxetic ν-range tests ---
+
+    #[test]
+    fn plane_stress_d_accepts_auxetic_poisson_ratio() {
+        // ν = -0.3 is inside the physical PD range (-1, 0.5).
+        // D_pl = E/(1-ν²) · [[1, ν, 0], [ν, 1, 0], [0, 0, (1-ν)/2]]
+        // All three diagonal entries are positive and finite for ν ∈ (-1, 0.5).
+        let e = 1.0_f64;
+        let nu = -0.3_f64;
+        let mat = IsotropicElastic {
+            youngs_modulus: e,
+            poisson_ratio: nu,
+        };
+
+        let d = plane_stress_d(&mat);
+
+        // All entries finite.
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!(d[i][j].is_finite(), "D[{i}][{j}] = {} is not finite", d[i][j]);
+            }
+        }
+
+        // Symmetric.
+        for i in 0..3 {
+            for j in 0..3 {
+                let lhs = d[i][j];
+                let rhs = d[j][i];
+                let scale = lhs.abs().max(rhs.abs()).max(1.0);
+                assert!(
+                    (lhs - rhs).abs() < 1e-9 * scale,
+                    "asymmetry at ({i},{j}): {lhs} vs {rhs}",
+                );
+            }
+        }
+
+        // Closed-form entries.
+        let factor = e / (1.0 - nu * nu);
+        let g = e / (2.0 * (1.0 + nu));
+        let tol = 1e-9 * factor.abs().max(1.0);
+        assert!((d[0][0] - factor).abs() < tol, "D[0][0] = {}", d[0][0]);
+        assert!((d[1][1] - factor).abs() < tol, "D[1][1] = {}", d[1][1]);
+        assert!((d[0][1] - nu * factor).abs() < tol, "D[0][1] = {}", d[0][1]);
+        assert!((d[1][0] - nu * factor).abs() < tol, "D[1][0] = {}", d[1][0]);
+        assert!((d[2][2] - g).abs() < tol, "D[2][2] = {} (expected G = {g})", d[2][2]);
+        assert!(d[2][2] > 0.0, "shear term D[2][2] = {} should be positive", d[2][2]);
+    }
+
+    #[test]
+    #[should_panic(expected = "poisson_ratio")]
+    fn plane_stress_d_panics_at_incompressible_limit() {
+        plane_stress_d(&IsotropicElastic {
+            youngs_modulus: 1.0,
+            poisson_ratio: 0.5,
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "poisson_ratio")]
+    fn plane_stress_d_panics_at_auxetic_limit() {
+        plane_stress_d(&IsotropicElastic {
+            youngs_modulus: 1.0,
+            poisson_ratio: -1.0,
+        });
+    }
+
     #[test]
     #[should_panic(expected = "degenerate shell element: p0 == p1")]
     fn build_shell_frame_panics_on_zero_edge_p0_eq_p1() {
