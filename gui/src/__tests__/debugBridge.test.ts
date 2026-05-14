@@ -772,6 +772,50 @@ describe('debug bridge screenshot_window', () => {
     expect(vi.mocked(toPng).mock.calls[0][0]).toBe(document.documentElement);
     expect(vi.mocked(toPng).mock.calls[0][1]).toEqual(expect.objectContaining({ cacheBust: true }));
   });
+
+  it('returns { error: "screenshot too large" } when toPng output exceeds the 16 MB threshold', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const stub = makeViewportStub();
+    window.__REIFY_DEBUG__!.viewport = {
+      scene: stub.scene,
+      camera: stub.camera,
+      renderer: stub.renderer as any,
+      getMeshes: vi.fn().mockReturnValue(new Map()),
+      getGhostMeshes: vi.fn().mockReturnValue(new Map()),
+      fitToView: vi.fn(),
+      flyToEntity: vi.fn(),
+    };
+
+    // Produce a payload 23 bytes over the 16 MB threshold (16,777,239 chars total)
+    vi.mocked(toPng).mockResolvedValueOnce('data:image/png;base64,' + 'A'.repeat(16 * 1024 * 1024 + 1));
+
+    const result = await dispatchScreenshotWindow(capturedHandler!, 704);
+    expect(result).toEqual({ error: 'screenshot too large' });
+  });
+
+  it('returns { data } when toPng output is exactly at the 16 MB boundary (length === 16777216)', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const stub = makeViewportStub();
+    window.__REIFY_DEBUG__!.viewport = {
+      scene: stub.scene,
+      camera: stub.camera,
+      renderer: stub.renderer as any,
+      getMeshes: vi.fn().mockReturnValue(new Map()),
+      getGhostMeshes: vi.fn().mockReturnValue(new Map()),
+      fitToView: vi.fn(),
+      flyToEntity: vi.fn(),
+    };
+
+    // Exactly 16 MB — strict > means this must succeed
+    const exactBoundaryPayload = 'X'.repeat(16 * 1024 * 1024);
+    vi.mocked(toPng).mockResolvedValueOnce(exactBoundaryPayload);
+
+    const result = await dispatchScreenshotWindow(capturedHandler!, 705);
+    expect(result.data).toBe(exactBoundaryPayload);
+    expect(result.error).toBeUndefined();
+  });
 });
 
 describe('debug bridge editor_content', () => {
