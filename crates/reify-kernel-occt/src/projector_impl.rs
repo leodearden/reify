@@ -49,10 +49,12 @@ impl<'k> Projector for OcctProjector<'k> {
 
     fn project_onto_edge(
         &self,
-        _edge: GeometryHandleId,
-        _point: [f64; 3],
+        edge: GeometryHandleId,
+        point: [f64; 3],
     ) -> Result<[f64; 3], ProjectorPayload> {
-        unimplemented!("step-8")
+        self.kernel
+            .closest_point_on_shape(edge, point[0], point[1], point[2])
+            .map_err(wrap_kernel_error)
     }
 
     fn vertex_position(
