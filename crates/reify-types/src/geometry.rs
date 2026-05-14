@@ -3309,6 +3309,57 @@ mod tests {
     }
 
     #[test]
+    fn role_corner_vertex_distinguishes_all_eight_box_corners() {
+        use std::collections::HashSet;
+        let mut set: HashSet<Role> = HashSet::new();
+        for x in [XFace::Pos, XFace::Neg] {
+            for y in [YFace::Pos, YFace::Neg] {
+                for z in [ZFace::Pos, ZFace::Neg] {
+                    set.insert(Role::CornerVertex { x_face: x, y_face: y, z_face: z });
+                }
+            }
+        }
+        assert_eq!(set.len(), 8, "8 sign-combo corners must be distinct Role values");
+
+        // Distinct from CapCornerVertex
+        assert_ne!(
+            Role::CornerVertex { x_face: XFace::Pos, y_face: YFace::Pos, z_face: ZFace::Pos },
+            Role::CapCornerVertex { face: CapFace::Top },
+        );
+        // Distinct from pre-existing Role variants
+        assert_ne!(
+            Role::CornerVertex { x_face: XFace::Pos, y_face: YFace::Pos, z_face: ZFace::Pos },
+            Role::Side,
+        );
+        assert_ne!(
+            Role::CornerVertex { x_face: XFace::Pos, y_face: YFace::Pos, z_face: ZFace::Pos },
+            Role::NewEdge,
+        );
+        assert_ne!(
+            Role::CornerVertex { x_face: XFace::Pos, y_face: YFace::Pos, z_face: ZFace::Pos },
+            Role::RevolvedFace,
+        );
+    }
+
+    #[test]
+    fn role_cap_corner_vertex_distinguishes_all_four_cap_faces() {
+        use std::collections::HashSet;
+        let cap_faces = [CapFace::Top, CapFace::Bottom, CapFace::Start, CapFace::End];
+        let set: HashSet<Role> = cap_faces.iter().map(|f| Role::CapCornerVertex { face: *f }).collect();
+        assert_eq!(set.len(), 4, "4 CapFace variants must yield 4 distinct CapCornerVertex roles");
+
+        // Distinct from CornerVertex
+        assert_ne!(
+            Role::CapCornerVertex { face: CapFace::Top },
+            Role::CornerVertex { x_face: XFace::Pos, y_face: YFace::Pos, z_face: ZFace::Pos },
+        );
+        // Distinct from pre-existing Role variants
+        assert_ne!(Role::CapCornerVertex { face: CapFace::Top }, Role::Side);
+        assert_ne!(Role::CapCornerVertex { face: CapFace::Top }, Role::NewEdge);
+        assert_ne!(Role::CapCornerVertex { face: CapFace::Top }, Role::RevolvedFace);
+    }
+
+    #[test]
     #[allow(clippy::clone_on_copy)] // intentional: exercises Clone impl on a Copy type
     fn role_revolved_face_and_axis_face_clone_round_trips() {
         let r = Role::RevolvedFace;
