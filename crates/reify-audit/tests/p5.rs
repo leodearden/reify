@@ -159,14 +159,104 @@ mod tests {
             "expected no findings on clean happy-path; got {:?}",
             findings
         );
+    }
 
-        // Sanity-touch the public types so this test pins the surface
-        // (dead-code linter will complain if e.g. EvidenceRef variants drift).
-        let _ = Pattern::P5PhantomDone;
-        let _ = Severity::High;
-        let _: Option<Finding> = None;
-        let _: Option<EvidenceRef> = None;
-        let _: Option<GitCommit> = None;
+    /// Pin the public-API surface of every detector type by destructuring
+    /// or exhaustively matching each variant. Renaming a field, adding a
+    /// variant without an arm, or changing a tuple's arity will fail this
+    /// test at compile time — which is exactly what we want from downstream
+    /// crates (T-4 CLI, eventual D-1 hook) that depend on a stable shape.
+    ///
+    /// Unlike a `let _ = Pattern::Variant` sanity-touch, the exhaustive
+    /// `match` here forces a test update on enum extensions and the struct
+    /// destructure forces one on field additions/renames.
+    #[test]
+    fn api_surface_pin() {
+        // Severity: every variant must be reachable.
+        for s in [Severity::Low, Severity::Medium, Severity::High] {
+            match s {
+                Severity::Low | Severity::Medium | Severity::High => {}
+            }
+        }
+
+        // Pattern: today only P5PhantomDone — adding P1/P2 (per task plan)
+        // must force this test to gain arms.
+        match Pattern::P5PhantomDone {
+            Pattern::P5PhantomDone => {}
+        }
+
+        // EvidenceRef: every variant exhaustively destructured.
+        let refs = [
+            EvidenceRef::File {
+                path: "x".to_string(),
+            },
+            EvidenceRef::Commit {
+                sha: "s".to_string(),
+                subject: "t".to_string(),
+            },
+            EvidenceRef::MetadataFiles {
+                entries: vec!["e".to_string()],
+            },
+            EvidenceRef::RunsDb {
+                table: "events".to_string(),
+                key: "k".to_string(),
+            },
+        ];
+        for r in refs {
+            match r {
+                EvidenceRef::File { path: _ } => {}
+                EvidenceRef::Commit { sha: _, subject: _ } => {}
+                EvidenceRef::MetadataFiles { entries: _ } => {}
+                EvidenceRef::RunsDb { table: _, key: _ } => {}
+            }
+        }
+
+        // Finding: destructure every field by name.
+        let Finding {
+            pattern: _,
+            severity: _,
+            task_id: _,
+            summary: _,
+            evidence: _,
+        } = Finding {
+            pattern: Pattern::P5PhantomDone,
+            severity: Severity::Low,
+            task_id: "0".to_string(),
+            summary: "s".to_string(),
+            evidence: vec![],
+        };
+
+        // GitCommit: destructure every field by name.
+        let GitCommit { sha: _, subject: _ } = GitCommit {
+            sha: "s".to_string(),
+            subject: "t".to_string(),
+        };
+
+        // TaskMetadata / DoneProvenance: destructure every field by name.
+        let TaskMetadata {
+            task_id: _,
+            status: _,
+            files: _,
+            done_provenance: _,
+        } = TaskMetadata {
+            task_id: "0".to_string(),
+            status: "done".to_string(),
+            files: vec![],
+            done_provenance: Some(DoneProvenance {
+                kind: None,
+                commit: None,
+                note: None,
+            }),
+        };
+        let DoneProvenance {
+            kind: _,
+            commit: _,
+            note: _,
+        } = DoneProvenance {
+            kind: None,
+            commit: None,
+            note: None,
+        };
     }
 
     /// Models the May-09 task 3242 incident
