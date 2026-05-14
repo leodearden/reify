@@ -164,4 +164,81 @@ mod tests {
         let _: Option<EvidenceRef> = None;
         let _: Option<GitCommit> = None;
     }
+
+    /// Models the May-09 task 3242 incident
+    /// (`~/.claude/projects/-home-leo-src-reify/memory/project_task3242_unblock.md`):
+    /// kind=merged, claimed commit not reachable from main, single-file
+    /// `crates/reify-shell-extract/src/pruning.rs` edit. The corroborating
+    /// diff does NOT cover that path → high-severity phantom-done.
+    #[test]
+    fn task_3242_shape_returns_high_severity_phantom_done() {
+        let conn = seed_db();
+        insert_run(&conn, "run-3242");
+        insert_task_result(&conn, "run-3242", "3242", "done");
+        // Task completed event is present (the orchestrator did write one) —
+        // the smoking gun is that the *git* corroboration fails, not the DB.
+        insert_task_completed_event(&conn, "run-3242", "3242");
+
+        let mut git = MockGitOps::new();
+        // log_grep returns empty → no sibling-FF rescue.
+        git.set_log_grep("main", "3242", vec![]);
+        // diff of the claimed commit against main does NOT include
+        // pruning.rs → metadata.files mismatch → phantom-done.
+        git.set_diff_changed_paths(
+            "main",
+            "7958491da22f",
+            // Only some unrelated path showed up in the claimed commit.
+            vec!["docs/unrelated.md".to_string()],
+        );
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "3242".to_string(),
+            TaskMetadata {
+                task_id: "3242".to_string(),
+                status: "done".to_string(),
+                files: vec!["crates/reify-shell-extract/src/pruning.rs".to_string()],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("7958491da22f".to_string()),
+                    note: None,
+                }),
+            },
+        );
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+        };
+
+        let findings = p5_phantom_done::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly one phantom-done finding; got {:?}",
+            findings
+        );
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::P5PhantomDone);
+        assert_eq!(f.severity, Severity::High);
+        assert_eq!(f.task_id, "3242");
+
+        // Evidence must include a MetadataFiles ref naming the missing path.
+        let metadata_files_evidence = f.evidence.iter().find_map(|e| match e {
+            EvidenceRef::MetadataFiles { entries } => Some(entries),
+            _ => None,
+        });
+        let entries = metadata_files_evidence.expect("MetadataFiles evidence present");
+        assert!(
+            entries
+                .iter()
+                .any(|p| p == "crates/reify-shell-extract/src/pruning.rs"),
+            "expected pruning.rs in MetadataFiles evidence; got {:?}",
+            entries
+        );
+    }
 }
