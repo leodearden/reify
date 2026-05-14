@@ -293,4 +293,109 @@ mod tests {
             );
         }
     }
+
+    // --- Auxetic (negative-ν) validity range tests ---
+
+    #[test]
+    fn d_matrix_accepts_auxetic_poisson_ratio_with_positive_bulk_and_shear_moduli() {
+        // ν = -0.5 is inside the physical PD range (-1, 0.5).
+        // K = E/(3(1−2ν)) = 1/(3·2) = 1/6 > 0;  G = E/(2(1+ν)) = 1/(2·0.5) = 1 > 0.
+        let e = 1.0_f64;
+        let nu = -0.5_f64;
+        let mat = IsotropicElastic {
+            youngs_modulus: e,
+            poisson_ratio: nu,
+        };
+
+        let d = mat.d_matrix();
+
+        // All entries finite.
+        for i in 0..6 {
+            for j in 0..6 {
+                assert!(d[i][j].is_finite(), "D[{i}][{j}] = {} is not finite", d[i][j]);
+            }
+        }
+
+        // Symmetric.
+        for i in 0..6 {
+            for j in 0..6 {
+                let lhs = d[i][j];
+                let rhs = d[j][i];
+                let scale = lhs.abs().max(rhs.abs()).max(1.0);
+                assert!(
+                    (lhs - rhs).abs() < 1e-9 * scale,
+                    "asymmetry at ({i},{j}): {lhs} vs {rhs}",
+                );
+            }
+        }
+
+        // Hydrostatic strain → bulk modulus K > 0.
+        let bulk = e / (3.0 * (1.0 - 2.0 * nu));
+        assert!(bulk > 0.0, "K = {bulk} should be positive for ν = {nu}");
+        let eps_v = 1.0e-4_f64;
+        let strain_h = [eps_v, eps_v, eps_v, 0.0, 0.0, 0.0];
+        let sigma_h = matvec(&d, &strain_h);
+        let trace_sigma = sigma_h[0] + sigma_h[1] + sigma_h[2];
+        let mean_stress = trace_sigma / 3.0;
+        let expected_mean = bulk * (3.0 * eps_v);
+        let scale = expected_mean.abs().max(1.0);
+        assert!(
+            (mean_stress - expected_mean).abs() < 1e-9 * scale,
+            "mean stress: got {mean_stress}, expected {expected_mean}",
+        );
+
+        // Pure-shear strain → shear modulus G > 0.
+        let g = e / (2.0 * (1.0 + nu));
+        assert!(g > 0.0, "G = {g} should be positive for ν = {nu}");
+        let gamma = 1.0e-4_f64;
+        let strain_s = [0.0, 0.0, 0.0, gamma, 0.0, 0.0];
+        let sigma_s = matvec(&d, &strain_s);
+        let expected_shear = g * gamma;
+        let scale_s = expected_shear.abs().max(1.0);
+        assert!(
+            (sigma_s[3] - expected_shear).abs() < 1e-9 * scale_s,
+            "σ_xy: got {}, expected G·γ = {expected_shear}",
+            sigma_s[3],
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "poisson_ratio")]
+    fn d_matrix_panics_at_incompressible_upper_limit() {
+        IsotropicElastic {
+            youngs_modulus: 1.0,
+            poisson_ratio: 0.5,
+        }
+        .d_matrix();
+    }
+
+    #[test]
+    #[should_panic(expected = "poisson_ratio")]
+    fn d_matrix_panics_at_auxetic_lower_limit() {
+        IsotropicElastic {
+            youngs_modulus: 1.0,
+            poisson_ratio: -1.0,
+        }
+        .d_matrix();
+    }
+
+    #[test]
+    #[should_panic(expected = "poisson_ratio")]
+    fn d_matrix_panics_above_incompressible_limit() {
+        IsotropicElastic {
+            youngs_modulus: 1.0,
+            poisson_ratio: 0.6,
+        }
+        .d_matrix();
+    }
+
+    #[test]
+    #[should_panic(expected = "poisson_ratio")]
+    fn d_matrix_panics_below_auxetic_limit() {
+        IsotropicElastic {
+            youngs_modulus: 1.0,
+            poisson_ratio: -1.5,
+        }
+        .d_matrix();
+    }
 }
