@@ -130,6 +130,29 @@ $ grep -n "multi-kernel-phase-3" docs/architecture-audit/gap-register.md | head 
 
 All three entries point at the PRD with intact §8 task letter references. τ (3542) can be closed `done` once the batch flips pending (the verification is complete; no further work required).
 
+## Post-SIGABRT audit-confirmation (2026-05-14, task 3448)
+
+PRD §8 task τ (this task) was originally filed as task 3542 on 2026-05-12 and lost in the 2026-05-13 fused-memory SIGABRT. The DAG was re-filed 2026-05-14 with new IDs (τ=3448, was 3542). This section records the post-recovery re-verification, confirming that the three gap-register disposition rows survived the SIGABRT recovery intact and continue to point at the PRD with correct §8 task letter references and post-recovery task IDs.
+
+Verified via grep 2026-05-14:
+
+```
+$ grep -n "multi-kernel-phase-3" docs/architecture-audit/gap-register.md
+10:> - multi-kernel-phase-3 DAG `3526-3542` → `3432-3448`
+98:| Disposition | **Ownership → multi-kernel; resolution mechanism `docs/prds/v0_3/multi-kernel-phase-3.md` §8 task θ ...
+336:| Disposition | **PRD-shape work — resolved 2026-05-12 via `docs/prds/v0_3/multi-kernel-phase-3.md`** ... 17 tasks **3432-3448** (α=3432 ... τ=3448) ...
+532:| Disposition | **folded into GR-020 — resolution mechanism `docs/prds/v0_3/multi-kernel-phase-3.md` §8 task ρ ... FILED as task 3445** ...
+699:- **GR-020** `multi-kernel-phase-3.md` — decomposed, 17 tasks 3432-3448 (folds GR-034 task ρ=3445 + OpenVDB half of GR-003 task θ=3439).
+```
+
+Three verification points confirmed:
+
+1. **PRD pointers intact**: GR-003 (L98), GR-020 (L336), and GR-034 (L532) all reference `docs/prds/v0_3/multi-kernel-phase-3.md`.
+2. **§8 task letter references intact**: GR-003 (L98) cites §8 task θ; GR-020 (L336) cites §8 task ρ + θ and enumerates the full DAG (α=3432 … τ=3448); GR-034 (L532) cites §8 task ρ FILED as task 3445.
+3. **Post-SIGABRT recovered IDs present**: GR-020 (L336) lists all 17 IDs 3432-3448 explicitly; GR-034 (L532) names 3445; GR-003's recovered ID 3439 is captured transitively at L336 ("OpenVDB half of GR-003 task θ=3439") and the L699 summary.
+
+Audit-confirmation passes; task 3448 (τ, re-filed after SIGABRT) can move to `done`.
+
 ## Session-end procedure
 
 1. Call `commit_planning` on `3526,3527,3528,3529,3530,3531,3532,3533,3534,3535,3536,3537,3538,3539,3540,3541,3542` with target_status=pending.
