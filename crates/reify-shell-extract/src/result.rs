@@ -189,4 +189,128 @@ mod tests {
             1
         );
     }
+
+    /// Build a fresh `MidSurfaceMesh` with `vertices.len() == thickness.len()`
+    /// to use as a known-good fixture for the constructor pin tests.
+    fn matched_lengths_mesh() -> MidSurfaceMesh {
+        MidSurfaceMesh {
+            vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            triangles: vec![[0, 1, 2]],
+            thickness: vec![1.0, 1.0, 1.0],
+        }
+    }
+
+    fn empty_segmentation_for(mesh: &MidSurfaceMesh) -> SegmentationResult {
+        SegmentationResult {
+            regions: vec![],
+            vertex_labels: vec![u32::MAX; mesh.vertices.len()],
+            triangle_labels: vec![u32::MAX; mesh.triangles.len()],
+        }
+    }
+
+    #[test]
+    fn shell_extraction_result_new_rejects_length_invariant_violation() {
+        // Construct a deliberately mismatched mesh: 3 vertices vs 2 thicknesses.
+        // The constructor must reject with the parallel-array length pair —
+        // mirroring `SegmentationError::MeshLengthMismatch`'s shape so the
+        // contract is uniform across the crate.
+        let bad_mesh = MidSurfaceMesh {
+            vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            triangles: vec![[0, 1, 2]],
+            thickness: vec![1.0, 1.0],
+        };
+        let segmentation = empty_segmentation_for(&bad_mesh);
+        let err = ShellExtractionResult::new(
+            bad_mesh,
+            segmentation,
+            MidSurfaceAttributes::default(),
+            0,
+            vec![],
+        )
+        .expect_err("3 vertices vs 2 thicknesses must violate the length invariant");
+        assert_eq!(
+            err,
+            ShellExtractionResultError::LengthInvariantViolation {
+                vertices_len: 3,
+                thickness_len: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn shell_extraction_result_new_accepts_matching_lengths() {
+        // Matched lengths (3 == 3) must succeed.
+        let good = ShellExtractionResult::new(
+            matched_lengths_mesh(),
+            empty_segmentation_for(&matched_lengths_mesh()),
+            MidSurfaceAttributes::default(),
+            0,
+            vec![],
+        )
+        .expect("matched parallel-array lengths must be accepted");
+        assert_eq!(good.mid_surface.vertices.len(), good.mid_surface.thickness.len());
+
+        // The empty-mesh case (0 == 0) is also a legal match.
+        let empty_mesh = MidSurfaceMesh {
+            vertices: vec![],
+            triangles: vec![],
+            thickness: vec![],
+        };
+        let empty = ShellExtractionResult::new(
+            empty_mesh,
+            SegmentationResult {
+                regions: vec![],
+                vertex_labels: vec![],
+                triangle_labels: vec![],
+            },
+            MidSurfaceAttributes::default(),
+            0,
+            vec![],
+        )
+        .expect("empty-mesh case (0 == 0) is a legal match");
+        assert!(empty.mid_surface.vertices.is_empty());
+    }
+
+    #[test]
+    fn shell_extraction_result_solve_time_ms_returns_constructor_value() {
+        // Build two values with distinct solve_time_ms and confirm the trait
+        // accessor reads the field. Mirrors `elastic_result_solve_time_ms_*`
+        // at `persistent_cache.rs:1115` — the second sample with
+        // solve_time_ms = 0 catches a hard-coded constant.
+        let nine_thousand_nine_hundred_ninety_nine = ShellExtractionResult::new(
+            MidSurfaceMesh {
+                vertices: vec![],
+                triangles: vec![],
+                thickness: vec![],
+            },
+            SegmentationResult {
+                regions: vec![],
+                vertex_labels: vec![],
+                triangle_labels: vec![],
+            },
+            MidSurfaceAttributes::default(),
+            9999,
+            vec![],
+        )
+        .unwrap();
+        assert_eq!(nine_thousand_nine_hundred_ninety_nine.solve_time_ms(), 9999);
+
+        let zero = ShellExtractionResult::new(
+            MidSurfaceMesh {
+                vertices: vec![],
+                triangles: vec![],
+                thickness: vec![],
+            },
+            SegmentationResult {
+                regions: vec![],
+                vertex_labels: vec![],
+                triangle_labels: vec![],
+            },
+            MidSurfaceAttributes::default(),
+            0,
+            vec![],
+        )
+        .unwrap();
+        assert_eq!(zero.solve_time_ms(), 0);
+    }
 }
