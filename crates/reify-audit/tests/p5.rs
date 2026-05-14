@@ -504,4 +504,96 @@ mod tests {
             entries
         );
     }
+
+    /// `check_pre_done` is the entry point for the eventual D-1 dark-factory
+    /// hook (see `f-infra-design.md` §11). It must scope to a single task_id
+    /// even when other phantom-done tasks coexist in `task_metadata`.
+    #[test]
+    fn check_pre_done_filters_to_single_task() {
+        let conn = seed_db();
+        insert_run(&conn, "run-mixed");
+        // Phantom-done task 5000 (task-3242 shape).
+        insert_task_result(&conn, "run-mixed", "5000", "done");
+        insert_task_completed_event(&conn, "run-mixed", "5000");
+        // Clean done task 5001 (happy-path shape).
+        insert_task_result(&conn, "run-mixed", "5001", "done");
+        insert_task_completed_event(&conn, "run-mixed", "5001");
+
+        let mut git = MockGitOps::new();
+        // Task 5000: claimed commit's diff doesn't cover the metadata file.
+        git.set_diff_changed_paths(
+            "main",
+            "phantom_sha",
+            vec!["docs/unrelated.md".to_string()],
+        );
+        git.set_log_grep("main", "5000", vec![]);
+        // Task 5001: claimed commit's diff covers the metadata file cleanly.
+        git.set_diff_changed_paths(
+            "main",
+            "clean_sha",
+            vec!["crates/x/clean.rs".to_string()],
+        );
+        git.set_log_grep("main", "5001", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "5000".to_string(),
+            TaskMetadata {
+                task_id: "5000".to_string(),
+                status: "done".to_string(),
+                files: vec!["crates/reify-shell-extract/src/pruning.rs".to_string()],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("phantom_sha".to_string()),
+                    note: None,
+                }),
+            },
+        );
+        task_metadata.insert(
+            "5001".to_string(),
+            TaskMetadata {
+                task_id: "5001".to_string(),
+                status: "done".to_string(),
+                files: vec!["crates/x/clean.rs".to_string()],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("clean_sha".to_string()),
+                    note: None,
+                }),
+            },
+        );
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+        };
+
+        // Sanity: full check returns the single phantom finding.
+        let all = p5_phantom_done::check(&ctx);
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].task_id, "5000");
+
+        // Scoped to "5000" → returns the phantom finding.
+        let phantom_only = p5_phantom_done::check_pre_done(&ctx, "5000");
+        assert_eq!(
+            phantom_only.len(),
+            1,
+            "check_pre_done(5000) should return only 5000's finding; got {:?}",
+            phantom_only
+        );
+        assert_eq!(phantom_only[0].task_id, "5000");
+        assert_eq!(phantom_only[0].severity, Severity::High);
+
+        // Scoped to "5001" (clean) → returns empty.
+        let clean_only = p5_phantom_done::check_pre_done(&ctx, "5001");
+        assert!(
+            clean_only.is_empty(),
+            "check_pre_done(5001) should be empty; got {:?}",
+            clean_only
+        );
+    }
 }
