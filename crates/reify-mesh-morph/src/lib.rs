@@ -57,9 +57,15 @@
 //! is *materially better* (> 20 % improvement on the relevant metric). This
 //! is encoded as `from_scratch > MATERIALITY_FACTOR * morph` for
 //! higher-is-better metrics (min scaled J) and
-//! `morph_ar_factor > MATERIALITY_FACTOR` for lower-is-better metrics (the
-//! from-scratch AR baseline is ~ 1.0 by construction). The canonical
-//! constant lives in `tests/calibration/sweep.rs::MATERIALITY_FACTOR`.
+//! `from_scratch_max_ar_factor > MATERIALITY_FACTOR` for lower-is-better
+//! metrics, where `from_scratch_max_ar_factor` is the true
+//! `max(morphed_AR / from_scratch_AR)` ratio computed in
+//! `tests/calibration/sweep.rs::extract_metrics` and exposed via the
+//! `SweepReport` field of the same name. The live predicates live in
+//! `tests/calibration/sweep.rs::sj_materially_better` and
+//! `tests/calibration/sweep.rs::ar_materially_better`; the canonical
+//! materiality constant lives in
+//! `tests/calibration/sweep.rs::MATERIALITY_FACTOR`.
 //!
 //! Calibration was performed against the [`StiffnessRule::InverseVolume`]
 //! production default (PRD task #8 / task 2945, shipped on main).
