@@ -7055,6 +7055,120 @@ fn engine_session_no_auto_resolve_emission_when_no_auto_params() {
     );
 }
 
+/// Step-8: Pin the AutoResolveParameterValue conversion contract.
+///
+/// Resolved `mm(4.2)` → `{ value: 4.2, unit: "mm", display: "4.2mm" }`.
+/// Tests `dimension.to_display_units` + `format_display_number` pipeline.
+#[test]
+fn engine_session_auto_resolve_iteration_parameter_payload_matches_resolved_value_shape() {
+    use std::sync::Arc;
+
+    let thickness_id = ValueCellId::new("S", "thickness");
+    let mut solved = std::collections::HashMap::new();
+    solved.insert(thickness_id.clone(), mm(4.2));
+    let solver = MockConstraintSolver::new_solved(solved);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "thickness", Type::length())
+        .constraint(
+            "S",
+            0,
+            None,
+            gt(value_ref("S", "thickness"), literal(mm(2.0))),
+        )
+        .build();
+
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None)
+        .with_solver_for_test(Box::new(solver));
+
+    let recorder = RecordingEmitter::new();
+    let events = Arc::clone(&recorder.events);
+    session.set_auto_resolve_emitter(Arc::new(recorder));
+
+    session.check_and_emit_for_test(&compiled);
+
+    let events = events.lock().unwrap();
+    assert_eq!(events.len(), 3, "expected [Start, Iteration, Complete]");
+
+    if let EmitEvent::Iteration(ref iter) = events[1] {
+        let param = iter
+            .parameters
+            .get("S.thickness")
+            .expect("S.thickness must be in parameters");
+        assert!(
+            (param.value - 4.2).abs() < 1e-10,
+            "value must be 4.2 (display units), got {}",
+            param.value
+        );
+        assert_eq!(param.unit, "mm", "unit must be 'mm'");
+        assert_eq!(param.display, "4.2mm", "display must be '4.2mm'");
+    } else {
+        panic!("events[1] must be Iteration");
+    }
+}
+
+/// Step-9: Pin the Satisfaction → bool projection in `AutoResolveConstraintProgress`.
+///
+/// Two constraints: `thickness > 2mm` (satisfied at 5mm) and `thickness > 10mm`
+/// (violated at 5mm). Asserts exactly one satisfied and one violated entry.
+#[test]
+fn engine_session_auto_resolve_constraint_progress_projects_satisfaction_to_bool() {
+    use std::sync::Arc;
+
+    let thickness_id = ValueCellId::new("S", "thickness");
+    let mut solved = std::collections::HashMap::new();
+    solved.insert(thickness_id.clone(), mm(5.0));
+    let solver = MockConstraintSolver::new_solved(solved);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "thickness", Type::length())
+        .constraint(
+            "S",
+            0,
+            None,
+            gt(value_ref("S", "thickness"), literal(mm(2.0))),
+        )
+        .constraint(
+            "S",
+            1,
+            None,
+            gt(value_ref("S", "thickness"), literal(mm(10.0))),
+        )
+        .build();
+
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None)
+        .with_solver_for_test(Box::new(solver));
+
+    let recorder = RecordingEmitter::new();
+    let events = Arc::clone(&recorder.events);
+    session.set_auto_resolve_emitter(Arc::new(recorder));
+
+    session.check_and_emit_for_test(&compiled);
+
+    let events = events.lock().unwrap();
+    assert_eq!(events.len(), 3, "expected [Start, Iteration, Complete]");
+
+    if let EmitEvent::Iteration(ref iter) = events[1] {
+        assert_eq!(iter.constraints.len(), 2, "must have 2 constraint entries");
+        let satisfied = iter.constraints.values().filter(|c| c.satisfied).count();
+        let violated = iter.constraints.values().filter(|c| !c.satisfied).count();
+        assert_eq!(satisfied, 1, "exactly one constraint should be satisfied (> 2mm at 5mm)");
+        assert_eq!(violated, 1, "exactly one constraint should be violated (> 10mm at 5mm)");
+    } else {
+        panic!("events[1] must be Iteration");
+    }
+}
+
 /// Step-6: With a solver-injected session loaded with an auto-param fixture,
 /// `check_and_emit_for_test` must fire exactly [Start, Iteration, Complete].
 #[test]
