@@ -48,7 +48,7 @@ Existing infrastructure to lean on:
 2. **Compile diagnostic at use site**: a call requiring `Bounded` (e.g.
    `volume`, `bounding_box`, `centroid`) on a value statically known to lack
    `Bounded` (i.e. produced by `half_space`/`extrude_infinite` and not
-   subsequently bounded by intersection) emits `error[E_GEOMETRY_UNBOUNDED]` at
+   subsequently bounded by intersection) emits `error[GeometryUnbounded]` at
    the call site. `Watertight`/`Manifold` violations are runtime — no
    compile-time diagnostic.
 3. **Trait flow rules** (per-op):
@@ -76,7 +76,7 @@ Existing infrastructure to lean on:
 // Compile-time error: half_space is Unbounded, volume requires Bounded.
 fn err_unbounded_volume() -> Real {
     let h = half_space(plane_xy(0mm))
-    volume(h)            // error[E_GEOMETRY_UNBOUNDED] at this call site
+    volume(h)            // error[GeometryUnbounded] at this call site
 }
 
 // OK: intersection with a Bounded solid restores Bounded.
@@ -109,7 +109,7 @@ structure def TrustedShell : Watertight {
    `crates/reify-compiler/src/geometry_traits_inference.rs` (new file, ~150L).
 3. **Diagnostic at call sites** — when resolving calls whose signatures bind
    a `Bounded` (or `: Bounded`-refining) trait parameter, check the inferred
-   set on the argument; emit `E_GEOMETRY_UNBOUNDED` if absent. Reuse the
+   set on the argument; emit `GeometryUnbounded` if absent. Reuse the
    diagnostic infrastructure already used for trait-bound mismatches.
 4. **Runtime conformance queries** — three new OCCT FFI entry points:
    `is_watertight(shape) → bool`, `is_manifold(shape) → bool`,
@@ -139,7 +139,7 @@ structure def TrustedShell : Watertight {
    BRepCheck hook (PRD tasks 4/5) is not yet wired into eval, so today the
    warning is the only observable effect.
 6. **Tests**: per-op trait inference (full table), Boolean propagation rules,
-   `E_GEOMETRY_UNBOUNDED` diagnostic, `is_watertight`/`is_manifold` against
+   `GeometryUnbounded` diagnostic, `is_watertight`/`is_manifold` against
    known-good (`box`) and known-bad (`union(box, translated_box)` separated)
    shapes, escape-hatch warning fires once.
 
@@ -276,7 +276,7 @@ access). The correct file list is the table above.
    over all `CompiledGeometryOp` variants. New module
    `geometry_traits_inference.rs`; populate `inferred_traits` field on
    `CompiledGeometryOp`. Unit tests for every variant.
-3. **Diagnostic `E_GEOMETRY_UNBOUNDED`** at call sites that bind a `Bounded`
+3. **Diagnostic `GeometryUnbounded`** at call sites that bind a `Bounded`
    trait parameter to an argument lacking it. Reuse trait-bound error path.
    Tests: `volume(half_space(...))` errors; `volume(intersection(half_space,
    box))` does not.

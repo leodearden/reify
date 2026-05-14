@@ -24,7 +24,7 @@ minimal for v0.1: each compiler-generated face/edge gets a tag derived from
 `(source_line, step_kind, sub_index)` — i.e. "the third edge produced by line
 42's `fillet(...)` step". When topology changes invalidate a tag (zero or
 multiple matches after a downstream edit), the selector returns `undef` and
-emits `warn[W_TOPOLOGY_TAG_STALE]` referencing the original source span.
+emits `warn[TopologyTagStale]` referencing the original source span.
 Solvespace's full attribute-persistence scheme is deferred to v0.2.
 
 `#249` (ad-hoc port selectors compiler) is the **reference implementation** for
@@ -113,7 +113,7 @@ fn chamfer_bottom_ring(b : Solid, h : Length) -> List<Curve> {
      `Vec<FeatureTag>` per `ShapeId`).
    - Selector resolution: at the call site, walk the runtime shape, match
      tags, return matched sub-shapes. Zero or multiple matches → `undef` +
-     `W_TOPOLOGY_TAG_STALE` diagnostic with the original source span.
+     `TopologyTagStale` diagnostic with the original source span.
 4. **Re-expose the four already-shipped filtered selectors**
    (`edges_at_height`, `edges_parallel_to`, `edges_by_length`, `faces_by_area`)
    to use the feature-tag path so they degrade gracefully across topology
@@ -125,7 +125,7 @@ fn chamfer_bottom_ring(b : Solid, h : Length) -> List<Curve> {
    Re-use `Tensor<2, 3, MomentOfInertia>` from existing tensor work.
 6. **Tests**: per-FFI happy-path tests; feature-tag survival across a fillet
    edit (selector returns same result after a parameter tweak); stale-tag
-   path emits `W_TOPOLOGY_TAG_STALE` exactly once.
+   path emits `TopologyTagStale` exactly once.
 
 ## Out of scope
 
@@ -142,7 +142,7 @@ fn chamfer_bottom_ring(b : Solid, h : Length) -> List<Curve> {
 - `cargo test -p reify-eval -- topology_selectors` covers all eleven
   stdlib functions end-to-end through `compile_with_stdlib`.
 - `cargo test -p reify-compiler -- feature_tag` covers tag generation,
-  resolution, and the stale/ambiguous → `undef` + `W_TOPOLOGY_TAG_STALE`
+  resolution, and the stale/ambiguous → `undef` + `TopologyTagStale`
   path.
 - `moment_of_inertia(box(L, W, H), ρ)` returns the analytic
   `(1/12) * m * (W² + H²)` etc. tensor within OCCT precision.
@@ -178,7 +178,7 @@ Also references #318, #319 (existing selector FFI pattern) and #249
    `faces_by_area`) through feature-tag resolution. Behaviour change:
    stale → `undef` + warning. Migration tests prove pre-existing tests
    still pass under new path.
-6. **Stale-tag diagnostic `W_TOPOLOGY_TAG_STALE`** with source-span
+6. **Stale-tag diagnostic `TopologyTagStale`** with source-span
    surface mapping. Test: edit profile → tagged feature disappears →
    exactly one warning emitted, span points to original selector site.
    — **Implemented (task 2332):** `DiagnosticCode::TopologyTagStale` in

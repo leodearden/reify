@@ -17,7 +17,7 @@
 > registry; the bare ident lowers to `AnnotationArg::Ident("shadowing")`).
 > The annotation-args PRD's Phase 1 task γ is the joint integration
 > gate: wires the shadow-lint walker (per this PRD's task 1) to
-> consult `@allow` annotations and suppress W_SHADOW when
+> consult `@allow` annotations and suppress Shadowing when
 > `has_flag("shadowing")` returns true. See `docs/prds/annotation-args.md`
 > §6 (consumer policy) + §8 task γ (LEAF observable signal).
 
@@ -34,7 +34,7 @@ Emit a compile-time warning whenever an inner-scope declaration uses the same na
 ## Scope
 
 - A single-pass scope analyzer that, when registering a name in a child scope, walks parent scopes and checks for collision against parameters, ports, sub-entities, and `let` bindings.
-- New diagnostic code (e.g. `W_SHADOW`) with: shadowed name, shadowing-site span, original-declaration span.
+- New diagnostic code (e.g. `Shadowing`) with: shadowed name, shadowing-site span, original-declaration span.
 - Apply to: structure / occurrence / constraint / field / trait / fn bodies, and nested specialization scopes.
 - Lint-style: warning by default. Suppressible via `@allow(shadowing)`. The `@allow` annotation is shipped by `docs/prds/annotation-args.md` (§8 tasks α+β); this PRD's task 3 wires the consumer side (the shadow-lint walker reads `Annotation::has_flag("shadowing")` per `annotation-args.md` §3). Note: `#[allow(shadowing)]` Rust-bracket form is **not** Reify's annotation grammar.
 
@@ -47,7 +47,7 @@ Emit a compile-time warning whenever an inner-scope declaration uses the same na
 
 ## Acceptance criteria
 
-1. Declaring `param x` in a sub-structure body when an enclosing structure already has `param x` emits warning W_SHADOW with both spans.
+1. Declaring `param x` in a sub-structure body when an enclosing structure already has `param x` emits warning Shadowing with both spans.
 2. `let` shadowing a parent `param`, `port`, or another `let` warns.
 3. Shadowing across more than one scope hop (grandparent) warns and points at the nearest visible parent declaration.
 4. `match` block same-name guarded decls do NOT warn (the per-arm decls are siblings under mutually-exclusive guards, not shadowing each other).
@@ -56,7 +56,7 @@ Emit a compile-time warning whenever an inner-scope declaration uses the same na
 
 ## Task breakdown
 
-1. Implement single-pass scope-walk shadow detector in name-resolution / scope analyzer. Emits W_SHADOW with both spans.
+1. Implement single-pass scope-walk shadow detector in name-resolution / scope analyzer. Emits Shadowing with both spans.
 2. Wire diagnostic code, span pairs, formatting; add to LSP diagnostics path.
-3. Consult `@allow(shadowing)` to suppress W_SHADOW on annotated entities. Reads via `Annotation::has_flag("shadowing")` per `annotation-args.md` §3 / §6. This task is the joint integration-gate with `annotation-args.md` §8 task γ — its observable signal (a `.ri` file with `@allow(shadowing)` emits zero W_SHADOW) closes the loop for both PRDs.
+3. Consult `@allow(shadowing)` to suppress Shadowing on annotated entities. Reads via `Annotation::has_flag("shadowing")` per `annotation-args.md` §3 / §6. This task is the joint integration-gate with `annotation-args.md` §8 task γ — its observable signal (a `.ri` file with `@allow(shadowing)` emits zero Shadowing) closes the loop for both PRDs.
 4. Tests: positive shadow cases, match-block exception, sibling-scope no-warn, trait-merge no-warn, multi-hop shadow, `@allow(shadowing)` suppression.

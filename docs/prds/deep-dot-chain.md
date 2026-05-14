@@ -13,7 +13,7 @@ Warn at compile time when a member-access chain `a.b.c.d.e` exceeds a configurab
 
 - Single-pass syntactic check during AST validation (post-parse, pre-typecheck is fine; no semantic info needed).
 - Count the number of `MemberAccess` nodes in a left-to-right chain, where each node's left-hand side is itself a `MemberAccess` or a bare identifier.
-- New diagnostic code (e.g. `W_DEEP_DOT_CHAIN`) reporting full chain text and span.
+- New diagnostic code (e.g. `DeepDotChain`) reporting full chain text and span.
 - Threshold configurable but with a hardcoded v0.1 default of 4 (chains of length > 4 warn).
 - Method-call chains (`x.foo().bar().baz()`) are out-of-scope unless the spec extends — v0.1 only counts pure member-access (`.field`) hops. Document this explicitly so we don't surprise users with method-call lint noise.
 
@@ -27,7 +27,7 @@ Warn at compile time when a member-access chain `a.b.c.d.e` exceeds a configurab
 ## Acceptance criteria
 
 1. `a.b.c.d` (4 hops) does not warn.
-2. `a.b.c.d.e` (5 hops) emits W_DEEP_DOT_CHAIN with the full chain text and span.
+2. `a.b.c.d.e` (5 hops) emits DeepDotChain with the full chain text and span.
 3. `a.b.foo().c.d` (mixed call+access) does not trip the lint in v0.1 (out-of-scope).
 4. Indexing in the middle (`a.b[0].c.d.e`) — count `.field` hops only; treat the indexed expression as a fresh chain root so `a.b[0]` is hop-1.
 5. Test coverage: at-threshold (no warn), one-over-threshold (warn), deeply nested chains in let bodies and constraint bodies, mixed indexing/method calls (no false-positive).
