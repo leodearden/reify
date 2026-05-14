@@ -34,14 +34,40 @@ const MAIN_BASE: &str = "main";
 ///
 /// Mismatches that survive both guards produce `Severity::High`.
 pub fn check(ctx: &AuditContext) -> Vec<Finding> {
+    check_with_target(ctx, ctx.target_task_id.as_deref())
+}
+
+/// Single-task entry point for the D-1 dark-factory pre-done hook
+/// (`docs/architecture-audit/f-infra-design.md` §3 + §11). Scopes the
+/// otherwise-identical [`check`] pass to one `task_id` so the orchestrator
+/// can call us synchronously before flipping a task to `done` without
+/// auditing its entire backlog.
+///
+/// Hot-path note: the D-1 hook fires on every status flip, so this wrapper
+/// passes `target_task_id` through to the inner routine without cloning
+/// the `task_metadata` HashMap — at backlog sizes of hundreds of tasks the
+/// clone would dominate the per-flip cost while the inner filter already
+/// skips non-target rows in O(n) anyway.
+///
+/// Slice-1 ships the wrapper; T-4 will host the CLI subprocess that the
+/// hook actually invokes.
+pub fn check_pre_done(ctx: &AuditContext, task_id: &str) -> Vec<Finding> {
+    check_with_target(ctx, Some(task_id))
+}
+
+/// Shared inner routine for [`check`] and [`check_pre_done`]. Borrows the
+/// context (no clone of `task_metadata`) and threads the optional
+/// single-task override through the filter so both entry points share one
+/// code path for the P5 invariant.
+fn check_with_target(ctx: &AuditContext, target_task_id: Option<&str>) -> Vec<Finding> {
     let mut findings = Vec::new();
 
     for meta in ctx.task_metadata.values() {
         if meta.status != "done" {
             continue;
         }
-        if let Some(target) = &ctx.target_task_id
-            && &meta.task_id != target
+        if let Some(target) = target_task_id
+            && meta.task_id != target
         {
             continue;
         }
@@ -55,26 +81,6 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
     }
 
     findings
-}
-
-/// Single-task entry point for the D-1 dark-factory pre-done hook
-/// (`docs/architecture-audit/f-infra-design.md` §3 + §11). Scopes the
-/// otherwise-identical [`check`] pass to one `task_id` so the orchestrator
-/// can call us synchronously before flipping a task to `done` without
-/// auditing its entire backlog.
-///
-/// Slice-1 ships the wrapper; T-4 will host the CLI subprocess that the
-/// hook actually invokes.
-pub fn check_pre_done(ctx: &AuditContext, task_id: &str) -> Vec<Finding> {
-    let scoped = AuditContext {
-        project_root: ctx.project_root.clone(),
-        conn: ctx.conn,
-        git: ctx.git,
-        task_metadata: ctx.task_metadata.clone(),
-        target_task_id: Some(task_id.to_string()),
-        window: ctx.window.clone(),
-    };
-    check(&scoped)
 }
 
 /// Independent pre-pass: any metadata.files entry that's gitignored gets
