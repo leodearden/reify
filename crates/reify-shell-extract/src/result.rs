@@ -907,6 +907,38 @@ impl reify_eval::persistent_cache::PersistentlyCacheable for ShellExtractionResu
             ));
         }
 
+        // Parallel-array invariants from SegmentationResult's docstring
+        // (`segmentation.rs:181-194`): `vertex_labels` is parallel to
+        // `mesh.vertices`, `triangle_labels` is parallel to
+        // `mesh.triangles`. Enforce at the deserialization boundary so a
+        // tampered cache entry cannot produce a struct whose parallel
+        // arrays disagree — the invariant the producer-side
+        // `segment_regions` guarantees and that all downstream consumers
+        // rely on. Mirrors the principle "deserialize cannot produce a
+        // struct new() would have refused" articulated for the
+        // vertices/thickness check above.
+        if header.vertex_labels_len != header.vertices_len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "ShellExtractionResult parallel-array invariant violation on cache read: \
+                     vertex_labels_len {} != vertices_len {} (corrupted or tampered cache entry?)",
+                    header.vertex_labels_len, header.vertices_len
+                ),
+            ));
+        }
+        if header.triangle_labels_len != header.triangles_len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "ShellExtractionResult parallel-array invariant violation on cache read: \
+                     triangle_labels_len {} != triangles_len {} \
+                     (corrupted or tampered cache entry?)",
+                    header.triangle_labels_len, header.triangles_len
+                ),
+            ));
+        }
+
         // Pre-validate every per-region voxel slab cap before any slab read.
         let mut per_region_voxel_caps: Vec<usize> = Vec::new();
         per_region_voxel_caps
@@ -1594,6 +1626,75 @@ mod tests {
             msg.contains("length-invariant violation") && msg.contains("vertices_len 4")
                 && msg.contains("thickness_len 3"),
             "error message must explain the mismatch, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn shell_extraction_result_deserialize_rejects_vertex_labels_invariant_violation() {
+        // Tampered/corrupted entry: vertex_labels_len = 2 but vertices_len = 4
+        // (parallel-array invariant from `SegmentationResult` docstring —
+        // `vertex_labels` is parallel to `mesh.vertices`). The deserialize
+        // path must reject this just as `vertices_len != thickness_len` is
+        // rejected. Setting `thickness_len = vertices_len` so the earlier
+        // length-invariant check passes and the vertex-labels check fires.
+        let header = ShellExtractionResultHeader {
+            solve_time_ms: 0,
+            vertices_len: 4,
+            triangles_len: 0,
+            thickness_len: 4,
+            vertex_labels_len: 2,
+            triangle_labels_len: 0,
+            regions: vec![],
+            naming: MidSurfaceAttributesOnDisk {
+                face_records: vec![],
+                edges: vec![],
+            },
+            diagnostics: vec![],
+        };
+        let buf = encode_header_only_for_test(&header);
+        let err = ShellExtractionResult::deserialize_from_reader(&mut &buf[..])
+            .expect_err("vertex_labels parallel-array violation must be rejected");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        let msg = err.to_string();
+        assert!(
+            msg.contains("parallel-array invariant violation")
+                && msg.contains("vertex_labels_len 2")
+                && msg.contains("vertices_len 4"),
+            "error message must explain the vertex_labels mismatch, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn shell_extraction_result_deserialize_rejects_triangle_labels_invariant_violation() {
+        // Tampered/corrupted entry: triangle_labels_len = 5 but
+        // triangles_len = 2 (parallel-array invariant from
+        // `SegmentationResult` docstring — `triangle_labels` is parallel to
+        // `mesh.triangles`). Earlier checks (vertices==thickness,
+        // vertex_labels==vertices) pass so the triangle-labels check fires.
+        let header = ShellExtractionResultHeader {
+            solve_time_ms: 0,
+            vertices_len: 0,
+            triangles_len: 2,
+            thickness_len: 0,
+            vertex_labels_len: 0,
+            triangle_labels_len: 5,
+            regions: vec![],
+            naming: MidSurfaceAttributesOnDisk {
+                face_records: vec![],
+                edges: vec![],
+            },
+            diagnostics: vec![],
+        };
+        let buf = encode_header_only_for_test(&header);
+        let err = ShellExtractionResult::deserialize_from_reader(&mut &buf[..])
+            .expect_err("triangle_labels parallel-array violation must be rejected");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        let msg = err.to_string();
+        assert!(
+            msg.contains("parallel-array invariant violation")
+                && msg.contains("triangle_labels_len 5")
+                && msg.contains("triangles_len 2"),
+            "error message must explain the triangle_labels mismatch, got: {msg}"
         );
     }
 
