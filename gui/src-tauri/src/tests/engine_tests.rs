@@ -7234,3 +7234,62 @@ fn engine_session_auto_resolve_emitter_fires_start_iter_complete_when_solver_res
         assert!(!iter.constraints.is_empty(), "constraints must be non-empty");
     }
 }
+
+/// Step-11: `set_parameter` must re-fire the emit sequence when the solver resolves auto params.
+///
+/// Setup: session with `S.x` (regular param, settable) + `S.thickness` (auto param).
+/// After initial check drains the recorder, `set_parameter("S.x", "10mm")` triggers
+/// `edit_check` → solver resolves `thickness` again → [Start, Iteration, Complete].
+#[test]
+fn engine_session_auto_resolve_emitter_fires_on_set_parameter_when_solver_present() {
+    use std::sync::Arc;
+
+    let thickness_id = ValueCellId::new("S", "thickness");
+    let mut solved = std::collections::HashMap::new();
+    solved.insert(thickness_id.clone(), mm(5.0));
+    let solver = MockConstraintSolver::new_solved(solved);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "x", Type::length(), Some(literal(mm(5.0))))
+        .auto_param("S", "thickness", Type::length())
+        .constraint(
+            "S",
+            0,
+            None,
+            gt(value_ref("S", "thickness"), literal(mm(2.0))),
+        )
+        .build();
+
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None)
+        .with_solver_for_test(Box::new(solver));
+
+    let recorder = RecordingEmitter::new();
+    let events = Arc::clone(&recorder.events);
+    session.set_auto_resolve_emitter(Arc::new(recorder));
+
+    // Initial check: gives engine a snapshot; drains 3 events.
+    session.check_and_emit_for_test(&compiled);
+    // Inject compiled so set_parameter can validate the cell exists.
+    session.inject_compiled_for_test(compiled);
+    // Drain recorder before the set_parameter call.
+    events.lock().unwrap().clear();
+
+    // set_parameter("S.x", "10mm") → edit_check → solver fires → emit sequence
+    session.set_parameter("S.x", "10mm").expect("set_parameter should succeed");
+
+    let events = events.lock().unwrap();
+    assert_eq!(
+        events.len(),
+        3,
+        "set_parameter must emit [Start, Iteration, Complete], got {} events",
+        events.len()
+    );
+    assert!(matches!(events[0], EmitEvent::Start), "event[0] must be Start");
+    assert!(matches!(events[1], EmitEvent::Iteration(_)), "event[1] must be Iteration");
+    assert!(matches!(events[2], EmitEvent::Complete), "event[2] must be Complete");
+}
