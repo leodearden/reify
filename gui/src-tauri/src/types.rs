@@ -590,14 +590,21 @@ pub struct AutoResolveParameterValue {
 /// Per-constraint progress within an auto-resolve iteration.
 ///
 /// Mirrors the TypeScript `AutoResolveConstraintProgress` interface in
-/// `gui/src/types.ts`.  Optional fields (`unit`, `target_lower`,
+/// `gui/src/types.ts`.  Optional fields (`value`, `unit`, `target_lower`,
 /// `target_upper`) are omitted from the JSON wire when absent — the GUI panel
 /// renders gracefully without them, using `satisfied` + `name` for the
 /// indicator row.
+///
+/// `value` is `None` until the kernel exposes per-constraint observed scalars
+/// at the CheckResult boundary; emitting `0.0` would be a wire-level lie
+/// (indistinguishable from a genuine zero observation).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AutoResolveConstraintProgress {
     pub name: String,
-    pub value: f64,
+    /// Observed scalar value for this constraint (display-unit).
+    /// `None` when the kernel does not yet expose the observed value.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unit: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

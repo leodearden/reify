@@ -12,6 +12,8 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
+use tracing::warn;
+
 use tauri::{Emitter, Manager};
 
 use reify_constraints::SimpleConstraintChecker;
@@ -91,15 +93,21 @@ struct TauriAutoResolveEmitter {
 
 impl AutoResolveEmitter for TauriAutoResolveEmitter {
     fn start(&self) {
-        self.app.emit("auto-resolve-start", ()).ok();
+        if let Err(e) = self.app.emit("auto-resolve-start", ()) {
+            warn!("auto-resolve emit 'auto-resolve-start' failed: {}", e);
+        }
     }
 
     fn iteration(&self, iter: reify_gui::types::AutoResolveIteration) {
-        self.app.emit("auto-resolve-iteration", iter).ok();
+        if let Err(e) = self.app.emit("auto-resolve-iteration", iter) {
+            warn!("auto-resolve emit 'auto-resolve-iteration' failed: {}", e);
+        }
     }
 
     fn complete(&self) {
-        self.app.emit("auto-resolve-complete", ()).ok();
+        if let Err(e) = self.app.emit("auto-resolve-complete", ()) {
+            warn!("auto-resolve emit 'auto-resolve-complete' failed: {}", e);
+        }
     }
 }
 

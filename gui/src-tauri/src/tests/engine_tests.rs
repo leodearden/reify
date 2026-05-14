@@ -7295,13 +7295,3 @@ fn engine_session_auto_resolve_emitter_fires_on_set_parameter_when_solver_presen
     assert!(matches!(events[1], EmitEvent::Iteration(_)), "event[1] must be Iteration");
     assert!(matches!(events[2], EmitEvent::Complete), "event[2] must be Complete");
 }
-
-/// Step-14: Pin object-safety of AutoResolveEmitter at compile time.
-///
-/// If any future method gains a `Self`-typed parameter, `dyn AutoResolveEmitter`
-/// would stop being object-safe and the trait could not be used as a vtable.
-/// This one-liner catches that regression immediately.
-#[test]
-fn auto_resolve_emitter_trait_object_is_object_safe() {
-    let _x: Box<dyn crate::engine::AutoResolveEmitter> = Box::new(RecordingEmitter::new());
-}

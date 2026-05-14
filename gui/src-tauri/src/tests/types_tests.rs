@@ -1317,7 +1317,7 @@ fn auto_resolve_iteration_serializes_with_expected_field_set() {
         "max_von_mises".to_string(),
         AutoResolveConstraintProgress {
             name: "max_von_mises".to_string(),
-            value: 180.0,
+            value: Some(180.0),
             unit: Some("MPa".to_string()),
             target_lower: None,
             target_upper: Some(200.0),
@@ -1380,7 +1380,11 @@ fn auto_resolve_iteration_serializes_with_expected_field_set() {
         json!("max_von_mises"),
         "constraint name must match"
     );
-    assert_eq!(constraint["value"], json!(180.0), "constraint value must be 180.0");
+    assert_eq!(
+        constraint["value"],
+        json!(180.0),
+        "constraint value must be 180.0 when Some"
+    );
     assert_eq!(
         constraint["unit"],
         json!("MPa"),
@@ -1424,15 +1428,17 @@ fn auto_resolve_iteration_omits_optional_when_none() {
     );
 }
 
-/// Step-2b: unit, target_lower, and target_upper must be ABSENT from JSON when
-/// set to None (validates #[serde(skip_serializing_if = "Option::is_none")]).
+/// Step-2b: value, unit, target_lower, and target_upper must be ABSENT from JSON
+/// when set to None (validates #[serde(skip_serializing_if = "Option::is_none")]).
+/// `value: None` is the v1 representation — the kernel does not yet expose
+/// per-constraint observed scalars, so omitting is better than emitting 0.0.
 #[test]
 fn auto_resolve_constraint_progress_omits_unset_targets_and_unit() {
     use crate::types::AutoResolveConstraintProgress;
 
     let c = AutoResolveConstraintProgress {
         name: "stress_limit".to_string(),
-        value: 0.0,
+        value: None,
         unit: None,
         target_lower: None,
         target_upper: None,
@@ -1440,6 +1446,10 @@ fn auto_resolve_constraint_progress_omits_unset_targets_and_unit() {
     };
 
     let v = serde_json::to_value(&c).unwrap();
+    assert!(
+        v.get("value").is_none(),
+        "value must be absent from JSON when None"
+    );
     assert!(
         v.get("unit").is_none(),
         "unit must be absent from JSON when None"
@@ -1454,7 +1464,6 @@ fn auto_resolve_constraint_progress_omits_unset_targets_and_unit() {
     );
     // Required fields must still be present
     assert_eq!(v["name"], json!("stress_limit"));
-    assert_eq!(v["value"], json!(0.0));
     assert_eq!(v["satisfied"], json!(false));
 }
 

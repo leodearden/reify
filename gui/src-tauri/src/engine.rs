@@ -596,6 +596,11 @@ impl EngineSession {
                         display,
                     },
                 );
+            } else {
+                warn!(
+                    "auto-resolve: resolved param {:?} is not a Scalar; skipping",
+                    cell_id
+                );
             }
         }
         out
@@ -603,20 +608,27 @@ impl EngineSession {
 
     /// Build the `constraints` map for an `AutoResolveIteration` payload.
     ///
-    /// Projects each `ConstraintCheckEntry` to `{ name, value: 0.0, unit: None,
-    /// target_lower: None, target_upper: None, satisfied }`.  The scalar fields
-    /// are v1 placeholders — the kernel does not yet expose per-constraint
-    /// observed/target scalars at the CheckResult boundary.
+    /// Projects each `ConstraintCheckEntry` to `{ name, value: None, unit: None,
+    /// target_lower: None, target_upper: None, satisfied }`.  `value` is `None`
+    /// because the kernel does not yet expose per-constraint observed/target
+    /// scalars at the CheckResult boundary; emitting `0.0` would be a wire-level
+    /// lie (indistinguishable from a genuine zero observation).
+    ///
+    /// `name` prefers the user-authored `label` over the synthetic `id` so the
+    /// GUI panel indicator row shows human-readable names.  The map key is always
+    /// `id.to_string()` for stable lookup by the frontend.
     fn build_constraints_payload(
         results: &[reify_eval::ConstraintCheckEntry],
     ) -> HashMap<String, AutoResolveConstraintProgress> {
         let mut out = HashMap::new();
         for r in results {
+            let id_str = r.id.to_string();
+            let name = r.label.clone().unwrap_or_else(|| id_str.clone());
             out.insert(
-                r.id.to_string(),
+                id_str,
                 AutoResolveConstraintProgress {
-                    name: r.id.to_string(),
-                    value: 0.0,
+                    name,
+                    value: None,
                     unit: None,
                     target_lower: None,
                     target_upper: None,
@@ -670,12 +682,13 @@ impl EngineSession {
         // field mutations can safely be deferred until after check() returns).
         let check_result = self.engine.check(&compiled);
 
-        // Emit auto-resolve events before committing state so the GUI receives
-        // the resolved-params payload on the same call that loaded the file.
-        self.emit_auto_resolve_if_any(&check_result);
-
         // Atomically commit all state after check() succeeds.
         self.commit_state(parsed, compiled, check_result, module_name, source);
+
+        // Emit auto-resolve events after committing state, consistent with the
+        // panic-safety ordering story: all state mutations are complete before
+        // any events fire.
+        self.emit_auto_resolve_if_any(self.last_check.as_ref().unwrap());
 
         self.build_gui_state()
     }
