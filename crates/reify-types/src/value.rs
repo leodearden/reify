@@ -123,6 +123,65 @@ pub struct SampledField {
     pub oob_emitted: std::sync::atomic::AtomicBool,
 }
 
+impl SampledField {
+    /// Returns `true` if all spatial-geometry fields of `self` and `other` are
+    /// bit-identical, i.e. the two fields sample the same physical grid.
+    ///
+    /// ## Relationship to `PartialEq`
+    ///
+    /// This is a strict subset of `SampledField::PartialEq`: it compares every
+    /// field that `PartialEq` compares **except** `data` (the value payload,
+    /// compared element-wise with tolerance by callers) and `oob_emitted` (a
+    /// runtime-mutability slot deliberately excluded from all equality/ordering
+    /// impls).  When only grid geometry matters — regardless of what data values
+    /// happen to be stored at those coordinates — use this method.
+    ///
+    /// ## `#[doc(hidden)]` rationale
+    ///
+    /// This method is `pub` because its primary caller, `reify-eval`'s
+    /// significance filter, lives in a downstream crate.  It is `#[doc(hidden)]`
+    /// because it is an internal contract between the two crates and is not part
+    /// of `SampledField`'s stable public API.
+    ///
+    /// ## Bit-equality rationale
+    ///
+    /// Float fields (`bounds_min`, `bounds_max`, `spacing`, `axis_grids`) are
+    /// compared with `to_bits()` to match the behaviour of `PartialEq`.  This
+    /// means `+0.0` and `-0.0` compare as **different** (a grid spec that
+    /// switches sign on a spacing entry is a physically distinct grid even
+    /// though the two values are numerically equal under `f64::PartialEq`).
+    /// Same-bit-pattern NaN values compare as equal.
+    #[doc(hidden)]
+    pub fn grid_metadata_eq(&self, other: &Self) -> bool {
+        if self.name != other.name
+            || self.kind != other.kind
+            || self.interpolation != other.interpolation
+        {
+            return false;
+        }
+        let vecs_bit_eq = |xs: &[f64], ys: &[f64]| -> bool {
+            xs.len() == ys.len()
+                && xs
+                    .iter()
+                    .zip(ys.iter())
+                    .all(|(x, y)| x.to_bits() == y.to_bits())
+        };
+        if !vecs_bit_eq(&self.bounds_min, &other.bounds_min)
+            || !vecs_bit_eq(&self.bounds_max, &other.bounds_max)
+            || !vecs_bit_eq(&self.spacing, &other.spacing)
+        {
+            return false;
+        }
+        if self.axis_grids.len() != other.axis_grids.len() {
+            return false;
+        }
+        self.axis_grids
+            .iter()
+            .zip(other.axis_grids.iter())
+            .all(|(ag, bg)| vecs_bit_eq(ag, bg))
+    }
+}
+
 impl Clone for SampledField {
     /// Cloning a `SampledField` produces a fresh `oob_emitted = false`.
     /// Cloning is rare in normal operation (the `Arc<Value::SampledField>`
