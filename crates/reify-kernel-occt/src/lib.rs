@@ -69,6 +69,14 @@ pub use types::Curvature;
 mod handle;
 #[cfg(has_occt)]
 pub use handle::OcctKernelHandle;
+// `reify_mesh_morph::Projector` impl over `OcctKernel`. Gated on
+// `feature = "mesh-morph"` so adapters keep the dep-direction-inverted
+// layering (see `Cargo.toml`); also `has_occt` because the impl requires the
+// real FFI to be useful.
+#[cfg(all(has_occt, feature = "mesh-morph"))]
+mod projector_impl;
+#[cfg(all(has_occt, feature = "mesh-morph"))]
+pub use projector_impl::OcctProjector;
 // v0.2 persistent-naming-v2 BRepAlgoAPI history records (task 2590).
 // Always exported from the crate root so callers in either build mode
 // (`has_occt` and stub) can name the types; the stub variant of
