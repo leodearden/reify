@@ -259,3 +259,56 @@ fn shift_invert_reports_non_convergence_when_max_iters_too_low() {
     );
     // Must not panic — absence of panic IS the no-panic assertion.
 }
+
+// ---------------------------------------------------------------------------
+// Step-9 tests: contract guard #[should_panic] tests
+// ---------------------------------------------------------------------------
+
+/// (a) n_modes=0 is rejected by the entry-point guard.
+#[test]
+#[should_panic(expected = "n_modes")]
+fn solve_eigen_shift_invert_panics_on_zero_n_modes() {
+    let (k, b) = fixture_a();
+    let opts = EigenSolverOptions {
+        n_modes: 0,
+        ..EigenSolverOptions::default()
+    };
+    let _ = solve_eigen_shift_invert(&k, &b, opts);
+}
+
+/// (b) A non-square K (5 rows × 4 cols) is rejected.
+#[test]
+#[should_panic(expected = "K must be square")]
+fn solve_eigen_shift_invert_panics_on_non_square_k() {
+    // Produce a 5×4 K by hand.
+    let k_trips: Vec<Triplet<usize, usize, f64>> = vec![Triplet::new(0, 0, 1.0)];
+    let k_rect = SparseRowMat::try_new_from_triplets(5, 4, &k_trips).unwrap();
+    // B must also be non-empty; 5×5 identity (will be rejected before shape check on B).
+    let b_trips: Vec<Triplet<usize, usize, f64>> =
+        (0..5).map(|i| Triplet::new(i, i, 1.0)).collect();
+    let b = SparseRowMat::try_new_from_triplets(5, 5, &b_trips).unwrap();
+    let _ = solve_eigen_shift_invert(&k_rect, &b, EigenSolverOptions::default());
+}
+
+/// (c) B dimensions mismatched with K (K 5×5, B 4×4).
+#[test]
+#[should_panic(expected = "B must match K dimensions")]
+fn solve_eigen_shift_invert_panics_on_shape_mismatch() {
+    let (k, _) = fixture_a(); // 5×5
+    let b_small_trips: Vec<Triplet<usize, usize, f64>> =
+        (0..4).map(|i| Triplet::new(i, i, 1.0)).collect();
+    let b_small = SparseRowMat::try_new_from_triplets(4, 4, &b_small_trips).unwrap();
+    let _ = solve_eigen_shift_invert(&k, &b_small, EigenSolverOptions::default());
+}
+
+/// (d) tol=NaN is rejected (must be a finite positive value).
+#[test]
+#[should_panic(expected = "tol")]
+fn solve_eigen_shift_invert_panics_on_non_finite_tol() {
+    let (k, b) = fixture_a();
+    let opts = EigenSolverOptions {
+        tol: f64::NAN,
+        ..EigenSolverOptions::default()
+    };
+    let _ = solve_eigen_shift_invert(&k, &b, opts);
+}
