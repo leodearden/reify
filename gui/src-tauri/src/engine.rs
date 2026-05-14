@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use tracing::warn;
 
@@ -16,7 +17,8 @@ use reify_types::{
 use reify_types::{Diagnostic, DiagnosticInfo, DiagnosticLabel, SourceLocationInfo, SourceSpan};
 
 use crate::types::{
-    ConstraintData, DefInfo, EntityIdentity, EntityTreeNode, FileData, GuiState, JointDescriptor,
+    AutoResolveConstraintProgress, AutoResolveIteration, AutoResolveParameterValue, ConstraintData,
+    DefInfo, EntityIdentity, EntityTreeNode, FileData, GuiState, JointDescriptor,
     MechanismDescriptor, MeshData, SourceSpanInfo, ValueData, format_determinacy, format_freshness,
     format_value,
 };
@@ -121,6 +123,24 @@ pub struct EngineSession {
     /// `Option<CompileFailure>` makes the at-most-one-non-empty invariant inexpressible —
     /// the prior two-field representation enforced it only at runtime via `debug_assert!`s.
     compile_failure: Option<CompileFailure>,
+    /// Optional auto-resolve event sink installed by the GUI layer.
+    ///
+    /// When `Some`, `emit_auto_resolve_if_any` calls `start → iteration → complete`
+    /// after every check that produces non-empty `resolved_params`. When `None`
+    /// (the default), all emit paths are no-ops — existing tests that construct an
+    /// EngineSession without installing an emitter are unaffected.
+    auto_resolve_emitter: Option<Arc<dyn AutoResolveEmitter>>,
+}
+
+/// Trait for sinking auto-resolve loop events to the GUI transport layer.
+///
+/// Implemented by [`TauriAutoResolveEmitter`] in `main.rs` for the production
+/// path, and by `RecordingEmitter` in tests.  The trait is object-safe:
+/// no method takes or returns `Self`.
+pub trait AutoResolveEmitter: Send + Sync {
+    fn start(&self);
+    fn iteration(&self, iter: AutoResolveIteration);
+    fn complete(&self);
 }
 
 /// Build the normalized source-map key for a module name: `"{name}.ri"`.
@@ -477,7 +497,106 @@ impl EngineSession {
             line_offsets_cache: None,
             consumed_idents_cache: None,
             compile_failure: None,
+            auto_resolve_emitter: None,
         }
+    }
+
+    /// Install an auto-resolve event emitter on this session.
+    ///
+    /// After installation, every `Engine::check` / `edit_check` call that
+    /// produces non-empty `resolved_params` fires `start → iteration → complete`
+    /// on the emitter.  Replaces any previously installed emitter.
+    pub fn set_auto_resolve_emitter(&mut self, emitter: Arc<dyn AutoResolveEmitter>) {
+        self.auto_resolve_emitter = Some(emitter);
+    }
+
+    /// Emit auto-resolve events if an emitter is installed and the check produced
+    /// resolved auto-parameter values.
+    ///
+    /// Early-returns silently when:
+    /// - No emitter is installed (`auto_resolve_emitter` is `None`), or
+    /// - `check.resolved_params` is empty (no auto params were resolved).
+    ///
+    /// When both conditions are met, fires `start → iteration → complete` in order.
+    fn emit_auto_resolve_if_any(&self, check: &CheckResult) {
+        let emitter = match &self.auto_resolve_emitter {
+            Some(e) => e,
+            None => return,
+        };
+        if check.resolved_params.is_empty() {
+            return;
+        }
+
+        let parameters = Self::build_parameters_payload(&check.resolved_params);
+        let constraints = Self::build_constraints_payload(&check.constraint_results);
+
+        let iter = AutoResolveIteration {
+            iteration: 0,
+            parameters,
+            constraints,
+            driving_metric: None,
+            driving_metric_value: None,
+        };
+
+        emitter.start();
+        emitter.iteration(iter);
+        emitter.complete();
+    }
+
+    /// Build the `parameters` map for an `AutoResolveIteration` payload.
+    ///
+    /// Only `Value::Scalar` resolved params are included; other variants are
+    /// filtered out (auto parameters are always physical quantities, so non-scalar
+    /// resolved values indicate an unexpected state — skip rather than emit garbage).
+    fn build_parameters_payload(
+        resolved: &HashMap<ValueCellId, Value>,
+    ) -> HashMap<String, AutoResolveParameterValue> {
+        let mut out = HashMap::new();
+        for (cell_id, value) in resolved {
+            if let Value::Scalar { si_value, dimension } = value {
+                let (display_value, unit) = dimension.to_display_units(*si_value);
+                let display = format!(
+                    "{}{}",
+                    reify_types::value::format_display_number(display_value),
+                    unit
+                );
+                out.insert(
+                    cell_id.to_string(),
+                    AutoResolveParameterValue {
+                        value: display_value,
+                        unit: unit.to_string(),
+                        display,
+                    },
+                );
+            }
+        }
+        out
+    }
+
+    /// Build the `constraints` map for an `AutoResolveIteration` payload.
+    ///
+    /// Projects each `ConstraintCheckEntry` to `{ name, value: 0.0, unit: None,
+    /// target_lower: None, target_upper: None, satisfied }`.  The scalar fields
+    /// are v1 placeholders — the kernel does not yet expose per-constraint
+    /// observed/target scalars at the CheckResult boundary.
+    fn build_constraints_payload(
+        results: &[reify_eval::ConstraintCheckEntry],
+    ) -> HashMap<String, AutoResolveConstraintProgress> {
+        let mut out = HashMap::new();
+        for r in results {
+            out.insert(
+                r.id.to_string(),
+                AutoResolveConstraintProgress {
+                    name: r.id.to_string(),
+                    value: 0.0,
+                    unit: None,
+                    target_lower: None,
+                    target_upper: None,
+                    satisfied: matches!(r.satisfaction, Satisfaction::Satisfied),
+                },
+            );
+        }
+        out
     }
 
     /// Create a new EngineSession with the given constraint checker and optional geometry kernel.
@@ -522,6 +641,10 @@ impl EngineSession {
         // Evaluate + check constraints (borrows compiled by shared ref, so all
         // field mutations can safely be deferred until after check() returns).
         let check_result = self.engine.check(&compiled);
+
+        // Emit auto-resolve events before committing state so the GUI receives
+        // the resolved-params payload on the same call that loaded the file.
+        self.emit_auto_resolve_if_any(&check_result);
 
         // Atomically commit all state after check() succeeds.
         self.commit_state(parsed, compiled, check_result, module_name, source);
@@ -590,6 +713,7 @@ impl EngineSession {
                 msg
             })?;
         let check_result = self.engine.check(&compiled);
+        self.emit_auto_resolve_if_any(&check_result);
         self.commit_state(parsed, compiled, check_result, module_name, &source);
         self.file_path = Some(path.to_path_buf());
         self.build_gui_state()
@@ -648,6 +772,8 @@ impl EngineSession {
         // Parse+compile succeeded — run check() before mutating any state, so
         // that a panic in check() leaves the session completely unchanged.
         let check_result = self.engine.check(&compiled);
+
+        self.emit_auto_resolve_if_any(&check_result);
 
         // Atomically commit all state after check() succeeds.
         self.commit_state(parsed, compiled, check_result, module_name, content);
