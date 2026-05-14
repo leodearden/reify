@@ -283,7 +283,7 @@ make the classification machine-readable.
 
 ---
 
-### `solver_elastic.ri` — 5 sites
+### `solver_elastic.ri` — 5 original + 4 post-audit sites
 
 Source: `crates/reify-compiler/stdlib/solver_elastic.ri`
 
@@ -292,18 +292,28 @@ Source: `crates/reify-compiler/stdlib/solver_elastic.ri`
 | 166 | `ElasticOptions` struct | `cg_tolerance` | `Real` | `Real` | genuine-dimensionless | — |
 | 168 | `ElasticOptions` struct | `shell_threshold` | `Real` | `Real` | genuine-dimensionless | — |
 | 171 | `ElasticOptions` struct | `shell_branch_prune_ratio` | `Real` | `Real` | genuine-dimensionless | — |
-| 284 | `ElasticResult` struct | `displacement` | `Real` | `Field<Point3<Length>, Vector3<Length>>` | blocked-field-in-param | task-G |
-| 285 | `ElasticResult` struct | `stress` | `Real` | `Field<Point3<Length>, Tensor<2,3,Pressure>>` | blocked-field-in-param | task-G |
+| 284 | `ElasticResult` struct | `displacement` | `Real` | `Field<Point3<Length>, Vector3<Length>>` | blocked-field-in-param | task-G (#3117) |
+| 285 | `ElasticResult` struct | `stress` | `Real` | `Field<Point3<Length>, Tensor<2,3,Pressure>>` | blocked-field-in-param | task-G (#3117) |
+
+Post-audit sites added after the original table was fixed (task #3641 scope):
+
+| Line | Owner | Param | Tightened Type | Classification | Resolved in |
+|------|-------|-------|----------------|----------------|-------------|
+| 286 | `ElasticResult` struct | `frame` | `Field<Point3<Length>, Matrix<3,3,Real>>` | tightened | task #3641 |
+| 343 | `ShellStress` struct | `top` | `Field<Point3<Length>, Tensor<2,3,Pressure>>` | tightened | task #3641 |
+| 344 | `ShellStress` struct | `mid` | `Field<Point3<Length>, Tensor<2,3,Pressure>>` | tightened | task #3641 |
+| 345 | `ShellStress` struct | `bottom` | `Field<Point3<Length>, Tensor<2,3,Pressure>>` | tightened | task #3641 |
 
 **Notes:**
 - `cg_tolerance` (relative residual norm), `shell_threshold` (thickness/extent ratio),
   and `shell_branch_prune_ratio` (branch/thickness ratio) are all dimensionless;
   `Real` is correct.
-- `displacement` and `stress` are `Field<X,Y>` types. The resolver registers a `Field`
-  arm at `type_resolution.rs:1397` for parametric forms, but the existing TODO comment
-  at `solver_elastic.ri:243-254` claims Field is only registered for top-level `field
-  def` declarations, not `param` positions. These two statements may be inconsistent —
-  the TODO may be stale. → blocked-field-in-param (task-G to investigate).
+- `displacement` and `stress` are `Field<X,Y>` types. Task #3117 investigated and
+  confirmed the resolver arm at `type_resolution.rs:1313` handles `Field<D,C>` in
+  `param` positions. These two slots remain as `Real` placeholders pending task #3117.
+- `frame`, `top`, `mid`, and `bottom` were tightened from `Real` to their proper
+  `Field<…>` types in task #3641, following the same resolver capability confirmed
+  by task #3117.
 
 ---
 
