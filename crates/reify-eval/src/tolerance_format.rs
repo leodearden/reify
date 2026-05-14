@@ -4,8 +4,12 @@
 //! `µm / mm / m` magnitude bands in diagnostic messages.
 //!
 //! Currently only `tolerance_promise` calls this helper.
-//! TODO(task-2790-follow-up): migrate `tolerance_combine`, `tolerance_bucket`,
-//! and `tolerance_budget` raw f64-metres format sites to use `format_tolerance`.
+//! TODO(task-2798, reopened 2026-05-14): migrate `tolerance_combine`,
+//! `tolerance_bucket`, and `tolerance_budget` raw f64-metres format sites to
+//! use `format_tolerance`. Task 2798 was previously marked done (commit
+//! a5bab10a4c) after completing only Part 1 of its scope (the debug_assert
+//! hardening); the Part 2 migration named here was never started. The
+//! original task 2790 is also done.
 //!
 //! # Band breakpoints
 //!
