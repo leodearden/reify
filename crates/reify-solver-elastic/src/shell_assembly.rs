@@ -458,6 +458,28 @@ mod tests {
         }
     }
 
+    /// Assert that an N×N matrix is entry-wise finite and symmetric.
+    ///
+    /// Symmetry tolerance: `|D[i][j] − D[j][i]| < 1e-9 · max(|D[i][j]|, |D[j][i]|, 1)`.
+    fn assert_symmetric_finite<const N: usize>(d: &[[f64; N]; N]) {
+        for i in 0..N {
+            for j in 0..N {
+                assert!(
+                    d[i][j].is_finite(),
+                    "D[{i}][{j}] = {} is not finite",
+                    d[i][j]
+                );
+                let lhs = d[i][j];
+                let rhs = d[j][i];
+                let scale = lhs.abs().max(rhs.abs()).max(1.0);
+                assert!(
+                    (lhs - rhs).abs() < 1e-9 * scale,
+                    "asymmetry at ({i},{j}): {lhs} vs {rhs}",
+                );
+            }
+        }
+    }
+
     const UNIT_TRI: [[f64; 3]; 3] = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
 
     /// Compute K · u for an 18-DOF stiffness matrix.
@@ -1124,25 +1146,8 @@ mod tests {
 
         let d = plane_stress_d(&mat);
 
-        // All entries finite.
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!(d[i][j].is_finite(), "D[{i}][{j}] = {} is not finite", d[i][j]);
-            }
-        }
-
-        // Symmetric.
-        for i in 0..3 {
-            for j in 0..3 {
-                let lhs = d[i][j];
-                let rhs = d[j][i];
-                let scale = lhs.abs().max(rhs.abs()).max(1.0);
-                assert!(
-                    (lhs - rhs).abs() < 1e-9 * scale,
-                    "asymmetry at ({i},{j}): {lhs} vs {rhs}",
-                );
-            }
-        }
+        // Finite and symmetric.
+        assert_symmetric_finite(&d);
 
         // Closed-form entries.
         let factor = e / (1.0 - nu * nu);

@@ -157,6 +157,28 @@ mod tests {
         out
     }
 
+    /// Assert that an N×N matrix is entry-wise finite and symmetric.
+    ///
+    /// Symmetry tolerance: `|D[i][j] − D[j][i]| < 1e-9 · max(|D[i][j]|, |D[j][i]|, 1)`.
+    fn assert_symmetric_finite<const N: usize>(d: &[[f64; N]; N]) {
+        for i in 0..N {
+            for j in 0..N {
+                assert!(
+                    d[i][j].is_finite(),
+                    "D[{i}][{j}] = {} is not finite",
+                    d[i][j]
+                );
+                let lhs = d[i][j];
+                let rhs = d[j][i];
+                let scale = lhs.abs().max(rhs.abs()).max(1.0);
+                assert!(
+                    (lhs - rhs).abs() < 1e-9 * scale,
+                    "asymmetry at ({i},{j}): {lhs} vs {rhs}",
+                );
+            }
+        }
+    }
+
     /// Steel-like reference: E = 200 GPa, ν = 0.3 (Pa, dimensionless).
     fn steel_like() -> IsotropicElastic {
         IsotropicElastic {
@@ -167,18 +189,7 @@ mod tests {
 
     #[test]
     fn d_matrix_is_symmetric_for_steel_like_inputs() {
-        let d = steel_like().d_matrix();
-        for i in 0..6 {
-            for j in 0..6 {
-                let lhs = d[i][j];
-                let rhs = d[j][i];
-                let scale = lhs.abs().max(rhs.abs()).max(1.0);
-                assert!(
-                    (lhs - rhs).abs() < 1e-9 * scale,
-                    "asymmetry at ({i},{j}): {lhs} vs {rhs}",
-                );
-            }
-        }
+        assert_symmetric_finite(&steel_like().d_matrix());
     }
 
     #[test]
@@ -330,25 +341,8 @@ mod tests {
 
         let d = mat.d_matrix();
 
-        // All entries finite.
-        for i in 0..6 {
-            for j in 0..6 {
-                assert!(d[i][j].is_finite(), "D[{i}][{j}] = {} is not finite", d[i][j]);
-            }
-        }
-
-        // Symmetric.
-        for i in 0..6 {
-            for j in 0..6 {
-                let lhs = d[i][j];
-                let rhs = d[j][i];
-                let scale = lhs.abs().max(rhs.abs()).max(1.0);
-                assert!(
-                    (lhs - rhs).abs() < 1e-9 * scale,
-                    "asymmetry at ({i},{j}): {lhs} vs {rhs}",
-                );
-            }
-        }
+        // Finite and symmetric.
+        assert_symmetric_finite(&d);
 
         // Hydrostatic strain → bulk modulus K > 0.
         let bulk = e / (3.0 * (1.0 - 2.0 * nu));
