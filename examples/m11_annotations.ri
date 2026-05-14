@@ -1,4 +1,4 @@
-// M11 annotations: exercises @test annotations through the full pipeline.
+// M11 annotations: exercises @test and @solver_hint annotations through the full pipeline.
 // Features covered:
 //   1. Basic @test structure with satisfied inline constraint
 //   2. Basic @test structure with violated inline constraint (intentional FAIL)
@@ -6,6 +6,9 @@
 //   4. @test structure exercising a constraint def reference (pass)
 //   5. @test structure exercising a constraint def reference (fail)
 //   6. @test structure with sub-structure fixture (multi-component assembly)
+//   7. @solver_hint with stdlib collection payloads (non-test fixture)
+//
+// PRD: docs/prds/solver-hint-payloads.md (acceptance bullet 1).
 //
 // Run with: reify test examples/m11_annotations.ri
 //
@@ -96,4 +99,20 @@ structure def Pedestal {
     constraint self.col.height > 0mm
     constraint self.ped.base > 0mm
     constraint MinLength(value: self.col.radius, min: 10mm)
+}
+
+// ── Feature 7: @solver_hint with stdlib collection payloads ───────────────────
+// Demonstrates the currently-supported @solver_hint surface:
+//   @solver_hint("<kind>", <collection_ident>)
+// where <collection_ident> resolves to a stdlib List<Length> (std.stock).
+// This block is intentionally non-@test: it exists to exercise annotation
+// lowering and validate_solver_hint_collections at compile time. The
+// constraint solver does not yet consume these hints at runtime (audit
+// finding M-008 in docs/architecture-audit/findings/solver-hint-payloads.md).
+
+structure def BoltedPanel {
+    @solver_hint("discrete_set", standard_bolt_lengths)
+    param bolt_length: Length = auto
+    @solver_hint("prefer_stock", standard_sheet_thicknesses)
+    param sheet_thickness: Length = auto
 }
