@@ -2,7 +2,7 @@
 
 This file is the **canonical, machine-grep-friendly source of truth** for Tauri-side event channel names in the Reify GUI. It is generated from and kept in lockstep with [`docs/prds/v0_3/gui-event-channel-inventory.md`](prds/v0_3/gui-event-channel-inventory.md) — §2 of that PRD is the cross-referenced human-readable form; this file is the grep target. On any PRD §2 prose change, this file is updated in the same commit.
 
-For the naming/payload convention governing new entries see §3 of the source PRD. Every **event channel** name in column 1 of §1 and §2 is wrapped in single backticks so the regex `\| \`[a-z0-9-]+\` \|` matches every event-channel row machine-grep-style. This grep contract covers §1/§2 only — §3 RPC names use snake_case and are intentionally outside it.
+For the naming/payload convention governing new entries see §3 of the source PRD. Every **event channel** name in column 1 of §1 and §2 is wrapped in single backticks so the regex `\| \`[a-z0-9-]+\` \|` matches every event-channel row machine-grep-style. This grep contract covers §1/§2 only — §2a command rows use **bold** first-column formatting (e.g. `| **solver-cancel-request** |`) and are intentionally NOT matched by the regex; §3 RPC names use snake_case and are also intentionally outside it.
 
 ## §1 — Wired channels (production today)
 
@@ -23,15 +23,15 @@ For the naming/payload convention governing new entries see §3 of the source PR
 | `focus-entity` | `String` (entity_path) | `focus_entity` command + MCP `focus_entity` tool | `onFocusEntity` | Bidirectional (UI ↔ MCP) |
 | `navigate-to-source` | `{file, line, column, end_line, end_column}` | MCP `navigate_to_source` tool | `onNavigateToSource` | MCP-driven |
 | `serialization-error` | `SerializationError` | `diff.rs::push_serialized_event` | `onSerializationError` | Replaces a payload that failed to serialize |
-| `claude-text-delta` | `{id, content}` | `claude_bridge.rs::spawn_sidecar_impl` | `subscribeToClaudeEvents` | Sidecar message stream |
-| `claude-thinking-delta` | `{id, content}` | same | same | |
-| `claude-tool-call` | `{id, tool_use_id, tool_name, tool_input}` | same | same | |
-| `claude-tool-result` | `{id, tool_name, result}` | same | same | |
-| `claude-done` | `{id}` | same | same | |
-| `claude-error` | `{id, message}` | same | same | |
-| `claude-notice` | `{id, code, message}` | same | same | |
-| `claude-ready` | `()` | same | same | |
-| `claude-permission-request` | `{id, request_id, tool_name, tool_input}` | same | same | |
+| `claude-text-delta` | `{id, content}` | `claude_bridge.rs::outbound_to_event` | `subscribeToClaudeEvents` | Channel name constructed at `claude_bridge.rs::outbound_to_event` (lines 1096, 1100, …); emitted at dynamic `app.emit(&event_name, …)` closure site in `main.rs` (line 438) — closure passed as `event_emitter` arg to `spawn_sidecar_impl`. Literal-string grep lands in `claude_bridge.rs`; `app.emit(…)` grep lands in `main.rs`. |
+| `claude-thinking-delta` | `{id, content}` | same | same | same |
+| `claude-tool-call` | `{id, tool_use_id, tool_name, tool_input}` | same | same | same |
+| `claude-tool-result` | `{id, tool_name, result}` | same | same | same |
+| `claude-done` | `{id}` | same | same | same |
+| `claude-error` | `{id, message}` | same | same | same |
+| `claude-notice` | `{id, code, message}` | same | same | same |
+| `claude-ready` | `()` | same | same | same |
+| `claude-permission-request` | `{id, request_id, tool_name, tool_input}` | same | same | same |
 | `claude-sidecar-crashed` | `{reason: String}` | `claude_bridge.rs` `on_exit` hook | `subscribeToSidecarCrashed` | |
 | `debug-request` | (variant; see `debug.rs`) | `debug.rs::emit` | `gui/src` debug-bridge | REIFY_DEBUG=1 only; internal Tauri-event-routed RPC pattern |
 
@@ -49,11 +49,11 @@ For the naming/payload convention governing new entries see §3 of the source PR
 
 ### §2a — Tauri commands (frontend → backend; not events; lint-exempt from Phase 5 script)
 
-These are Tauri **commands**, not fire-and-forget events. Listed here because they were scoped alongside the Phase 3 channels above. They must **not** be treated as emit sites by the Phase 5 lint script (PRD §9 task μ) — use an invoke-site grep for commands, not the `\| \`[a-z0-9-]+\` \|` event-channel regex.
+These are Tauri **commands**, not fire-and-forget events. Listed here because they were scoped alongside the Phase 3 channels above. The **bold** first-column formatting (rather than backticks) keeps these rows outside the `\| \`[a-z0-9-]+\` \|` regex contract mechanically — the Phase 5 lint script needs no special-case handling for this section. To find a command's invoke site, grep for the command name as a string in the frontend source rather than using the event-channel regex.
 
 | Command | Payload | Direction | Backend handler | Upstream prereq | Owning slice |
 |---|---|---|---|---|---|
-| `solver-cancel-request` | `{solver_kind: String, run_id: String}` | frontend → backend (`cancel_solve` Tauri command) | `reify-solver-elastic` cancellation handle | task 2923 (FEA progressive framework); task 2965 (overlay component) | Phase 3 |
+| **solver-cancel-request** | `{solver_kind: String, run_id: String}` | frontend → backend (`cancel_solve` Tauri command) | `reify-solver-elastic` cancellation handle | task 2923 (FEA progressive framework); task 2965 (overlay component) | Phase 3 |
 
 ## §3 — Debug-MCP RPCs (not fire-and-forget events; snake_case names; outside §1/§2 kebab-case grep contract)
 
