@@ -2,7 +2,7 @@
 
 This file is the **canonical, machine-grep-friendly source of truth** for Tauri-side event channel names in the Reify GUI. It is generated from and kept in lockstep with [`docs/prds/v0_3/gui-event-channel-inventory.md`](prds/v0_3/gui-event-channel-inventory.md) — §2 of that PRD is the cross-referenced human-readable form; this file is the grep target. On any PRD §2 prose change, this file is updated in the same commit.
 
-For the naming/payload convention governing new entries see §3 of the source PRD. Every channel name in column 1 is wrapped in single backticks so the regex `\| \`[a-z0-9-]+\` \|` matches every channel row machine-grep-style.
+For the naming/payload convention governing new entries see §3 of the source PRD. Every **event channel** name in column 1 of §1 and §2 is wrapped in single backticks so the regex `\| \`[a-z0-9-]+\` \|` matches every event-channel row machine-grep-style. This grep contract covers §1/§2 only — §3 RPC names use snake_case and are intentionally outside it.
 
 ## §1 — Wired channels (production today)
 
@@ -44,11 +44,18 @@ For the naming/payload convention governing new entries see §3 of the source PR
 | `auto-resolve-complete` | `()` | same | `bridge.ts::onAutoResolveComplete` | same | Phase 2 |
 | `warm-pool-event` | `WarmPoolEvent {kind: 'evicted'\|'donated', size_bytes: u64, node_id: String}` | `reify-eval` `WarmStatePool::drain_events()` → journal translator at eval boundary | (new) `WarmPoolDebugPanel` in `gui/src/debug/` | warm-state-eviction M-010 (drainer wiring) | Phase 3 |
 | `solver-progress` | `{solver_kind: String, iter: u32, residual: f64, eta_ms: Option<u64>}` | `reify-solver-elastic` CG callback at iteration boundary | (new) `SolverProgressOverlay` | task 2923 (FEA progressive framework); task 2965 (overlay component) | Phase 3 |
-| `solver-cancel-request` | `{solver_kind: String, run_id: String}` | (frontend → backend) `cancel_solve` Tauri command, NOT an event — listed for documentation completeness | `reify-solver-elastic` cancellation handle | tasks above | Phase 3 |
 | `fea-case-changed` | `{active_case_id: String, available_cases: Vec<String>}` | `reify-eval` multi-case ElasticResult dispatch at case-switch | (new) `FeaCasePickerDropdown` | task 3026 (multi-load case engine wiring) | Phase 3 |
 | `mode-shape-frame` | `{mode_index: u8, phase: f32, displaced_positions: Vec<f32>}` | buckling solver post-process animation feed | (new) `BucklingPanel` animator | `docs/prds/v0_5/buckling-eigensolver.md` §13 task ι (GR-024) | **ACTIVE** — owned by `docs/prds/v0_5/buckling-eigensolver.md` §13 task ι (3458) (GR-024 / Phase 9: backend emitter + BucklingPanel animator) |
 
-## §3 — Debug-MCP RPCs (not fire-and-forget events; convention applies)
+### §2a — Tauri commands (frontend → backend; not events; lint-exempt from Phase 5 script)
+
+These are Tauri **commands**, not fire-and-forget events. Listed here because they were scoped alongside the Phase 3 channels above. They must **not** be treated as emit sites by the Phase 5 lint script (PRD §9 task μ) — use an invoke-site grep for commands, not the `\| \`[a-z0-9-]+\` \|` event-channel regex.
+
+| Command | Payload | Direction | Backend handler | Upstream prereq | Owning slice |
+|---|---|---|---|---|---|
+| `solver-cancel-request` | `{solver_kind: String, run_id: String}` | frontend → backend (`cancel_solve` Tauri command) | `reify-solver-elastic` cancellation handle | task 2923 (FEA progressive framework); task 2965 (overlay component) | Phase 3 |
+
+## §3 — Debug-MCP RPCs (not fire-and-forget events; snake_case names; outside §1/§2 kebab-case grep contract)
 
 | RPC | Request shape | Response shape | Producer | Consumer | Upstream prereq |
 |---|---|---|---|---|---|
