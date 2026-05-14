@@ -147,14 +147,6 @@ fn export_writes_file() {
 
 // --- Mutex-poison tests (task-1781) ---
 
-/// Return an `Arc<Mutex<EngineSession>>` whose mutex has already been poisoned.
-///
-/// Delegates to `poison_engine` with an unloaded session; kept for backwards
-/// compat with tests that don't need a module loaded.
-fn make_poisoned_engine() -> Arc<Mutex<EngineSession>> {
-    poison_engine(Arc::new(Mutex::new(make_session())))
-}
-
 /// Poison an existing `Arc<Mutex<EngineSession>>` and return it.
 ///
 /// Used by Group-B tests to poison an already-loaded session so recovery
