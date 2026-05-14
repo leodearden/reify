@@ -352,14 +352,13 @@ echo ""
 echo "--- Check 11: --help output contains --bidirectional ---"
 
 _help_out="$_tmpdir/help_out.txt"
-"$CHECK_SCRIPT" --help 2>&1 | tee "$_help_out" > /dev/null || true
 "$CHECK_SCRIPT" --help > "$_help_out" 2>&1 || true
 
 assert "--help output contains --bidirectional" \
     grep -q '\-\-bidirectional' "$_help_out"
 
-assert "--help output contains a description of --bidirectional" \
-    grep -q 'reverse pass\|§1\|bidirectional' "$_help_out"
+assert "--help output contains a description of the reverse pass" \
+    grep -q 'reverse pass' "$_help_out"
 
 # -- Summary ------------------------------------------------------------------
 test_summary
