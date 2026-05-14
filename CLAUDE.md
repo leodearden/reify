@@ -4,8 +4,6 @@
 
 The orchestrator verify pipeline requires `sccache` on PATH (install via `cargo install sccache`). `orchestrator.yaml` sets `RUSTC_WRAPPER=sccache` and `CARGO_INCREMENTAL=0` to share a rustc cache across worktrees; rationale and design in `~/.claude/plans/playful-hopping-nygaard.md`.
 
-This repo ships its git hooks under `hooks/` rather than `.git/hooks/`. `scripts/setup-dev.sh` configures `git config core.hooksPath hooks` so the post-commit tasks.json ID normalizer (`hooks/post-commit`) runs automatically. Re-run `setup-dev.sh` if you need to re-configure.
-
 ### Single-command GUI launch
 
 From a clean checkout, two wrapper scripts collapse the full sidecar → npm install → npm build → cargo build → launch pipeline into a single command. Both scripts export `LD_LIBRARY_PATH` for OCCT's bundled snap shared libraries automatically — no need to set it yourself.
