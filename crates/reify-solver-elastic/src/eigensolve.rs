@@ -185,7 +185,7 @@ pub fn solve_eigen_dense(
         Default::default(),
     );
     let mut buf = MemBuffer::new(scratch_req);
-    let stack = MemStack::new(&mut *buf);
+    let stack = MemStack::new(&mut buf);
 
     gevd_real(
         k_dense.as_mut(),
@@ -376,7 +376,7 @@ pub fn solve_eigen_shift_invert(
         params,
     );
     let mut buf = MemBuffer::new(scratch_req);
-    let stack = MemStack::new(&mut *buf);
+    let stack = MemStack::new(&mut buf);
 
     let info = partial_self_adjoint_eigen(
         eigvecs.as_mut(),
