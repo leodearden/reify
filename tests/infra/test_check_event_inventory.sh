@@ -237,5 +237,88 @@ assert "--bidirectional emits phantom warning for phantom-channel" \
 assert "--bidirectional exits 0 in warning mode with phantom present" \
     "$CHECK_SCRIPT" --repo-root "$_fix6dir" --bidirectional
 
+# ==============================================================================
+# Check 7: --bidirectional dynamic-emit false-positive guard
+# A §1 channel whose name appears as a .to_string() literal (not .emit("…"))
+# must NOT be flagged as a phantom — permissive literal scan covers it.
+# ==============================================================================
+echo ""
+echo "--- Check 7: --bidirectional dynamic-emit no-false-positive ---"
+
+_fix7dir="$_tmpdir/fix7"
+mkdir -p "$_fix7dir/docs" "$_fix7dir/gui/src-tauri/src"
+
+cat > "$_fix7dir/docs/gui-event-channels.md" <<'INVENTORY'
+# GUI Event Channel Inventory
+
+## §1 — Wired channels (production today)
+
+| Channel | Notes |
+|---|---|
+| `dyn-channel` | wired |
+
+## §2 — Channels this PRD adds (FICTION → WIRED via GR-016 decomposition)
+
+| Channel | Notes |
+|---|---|
+INVENTORY
+
+cat > "$_fix7dir/gui/src-tauri/src/test_dyn.rs" <<'RUST'
+fn push_event(events: &mut Vec<(String, Payload)>, payload: Payload) {
+    events.push(("dyn-channel".to_string(), payload));
+}
+RUST
+
+_fix7_stderr="$_tmpdir/fix7_stderr.txt"
+"$CHECK_SCRIPT" --repo-root "$_fix7dir" --bidirectional 2>"$_fix7_stderr" || true
+
+assert "--bidirectional produces no phantom warning for dynamic-emit channel" \
+    bash -c "! grep -q 'phantom' '$_fix7_stderr'"
+
+assert "--bidirectional exits 0 for dynamic-emit channel" \
+    "$CHECK_SCRIPT" --repo-root "$_fix7dir" --bidirectional
+
+# ==============================================================================
+# Check 8: --bidirectional §2 FICTION exclusion
+# A channel in §2 with no source occurrence must NOT produce a phantom warning —
+# §2 is pre-implementation by design.
+# ==============================================================================
+echo ""
+echo "--- Check 8: --bidirectional §2 FICTION exclusion ---"
+
+_fix8dir="$_tmpdir/fix8"
+mkdir -p "$_fix8dir/docs" "$_fix8dir/gui/src-tauri/src"
+
+cat > "$_fix8dir/docs/gui-event-channels.md" <<'INVENTORY'
+# GUI Event Channel Inventory
+
+## §1 — Wired channels (production today)
+
+| Channel | Notes |
+|---|---|
+| `wired-ok` | wired |
+
+## §2 — Channels this PRD adds (FICTION → WIRED via GR-016 decomposition)
+
+| Channel | Notes |
+|---|---|
+| `fiction-channel` | pre-implementation |
+INVENTORY
+
+cat > "$_fix8dir/gui/src-tauri/src/test_emit.rs" <<'RUST'
+fn emit_something(app: &AppHandle) {
+    app.emit("wired-ok", payload);
+}
+RUST
+
+_fix8_stderr="$_tmpdir/fix8_stderr.txt"
+"$CHECK_SCRIPT" --repo-root "$_fix8dir" --bidirectional 2>"$_fix8_stderr" || true
+
+assert "--bidirectional produces no warning for §2 fiction-channel" \
+    bash -c "! grep -q 'fiction-channel' '$_fix8_stderr'"
+
+assert "--bidirectional exits 0 when only §2 channel is unimplemented" \
+    "$CHECK_SCRIPT" --repo-root "$_fix8dir" --bidirectional
+
 # -- Summary ------------------------------------------------------------------
 test_summary
