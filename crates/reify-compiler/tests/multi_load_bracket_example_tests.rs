@@ -6,18 +6,20 @@
 //!   1. The file parses with zero errors.
 //!   2. It compiles under the stdlib prelude with zero Error-severity diagnostics.
 //!   3. The compiled module exposes a `MultiLoadBracket` structure template.
-//!   4. The source demonstrates ≥2 `LoadCase(` instances, ≥1 `MultiCaseResult(`
-//!      envelope, bracket `box(` geometry, and at least one realistic-load
+//!   4. The compiled template carries `operating`, `overload`, and `transport`
+//!      value cells (pins ≥2 `LoadCase` leaf signal by compiled presence, not
+//!      source-text matching), a `results` cell (pins ≥1 `MultiCaseResult`
+//!      envelope), and a `width` param cell of type `Scalar<LENGTH>` (typed
+//!      assertion mirroring `cost_aggregation_tests.rs:218-283`), plus
+//!      source-text markers for `box(` geometry and at least one realistic-load
 //!      constructor (`point_load(`, `pressure_load(`, `traction_load(`,
 //!      `body_force(`, or `gravity(`).
 //!
 //! Mirrors the `cost_aggregation_example_compiles_under_stdlib_with_zero_errors`
-//! pattern at `cost_aggregation_tests.rs:218-283`.  The substring-marker
-//! assertions pin the *semantic purpose* of the example (demonstrating named
-//! stdlib API entry points), not prose wording — analogous to a unit test
-//! asserting that an "iterator example" actually calls `.iter()`.
+//! pattern at `cost_aggregation_tests.rs:218-283`, including the typed value-cell
+//! assertion (`AssemblyBOM.total_cost: Scalar<MONEY>` → here `width: Scalar<LENGTH>`).
 
-use reify_types::{ModulePath, Severity};
+use reify_types::{DimensionVector, ModulePath, Severity, Type};
 
 // ─── examples/multi_load_bracket.ri compiles clean and pins leaf signals ─────
 
@@ -64,7 +66,7 @@ fn multi_load_bracket_example_compiles_under_stdlib_with_zero_errors() {
 
     // ── Template presence ────────────────────────────────────────────────────
 
-    let _multi_load_bracket = module
+    let multi_load_bracket = module
         .templates
         .iter()
         .find(|t| t.name == "MultiLoadBracket")
@@ -76,28 +78,83 @@ fn multi_load_bracket_example_compiles_under_stdlib_with_zero_errors() {
             )
         });
 
-    // ── Content-marker assertions (leaf-signal pinning) ───────────────────────
+    // ── Value-cell and content-marker assertions (leaf-signal pinning) ────────
     //
-    // Each assertion pins one task-spec leaf signal.  The markers are chosen to
-    // be the API entry points the PRD demands the example demonstrate; they are
-    // semantic-purpose pins, not docstring-prose pins.
+    // The first three signals are checked against the compiled template's
+    // value_cells rather than raw source text, so they cannot be satisfied by
+    // comment text that happens to match the pattern.  The latter two use source-
+    // text markers for API entry points that are not ambiguous with comments in
+    // the example file.
 
-    let load_case_count = src.matches("LoadCase(").count();
+    // Leaf signal: '≥2 LoadCase instances' — three named cells must compile.
+    // Checking compiled value_cells is stronger than `src.matches("LoadCase(")`:
+    // a comment mentioning LoadCase cannot satisfy this assertion.
+    for cell_name in &["operating", "overload", "transport"] {
+        assert!(
+            multi_load_bracket
+                .value_cells
+                .iter()
+                .any(|c| c.id.member == *cell_name),
+            "leaf signal '≥2 LoadCase instances': expected MultiLoadBracket to carry a \
+             '{}' value cell (compiled from a LoadCase constructor); found cells: {:?}",
+            cell_name,
+            multi_load_bracket
+                .value_cells
+                .iter()
+                .map(|c| &c.id.member)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    // Leaf signal: '≥1 MultiCaseResult envelope' — a 'results' cell must compile.
+    // Checking value_cells avoids false positives from the comment that mentions
+    // `MultiCaseResult(...)` in the example's engine-wiring note.
     assert!(
-        load_case_count >= 2,
-        "leaf signal '≥2 LoadCase instances': expected src to contain at least 2 occurrences \
-         of 'LoadCase(' but found {}",
-        load_case_count
+        multi_load_bracket
+            .value_cells
+            .iter()
+            .any(|c| c.id.member == "results"),
+        "leaf signal '≥1 MultiCaseResult envelope': expected MultiLoadBracket to carry a \
+         'results' value cell; found cells: {:?}",
+        multi_load_bracket
+            .value_cells
+            .iter()
+            .map(|c| &c.id.member)
+            .collect::<Vec<_>>()
     );
 
-    let multi_case_result_count = src.matches("MultiCaseResult(").count();
-    assert!(
-        multi_case_result_count >= 1,
-        "leaf signal '≥1 MultiCaseResult envelope': expected src to contain at least 1 \
-         occurrence of 'MultiCaseResult(' but found {}",
-        multi_case_result_count
+    // Typed cell assertion (mirrors cost_aggregation_tests.rs:218-283 pattern,
+    // which asserts AssemblyBOM.total_cost: Scalar<MONEY>).  The 'width' param
+    // carries an explicit `Length` annotation, so the compiler round-trip from
+    // `param width : Length` → `Scalar<LENGTH>` is verifiable without type
+    // inference ambiguity.
+    let width_cell = multi_load_bracket
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "width")
+        .unwrap_or_else(|| {
+            panic!(
+                "MultiLoadBracket should carry a 'width' value cell; found cells: {:?}",
+                multi_load_bracket
+                    .value_cells
+                    .iter()
+                    .map(|c| &c.id.member)
+                    .collect::<Vec<_>>()
+            )
+        });
+
+    assert_eq!(
+        width_cell.cell_type,
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH
+        },
+        "MultiLoadBracket.width should have type Scalar<LENGTH>, got {:?}",
+        width_cell.cell_type
     );
 
+    // Source-text markers for the remaining leaf signals.  These patterns do
+    // not appear inside comments in the example file, so substring matching
+    // is unambiguous here.
     assert!(
         src.contains("box("),
         "leaf signal 'plausible bracket geometry': expected src to contain 'box(' \

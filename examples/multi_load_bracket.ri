@@ -68,9 +68,11 @@ structure MultiLoadBracket {
         supports: [mount],
     )
 
+    let g_scalar   = 9.80665 * 1m / (1s * 1s)   // standard gravity (m/s²)
+
     let transport = LoadCase(
         name:     "transport",
-        loads:    [gravity(49.03325 * 1m / (1s * 1s))],   // 5 g downward (scalar form → -Z)
+        loads:    [gravity(5 * g_scalar)],   // 5 g downward; g_scalar = 9.80665 m/s²
         supports: [mount],
     )
 
