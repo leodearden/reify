@@ -241,22 +241,16 @@ structure def ElasticOptions {
 // has no defaults — every field is populated by the solver at run time;
 // constructing one outside that flow is meaningless.
 //
-// TODO(field-in-param, task #3117): once `resolve_parameterized_builtin_type`
-// (`crates/reify-compiler/src/type_resolution.rs:1340-1398`) accepts
-// `Field<X, Y>` in `param` positions, tighten the following six field-typed
-// slots in a single migration pass:
-//   displacement     → Field<Point3<Length>, Vector3<Length>>
-//   stress           → Field<Point3<Length>, Tensor<2, 3, Pressure>>
-//   frame            → Field<Point3<Length>, Matrix<3, 3, Real>>
-//   ShellStress.top    → Field<Point3<Length>, Tensor<2, 3, Pressure>>
-//   ShellStress.mid    → Field<Point3<Length>, Tensor<2, 3, Pressure>>
-//   ShellStress.bottom → Field<Point3<Length>, Tensor<2, 3, Pressure>>
-// Until then the `Real` placeholder lets the runtime implementation write
-// Field-typed values regardless of the static `param` annotation — the
-// runtime FEA solver in PRD task #16 is the only writer, so the hazard is
-// contained. Task #3117 investigates whether the existing Field arm at
-// type_resolution.rs:1397 already handles param-position Field<X,Y> (the
-// TODO may be stale) and either tightens these sites or extends the resolver.
+// Resolution note (task 3117): the TODO above was stale. Task 3088 added the
+// `Field<D, C>` arm to `resolve_parameterized_builtin_type` (type_resolution.rs:1313)
+// and its `_with_subst` mirror (:1509); both arms accept `Field<X, Y>` in `param`
+// positions. Task 3117 confirmed this via the probe at `tests/field_param_probe.rs`
+// and tightened `displacement` and `stress` to their proper Field types.
+//
+// Remaining Real placeholders: `frame`, `ShellStress.top/mid/bottom` — these were
+// added after the audit (docs/notes/stdlib-real-placeholder-audit.md) classified
+// only `displacement` and `stress` as task-G scope. The resolver supports Field for
+// these forms too; tightening them is a clean follow-up outside task-G.
 // Real-placeholder audit: docs/notes/stdlib-real-placeholder-audit.md
 //
 // Field semantics:
@@ -340,12 +334,12 @@ structure def ElasticResult {
 //
 // At runtime each channel is a `Field<Point3<Length>, Tensor<2, 3, Pressure>>`
 // — a per-mesh-node Cauchy stress tensor. These are declared as `Real`
-// placeholders for the same reason as `ElasticResult.displacement` and
-// `ElasticResult.stress`: Reify's `resolve_parameterized_builtin_type` does
-// not yet support `Field<X, Y>` in `param` positions. See the
-// TODO(field-in-param, task #3117) block above (in ElasticResult) for the
-// planned migration pass that will tighten all six field-typed slots
-// (displacement, stress, frame, top, mid, bottom) in a single diff.
+// placeholders pending the follow-up tightening pass (these slots were added
+// post-audit and are outside task-G scope). The resolver supports
+// `Field<X, Y>` in `param` positions (see resolution note in `ElasticResult`
+// above; `ElasticResult.displacement` and `.stress` were already tightened).
+// top/mid/bottom remain Real for now; the runtime FEA solver populates them
+// as Field-typed values regardless of the static `param` annotation.
 //
 // Tet-result population convention: the engine calls
 // `ShellStress::homogeneous(field)` (Rust constructor in
