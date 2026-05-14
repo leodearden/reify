@@ -89,7 +89,7 @@
 
 - **State:** FICTION
 - **Failure mode:** F1 (PRD §Sketch item 1 + §Resolved "rendering pipeline" assume an end-to-end path; only IPC schema + UI/baker exist)
-- **Evidence:** Task 2962 pending (depends on 2920/2924/2961). `ElasticResult` typed contract (#2911) and result-interpolation (#2920) are done in the kernel; engine integration (#2924) is pending and depends on 14 prerequisites including 3378/3379/3383/3384 (compute-node-infrastructure subset). Without 2924, no ElasticResult ever reaches the GUI. Even if 2924 lands, 2962 must do the sample-stress-at-surface-vertex translation that doesn't exist yet (`engine.rs:949` proves it).
+- **Evidence:** Task 2962 pending (depends on 2920/2924/2961). `ElasticResult` typed contract (#2911) and result-interpolation (#2920) are done in the kernel; engine integration (#2924) is pending and depends on 14 prerequisites including 3426/3379/3383/3384 (compute-node-infrastructure subset). Without 2924, no ElasticResult ever reaches the GUI. Even if 2924 lands, 2962 must do the sample-stress-at-surface-vertex translation that doesn't exist yet (`engine.rs:949` proves it).
 - **Blocks:** entire FEA visualization headline deliverable
 - **Note:** This is the largest concrete chain. Transitively gated by GR-001 only via 2924's input-instantiation needs (Material struct ctors etc.); the GUI-side wire itself doesn't touch struct ctors.
 
@@ -158,9 +158,9 @@
 
 - **State:** FICTION (for this PRD's purposes)
 - **Failure mode:** F1
-- **Evidence:** Task 2924 pending; depends on 14 prerequisite tasks including ComputeNode infra (3377-3385) and 3378 (the deferred stdlib `fn solve_elastic_static` decl). PRD §"Pre-conditions for activating" line 41 lists 2924 as required. Without it, GUI never sees ElasticResult regardless of GUI-side wiring.
+- **Evidence:** Task 2924 pending; depends on 14 prerequisite tasks including ComputeNode infra (3377-3385) and 3426 (the pending stdlib `fn solve_elastic_static` decl). PRD §"Pre-conditions for activating" line 41 lists 2924 as required. Without it, GUI never sees ElasticResult regardless of GUI-side wiring.
 - **Blocks:** M-006/M-007/M-010/M-011/M-012/M-013/M-014 (all downstream)
-- **Note:** Cross-PRD breadcrumb: this PRD's headline feature gates on `structural-analysis-fea.md` decomposition #16 + `compute-node-infrastructure.md` Phase 3. GR-001 (struct ctor eval) is a transitive blocker via 3378.
+- **Note:** Cross-PRD breadcrumb: this PRD's headline feature gates on `structural-analysis-fea.md` decomposition #16 + `compute-node-infrastructure.md` Phase 3. GR-001 (struct ctor eval) is a transitive blocker via 3426.
 
 ### M-020: Surface mesh existing pipeline already accepts per-vertex scalars
 

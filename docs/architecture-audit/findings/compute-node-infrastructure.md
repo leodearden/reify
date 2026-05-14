@@ -124,7 +124,7 @@
 - **State:** FICTION
 - **Failure mode:** F6 (load-bearing dispatch infrastructure leaned on by FEA + multi-load-case PRDs, absent from production code)
 - **Evidence:** `insert_compute_node` (graph.rs:522) has callers ONLY in tests (deps.rs, dirty.rs, freshness_walk.rs, engine_edit.rs, demand.rs — all `#[cfg(test)]` or `#[test]`-adjacent). `CompiledFunction::optimized_target` field exists (compiler/src/types.rs:839, populated in `functions.rs:106-122`) and `@optimized` is accepted on function context (annotations.rs:64-130, task 3377), but `crates/reify-eval/src/engine_eval.rs` does NOT inspect `optimized_target` at function-call evaluation time. No `crates/reify-eval/src/engine_compute.rs` or `crates/reify-types/src/compute.rs` files exist (both named in task 3383's `metadata.files`). Task 3383 pending; prior attempt (`run-da7582f16a91`, 2026-05-11) reaped after merge-gate failure — work unrecoverable per carry-forward note.
-- **Blocks:** 2924 (FEA #16 — the first ComputeNode consumer; this PRD's stated `Consumer`), 3378 (deferred — `fn solve_elastic_static` stdlib decl), 3444 (curator-filed follow-up)
+- **Blocks:** 2924 (FEA #16 — the first ComputeNode consumer; this PRD's stated `Consumer`), 3426 (pending — `fn solve_elastic_static` stdlib decl), 3444 (curator-filed follow-up)
 - **Note:** This is the single biggest gap in the PRD. Every other "WIRED" mechanism is verified by tests that themselves construct `ComputeNodeData` directly; in production, the universe of ComputeNodes is the empty set. This is structurally identical to GR-001 (struct ctors): the runtime entry point is absent despite all surrounding scaffolding being correct.
 
 ### M-015: Dispatch registry (string-keyed `(target, ComputeFn)` lookup)

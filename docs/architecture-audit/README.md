@@ -1,6 +1,6 @@
 # Architecture Audit (2026-05-12)
 
-Triggered by the discovery during task 3378 unblock-triage that **structure-constructor runtime evaluation is silently missing** despite being assumed by multiple merged PRDs (FEA materials, multi-load-case, and others). The pattern — independent architects accreting decisions that each look reasonable but don't compose at runtime — is suspected to have produced other latent gaps.
+Triggered by the discovery during task 3378 unblock-triage that **structure-constructor runtime evaluation is silently missing** despite being assumed by multiple merged PRDs (FEA materials, multi-load-case, and others). The pattern — independent architects accreting decisions that each look reasonable but don't compose at runtime — is suspected to have produced other latent gaps. (Task 3378 has since been cancelled-as-superseded by task 3426; see `phase-3-eight-dag-filing-log.md`.)
 
 This audit inventories the gaps **across the v0.1–v0.5 PRD corpus** so Leo can make scope-shaping decisions before any further consumer work lands.
 

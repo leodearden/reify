@@ -2,7 +2,7 @@
 
 ## Why you (the audit agent) exist
 
-Reify's PRD corpus has been authored and decomposed by many independent architects over ~3 months. Each PRD individually looks reasonable. But on 2026-05-12 a routine unblock-triage on task 3378 surfaced that the **runtime evaluation of structure constructors** (e.g. `Steel_AISI_1045()` → `Value::Map`) is silently missing — despite being assumed by at least three merged PRDs (FEA materials, multi-load-case, FEA #1-#5). The fix isn't urgent. The pattern is. We don't know how many other gaps of this shape exist.
+Reify's PRD corpus has been authored and decomposed by many independent architects over ~3 months. Each PRD individually looks reasonable. But on 2026-05-12 a routine unblock-triage on task 3378 surfaced that the **runtime evaluation of structure constructors** (e.g. `Steel_AISI_1045()` → `Value::Map`) is silently missing — despite being assumed by at least three merged PRDs (FEA materials, multi-load-case, FEA #1-#5). The fix isn't urgent. The pattern is. We don't know how many other gaps of this shape exist. (Task 3378 has since been cancelled-as-superseded by task 3426; see `phase-3-eight-dag-filing-log.md`.)
 
 Your job: take one PRD, enumerate every mechanism it assumes exists at runtime, classify the current state of each, and emit findings in a uniform schema so Phase 3 can synthesize across all PRDs without re-deriving them.
 
@@ -141,7 +141,7 @@ For the FEA PRD, your findings file would include:
 
 - **State:** FICTION
 - **Failure mode:** F6 (ComputeNode infrastructure leaned on but absent)
-- **Evidence:** docs/prds/v0_3/compute-node-infrastructure.md tasks P3.1-P3.6 (3379-3385); 3380/3381/3382/3385 done, 3379/3383/3384 pending; no integration with stdlib fn yet (3378 was the integration task, currently deferred); GR-001 transitively blocks (no runtime structure for inputs)
+- **Evidence:** docs/prds/v0_3/compute-node-infrastructure.md tasks P3.1-P3.6 (3379-3385); 3380/3381/3382/3385 done, 3379/3383/3384 pending; no integration with stdlib fn yet (3426 is the integration task, currently pending); GR-001 transitively blocks (no runtime structure for inputs)
 - **Blocks:** 2924 (FEA #16 engine integration)
 - **Note:** ComputeNode struct + dispatch registry partly built, but stdlib `fn` → ComputeNode wiring + the input-value-to-Rust-call surface still missing.
 ```
