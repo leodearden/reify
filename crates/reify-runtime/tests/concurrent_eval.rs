@@ -4051,3 +4051,26 @@ mod poison_fields_constants {
         );
     }
 } // mod poison_fields_constants
+
+/// Verify that `SchedulerConfig::default()` provides a `node_traits` field
+/// whose default-empty `NodeTraitsMap<NodeId>` resolves to kind-derived defaults
+/// for each node kind (PRD §5 B1 / §7.6 architecture default).
+#[test]
+fn scheduler_config_default_node_traits_resolves_kind_defaults() {
+    use reify_eval::cache::NodeId;
+    use reify_runtime::concurrent::SchedulerConfig;
+    use reify_types::{ComputeNodeId, NodeKind, NodeTraits, ValueCellId};
+
+    let config = SchedulerConfig::default();
+
+    // Default-empty NodeTraitsMap<NodeId>: resolve falls through to kind-derived defaults.
+    let v = NodeId::Value(ValueCellId::new("E", "x"));
+    assert_eq!(config.node_traits.resolve(&v), NodeKind::Value.default_traits());
+    assert_eq!(config.node_traits.resolve(&v), NodeTraits::IMMEDIATE);
+
+    let c = NodeId::Compute(ComputeNodeId::new("E", 0));
+    assert_eq!(
+        config.node_traits.resolve(&c),
+        NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE)
+    );
+}
