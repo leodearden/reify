@@ -409,6 +409,9 @@ pub fn populate_extrude_attributes(
     result_face_handles: &[GeometryHandleId],
     result_edge_handles: &[GeometryHandleId],
     history: &SweepOpHistoryRecords,
+    result_vertex_handles: &[GeometryHandleId],
+    start_cap_vertex_index_lists: &[Vec<u32>],
+    end_cap_vertex_index_lists: &[Vec<u32>],
 ) -> Result<(), QueryError> {
     // Caps: start → Top, end → Bottom; each cap is unique → local_index = 0.
     write_cap_attributes(
@@ -441,6 +444,24 @@ pub fn populate_extrude_attributes(
         &history.face_generated,
         Role::Side,
         "extrude side",
+    )?;
+
+    // Cap vertices: start → Top, end → Bottom.
+    write_cap_vertex_attributes(
+        table,
+        feature_id,
+        result_vertex_handles,
+        start_cap_vertex_index_lists,
+        CapKind::Top,
+        "extrude start cap vertex",
+    )?;
+    write_cap_vertex_attributes(
+        table,
+        feature_id,
+        result_vertex_handles,
+        end_cap_vertex_index_lists,
+        CapKind::Bottom,
+        "extrude end cap vertex",
     )?;
 
     Ok(())
@@ -492,6 +513,9 @@ pub fn populate_revolve_attributes(
     result_face_handles: &[GeometryHandleId],
     result_edge_handles: &[GeometryHandleId],
     history: &SweepOpHistoryRecords,
+    result_vertex_handles: &[GeometryHandleId],
+    start_cap_vertex_index_lists: &[Vec<u32>],
+    end_cap_vertex_index_lists: &[Vec<u32>],
 ) -> Result<(), QueryError> {
     write_cap_attributes(
         table,
@@ -520,6 +544,23 @@ pub fn populate_revolve_attributes(
         &history.face_generated,
         Role::RevolvedFace,
         "revolve revolved face",
+    )?;
+
+    write_cap_vertex_attributes(
+        table,
+        feature_id,
+        result_vertex_handles,
+        start_cap_vertex_index_lists,
+        CapKind::Start,
+        "revolve start cap vertex",
+    )?;
+    write_cap_vertex_attributes(
+        table,
+        feature_id,
+        result_vertex_handles,
+        end_cap_vertex_index_lists,
+        CapKind::End,
+        "revolve end cap vertex",
     )?;
 
     Ok(())
@@ -559,6 +600,9 @@ pub fn populate_sweep_attributes(
     result_face_handles: &[GeometryHandleId],
     result_edge_handles: &[GeometryHandleId],
     history: &SweepOpHistoryRecords,
+    result_vertex_handles: &[GeometryHandleId],
+    start_cap_vertex_index_lists: &[Vec<u32>],
+    end_cap_vertex_index_lists: &[Vec<u32>],
 ) -> Result<(), QueryError> {
     write_cap_attributes(
         table,
@@ -587,6 +631,23 @@ pub fn populate_sweep_attributes(
         &history.face_generated,
         Role::SweptFace,
         "sweep swept face",
+    )?;
+
+    write_cap_vertex_attributes(
+        table,
+        feature_id,
+        result_vertex_handles,
+        start_cap_vertex_index_lists,
+        CapKind::Start,
+        "sweep start cap vertex",
+    )?;
+    write_cap_vertex_attributes(
+        table,
+        feature_id,
+        result_vertex_handles,
+        end_cap_vertex_index_lists,
+        CapKind::End,
+        "sweep end cap vertex",
     )?;
 
     Ok(())
@@ -644,6 +705,9 @@ pub fn populate_loft_attributes(
     result_face_handles: &[GeometryHandleId],
     result_edge_handles: &[GeometryHandleId],
     history: &LoftOpHistoryRecords,
+    result_vertex_handles: &[GeometryHandleId],
+    start_cap_vertex_index_lists: &[Vec<u32>],
+    end_cap_vertex_index_lists: &[Vec<u32>],
 ) -> Result<(), QueryError> {
     // Pin the lockstep invariant: `engine_build.rs::populate_loft_op` builds
     // `section_faces` and `section_edges` in tandem (one push per profile) so
@@ -692,6 +756,23 @@ pub fn populate_loft_attributes(
         &history.face_generated,
     )?;
 
+    write_cap_vertex_attributes(
+        table,
+        feature_id,
+        result_vertex_handles,
+        start_cap_vertex_index_lists,
+        CapKind::Start,
+        "loft start cap vertex",
+    )?;
+    write_cap_vertex_attributes(
+        table,
+        feature_id,
+        result_vertex_handles,
+        end_cap_vertex_index_lists,
+        CapKind::End,
+        "loft end cap vertex",
+    )?;
+
     Ok(())
 }
 
@@ -726,6 +807,53 @@ fn write_cap_attributes(
                 mod_history: Vec::new(),
             },
         );
+    }
+    Ok(())
+}
+
+/// Shared helper: write `Role::CapCornerVertex { face }` entries for all
+/// vertices belonging to cap faces.
+///
+/// `cap_vertex_index_lists` is a slice of `Vec<u32>`, one inner `Vec` per
+/// cap face (mirrors `cap_face_indices` in [`write_cap_attributes`]).  Each
+/// inner `Vec` is a list of indices into `result_vertex_handles` that belong
+/// to that cap face's vertices.  `local_index` is assigned sequentially
+/// within each inner Vec, resetting to 0 at the start of each new cap face's
+/// vertex list.
+///
+/// Returns `Err(QueryError::QueryFailed)` if any index is out of range for
+/// `result_vertex_handles` (defense-in-depth; the caller supplies
+/// kernel-derived indices that are guaranteed in-range for well-formed ops).
+fn write_cap_vertex_attributes(
+    table: &mut TopologyAttributeTable,
+    feature_id: &FeatureId,
+    result_vertex_handles: &[GeometryHandleId],
+    cap_vertex_index_lists: &[Vec<u32>],
+    face: CapKind,
+    kind: &str,
+) -> Result<(), QueryError> {
+    for cap_vertices in cap_vertex_index_lists {
+        for (local_index, &vertex_idx) in cap_vertices.iter().enumerate() {
+            let idx_usize = vertex_idx as usize;
+            if idx_usize >= result_vertex_handles.len() {
+                return Err(QueryError::QueryFailed(format!(
+                    "{kind} vertex index {vertex_idx} is out of range \
+                     for result vertex handles of len {}",
+                    result_vertex_handles.len()
+                )));
+            }
+            let handle = result_vertex_handles[idx_usize];
+            table.record(
+                handle,
+                TopologyAttribute {
+                    feature_id: feature_id.clone(),
+                    role: Role::CapCornerVertex { face },
+                    local_index: local_index as u32,
+                    user_label: None,
+                    mod_history: Vec::new(),
+                },
+            );
+        }
     }
     Ok(())
 }
