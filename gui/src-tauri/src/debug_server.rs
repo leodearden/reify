@@ -315,16 +315,27 @@ fn is_image_tool(name: &str) -> bool {
 
 // --- Tool dispatch ---
 
+// Handles state-free tool arms so they can be tested without a DebugServerState.
+// Returns Some(result) when the name matches a stateless arm, None otherwise.
+async fn dispatch_stateless_tool(name: &str, params: Value) -> Option<Result<Value, String>> {
+    match name {
+        "health" => Some(Ok(json!({"ok": true}))),
+        "morph_stats" => Some(handle_morph_stats(params).await),
+        _ => None,
+    }
+}
+
 async fn dispatch_tool(
     state: &DebugServerState,
     name: &str,
     params: Value,
 ) -> Result<Value, String> {
+    if let Some(result) = dispatch_stateless_tool(name, params.clone()).await {
+        return result;
+    }
     match name {
-        "health" => Ok(json!({"ok": true})),
         "engine_state" => handle_engine_state(state).await,
         "mesh_stats" => handle_mesh_stats(state).await,
-        "morph_stats" => handle_morph_stats(params).await,
         "open_file" => handle_open_file(state, params).await,
         "wait_for_idle" => handle_wait_for_idle(state, params).await,
         _ => {
