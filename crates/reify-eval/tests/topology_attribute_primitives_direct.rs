@@ -95,6 +95,7 @@ fn seed_primitive_attributes_box_records_six_side_faces() {
         &mut kernel,
         &face_handles,
         &edge_handles,
+        &[],
         &feature_id,
         &box_op(),
     )
@@ -201,6 +202,7 @@ fn seed_primitive_attributes_cylinder_classifies_cap_top_cap_bottom_and_side() {
         &mut kernel,
         &face_handles,
         &edge_handles,
+        &[],
         &feature_id,
         &cylinder_op(),
     )
@@ -303,6 +305,7 @@ fn seed_primitive_attributes_sphere_records_role_side_for_each_face() {
         &mut kernel,
         &face_handles,
         &edge_handles,
+        &[],
         &feature_id,
         &sphere_op(),
     )
@@ -395,6 +398,7 @@ fn seed_primitive_attributes_records_new_edge_for_every_extracted_edge() {
             &mut kernel,
             &face_handles,
             &edge_handles,
+            &[],
             &feature_id,
             &box_op(),
         )
@@ -497,6 +501,7 @@ fn seed_primitive_attributes_records_new_edge_for_every_extracted_edge() {
             &mut kernel,
             &face_handles,
             &edge_handles,
+            &[],
             &feature_id,
             &cylinder_op(),
         )
@@ -572,6 +577,7 @@ fn seed_primitive_attributes_records_new_edge_for_every_extracted_edge() {
             &mut kernel,
             &face_handles,
             &edge_handles,
+            &[],
             &feature_id,
             &sphere_op(),
         )
