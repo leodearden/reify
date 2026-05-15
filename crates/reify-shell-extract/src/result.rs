@@ -2142,4 +2142,103 @@ mod tests {
             .deserialize_from(&mut &round_trip_buf[..])
             .expect("empty header must round-trip within MAX_HEADER_BYTES");
     }
+
+    // ---- pin-cap test: empirically pins MAX_HEADER_BYTES at 4 MiB ----
+
+    #[test]
+    fn shell_extraction_result_deserialize_rejects_header_above_max_header_bytes() {
+        // Construct a header whose bincode-encoded size falls between the old
+        // 256 MiB cap and the new 4 MiB cap.  A single DiagnosticOnDisk with a
+        // ~5 MiB message: above 4 MiB (fires SizeLimit at the new cap) and
+        // well below 256 MiB (so this test was a no-op non-rejection at the
+        // old cap — proving TDD-RED against 1 << 28).
+        //
+        // IMPORTANT: the fixture must be serialized through a *local unbounded*
+        // options chain — NOT `bincode_options()` — because bincode 1.3's
+        // `with_limit` is enforced on both serialize and deserialize.
+        // Serializing a 5 MiB header through `bincode_options()` (or through
+        // `encode_header_only_for_test`, which delegates to it) would fail at
+        // the serialize step, never reaching the production deserialize path.
+        use bincode::Options;
+
+        let big_diagnostic = DiagnosticOnDisk {
+            severity: 0, // Severity::Info
+            message: "x".repeat(5 * 1024 * 1024), // ~5 MiB — above the 4 MiB new cap
+            labels: vec![],
+            candidates: vec![],
+        };
+        let oversize_header = ShellExtractionResultHeader {
+            solve_time_ms: 0,
+            vertices_len: 0,
+            triangles_len: 0,
+            thickness_len: 0,
+            vertex_labels_len: 0,
+            triangle_labels_len: 0,
+            regions: vec![],
+            naming: MidSurfaceAttributesOnDisk {
+                face_records: vec![],
+                edges: vec![],
+            },
+            diagnostics: vec![big_diagnostic],
+        };
+
+        // Serialize through an unbounded chain (no with_limit) so the
+        // fixture exceeds 4 MiB in bincode bytes.
+        let unbounded_opts = bincode::DefaultOptions::new()
+            .with_fixint_encoding()
+            .allow_trailing_bytes();
+        let mut bincode_bytes: Vec<u8> = Vec::new();
+        unbounded_opts
+            .serialize_into(&mut bincode_bytes, &oversize_header)
+            .expect("unbounded serialization of 5 MiB fixture must succeed");
+
+        // zstd-wrap to match the production wire layout expected by
+        // `deserialize_from_reader` (level 0, same as `encode_header`).
+        let mut zstd_buf: Vec<u8> = Vec::new();
+        {
+            let mut encoder = zstd::Encoder::new(&mut zstd_buf, 0).unwrap();
+            encoder.write_all(&bincode_bytes).unwrap();
+            encoder.finish().unwrap();
+        }
+
+        // Production deserialize must reject this — the header byte count
+        // exceeds MAX_HEADER_BYTES (1 << 22 = 4 MiB), so bincode fires
+        // SizeLimit which lowers to io::ErrorKind::Other.
+        let err = ShellExtractionResult::deserialize_from_reader(&mut &zstd_buf[..])
+            .expect_err("5 MiB header must be rejected by the 4 MiB MAX_HEADER_BYTES cap");
+        let kind = err.kind();
+        assert!(
+            matches!(
+                kind,
+                io::ErrorKind::Other
+                    | io::ErrorKind::InvalidData
+                    | io::ErrorKind::UnexpectedEof
+            ),
+            "expected SizeLimit-related decode error, got io::ErrorKind {kind:?}: {err:?}"
+        );
+
+        // Sanity: an empty header still round-trips through production
+        // options — the limit is not accidentally set to 0.
+        let empty_header = ShellExtractionResultHeader {
+            solve_time_ms: 0,
+            vertices_len: 0,
+            triangles_len: 0,
+            thickness_len: 0,
+            vertex_labels_len: 0,
+            triangle_labels_len: 0,
+            regions: vec![],
+            naming: MidSurfaceAttributesOnDisk {
+                face_records: vec![],
+                edges: vec![],
+            },
+            diagnostics: vec![],
+        };
+        let mut round_trip_buf: Vec<u8> = Vec::new();
+        bincode_options()
+            .serialize_into(&mut round_trip_buf, &empty_header)
+            .expect("empty header must serialize within MAX_HEADER_BYTES");
+        let _: ShellExtractionResultHeader = bincode_options()
+            .deserialize_from(&mut &round_trip_buf[..])
+            .expect("empty header must round-trip within MAX_HEADER_BYTES");
+    }
 }
