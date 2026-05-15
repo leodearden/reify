@@ -1500,10 +1500,7 @@ impl GeometryKernel for CountingMockKernel {
         self.inner.extract_faces(h)
     }
 
-    fn extract_vertices(
-        &mut self,
-        h: GeometryHandleId,
-    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+    fn extract_vertices(&mut self, h: GeometryHandleId) -> Result<Vec<GeometryHandleId>, QueryError> {
         self.inner.extract_vertices(h)
     }
 
@@ -4005,18 +4002,21 @@ mod tests {
 
         let result = kernel.extract_vertices(handle);
 
+        // Pin the error variant (Err(QueryFailed)) without locking to the
+        // upstream wording owned by the trait default in reify-types.  The
+        // exact message may change when MockGeometryKernel gains its own
+        // extract_vertices override; the forwarding contract is what matters.
         match result {
-            Err(QueryError::QueryFailed(msg)) => {
-                assert!(
-                    msg.contains("topology extraction not supported by this kernel"),
-                    "expected trait-default error message, got: {msg:?}"
-                );
-            }
+            Err(QueryError::QueryFailed(_)) => {}
             other => panic!("expected Err(QueryFailed(…)), got {other:?}"),
         }
 
         let counts = kernel.counts();
         assert_eq!(counts.total(), 0, "extract_vertices must not increment total");
+        // Belt-and-suspenders: these per-variant counters are only incremented
+        // by query()/query_many(), so they cannot be touched by extract_vertices
+        // today.  The assertions guard against any future refactor that
+        // accidentally routes extraction through the counting path.
         assert_eq!(
             counts.is_watertight(),
             0,
