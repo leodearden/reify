@@ -3639,6 +3639,59 @@ mod tests {
     }
 
     #[test]
+    fn evict_over_cap_reduces_total_bytes_to_at_or_under_cap_when_over_cap() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "cccccccccccccccccccccccccccccc00";
+        let inp1 = "aaaa111111111111111111111111aabb";
+        let inp2 = "bbbb111111111111111111111111ccdd";
+        let inp3 = "cccc111111111111111111111111eeff";
+
+        let v = make_sample_result();
+        write_entry(root, eng, inp1, &v).unwrap();
+        write_entry(root, eng, inp2, &v).unwrap();
+        write_entry(root, eng, inp3, &v).unwrap();
+
+        // Measure one entry size and set cap so only ~1 entry can remain.
+        let sz = std::fs::metadata(entry_bin_path(root, eng, inp1)).unwrap().len();
+        let total = sz * 3;
+        // Cap just above one entry → at least two must evict.
+        let cap = sz + sz / 2;
+        assert!(total > cap, "test precondition: total must exceed cap");
+
+        let report = evict_over_cap(root, eng, cap).unwrap();
+
+        assert!(
+            report.remaining_bytes <= cap,
+            "remaining_bytes {} must be <= cap {}",
+            report.remaining_bytes,
+            cap
+        );
+        assert!(
+            report.evicted_count >= 1,
+            "at least one entry must have been evicted"
+        );
+        assert!(
+            report.evicted_bytes >= 1,
+            "evicted_bytes must be non-zero when entries were evicted"
+        );
+
+        // Recompute on-disk total and verify it matches remaining_bytes.
+        let on_disk: u64 = [inp1, inp2, inp3]
+            .iter()
+            .filter_map(|inp| {
+                let p = entry_bin_path(root, eng, inp);
+                std::fs::metadata(&p).ok().map(|m| m.len())
+            })
+            .sum();
+        assert_eq!(
+            on_disk,
+            report.remaining_bytes,
+            "on-disk total must equal report.remaining_bytes"
+        );
+    }
+
+    #[test]
     fn evict_over_cap_returns_zero_evictions_with_correct_remaining_bytes_when_under_cap() {
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path();
