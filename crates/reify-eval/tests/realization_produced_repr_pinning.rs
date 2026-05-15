@@ -1,7 +1,8 @@
-//! Integration test: PRD §8 task α observable-signal pin.
+//! Integration test: PRD §8 task α construction-default pin.
 //!
 //! Pins the contract that, after `Engine::eval`, every realization node in
-//! the snapshot graph has `produced_repr == ReprKind::BRep`.
+//! the snapshot graph retains the construction-time BRep default set by
+//! `EvaluationGraph::from_templates`.
 //!
 //! In v0.2, `produced_repr` is initialized to `ReprKind::BRep` at
 //! graph-construction time (`EvaluationGraph::from_templates`) — the BRep
@@ -10,10 +11,14 @@
 //! execution time; if that wiring accidentally stops writing BRep for the
 //! OCCT path, this test will fail, surfacing the regression before merge.
 //!
-//! Observable-signal definition (PRD §8 task α):
-//! "after `execute_realization_ops`, every realization node's `produced_repr`
-//!  matches the actual ReprKind of its stored value (verified against the
-//!  kernel adapter's output type)."
+//! What this test guards today:
+//! "after `Engine::eval`, the construction-time BRep default on every
+//!  realization node survives — eval must not clear or overwrite
+//!  `produced_repr` before task ε (3436) wires the dispatcher."
+//!
+//! Note: this test does NOT compare `produced_repr` against the actual stored
+//! Value/handle's ReprKind; that cross-check belongs to task ε once
+//! `execute_realization_ops` writes the field dynamically.
 
 use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
 use reify_eval::Engine;
@@ -53,9 +58,7 @@ fn single_box_realization_module() -> reify_compiler::CompiledModule {
         .build()
 }
 
-/// PRD §8 task α observable-signal pin:
-/// after `Engine::eval`, every realization in `snapshot().graph.realizations`
-/// must carry `produced_repr == ReprKind::BRep`.
+/// Guards that the construction-time BRep default survives a full `Engine::eval`.
 ///
 /// In v0.2, `produced_repr` is initialized at graph-construction time inside
 /// `EvaluationGraph::from_templates` to the constant `ReprKind::BRep` — the
@@ -64,10 +67,14 @@ fn single_box_realization_module() -> reify_compiler::CompiledModule {
 /// contract (BRep-tagged handles only), so the assertion holds on both
 /// OCCT-enabled and CI (mock-kernel) build configurations.
 ///
-/// Future regression guard: when task ε (3436) wires the per-op dispatcher
-/// choice and begins writing `produced_repr` dynamically inside
-/// `execute_realization_ops`, this test will catch any accidental non-BRep
-/// output on the OCCT path before it reaches the merge queue.
+/// This test asserts that eval does not accidentally clear or overwrite
+/// `produced_repr`. It does NOT compare the field against the actual stored
+/// Value/handle's ReprKind — that cross-check is deferred to task ε (3436),
+/// which wires `execute_realization_ops` to write the field dynamically.
+///
+/// Future regression guard: when task ε lands, this test will catch any
+/// accidental non-BRep output on the OCCT path before it reaches the merge
+/// queue.
 #[test]
 fn every_realization_node_has_produced_repr_brep_after_eval() {
     let module = single_box_realization_module();
