@@ -13,7 +13,7 @@
 /// Absolute path to the example file, resolved at compile time from this
 /// crate's manifest directory (two levels up to workspace root, then into
 /// `examples/`).  Mirrors the pattern in
-/// `crates/reify-eval/tests/m11_field_calculus.rs:14-17`.
+/// `crates/reify-eval/tests/m11_field_calculus.rs`.
 const EXAMPLE_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../examples/m11_annotations.ri"
