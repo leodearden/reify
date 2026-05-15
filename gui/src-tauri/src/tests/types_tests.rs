@@ -1467,6 +1467,48 @@ fn auto_resolve_constraint_progress_omits_unset_targets_and_unit() {
     assert_eq!(v["satisfied"], json!(false));
 }
 
+// --- NaN-sentinel serialization contract test (Task 3648 amendment, suggestion 4) ---
+
+/// Pins the wire-level JSON serialization of the NaN sentinel for
+/// `AutoResolveParameterValue`.
+///
+/// `serde_json::to_value` maps `f64::NAN` to `Value::Null` (not an error) —
+/// this is the internal `to_value` serializer behavior in serde_json.  The
+/// resulting JSON wire payload is `{ "value": null, "unit": "", "display": "<non-scalar>" }`.
+///
+/// **Frontend contract (action required in gui/src/types.ts — out of scope for this task):**
+/// The TypeScript `AutoResolveParameterValue` interface must type `value` as
+/// `number | null` (not `number`) so the auto-resolve panel can render an error chip
+/// when `value === null` rather than displaying `NaN` or crashing.
+///
+/// This test pins the current wire format so any future serde_json upgrade that
+/// changes NaN handling (e.g. from null to an error) will be caught immediately.
+#[test]
+fn auto_resolve_parameter_value_nan_sentinel_serializes_value_field_as_null() {
+    use crate::types::AutoResolveParameterValue;
+
+    let param = AutoResolveParameterValue {
+        value: f64::NAN,
+        unit: String::new(),
+        display: "<non-scalar>".to_string(),
+    };
+
+    // serde_json::to_value maps f64::NAN → Value::Null (not an error).
+    let v = serde_json::to_value(&param)
+        .expect("AutoResolveParameterValue with NaN value must serialize without error");
+
+    // The wire contract: NaN serializes as null so the frontend can distinguish
+    // a genuine zero from a non-scalar sentinel.
+    assert_eq!(
+        v["value"],
+        serde_json::Value::Null,
+        "NaN sentinel must serialize as JSON null — \
+         frontend TypeScript must type value as `number | null`"
+    );
+    assert_eq!(v["unit"], json!(""), "unit must be empty string");
+    assert_eq!(v["display"], json!("<non-scalar>"), "display must be '<non-scalar>'");
+}
+
 /// Positive case: a correct-length scalar_channels entry serializes successfully.
 #[test]
 fn meshdata_accepts_matching_scalar_channel_length() {

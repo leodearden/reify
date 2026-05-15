@@ -820,29 +820,31 @@ impl EngineSession {
     ) -> HashMap<String, AutoResolveParameterValue> {
         let mut out = HashMap::new();
         for (cell_id, value) in resolved {
-            if let Value::Scalar { .. } = value {
-                let (display_value, formatted, unit) = value.format_display_triple();
-                out.insert(
-                    cell_id.to_string(),
-                    AutoResolveParameterValue {
-                        value: display_value,
-                        display: format!("{}{}", formatted, unit),
-                        unit,
-                    },
-                );
-            } else {
-                warn!(
-                    "auto-resolve: resolved param {:?} is not a Scalar; emitted NaN sentinel",
-                    cell_id
-                );
-                out.insert(
-                    cell_id.to_string(),
-                    AutoResolveParameterValue {
-                        value: f64::NAN,
-                        unit: String::new(),
-                        display: "<non-scalar>".to_string(),
-                    },
-                );
+            match value.format_display_triple() {
+                Some((display_value, formatted, unit)) => {
+                    out.insert(
+                        cell_id.to_string(),
+                        AutoResolveParameterValue {
+                            value: display_value,
+                            display: format!("{}{}", formatted, unit),
+                            unit,
+                        },
+                    );
+                }
+                None => {
+                    warn!(
+                        "auto-resolve: resolved param {:?} is not a Scalar; emitted NaN sentinel",
+                        cell_id
+                    );
+                    out.insert(
+                        cell_id.to_string(),
+                        AutoResolveParameterValue {
+                            value: f64::NAN,
+                            unit: String::new(),
+                            display: "<non-scalar>".to_string(),
+                        },
+                    );
+                }
             }
         }
         out
@@ -934,7 +936,9 @@ impl EngineSession {
         // session state mutations are committed.  Combined with `core.commit_state` /
         // `core.commit_check` writing `last_check` unconditionally, a panic during state
         // commit cannot leak phantom auto-resolve events to the GUI.
-        self.emit_auto_resolve_if_any(self.core.last_check().unwrap());
+        self.emit_auto_resolve_if_any(self.core.last_check().expect(
+            "emit_auto_resolve_if_any: last_check must be Some after commit_state — see ordering invariant",
+        ));
 
         self.build_gui_state()
     }
@@ -973,7 +977,9 @@ impl EngineSession {
         // Commit state first; emit_auto_resolve_if_any reads back via last_check()
         // so it fires AFTER all mutations are complete — cross-cutting ordering invariant.
         self.core.commit_check(check_result);
-        self.emit_auto_resolve_if_any(self.core.last_check().unwrap());
+        self.emit_auto_resolve_if_any(self.core.last_check().expect(
+            "emit_auto_resolve_if_any: last_check must be Some after commit_check — see ordering invariant",
+        ));
         self.build_gui_state()
     }
 
@@ -1008,7 +1014,9 @@ impl EngineSession {
         self.core.commit_file_path(path.to_path_buf());
         // Emit AFTER all state is committed so phantom events cannot fire if
         // commit_state or commit_file_path panics — cross-cutting ordering invariant.
-        self.emit_auto_resolve_if_any(self.core.last_check().unwrap());
+        self.emit_auto_resolve_if_any(self.core.last_check().expect(
+            "emit_auto_resolve_if_any: last_check must be Some after commit_state — see ordering invariant",
+        ));
         self.build_gui_state()
     }
 
@@ -1076,7 +1084,9 @@ impl EngineSession {
         self.commit_state(parsed, compiled, check_result, module_name, content);
 
         // Emit AFTER all state is committed — cross-cutting ordering invariant.
-        self.emit_auto_resolve_if_any(self.core.last_check().unwrap());
+        self.emit_auto_resolve_if_any(self.core.last_check().expect(
+            "emit_auto_resolve_if_any: last_check must be Some after commit_state — see ordering invariant",
+        ));
 
         self.build_gui_state()
     }

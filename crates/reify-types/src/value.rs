@@ -1590,33 +1590,29 @@ impl Value {
     }
 
     /// Format this value for auto-resolve emit, returning
-    /// `(display_value_f64, formatted_number_string, unit_string)`.
+    /// `Some((display_value_f64, formatted_number_string, unit_string))`.
+    ///
+    /// Returns `None` for variants that are not physical scalars (i.e. anything
+    /// other than `Value::Scalar` or `Value::Option(Some(Scalar))`).  The `None`
+    /// case is the caller's signal to emit a non-scalar sentinel rather than a
+    /// real value.
     ///
     /// For `Value::Scalar`, the `f64` component is the engineering-unit value
     /// (e.g. millimetres, degrees) and the strings are the formatted number
     /// and unit symbol respectively.
     ///
     /// For `Value::Option(Some(inner))`, this recurses into `inner`.
-    ///
-    /// For all other variants the `f64` component is `f64::NAN` (a sentinel
-    /// indicating the value is not a physical scalar), and the two strings
-    /// are taken from [`format_display_pair`](Value::format_display_pair) for
-    /// consistency.  Callers that need the f64 for arithmetic must guard on
-    /// `.is_nan()` or restrict to variants where the value is meaningful.
-    pub fn format_display_triple(&self) -> (f64, String, String) {
+    pub fn format_display_triple(&self) -> Option<(f64, String, String)> {
         match self {
             Value::Scalar {
                 si_value,
                 dimension,
             } => {
                 let (display_value, unit) = dimension.to_display_units(*si_value);
-                (display_value, format_display_number(display_value), unit.to_string())
+                Some((display_value, format_display_number(display_value), unit.to_string()))
             }
             Value::Option(Some(inner)) => inner.format_display_triple(),
-            _ => {
-                let (s, u) = self.format_display_pair();
-                (f64::NAN, s, u)
-            }
+            _ => None,
         }
     }
 }
@@ -7956,7 +7952,7 @@ mod tests {
     ///   canonicalisation (all NaNs would be treated as equal).
     // ── format_display_triple unit tests (Task 3648) ─────────────────────────
 
-    /// Scalar mm(4.2) → (4.2, "4.2", "mm"):
+    /// Scalar mm(4.2) → Some((4.2, "4.2", "mm")):
     /// display_value is the engineering-unit f64, formatted string has no unit,
     /// and unit_str is the engineering unit symbol.
     #[test]
@@ -7967,7 +7963,9 @@ mod tests {
             si_value: 0.0042,
             dimension: DimensionVector::LENGTH,
         };
-        let (display_value, formatted, unit) = v.format_display_triple();
+        let (display_value, formatted, unit) = v
+            .format_display_triple()
+            .expect("Scalar must return Some");
         assert!(
             (display_value - 4.2).abs() < 1e-10,
             "display_value must be 4.2, got {}",
@@ -7977,7 +7975,7 @@ mod tests {
         assert_eq!(unit, "mm", "unit must be 'mm'");
     }
 
-    /// Scalar mm(80.0) → (80.0, "80", "mm"):
+    /// Scalar mm(80.0) → Some((80.0, "80", "mm")):
     /// format_display_number trims trailing `.0` for whole numbers.
     #[test]
     fn format_display_triple_scalar_whole_number_trims_decimal() {
@@ -7988,7 +7986,9 @@ mod tests {
             si_value: 0.080,
             dimension: DimensionVector::LENGTH,
         };
-        let (display_value, formatted, unit) = v.format_display_triple();
+        let (display_value, formatted, unit) = v
+            .format_display_triple()
+            .expect("Scalar must return Some");
         assert!(
             (display_value - 80.0).abs() < 1e-10,
             "display_value must be 80.0, got {}",
@@ -7998,7 +7998,7 @@ mod tests {
         assert_eq!(unit, "mm", "unit must be 'mm'");
     }
 
-    /// Value::Option(Some(Scalar)) recurses to the inner Scalar.
+    /// Value::Option(Some(Scalar)) recurses to the inner Scalar, returns Some.
     #[test]
     fn format_display_triple_option_some_scalar_recurses_to_inner() {
         let inner = Value::Scalar {
@@ -8006,7 +8006,9 @@ mod tests {
             dimension: DimensionVector::LENGTH,
         };
         let v = Value::Option(Some(Box::new(inner)));
-        let (display_value, formatted, unit) = v.format_display_triple();
+        let (display_value, formatted, unit) = v
+            .format_display_triple()
+            .expect("Option(Some(Scalar)) must recurse and return Some");
         assert!(
             (display_value - 4.2).abs() < 1e-10,
             "Option(Some(Scalar)) must recurse: display_value must be 4.2, got {}",
@@ -8016,21 +8018,19 @@ mod tests {
         assert_eq!(unit, "mm", "unit must be 'mm'");
     }
 
-    /// Non-Scalar variant (Bool) → (NaN, pair.0, pair.1):
-    /// f64 sentinel is NaN, strings delegate to format_display_pair.
+    /// Non-Scalar variant (Bool) → None:
+    /// format_display_triple returns None for variants that are not physical
+    /// scalars; callers handle the None case by emitting their own sentinel.
     #[test]
-    fn format_display_triple_non_scalar_returns_nan_and_pair_strings() {
-        let v = Value::Bool(true);
-        let (display_value, formatted, unit) = v.format_display_triple();
+    fn format_display_triple_non_scalar_returns_none() {
         assert!(
-            display_value.is_nan(),
-            "non-Scalar must return f64::NAN as display_value, got {}",
-            display_value
+            Value::Bool(true).format_display_triple().is_none(),
+            "Bool must return None — not a physical scalar"
         );
-        // format_display_pair for Bool(true) → ("true", "")
-        let (expected_s, expected_u) = v.format_display_pair();
-        assert_eq!(formatted, expected_s, "formatted must match format_display_pair().0");
-        assert_eq!(unit, expected_u, "unit must match format_display_pair().1");
+        assert!(
+            Value::Int(5).format_display_triple().is_none(),
+            "Int must return None — not a physical scalar"
+        );
     }
 
     #[test]
