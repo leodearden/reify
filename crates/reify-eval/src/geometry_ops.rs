@@ -1813,6 +1813,7 @@ pub(crate) fn try_eval_topology_selector(
         "is_on" => TopologySelectorHelper::IsOn,
         "angle_between_surfaces" => TopologySelectorHelper::AngleBetweenSurfaces,
         "edges" => TopologySelectorHelper::Edges,
+        "faces" => TopologySelectorHelper::Faces,
         _ => return None,
     };
 
@@ -1869,16 +1870,15 @@ pub(crate) fn try_eval_topology_selector(
             let query = reify_types::GeometryQuery::SurfaceAngle { face_a, face_b };
             dispatch_surface_angle(kernel, &query, &function.name, diagnostics)
         }
-        TopologySelectorHelper::Edges => {
+        TopologySelectorHelper::Edges | TopologySelectorHelper::Faces => {
             // args[0]: geometry ValueRef → named_steps map → GeometryHandleId.
             let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
-            dispatch_extract_subshapes(
-                kernel,
-                handle,
-                ExtractKind::Edges,
-                &function.name,
-                diagnostics,
-            )
+            let kind = match helper {
+                TopologySelectorHelper::Edges => ExtractKind::Edges,
+                TopologySelectorHelper::Faces => ExtractKind::Faces,
+                _ => unreachable!("Edges/Faces outer match guarantees this"),
+            };
+            dispatch_extract_subshapes(kernel, handle, kind, &function.name, diagnostics)
         }
     }
 }
@@ -1891,6 +1891,9 @@ enum TopologySelectorHelper {
     /// `edges(geometry) -> List<Geometry>` — extract the unique edges of a
     /// shape (task 3560).
     Edges,
+    /// `faces(geometry) -> List<Geometry>` — extract the unique faces of a
+    /// shape (task 3560).
+    Faces,
 }
 
 impl TopologySelectorHelper {
@@ -1903,7 +1906,7 @@ impl TopologySelectorHelper {
             TopologySelectorHelper::ClosestPoint
             | TopologySelectorHelper::IsOn
             | TopologySelectorHelper::AngleBetweenSurfaces => 2,
-            TopologySelectorHelper::Edges => 1,
+            TopologySelectorHelper::Edges | TopologySelectorHelper::Faces => 1,
         }
     }
 }
@@ -1915,7 +1918,6 @@ impl TopologySelectorHelper {
 #[derive(Clone, Copy)]
 enum ExtractKind {
     Edges,
-    #[allow(dead_code)] // Faces variant introduced in task 3560 step-4.
     Faces,
 }
 
