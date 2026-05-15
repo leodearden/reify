@@ -7662,3 +7662,68 @@ fn set_parameter_updates_only_last_check_via_commit_check() {
         "last_check must remain Some after second set_parameter"
     );
 }
+
+/// Behavioral test for `CoreState::commit_file_path`:
+/// `load_file` must set `file_path` and leave the other five core fields consistent
+/// (compiled and last_check become Some; module_name matches the file stem).
+///
+/// The compile-time marker `let _: fn(&mut CoreState, PathBuf) =
+/// CoreState::commit_file_path;` fails before step-6 adds the method — that
+/// compile failure IS the RED state.  After step-6 lands it must pass and stay green.
+#[test]
+fn load_file_updates_only_file_path_via_commit_file_path() {
+    use reify_eval::CheckResult;
+    use std::path::PathBuf;
+
+    // Pre-step-6 compile-time marker: fails until CoreState::commit_file_path is added.
+    let _: fn(&mut CoreState, PathBuf) = CoreState::commit_file_path;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // Pre-load: file_path must be None on a fresh session.
+    assert!(
+        session.core_state_for_test().file_path().is_none(),
+        "file_path must be None on a fresh session before load_file"
+    );
+
+    // Write bracket_source() to a temp file named "bracket.ri" so that load_file
+    // derives module_name = "bracket" from the file stem.
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+    let tmp_path = dir.path().join("bracket.ri");
+    std::fs::write(&tmp_path, bracket_source()).expect("write bracket.ri to tempdir");
+
+    // load_file triggers commit_file_path internally.
+    session
+        .load_file(&tmp_path)
+        .expect("load_file should succeed");
+
+    // file_path() must now equal the path we loaded.
+    let core = session.core_state_for_test();
+    assert_eq!(
+        core.file_path(),
+        Some(tmp_path.as_path()),
+        "file_path must be Some(tmp_path) after load_file"
+    );
+
+    // Successful load means compiled and last_check must also be Some.
+    assert!(
+        core.compiled().is_some(),
+        "compiled must be Some after successful load_file"
+    );
+    assert!(
+        core.last_check().is_some(),
+        "last_check must be Some after successful load_file"
+    );
+
+    // module_name must match the file stem ("bracket").
+    assert_eq!(
+        core.module_name(),
+        Some("bracket"),
+        "module_name must be 'bracket' (from file stem) after load_file"
+    );
+
+    // Marker that CheckResult is used in this scope (avoids dead-import warning).
+    let _: Option<&CheckResult> = core.last_check();
+}
