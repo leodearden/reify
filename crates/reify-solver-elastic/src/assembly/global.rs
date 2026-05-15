@@ -2332,6 +2332,73 @@ mod tests {
         assert!(summary.examples.is_empty());
     }
 
+    /// Every reported orphan `(node, α)` has a structurally zero row and column
+    /// in the assembled global K.
+    ///
+    /// Builds the mixed tet+shell fixture, assembles K with
+    /// `assemble_global_stiffness`, then calls `detect_orphan_dofs` and
+    /// verifies that for every `(node, α)` in `examples`, the entire row
+    /// `D*node + α` and column `D*node + α` in K are zero.
+    ///
+    /// Pins that the detector's output matches the assembler's actual emission
+    /// pattern: a regression in either (e.g. wrong d_e formula, wrong axis
+    /// mapping) surfaces here rather than silently producing a wrong matrix.
+    #[test]
+    fn detect_orphan_dofs_consistent_with_assemble_global_stiffness_emission() {
+        let mat = dimensionless_steel_like();
+        let k_e_tet = element_stiffness_p1(&UNIT_TET_P1, &mat);
+        let k_e_shell = shell_element_stiffness(&UNIT_TRI, SHELL_T, &mat);
+        let conn_tet = [0usize, 1, 2, 3];
+        let conn_shell = [0usize, 4, 5];
+        let n_nodes = 6usize;
+        let elements = [
+            AssemblyElement {
+                id: 0,
+                connectivity: &conn_tet,
+                k_e: &k_e_tet,
+            },
+            AssemblyElement {
+                id: 1,
+                connectivity: &conn_shell,
+                k_e: &k_e_shell,
+            },
+        ];
+
+        let k = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
+        let summary = detect_orphan_dofs(n_nodes, &elements);
+
+        // D = 6; dim = 6 * n_nodes = 36.
+        let d_global = 6usize;
+        let dim = d_global * n_nodes;
+
+        assert_eq!(k.nrows(), dim);
+        assert_eq!(k.ncols(), dim);
+
+        // For every reported orphan (node, α) the entire DOF row and column
+        // must be zero.
+        for &(node, axis) in &summary.examples {
+            let dof = d_global * node + axis;
+            for j in 0..dim {
+                let row_val = read(&k, dof, j);
+                assert_eq!(
+                    row_val,
+                    0.0,
+                    "K[{dof}][{j}] (orphan row for node={node}, axis={axis}) \
+                     should be 0.0, got {row_val}",
+                );
+            }
+            for i in 0..dim {
+                let col_val = read(&k, i, dof);
+                assert_eq!(
+                    col_val,
+                    0.0,
+                    "K[{i}][{dof}] (orphan col for node={node}, axis={axis}) \
+                     should be 0.0, got {col_val}",
+                );
+            }
+        }
+    }
+
     /// `Display` for `OrphanDofsSummary` emits a single-line diagnostic string.
     ///
     /// Pins:
