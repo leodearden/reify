@@ -81,10 +81,14 @@ const MAX_HEADER_BYTES: u64 = 1 << 22;
 /// `with_fixint_encoding` matches the legacy `bincode::serialize_into`
 /// default (verified by the cross-format pin at
 /// `crates/reify-eval/src/persistent_cache.rs:1670`), `with_limit`
-/// applies on the read side (bincode 1.3's `with_limit` is documented as
-/// ignored on serialize but enforced on deserialize), and
-/// `allow_trailing_bytes` is required because the slab data follows the
-/// bincode header in the same stream.
+/// is enforced on **both** encode and decode in bincode 1.3 (empirically
+/// confirmed: `shell_extraction_result_deserialize_rejects_header_above_max_header_bytes`
+/// must serialize the oversize fixture through a separate unbounded chain
+/// to reach the production deserialize path — calling `serialize_to_writer`
+/// on a header exceeding `MAX_HEADER_BYTES` fails at the encode step,
+/// which is the intended behavior for a production header that grows
+/// beyond the cap), and `allow_trailing_bytes` is required because the
+/// slab data follows the bincode header in the same stream.
 fn bincode_options() -> impl bincode::Options + Copy {
     use bincode::Options;
     bincode::DefaultOptions::new()
@@ -2216,29 +2220,123 @@ mod tests {
             ),
             "expected SizeLimit-related decode error, got io::ErrorKind {kind:?}: {err:?}"
         );
+        // The empty-header sanity check (limit is not accidentally 0) is
+        // already covered by the immediately preceding test
+        // `shell_extraction_result_deserialize_rejects_oversize_header_via_bincode_limit`
+        // — no need to duplicate it here.
+    }
 
-        // Sanity: an empty header still round-trips through production
-        // options — the limit is not accidentally set to 0.
-        let empty_header = ShellExtractionResultHeader {
-            solve_time_ms: 0,
-            vertices_len: 0,
-            triangles_len: 0,
-            thickness_len: 0,
-            vertex_labels_len: 0,
-            triangle_labels_len: 0,
-            regions: vec![],
-            naming: MidSurfaceAttributesOnDisk {
-                face_records: vec![],
-                edges: vec![],
-            },
-            diagnostics: vec![],
+    // ---- producer-headroom test: realistic large fixture fits within cap ----
+
+    #[test]
+    fn shell_extraction_result_header_large_legal_serializes_within_cap() {
+        // Empirical upper-bound check: a synthetic "worst realistic producer
+        // output" header must serialize (and deserialize) successfully through
+        // `bincode_options()` — i.e. it must stay within MAX_HEADER_BYTES
+        // (4 MiB = 1 << 22). If `bincode_options().serialize_into` panics or
+        // returns `Err`, that proves the cap is too tight for legitimate
+        // producers and the design decision must be revisited (raise the cap
+        // or shrink per-field limits).
+        //
+        // Fixture sizing rationale (fixint LE encoding, ~bytes per entry):
+        //   face_records: 2 000 entries × ~260 bytes
+        //       (8+64 feature_id + 1 role + 4 local_index
+        //        + 1+8+32 user_label(Some)
+        //        + 8+3×(8+32+4) mod_history) ≈ 520 KB
+        //   edges: 2 000 entries × ~268 bytes (same + 2×u32 region pair)
+        //       ≈ 536 KB
+        //   regions: 500 entries × 37 bytes ≈ 18 KB
+        //   diagnostics: 50 entries × (1+8+256+8+5×(4+4+8+64)+8)
+        //       ≈ 50 × 657 ≈ 33 KB
+        //   fixed u64 fields + length prefixes: < 1 KB
+        //   Total ≈ 1.1 MiB — comfortably under the 4 MiB cap, validating
+        //   the ~4× headroom claim in the MAX_HEADER_BYTES doc-comment.
+        use bincode::Options;
+
+        fn make_topo(feature_id: &str) -> TopologyAttributeOnDisk {
+            TopologyAttributeOnDisk {
+                feature_id: feature_id.to_string(),
+                role: ROLE_TAG_SIDE,
+                local_index: 0,
+                user_label: Some("user_lbl_xxxxxxxxxxxxxxxxxxxxxxxx".to_string()),
+                mod_history: (0..3)
+                    .map(|_| ModEntryOnDisk {
+                        splitting_feature_id: "split_feat_xxxxxxxxxxxxxxxxxxxxxx"
+                            .to_string(),
+                        split_index: 0,
+                    })
+                    .collect(),
+            }
+        }
+
+        let feature_id: String = "face_feature_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+            .to_string(); // 64 chars
+        let face_records: Vec<TopologyAttributeOnDisk> =
+            (0..2_000).map(|_| make_topo(&feature_id)).collect();
+        let edges: Vec<MidSurfaceEdgeRecordOnDisk> = (0..2_000)
+            .map(|i| MidSurfaceEdgeRecordOnDisk {
+                attribute: make_topo(&feature_id),
+                region_pair_a: i as u32,
+                region_pair_b: (i + 1) as u32,
+            })
+            .collect();
+        let regions: Vec<RegionInfoOnDisk> = (0..500)
+            .map(|i| RegionInfoOnDisk {
+                label: i,
+                voxels_len: 1_000,
+                mean_thickness_bits: 1.5f64.to_bits(),
+                extent_bits: 2.0f64.to_bits(),
+                thickness_extent_ratio_bits: 0.75f64.to_bits(),
+                classification: 0,
+            })
+            .collect();
+        let diag_message: String = "w".repeat(256);
+        let diag_label_msg: String = "l".repeat(64);
+        let diagnostics: Vec<DiagnosticOnDisk> = (0..50)
+            .map(|_| DiagnosticOnDisk {
+                severity: 1,
+                message: diag_message.clone(),
+                labels: (0..5)
+                    .map(|_| DiagnosticLabelOnDisk {
+                        span_start: 0,
+                        span_end: 10,
+                        message: diag_label_msg.clone(),
+                    })
+                    .collect(),
+                candidates: vec![],
+            })
+            .collect();
+        let large_legal_header = ShellExtractionResultHeader {
+            solve_time_ms: 42_000,
+            vertices_len: 1_000_000,
+            triangles_len: 2_000_000,
+            thickness_len: 1_000_000,
+            vertex_labels_len: 1_000_000,
+            triangle_labels_len: 2_000_000,
+            regions,
+            naming: MidSurfaceAttributesOnDisk { face_records, edges },
+            diagnostics,
         };
-        let mut round_trip_buf: Vec<u8> = Vec::new();
+
+        // Serialize through the production options chain (includes with_limit).
+        // A failure here means the fixture exceeded MAX_HEADER_BYTES at the
+        // encode step — the cap is too tight for this realistic fixture.
+        let mut header_buf: Vec<u8> = Vec::new();
         bincode_options()
-            .serialize_into(&mut round_trip_buf, &empty_header)
-            .expect("empty header must serialize within MAX_HEADER_BYTES");
+            .serialize_into(&mut header_buf, &large_legal_header)
+            .expect("large-legal fixture must serialize within 4 MiB MAX_HEADER_BYTES");
+
+        // Confirm it also round-trips through the deserialize path.
         let _: ShellExtractionResultHeader = bincode_options()
-            .deserialize_from(&mut &round_trip_buf[..])
-            .expect("empty header must round-trip within MAX_HEADER_BYTES");
+            .deserialize_from(&mut &header_buf[..])
+            .expect("large-legal fixture must deserialize within MAX_HEADER_BYTES");
+
+        // Explicit size guard so the test fails fast if the fixture grows past
+        // the cap — rather than relying solely on the bincode limit error.
+        assert!(
+            header_buf.len() < (1 << 22),
+            "large-legal fixture serialized to {} bytes, exceeds 4 MiB cap",
+            header_buf.len()
+        );
     }
 }
