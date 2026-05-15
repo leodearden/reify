@@ -1250,6 +1250,98 @@ fn cache_gc_under_cap_is_no_op_and_preserves_all_entries() {
 }
 
 #[test]
+fn cache_gc_evicts_when_forced_over_cap() {
+    // Seed several entries with non-trivial body sizes (large displacement
+    // vectors) so the total .bin footprint exceeds a 1 KiB synthetic cap.
+    // Run `reify cache gc` with REIFY_CACHE_MAX_BYTES=1024 and assert
+    // (a) exit SUCCESS, (b) evicted_count > 0, (c) remaining_bytes <= 1024,
+    // (d) collect_cache_files reports strictly fewer .bins than seeded.
+    //
+    // Critically: seed under the LIVE ENGINE_VERSION_HASH (not a synthesized
+    // hash) because cmd_cache_gc hard-codes ENGINE_VERSION_HASH per the
+    // design decision.
+    let cache_dir = tempdir().expect("tempdir");
+    let chars = ['a', 'b', 'c', 'd', 'e'];
+    for ch in chars.iter() {
+        let input_hash: String = std::iter::repeat(*ch).take(32).collect();
+        // 4096 doubles = 32 KiB uncompressed displacement; the compressed
+        // .bin will still exceed 1 KiB on disk for each entry, ensuring the
+        // total tops the synthetic cap by a wide margin.
+        let displacement: Vec<f64> = (0..4096).map(|n| (n as f64).sin()).collect();
+        let stress: Vec<f64> = (0..4096).map(|n| (n as f64).cos()).collect();
+        let fixture = ElasticResult {
+            displacement,
+            stress,
+            max_von_mises: 7.5,
+            converged: true,
+            iterations: 9,
+            solve_time_ms: 42,
+            shell_channels: None,
+        };
+        write_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
+            .expect("write_entry must seed the cache");
+    }
+
+    let pre_count = collect_cache_files(cache_dir.path())
+        .iter()
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("bin"))
+        .count();
+    assert_eq!(
+        pre_count,
+        chars.len(),
+        "test setup: all seeded .bins must be present pre-gc"
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+        .args(["cache", "gc"])
+        .env("REIFY_CACHE_DIR", cache_dir.path())
+        .env("REIFY_CACHE_MAX_BYTES", "1024")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute reify gc");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "reify cache gc with tiny cap should succeed; stderr={stderr}"
+    );
+
+    let evicted_n: u64 = parse_labelled_u64(&stdout, "Evicted entries:")
+        .unwrap_or_else(|| panic!("stdout must report 'Evicted entries: <n>', got: {stdout}"));
+    assert!(
+        evicted_n > 0,
+        "Evicted entries must be > 0 when over cap, got: {stdout}"
+    );
+    let remaining: u64 = parse_labelled_u64(&stdout, "Remaining bytes:")
+        .unwrap_or_else(|| panic!("stdout must report 'Remaining bytes: <n>', got: {stdout}"));
+    assert!(
+        remaining <= 1024,
+        "Remaining bytes must be <= 1024 cap, got: {remaining}"
+    );
+
+    let post_count = collect_cache_files(cache_dir.path())
+        .iter()
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("bin"))
+        .count();
+    assert!(
+        post_count < pre_count,
+        "post-gc .bin count ({post_count}) must be strictly less than pre-gc ({pre_count})"
+    );
+}
+
+/// Find a `<label> <u64>` line in `stdout` and return the parsed integer.
+fn parse_labelled_u64(stdout: &str, label: &str) -> Option<u64> {
+    for line in stdout.lines() {
+        if let Some(rest) = line.strip_prefix(label) {
+            return rest.split_whitespace().next().and_then(|t| t.parse().ok());
+        }
+    }
+    None
+}
+
+#[test]
 fn cache_export_with_extra_positional_shows_export_usage() {
     // `reify cache export aaa bbb` (extra positional past the hash) should be
     // rejected with the export-specific usage banner.
