@@ -2799,13 +2799,28 @@ impl Engine {
                             Ok((result, diags)) => {
                                 diagnostics.extend(diags);
 
+                                // Derive a unique per-entity ComputeNodeId index by
+                                // counting already-inserted ComputeNodes in the same
+                                // entity. `insert_compute_node` does NOT dedupe
+                                // (graph.rs:565-571 "Duplicate targets" doc), so this
+                                // caller-side counter discharges the unique-ID contract.
+                                // Without it, two `@optimized` calls in the same entity
+                                // would collide on `PersistentMap<ComputeNodeId, _>`,
+                                // silently overwriting the first node.
+                                let next_index: u32 = snapshot
+                                    .graph
+                                    .compute_nodes
+                                    .iter()
+                                    .filter(|(id, _)| id.entity == cell_id.entity)
+                                    .count() as u32;
+
                                 // Record a ComputeNode in the graph so callers can
                                 // inspect which cells were routed through a trampoline.
                                 snapshot.graph.insert_compute_node(
                                     crate::graph::ComputeNodeData {
                                         computation_id: reify_types::ComputeNodeId::new(
                                             cell_id.entity.as_str(),
-                                            0,
+                                            next_index,
                                         ),
                                         target,
                                         value_inputs: vec![cell_id.clone()],
