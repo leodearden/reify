@@ -55,6 +55,12 @@ fn resolve_boolean_arg(
     // The returned `Option<CompiledExpr>` is consumed only for its is_some()
     // signal — the CompiledExpr value is discarded because boolean-arg position
     // needs a GeomRef, not a CompiledExpr (task 3512 design decision).
+    //
+    // Scope note: only the `self.<sub>.<member>` two-level MemberAccess shape is
+    // matched here.  Indexed forms such as `self.<sub>[i].<member>` (where the
+    // outer object is an IndexAccess rather than a MemberAccess) are intentionally
+    // out of scope for task 3512 and fall through to the generic diagnostic.
+    // Extending boolean-arg routing to that shape is a post-3512 follow-up.
     if let reify_syntax::ExprKind::MemberAccess {
         object: outer_obj,
         member,

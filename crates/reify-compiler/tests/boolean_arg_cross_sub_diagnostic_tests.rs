@@ -97,19 +97,20 @@ pub structure Rack {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    // (c) Regression guard: the generic fallback "argument 1 must be a geometry
-    //     expression" must not be the ONLY diagnostic — a specific deferred
-    //     diagnostic must also be present when the generic fires.  Pins that the
-    //     fix does not accidentally leave only the generic message.
-    let has_generic_without_specific = errors
+    // (c) Independent regression guard: the generic "must be a geometry expression"
+    //     fallback must be entirely ABSENT — the early `return None` in
+    //     `resolve_boolean_arg` (triggered when `try_emit_cross_sub_geometry`
+    //     returns `Some`) suppresses the generic path.  This check is independent
+    //     of (b): (b) asserts the specific diagnostic fires; (c) asserts the
+    //     generic fallback does NOT fire at all.
+    let has_any_generic_fallback = errors
         .iter()
-        .any(|d| d.message.contains("argument 1 must be a geometry expression"))
-        && !has_specific_diagnostic;
+        .any(|d| d.message.contains("must be a geometry expression"));
     assert!(
-        !has_generic_without_specific,
-        "generic 'argument 1 must be a geometry expression' fired without the specific \
-         cross-sub-deferred diagnostic — the routing through try_emit_cross_sub_geometry \
-         is missing or not firing; errors: {:?}",
+        !has_any_generic_fallback,
+        "generic 'must be a geometry expression' must be absent when the specific \
+         cross-sub-deferred diagnostic fires — the early return in resolve_boolean_arg \
+         should suppress it; errors: {:?}",
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
@@ -140,6 +141,14 @@ pub structure Rack {
     param b : Solid = box(6mm, 6mm, 6mm)
     let combined = union_all(a, self.bolts.body, b)
 }"#;
+    // Dependency note: arg-0 (`a`, a `param : Solid`) must resolve successfully
+    // via the geometry-let/param path in `resolve_boolean_arg` for the n-ary fold
+    // loop in `compile_boolean_op` to proceed and reach `self.bolts.body` (arg-1).
+    // If `a` ever stopped resolving, the `?` on the first-arg resolve would
+    // short-circuit before the cross-sub diagnostic fires — the test would fail,
+    // not silently pass.  Should this become unexpectedly flaky due to
+    // param/geometry-let classification changes, consider moving the collection-sub
+    // arg to arg-0 position in a separate test.
     let compiled = compile_source(source);
     let errors: Vec<_> = compiled
         .diagnostics
@@ -169,15 +178,19 @@ pub structure Rack {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    // (c) Regression guard: specific diagnostic preferred over generic fallback.
-    let has_generic_without_specific = errors
+    // (c) Independent regression guard: the generic "must be a geometry expression"
+    //     fallback must be entirely ABSENT — the early `return None` in
+    //     `resolve_boolean_arg` suppresses the generic path when the specific
+    //     deferred diagnostic fires.  This check is independent of (b): (b) asserts
+    //     the specific diagnostic fires; (c) asserts the generic fallback does NOT
+    //     fire at all (including for arg-0 or arg-2 which resolved correctly).
+    let has_any_generic_fallback = errors
         .iter()
-        .any(|d| d.message.contains("argument 2 must be a geometry expression"))
-        && !has_specific_diagnostic;
+        .any(|d| d.message.contains("must be a geometry expression"));
     assert!(
-        !has_generic_without_specific,
-        "generic 'argument 2 must be a geometry expression' fired without the specific \
-         cross-sub-deferred diagnostic in union_all() n-ary path; errors: {:?}",
+        !has_any_generic_fallback,
+        "generic 'must be a geometry expression' must be absent when the specific \
+         cross-sub-deferred diagnostic fires in union_all() n-ary path; errors: {:?}",
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
