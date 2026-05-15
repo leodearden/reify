@@ -1145,25 +1145,17 @@ fn engine_build_emits_local_index_reassignment_for_coincident_box_union() {
         build_result.diagnostics
     );
 
-    // The warning must name the realization's feature_id — proves the
-    // engine's `realization_feature_id = FeatureId::from(realization_id)` path.
-    // Note: `FeatureId::from(realization_id)` formats as `{entity}#realization[{index}]`
-    // where `entity` is the structure name (e.g. "S"), not the field name.
-    let names_realization = warnings
-        .iter()
-        .any(|d| d.message.contains("S#realization[0]"));
+    // The warning must name both the realization's feature_id AND the role in
+    // the SAME message — proves the engine's `realization_feature_id` path and
+    // `detect_local_index_reassignment_diagnostics` role formatting together.
+    // Two separate `.any()` checks would pass even if a regression split the
+    // fields across distinct diagnostics; a single combined check prevents that.
     assert!(
-        names_realization,
-        "expected a warning naming 'S#realization[0]'; messages: {:?}",
-        warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-
-    // The warning must name the role — proves `detect_local_index_reassignment_diagnostics`
-    // formats the role in its message.
-    let names_side = warnings.iter().any(|d| d.message.contains("Side"));
-    assert!(
-        names_side,
-        "expected a warning mentioning 'Side'; messages: {:?}",
+        warnings
+            .iter()
+            .any(|d| d.message.contains("S#realization[0]") && d.message.contains("Side")),
+        "expected a warning naming both 'S#realization[0]' and 'Side' in the same message; \
+         messages: {:?}",
         warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
@@ -1341,50 +1333,51 @@ fn engine_build_local_index_reassignment_warning_filters_cross_realization() {
         })
         .collect();
 
-    // At least one warning per realization.
-    assert!(
-        warnings.len() >= 2,
-        "expected ≥2 TopologyAttributeLocalIndexReassigned warnings (one per realization); \
-         messages: {:?}",
-        warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-
-    // One warning naming each realization's feature_id.
+    // Exactly two warnings per realization (one per role: Side + NewEdge) — no more, no less.
     // Note: `FeatureId::from(realization_id)` formats as `{entity}#realization[{index}]`
     // where the entity is the structure name "S". Realization 0 is for `foo`,
     // realization 1 is for `bar` — their feature_ids are S#realization[0] and
     // S#realization[1] respectively.
-    let r0_warn = warnings
+    //
+    // Cross-realization isolation: a broken per-realization filter in
+    // `execute_realization_ops` would cause realization 1's detector pass to
+    // re-see realization 0's still-resident table entries and emit two spurious
+    // additional warnings naming `S#realization[0]`, making r0_count == 4 and
+    // tripping the assert below.
+    let r0_count = warnings
         .iter()
-        .find(|d| d.message.contains("S#realization[0]"));
-    let r1_warn = warnings
+        .filter(|d| d.message.contains("S#realization[0]"))
+        .count();
+    let r1_count = warnings
         .iter()
-        .find(|d| d.message.contains("S#realization[1]"));
-    assert!(
-        r0_warn.is_some(),
-        "expected a warning naming S#realization[0]; messages: {:?}",
+        .filter(|d| d.message.contains("S#realization[1]"))
+        .count();
+    // Each coincident-box union produces two tied-centroid warnings per realization:
+    // one for Role::Side and one for Role::NewEdge. So each realization contributes
+    // exactly 2 warnings naming its feature_id. A broken per-realization filter
+    // would cause realization 1's detector pass to re-see realization 0's entries,
+    // doubling r0_count from 2 to 4 and tripping the assert.
+    assert_eq!(
+        r0_count,
+        2,
+        "expected exactly 2 warnings naming S#realization[0] (one per role: Side + NewEdge); \
+         broken per-realization filter would yield 4; \
+         messages: {:?}",
         warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
-    assert!(
-        r1_warn.is_some(),
-        "expected a warning naming S#realization[1]; messages: {:?}",
+    assert_eq!(
+        r1_count,
+        2,
+        "expected exactly 2 warnings naming S#realization[1] (one per role: Side + NewEdge); \
+         messages: {:?}",
         warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
-
-    // Cross-realization isolation: pins the per-realization filter in execute_realization_ops.
-    // If the filter is broken, realization 1's detector pass would re-see
-    // realization 0's table entries and emit duplicate S#realization[0] warnings
-    // during realization 1's pass. The per-realization warning must name only
-    // its own realization index — realization 0's warning must not reference
-    // [1] and realization 1's warning must not reference [0].
-    let r0_msg = r0_warn.unwrap().message.as_str();
-    let r1_msg = r1_warn.unwrap().message.as_str();
-    assert!(
-        !r1_msg.contains("S#realization[0]"),
-        "realization-1 warning must not reference S#realization[0]: {r1_msg}"
-    );
-    assert!(
-        !r0_msg.contains("S#realization[1]"),
-        "realization-0 warning must not reference S#realization[1]: {r0_msg}"
+    assert_eq!(
+        warnings.len(),
+        4,
+        "expected exactly 4 TopologyAttributeLocalIndexReassigned warnings total \
+         (2 per realization × 2 realizations); \
+         messages: {:?}",
+        warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
