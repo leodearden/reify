@@ -301,6 +301,16 @@ fn cmd_cache_clear(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
         let target = cache_root.join(&hash);
+        // Idempotent contract: a non-directory or absent target is a no-op
+        // SUCCESS.  This mirrors the bulk-clear branch's `if !path.is_dir() {
+        // continue }` guard (cache.rs:348-350) which silently skips stray
+        // regular files.  `Path::is_dir()` returns false for both a missing
+        // path and a non-directory (regular file / symlink-to-file), so this
+        // single guard covers both cases without surfacing ENOTDIR as a generic
+        // I/O FAILURE.
+        if !target.is_dir() {
+            return ExitCode::SUCCESS;
+        }
         match std::fs::remove_dir_all(&target) {
             Ok(()) => return ExitCode::SUCCESS,
             // No-op SUCCESS when the target subdir doesn't exist (idempotent).
