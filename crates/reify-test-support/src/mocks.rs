@@ -3980,4 +3980,50 @@ mod tests {
         );
         assert_eq!(counts.total(), 2, "both elements contribute to grand total");
     }
+
+    #[test]
+    fn counting_mock_kernel_extract_vertices_forwards_to_inner_uncounted() {
+        // Pins the "Forwarded uncounted" contract for extract_vertices:
+        // (a) the call returns the trait-default QueryFailed error (since
+        //     MockGeometryKernel has no extract_vertices override), and
+        // (b) no per-variant counter increments — grand total stays at zero.
+        //
+        // Note: this test passes both before and after the override is added
+        // because both paths resolve to the same trait-default error today.
+        // Its value is as a regression guard for when a sibling task adds a
+        // distinguishable MockGeometryKernel::extract_vertices impl.
+        let handle = GeometryHandleId(1);
+        let inner = MockGeometryKernel::new();
+        let mut kernel = CountingMockKernel::new(inner);
+
+        let result = kernel.extract_vertices(handle);
+
+        match result {
+            Err(QueryError::QueryFailed(msg)) => {
+                assert!(
+                    msg.contains("topology extraction not supported by this kernel"),
+                    "expected trait-default error message, got: {msg:?}"
+                );
+            }
+            other => panic!("expected Err(QueryFailed(…)), got {other:?}"),
+        }
+
+        let counts = kernel.counts();
+        assert_eq!(counts.total(), 0, "extract_vertices must not increment total");
+        assert_eq!(
+            counts.is_watertight(),
+            0,
+            "extract_vertices must not increment is_watertight"
+        );
+        assert_eq!(
+            counts.is_manifold(),
+            0,
+            "extract_vertices must not increment is_manifold"
+        );
+        assert_eq!(
+            counts.is_orientable(),
+            0,
+            "extract_vertices must not increment is_orientable"
+        );
+    }
 }
