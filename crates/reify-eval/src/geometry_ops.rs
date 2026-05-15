@@ -39,6 +39,7 @@ pub(crate) const GEOMETRY_EPSILON: f64 = 1e-12;
 ///   retains `Value::Undef` (the existing fall-through-is-preservation
 ///   contract invariant).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // used in #[cfg(test)] and by downstream dispatcher tasks (KGQ-ο/π/ρ)
 pub(crate) enum CapabilityRoute {
     /// Route to the OCCT BRep kernel.
     Occt,
@@ -88,6 +89,7 @@ pub(crate) enum CapabilityRoute {
 /// The inner `match produced_repr` covers all five [`reify_types::ReprKind`]
 /// variants explicitly (no `_` wildcard) so a future repr addition is a
 /// compile error at this site.
+#[allow(dead_code)] // used in #[cfg(test)] and by downstream dispatcher tasks (KGQ-ο/π/ρ)
 pub(crate) fn gate_query_capability(
     query: &reify_types::GeometryQuery,
     produced_repr: reify_types::ReprKind,
