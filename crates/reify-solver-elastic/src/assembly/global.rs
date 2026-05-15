@@ -476,8 +476,13 @@ fn emit_element_triplets(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::assembly::test_support::{dimensionless_steel_like, scaled_p2_phys_nodes};
+    use crate::assembly::hex::element_stiffness_hex_p1;
+    use crate::assembly::test_support::{
+        dimensionless_steel_like, scaled_p2_phys_nodes, scaled_unit_hex_phys_nodes,
+        scaled_unit_wedge_phys_nodes,
+    };
     use crate::assembly::tet::{element_stiffness_p1, element_stiffness_p2};
+    use crate::assembly::wedge::element_stiffness_wedge_p1;
     use crate::constitutive::IsotropicElastic;
     use crate::shell_assembly::shell_element_stiffness;
 
@@ -1321,6 +1326,59 @@ mod tests {
 
         for i in 0..30 {
             for j in 0..30 {
+                let actual = read(&k, i, j);
+                let expected = k_e.get(i, j);
+                assert_eq!(
+                    actual.to_bits(),
+                    expected.to_bits(),
+                    "K_global[{i}][{j}] = {actual} but K_e[{i}][{j}] = {expected}",
+                );
+            }
+        }
+    }
+
+    /// Single P1 hex element with identity connectivity `[0..8]` → K_global
+    /// equals K_e bit-for-bit at every entry.
+    ///
+    /// Pins that the D-agnostic emission loop in `emit_element_triplets`
+    /// handles `n_local = 8`, `d_e = 3`. Identity connectivity ⇒ no
+    /// FP-summation reordering ⇒ bit-equality is achievable, not just
+    /// tolerance-equality. The 24×24 dim assertion is the first regression
+    /// pin for the hex element kind in `assemble_global_stiffness`.
+    ///
+    /// Pure-hex mesh ⇒ `D = max(d_e) = 3` (NOT 6 — shell isn't present),
+    /// so `K.nrows() == 24` and `K.ncols() == 24`, not 48.
+    #[test]
+    fn single_p1_hex_identity_connectivity_matches_k_e_bit_for_bit() {
+        let mat = dimensionless_steel_like();
+        let phys = scaled_unit_hex_phys_nodes(1.0);
+        let k_e = element_stiffness_hex_p1(&phys, &mat);
+        assert_eq!(k_e.n_dofs, 24);
+
+        let connectivity: [usize; 8] = std::array::from_fn(|i| i);
+        let element = AssemblyElement {
+            id: 0,
+            connectivity: &connectivity,
+            k_e: &k_e,
+        };
+        let k = assemble_global_stiffness(8, &[element], AssemblyMode::Deterministic);
+
+        // Pure-hex mesh ⇒ D = 3 (NOT 6), so dim = 3 · 8 = 24 (NOT 48).
+        assert_eq!(
+            k.nrows(),
+            24,
+            "pure-hex mesh must derive D = 3, giving 3·8 = 24 rows (not 6·8 = 48)",
+        );
+        assert_eq!(
+            k.ncols(),
+            24,
+            "pure-hex mesh must derive D = 3, giving 3·8 = 24 cols (not 6·8 = 48)",
+        );
+
+        // Bit-equality: identity connectivity ⇒ each entry has exactly one
+        // contributing triplet.
+        for i in 0..24 {
+            for j in 0..24 {
                 let actual = read(&k, i, j);
                 let expected = k_e.get(i, j);
                 assert_eq!(
