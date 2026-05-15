@@ -173,21 +173,24 @@ pub fn detect_orphan_dofs(
         }
     }
 
-    // Count orphan (node, axis) pairs: nodes that ARE touched (d_max_local > 0)
-    // but whose best-covering element stops short of D.
-    // examples populated in step-6.
+    // Count orphan (node, axis) pairs and collect examples.
+    // Nodes that ARE touched (d_max_local > 0) but whose best-covering
+    // element stops short of D contribute (d_global - d_local) orphan axes.
+    // Both loops are ascending so examples are naturally sorted by (node, axis).
+    // Truncation (MAX_EXAMPLES cap) is added in step-8.
     let mut count = 0usize;
+    let mut examples: Vec<(usize, usize)> = Vec::new();
     for node in 0..n_nodes {
         let d_local = d_max_local[node];
         if d_local > 0 && d_local < d_global {
-            count += d_global - d_local;
+            for axis in d_local..d_global {
+                count += 1;
+                examples.push((node, axis));
+            }
         }
     }
 
-    OrphanDofsSummary {
-        count,
-        examples: Vec::new(),
-    }
+    OrphanDofsSummary { count, examples }
 }
 
 /// Scatter per-element stiffness matrices into a global `D·N × D·N` sparse
