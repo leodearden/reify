@@ -13,7 +13,7 @@
 use reify_types::ModulePath;
 
 mod common;
-use common::{find_cst_node, find_outermost_cst_nodes, make_ts_parser};
+use common::{find_cst_node, make_ts_parser};
 
 // ── High-level parse tests (user-observable signal) ─────────────────────────
 
@@ -207,7 +207,7 @@ fn sub_decl_specialization_body_rejects_malformed_assignment() {
 /// with `is_collection == false`, `body.is_none()`, and `structure_name == "Foo"`.
 #[test]
 fn sub_decl_instantiation_form_regression() {
-    use reify_syntax::{Declaration, MemberDecl, SubDecl};
+    use reify_syntax::{Declaration, MemberDecl};
     let source = "structure S { sub a = Foo() }";
     let module = reify_syntax::parse(source, ModulePath::single("test"));
     let Declaration::Structure(s) = &module.declarations[0] else {
@@ -225,7 +225,7 @@ fn sub_decl_instantiation_form_regression() {
 /// `is_collection == true`, `body.is_none()`, `structure_name == "Foo"`.
 #[test]
 fn sub_decl_collection_form_regression() {
-    use reify_syntax::{Declaration, MemberDecl, SubDecl};
+    use reify_syntax::{Declaration, MemberDecl};
     let source = "structure S { sub a : List<Foo> }";
     let module = reify_syntax::parse(source, ModulePath::single("test"));
     let Declaration::Structure(s) = &module.declarations[0] else {
