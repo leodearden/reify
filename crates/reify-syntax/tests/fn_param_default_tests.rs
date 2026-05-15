@@ -222,3 +222,44 @@ fn fn_param_ast_multi_param_mixed_defaults() {
         "fn_param[1] (`y : U`) must have None default",
     );
 }
+
+// ── Negative coverage test ────────────────────────────────────────────────────
+
+/// `fn f(x = 1) -> T { x }` (default WITHOUT type annotation) must produce a
+/// CST ERROR node — the `:` separator and type_expr remain mandatory.
+///
+/// This is a regression guard ensuring the optional default clause does NOT
+/// make the colon-and-type optional.  The grammar keeps `:` and `type_expr`
+/// inside `seq(...)` before the `optional(seq('=', ...))` clause.
+///
+/// The test should PASS after step-4 (grammar makes `:` mandatory).  It is
+/// filed as a RED step in case a future grammar edit accidentally regresses
+/// this — if it passes immediately the implementation is sound.
+#[test]
+fn fn_param_rejects_default_without_type() {
+    let source = "fn f(x = 1) -> T { x }";
+    let mut parser = make_ts_parser();
+    let tree = parser.parse(source.as_bytes(), None).expect("parse failed");
+
+    assert!(
+        tree.root_node().has_error(),
+        "expected a CST ERROR node for `fn f(x = 1) -> T {{ x }}`; \
+         the grammar requires `:` and a type_expr before the optional default",
+    );
+
+    let error_node = find_cst_node(tree.root_node(), "ERROR")
+        .expect("expected at least one ERROR node when has_error() is true");
+
+    let token = "= 1";
+    let token_start = source
+        .find(token)
+        .expect("fixture must contain '= 1'") as u32;
+    let token_end = token_start + token.len() as u32;
+    let error_start = error_node.start_byte() as u32;
+    let error_end = error_node.end_byte() as u32;
+    assert!(
+        error_start < token_end && error_end > token_start,
+        "expected ERROR node to overlap `= 1` (bytes {token_start}..{token_end}), \
+         got error at {error_start}..{error_end}",
+    );
+}
