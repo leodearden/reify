@@ -458,4 +458,56 @@ mod tests {
             NodeTraits::empty()
         );
     }
+
+    // --- NodeKind (canonical 5-variant enum, mirrors NodeId) ---
+
+    #[test]
+    fn node_kind_variants_are_distinct() {
+        use NodeKind::*;
+        assert_ne!(Value, Constraint);
+        assert_ne!(Value, Realization);
+        assert_ne!(Value, Resolution);
+        assert_ne!(Value, Compute);
+        assert_ne!(Constraint, Realization);
+        assert_ne!(Constraint, Resolution);
+        assert_ne!(Constraint, Compute);
+        assert_ne!(Realization, Resolution);
+        assert_ne!(Realization, Compute);
+        assert_ne!(Resolution, Compute);
+    }
+
+    #[test]
+    fn node_kind_value_default_traits() {
+        assert_eq!(NodeKind::Value.default_traits(), NodeTraits::IMMEDIATE);
+    }
+
+    #[test]
+    fn node_kind_constraint_default_traits() {
+        // Q-1 resolution: empty, preserving today's NodeArchKind::ConstraintNode behavior.
+        assert_eq!(NodeKind::Constraint.default_traits(), NodeTraits::empty());
+    }
+
+    #[test]
+    fn node_kind_resolution_default_traits() {
+        assert_eq!(
+            NodeKind::Resolution.default_traits(),
+            NodeTraits::WARM_STARTABLE | NodeTraits::COMMITTABLE
+        );
+    }
+
+    #[test]
+    fn node_kind_realization_default_traits() {
+        assert_eq!(
+            NodeKind::Realization.default_traits(),
+            NodeTraits::WARM_STARTABLE | NodeTraits::COMMITTABLE
+        );
+    }
+
+    #[test]
+    fn node_kind_compute_default_traits() {
+        assert_eq!(
+            NodeKind::Compute.default_traits(),
+            NodeTraits::WARM_STARTABLE | NodeTraits::COMMITTABLE
+        );
+    }
 }
