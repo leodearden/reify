@@ -25,6 +25,14 @@
 //!       short-circuits via `infer_binop_type`), and
 //!   (b) No `"mismatch"` / `"incompatible"` cascade diagnostic is present.
 //!
+//! **Exception — `COLLECTION_AGGREGATION_MEMBERS` carve-out (task-3657 section):** the
+//! `count`/`sum`/`keys`/`values` aggregation members on collection subs intentionally pin a
+//! *concrete* fallback type (`Type::Int` for `count`; `Type::Real` for `sum`/`keys`/`values`)
+//! rather than `Type::Error`.  The two tests in the task-3657 section therefore assert a
+//! concrete type instead of `Type::Error` — per task-3639 design decision #2
+//! ("user-knows-the-type cascade-suppression": the return type is known, so downstream
+//! checks against it are legitimate, not spurious cascade).
+//!
 //! ## Policy reference
 //!
 //! See the module-header doc block in `crates/reify-compiler/src/expr.rs` for the full
@@ -507,16 +515,16 @@ structure Outer {
 /// type (`Type::Int`) because the carve-out does **not** poison `count`/`sum`/`keys`/
 /// `values`: the user typed a known aggregation method whose return type they know,
 /// so downstream type checks against that concrete type are legitimate, not spurious
-/// cascade (design decision #2, task 3639 review; documented at `expr.rs:1344-1352`).
+/// cascade (design decision #2, task 3639 review; see the comment block above the
+/// `fallback_type` match in `compile_expr`).
 ///
 /// Fixture shape: `let broken = self.bolts.count + 5`.
 /// - `self.bolts.count` → `CompiledExpr::literal(Value::Undef, Type::Int)` (carve-out arm),
 ///   plus the "cannot access aggregation … through self" `Diagnostic::error`.
-/// - `5` → `Type::Int` (integer literal, `classify_number_literal` → `NumberClass::Int`,
-///   `expr.rs:546-549`).
+/// - `5` → `Type::Int` (integer literal; `classify_number_literal` returns `NumberClass::Int`).
 /// - `infer_binop_type(Add, Int, Int)` = `left.clone()` = `Type::Int` (neither operand is
-///   `Type::Error`, so no short-circuit; `type_compat.rs:430-477`).
-/// - `(Int, Int)` hits `_ => {}` in the Add/Sub dimension check (`expr.rs:744-775`) — no
+///   `Type::Error`, so no short-circuit).
+/// - `(Int, Int)` hits `_ => {}` in the Add/Sub dimension check in `compile_expr` — no
 ///   extra "incompatible" diagnostic.
 /// - Net: `result_type == Type::Int`; exactly one error ("cannot access aggregation").
 ///
@@ -561,7 +569,8 @@ structure Outer {
 ///   plus the "cannot access aggregation … through self" `Diagnostic::error`.
 /// - `5` → `Type::Int` (integer literal).
 /// - `infer_binop_type(Add, Real, Int)` = `left.clone()` = `Type::Real` (neither operand
-///   is `Type::Error`; `type_compat.rs:445`).
+///   is `Type::Error`; `infer_binop_type` returns `left.clone()` for matching-kind numeric
+///   operands).
 /// - `(Real, Int)` hits `_ => {}` in the Add/Sub dimension check — the
 ///   dimensioned+dimensionless error arm only matches `Type::Scalar`, not `Type::Real`, so
 ///   no extra diagnostic is emitted.
