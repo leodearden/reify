@@ -4305,4 +4305,65 @@ mod tests {
             cap
         );
     }
+
+    /// Step-3 RED: verify that `evict_over_cap` prunes the two-char shard dir
+    /// after evicting ALL entries from it, reclaiming dirs that would otherwise
+    /// accumulate forever as the cache turns over.
+    ///
+    /// Two input hashes sharing the same two-character prefix are used so they
+    /// hash into the same shard dir.  `cap = 0` forces the eviction loop to
+    /// remove every entry, fully draining the shard.  After the call the shard
+    /// dir must not exist on disk, but the engine-version subdir must survive
+    /// (pruning the version dir is the startup-sweep task's concern, not this
+    /// function's).
+    ///
+    /// Test must FAIL on current main because no shard-dir cleanup is wired in.
+    #[test]
+    fn evict_over_cap_prunes_empty_shard_dir_after_evicting_all_entries_from_it() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "aa00000000000000000000000000aaaa";
+        // Both hashes share "aa" prefix → same shard dir.
+        let inp1 = "aa00000000000000000000000000aabb";
+        let inp2 = "aa00000000000000000000000000aacc";
+
+        let v = make_sample_result();
+        write_entry(root, eng, inp1, &v).unwrap();
+        write_entry(root, eng, inp2, &v).unwrap();
+
+        // Precondition: shard dir must exist before the call.
+        let shard = shard_dir(root, eng, inp1);
+        assert!(
+            shard.exists(),
+            "shard dir must exist before evict_over_cap (test precondition)"
+        );
+        // Both hashes share the same shard dir.
+        assert_eq!(
+            shard,
+            shard_dir(root, eng, inp2),
+            "inp1 and inp2 must share the same shard dir"
+        );
+
+        // cap = 0 → evict every entry, fully draining the shard.
+        let report = evict_over_cap(root, eng, 0)
+            .expect("evict_over_cap must return Ok when draining the cache");
+
+        // (a) Ok — already asserted above via .expect()
+        // (b) Both entries evicted by THIS call.
+        assert_eq!(report.evicted_count, 2, "evicted_count must be 2");
+        // (c) No bytes remain.
+        assert_eq!(report.remaining_bytes, 0, "remaining_bytes must be 0");
+        // (d) The shared shard dir must have been pruned.
+        assert!(
+            !shard.exists(),
+            "shard dir must be pruned after all entries evicted"
+        );
+        // (e) Engine-version subdir must survive — pruning the version dir is
+        //     owned by the startup-sweep task (cross-version orphan pruning),
+        //     NOT this function.
+        assert!(
+            root.join(eng).exists(),
+            "engine-version subdir must survive after shard-dir pruning"
+        );
+    }
 }
