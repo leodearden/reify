@@ -41,7 +41,11 @@ Length, Mass, Time, Current, Temperature, AmountOfSubstance, LuminousIntensity, 
 SolidAngle, Money, Area, Volume, Force, Energy, Power, Pressure, Frequency, Voltage,
 Charge, Capacitance, Resistance, Conductance, Inductance, MagneticFlux,
 MagneticFluxDensity, LuminousFlux, Illuminance, AbsorbedDose, AngularVelocity,
-DynamicViscosity, **MomentOfInertia**, **Density**, Dimensionless.
+DynamicViscosity, **MomentOfInertia**, **Density**, Dimensionless,
+**ThermalConductivity**, **SpecificHeat**, **ThermalExpansion**,
+**ElectricResistivity**, **ElectricalConductivity**, **DielectricStrength**,
+**Stiffness**, **AbsorptionCoeff**, **FractureToughness** (last 9 added by task #3115;
+FractureToughness uses fractional Length exponent via `from_rational_exps`).
 
 Parametric types available today (`type_resolution.rs:1340-1421`):
 `Scalar<Q>`, `Vector3<Q>`, `Point3<Q>`, `Tensor<rank,n,Q>`, `Matrix<m,n,Q>`, `Field<D,C>`.
