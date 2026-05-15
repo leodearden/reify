@@ -1778,6 +1778,14 @@ mod tests {
     ///   (11..16) — each 3×3 self-block matches the corresponding
     ///   K_e[3·a_local..3·a_local+3, 3·b_local..3·b_local+3] bit-for-bit
     ///   (only one summand from the owning element).
+    /// - **shared-to-exclusive cross-blocks**: pair the shared node 0 with
+    ///   one element-exclusive partner per kind (gn ∈ {1, 4, 11}). Each
+    ///   cross-block is single-summand (only the owning element touches the
+    ///   exclusive partner), so bit-equality with the per-element K_e sub-
+    ///   block holds. Both `(0, partner)` and `(partner, 0)` directions are
+    ///   checked — a regression that miscomputed the dest-row/col when the
+    ///   first connectivity entry is shared but the second is exclusive
+    ///   would slip past the (a)/(c)/(d)/(e) self-block cells.
     #[test]
     fn mixed_tet_hex_wedge_sharing_node_assembles_into_unified_3dof_per_node_global_k() {
         let mat = dimensionless_steel_like();
@@ -1910,6 +1918,62 @@ mod tests {
                              actual = {actual}, expected = {expected}",
                         );
                     }
+                }
+            }
+        }
+
+        // (f) Cross-blocks pairing the shared node (gn=0) with one
+        // element-exclusive partner per element kind: gn=1 (tet-only),
+        // gn=4 (hex-only), gn=11 (wedge-only). Each pair is owned by
+        // exactly one element (the non-shared partner is exclusive to
+        // it), so the cross-block is a single-summand triplet — bit-
+        // equality with `K_e[3·la..3·la+3, 3·lb..3·lb+3]` still works.
+        //
+        // Both orderings are checked: `(gn=0, gn=partner)` exercises the
+        // dest-row from the *shared* node and dest-col from the exclusive
+        // partner, and `(gn=partner, gn=0)` exercises the mirror direction.
+        // A regression that miscomputed the dest-row when the *first*
+        // connectivity entry is shared but the second is exclusive (e.g.
+        // a stale `local_a == 0` early-return in `emit_element_triplets`)
+        // would not be caught by the (a)/(c)/(d)/(e) self-block pinned
+        // cells alone — this section closes that gap.
+        for (gn_partner, k_e, local_partner, kind) in [
+            (1usize, &k_e_tet, 1usize, "tet"),
+            (4usize, &k_e_hex, 1usize, "hex"),
+            (11usize, &k_e_wedge, 1usize, "wedge"),
+        ] {
+            // Direction 1: K_global[3·0..3·0+3, 3·gn_partner..3·gn_partner+3]
+            //   = K_e[3·0..3·0+3, 3·local_partner..3·local_partner+3]
+            for alpha in 0..3 {
+                for beta in 0..3 {
+                    let i = alpha; // 3 · 0 + alpha
+                    let j = 3 * gn_partner + beta;
+                    let actual = read(&k, i, j);
+                    let expected = k_e.get(alpha, 3 * local_partner + beta);
+                    assert_eq!(
+                        actual.to_bits(),
+                        expected.to_bits(),
+                        "K_global[{i}][{j}] ({kind} cross-block (gn=0, gn={gn_partner}), \
+                         local (0, {local_partner}), α={alpha} β={beta}): \
+                         actual = {actual}, expected = {expected}",
+                    );
+                }
+            }
+            // Direction 2: K_global[3·gn_partner..3·gn_partner+3, 3·0..3·0+3]
+            //   = K_e[3·local_partner..3·local_partner+3, 3·0..3·0+3]
+            for alpha in 0..3 {
+                for beta in 0..3 {
+                    let i = 3 * gn_partner + alpha;
+                    let j = beta; // 3 · 0 + beta
+                    let actual = read(&k, i, j);
+                    let expected = k_e.get(3 * local_partner + alpha, beta);
+                    assert_eq!(
+                        actual.to_bits(),
+                        expected.to_bits(),
+                        "K_global[{i}][{j}] ({kind} cross-block (gn={gn_partner}, gn=0), \
+                         local ({local_partner}, 0), α={alpha} β={beta}): \
+                         actual = {actual}, expected = {expected}",
+                    );
                 }
             }
         }
