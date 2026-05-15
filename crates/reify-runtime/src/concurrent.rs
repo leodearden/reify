@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use reify_eval::cache::{CacheStore, EvalOutcome, NodeId};
 use reify_eval::deps::DependencyTrace;
 use reify_eval::gating;
-use reify_types::ValueCellId;
+use reify_types::{NodeTraitsMap, ValueCellId};
 
 use crate::Priority;
 use crate::commitment::{CommitmentTracker, NodeCommitmentOverride, NodePolicyOverrides};
@@ -22,6 +22,17 @@ use crate::priority_promotion::SharedPriorityPromoter;
 /// behavior overrides during concurrent evaluation. `Default` gives
 /// exact current `execute` behavior (no priority sorting, no commitment
 /// tracking, no skip overrides).
+///
+/// Fields:
+/// - `commitment_tracker`: optional commitment-aware cancellation tracker.
+/// - `priority_promoter`: optional priority-based spawn ordering.
+/// - `node_overrides`: per-node commitment behavior overrides.
+/// - `node_priorities`: per-node scheduling priorities.
+/// - `cache`: optional cache reference for `OnlyRunOnFinalInputs` gating.
+/// - `node_traits`: per-NodeId / per-kind trait override map with kind-derived
+///   default fallback (per PRD §5 B1 / arch §7.6). Default-empty — every
+///   `resolve` call returns the §7.6 architecture default until a downstream
+///   task (γ/δ/η/θ) wires consumer dispatch on it.
 pub struct SchedulerConfig<'a> {
     /// Optional commitment tracker for commitment-aware cancellation.
     pub commitment_tracker: Option<Arc<Mutex<CommitmentTracker>>>,
@@ -35,6 +46,11 @@ pub struct SchedulerConfig<'a> {
     /// whether `OnlyRunOnFinalInputs` nodes are runnable. `None` means no
     /// gating — equivalent to treating every node as having all-Final inputs.
     pub cache: Option<&'a CacheStore>,
+    /// Per-NodeId / per-kind trait override map with kind-derived default
+    /// fallback (per PRD §5 B1 / arch §7.6). Default-empty — every
+    /// `resolve` call returns the §7.6 architecture default until a
+    /// downstream task (γ/δ/η/θ) wires consumer dispatch on it.
+    pub node_traits: NodeTraitsMap<NodeId>,
 }
 
 impl Default for SchedulerConfig<'_> {
@@ -45,6 +61,7 @@ impl Default for SchedulerConfig<'_> {
             node_overrides: NodePolicyOverrides::new(),
             node_priorities: HashMap::new(),
             cache: None,
+            node_traits: NodeTraitsMap::default(),
         }
     }
 }
