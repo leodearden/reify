@@ -212,6 +212,88 @@ mod tests {
             f.evidence
         );
     }
+
+    /// Required #3 — a non-test workspace caller suppresses the finding,
+    /// but a test-only reference does NOT (the filter excludes *test* refs,
+    /// not all refs). One done task, two symbols: `new_widget` has a real
+    /// caller (suppressed); `test_only_widget` is referenced only from a
+    /// `*/tests/*` path (still flagged → exactly one surviving finding).
+    #[test]
+    fn non_test_caller_in_workspace_suppresses_finding() {
+        let done_at = NOW - 15 * DAY;
+
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+        let mut jc = MockJCodemunchOps::new();
+        jc.set_changed_symbols(
+            "main",
+            done_at,
+            vec![
+                changed_symbol("new_widget", "crates/reify-x/src/widget.rs"),
+                changed_symbol("test_only_widget", "crates/reify-x/src/other.rs"),
+            ],
+        );
+        // Real non-test caller → new_widget suppressed.
+        jc.set_find_references(
+            "new_widget",
+            vec![SymbolReference {
+                file: "crates/reify-y/src/uses_widget.rs".to_string(),
+                line: 7,
+            }],
+        );
+        // Only a test-path caller → test_only_widget still flagged.
+        jc.set_find_references(
+            "test_only_widget",
+            vec![SymbolReference {
+                file: "crates/reify-y/tests/it.rs".to_string(),
+                line: 3,
+            }],
+        );
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "7003".to_string(),
+            done_meta("7003", done_at, Some("docs/x.md")),
+        );
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: Some(NOW),
+        };
+
+        let findings = p1_producer_orphan::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "only test_only_widget should be flagged (new_widget has a \
+             non-test caller); got {:?}",
+            findings
+        );
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::P1ProducerOrphan);
+        assert!(
+            f.evidence.iter().any(|e| matches!(
+                e,
+                EvidenceRef::File { path } if path == "crates/reify-x/src/other.rs"
+            )),
+            "surviving finding must cite other.rs (test_only_widget); got {:?}",
+            f.evidence
+        );
+        assert!(
+            !f.evidence.iter().any(|e| matches!(
+                e,
+                EvidenceRef::File { path } if path == "crates/reify-x/src/widget.rs"
+            )),
+            "new_widget (real caller) must not appear; got {:?}",
+            f.evidence
+        );
+    }
 }
 
 } // mod p1
