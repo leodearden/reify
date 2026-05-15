@@ -49,7 +49,10 @@ trait Rigid : Physical {
 trait Flexible {
     param stiffness : Stiffness
     param max_deflection : Real
-    constraint stiffness > 0
+    // RHS is dimensioned (N/m = Stiffness) so `eval_cmp` dim-equality succeeds
+    // at runtime; a bare `0` would yield Indeterminate per task #3115
+    // esc-3115-112 (compile-time accepted bare-numeric, runtime rejected it).
+    constraint stiffness > 0.0 * 1N / 1m
     constraint max_deflection > 0
 }
 
@@ -98,7 +101,9 @@ trait Plastic : Flexible {
 trait ThermallyConductive : Physical {
     param thermal_conductivity : ThermalConductivity
     param max_service_temp : Real
-    constraint thermal_conductivity > 0
+    // RHS dimensioned (W/(m·K) = ThermalConductivity) — see Flexible above for
+    // rationale (esc-3115-112).
+    constraint thermal_conductivity > 0.0 * 1W / (1m * 1K)
 }
 
 // ── Electrical conductivity ─────────────────────────────────────────────────
@@ -110,7 +115,9 @@ trait ThermallyConductive : Physical {
 trait ElectricallyConductive : Physical {
     param electrical_conductivity : ElectricalConductivity
     param resistivity : ElectricResistivity
-    constraint electrical_conductivity > 0
+    // RHS dimensioned (S/m = ElectricalConductivity) — see Flexible above for
+    // rationale (esc-3115-112).
+    constraint electrical_conductivity > 0.0 * 1S / 1m
 }
 
 // ── Sealing ─────────────────────────────────────────────────────────────────

@@ -1,7 +1,7 @@
 # Stdlib `param X : Real` Placeholder Audit
 
-**Status:** Open — classification complete; dimensionless annotations applied (step-2); follow-up tasks filed (step-3)
-**Date:** 2026-05-07
+**Status:** Open — classification complete; dimensionless annotations applied (step-2); follow-up tasks filed (step-3); composite-dim task-E (#3115) resolved 2026-05-15 → all 11 blocked-composite sites tightened to named-dimension aliases
+**Date:** 2026-05-07 (audit), 2026-05-15 (task-E close-out)
 **Source:** Task 3090 (origin tasks: 2354 stdlib design, 2696 Density type, 2759 tensor literals)
 **Audit doc parallel:** `docs/notes/stdlib-trait-breadth-audit-v01.md` (trait-breadth audit, task 2347; refreshed 2026-05-14 via task 3529, formerly named `stdlib-trait-audit.md`)
 
@@ -84,7 +84,7 @@ Source: `crates/reify-compiler/stdlib/materials_mechanical.ri`
 | 83 | `Strong` trait | `compressive_strength` | `Real` | `Pressure` | tightenable-now | task-A |
 | 93 | `Hard` trait | `hardness_value` | `Real` | `Real` | genuine-dimensionless | — |
 | 101 | `FatigueRated` trait | `endurance_limit` | `Real` | `Pressure` | tightenable-now | task-A |
-| 108 | `FractureTough` trait | `fracture_toughness` | `Real` | `Pressure·√Length` (K_Ic) | blocked-composite | task-E |
+| 108 | `FractureTough` trait | `fracture_toughness` | `FractureToughness` ✓ | `Pressure·√Length` (K_Ic) | tightened-by-#3115 | task-E ✓ |
 | 116 | `Ductile` trait | `elongation` | `Real` | `Real` | genuine-dimensionless | — |
 | 117 | `Ductile` trait | `reduction_of_area` | `Real` | `Real` | genuine-dimensionless | — |
 | 124 | `ImpactResistant` trait | `impact_energy` | `Real` | `Energy` | tightenable-now | task-A |
@@ -97,9 +97,10 @@ Source: `crates/reify-compiler/stdlib/materials_mechanical.ri`
   etc. use incommensurable scales); `Real` is correct.
 - `elongation` and `reduction_of_area` are fractional percentages; `Real` is correct.
 - `damping_ratio` and `loss_factor` are energy ratios; `Real` is correct.
-- `fracture_toughness` (K_Ic) has SI units Pa·√m = Pressure × Length^(1/2); this is
-  not expressible as a simple `Scalar<Q>` without a square-root dimension exponent,
-  which the resolver does not yet support → blocked-composite.
+- `fracture_toughness` (K_Ic) has SI units Pa·√m = Pressure × Length^(1/2); tightened
+  to the named-dimension alias `FractureToughness` by task #3115. The blocker was the
+  const-eval helper `from_exps(...)` (denominator=1 only); #3115 added a sibling
+  `from_rational_exps(...)` that admits fractional Length exponents (1/2 here).
 
 ---
 
@@ -109,18 +110,17 @@ Source: `crates/reify-compiler/stdlib/materials_thermal.ri`
 
 | Line | Owner | Param | Current Type | Spec / Intent Type | Classification | Follow-up |
 |------|-------|-------|-------------|-------------------|----------------|-----------|
-| 36 | `ThermallyCharacterized` trait | `thermal_conductivity` | `Real` | W/(m·K) | blocked-composite | task-E |
-| 37 | `ThermallyCharacterized` trait | `specific_heat` | `Real` | J/(kg·K) | blocked-composite | task-E |
-| 38 | `ThermallyCharacterized` trait | `thermal_expansion` | `Real` | 1/K | blocked-composite | task-E |
+| 36 | `ThermallyCharacterized` trait | `thermal_conductivity` | `ThermalConductivity` ✓ | W/(m·K) | tightened-by-#3115 | task-E ✓ |
+| 37 | `ThermallyCharacterized` trait | `specific_heat` | `SpecificHeat` ✓ | J/(kg·K) | tightened-by-#3115 | task-E ✓ |
+| 38 | `ThermallyCharacterized` trait | `thermal_expansion` | `ThermalExpansion` ✓ | 1/K | tightened-by-#3115 | task-E ✓ |
 | 39 | `ThermallyCharacterized` trait | `melting_point` | `Real` | `Temperature` | tightenable-now | task-B |
 | 40 | `ThermallyCharacterized` trait | `max_service_temperature` | `Real` | `Temperature` | tightenable-now | task-B |
 | 41 | `ThermallyCharacterized` trait | `glass_transition` | `Real` | `Temperature` | tightenable-now | task-B |
 
 **Notes:**
 - `thermal_conductivity` (W/(m·K) = kg·m/s³/K), `specific_heat` (J/(kg·K) = m²/s²/K),
-  and `thermal_expansion` (1/K) are composite-dimension quantities that cannot be
-  expressed today without named aliases for `ThermalConductivity`, `SpecificHeat`,
-  and `ThermalExpansion` in `NAMED_DIMENSIONS`. → blocked-composite (task-E).
+  and `thermal_expansion` (1/K) tightened to named-dimension aliases
+  `ThermalConductivity`, `SpecificHeat`, `ThermalExpansion` by task #3115 (task-E).
 - `melting_point`, `max_service_temperature`, and `glass_transition` are pure
   temperatures; `Temperature` is registered at `type_resolution.rs:497` → tightenable-now.
 
@@ -133,15 +133,15 @@ Source: `crates/reify-compiler/stdlib/materials_optical.ri`
 | Line | Owner | Param | Current Type | Spec / Intent Type | Classification | Follow-up |
 |------|-------|-------|-------------|-------------------|----------------|-----------|
 | 25 | `OpticallyCharacterized` trait | `refractive_index` | `Real` | `Real` | genuine-dimensionless | — |
-| 26 | `OpticallyCharacterized` trait | `absorption_coefficient` | `Real` | 1/m (per-length) | blocked-composite | task-E |
+| 26 | `OpticallyCharacterized` trait | `absorption_coefficient` | `AbsorptionCoeff` ✓ | 1/m (per-length) | tightened-by-#3115 | task-E ✓ |
 | 27 | `OpticallyCharacterized` trait | `transmittance` | `Real` | `Real` | genuine-dimensionless | — |
 | 28 | `OpticallyCharacterized` trait | `reference_thickness` | `Real` | `Length` | tightenable-now | task-C |
 
 **Notes:**
 - `refractive_index` (c/v_phase) and `transmittance` (optical power ratio) are
   dimensionless; `Real` is correct.
-- `absorption_coefficient` (Beer-Lambert α, units m⁻¹ = Length⁻¹) needs a
-  `Scalar<Length⁻¹>` parametric form or a `PerLength` named alias → blocked-composite.
+- `absorption_coefficient` (Beer-Lambert α, units m⁻¹ = Length⁻¹) tightened to the
+  named-dimension alias `AbsorptionCoeff` by task #3115.
 - `reference_thickness` is a length measurement → tightenable-now.
 
 ---
@@ -152,16 +152,17 @@ Source: `crates/reify-compiler/stdlib/materials_electrical.ri`
 
 | Line | Owner | Param | Current Type | Spec / Intent Type | Classification | Follow-up |
 |------|-------|-------|-------------|-------------------|----------------|-----------|
-| 49 | `ElectricallyCharacterized` trait | `resistivity` | `Real` | Ω·m | blocked-composite | task-E |
+| 49 | `ElectricallyCharacterized` trait | `resistivity` | `ElectricResistivity` ✓ | Ω·m | tightened-by-#3115 | task-E ✓ |
 | 50 | `ElectricallyCharacterized` trait | `dielectric_constant` | `Real` | `Real` | genuine-dimensionless | — |
-| 51 | `ElectricallyCharacterized` trait | `dielectric_strength` | `Real` | V/m | blocked-composite | task-E |
+| 51 | `ElectricallyCharacterized` trait | `dielectric_strength` | `DielectricStrength` ✓ | V/m | tightened-by-#3115 | task-E ✓ |
 | 52 | `ElectricallyCharacterized` trait | `magnetic_permeability` | `Real` | `Real` | genuine-dimensionless | — |
 
 **Notes:**
 - `dielectric_constant` (ε_r, relative permittivity) and `magnetic_permeability`
   (μ_r, relative permeability) are dimensionless ratios; `Real` is correct.
 - `resistivity` (Ω·m = kg·m³/(A²·s³)) and `dielectric_strength` (V/m = kg·m/(A·s³))
-  are composite-dimension quantities → blocked-composite.
+  tightened to named-dimension aliases `ElectricResistivity` and `DielectricStrength`
+  by task #3115.
 
 ---
 
@@ -199,15 +200,15 @@ Source: `crates/reify-compiler/stdlib/structural_physical.ri`
 | 18 | `Physical` trait | `centroid_y` | `Real` | `Length` | tightenable-now | task-D |
 | 19 | `Physical` trait | `centroid_z` | `Real` | `Length` | tightenable-now | task-D |
 | 29 | `Rigid` trait | `moment_of_inertia` | `Real` | `MomentOfInertia` | tightenable-now | task-D |
-| 42 | `Flexible` trait | `stiffness` | `Real` | N/m | blocked-composite | task-E |
+| 42 | `Flexible` trait | `stiffness` | `Stiffness` ✓ | N/m | tightened-by-#3115 | task-E ✓ |
 | 43 | `Flexible` trait | `max_deflection` | `Real` | `Length` | tightenable-now | task-D |
 | 61 | `ElasticallyDeformable` trait | `max_elastic_strain` | `Real` | `Real` | genuine-dimensionless | — |
 | 78 | `Plastic` trait | `plastic_strain` | `Real` | `Real` | genuine-dimensionless | — |
 | 79 | `Plastic` trait | `hardening_modulus` | `Real` | `Pressure` | tightenable-now | task-D |
-| 91 | `ThermallyConductive` trait | `thermal_conductivity` | `Real` | W/(m·K) | blocked-composite | task-E |
+| 91 | `ThermallyConductive` trait | `thermal_conductivity` | `ThermalConductivity` ✓ | W/(m·K) | tightened-by-#3115 | task-E ✓ |
 | 92 | `ThermallyConductive` trait | `max_service_temp` | `Real` | `Temperature` | tightenable-now | task-D |
-| 103 | `ElectricallyConductive` trait | `electrical_conductivity` | `Real` | S/m | blocked-composite | task-E |
-| 104 | `ElectricallyConductive` trait | `resistivity` | `Real` | Ω·m | blocked-composite | task-E |
+| 103 | `ElectricallyConductive` trait | `electrical_conductivity` | `ElectricalConductivity` ✓ | S/m | tightened-by-#3115 | task-E ✓ |
+| 104 | `ElectricallyConductive` trait | `resistivity` | `ElectricResistivity` ✓ | Ω·m | tightened-by-#3115 | task-E ✓ |
 | 113 | `Sealed` trait | `seal_pressure_rating` | `Real` | `Pressure` | tightenable-now | task-D |
 
 **Notes:**
@@ -215,8 +216,10 @@ Source: `crates/reify-compiler/stdlib/structural_physical.ri`
   at `dimension.rs:362-393` → tightenable-now.
 - `max_elastic_strain` and `plastic_strain` are dimensionless fractions (ΔL/L);
   `Real` is correct.
-- `stiffness` (N/m = kg/s²), `thermal_conductivity`, `electrical_conductivity` (S/m),
-  and `resistivity` (Ω·m) are composite dimensions → blocked-composite.
+- `stiffness` (N/m = kg/s²), `thermal_conductivity` (W/(m·K)),
+  `electrical_conductivity` (S/m), and `resistivity` (Ω·m) tightened to
+  named-dimension aliases `Stiffness`, `ThermalConductivity`,
+  `ElectricalConductivity`, and `ElectricResistivity` by task #3115.
 
 ---
 
@@ -341,7 +344,8 @@ rejected by the dimension checker. **No follow-up task is filed for this module.
 |----------------|-------|--------|
 | `tightenable-now` | 30 | Filed per-module follow-up tasks (task-A … task-D) |
 | `genuine-dimensionless` | 21 | Annotated `// dimensionless` in-place |
-| `blocked-composite` | 15 | Filed composite-dim alias follow-up task (task-E) |
+| `tightened-by-#3115` | 11 | Composite-dim alias task-E ✓ resolved 2026-05-15 — all 11 sites now use named-dimension aliases (ThermalConductivity, SpecificHeat, ThermalExpansion, ElectricResistivity, ElectricalConductivity, DielectricStrength, Stiffness, AbsorptionCoeff, FractureToughness) |
+| `blocked-composite` | 0 | All 11 previous blocked-composite sites tightened by #3115 |
 | `blocked-geometry-type` | 24 | Filed geometry-type follow-up task (task-F) |
 | `blocked-field-in-param` | 0 | Resolved by task 3117; both sites tightened to Field types |
 | `structural-contract` | 7 | Rationale recorded; no tightening needed or intended |
@@ -365,7 +369,7 @@ rejected by the dimension checker. **No follow-up task is filed for this module.
 | task-B | Tighten `materials_thermal.ri` Temperature params | melting_point / max_service_temperature / glass_transition → Temperature; update call sites | #3112 |
 | task-C | Tighten `materials_optical.ri` `reference_thickness` | reference_thickness → Length; update call sites | #3113 |
 | task-D | Tighten `structural_physical.ri` dimensioned params | volume→Volume, centroid_x/y/z→Length, moment_of_inertia→MomentOfInertia, max_deflection→Length, hardening_modulus→Pressure, max_service_temp→Temperature, seal_pressure_rating→Pressure; update call sites | #3114 |
-| task-E | Add named-dimension aliases for composite quantities | Introduce ThermalConductivity (W/(m·K)), SpecificHeat (J/(kg·K)), ThermalExpansion (1/K), ElectricResistivity (Ω·m), DielectricStrength (V/m), Stiffness (N/m), AbsorptionCoeff (1/m) to NAMED_DIMENSIONS + resolve_type_name; then re-classify all blocked-composite sites | #3115 |
+| task-E ✓ | Add named-dimension aliases for composite quantities | Introduced 9 aliases (ThermalConductivity, SpecificHeat, ThermalExpansion, ElectricResistivity, ElectricalConductivity, DielectricStrength, Stiffness, AbsorptionCoeff, FractureToughness — last needs fractional Length exponent, supported via new `from_rational_exps` helper) to NAMED_DIMENSIONS; resolver table-driven so no resolver changes needed. All 11 audit-identified blocked-composite sites tightened. Trait-level constraints (`stiffness > 0`, `resistivity < 0.0001`, etc.) rewritten to use dimensioned RHS literals (e.g. `> 0.0 * 1N / 1m`) — bare numeric RHS evaluated to Indeterminate at runtime because `eval_cmp` compares dimensions; see esc-3115-112 design note. | #3115 (resolved 2026-05-15) |
 | task-F | Introduce `Geometry` / `DatumRef` resolver capability | Add a `Geometry` opaque type and `DatumRef` type to the resolver so `tolerancing.ri::feature` (16 sites) and `datum_refs` (8 sites) can be tightened away from `Real` | #3116 |
 | task-G ✓ | Investigate and resolve `Field<X,Y>` in `param` positions | Confirmed: resolver arm at `type_resolution.rs:1313` (added by task 3088) works in `param` positions. TODO was stale. Both `ElasticResult::displacement` and `::stress` tightened to Field types. | #3117 (resolved) |
 | task-H | Tighten `frame` and `ShellStress.top/mid/bottom` to Field types | `ElasticResult.frame → Field<Point3<Length>, Matrix<3,3,Real>>`, `ShellStress.{top,mid,bottom} → Field<Point3<Length>, Tensor<2,3,Pressure>>`. Resolver already supports these forms (confirmed task 3117). Post-audit sites not in task-G scope. | #3641 |

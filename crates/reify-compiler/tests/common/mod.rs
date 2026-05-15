@@ -299,19 +299,37 @@ pub fn assert_trait_constraint_binop(
         expected_op,
         op
     );
-    match &right.kind {
-        ExprKind::NumberLiteral { value: v, .. } => assert!(
-            (*v - expected_rhs).abs() <= rhs_epsilon,
-            "{} constraint RHS for '{}' should be {} (±{}), got {}",
-            trait_name,
-            expected_member,
-            expected_rhs,
-            rhs_epsilon,
-            v
-        ),
-        other => panic!(
-            "{} constraint RHS for '{}' should be NumberLiteral, got {:?}",
-            trait_name, expected_member, other
-        ),
-    }
+    // The numeric coefficient may be wrapped in a dimensioned-multiply chain
+    // such as `0.0 * 1N / 1m` (esc-3115-112: trait constraints comparing a
+    // dimensioned LHS to a bare-numeric RHS evaluate to Indeterminate at
+    // runtime, so stdlib RHS literals are dimensioned). The shape parses as
+    // `((coefficient * unit_a) * unit_b)` (or with a `/` instead of `*`); walk
+    // the left spine of any `*`/`/` BinOp until we find the NumberLiteral.
+    let coefficient_value = {
+        let mut cursor = right.as_ref();
+        loop {
+            match &cursor.kind {
+                ExprKind::NumberLiteral { value: v, .. } => break *v,
+                ExprKind::BinOp { op, left, .. }
+                    if op.as_str() == "*" || op.as_str() == "/" =>
+                {
+                    cursor = left;
+                }
+                other => panic!(
+                    "{} constraint RHS for '{}' should be NumberLiteral (or a \
+                     dimensioned-multiply chain rooted at one), got {:?}",
+                    trait_name, expected_member, other
+                ),
+            }
+        }
+    };
+    assert!(
+        (coefficient_value - expected_rhs).abs() <= rhs_epsilon,
+        "{} constraint RHS coefficient for '{}' should be {} (±{}), got {}",
+        trait_name,
+        expected_member,
+        expected_rhs,
+        rhs_epsilon,
+        coefficient_value
+    );
 }

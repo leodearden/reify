@@ -364,22 +364,42 @@ structure def Glass : Insulating {
         "Glass template must have injected constraints from Insulating trait"
     );
 
-    // Helper: assert a `member > rhs_real` BinOp constraint is injected.
-    // Verifies the operator is Gt and the right-hand-side is the expected real literal.
-    // Decimal-form source tokens (e.g. `1000000.0`, `0.0`) compile to Value::Real
-    // after task 3184 added the int-vs-real syntactic distinction to the AST.
+    // Helper: assert a `member > rhs_real * <unit-chain>` BinOp constraint is
+    // injected. Verifies the operator is Gt and the leading numeric coefficient
+    // in the RHS matches `rhs_real`. The stdlib RHS literals are dimensioned
+    // (esc-3115-112) so the right side parses as a `Mul`/`Div` chain rooted at
+    // the numeric coefficient; walk the left spine until we find the literal.
+    // Decimal-form source tokens (e.g. `1000000.0`, `0.0`) compile to
+    // Value::Real after task 3184 added the int-vs-real syntactic distinction.
+    fn rhs_coefficient(expr: &reify_types::expr::CompiledExpr) -> Option<f64> {
+        let mut cursor = expr;
+        loop {
+            match &cursor.kind {
+                CompiledExprKind::Literal(Value::Real(v)) => return Some(*v),
+                CompiledExprKind::BinOp { op, left, .. }
+                    if matches!(op, BinOp::Mul | BinOp::Div) =>
+                {
+                    cursor = left;
+                }
+                _ => return None,
+            }
+        }
+    }
     let assert_gt_constraint = |member: &str, rhs_real: f64, epsilon: f64| {
         let found = template.constraints.iter().find(|cc| {
-            matches!(
-                &cc.expr.kind,
-                CompiledExprKind::BinOp { op: BinOp::Gt, left, right }
-                if matches!(&left.kind, CompiledExprKind::ValueRef(id) if id.member == member)
-                    && matches!(&right.kind, CompiledExprKind::Literal(Value::Real(v)) if (*v - rhs_real).abs() <= epsilon)
-            )
+            if let CompiledExprKind::BinOp { op: BinOp::Gt, left, right } = &cc.expr.kind {
+                let left_match = matches!(&left.kind, CompiledExprKind::ValueRef(id) if id.member == member);
+                let right_match = rhs_coefficient(right)
+                    .map(|v| (v - rhs_real).abs() <= epsilon)
+                    .unwrap_or(false);
+                left_match && right_match
+            } else {
+                false
+            }
         });
         assert!(
             found.is_some(),
-            "expected constraint `{member} > {rhs_real}` injected into Glass template, got: {:?}",
+            "expected constraint `{member} > {rhs_real} * <units>` injected into Glass template, got: {:?}",
             template.constraints
         );
     };

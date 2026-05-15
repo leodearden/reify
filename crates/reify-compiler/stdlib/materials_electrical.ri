@@ -56,8 +56,10 @@ trait ElectricallyCharacterized : MaterialSpec {
 
 // A conductive material is an ElectricallyCharacterized material whose
 // resistivity is below 1e-4 Ω·m (the conventional metal/semiconductor boundary).
+// RHS dimensioned (Ω·m = ElectricResistivity) so runtime `eval_cmp` dim-equality
+// succeeds — bare-numeric RHS would yield Indeterminate (esc-3115-112).
 trait Conductive : ElectricallyCharacterized {
-    constraint resistivity < 0.0001
+    constraint resistivity < 0.0001 * 1ohm * 1m
 }
 
 // ── Insulating ───────────────────────────────────────────────────────────────
@@ -68,7 +70,9 @@ trait Conductive : ElectricallyCharacterized {
 // bound enforces physical non-degeneracy (zero breakdown field is contradictory
 // for an insulator) rather than attempting to fully recapture the spec's
 // unavailable `determined(...)` predicate — see Decision #3 in the header.
+// RHS values dimensioned to match LHS aliases (Ω·m, V/m) — see Conductive above
+// for rationale (esc-3115-112).
 trait Insulating : ElectricallyCharacterized {
-    constraint resistivity > 1000000.0
-    constraint dielectric_strength > 0.0
+    constraint resistivity > 1000000.0 * 1ohm * 1m
+    constraint dielectric_strength > 0.0 * 1V / 1m
 }
