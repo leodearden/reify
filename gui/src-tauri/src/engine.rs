@@ -158,14 +158,19 @@ mod core_state {
             self.file_path = Some(path);
         }
 
-        /// Atomically commit all four canonical core fields after a successful
+        /// Commit the four canonical core fields after a successful
         /// parse+compile+check cycle.
         ///
-        /// This is the **single** multi-field commit point.  All four writes happen
-        /// before the method returns, so a panic inside this method leaves the fields
-        /// either all at their new values or, if the panic occurs before any write,
-        /// at their previous values.  Callers must only invoke this after compilation
-        /// and `check()` have both succeeded.
+        /// This is the **single** multi-field commit point.  Writes proceed in a
+        /// fixed order: `source_map` is rebuilt first (clear then insert), then
+        /// `module_name`, `compiled`, `last_check`.  A panic on an intermediate
+        /// allocation (e.g. inside `source_map.insert` or a `to_string()` call) may
+        /// leave the fields in a partially-updated state.  This is tolerated: the
+        /// surrounding mutex is recovered via `PoisonError::into_inner`, and the
+        /// affected fields are either rebuilt on the next `commit_state` call or
+        /// consumed only through graceful-degrade paths (`resolve_source`,
+        /// `get_diagnostics`).  Callers must only invoke this after compilation and
+        /// `check()` have both succeeded.
         ///
         /// The five cache fields on `EngineSession` (`def_preview_cache`,
         /// `parsed_cache`, `line_offsets_cache`, `consumed_idents_cache`,

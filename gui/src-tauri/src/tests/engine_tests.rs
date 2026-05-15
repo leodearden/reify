@@ -7575,19 +7575,8 @@ fn engine_session_exposes_core_state_with_read_accessors() {
 /// Behavioral test for `CoreState::commit_check`:
 /// `set_parameter` must update `last_check` and leave the other five core fields
 /// (`engine`, `compiled`, `source_map`, `file_path`, `module_name`) untouched.
-///
-/// The compile-time marker `let _: fn(&mut CoreState, CheckResult) =
-/// CoreState::commit_check;` fails before step-4 adds the method — that compile
-/// failure IS the RED state.  After step-4 lands it must pass and stay green.
 #[test]
 fn set_parameter_updates_only_last_check_via_commit_check() {
-    use reify_eval::CheckResult;
-
-    // Pre-step-4 compile-time marker: fails to compile until CoreState::commit_check
-    // is added with at least pub(crate) visibility.  This line exercises the symbol
-    // existence; it is never called at runtime.
-    let _: fn(&mut CoreState, CheckResult) = CoreState::commit_check;
-
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
@@ -7666,18 +7655,8 @@ fn set_parameter_updates_only_last_check_via_commit_check() {
 /// Behavioral test for `CoreState::commit_file_path`:
 /// `load_file` must set `file_path` and leave the other five core fields consistent
 /// (compiled and last_check become Some; module_name matches the file stem).
-///
-/// The compile-time marker `let _: fn(&mut CoreState, PathBuf) =
-/// CoreState::commit_file_path;` fails before step-6 adds the method — that
-/// compile failure IS the RED state.  After step-6 lands it must pass and stay green.
 #[test]
 fn load_file_updates_only_file_path_via_commit_file_path() {
-    use reify_eval::CheckResult;
-    use std::path::PathBuf;
-
-    // Pre-step-6 compile-time marker: fails until CoreState::commit_file_path is added.
-    let _: fn(&mut CoreState, PathBuf) = CoreState::commit_file_path;
-
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
@@ -7723,7 +7702,4 @@ fn load_file_updates_only_file_path_via_commit_file_path() {
         Some("bracket"),
         "module_name must be 'bracket' (from file stem) after load_file"
     );
-
-    // Marker that CheckResult is used in this scope (avoids dead-import warning).
-    let _: Option<&CheckResult> = core.last_check();
 }
