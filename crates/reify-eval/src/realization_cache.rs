@@ -142,9 +142,9 @@ impl<V> RealizationCache<V> {
 
 #[cfg(test)]
 mod tests {
-    use reify_types::ReprKind;
+    use reify_types::{ContentHash, ReprKind};
 
-    use super::RealizationCache;
+    use super::{RealizationCache, RealizationCacheKey};
 
     /// Happy-path: single (entity, repr_kind) round-trip with exact and looser lookup.
     ///
@@ -342,6 +342,105 @@ mod tests {
             cache.len(),
             SOFT_CAPACITY,
             "total cache len must equal SOFT_CAPACITY after single-bucket eviction"
+        );
+    }
+
+    /// Two distinct `options_hash` values under the same `(entity, repr_kind, tol)` must
+    /// produce two distinct slots — neither value shadows the other.
+    ///
+    /// This is the mirror of `repr_kind_distinguishes_buckets_under_same_entity`, guarding
+    /// the new `options_hash` dimension added in PRD §4.  If `options_hash` were ignored
+    /// in the cache key, the second insert would land in the same `ToleranceBucket` as the
+    /// first and be REJECTED (existing entry satisfies it), causing the lookup to return the
+    /// wrong value for one of the two slots.
+    #[test]
+    fn options_hash_distinguishes_buckets_under_same_entity_and_repr_kind() {
+        let hash_a = ContentHash::of_str("force_tet=true");
+        let hash_b = ContentHash::of_str("force_tet=false");
+
+        let mut cache = RealizationCache::<u32>::new();
+        let inserted_a = cache.insert("A", ReprKind::BRep, 0.01, hash_a, 1);
+        let inserted_b = cache.insert("A", ReprKind::BRep, 0.01, hash_b, 2);
+        assert!(inserted_a, "insert under hash_a must succeed");
+        assert!(inserted_b, "insert under hash_b must succeed (distinct slot)");
+
+        assert_eq!(
+            cache.lookup("A", ReprKind::BRep, 0.01, hash_a),
+            Some(&1),
+            "lookup under hash_a must return value 1"
+        );
+        assert_eq!(
+            cache.lookup("A", ReprKind::BRep, 0.01, hash_b),
+            Some(&2),
+            "lookup under hash_b must return value 2 (not shadowed by hash_a)"
+        );
+        // Cross-check: RealizationCacheKey naming is reachable (it's a public doc type).
+        let _key_a = RealizationCacheKey {
+            entity_id: "A".to_string(),
+            repr_kind: ReprKind::BRep,
+            tol: 0.01,
+            options_hash: hash_a,
+        };
+    }
+
+    /// Partial-order tolerance lookup is scoped per `options_hash` — it does not cross
+    /// into a different `options_hash` bucket.
+    ///
+    /// Scenario:
+    /// - Insert at tol=0.01 under `options_hash_a`.
+    /// - Lookup at tol=0.1 under `options_hash_a` → hits (tighter 0.01 satisfies looser 0.1).
+    /// - Lookup at tol=0.1 under `options_hash_b` → misses (no entry under that hash).
+    ///
+    /// Guards against a bug where `lookup` ignores `options_hash` and falls through to
+    /// a bucket belonging to a different options_hash value.
+    #[test]
+    fn partial_order_tolerance_lookup_works_within_fixed_options_hash() {
+        let hash_a = ContentHash::of_str("opts_a");
+        let hash_b = ContentHash::of_str("opts_b");
+
+        let mut cache = RealizationCache::<u32>::new();
+        cache.insert("E", ReprKind::BRep, 0.01, hash_a, 42);
+
+        // Looser request within the same options_hash: tighter cached entry satisfies it.
+        assert_eq!(
+            cache.lookup("E", ReprKind::BRep, 0.1, hash_a),
+            Some(&42),
+            "looser request within same options_hash must hit tighter cached entry"
+        );
+
+        // Same (entity, repr_kind, tol) but different options_hash: must miss.
+        assert_eq!(
+            cache.lookup("E", ReprKind::BRep, 0.1, hash_b),
+            None,
+            "lookup under different options_hash must miss even when tol would satisfy"
+        );
+    }
+
+    /// `ContentHash(0)` (the PRD §4 "no options" sentinel) behaves as a first-class
+    /// partition key, not as magic that bypasses the dimension.
+    ///
+    /// Inserts at `ContentHash(0)` and `ContentHash::of_str("anything")` under the same
+    /// `(entity, repr_kind, tol)` must both succeed and both be retrievable.
+    #[test]
+    fn content_hash_zero_sentinel_partitions_like_any_other() {
+        let sentinel = ContentHash(0);
+        let other = ContentHash::of_str("anything");
+
+        let mut cache = RealizationCache::<u32>::new();
+        let inserted_sentinel = cache.insert("B", ReprKind::BRep, 0.01, sentinel, 10);
+        let inserted_other = cache.insert("B", ReprKind::BRep, 0.01, other, 20);
+        assert!(inserted_sentinel, "insert under ContentHash(0) must succeed");
+        assert!(inserted_other, "insert under non-zero hash must succeed (distinct slot)");
+
+        assert_eq!(
+            cache.lookup("B", ReprKind::BRep, 0.01, sentinel),
+            Some(&10),
+            "lookup under ContentHash(0) must return sentinel-slot value"
+        );
+        assert_eq!(
+            cache.lookup("B", ReprKind::BRep, 0.01, other),
+            Some(&20),
+            "lookup under non-zero hash must return its own value"
         );
     }
 }
