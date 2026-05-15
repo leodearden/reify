@@ -1177,6 +1177,116 @@ mod tests {
         );
     }
 
+    // ── value_type_kind_matches: StructureInstance arm (task 3540 / SIR-α) ────
+    // step-5: these tests call the *future* 3-arg signature
+    // `value_type_kind_matches(value, ty, registry)`. They fail to compile
+    // against the current 2-arg signature — the compile failure IS the RED
+    // signal. step-6 changes the signature + adds the StructureInstance arm,
+    // turning these green.
+
+    /// Build a `(Value::StructureInstance, StructureRegistry)` pair where the
+    /// instance's `type_id` is the id the registry interned for `name` with the
+    /// given declared trait bounds. Mirrors the per-Engine side-table contract.
+    #[cfg(test)]
+    fn structure_instance_with_registry(
+        name: &str,
+        bounds: &[&str],
+    ) -> (reify_types::Value, reify_types::StructureRegistry) {
+        use reify_types::{StructureMeta, StructureRegistry, Value};
+        let mut reg = StructureRegistry::new();
+        let id = reg.intern(
+            name,
+            StructureMeta {
+                name: name.to_string(),
+                version: 1,
+                declared_trait_bounds: bounds.iter().map(|s| s.to_string()).collect(),
+                source: None,
+                field_layout: vec![],
+            },
+        );
+        let v = Value::StructureInstance {
+            type_id: id,
+            type_name: name.to_string(),
+            version: 1,
+            fields: Default::default(),
+        };
+        (v, reg)
+    }
+
+    /// (a) StructureInstance against a StructureRef of the *same* name → true.
+    #[test]
+    fn value_type_kind_matches_structure_instance_into_matching_structure_ref_returns_true() {
+        use reify_types::Type;
+        let (v, reg) = structure_instance_with_registry("Steel_AISI_1045", &["ElasticMaterial"]);
+        let t = Type::StructureRef("Steel_AISI_1045".to_string());
+        assert!(
+            value_type_kind_matches(&v, &t, Some(&reg)),
+            "StructureInstance must match a StructureRef of the same name"
+        );
+    }
+
+    /// (a) StructureInstance against a StructureRef of a *different* name → false.
+    #[test]
+    fn value_type_kind_matches_structure_instance_into_mismatched_structure_ref_returns_false() {
+        use reify_types::Type;
+        let (v, reg) = structure_instance_with_registry("Steel_AISI_1045", &["ElasticMaterial"]);
+        let t = Type::StructureRef("Aluminium_6061_T6".to_string());
+        assert!(
+            !value_type_kind_matches(&v, &t, Some(&reg)),
+            "StructureInstance must NOT match a StructureRef of a different name"
+        );
+    }
+
+    /// (b) StructureInstance against a TraitObject in its declared bounds → true.
+    #[test]
+    fn value_type_kind_matches_structure_instance_into_declared_trait_object_returns_true() {
+        use reify_types::Type;
+        let (v, reg) = structure_instance_with_registry("Steel_AISI_1045", &["ElasticMaterial"]);
+        let t = Type::TraitObject("ElasticMaterial".to_string());
+        assert!(
+            value_type_kind_matches(&v, &t, Some(&reg)),
+            "StructureInstance must match a TraitObject it declares conformance to"
+        );
+    }
+
+    /// (b) StructureInstance against a TraitObject NOT in its bounds → false.
+    #[test]
+    fn value_type_kind_matches_structure_instance_into_undeclared_trait_object_returns_false() {
+        use reify_types::Type;
+        let (v, reg) = structure_instance_with_registry("Steel_AISI_1045", &["ElasticMaterial"]);
+        let t = Type::TraitObject("Load".to_string());
+        assert!(
+            !value_type_kind_matches(&v, &t, Some(&reg)),
+            "StructureInstance must NOT match a TraitObject outside its declared bounds"
+        );
+    }
+
+    /// (c) StructureInstance against unrelated primitive types → false.
+    #[test]
+    fn value_type_kind_matches_structure_instance_into_unrelated_types_returns_false() {
+        use reify_types::Type;
+        let (v, reg) = structure_instance_with_registry("Steel_AISI_1045", &["ElasticMaterial"]);
+        for t in [Type::Int, Type::Real, Type::Bool, Type::String] {
+            assert!(
+                !value_type_kind_matches(&v, &t, Some(&reg)),
+                "StructureInstance must be rejected by unrelated type {t:?}"
+            );
+        }
+    }
+
+    /// (b/edge) Absent registry → trait-object conformance cannot be proven,
+    /// so a TraitObject match conservatively returns false.
+    #[test]
+    fn value_type_kind_matches_structure_instance_trait_object_without_registry_returns_false() {
+        use reify_types::Type;
+        let (v, _reg) = structure_instance_with_registry("Steel_AISI_1045", &["ElasticMaterial"]);
+        let t = Type::TraitObject("ElasticMaterial".to_string());
+        assert!(
+            !value_type_kind_matches(&v, &t, None),
+            "Without a registry, trait-bound conformance is unprovable → false"
+        );
+    }
+
     // execute_realization_ops_* tests moved to engine_build.rs
 
     // ── Engine.functions accumulation regression (task 506 / 1873) ───────────
