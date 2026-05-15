@@ -605,6 +605,7 @@ mod tests {
         kernel_pragma_unsatisfiable_diagnostic, long_chain_diagnostic,
         long_chain_threshold_from_env_value, no_kernel_chain_diagnostic,
         per_stage_tolerance_for_plan, pinned_kernel_missing_diagnostic,
+        unpinned_kernel_loaded_diagnostic,
     };
     use crate::tolerance_budget::{SAFETY_FACTOR, per_stage_tolerance};
     use std::time::Duration;
@@ -1713,6 +1714,48 @@ mod tests {
             diag.message.contains("truck"),
             "diagnostic message must surface the missing pinned kernel id \
              so the user can see which reify.toml pin is unsatisfied \
+             (got: {:?})",
+            diag.message,
+        );
+    }
+
+    /// Pins the wire-contract of [`unpinned_kernel_loaded_diagnostic`]:
+    /// `Severity::Warning` + `Some(DiagnosticCode::UnpinnedKernelLoaded)`.
+    /// Warning per PRD `docs/prds/v0_3/multi-kernel-phase-3.md` §5
+    /// "warning; engine starts" — the kernel is usable; the missing pin
+    /// only weakens the determinism contract. Consumed by task π (ID 3444).
+    #[test]
+    fn unpinned_kernel_loaded_diagnostic_carries_warning_severity_and_code() {
+        use reify_types::{DiagnosticCode, Severity};
+
+        let diag = unpinned_kernel_loaded_diagnostic("fidget");
+
+        assert_eq!(
+            diag.severity,
+            Severity::Warning,
+            "diagnostic severity must be Warning (PRD §5: warning; engine \
+             starts — the kernel is usable, the missing pin only weakens \
+             the determinism contract)"
+        );
+        assert_eq!(
+            diag.code,
+            Some(DiagnosticCode::UnpinnedKernelLoaded),
+            "diagnostic code must round-trip the typed variant for downstream \
+             filter-by-code consumers (task π wiring + LSP / MCP)"
+        );
+    }
+
+    /// Pins the user-visible-content requirement: the message must name the
+    /// unpinned kernel so the user can see which kernel to add to
+    /// `reify.toml` for build determinism. Asserts only `contains()`.
+    #[test]
+    fn unpinned_kernel_loaded_diagnostic_message_names_kernel_id() {
+        let diag = unpinned_kernel_loaded_diagnostic("fidget");
+
+        assert!(
+            diag.message.contains("fidget"),
+            "diagnostic message must surface the unpinned kernel id so the \
+             user can see which kernel to pin for build determinism \
              (got: {:?})",
             diag.message,
         );
