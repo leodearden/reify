@@ -17,6 +17,9 @@
 
 use reify_types::ModulePath;
 
+mod common;
+use common::{find_all_cst_nodes, find_cst_node, make_ts_parser};
+
 // ── Parse-pipeline smoke check ──────────────────────────────────────────────
 
 #[test]
@@ -29,65 +32,6 @@ fn parse_pipeline_smoke_auto_type_arg() {
         "fn f() -> Bearing<auto: Seal> { 0 }",
         ModulePath::single("test"),
     );
-}
-
-// ── CST-level helpers ────────────────────────────────────────────────────────
-
-/// Build a tree-sitter parser loaded with the Reify grammar.
-fn make_ts_parser() -> tree_sitter::Parser {
-    let mut parser = tree_sitter::Parser::new();
-    parser
-        .set_language(&tree_sitter_reify::language().into())
-        .expect("Error loading Reify grammar");
-    parser
-}
-
-/// Depth-first search — returns the first node with the given kind.
-fn find_cst_node<'a>(root: tree_sitter::Node<'a>, kind: &str) -> Option<tree_sitter::Node<'a>> {
-    if root.kind() == kind {
-        return Some(root);
-    }
-    let mut cursor = root.walk();
-    if cursor.goto_first_child() {
-        loop {
-            if let Some(found) = find_cst_node(cursor.node(), kind) {
-                return Some(found);
-            }
-            if !cursor.goto_next_sibling() {
-                break;
-            }
-        }
-    }
-    None
-}
-
-/// Depth-first search — returns all **outermost** nodes with the given kind.
-///
-/// **No-nesting precondition**: when a matching node is found, the search does
-/// not recurse into its children.  This is correct for node kinds that cannot
-/// legitimately nest (e.g. `auto_type_arg`), but is a footgun for kinds that
-/// can (e.g. `type_expr`).  Only call this helper for non-nesting node kinds.
-fn find_outermost_cst_nodes<'a>(
-    root: tree_sitter::Node<'a>,
-    kind: &str,
-) -> Vec<tree_sitter::Node<'a>> {
-    let mut results = Vec::new();
-    if root.kind() == kind {
-        results.push(root);
-        // Do not descend — children of a matching node are not separate
-        // top-level occurrences of the same kind.
-        return results;
-    }
-    let mut cursor = root.walk();
-    if cursor.goto_first_child() {
-        loop {
-            results.extend(find_outermost_cst_nodes(cursor.node(), kind));
-            if !cursor.goto_next_sibling() {
-                break;
-            }
-        }
-    }
-    results
 }
 
 // ── Suggestion #1: strict vs free modifier discrimination ────────────────────
@@ -174,7 +118,7 @@ fn auto_type_arg_cst_bound_identifiers_multi_param() {
     let mut parser = make_ts_parser();
     let tree = parser.parse(source.as_bytes(), None).expect("parse failed");
 
-    let nodes = find_outermost_cst_nodes(tree.root_node(), "auto_type_arg");
+    let nodes = find_all_cst_nodes(tree.root_node(), "auto_type_arg");
     assert_eq!(
         nodes.len(),
         2,
