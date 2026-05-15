@@ -4185,4 +4185,94 @@ mod tests {
         );
         assert_eq!(report.evicted_count, 1, "exactly one entry must be evicted");
     }
+
+    /// Step-1 RED: verify that `evict_over_cap` tolerates `NotFound` in the
+    /// candidate-walker loop when a concurrent reify-process has removed a
+    /// candidate's `.bin` between the `read_dir` scan and the `File::open` at
+    /// line 1390.  The `.meta` is left in place to exercise the primary race
+    /// window: `read_sidecar_mtime` succeeds (sidecar present) but the
+    /// subsequent `File::open(&file_path)?` returns `NotFound`.
+    ///
+    /// To reproduce the race from a single-threaded test we plant inp1 as a
+    /// dangling symlink: `read_dir` lists it (the directory entry exists) but
+    /// `File::open` follows the symlink and returns `NotFound` because the
+    /// target does not exist — the same `ENOENT` the kernel surfaces when
+    /// another process deletes the file between `readdir(3)` and `open(2)`.
+    ///
+    /// The current impl propagates `Err(NotFound)` at that `?`; after the fix
+    /// the walker continues to the next `file_entry`.
+    #[test]
+    fn evict_over_cap_tolerates_notfound_in_candidate_walker_when_bin_concurrently_removed() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "ff00000000000000000000000000ffff";
+        // inp1: .bin is a dangling symlink — read_dir lists it, File::open → NotFound
+        let inp1 = "cc00000000000000000000000000cccc";
+        let inp2 = "dd00000000000000000000000000dddd"; // real entry
+        let inp3 = "ee00000000000000000000000000eeee"; // real entry
+
+        let v = make_sample_result();
+        write_entry(root, eng, inp2, &v).unwrap();
+        write_entry(root, eng, inp3, &v).unwrap();
+
+        // Measure size from a real entry (all entries written with the same
+        // value, so they serialize to identical sizes).
+        let sz = std::fs::metadata(entry_bin_path(root, eng, inp2))
+            .unwrap()
+            .len();
+
+        // Plant inp1 to simulate the concurrent-removal race:
+        //   1. Create the shard dir (same layout as write_entry).
+        //   2. Create a real .meta so read_sidecar_mtime succeeds — the race
+        //      window is specifically File::open of the .bin, not the sidecar.
+        //   3. Create a dangling symlink as .bin: read_dir sees the entry, but
+        //      File::open follows it and returns ENOENT (NotFound) because the
+        //      symlink target does not exist.  This is the exact errno the kernel
+        //      returns when another process removes the file after readdir(3)
+        //      returns its entry but before the open(2) call.
+        let shard1 = shard_dir(root, eng, inp1);
+        std::fs::create_dir_all(&shard1).unwrap();
+        std::fs::write(entry_meta_path(root, eng, inp1), b"").unwrap();
+        let bin1 = entry_bin_path(root, eng, inp1);
+        std::os::unix::fs::symlink("/nonexistent/reify-race-simulation", &bin1).unwrap();
+
+        // cap = sz (one entry): the walker encounters the dangling-symlink inp1
+        // (currently crashes with NotFound; after fix it skips it) and observes
+        // two real candidates (inp2, inp3) summing to 2*sz > cap, so exactly
+        // one must be evicted to bring remaining ≤ cap.
+        let cap = sz;
+
+        // (a) Must not propagate Err(NotFound).
+        let report = evict_over_cap(root, eng, cap).expect(
+            "evict_over_cap must not propagate NotFound when .bin is concurrently removed",
+        );
+
+        // (b) Exactly one eviction — credit only THIS call's work; the phantom
+        //     inp1 was skipped and is NOT counted.
+        assert_eq!(report.evicted_count, 1, "evicted_count must be 1");
+
+        // (c) evicted_bytes must equal the size of the one real .bin THIS call
+        //     removed, not including the phantom inp1.
+        assert_eq!(
+            report.evicted_bytes, sz,
+            "evicted_bytes must equal one entry's size"
+        );
+
+        // (d) On-disk .bin total (real files only; metadata() on a dangling
+        //     symlink returns NotFound and is filtered out) must be ≤ cap.
+        let on_disk: u64 = [inp1, inp2, inp3]
+            .iter()
+            .filter_map(|inp| {
+                std::fs::metadata(entry_bin_path(root, eng, inp))
+                    .ok()
+                    .map(|m| m.len())
+            })
+            .sum();
+        assert!(
+            on_disk <= cap,
+            "on-disk .bin total {} must be ≤ cap {}",
+            on_disk,
+            cap
+        );
+    }
 }
