@@ -733,4 +733,21 @@ mod tests {
             }
         }
     }
+
+    /// Zero-DOF regression guard (relocated from lib.rs doctest and strengthened).
+    ///
+    /// With all 18 DOFs set to zero, every strain/stress accumulation in
+    /// `shell_element_stress` reduces to a sum of `coeff * 0.0` terms, so each
+    /// output component must be bit-exact 0.0 (no floating-point rounding).
+    ///
+    /// Asserts every component of all three layers (`top`, `mid`, `bottom`) via
+    /// the derived `PartialEq`, catching σ_xx/σ_yy/σ_xy/σ_xz/σ_yz/σ_zz
+    /// regressions — not just [0][0] as the old lib.rs doctest did.
+    #[test]
+    fn shell_element_stress_zero_dofs_yields_all_zero_stress() {
+        let s = shell_element_stress(&UNIT_TRI, 0.05, &steel_like(), &[0.0_f64; 18]);
+        assert_eq!(s.top, [[0.0_f64; 3]; 3], "zero-DOF top layer must be all 0.0");
+        assert_eq!(s.mid, [[0.0_f64; 3]; 3], "zero-DOF mid layer must be all 0.0");
+        assert_eq!(s.bottom, [[0.0_f64; 3]; 3], "zero-DOF bottom layer must be all 0.0");
+    }
 }
