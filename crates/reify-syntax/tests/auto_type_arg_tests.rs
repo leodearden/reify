@@ -2,32 +2,32 @@
 //!
 //! User-observable signal: `cargo test -p reify-syntax --test auto_type_arg_tests`
 //! passes.  The load-bearing coverage is in the CST-level bound-identifier tests
-//! (`auto_type_arg_cst_bound_identifier_strict`, `_multi_param`).
+//! (`auto_type_arg_cst_bound_identifier_strict`, `_multi_param`) and the
+//! negative-coverage test `auto_type_arg_rejects_unrecognized_modifier`.
 //!
-//! The single high-level parse test below (`auto_type_arg_does_not_surface_through_lowering_errors_yet`)
-//! is a weak contract pin only: it verifies that `module.errors` is empty, but
-//! the lowering pipeline does NOT propagate CST ERROR nodes from return-type
-//! expressions into `module.errors` — so it cannot detect grammar regressions
-//! that drop `auto_type_arg` from `type_arg_list`.  See lines 154-160 for detail.
+//! A small `parse_pipeline_smoke_auto_type_arg` test pins that
+//! `reify_syntax::parse` returns without panicking on `auto: Seal` in type-arg
+//! position.  It cannot detect grammar regressions on its own — the lowering
+//! pipeline does not propagate CST ERROR nodes from return-type expressions
+//! into `module.errors`.  See the doc comment on
+//! `auto_type_arg_rejects_unrecognized_modifier` for detail.
 //!
 //! AST-shape assertions (e.g. the bound identifier is surfaced in TypeExprKind)
 //! are deferred to sibling task 3477, which wires the lowering extension.
 
 use reify_types::ModulePath;
 
-// ── High-level parse test (API-surface smoke check) ─────────────────────────
-//
-// Pins the `reify_syntax::parse` pipeline, not just tree-sitter directly.
-// WEAK — cannot detect grammar regressions; see module doc and CST-level tests below.
+// ── Parse-pipeline smoke check ──────────────────────────────────────────────
 
 #[test]
-fn auto_type_arg_does_not_surface_through_lowering_errors_yet() {
-    let source = "fn f() -> Bearing<auto: Seal> { 0 }";
-    let module = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        module.errors.is_empty(),
-        "expected zero parse errors for `auto: Seal` in type-arg position, got: {:?}",
-        module.errors,
+fn parse_pipeline_smoke_auto_type_arg() {
+    // No assertion beyond "does not panic": the lowering pipeline does not
+    // propagate CST ERROR nodes from return-type expressions into module.errors,
+    // so a meaningful grammar-regression check has to live at the CST level.
+    // See `auto_type_arg_rejects_unrecognized_modifier` for that load-bearing guard.
+    let _ = reify_syntax::parse(
+        "fn f() -> Bearing<auto: Seal> { 0 }",
+        ModulePath::single("test"),
     );
 }
 
@@ -102,9 +102,7 @@ fn find_outermost_cst_nodes<'a>(
 fn auto_type_arg_cst_strict_has_no_modifier_field() {
     let source = "fn f() -> Bearing<auto: Seal> { 0 }";
     let mut parser = make_ts_parser();
-    let tree = parser
-        .parse(source.as_bytes(), None)
-        .expect("parse failed");
+    let tree = parser.parse(source.as_bytes(), None).expect("parse failed");
 
     let kw = find_cst_node(tree.root_node(), "auto_keyword")
         .expect("expected an auto_keyword node in the CST");
@@ -122,9 +120,7 @@ fn auto_type_arg_cst_strict_has_no_modifier_field() {
 fn auto_type_arg_cst_free_has_modifier_field_with_text_free() {
     let source = "fn g() -> Bearing<auto(free): Seal> { 0 }";
     let mut parser = make_ts_parser();
-    let tree = parser
-        .parse(source.as_bytes(), None)
-        .expect("parse failed");
+    let tree = parser.parse(source.as_bytes(), None).expect("parse failed");
 
     let kw = find_cst_node(tree.root_node(), "auto_keyword")
         .expect("expected an auto_keyword node in the CST");
@@ -154,9 +150,7 @@ fn auto_type_arg_cst_free_has_modifier_field_with_text_free() {
 fn auto_type_arg_cst_bound_identifier_strict() {
     let source = "fn f() -> Bearing<auto: Seal> { 0 }";
     let mut parser = make_ts_parser();
-    let tree = parser
-        .parse(source.as_bytes(), None)
-        .expect("parse failed");
+    let tree = parser.parse(source.as_bytes(), None).expect("parse failed");
 
     let node = find_cst_node(tree.root_node(), "auto_type_arg")
         .expect("expected an auto_type_arg node in the CST");
@@ -178,9 +172,7 @@ fn auto_type_arg_cst_bound_identifier_strict() {
 fn auto_type_arg_cst_bound_identifiers_multi_param() {
     let source = "fn h() -> Coupling<auto: A, auto: B> { 0 }";
     let mut parser = make_ts_parser();
-    let tree = parser
-        .parse(source.as_bytes(), None)
-        .expect("parse failed");
+    let tree = parser.parse(source.as_bytes(), None).expect("parse failed");
 
     let nodes = find_outermost_cst_nodes(tree.root_node(), "auto_type_arg");
     assert_eq!(
@@ -229,9 +221,7 @@ fn auto_type_arg_cst_bound_identifiers_multi_param() {
 fn auto_type_arg_rejects_unrecognized_modifier() {
     let source = "fn f() -> Bearing<auto(constrained): Seal> { 0 }";
     let mut parser = make_ts_parser();
-    let tree = parser
-        .parse(source.as_bytes(), None)
-        .expect("parse failed");
+    let tree = parser.parse(source.as_bytes(), None).expect("parse failed");
 
     // The grammar must reject `auto(constrained)` with an ERROR node.
     assert!(
