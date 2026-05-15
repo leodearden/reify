@@ -153,9 +153,24 @@ impl SampledField {
     /// Same-bit-pattern NaN values compare as equal.
     #[doc(hidden)]
     pub fn grid_metadata_eq(&self, other: &Self) -> bool {
-        if self.name != other.name
-            || self.kind != other.kind
-            || self.interpolation != other.interpolation
+        // Destructure `self` so that adding a new field to `SampledField`
+        // without updating this method produces a compile error.  `data` and
+        // `oob_emitted` are bound to `_` because they are intentionally
+        // excluded from the geometry-only comparison.
+        let Self {
+            name,
+            kind,
+            bounds_min,
+            bounds_max,
+            spacing,
+            axis_grids,
+            interpolation,
+            data: _,
+            oob_emitted: _,
+        } = self;
+        if name != &other.name
+            || kind != &other.kind
+            || interpolation != &other.interpolation
         {
             return false;
         }
@@ -166,16 +181,16 @@ impl SampledField {
                     .zip(ys.iter())
                     .all(|(x, y)| x.to_bits() == y.to_bits())
         };
-        if !vecs_bit_eq(&self.bounds_min, &other.bounds_min)
-            || !vecs_bit_eq(&self.bounds_max, &other.bounds_max)
-            || !vecs_bit_eq(&self.spacing, &other.spacing)
+        if !vecs_bit_eq(bounds_min, &other.bounds_min)
+            || !vecs_bit_eq(bounds_max, &other.bounds_max)
+            || !vecs_bit_eq(spacing, &other.spacing)
         {
             return false;
         }
-        if self.axis_grids.len() != other.axis_grids.len() {
+        if axis_grids.len() != other.axis_grids.len() {
             return false;
         }
-        self.axis_grids
+        axis_grids
             .iter()
             .zip(other.axis_grids.iter())
             .all(|(ag, bg)| vecs_bit_eq(ag, bg))
@@ -7931,110 +7946,4 @@ mod tests {
         );
     }
 
-    /// `grid_metadata_eq` is a **strict subset** of `PartialEq`: it compares
-    /// every field that `PartialEq` compares except `data` and `oob_emitted`.
-    ///
-    /// This consolidated test mirrors every field of `SampledField` against that
-    /// contract so that a future contributor who adds a new geometry field and
-    /// forgets to update `grid_metadata_eq` will see the missing branch here and
-    /// know coverage is incomplete.  The per-field tests in the task-3515 cluster
-    /// remain as fine-grained diagnostics; this test anchors the holistic claim.
-    #[test]
-    fn sampled_field_grid_metadata_eq_is_strict_subset_of_partial_eq() {
-        use std::sync::atomic::Ordering;
-
-        // --- fields that ARE compared (mutating one must return false) ---
-
-        {
-            let a = sample_field_1d_fixture();
-            let mut b = sample_field_1d_fixture();
-            b.name = "g".to_string();
-            assert!(
-                !a.grid_metadata_eq(&b),
-                "mutating only `name` must cause grid_metadata_eq to return false (strict-subset contract)"
-            );
-        }
-
-        {
-            let a = sample_field_1d_fixture();
-            let mut b = sample_field_1d_fixture();
-            b.kind = SampledGridKind::Regular2D;
-            assert!(
-                !a.grid_metadata_eq(&b),
-                "mutating only `kind` must cause grid_metadata_eq to return false (strict-subset contract)"
-            );
-        }
-
-        {
-            let a = sample_field_1d_fixture();
-            let mut b = sample_field_1d_fixture();
-            b.bounds_min[0] = -1.0;
-            assert!(
-                !a.grid_metadata_eq(&b),
-                "mutating only `bounds_min` must cause grid_metadata_eq to return false (strict-subset contract)"
-            );
-        }
-
-        {
-            let a = sample_field_1d_fixture();
-            let mut b = sample_field_1d_fixture();
-            b.bounds_max[0] = 2.0;
-            assert!(
-                !a.grid_metadata_eq(&b),
-                "mutating only `bounds_max` must cause grid_metadata_eq to return false (strict-subset contract)"
-            );
-        }
-
-        {
-            let a = sample_field_1d_fixture();
-            let mut b = sample_field_1d_fixture();
-            b.spacing[0] = 0.25;
-            assert!(
-                !a.grid_metadata_eq(&b),
-                "mutating only `spacing` must cause grid_metadata_eq to return false (strict-subset contract)"
-            );
-        }
-
-        {
-            let a = sample_field_1d_fixture();
-            let mut b = sample_field_1d_fixture();
-            b.axis_grids[0][1] = 0.75;
-            assert!(
-                !a.grid_metadata_eq(&b),
-                "mutating only `axis_grids` must cause grid_metadata_eq to return false (strict-subset contract)"
-            );
-        }
-
-        {
-            let a = sample_field_1d_fixture();
-            let mut b = sample_field_1d_fixture();
-            b.interpolation = InterpolationKind::NearestNeighbor;
-            assert!(
-                !a.grid_metadata_eq(&b),
-                "mutating only `interpolation` must cause grid_metadata_eq to return false (strict-subset contract)"
-            );
-        }
-
-        // --- fields that ARE NOT compared (mutating one must still return true) ---
-
-        {
-            let a = sample_field_1d_fixture();
-            let mut b = sample_field_1d_fixture();
-            b.data = vec![9.0, 8.0, 7.0];
-            assert!(
-                a.grid_metadata_eq(&b),
-                "mutating only `data` must cause grid_metadata_eq to return true (strict-subset contract)"
-            );
-        }
-
-        {
-            let a = sample_field_1d_fixture();
-            let b = sample_field_1d_fixture();
-            b.oob_emitted.store(true, Ordering::Release);
-            assert!(
-                a.grid_metadata_eq(&b),
-                "mutating only `oob_emitted` must cause grid_metadata_eq to return true (strict-subset contract)"
-            );
-        }
-    }
 }
