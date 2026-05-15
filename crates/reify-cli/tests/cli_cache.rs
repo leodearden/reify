@@ -1028,6 +1028,80 @@ fn cache_stats_output_schema_golden_with_top_n_and_hit_rate_caveat() {
 }
 
 #[test]
+fn cache_stats_aggregates_across_engine_versions() {
+    // Reviewer-driven amendment (suggestion #6): the stats walk is documented
+    // to aggregate across ALL engine-version subdirs (cross-version bloat is
+    // visible to the operator), but every existing stats test seeds under the
+    // LIVE `ENGINE_VERSION_HASH`, so a regression that silently restricted the
+    // walk to the live subdir would pass the whole suite.  Seed under TWO
+    // distinct synthesized 32-hex engine-version hashes (one matching the
+    // live constant — so we never depend on hash drift — plus one definitely-
+    // stale fake) and assert (a) `Entry count: 2` and (b) both input hashes
+    // appear somewhere in the Top-N section.
+    let cache_dir = tempdir().expect("tempdir");
+    // The "stale" engine-version hash must be 32 lowercase hex and must NOT
+    // equal the live ENGINE_VERSION_HASH constant — `"1".repeat(32)` is well-
+    // defined and clearly synthetic.  If the live hash ever happens to be
+    // "1"*32 the assertion below catches it before the test misleads.
+    let stale_engine = "1".repeat(32);
+    assert_ne!(
+        stale_engine.as_str(),
+        ENGINE_VERSION_HASH,
+        "test invariant: synthesized stale engine-version hash must differ from live"
+    );
+    let live_input = "a".repeat(32);
+    let stale_input = "b".repeat(32);
+    let fixture = make_elastic_result_fixture();
+    write_entry(cache_dir.path(), ENGINE_VERSION_HASH, &live_input, &fixture)
+        .expect("write_entry must seed under live engine version");
+    write_entry(cache_dir.path(), &stale_engine, &stale_input, &fixture)
+        .expect("write_entry must seed under synthesized stale engine version");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+        .args(["cache", "stats"])
+        .env("REIFY_CACHE_DIR", cache_dir.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute reify stats");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "reify cache stats should succeed; stderr={stderr}"
+    );
+    assert!(
+        stdout.contains("Entry count: 2"),
+        "stats must aggregate both engine-version subdirs (Entry count: 2), got: {stdout}"
+    );
+    // Locate the Top-N section and assert both input-hash stems appear in it.
+    // Pinning hash presence (not row-by-row equality) keeps the assertion
+    // robust to ordering changes — what we're proving is "stats sees BOTH
+    // engine-version subdirs", not "stats sorts in any particular order".
+    let top_header_idx = stdout
+        .lines()
+        .position(|l| l.starts_with("Top 5 largest entries"))
+        .unwrap_or_else(|| {
+            panic!("stdout must contain a 'Top 5 largest entries' section header, got: {stdout}")
+        });
+    let top_section: String = stdout
+        .lines()
+        .skip(top_header_idx + 1)
+        .take(5)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        top_section.contains(&live_input),
+        "Top-N section must contain live-engine input hash {live_input}, got: {top_section}"
+    );
+    assert!(
+        top_section.contains(&stale_input),
+        "Top-N section must contain stale-engine input hash {stale_input}, got: {top_section}"
+    );
+}
+
+#[test]
 fn cache_clear_without_yes_refuses_and_exits_failure_and_preserves_entries() {
     // `reify cache clear` (no `--yes`) must refuse the destructive op,
     // exit non-zero, mention `--yes` on stderr, and leave the seeded
@@ -1332,9 +1406,14 @@ fn cache_gc_evicts_when_forced_over_cap() {
 }
 
 /// Find a `<label> <u64>` line in `stdout` and return the parsed integer.
+///
+/// Leading whitespace on the line is tolerated so a future cosmetic change
+/// (e.g. indenting gc rows for visual grouping) doesn't silently break the
+/// parser — the helper would otherwise return `None` and tests would panic
+/// from `unwrap_or_else` with a misleading "label missing" message.
 fn parse_labelled_u64(stdout: &str, label: &str) -> Option<u64> {
     for line in stdout.lines() {
-        if let Some(rest) = line.strip_prefix(label) {
+        if let Some(rest) = line.trim_start().strip_prefix(label) {
             return rest.split_whitespace().next().and_then(|t| t.parse().ok());
         }
     }
