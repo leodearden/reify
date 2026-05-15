@@ -1358,10 +1358,20 @@ pub fn evict_over_cap(
             // Derive .meta path: same stem, .meta extension.
             let meta_path = file_path.with_extension("meta");
 
-            // Read last-access from sidecar mtime; fall back to .bin mtime when
-            // sidecar absent (crash-orphan .bin — see step-12 for full fallback).
-            // For now propagate NotFound so step-11 test surfaces the gap.
-            let last_access = read_sidecar_mtime(&meta_path)?;
+            // Read last-access from sidecar mtime.  When the sidecar is absent
+            // (crash-orphan .bin: `write_entry` persists `.bin` then calls
+            // `write_sidecar`; a crash between those two steps leaves an orphan
+            // `.bin` with no `.meta`), fall back to the `.bin` file's own mtime.
+            // `.bin` mtime is set at write time and is a safe substitute until
+            // the sidecar is recreated by the next `read_entry` hit.
+            // Any other I/O error propagates via `?`.
+            let last_access = match read_sidecar_mtime(&meta_path) {
+                Ok(t) => t,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    std::fs::metadata(&file_path)?.modified()?
+                }
+                Err(e) => return Err(e),
+            };
 
             // Read solve_time_ms from the fixed 92-byte header — no body decompression.
             let solve_time_ms = {
