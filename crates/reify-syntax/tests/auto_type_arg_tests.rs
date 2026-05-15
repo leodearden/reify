@@ -15,15 +15,10 @@
 
 use reify_types::ModulePath;
 
-// ── High-level parse test (weak contract pin) ───────────────────────────────
+// ── High-level parse test (API-surface smoke check) ─────────────────────────
 //
-// WEAK: module.errors is empty, but the lowering pipeline does not propagate
-// CST ERROR nodes from return-type expressions into module.errors.  A grammar
-// regression that dropped auto_type_arg from type_arg_list would leave
-// module.errors empty and this test would silently pass.
-//
-// The CST-level tests below (auto_type_arg_cst_bound_identifier_strict, _multi_param)
-// are the load-bearing coverage.
+// Pins the `reify_syntax::parse` pipeline, not just tree-sitter directly.
+// WEAK — cannot detect grammar regressions; see module doc and CST-level tests below.
 
 #[test]
 fn auto_type_arg_does_not_surface_through_lowering_errors_yet() {
@@ -66,13 +61,13 @@ fn find_cst_node<'a>(root: tree_sitter::Node<'a>, kind: &str) -> Option<tree_sit
     None
 }
 
-/// Depth-first search — returns all **top-level** nodes with the given kind.
+/// Depth-first search — returns all **outermost** nodes with the given kind.
 ///
 /// **No-nesting precondition**: when a matching node is found, the search does
 /// not recurse into its children.  This is correct for node kinds that cannot
 /// legitimately nest (e.g. `auto_type_arg`), but is a footgun for kinds that
 /// can (e.g. `type_expr`).  Only call this helper for non-nesting node kinds.
-fn find_top_level_cst_nodes<'a>(
+fn find_outermost_cst_nodes<'a>(
     root: tree_sitter::Node<'a>,
     kind: &str,
 ) -> Vec<tree_sitter::Node<'a>> {
@@ -86,7 +81,7 @@ fn find_top_level_cst_nodes<'a>(
     let mut cursor = root.walk();
     if cursor.goto_first_child() {
         loop {
-            results.extend(find_top_level_cst_nodes(cursor.node(), kind));
+            results.extend(find_outermost_cst_nodes(cursor.node(), kind));
             if !cursor.goto_next_sibling() {
                 break;
             }
@@ -187,7 +182,7 @@ fn auto_type_arg_cst_bound_identifiers_multi_param() {
         .parse(source.as_bytes(), None)
         .expect("parse failed");
 
-    let nodes = find_top_level_cst_nodes(tree.root_node(), "auto_type_arg");
+    let nodes = find_outermost_cst_nodes(tree.root_node(), "auto_type_arg");
     assert_eq!(
         nodes.len(),
         2,
