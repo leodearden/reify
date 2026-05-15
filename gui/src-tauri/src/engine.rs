@@ -927,9 +927,13 @@ impl EngineSession {
         // Atomically commit all state after check() succeeds.
         self.commit_state(parsed, compiled, check_result, module_name, source);
 
-        // Emit auto-resolve events after committing state, consistent with the
-        // panic-safety ordering story: all state mutations are complete before
-        // any events fire.
+        // Emit auto-resolve events after committing state.
+        //
+        // Cross-cutting ordering invariant: all four mutating entry points
+        // (load_from_source, load_file, update_source, set_parameter) emit AFTER all
+        // session state mutations are committed.  Combined with `core.commit_state` /
+        // `core.commit_check` writing `last_check` unconditionally, a panic during state
+        // commit cannot leak phantom auto-resolve events to the GUI.
         self.emit_auto_resolve_if_any(self.core.last_check().unwrap());
 
         self.build_gui_state()
@@ -966,8 +970,10 @@ impl EngineSession {
             .edit_check(cell_id, value)
             .map_err(|e| format!("Engine error: {}", e))?;
 
-        self.emit_auto_resolve_if_any(&check_result);
+        // Commit state first; emit_auto_resolve_if_any reads back via last_check()
+        // so it fires AFTER all mutations are complete — cross-cutting ordering invariant.
         self.core.commit_check(check_result);
+        self.emit_auto_resolve_if_any(self.core.last_check().unwrap());
         self.build_gui_state()
     }
 
@@ -998,9 +1004,11 @@ impl EngineSession {
                 msg
             })?;
         let check_result = self.core.engine_mut().check(&compiled);
-        self.emit_auto_resolve_if_any(&check_result);
         self.commit_state(parsed, compiled, check_result, module_name, &source);
         self.core.commit_file_path(path.to_path_buf());
+        // Emit AFTER all state is committed so phantom events cannot fire if
+        // commit_state or commit_file_path panics — cross-cutting ordering invariant.
+        self.emit_auto_resolve_if_any(self.core.last_check().unwrap());
         self.build_gui_state()
     }
 
@@ -1064,10 +1072,11 @@ impl EngineSession {
         // that a panic in check() leaves the session completely unchanged.
         let check_result = self.core.engine_mut().check(&compiled);
 
-        self.emit_auto_resolve_if_any(&check_result);
-
         // Atomically commit all state after check() succeeds.
         self.commit_state(parsed, compiled, check_result, module_name, content);
+
+        // Emit AFTER all state is committed — cross-cutting ordering invariant.
+        self.emit_auto_resolve_if_any(self.core.last_check().unwrap());
 
         self.build_gui_state()
     }
