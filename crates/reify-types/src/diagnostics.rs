@@ -1006,6 +1006,27 @@ pub enum DiagnosticCode {
     /// downstream task π (ID 3444) which wires `reify.toml` parsing into
     /// `Engine::with_registered_kernels`.
     UnpinnedKernelLoaded,
+    /// Origin: `crates/reify-eval/src/dispatcher.rs::kernel_version_mismatch_diagnostic`
+    /// (task 3434 — PRD `docs/prds/v0_3/multi-kernel-phase-3.md` §8 task γ +
+    /// §5 "Pin version mismatch with adapter VERSION constant").
+    ///
+    /// Canonical message form:
+    /// `"kernel '<kernel_id>' version mismatch: reify.toml pins '<pinned>' \
+    /// but adapter VERSION = '<actual>'; determinism contract requires \
+    /// matching versions"`.
+    ///
+    /// Emitted as a `Severity::Error` when `reify.toml` pins a kernel
+    /// version that disagrees with the adapter's compiled-in `VERSION`
+    /// constant. Per PRD §5: "error. Determinism contract enforcement" —
+    /// matching versions is load-bearing for reproducible realization
+    /// across build hosts; the engine fails closed rather than silently
+    /// using a different adapter than the project pins.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_KERNEL_VERSION_MISMATCH`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error). Consumed by
+    /// downstream task π (ID 3444) which wires `reify.toml` parsing into
+    /// `Engine::with_registered_kernels`.
+    KernelVersionMismatch,
     /// Origin: `crates/reify-eval/src/geometry_ops.rs::gate_query_capability`
     /// (task 3623 — PRD `docs/prds/v0_3/kernel-geometry-queries.md` §5.4).
     ///
