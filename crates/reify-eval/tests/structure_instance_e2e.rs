@@ -420,3 +420,59 @@ fn compute_node_trampoline_arm_accepts_structure_instance() {
          registration seam not yet available in SIR-α scope"
     );
 }
+
+// ── SIR-α user-observable signal (step-23) ───────────────────────────────────
+
+/// `reify eval examples/structure-instance.ri` must print inspectable
+/// structure-shaped values (not `undef`), and its stdout must match the
+/// committed golden. Regenerate with `REIFY_REGENERATE_GOLDEN=1`.
+///
+/// `CARGO_BIN_EXE_reify` is only injected for `reify-cli`'s own integration
+/// tests, so this cross-crate test drives the binary through `cargo run`
+/// (the design-decision-4 fallback) rather than a direct exe path.
+#[test]
+fn cli_reify_eval_prints_inspectable_structure_values() {
+    let manifest = env!("CARGO_MANIFEST_DIR"); // .../crates/reify-eval
+    let workspace_root = std::path::Path::new(manifest)
+        .ancestors()
+        .nth(2)
+        .expect("workspace root is two levels above crates/reify-eval")
+        .to_path_buf();
+    let example = workspace_root.join("examples/structure-instance.ri");
+    let golden = std::path::Path::new(manifest).join("tests/golden/structure_instance.txt");
+
+    let output = std::process::Command::new(env!("CARGO"))
+        .current_dir(&workspace_root)
+        .args(["run", "-q", "-p", "reify-cli", "--bin", "reify", "--", "eval"])
+        .arg(&example)
+        .output()
+        .expect("failed to spawn `cargo run -p reify-cli -- eval`");
+
+    assert!(
+        output.status.success(),
+        "`reify eval` exited non-zero.\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout must be valid UTF-8");
+
+    if std::env::var("REIFY_REGENERATE_GOLDEN").is_ok() {
+        std::fs::write(&golden, &stdout).expect("failed to write golden file");
+        return;
+    }
+
+    let expected = std::fs::read_to_string(&golden).expect(
+        "golden crates/reify-eval/tests/golden/structure_instance.txt missing; \
+         run once with REIFY_REGENERATE_GOLDEN=1",
+    );
+    assert_eq!(
+        stdout, expected,
+        "`reify eval examples/structure-instance.ri` stdout drifted from the golden; \
+         re-run with REIFY_REGENERATE_GOLDEN=1 to update"
+    );
+    assert!(
+        stdout.contains("Steel_AISI_1045 {"),
+        "the SIR-α signal requires an inspectable Steel_AISI_1045 structure value \
+         (not `undef`) in `reify eval` output; got:\n{stdout}"
+    );
+}
