@@ -2283,4 +2283,59 @@ mod tests {
         assert_eq!(summary.count, 0);
         assert!(summary.examples.is_empty());
     }
+
+    /// Mixed tet+shell mesh → tet-only nodes 1,2,3 report 3 orphan rotation
+    /// axes each; node 0 (shared) and shell-only nodes 4,5 have no orphans.
+    ///
+    /// Fixture: P1 tet on `[0,1,2,3]` + MITC3 shell on `[0,4,5]`, n_nodes=6.
+    /// D=6 (shell dominates). Nodes 1,2,3 are tet-only (d_e_max_local=3 < 6),
+    /// contributing 3 orphan axes each → count=9. Node 0 is shared (d_e_max_local=6=D,
+    /// no orphans). Nodes 4,5 are shell-only (d_e_max_local=6=D, no orphans).
+    ///
+    /// Also asserts the sorted `examples` list equals the first-9 canonical
+    /// `(node, axis)` pairs. With step-4's count logic this passes the `count`
+    /// assertion, but fails the `examples` assertion until step-6 populates them.
+    #[test]
+    fn detect_orphan_dofs_mixed_tet_shell_reports_tet_only_node_rotation_dofs() {
+        let mat = dimensionless_steel_like();
+        let k_e_tet = element_stiffness_p1(&UNIT_TET_P1, &mat);
+        let k_e_shell = shell_element_stiffness(&UNIT_TRI, SHELL_T, &mat);
+        let conn_tet = [0usize, 1, 2, 3];
+        let conn_shell = [0usize, 4, 5];
+        let elements = [
+            AssemblyElement {
+                id: 0,
+                connectivity: &conn_tet,
+                k_e: &k_e_tet,
+            },
+            AssemblyElement {
+                id: 1,
+                connectivity: &conn_shell,
+                k_e: &k_e_shell,
+            },
+        ];
+        let summary = detect_orphan_dofs(6, &elements);
+
+        // Nodes 1,2,3 are tet-only (d_e_max_local=3 < D=6), each contributing
+        // 3 orphan axes {3,4,5} → total 9.
+        assert_eq!(summary.count, 9, "expected 9 orphan (node,axis) pairs");
+
+        // Full example list (9 < MAX_EXAMPLES=16, so no truncation).
+        let expected_examples = vec![
+            (1, 3),
+            (1, 4),
+            (1, 5),
+            (2, 3),
+            (2, 4),
+            (2, 5),
+            (3, 3),
+            (3, 4),
+            (3, 5),
+        ];
+        assert_eq!(
+            summary.examples,
+            expected_examples,
+            "examples should list all 9 orphan (node,axis) pairs sorted by (node, axis)",
+        );
+    }
 }
