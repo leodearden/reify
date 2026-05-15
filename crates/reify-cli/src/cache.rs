@@ -19,6 +19,9 @@ const CACHE_USAGE: &str = "Usage: reify cache (export <hash>|import)";
 /// Usage line for `reify cache export` argument errors.
 const EXPORT_USAGE: &str = "Usage: reify cache export <hash>";
 
+/// Usage line for `reify cache import` argument errors.
+const IMPORT_USAGE: &str = "Usage: reify cache import";
+
 /// Top-level `cache` subcommand dispatcher.
 ///
 /// `args` is everything after `cache` on the command line, i.e. for
@@ -110,8 +113,44 @@ fn resolve_cache_root() -> Result<PathBuf, CacheError> {
     resolve_cache(&inputs).map(|r| r.dir)
 }
 
-/// Placeholder implementation of `cache import` — wired in later steps.
-fn cmd_cache_import(_args: &[String]) -> ExitCode {
-    eprintln!("reify cache import: not yet implemented");
-    ExitCode::FAILURE
+/// `reify cache import` — reads a cache tarball from stdin into the local
+/// cache.  This step drives the tar reader and surfaces parse errors; the
+/// per-entry write body lands in step-12.
+fn cmd_cache_import(args: &[String]) -> ExitCode {
+    if !args.is_empty() {
+        eprintln!("{IMPORT_USAGE}");
+        return ExitCode::FAILURE;
+    }
+
+    // Resolve the cache root up front even though step-10 doesn't write
+    // anything yet — surfaces config errors before we start reading stdin.
+    let _cache_root = match resolve_cache_root() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("reify cache import: {e:?}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let stdin = std::io::stdin();
+    let mut archive = tar::Archive::new(stdin.lock());
+    let entries = match archive.entries() {
+        Ok(it) => it,
+        Err(e) => {
+            eprintln!("reify cache import: tar archive parse error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    for entry_result in entries {
+        match entry_result {
+            Ok(_entry) => {
+                // TODO(step-12): decode header, validate, atomic-rename.
+            }
+            Err(e) => {
+                eprintln!("reify cache import: tar entry decode error: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    ExitCode::SUCCESS
 }
