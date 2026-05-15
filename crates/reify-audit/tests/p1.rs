@@ -350,6 +350,94 @@ mod tests {
             f.summary
         );
     }
+
+    /// Required #4 — two independent suppression guards, each exercised in
+    /// its own AuditContext within this test (both past grace, zero refs):
+    ///   (a) `audit_foundation: Some(true)` on the producing task suppresses
+    ///       the orphan entirely (foundation/scaffold task);
+    ///   (b) a `pending` consumer task whose `consumer_ref` matches the
+    ///       producer's `prd` suppresses it (a downstream consumer is queued).
+    #[test]
+    fn audit_foundation_metadata_suppresses_finding() {
+        let done_at = NOW - 15 * DAY;
+
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+        let mut jc = MockJCodemunchOps::new();
+        jc.set_changed_symbols(
+            "main",
+            done_at,
+            vec![changed_symbol(
+                "scaffold_widget",
+                "crates/reify-x/src/scaffold.rs",
+            )],
+        );
+        jc.set_find_references("scaffold_widget", vec![]);
+
+        // (a) Foundation task → suppressed.
+        let mut tm_foundation = HashMap::new();
+        tm_foundation.insert(
+            "8001".to_string(),
+            TaskMetadata {
+                audit_foundation: Some(true),
+                ..done_meta("8001", done_at, Some("docs/x.md"))
+            },
+        );
+        let ctx_a = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata: tm_foundation,
+            target_task_id: None,
+            window: None,
+            now: Some(NOW),
+        };
+        let findings_a = p1_producer_orphan::check(&ctx_a);
+        assert!(
+            findings_a.is_empty(),
+            "audit_foundation=true must suppress the orphan; got {:?}",
+            findings_a
+        );
+
+        // (b) Pending consumer task referencing the producer's PRD → suppressed.
+        let mut tm_consumer = HashMap::new();
+        tm_consumer.insert(
+            "8002".to_string(),
+            done_meta("8002", done_at, Some("docs/x.md")),
+        );
+        tm_consumer.insert(
+            "8003".to_string(),
+            TaskMetadata {
+                task_id: "8003".to_string(),
+                status: "pending".to_string(),
+                files: vec![],
+                done_provenance: None,
+                title: "Consume the widget".to_string(),
+                prd: None,
+                consumer_ref: Some("docs/x.md".to_string()),
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+        let ctx_b = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata: tm_consumer,
+            target_task_id: None,
+            window: None,
+            now: Some(NOW),
+        };
+        let findings_b = p1_producer_orphan::check(&ctx_b);
+        assert!(
+            findings_b.is_empty(),
+            "a pending consumer task referencing the producer PRD must \
+             suppress the orphan; got {:?}",
+            findings_b
+        );
+    }
 }
 
 } // mod p1
