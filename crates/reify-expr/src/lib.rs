@@ -141,19 +141,17 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
 
         CompiledExprKind::ValueRef(id) => ctx.values.get_or_undef(id),
 
-        CompiledExprKind::CrossSubGeometryRef(id) => {
-            // This variant is consumed by entity.rs before reaching eval (task-3508).
-            // Reaching this arm is a bug — a CrossSubGeometryRef escaped the
-            // compile-time drop site. The debug_assert fires immediately in debug
-            // builds; in release we fall back to Undef (the synthetic cell
-            // `<entity>.<sub>.<member>` has no value cell, so get_or_undef is Undef
-            // regardless).
-            debug_assert!(
-                false,
-                "CrossSubGeometryRef should not reach eval; \
-                 must be consumed by entity.rs bare-let drop site (task-3508)"
-            );
-            ctx.values.get_or_undef(id)
+        CompiledExprKind::CrossSubGeometryRef(_id) => {
+            // This variant must be consumed by the bare-let drop site in
+            // entity.rs (task-3508) before eval_expr is ever invoked. Reaching
+            // this arm means a CrossSubGeometryRef escaped that drop site —
+            // a routing violation, not a normal undef-propagation case.
+            // `unreachable!()` fires identically in debug and release builds,
+            // unlike the former `debug_assert!(false, ...) + get_or_undef` which
+            // silently returned Undef in release and could mask downstream bugs.
+            unreachable!(
+                "CrossSubGeometryRef should be consumed by entity.rs bare-let drop site (task-3508)"
+            )
         }
 
         CompiledExprKind::BinOp { op, left, right } => eval_binop(*op, left, right, ctx),
