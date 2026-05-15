@@ -21,20 +21,20 @@ use rusqlite::Connection;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// Build a minimal TaskMetadata with a benign title that does NOT
+/// contain "stub" or "placeholder" (so P2 emits Medium, not Low).
+fn benign_meta(task_id: &str, files: Vec<String>) -> TaskMetadata {
+    TaskMetadata {
+        task_id: task_id.to_string(),
+        status: "in_progress".to_string(),
+        files,
+        done_provenance: None,
+        title: "Wire foo into bar".to_string(),
+    }
+}
+
 mod tests {
     use super::*;
-
-    /// Build a minimal TaskMetadata with a benign title that does NOT
-    /// contain "stub" or "placeholder" (so P2 emits Medium, not Low).
-    fn benign_meta(task_id: &str, files: Vec<String>) -> TaskMetadata {
-        TaskMetadata {
-            task_id: task_id.to_string(),
-            status: "in_progress".to_string(),
-            files,
-            done_provenance: None,
-            title: "Wire foo into bar".to_string(),
-        }
-    }
 
     /// Verify that all nine canonical stub-pattern families are detected when
     /// they appear on the added-lines side of a diff (i.e. as `+` lines).
@@ -163,6 +163,82 @@ mod tests {
             findings
         );
     }
-}
+
+    /// Verify that paths whose shape indicates a test file are excluded from
+    /// P2 scanning, even when they carry real stub markers on the added-lines
+    /// side.  Three test-shaped paths and one non-test path:
+    ///   - `crates/foo/tests/integration_bar.rs`  — contains `/tests/`
+    ///   - `src/lexer_test.rs`                    — ends with `_test.rs`
+    ///   - `frontend/__tests__/foo.ts`             — contains `__tests__/`
+    ///   - `src/foo.rs`                            — production file → flagged
+    ///
+    /// All four carry `// TODO(impl pending)` as an added line.  Exactly one
+    /// finding must emerge and it must reference `src/foo.rs`.
+    #[test]
+    fn test_file_paths_excluded() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let task_id = "9003";
+        let task_branch = format!("task/{}", task_id);
+
+        let test_paths = vec![
+            "crates/foo/tests/integration_bar.rs",
+            "src/lexer_test.rs",
+            "frontend/__tests__/foo.ts",
+        ];
+        let prod_path = "src/foo.rs";
+        let stub_line = (1usize, "    // TODO(impl pending)".to_string());
+
+        let mut git = MockGitOps::new();
+        for p in &test_paths {
+            git.set_diff_added_lines("main", &task_branch, p, vec![stub_line.clone()]);
+        }
+        git.set_diff_added_lines("main", &task_branch, prod_path, vec![stub_line.clone()]);
+
+        let all_files: Vec<String> = test_paths
+            .iter()
+            .map(|p| p.to_string())
+            .chain(std::iter::once(prod_path.to_string()))
+            .collect();
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(task_id.to_string(), benign_meta(task_id, all_files));
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+        };
+
+        let findings = p2_consumer_stub::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly 1 finding (only src/foo.rs); got {:?}",
+            findings
+        );
+        let f = &findings[0];
+        assert!(
+            f.evidence.iter().any(|e| match e {
+                EvidenceRef::File { path } => path == prod_path,
+                _ => false,
+            }),
+            "the single finding must reference src/foo.rs; got {:?}",
+            f.evidence
+        );
+        for tp in &test_paths {
+            assert!(
+                !f.evidence.iter().any(|e| match e {
+                    EvidenceRef::File { path } => path == tp,
+                    _ => false,
+                }),
+                "test-shaped path {tp} must not appear in findings"
+            );
+        }
+    }
+
+} // mod tests
 
 } // mod p2
