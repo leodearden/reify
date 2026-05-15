@@ -1817,6 +1817,7 @@ pub(crate) fn try_eval_topology_selector(
         "center_of_mass" => TopologySelectorHelper::CenterOfMass,
         "moment_of_inertia" => TopologySelectorHelper::MomentOfInertia,
         "edges_by_length" => TopologySelectorHelper::EdgesByLength,
+        "faces_by_area" => TopologySelectorHelper::FacesByArea,
         _ => return None,
     };
 
@@ -1905,16 +1906,45 @@ pub(crate) fn try_eval_topology_selector(
             // args[1]: Range<Length> ValueRef/Literal → (lo_m, hi_m).
             let (lo, hi) =
                 resolve_range_dim_arg(&args[1], values, reify_types::DimensionVector::LENGTH)?;
-            match crate::topology_selectors::edges_by_length(kernel, handle, lo, hi) {
-                Ok(handles) => Some(handle_list_value(handles)),
-                Err(err) => {
-                    diagnostics.push(Diagnostic::warning(format!(
-                        "{} kernel query failed: {}",
-                        function.name, err
-                    )));
-                    Some(reify_types::Value::Undef)
-                }
-            }
+            dispatch_filtered_list(
+                crate::topology_selectors::edges_by_length(kernel, handle, lo, hi),
+                &function.name,
+                diagnostics,
+            )
+        }
+        TopologySelectorHelper::FacesByArea => {
+            // args[0]: geometry ValueRef → named_steps map → GeometryHandleId.
+            let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
+            // args[1]: Range<Area> ValueRef/Literal → (lo_m2, hi_m2). `mm*mm`
+            // canonicalises to AREA (LENGTH² == AREA per dimension algebra).
+            let (lo, hi) =
+                resolve_range_dim_arg(&args[1], values, reify_types::DimensionVector::AREA)?;
+            dispatch_filtered_list(
+                crate::topology_selectors::faces_by_area(kernel, handle, lo, hi),
+                &function.name,
+                diagnostics,
+            )
+        }
+    }
+}
+
+/// Map a filtered-selector helper `Result<Vec<GeometryHandleId>, QueryError>`
+/// onto the dispatcher's `Option<Value>` contract: `Ok` → `Value::List` of
+/// Int handle ids; `Err` → Warning diagnostic + `Value::Undef`. Shared by all
+/// `topology_selectors::*` delegating arms (task 3560).
+fn dispatch_filtered_list(
+    result: Result<Vec<GeometryHandleId>, reify_types::QueryError>,
+    helper_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_types::Value> {
+    match result {
+        Ok(handles) => Some(handle_list_value(handles)),
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{} kernel query failed: {}",
+                helper_name, err
+            )));
+            Some(reify_types::Value::Undef)
         }
     }
 }
@@ -1951,6 +1981,9 @@ enum TopologySelectorHelper {
     /// `edges_by_length(geometry, Range<Length>) -> List<Geometry>` — edges
     /// whose length falls in the range (task 3560).
     EdgesByLength,
+    /// `faces_by_area(geometry, Range<Area>) -> List<Geometry>` — faces whose
+    /// surface area falls in the range (task 3560).
+    FacesByArea,
 }
 
 impl TopologySelectorHelper {
@@ -1965,7 +1998,8 @@ impl TopologySelectorHelper {
             | TopologySelectorHelper::AngleBetweenSurfaces
             | TopologySelectorHelper::CenterOfMass
             | TopologySelectorHelper::MomentOfInertia
-            | TopologySelectorHelper::EdgesByLength => 2,
+            | TopologySelectorHelper::EdgesByLength
+            | TopologySelectorHelper::FacesByArea => 2,
             TopologySelectorHelper::Edges | TopologySelectorHelper::Faces => 1,
         }
     }
