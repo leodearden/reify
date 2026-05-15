@@ -272,6 +272,49 @@ pub fn no_kernel_chain_diagnostic(
     Diagnostic::error(message).with_code(DiagnosticCode::NoKernelChain)
 }
 
+/// Build the `Severity::Warning` diagnostic emitted when a `#kernel(...)`
+/// pragma names a kernel that cannot serve the demanded `(op, demanded)`
+/// pair, so the dispatcher falls through to default lex-min selection.
+///
+/// Unconditional [`Diagnostic`]-returning builder (the caller has already
+/// observed the pragma kernel does not support the demand). Carries
+/// [`DiagnosticCode::KernelPragmaUnsatisfiable`] for filter-by-code
+/// consumers and a message naming the pragma kernel, the op, and the
+/// demanded repr.
+///
+/// # Integration status
+///
+/// TODO(task-3443/ο): wire this builder into the `#kernel(...)` pragma
+/// surface once it lands (PRD `docs/prds/v0_3/multi-kernel-phase-3.md`
+/// §5 + §8 DAG; consumer ο = ID 3443). Until then, scaffolding — public
+/// API with no in-tree caller — mirroring the `long_chain_diagnostic`
+/// precedent (task 2646).
+///
+/// # Severity rationale
+///
+/// PRD `docs/prds/v0_3/multi-kernel-phase-3.md` §5: "warning, not error —
+/// fall through to default lex-min selection so the user's design still
+/// evaluates." The realization proceeds; the warning gives the author
+/// visibility into the unmet kernel preference.
+///
+/// # Arguments
+///
+/// - `pragma_kernel` — the kernel name written in the `#kernel(...)`
+///   pragma that could not be honoured.
+/// - `op` — the [`Operation`] the pragma kernel was asked to perform.
+/// - `demanded` — the [`ReprKind`] the op was required to produce.
+pub fn kernel_pragma_unsatisfiable_diagnostic(
+    pragma_kernel: &str,
+    op: Operation,
+    demanded: ReprKind,
+) -> Diagnostic {
+    let message = format!(
+        "#kernel('{pragma_kernel}') cannot serve op '{op:?}' producing \
+         '{demanded:?}'; falling through to default kernel selection"
+    );
+    Diagnostic::warning(message).with_code(DiagnosticCode::KernelPragmaUnsatisfiable)
+}
+
 /// Resolve the long-chain wall-time threshold from the
 /// [`LONG_CHAIN_THRESHOLD_ENV_VAR`] environment variable, falling back to
 /// [`LONG_CHAIN_DEFAULT_THRESHOLD_MS`] when unset or unparseable.
