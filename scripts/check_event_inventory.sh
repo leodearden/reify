@@ -13,10 +13,9 @@
 # in gui/src-tauri/**/*.rs. §1-only scoping: §2 (FICTION → WIRED) rows are
 # pre-implementation and intentionally excluded to avoid phantom-warning noise.
 # Permissive scan: searches for the channel name as a quoted literal anywhere in
-# *.rs, not just in .emit(…) form — this naturally covers dynamic-emit patterns
-# (e.g. delta_to_events constructs "mesh-update".to_string() in diff.rs;
-# outbound_to_event constructs "claude-text-delta".to_string() in claude_bridge.rs;
-# mcp_context.rs uses emitter("focus-entity", …)). No hardcoded allowlist needed.
+# *.rs, not just in .emit(…) form — this naturally covers dynamic-emit patterns;
+# see docs/gui-event-channels.md §1 producer columns for the source-of-truth list
+# of which sites produce which channel literal. No hardcoded allowlist needed.
 # Opt-in per esc-3552-52 reviewer note; default-on deferred pending §2 graduation.
 #
 # Dynamic emit-sites (app.emit(&name, …), app.emit(event_name, …)) are
