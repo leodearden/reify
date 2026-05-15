@@ -903,6 +903,25 @@ pub enum DiagnosticCode {
     /// wants to surface this as a harder failure (e.g. CI gate) can filter
     /// by code at the consumer side.
     LongChainRealization,
+    /// Origin: `crates/reify-eval/src/geometry_ops.rs::gate_query_capability`
+    /// (task 3623 — PRD `docs/prds/v0_3/kernel-geometry-queries.md` §5.4).
+    ///
+    /// Canonical message form:
+    /// `"'<helper>' requires BRep representation; this geometry is realized as <Repr>"`.
+    ///
+    /// Emitted as a `Severity::Error` by `gate_query_capability` when a
+    /// BRep-only query (e.g. `edge_length`, or future `curvature`/`perimeter`)
+    /// is dispatched against a non-BRep realization
+    /// (`ReprKind::Mesh`/`Sdf`/`Voxel`/`VolumeMesh`). The gate fails closed:
+    /// the caller maps `CapabilityRoute::Unsupported` → `None` → the cell
+    /// retains `Value::Undef` (the existing fall-through-is-preservation
+    /// contract). The helper name (`<helper>`) is the user-written `.ri`
+    /// function name (e.g. `"curvature"`, `"edge_length"`); the repr token
+    /// is the `Debug` representation of `ReprKind` (e.g. `"Mesh"`, `"Voxel"`).
+    ///
+    /// The PRD-prose mnemonic for this code is `E_QUERY_NOT_SUPPORTED_ON_REPR`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    QueryNotSupportedOnRepr,
 }
 
 /// A diagnostic message with location and optional labels.
