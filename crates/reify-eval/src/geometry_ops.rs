@@ -1815,6 +1815,7 @@ pub(crate) fn try_eval_topology_selector(
         "edges" => TopologySelectorHelper::Edges,
         "faces" => TopologySelectorHelper::Faces,
         "center_of_mass" => TopologySelectorHelper::CenterOfMass,
+        "moment_of_inertia" => TopologySelectorHelper::MomentOfInertia,
         _ => return None,
     };
 
@@ -1889,6 +1890,14 @@ pub(crate) fn try_eval_topology_selector(
             let query = reify_types::GeometryQuery::CenterOfMass { handle, density };
             dispatch_point3_length_reply(kernel, &query, &function.name, diagnostics)
         }
+        TopologySelectorHelper::MomentOfInertia => {
+            // args[0]: geometry ValueRef → named_steps map → GeometryHandleId.
+            let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
+            // args[1]: density ValueRef → values map → Real / dimensionless Scalar.
+            let density = resolve_real_scalar_arg(&args[1], values)?;
+            let query = reify_types::GeometryQuery::InertiaTensor { handle, density };
+            dispatch_inertia_tensor(kernel, &query, &function.name, diagnostics)
+        }
     }
 }
 
@@ -1906,6 +1915,9 @@ enum TopologySelectorHelper {
     /// `center_of_mass(geometry, density) -> Point3<Length>` — uniform-density
     /// center of mass (task 3560).
     CenterOfMass,
+    /// `moment_of_inertia(geometry, density) -> Tensor<2,3,MomentOfInertia>` —
+    /// mass-weighted 3×3 inertia tensor about the centroid (task 3560).
+    MomentOfInertia,
 }
 
 impl TopologySelectorHelper {
@@ -1918,7 +1930,8 @@ impl TopologySelectorHelper {
             TopologySelectorHelper::ClosestPoint
             | TopologySelectorHelper::IsOn
             | TopologySelectorHelper::AngleBetweenSurfaces
-            | TopologySelectorHelper::CenterOfMass => 2,
+            | TopologySelectorHelper::CenterOfMass
+            | TopologySelectorHelper::MomentOfInertia => 2,
             TopologySelectorHelper::Edges | TopologySelectorHelper::Faces => 1,
         }
     }
@@ -2100,6 +2113,92 @@ fn dispatch_point3_length_reply(
             Some(reify_types::Value::Undef)
         }
     }
+}
+
+/// Issue an `InertiaTensor` query and re-wrap the kernel's row-of-row
+/// `Value::List` reply into a nested `Value::Tensor(rows_of_tensors)` where
+/// each element is a `Value::Scalar { si_value, dimension: MOMENT_OF_INERTIA }`.
+///
+/// The kernel returns raw dimensionless `Value::Real` cell values
+/// (`[[m11,m12,m13],[m21,m22,m23],[m31,m32,m33]]`) because
+/// `GeometryQuery::InertiaTensor` predates the dimensioned-Scalar wrap; the
+/// eval-side owns the MomentOfInertia (kg·m²) tagging so the result matches
+/// the compile-time `Tensor<2,3,MomentOfInertia>` cell type from
+/// `topology_selector_result_type`.
+///
+/// Returns `Some(Value::Undef)` (with a Warning diagnostic) on a kernel
+/// error or any malformed shape (non-List reply, non-List row, non-numeric
+/// element). Same defensive-downgrade contract as
+/// `dispatch_point3_length_reply`.
+fn dispatch_inertia_tensor(
+    kernel: &mut dyn reify_types::GeometryKernel,
+    query: &reify_types::GeometryQuery,
+    helper_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_types::Value> {
+    let malformed = |diagnostics: &mut Vec<Diagnostic>, detail: String| {
+        diagnostics.push(Diagnostic::warning(format!(
+            "{} kernel reply malformed: {}",
+            helper_name, detail
+        )));
+        Some(reify_types::Value::Undef)
+    };
+    let reply = match kernel.query(query) {
+        Ok(v) => v,
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{} kernel query failed: {}",
+                helper_name, err
+            )));
+            return Some(reify_types::Value::Undef);
+        }
+    };
+    let rows = match &reply {
+        reify_types::Value::List(rows) => rows,
+        other => return malformed(diagnostics, format!("expected Value::List, got {:?}", other)),
+    };
+    let mut tensor_rows = Vec::with_capacity(rows.len());
+    for row in rows {
+        let cols = match row {
+            reify_types::Value::List(cols) => cols,
+            other => {
+                return malformed(
+                    diagnostics,
+                    format!("expected Value::List row, got {:?}", other),
+                );
+            }
+        };
+        let mut tensor_cols = Vec::with_capacity(cols.len());
+        for col in cols {
+            // The kernel emits dimensionless Value::Real; accept a
+            // dimensionless Scalar too so the dispatch stays kernel-
+            // implementation agnostic (mirrors kernel_distance's
+            // Real|Scalar leniency).
+            let si = match col {
+                reify_types::Value::Real(v) => *v,
+                reify_types::Value::Scalar {
+                    si_value,
+                    dimension,
+                } if *dimension == reify_types::DimensionVector::DIMENSIONLESS
+                    || *dimension == reify_types::DimensionVector::MOMENT_OF_INERTIA =>
+                {
+                    *si_value
+                }
+                other => {
+                    return malformed(
+                        diagnostics,
+                        format!("expected numeric tensor element, got {:?}", other),
+                    );
+                }
+            };
+            tensor_cols.push(reify_types::Value::Scalar {
+                si_value: si,
+                dimension: reify_types::DimensionVector::MOMENT_OF_INERTIA,
+            });
+        }
+        tensor_rows.push(reify_types::Value::Tensor(tensor_cols));
+    }
+    Some(reify_types::Value::Tensor(tensor_rows))
 }
 
 /// Issue a `PointOnShape` query and unwrap to a `Value::Bool(_)`. Returns
