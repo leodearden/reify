@@ -2663,6 +2663,166 @@ mod tests {
         1.0,
     ];
 
+    // ── Value::StructureInstance variant (task 3540 / SIR-α) ─────────────────
+    mod structure_instance {
+        use super::*;
+        use crate::StructureTypeId;
+
+        /// Build a `Value::StructureInstance` with a fixed `type_id`/`version`
+        /// and the given `(name, value)` field pairs.
+        fn si(name: &str, version: u32, pairs: &[(&str, Value)]) -> Value {
+            let fields: PersistentMap<String, Value> = pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.clone()))
+                .collect();
+            Value::StructureInstance {
+                type_id: StructureTypeId(0),
+                type_name: name.to_string(),
+                version,
+                fields,
+            }
+        }
+
+        #[test]
+        fn construct_and_destructure() {
+            let v = si("Steel_AISI_1045", 1, &[("youngs_modulus", Value::Real(205e9))]);
+            match &v {
+                Value::StructureInstance {
+                    type_name,
+                    version,
+                    fields,
+                    ..
+                } => {
+                    assert_eq!(type_name, "Steel_AISI_1045");
+                    assert_eq!(*version, 1);
+                    assert_eq!(
+                        fields.get(&"youngs_modulus".to_string()),
+                        Some(&Value::Real(205e9))
+                    );
+                }
+                other => panic!("expected StructureInstance, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn clone_preserves_nested_fields() {
+            let v = si(
+                "Beam",
+                1,
+                &[
+                    ("length", Value::length(1.0)),
+                    ("material", si("Steel_AISI_1045", 1, &[("e", Value::Real(2.0))])),
+                ],
+            );
+            let c = v.clone();
+            assert_eq!(v, c, "clone is structurally equal (PersistentMap sharing)");
+        }
+
+        #[test]
+        fn partial_eq_is_field_order_insensitive() {
+            let a = si("S", 1, &[("x", Value::Int(1)), ("y", Value::Int(2))]);
+            let b = si("S", 1, &[("y", Value::Int(2)), ("x", Value::Int(1))]);
+            assert_eq!(a, b, "PersistentMap content equality ignores insert order");
+        }
+
+        #[test]
+        fn partial_eq_discriminates_name_version_and_fields() {
+            let base = si("S", 1, &[("x", Value::Int(1))]);
+            assert_ne!(base, si("T", 1, &[("x", Value::Int(1))]), "name differs");
+            assert_ne!(base, si("S", 2, &[("x", Value::Int(1))]), "version differs");
+            assert_ne!(
+                base,
+                si("S", 1, &[("x", Value::Int(2))]),
+                "field value differs"
+            );
+            assert_ne!(
+                base,
+                si("S", 1, &[("x", Value::Int(1)), ("z", Value::Int(0))]),
+                "extra field"
+            );
+        }
+
+        #[test]
+        fn content_hash_is_deterministic() {
+            let v = si("S", 1, &[("a", Value::Int(1))]);
+            assert_eq!(
+                v.content_hash(),
+                v.content_hash(),
+                "content_hash is a deterministic pure function"
+            );
+        }
+
+        #[test]
+        fn content_hash_equal_for_equal_structures() {
+            let a = si("S", 1, &[("a", Value::Int(1)), ("b", Value::Real(2.0))]);
+            let b = si("S", 1, &[("a", Value::Int(1)), ("b", Value::Real(2.0))]);
+            assert_eq!(a.content_hash(), b.content_hash());
+        }
+
+        #[test]
+        fn content_hash_independent_of_field_insertion_order() {
+            let a = si(
+                "S",
+                1,
+                &[
+                    ("alpha", Value::Int(1)),
+                    ("beta", Value::Int(2)),
+                    ("gamma", Value::Int(3)),
+                ],
+            );
+            let b = si(
+                "S",
+                1,
+                &[
+                    ("gamma", Value::Int(3)),
+                    ("alpha", Value::Int(1)),
+                    ("beta", Value::Int(2)),
+                ],
+            );
+            assert_eq!(
+                a.content_hash(),
+                b.content_hash(),
+                "content_hash must sort fields by key before folding"
+            );
+        }
+
+        #[test]
+        fn content_hash_differs_on_name() {
+            let a = si("Steel_AISI_1045", 1, &[("x", Value::Int(1))]);
+            let b = si("Aluminium_6061_T6", 1, &[("x", Value::Int(1))]);
+            assert_ne!(a.content_hash(), b.content_hash());
+        }
+
+        #[test]
+        fn content_hash_differs_on_version() {
+            let a = si("S", 1, &[("x", Value::Int(1))]);
+            let b = si("S", 2, &[("x", Value::Int(1))]);
+            assert_ne!(
+                a.content_hash(),
+                b.content_hash(),
+                "@version(N) bump must invalidate the content hash"
+            );
+        }
+
+        #[test]
+        fn content_hash_differs_on_field_value() {
+            let a = si("S", 1, &[("x", Value::Int(1))]);
+            let b = si("S", 1, &[("x", Value::Int(2))]);
+            assert_ne!(a.content_hash(), b.content_hash());
+        }
+
+        #[test]
+        fn content_hash_distinct_from_map_lookalike() {
+            // Linguistic Map-vs-Structure distinction: a Value::Map with the
+            // same String→Value entry must not collide with a StructureInstance.
+            let structure = si("S", 1, &[("x", Value::Int(1))]);
+            let mut m = BTreeMap::new();
+            m.insert(Value::String("x".to_string()), Value::Int(1));
+            let map = Value::Map(m);
+            assert_ne!(structure.content_hash(), map.content_hash());
+        }
+    }
+
     // ── normalize_range_flags unit tests ─────────────────────────────────────
 
     #[test]
@@ -7357,6 +7517,15 @@ mod tests {
             ),
             ("Range", Value::range(None, None, false, false)),
             ("Matrix", Value::Matrix(vec![])),
+            (
+                "StructureInstance",
+                Value::StructureInstance {
+                    type_id: crate::StructureTypeId(0),
+                    type_name: "S".into(),
+                    version: 1,
+                    fields: crate::PersistentMap::new(),
+                },
+            ),
             ("Undef", Value::Undef),
         ];
 
