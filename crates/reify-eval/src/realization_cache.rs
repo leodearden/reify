@@ -25,9 +25,8 @@
 //! have no parameterisation — it is a first-class partition value, not magic.  See PRD §4
 //! for the convention; it matches the `compute_cache_key.rs` `ContentHash(0)` baseline.
 //!
-//! [`RealizationCacheKey`] is the PRD-named public struct that downstream callers (tasks δ
-//! and ξ) can use to aggregate the four-tuple key for documentation and passing-around
-//! purposes.  The cache methods themselves take separate arguments (see "Storage layout").
+//! The cache methods take separate arguments rather than an aggregate key struct —
+//! see "Storage layout" for the allocation-free read path rationale.
 //!
 //! ## Storage layout
 //!
@@ -84,24 +83,6 @@ use crate::tolerance_bucket::ToleranceBucket;
 /// once the option structs expose `ContentHash` output.  Grep for
 /// `NO_OPTIONS` to locate every replacement target.
 pub const NO_OPTIONS: ContentHash = ContentHash(0);
-
-/// The PRD §4-named logical four-tuple key for the realization cache.
-///
-/// Aggregates `(entity_id, repr_kind, tol, options_hash)` into a named struct for
-/// documentation and passing-around purposes.  Downstream callers (tasks δ and ξ) can
-/// construct one for clarity, but the cache methods themselves take separate arguments
-/// to preserve the allocation-free read path.
-///
-/// Does **not** derive `Eq`/`Hash`/`PartialEq` — `f64` does not implement them
-/// (NaN equality, bit-pattern ambiguity); partial-order tolerance match lives in
-/// [`crate::tolerance_bucket::ToleranceBucket`].
-#[derive(Debug, Clone)]
-pub struct RealizationCacheKey {
-    pub entity_id: String,
-    pub repr_kind: ReprKind,
-    pub tol: f64,
-    pub options_hash: ContentHash,
-}
 
 /// Cache keyed by `(entity_id, repr_kind, options_hash, tol: f64)`.
 ///
@@ -238,7 +219,7 @@ impl<V> RealizationCache<V> {
 mod tests {
     use reify_types::{ContentHash, ReprKind};
 
-    use super::{RealizationCache, RealizationCacheKey};
+    use super::RealizationCache;
 
     /// Happy-path: single (entity, repr_kind) round-trip with exact and looser lookup.
     ///
@@ -470,13 +451,6 @@ mod tests {
             Some(&2),
             "lookup under hash_b must return value 2 (not shadowed by hash_a)"
         );
-        // Cross-check: RealizationCacheKey naming is reachable (it's a public doc type).
-        let _key_a = RealizationCacheKey {
-            entity_id: "A".to_string(),
-            repr_kind: ReprKind::BRep,
-            tol: 0.01,
-            options_hash: hash_a,
-        };
     }
 
     /// Partial-order tolerance lookup is scoped per `options_hash` — it does not cross
