@@ -42,15 +42,16 @@
 //   max_deflection > 0  (Flexible)
 //   max_elastic_strain > 0 (ElasticallyDeformable)
 //
-// All values are raw SI numerics (Real) — density in kg/m³, stiffness in N/m,
-// deflection in m, energy in J, ratios dimensionless.
+// stiffness uses the tightened Stiffness alias (N/m) introduced by task #3115;
+// other values are raw SI numerics (Real) — density in kg/m³, deflection in m,
+// energy in J, ratios dimensionless.
 structure def DriveBelt : ElasticallyDeformable + ImpactResistant + Damping {
     // MaterialSpec (shared root via ImpactResistant and Damping)
     param density : Real = 1100.0          // kg/m³ — typical SBR/EPDM elastomer
     param name : String = "elastomer_belt"
 
     // Flexible (via ElasticallyDeformable) — stiffness > 0, max_deflection > 0
-    param stiffness : Real = 2000.0        // N/m — moderate belt stiffness
+    param stiffness : Stiffness = 2000.0 * 1N / 1m   // moderate belt stiffness
     param max_deflection : Real = 0.02     // m — 20mm rated deflection
 
     // ElasticallyDeformable — max_elastic_strain > 0
@@ -72,18 +73,18 @@ structure def DriveBelt : ElasticallyDeformable + ImpactResistant + Damping {
 // Constraint from Refractory: max_service_temperature >= 1500.0
 // CeramicLiner.max_service_temperature = 2050.0 — well above the guard.
 //
-// All thermal quantities are raw Real (dimensionless SI numerics):
-//   thermal_conductivity in W/(m·K), specific_heat in J/(kg·K),
-//   thermal_expansion in 1/K, temperatures in K.
+// thermal_conductivity / specific_heat / thermal_expansion use the named-dim
+// aliases introduced by task #3115; temperatures remain Real pending task
+// #3112.
 structure def CeramicLiner : Refractory {
     // MaterialSpec
     param density : Real = 3900.0              // kg/m³ — alumina (Al₂O₃)
     param name : String = "alumina_ceramic"
 
     // ThermallyCharacterized
-    param thermal_conductivity : Real = 30.0   // W/(m·K)
-    param specific_heat : Real = 880.0         // J/(kg·K)
-    param thermal_expansion : Real = 0.000008  // 1/K (8.0e-6 — coefficient of linear expansion)
+    param thermal_conductivity : ThermalConductivity = 30.0 * 1W / (1m * 1K)
+    param specific_heat : SpecificHeat = 880.0 * 1J / (1kg * 1K)
+    param thermal_expansion : ThermalExpansion = 0.000008 / 1K  // 8.0e-6 coefficient of linear expansion
     param melting_point : Real = 2072.0        // K
     param max_service_temperature : Real = 2050.0 // K — clears Refractory >= 1500 guard
     param glass_transition : Real = 0.0        // K — not applicable; 0 sentinel
@@ -100,15 +101,16 @@ structure def CeramicLiner : Refractory {
 // dielectric_constant, dielectric_strength, magnetic_permeability are
 // required by ElectricallyCharacterized even though they are not physically
 // meaningful for pure metals; placeholder values are supplied.
+// resistivity / dielectric_strength use named-dim aliases introduced by #3115.
 structure def Copper : Conductive {
     // MaterialSpec
     param density : Real = 8960.0               // kg/m³ — pure copper
     param name : String = "copper"
 
     // ElectricallyCharacterized
-    param resistivity : Real = 0.000000017      // Ω·m (1.7e-8) — clears Conductive < 1e-4 guard
+    param resistivity : ElectricResistivity = 0.000000017 * 1ohm * 1m  // 1.7e-8 Ω·m — clears Conductive < 1e-4 guard
     param dielectric_constant : Real = 1.0      // placeholder (not meaningful for metals)
-    param dielectric_strength : Real = 0.0      // placeholder (infinite for conductors)
+    param dielectric_strength : DielectricStrength = 0.0 * 1V / 1m     // placeholder (infinite for conductors)
     param magnetic_permeability : Real = 1.0    // μ_r ≈ 1 for copper (diamagnetic)
 }
 
@@ -124,9 +126,10 @@ structure def BorosilicateGlass : OpticallyCharacterized {
     param density : Real = 2230.0               // kg/m³ — Borosilicate 33 glass
     param name : String = "borosilicate_glass"
 
-    // OpticallyCharacterized
+    // OpticallyCharacterized — absorption_coefficient uses the AbsorptionCoeff
+    // alias introduced by #3115; the other three remain Real.
     param refractive_index : Real = 1.52        // dimensionless (BK7 / N-BK7)
-    param absorption_coefficient : Real = 0.001 // 1/m — very low for optical glass
+    param absorption_coefficient : AbsorptionCoeff = 0.001 / 1m  // very low for optical glass
     param transmittance : Real = 0.92           // 92% at reference thickness
     param reference_thickness : Real = 0.01    // 1cm reference sample thickness
 }
