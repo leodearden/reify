@@ -33,7 +33,9 @@
 use reify_compiler::compile_with_stdlib;
 use reify_eval::Engine;
 use reify_test_support::MockGeometryKernel;
-use reify_types::{ExportFormat, GeometryHandleId, ModulePath, Severity, Value, ValueCellId};
+use reify_types::{
+    DimensionVector, ExportFormat, GeometryHandleId, ModulePath, Severity, Value, ValueCellId,
+};
 
 /// Parse and compile a source string with the stdlib prelude.
 /// Asserts the parse and compile pipelines produce no errors.
@@ -411,6 +413,53 @@ fn center_of_mass_let_resolves_to_point3_length_via_kernel_reply() {
         ])),
         "Bracket.com must resolve to Value::Point of three Length scalars via \
          kernel CenterOfMass JSON reply, got {:?}",
+        result.values.get(&cell),
+    );
+}
+
+/// `let i = moment_of_inertia(body, density)` on a structure containing
+/// `let body = box(50mm, 30mm, 10mm)` and `let density = 7850.0` must resolve
+/// to a rank-2 `Value::Tensor` (3 rows × 3 cols) of MomentOfInertia-dimensioned
+/// scalars when the mock kernel pre-stages the OCCT row-of-row `Value::List`
+/// reply for `InertiaTensor(handle=1, density=7850.0)`. Pins the
+/// raw-Real-rows → nested-Tensor-of-MI-Scalars re-wrap (the eval-side owns the
+/// dimension tagging; the kernel reply is dimensionless `Value::Real`).
+#[test]
+fn moment_of_inertia_let_resolves_to_rank2_tensor_via_kernel_reply() {
+    let source = "structure def Bracket {\n    \
+        let body = box(50mm, 30mm, 10mm)\n    \
+        let density = 7850.0\n    \
+        let i = moment_of_inertia(body, density)\n}";
+    let compiled = compile_no_errors(source);
+    let mut engine = engine_with_mock_kernel(|k| {
+        k.with_inertia_tensor_result(
+            GeometryHandleId(1),
+            7850.0,
+            Value::List(vec![
+                Value::List(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]),
+                Value::List(vec![Value::Real(0.0), Value::Real(2.0), Value::Real(0.0)]),
+                Value::List(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(3.0)]),
+            ]),
+        )
+    });
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let cell = ValueCellId::new("Bracket", "i");
+    let mi = |v: f64| Value::Scalar {
+        si_value: v,
+        dimension: DimensionVector::MOMENT_OF_INERTIA,
+    };
+    assert_eq!(
+        result.values.get(&cell),
+        Some(&Value::Tensor(vec![
+            Value::Tensor(vec![mi(1.0), mi(0.0), mi(0.0)]),
+            Value::Tensor(vec![mi(0.0), mi(2.0), mi(0.0)]),
+            Value::Tensor(vec![mi(0.0), mi(0.0), mi(3.0)]),
+        ])),
+        "Bracket.i must resolve to a rank-2 Value::Tensor (3×3) of \
+         MomentOfInertia-dimensioned scalars via kernel InertiaTensor reply, \
+         got {:?}",
         result.values.get(&cell),
     );
 }
