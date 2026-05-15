@@ -239,6 +239,71 @@ mod tests {
         }
     }
 
+    /// Verify that when the task title contains "stub" or "placeholder"
+    /// (case-insensitive), the P2 finding is downgraded to Severity::Low.
+    ///
+    /// Two sub-cases:
+    ///   (a) title = "Add stub for foo subsystem"  — contains "stub"
+    ///   (b) title = "Wire placeholder for bar"    — contains "placeholder"
+    #[test]
+    fn stub_in_title_downgrades_to_low() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let path = "src/foo.rs";
+        let stub_line = vec![(5usize, "    unimplemented!()".to_string())];
+
+        let check_downgrade = |title: &str, task_id: &str| {
+            let mut git = MockGitOps::new();
+            git.set_diff_added_lines(
+                "main",
+                &format!("task/{}", task_id),
+                path,
+                stub_line.clone(),
+            );
+            let mut task_metadata = HashMap::new();
+            task_metadata.insert(
+                task_id.to_string(),
+                TaskMetadata {
+                    task_id: task_id.to_string(),
+                    status: "in_progress".to_string(),
+                    files: vec![path.to_string()],
+                    done_provenance: None,
+                    title: title.to_string(),
+                },
+            );
+            let ctx = AuditContext {
+                project_root: PathBuf::from("/tmp/fake-project"),
+                conn: &conn,
+                git: &git,
+                task_metadata,
+                target_task_id: None,
+                window: None,
+            };
+            p2_consumer_stub::check(&ctx)
+        };
+
+        // (a) Title contains "stub"
+        let findings_a = check_downgrade("Add stub for foo subsystem", "9010");
+        assert_eq!(findings_a.len(), 1, "expected 1 finding for stub title; got {:?}", findings_a);
+        assert_eq!(
+            findings_a[0].severity,
+            Severity::Low,
+            "title with 'stub' must downgrade to Low; got {:?}",
+            findings_a[0].severity
+        );
+        assert_eq!(findings_a[0].pattern, Pattern::P2ConsumerStub);
+
+        // (b) Title contains "placeholder"
+        let findings_b = check_downgrade("Wire placeholder for bar", "9011");
+        assert_eq!(findings_b.len(), 1, "expected 1 finding for placeholder title; got {:?}", findings_b);
+        assert_eq!(
+            findings_b[0].severity,
+            Severity::Low,
+            "title with 'placeholder' must downgrade to Low; got {:?}",
+            findings_b[0].severity
+        );
+        assert_eq!(findings_b[0].pattern, Pattern::P2ConsumerStub);
+    }
+
 } // mod tests
 
 } // mod p2
