@@ -2287,6 +2287,77 @@ mod tests {
         assert!(summary.examples.is_empty());
     }
 
+    /// Mesh with > MAX_EXAMPLES orphan pairs → count is the true total but
+    /// examples is capped at MAX_EXAMPLES.
+    ///
+    /// Fixture: one shell on `[0, n_nodes-2, n_nodes-1]` + 2 disjoint P1 tets
+    /// on `[1,2,3,4]` and `[5,6,7,8]`. D=6 (shell dominates). Tet-only nodes
+    /// are 1..=8 minus the shell nodes (n_nodes-2, n_nodes-1 are shell-only,
+    /// node 0 is shared). So tet-only = {1,2,3,4,5,6,7,8}: 8 nodes × 3 orphan
+    /// axes {3,4,5} = 24 orphans > MAX_EXAMPLES=16.
+    ///
+    /// Asserts `count == 24`, `examples.len() == 16`, and that examples == first
+    /// 16 entries of the full sorted list `[(1,3),(1,4),(1,5),(2,3),...,(6,3)]`.
+    #[test]
+    fn detect_orphan_dofs_caps_examples_at_max_examples_constant() {
+        let mat = dimensionless_steel_like();
+        let k_e_tet1 = element_stiffness_p1(&UNIT_TET_P1, &mat);
+        let k_e_tet2 = element_stiffness_p1(&UNIT_TET_P1, &mat);
+        let k_e_shell = shell_element_stiffness(&UNIT_TRI, SHELL_T, &mat);
+
+        // n_nodes: 0..=8 for 9 nodes (0=shared, 1..=4=tet1-only,
+        // 5..=8=tet2-only; node 7 and 8 are shell-only → but
+        // we want shell_conn=[0,7,8], tet1=[1,2,3,4], tet2=[5,6,7,8])
+        // Actually let's make it cleaner: shell on [0,9,10], tet1 on [1,2,3,4],
+        // tet2 on [5,6,7,8]. That gives tet-only={1..8}: 8 nodes × 3 axes = 24.
+        let n_nodes = 11;
+        let conn_shell = [0usize, 9, 10];
+        let conn_tet1 = [1usize, 2, 3, 4];
+        let conn_tet2 = [5usize, 6, 7, 8];
+        let elements = [
+            AssemblyElement {
+                id: 0,
+                connectivity: &conn_shell,
+                k_e: &k_e_shell,
+            },
+            AssemblyElement {
+                id: 1,
+                connectivity: &conn_tet1,
+                k_e: &k_e_tet1,
+            },
+            AssemblyElement {
+                id: 2,
+                connectivity: &conn_tet2,
+                k_e: &k_e_tet2,
+            },
+        ];
+        let summary = detect_orphan_dofs(n_nodes, &elements);
+
+        // 8 tet-only nodes × 3 orphan axes = 24 total.
+        assert_eq!(summary.count, 24, "true total should be 24");
+        // examples capped at MAX_EXAMPLES=16.
+        assert_eq!(summary.examples.len(), 16, "examples should be capped at 16");
+
+        // First 16 sorted (node, axis) pairs: nodes 1..=5 fully represented
+        // plus nodes 6 axis 3 (16th entry).
+        let expected_first_16: Vec<(usize, usize)> = (1usize..=6)
+            .flat_map(|n| {
+                if n < 6 {
+                    // nodes 1..5: all 3 axes (3,4,5) → 5 nodes × 3 = 15 entries
+                    (3usize..6).map(|a| (n, a)).collect::<Vec<_>>()
+                } else {
+                    // node 6: only axis 3 (the 16th entry)
+                    vec![(n, 3)]
+                }
+            })
+            .collect();
+        assert_eq!(
+            summary.examples,
+            expected_first_16,
+            "examples should be the first 16 (node,axis) pairs sorted ascending",
+        );
+    }
+
     /// Mixed tet+shell mesh → tet-only nodes 1,2,3 report 3 orphan rotation
     /// axes each; node 0 (shared) and shell-only nodes 4,5 have no orphans.
     ///
