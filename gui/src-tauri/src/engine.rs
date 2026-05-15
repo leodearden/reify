@@ -33,6 +33,9 @@ mod core_state {
     use reify_compiler::CompiledModule;
     use reify_eval::{CheckResult, Engine};
 
+    #[cfg(test)]
+    use reify_types::{ConstraintSolver, Diagnostic};
+
     /// The six core fields of `EngineSession` that must stay consistent across panics.
     ///
     /// Fields are marked `pub(super)` temporarily — this allows `engine.rs`'s outer module
@@ -131,6 +134,101 @@ mod core_state {
         /// in `tests/engine_tests.rs` requires symbol visibility.
         pub(crate) fn commit_file_path(&mut self, path: PathBuf) {
             self.file_path = Some(path);
+        }
+
+        /// Atomically commit all four canonical core fields after a successful
+        /// parse+compile+check cycle.
+        ///
+        /// This is the **single** multi-field commit point.  All four writes happen
+        /// before the method returns, so a panic inside this method leaves the fields
+        /// either all at their new values or, if the panic occurs before any write,
+        /// at their previous values.  Callers must only invoke this after compilation
+        /// and `check()` have both succeeded.
+        ///
+        /// The five cache fields on `EngineSession` (`def_preview_cache`,
+        /// `parsed_cache`, `line_offsets_cache`, `consumed_idents_cache`,
+        /// `compile_failure`) are NOT committed here — those are updated by the
+        /// outer `EngineSession::commit_state` wrapper after this call returns.
+        pub(crate) fn commit_state(
+            &mut self,
+            compiled: CompiledModule,
+            check_result: CheckResult,
+            module_name: &str,
+            source: &str,
+        ) {
+            self.source_map.clear();
+            self.source_map.insert(
+                super::module_key(module_name),
+                source.to_string(),
+            );
+            self.module_name = Some(module_name.to_string());
+            self.compiled = Some(compiled);
+            self.last_check = Some(check_result);
+        }
+
+        // ---- Test-only mutators (cfg(test)) ---------------------------------
+        //
+        // Each method mirrors an existing `EngineSession::*_for_test` helper,
+        // encapsulating the direct field write inside `CoreState`'s impl so that
+        // the outer EngineSession mutators can delegate here rather than accessing
+        // fields directly.  This is the preparation step for strict field
+        // privatization in step-8.
+
+        /// Replace the underlying `Engine` with one that has the given constraint
+        /// solver installed.  Consumes and returns `Self` to mirror `Engine::with_solver`.
+        #[cfg(test)]
+        pub(crate) fn with_solver(mut self, solver: Box<dyn ConstraintSolver>) -> Self {
+            self.engine = self.engine.with_solver(solver);
+            self
+        }
+
+        /// Clear `module_name` while leaving `compiled` and `source_map` intact,
+        /// intentionally breaking the compiled/module_name/source_map invariant.
+        #[cfg(test)]
+        pub(crate) fn break_module_name(&mut self) {
+            self.module_name.take();
+        }
+
+        /// Clear `source_map` while leaving `compiled` and `module_name` intact,
+        /// intentionally breaking the compiled/module_name/source_map invariant.
+        #[cfg(test)]
+        pub(crate) fn break_source_map(&mut self) {
+            self.source_map.clear();
+        }
+
+        /// Directly inject a `CompiledModule` without running parse/compile/check.
+        ///
+        /// `module_name`, `source_map`, and `last_check` are NOT updated, so the
+        /// session's invariant is intentionally broken after this call.
+        #[cfg(test)]
+        pub(crate) fn inject_compiled(&mut self, compiled: CompiledModule) {
+            self.compiled = Some(compiled);
+        }
+
+        /// Re-run `engine.check` on the current compiled module and store the result.
+        ///
+        /// Clones `self.compiled` to avoid the borrow conflict between
+        /// `self.engine` (needs `&mut`) and `self.compiled` (immutable reference
+        /// for the check call).  No-op when no module is loaded.
+        #[cfg(test)]
+        pub(crate) fn recheck(&mut self) {
+            if let Some(compiled) = self.compiled.as_ref().cloned() {
+                let check_result = self.engine.check(&compiled);
+                self.compiled = Some(compiled);
+                self.last_check = Some(check_result);
+            }
+        }
+
+        /// Push a diagnostic into the currently compiled module's diagnostics vec.
+        ///
+        /// Panics if no module is currently loaded.
+        #[cfg(test)]
+        pub(crate) fn inject_diagnostic(&mut self, diag: Diagnostic) {
+            self.compiled
+                .as_mut()
+                .expect("inject_diagnostic: no compiled module loaded")
+                .diagnostics
+                .push(diag);
         }
     }
 }
@@ -626,7 +724,7 @@ impl EngineSession {
     /// `main.rs` (solver installation in main.rs is a separate future task).
     #[cfg(test)]
     pub(crate) fn with_solver_for_test(mut self, solver: Box<dyn ConstraintSolver>) -> Self {
-        self.core.engine = self.core.engine.with_solver(solver);
+        self.core = self.core.with_solver(solver);
         self
     }
 
@@ -979,12 +1077,11 @@ impl EngineSession {
         module_name: &str,
         source: &str,
     ) {
-        self.core.source_map.clear();
-        self.core.source_map
-            .insert(module_key(module_name), source.to_string());
-        self.core.module_name = Some(module_name.to_string());
-        self.core.compiled = Some(compiled);
-        self.core.last_check = Some(check_result);
+        // Commit the four canonical core fields atomically via CoreState::commit_state.
+        // A panic between the core commit and the cache updates below leaves core fields
+        // consistent (at new values) while caches may be stale — that is tolerated per
+        // engine_lock.rs:30-34 ("other fields are caches that tolerate partial state").
+        self.core.commit_state(compiled, check_result, module_name, source);
         // Invalidate def preview cache — new module may have different content hashes.
         self.def_preview_cache.clear();
         // Cache the parse result so get_containing_definition can avoid re-parsing
@@ -2619,11 +2716,7 @@ impl EngineSession {
     /// # Panics
     /// Panics if no module is currently loaded (`self.compiled` is `None`).
     pub(crate) fn inject_diagnostic_for_test(&mut self, diag: reify_types::Diagnostic) {
-        self.core.compiled
-            .as_mut()
-            .expect("inject_diagnostic_for_test: no compiled module loaded")
-            .diagnostics
-            .push(diag);
+        self.core.inject_diagnostic(diag);
     }
 
     /// Thin wrapper around `resolve_source` for use in tests.
@@ -2651,7 +2744,7 @@ impl EngineSession {
     /// - `get_source_location_returns_none_when_module_name_broken` (graceful `None`)
     /// - `get_diagnostics_debug_asserts_when_module_name_broken` (debug-build loud path)
     pub(crate) fn break_module_name_for_test(&mut self) {
-        self.core.module_name.take();
+        self.core.break_module_name();
     }
 
     /// Deliberately break the compiled/module_name/source_map invariant by
@@ -2669,7 +2762,7 @@ impl EngineSession {
     /// - `resolve_source_fallback_when_source_map_missing` (graceful `None`)
     /// - `get_diagnostics_debug_asserts_when_source_map_broken` (debug-build loud path)
     pub(crate) fn break_source_map_for_test(&mut self) {
-        self.core.source_map.clear();
+        self.core.break_source_map();
     }
 
     /// Return a reference to the cached `ParsedModule`, or `None` if no module
@@ -2757,7 +2850,7 @@ impl EngineSession {
     /// session's invariant is intentionally broken.  Functions that rely on those
     /// fields (e.g. `get_diagnostics`, `resolve_source`) degrade gracefully.
     pub(crate) fn inject_compiled_for_test(&mut self, compiled: CompiledModule) {
-        self.core.compiled = Some(compiled);
+        self.core.inject_compiled(compiled);
     }
 
     /// Register a cell to panic during the next eval cycle.
@@ -2786,11 +2879,7 @@ impl EngineSession {
     /// `&CompiledModule` for the check call) — the clone cost is acceptable
     /// in test code.  No-op when no module is loaded.
     pub(crate) fn recheck_for_test(&mut self) {
-        if let Some(compiled) = self.core.compiled.as_ref().cloned() {
-            let check_result = self.core.engine.check(&compiled);
-            self.core.compiled = Some(compiled);
-            self.core.last_check = Some(check_result);
-        }
+        self.core.recheck();
     }
 
     /// Trigger the full build path (check + geometry ops) without writing any
