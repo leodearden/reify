@@ -7,6 +7,7 @@ use crate::expr::CompiledExpr;
 use crate::hash::ContentHash;
 use crate::identity::ValueCellId;
 use crate::persistent::PersistentMap;
+use crate::structure_registry::StructureTypeId;
 
 // ── Float ordering strategy ───────────────────────────────────────────────────
 //
@@ -567,6 +568,23 @@ pub enum Value {
     /// `engine_eval::elaborate_field` constructs a fresh `SampledField` per cold-start,
     /// so the per-field-per-session `oob_emitted` AtomicBool resets naturally.
     SampledField(SampledField),
+    /// Instance of a `structure def` (e.g. `Steel_AISI_1045()`).
+    ///
+    /// `type_id` is an opaque per-Engine handle into the
+    /// [`StructureRegistry`](crate::StructureRegistry) side-table (declared
+    /// trait bounds, source span, field layout). `type_name` and `version`
+    /// are carried inline so that [`content_hash`](Value::content_hash) — a
+    /// pure function with no registry access — can compose a cache key that
+    /// is stable across Engine restarts (PRD §5: key on *name*, never the
+    /// ephemeral id; `@version(N)` bumps must invalidate). `fields` is the
+    /// constructed parameter map (declaration-order-independent: hashing and
+    /// equality sort by key).
+    StructureInstance {
+        type_id: StructureTypeId,
+        type_name: String,
+        version: u32,
+        fields: PersistentMap<String, Value>,
+    },
     /// Undefined — not yet determined or computation failed.
     Undef,
 }
@@ -771,7 +789,7 @@ impl Value {
         // 8=Set, 9=Map, 10=Satisfaction(reserved), 11=Option, 12=Lambda, 13=Field,
         // 14=Tensor, 15=Complex, 16=Orientation, 17=Range, 18=Point, 19=Vector,
         // 20=Frame, 21=Transform, 22=Plane, 23=Axis, 24=BoundingBox, 25=Matrix,
-        // 26=SampledField
+        // 26=SampledField, 27=StructureInstance
         match self {
             Value::Bool(b) => ContentHash::of(&[0, *b as u8]),
             Value::Int(i) => {
@@ -1033,6 +1051,28 @@ impl Value {
                 h = h.combine(hash_floats(&sf.data));
                 h
             }
+            Value::StructureInstance {
+                type_name,
+                version,
+                fields,
+                ..
+            } => {
+                // tag=27; cross-Engine-stable identity: name + version + the
+                // sorted-by-key field hashes. `type_id` is intentionally
+                // excluded — it is a per-Engine ephemeral handle, while the
+                // persistent cache key must survive Engine restarts (PRD §5).
+                let mut h = ContentHash::of(&[27]);
+                h = h.combine(ContentHash::of_str(type_name));
+                h = h.combine(ContentHash::of(&version.to_le_bytes()));
+                let mut entries: Vec<(&String, &Value)> = fields.iter().collect();
+                entries.sort_by(|a, b| a.0.cmp(b.0));
+                h = h.combine(ContentHash::of(&(entries.len() as u64).to_le_bytes()));
+                for (k, v) in entries {
+                    h = h.combine(ContentHash::of_str(k));
+                    h = h.combine(v.content_hash());
+                }
+                h
+            }
             Value::Undef => ContentHash::of(&[5]),
         }
     }
@@ -1259,6 +1299,9 @@ impl Value {
             // SampledField is the runtime payload stored under Value::Field.lambda
             // for source = sampled fields; it has no standalone Type.
             Value::SampledField(_) => None,
+            Value::StructureInstance { type_name, .. } => {
+                Some(Type::StructureRef(type_name.clone()))
+            }
             Value::Undef => Some(Type::Bool),
         }
     }
@@ -1418,6 +1461,21 @@ impl Value {
                 sf.kind,
                 sf.data.len()
             ),
+            Value::StructureInstance {
+                type_name, fields, ..
+            } => {
+                let mut entries: Vec<(&String, &Value)> = fields.iter().collect();
+                entries.sort_by(|a, b| a.0.cmp(b.0));
+                if entries.is_empty() {
+                    format!("{type_name} {{ }}")
+                } else {
+                    let inner: Vec<String> = entries
+                        .iter()
+                        .map(|(k, v)| format!("{k}: {}", v.format_hover()))
+                        .collect();
+                    format!("{type_name} {{ {} }}", inner.join(", "))
+                }
+            }
             Value::Undef => "(undefined)".to_string(),
         }
     }
@@ -1560,6 +1618,21 @@ impl Value {
             }
             Value::SampledField(sf) => {
                 format!("SampledField('{}', {} samples)", sf.name, sf.data.len())
+            }
+            Value::StructureInstance {
+                type_name, fields, ..
+            } => {
+                let mut entries: Vec<(&String, &Value)> = fields.iter().collect();
+                entries.sort_by(|a, b| a.0.cmp(b.0));
+                if entries.is_empty() {
+                    format!("{type_name} {{ }}")
+                } else {
+                    let inner: Vec<String> = entries
+                        .iter()
+                        .map(|(k, v)| format!("{k}: {}", v.format_display()))
+                        .collect();
+                    format!("{type_name} {{ {} }}", inner.join(", "))
+                }
             }
             Value::Undef => "undefined".to_string(),
         }
@@ -1872,6 +1945,20 @@ impl PartialEq for Value {
             }
             (Value::Matrix(a), Value::Matrix(b)) => a == b,
             (Value::SampledField(a), Value::SampledField(b)) => a == b,
+            (
+                Value::StructureInstance {
+                    type_name: an,
+                    version: av,
+                    fields: af,
+                    ..
+                },
+                Value::StructureInstance {
+                    type_name: bn,
+                    version: bv,
+                    fields: bf,
+                    ..
+                },
+            ) => an == bn && av == bv && af == bf,
             (Value::Undef, Value::Undef) => true,
             _ => false,
         }
@@ -1930,6 +2017,7 @@ impl Ord for Value {
                 Value::Axis { .. } => 23,
                 Value::BoundingBox { .. } => 24,
                 Value::SampledField(_) => 25,
+                Value::StructureInstance { .. } => 26,
             }
         }
 
@@ -2126,6 +2214,30 @@ impl Ord for Value {
                 },
             ) => amin.cmp(bmin).then_with(|| amax.cmp(bmax)),
             (Value::SampledField(a), Value::SampledField(b)) => a.cmp(b),
+            (
+                Value::StructureInstance {
+                    type_name: an,
+                    version: av,
+                    fields: af,
+                    ..
+                },
+                Value::StructureInstance {
+                    type_name: bn,
+                    version: bv,
+                    fields: bf,
+                    ..
+                },
+            ) => {
+                // Ordering must agree with PartialEq (Eq/Ord contract) and be
+                // field-insertion-order-independent: compare name, then
+                // version, then the sorted-by-key (key, value) pairs.
+                // `type_id` is excluded — it is per-Engine ephemeral.
+                let mut a: Vec<(&String, &Value)> = af.iter().collect();
+                a.sort_by(|x, y| x.0.cmp(y.0));
+                let mut b: Vec<(&String, &Value)> = bf.iter().collect();
+                b.sort_by(|x, y| x.0.cmp(y.0));
+                an.cmp(bn).then_with(|| av.cmp(bv)).then_with(|| a.cmp(&b))
+            }
             _ => unreachable!("same type tag but different variants"),
         }
     }
@@ -2337,6 +2449,19 @@ impl std::fmt::Display for Value {
                     sf.data.len(),
                     sf.interpolation
                 )
+            }
+            Value::StructureInstance {
+                type_name, fields, ..
+            } => {
+                // `TypeName { k1: v1, k2: v2 }` with keys sorted for
+                // deterministic output; empty → `TypeName { }`.
+                let mut entries: Vec<(&String, &Value)> = fields.iter().collect();
+                entries.sort_by(|a, b| a.0.cmp(b.0));
+                write!(f, "{type_name} {{")?;
+                for (i, (k, v)) in entries.iter().enumerate() {
+                    write!(f, "{} {k}: {v}", if i > 0 { "," } else { "" })?;
+                }
+                write!(f, " }}")
             }
             Value::Undef => write!(f, "undef"),
         }
