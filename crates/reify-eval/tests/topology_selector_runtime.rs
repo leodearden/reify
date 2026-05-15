@@ -498,6 +498,34 @@ fn edges_by_length_let_resolves_to_filtered_list_via_helper() {
     );
 }
 
+/// `let fs = faces_by_area(body, r)` with `let r = 0mm*0mm..1m*1m` must
+/// resolve to the area-filtered `Value::List`. The single staged face
+/// (0.0001 m²) is within `[0, 1] m²`, so it survives. Pins the Area-Range
+/// resolution + delegation to `topology_selectors::faces_by_area`.
+#[test]
+fn faces_by_area_let_resolves_to_filtered_list_via_helper() {
+    let source = "structure def Bracket {\n    \
+        let body = box(10mm, 10mm, 10mm)\n    \
+        let r = 0mm*0mm..1m*1m\n    \
+        let fs = faces_by_area(body, r)\n}";
+    let compiled = compile_no_errors(source);
+    let mut engine = engine_with_mock_kernel(|k| {
+        k.with_extracted_faces(GeometryHandleId(1), vec![GeometryHandleId(2)])
+            .with_surface_area_result(GeometryHandleId(2), Value::Real(0.0001))
+    });
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let cell = ValueCellId::new("Bracket", "fs");
+    assert_eq!(
+        result.values.get(&cell),
+        Some(&Value::List(vec![Value::Int(2)])),
+        "Bracket.fs must resolve to the area-filtered Value::List via \
+         topology_selectors::faces_by_area, got {:?}",
+        result.values.get(&cell),
+    );
+}
+
 // ── Tessellate-path parity test ─────────────────────────────────────────────
 
 /// The post-process must run on the `tessellate_realizations` path too, so
