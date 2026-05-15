@@ -1140,6 +1140,15 @@ impl Engine {
         // SHADOWING INVARIANT) and seal it in an Arc so clones are O(1).
         // See `merge_functions` in lib.rs for the full contract.
         self.functions = merge_functions(module, &self.prelude_functions);
+        // Incrementally refresh the structure side-table from the user
+        // module's `structure def` templates (task 3540 / SIR-α step-12).
+        // `intern` is idempotent on name: prelude-seeded structures keep
+        // their stable `StructureTypeId`; user structures are added (or their
+        // meta overwritten on re-eval after an edit).
+        crate::engine_admin::populate_structure_registry(
+            &mut self.structure_registry,
+            std::slice::from_ref(module),
+        );
         self.compiled_purposes = module.compiled_purposes.clone();
         // Snapshot the field declarations so `Engine::edit_param` can
         // re-elaborate composed fields incrementally when their tracked

@@ -327,6 +327,17 @@ pub struct Engine {
     /// Note: this duplicates data already held in the static `prelude` slice,
     /// adding per-Engine memory proportional to the number of prelude functions.
     prelude_functions: Vec<CompiledFunction>,
+    /// Per-Engine structure-definition side-table (task 3540 / SIR-α).
+    ///
+    /// Maps interned `StructureTypeId`s to `StructureMeta` (declared trait
+    /// bounds, `@version(N)`, declaration-order field layout). Populated at
+    /// construction by walking every `prelude` module's `templates` (only
+    /// `EntityKind::Structure`), and incrementally refreshed from the user
+    /// module's templates at the top of `eval()` (`intern` is idempotent on
+    /// name — existing ids stay stable, meta is overwritten). Backs
+    /// `Value::StructureInstance` nominal-conformance and cache-key stability;
+    /// ids are NOT stable across Engine restarts (cache keys use name+version).
+    structure_registry: reify_types::StructureRegistry,
     /// Overridden param values (set by set_param_and_invalidate).
     param_overrides: std::collections::HashMap<ValueCellId, reify_types::Value>,
     /// Consolidated evaluation state from last eval() or edit_param().

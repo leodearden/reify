@@ -5,7 +5,7 @@ use crate::demand::DemandRegistry;
 use crate::journal::EventJournal;
 use crate::snapshot::Snapshot;
 use crate::{Engine, EvaluationState};
-use reify_compiler::{CompiledModule, ValueCellKind};
+use reify_compiler::{CompiledModule, EntityKind, ValueCellKind};
 use reify_types::{
     CompiledFunction, ConstraintChecker, ConstraintSolver, Diagnostic, FeatureTagTable,
     GeometryKernel, OptimizedImpl, TopologyAttributeTable,
@@ -71,6 +71,50 @@ fn module_has_auto_cells(module: &CompiledModule) -> bool {
         .any(|t| t.value_cells.iter().any(|c| c.kind.is_auto()))
 }
 
+/// Walk every `EntityKind::Structure` template in `modules` and intern a
+/// [`reify_types::StructureMeta`] per template into `registry` (task 3540 /
+/// SIR-α step-12).
+///
+/// `Occurrence` templates (instances) are skipped — only `structure def`-kind
+/// declarations back the `Value::StructureInstance` side-table. `intern` is
+/// idempotent on the structure name: an already-interned name keeps its
+/// `StructureTypeId` stable and only its `StructureMeta` is overwritten, so
+/// calling this at construction (prelude) and again per `eval()` (user module)
+/// is a safe incremental refresh.
+///
+/// `version` is fixed at `1` here; the `@version(N)` annotation read-side
+/// (task 3540 / step-14) will source it from `TopologyTemplate.version` once
+/// that field exists. `source` is `None` (templates carry no single decl
+/// span; per-cell spans live on `value_cells`).
+pub(crate) fn populate_structure_registry(
+    registry: &mut reify_types::StructureRegistry,
+    modules: &[CompiledModule],
+) {
+    for module in modules {
+        for tmpl in &module.templates {
+            if tmpl.entity_kind != EntityKind::Structure {
+                continue;
+            }
+            let field_layout: Vec<(String, reify_types::Type)> = tmpl
+                .value_cells
+                .iter()
+                .filter(|c| matches!(c.kind, ValueCellKind::Param))
+                .map(|c| (c.id.member.clone(), c.cell_type.clone()))
+                .collect();
+            registry.intern(
+                &tmpl.name,
+                reify_types::StructureMeta {
+                    name: tmpl.name.clone(),
+                    version: 1,
+                    declared_trait_bounds: tmpl.trait_bounds.clone(),
+                    source: None,
+                    field_layout,
+                },
+            );
+        }
+    }
+}
+
 pub(crate) fn validate_param_override(
     value: &reify_types::Value,
     cell_type: &reify_types::Type,
@@ -128,6 +172,11 @@ impl Engine {
             .iter()
             .flat_map(|pm| pm.functions.iter().cloned())
             .collect();
+        // Seed the structure side-table from the prelude's `structure def`
+        // templates (task 3540 / SIR-α step-12). Refreshed incrementally per
+        // `eval()` from the user module's templates.
+        let mut structure_registry = reify_types::StructureRegistry::new();
+        populate_structure_registry(&mut structure_registry, prelude);
         Self {
             constraint_checker,
             geometry_kernel,
@@ -135,6 +184,7 @@ impl Engine {
             cache: CacheStore::new(),
             prelude,
             prelude_functions,
+            structure_registry,
             param_overrides: std::collections::HashMap::new(),
             eval_state: None,
             demand: DemandRegistry::new(),
@@ -227,6 +277,26 @@ impl Engine {
     /// entry. Task 2982.
     pub fn swept_kind_table(&self) -> &crate::sweep_classifier::SweptKindTable {
         &self.swept_kind_table
+    }
+
+    /// **Test-instrumentation only — not a stable public surface.**
+    ///
+    /// Immutable access to the per-Engine [`reify_types::StructureRegistry`]
+    /// seeded from the prelude at construction and refreshed per `eval()`
+    /// from the user module's `structure def` templates (task 3540 / SIR-α
+    /// step-12). Tests assert that a known prelude structure (e.g.
+    /// `Steel_AISI_1045`) is interned with its declared trait bounds, default
+    /// version, and declaration-order field layout, and that unknown names
+    /// resolve to `None`.
+    ///
+    /// Mirrors the cfg-gating of [`realization_cache`](Self::realization_cache):
+    /// `StructureTypeId`s are per-Engine ephemeral handles, so exposing the
+    /// table in production builds would leak an internal id space into the
+    /// public surface. Only available under
+    /// `#[cfg(any(test, feature = "test-instrumentation"))]`.
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn structure_registry(&self) -> &reify_types::StructureRegistry {
+        &self.structure_registry
     }
 
     /// **Test-instrumentation only — not a stable public metric.**
