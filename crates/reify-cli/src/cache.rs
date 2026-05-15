@@ -53,7 +53,7 @@ const IMPORT_ENTRY_MAX_BYTES: usize = ENTRY_HEADER_ENCODED_LEN + 256 * 1024 * 10
 const IMPORT_ENTRY_MAX_COUNT: usize = 1024;
 
 /// Usage line printed to stderr for any `reify cache` dispatcher error.
-const CACHE_USAGE: &str = "Usage: reify cache (export <hash>|import)";
+const CACHE_USAGE: &str = "Usage: reify cache (export <hash>|import|stats|clear|gc)";
 
 /// Usage line for `reify cache export` argument errors.
 const EXPORT_USAGE: &str = "Usage: reify cache export <hash>";

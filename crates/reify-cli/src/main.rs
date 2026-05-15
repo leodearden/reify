@@ -56,6 +56,18 @@ fn print_usage(out: &mut dyn std::io::Write) {
         out,
         "  cache import               Read a cache tarball from stdin into the local cache"
     );
+    let _ = writeln!(
+        out,
+        "  cache stats                Print cache directory, entry count, total size, and top-N largest entries"
+    );
+    let _ = writeln!(
+        out,
+        "  cache clear [--engine-version <hash>] --yes  Empty the cache (or one engine-version subdir); --yes required"
+    );
+    let _ = writeln!(
+        out,
+        "  cache gc                   Force LRU eviction down to the configured cache cap"
+    );
     let _ = writeln!(out, "  --version                  Print version");
     let _ = writeln!(out, "  --help                     Show this list");
 }
