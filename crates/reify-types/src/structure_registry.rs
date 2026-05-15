@@ -5,8 +5,12 @@
 //! `Value::StructureInstance` side-table per
 //! `docs/prds/v0_3/structure-instance-runtime.md` (task SIR-α / 3540).
 //!
-//! Module skeleton only at this stage — full field definitions and the
-//! intern/lookup methods land in a subsequent step.
+//! The registry is per-Engine: ids are *not* stable across Engine restarts,
+//! so cache-key composition keys off the structure *name* + `version`, never
+//! the [`StructureTypeId`].
+
+use crate::{SourceSpan, Type};
+use std::collections::HashMap;
 
 /// Stable per-Engine identifier for an interned structure definition.
 ///
@@ -17,12 +21,90 @@
 pub struct StructureTypeId(pub u32);
 
 /// Side-table metadata for a structure definition.
+///
+/// Sourced from the compiler's `TopologyTemplate` at Engine construction:
+/// declared trait bounds drive nominal-conformance checks, `version` drives
+/// `@version(N)` cache invalidation, `field_layout` records declaration order.
 #[derive(Debug, Clone, PartialEq, Default)]
-pub struct StructureMeta;
+pub struct StructureMeta {
+    /// Canonical structure name (e.g. `"Steel_AISI_1045"`). Also the
+    /// cache-key-stable identity across Engine restarts.
+    pub name: String,
+    /// `@version(N)` value; defaults to `1` when the annotation is absent.
+    pub version: u32,
+    /// Trait names this structure declares conformance to
+    /// (`structure def Foo : Bar` → `["Bar"]`).
+    pub declared_trait_bounds: Vec<String>,
+    /// Source span of the `structure def` declaration, if known. `None` for
+    /// synthetic / prelude-interned structures without a span.
+    pub source: Option<SourceSpan>,
+    /// Declared parameters in declaration order: `(field_name, field_type)`.
+    pub field_layout: Vec<(String, Type)>,
+}
 
 /// Per-Engine registry mapping structure names ↔ ids and ids → meta.
+///
+/// `intern` is idempotent on the name: re-interning an existing name keeps
+/// the original [`StructureTypeId`] stable while overwriting its metadata.
 #[derive(Debug, Clone, Default)]
-pub struct StructureRegistry;
+pub struct StructureRegistry {
+    by_id: Vec<StructureMeta>,
+    by_name: HashMap<String, StructureTypeId>,
+}
+
+impl StructureRegistry {
+    /// Create an empty registry.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Intern `name` with its `meta`, returning a stable id.
+    ///
+    /// If `name` was already interned, the existing id is returned and its
+    /// metadata is overwritten with `meta` (id stays stable). Otherwise a
+    /// fresh sequential id is allocated.
+    pub fn intern(&mut self, name: &str, meta: StructureMeta) -> StructureTypeId {
+        if let Some(&id) = self.by_name.get(name) {
+            self.by_id[id.0 as usize] = meta;
+            id
+        } else {
+            let id = StructureTypeId(self.by_id.len() as u32);
+            self.by_id.push(meta);
+            self.by_name.insert(name.to_string(), id);
+            id
+        }
+    }
+
+    /// Look up the id for a structure name, if interned.
+    pub fn id_for(&self, name: &str) -> Option<StructureTypeId> {
+        self.by_name.get(name).copied()
+    }
+
+    /// Look up the canonical name for an id, if it is in range.
+    pub fn name_for(&self, id: StructureTypeId) -> Option<&str> {
+        self.by_id.get(id.0 as usize).map(|m| m.name.as_str())
+    }
+
+    /// Borrow the full metadata for an id, if it is in range.
+    pub fn meta(&self, id: StructureTypeId) -> Option<&StructureMeta> {
+        self.by_id.get(id.0 as usize)
+    }
+
+    /// Borrow the declared trait bounds for an id, if it is in range.
+    pub fn declared_bounds(&self, id: StructureTypeId) -> Option<&[String]> {
+        self.meta(id).map(|m| m.declared_trait_bounds.as_slice())
+    }
+
+    /// Number of interned structures.
+    pub fn len(&self) -> usize {
+        self.by_id.len()
+    }
+
+    /// Whether the registry has no interned structures.
+    pub fn is_empty(&self) -> bool {
+        self.by_id.is_empty()
+    }
+}
 
 #[cfg(test)]
 mod tests {
