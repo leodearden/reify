@@ -72,6 +72,19 @@ impl From<&NodeId> for reify_types::NodeKind {
     }
 }
 
+/// Project a [`NodeId`] to its [`reify_types::NodeKind`] discriminant via the
+/// [`reify_types::HasNodeKind`] trait.
+///
+/// Sibling bridge to the `From<&NodeId> for NodeKind` impl above; both live in
+/// `reify-eval` for the same orphan-rule reason (`NodeId` is local to this crate,
+/// the destination trait/type is foreign). The body delegates to that existing `From`
+/// impl to avoid duplicating match arms. See PRD §5 B1.
+impl reify_types::HasNodeKind for NodeId {
+    fn node_kind(&self) -> reify_types::NodeKind {
+        reify_types::NodeKind::from(self)
+    }
+}
+
 impl fmt::Display for NodeId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
