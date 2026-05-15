@@ -73,9 +73,18 @@ pub struct EigenSolverResult {
     pub eigenvalues: Vec<f64>,
     /// Column-major eigenvector matrix of shape `n × eigenvalues.len()`.
     pub eigenvectors: Mat<f64>,
-    /// Number of converged eigenvalues (equals `eigenvalues.len()`).
-    pub iterations: usize,
-    /// `true` iff all requested `n_modes` eigenvalues converged.
+    /// Number of eigenvalues converged by the underlying solver.
+    ///
+    /// For the **dense path** this is always `0` — the direct path has no
+    /// iterative budget to report (the full spectrum is computed in one pass).
+    /// For the **shift-invert path** this equals `info.n_converged_eigen` from
+    /// faer's `partial_self_adjoint_eigen` — the count of Krylov eigenpairs
+    /// that satisfied the tolerance criterion.  Normally equals
+    /// `eigenvalues.len()`; may exceed it only in the rare case that some
+    /// converged Krylov eigenvalues were near-zero and filtered out.
+    pub n_converged: usize,
+    /// `true` iff all requested `n_modes` eigenvalues were returned
+    /// (`eigenvalues.len() == n_modes`).
     pub converged: bool,
 }
 
@@ -133,7 +142,9 @@ fn check_eigen_options_and_shapes(
 /// `λ_i = S_re[i] / beta[i]` (skipping near-zero or infinite beta), sorts
 /// ascending by `|λ|`, and returns the smallest `n_modes`.
 ///
-/// Always sets `converged = true` and `iterations = 0` (direct path).
+/// Sets `n_converged = 0` (direct path; no iterative budget consumed).
+/// Sets `converged = (n_take == opts.n_modes)` — `false` only when B is
+/// nearly singular and too many eigenvalues are filtered out.
 ///
 /// # Panics
 ///
@@ -152,15 +163,17 @@ pub fn solve_eigen_dense(
     {
         let k_ref = k.as_ref();
         let b_ref = b.as_ref();
+        // Hoist symbolic() calls outside the row loop — each call is a
+        // lightweight pointer borrow, but recomputing it per row is noisy.
+        let k_sym = k_ref.symbolic();
+        let b_sym = b_ref.symbolic();
         for i in 0..n {
-            let k_sym = k_ref.symbolic();
             let k_cols = k_sym.col_idx_of_row_raw(i);
             let k_vals = k_ref.val_of_row(i);
             for (col_idx, &val) in k_cols.iter().zip(k_vals.iter()) {
                 let j = *col_idx;
                 k_dense[(i, j)] = val;
             }
-            let b_sym = b_ref.symbolic();
             let b_cols = b_sym.col_idx_of_row_raw(i);
             let b_vals = b_ref.val_of_row(i);
             for (col_idx, &val) in b_cols.iter().zip(b_vals.iter()) {
@@ -221,16 +234,17 @@ pub fn solve_eigen_dense(
 
     let mut eigenvectors = Mat::<f64>::zeros(n, n_take);
     for (out_col, &(_, src_col)) in pairs[..n_take].iter().enumerate() {
-        for row in 0..n {
-            eigenvectors[(row, out_col)] = u_right[(row, src_col)];
-        }
+        // Column-major faer storage: copy whole column slice in one memcpy.
+        eigenvectors
+            .col_as_slice_mut(out_col)
+            .copy_from_slice(u_right.col_as_slice(src_col));
     }
 
     EigenSolverResult {
         eigenvalues,
         eigenvectors,
-        iterations: 0,
-        converged: true,
+        n_converged: 0,
+        converged: n_take == opts.n_modes,
     }
 }
 
@@ -343,7 +357,12 @@ pub fn solve_eigen_shift_invert(
     // For n ≤ 64 (or 2*n_modes ≥ n) max_dim reaches n, causing a panic in the
     // inner thick-restart loop.  Mirror faer's computation here and fall back
     // to the dense path when the Krylov window would hit the problem size.
-    const FAER_MIN_DIM: usize = 32; // matches faer-0.24 src/operator/eigen/mod.rs:MIN_DIM
+    // FAER_MIN_DIM mirrors the private MIN_DIM constant from faer-0.24
+    // (src/operator/eigen/mod.rs).  If the faer workspace dependency is bumped,
+    // re-check this value.  The `shift_invert_no_panic_at_min_dim_boundaries`
+    // integration test probes n ∈ {2, 16, 32, 33, 63, 64, 65} to catch silent
+    // divergence from faer's actual floor without requiring a recompile.
+    const FAER_MIN_DIM: usize = 32; // faer-0.24
     let min_dim = opts.n_modes;
     let max_dim = (2 * opts.n_modes).max(32).min(n);
     let effective_max_dim = max_dim
@@ -407,20 +426,24 @@ pub fn solve_eigen_shift_invert(
     pairs.sort_by(|a, b| a.0.abs().total_cmp(&b.0.abs()));
 
     let n_take = pairs.len().min(opts.n_modes);
-    let converged = n_conv >= opts.n_modes;
+    // Track what the caller actually receives: converged iff we hand back
+    // all n_modes eigenvalues.  Tighter than `n_conv >= n_modes` alone,
+    // since filter_map can drop near-zero μ even when n_conv == n_modes.
+    let converged = n_take == opts.n_modes;
     let eigenvalues: Vec<f64> = pairs[..n_take].iter().map(|&(lam, _)| lam).collect();
 
     let mut eigenvectors = Mat::<f64>::zeros(n, n_take);
     for (out_col, &(_, src_col)) in pairs[..n_take].iter().enumerate() {
-        for row in 0..n {
-            eigenvectors[(row, out_col)] = eigvecs[(row, src_col)];
-        }
+        // Column-major faer storage: copy whole column slice in one memcpy.
+        eigenvectors
+            .col_as_slice_mut(out_col)
+            .copy_from_slice(eigvecs.col_as_slice(src_col));
     }
 
     EigenSolverResult {
         eigenvalues,
         eigenvectors,
-        iterations: n_conv,
+        n_converged: n_conv,
         converged,
     }
 }

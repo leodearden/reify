@@ -62,7 +62,7 @@ fn dense_recovers_known_spectrum_on_5x5_diagonal_pair() {
     let result = solve_eigen_dense(&k, &b, opts);
 
     assert!(result.converged, "dense path must always converge (direct solver)");
-    assert_eq!(result.iterations, 0, "dense path iterations must be 0 (direct solver)");
+    assert_eq!(result.n_converged, 0, "dense path n_converged must be 0 (direct solver)");
     assert_eq!(result.eigenvalues.len(), 5, "must return 5 eigenvalues");
 
     let expected = fixture_a_expected();
@@ -131,12 +131,12 @@ fn shift_invert_routes_5x5_diagonal_pair_through_dense_fallback() {
     };
     let result = solve_eigen_shift_invert(&k, &b, opts);
 
-    // Fallback → dense always reports converged=true and iterations=0.
+    // Fallback → dense always reports n_converged=0 (direct path, no Lanczos).
     assert!(result.converged, "fallback to dense must converge on the 5×5 diagonal pair");
     assert_eq!(
-        result.iterations, 0,
-        "dense-fallback iterations must be 0; got {} (suggests Lanczos was reached)",
-        result.iterations,
+        result.n_converged, 0,
+        "dense-fallback n_converged must be 0; got {} (suggests Lanczos was reached)",
+        result.n_converged,
     );
     assert_eq!(result.eigenvalues.len(), 5, "must return 5 eigenvalues");
     assert_eq!(result.eigenvectors.nrows(), 5, "eigenvectors must have n=5 rows");
@@ -191,16 +191,16 @@ fn dense_recovers_closed_form_on_50dof_laplacian() {
     }
 
     // (b) Shift-invert entry point falls back to dense at n=50 — assert the
-    // fallback-routing contract (iterations=0, converged=true), then verify
+    // fallback-routing contract (n_converged=0, converged=true), then verify
     // the returned spectrum matches the direct dense call bit-for-bit.
     assert!(
         si_result.converged,
         "shift-invert dense-fallback must converge on the 50-DOF Laplacian pair",
     );
     assert_eq!(
-        si_result.iterations, 0,
-        "n=50 must route through dense fallback (iterations=0); got {}",
-        si_result.iterations,
+        si_result.n_converged, 0,
+        "n=50 must route through dense fallback (n_converged=0); got {}",
+        si_result.n_converged,
     );
     assert_eq!(
         si_result.eigenvalues.len(),
@@ -249,16 +249,16 @@ fn shift_invert_and_dense_agree_on_80dof_synthetic_pair() {
 
     let expected = fixture_c_expected_5();
 
-    // (a) Shift-invert must take the Lanczos path (iterations > 0 reflects
-    // n_converged_eigen).  If iterations==0, the fallback routing leaked into
-    // n>64 territory and the test no longer covers Lanczos.
+    // (a) Shift-invert must take the Lanczos path (n_converged > 0 reflects
+    // info.n_converged_eigen from faer).  If n_converged==0, the fallback
+    // routing leaked into n>64 territory and the test no longer covers Lanczos.
     assert!(
         si_result.converged,
         "shift-invert (Lanczos) must converge on the 80-DOF Laplacian pair",
     );
     assert!(
-        si_result.iterations > 0,
-        "shift-invert at n=80 must exercise Lanczos (iterations>0); got 0 \
+        si_result.n_converged > 0,
+        "shift-invert at n=80 must exercise Lanczos (n_converged>0); got 0 \
          (suggests routing fell through to dense — Lanczos coverage lost)",
     );
     assert_eq!(
@@ -336,7 +336,7 @@ fn shift_invert_reports_non_convergence_when_max_iters_too_low() {
 
     assert!(
         !result.converged,
-        "shift-invert must report converged=false when max_iters=1 and tol=1e-14 \
+        "shift-invert must report converged=false when max_iters=1 and tol=1e-300 \
          — got converged=true with {} eigenvalues",
         result.eigenvalues.len(),
     );
@@ -348,8 +348,8 @@ fn shift_invert_reports_non_convergence_when_max_iters_too_low() {
     );
     assert_eq!(
         result.eigenvalues.len(),
-        result.iterations,
-        "iterations must equal the number of converged eigenvalues returned",
+        result.n_converged,
+        "n_converged must equal the number of converged eigenvalues returned",
     );
     assert_eq!(
         result.eigenvectors.ncols(),
@@ -410,4 +410,49 @@ fn solve_eigen_shift_invert_panics_on_non_finite_tol() {
         ..EigenSolverOptions::default()
     };
     let _ = solve_eigen_shift_invert(&k, &b, opts);
+}
+
+// ---------------------------------------------------------------------------
+// Suggestion-4 robustness test: n-floor no-panic boundary sweep
+// ---------------------------------------------------------------------------
+
+/// Verify that `solve_eigen_shift_invert` does not panic at boundary sizes
+/// near faer's FAER_MIN_DIM=32 floor: n ∈ {2, 16, 32, 33, 63, 64, 65}.
+///
+/// For n ≤ 64 the `effective_max_dim >= n` branch fires and the call is
+/// forwarded to the dense fallback.  For n = 65 the Krylov window (64) is
+/// strictly less than n, so `partial_self_adjoint_eigen` actually runs.
+/// Both paths must complete without panic.
+///
+/// Numerical accuracy is not checked here — that is pinned by the closed-form
+/// fixtures.  This test guards only against the "panic on small problems"
+/// regression documented in eigensolve.rs FAER_MIN_DIM comment.
+#[test]
+fn shift_invert_no_panic_at_min_dim_boundaries() {
+    for n in [2_usize, 16, 32, 33, 63, 64, 65] {
+        // K = tridiag(-1, 2, -1) (SPD Dirichlet Laplacian), B = I.
+        let mut k_trips = Vec::with_capacity(3 * n);
+        for i in 0..n {
+            k_trips.push(Triplet::new(i, i, 2.0));
+            if i > 0 {
+                k_trips.push(Triplet::new(i, i - 1, -1.0));
+            }
+            if i + 1 < n {
+                k_trips.push(Triplet::new(i, i + 1, -1.0));
+            }
+        }
+        let b_trips: Vec<Triplet<usize, usize, f64>> =
+            (0..n).map(|i| Triplet::new(i, i, 1.0)).collect();
+        let k = SparseRowMat::try_new_from_triplets(n, n, &k_trips).unwrap();
+        let b = SparseRowMat::try_new_from_triplets(n, n, &b_trips).unwrap();
+
+        let opts = EigenSolverOptions {
+            n_modes: 2,
+            tol: 1e-10,
+            max_iters: 1000,
+            sigma: 0.0,
+        };
+        // Absence of panic IS the assertion.
+        let _ = solve_eigen_shift_invert(&k, &b, opts);
+    }
 }
