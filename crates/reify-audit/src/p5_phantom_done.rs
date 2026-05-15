@@ -131,14 +131,6 @@ fn check_one(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Finding> {
     let prov = meta.done_provenance.as_ref()?;
     let kind = prov.kind.as_deref().unwrap_or("");
 
-    // No files claimed → no provenance to corroborate; treat as clean.
-    // Prevents spurious git-diff calls (which would fail in non-git repos)
-    // when the caller supplies an empty `files` list for testing or
-    // for tasks whose provenance is verified solely by the runs.db trail.
-    if meta.files.is_empty() {
-        return None;
-    }
-
     // Corroboration (a) — runs.db trail. For kind="merged", absence of a
     // task_completed event means the orchestrator never recorded the
     // completion at all — definitive phantom-done, no sibling rescue.
@@ -197,6 +189,15 @@ fn check_one(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Finding> {
                 });
             }
         }
+    }
+
+    // No files claimed → no git provenance to corroborate; treat as clean for
+    // the git-diff leg only. The runs.db check above was already decisive for
+    // kind="merged" tasks: if that check passed (Ok(true)), the task is
+    // corroborated by the orchestrator record even without a file-list. Only
+    // gate the expensive git-diff work that follows.
+    if meta.files.is_empty() {
+        return None;
     }
 
     // Corroboration (b) — primary git check. The claimed commit's diff
