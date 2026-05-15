@@ -4,7 +4,7 @@
 //! Test E — defaulted call compiles without errors and emits UserFunctionCall.
 //! Test F — param without a default still produces the unchanged NoMatch error.
 
-use reify_types::{CompiledExprKind, ModulePath, Severity};
+use reify_types::{CompiledExprKind, ModulePath, Severity, Value};
 
 /// Test E: a call that omits all defaulted params compiles without errors
 /// and the resulting expression is a UserFunctionCall with the full arg count.
@@ -55,6 +55,19 @@ structure S {
                 1,
                 "padded call should carry 1 arg (the compiled default)"
             );
+            // Suggestion 2: pin the content of the padded default, not just its presence.
+            // A bug that inserted the wrong default (e.g., from a different candidate or
+            // a zero literal) would still pass an args.len() check alone.
+            match &args[0].kind {
+                CompiledExprKind::Literal(Value::Real(v)) => assert!(
+                    (*v - 1.0).abs() < f64::EPSILON,
+                    "padded default should be 1.0, got {v}"
+                ),
+                other => panic!(
+                    "expected Literal(Value::Real(1.0)) as padded default, got {:?}",
+                    other
+                ),
+            }
         }
         other => panic!("expected UserFunctionCall, got {:?}", other),
     }
@@ -106,5 +119,89 @@ structure S {
         errors[0].message.contains("no matching overload"),
         "error should mention 'no matching overload', got: {:?}",
         errors[0].message
+    );
+}
+
+/// Test G: a default expression that references a sibling param (`fn f(a: Real, b: Real = a)`)
+/// produces a diagnostic during compilation — defaults are compiled in a neutral scope
+/// (no params registered) so sibling-param references are unresolved.
+///
+/// The current diagnostic is the generic "unresolved name: a" from compile_expr.
+/// A future refinement may emit a more specific message; update this test accordingly.
+#[test]
+fn fn_param_default_sibling_param_ref_errors() {
+    let source = r#"
+fn f(a : Real, b : Real = a) -> Real { b }
+"#;
+    let parsed = reify_syntax::parse(source, ModulePath::single("test_consume_g"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error for sibling-param reference in default expression"
+    );
+    // Current behavior: generic "unresolved name: a" because the neutral scope has no params.
+    assert!(
+        errors.iter().any(|e| e.message.contains("unresolved name")),
+        "expected 'unresolved name' diagnostic, got: {:?}",
+        errors
+    );
+}
+
+/// Test H (ambiguous-padding regression): when two or more same-name candidates are
+/// both satisfiable via default-padding for the same call, `try_default_padding` returns
+/// `None` and the caller falls through to the generic "no matching overload" error.
+///
+/// This documents the current UX gap: the message says "no matching overload" rather
+/// than something like "ambiguous default-padding". A future enhancement may route
+/// the `satisfiable.len() > 1` case through a dedicated diagnostic mirroring
+/// `OverloadResolution::Ambiguous`; when that lands, update or remove this test.
+#[test]
+fn fn_param_default_ambiguous_padding_pins_no_match_error() {
+    // Both overloads are satisfiable from f() with 0 provided args:
+    //   f(x:Real=1.0)             — 1 param, all-defaulted → satisfiable
+    //   f(x:Real=3.0, y:Real=2.0) — 2 params, all-defaulted → satisfiable
+    // Multiple satisfiable → try_default_padding returns None → NoMatch error.
+    let source = r#"
+fn f(x : Real = 1.0) -> Real { x }
+fn f(x : Real = 3.0, y : Real = 2.0) -> Real { x + y }
+
+structure S {
+    let v = f()
+}
+"#;
+    let parsed = reify_syntax::parse(source, ModulePath::single("test_consume_h"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected an error for ambiguous default-padding"
+    );
+    assert!(
+        errors.iter().any(|e| e.message.contains("no matching overload")),
+        "expected 'no matching overload' (ambiguous default-padding pins current behavior), got: {:?}",
+        errors
     );
 }
