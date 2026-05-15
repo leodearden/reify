@@ -878,6 +878,156 @@ fn cache_stats_reports_correct_entry_count_and_total_size_for_seeded_cache() {
 }
 
 #[test]
+fn cache_stats_output_schema_golden_with_top_n_and_hit_rate_caveat() {
+    // Pin the full stats schema: 7 seeded entries with strictly increasing
+    // payload sizes (so the .bin byte sizes differ and the top-N ordering is
+    // deterministic) must produce:
+    //   (a) `Cache directory: <tempdir path>`
+    //   (b) `Entry count: 7`
+    //   (c) a non-zero `Total size:` line
+    //   (d) a `Top 5 largest entries:` section listing exactly 5 entries by
+    //       32-hex input_hash, sorted descending by byte size
+    //   (e) a hit-rate caveat sentence mentioning `hit rate` and
+    //       `per-process` (or `current process`)
+    let cache_dir = tempdir().expect("tempdir");
+
+    // Seed 7 entries with strictly increasing displacement vec lengths so each
+    // .bin is a different size on disk.  Use the index character as the hash
+    // prefix so the hash strings are distinct AND the ordering is recoverable
+    // from the test (largest = 'g'×32 = idx 6, smallest = 'a'×32 = idx 0).
+    let chars = ['a', 'b', 'c', 'd', 'e', 'f', 'g'];
+    for (i, ch) in chars.iter().enumerate() {
+        let input_hash: String = std::iter::repeat(*ch).take(32).collect();
+        let displacement: Vec<f64> = (0..(i + 1) * 64).map(|n| n as f64).collect();
+        let stress: Vec<f64> = (0..(i + 1) * 64).map(|n| (n as f64) * 1.5).collect();
+        let fixture = ElasticResult {
+            displacement,
+            stress,
+            max_von_mises: 7.5,
+            converged: true,
+            iterations: 9,
+            solve_time_ms: 42,
+            shell_channels: None,
+        };
+        write_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
+            .expect("write_entry must seed the cache");
+    }
+
+    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+        .args(["cache", "stats"])
+        .env("REIFY_CACHE_DIR", cache_dir.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute reify binary");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "reify cache stats should succeed; status={:?} stderr={stderr}",
+        output.status
+    );
+
+    // (a) Cache-directory line carries the tempdir path.
+    let cache_dir_str = cache_dir.path().display().to_string();
+    assert!(
+        stdout.contains(&format!("Cache directory: {cache_dir_str}")),
+        "stdout should contain 'Cache directory: {cache_dir_str}', got: {stdout}"
+    );
+
+    // (b) Entry count is 7.
+    assert!(
+        stdout.contains("Entry count: 7"),
+        "stdout should contain 'Entry count: 7', got: {stdout}"
+    );
+
+    // (c) Total size is non-zero.
+    let size_line = stdout
+        .lines()
+        .find(|l| l.starts_with("Total size:"))
+        .unwrap_or_else(|| panic!("stdout must contain a 'Total size:' line, got: {stdout}"));
+    let size_n: u64 = size_line
+        .split_whitespace()
+        .nth(2)
+        .and_then(|t| t.parse().ok())
+        .unwrap_or_else(|| panic!("'Total size:' line must have a u64 value: {size_line}"));
+    assert!(
+        size_n > 0,
+        "Total size should be > 0 for a seeded cache, got: {size_line}"
+    );
+
+    // (d) Top-N section: header label + exactly 5 hash-prefixed lines, sorted
+    // descending by byte size.  Find the header by its fixed label, then take
+    // the next 5 non-blank lines and assert each contains a 32-hex input_hash
+    // (one of the seeded chars).  Also assert the descending-by-size
+    // invariant by taking the trailing numeric token (byte size) on each row.
+    let top_header_idx = stdout
+        .lines()
+        .position(|l| l.starts_with("Top 5 largest entries"))
+        .unwrap_or_else(|| {
+            panic!("stdout must contain a 'Top 5 largest entries' section header, got: {stdout}")
+        });
+    let top_lines: Vec<&str> = stdout
+        .lines()
+        .skip(top_header_idx + 1)
+        .filter(|l| !l.trim().is_empty())
+        .take(5)
+        .collect();
+    assert_eq!(
+        top_lines.len(),
+        5,
+        "Top-5 section should list exactly 5 entries, got: {top_lines:?}"
+    );
+    // Each row must contain a 32-char repeating hash (we'll just check that
+    // the 32-char repeating prefix substring of one of the seeded chars
+    // appears in the row).
+    let mut prev_size: Option<u64> = None;
+    for row in &top_lines {
+        let mut found_hash = None;
+        for ch in chars.iter() {
+            let hash: String = std::iter::repeat(*ch).take(32).collect();
+            if row.contains(&hash) {
+                found_hash = Some(hash);
+                break;
+            }
+        }
+        assert!(
+            found_hash.is_some(),
+            "Top-N row must contain a seeded 32-hex hash, got: {row}"
+        );
+        // Pull the trailing whitespace-delimited numeric token as the byte
+        // size and assert descending order.
+        let size_token: u64 = row
+            .split_whitespace()
+            .filter_map(|t| t.parse::<u64>().ok())
+            .next_back()
+            .unwrap_or_else(|| panic!("Top-N row must contain a u64 byte size, got: {row}"));
+        if let Some(prev) = prev_size {
+            assert!(
+                size_token <= prev,
+                "Top-N rows must be sorted descending by size; \
+                 prev={prev}, current={size_token}, row={row}"
+            );
+        }
+        prev_size = Some(size_token);
+    }
+
+    // (e) Hit-rate caveat sentence.  Lower-case the haystack so we don't
+    // pin the exact capitalization of the sentence.
+    let stdout_lc = stdout.to_ascii_lowercase();
+    assert!(
+        stdout_lc.contains("hit rate"),
+        "stdout should contain 'hit rate' caveat, got: {stdout}"
+    );
+    assert!(
+        stdout_lc.contains("per-process") || stdout_lc.contains("current process"),
+        "stdout should contain 'per-process' or 'current process' caveat, got: {stdout}"
+    );
+}
+
+#[test]
 fn cache_export_with_extra_positional_shows_export_usage() {
     // `reify cache export aaa bbb` (extra positional past the hash) should be
     // rejected with the export-specific usage banner.
