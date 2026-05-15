@@ -4501,6 +4501,7 @@ mod tests {
             BRepKind::Compound,
             BRepKind::Edge,
             BRepKind::Face,
+            BRepKind::Vertex,
         ];
 
         // All variants are pairwise distinct.
