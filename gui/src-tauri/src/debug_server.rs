@@ -845,7 +845,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dispatch_tool_morph_stats_returns_morph_stats_shape() {
+    async fn handle_morph_stats_returns_morph_stats_shape() {
         // Precondition: pristine stats. reset_for_test() is exposed via the
         // `testing` feature on reify-mesh-morph (activated by [dev-dependencies]
         // features = ["testing"] in Cargo.toml). This keeps the test correct even
@@ -854,7 +854,7 @@ mod tests {
         // leaked state from other test runs could produce non-zero counts.
         reify_mesh_morph::stats::reset_for_test();
 
-        // State-free handler — call directly. Zero snapshot expected after reset.
+        // State-free handler — call directly (not through dispatch). Zero snapshot expected after reset.
         let result = super::handle_morph_stats(serde_json::json!({}))
             .await
             .expect("morph_stats handler must succeed");
@@ -877,5 +877,34 @@ mod tests {
             .await
             .expect("morph_stats with body_id must succeed");
         assert_eq!(with_body, result, "body_id must be ignored — identical response");
+    }
+
+    #[tokio::test]
+    async fn dispatch_routes_morph_stats_through_stateless_arm() {
+        // Precondition: pristine stats so counts are deterministically 0.
+        reify_mesh_morph::stats::reset_for_test();
+
+        // dispatch_stateless_tool covers the state-free arms of dispatch_tool
+        // ("health" and "morph_stats"). This test exercises the exact
+        // "morph_stats" match-arm string — a typo or removal fails compilation
+        // or returns None, which is caught by the assert below.
+        let result = super::dispatch_stateless_tool("morph_stats", serde_json::json!({}))
+            .await
+            .expect("dispatch_stateless_tool must return Some for 'morph_stats'")
+            .expect("morph_stats handler must succeed");
+
+        assert!(result.is_object(), "response must be a JSON object");
+        assert_eq!(result["morph_count"].as_u64(), Some(0), "morph_count key present, default 0");
+        assert_eq!(
+            result["remesh_count"].as_u64(),
+            Some(0),
+            "remesh_count key present, default 0"
+        );
+        assert!(
+            result.get("last_rejection_reason").is_none()
+                || result["last_rejection_reason"].is_null(),
+            "last_rejection_reason absent/null by default; got: {:?}",
+            result.get("last_rejection_reason")
+        );
     }
 }
