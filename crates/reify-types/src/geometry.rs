@@ -4490,7 +4490,7 @@ mod tests {
     /// Verify that `BRepKind` (renamed from `ReprKind`) retains `Hash + Eq + Copy + Debug`
     /// so it can act as a `HashMap` key and be compared / logged by callers.
     ///
-    /// All six B-rep sub-shape variants must be pairwise distinct.
+    /// All seven B-rep sub-shape variants must be pairwise distinct.
     #[test]
     fn b_rep_kind_variants_round_trip_through_hashmap_key() {
         use std::collections::HashMap;
@@ -4516,15 +4516,15 @@ mod tests {
             }
         }
 
-        // All six variants survive a HashMap round-trip (requires Hash + Eq).
+        // All seven variants survive a HashMap round-trip (requires Hash + Eq).
         let mut map: HashMap<BRepKind, u32> = HashMap::new();
         for (idx, v) in variants.iter().enumerate() {
             map.insert(*v, idx as u32); // *v requires Copy
         }
         assert_eq!(
             map.len(),
-            6,
-            "all 6 BRepKind variants must be stored as distinct keys"
+            7,
+            "all 7 BRepKind variants must be stored as distinct keys"
         );
         for (idx, v) in variants.iter().enumerate() {
             assert_eq!(
