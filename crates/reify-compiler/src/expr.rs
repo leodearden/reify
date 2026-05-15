@@ -1318,11 +1318,20 @@ pub(crate) fn compile_expr_guarded(
                                 .with_label(DiagnosticLabel::new(expr.span, "unknown member")),
                             );
                         }
-                        // Use the member's actual type as fallback so downstream expressions
-                        // do not cascade spurious type-mismatch diagnostics.
-                        // Aggregation members are not in sub_member_types (they're methods,
-                        // not struct fields), so infer their types the same way the general
-                        // method-call path does at the bottom of this arm.
+                        // Determine the fallback type to suppress cascading type-mismatch
+                        // diagnostics in downstream expressions.
+                        //
+                        // Known aggregation members (count/sum/keys/values) are NOT in
+                        // sub_member_types (they're methods, not struct fields); infer their
+                        // concrete types the same way the general method-call path does.
+                        //
+                        // For any *unknown* member, the diagnostic above already captures the
+                        // root cause.  We must NOT fall back to Type::Real here: doing so lets
+                        // downstream BinOp consumers see `Real + Real = Real` and swallow the
+                        // error, defeating the Type::Error anti-cascade policy described in
+                        // `make_poison_literal` (expr.rs:76-85) and ty.rs:123-131.
+                        // `unwrap_or(Type::Error)` ensures the literal carries the poison
+                        // sentinel so `infer_binop_type` short-circuits correctly.
                         let fallback_type = match member.as_str() {
                             "count" => Type::Int,
                             "sum" | "keys" | "values" => Type::Real,
@@ -1331,7 +1340,10 @@ pub(crate) fn compile_expr_guarded(
                                 .get(sub_name.as_str())
                                 .and_then(|m| m.get(member.as_str()))
                                 .cloned()
-                                .unwrap_or(Type::Real),
+                                // G-allow: Type::Error is intentional here — unknown member on a
+                                // collection sub is an unrecoverable error; poison the literal so
+                                // downstream consumers short-circuit (task 3639 review).
+                                .unwrap_or(Type::Error),
                         };
                         return CompiledExpr::literal(Value::Undef, fallback_type);
                     }
