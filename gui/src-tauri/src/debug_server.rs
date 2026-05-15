@@ -832,4 +832,33 @@ mod tests {
             );
         }
     }
+
+    #[tokio::test]
+    async fn dispatch_tool_morph_stats_returns_morph_stats_shape() {
+        // State-free handler — call directly. Default (zero) snapshot expected
+        // because no reify-gui code path records morph activity (engine wiring
+        // is owned by mesh-morphing PRD tasks #2947-#2949, not yet landed).
+        let result = super::handle_morph_stats(serde_json::json!({}))
+            .await
+            .expect("morph_stats handler must succeed");
+
+        assert!(result.is_object(), "response must be a JSON object");
+        assert_eq!(result["morph_count"].as_u64(), Some(0), "morph_count key present, default 0");
+        assert_eq!(result["remesh_count"].as_u64(), Some(0), "remesh_count key present, default 0");
+        // last_rejection_reason: skip_serializing_if Option::is_none on Rust ⇒
+        // key absent (Value::Null on index) when no rejection recorded.
+        assert!(
+            result.get("last_rejection_reason").is_none()
+                || result["last_rejection_reason"].is_null(),
+            "last_rejection_reason absent/null by default; got: {:?}",
+            result.get("last_rejection_reason")
+        );
+
+        // body_id is accepted but ignored — `{body_id}` form returns the
+        // identical response as the `()` form (forward-compat, per design).
+        let with_body = super::handle_morph_stats(serde_json::json!({"body_id": "Bracket.body"}))
+            .await
+            .expect("morph_stats with body_id must succeed");
+        assert_eq!(with_body, result, "body_id must be ignored — identical response");
+    }
 }
