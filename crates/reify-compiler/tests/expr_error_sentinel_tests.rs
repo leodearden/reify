@@ -561,11 +561,14 @@ structure Outer {
 /// in `compile_expr`'s `self.<collection-sub>.<member>` branch
 /// (`COLLECTION_AGGREGATION_MEMBERS` carve-out, task 3639).
 ///
-/// Testing `sum` alone fully guards the `Type::Real` arm: all three identifiers share the
-/// same single match arm, so one test suffices (design decision #4, task 3657).
+/// Iterates over all three members (`sum`, `keys`, `values`) to actively guard against a
+/// future split of the merged `expr.rs` arm (e.g. if `keys`/`values` were moved to
+/// `Type::List(...)` once collection-iteration lands). Each member is tested independently
+/// so the test goes RED immediately if any arm diverges from `Type::Real` (design decision
+/// #4, task 3657).
 ///
-/// Fixture shape: `let broken = self.bolts.sum + 5`.
-/// - `self.bolts.sum` → `CompiledExpr::literal(Value::Undef, Type::Real)` (carve-out arm),
+/// Fixture shape per member: `let broken = self.bolts.<member> + 5`.
+/// - `self.bolts.<member>` → `CompiledExpr::literal(Value::Undef, Type::Real)` (carve-out arm),
 ///   plus the "cannot access aggregation … through self" `Diagnostic::error`.
 /// - `5` → `Type::Int` (integer literal).
 /// - `infer_binop_type(Add, Real, Int)` = `left.clone()` = `Type::Real` (neither operand
@@ -582,24 +585,28 @@ structure Outer {
 /// Same CONCRETE-type rationale as `self_collection_sub_count_aggregation_pins_int_fallback`;
 /// see that test's docstring for the contrast with sibling Type::Error-asserting tests.
 #[test]
-fn self_collection_sub_sum_aggregation_pins_real_fallback() {
-    let source = r#"
-structure Inner { param x : Scalar = 0mm }
-structure Outer {
+fn self_collection_sub_sum_keys_values_aggregation_pins_real_fallback() {
+    for member in ["sum", "keys", "values"] {
+        let source = format!(
+            r#"
+structure Inner {{ param x : Scalar = 0mm }}
+structure Outer {{
     sub bolts : List<Inner>
-    let broken = self.bolts.sum + 5
-}
-"#;
-    let module = compile_source(source);
+    let broken = self.bolts.{member} + 5
+}}
+"#
+        );
+        let module = compile_source(&source);
 
-    let expr = get_let_expr_in(&module, "Outer", "broken");
+        let expr = get_let_expr_in(&module, "Outer", "broken");
 
-    assert_eq!(
-        expr.result_type,
-        Type::Real,
-        "sum/keys/values carve-out must pin BinOp result_type == Type::Real; got {:?}",
-        expr.result_type,
-    );
+        assert_eq!(
+            expr.result_type,
+            Type::Real,
+            "sum/keys/values carve-out must pin BinOp result_type == Type::Real for member `{member}`; got {:?}",
+            expr.result_type,
+        );
 
-    assert_no_type_cascade(&module.diagnostics, &["cannot access aggregation"]);
+        assert_no_type_cascade(&module.diagnostics, &["cannot access aggregation"]);
+    }
 }
