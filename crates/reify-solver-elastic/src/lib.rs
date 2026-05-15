@@ -99,7 +99,7 @@
 //! assert_eq!(ss.mid, field, "homogeneous: mid must equal input");
 //! assert_eq!(ss.bottom, field, "homogeneous: bottom must equal input");
 //!
-//! // T7 smoke tests: shell_element_frame orthonormality + shell_element_stress zero-DOF regression.
+//! // T7 smoke tests: shell_element_frame orthonormality + shell_element_stress API typecheck.
 //! let frame_mat: [[f64; 3]; 3] = shell_element_frame(&nodes);
 //! // All three rows of the local-to-global rotation matrix must have unit norm.
 //! for i in 0..3 {
@@ -114,11 +114,9 @@
 //!     + frame_mat[0][1]*frame_mat[1][1]
 //!     + frame_mat[0][2]*frame_mat[1][2];
 //! assert!(gram_01.abs() < 1e-12, "frame_mat rows 0·1 = {gram_01}, expected 0.0");
-//! // Zero DOFs → all stress components must be exactly 0.0 (regression guard).
-//! let ses: ShellElementStress = shell_element_stress(&nodes, 0.05, &mat, &[0.0_f64; 18]);
-//! assert_eq!(ses.top[0][0], 0.0, "zero-DOF top σ_xx must be 0.0");
-//! assert_eq!(ses.mid[0][0], 0.0, "zero-DOF mid σ_xx must be 0.0");
-//! assert_eq!(ses.bottom[0][0], 0.0, "zero-DOF bottom σ_xx must be 0.0");
+//! // shell_element_stress public-API typecheck; zero-DOF behaviour is covered by
+//! // shell_result::tests::shell_element_stress_zero_dofs_yields_all_zero_stress.
+//! let _: fn(&[[f64; 3]; 3], f64, &IsotropicElastic, &[f64; 18]) -> ShellElementStress = shell_element_stress;
 //!
 //! // DirichletBc smoke test (T2917): construct, clone, and verify round-trip.
 //! let bc = DirichletBc { dof: 0, value: 0.0 };
