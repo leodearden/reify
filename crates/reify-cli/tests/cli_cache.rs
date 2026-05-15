@@ -15,11 +15,14 @@ use reify_eval::persistent_cache::{
 };
 use tempfile::tempdir;
 
-/// Build a tet-only `ElasticResult` fixture for cache round-trip tests.
+/// Build a tetrahedral-only (no shell elements) `ElasticResult` fixture for
+/// cache round-trip tests.
 ///
-/// Tet-only is signalled by `shell_channels: None`; the v2 encoder emits a
-/// single zero discriminator byte after the existing slabs and the v2 reader
-/// decodes back to `None`, so write-then-read round-trips by `PartialEq`.
+/// Tetrahedral-only is signalled by `shell_channels: None` (per-element
+/// top/bottom shell stress + local frames are absent because the FEA mesh
+/// has no shell elements).  The v2 encoder emits a single zero discriminator
+/// byte after the existing slabs and the v2 reader decodes back to `None`,
+/// so write-then-read round-trips by `PartialEq`.
 fn make_elastic_result_fixture() -> ElasticResult {
     ElasticResult {
         displacement: vec![1.0, 2.0, 3.0],
@@ -629,6 +632,161 @@ fn cache_export_rejects_invalid_hash_without_panic() {
             "stderr should surface hash-shape error for {bad:?}, got: {stderr}"
         );
     }
+}
+
+#[test]
+fn import_with_traversal_shaped_tar_path_exits_failure_no_filesystem_writes() {
+    // Hand-build a tar with one entry whose tar-path is a literal traversal
+    // shape (`../foo.bin`).  This hits the existing tar-slip defense at
+    // `entry_path.is_absolute() || entry_path.components().count() != 1`,
+    // which produces FAILURE (not warn-and-skip).  Pinning this contract in
+    // a test guards against a future refactor that would soften the
+    // multi-component-path branch into a warn-and-skip without a deliberate
+    // decision.
+    let mut tar_bytes: Vec<u8> = Vec::new();
+    {
+        let mut builder = tar::Builder::new(&mut tar_bytes);
+        let body = vec![0u8; 16];
+        let mut tar_header = tar::Header::new_gnu();
+        tar_header.set_size(body.len() as u64);
+        tar_header.set_mode(0o644);
+        // GNU tar Header `set_path` rejects literal `..`-leading paths since
+        // tar-0.4 (defense-in-depth at the construction layer), so we use
+        // `set_path("foo.bin")` to construct a valid header and then patch
+        // the path block in-place via `as_old_mut().name`.  The on-disk tar
+        // body that the reify import sees will then carry `../pwn.bin`,
+        // exercising the `components().count() != 1` branch when the reader
+        // resolves the path.
+        tar_header.set_path("foo.bin").expect("set_path");
+        // Overwrite the path field with `../pwn.bin` directly (USTAR/GNU
+        // both allow up to 100 ASCII bytes in the `name` block).  The
+        // checksum must be recomputed AFTER the in-place edit.
+        let traversal = b"../pwn.bin";
+        let name_field = &mut tar_header.as_old_mut().name;
+        name_field.fill(0);
+        name_field[..traversal.len()].copy_from_slice(traversal);
+        tar_header.set_cksum();
+        builder
+            .append(&tar_header, body.as_slice())
+            .expect("append traversal-path entry");
+        builder.finish().expect("tar finish");
+    }
+
+    let outer = tempdir().expect("outer tempdir");
+    let cache_dir = outer.path().join("cache");
+    std::fs::create_dir(&cache_dir).expect("create cache subdir");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_reify"))
+        .args(["cache", "import"])
+        .env("REIFY_CACHE_DIR", &cache_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn reify import");
+    {
+        let stdin = child.stdin.as_mut().expect("import stdin");
+        stdin
+            .write_all(&tar_bytes)
+            .expect("write tar to import stdin");
+    }
+    let output = child.wait_with_output().expect("wait import");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // FAILURE per the existing tar-slip defense — distinct from the
+    // warn-and-skip semantics for header echo / non-hex stem / engine-version
+    // mismatch.  The contract distinction is intentional: a tar entry path
+    // shaped like `../foo` could not have been produced by `cache export`,
+    // so it's treated as malformed input rather than a recoverable per-entry
+    // skip.
+    assert!(
+        !output.status.success(),
+        "import of traversal-shaped tar path should exit FAILURE; stderr={stderr}"
+    );
+    let stderr_lc = stderr.to_ascii_lowercase();
+    assert!(
+        stderr_lc.contains("traversal") || stderr_lc.contains("rejecting"),
+        "stderr should surface traversal-rejection verbiage, got: {stderr}"
+    );
+    let cache_files = collect_cache_files(&cache_dir);
+    assert!(
+        cache_files.is_empty(),
+        "cache dir must remain empty after FAILURE, found: {cache_files:?}"
+    );
+    // Also: no write escaped into the outer dir.
+    let outer_entries: Vec<std::ffi::OsString> = std::fs::read_dir(outer.path())
+        .expect("read_dir outer")
+        .flatten()
+        .map(|e| e.file_name())
+        .collect();
+    assert_eq!(
+        outer_entries.len(),
+        1,
+        "outer dir should contain only `cache/`, found: {outer_entries:?}"
+    );
+}
+
+#[test]
+fn import_with_non_hex_stem_warns_and_skips_no_filesystem_writes() {
+    // Hand-build a tar with one entry whose tar-path stem is not a 32-hex
+    // string (`hello.bin`).  This hits the `is_32_lowercase_hex(&stem)`
+    // warn-and-skip gate added to close the path-traversal hole, BEFORE any
+    // body decode runs.  Exit must be SUCCESS (warn-and-skip is non-fatal),
+    // stderr must mention 'skip', and no files may be created under the
+    // cache root.
+    let mut tar_bytes: Vec<u8> = Vec::new();
+    {
+        let mut builder = tar::Builder::new(&mut tar_bytes);
+        let body = vec![0u8; 16];
+        let mut tar_header = tar::Header::new_gnu();
+        tar_header.set_size(body.len() as u64);
+        tar_header.set_mode(0o644);
+        tar_header.set_path("hello.bin").expect("set_path");
+        tar_header.set_cksum();
+        builder
+            .append(&tar_header, body.as_slice())
+            .expect("append non-hex-stem entry");
+        builder.finish().expect("tar finish");
+    }
+
+    let cache_dir = tempdir().expect("tempdir");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_reify"))
+        .args(["cache", "import"])
+        .env("REIFY_CACHE_DIR", cache_dir.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn reify import");
+    {
+        let stdin = child.stdin.as_mut().expect("import stdin");
+        stdin
+            .write_all(&tar_bytes)
+            .expect("write tar to import stdin");
+    }
+    let output = child.wait_with_output().expect("wait import");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "import of non-hex stem should exit SUCCESS (warn-and-skip is non-fatal); \
+         stderr={stderr}"
+    );
+    let stderr_lc = stderr.to_ascii_lowercase();
+    assert!(
+        stderr_lc.contains("skip"),
+        "stderr should mention 'skip', got: {stderr}"
+    );
+    assert!(
+        stderr_lc.contains("non-hex") || stderr_lc.contains("hello"),
+        "stderr should surface the non-hex-stem-shape diagnostic, got: {stderr}"
+    );
+    let cache_files = collect_cache_files(cache_dir.path());
+    assert!(
+        cache_files.is_empty(),
+        "cache dir should remain empty after warn-and-skip, found: {cache_files:?}"
+    );
 }
 
 #[test]
