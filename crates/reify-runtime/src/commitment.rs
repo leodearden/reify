@@ -613,6 +613,10 @@ mod tests {
         NodeId::Resolution(reify_types::ResolutionNodeId::new(entity, idx))
     }
 
+    fn make_compute_node(entity: &str, idx: u32) -> NodeId {
+        NodeId::Compute(reify_types::ComputeNodeId::new(entity, idx))
+    }
+
     // --- NodePolicyOverrides tests ---
 
     #[test]
@@ -764,11 +768,21 @@ mod tests {
         let constraint_node = make_constraint_node("E", 0);
         let realization_node = make_realization_node("E", 0);
         let resolution_node = make_resolution_node("E", 0);
+        let compute_node = make_compute_node("E", 0);
 
         assert_eq!(NodeKind::from(&value_node), NodeKind::Value);
         assert_eq!(NodeKind::from(&constraint_node), NodeKind::Constraint);
         assert_eq!(NodeKind::from(&realization_node), NodeKind::Realization);
         assert_eq!(NodeKind::from(&resolution_node), NodeKind::Resolution);
+        assert_eq!(NodeKind::from(&compute_node), NodeKind::Compute);
+    }
+
+    #[test]
+    fn node_kind_reexport_identity() {
+        // Asserts that crate::commitment::NodeKind IS reify_types::NodeKind
+        // (the same type, not a wrapper). After step-6, this compiles because
+        // commitment re-exports via `pub use reify_types::NodeKind`.
+        let _: reify_types::NodeKind = crate::commitment::NodeKind::Value;
     }
 
     #[test]
