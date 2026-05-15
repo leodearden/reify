@@ -7923,6 +7923,85 @@ mod tests {
     ///   with plain `==` (NaN != NaN always, so the result would flip to false).
     /// - Different-bits-unequal: fails if a contributor introduces NaN
     ///   canonicalisation (all NaNs would be treated as equal).
+    // ── format_display_triple unit tests (Task 3648) ─────────────────────────
+
+    /// Scalar mm(4.2) → (4.2, "4.2", "mm"):
+    /// display_value is the engineering-unit f64, formatted string has no unit,
+    /// and unit_str is the engineering unit symbol.
+    #[test]
+    fn format_display_triple_scalar_fractional_returns_f64_formatted_unit() {
+        // mm(4.2): si_value = 0.0042, dimension = LENGTH
+        // to_display_units(0.0042) on LENGTH → (4.2, "mm")
+        let v = Value::Scalar {
+            si_value: 0.0042,
+            dimension: DimensionVector::LENGTH,
+        };
+        let (display_value, formatted, unit) = v.format_display_triple();
+        assert!(
+            (display_value - 4.2).abs() < 1e-10,
+            "display_value must be 4.2, got {}",
+            display_value
+        );
+        assert_eq!(formatted, "4.2", "formatted must be '4.2'");
+        assert_eq!(unit, "mm", "unit must be 'mm'");
+    }
+
+    /// Scalar mm(80.0) → (80.0, "80", "mm"):
+    /// format_display_number trims trailing `.0` for whole numbers.
+    #[test]
+    fn format_display_triple_scalar_whole_number_trims_decimal() {
+        // mm(80.0): si_value = 0.080, dimension = LENGTH
+        // to_display_units(0.080) → (80.0, "mm")
+        // format_display_number(80.0) → "80" (no trailing .0)
+        let v = Value::Scalar {
+            si_value: 0.080,
+            dimension: DimensionVector::LENGTH,
+        };
+        let (display_value, formatted, unit) = v.format_display_triple();
+        assert!(
+            (display_value - 80.0).abs() < 1e-10,
+            "display_value must be 80.0, got {}",
+            display_value
+        );
+        assert_eq!(formatted, "80", "formatted must be '80' (no trailing .0)");
+        assert_eq!(unit, "mm", "unit must be 'mm'");
+    }
+
+    /// Value::Option(Some(Scalar)) recurses to the inner Scalar.
+    #[test]
+    fn format_display_triple_option_some_scalar_recurses_to_inner() {
+        let inner = Value::Scalar {
+            si_value: 0.0042,
+            dimension: DimensionVector::LENGTH,
+        };
+        let v = Value::Option(Some(Box::new(inner)));
+        let (display_value, formatted, unit) = v.format_display_triple();
+        assert!(
+            (display_value - 4.2).abs() < 1e-10,
+            "Option(Some(Scalar)) must recurse: display_value must be 4.2, got {}",
+            display_value
+        );
+        assert_eq!(formatted, "4.2", "formatted must be '4.2'");
+        assert_eq!(unit, "mm", "unit must be 'mm'");
+    }
+
+    /// Non-Scalar variant (Bool) → (NaN, pair.0, pair.1):
+    /// f64 sentinel is NaN, strings delegate to format_display_pair.
+    #[test]
+    fn format_display_triple_non_scalar_returns_nan_and_pair_strings() {
+        let v = Value::Bool(true);
+        let (display_value, formatted, unit) = v.format_display_triple();
+        assert!(
+            display_value.is_nan(),
+            "non-Scalar must return f64::NAN as display_value, got {}",
+            display_value
+        );
+        // format_display_pair for Bool(true) → ("true", "")
+        let (expected_s, expected_u) = v.format_display_pair();
+        assert_eq!(formatted, expected_s, "formatted must match format_display_pair().0");
+        assert_eq!(unit, expected_u, "unit must match format_display_pair().1");
+    }
+
     #[test]
     fn sampled_field_grid_metadata_eq_nan_bits_equal_returns_true() {
         // Half 1: same bit-pattern NaN → equal.
