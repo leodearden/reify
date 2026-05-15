@@ -538,6 +538,22 @@ mod tests {
     }
 
     #[test]
+    fn stub_kernel_extract_vertices_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.extract_vertices(GeometryHandleId(1));
+        let err = result.expect_err("stub extract_vertices should error");
+        assert_stub_message(&format!("{err:?}"));
+    }
+
+    #[test]
+    fn stub_handle_extract_vertices_returns_error() {
+        let mut handle = OcctKernelHandle::spawn();
+        let result = handle.extract_vertices(GeometryHandleId(1));
+        let err = result.expect_err("stub handle extract_vertices should error");
+        assert_stub_message(&format!("{err:?}"));
+    }
+
+    #[test]
     fn stub_kernel_query_edge_length_returns_error() {
         let kernel = OcctKernel::new();
         let result = kernel.query(&reify_types::GeometryQuery::EdgeLength(GeometryHandleId(1)));
