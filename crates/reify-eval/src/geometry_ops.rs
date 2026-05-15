@@ -1807,16 +1807,20 @@ pub(crate) fn try_eval_topology_selector(
         _ => return None,
     };
 
-    // (2) Must be one of the three recognised helper names.
+    // (2) Must be one of the recognised helper names.
     let helper = match function.name.as_str() {
         "closest_point" => TopologySelectorHelper::ClosestPoint,
         "is_on" => TopologySelectorHelper::IsOn,
         "angle_between_surfaces" => TopologySelectorHelper::AngleBetweenSurfaces,
+        "edges" => TopologySelectorHelper::Edges,
         _ => return None,
     };
 
-    // (3) All v0.1 helpers are 2-arg; non-2-arg call sites fall through.
-    if args.len() != 2 {
+    // (3) Per-helper arity check. Each new selector in task 3560 carries its
+    // own arity contract; the legacy 2-arg trio (closest_point, is_on,
+    // angle_between_surfaces) shares the arity-2 branch.
+    let expected_arity = helper.expected_arity();
+    if args.len() != expected_arity {
         return None;
     }
 
@@ -1855,9 +1859,7 @@ pub(crate) fn try_eval_topology_selector(
                     };
                     dispatch_point_on_shape(kernel, &query, &function.name, diagnostics)
                 }
-                TopologySelectorHelper::AngleBetweenSurfaces => {
-                    unreachable!("angle_between_surfaces is handled in the outer match")
-                }
+                _ => unreachable!("ClosestPoint/IsOn outer match guarantees this"),
             }
         }
         TopologySelectorHelper::AngleBetweenSurfaces => {
@@ -1867,6 +1869,17 @@ pub(crate) fn try_eval_topology_selector(
             let query = reify_types::GeometryQuery::SurfaceAngle { face_a, face_b };
             dispatch_surface_angle(kernel, &query, &function.name, diagnostics)
         }
+        TopologySelectorHelper::Edges => {
+            // args[0]: geometry ValueRef → named_steps map → GeometryHandleId.
+            let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
+            dispatch_extract_subshapes(
+                kernel,
+                handle,
+                ExtractKind::Edges,
+                &function.name,
+                diagnostics,
+            )
+        }
     }
 }
 
@@ -1875,6 +1888,70 @@ enum TopologySelectorHelper {
     ClosestPoint,
     IsOn,
     AngleBetweenSurfaces,
+    /// `edges(geometry) -> List<Geometry>` — extract the unique edges of a
+    /// shape (task 3560).
+    Edges,
+}
+
+impl TopologySelectorHelper {
+    /// The exact number of arguments this helper takes. Used by the
+    /// per-helper arity gate in `try_eval_topology_selector` before any
+    /// arg-shape resolution runs — non-matching arities fall through to
+    /// `None` so the cell stays at the `Value::Undef` left by `eval_expr`.
+    fn expected_arity(self) -> usize {
+        match self {
+            TopologySelectorHelper::ClosestPoint
+            | TopologySelectorHelper::IsOn
+            | TopologySelectorHelper::AngleBetweenSurfaces => 2,
+            TopologySelectorHelper::Edges => 1,
+        }
+    }
+}
+
+/// Which sub-shape kind to extract: edges or faces. Drives
+/// `dispatch_extract_subshapes` to route into `extract_edges` /
+/// `extract_faces` on the kernel while keeping a single shared
+/// kernel-error → diagnostic + `Value::Undef` downgrade path.
+#[derive(Clone, Copy)]
+enum ExtractKind {
+    Edges,
+    #[allow(dead_code)] // Faces variant introduced in task 3560 step-4.
+    Faces,
+}
+
+/// Issue `extract_edges(handle)` (or `extract_faces` per `kind`) and wrap the
+/// resulting `Vec<GeometryHandleId>` as `Value::List(Vec<Value::Int>)` whose
+/// elements are the raw u64 handle ids cast to `i64`. Returns
+/// `Some(Value::Undef)` (with a Warning diagnostic) on kernel error.
+///
+/// Sibling to `dispatch_closest_point` / `dispatch_point_on_shape` /
+/// `dispatch_surface_angle` — same defensive-downgrade contract.
+fn dispatch_extract_subshapes(
+    kernel: &mut dyn reify_types::GeometryKernel,
+    handle: GeometryHandleId,
+    kind: ExtractKind,
+    helper_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_types::Value> {
+    let result = match kind {
+        ExtractKind::Edges => kernel.extract_edges(handle),
+        ExtractKind::Faces => kernel.extract_faces(handle),
+    };
+    match result {
+        Ok(sub_handles) => Some(reify_types::Value::List(
+            sub_handles
+                .into_iter()
+                .map(|h| reify_types::Value::Int(h.0 as i64))
+                .collect(),
+        )),
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{}({:?}): kernel error: {}",
+                helper_name, handle, err
+            )));
+            Some(reify_types::Value::Undef)
+        }
+    }
 }
 
 /// Resolve a `CompiledExprKind::ValueRef` arg to a `Value::Point` of three
