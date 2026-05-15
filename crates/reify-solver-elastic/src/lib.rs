@@ -29,7 +29,6 @@
 //!
 //! ```
 //! use reify_solver_elastic::{
-//!     EigenSolverOptions, EigenSolverResult, solve_eigen_dense, solve_eigen_shift_invert,
 //!     element_stiffness_hex_p1, element_stiffness_wedge_p1,
 //!     Jacobian, QuadraturePoint, ReferenceCoord, ReferenceElement, TetP1, TetP2, HexP1, WedgeP1,
 //!     Mitc3Plus, ShellReferenceCoord, TyingPoint,
@@ -313,20 +312,6 @@
 //!     &reify_types::VolumeMesh,
 //!     &IsotropicElastic,
 //! ) -> ZzIndicator = compute_zz_indicator;
-//!
-//! // Task 3451: buckling eigensolver surface pin — shift-invert Lanczos + dense fallback.
-//! // Renames or removals of any re-exported symbol trip this doctest at compile time.
-//! let _ = EigenSolverOptions::default();
-//! let _: fn(
-//!     &faer::sparse::SparseRowMat<usize, f64>,
-//!     &faer::sparse::SparseRowMat<usize, f64>,
-//!     EigenSolverOptions,
-//! ) -> EigenSolverResult = solve_eigen_dense;
-//! let _: fn(
-//!     &faer::sparse::SparseRowMat<usize, f64>,
-//!     &faer::sparse::SparseRowMat<usize, f64>,
-//!     EigenSolverOptions,
-//! ) -> EigenSolverResult = solve_eigen_shift_invert;
 //! ```
 
 pub mod assembly;

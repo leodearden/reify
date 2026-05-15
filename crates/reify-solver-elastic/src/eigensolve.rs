@@ -50,7 +50,14 @@ pub struct EigenSolverOptions {
     pub n_modes: usize,
     /// Convergence tolerance for iterative paths (must be finite and > 0).
     pub tol: f64,
-    /// Maximum number of Lanczos restarts for the shift-invert path (≥ 1).
+    /// Maximum number of Lanczos **thick-restart cycles** (not inner Krylov
+    /// iterations) for the shift-invert path; must be ≥ 1.
+    ///
+    /// One restart cycle expands and compresses the Krylov subspace up to
+    /// `max_dim`, so the inner iteration count is roughly
+    /// `max_iters · max_dim` — set this knob accordingly.  Mirrors faer's
+    /// `PartialEigenParams.max_restarts`; do not extrapolate the value from
+    /// `CgResult::iterations` (which counts inner iterations).
     pub max_iters: usize,
     /// Shift σ (reserved for shifted-inverse formulation; currently 0.0).
     pub sigma: f64,
@@ -148,7 +155,13 @@ fn check_eigen_options_and_shapes(
 ///
 /// # Panics
 ///
-/// See [`check_eigen_options_and_shapes`].
+/// - See [`check_eigen_options_and_shapes`] for option/shape contract guards.
+/// - Panics with `"eigensolve: gevd_real failed on dense (K, B) pair"` if
+///   faer's `gevd_real` returns an error.  In practice this fires only for
+///   genuinely ill-conditioned (K, B) pairs (e.g. both nearly singular, or
+///   B = 0 to machine precision); the routine handles benign degenerate β
+///   internally by filtering eigenvalues, so the panic indicates a
+///   pre-decomposition QZ breakdown rather than a near-singular eigenvalue.
 pub fn solve_eigen_dense(
     k: &SparseRowMat<usize, f64>,
     b: &SparseRowMat<usize, f64>,
@@ -360,8 +373,8 @@ pub fn solve_eigen_shift_invert(
     // FAER_MIN_DIM mirrors the private MIN_DIM constant from faer-0.24
     // (src/operator/eigen/mod.rs).  If the faer workspace dependency is bumped,
     // re-check this value.  The `shift_invert_no_panic_at_min_dim_boundaries`
-    // integration test probes n ∈ {2, 16, 32, 33, 63, 64, 65} to catch silent
-    // divergence from faer's actual floor without requiring a recompile.
+    // integration test sweeps every n in 2..=128 to catch silent divergence
+    // from faer's actual floor without requiring a recompile.
     const FAER_MIN_DIM: usize = 32; // faer-0.24
     let min_dim = opts.n_modes;
     let max_dim = (2 * opts.n_modes).max(32).min(n);

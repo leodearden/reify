@@ -20,6 +20,7 @@
 //!   and for the non-convergence signal (max_iters=1, tol=1e-300 —
 //!   pathologically under-budgeted).
 
+use faer::Mat;
 use faer::sparse::{SparseRowMat, Triplet};
 use reify_solver_elastic::eigensolve::{EigenSolverOptions, solve_eigen_dense, solve_eigen_shift_invert};
 
@@ -360,6 +361,102 @@ fn shift_invert_reports_non_convergence_when_max_iters_too_low() {
 }
 
 // ---------------------------------------------------------------------------
+// Eigenvector residual check (both paths) on Fixture A.
+//
+// Catches regressions where eigenvalues are correct but eigenvectors are
+// mis-paired (column-copy off-by-one, sort/permutation mismatch between
+// eigenvalues and eigenvectors, etc.) — the existing closed-form tests
+// only check eigenvalues + eigenvector shape, so this is the residual net.
+//
+// Residual: ‖K φ_i − λ_i B φ_i‖ / ‖K φ_i‖ < 1e-8 for each returned mode.
+// ---------------------------------------------------------------------------
+
+/// Compute y = M · x for a SparseRowMat (CSR) by iterating stored entries.
+fn csr_matvec(m: &SparseRowMat<usize, f64>, x: &[f64]) -> Vec<f64> {
+    let n = m.nrows();
+    assert_eq!(x.len(), m.ncols());
+    let m_ref = m.as_ref();
+    let m_sym = m_ref.symbolic();
+    let mut y = vec![0.0_f64; n];
+    for i in 0..n {
+        let cols = m_sym.col_idx_of_row_raw(i);
+        let vals = m_ref.val_of_row(i);
+        let mut acc = 0.0_f64;
+        for (col_idx, &val) in cols.iter().zip(vals.iter()) {
+            acc += val * x[*col_idx];
+        }
+        y[i] = acc;
+    }
+    y
+}
+
+fn l2_norm(v: &[f64]) -> f64 {
+    v.iter().map(|x| x * x).sum::<f64>().sqrt()
+}
+
+/// Assert ‖K φ_i − λ_i B φ_i‖ / ‖K φ_i‖ < tol for every returned mode.
+fn assert_eigen_residuals(
+    k: &SparseRowMat<usize, f64>,
+    b: &SparseRowMat<usize, f64>,
+    eigenvalues: &[f64],
+    eigenvectors: &Mat<f64>,
+    tol: f64,
+    label: &str,
+) {
+    let n = k.nrows();
+    assert_eq!(eigenvectors.nrows(), n, "{label}: eigenvector row count mismatch");
+    assert_eq!(
+        eigenvectors.ncols(),
+        eigenvalues.len(),
+        "{label}: eigenvector column count must match eigenvalue count",
+    );
+    for (i, &lam) in eigenvalues.iter().enumerate() {
+        let phi: Vec<f64> = (0..n).map(|row| eigenvectors[(row, i)]).collect();
+        let k_phi = csr_matvec(k, &phi);
+        let b_phi = csr_matvec(b, &phi);
+        let resid: Vec<f64> = k_phi.iter().zip(b_phi.iter())
+            .map(|(k_, b_)| k_ - lam * b_)
+            .collect();
+        let nr = l2_norm(&resid);
+        let nk = l2_norm(&k_phi);
+        let rel = nr / nk.max(f64::MIN_POSITIVE);
+        assert!(
+            rel < tol,
+            "{label} mode[{i}] (λ={lam}): ‖K φ − λ B φ‖/‖K φ‖ = {rel:.3e} ≥ tol={tol:.3e}",
+        );
+    }
+}
+
+#[test]
+fn dense_eigenvector_residual_matches_eigenvalue_on_5x5_diagonal_pair() {
+    let (k, b) = fixture_a();
+    let opts = EigenSolverOptions {
+        n_modes: 5,
+        tol: 1e-12,
+        max_iters: 1,
+        sigma: 0.0,
+    };
+    let result = solve_eigen_dense(&k, &b, opts);
+    assert_eigen_residuals(&k, &b, &result.eigenvalues, &result.eigenvectors, 1e-8, "dense");
+}
+
+#[test]
+fn shift_invert_eigenvector_residual_matches_eigenvalue_on_80dof_laplacian() {
+    let (k, b) = fixture_c();
+    let opts = EigenSolverOptions {
+        n_modes: 5,
+        tol: 1e-10,
+        max_iters: 1000,
+        sigma: 0.0,
+    };
+    let result = solve_eigen_shift_invert(&k, &b, opts);
+    // n=80 > 64: Lanczos path actually runs.
+    assert!(result.converged, "shift-invert must converge on 80-DOF Laplacian");
+    assert!(result.n_converged > 0, "must take Lanczos path (n_converged>0)");
+    assert_eigen_residuals(&k, &b, &result.eigenvalues, &result.eigenvectors, 1e-8, "shift-invert");
+}
+
+// ---------------------------------------------------------------------------
 // Step-9 tests: contract guard #[should_panic] tests
 // ---------------------------------------------------------------------------
 
@@ -416,12 +513,14 @@ fn solve_eigen_shift_invert_panics_on_non_finite_tol() {
 // Suggestion-4 robustness test: n-floor no-panic boundary sweep
 // ---------------------------------------------------------------------------
 
-/// Verify that `solve_eigen_shift_invert` does not panic at boundary sizes
-/// near faer's FAER_MIN_DIM=32 floor: n ∈ {2, 16, 32, 33, 63, 64, 65}.
+/// Verify that `solve_eigen_shift_invert` does not panic at problem sizes
+/// surrounding faer's FAER_MIN_DIM=32 floor.
 ///
-/// For n ≤ 64 the `effective_max_dim >= n` branch fires and the call is
-/// forwarded to the dense fallback.  For n = 65 the Krylov window (64) is
-/// strictly less than n, so `partial_self_adjoint_eigen` actually runs.
+/// Sweeps every n in 2..=128 — well past 2·FAER_MIN_DIM=64 so the test
+/// would catch a future faer MIN_DIM raise (e.g. 48 → window shifts to (64,
+/// 96]) that a hand-picked size list would miss.  For n ≤ 64 the
+/// `effective_max_dim >= n` branch fires and the call is forwarded to the
+/// dense fallback; for n ≥ 65 `partial_self_adjoint_eigen` actually runs.
 /// Both paths must complete without panic.
 ///
 /// Numerical accuracy is not checked here — that is pinned by the closed-form
@@ -429,7 +528,7 @@ fn solve_eigen_shift_invert_panics_on_non_finite_tol() {
 /// regression documented in eigensolve.rs FAER_MIN_DIM comment.
 #[test]
 fn shift_invert_no_panic_at_min_dim_boundaries() {
-    for n in [2_usize, 16, 32, 33, 63, 64, 65] {
+    for n in 2_usize..=128 {
         // K = tridiag(-1, 2, -1) (SPD Dirichlet Laplacian), B = I.
         let mut k_trips = Vec::with_capacity(3 * n);
         for i in 0..n {
