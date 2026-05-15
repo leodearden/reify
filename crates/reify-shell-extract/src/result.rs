@@ -1799,15 +1799,46 @@ mod tests {
         assert_eq!(role_to_u8(Role::Cap(CapKind::End)), 0x03);
         assert_eq!(role_to_u8(Role::Side), 0x10);
         assert_eq!(role_to_u8(Role::MidSurfaceEdge), 0x17);
+        // CornerVertex: all 8 sign combos are pinned individually (not just endpoints)
+        // to lock the bit-pack contract (bit2=x, bit1=y, bit0=z; Pos=0, Neg=1) so
+        // that a swap of any two arms in role_to_u8/role_from_u8 fails even if the
+        // round-trip still passes.
         assert_eq!(
             role_to_u8(Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Pos, z: AxisSign::Pos }),
             0x20
-        );
+        ); // PPP → bit2=0,bit1=0,bit0=0
+        assert_eq!(
+            role_to_u8(Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Pos, z: AxisSign::Neg }),
+            0x21
+        ); // PPN → bit2=0,bit1=0,bit0=1
+        assert_eq!(
+            role_to_u8(Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Neg, z: AxisSign::Pos }),
+            0x22
+        ); // PNP → bit2=0,bit1=1,bit0=0
+        assert_eq!(
+            role_to_u8(Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Neg, z: AxisSign::Neg }),
+            0x23
+        ); // PNN → bit2=0,bit1=1,bit0=1
+        assert_eq!(
+            role_to_u8(Role::CornerVertex { x: AxisSign::Neg, y: AxisSign::Pos, z: AxisSign::Pos }),
+            0x24
+        ); // NPP → bit2=1,bit1=0,bit0=0
+        assert_eq!(
+            role_to_u8(Role::CornerVertex { x: AxisSign::Neg, y: AxisSign::Pos, z: AxisSign::Neg }),
+            0x25
+        ); // NPN → bit2=1,bit1=0,bit0=1
+        assert_eq!(
+            role_to_u8(Role::CornerVertex { x: AxisSign::Neg, y: AxisSign::Neg, z: AxisSign::Pos }),
+            0x26
+        ); // NNP → bit2=1,bit1=1,bit0=0
         assert_eq!(
             role_to_u8(Role::CornerVertex { x: AxisSign::Neg, y: AxisSign::Neg, z: AxisSign::Neg }),
             0x27
-        );
+        ); // NNN → bit2=1,bit1=1,bit0=1
+        // CapCornerVertex: all 4 face values pinned individually (Top→Bottom→Start→End).
         assert_eq!(role_to_u8(Role::CapCornerVertex { face: CapKind::Top }), 0x30);
+        assert_eq!(role_to_u8(Role::CapCornerVertex { face: CapKind::Bottom }), 0x31);
+        assert_eq!(role_to_u8(Role::CapCornerVertex { face: CapKind::Start }), 0x32);
         assert_eq!(role_to_u8(Role::CapCornerVertex { face: CapKind::End }), 0x33);
 
         // Unknown discriminants (gap in the table) must be rejected with
