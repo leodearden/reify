@@ -824,6 +824,60 @@ fn cache_stats_on_empty_cache_succeeds_and_prints_entry_count_zero() {
 }
 
 #[test]
+fn cache_stats_reports_correct_entry_count_and_total_size_for_seeded_cache() {
+    // Seed three entries via the persistent_cache::write_entry test helper
+    // and assert that `reify cache stats` walks the cache root, counts the
+    // .bin files, and reports a non-zero total-size.  Pinning the count
+    // (3) keeps the assertion robust to byte-format changes in step-6's
+    // golden — only the numeric prefix of the size line is validated here.
+    let cache_dir = tempdir().expect("tempdir");
+    let fixture = make_elastic_result_fixture();
+    for c in ['a', 'b', 'c'] {
+        let input_hash: String = std::iter::repeat(c).take(32).collect();
+        write_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
+            .expect("write_entry must seed the cache");
+    }
+
+    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+        .args(["cache", "stats"])
+        .env("REIFY_CACHE_DIR", cache_dir.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute reify binary");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "reify cache stats should succeed; status={:?} stderr={stderr}",
+        output.status
+    );
+    assert!(
+        stdout.contains("Entry count: 3"),
+        "stdout should contain 'Entry count: 3', got: {stdout}"
+    );
+    // Total-size must be a non-zero numeric value.  Find the `Total size:`
+    // line, take the next whitespace-delimited token, parse as u64, assert > 0.
+    let size_line = stdout
+        .lines()
+        .find(|l| l.starts_with("Total size:"))
+        .unwrap_or_else(|| panic!("stdout must contain a 'Total size:' line, got: {stdout}"));
+    let size_token = size_line
+        .split_whitespace()
+        .nth(2)
+        .unwrap_or_else(|| panic!("'Total size:' line must have a numeric value: {size_line}"));
+    let size_n: u64 = size_token
+        .parse()
+        .unwrap_or_else(|_| panic!("'Total size:' value must parse as u64: {size_line}"));
+    assert!(
+        size_n > 0,
+        "Total size value should be > 0 for a seeded cache, got: {size_line}"
+    );
+}
+
+#[test]
 fn cache_export_with_extra_positional_shows_export_usage() {
     // `reify cache export aaa bbb` (extra positional past the hash) should be
     // rejected with the export-specific usage banner.
