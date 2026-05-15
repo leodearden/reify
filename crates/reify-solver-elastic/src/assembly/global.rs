@@ -381,14 +381,20 @@ pub fn assemble_global_stiffness(
     // tet-only nodes carry orphan rotation rows/cols of zero, which
     // downstream BC/MPC layers handle).
     //
-    // Design note: when `D > min(d_e)` (mixed tet+shell), nodes touched
-    // only by lower-`d_e` elements end up with structurally zero
-    // rows/cols at the extra DOFs (`α >= d_e` observed at that node).
-    // Stabilisation is provided by Shells T10's MPC tying (task 3020,
-    // landed) plus the Dirichlet rotation auto-clamp (task 2917,
-    // landed); the contract owner is the BC/MPC layer. If a caller
-    // forgets to apply either, the failure surfaces deep in the linear
-    // solve as a singular K.
+    // Design note (task 3293): when `D > min(d_e)` (mixed tet+shell),
+    // nodes touched only by lower-`d_e` elements end up with structurally
+    // zero rows/cols at the extra DOFs (`α >= d_e_max_local(n)` for that
+    // node). Stabilisation is provided by Shells T10's MPC tying (task
+    // 3020, landed) plus the Dirichlet rotation auto-clamp (task 2917,
+    // landed); the contract owner is the BC/MPC layer.
+    //
+    // Diagnostic surface: `detect_orphan_dofs(n_nodes, elements)` returns
+    // an `OrphanDofsSummary { count, examples }` describing any such
+    // under-covered (node, axis) pairs. In debug builds this function
+    // calls `detect_orphan_dofs` internally and emits a single `eprintln!`
+    // warning if `count > 0`, so forgetting BC/MPC stabilisation surfaces
+    // at the assembly boundary rather than as a silent singular K in the
+    // linear solve.
     let n_dofs_per_node: usize = elements
         .iter()
         .map(|e| e.k_e.n_dofs / e.connectivity.len())
@@ -532,6 +538,22 @@ pub fn assemble_global_stiffness(
     // that sums in a `BTreeMap<(row, col), f64>` keyed by the canonical
     // `(row, col)` order. step-5's `two_p1_elements_sharing_face_*` test
     // would also surface the regression.
+    // Debug-only orphan-DOF diagnostic. Zero release-mode cost; matches the
+    // #[cfg(debug_assertions)] gating idiom in mpc.rs:172-213. Uses eprintln!
+    // rather than tracing/log because reify-solver-elastic has no logging
+    // dependency (task 3293, design decision 3).
+    #[cfg(debug_assertions)]
+    {
+        let orphans = detect_orphan_dofs(n_nodes, elements);
+        if orphans.count > 0 {
+            eprintln!(
+                "[reify-solver-elastic] assemble_global_stiffness: {orphans}; \
+                 apply Dirichlet BC (task 2917) or MPC tying (task 3020) to \
+                 stabilise these DOFs before solving",
+            );
+        }
+    }
+
     let dim = n_dofs_per_node * n_nodes;
     SparseRowMat::try_new_from_triplets(dim, dim, &triplets).expect(
         "triplets within declared n_dofs_per_node*n_nodes dims \
