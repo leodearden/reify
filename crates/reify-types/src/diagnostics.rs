@@ -943,6 +943,28 @@ pub enum DiagnosticCode {
     /// return into op-execution; until then this is scaffolding alongside
     /// `LongChainRealization`'s established precedent (task 2646).
     NoKernelChain,
+    /// Origin: `crates/reify-eval/src/dispatcher.rs::kernel_pragma_unsatisfiable_diagnostic`
+    /// (task 3434 — PRD `docs/prds/v0_3/multi-kernel-phase-3.md` §8 task γ +
+    /// §5 "pragma steers").
+    ///
+    /// Canonical message form:
+    /// `"#kernel('<pragma_kernel>') cannot serve op '<Operation:?>' producing \
+    /// '<ReprKind:?>'; falling through to default kernel selection"`.
+    ///
+    /// Emitted as a `Severity::Warning` when a `#kernel(...)` pragma names
+    /// a kernel that does not support the demanded `(op, demanded)` pair.
+    /// Per PRD §5: "warning, not error — fall through to default lex-min
+    /// selection so the user's design still evaluates" — the realization
+    /// proceeds via the default selection path; the warning gives the author
+    /// visibility into the unmet preference. Mirrors the advisory-warning
+    /// posture established by `LongChainRealization` and
+    /// `ImportedTolerancePromiseInsufficient`.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_KERNEL_PRAGMA_UNSATISFIABLE`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error). Consumed by
+    /// downstream task ο (ID 3443) which wires the `#kernel(...)` pragma
+    /// surface into the dispatcher's preference path.
+    KernelPragmaUnsatisfiable,
     /// Origin: `crates/reify-eval/src/geometry_ops.rs::gate_query_capability`
     /// (task 3623 — PRD `docs/prds/v0_3/kernel-geometry-queries.md` §5.4).
     ///
