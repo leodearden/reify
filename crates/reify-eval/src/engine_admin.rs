@@ -1271,19 +1271,9 @@ mod tests {
             ),
         );
 
-        // Inject a synthetic cache entry for the Compute node (result payload
-        // variant is irrelevant for pending_cause — we just need an entry to exist).
-        engine.cache_store_mut().put(
-            compute_node.clone(),
-            NodeCache::new(
-                CachedResult::Value(Value::Int(0), DeterminacyState::Determined),
-                Freshness::Final,
-                DependencyTrace::default(),
-                VersionId(0),
-            ),
-        );
-
         // Wire: mark v as Pending with compute_node as the chain-root cause.
+        // No cache entry for `compute_node` is needed — `pending_cause` reads
+        // only the side-table on v's entry, never the cause node's entry.
         let marked = engine
             .cache_store_mut()
             .mark_pending_with_cause(&v_node, compute_node.clone());
