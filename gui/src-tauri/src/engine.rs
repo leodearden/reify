@@ -815,19 +815,14 @@ impl EngineSession {
     ) -> HashMap<String, AutoResolveParameterValue> {
         let mut out = HashMap::new();
         for (cell_id, value) in resolved {
-            if let Value::Scalar { si_value, dimension } = value {
-                let (display_value, unit) = dimension.to_display_units(*si_value);
-                let display = format!(
-                    "{}{}",
-                    reify_types::value::format_display_number(display_value),
-                    unit
-                );
+            if let Value::Scalar { .. } = value {
+                let (display_value, formatted, unit) = value.format_display_triple();
                 out.insert(
                     cell_id.to_string(),
                     AutoResolveParameterValue {
                         value: display_value,
-                        unit: unit.to_string(),
-                        display,
+                        display: format!("{}{}", formatted, unit),
+                        unit,
                     },
                 );
             } else {
