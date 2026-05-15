@@ -6381,4 +6381,258 @@ mod tests {
             diag.message
         );
     }
+
+    // ── gate_query_capability unit tests (task 3623) ─────────────────────────
+    //
+    // These tests pin the §5.4 four-branch policy contract of
+    // `gate_query_capability`. The function lives in this module (pub(crate))
+    // and is tested here following the established in-module pattern for
+    // `try_eval_conformance_query_*` / `try_eval_topology_selector_*`.
+    //
+    // Coverage map (PRD §8.1):
+    //  branch-a: BRepOnly + BRep    → Occt,        zero diagnostics
+    //  branch-b: BRepAndMesh + BRep → Occt,        zero diagnostics
+    //  branch-c: BRepAndMesh + Mesh → Manifold,    zero diagnostics
+    //  branch-d: BRepOnly + Mesh    → Unsupported, exactly-one Error
+    //            with code QueryNotSupportedOnRepr, message contains
+    //            helper name + repr token
+    //  branch-e: any capability + Voxel/Sdf/VolumeMesh → Unsupported + diag
+    //  branch-f: exhaustive no-panic loop over all 5 ReprKind values for both
+    //            BRepOnly and BRepAndMesh; Unsupported ⟺ exactly-one-diagnostic
+
+    #[test]
+    fn gate_query_capability_brep_only_on_brep_routes_occt_no_diag() {
+        // branch-a: BRepOnly + BRep → Occt
+        let query = reify_types::GeometryQuery::EdgeLength(GeometryHandleId(1));
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let route = super::gate_query_capability(
+            &query,
+            reify_types::ReprKind::BRep,
+            "edge_length",
+            &mut diags,
+        );
+        assert_eq!(
+            route,
+            super::CapabilityRoute::Occt,
+            "BRepOnly query on BRep repr must route to Occt"
+        );
+        assert!(
+            diags.is_empty(),
+            "BRepOnly on BRep must emit zero diagnostics; got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn gate_query_capability_brep_and_mesh_on_brep_routes_occt_no_diag() {
+        // branch-b: BRepAndMesh + BRep → Occt
+        let query = reify_types::GeometryQuery::Distance {
+            from: GeometryHandleId(1),
+            to: GeometryHandleId(2),
+        };
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let route = super::gate_query_capability(
+            &query,
+            reify_types::ReprKind::BRep,
+            "distance",
+            &mut diags,
+        );
+        assert_eq!(
+            route,
+            super::CapabilityRoute::Occt,
+            "BRepAndMesh query on BRep repr must route to Occt"
+        );
+        assert!(
+            diags.is_empty(),
+            "BRepAndMesh on BRep must emit zero diagnostics; got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn gate_query_capability_brep_and_mesh_on_mesh_routes_manifold_no_diag() {
+        // branch-c: BRepAndMesh + Mesh → Manifold
+        let query = reify_types::GeometryQuery::Distance {
+            from: GeometryHandleId(1),
+            to: GeometryHandleId(2),
+        };
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let route = super::gate_query_capability(
+            &query,
+            reify_types::ReprKind::Mesh,
+            "distance",
+            &mut diags,
+        );
+        assert_eq!(
+            route,
+            super::CapabilityRoute::Manifold,
+            "BRepAndMesh query on Mesh repr must route to Manifold"
+        );
+        assert!(
+            diags.is_empty(),
+            "BRepAndMesh on Mesh must emit zero diagnostics; got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn gate_query_capability_brep_only_on_mesh_fails_closed_with_diag() {
+        // branch-d: BRepOnly + Mesh → Unsupported + exactly-one Error diag
+        let query = reify_types::GeometryQuery::EdgeLength(GeometryHandleId(1));
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let route = super::gate_query_capability(
+            &query,
+            reify_types::ReprKind::Mesh,
+            "curvature",
+            &mut diags,
+        );
+        assert_eq!(
+            route,
+            super::CapabilityRoute::Unsupported,
+            "BRepOnly query on Mesh repr must route to Unsupported (fail closed)"
+        );
+        assert_eq!(
+            diags.len(),
+            1,
+            "BRepOnly on Mesh must emit exactly one diagnostic; got {} ({:?})",
+            diags.len(),
+            diags
+        );
+        let diag = &diags[0];
+        assert_eq!(
+            diag.severity,
+            reify_types::Severity::Error,
+            "diagnostic severity must be Error, got {:?}",
+            diag.severity
+        );
+        assert_eq!(
+            diag.code,
+            Some(reify_types::DiagnosticCode::QueryNotSupportedOnRepr),
+            "diagnostic code must be QueryNotSupportedOnRepr, got {:?}",
+            diag.code
+        );
+        assert!(
+            diag.message.contains("curvature"),
+            "diagnostic must contain the helper name 'curvature'; got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("Mesh"),
+            "diagnostic must contain the repr token 'Mesh'; got: {}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn gate_query_capability_any_query_on_voxel_fails_closed() {
+        // branch-e (Voxel): any capability + Voxel → Unsupported + one diag
+        let query = reify_types::GeometryQuery::Distance {
+            from: GeometryHandleId(1),
+            to: GeometryHandleId(2),
+        };
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let route = super::gate_query_capability(
+            &query,
+            reify_types::ReprKind::Voxel,
+            "distance",
+            &mut diags,
+        );
+        assert_eq!(route, super::CapabilityRoute::Unsupported);
+        assert_eq!(diags.len(), 1, "Voxel repr must emit one diag: {:?}", diags);
+        assert_eq!(
+            diags[0].code,
+            Some(reify_types::DiagnosticCode::QueryNotSupportedOnRepr)
+        );
+    }
+
+    #[test]
+    fn gate_query_capability_any_query_on_sdf_fails_closed() {
+        // branch-e (Sdf): any capability + Sdf → Unsupported + one diag
+        let query = reify_types::GeometryQuery::Volume(GeometryHandleId(1));
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let route = super::gate_query_capability(
+            &query,
+            reify_types::ReprKind::Sdf,
+            "volume",
+            &mut diags,
+        );
+        assert_eq!(route, super::CapabilityRoute::Unsupported);
+        assert_eq!(diags.len(), 1, "Sdf repr must emit one diag: {:?}", diags);
+        assert_eq!(
+            diags[0].code,
+            Some(reify_types::DiagnosticCode::QueryNotSupportedOnRepr)
+        );
+    }
+
+    #[test]
+    fn gate_query_capability_any_query_on_volume_mesh_fails_closed() {
+        // branch-e (VolumeMesh): any capability + VolumeMesh → Unsupported + one diag
+        let query = reify_types::GeometryQuery::BoundingBox(GeometryHandleId(1));
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let route = super::gate_query_capability(
+            &query,
+            reify_types::ReprKind::VolumeMesh,
+            "bounding_box",
+            &mut diags,
+        );
+        assert_eq!(route, super::CapabilityRoute::Unsupported);
+        assert_eq!(
+            diags.len(),
+            1,
+            "VolumeMesh repr must emit one diag: {:?}",
+            diags
+        );
+        assert_eq!(
+            diags[0].code,
+            Some(reify_types::DiagnosticCode::QueryNotSupportedOnRepr)
+        );
+    }
+
+    #[test]
+    fn gate_query_capability_exhaustive_no_panic_unsupported_iff_one_diag() {
+        // branch-f: no-panic loop over all 5 ReprKind values for two queries
+        // (one BRepOnly, one BRepAndMesh); invariant: Unsupported ⟺ exactly
+        // one diagnostic with code QueryNotSupportedOnRepr.
+        let all_reprs = [
+            reify_types::ReprKind::BRep,
+            reify_types::ReprKind::Mesh,
+            reify_types::ReprKind::Sdf,
+            reify_types::ReprKind::Voxel,
+            reify_types::ReprKind::VolumeMesh,
+        ];
+        let brep_only_query = reify_types::GeometryQuery::EdgeLength(GeometryHandleId(1));
+        let brep_and_mesh_query = reify_types::GeometryQuery::Distance {
+            from: GeometryHandleId(1),
+            to: GeometryHandleId(2),
+        };
+        for repr in all_reprs {
+            for (query, label) in [
+                (&brep_only_query, "edge_length"),
+                (&brep_and_mesh_query, "distance"),
+            ] {
+                let mut diags: Vec<Diagnostic> = Vec::new();
+                let route = super::gate_query_capability(query, repr, label, &mut diags);
+                if matches!(route, super::CapabilityRoute::Unsupported) {
+                    assert_eq!(
+                        diags.len(),
+                        1,
+                        "Unsupported route for {label}/{repr:?} must emit exactly one diag; got {} ({:?})",
+                        diags.len(),
+                        diags
+                    );
+                    assert_eq!(
+                        diags[0].code,
+                        Some(reify_types::DiagnosticCode::QueryNotSupportedOnRepr),
+                        "Unsupported diag must carry QueryNotSupportedOnRepr code"
+                    );
+                } else {
+                    assert!(
+                        diags.is_empty(),
+                        "non-Unsupported route for {label}/{repr:?} must emit zero diagnostics; got: {:?}",
+                        diags
+                    );
+                }
+            }
+        }
+    }
 }
