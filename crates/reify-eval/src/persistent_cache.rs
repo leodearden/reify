@@ -5000,4 +5000,72 @@ mod tests {
             "sweep_stale_tempfiles must not touch dirs (orphan_dirs_removed == 0)"
         );
     }
+
+    // ── step-3 defensiveness tests ───────────────────────────────────────────
+
+    /// Step-3(a): `sweep_stale_tempfiles` on a non-existent `cache_root`
+    /// returns `SweepReport::default()` without panicking or returning Err.
+    #[test]
+    fn sweep_stale_tempfiles_absent_cache_root_returns_default_no_panic() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Point to a path that definitely doesn't exist.
+        let nonexistent = tmp.path().join("no_such_cache_root");
+        let report = sweep_stale_tempfiles(&nonexistent);
+        assert_eq!(
+            report,
+            SweepReport::default(),
+            "absent cache_root must yield SweepReport::default()"
+        );
+    }
+
+    /// Step-3(b): `sweep_stale_tempfiles` on an empty `cache_root` returns a
+    /// zeroed report and makes no filesystem changes.
+    #[test]
+    fn sweep_stale_tempfiles_empty_cache_root_returns_default_no_fs_change() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let report = sweep_stale_tempfiles(root);
+        assert_eq!(
+            report,
+            SweepReport::default(),
+            "empty cache_root must yield SweepReport::default()"
+        );
+        // The tempdir itself must still exist.
+        assert!(root.exists(), "empty cache_root directory must still exist");
+    }
+
+    /// Step-3(c): an old `.tmp.*` file placed inside a non-current
+    /// engine-version subdir (orphan subdir) is swept by
+    /// `sweep_stale_tempfiles` — proves the walker recurses across the whole
+    /// subtree, not just the live subdir.
+    ///
+    /// Layout: `cache_root/<orphan_eng_ver>/ab/.tmp.x` (backdated > threshold).
+    #[test]
+    fn sweep_stale_tempfiles_recurses_into_orphan_engine_version_subdirs() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // Use a hash that is NOT the live ENGINE_VERSION_HASH.
+        let orphan_eng = "dead000000000000000000000000dead";
+        let inp = "abcd111111111111111111111111abcd";
+
+        let sd = shard_dir(root, orphan_eng, inp);
+        std::fs::create_dir_all(&sd).unwrap();
+
+        let stale_tmp = sd.join(".tmp.x");
+        std::fs::write(&stale_tmp, b"orphan-shard-crash-leftover").unwrap();
+        backdate_mtime(&stale_tmp, STALE_TEMPFILE_AGE.as_secs() + 120);
+
+        let report = sweep_stale_tempfiles(root);
+
+        assert!(
+            !stale_tmp.exists(),
+            ".tmp.x inside an orphan engine-version subdir must be swept"
+        );
+        assert_eq!(
+            report.tempfiles_removed, 1,
+            "tempfiles_removed must be 1 for the file in the orphan subdir"
+        );
+        assert_eq!(report.orphan_dirs_removed, 0);
+    }
 }
