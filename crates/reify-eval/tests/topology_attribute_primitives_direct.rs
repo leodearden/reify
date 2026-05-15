@@ -17,7 +17,7 @@
 
 use std::collections::HashSet;
 
-use reify_eval::seed_primitive_attributes;
+use reify_eval::{seed_primitive_attributes, seed_primitive_attributes_for_handle};
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
 use reify_types::{
     AxisSign, CapKind, FeatureId, GeometryOp, RealizationNodeId, Role, TopologyAttributeTable,
@@ -842,5 +842,64 @@ fn cylinder_and_sphere_do_not_record_any_vertex_entries() {
                 vertex_id
             );
         }
+    }
+}
+
+// ─── task-3633 step-3: seed_primitive_attributes_for_handle extracts + seeds vertices ─
+
+#[test]
+fn seed_primitive_attributes_for_handle_box_extracts_and_seeds_vertices_too() {
+    if !OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let mut kernel = OcctKernelHandle::spawn();
+    let box_id = kernel.execute(&box_op()).expect("box should build").id;
+
+    // Verify extract_vertices returns 8 handles directly (precondition).
+    let vertex_handles = kernel
+        .extract_vertices(box_id)
+        .expect("extract_vertices(box) should succeed");
+    assert_eq!(
+        vertex_handles.len(),
+        8,
+        "extract_vertices(box_id) must return exactly 8 handles"
+    );
+
+    // Call the wrapper — it should extract vertices internally for Box ops
+    // and pass them through to seed_primitive_attributes, populating the
+    // 8 CornerVertex entries.
+    let feature_id = body_realization_feature_id();
+    let mut table = TopologyAttributeTable::default();
+    seed_primitive_attributes_for_handle(&mut table, &mut kernel, box_id, &feature_id, &box_op())
+        .expect("seed_primitive_attributes_for_handle(box) should succeed");
+
+    // Each manually-extracted vertex handle must now have a CornerVertex entry.
+    for (idx, &vertex_id) in vertex_handles.iter().enumerate() {
+        let attr = table.lookup(vertex_id).unwrap_or_else(|| {
+            panic!(
+                "box vertex #{} (handle {:?}) must have a CornerVertex entry after \
+                 seed_primitive_attributes_for_handle",
+                idx, vertex_id
+            )
+        });
+        assert!(
+            matches!(attr.role, Role::CornerVertex { .. }),
+            "box vertex #{idx} role must be Role::CornerVertex {{..}}, got {:?}",
+            attr.role
+        );
+        assert_eq!(
+            attr.feature_id, feature_id,
+            "box vertex #{idx} feature_id must equal Body#realization[0]"
+        );
+        assert_eq!(
+            attr.user_label, None,
+            "box vertex #{idx} user_label must be None"
+        );
+        assert!(
+            attr.mod_history.is_empty(),
+            "box vertex #{idx} mod_history must be empty"
+        );
     }
 }
