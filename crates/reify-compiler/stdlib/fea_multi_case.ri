@@ -21,13 +21,12 @@
 //      stdlib: runtime load/support instances are kind-tagged `Value::Map`s
 //      produced by `point_load`, `pressure_load`, `fixed_support`,
 //      `pinned_support`, etc. (name-dispatched builtins). Using
-//      `List<Real>` placeholders here mirrors the
-//      `ElasticResult.displacement : Real` precedent at
-//      `solver_elastic.ri:17-28` — a `TODO(load-trait)` note on each field
-//      signals the future tightening (a `trait def Load` marker that all
-//      kind-constructors satisfy). Runtime type-checking is shallow
-//      kind-match only, so `List<Real>` silently accepts a `Value::List` of
-//      load/support `Value::Map`s without runtime rejection.
+//      `List<Real>` here is a placeholder pending a `trait def Load` /
+//      `trait def Support` marker that all kind-constructors satisfy;
+//      a `TODO(load-trait)` note on each field tracks the future tightening.
+//      Runtime type-checking is shallow kind-match only, so `List<Real>`
+//      silently accepts a `Value::List` of load/support `Value::Map`s
+//      without runtime rejection.
 //   2. `LoadCase` has no `constraint` blocks: neither `loads` nor `supports`
 //      can be validated for non-emptiness or uniqueness at the struct level
 //      (constraint clauses evaluate per-instance scalar predicates; they
@@ -85,8 +84,6 @@ structure def LoadCase {
     // TODO(load-trait): replace `List<Real>` with `List<Load>` once
     // `trait def Load` is declared and the kind-constructor builtins
     // (`point_load`, `pressure_load`) are annotated as satisfying it.
-    // Precedent: `ElasticResult.displacement : Real` placeholder at
-    // `solver_elastic.ri:17-28`.
     param loads : List<Real>
 
     // Boundary-condition supports for this case.  Each element is a runtime
@@ -94,7 +91,7 @@ structure def LoadCase {
     //
     // TODO(load-trait): replace `List<Real>` with `List<Support>` once
     // `trait def Support` is declared and the kind-constructor builtins
-    // are annotated.  Same precedent as `loads` above.
+    // are annotated.
     param supports : List<Real>
 
     // Optional solver-knob override for this case.  `none` instructs
@@ -278,18 +275,25 @@ structure def MultiCaseResult {
 // for shell-result data. Three of these are grouped into a companion structure,
 // `ShellStress` (also in `std/solver/elastic`):
 //
-//   ElasticResult.stress  — kept as the legacy tet-compatible stress placeholder
-//                           (Real, per TODO(field-in-param, task #3117)).
+//   ElasticResult.stress  — per-mesh-node Cauchy stress field
+//                           (Field<Point3<Length>, Tensor<2,3,Pressure>>);
+//                           tightened from Real placeholder in task 3117.
+//                           Legacy tet-compatible alias.
 //   ElasticResult.frame   — new in T16: per-element local-to-global rotation
-//                           (Real placeholder for Field<Point3<Length>,
-//                           Matrix<3,3,Real>>). Set to Value::Undef for tet
-//                           results; populated from the MITC3+ mid-surface
-//                           mesher for shell results.
-//   ShellStress.top       — top-surface Cauchy stress layer (Real placeholder
-//                           for Field<Point3<Length>, Tensor<2,3,Pressure>>).
-//   ShellStress.mid       — mid-surface (neutral-plane) stress layer. For tet
-//                           results all three ShellStress channels are equal.
-//   ShellStress.bottom    — bottom-surface stress layer.
+//                           (Field<Point3<Length>, Matrix<3,3,Real>>;
+//                           tightened from Real placeholder in task 3641).
+//                           Set to Value::Undef for tet results; populated
+//                           from the MITC3+ mid-surface mesher for shell results.
+//   ShellStress.top       — top-surface Cauchy stress layer
+//                           (Field<Point3<Length>, Tensor<2,3,Pressure>>;
+//                           tightened in task 3641).
+//   ShellStress.mid       — mid-surface (neutral-plane) stress layer
+//                           (Field<Point3<Length>, Tensor<2,3,Pressure>>;
+//                           tightened in task 3641). For tet results all
+//                           three ShellStress channels are equal.
+//   ShellStress.bottom    — bottom-surface stress layer
+//                           (Field<Point3<Length>, Tensor<2,3,Pressure>>;
+//                           tightened in task 3641).
 //
 // Runtime structured-stress contract (NOT implemented at the stdlib level):
 // The backward-compatible alias `result.stress` → `result.stress.mid` for
