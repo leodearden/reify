@@ -1754,6 +1754,167 @@ mod tests {
         }
     }
 
+    /// One P1 tet, one P1 hex, and one P1 wedge sharing only node 0 →
+    /// unified 3-DOF/node global K with the right per-node-pair contributions.
+    ///
+    /// Mesh:
+    /// - tet on `[0, 1, 2, 3]` (P1, 12 DOFs)
+    /// - hex on `[0, 4, 5, 6, 7, 8, 9, 10]` (P1, 24 DOFs)
+    /// - wedge on `[0, 11, 12, 13, 14, 15]` (P1, 18 DOFs)
+    ///
+    /// All three elements share *only* node 0. `n_nodes = 16`, expected
+    /// global dim `3 · 16 = 48`. All three have `d_e = 3`, so the global
+    /// `D = max(d_e) = 3` (NOT 6).
+    ///
+    /// Pinning strategy:
+    /// - **dim**: pure-volume-element mesh ⇒ D = 3, dim = 48 (NOT 96).
+    /// - **node 0 displacement block (rows/cols 0..3)**: all three elements
+    ///   contribute. Encounter order matches slice order tet → hex → wedge;
+    ///   faer sums duplicates left-to-right so the bit-for-bit expected value
+    ///   is `K_e_tet[α][β] + K_e_hex[α][β] + K_e_wedge[α][β]` summed in that
+    ///   order. A three-summand left-fold has stable bit-equality with the
+    ///   `expected` construction order.
+    /// - **exclusive nodes**: tet-only (1..4), hex-only (4..11), wedge-only
+    ///   (11..16) — each 3×3 self-block matches the corresponding
+    ///   K_e[3·a_local..3·a_local+3, 3·b_local..3·b_local+3] bit-for-bit
+    ///   (only one summand from the owning element).
+    #[test]
+    fn mixed_tet_hex_wedge_sharing_node_assembles_into_unified_3dof_per_node_global_k() {
+        let mat = dimensionless_steel_like();
+        let k_e_tet = element_stiffness_p1(&UNIT_TET_P1, &mat);
+        let k_e_hex = element_stiffness_hex_p1(&scaled_unit_hex_phys_nodes(1.0), &mat);
+        let k_e_wedge = element_stiffness_wedge_p1(&scaled_unit_wedge_phys_nodes(1.0), &mat);
+        assert_eq!(k_e_tet.n_dofs, 12);
+        assert_eq!(k_e_hex.n_dofs, 24);
+        assert_eq!(k_e_wedge.n_dofs, 18);
+
+        let conn_tet = [0usize, 1, 2, 3];
+        let conn_hex = [0usize, 4, 5, 6, 7, 8, 9, 10];
+        let conn_wedge = [0usize, 11, 12, 13, 14, 15];
+        let elements = [
+            AssemblyElement {
+                id: 0,
+                connectivity: &conn_tet,
+                k_e: &k_e_tet,
+            },
+            AssemblyElement {
+                id: 1,
+                connectivity: &conn_hex,
+                k_e: &k_e_hex,
+            },
+            AssemblyElement {
+                id: 2,
+                connectivity: &conn_wedge,
+                k_e: &k_e_wedge,
+            },
+        ];
+        let n_nodes = 16;
+        let k = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
+
+        // (a) dim = 3 · n_nodes (max(d_e) = 3, NOT 6).
+        let dim = 3 * n_nodes;
+        assert_eq!(k.nrows(), dim);
+        assert_eq!(k.ncols(), dim);
+
+        // (b) Node 0's displacement-displacement block (α, β ∈ 0..3): all
+        // three elements contribute, summed in tet → hex → wedge encounter
+        // order. Bit-equal to a three-summand left-fold of the K_e's
+        // [0..3, 0..3] sub-blocks.
+        for alpha in 0..3 {
+            for beta in 0..3 {
+                let i = alpha;
+                let j = beta;
+                let actual = read(&k, i, j);
+                // Three-summand left-fold in slice order:
+                //   ((K_tet[α,β] + K_hex[α,β]) + K_wedge[α,β])
+                let expected = k_e_tet.get(alpha, beta)
+                    + k_e_hex.get(alpha, beta)
+                    + k_e_wedge.get(alpha, beta);
+                assert_eq!(
+                    actual.to_bits(),
+                    expected.to_bits(),
+                    "K_global[{i}][{j}] (node 0 shared block): \
+                     actual = {actual}, expected = K_tet+K_hex+K_wedge = {expected}",
+                );
+            }
+        }
+
+        // (c) tet-exclusive nodes (1..=3): 3×3 self-blocks match
+        // K_e_tet[3·a_local..3·a_local+3, 3·b_local..3·b_local+3] bit-for-bit.
+        // Local indices: global node 1 = local 1, node 2 = local 2, node 3 = local 3.
+        for &gn_a in &[1usize, 2, 3] {
+            let la = gn_a; // identity local-from-global on tet-only nodes
+            for &gn_b in &[1usize, 2, 3] {
+                let lb = gn_b;
+                for alpha in 0..3 {
+                    for beta in 0..3 {
+                        let i = 3 * gn_a + alpha;
+                        let j = 3 * gn_b + beta;
+                        let actual = read(&k, i, j);
+                        let expected = k_e_tet.get(3 * la + alpha, 3 * lb + beta);
+                        assert_eq!(
+                            actual.to_bits(),
+                            expected.to_bits(),
+                            "K_global[{i}][{j}] (tet-only node-pair gn=({gn_a}, {gn_b}), \
+                             local ({la}, {lb}), α={alpha} β={beta}): \
+                             actual = {actual}, expected = {expected}",
+                        );
+                    }
+                }
+            }
+        }
+
+        // (d) hex-exclusive nodes (4..=10): 3×3 self-blocks match
+        // K_e_hex[3·a_local..3·a_local+3, 3·b_local..3·b_local+3] bit-for-bit.
+        // Local indices: global node 4 = local 1, 5 = local 2, ..., 10 = local 7.
+        for &gn_a in &[4usize, 5, 6, 7, 8, 9, 10] {
+            let la = gn_a - 3; // global 4..=10 → local 1..=7
+            for &gn_b in &[4usize, 5, 6, 7, 8, 9, 10] {
+                let lb = gn_b - 3;
+                for alpha in 0..3 {
+                    for beta in 0..3 {
+                        let i = 3 * gn_a + alpha;
+                        let j = 3 * gn_b + beta;
+                        let actual = read(&k, i, j);
+                        let expected = k_e_hex.get(3 * la + alpha, 3 * lb + beta);
+                        assert_eq!(
+                            actual.to_bits(),
+                            expected.to_bits(),
+                            "K_global[{i}][{j}] (hex-only node-pair gn=({gn_a}, {gn_b}), \
+                             local ({la}, {lb}), α={alpha} β={beta}): \
+                             actual = {actual}, expected = {expected}",
+                        );
+                    }
+                }
+            }
+        }
+
+        // (e) wedge-exclusive nodes (11..=15): 3×3 self-blocks match
+        // K_e_wedge[3·a_local..3·a_local+3, 3·b_local..3·b_local+3] bit-for-bit.
+        // Local indices: global node 11 = local 1, ..., 15 = local 5.
+        for &gn_a in &[11usize, 12, 13, 14, 15] {
+            let la = gn_a - 10; // global 11..=15 → local 1..=5
+            for &gn_b in &[11usize, 12, 13, 14, 15] {
+                let lb = gn_b - 10;
+                for alpha in 0..3 {
+                    for beta in 0..3 {
+                        let i = 3 * gn_a + alpha;
+                        let j = 3 * gn_b + beta;
+                        let actual = read(&k, i, j);
+                        let expected = k_e_wedge.get(3 * la + alpha, 3 * lb + beta);
+                        assert_eq!(
+                            actual.to_bits(),
+                            expected.to_bits(),
+                            "K_global[{i}][{j}] (wedge-only node-pair gn=({gn_a}, {gn_b}), \
+                             local ({la}, {lb}), α={alpha} β={beta}): \
+                             actual = {actual}, expected = {expected}",
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// Mixed-element global K is symmetric within the same FP tolerance
     /// band the existing tet-only `global_k_is_symmetric_within_fp_tolerance`
     /// pins.
