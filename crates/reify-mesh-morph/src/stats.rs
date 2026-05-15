@@ -115,4 +115,38 @@ mod tests {
             serde_json::from_value(json_val).expect("deserialize must succeed");
         assert_eq!(original, roundtripped, "roundtrip must be identity");
     }
+
+    #[test]
+    fn record_morph_attempt_increments_morph_count() {
+        with_locked_stats(|| {
+            record_morph_attempt();
+            record_morph_attempt();
+            record_morph_attempt();
+            assert_eq!(snapshot().morph_count, 3, "morph_count should be 3 after 3 calls");
+        });
+    }
+
+    #[test]
+    fn record_remesh_increments_remesh_count() {
+        with_locked_stats(|| {
+            record_remesh();
+            record_remesh();
+            let s = snapshot();
+            assert_eq!(s.remesh_count, 2, "remesh_count should be 2 after 2 calls");
+            assert_eq!(s.morph_count, 0, "morph_count must be unaffected by record_remesh");
+        });
+    }
+
+    #[test]
+    fn record_rejection_sets_last_reason_and_overwrites() {
+        with_locked_stats(|| {
+            record_rejection("first");
+            record_rejection("second");
+            assert_eq!(
+                snapshot().last_rejection_reason,
+                Some("second".into()),
+                "last_rejection_reason should be 'second' (overwrite semantics — latest wins)"
+            );
+        });
+    }
 }
