@@ -197,8 +197,13 @@ fn check_one(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Finding> {
     // Cargo.lock — and every other metadata.files path was corroborated by
     // the primary diff — main has merely absorbed an unrelated dependency
     // bump after our task wrote its lockfile. Not phantom-done.
+    // Precondition: meta.files must have more than one entry so that "every
+    // other entry corroborates" is a meaningful claim. When the task claims
+    // only Cargo.lock (no other entries), the precondition is violated and
+    // we fall through to sibling-FF rescue, then High (erring on the side of
+    // operator visibility for an unverifiable claim).
     // Memory: project_post_merge_equivalence_false_positive_cargo_lock.md.
-    if is_cargo_lock_only(&missing) {
+    if is_cargo_lock_only(&missing, meta.files.len()) {
         return Some(Finding {
             pattern: Pattern::P5PhantomDone,
             severity: Severity::Low,
@@ -299,8 +304,15 @@ fn files_missing_from(files: &[String], covered: &[String]) -> Vec<String> {
 /// nested — e.g. `fuzz/Cargo.lock`, `examples/foo/Cargo.lock`). Matches by
 /// the path's final segment so nested lockfiles still benefit from the
 /// downgrade.
-fn is_cargo_lock_only(missing: &[String]) -> bool {
-    missing.len() == 1
+///
+/// Precondition: `total_files > 1`. At least one other `metadata.files` entry
+/// must exist for the "every other entry corroborates" justification to hold.
+/// Pass `meta.files.len()` at the call site; when the task claims only
+/// Cargo.lock, this returns `false` and the caller falls through to the
+/// sibling-FF rescue path.
+fn is_cargo_lock_only(missing: &[String], total_files: usize) -> bool {
+    total_files > 1
+        && missing.len() == 1
         && std::path::Path::new(&missing[0]).file_name()
             == Some(std::ffi::OsStr::new("Cargo.lock"))
 }
