@@ -3572,6 +3572,46 @@ mod tests {
     }
 
     #[test]
+    fn evict_over_cap_returns_zero_evictions_with_correct_remaining_bytes_when_under_cap() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb00";
+        let inp1 = "1111111111111111111111111111aabb";
+        let inp2 = "2222222222222222222222222222ccdd";
+
+        let v1 = make_sample_result();
+        let v2 = make_sample_result();
+        write_entry(root, eng, inp1, &v1).unwrap();
+        write_entry(root, eng, inp2, &v2).unwrap();
+
+        // Measure the on-disk .bin sizes.
+        let bin1 = entry_bin_path(root, eng, inp1);
+        let bin2 = entry_bin_path(root, eng, inp2);
+        let sz1 = std::fs::metadata(&bin1).unwrap().len();
+        let sz2 = std::fs::metadata(&bin2).unwrap().len();
+        let total = sz1 + sz2;
+
+        // Cap is well above current total — nothing should be evicted.
+        let cap = total + 1024;
+        let report = evict_over_cap(root, eng, cap).unwrap();
+
+        assert_eq!(report.evicted_count, 0, "evicted_count must be 0 when under cap");
+        assert_eq!(report.evicted_bytes, 0, "evicted_bytes must be 0 when under cap");
+        assert_eq!(
+            report.remaining_bytes, total,
+            "remaining_bytes must equal total .bin size: got {} expected {}",
+            report.remaining_bytes,
+            total
+        );
+
+        // Both .bin and .meta files must still exist.
+        assert!(bin1.exists(), ".bin for inp1 must survive under-cap call");
+        assert!(bin2.exists(), ".bin for inp2 must survive under-cap call");
+        assert!(entry_meta_path(root, eng, inp1).exists(), ".meta for inp1 must survive");
+        assert!(entry_meta_path(root, eng, inp2).exists(), ".meta for inp2 must survive");
+    }
+
+    #[test]
     fn evict_over_cap_returns_zero_evictions_when_engine_version_subdir_is_absent() {
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path();
