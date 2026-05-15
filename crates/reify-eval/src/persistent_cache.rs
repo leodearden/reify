@@ -1357,14 +1357,27 @@ pub fn evict_over_cap(
             let bin_size = file_entry.metadata()?.len();
             // Derive .meta path: same stem, .meta extension.
             let meta_path = file_path.with_extension("meta");
+
+            // Read last-access from sidecar mtime; fall back to .bin mtime when
+            // sidecar absent (crash-orphan .bin — see step-12 for full fallback).
+            // For now propagate NotFound so step-11 test surfaces the gap.
+            let last_access = read_sidecar_mtime(&meta_path)?;
+
+            // Read solve_time_ms from the fixed 92-byte header — no body decompression.
+            let solve_time_ms = {
+                use std::fs::File;
+                use std::io::BufReader;
+                let f = File::open(&file_path)?;
+                CacheEntryHeader::read_from(&mut BufReader::new(f))?.solve_time_ms
+            };
+
             total_bytes += bin_size;
             candidates.push(EvictionCandidate {
                 bin_path: file_path,
                 meta_path,
                 bin_size,
-                // Placeholder values filled after sorting decision is added (step 8).
-                last_access: std::time::SystemTime::UNIX_EPOCH,
-                solve_time_ms: 0,
+                last_access,
+                solve_time_ms,
             });
         }
     }
@@ -1378,11 +1391,36 @@ pub fn evict_over_cap(
         });
     }
 
-    // Eviction loop deferred to step 8 — for now propagate no error.
+    // Sort by last_access ascending (naive LRU: oldest first).
+    // Step 10 replaces this with a cost-aware sort using eviction_score.
+    candidates.sort_by_key(|c| c.last_access);
+
+    // Evict candidates in order until remaining ≤ cap_bytes.
+    let mut evicted_count: u64 = 0;
+    let mut evicted_bytes: u64 = 0;
+    let mut remaining: u64 = total_bytes;
+
+    for candidate in &candidates {
+        if remaining <= cap_bytes {
+            break;
+        }
+        std::fs::remove_file(&candidate.bin_path)?;
+        // Remove .meta — suppress NotFound only (crash-orphan .bin never had one).
+        // All other errors propagate via `?`.
+        match std::fs::remove_file(&candidate.meta_path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+        evicted_count += 1;
+        evicted_bytes += candidate.bin_size;
+        remaining -= candidate.bin_size;
+    }
+
     Ok(EvictionReport {
-        evicted_count: 0,
-        evicted_bytes: 0,
-        remaining_bytes: total_bytes,
+        evicted_count,
+        evicted_bytes,
+        remaining_bytes: remaining,
     })
 }
 
