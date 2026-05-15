@@ -2751,6 +2751,118 @@ impl Engine {
                 }
             }
 
+            // @optimized UserFunctionCall → ComputeNode lowering (task γ / 3422, PRD §8).
+            // When a let-cell's expr is a UserFunctionCall whose CompiledFunction carries
+            // `optimized_target == Some(t)` AND a compute trampoline is registered for `t`,
+            // we insert a ComputeNode into the graph and invoke the trampoline synchronously
+            // instead of body-inlining. Runs after the Pending gate; unregistered targets
+            // fall through to the eval_expr path below (step-8 adds the fallback diagnostic).
+            if let reify_types::CompiledExprKind::UserFunctionCall {
+                function_name,
+                args,
+            } = &expr.kind
+            {
+                // First-match-wins lookup — same logic as eval_user_function_call in reify-expr.
+                let maybe_target: Option<String> = functions
+                    .iter()
+                    .find(|f| {
+                        f.name == *function_name
+                            && f.params.len() == args.len()
+                            && f.params
+                                .iter()
+                                .zip(args.iter())
+                                .all(|((_, ty), arg)| *ty == arg.result_type)
+                    })
+                    .and_then(|f| f.optimized_target.clone());
+
+                if let Some(target) = maybe_target {
+                    if self.compute_dispatch(&target).is_some() {
+                        // Evaluate args in a scoped block so the eval_ctx borrow on
+                        // `snapshot.values` ends before we mutably access `snapshot`.
+                        let arg_values: Vec<Value> = {
+                            let eval_ctx =
+                                eval_ctx_with_meta(values, functions, meta_map)
+                                    .with_determinacy(&snapshot.values)
+                                    .with_runtime_diagnostics(runtime_sink);
+                            args.iter()
+                                .map(|a| reify_expr::eval_expr(a, &eval_ctx))
+                                .collect()
+                        };
+
+                        match self.dispatch_compute_node(
+                            &target,
+                            &arg_values,
+                            &[],
+                            &Value::Undef,
+                            None,
+                        ) {
+                            Ok((result, diags)) => {
+                                diagnostics.extend(diags);
+
+                                // Record a ComputeNode in the graph so callers can
+                                // inspect which cells were routed through a trampoline.
+                                snapshot.graph.insert_compute_node(
+                                    crate::graph::ComputeNodeData {
+                                        computation_id: reify_types::ComputeNodeId::new(
+                                            cell_id.entity.as_str(),
+                                            0,
+                                        ),
+                                        target,
+                                        value_inputs: vec![cell_id.clone()],
+                                        realization_inputs: vec![],
+                                        options_hash: reify_types::ContentHash(0),
+                                        cache_key: reify_types::ContentHash(0),
+                                        cached_result: Some(result.clone()),
+                                        result_content_hash: None,
+                                        opaque_state: None,
+                                        running: None,
+                                        output_value_cells: vec![cell_id.clone()],
+                                    },
+                                );
+
+                                values.insert(cell_id.clone(), result.clone());
+                                snapshot.values.insert(
+                                    cell_id.clone(),
+                                    (result.clone(), DeterminacyState::Determined),
+                                );
+                                let trace = take_trace(
+                                    &mut let_traces,
+                                    &node_id,
+                                    "sorted_lets",
+                                    "let_traces",
+                                );
+                                let cached_result =
+                                    CachedResult::Value(result, DeterminacyState::Determined);
+                                let outcome = self
+                                    .cache
+                                    .record_evaluation_propagating_freshness(
+                                        node_id.clone(),
+                                        cached_result,
+                                        VersionId(version_id),
+                                        trace,
+                                        false,
+                                    );
+                                self.journal.record(EvalEvent {
+                                    timestamp: Instant::now(),
+                                    node_id,
+                                    kind: EventKind::Completed { outcome },
+                                    version: VersionId(version_id),
+                                    payload: Some(EventPayload::Duration(start.elapsed())),
+                                });
+                                continue;
+                            }
+                            Err(diags) => {
+                                // Registered trampoline failed/cancelled — surface diags
+                                // and fall through to body-inlining as best-effort.
+                                diagnostics.extend(diags);
+                            }
+                        }
+                    }
+                    // Unregistered target: fall through to eval_expr below.
+                    // step-8 adds the fallback diagnostic in this branch.
+                }
+            }
+
             // Arch §9.1 panic boundary (lines 868–877): wrap `reify_expr::eval_expr`
             // in `catch_unwind` so a panic inside expression evaluation becomes
             // `Freshness::Failed { error }` on the cell plus a single
