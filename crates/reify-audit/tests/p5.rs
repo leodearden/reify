@@ -588,6 +588,33 @@ mod tests {
         );
     }
 
+    /// Pin the minimal schema contract assumed by production's
+    /// `has_task_completed_event` query (`SELECT 1 FROM events WHERE task_id = ?
+    /// AND event_type = 'task_completed'`). This test fails if `RUNS_DB_SCHEMA`
+    /// is edited to rename or remove either column, acting as a reminder to also
+    /// update the production query and any dark-factory migration that changes the
+    /// real runs.db schema. Column additions do not fail this test (they'd be
+    /// caught by future detectors' own tests when they add the columns they need).
+    #[test]
+    fn runs_db_schema_pin() {
+        let conn = seed_db();
+        let mut stmt = conn
+            .prepare("PRAGMA table_info(events)")
+            .expect("PRAGMA must succeed on seeded schema");
+        let column_names: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("query_map")
+            .map(|r| r.expect("row"))
+            .collect();
+        assert_eq!(
+            column_names,
+            vec!["task_id", "event_type"],
+            "events table columns differ from production query contract — \
+             update RUNS_DB_SCHEMA and has_task_completed_event if dark-factory \
+             migrated the schema"
+        );
+    }
+
     /// Coverage gap pin — verifies the Err arm of `has_task_completed_event`
     /// survives future refactors. No production-code change required; this
     /// branch was added in amend e5e8932cb6 but never had a direct test.

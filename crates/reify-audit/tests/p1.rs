@@ -68,21 +68,11 @@ mod tests {
     /// time — exactly what downstream crates (T-4 CLI) need from a stable API.
     #[test]
     fn api_surface_pin() {
-        // Pattern: all FOUR variants must be reachable; the exhaustive
-        // `match` forces a test update on any future enum extension.
-        for p in [
-            Pattern::P5PhantomDone,
-            Pattern::P2ConsumerStub,
-            Pattern::P1ProducerOrphan,
-            Pattern::MetadataFilesGitignored,
-        ] {
-            match p {
-                Pattern::P5PhantomDone => {}
-                Pattern::P2ConsumerStub => {}
-                Pattern::P1ProducerOrphan => {}
-                Pattern::MetadataFilesGitignored => {}
-            }
-        }
+        // Pattern: spot-check that P1ProducerOrphan is accessible from this crate.
+        // The exhaustive all-variants match lives in tests/p5.rs::api_surface_pin
+        // (the canonical home) so future variant additions only require updating
+        // one test file rather than two.
+        let _: Pattern = Pattern::P1ProducerOrphan;
 
         // ChangedSymbol / SymbolReference: destructure every field by name.
         let ChangedSymbol {
