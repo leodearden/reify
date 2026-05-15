@@ -12,6 +12,11 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use reify_eval::cache::NodeId;
+// Re-export the canonical NodeKind from reify-types so all existing call sites
+// (including reify_runtime::commitment::NodeKind in tests and concurrent_eval.rs)
+// continue to resolve transparently. The From<&NodeId> bridge impl lives in
+// reify-eval/src/cache.rs (the only orphan-rule-clean host; see PRD §4).
+pub use reify_types::NodeKind;
 
 /// Project-level configuration for the dual-threshold commitment policy.
 ///
@@ -26,39 +31,6 @@ pub struct CommitmentPolicy {
     pub always_commit_after: Duration,
     /// Commit when estimated progress exceeds this fraction (default: 0.5).
     pub commit_when_proportion_done: f64,
-}
-
-/// Discriminant for the "type" of a node in the evaluation graph.
-///
-/// Mirrors the variants of [`NodeId`] (§7.6 of the architecture) but without
-/// the per-instance identifier payload, making it usable as a lightweight
-/// key for per-type policy overrides (§7.3, lines 751–767).
-///
-/// Convert from a [`NodeId`] via `NodeKind::from(&node_id)` / `(&node_id).into()`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum NodeKind {
-    /// A value cell node.
-    Value,
-    /// A constraint node.
-    Constraint,
-    /// A realization (geometry output) node.
-    Realization,
-    /// A resolution (constraint solver) node.
-    Resolution,
-    /// A compute (ComputeNode) node — P3.3+, see §5 of the architecture.
-    Compute,
-}
-
-impl From<&NodeId> for NodeKind {
-    fn from(node_id: &NodeId) -> Self {
-        match node_id {
-            NodeId::Value(_) => Self::Value,
-            NodeId::Constraint(_) => Self::Constraint,
-            NodeId::Realization(_) => Self::Realization,
-            NodeId::Resolution(_) => Self::Resolution,
-            NodeId::Compute(_) => Self::Compute,
-        }
-    }
 }
 
 /// Per-node override for commitment behavior.
