@@ -333,6 +333,14 @@
 //!     &reify_types::VolumeMesh,
 //!     &IsotropicElastic,
 //! ) -> ZzIndicator = compute_zz_indicator;
+//!
+//! // Task 3293: orphan-DOF diagnostic surface — crate-root re-export smoke pin.
+//! // Pins that OrphanDofsSummary and detect_orphan_dofs are discoverable from
+//! // the crate root. Will fail to compile until step-14 adds the re-exports.
+//! use reify_solver_elastic::{OrphanDofsSummary, detect_orphan_dofs};
+//! let _: OrphanDofsSummary = OrphanDofsSummary::default();
+//! let s = detect_orphan_dofs(0, &[]);
+//! assert_eq!(s.count, 0);
 //! ```
 
 pub mod assembly;
