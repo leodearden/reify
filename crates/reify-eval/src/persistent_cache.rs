@@ -3932,4 +3932,80 @@ mod tests {
         assert_eq!(report.evicted_bytes, 0, "evicted_bytes");
         assert_eq!(report.remaining_bytes, 0, "remaining_bytes");
     }
+
+    /// Step-11 RED: verify that `evict_over_cap` does NOT propagate
+    /// `io::ErrorKind::NotFound` when a `.bin` entry has no companion `.meta`
+    /// sidecar, simulating the `write_entry` crash window where `.bin` was
+    /// persisted but `write_sidecar` was not yet called.
+    ///
+    /// When the sidecar is absent the `.bin` file's **own mtime** should be
+    /// used as the LRU signal.  Under step-8's naive impl, `read_sidecar_mtime`
+    /// propagates `NotFound` — so the call returns `Err` rather than `Ok`.
+    /// This test surfaces that gap.
+    #[test]
+    fn evict_over_cap_uses_bin_mtime_as_lru_fallback_when_meta_sidecar_is_absent() {
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "ee00000000000000000000000000eeee";
+        let inp_orphan = "oo00000000000000000000000000oooo"; // orphan: no sidecar
+        let inp_normal = "nn00000000000000000000000000nnnn"; // normal: sidecar present
+
+        let v = make_sample_result();
+        write_entry(root, eng, inp_orphan, &v).unwrap();
+        write_entry(root, eng, inp_normal, &v).unwrap();
+
+        // Remove the orphan's sidecar to simulate a crash between write_entry's
+        // persist(.bin) step and its write_sidecar(.meta) step.
+        let meta_orphan = entry_meta_path(root, eng, inp_orphan);
+        std::fs::remove_file(&meta_orphan)
+            .expect("orphan .meta must be present to remove");
+
+        // Back-date the orphan .bin mtime so it is the oldest on disk and will
+        // be chosen for eviction (highest LRU score via .bin mtime fallback).
+        let ancient = UNIX_EPOCH + Duration::from_secs(1_000);
+        let bin_orphan = entry_bin_path(root, eng, inp_orphan);
+        {
+            let f = std::fs::File::options()
+                .write(true)
+                .open(&bin_orphan)
+                .unwrap();
+            f.set_times(std::fs::FileTimes::new().set_modified(ancient))
+                .expect("must set .bin mtime");
+        }
+
+        // Measure sizes; set cap so only one entry can survive.
+        let sz_orphan = std::fs::metadata(&bin_orphan).unwrap().len();
+        let sz_normal =
+            std::fs::metadata(entry_bin_path(root, eng, inp_normal)).unwrap().len();
+        let total = sz_orphan + sz_normal;
+        // cap = sz_normal → exactly one eviction required.
+        let cap = sz_normal;
+        assert!(total > cap, "test precondition: total must exceed cap");
+
+        // MUST NOT return Err — NotFound from absent .meta must be caught.
+        let report = evict_over_cap(root, eng, cap)
+            .expect("evict_over_cap must not propagate NotFound when .meta is absent");
+
+        // The orphan .bin (oldest by file mtime) must be the one evicted.
+        assert!(
+            !bin_orphan.exists(),
+            "orphan .bin (oldest by .bin mtime) must be evicted"
+        );
+
+        // Normal entry must survive.
+        assert!(
+            entry_bin_path(root, eng, inp_normal).exists(),
+            "normal .bin must survive"
+        );
+
+        assert!(
+            report.remaining_bytes <= cap,
+            "remaining_bytes {} must be ≤ cap {}",
+            report.remaining_bytes,
+            cap
+        );
+        assert_eq!(report.evicted_count, 1, "exactly one entry must be evicted");
+    }
 }
