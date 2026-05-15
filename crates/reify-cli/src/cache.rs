@@ -6,6 +6,19 @@
 //!
 //! Sibling task 2976 (`cache stats/clear/gc`) will extend this module with
 //! additional sub-subcommands; the dispatcher is structured for that.
+//!
+//! ## Partial-batch import semantics
+//!
+//! `cache import` processes staged entries in `HashMap` (non-deterministic)
+//! order and individual placement is atomic per entry (tempfile+persist).
+//! Filesystem I/O failures during the second loop (tempfile create/write/
+//! sync/persist, `create_dir_all`, `write_sidecar`) abort the batch with
+//! `ExitCode::FAILURE` *after* any earlier entries have already landed.
+//! On-disk state remains internally consistent (no half-written `.bin`s),
+//! but operators cannot tell from the exit code alone which entries
+//! succeeded.  This is acceptable for the v0.3 single-entry distribution
+//! workflow; if multi-entry batches become common, a per-entry summary
+//! and continue-on-error policy would replace the early-return pattern.
 
 use std::collections::HashMap;
 use std::io::{Cursor, Read, Write};
@@ -47,6 +60,21 @@ const EXPORT_USAGE: &str = "Usage: reify cache export <hash>";
 
 /// Usage line for `reify cache import` argument errors.
 const IMPORT_USAGE: &str = "Usage: reify cache import";
+
+/// Render a 32-byte echo field (e.g. `header.engine_version_hash`) as a
+/// stderr-safe lowercase-hex string.  Used in warn-and-skip error messages
+/// where the field's bytes might be operator-hostile: a maliciously crafted
+/// tar entry could place terminal escapes, NULs, or other control bytes in
+/// the 32-byte echo, and `String::from_utf8_lossy` only replaces invalid
+/// UTF-8 — it passes valid-but-non-printable ASCII (NUL, ESC, etc.) through
+/// unchanged.  Hex-encoding is unambiguous and safe to splat into any log.
+fn hex_encode_32(bytes: &[u8; 32]) -> String {
+    let mut s = String::with_capacity(64);
+    for b in bytes {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
 
 /// Staged-entry value for the import walk: `(bin_bytes, meta_bytes)`.  Either
 /// may be absent depending on the tar order or whether the producer chose to
@@ -386,11 +414,15 @@ fn cmd_cache_import(args: &[String]) -> ExitCode {
         // leaves zero filesystem residue (the integrity invariant called
         // out in the plan's Design Decisions).
         if &header.engine_version_hash[..] != ENGINE_VERSION_HASH.as_bytes() {
+            // Hex-render the echo field rather than `from_utf8_lossy` — a
+            // hostile tar could place terminal escapes / NULs in the 32-byte
+            // header field that lossy UTF-8 would pass through verbatim to
+            // an operator's stderr (and any log it gets piped into).
             eprintln!(
                 "reify cache import: warning: skipping entry {stem}: \
                  engine-version mismatch (expected {}, got {})",
                 ENGINE_VERSION_HASH,
-                String::from_utf8_lossy(&header.engine_version_hash),
+                hex_encode_32(&header.engine_version_hash),
             );
             continue;
         }
