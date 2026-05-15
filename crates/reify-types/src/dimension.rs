@@ -229,6 +229,24 @@ impl DimensionVector {
         DimensionVector(v)
     }
 
+    /// Sibling helper to [`from_exps`] for declaring constants with non-integer
+    /// rational exponents (e.g. `FRACTURE_TOUGHNESS` with Length=Rational(-1, 2)).
+    /// Each tuple is `(index, numerator, denominator)`.
+    ///
+    /// The two-helper split is intentional: the integer/rational distinction is
+    /// explicit at the call site, and the 30+ existing `from_exps` callers stay
+    /// untouched.
+    const fn from_rational_exps(entries: &[(usize, i16, i16)]) -> DimensionVector {
+        let mut v = [Rational::ZERO; 10];
+        let mut i = 0;
+        while i < entries.len() {
+            let (idx, num, den) = entries[i];
+            v[idx] = Rational::new(num, den);
+            i += 1;
+        }
+        DimensionVector(v)
+    }
+
     /// Return the canonical user-facing name for this dimension, if it matches
     /// exactly one of the named singleton constants.
     ///
