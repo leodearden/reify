@@ -3391,4 +3391,222 @@ pub structure Rack {
         // (e) result_type must be Type::Geometry.
         assert_eq!(result.result_type, Type::Geometry);
     }
+
+    // ───────────────────────────────────────────────────────────────────────
+    // task 3540 step-15: structure-instance ctor lowering (RED)
+    //
+    // When a FunctionCall callee resolves to a `structure def` template in
+    // `scope.template_registry`, the compiler must emit
+    // `CompiledExprKind::StructureInstanceCtor` instead of a stdlib
+    // `FunctionCall` (design-decision-2). type_id is a baked
+    // `StructureTypeId(0)` placeholder; (type_name, version) are authoritative
+    // (esc-3540-173 / RULING 2+3). version is read via `template.version()`
+    // (the @version(N) accessor, esc-3540-176). Builtins (e.g. `cos`) are NOT
+    // perturbed.
+    //
+    // NOTE (escalate_info, design_concern, non-blocking): plan step-15(b)
+    // posits a `Beam { length: 2.0m }` "named-arg form". There is no
+    // record/struct-literal `ExprKind` in the surface grammar
+    // (reify-syntax/src/lib.rs ExprKind has FunctionCall only) — structure
+    // construction is positional-call form exclusively. Scenario (b) is
+    // therefore covered by the positional-binding test below rather than a
+    // separate `{}` form.
+    // ───────────────────────────────────────────────────────────────────────
+
+    /// Build a minimal structure-def `TopologyTemplate` with the given
+    /// `(param_name, default)` params (mirrors scc.rs::minimal_template).
+    fn sct_template(
+        name: &str,
+        params: &[(&str, Option<CompiledExpr>)],
+    ) -> crate::types::TopologyTemplate {
+        let value_cells = params
+            .iter()
+            .map(|(pname, default)| crate::types::ValueCellDecl {
+                id: ValueCellId::new(name, *pname),
+                kind: crate::types::ValueCellKind::Param,
+                visibility: crate::types::Visibility::Public,
+                cell_type: Type::Real,
+                default_expr: default.clone(),
+                solver_hints: vec![],
+                span: SourceSpan::prelude(),
+            })
+            .collect();
+        crate::types::TopologyTemplate {
+            name: name.to_string(),
+            entity_kind: crate::types::EntityKind::Structure,
+            visibility: crate::types::Visibility::Public,
+            type_params: vec![],
+            trait_bounds: vec![],
+            value_cells,
+            constraints: vec![],
+            realizations: vec![],
+            sub_components: vec![],
+            ports: vec![],
+            connections: vec![],
+            guarded_groups: vec![],
+            structure_controlling: std::collections::HashSet::new(),
+            objective: None,
+            meta: std::collections::HashMap::new(),
+            content_hash: ContentHash(0),
+            is_recursive: false,
+            annotations: vec![],
+            pragmas: vec![],
+            match_arm_groups: vec![],
+            forall_templates: vec![],
+        }
+    }
+
+    fn call_expr(name: &str, args: Vec<reify_syntax::Expr>) -> reify_syntax::Expr {
+        reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::FunctionCall {
+                name: name.to_string(),
+                args,
+            },
+            span: SourceSpan::prelude(),
+        }
+    }
+
+    fn num_expr(v: f64) -> reify_syntax::Expr {
+        reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::NumberLiteral {
+                value: v,
+                is_real: true,
+            },
+            span: SourceSpan::prelude(),
+        }
+    }
+
+    #[test]
+    fn structure_def_zero_arg_call_lowers_to_ctor() {
+        let tmpl = sct_template(
+            "Steel_AISI_1045",
+            &[(
+                "youngs_modulus",
+                Some(CompiledExpr::literal(Value::Int(200), Type::Int)),
+            )],
+        );
+        let mut registry: std::collections::HashMap<String, &crate::types::TopologyTemplate> =
+            std::collections::HashMap::new();
+        registry.insert("Steel_AISI_1045".to_string(), &tmpl);
+
+        let mut scope = CompilationScope::new("Host");
+        scope.is_entity_scope = true;
+        scope.set_template_registry(&registry);
+
+        let mut diags: Vec<Diagnostic> = vec![];
+        let result = compile_expr(
+            &call_expr("Steel_AISI_1045", vec![]),
+            &scope,
+            &[],
+            &[],
+            &mut diags,
+        );
+
+        match &result.kind {
+            CompiledExprKind::StructureInstanceCtor {
+                type_name,
+                version,
+                ordered_args,
+                defaults,
+                ..
+            } => {
+                assert_eq!(type_name, "Steel_AISI_1045");
+                assert_eq!(*version, 1, "absent @version defaults to 1 via version()");
+                assert!(ordered_args.is_empty(), "zero-arg call → no ordered args");
+                assert!(
+                    defaults.iter().any(|(n, _)| n == "youngs_modulus"),
+                    "omitted param's default must be captured, got {:?}",
+                    defaults.iter().map(|(n, _)| n).collect::<Vec<_>>()
+                );
+            }
+            other => panic!("expected StructureInstanceCtor, got {:?}", other),
+        }
+        assert_eq!(
+            result.result_type,
+            Type::StructureRef("Steel_AISI_1045".to_string())
+        );
+    }
+
+    #[test]
+    fn structure_def_positional_args_bind_in_declaration_order() {
+        let tmpl = sct_template(
+            "PointLoad",
+            &[
+                ("target", Some(CompiledExpr::literal(Value::Undef, Type::Real))),
+                (
+                    "magnitude",
+                    Some(CompiledExpr::literal(Value::Int(0), Type::Int)),
+                ),
+            ],
+        );
+        let mut registry: std::collections::HashMap<String, &crate::types::TopologyTemplate> =
+            std::collections::HashMap::new();
+        registry.insert("PointLoad".to_string(), &tmpl);
+
+        let mut scope = CompilationScope::new("Host");
+        scope.is_entity_scope = true;
+        scope.set_template_registry(&registry);
+
+        let mut diags: Vec<Diagnostic> = vec![];
+        let result = compile_expr(
+            &call_expr("PointLoad", vec![num_expr(5.0)]),
+            &scope,
+            &[],
+            &[],
+            &mut diags,
+        );
+
+        match &result.kind {
+            CompiledExprKind::StructureInstanceCtor {
+                ordered_args,
+                defaults,
+                ..
+            } => {
+                assert_eq!(ordered_args.len(), 1, "one positional arg supplied");
+                assert_eq!(
+                    ordered_args[0].0, "target",
+                    "first positional binds to first param in declaration order"
+                );
+                assert!(
+                    defaults.iter().any(|(n, _)| n == "magnitude"),
+                    "uncovered param keeps its default"
+                );
+                assert!(
+                    !defaults.iter().any(|(n, _)| n == "target"),
+                    "covered param must NOT appear in defaults"
+                );
+            }
+            other => panic!("expected StructureInstanceCtor, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn builtin_call_not_perturbed_by_ctor_path() {
+        // Empty template registry → `cos` is not a structure-def → must stay
+        // a FunctionCall (the stdlib path), NOT a StructureInstanceCtor.
+        let registry: std::collections::HashMap<String, &crate::types::TopologyTemplate> =
+            std::collections::HashMap::new();
+        let mut scope = CompilationScope::new("Host");
+        scope.is_entity_scope = true;
+        scope.set_template_registry(&registry);
+
+        let mut diags: Vec<Diagnostic> = vec![];
+        let result = compile_expr(
+            &call_expr("cos", vec![num_expr(0.0)]),
+            &scope,
+            &[],
+            &[],
+            &mut diags,
+        );
+
+        assert!(
+            !matches!(result.kind, CompiledExprKind::StructureInstanceCtor { .. }),
+            "builtin `cos` must not lower to StructureInstanceCtor"
+        );
+        assert!(
+            matches!(result.kind, CompiledExprKind::FunctionCall { .. }),
+            "builtin `cos` must remain a FunctionCall, got {:?}",
+            result.kind
+        );
+    }
 }
