@@ -120,6 +120,38 @@ pub struct OrphanDofsSummary {
     pub examples: Vec<(usize, usize)>,
 }
 
+impl std::fmt::Display for OrphanDofsSummary {
+    /// Single-line summary suitable for `eprintln!` and grep.
+    ///
+    /// Format (non-empty, no truncation):
+    /// `orphan DOFs: count=9, examples=[(1, 3), (1, 4), (1, 5), ...]`
+    ///
+    /// Format (truncated, `examples.len() < count`):
+    /// `orphan DOFs: count=24, examples=[(1, 3), ..., (6, 3)] (first 16 of 24)`
+    ///
+    /// Format (empty / no orphans):
+    /// `orphan DOFs: count=0, examples=[]`
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "orphan DOFs: count={}, examples=[", self.count)?;
+        for (i, &(node, axis)) in self.examples.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "({node}, {axis})")?;
+        }
+        write!(f, "]")?;
+        if self.examples.len() < self.count {
+            write!(
+                f,
+                " (first {} of {})",
+                self.examples.len(),
+                self.count,
+            )?;
+        }
+        Ok(())
+    }
+}
+
 /// Detect orphan DOFs in a mesh described by `elements`, returning a summary
 /// of all `(node, axis)` pairs whose row/col in the global stiffness matrix
 /// would be structurally zero because no touching element covers that axis.
