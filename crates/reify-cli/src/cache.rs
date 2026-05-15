@@ -128,10 +128,85 @@ fn cmd_cache_stats(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+
+    let entries = match collect_cache_entries(&cache_root) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("reify cache stats: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let total_bytes: u64 = entries.iter().map(|(_, sz)| *sz).sum();
+    let entry_count = entries.len();
+
     println!("Cache directory: {}", cache_root.display());
-    println!("Entry count: 0");
-    println!("Total size: 0 B");
+    println!("Entry count: {entry_count}");
+    println!("Total size: {total_bytes} B");
     ExitCode::SUCCESS
+}
+
+/// Walk `cache_root/<engine_version_subdir>/<shard>/*.bin` across ALL
+/// engine-version subdirs and return `(input_hash_stem, byte_size)` tuples.
+///
+/// Per the stats design decision, this aggregates across every engine-version
+/// directory it finds (so operators can spot stale-engine bloat).  Shape gates:
+/// * engine-version subdirs are filtered through [`is_32_lowercase_hex`] —
+///   stray non-cache directories under a misconfigured `--cache-dir` are
+///   silently skipped (matches the `clear` defense-in-depth predicate).
+/// * `.bin` files prefixed with `.tmp.` (in-flight tempfile writes) are
+///   skipped.
+/// * `.meta` sidecars are skipped (`.bin` is the canonical entry).
+///
+/// Returns `Ok(vec![])` when `cache_root` does not exist (treat as "empty").
+fn collect_cache_entries(cache_root: &Path) -> std::io::Result<Vec<(String, u64)>> {
+    let mut out: Vec<(String, u64)> = Vec::new();
+    let read_root = match std::fs::read_dir(cache_root) {
+        Ok(it) => it,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+        Err(e) => return Err(e),
+    };
+    for ev_entry in read_root {
+        let ev_entry = ev_entry?;
+        let ev_path = ev_entry.path();
+        if !ev_path.is_dir() {
+            continue;
+        }
+        let ev_name = match ev_path.file_name().and_then(|s| s.to_str()) {
+            Some(s) => s,
+            None => continue,
+        };
+        if !is_32_lowercase_hex(ev_name) {
+            continue;
+        }
+        for shard_entry in std::fs::read_dir(&ev_path)? {
+            let shard_entry = shard_entry?;
+            let shard_path = shard_entry.path();
+            if !shard_path.is_dir() {
+                continue;
+            }
+            for file_entry in std::fs::read_dir(&shard_path)? {
+                let file_entry = file_entry?;
+                let file_path = file_entry.path();
+                if file_path.extension().and_then(|s| s.to_str()) != Some("bin") {
+                    continue;
+                }
+                let file_name = match file_path.file_name().and_then(|n| n.to_str()) {
+                    Some(s) => s,
+                    None => continue,
+                };
+                if file_name.starts_with(".tmp.") {
+                    continue;
+                }
+                let stem = match file_path.file_stem().and_then(|s| s.to_str()) {
+                    Some(s) => s.to_owned(),
+                    None => continue,
+                };
+                let size = file_entry.metadata()?.len();
+                out.push((stem, size));
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// `reify cache export <hash>` — writes a single cache entry to stdout as a
