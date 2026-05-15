@@ -484,6 +484,9 @@ module.exports = grammar({
         optional(field('guard', $.where_clause)),
       ),
       // Collection form: sub name : List<StructName>
+      // The bare `'List'` token is reached only on exact-length matches —
+      // see the long comment on the specialization arm below for the full
+      // tree-sitter rule #1 / rule #2 reasoning and the regression lock.
       seq(
         'sub',
         field('name', $.identifier),
@@ -495,8 +498,34 @@ module.exports = grammar({
         optional(field('guard', $.where_clause)),
       ),
       // Specialization form: sub name : StructName <typeargs>? where? { body }?
-      // 'List' is a string token with lexical precedence over the identifier regex,
-      // so this branch is only reached when the type name is not the literal 'List'.
+      //
+      // Disambiguation from the collection arm above relies on tree-sitter's
+      // documented lexer rules — NOT on choice-arm order or on `prec(...)`:
+      //
+      //   Rule #1 (longest match, evaluated FIRST): the lexer picks the token
+      //   whose match consumes the most characters. For `Listicle<Foo>`, the
+      //   $.identifier regex matches 8 chars while the bare string `'List'`
+      //   matches only 4 — so the identifier wins and this specialization arm
+      //   is taken with structure_name == "Listicle".
+      //
+      //   Rule #2 (string-vs-regex tie-break, on equal-length matches): an
+      //   anonymous string/keyword token wins over a regex token of the same
+      //   length. For `List<Foo>`, both `'List'` and $.identifier match exactly
+      //   4 chars on "List", so `'List'` wins and the collection arm above is
+      //   taken — leaving "Foo" to be matched as structure_name.
+      //
+      // Together these two rules give: `List<X>` → collection arm; everything
+      // else (`Foo<X>`, `Listicle<X>`, `MyList<X>`, …) → this specialization
+      // arm. The invariant is pinned by `sub_decl_disambiguation_invariant` in
+      // `crates/reify-syntax/tests/sub_decl_specialization_body_parser_tests.rs`
+      // (Cases 1–4), which is the regression lock for this disambiguation.
+      //
+      // History: an earlier plan proposed `token(prec(1, 'List'))` here to make
+      // the precedence "explicit" in the grammar. That mechanism does NOT
+      // respect rule #1 — `token(prec(...))` causes the lexer to emit 'List'
+      // even when 'Listicle' would be a longer match, breaking Case 3.
+      // Bare `'List'` (relying on rules #1 + #2) is the correct mechanism.
+      // See escalation esc-3712-201 for the empirical evidence.
       seq(
         'sub',
         field('name', $.identifier),
