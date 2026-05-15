@@ -4597,4 +4597,93 @@ mod tests {
             "inp1 .bin must be removed"
         );
     }
+
+    // ── startup-sweep tests ──────────────────────────────────────────────────
+
+    /// Set the mtime of `path` to `age_secs` seconds in the past.
+    ///
+    /// Works for both regular files (opened write-only) and directories
+    /// (opened read-only; on Linux `futimens` only requires ownership of the
+    /// inode, not write access on the file descriptor).
+    fn backdate_mtime(path: &std::path::Path, age_secs: u64) {
+        use std::fs::FileTimes;
+        use std::time::{Duration, SystemTime};
+        let t = SystemTime::now()
+            .checked_sub(Duration::from_secs(age_secs))
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        let times = FileTimes::new().set_modified(t);
+        if path.is_dir() {
+            // Directories can be opened O_RDONLY; futimens checks ownership not
+            // fd write-access on Linux.
+            let f = std::fs::File::open(path).unwrap();
+            f.set_times(times).unwrap();
+        } else {
+            let f = std::fs::File::options().write(true).open(path).unwrap();
+            f.set_times(times).unwrap();
+        }
+    }
+
+    /// Step-1 RED: `sweep_stale_tempfiles` removes only old `.tmp.*` files.
+    ///
+    /// Fixture: a shard dir containing
+    /// * a fresh `.tmp.fresh` file (mtime ≈ now),
+    /// * an old `.tmp.old` file (backdated well past `STALE_TEMPFILE_AGE`),
+    /// * a `.bin` and `.meta` pair also backdated past the threshold (but
+    ///   NOT `.tmp.*`-prefixed, so they must survive).
+    ///
+    /// After `sweep_stale_tempfiles(cache_root)`:
+    /// * `.tmp.old` is gone,
+    /// * `.tmp.fresh`, `.bin`, `.meta` all remain,
+    /// * `SweepReport { tempfiles_removed: 1, orphan_dirs_removed: 0 }`.
+    #[test]
+    fn sweep_stale_tempfiles_removes_only_old_tmp_files_not_bin_or_meta() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "aabb000000000000000000000000aabb";
+        let inp = "ccdd111111111111111111111111ccdd";
+
+        let sd = shard_dir(root, eng, inp);
+        std::fs::create_dir_all(&sd).unwrap();
+
+        // Fresh .tmp file — mtime = now, must NOT be swept.
+        let fresh = sd.join(".tmp.fresh");
+        std::fs::write(&fresh, b"in-flight write").unwrap();
+
+        // Old .tmp file — backdated past threshold, must be swept.
+        let old_tmp = sd.join(".tmp.old");
+        std::fs::write(&old_tmp, b"crashed-writer leftover").unwrap();
+        backdate_mtime(&old_tmp, STALE_TEMPFILE_AGE.as_secs() + 60);
+
+        // Old .bin + .meta pair — old but NOT .tmp.* prefixed → must survive.
+        let bin = entry_bin_path(root, eng, inp);
+        let meta = entry_meta_path(root, eng, inp);
+        std::fs::write(&bin, b"bin-data").unwrap();
+        std::fs::write(&meta, b"meta-data").unwrap();
+        backdate_mtime(&bin, STALE_TEMPFILE_AGE.as_secs() + 60);
+        backdate_mtime(&meta, STALE_TEMPFILE_AGE.as_secs() + 60);
+
+        let report = sweep_stale_tempfiles(root);
+
+        assert!(
+            !old_tmp.exists(),
+            ".tmp.old must be removed by sweep_stale_tempfiles"
+        );
+        assert!(fresh.exists(), ".tmp.fresh must survive (mtime is recent)");
+        assert!(
+            bin.exists(),
+            ".bin must survive regardless of age (not a .tmp.* file)"
+        );
+        assert!(
+            meta.exists(),
+            ".meta must survive regardless of age (not a .tmp.* file)"
+        );
+        assert_eq!(
+            report.tempfiles_removed, 1,
+            "SweepReport.tempfiles_removed must be 1"
+        );
+        assert_eq!(
+            report.orphan_dirs_removed, 0,
+            "sweep_stale_tempfiles must not touch dirs (orphan_dirs_removed == 0)"
+        );
+    }
 }
