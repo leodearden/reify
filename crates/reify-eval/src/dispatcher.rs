@@ -315,6 +315,42 @@ pub fn kernel_pragma_unsatisfiable_diagnostic(
     Diagnostic::warning(message).with_code(DiagnosticCode::KernelPragmaUnsatisfiable)
 }
 
+/// Build the `Severity::Error` diagnostic emitted when `reify.toml`
+/// `[kernels]` pins a kernel that the current build did not register
+/// (typically because the corresponding Cargo feature was not enabled).
+///
+/// Unconditional [`Diagnostic`]-returning builder (the caller has already
+/// observed the pinned kernel is absent from the registry). Carries
+/// [`DiagnosticCode::PinnedKernelMissing`] for filter-by-code consumers
+/// and a message naming the missing kernel id.
+///
+/// # Integration status
+///
+/// TODO(task-3444/π): wire this builder into `reify.toml` parsing in
+/// `Engine::with_registered_kernels` once it lands (PRD
+/// `docs/prds/v0_3/multi-kernel-phase-3.md` §5 + §8 DAG; consumer π =
+/// ID 3444). Until then, scaffolding — public API with no in-tree caller
+/// — mirroring the `long_chain_diagnostic` precedent (task 2646).
+///
+/// # Severity rationale
+///
+/// PRD `docs/prds/v0_3/multi-kernel-phase-3.md` §5: "error; engine
+/// refuses to start." The determinism contract requires every pinned
+/// kernel to be present; the engine fails closed at startup rather than
+/// silently downgrading to a different kernel set.
+///
+/// # Arguments
+///
+/// - `kernel_id` — the kernel name pinned in `reify.toml` `[kernels]`
+///   that is missing from the build's registry.
+pub fn pinned_kernel_missing_diagnostic(kernel_id: &str) -> Diagnostic {
+    let message = format!(
+        "kernel '{kernel_id}' is pinned in reify.toml but not registered in \
+         this build; rebuild with the required kernel feature enabled"
+    );
+    Diagnostic::error(message).with_code(DiagnosticCode::PinnedKernelMissing)
+}
+
 /// Resolve the long-chain wall-time threshold from the
 /// [`LONG_CHAIN_THRESHOLD_ENV_VAR`] environment variable, falling back to
 /// [`LONG_CHAIN_DEFAULT_THRESHOLD_MS`] when unset or unparseable.
