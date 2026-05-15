@@ -21,10 +21,13 @@
 //      3088 added the `Field<D, C>` arm to `resolve_parameterized_builtin_type`
 //      and its `_with_subst` mirror (`type_resolution.rs:1313` and `:1509`).
 //      Task 3117 confirmed the arm works in `param` positions (finding recorded
-//      in docs/notes/stdlib-real-placeholder-audit.md); `displacement` and
-//      `stress` are now declared with their precise Field types. `frame` and
-//      `ShellStress` top/mid/bottom remain `Real` placeholders — tightening
-//      is tracked as task #3641.
+//      in docs/notes/stdlib-real-placeholder-audit.md) and tightened
+//      `displacement` and `stress` to their precise Field types. Task 3641
+//      then used the same resolver capability to tighten the four remaining
+//      post-audit slots — `ElasticResult.frame` and
+//      `ShellStress.top/mid/bottom`. All six Field-typed slots are now
+//      declared with their precise types; see the Resolution note above the
+//      `ElasticResult` declaration below for full provenance.
 //   2. PRD writes `mesh_size : Length = auto` and `threads : Integer = num_cpus::get()`.
 //      Reify has no `auto` literal and no `num_cpus::get()` — both encode as
 //      `Option<T> = none`, with the solver applying its own fallback when the
@@ -241,15 +244,16 @@ structure def ElasticOptions {
 // has no defaults — every field is populated by the solver at run time;
 // constructing one outside that flow is meaningless.
 //
-// Resolution note (task 3117): the TODO above was stale. Task 3088 added the
+// Resolution note (tasks 3117 + 3641): the TODO above was stale. Task 3088 added the
 // `Field<D, C>` arm to `resolve_parameterized_builtin_type` (type_resolution.rs:1313)
 // and its `_with_subst` mirror (:1509); both arms accept `Field<X, Y>` in `param`
 // positions. Task 3117 confirmed this and tightened `displacement` and `stress` to
 // their proper Field types (finding recorded in docs/notes/stdlib-real-placeholder-audit.md).
-//
-// Remaining Real placeholders: `frame`, `ShellStress.top/mid/bottom` — these were
-// added after the audit classified only `displacement` and `stress` as task-G scope.
-// The resolver supports Field for these forms too; tightening is tracked as task #3641.
+// Task 3641 then used the same resolver capability to tighten the four remaining
+// post-audit slots — `ElasticResult.frame` (`Field<Point3<Length>, Matrix<3, 3, Real>>`)
+// and `ShellStress.top/mid/bottom` (`Field<Point3<Length>, Tensor<2, 3, Pressure>>`).
+// All six Field-typed slots are now declared with their precise types; no Real
+// placeholders remain in `ElasticResult` or `ShellStress`.
 // Real-placeholder audit: docs/notes/stdlib-real-placeholder-audit.md
 //
 // Field semantics:
@@ -263,18 +267,21 @@ structure def ElasticOptions {
 //                   population path as `displacement`; tightened from Real
 //                   placeholder in task 3117.
 //   frame         — per-mesh-element local-to-global rotation matrix,
-//                   returned as a `Field<Point3<Length>, Matrix<3, 3, Real>>`
-//                   at runtime (one 3×3 orthogonal matrix per element).
-//                   Statically declared as `Real` — follow-up tightening
-//                   is outside task-G scope (added post-audit). See the
-//                   resolution note below for context.
+//                   `Field<Point3<Length>, Matrix<3, 3, Real>>` (one 3×3
+//                   orthogonal matrix per element; tightened from `Real`
+//                   placeholder in task #3641 using the resolver capability
+//                   confirmed by task 3117).
 //                   Tet population convention: the engine sets
 //                   `frame = Value::Undef` because tet stress is already in
 //                   the global Cartesian frame — no per-element local frame
 //                   exists for solid elements. Using Undef (rather than a
 //                   synthesised identity field) signals the absence cleanly
 //                   and prevents silent mistreatment by shell pipeline code
-//                   that forgets to check element type.
+//                   that forgets to check element type. Note for future
+//                   runtime-type-checking implementors: Value::Undef must
+//                   remain accepted for this Field-typed param on tet results
+//                   (see 'Runtime structured-stress contract (NOT implemented
+//                   at the stdlib level)' in `std/fea_multi_case.ri`).
 //                   Shell population convention: the engine populates the
 //                   per-element MITC3+ local frame derived from the
 //                   mid-surface mesher (the frame whose z-axis is the
@@ -298,7 +305,7 @@ structure def ElasticOptions {
 structure def ElasticResult {
     param displacement : Field<Point3<Length>, Vector3<Length>>
     param stress : Field<Point3<Length>, Tensor<2, 3, Pressure>>
-    param frame : Real
+    param frame : Field<Point3<Length>, Matrix<3, 3, Real>>
     param max_von_mises : Pressure
     param converged : Bool
     param iterations : Int
@@ -331,21 +338,21 @@ structure def ElasticResult {
 //            engine-integration tasks T18-T20.
 //   bottom — bottom-surface stress (inner fibre opposite to `top`).
 //
-// At runtime each channel is a `Field<Point3<Length>, Tensor<2, 3, Pressure>>`
-// — a per-mesh-node Cauchy stress tensor. These are declared as `Real`
-// placeholders pending the follow-up tightening pass (these slots were added
-// post-audit and are outside task-G scope). The resolver supports
-// `Field<X, Y>` in `param` positions (see resolution note in `ElasticResult`
-// above; `ElasticResult.displacement` and `.stress` were already tightened).
-// top/mid/bottom remain Real for now; the runtime FEA solver populates them
-// as Field-typed values regardless of the static `param` annotation.
+// Each channel is a `Field<Point3<Length>, Tensor<2, 3, Pressure>>` — a
+// per-mesh-node Cauchy stress tensor (tightened from `Real` placeholder in
+// task #3641 — see Resolution note above the `ElasticResult` declaration
+// for provenance).
 //
 // Tet-result population convention: the engine calls
 // `ShellStress::homogeneous(field)` (Rust constructor in
 // `crates/reify-solver-elastic/src/shell_result.rs`), which sets
 // top == mid == bottom == the single tet stress field. This preserves the
 // invariant that `ShellStress` always has all three channels populated even
-// for solid-element results that have no through-thickness variation.
+// for solid-element results that have no through-thickness variation. Note
+// for future runtime-type-checking implementors: Map-typed values from
+// ShellStress::homogeneous must remain accepted for these Field-typed params
+// on tet results (see 'Runtime structured-stress contract (NOT implemented
+// at the stdlib level)' in `std/fea_multi_case.ri`).
 //
 // No defaults, no constraints — output container only, populated exclusively
 // by the solver. Mirrors the `ElasticResult` shape discipline.
@@ -353,7 +360,7 @@ structure def ElasticResult {
 // PRD reference: docs/prds/v0_4/structural-analysis-shells.md §
 // "Stress through thickness".
 structure def ShellStress {
-    param top : Real
-    param mid : Real
-    param bottom : Real
+    param top : Field<Point3<Length>, Tensor<2, 3, Pressure>>
+    param mid : Field<Point3<Length>, Tensor<2, 3, Pressure>>
+    param bottom : Field<Point3<Length>, Tensor<2, 3, Pressure>>
 }

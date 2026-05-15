@@ -853,19 +853,18 @@ fn elastic_result_constrains_iterations_and_max_von_mises_nonneg() {
 ///     `type_resolution.rs:1313` confirmed to work in `param` positions)
 ///   - `stress        : Field<Point3<Length>, Tensor<2,3,Pressure>>`
 ///     (tightened from Real placeholder in task 3117; same resolver confirmation)
-///   - `frame         : Real`     (Real placeholder for Field<Point3<Length>, Matrix<3,3,Real>>;
-///     per-element local-to-global rotation; T16; follow-up tightening out of task-G scope)
+///   - `frame         : Field<Point3<Length>, Matrix<3,3,Real>>`
+///     (per-element local-to-global rotation; tightened in task #3641 using
+///     the resolver capability confirmed by task 3117)
 ///   - `max_von_mises : Pressure`
 ///   - `converged     : Bool`
 ///   - `iterations    : Int`
 ///
-/// `frame` remains a `Real` placeholder pending the follow-up tightening pass
-/// (added post-audit; outside task-G scope). The runtime FEA solver (PRD
-/// task #16) populates it as a Field-typed Map regardless of the static
-/// `param` annotation.
+/// All three Field-typed slots have been tightened from `Real` placeholders:
+/// `displacement` and `stress` by task #3117, `frame` by task #3641 — both
+/// using the resolver arm at `type_resolution.rs:1313`.
 ///
-/// `frame` is the per-element local-to-global rotation
-/// (`Field<Point3<Length>, Matrix<3,3,Real>>` at runtime):
+/// `frame` is the per-element local-to-global rotation:
 ///   - For tet results the engine sets `frame = Value::Undef` (tet stress is
 ///     already in the global Cartesian frame; no per-element local frame).
 ///   - For shell results the engine populates the per-element MITC3+ local
@@ -914,7 +913,22 @@ fn elastic_result_struct_has_correct_param_shape() {
                 )),
             },
         ),
-        ("frame", Type::Real),
+        (
+            "frame",
+            Type::Field {
+                domain: Box::new(Type::Point {
+                    n: 3,
+                    quantity: Box::new(Type::Scalar {
+                        dimension: DimensionVector::LENGTH,
+                    }),
+                }),
+                codomain: Box::new(Type::Matrix {
+                    m: 3,
+                    n: 3,
+                    quantity: Box::new(Type::Real),
+                }),
+            },
+        ),
         (
             "max_von_mises",
             Type::Scalar {
@@ -949,19 +963,16 @@ fn elastic_result_struct_has_correct_param_shape() {
 /// (PRD task T16, `docs/prds/v0_4/structural-analysis-shells.md` §
 /// "Stress through thickness"). It must declare exactly three params:
 ///
-///   - `top    : Real`   (top-surface stress layer)
-///   - `mid    : Real`   (mid-surface stress layer)
-///   - `bottom : Real`   (bottom-surface stress layer)
+///   - `top    : Field<Point3<Length>, Tensor<2, 3, Pressure>>`  (top-surface stress)
+///   - `mid    : Field<Point3<Length>, Tensor<2, 3, Pressure>>`  (mid-surface stress)
+///   - `bottom : Field<Point3<Length>, Tensor<2, 3, Pressure>>`  (bottom-surface stress)
 ///
-/// All three are declared as `Real` placeholders for
-/// `Field<Point3<Length>, Tensor<2, 3, Pressure>>` at runtime, mirroring the
-/// existing `ElasticResult.stress` placeholder convention. The Real placeholder
-/// lets the runtime solver populate the actual Field-typed values regardless of
-/// the static `param` annotation; the TODO(field-in-param, task #3117) block
-/// in `solver_elastic.ri` enumerates these three slots alongside `displacement`
-/// and `stress` for the future migration pass. The `ShellStress` structure has
-/// no defaults and no constraints — it is a data-only output container
-/// analogous to `ElasticResult` (no user-configurable knobs).
+/// All three were tightened from `Real` placeholders to their proper
+/// `Field<Point3<Length>, Tensor<2, 3, Pressure>>` type in task #3641, after
+/// task #3117 confirmed the resolver arm at `type_resolution.rs:1313` handles
+/// `Field<D, C>` in `param` positions. The `ShellStress` structure has no
+/// defaults and no constraints — it is a data-only output container analogous
+/// to `ElasticResult` (no user-configurable knobs).
 ///
 /// For tet results the engine populates all three channels with the same field
 /// (no through-thickness variation); for shell results the MITC3+ kernel
@@ -972,7 +983,7 @@ fn elastic_result_struct_has_correct_param_shape() {
 /// cross-check will be added in engine-integration tasks T18-T20 when both
 /// sides are actually consumed together.
 #[test]
-fn shell_stress_struct_has_top_mid_bottom_real_params() {
+fn shell_stress_struct_has_top_mid_bottom_field_params() {
     let template = find_structure("ShellStress");
     let params = param_cells(template);
     let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
@@ -984,10 +995,27 @@ fn shell_stress_struct_has_top_mid_bottom_real_params() {
         names
     );
 
-    let expected: &[(&str, Type)] = &[
-        ("top", Type::Real),
-        ("mid", Type::Real),
-        ("bottom", Type::Real),
+    // All three channels share the same Field type: per-mesh-node Cauchy stress
+    // tensor mapping from Point3<Length> domain to Tensor<2,3,Pressure> codomain.
+    let shell_field_ty = Type::Field {
+        domain: Box::new(Type::Point {
+            n: 3,
+            quantity: Box::new(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            }),
+        }),
+        codomain: Box::new(Type::Tensor {
+            rank: 2,
+            n: 3,
+            quantity: Box::new(Type::Scalar {
+                dimension: DimensionVector::PRESSURE,
+            }),
+        }),
+    };
+    let expected: &[(&str, &Type)] = &[
+        ("top", &shell_field_ty),
+        ("mid", &shell_field_ty),
+        ("bottom", &shell_field_ty),
     ];
 
     for (member, expected_ty) in expected {
@@ -1001,7 +1029,7 @@ fn shell_stress_struct_has_top_mid_bottom_real_params() {
                 )
             });
         assert_eq!(
-            cell.cell_type, *expected_ty,
+            cell.cell_type, **expected_ty,
             "ShellStress.{} should be {:?}, got {:?}",
             member, expected_ty, cell.cell_type
         );

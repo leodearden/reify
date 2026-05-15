@@ -18,7 +18,7 @@ buckets:
 | `genuine-dimensionless` | `Real` IS the correct type — the quantity is a dimensionless ratio or a scale-dependent score. | Annotate `// dimensionless` on the param line. |
 | `blocked-composite` | The spec'd type is a composite dimension (e.g. W/(m·K), Ω·m, N/m) that the resolver cannot yet express as a named scalar alias or parametric type. | File a follow-up task for composite-dim named aliases. |
 | `blocked-geometry-type` | The spec'd type references a `Geometry` / `DatumRef` type that does not exist in the resolver. | File a follow-up task for the geometry-type capability. |
-| `blocked-field-in-param` | The spec'd type is `Field<X, Y>` in a `param` position; a resolver arm for `Field` exists at `type_resolution.rs:1397` but the existing TODO comment (solver_elastic.ri:243-254) claims it is restricted to `field def`. | File a follow-up task to investigate and either tighten or extend. |
+| `blocked-field-in-param` ✓ (retired) | Historically: the spec'd type is `Field<X, Y>` in a `param` position; an old TODO in solver_elastic.ri claimed the resolver `Field` arm was restricted to `field def`. Task 3088 added the `Field<D, C>` arm to `resolve_parameterized_builtin_type` at `type_resolution.rs:1313` (and its `_with_subst` mirror at `:1509`); task 3117 confirmed it works in `param` positions and tightened `displacement`/`stress`; task 3641 used the same capability to tighten the remaining post-audit slots (`frame`, `ShellStress.{top,mid,bottom}`). Bucket retired — no site classifies here today. | — |
 | `structural-contract` | `Real` is intentionally dimension-agnostic — the runtime builtins produce correctly-dimensioned values but the trait itself must not participate in dimension checking. Tightening would BREAK the contract. | Record rationale only; no follow-up task. |
 
 ### Inline annotation policy
@@ -290,7 +290,7 @@ make the classification machine-readable.
 
 ---
 
-### `solver_elastic.ri` — 5 sites
+### `solver_elastic.ri` — 5 original + 4 post-audit sites
 
 Source: `crates/reify-compiler/stdlib/solver_elastic.ri`
 
@@ -301,6 +301,15 @@ Source: `crates/reify-compiler/stdlib/solver_elastic.ri`
 | 171 | `ElasticOptions` struct | `shell_branch_prune_ratio` | `Real` | `Real` | genuine-dimensionless | — |
 | 284 | `ElasticResult` struct | `displacement` | `Field<Point3<Length>, Vector3<Length>>` | `Field<Point3<Length>, Vector3<Length>>` | resolved ✓ task-G #3117 | — |
 | 285 | `ElasticResult` struct | `stress` | `Field<Point3<Length>, Tensor<2,3,Pressure>>` | `Field<Point3<Length>, Tensor<2,3,Pressure>>` | resolved ✓ task-G #3117 | — |
+
+Post-audit sites added after the original table was fixed (task #3641 scope):
+
+| Line | Owner | Param | Tightened Type | Classification | Resolved in |
+|------|-------|-------|----------------|----------------|-------------|
+| 286 | `ElasticResult` struct | `frame` | `Field<Point3<Length>, Matrix<3,3,Real>>` | tightened | task #3641 |
+| 343 | `ShellStress` struct | `top` | `Field<Point3<Length>, Tensor<2,3,Pressure>>` | tightened | task #3641 |
+| 344 | `ShellStress` struct | `mid` | `Field<Point3<Length>, Tensor<2,3,Pressure>>` | tightened | task #3641 |
+| 345 | `ShellStress` struct | `bottom` | `Field<Point3<Length>, Tensor<2,3,Pressure>>` | tightened | task #3641 |
 
 **Notes:**
 - `cg_tolerance` (relative residual norm), `shell_threshold` (thickness/extent ratio),
@@ -313,7 +322,10 @@ Source: `crates/reify-compiler/stdlib/solver_elastic.ri`
   Regression-locked by `tests/solver_elastic_tests.rs::elastic_result_struct_has_correct_param_shape`
   and `tests/parametric_field_resolution_tests.rs` (covers identical forms with the `Body` fixture).
 - `frame` and `ShellStress.top/mid/bottom`: added post-audit; resolver supports Field for
-  these forms too (confirmed by task 3117). Tightening tracked as task #3641.
+  these forms too (confirmed by task 3117). Tightened from `Real` to their proper
+  `Field<…>` types in task #3641 using the same resolver capability.
+  Regression-locked by `tests/solver_elastic_tests.rs::{elastic_result_struct_has_correct_param_shape,
+  shell_stress_struct_has_top_mid_bottom_field_params}`.
 
 ---
 
@@ -376,4 +388,4 @@ rejected by the dimension checker. **No follow-up task is filed for this module.
 | task-E ✓ | Add named-dimension aliases for composite quantities | Introduced 9 aliases (ThermalConductivity, SpecificHeat, ThermalExpansion, ElectricResistivity, ElectricalConductivity, DielectricStrength, Stiffness, AbsorptionCoeff, FractureToughness — last needs fractional Length exponent, supported via new `from_rational_exps` helper) to NAMED_DIMENSIONS; resolver table-driven so no resolver changes needed. All 11 audit-identified blocked-composite sites tightened. Trait-level constraints (`stiffness > 0`, `resistivity < 0.0001`, etc.) rewritten to use dimensioned RHS literals (e.g. `> 0.0 * 1N / 1m`) — bare numeric RHS evaluated to Indeterminate at runtime because `eval_cmp` compares dimensions; see esc-3115-112 design note. | #3115 (resolved 2026-05-15) |
 | task-F | Introduce `Geometry` / `DatumRef` resolver capability | Add a `Geometry` opaque type and `DatumRef` type to the resolver so `tolerancing.ri::feature` (16 sites) and `datum_refs` (8 sites) can be tightened away from `Real` | #3116 |
 | task-G ✓ | Investigate and resolve `Field<X,Y>` in `param` positions | Confirmed: resolver arm at `type_resolution.rs:1313` (added by task 3088) works in `param` positions. TODO was stale. Both `ElasticResult::displacement` and `::stress` tightened to Field types. | #3117 (resolved) |
-| task-H | Tighten `frame` and `ShellStress.top/mid/bottom` to Field types | `ElasticResult.frame → Field<Point3<Length>, Matrix<3,3,Real>>`, `ShellStress.{top,mid,bottom} → Field<Point3<Length>, Tensor<2,3,Pressure>>`. Resolver already supports these forms (confirmed task 3117). Post-audit sites not in task-G scope. | #3641 |
+| task-H ✓ | Tighten `frame` and `ShellStress.top/mid/bottom` to Field types | Confirmed: resolver already supported these forms (per task 3117). `ElasticResult.frame` tightened to `Field<Point3<Length>, Matrix<3,3,Real>>`; `ShellStress.{top,mid,bottom}` tightened to `Field<Point3<Length>, Tensor<2,3,Pressure>>`. Regression-locked by `tests/solver_elastic_tests.rs::{elastic_result_struct_has_correct_param_shape, shell_stress_struct_has_top_mid_bottom_field_params}`. | #3641 (resolved) |
