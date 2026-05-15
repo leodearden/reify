@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use reify_config::cache::{CacheError, CacheResolverInputs, resolve_cache};
-use reify_eval::persistent_cache::{ENGINE_VERSION_HASH, entry_bin_path};
+use reify_eval::persistent_cache::{ENGINE_VERSION_HASH, entry_bin_path, entry_meta_path};
 
 /// Usage line printed to stderr for any `reify cache` dispatcher error.
 const CACHE_USAGE: &str = "Usage: reify cache (export <hash>|import)";
@@ -57,8 +57,32 @@ fn cmd_cache_export(args: &[String]) -> ExitCode {
         eprintln!("reify cache export: no such cache entry: {hash}");
         return ExitCode::FAILURE;
     }
+    let meta_path = entry_meta_path(&cache_root, ENGINE_VERSION_HASH, hash);
 
-    // TODO(step-8): build the tar archive and stream it to stdout.
+    // Build the tar over a stdout lock.  Tar entry names are flat
+    // `<hash>.bin` / `<hash>.meta`; the sharded directory layout is
+    // reconstructed on import from the bin's `CacheEntryHeader` echo fields.
+    // See plan.json "Tar entry layout" design decision for rationale.
+    let stdout = std::io::stdout();
+    let mut builder = tar::Builder::new(stdout.lock());
+    if let Err(e) = builder.append_path_with_name(&bin_path, format!("{hash}.bin")) {
+        eprintln!("reify cache export: {e}");
+        return ExitCode::FAILURE;
+    }
+    // The sidecar is recoverable per persistent_cache.rs (the read path
+    // recreates it on a cache hit), so absence is non-fatal — we just
+    // export what we have.
+    if meta_path.exists()
+        && let Err(e) = builder.append_path_with_name(&meta_path, format!("{hash}.meta"))
+    {
+        eprintln!("reify cache export: {e}");
+        return ExitCode::FAILURE;
+    }
+    if let Err(e) = builder.finish() {
+        eprintln!("reify cache export: {e}");
+        return ExitCode::FAILURE;
+    }
+
     ExitCode::SUCCESS
 }
 
