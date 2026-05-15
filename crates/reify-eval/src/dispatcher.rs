@@ -457,7 +457,8 @@ mod tests {
     use super::{
         DispatchPlan, LONG_CHAIN_DEFAULT_THRESHOLD_MS, LONG_CHAIN_MIN_STAGES,
         LONG_CHAIN_THRESHOLD_ENV_VAR, dispatch, is_long_chain_realization, long_chain_diagnostic,
-        long_chain_threshold_from_env_value, per_stage_tolerance_for_plan,
+        long_chain_threshold_from_env_value, no_kernel_chain_diagnostic,
+        per_stage_tolerance_for_plan,
     };
     use crate::tolerance_budget::{SAFETY_FACTOR, per_stage_tolerance};
     use std::time::Duration;
@@ -1415,5 +1416,65 @@ mod tests {
             req * SAFETY_FACTOR,
             "single-conversion chain must return requested_tol × SAFETY_FACTOR (N=1 short-circuit)",
         );
+    }
+
+    /// Pins the wire-contract of [`no_kernel_chain_diagnostic`]: the emitted
+    /// [`reify_types::Diagnostic`] carries `Severity::Error` and
+    /// `Some(DiagnosticCode::NoKernelChain)`. This is the load-bearing
+    /// assertion downstream tasks δ/ε (3435/3436) filter on when wiring the
+    /// dispatcher None-return into op-execution. Mirrors
+    /// `long_chain_diagnostic_carries_warning_severity_and_code_when_emitted`
+    /// (the severity+code half of the long-chain precedent), except severity
+    /// is Error here per PRD `docs/prds/v0_3/multi-kernel-phase-3.md` §2
+    /// "failing closed is the failure mode".
+    #[test]
+    fn no_kernel_chain_diagnostic_carries_error_severity_and_code() {
+        use reify_types::{DiagnosticCode, Severity};
+
+        let diag = no_kernel_chain_diagnostic(
+            Operation::BooleanUnion,
+            ReprKind::BRep,
+            &[ReprKind::Mesh, ReprKind::Voxel],
+        );
+
+        assert_eq!(
+            diag.severity,
+            Severity::Error,
+            "diagnostic severity must be Error (PRD §2: failing closed is \
+             the failure mode — the dispatcher exhausted its BFS without \
+             reaching the demanded repr)"
+        );
+        assert_eq!(
+            diag.code,
+            Some(DiagnosticCode::NoKernelChain),
+            "diagnostic code must round-trip the typed variant for downstream \
+             filter-by-code consumers (tasks δ/ε wiring + LSP / MCP)"
+        );
+    }
+
+    /// Pins the user-visible-content requirement: the message must name the
+    /// op (Debug-rendered), the demanded repr, AND every available repr so
+    /// the user can see exactly which conversion was impossible. Asserts
+    /// only `contains()` of each named element — does NOT pin surrounding
+    /// prose — keeping the test wording-churn-resistant per the
+    /// `long_chain_diagnostic_message_names_each_chain_kernel_and_final_stage`
+    /// precedent.
+    #[test]
+    fn no_kernel_chain_diagnostic_message_names_op_demanded_and_available() {
+        let diag = no_kernel_chain_diagnostic(
+            Operation::BooleanUnion,
+            ReprKind::BRep,
+            &[ReprKind::Mesh, ReprKind::Voxel],
+        );
+
+        for needle in ["BooleanUnion", "BRep", "Mesh", "Voxel"] {
+            assert!(
+                diag.message.contains(needle),
+                "diagnostic message must surface {:?} so the user can see \
+                 which op/repr conversion was impossible (got: {:?})",
+                needle,
+                diag.message,
+            );
+        }
     }
 }
