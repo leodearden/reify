@@ -2458,4 +2458,47 @@ mod tests {
             "connection insertion order must not affect fingerprint",
         );
     }
+
+    // --- CancellationHandle API tests (PRD §8 task β observable signal) ---
+
+    #[test]
+    fn cancellation_handle_new_is_not_cancelled() {
+        let handle = CancellationHandle::new();
+        assert!(!handle.is_cancelled(), "fresh handle must not be cancelled");
+    }
+
+    #[test]
+    fn cancellation_handle_cancel_makes_is_cancelled_true() {
+        let handle = CancellationHandle::new();
+        handle.cancel();
+        assert!(
+            handle.is_cancelled(),
+            "handle must be cancelled after cancel()"
+        );
+    }
+
+    #[test]
+    fn cancellation_handle_clones_share_cancellation_state() {
+        let original = CancellationHandle::new();
+        let clone = original.clone();
+        clone.cancel();
+        assert!(
+            original.is_cancelled(),
+            "cancelling a clone must be visible on the original (Arc-sharing)"
+        );
+    }
+
+    #[test]
+    fn cancellation_handle_thread_safety_cancel_from_spawned_thread() {
+        let handle = CancellationHandle::new();
+        let clone = handle.clone();
+        let t = std::thread::spawn(move || {
+            clone.cancel();
+        });
+        t.join().expect("spawned thread panicked");
+        assert!(
+            handle.is_cancelled(),
+            "cancellation from spawned thread must be visible on the main-thread handle"
+        );
+    }
 }
