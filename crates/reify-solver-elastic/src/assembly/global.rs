@@ -2300,6 +2300,70 @@ mod tests {
         assert!(summary.examples.is_empty());
     }
 
+    /// `Display` for `OrphanDofsSummary` emits a single-line diagnostic string.
+    ///
+    /// Pins:
+    /// 1. No newlines in the output (`!result.contains('\n')`).
+    /// 2. The string contains `count=9` so it is grep-able.
+    /// 3. The first three `(node, axis)` pairs `(1, 3)`, `(1, 4)`, `(1, 5)`
+    ///    appear literally so a reader can spot offending nodes.
+    /// 4. The empty summary (`count=0`) also formats correctly.
+    #[test]
+    fn orphan_dofs_summary_display_emits_single_line_diagnostic() {
+        // Non-empty case: use the mixed-mesh fixture (count=9, full examples).
+        let mat = dimensionless_steel_like();
+        let k_e_tet = element_stiffness_p1(&UNIT_TET_P1, &mat);
+        let k_e_shell = shell_element_stiffness(&UNIT_TRI, SHELL_T, &mat);
+        let conn_tet = [0usize, 1, 2, 3];
+        let conn_shell = [0usize, 4, 5];
+        let elements = [
+            AssemblyElement {
+                id: 0,
+                connectivity: &conn_tet,
+                k_e: &k_e_tet,
+            },
+            AssemblyElement {
+                id: 1,
+                connectivity: &conn_shell,
+                k_e: &k_e_shell,
+            },
+        ];
+        let summary = detect_orphan_dofs(6, &elements);
+        let s = format!("{}", summary);
+
+        // Single line.
+        assert!(!s.contains('\n'), "Display must not contain newlines; got: {s:?}");
+
+        // Must name the count.
+        assert!(
+            s.contains("count=9"),
+            "Display must contain 'count=9'; got: {s:?}",
+        );
+
+        // Must contain the first three canonical (node, axis) pairs.
+        assert!(
+            s.contains("(1, 3)"),
+            "Display must contain '(1, 3)'; got: {s:?}",
+        );
+        assert!(
+            s.contains("(1, 4)"),
+            "Display must contain '(1, 4)'; got: {s:?}",
+        );
+        assert!(
+            s.contains("(1, 5)"),
+            "Display must contain '(1, 5)'; got: {s:?}",
+        );
+
+        // Empty summary is also well-defined.
+        let empty = OrphanDofsSummary::default();
+        let se = format!("{}", empty);
+        assert!(!se.contains('\n'), "empty Display must not contain newlines");
+        assert!(
+            se.contains("count=0"),
+            "empty Display must contain 'count=0'; got: {se:?}",
+        );
+    }
+
     /// Mesh with > MAX_EXAMPLES orphan pairs → count is the true total but
     /// examples is capped at MAX_EXAMPLES.
     ///
