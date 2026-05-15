@@ -1728,6 +1728,39 @@ mod tests {
         let s = serde_json::to_string(&DiagnosticCode::NoKernelChain).unwrap();
         assert_eq!(s, "\"NoKernelChain\"");
     }
+
+    // --- KernelPragmaUnsatisfiable tests (task 3434 — W_KERNEL_PRAGMA_UNSATISFIABLE) ---
+    // Pairs with the dispatcher's pragma-fallthrough diagnostic in
+    // `crates/reify-eval/src/dispatcher.rs::kernel_pragma_unsatisfiable_diagnostic`
+    // (PRD `docs/prds/v0_3/multi-kernel-phase-3.md` §8 task γ + §5 "pragma
+    // steers"). Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives
+    // are already covered by `diagnostic_code_derives` above; only the
+    // variant-specific round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::KernelPragmaUnsatisfiable` round-trips through
+    /// `Diagnostic::warning(...).with_code(...)` carrying both the expected
+    /// `Severity::Warning` and `Some(DiagnosticCode::KernelPragmaUnsatisfiable)`.
+    /// Pins the warning-severity contract and variant existence for the
+    /// `#kernel(...)` pragma fall-through (PRD §5 "warning, not error —
+    /// fall through to default lex-min selection").
+    #[test]
+    fn diagnostic_code_kernel_pragma_unsatisfiable_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::warning("x").with_code(DiagnosticCode::KernelPragmaUnsatisfiable);
+        assert_eq!(d.severity, Severity::Warning);
+        assert_eq!(d.code, Some(DiagnosticCode::KernelPragmaUnsatisfiable));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::KernelPragmaUnsatisfiable`
+    /// serializes as `"KernelPragmaUnsatisfiable"` (PascalCase, from
+    /// `rename_all = "PascalCase"`). Pins the wire-format contract for
+    /// downstream consumers (LSP / MCP).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_kernel_pragma_unsatisfiable_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::KernelPragmaUnsatisfiable).unwrap();
+        assert_eq!(s, "\"KernelPragmaUnsatisfiable\"");
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
