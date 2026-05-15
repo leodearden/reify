@@ -1342,6 +1342,59 @@ fn parse_labelled_u64(stdout: &str, label: &str) -> Option<u64> {
 }
 
 #[test]
+fn cache_stats_honors_cache_dir_flag_overriding_env_var() {
+    // Per the design decision, --cache-dir is parsed per-subcommand and is
+    // placed AFTER the sub-subcommand name (e.g.
+    // `reify cache stats --cache-dir /tmp/foo`).  Verify the flag overrides
+    // REIFY_CACHE_DIR by seeding two entries in flag_dir and one in env_dir,
+    // then running `reify cache stats --cache-dir <flag_dir>` with
+    // REIFY_CACHE_DIR=<env_dir> in the child env: stats must report the
+    // flag_dir's count (2), not the env_dir's (1).
+    let flag_dir = tempdir().expect("flag tempdir");
+    let env_dir = tempdir().expect("env tempdir");
+    let fixture = make_elastic_result_fixture();
+    for c in ['a', 'b'] {
+        let input_hash: String = std::iter::repeat(c).take(32).collect();
+        write_entry(flag_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
+            .expect("write_entry must seed flag_dir");
+    }
+    {
+        let input_hash: String = std::iter::repeat('c').take(32).collect();
+        write_entry(env_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
+            .expect("write_entry must seed env_dir");
+    }
+
+    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+        .args([
+            "cache",
+            "stats",
+            "--cache-dir",
+            &flag_dir.path().display().to_string(),
+        ])
+        .env("REIFY_CACHE_DIR", env_dir.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute reify stats");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "reify cache stats --cache-dir should succeed; stderr={stderr}"
+    );
+    assert!(
+        stdout.contains("Entry count: 2"),
+        "stats with --cache-dir <flag_dir> must report flag_dir's count (2), \
+         not env_dir's (1); got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("Entry count: 1"),
+        "stats must NOT report env_dir's count (1), got: {stdout}"
+    );
+}
+
+#[test]
 fn cache_export_with_extra_positional_shows_export_usage() {
     // `reify cache export aaa bbb` (extra positional past the hash) should be
     // rejected with the export-specific usage banner.
