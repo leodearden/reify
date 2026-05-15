@@ -527,4 +527,92 @@ mod tests {
             "lookup under non-zero hash must return its own value"
         );
     }
+
+    /// Structural regression pin: two distinct `options_hash` values must produce two distinct
+    /// `ToleranceBucket` slots at SOFT_CAPACITY scale — neither set of inserts displaces or
+    /// shadows the other.
+    ///
+    /// Inserts `SOFT_CAPACITY` entries under `options_hash_a`, then `SOFT_CAPACITY` more at
+    /// the SAME `(entity, repr_kind, tol)` coordinates under `options_hash_b`.  Asserts:
+    /// 1. Every B-insert returns `true` (no A-entry satisfies it — they're in distinct buckets).
+    /// 2. `cache.len() == 2 * SOFT_CAPACITY` (B-inserts add a new bucket; do not displace A).
+    /// 3. Round-trip lookups retrieve the correct value for each `(entity, tol, options_hash)`.
+    /// 4. `bucket_len(entity, repr_kind, options_hash_a/b)` equals `SOFT_CAPACITY` each —
+    ///    eviction is per-`options_hash`, not cross-`options_hash`.
+    ///
+    /// Fails if a future refactor collapses the `options_hash` dimension (e.g. by folding both
+    /// hashes into the same `ToleranceBucket`): in that case B-inserts return `false`,
+    /// `len() == SOFT_CAPACITY` (not `2 * SOFT_CAPACITY`), and lookups return wrong values.
+    /// This matches the hex-wedge `force_tet` regression shape described in PRD §4 (M-024).
+    #[test]
+    fn options_hash_dimension_does_not_collapse_under_cardinality_check() {
+        use crate::tolerance_bucket::SOFT_CAPACITY;
+
+        let hash_a = ContentHash::of_str("force_tet=true");
+        let hash_b = ContentHash::of_str("force_tet=false");
+
+        // Build SOFT_CAPACITY strictly-descending tolerances (tighter → accepted, since
+        // no prior entry satisfies each successive tighter request).
+        // SOFT_CAPACITY is 5 → tols = [0.05, 0.04, 0.03, 0.02, 0.01]
+        let tols: Vec<f64> = (0..SOFT_CAPACITY)
+            .map(|i| 0.05 - (i as f64) * 0.01)
+            .collect();
+
+        let entity = "TargetEntity";
+        let mut cache = RealizationCache::<u32>::new();
+
+        // Insert SOFT_CAPACITY entries under hash_a.
+        for (i, &t) in tols.iter().enumerate() {
+            let ok = cache.insert(entity, ReprKind::BRep, t, hash_a, i as u32);
+            assert!(ok, "hash_a insert at tol={t} must be accepted");
+        }
+
+        // Insert the same tols under hash_b — must all succeed (different bucket).
+        for (i, &t) in tols.iter().enumerate() {
+            let ok = cache.insert(entity, ReprKind::BRep, t, hash_b, (i + 100) as u32);
+            assert!(
+                ok,
+                "hash_b insert at tol={t} must be accepted (independent bucket, not shadowed by hash_a)"
+            );
+        }
+
+        // 1. Total entry count is 2 * SOFT_CAPACITY — no collapse.
+        assert_eq!(
+            cache.len(),
+            2 * SOFT_CAPACITY,
+            "len must be 2*SOFT_CAPACITY; a collapsed dimension would give SOFT_CAPACITY"
+        );
+
+        // 2. Each options_hash bucket has exactly SOFT_CAPACITY entries.
+        assert_eq!(
+            cache.bucket_len(entity, ReprKind::BRep, hash_a),
+            SOFT_CAPACITY,
+            "hash_a bucket must hold SOFT_CAPACITY entries"
+        );
+        assert_eq!(
+            cache.bucket_len(entity, ReprKind::BRep, hash_b),
+            SOFT_CAPACITY,
+            "hash_b bucket must hold SOFT_CAPACITY entries"
+        );
+
+        // 3. Round-trip lookups retrieve values from the correct bucket.
+        //    The tightest tol in our set is tols[SOFT_CAPACITY-1] = 0.01; looking up at
+        //    that tolerance retrieves the entry from the matching options_hash bucket.
+        let tightest = tols[SOFT_CAPACITY - 1];
+        let val_a = cache.lookup(entity, ReprKind::BRep, tightest, hash_a);
+        let val_b = cache.lookup(entity, ReprKind::BRep, tightest, hash_b);
+        assert!(
+            val_a.is_some(),
+            "hash_a lookup at tightest tol must hit"
+        );
+        assert!(
+            val_b.is_some(),
+            "hash_b lookup at tightest tol must hit"
+        );
+        // Values must differ — each bucket stored different u32 values.
+        assert_ne!(
+            val_a, val_b,
+            "hash_a and hash_b buckets must hold distinct values (not the same slot)"
+        );
+    }
 }
