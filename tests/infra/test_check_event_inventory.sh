@@ -360,5 +360,54 @@ assert "--help output contains --bidirectional" \
 assert "--help output contains a description of the reverse pass" \
     grep -q 'reverse pass' "$_help_out"
 
+# ==============================================================================
+# Check 12: --bidirectional §10+ heading ambiguity guard
+# A channel registered under §10 (or any §N with N ≥ 10) must NOT be classified
+# as a §1 channel by the awk filter — the un-anchored /^## §1/ pattern matches
+# §10, §11, … as a prefix, silently including their rows in the §1 phantom set.
+# With the fixed /^## §1 / (trailing-space anchor) this test passes.
+# ==============================================================================
+echo ""
+echo "--- Check 12: --bidirectional §10+ heading not misclassified as §1 ---"
+
+_fix12dir="$_tmpdir/fix12"
+mkdir -p "$_fix12dir/docs" "$_fix12dir/gui/src-tauri/src"
+
+cat > "$_fix12dir/docs/gui-event-channels.md" <<'INVENTORY'
+# GUI Event Channel Inventory
+
+## §1 — Wired channels (production today)
+
+| Channel | Notes |
+|---|---|
+| `wired-ok` | wired |
+
+## §2 — Channels this PRD adds (FICTION → WIRED via GR-016 decomposition)
+
+| Channel | Notes |
+|---|---|
+
+## §10 — Synthetic section (future expansion)
+
+| Channel | Notes |
+|---|---|
+| `should-not-be-scanned` | future |
+INVENTORY
+
+cat > "$_fix12dir/gui/src-tauri/src/test_emit.rs" <<'RUST'
+fn emit_something(app: &AppHandle) {
+    app.emit("wired-ok", payload);
+}
+RUST
+
+_fix12_stderr="$_tmpdir/fix12_stderr.txt"
+"$CHECK_SCRIPT" --repo-root "$_fix12dir" --bidirectional 2>"$_fix12_stderr" || true
+
+assert "--bidirectional does not classify §10 channel as §1 phantom" \
+    bash -c "! grep -q 'should-not-be-scanned' '$_fix12_stderr'"
+
+assert "--bidirectional exits 0 with §10 section present" \
+    "$CHECK_SCRIPT" --repo-root "$_fix12dir" --bidirectional
+
 # -- Summary ------------------------------------------------------------------
 test_summary
