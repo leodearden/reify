@@ -5203,4 +5203,85 @@ mod tests {
         assert_eq!(report.orphan_dirs_removed, 1);
         assert_eq!(report.tempfiles_removed, 0);
     }
+
+    // ── sweep_on_startup composition + idempotence (step-9) ─────────────────
+
+    /// Step-9 RED: `sweep_on_startup` aggregates both passes and is idempotent.
+    ///
+    /// Combined fixture:
+    /// * An old `.tmp.*` file in an orphan shard dir.
+    /// * An old orphan engine-version subdir (different from `current`).
+    /// * The `current`-named subdir backdated > 30d (must survive).
+    /// * A fresh regular entry (must survive).
+    ///
+    /// First call: both removals happen; `SweepReport` aggregates counts.
+    /// Second call on the now-swept tree: `SweepReport::default()` (idempotent).
+    /// Absent-root call: `SweepReport::default()` with no error.
+    #[test]
+    fn sweep_on_startup_aggregates_both_passes_and_is_idempotent() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let current = ENGINE_VERSION_HASH;
+
+        // Old orphan engine-version subdir (will be pruned).
+        let orphan_eng = "dead000000000000000000000000dead";
+        let orphan_dir = root.join(orphan_eng);
+        std::fs::create_dir_all(orphan_dir.join("ab")).unwrap();
+
+        // Stale .tmp.* inside the orphan subdir — will be swept by tempfile pass.
+        let stale_tmp = orphan_dir.join("ab").join(".tmp.crashed");
+        std::fs::write(&stale_tmp, b"crash").unwrap();
+        backdate_mtime(&stale_tmp, STALE_TEMPFILE_AGE.as_secs() + 120);
+        // Backdate the orphan dir itself so the dir-prune pass removes it.
+        backdate_mtime(&orphan_dir, ORPHAN_DIR_AGE.as_secs() + 60);
+
+        // Current engine-version subdir — old mtime but must survive.
+        let current_dir = root.join(current);
+        std::fs::create_dir_all(&current_dir).unwrap();
+        backdate_mtime(&current_dir, ORPHAN_DIR_AGE.as_secs() + 60);
+
+        // Fresh regular entry in the current subdir (must survive).
+        let live_sd = shard_dir(root, current, "ff001111111111111111111111111111");
+        std::fs::create_dir_all(&live_sd).unwrap();
+        let live_bin = live_sd.join("ff001111111111111111111111111111.bin");
+        std::fs::write(&live_bin, b"live-data").unwrap();
+
+        let report = sweep_on_startup(root, current);
+
+        // tempfiles_removed: stale .tmp.* was swept (may be 0 if the orphan dir
+        // was pruned first — the fixed order is tempfiles first, dir prune second,
+        // so the stale tempfile pass runs first and collects 1 file, then the
+        // dir prune removes the orphan dir).
+        assert_eq!(
+            report.tempfiles_removed, 1,
+            "stale .tmp.* in the orphan dir must be swept by the tempfile pass (runs first)"
+        );
+        assert_eq!(
+            report.orphan_dirs_removed, 1,
+            "the orphan engine-version dir must be pruned"
+        );
+        assert!(
+            current_dir.exists(),
+            "current engine-version subdir must survive"
+        );
+        assert!(live_bin.exists(), "live entry in current subdir must survive");
+
+        // Second call: idempotent — tree is already clean.
+        let report2 = sweep_on_startup(root, current);
+        assert_eq!(
+            report2,
+            SweepReport::default(),
+            "second sweep_on_startup call on a clean tree must return SweepReport::default()"
+        );
+
+        // Absent cache_root: silent no-op.
+        let tmp2 = tempfile::TempDir::new().unwrap();
+        let nonexistent = tmp2.path().join("no_cache");
+        let report3 = sweep_on_startup(&nonexistent, current);
+        assert_eq!(
+            report3,
+            SweepReport::default(),
+            "absent cache_root must yield SweepReport::default()"
+        );
+    }
 }
