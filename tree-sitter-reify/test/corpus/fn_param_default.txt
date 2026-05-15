@@ -1,0 +1,70 @@
+================================================================================
+fn param with member-access default (PRD fixture shape)
+================================================================================
+
+fn f(x : T = Foo.bar) -> T { x }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_definition
+    name: (identifier)
+    (fn_param_list
+      (fn_param
+        name: (identifier)
+        type: (type_expr
+          (identifier))
+        default: (member_access
+          object: (identifier)
+          member: (identifier))))
+    return_type: (type_expr
+      (identifier))
+    (fn_body
+      result: (identifier))))
+
+================================================================================
+fn param without default (regression guard — optional path parses)
+================================================================================
+
+fn f(x : T) -> T { x }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_definition
+    name: (identifier)
+    (fn_param_list
+      (fn_param
+        name: (identifier)
+        type: (type_expr
+          (identifier))))
+    return_type: (type_expr
+      (identifier))
+    (fn_body
+      result: (identifier))))
+
+================================================================================
+fn multi-param mix — some with default, some without
+================================================================================
+
+fn f(x : T = 1, y : U) -> T { x }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_definition
+    name: (identifier)
+    (fn_param_list
+      (fn_param
+        name: (identifier)
+        type: (type_expr
+          (identifier))
+        default: (number_literal))
+      (fn_param
+        name: (identifier)
+        type: (type_expr
+          (identifier))))
+    return_type: (type_expr
+      (identifier))
+    (fn_body
+      result: (identifier))))
