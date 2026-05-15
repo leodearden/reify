@@ -187,12 +187,19 @@ mod tests {
             }
         }
 
-        // Pattern: today only P5PhantomDone — adding P1/P2 (per task plan)
-        // must force this test to gain arms.
-        match Pattern::P5PhantomDone {
-            Pattern::P5PhantomDone => {}
-            Pattern::P2ConsumerStub => {}
-            Pattern::P1ProducerOrphan => {}
+        // Pattern: all FOUR variants; adding another must force this test to gain arms.
+        for p in [
+            Pattern::P5PhantomDone,
+            Pattern::P2ConsumerStub,
+            Pattern::P1ProducerOrphan,
+            Pattern::MetadataFilesGitignored,
+        ] {
+            match p {
+                Pattern::P5PhantomDone => {}
+                Pattern::P2ConsumerStub => {}
+                Pattern::P1ProducerOrphan => {}
+                Pattern::MetadataFilesGitignored => {}
+            }
         }
 
         // EvidenceRef: every variant exhaustively destructured.
@@ -626,7 +633,7 @@ mod tests {
             findings
         );
         let f = &findings[0];
-        assert_eq!(f.pattern, Pattern::P5PhantomDone);
+        assert_eq!(f.pattern, Pattern::MetadataFilesGitignored);
         assert_eq!(f.severity, Severity::Medium);
         assert_eq!(f.task_id, "6000");
         assert!(

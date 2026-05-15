@@ -68,17 +68,19 @@ mod tests {
     /// time — exactly what downstream crates (T-4 CLI) need from a stable API.
     #[test]
     fn api_surface_pin() {
-        // Pattern: all THREE variants must be reachable; the exhaustive
+        // Pattern: all FOUR variants must be reachable; the exhaustive
         // `match` forces a test update on any future enum extension.
         for p in [
             Pattern::P5PhantomDone,
             Pattern::P2ConsumerStub,
             Pattern::P1ProducerOrphan,
+            Pattern::MetadataFilesGitignored,
         ] {
             match p {
                 Pattern::P5PhantomDone => {}
                 Pattern::P2ConsumerStub => {}
                 Pattern::P1ProducerOrphan => {}
+                Pattern::MetadataFilesGitignored => {}
             }
         }
 
