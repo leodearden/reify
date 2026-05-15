@@ -221,6 +221,145 @@ impl NodeKind {
 }
 
 #[cfg(test)]
+mod node_traits_map_tests {
+    use super::*;
+
+    #[derive(Clone, Debug, Eq, Hash, PartialEq)]
+    struct TestKey {
+        id: u32,
+        kind: NodeKind,
+    }
+
+    impl HasNodeKind for TestKey {
+        fn node_kind(&self) -> NodeKind {
+            self.kind
+        }
+    }
+
+    fn value_key(id: u32) -> TestKey {
+        TestKey { id, kind: NodeKind::Value }
+    }
+    fn compute_key(id: u32) -> TestKey {
+        TestKey { id, kind: NodeKind::Compute }
+    }
+    fn constraint_key(id: u32) -> TestKey {
+        TestKey { id, kind: NodeKind::Constraint }
+    }
+
+    #[test]
+    fn empty_map_resolves_to_kind_derived_default() {
+        let m = NodeTraitsMap::<TestKey>::default();
+        assert_eq!(m.resolve(&value_key(0)), NodeTraits::IMMEDIATE);
+        assert_eq!(
+            m.resolve(&compute_key(0)),
+            NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE)
+        );
+        assert_eq!(m.resolve(&constraint_key(0)), NodeTraits::empty());
+    }
+
+    #[test]
+    fn set_type_resolves_to_type_value_for_matching_kind() {
+        let mut m = NodeTraitsMap::<TestKey>::default();
+        m.set_type(NodeKind::Compute, NodeTraits::PROGRESSIVE);
+        assert_eq!(m.resolve(&compute_key(1)), NodeTraits::PROGRESSIVE);
+    }
+
+    #[test]
+    fn set_type_isolates_other_kinds() {
+        let mut m = NodeTraitsMap::<TestKey>::default();
+        m.set_type(NodeKind::Compute, NodeTraits::PROGRESSIVE);
+        // Value default unaffected
+        assert_eq!(m.resolve(&value_key(1)), NodeTraits::IMMEDIATE);
+    }
+
+    #[test]
+    fn set_instance_resolves_to_instance_value() {
+        let mut m = NodeTraitsMap::<TestKey>::default();
+        let key = compute_key(7);
+        m.set_instance(key.clone(), NodeTraits::PROGRESSIVE.union(NodeTraits::COMMITTABLE));
+        assert_eq!(
+            m.resolve(&key),
+            NodeTraits::PROGRESSIVE.union(NodeTraits::COMMITTABLE)
+        );
+    }
+
+    #[test]
+    fn instance_wins_over_type_wins_over_default() {
+        let mut m = NodeTraitsMap::<TestKey>::default();
+        let x = NodeTraits::WARM_STARTABLE;
+        let y = NodeTraits::PROGRESSIVE;
+        m.set_type(NodeKind::Compute, x);
+        let key_42 = compute_key(42);
+        let key_99 = compute_key(99);
+        m.set_instance(key_42.clone(), y);
+        assert_eq!(m.resolve(&key_42), y);
+        assert_eq!(m.resolve(&key_99), x);
+        // Value kind falls back to kind default (unaffected by Compute type override)
+        assert_eq!(m.resolve(&value_key(0)), NodeTraits::IMMEDIATE);
+    }
+
+    #[test]
+    fn set_instance_isolates_other_node_ids() {
+        let mut m = NodeTraitsMap::<TestKey>::default();
+        let key_a = compute_key(1);
+        let key_b = compute_key(2);
+        m.set_instance(key_a, NodeTraits::PROGRESSIVE);
+        // key_b resolves to Compute kind default
+        assert_eq!(
+            m.resolve(&key_b),
+            NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE)
+        );
+    }
+
+    #[test]
+    fn set_type_overwrites_previous_value() {
+        let mut m = NodeTraitsMap::<TestKey>::default();
+        m.set_type(NodeKind::Compute, NodeTraits::IMMEDIATE);
+        m.set_type(NodeKind::Compute, NodeTraits::PROGRESSIVE);
+        assert_eq!(m.resolve(&compute_key(0)), NodeTraits::PROGRESSIVE);
+    }
+
+    #[test]
+    fn set_instance_overwrites_previous_value() {
+        let mut m = NodeTraitsMap::<TestKey>::default();
+        let key = compute_key(5);
+        m.set_instance(key.clone(), NodeTraits::IMMEDIATE);
+        m.set_instance(key.clone(), NodeTraits::PROGRESSIVE);
+        assert_eq!(m.resolve(&key), NodeTraits::PROGRESSIVE);
+    }
+
+    #[test]
+    fn set_instance_constraint_immediate_override_is_returned_verbatim() {
+        // Q-6 resolution: per-instance Constraint+IMMEDIATE is allowed without
+        // any code-level ceiling — resolve returns the instance value verbatim.
+        let mut m = NodeTraitsMap::<TestKey>::default();
+        let key = constraint_key(1);
+        m.set_instance(key.clone(), NodeTraits::IMMEDIATE);
+        assert_eq!(m.resolve(&key), NodeTraits::IMMEDIATE);
+    }
+
+    #[test]
+    fn default_is_empty_for_both_maps() {
+        let m = NodeTraitsMap::<TestKey>::default();
+        // Sanity: no stale entries; each kind falls back to default_traits()
+        assert_eq!(m.resolve(&value_key(0)), NodeKind::Value.default_traits());
+        assert_eq!(m.resolve(&compute_key(0)), NodeKind::Compute.default_traits());
+        assert_eq!(
+            m.resolve(&constraint_key(0)),
+            NodeKind::Constraint.default_traits()
+        );
+        assert_eq!(
+            m.resolve(&TestKey { id: 0, kind: NodeKind::Realization }),
+            NodeKind::Realization.default_traits()
+        );
+        assert_eq!(
+            m.resolve(&TestKey { id: 0, kind: NodeKind::Resolution }),
+            NodeKind::Resolution.default_traits()
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
