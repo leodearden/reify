@@ -603,10 +603,6 @@ export async function writeViewSidecar(riPath: string, state: PersistentViewStat
 }
 
 // ── Auto-resolve loop event listeners (Task 2967) ───────────────────
-// These listen for events emitted by the engine's param x = auto solver loop.
-// The backend event source is wired in a later task; the GUI side is ready ahead
-// of time. The engineStore.subscribeToEvents Promise.allSettled pattern means
-// unavailable events degrade to a console.warn rather than a startup crash.
 
 /** Subscribe to auto-resolve loop start events. Fires when a new solve loop begins. */
 export async function onAutoResolveStart(
@@ -621,10 +617,7 @@ export async function onAutoResolveStart(
 export async function onAutoResolveIteration(
   callback: (iter: AutoResolveIteration) => void,
 ): Promise<UnlistenFn> {
-  // The backend wire format is defined in a later task. Guard against malformed
-  // payloads so a field mismatch (missing `parameters`, `constraints`, etc.)
-  // logs a warning and drops the event rather than letting a downstream NPE
-  // crash the panel renderer.
+  // Payload shape: docs/gui-event-channels/auto-resolve-iteration.md (§2)
   return listen<unknown>('auto-resolve-iteration', (event) => {
     const p = event.payload;
     if (
