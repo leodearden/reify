@@ -1184,4 +1184,24 @@ mod tests {
         // distinction so future edits cannot silently collapse the two.
         assert_ne!(DimensionVector::FORCE_DENSITY, DimensionVector::PRESSURE);
     }
+
+    /// `from_rational_exps` is the sibling helper to `from_exps` for declaring
+    /// `DimensionVector` constants whose exponents are non-integer rationals
+    /// (e.g. `FRACTURE_TOUGHNESS` with Length=Rational(-1, 2)).
+    ///
+    /// Test asserts the helper is usable at const-eval time (the call site that
+    /// matters is inside `pub const FRACTURE_TOUGHNESS: DimensionVector = …`),
+    /// and that the slot vector contains the precise (num, den) rationals at
+    /// the indexed positions while every other slot is `Rational::ZERO`.
+    #[test]
+    fn from_rational_exps_builds_fractional_exponent_vector() {
+        const V: DimensionVector =
+            DimensionVector::from_rational_exps(&[(0, -1, 2), (1, 1, 1), (2, -2, 1)]);
+        assert_eq!(V.0[0], Rational::new(-1, 2));
+        assert_eq!(V.0[1], Rational::ONE);
+        assert_eq!(V.0[2], Rational::new(-2, 1));
+        for i in 3..10 {
+            assert_eq!(V.0[i], Rational::ZERO, "slot {} should be zero", i);
+        }
+    }
 }
