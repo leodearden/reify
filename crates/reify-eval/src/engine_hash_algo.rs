@@ -143,8 +143,7 @@ pub(crate) const CONTRIBUTORS_RELATIVE: &[&str] = &[
 // See walk_contributor for inline-never workaround history (task 3429).
 #[allow(dead_code)]
 fn is_editor_debris(file_name: &OsStr) -> bool {
-    let name = file_name.to_string_lossy();
-    let name_lower = name.to_lowercase();
+    let name_lower = file_name.to_string_lossy().to_lowercase();
 
     // Emacs backup: file ends with `~`.
     if name_lower.ends_with('~') {
@@ -174,7 +173,7 @@ fn is_editor_debris(file_name: &OsStr) -> bool {
     }
 
     // Extension-based matches: extract the last `.`-delimited component.
-    if let Some(ext) = std::path::Path::new(&*name).extension() {
+    if let Some(ext) = std::path::Path::new(file_name).extension() {
         let ext_lower = ext.to_string_lossy().to_lowercase();
         if matches!(
             ext_lower.as_str(),
