@@ -1420,6 +1420,44 @@ mod tests {
         }
     }
 
+    /// P1Quad conservation contract for an arbitrary traction vector.
+    ///
+    /// Reuses the unit reference quad fixture (area = 4) with a non-trivial
+    /// traction `(3.7, -1.2, 0.5)`. Asserts (a) per-axis conservation
+    /// `Σ_node f[3·node + α] == area · traction[α]` within TOL, and (b)
+    /// untouched DOFs remain exactly 0.0. Pins the conservation contract
+    /// independently of the equal-lumping spot check.
+    #[test]
+    fn apply_traction_p1quad_conservation_arbitrary_traction() {
+        let face_phys: [[f64; 3]; 4] = [
+            [-1.0, -1.0, 0.0],
+            [1.0, -1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [-1.0, 1.0, 0.0],
+        ];
+        let conn = [0usize, 1, 2, 3];
+        let traction = [3.7_f64, -1.2, 0.5];
+        let mut f = vec![0.0_f64; 18]; // 6 nodes (4 face + 2 untouched)
+        apply_traction_load(&mut f, FaceOrder::P1Quad, &conn, &face_phys, traction);
+
+        let area = 4.0_f64;
+
+        // (a) Per-axis conservation: Σ f = area · traction.
+        for alpha in 0..3 {
+            let total: f64 = (0..4).map(|n| f[3 * n + alpha]).sum();
+            let expected = area * traction[alpha];
+            assert!(
+                (total - expected).abs() < TOL,
+                "axis {alpha}: total = {total}, expected {expected}",
+            );
+        }
+
+        // (b) Untouched DOFs (nodes 4, 5) remain exactly 0.0.
+        for i in 12..18 {
+            assert_eq!(f[i], 0.0, "f[{i}] should remain 0.0 (untouched DOF)");
+        }
+    }
+
     // =======================================================================
     // apply_traction_load — contract panics
     // =======================================================================
