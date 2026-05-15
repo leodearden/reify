@@ -259,6 +259,19 @@ impl DimensionVector {
     /// Build a `DimensionVector` from `(index, integer_exponent)` pairs at
     /// const-eval time. Intended for concise declaration of derived-dimension
     /// constants (e.g. `ENERGY`, `VOLTAGE`).
+    ///
+    /// Sibling of [`from_rational_exps`]. The two share an identical
+    /// index-bounds/iteration `while` skeleton, which is duplicated *by
+    /// necessity*: the helpers consume slices of different tuple arity
+    /// (`&[(usize, i16)]` vs `&[(usize, i16, i16)]`), and stable const fns
+    /// cannot map one slice to the other nor iterate generically over two
+    /// element shapes (no const closures/iterator adapters). Factoring the
+    /// loop into one helper would require either unstable features or a macro
+    /// that hides the integer-vs-rational distinction at the call site — the
+    /// opposite of the ratified design decision keeping that distinction
+    /// explicit. The duplicated scaffolding is 4 lines; the only real
+    /// divergence is the per-entry `Rational::new(e, 1)` vs
+    /// `Rational::new(num, den)`. Do not re-flag.
     const fn from_exps(entries: &[(usize, i16)]) -> DimensionVector {
         let mut v = [Rational::ZERO; 10];
         let mut i = 0;
@@ -276,7 +289,9 @@ impl DimensionVector {
     ///
     /// The two-helper split is intentional: the integer/rational distinction is
     /// explicit at the call site, and the 30+ existing `from_exps` callers stay
-    /// untouched.
+    /// untouched. The shared `while`-loop skeleton is duplicated by a stable
+    /// const-fn limitation, not by oversight — see [`from_exps`] for the full
+    /// rationale. Do not re-flag.
     const fn from_rational_exps(entries: &[(usize, i16, i16)]) -> DimensionVector {
         let mut v = [Rational::ZERO; 10];
         let mut i = 0;
