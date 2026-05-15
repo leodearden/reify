@@ -20,6 +20,7 @@ use reify_constraints::SimpleConstraintChecker;
 use reify_gui::commands::AppState;
 use reify_gui::diff::{StateDelta, compute_delta, delta_to_events};
 use reify_gui::engine::{AutoResolveEmitter, EngineSession};
+use reify_gui::event_bus::emit_typed;
 use reify_gui::lsp_bridge::LspBridge;
 use reify_gui::types::EvaluationStatus;
 use reify_gui::watcher::FileWatcher;
@@ -93,19 +94,19 @@ struct TauriAutoResolveEmitter {
 
 impl AutoResolveEmitter for TauriAutoResolveEmitter {
     fn start(&self) {
-        if let Err(e) = self.app.emit("auto-resolve-start", ()) {
+        if let Err(e) = emit_typed(&self.app, "auto-resolve-start", &()) {
             warn!("auto-resolve emit 'auto-resolve-start' failed: {}", e);
         }
     }
 
     fn iteration(&self, iter: reify_gui::types::AutoResolveIteration) {
-        if let Err(e) = self.app.emit("auto-resolve-iteration", iter) {
+        if let Err(e) = emit_typed(&self.app, "auto-resolve-iteration", &iter) {
             warn!("auto-resolve emit 'auto-resolve-iteration' failed: {}", e);
         }
     }
 
     fn complete(&self) {
-        if let Err(e) = self.app.emit("auto-resolve-complete", ()) {
+        if let Err(e) = emit_typed(&self.app, "auto-resolve-complete", &()) {
             warn!("auto-resolve emit 'auto-resolve-complete' failed: {}", e);
         }
     }
