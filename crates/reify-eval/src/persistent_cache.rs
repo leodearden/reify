@@ -1391,9 +1391,23 @@ pub fn evict_over_cap(
         });
     }
 
-    // Sort by last_access ascending (naive LRU: oldest first).
-    // Step 10 replaces this with a cost-aware sort using eviction_score.
-    candidates.sort_by_key(|c| c.last_access);
+    // Cost-aware sort: highest eviction_score first.
+    //
+    // `eviction_score(now, last_access, solve_time_ms) = age_secs / max(solve_time_ms, 1)`
+    // per PRD `docs/prds/v0_3/persistent-fea-cache.md` §"GC policy". A high score
+    // means the entry is cheap to recompute AND has not been accessed recently —
+    // evict it before an expensive-but-recently-accessed entry.
+    //
+    // `f64::partial_cmp` covers all finite values; NaN is impossible here (age_secs
+    // is non-negative, denominator is ≥ 1), but `unwrap_or(Equal)` is used for
+    // soundness rather than panicking on a hypothetical NaN.
+    let now = std::time::SystemTime::now();
+    candidates.sort_by(|a, b| {
+        let sa = eviction_score(now, a.last_access, a.solve_time_ms);
+        let sb = eviction_score(now, b.last_access, b.solve_time_ms);
+        sb.partial_cmp(&sa)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     // Evict candidates in order until remaining ≤ cap_bytes.
     let mut evicted_count: u64 = 0;
