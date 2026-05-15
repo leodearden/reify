@@ -311,9 +311,10 @@ Post-audit sites added after the original table was fixed (task #3641 scope):
 - `displacement` and `stress` are `Field<X,Y>` types. Task #3117 investigated and
   confirmed the resolver arm at `type_resolution.rs:1313` handles `Field<D,C>` in
   `param` positions. These two slots remain as `Real` placeholders pending task #3117.
-- `frame`, `top`, `mid`, and `bottom` were tightened from `Real` to their proper
-  `Field<…>` types in task #3641, following the same resolver capability confirmed
-  by task #3117.
+- `frame` and `ShellStress.top/mid/bottom`: tightened from `Real` to their proper
+  `Field<…>` types in task #3641, using the same resolver capability confirmed by task 3117.
+  Regression-locked by `tests/solver_elastic_tests.rs::{elastic_result_struct_has_correct_param_shape,
+  shell_stress_struct_has_top_mid_bottom_field_params}`.
 
 ---
 
@@ -374,4 +375,5 @@ rejected by the dimension checker. **No follow-up task is filed for this module.
 | task-D | Tighten `structural_physical.ri` dimensioned params | volume→Volume, centroid_x/y/z→Length, moment_of_inertia→MomentOfInertia, max_deflection→Length, hardening_modulus→Pressure, max_service_temp→Temperature, seal_pressure_rating→Pressure; update call sites | #3114 |
 | task-E | Add named-dimension aliases for composite quantities | Introduce ThermalConductivity (W/(m·K)), SpecificHeat (J/(kg·K)), ThermalExpansion (1/K), ElectricResistivity (Ω·m), DielectricStrength (V/m), Stiffness (N/m), AbsorptionCoeff (1/m) to NAMED_DIMENSIONS + resolve_type_name; then re-classify all blocked-composite sites | #3115 |
 | task-F | Introduce `Geometry` / `DatumRef` resolver capability | Add a `Geometry` opaque type and `DatumRef` type to the resolver so `tolerancing.ri::feature` (16 sites) and `datum_refs` (8 sites) can be tightened away from `Real` | #3116 |
-| task-G | Investigate and resolve `Field<X,Y>` in `param` positions | Confirm whether `type_resolution.rs:1397` Field arm works in `param` context or is restricted to `field def`; write a probe test; either tighten `ElasticResult::displacement` and `::stress` or extend the resolver | #3117 |
+| task-G ✓ | Investigate and resolve `Field<X,Y>` in `param` positions | Confirmed: resolver arm at `type_resolution.rs:1313` (added by task 3088) works in `param` positions. TODO was stale. Both `ElasticResult::displacement` and `::stress` tightened to Field types. | #3117 (resolved) |
+| task-H ✓ | Tighten `frame` and `ShellStress.top/mid/bottom` to Field types | Confirmed: resolver already supported these forms (per task 3117). `ElasticResult.frame` tightened to `Field<Point3<Length>, Matrix<3,3,Real>>`; `ShellStress.{top,mid,bottom}` tightened to `Field<Point3<Length>, Tensor<2,3,Pressure>>`. Regression-locked by `tests/solver_elastic_tests.rs::{elastic_result_struct_has_correct_param_shape, shell_stress_struct_has_top_mid_bottom_field_params}`. | #3641 (resolved) |
