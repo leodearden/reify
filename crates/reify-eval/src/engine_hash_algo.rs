@@ -114,13 +114,14 @@ pub(crate) const CONTRIBUTORS_RELATIVE: &[&str] = &[
 /// listed in `build.rs` are **not** passed through this filter (filtering only
 /// happens inside the directory-enumeration branch of `walk_recursive`).
 ///
-/// **Root-directory bypass:** When `walk_contributor` is called with a directory
-/// `root`, that root path itself is never filtered — only its *children* are
-/// checked.  If a caller ever passes a root directory whose final component
-/// matches a debris pattern (e.g. `/tmp/.DS_Store/`) it will still be entered
-/// and its contents walked.  This is intentional: the filter's purpose is to
-/// exclude transient files that appear *alongside* real sources, not to gate
-/// which top-level contributors the caller may name.
+/// **Root-directory bypass:** When `walk_recursive` enters a directory, the
+/// directory's own name is never tested against this filter — only the names
+/// of its children are.  A caller that names a top-level contributor whose
+/// final path component matches a debris pattern (e.g. `/tmp/.DS_Store/`)
+/// will still have the directory entered and its contents walked.  This is
+/// intentional: the filter's purpose is to exclude transient files that
+/// appear *alongside* real sources, not to gate which top-level contributors
+/// the caller may name.
 ///
 /// # Denylist rationale
 ///
