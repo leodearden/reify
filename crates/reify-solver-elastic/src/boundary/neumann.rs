@@ -1633,7 +1633,7 @@ mod tests {
     }
 
     /// Second call accumulates rather than overwrites (`+=` semantics)
-    /// for the P1Quad arm — pins that `integrate_quad_face_generic`'s
+    /// for the P1Quad arm — pins that `integrate_face_generic`'s
     /// scatter step uses `+=` not `=` so two sequential applies of the
     /// same traction produce a result exactly 2× the single-call value.
     #[test]
