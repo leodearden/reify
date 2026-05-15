@@ -45,11 +45,9 @@ async function onConventionSmoke(
 
 describe('convention smoke (GR-016 β)', () => {
   beforeEach(() => {
-    // vi.restoreAllMocks() (called first) clears mockImplementation on vi.fn()-based
-    // mocks like listen. clearAllMockEvents() then resets installed=false so that
-    // ensureMockInstalled() will reinstall the implementation in the next test.
-    // vi.clearAllMocks() afterwards clears call-history only (not implementations).
-    vi.restoreAllMocks();
+    // Reset the `listen` mock's implementation so the next `ensureMockInstalled`
+    // reinstalls fresh routing, then clear call history.
+    vi.mocked(listen).mockReset();
     clearAllMockEvents();
     vi.clearAllMocks();
   });

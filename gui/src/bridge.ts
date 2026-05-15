@@ -278,6 +278,12 @@ export async function isDebugEnabled(): Promise<boolean> {
  * Validate that a Tauri event payload is a non-null plain object with all
  * required keys present and of type string.
  * Returns the payload as a Record on success, or null on failure (with a console.warn).
+ *
+ * @internal Exported for §8.2 boundary tests in
+ *   `src/__tests__/bridge/convention_smoke.test.ts`. Not a public API — the
+ *   warn-only contract may be tightened to a DEV-mode throw in a future
+ *   revision; production callers should compose this via `on<Name>` wrappers
+ *   in this module rather than importing it directly.
  */
 export function validatePayload(
   eventName: string,
