@@ -6,6 +6,54 @@
 //! See: `docs/prds/v0_3/gui-event-channel-inventory.md` §2.3 (audit M-013).
 //! RPC registration: `gui/src-tauri/src/debug_server.rs::handle_morph_stats`.
 
+use std::sync::{Mutex, OnceLock};
+
+use serde::{Deserialize, Serialize};
+
+/// Mesh-morph runtime statistics DTO.
+///
+/// Response shape for the `morph_stats` debug-MCP RPC.
+/// Per PRD §3.2 field names match exactly — no `#[serde(rename_all)]`.
+/// `last_rejection_reason` is serialised `skip_serializing_if = "Option::is_none"`,
+/// so it is absent from the JSON payload when no rejection has been recorded.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+pub struct MorphStats {
+    pub morph_count: u32,
+    pub remesh_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub last_rejection_reason: Option<String>,
+}
+
+#[derive(Default)]
+struct StatsState {
+    morph_count: u32,
+    remesh_count: u32,
+    last_rejection_reason: Option<String>,
+}
+
+static STATS: OnceLock<Mutex<StatsState>> = OnceLock::new();
+
+fn state() -> &'static Mutex<StatsState> {
+    STATS.get_or_init(|| Mutex::new(StatsState::default()))
+}
+
+/// Return a point-in-time snapshot of the process-global morph stats.
+pub fn snapshot() -> MorphStats {
+    let guard = state().lock().unwrap_or_else(|e| e.into_inner());
+    MorphStats {
+        morph_count: guard.morph_count,
+        remesh_count: guard.remesh_count,
+        last_rejection_reason: guard.last_rejection_reason.clone(),
+    }
+}
+
+/// Reset state to defaults. Only callable from same-crate test code.
+#[cfg(test)]
+pub fn reset_for_test() {
+    let mut guard = state().lock().unwrap_or_else(|e| e.into_inner());
+    *guard = StatsState::default();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
