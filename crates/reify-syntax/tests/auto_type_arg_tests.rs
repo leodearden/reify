@@ -1,50 +1,37 @@
 //! Tests for `auto:` / `auto(free):` in `type_arg_list` position (task 3526).
 //!
-//! User-observable signal: `reify_syntax::parse` of a function returning a
-//! parameterized type whose type-arg list contains `auto: TraitName` or
-//! `auto(free): TraitName` produces zero parse errors.
+//! User-observable signal: `cargo test -p reify-syntax --test auto_type_arg_tests`
+//! passes.  The load-bearing coverage is in the CST-level bound-identifier tests
+//! (`auto_type_arg_cst_bound_identifier_strict`, `_multi_param`).
 //!
-//! Covers:
-//!   * bare `auto:` (strict solver) in a single type-arg position
-//!   * `auto(free):` in a single type-arg position
-//!   * multiple `auto:` type-args in the same list
+//! The single high-level parse test below (`auto_type_arg_does_not_surface_through_lowering_errors_yet`)
+//! is a weak contract pin only: it verifies that `module.errors` is empty, but
+//! the lowering pipeline does NOT propagate CST ERROR nodes from return-type
+//! expressions into `module.errors` — so it cannot detect grammar regressions
+//! that drop `auto_type_arg` from `type_arg_list`.  See lines 154-160 for detail.
 //!
 //! AST-shape assertions (e.g. the bound identifier is surfaced in TypeExprKind)
 //! are deferred to sibling task 3477, which wires the lowering extension.
 
 use reify_types::ModulePath;
 
-// ── High-level parse tests (no-error signal) ────────────────────────────────
+// ── High-level parse test (weak contract pin) ───────────────────────────────
+//
+// WEAK: module.errors is empty, but the lowering pipeline does not propagate
+// CST ERROR nodes from return-type expressions into module.errors.  A grammar
+// regression that dropped auto_type_arg from type_arg_list would leave
+// module.errors empty and this test would silently pass.
+//
+// The CST-level tests below (auto_type_arg_cst_bound_identifier_strict, _multi_param)
+// are the load-bearing coverage.
 
 #[test]
-fn auto_type_arg_parses_strict() {
+fn auto_type_arg_does_not_surface_through_lowering_errors_yet() {
     let source = "fn f() -> Bearing<auto: Seal> { 0 }";
     let module = reify_syntax::parse(source, ModulePath::single("test"));
     assert!(
         module.errors.is_empty(),
         "expected zero parse errors for `auto: Seal` in type-arg position, got: {:?}",
-        module.errors,
-    );
-}
-
-#[test]
-fn auto_type_arg_parses_free() {
-    let source = "fn g() -> Bearing<auto(free): Seal> { 0 }";
-    let module = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        module.errors.is_empty(),
-        "expected zero parse errors for `auto(free): Seal` in type-arg position, got: {:?}",
-        module.errors,
-    );
-}
-
-#[test]
-fn auto_type_arg_parses_multi_param() {
-    let source = "fn h() -> Coupling<auto: A, auto: B> { 0 }";
-    let module = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        module.errors.is_empty(),
-        "expected zero parse errors for `auto: A, auto: B` in type-arg list, got: {:?}",
         module.errors,
     );
 }
@@ -79,20 +66,27 @@ fn find_cst_node<'a>(root: tree_sitter::Node<'a>, kind: &str) -> Option<tree_sit
     None
 }
 
-/// Depth-first search — returns all nodes with the given kind.
-fn find_all_cst_nodes<'a>(root: tree_sitter::Node<'a>, kind: &str) -> Vec<tree_sitter::Node<'a>> {
+/// Depth-first search — returns all **top-level** nodes with the given kind.
+///
+/// **No-nesting precondition**: when a matching node is found, the search does
+/// not recurse into its children.  This is correct for node kinds that cannot
+/// legitimately nest (e.g. `auto_type_arg`), but is a footgun for kinds that
+/// can (e.g. `type_expr`).  Only call this helper for non-nesting node kinds.
+fn find_top_level_cst_nodes<'a>(
+    root: tree_sitter::Node<'a>,
+    kind: &str,
+) -> Vec<tree_sitter::Node<'a>> {
     let mut results = Vec::new();
     if root.kind() == kind {
         results.push(root);
-        // Don't descend into a matching node — its children are not separate
-        // occurrences of the same node-kind at the same semantic level.
-        // (For auto_type_arg we want to collect siblings, not nested matches.)
+        // Do not descend — children of a matching node are not separate
+        // top-level occurrences of the same kind.
         return results;
     }
     let mut cursor = root.walk();
     if cursor.goto_first_child() {
         loop {
-            results.extend(find_all_cst_nodes(cursor.node(), kind));
+            results.extend(find_top_level_cst_nodes(cursor.node(), kind));
             if !cursor.goto_next_sibling() {
                 break;
             }
@@ -153,9 +147,9 @@ fn auto_type_arg_cst_free_has_modifier_field_with_text_free() {
 
 // ── Suggestion #2: bound-identifier assertions ───────────────────────────────
 //
-// The three high-level parse tests above only check `errors.is_empty()`.
+// The high-level parse test above only checks `errors.is_empty()`.
 // If the grammar accidentally dropped `auto_type_arg` from `type_arg_list`
-// but still parsed the surrounding `fn` cleanly, they would silently pass.
+// but still parsed the surrounding `fn` cleanly, it would silently pass.
 // These CST-level tests verify that the `auto_type_arg` node is actually
 // produced and carries the correct bound identifier text.
 
@@ -193,7 +187,7 @@ fn auto_type_arg_cst_bound_identifiers_multi_param() {
         .parse(source.as_bytes(), None)
         .expect("parse failed");
 
-    let nodes = find_all_cst_nodes(tree.root_node(), "auto_type_arg");
+    let nodes = find_top_level_cst_nodes(tree.root_node(), "auto_type_arg");
     assert_eq!(
         nodes.len(),
         2,
