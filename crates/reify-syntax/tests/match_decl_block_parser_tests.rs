@@ -13,8 +13,16 @@ use reify_types::ModulePath;
 
 /// User-signal test: all three forms of decl-level match block parse without
 /// errors. Covers union arms, variant-pipe arm, and single (non-exhaustive) arm.
-/// Both `module.errors.is_empty()` and `!tree.root_node().has_error()` are
-/// verified so that the signal catches both lowering-level and CST-level failures.
+///
+/// `!tree.root_node().has_error()` is the primary signal — it confirms the new
+/// grammar production is reachable from `_member` with no CST ERROR nodes.
+///
+/// `module.errors.is_empty()` is a regression guard for the *surrounding*
+/// source (the `structure S { ... }` wrapper): it will fire if an unrelated
+/// change breaks the surrounding structure parse, but it carries no signal about
+/// the `match_arm_decl_block` construct itself, because lowering for that
+/// construct is a no-op (silent drop via `lower_member`'s `_ => None`) until
+/// sibling task 3564 wires the CST→AST mapping.
 #[test]
 fn match_decl_block_parses_from_source() {
     let sources: &[(&str, &str)] = &[
@@ -33,7 +41,9 @@ fn match_decl_block_parses_from_source() {
     ];
 
     for (label, source) in sources {
-        // High-level parse check: no lowering errors.
+        // Regression guard: asserts the surrounding `structure S { ... }` source
+        // still parses cleanly. Does NOT verify match_arm_decl_block itself —
+        // lowering is a no-op (silent drop) until sibling task 3564 wires CST→AST.
         let module = reify_syntax::parse(source, ModulePath::single("test"));
         assert!(
             module.errors.is_empty(),
