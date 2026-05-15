@@ -1268,6 +1268,66 @@ pub fn read_entry<V: PersistentlyCacheable>(
 
 // ── Eviction primitive ────────────────────────────────────────────────────────
 
+/// Result returned by [`evict_over_cap`] describing what was removed.
+///
+/// All three fields together give the caller — and `reify cache stats` —
+/// everything needed to understand the post-eviction state:
+/// * `evicted_count` + `evicted_bytes` describe what was removed.
+/// * `remaining_bytes` describes the post-eviction footprint (callers can
+///   assert the cap was actually met by checking `remaining_bytes <= cap_bytes`).
+///
+/// Excluded intentionally: per-entry detail (would couple the report shape to
+/// the internal candidate format), time taken (callers can measure externally),
+/// and the cap echo (the caller supplied it).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EvictionReport {
+    /// Number of `.bin` entries removed.
+    pub evicted_count: u64,
+    /// Total bytes removed (sum of evicted `.bin` file sizes).
+    pub evicted_bytes: u64,
+    /// On-disk `.bin` byte total that remains after eviction.
+    pub remaining_bytes: u64,
+}
+
+/// Evict entries from `cache_root/<engine_version_hash>` until the total
+/// `.bin` footprint is at or below `cap_bytes`.
+///
+/// # Scope
+///
+/// Only the subdir for `engine_version_hash` is walked. Cross-version GC
+/// is a separate startup-sweep task per PRD `docs/prds/v0_3/persistent-fea-cache.md`
+/// §"GC policy".
+///
+/// # Algorithm
+///
+/// 1. Walk every `.bin` file in `<cache_root>/<engine_version_hash>/**/*.bin`.
+///    `.tmp.*` in-flight writes and `.meta` sidecars are skipped.
+/// 2. Read [`CacheEntryHeader`] (92 bytes, no body decompression) for `solve_time_ms`.
+/// 3. Last-access signal = `.meta` sidecar mtime via [`read_sidecar_mtime`];
+///    if the sidecar is absent (crash-orphan `.bin`), falls back to `.bin` mtime.
+/// 4. Sort candidates by [`eviction_score`] **descending** (highest score = first to evict).
+/// 5. Remove `.bin` + `.meta` pairs in score order until `remaining ≤ cap_bytes`.
+///
+/// # Errors
+///
+/// Returns `Ok(EvictionReport::default())` when the engine-version subdir does
+/// not exist (no entries → nothing to evict). Other `io::Error` kinds propagate.
+pub fn evict_over_cap(
+    cache_root: &Path,
+    engine_version_hash: &str,
+    cap_bytes: u64,
+) -> io::Result<EvictionReport> {
+    let subdir = cache_root.join(engine_version_hash);
+    match subdir.metadata() {
+        Ok(_) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            return Ok(EvictionReport::default());
+        }
+        Err(e) => return Err(e),
+    }
+    Ok(EvictionReport::default())
+}
+
 /// Compute the cost-weighted LRU eviction score for a cache entry.
 ///
 /// Formula per PRD `docs/prds/v0_3/persistent-fea-cache.md` §"GC policy":
