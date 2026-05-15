@@ -4255,6 +4255,7 @@ mod tests {
     ///
     /// The current impl propagates `Err(NotFound)` at that `?`; after the fix
     /// the walker continues to the next `file_entry`.
+    #[cfg(unix)]
     #[test]
     fn evict_over_cap_tolerates_notfound_in_candidate_walker_when_bin_concurrently_removed() {
         let tmp = tempfile::TempDir::new().unwrap();
