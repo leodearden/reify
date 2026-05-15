@@ -17,12 +17,46 @@
 mod p1 {
 
 use reify_audit::{
-    AuditContext, ChangedSymbol, Finding, MockGitOps, MockJCodemunchOps, Pattern, Severity,
-    SymbolReference, TaskMetadata, p1_producer_orphan,
+    AuditContext, ChangedSymbol, EvidenceRef, Finding, MockGitOps, MockJCodemunchOps, Pattern,
+    Severity, SymbolReference, TaskMetadata, p1_producer_orphan,
 };
 use rusqlite::Connection;
 use std::collections::HashMap;
 use std::path::PathBuf;
+
+/// A fixed synthetic "now" (epoch-seconds) so grace-window boundaries are
+/// deterministic. Tests derive `done_at` relative to this.
+const NOW: i64 = 1_700_000_000;
+const DAY: i64 = 86_400;
+
+/// Build a `done` producer task with a benign title (does NOT signal a
+/// stub) and the given done-flip timestamp + originating PRD.
+fn done_meta(task_id: &str, done_at: i64, prd: Option<&str>) -> TaskMetadata {
+    TaskMetadata {
+        task_id: task_id.to_string(),
+        status: "done".to_string(),
+        files: vec![],
+        done_provenance: None,
+        title: "Wire foo into bar".to_string(),
+        prd: prd.map(|s| s.to_string()),
+        consumer_ref: None,
+        audit_foundation: None,
+        done_at: Some(done_at),
+    }
+}
+
+/// Build a `ChangedSymbol` with no suppression metadata (the orphan-candidate
+/// default); individual tests flip `has_*` / `g_allow_marker` as needed.
+fn changed_symbol(name: &str, file: &str) -> ChangedSymbol {
+    ChangedSymbol {
+        name: name.to_string(),
+        file: file.to_string(),
+        line: 42,
+        has_allow_dead_code: false,
+        has_cfg_test: false,
+        g_allow_marker: None,
+    }
+}
 
 mod tests {
     use super::*;
@@ -116,6 +150,67 @@ mod tests {
                 Severity::Low | Severity::Medium | Severity::High => {}
             }
         }
+    }
+
+    /// Required #1 — a `done` task introduced a public symbol with zero
+    /// references, no pending consumer task, and a done-flip 15 days old
+    /// (past the 14-day grace window) → exactly one Medium P1 finding
+    /// citing the symbol's file via `EvidenceRef::File`.
+    #[test]
+    fn producer_orphan_flagged_medium_after_grace_window() {
+        let done_at = NOW - 15 * DAY;
+
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+        let mut jc = MockJCodemunchOps::new();
+        jc.set_changed_symbols(
+            "main",
+            done_at,
+            vec![changed_symbol("new_widget", "crates/reify-x/src/widget.rs")],
+        );
+        jc.set_find_references("new_widget", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "7001".to_string(),
+            done_meta("7001", done_at, Some("docs/x.md")),
+        );
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: Some(NOW),
+        };
+
+        let findings = p1_producer_orphan::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly one P1 finding; got {:?}",
+            findings
+        );
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::P1ProducerOrphan);
+        assert_eq!(
+            f.severity,
+            Severity::Medium,
+            "15 days > 14-day grace → Medium; got {:?}",
+            f.severity
+        );
+        assert_eq!(f.task_id, "7001");
+        assert!(
+            f.evidence.iter().any(|e| matches!(
+                e,
+                EvidenceRef::File { path } if path == "crates/reify-x/src/widget.rs"
+            )),
+            "expected EvidenceRef::File for widget.rs; got {:?}",
+            f.evidence
+        );
     }
 }
 
