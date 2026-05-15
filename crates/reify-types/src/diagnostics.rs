@@ -1668,6 +1668,40 @@ mod tests {
             "deserialize must round-trip back to AutoTypeParamDepthBoundExceeded"
         );
     }
+
+    // --- NoKernelChain tests (task 3434 — E_NO_KERNEL_CHAIN) ---
+    // Pairs with the dispatcher's no-kernel-chain diagnostic in
+    // `crates/reify-eval/src/dispatcher.rs::no_kernel_chain_diagnostic`
+    // (PRD `docs/prds/v0_3/multi-kernel-phase-3.md` §8 task γ + §2 "failing
+    // closed is the failure mode"). Variant-agnostic Copy/Clone/PartialEq/Eq/
+    // Hash/Debug derives are already covered by `diagnostic_code_derives`
+    // above; only the variant-specific round-trip and serde wire-format tests
+    // are added here.
+
+    /// `DiagnosticCode::NoKernelChain` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` carrying both the expected
+    /// `Severity::Error` and `Some(DiagnosticCode::NoKernelChain)`.
+    /// Pins the error-severity contract and variant existence for the
+    /// dispatcher's None-return (no kernel chain found) failure mode (PRD
+    /// `docs/prds/v0_3/multi-kernel-phase-3.md` §2 "failing closed").
+    #[test]
+    fn diagnostic_code_no_kernel_chain_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::NoKernelChain);
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::NoKernelChain));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::NoKernelChain` serializes
+    /// as `"NoKernelChain"` (PascalCase, from `rename_all = "PascalCase"`).
+    /// Pins the wire-format contract for downstream consumers (LSP / MCP)
+    /// so a future variant rename is caught at the wire boundary.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_no_kernel_chain_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::NoKernelChain).unwrap();
+        assert_eq!(s, "\"NoKernelChain\"");
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
