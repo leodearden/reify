@@ -394,10 +394,13 @@ export interface AutoResolveParameterValue {
 /**
  * Progress for one FEA-derived constraint at a given iteration.
  * `satisfied` is true when the constraint bound is met.
+ * `value` is optional: the Rust side serialises it as `Option<f64>` with
+ * `skip_serializing_if`, so it is absent from the wire payload whenever the
+ * kernel has no observed scalar for the constraint (the common case).
  */
 export interface AutoResolveConstraintProgress {
   name: string;
-  value: number;
+  value?: number;
   unit?: string;
   target_lower?: number;
   target_upper?: number;

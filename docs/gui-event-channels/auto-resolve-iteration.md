@@ -63,7 +63,7 @@ export interface AutoResolveParameterValue {
 
 export interface AutoResolveConstraintProgress {
   name: string;
-  value: number;
+  value?: number;
   unit?: string;
   target_lower?: number;
   target_upper?: number;
@@ -81,8 +81,8 @@ export interface AutoResolveIteration {
 
 Source: `gui/src/types.ts:388-429`.
 
-> **⚠ Wire-optionality divergence — `AutoResolveConstraintProgress.value`:**
-> On the Rust side, `value` is `Option<f64>` with `#[serde(skip_serializing_if = "Option::is_none")]` — it is **omitted from the wire payload** whenever the kernel has no observed scalar for the constraint (the common case; see `types.rs:606-607`). The TS interface at `types.ts:399` currently declares `value: number` (required), so a consumer reading `constraints[k].value` will compile-pass but receive `undefined` at runtime when the field is absent. This is a pre-existing TS type gap, not introduced by this task. **Follow-up:** relax the TS declaration to `value?: number` to match actual wire behaviour.
+> **Wire-optionality — `AutoResolveConstraintProgress.value` (resolved):**
+> On the Rust side, `value` is `Option<f64>` with `#[serde(skip_serializing_if = "Option::is_none")]` (see the `value` field of `AutoResolveConstraintProgress` in `gui/src-tauri/src/types.rs`) — it is **omitted from the wire payload** whenever the kernel has no observed scalar for the constraint (the common case). The TS interface previously declared `value: number` (required); a consumer reading `constraints[k].value` would compile-pass but receive `undefined` at runtime when the field is absent. Resolved in task 3539: the `value` field of the `AutoResolveConstraintProgress` interface in `gui/src/types.ts` is now `value?: number`, matching actual wire behaviour (a non-breaking type widening; `AutoResolvePanel` already renders absent values as empty).
 
 ### §11 Q3 resolution (2026-05-15, task 3539)
 
@@ -122,7 +122,7 @@ Default per PRD §3.3 (no `version` field). `driving_metric` / `driving_metric_v
 
 Default per PRD §5, with one channel-specific note:
 
-- **Malformed payload:** `console.warn` + drop in `bridge.ts:628-640` — structural guard checks `typeof p['iteration'] === 'number'`, `isPlainObject(p['parameters'])`, `isPlainObject(p['constraints'])`. Drop is preferred over throw because a field mismatch (e.g. from a future shape extension during development) should not crash `AutoResolvePanel`.
+- **Malformed payload:** `console.warn` + drop in the guard inside `onAutoResolveIteration` (`gui/src/bridge.ts`) — the structural guard validates **top-level shape only**: `typeof p['iteration'] === 'number'`, `isPlainObject(p['parameters'])`, `isPlainObject(p['constraints'])`. It does **not** inspect inner `AutoResolveParameterValue` / `AutoResolveConstraintProgress` entry fields; those are trusted per the serde contract (consistent with the §2 wire-optionality note). Drop-at-top-level is preferred over throw because a gross structural mismatch (e.g. `parameters` absent entirely) should not crash `AutoResolvePanel`; the panel itself renders absent inner fields gracefully (e.g. an omitted `constraints[k].value`).
 - **Emit failure:** `tracing::warn!` and continue (§5.3).
 - **Missing emitter:** silent (§5.1 + §6.1).
 
@@ -130,9 +130,11 @@ Default per PRD §5, with one channel-specific note:
 
 ## 7. Test pointers
 
-- **Rust serde roundtrip tests:** `gui/src-tauri/src/tests/types_tests.rs:1294-1465`
+> Test pointers use symbol/function-name anchors rather than absolute line numbers (line ranges drift; symbol names are stable). Grep the cited file for the function name.
+
+- **Rust serde roundtrip tests:** `gui/src-tauri/src/tests/types_tests.rs`
   — `auto_resolve_iteration_serializes_with_expected_field_set`, `auto_resolve_iteration_omits_optional_when_none`, `auto_resolve_constraint_progress_omits_unset_targets_and_unit` cover the per-field shape contract.
-- **Rust emit-sequence test:** `gui/src-tauri/src/tests/engine_tests.rs:7102+`
-  — `engine_session_auto_resolve_emitter_fires_start_iter_complete_when_solver_resolves` asserts `events[1]` matches `EmitEvent::Iteration(_)` with correct parameter payload; `engine_session_auto_resolve_emitter_fires_on_set_parameter_when_solver_present` (line 7312) additionally covers the `set_parameter` path.
-- **TS malformed-payload tests:** `gui/src/__tests__/bridge.test.ts:647-740`
-  — `onAutoResolveIteration malformed payload` (8 cases from task-3407) cover the validatePayload-style drop semantics including missing `parameters`, missing `constraints`, wrong `iteration` type, etc.
+- **Rust emit-sequence test:** `gui/src-tauri/src/tests/engine_tests.rs`
+  — `engine_session_auto_resolve_emitter_fires_start_iter_complete_when_solver_resolves` asserts `events[1]` matches `EmitEvent::Iteration(_)` with correct parameter payload; `engine_session_auto_resolve_emitter_fires_on_set_parameter_when_solver_present` additionally covers the `set_parameter` path.
+- **TS malformed-payload tests:** `gui/src/__tests__/bridge.test.ts`
+  — the `onAutoResolveIteration malformed payload` describe block (8 cases from task-3407) covers the validatePayload-style drop semantics including missing `parameters`, missing `constraints`, wrong `iteration` type, etc.
