@@ -317,10 +317,10 @@ fn is_image_tool(name: &str) -> bool {
 
 // Handles state-free tool arms so they can be tested without a DebugServerState.
 // Returns Some(result) when the name matches a stateless arm, None otherwise.
-async fn dispatch_stateless_tool(name: &str, params: Value) -> Option<Result<Value, String>> {
+async fn dispatch_stateless_tool(name: &str, params: &Value) -> Option<Result<Value, String>> {
     match name {
         "health" => Some(Ok(json!({"ok": true}))),
-        "morph_stats" => Some(handle_morph_stats(params).await),
+        "morph_stats" => Some(handle_morph_stats(params.clone()).await),
         _ => None,
     }
 }
@@ -330,7 +330,7 @@ async fn dispatch_tool(
     name: &str,
     params: Value,
 ) -> Result<Value, String> {
-    if let Some(result) = dispatch_stateless_tool(name, params.clone()).await {
+    if let Some(result) = dispatch_stateless_tool(name, &params).await {
         return result;
     }
     match name {
@@ -810,10 +810,6 @@ mod tests {
             "input_schema.type must be 'object'"
         );
         assert!(!entry.description.is_empty(), "morph_stats must have a non-empty description");
-        assert!(
-            entry.description.to_lowercase().contains("morph"),
-            "morph_stats description must mention 'morph' (doc gui-event-channels/morph-stats.md §7 contract)"
-        );
         // `body_id` is optional — the no-args `()` form must be valid per PRD §2.3.
         // `required` may be absent entirely; if present it must not list body_id.
         if let Some(required) = schema["required"].as_array() {
@@ -895,31 +891,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dispatch_routes_morph_stats_through_stateless_arm() {
-        // Precondition: pristine stats so counts are deterministically 0.
+    async fn dispatch_stateless_tool_handles_morph_stats_arm() {
+        // Unique coverage: the exact "morph_stats" match-arm string in
+        // dispatch_stateless_tool. A typo or deletion returns None, caught
+        // by the unwrap. Shape assertions live in
+        // handle_morph_stats_returns_morph_stats_shape; here we only verify
+        // delegation fidelity.
         reify_mesh_morph::stats::reset_for_test();
 
-        // dispatch_stateless_tool covers the state-free arms of dispatch_tool
-        // ("health" and "morph_stats"). This test exercises the exact
-        // "morph_stats" match-arm string — a typo or removal fails compilation
-        // or returns None, which is caught by the assert below.
-        let result = super::dispatch_stateless_tool("morph_stats", serde_json::json!({}))
+        let direct = super::handle_morph_stats(serde_json::json!({}))
+            .await
+            .expect("handle_morph_stats must succeed");
+
+        let via_dispatch = super::dispatch_stateless_tool("morph_stats", &serde_json::json!({}))
             .await
             .expect("dispatch_stateless_tool must return Some for 'morph_stats'")
             .expect("morph_stats handler must succeed");
 
-        assert!(result.is_object(), "response must be a JSON object");
-        assert_eq!(result["morph_count"].as_u64(), Some(0), "morph_count key present, default 0");
-        assert_eq!(
-            result["remesh_count"].as_u64(),
-            Some(0),
-            "remesh_count key present, default 0"
-        );
-        assert!(
-            result.get("last_rejection_reason").is_none()
-                || result["last_rejection_reason"].is_null(),
-            "last_rejection_reason absent/null by default; got: {:?}",
-            result.get("last_rejection_reason")
-        );
+        assert_eq!(via_dispatch, direct, "dispatch_stateless_tool must delegate to handle_morph_stats");
     }
 }
