@@ -288,3 +288,86 @@ fn e2e_unregistered_optimized_target_emits_diagnostic_and_inlines() {
         rogue_node.map(|(id, _)| id)
     );
 }
+
+// ── step-11: RED — ComputeNodeId index-collision regression ───────────────────
+// Review feedback #1 (engine_eval.rs:2806-2809): the lowering hardcoded
+// `ComputeNodeId::new(cell_id.entity.as_str(), 0)`, so two `@optimized` calls
+// in the same entity would collide on the `PersistentMap<ComputeNodeId, _>`
+// key, with the second `insert_compute_node` silently overwriting the first.
+//
+// This test pins the contract that each per-entity ComputeNode receives a
+// distinct `index`, surviving PersistentMap insertion as separate entries.
+
+/// Two-call inline fixture: an entity with TWO `@optimized("test::identity")`
+/// calls — the engine must insert TWO distinct ComputeNodes (not overwrite
+/// one with the other).
+#[test]
+fn e2e_two_optimized_calls_in_same_entity_yield_distinct_compute_nodes() {
+    let source = r#"
+        @optimized("test::identity")
+        fn identity_compute_test(x: Int) -> Int {
+            x
+        }
+
+        structure TwoCallsFixture {
+            param input1: Int = 7
+            param input2: Int = 9
+            let result1 = identity_compute_test(input1)
+            let result2 = identity_compute_test(input2)
+        }
+    "#;
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_simple_engine();
+    engine.register_compute_fn("test::identity", identity_fn as ComputeFn);
+
+    let eval_result = engine.eval(&compiled);
+
+    let snapshot = engine
+        .eval_state()
+        .expect("eval_state must be Some after eval()")
+        .snapshot
+        .clone();
+
+    // (a) Both ComputeNodes survived insertion: the filter count == 2 means
+    //     neither got overwritten by a colliding ComputeNodeId.
+    let identity_nodes: Vec<_> = snapshot
+        .graph
+        .compute_nodes
+        .iter()
+        .filter(|(_, d)| d.target == "test::identity")
+        .collect();
+    assert_eq!(
+        identity_nodes.len(),
+        2,
+        "expected 2 ComputeNodes for 2 @optimized calls in the same entity, \
+         found {} (this indicates ComputeNodeId index collision): {:?}",
+        identity_nodes.len(),
+        identity_nodes
+            .iter()
+            .map(|(id, _)| (*id).clone())
+            .collect::<Vec<_>>()
+    );
+
+    // (b) The two inserted ComputeNodeIds have distinct `index` values.
+    use std::collections::HashSet;
+    let indices: HashSet<u32> = identity_nodes.iter().map(|(id, _)| id.index).collect();
+    assert_eq!(
+        indices.len(),
+        2,
+        "expected 2 distinct ComputeNodeId indices, got {:?} (collision)",
+        indices
+    );
+
+    // (c) Both observable cells evaluate to their respective inputs.
+    let r1 = eval_result
+        .values
+        .get(&ValueCellId::new("TwoCallsFixture", "result1"))
+        .expect("TwoCallsFixture.result1 not found");
+    let r2 = eval_result
+        .values
+        .get(&ValueCellId::new("TwoCallsFixture", "result2"))
+        .expect("TwoCallsFixture.result2 not found");
+    assert_eq!(*r1, Value::Int(7), "result1 should be Int(7), got {:?}", r1);
+    assert_eq!(*r2, Value::Int(9), "result2 should be Int(9), got {:?}", r2);
+}
