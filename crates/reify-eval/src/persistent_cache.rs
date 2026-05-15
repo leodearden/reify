@@ -3433,4 +3433,38 @@ mod tests {
             expected = decompressed.len() as u64,
         );
     }
+
+    // ── Eviction primitive tests ──────────────────────────────────────────────
+
+    #[test]
+    fn eviction_score_formula_is_age_secs_over_max_solve_time_ms_one() {
+        use std::time::{Duration, SystemTime};
+
+        const EPS: f64 = 1e-9;
+
+        let now = SystemTime::now();
+
+        // (a) Ordinary case: last_access 100 s ago, solve_time_ms=10 → 100.0/10 = 10.0.
+        let last_access_a = now - Duration::from_secs(100);
+        let score_a = eviction_score(now, last_access_a, 10);
+        assert!(
+            (score_a - 10.0).abs() < EPS,
+            "ordinary case: expected 10.0, got {score_a}"
+        );
+
+        // (b) Zero-clamp: last_access 60 s ago, solve_time_ms=0 → 60.0/max(0,1)=60.0 (NOT INFINITY).
+        let last_access_b = now - Duration::from_secs(60);
+        let score_b = eviction_score(now, last_access_b, 0);
+        assert!(
+            (score_b - 60.0).abs() < EPS,
+            "zero-clamp case: expected 60.0, got {score_b}"
+        );
+
+        // (c) Just-touched: last_access == now, solve_time_ms=5 → 0.0.
+        let score_c = eviction_score(now, now, 5);
+        assert!(
+            score_c.abs() < EPS,
+            "just-touched case: expected 0.0, got {score_c}"
+        );
+    }
 }
