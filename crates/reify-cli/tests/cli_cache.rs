@@ -790,6 +790,40 @@ fn import_with_non_hex_stem_warns_and_skips_no_filesystem_writes() {
 }
 
 #[test]
+fn cache_stats_on_empty_cache_succeeds_and_prints_entry_count_zero() {
+    // `reify cache stats` against an empty cache root must succeed and surface
+    // a labelled `Entry count: 0` line plus a `Total size: 0` line.  Pinning
+    // the labels here keeps the schema discoverable for both human operators
+    // and the later golden test (step-5).
+    let cache_dir = tempdir().expect("tempdir");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+        .args(["cache", "stats"])
+        .env("REIFY_CACHE_DIR", cache_dir.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute reify binary");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "reify cache stats on empty cache should succeed; status={:?} stderr={stderr}",
+        output.status
+    );
+    assert!(
+        stdout.contains("Entry count: 0"),
+        "stdout should contain 'Entry count: 0', got: {stdout}"
+    );
+    assert!(
+        stdout.contains("Total size: 0"),
+        "stdout should contain 'Total size: 0', got: {stdout}"
+    );
+}
+
+#[test]
 fn cache_export_with_extra_positional_shows_export_usage() {
     // `reify cache export aaa bbb` (extra positional past the hash) should be
     // rejected with the export-specific usage banner.
