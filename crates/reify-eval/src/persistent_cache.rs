@@ -1335,6 +1335,10 @@ pub fn evict_over_cap(
         let shard_entry = shard_entry?;
         let shard_path = shard_entry.path();
         if !shard_path.is_dir() {
+            // Non-directory entries directly under the engine-version subdir
+            // (e.g., a stale debug-touch file or a partial cross-version migration
+            // leftover) are silently skipped.  A future `reify cache fsck` pass
+            // will surface these; no action needed here.
             continue;
         }
         for file_entry in std::fs::read_dir(&shard_path)? {
@@ -1354,7 +1358,6 @@ pub fn evict_over_cap(
             {
                 continue;
             }
-            let bin_size = file_entry.metadata()?.len();
             // Derive .meta path: same stem, .meta extension.
             let meta_path = file_path.with_extension("meta");
 
@@ -1373,12 +1376,24 @@ pub fn evict_over_cap(
                 Err(e) => return Err(e),
             };
 
-            // Read solve_time_ms from the fixed 92-byte header — no body decompression.
-            let solve_time_ms = {
+            // Open .bin once: read both the file size and the 92-byte fixed-length
+            // header from the same file descriptor, saving one stat(2) syscall per
+            // candidate compared to `file_entry.metadata()` + a second `File::open`.
+            //
+            // On a corrupt or truncated .bin (header decode fails), assign
+            // `solve_time_ms = 0` so the entry scores maximally high and self-heals
+            // on the next GC run — mirroring `read_entry` which returns `Ok(None)`
+            // on header mismatch rather than propagating the error.
+            let (bin_size, solve_time_ms) = {
                 use std::fs::File;
                 use std::io::BufReader;
                 let f = File::open(&file_path)?;
-                CacheEntryHeader::read_from(&mut BufReader::new(f))?.solve_time_ms
+                let bin_size = f.metadata()?.len();
+                let solve_time_ms = match CacheEntryHeader::read_from(&mut BufReader::new(f)) {
+                    Ok(hdr) => hdr.solve_time_ms,
+                    Err(_) => 0, // corrupt/truncated: treat as free-to-evict; self-heals
+                };
+                (bin_size, solve_time_ms)
             };
 
             total_bytes += bin_size;
@@ -1428,16 +1443,28 @@ pub fn evict_over_cap(
         if remaining <= cap_bytes {
             break;
         }
-        std::fs::remove_file(&candidate.bin_path)?;
-        // Remove .meta — suppress NotFound only (crash-orphan .bin never had one).
+        // Remove .bin; suppress NotFound (concurrent eviction race: another
+        // `reify` process may have removed this entry between the candidate-walk
+        // above and now).  Regardless of who removed the file the bytes are gone
+        // from disk — `remaining` is always decremented.  Only `evicted_count`
+        // and `evicted_bytes` credit work done by THIS invocation.
+        let we_removed_bin = match std::fs::remove_file(&candidate.bin_path) {
+            Ok(()) => true,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => false,
+            Err(e) => return Err(e),
+        };
+        // Remove .meta — suppress NotFound only (crash-orphan .bin never had one,
+        // or a concurrent eviction already cleaned it up).
         // All other errors propagate via `?`.
         match std::fs::remove_file(&candidate.meta_path) {
             Ok(()) => {}
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
             Err(e) => return Err(e),
         }
-        evicted_count += 1;
-        evicted_bytes += candidate.bin_size;
+        if we_removed_bin {
+            evicted_count += 1;
+            evicted_bytes += candidate.bin_size;
+        }
         remaining -= candidate.bin_size;
     }
 
@@ -3770,6 +3797,9 @@ mod tests {
         // Cap = sz(b): cost-aware evicts (a) → remaining = sz(b) = cap → break,
         // leaving (b) intact.  Naive LRU evicts (b) → remaining = sz(a) which may
         // be ≤ cap but assertion "(a) gone" then fails.
+        let sz_a = std::fs::metadata(entry_bin_path(root, eng_a, inp_a))
+            .unwrap()
+            .len();
         let sz_b = std::fs::metadata(entry_bin_path(root, eng_a, inp_b))
             .unwrap()
             .len();
@@ -3812,6 +3842,17 @@ mod tests {
             "remaining_bytes {} must be <= cap {}",
             report.remaining_bytes,
             cap
+        );
+
+        // Pin the report counters surfaced to `reify cache stats` — prevents a
+        // future refactor from silently double-counting or misreporting.
+        assert_eq!(
+            report.evicted_count, 1,
+            "exactly one entry must be evicted (only (a) cheap-stale)"
+        );
+        assert_eq!(
+            report.evicted_bytes, sz_a,
+            "evicted_bytes must equal the on-disk size of evicted entry (a)"
         );
 
         // No orphaned .meta files in eng_A (only (b)'s .meta should remain).
@@ -3941,6 +3982,132 @@ mod tests {
         assert_eq!(report.evicted_count, 0, "evicted_count");
         assert_eq!(report.evicted_bytes, 0, "evicted_bytes");
         assert_eq!(report.remaining_bytes, 0, "remaining_bytes");
+    }
+
+    /// Verify that a corrupt or zero-byte `.bin` file does not abort the entire
+    /// eviction run.  The `read_entry` path already returns `Ok(None)` on a bad
+    /// header; the GC path must be at least as forgiving.  A corrupt entry is
+    /// treated as maximally evictable (`solve_time_ms = 0`) so it self-heals on
+    /// the next GC run.
+    #[test]
+    fn evict_over_cap_treats_corrupt_bin_as_maximally_evictable_and_does_not_abort() {
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "cc00000000000000000000000000cccc";
+        let inp_good = "gg00000000000000000000000000gggg"; // well-formed entry
+        let inp_bad = "bb00000000000000000000000000bbbb"; // will be overwritten with garbage
+
+        // Write two real entries first so shard dirs exist.
+        let good_val = ElasticResult {
+            solve_time_ms: 10_000, // expensive — should be last to evict normally
+            ..make_sample_result()
+        };
+        write_entry(root, eng, inp_good, &good_val).unwrap();
+        write_entry(root, eng, inp_bad, &make_sample_result()).unwrap();
+
+        // Overwrite the "bad" .bin with a 4-byte truncated body — header decode fails.
+        let bad_bin = entry_bin_path(root, eng, inp_bad);
+        std::fs::write(&bad_bin, b"\x00\x00\x00\x00").unwrap();
+
+        // Back-date the bad entry's .meta so it is "ancient" relative to now.
+        // (The good entry will have a recent mtime.)
+        let ancient = UNIX_EPOCH + Duration::from_secs(1_000);
+        let bad_meta = entry_meta_path(root, eng, inp_bad);
+        {
+            let f = std::fs::File::options()
+                .write(true)
+                .open(&bad_meta)
+                .unwrap();
+            f.set_times(std::fs::FileTimes::new().set_modified(ancient))
+                .expect("must set mtime");
+        }
+
+        let sz_good = std::fs::metadata(entry_bin_path(root, eng, inp_good))
+            .unwrap()
+            .len();
+        let sz_bad = std::fs::metadata(&bad_bin).unwrap().len();
+        let total = sz_good + sz_bad;
+
+        // Cap = sz_good → exactly one eviction needed.
+        let cap = sz_good;
+        assert!(total > cap, "test precondition");
+
+        // Must NOT return Err — corrupt header must not abort the eviction run.
+        let report = evict_over_cap(root, eng, cap)
+            .expect("evict_over_cap must not abort on corrupt .bin header");
+
+        // The corrupt (bad) entry must be evicted (solve_time_ms=0 → maximal score).
+        assert!(!bad_bin.exists(), "corrupt .bin must be evicted");
+
+        // The well-formed expensive entry must survive.
+        assert!(
+            entry_bin_path(root, eng, inp_good).exists(),
+            "well-formed expensive .bin must survive"
+        );
+
+        assert!(
+            report.remaining_bytes <= cap,
+            "remaining_bytes {} must be <= cap {}",
+            report.remaining_bytes,
+            cap
+        );
+        assert_eq!(report.evicted_count, 1, "exactly one entry evicted");
+    }
+
+    /// Verify that the eviction walker skips in-flight `.tmp.*` tempfiles,
+    /// orphaned `.meta` files without a companion `.bin`, and files with
+    /// non-`.bin` extensions.  If any of these decoys were included,
+    /// `remaining_bytes` would be inflated and — in the `.tmp.*` case — a
+    /// future eviction could corrupt a concurrent `write_entry` caller's
+    /// in-flight tempfile.
+    #[test]
+    fn evict_over_cap_skips_tmp_prefix_files_orphaned_meta_and_non_bin_extensions() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "ff00000000000000000000000000ffff";
+        let inp = "ff00000000000000000000000000ffee";
+
+        // Write one real entry so a shard dir exists for dropping decoys into.
+        let v = make_sample_result();
+        write_entry(root, eng, inp, &v).unwrap();
+        let real_bin = entry_bin_path(root, eng, inp);
+        let real_sz = std::fs::metadata(&real_bin).unwrap().len();
+
+        // Locate the shard directory and drop three decoy files into it.
+        let shard = shard_dir(root, eng, inp);
+
+        // Decoy 1: `.tmp.deadbeef.bin` — has `.bin` extension but `.tmp.` prefix.
+        //           Simulates an in-flight `write_entry` tempfile; must never be evicted.
+        let decoy_tmp = shard.join(".tmp.deadbeef.bin");
+        std::fs::write(&decoy_tmp, b"in-flight").unwrap();
+
+        // Decoy 2: `orphan.meta` — `.meta` extension with no companion `.bin`.
+        //           Simulates a leaked sidecar; walker must not count or touch it.
+        let decoy_meta = shard.join("orphan.meta");
+        std::fs::write(&decoy_meta, b"orphan").unwrap();
+
+        // Decoy 3: `notes.txt` — wrong extension entirely.
+        let decoy_txt = shard.join("notes.txt");
+        std::fs::write(&decoy_txt, b"notes").unwrap();
+
+        // Cap well above the real entry — nothing should be evicted.
+        let cap = real_sz + 4096;
+        let report = evict_over_cap(root, eng, cap).unwrap();
+
+        // Only the real .bin is counted; decoys must not inflate remaining_bytes.
+        assert_eq!(
+            report.remaining_bytes, real_sz,
+            "remaining_bytes must equal only the real .bin size; decoys must not be counted"
+        );
+        assert_eq!(report.evicted_count, 0, "nothing should be evicted when under cap");
+        assert_eq!(report.evicted_bytes, 0, "evicted_bytes must be 0 when under cap");
+
+        // All decoy files must be untouched.
+        assert!(decoy_tmp.exists(), ".tmp.* in-flight file must not be touched");
+        assert!(decoy_meta.exists(), "orphaned .meta file must not be touched");
+        assert!(decoy_txt.exists(), "non-.bin file must not be touched");
     }
 
     /// Step-11 RED: verify that `evict_over_cap` does NOT propagate
