@@ -5,9 +5,9 @@
 //! Verifies:
 //!   1. No Error-severity diagnostics.
 //!   2. No Warning-severity diagnostics (per PRD acceptance "no warnings under reify check").
-//!   3. At least one `ValueCellDecl` across all templates carries a
+//!   3. `BoltedPanel.bolt_length` carries a
 //!      `SolverHint { kind: DiscreteSet, collection: "standard_bolt_lengths" }`.
-//!   4. At least one `ValueCellDecl` across all templates carries a
+//!   4. `BoltedPanel.sheet_thickness` carries a
 //!      `SolverHint { kind: PreferStock, collection: "standard_sheet_thicknesses" }`.
 
 /// Absolute path to the example file, resolved at compile time from this
@@ -52,7 +52,7 @@ fn m11_annotations_exercises_solver_hint_collection_payloads() {
 
     // Locate the BoltedPanel template by name — scoping to the specific template
     // produces clearer panic messages and guards against hints migrating to an
-    // unrelated template while still passing the broad at-least-one assertions.
+    // unrelated template while still passing the by-name cell assertions below.
     let bolted_panel = module
         .templates
         .iter()
