@@ -56,6 +56,14 @@ fn sub_decl_specialization_body_parses_from_source() {
             "forbidden body — nested bodyless sub (must parse, rejection deferred to validator)",
             "structure S { sub motor : ElectricMotor { sub child : Foo } }",
         ),
+        (
+            "bare colon, no body — new grammar branch, no body child expected",
+            "structure S { sub a : Foo }",
+        ),
+        (
+            "type_args + guard + body — exercises the full optional chain together",
+            "structure S { sub m : Gear<Steel> where n > 0 { ratio = 2 } }",
+        ),
     ];
 
     for (label, source) in sources {
@@ -181,6 +189,39 @@ fn sub_decl_specialization_body_cst_has_guard_and_body() {
     sub_decl
         .child_by_field_name("body")
         .expect("sub_declaration must have a `body` field for where-guard-before-body form");
+}
+
+/// `structure S { sub a : Foo }` (bare colon, no body) must parse without ERROR
+/// nodes and produce a `sub_declaration` with a `structure_name` field but NO
+/// `body` child — this is the new grammar branch that previously would have been
+/// a parse error.
+#[test]
+fn sub_decl_bare_colon_no_body_cst_shape() {
+    let source = "structure S { sub a : Foo }";
+    let mut parser = make_ts_parser();
+    let tree = parser
+        .parse(source.as_bytes(), None)
+        .expect("parse failed");
+    assert!(
+        !tree.root_node().has_error(),
+        "bare colon no-body form must parse without CST ERROR nodes",
+    );
+
+    let sub_decl = find_cst_node(tree.root_node(), "sub_declaration")
+        .expect("expected a sub_declaration node in the CST");
+
+    let structure_name = sub_decl
+        .child_by_field_name("structure_name")
+        .expect("sub_declaration must have a `structure_name` field");
+    let text = structure_name
+        .utf8_text(source.as_bytes())
+        .expect("utf8");
+    assert_eq!(text, "Foo", "structure_name must be 'Foo', got: {text:?}");
+
+    assert!(
+        sub_decl.child_by_field_name("body").is_none(),
+        "bare colon no-body form must NOT have a `body` field",
+    );
 }
 
 // ── Negative grammar tests ────────────────────────────────────────────────────
