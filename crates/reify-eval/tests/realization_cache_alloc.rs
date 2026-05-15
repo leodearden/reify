@@ -23,9 +23,10 @@
 //! rejected calls is a clean, deterministic assertion:
 //!
 //! - **Before the fix** (unconditional `entity.to_owned()`): each of the 256 calls
-//!   allocates a fresh `String`, so `delta == 256` → test fails.
+//!   allocates a fresh `String`, so `delta ≈ 256` → test fails.
 //! - **After the fix** (`get_mut` fast path skips `to_owned()`): the rejected calls
-//!   take the allocation-free `get_mut` branch → `delta == 0` → test passes.
+//!   take the allocation-free `get_mut` branch → `delta ≈ 0` (modulo ≤2 allocations
+//!   from libtest's output-capture thread), hence the `delta <= 4` assertion bound.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
