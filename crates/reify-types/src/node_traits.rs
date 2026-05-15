@@ -391,7 +391,7 @@ mod tests {
 
     #[test]
     fn node_kind_constraint_default_traits() {
-        // Q-1 resolution: empty, preserving today's NodeArchKind::ConstraintNode behavior.
+        // Q-1 resolution: empty, preserving the prior ConstraintNode default-traits behavior (now NodeKind::Constraint).
         assert_eq!(NodeKind::Constraint.default_traits(), NodeTraits::empty());
     }
 
