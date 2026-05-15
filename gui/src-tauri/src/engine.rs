@@ -117,6 +117,21 @@ mod core_state {
         pub(crate) fn commit_check(&mut self, check: CheckResult) {
             self.last_check = Some(check);
         }
+
+        /// Atomically commit a resolved `PathBuf` into `file_path`.
+        ///
+        /// This is the **single** write-point for `file_path`, used by
+        /// `EngineSession::load_file` **after** `commit_state` has already succeeded.
+        /// The ordering invariant — `commit_file_path` must never run before
+        /// `commit_state` — means a failed parse/compile leaves `file_path` as `None`
+        /// (or its previous value) while the core fields remain at the last-good
+        /// committed state.  See the deferred-assignment comment in `load_file`.
+        ///
+        /// `pub(crate)` for the same reason as `commit_check`: the marker assertion
+        /// in `tests/engine_tests.rs` requires symbol visibility.
+        pub(crate) fn commit_file_path(&mut self, path: PathBuf) {
+            self.file_path = Some(path);
+        }
     }
 }
 
@@ -849,7 +864,7 @@ impl EngineSession {
         let check_result = self.core.engine_mut().check(&compiled);
         self.emit_auto_resolve_if_any(&check_result);
         self.commit_state(parsed, compiled, check_result, module_name, &source);
-        self.core.file_path = Some(path.to_path_buf());
+        self.core.commit_file_path(path.to_path_buf());
         self.build_gui_state()
     }
 
