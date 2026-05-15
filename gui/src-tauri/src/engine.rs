@@ -2811,7 +2811,11 @@ fn format_expr(expr: &reify_types::CompiledExpr) -> String {
                 format!("{}{}", val, unit)
             }
         }
-        CompiledExprKind::ValueRef(id) => id.member.clone(),
+        CompiledExprKind::ValueRef(id) | CompiledExprKind::CrossSubGeometryRef(id) => {
+            // CrossSubGeometryRef formats identically to ValueRef — both name the
+            // member on the synthetic cross-sub entity stamp (task-3508).
+            id.member.clone()
+        }
         CompiledExprKind::BinOp { op, left, right } => {
             let op_str = match op {
                 reify_types::BinOp::Add => "+",

@@ -574,11 +574,14 @@ fn expand_purpose_reflective_placeholders(
                 CompiledExpr::reflective_cell_list(elements, Type::List(Box::new(element_type)));
         }
         CompiledExprKind::ValueRef(_)
+        | CompiledExprKind::CrossSubGeometryRef(_)
         | CompiledExprKind::Literal(_)
         | CompiledExprKind::OptionNone
         | CompiledExprKind::MetaAccess { .. }
         | CompiledExprKind::DeterminacyPredicate { .. } => {
             // No children carrying potential placeholders.
+            // CrossSubGeometryRef is a leaf consumed by entity.rs before
+            // activation — it never contains nested placeholders (task-3508).
         }
         CompiledExprKind::BinOp { left, right, .. } => {
             expand_purpose_reflective_placeholders(left, queries, entity_ref, value_cells);

@@ -139,7 +139,13 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
     match &expr.kind {
         CompiledExprKind::Literal(v) => v.clone(),
 
-        CompiledExprKind::ValueRef(id) => ctx.values.get_or_undef(id),
+        CompiledExprKind::ValueRef(id) | CompiledExprKind::CrossSubGeometryRef(id) => {
+            // CrossSubGeometryRef: synthetic cell never resolves to a value cell,
+            // so get_or_undef returns Undef — preserving today's ValueRef semantics.
+            // This variant is consumed by entity.rs before reaching eval; this arm
+            // exists only to satisfy Rust's exhaustive-match requirement (task-3508).
+            ctx.values.get_or_undef(id)
+        }
 
         CompiledExprKind::BinOp { op, left, right } => eval_binop(*op, left, right, ctx),
 

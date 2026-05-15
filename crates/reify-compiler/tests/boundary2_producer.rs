@@ -60,6 +60,8 @@ fn assert_no_unresolved(expr: &reify_types::CompiledExpr) {
     match &expr.kind {
         CompiledExprKind::Literal(_) => {}
         CompiledExprKind::ValueRef(_) => {} // Resolved — good
+        // CrossSubGeometryRef is a leaf (consumed by entity.rs before eval); treat as resolved.
+        CompiledExprKind::CrossSubGeometryRef(_) => {}
         CompiledExprKind::BinOp { left, right, .. } => {
             assert_no_unresolved(left);
             assert_no_unresolved(right);

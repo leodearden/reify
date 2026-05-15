@@ -144,6 +144,21 @@ pub enum CompiledExprKind {
     /// At runtime (outside the quantifier evaluator), behaves identically to
     /// `ListLiteral` — it is purely a structural marker.
     ReflectiveCellList(Vec<CompiledExpr>),
+    /// Typed discriminator for a synthetic cross-sub geometry value reference,
+    /// emitted exclusively by
+    /// `expr.rs::try_resolve_cross_sub_geometry_value_ref` (task-3508).
+    ///
+    /// The bare-let drop site in `entity.rs` matches this variant structurally
+    /// to recognise the synthetic shape unambiguously — replacing the fragile
+    /// `ValueRef + entity.contains('.')` heuristic used before task-3508.
+    ///
+    /// This variant is consumed by entity.rs before reaching any downstream
+    /// evaluation or constraint pass; it should never appear in eval, the GUI
+    /// formatter, or purpose-placeholder expansion. All downstream exhaustive
+    /// matches mirror the `ValueRef` leaf behaviour via OR-patterns, except
+    /// `map_value_refs` which rebuilds via `cross_sub_geometry_ref` to preserve
+    /// the variant on hash-rebuild.
+    CrossSubGeometryRef(ValueCellId),
 }
 
 /// Determinacy predicate kinds.
@@ -247,7 +262,7 @@ pub struct CompiledFnBody {
 ///
 /// Bytes `[20]`–`[23]` are reserved by `CachedResult::content_hash` in
 /// `reify-eval/src/cache.rs` (a distinct hash domain; sharing bytes would
-/// confuse future readers). Next new `CompiledExpr` variant: use `[27]`.
+/// confuse future readers). Next new `CompiledExpr` variant: use `[28]`.
 pub const TAG_LITERAL: u8 = 0;
 pub const TAG_VALUE_REF: u8 = 1;
 pub const TAG_BIN_OP: u8 = 2;
@@ -271,6 +286,7 @@ pub const TAG_AD_HOC_SELECTOR: u8 = 19;
 pub const TAG_MATCH: u8 = 24;
 pub const TAG_PURPOSE_REFLECTIVE_AGGREGATION: u8 = 25;
 pub const TAG_REFLECTIVE_CELL_LIST: u8 = 26;
+pub const TAG_CROSS_SUB_GEOMETRY_REF: u8 = 27;
 
 impl CompiledExpr {
     /// Create a literal expression.
@@ -289,6 +305,25 @@ impl CompiledExpr {
             ContentHash::of(&[TAG_VALUE_REF]).combine(ContentHash::of_str(&format!("{}", id)));
         CompiledExpr {
             kind: CompiledExprKind::ValueRef(id),
+            result_type,
+            content_hash,
+        }
+    }
+
+    /// Create a cross-sub geometry reference expression (task-3508).
+    ///
+    /// Mirrors `value_ref`'s content-hash composition but uses
+    /// `TAG_CROSS_SUB_GEOMETRY_REF` (27) as the seed, producing a distinct
+    /// `content_hash` from a structurally-identical `ValueRef`. The variant
+    /// is emitted exclusively by
+    /// `expr.rs::try_resolve_cross_sub_geometry_value_ref` and consumed by
+    /// the bare-let drop site in `entity.rs` (replaced the fragile
+    /// `entity.contains('.')` heuristic).
+    pub fn cross_sub_geometry_ref(id: ValueCellId, result_type: Type) -> Self {
+        let content_hash = ContentHash::of(&[TAG_CROSS_SUB_GEOMETRY_REF])
+            .combine(ContentHash::of_str(&format!("{}", id)));
+        CompiledExpr {
+            kind: CompiledExprKind::CrossSubGeometryRef(id),
             result_type,
             content_hash,
         }
@@ -320,7 +355,7 @@ impl CompiledExpr {
         f(self);
         match &self.kind {
             CompiledExprKind::Literal(_) => {}
-            CompiledExprKind::ValueRef(_) => {}
+            CompiledExprKind::ValueRef(_) | CompiledExprKind::CrossSubGeometryRef(_) => {}
             CompiledExprKind::BinOp { left, right, .. } => {
                 left.walk(f);
                 right.walk(f);
@@ -452,6 +487,12 @@ impl CompiledExpr {
             CompiledExprKind::ValueRef(id) => {
                 let new_id = f(id);
                 CompiledExpr::value_ref(new_id, result_type)
+            }
+            CompiledExprKind::CrossSubGeometryRef(id) => {
+                // Preserve the variant on rebuild so downstream pattern-match
+                // sites still treat the rebuilt expression as the synthetic shape.
+                let new_id = f(id);
+                CompiledExpr::cross_sub_geometry_ref(new_id, result_type)
             }
             CompiledExprKind::BinOp { op, left, right } => {
                 let new_left = left.map_value_refs(f);
@@ -657,7 +698,9 @@ impl CompiledExpr {
 
     fn collect_value_refs_inner(&self, refs: &mut Vec<ValueCellId>) {
         match &self.kind {
-            CompiledExprKind::ValueRef(id) => refs.push(id.clone()),
+            CompiledExprKind::ValueRef(id) | CompiledExprKind::CrossSubGeometryRef(id) => {
+                refs.push(id.clone())
+            }
             CompiledExprKind::Literal(_) => {}
             CompiledExprKind::BinOp { left, right, .. } => {
                 left.collect_value_refs_inner(refs);
@@ -957,7 +1000,7 @@ impl CompiledExpr {
     /// and to `engine_purposes::expand_purpose_reflective_placeholders`.
     pub fn remap_entity(&mut self, from_entity: &str, to_entity: &str) {
         match &mut self.kind {
-            CompiledExprKind::ValueRef(id) => {
+            CompiledExprKind::ValueRef(id) | CompiledExprKind::CrossSubGeometryRef(id) => {
                 if id.entity == from_entity {
                     id.entity = to_entity.to_string();
                 }
@@ -1105,7 +1148,7 @@ impl CompiledExpr {
     /// values. Callers that consume the rewritten tree's hash must reseed it.
     pub fn remap_cell(&mut self, from: &ValueCellId, to: &ValueCellId) {
         match &mut self.kind {
-            CompiledExprKind::ValueRef(id) => {
+            CompiledExprKind::ValueRef(id) | CompiledExprKind::CrossSubGeometryRef(id) => {
                 if id == from {
                     *id = to.clone();
                 }
