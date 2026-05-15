@@ -1226,4 +1226,86 @@ mod tests {
              derive_output_freshness_with_cause at cache.rs:961-1013"
         );
     }
+
+    /// `Engine::pending_cause` admits `NodeId::Compute(_)` as a valid chain-root
+    /// cause per PRD §3 "Chain-root contract extension". Exercises the engine-level
+    /// delegation contract using direct `cache_store_mut()` injection (no dispatch
+    /// machinery yet — that is task γ).
+    ///
+    /// (a) Downstream `NodeId::Value(V)` whose `pending_cause = Some(Compute(N))`
+    ///     → `engine.pending_cause(&V) == Some(NodeId::Compute(N))`.
+    ///
+    /// (b) The Compute node itself has no upstream cause stored
+    ///     → `engine.pending_cause(&Compute(N)) == None`
+    ///     (it is the chain root, mirroring the Failed-root "no cause" contract).
+    #[test]
+    fn pending_cause_admits_compute_node_id_as_chain_root() {
+        use crate::cache::{CachedResult, NodeCache, NodeId};
+        use crate::deps::DependencyTrace;
+        use reify_test_support::builders::literal;
+        use reify_test_support::mocks::MockConstraintChecker;
+        use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
+        use reify_types::{
+            ComputeNodeId, DeterminacyState, Freshness, ModulePath, Type, Value, ValueCellId,
+            VersionId,
+        };
+
+        let v_id = ValueCellId::new("T", "v");
+
+        // Build a 1-cell module: `let v = 1.0` in template T.
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(
+                TopologyTemplateBuilder::new("T")
+                    .let_binding("T", "v", Type::Real, literal(Value::Real(1.0)))
+                    .build(),
+            )
+            .build();
+
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+
+        // Initial eval: populates the cache entry for NodeId::Value(v).
+        let _ = engine.eval(&module);
+
+        let cn_id = ComputeNodeId::new("T", 0);
+        let compute_node = NodeId::Compute(cn_id.clone());
+        let v_node = NodeId::Value(v_id.clone());
+
+        // Inject a synthetic cache entry for the Compute node (result payload
+        // variant is irrelevant for pending_cause — we just need an entry to exist).
+        let compute_entry = NodeCache::new(
+            CachedResult::Value(Value::Int(0), DeterminacyState::Determined),
+            Freshness::Final,
+            DependencyTrace::default(),
+            VersionId(0),
+        );
+        engine
+            .cache_store_mut()
+            .put(compute_node.clone(), compute_entry);
+
+        // Wire: mark v as Pending with compute_node as the chain-root cause.
+        let marked = engine
+            .cache_store_mut()
+            .mark_pending_with_cause(&v_node, compute_node.clone());
+        assert!(
+            marked,
+            "mark_pending_with_cause must return true for the existing Value entry"
+        );
+
+        // (a) Engine delegation: v's pending_cause must be the Compute chain root.
+        assert_eq!(
+            engine.pending_cause(&v_node),
+            Some(compute_node.clone()),
+            "engine.pending_cause must return Some(NodeId::Compute(N)) for a Value \
+             entry whose pending_cause was set to a Compute node \
+             (PRD §3 chain-root contract extension)"
+        );
+
+        // (b) Compute node has no upstream cause stored — it is itself the chain root.
+        assert_eq!(
+            engine.pending_cause(&compute_node),
+            None,
+            "engine.pending_cause of the Compute chain root must return None \
+             (it is the originating cause, not a forwarder — mirrors the Failed-root contract)"
+        );
+    }
 }
