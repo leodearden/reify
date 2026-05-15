@@ -10,7 +10,8 @@ use std::io::{Cursor, Read, Write};
 use std::process::{Command, Stdio};
 
 use reify_eval::persistent_cache::{
-    CacheEntryHeader, ENGINE_VERSION_HASH, ElasticResult, read_entry, write_entry,
+    CacheEntryHeader, ENGINE_VERSION_HASH, ENTRY_FORMAT_VERSION, ElasticResult, read_entry,
+    write_entry,
 };
 use tempfile::tempdir;
 
@@ -374,6 +375,97 @@ fn round_trip_export_import_preserves_elastic_result() {
     assert_eq!(
         round_tripped, fixture,
         "round-tripped ElasticResult must equal the seeded fixture"
+    );
+}
+
+#[test]
+fn import_with_mismatched_engine_version_warns_and_skips() {
+    // Hand-build a 1-entry tar whose `<hash>.bin` carries a well-formed
+    // `CacheEntryHeader` but with `engine_version_hash` set to 32 ASCII zeros
+    // (the synthesized-mismatch sentinel — see plan Design Decision: the live
+    // ENGINE_VERSION_HASH is baked at build time so we can't perturb it at
+    // test time).  Import should warn-and-skip (non-fatal exit SUCCESS), and
+    // the destination cache must remain empty: neither the synthesized
+    // engine-version directory nor the live one should be populated.
+    let bogus_evh: [u8; 32] = *b"00000000000000000000000000000000";
+    let input_hash_bytes: [u8; 32] = *b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let header = CacheEntryHeader {
+        format_version: ENTRY_FORMAT_VERSION,
+        engine_version_hash: bogus_evh,
+        input_hash: input_hash_bytes,
+        solve_time_ms: 0,
+        byte_size: 0,
+        written_at: -1,
+    };
+    let mut bin_body: Vec<u8> = Vec::new();
+    header
+        .write_to(&mut bin_body)
+        .expect("header must encode");
+    // ~16 bytes of arbitrary trailing data — won't be decoded since the
+    // engine-version check short-circuits before body decode.
+    bin_body.extend_from_slice(&[0u8; 16]);
+
+    let mut tar_bytes: Vec<u8> = Vec::new();
+    {
+        let mut builder = tar::Builder::new(&mut tar_bytes);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(bin_body.len() as u64);
+        header.set_mode(0o644);
+        header
+            .set_path(format!(
+                "{}.bin",
+                std::str::from_utf8(&input_hash_bytes).expect("ascii input hash")
+            ))
+            .expect("set_path");
+        header.set_cksum();
+        builder
+            .append(&header, bin_body.as_slice())
+            .expect("append synthesized bin");
+        builder.finish().expect("tar finish");
+    }
+
+    let cache_dir = tempdir().expect("tempdir");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_reify"))
+        .args(["cache", "import"])
+        .env("REIFY_CACHE_DIR", cache_dir.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn reify import");
+    {
+        let stdin = child.stdin.as_mut().expect("import stdin");
+        stdin
+            .write_all(&tar_bytes)
+            .expect("write tar to import stdin");
+    }
+    let output = child.wait_with_output().expect("wait import");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Warn-and-skip is non-fatal: the run as a whole succeeds even though one
+    // entry was rejected.
+    assert!(
+        output.status.success(),
+        "import should exit SUCCESS on engine-version mismatch (warn-and-skip is non-fatal); \
+         stderr={stderr}"
+    );
+    let stderr_lc = stderr.to_ascii_lowercase();
+    assert!(
+        stderr_lc.contains("engine-version"),
+        "stderr should mention 'engine-version', got: {stderr}"
+    );
+    assert!(
+        stderr_lc.contains("skip"),
+        "stderr should mention 'skip', got: {stderr}"
+    );
+
+    // The destination cache must contain no `.bin` file under either the
+    // synthesized engine-version directory or the live one.
+    let cache_files = collect_cache_files(cache_dir.path());
+    assert!(
+        cache_files.is_empty(),
+        "cache dir should remain empty after warn-and-skip, found: {cache_files:?}"
     );
 }
 
