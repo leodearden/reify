@@ -1496,6 +1496,30 @@ pub fn evict_over_cap(
             evicted_bytes += candidate.bin_size;
         }
         remaining -= candidate.bin_size;
+
+        // Best-effort shard-dir housekeeping: attempt to prune the two-char
+        // shard dir once this candidate's files are gone.  Three cases:
+        //   `Ok(())`             — shard is now empty and was removed.
+        //   `DirectoryNotEmpty`  — other entries in this shard survive this
+        //                          eviction run; will be pruned on a future
+        //                          call that drains the shard.
+        //   `NotFound`           — a concurrent reify process already pruned it.
+        //   `Err(_)` catch-all   — PermissionDenied and other unexpected kinds
+        //                          are silently swallowed so that housekeeping
+        //                          never aborts an otherwise-successful eviction.
+        // Intentionally does NOT attempt to remove the engine-version subdir —
+        // that is owned by the startup-sweep task (cross-version orphan pruning).
+        if let Some(parent) = candidate.bin_path.parent() {
+            match std::fs::remove_dir(parent) {
+                Ok(()) => {}
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::NotFound | io::ErrorKind::DirectoryNotEmpty
+                    ) => {}
+                Err(_) => {} // best-effort: swallow PermissionDenied etc.
+            }
+        }
     }
 
     Ok(EvictionReport {
