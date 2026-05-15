@@ -62,49 +62,35 @@ fn m11_annotations_exercises_solver_hint_collection_payloads() {
              did you forget to add the Feature 7 block to examples/m11_annotations.ri?"
         );
 
-    // (3) BoltedPanel has a cell with DiscreteSet + standard_bolt_lengths.
-    let has_bolt_lengths = bolted_panel.value_cells.iter().any(|cell| {
-        cell.solver_hints.iter().any(|h| {
+    // (3) BoltedPanel.bolt_length carries SolverHint { DiscreteSet, "standard_bolt_lengths" }.
+    let bolt_length_cell = bolted_panel
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "bolt_length")
+        .expect("BoltedPanel should declare a `bolt_length` param");
+    assert!(
+        bolt_length_cell.solver_hints.iter().any(|h| {
             h.kind == reify_compiler::SolverHintKind::DiscreteSet
                 && h.collection == "standard_bolt_lengths"
-        })
-    });
-    assert!(
-        has_bolt_lengths,
-        "expected BoltedPanel to have a ValueCellDecl with SolverHint \
-         {{ kind: DiscreteSet, collection: \"standard_bolt_lengths\" }}"
+        }),
+        "BoltedPanel.bolt_length should carry SolverHint \
+         {{ kind: DiscreteSet, collection: \"standard_bolt_lengths\" }}, got: {:?}",
+        bolt_length_cell.solver_hints,
     );
 
-    // (4) BoltedPanel has a cell with PreferStock + standard_sheet_thicknesses.
-    let has_sheet_thicknesses = bolted_panel.value_cells.iter().any(|cell| {
-        cell.solver_hints.iter().any(|h| {
+    // (4) BoltedPanel.sheet_thickness carries SolverHint { PreferStock, "standard_sheet_thicknesses" }.
+    let sheet_thickness_cell = bolted_panel
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "sheet_thickness")
+        .expect("BoltedPanel should declare a `sheet_thickness` param");
+    assert!(
+        sheet_thickness_cell.solver_hints.iter().any(|h| {
             h.kind == reify_compiler::SolverHintKind::PreferStock
                 && h.collection == "standard_sheet_thicknesses"
-        })
-    });
-    assert!(
-        has_sheet_thicknesses,
-        "expected BoltedPanel to have a ValueCellDecl with SolverHint \
-         {{ kind: PreferStock, collection: \"standard_sheet_thicknesses\" }}"
-    );
-
-    // Guard: the two hints must live on distinct cells.  A regression where both
-    // hints are mistakenly attached to the same cell (and the other cell loses its
-    // hint) would still satisfy each any() assertion above in isolation, so we
-    // explicitly reject that configuration here.
-    assert!(
-        !bolted_panel.value_cells.iter().any(|cell| {
-            let has_discrete = cell.solver_hints.iter().any(|h| {
-                h.kind == reify_compiler::SolverHintKind::DiscreteSet
-                    && h.collection == "standard_bolt_lengths"
-            });
-            let has_prefer = cell.solver_hints.iter().any(|h| {
-                h.kind == reify_compiler::SolverHintKind::PreferStock
-                    && h.collection == "standard_sheet_thicknesses"
-            });
-            has_discrete && has_prefer
         }),
-        "DiscreteSet(standard_bolt_lengths) and PreferStock(standard_sheet_thicknesses) \
-         must be on distinct ValueCellDecl entries, not both on the same cell"
+        "BoltedPanel.sheet_thickness should carry SolverHint \
+         {{ kind: PreferStock, collection: \"standard_sheet_thicknesses\" }}, got: {:?}",
+        sheet_thickness_cell.solver_hints,
     );
 }
