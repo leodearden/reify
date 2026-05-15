@@ -1505,6 +1505,52 @@ mod tests {
         }
     }
 
+    /// Affinely-mapped quad — a parallelogram in xy with vertices
+    /// `(0,0,0)`, `(2,0,0)`, `(2.5,1,0)`, `(0.5,1,0)`. Base × height = 2 × 1
+    /// ⇒ phys_area = 2. Unit traction along +x. Asserts (a) each of 4 nodes
+    /// receives `area/4 = 0.5` along x within TOL, (b) all y- and z-DOFs are
+    /// exactly 0.0, (c) conservation `Σ f_x = 2.0`. Pins that an affine map
+    /// (constant Jacobian) preserves equal-lumping for P1 quads, independent
+    /// of the rectangular special case.
+    #[test]
+    fn apply_traction_p1quad_sheared_parallelogram_lumps_evenly() {
+        let face_phys: [[f64; 3]; 4] = [
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [2.5, 1.0, 0.0],
+            [0.5, 1.0, 0.0],
+        ];
+        let conn = [0usize, 1, 2, 3];
+        let traction = [1.0_f64, 0.0, 0.0];
+        let mut f = vec![0.0_f64; 12]; // 4 nodes × 3 DOFs
+        apply_traction_load(&mut f, FaceOrder::P1Quad, &conn, &face_phys, traction);
+
+        let area = 2.0_f64;
+        let expected_per_node_x = area / 4.0; // 0.5
+
+        // (a) Each node receives area/4 = 0.5 along x within TOL.
+        for node in 0..4 {
+            let got = f[3 * node];
+            assert!(
+                (got - expected_per_node_x).abs() < TOL,
+                "node {node} x-DOF: got {got}, expected {expected_per_node_x}",
+            );
+        }
+
+        // (b) All y- and z-DOFs are exactly 0.0.
+        for node in 0..4 {
+            assert_eq!(f[3 * node + 1], 0.0, "node {node} y-DOF should be 0.0");
+            assert_eq!(f[3 * node + 2], 0.0, "node {node} z-DOF should be 0.0");
+        }
+
+        // (c) Conservation: Σ f_x = 2.0.
+        let total_x: f64 = (0..4).map(|n| f[3 * n]).sum();
+        assert!(
+            (total_x - area).abs() < TOL,
+            "total f_x = {total_x}, expected {area}",
+        );
+    }
+
     // =======================================================================
     // apply_traction_load — contract panics
     // =======================================================================
