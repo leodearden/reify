@@ -7521,6 +7521,85 @@ fn engine_session_auto_resolve_emitter_fires_on_set_parameter_when_solver_presen
     assert!(matches!(events[2], EmitEvent::Complete), "event[2] must be Complete");
 }
 
+/// Non-Scalar resolved auto-param emits NaN sentinel instead of being silently dropped.
+///
+/// When the solver returns a non-Scalar Value for a resolved auto-param (which
+/// indicates a buggy or unexpected solver implementation), `build_parameters_payload`
+/// must emit an `AutoResolveParameterValue { value: NaN, unit: "", display: "<non-scalar>" }`
+/// so the GUI panel can render an error chip rather than silently omitting the cell.
+///
+/// RED: currently fails because the silent-drop branch omits the cell entirely —
+/// the parameters HashMap won't contain the key. Step-5 impl makes it green.
+#[test]
+fn engine_session_auto_resolve_emitter_emits_nan_sentinel_for_non_scalar_resolved_param() {
+    use std::sync::Arc;
+    use reify_types::Value;
+
+    let thickness_id = ValueCellId::new("S", "thickness");
+    let mut solved = std::collections::HashMap::new();
+    // Inject a non-Scalar value to trigger the non-Scalar branch.
+    solved.insert(thickness_id.clone(), Value::Int(7));
+    let solver = MockConstraintSolver::new_solved(solved);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "thickness", Type::length())
+        .constraint(
+            "S",
+            0,
+            None,
+            gt(value_ref("S", "thickness"), literal(mm(2.0))),
+        )
+        .build();
+
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None)
+        .with_solver_for_test(Box::new(solver));
+
+    let recorder = RecordingEmitter::new();
+    let events = Arc::clone(&recorder.events);
+    session.set_auto_resolve_emitter(Arc::new(recorder));
+
+    session.check_and_emit_for_test(&compiled);
+
+    let events = events.lock().unwrap();
+    assert_eq!(
+        events.len(),
+        3,
+        "expected [Start, Iteration, Complete] even for non-Scalar param, got {} events",
+        events.len()
+    );
+    assert!(matches!(events[0], EmitEvent::Start), "event[0] must be Start");
+    assert!(matches!(events[2], EmitEvent::Complete), "event[2] must be Complete");
+
+    if let EmitEvent::Iteration(ref iter) = events[1] {
+        let param = iter
+            .parameters
+            .get("S.thickness")
+            .expect("S.thickness must be in parameters even for non-Scalar (NaN sentinel)");
+        assert!(
+            param.value.is_nan(),
+            "non-Scalar resolved param must produce NaN sentinel value, got {}",
+            param.value
+        );
+        assert_eq!(
+            param.unit, "",
+            "non-Scalar sentinel unit must be empty string, got '{}'",
+            param.unit
+        );
+        assert_eq!(
+            param.display, "<non-scalar>",
+            "non-Scalar sentinel display must be '<non-scalar>', got '{}'",
+            param.display
+        );
+    } else {
+        panic!("events[1] must be Iteration");
+    }
+}
+
 // ── Structural lock-in test ──────────────────────────────────────────────────
 
 /// Structural lock-in test: verifies that `EngineSession` exposes `CoreState`
