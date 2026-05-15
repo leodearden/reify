@@ -3510,4 +3510,17 @@ mod tests {
             "just-touched case: expected 0.0, got {score_c}"
         );
     }
+
+    #[test]
+    fn evict_over_cap_returns_zero_evictions_when_engine_version_subdir_is_absent() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        // 32-char hex engine-version hash; no subdir created under root.
+        let eng = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0";
+
+        let report = evict_over_cap(root, eng, 1024).unwrap();
+        assert_eq!(report.evicted_count, 0, "evicted_count");
+        assert_eq!(report.evicted_bytes, 0, "evicted_bytes");
+        assert_eq!(report.remaining_bytes, 0, "remaining_bytes");
+    }
 }
