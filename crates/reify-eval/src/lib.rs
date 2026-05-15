@@ -17,6 +17,10 @@ mod engine_admin;
 pub use engine_admin::sweep_persistent_cache_at_startup;
 mod engine_build;
 mod engine_compute;
+pub use engine_compute::{
+    ComputeDispatchRegistry, ComputeFn, ComputeOutcome, RealizationReadHandle,
+};
+pub use graph::CancellationHandle;
 mod engine_constraints;
 mod engine_edit;
 mod engine_eval;
@@ -465,6 +469,18 @@ pub struct Engine {
     /// whose `optimized_target` matches a registered key is routed to that
     /// impl instead of the language-level `constraint_checker` (Task 273).
     optimization_registry: HashMap<String, Box<dyn OptimizedImpl>>,
+    /// Registry of compute trampolines for `@optimized` fn dispatch.
+    ///
+    /// Maps `&'static str` target names (from `@optimized("target")` on a
+    /// `fn` def) to [`ComputeFn`][engine_compute::ComputeFn] function pointers.
+    /// Populated via [`Engine::register_compute_fn`]. Consulted by the
+    /// value-cell eval loop when it encounters a `UserFunctionCall` whose
+    /// `CompiledFunction.optimized_target` is `Some(t)`.
+    ///
+    /// Mirrors `optimization_registry` (constraint `@optimized`) in shape and
+    /// lifecycle; see `engine_admin.rs` for the registration methods.
+    /// See `docs/prds/v0_3/compute-node-contract.md` §4 and task γ (3422).
+    compute_registry: engine_compute::ComputeDispatchRegistry,
     /// Registry of named constraint solvers selectable via the `#solver(<name>)`
     /// module pragma (Task 2300). Populated at runtime startup via
     /// `register_solver`; the default fallback solver remains `self.solver`

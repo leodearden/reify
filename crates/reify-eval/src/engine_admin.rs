@@ -156,6 +156,7 @@ impl Engine {
             max_unfold_depth: 64,
             max_unfold_nodes: 10_000,
             optimization_registry: HashMap::new(),
+            compute_registry: crate::engine_compute::ComputeDispatchRegistry::new(),
             solvers: HashMap::new(),
             // Read REIFY_WARM_STATE_BUDGET_BYTES once at construction; falls
             // back to DEFAULT_BUDGET_BYTES (2 GiB) when unset. Per arch §4.3.
@@ -434,6 +435,61 @@ impl Engine {
     /// test assertions ("was this target registered?").
     pub fn optimized_targets(&self) -> impl Iterator<Item = &str> {
         self.optimization_registry.keys().map(String::as_str)
+    }
+
+    // ── Compute-trampoline registry (task γ / 3422) ─────────────────────────
+
+    /// Register a compute trampoline for `target`.
+    ///
+    /// When the value-cell eval loop encounters a `UserFunctionCall` whose
+    /// `CompiledFunction.optimized_target == Some(target)`, it inserts a
+    /// `ComputeNode` into the evaluation graph and invokes `f` synchronously
+    /// instead of body-inlining the function.
+    ///
+    /// `target` must be a `&'static str` (a string literal); this mirrors the
+    /// zero-allocation design of the dispatch registry itself.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a trampoline is already registered for `target`, naming the
+    /// duplicated target in the panic message (PRD §4 hard-error contract).
+    /// Silent overwrite would mask accidental double-registration by two
+    /// independent crates claiming the same target string.
+    ///
+    /// See `docs/prds/v0_3/compute-node-contract.md` §4.
+    pub fn register_compute_fn(
+        &mut self,
+        target: &'static str,
+        f: crate::engine_compute::ComputeFn,
+    ) {
+        use std::collections::hash_map::Entry;
+        match self.compute_registry.fns.entry(target) {
+            Entry::Vacant(v) => {
+                v.insert(f);
+            }
+            Entry::Occupied(_) => {
+                panic!(
+                    "register_compute_fn: duplicate target {:?} — \
+                     a ComputeFn is already registered for this target",
+                    target
+                );
+            }
+        }
+    }
+
+    /// Look up the [`ComputeFn`][crate::engine_compute::ComputeFn] registered
+    /// for `target`.
+    ///
+    /// Returns `Some(f)` if a trampoline was previously registered via
+    /// [`register_compute_fn`][Self::register_compute_fn], `None` otherwise.
+    /// The returned value is a plain function pointer and therefore `Copy`.
+    ///
+    /// See `docs/prds/v0_3/compute-node-contract.md` §4.
+    pub fn compute_dispatch(
+        &self,
+        target: &str,
+    ) -> Option<crate::engine_compute::ComputeFn> {
+        self.compute_registry.fns.get(target).copied()
     }
 
     /// Returns the compiled stdlib prelude modules stored by this engine.
