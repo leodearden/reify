@@ -3676,6 +3676,143 @@ mod tests {
         );
     }
 
+    /// Core PRD eviction policy test (deterministic RED/GREEN structure).
+    ///
+    /// Two entries in eng_A; one sentinel in eng_B.
+    ///
+    /// The discriminating scenario: `(a)` is CHEAP (solve_time_ms=1) with a
+    /// slightly NEWER mtime than `(b)`; `(b)` is EXPENSIVE (solve_time_ms=10_000)
+    /// with a slightly OLDER mtime.
+    ///
+    /// Naive LRU (sort by mtime ascending) evicts `(b)` first (oldest mtime).
+    /// Cost-aware sort by `eviction_score` descending picks `(a)` first:
+    ///   score(a) ≈ age_a / 1        (huge — cheap)
+    ///   score(b) ≈ age_b / 10_000   (10_000× smaller — expensive)
+    /// Since both are backdated to ~1970, age_a ≈ age_b and score(a) >> score(b).
+    ///
+    /// Cap = sz(b) so exactly one entry survives in eng_A.
+    ///
+    /// With cost-aware sort: evict (a) → remaining = sz(b) = cap → break.
+    ///   → (a) gone, (b) survives: test PASSES.
+    /// With naive LRU: evict (b) → remaining = sz(a); sz(a) ≤ cap = sz(b)
+    ///   → (b) evicted, (a) survives: assertion "(a) .bin must be evicted" FAILS.
+    #[test]
+    fn evict_over_cap_evicts_cheap_stale_first_keeps_expensive_old_removes_meta_and_respects_engine_version_scope(
+    ) {
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng_a = "aaaa0000000000000000000000000000";
+        let eng_b = "bbbb0000000000000000000000000000";
+
+        // (a) cheap-stale: low solve_time_ms, mtime = epoch_base + 60 s (slightly newer).
+        // (b) expensive-old: high solve_time_ms, mtime = epoch_base (slightly older).
+        // (d) sentinel in eng_B: untouched by eviction scoped to eng_A.
+        let inp_a = "aa00000000000000000000000000aaaa"; // cheap-stale
+        let inp_b = "bb00000000000000000000000000bbbb"; // expensive-old
+        let inp_d = "dd00000000000000000000000000dddd"; // sentinel in eng_B
+
+        let cheap = ElasticResult {
+            solve_time_ms: 1,
+            ..make_sample_result()
+        };
+        let expensive = ElasticResult {
+            solve_time_ms: 10_000,
+            ..make_sample_result()
+        };
+
+        write_entry(root, eng_a, inp_a, &cheap).unwrap();
+        write_entry(root, eng_a, inp_b, &expensive).unwrap();
+        write_entry(root, eng_b, inp_d, &cheap).unwrap();
+
+        // epoch_base is ~1970 so both entries are "ancient" relative to now.
+        // (a) is 60 s newer than (b) — naive LRU evicts (b) first.
+        // score(a) = age_a/1 >> score(b) = age_b/10_000 — cost-aware evicts (a) first.
+        let epoch_base = UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let mtime_a = epoch_base + Duration::from_secs(60); // newer mtime
+        let mtime_b = epoch_base; // older mtime
+
+        for (inp, mtime) in [(inp_a, mtime_a), (inp_b, mtime_b)] {
+            let meta = entry_meta_path(root, eng_a, inp);
+            let f = std::fs::File::options()
+                .write(true)
+                .open(&meta)
+                .expect("must open sidecar");
+            f.set_times(std::fs::FileTimes::new().set_modified(mtime))
+                .expect("must set mtime");
+        }
+
+        // Cap = sz(b): cost-aware evicts (a) → remaining = sz(b) = cap → break,
+        // leaving (b) intact.  Naive LRU evicts (b) → remaining = sz(a) which may
+        // be ≤ cap but assertion "(a) gone" then fails.
+        let sz_b = std::fs::metadata(entry_bin_path(root, eng_a, inp_b))
+            .unwrap()
+            .len();
+        let cap = sz_b;
+
+        let report = evict_over_cap(root, eng_a, cap).unwrap();
+
+        // (a) cheap-stale must be evicted (higher cost-weighted eviction score).
+        assert!(
+            !entry_bin_path(root, eng_a, inp_a).exists(),
+            "(a) cheap-stale .bin must be evicted (cost-weighted score is higher)"
+        );
+        assert!(
+            !entry_meta_path(root, eng_a, inp_a).exists(),
+            "(a) cheap-stale .meta must be removed alongside .bin"
+        );
+
+        // (b) expensive-old must survive (lower cost-weighted score despite older mtime).
+        assert!(
+            entry_bin_path(root, eng_a, inp_b).exists(),
+            "(b) expensive-old .bin must survive"
+        );
+        assert!(
+            entry_meta_path(root, eng_a, inp_b).exists(),
+            "(b) expensive-old .meta must survive"
+        );
+
+        // (d) sentinel in eng_B must be entirely untouched (engine-version scope).
+        assert!(
+            entry_bin_path(root, eng_b, inp_d).exists(),
+            "(d) sentinel in eng_B .bin must be untouched"
+        );
+        assert!(
+            entry_meta_path(root, eng_b, inp_d).exists(),
+            "(d) sentinel in eng_B .meta must be untouched"
+        );
+
+        assert!(
+            report.remaining_bytes <= cap,
+            "remaining_bytes {} must be <= cap {}",
+            report.remaining_bytes,
+            cap
+        );
+
+        // No orphaned .meta files in eng_A (only (b)'s .meta should remain).
+        for shard in std::fs::read_dir(root.join(eng_a)).unwrap() {
+            let shard = shard.unwrap();
+            for f in std::fs::read_dir(shard.path()).unwrap() {
+                let f = f.unwrap();
+                if f.path().extension().and_then(|e| e.to_str()) == Some("meta") {
+                    let stem = f
+                        .path()
+                        .file_stem()
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .to_owned();
+                    assert_eq!(
+                        stem, inp_b,
+                        "unexpected orphaned .meta in eng_A: {:?}",
+                        f.path()
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn evict_over_cap_reduces_total_bytes_to_at_or_under_cap_when_over_cap() {
         let tmp = tempfile::TempDir::new().unwrap();
