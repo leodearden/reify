@@ -27,8 +27,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use reify_audit::{
-    AuditContext, ChangedSymbol, Finding, JCodemunchOps, Pattern, RealGitOps, Severity,
-    SymbolReference, TaskMetadata, TimeWindow,
+    AuditContext, ChangedSymbol, Finding, JCodemunchOps, RealGitOps, Severity, SymbolReference,
+    TaskMetadata, TimeWindow,
 };
 
 // -----------------------------------------------------------------------
@@ -300,9 +300,9 @@ fn main() -> ExitCode {
         reify_audit::p5_phantom_done::check_pre_done(&ctx, task_id)
     } else {
         // Spot-check or window sweep: run selected detectors.
-        let run_p1 = args.pattern.as_deref().map_or(true, |p| p == "P1");
-        let run_p2 = args.pattern.as_deref().map_or(true, |p| p == "P2");
-        let run_p5 = args.pattern.as_deref().map_or(true, |p| p == "P5");
+        let run_p1 = args.pattern.as_deref().is_none_or(|p| p == "P1");
+        let run_p2 = args.pattern.as_deref().is_none_or(|p| p == "P2");
+        let run_p5 = args.pattern.as_deref().is_none_or(|p| p == "P5");
 
         let mut all = Vec::new();
         if run_p1 {
