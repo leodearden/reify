@@ -297,25 +297,36 @@ impl RealGitOps {
         }
         String::from_utf8(out.stdout).map_err(|_| "git output not valid UTF-8".to_string())
     }
+
+    /// Run a git command, emitting a `reify-audit:` breadcrumb on failure and
+    /// returning `None` so callers can `else { return vec![]; }` in one line.
+    /// `label` is the human-readable git subcommand used in the breadcrumb
+    /// (e.g. `"log --grep"`, `"diff --name-only"`, `"diff"`).
+    fn run_or_warn(&self, label: &str, args: &[&str]) -> Option<String> {
+        match self.run(args) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                eprintln!(
+                    "reify-audit: git {} failed in {}: {}",
+                    label,
+                    self.project_root.display(),
+                    e
+                );
+                None
+            }
+        }
+    }
 }
 
 impl GitOps for RealGitOps {
     fn log_grep(&self, branch: &str, pattern: &str) -> Vec<GitCommit> {
-        let stdout = match self.run(&[
+        let Some(stdout) = self.run_or_warn("log --grep", &[
             "log",
             branch,
             &format!("--grep={}", pattern),
             &format!("--format={}", LOG_GREP_FORMAT),
-        ]) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!(
-                    "reify-audit: git log --grep failed in {}: {}",
-                    self.project_root.display(),
-                    e
-                );
-                return vec![];
-            }
+        ]) else {
+            return vec![];
         };
         stdout
             .lines()
@@ -329,16 +340,11 @@ impl GitOps for RealGitOps {
     }
 
     fn diff_changed_paths(&self, from: &str, to: &str) -> Vec<String> {
-        let stdout = match self.run(&["diff", "--name-only", &format!("{}..{}", from, to)]) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!(
-                    "reify-audit: git diff --name-only failed in {}: {}",
-                    self.project_root.display(),
-                    e
-                );
-                return vec![];
-            }
+        let Some(stdout) = self.run_or_warn(
+            "diff --name-only",
+            &["diff", "--name-only", &format!("{}..{}", from, to)],
+        ) else {
+            return vec![];
         };
         stdout
             .lines()
@@ -370,16 +376,11 @@ impl GitOps for RealGitOps {
     }
 
     fn diff_added_lines(&self, from: &str, to: &str, path: &str) -> Vec<(usize, String)> {
-        let stdout = match self.run(&["diff", &format!("{}..{}", from, to), "--", path]) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!(
-                    "reify-audit: git diff failed in {}: {}",
-                    self.project_root.display(),
-                    e
-                );
-                return vec![];
-            }
+        let Some(stdout) = self.run_or_warn(
+            "diff",
+            &["diff", &format!("{}..{}", from, to), "--", path],
+        ) else {
+            return vec![];
         };
         let mut result = Vec::new();
         let mut new_line: usize = 0;
