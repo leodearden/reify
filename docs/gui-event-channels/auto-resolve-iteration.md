@@ -81,9 +81,12 @@ export interface AutoResolveIteration {
 
 Source: `gui/src/types.ts:388-429`.
 
+> **⚠ Wire-optionality divergence — `AutoResolveConstraintProgress.value`:**
+> On the Rust side, `value` is `Option<f64>` with `#[serde(skip_serializing_if = "Option::is_none")]` — it is **omitted from the wire payload** whenever the kernel has no observed scalar for the constraint (the common case; see `types.rs:606-607`). The TS interface at `types.ts:399` currently declares `value: number` (required), so a consumer reading `constraints[k].value` will compile-pass but receive `undefined` at runtime when the field is absent. This is a pre-existing TS type gap, not introduced by this task. **Follow-up:** relax the TS declaration to `value?: number` to match actual wire behaviour.
+
 ### §11 Q3 resolution (2026-05-15, task 3539)
 
-PRD §11 Q3 asked whether `parameters` and `constraints` should be `BTreeMap<String, f64>` (simple) or richer types. **Resolution:** HashMap with rich value types — `HashMap<String, AutoResolveParameterValue>` and `HashMap<String, AutoResolveConstraintProgress>` — matching the TS interface field-for-field.
+PRD §11 Q3 asked whether `parameters` and `constraints` should be `BTreeMap<String, f64>` (simple) or richer types. **Resolution:** HashMap with rich value types — `HashMap<String, AutoResolveParameterValue>` and `HashMap<String, AutoResolveConstraintProgress>` — closely matching the TS interface shapes (see wire-optionality note above for the one known divergence).
 
 **Rationale:** The TS side already defined typed `AutoResolveParameterValue` (with `value`, `unit`, `display`) and `AutoResolveConstraintProgress` (with `name`, `value?`, `unit?`, `target_lower?`, `target_upper?`, `satisfied`). Dropping to `Map<String, f64>` would have either (a) forced a TS breaking change, or (b) created payload divergence between what the backend emits and what the frontend's types describe. Existing tests assert per-field rather than via golden-file snapshots, so HashMap iteration order is not a problem; BTreeMap would only buy deterministic JSON for snapshot tests that don't exist.
 
@@ -130,6 +133,6 @@ Default per PRD §5, with one channel-specific note:
 - **Rust serde roundtrip tests:** `gui/src-tauri/src/tests/types_tests.rs:1294-1465`
   — `auto_resolve_iteration_serializes_with_expected_field_set`, `auto_resolve_iteration_omits_optional_when_none`, `auto_resolve_constraint_progress_omits_unset_targets_and_unit` cover the per-field shape contract.
 - **Rust emit-sequence test:** `gui/src-tauri/src/tests/engine_tests.rs:7102+`
-  — `fires_start_iter_complete_on_check` asserts `events[1]` is `AutoResolveEvent::Iteration` with correct parameter payload.
+  — `engine_session_auto_resolve_emitter_fires_start_iter_complete_when_solver_resolves` asserts `events[1]` matches `EmitEvent::Iteration(_)` with correct parameter payload; `engine_session_auto_resolve_emitter_fires_on_set_parameter_when_solver_present` (line 7312) additionally covers the `set_parameter` path.
 - **TS malformed-payload tests:** `gui/src/__tests__/bridge.test.ts:647-740`
   — `onAutoResolveIteration malformed payload` (8 cases from task-3407) cover the validatePayload-style drop semantics including missing `parameters`, missing `constraints`, wrong `iteration` type, etc.

@@ -68,6 +68,6 @@ Default per PRD §5:
 ## 7. Test pointers
 
 - **Rust emit-sequence test:** `gui/src-tauri/src/tests/engine_tests.rs:7102+`
-  — `fires_start_iter_complete_on_check` asserts `events[2]` is `AutoResolveEvent::Complete`.
+  — `engine_session_auto_resolve_emitter_fires_start_iter_complete_when_solver_resolves` asserts `events[2]` matches `EmitEvent::Complete`.
 - **TS shape test:** existing `onAutoResolveComplete` coverage in `gui/src/__tests__/bridge.test.ts`.
 - **No separate roundtrip test needed:** payload is `()` — serde has nothing to round-trip.
