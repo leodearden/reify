@@ -1008,6 +1008,88 @@ impl GeometryQuery {
     }
 }
 
+/// Per-query capability flag: which geometry representations a query can
+/// operate on, as specified by PRD
+/// `docs/prds/v0_3/kernel-geometry-queries.md` §5.4.
+///
+/// Used by the multi-kernel dispatcher to fail closed when a BRep-only query
+/// is asked of a non-BRep (Mesh/Voxel/Sdf/VolumeMesh) realization. The gate
+/// function that maps `(ReprKind, QueryCapability)` to a routing decision is
+/// `reify_eval::geometry_ops::gate_query_capability`.
+///
+/// # Severity convention
+///
+/// | Variant       | Repr that satisfies it      |
+/// |---------------|-----------------------------|
+/// | `BRepOnly`    | [`ReprKind::BRep`] only     |
+/// | `MeshOnly`    | [`ReprKind::Mesh`] only     |
+/// | `BRepAndMesh` | Either [`ReprKind::BRep`] or [`ReprKind::Mesh`] |
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum QueryCapability {
+    /// Query can only be evaluated against a BRep (OCCT) representation.
+    ///
+    /// Examples from PRD §5.4: `edge_length`, `curvature` (KGQ-μ),
+    /// `surface_curvature` (KGQ-μ), `perimeter` (KGQ-ν).
+    BRepOnly,
+    /// Query can only be evaluated against a Mesh (Manifold) representation.
+    ///
+    /// Reserved for future mesh-native queries; no extant variants as of v0.3.
+    MeshOnly,
+    /// Query can be evaluated against either BRep or Mesh representations.
+    ///
+    /// The dispatcher routes BRep inputs to OCCT and Mesh inputs to Manifold.
+    BRepAndMesh,
+}
+
+impl GeometryQuery {
+    /// Map each query variant to its capability class per PRD §5.4.
+    ///
+    /// The match is EXHAUSTIVE with NO `_` wildcard — mirroring the
+    /// [`GeometryQuery::kind_name`] precedent. Adding a new `GeometryQuery`
+    /// variant requires adding an arm here at the same diff site; the
+    /// compiler enforces this, eliminating silent mis-routing of future
+    /// BRep-only variants (e.g. `CurveCurvatureAt`/`SurfaceCurvatureAt`
+    /// added by KGQ-μ, `Perimeter` by KGQ-ν) to the wrong kernel.
+    ///
+    /// # Adding new variants
+    ///
+    /// **BRep-only variants MUST add `=> QueryCapability::BRepOnly` here.**
+    /// A wildcard `_ => BRepAndMesh` would silently mis-route future
+    /// BRep-only queries to the Manifold kernel — the compiler enforces
+    /// correctness at the diff site.
+    pub fn capability_kind(&self) -> QueryCapability {
+        match self {
+            // §5.4 BRepOnly set (extant as of this commit; KGQ-μ adds
+            // CurveCurvatureAt + SurfaceCurvatureAt; KGQ-ν adds Perimeter)
+            GeometryQuery::EdgeLength(_) => QueryCapability::BRepOnly,
+
+            // All other extant variants default to BRepAndMesh.
+            GeometryQuery::Volume(_) => QueryCapability::BRepAndMesh,
+            GeometryQuery::SurfaceArea(_) => QueryCapability::BRepAndMesh,
+            GeometryQuery::Centroid(_) => QueryCapability::BRepAndMesh,
+            GeometryQuery::BoundingBox(_) => QueryCapability::BRepAndMesh,
+            GeometryQuery::Distance { .. } => QueryCapability::BRepAndMesh,
+            GeometryQuery::MomentOfInertia { .. } => QueryCapability::BRepAndMesh,
+            GeometryQuery::AdjacentFaces { .. } => QueryCapability::BRepAndMesh,
+            GeometryQuery::SharedEdges { .. } => QueryCapability::BRepAndMesh,
+            GeometryQuery::IsWatertight(_) => QueryCapability::BRepAndMesh,
+            GeometryQuery::IsManifold(_) => QueryCapability::BRepAndMesh,
+            GeometryQuery::IsOrientable(_) => QueryCapability::BRepAndMesh,
+            GeometryQuery::CenterOfMass { .. } => QueryCapability::BRepAndMesh,
+            GeometryQuery::InertiaTensor { .. } => QueryCapability::BRepAndMesh,
+            GeometryQuery::EdgeTangent(_) => QueryCapability::BRepAndMesh,
+            GeometryQuery::FaceNormal(_) => QueryCapability::BRepAndMesh,
+            GeometryQuery::FaceSurfaceKind(_) => QueryCapability::BRepAndMesh,
+            GeometryQuery::EdgeCurveKind(_) => QueryCapability::BRepAndMesh,
+            GeometryQuery::AncestorFacesOfEdge { .. } => QueryCapability::BRepAndMesh,
+            GeometryQuery::OwnerBody(_) => QueryCapability::BRepAndMesh,
+            GeometryQuery::ClosestPointOnShape { .. } => QueryCapability::BRepAndMesh,
+            GeometryQuery::PointOnShape { .. } => QueryCapability::BRepAndMesh,
+            GeometryQuery::SurfaceAngle { .. } => QueryCapability::BRepAndMesh,
+        }
+    }
+}
+
 /// Geometric kind of a face's underlying surface, matching OCCT's
 /// `GeomAbs_*` taxonomy via `BRepAdaptor_Surface::GetType()`.
 ///
