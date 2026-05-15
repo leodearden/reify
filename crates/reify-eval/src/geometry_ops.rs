@@ -77,8 +77,10 @@ pub(crate) enum CapabilityRoute {
 ///
 /// # Message text
 ///
-/// `'<query_display_name>' requires BRep representation; this geometry is
-/// realized as <produced_repr:?>`
+/// The 'requires' clause is derived from the query's capability kind:
+/// - `BRepOnly` → `'<name>' requires BRep representation; this geometry is realized as <repr>`
+/// - `MeshOnly` → `'<name>' requires Mesh representation; this geometry is realized as <repr>`
+/// - `BRepAndMesh` → `'<name>' requires BRep or Mesh representation; this geometry is realized as <repr>`
 ///
 /// `query_display_name` is the user-written `.ri` helper name (e.g.
 /// `"curvature"`, `"edge_length"`) — thread it like existing `&function.name`
@@ -100,10 +102,19 @@ pub(crate) fn gate_query_capability(
 
     let capability = query.capability_kind();
 
+    // Derive the 'requires' clause from capability so the message accurately
+    // describes recovery options: a BRepAndMesh query on Voxel can be recovered
+    // by switching to either BRep or Mesh, not just BRep.
+    let requires_clause = match capability {
+        QueryCapability::BRepOnly => "requires BRep representation",
+        QueryCapability::MeshOnly => "requires Mesh representation",
+        QueryCapability::BRepAndMesh => "requires BRep or Mesh representation",
+    };
+
     let unsupported = |diagnostics: &mut Vec<Diagnostic>| {
         diagnostics.push(
             Diagnostic::error(format!(
-                "'{query_display_name}' requires BRep representation; \
+                "'{query_display_name}' {requires_clause}; \
                  this geometry is realized as {produced_repr:?}"
             ))
             .with_code(DiagnosticCode::QueryNotSupportedOnRepr),
@@ -6624,7 +6635,8 @@ mod tests {
 
     #[test]
     fn gate_query_capability_any_query_on_voxel_fails_closed() {
-        // branch-e (Voxel): any capability + Voxel → Unsupported + one diag
+        // branch-e (Voxel): BRepAndMesh query + Voxel → Unsupported + one diag
+        // Message must say "BRep or Mesh" (not just "BRep") because Distance is BRepAndMesh.
         let query = reify_types::GeometryQuery::Distance {
             from: GeometryHandleId(1),
             to: GeometryHandleId(2),
@@ -6642,11 +6654,23 @@ mod tests {
             diags[0].code,
             Some(reify_types::DiagnosticCode::QueryNotSupportedOnRepr)
         );
+        assert!(
+            diags[0].message.contains("BRep or Mesh"),
+            "BRepAndMesh query on Voxel must say 'BRep or Mesh', not just 'BRep'; \
+             got: {}",
+            diags[0].message
+        );
+        assert!(
+            diags[0].message.contains("Voxel"),
+            "diagnostic must contain repr token 'Voxel'; got: {}",
+            diags[0].message
+        );
     }
 
     #[test]
     fn gate_query_capability_any_query_on_sdf_fails_closed() {
-        // branch-e (Sdf): any capability + Sdf → Unsupported + one diag
+        // branch-e (Sdf): BRepAndMesh query + Sdf → Unsupported + one diag
+        // Message must say "BRep or Mesh" because Volume is BRepAndMesh.
         let query = reify_types::GeometryQuery::Volume(GeometryHandleId(1));
         let mut diags: Vec<Diagnostic> = Vec::new();
         let route = super::gate_query_capability(
@@ -6661,11 +6685,22 @@ mod tests {
             diags[0].code,
             Some(reify_types::DiagnosticCode::QueryNotSupportedOnRepr)
         );
+        assert!(
+            diags[0].message.contains("BRep or Mesh"),
+            "BRepAndMesh query on Sdf must say 'BRep or Mesh'; got: {}",
+            diags[0].message
+        );
+        assert!(
+            diags[0].message.contains("Sdf"),
+            "diagnostic must contain repr token 'Sdf'; got: {}",
+            diags[0].message
+        );
     }
 
     #[test]
     fn gate_query_capability_any_query_on_volume_mesh_fails_closed() {
-        // branch-e (VolumeMesh): any capability + VolumeMesh → Unsupported + one diag
+        // branch-e (VolumeMesh): BRepAndMesh query + VolumeMesh → Unsupported + one diag
+        // Message must say "BRep or Mesh" because BoundingBox is BRepAndMesh.
         let query = reify_types::GeometryQuery::BoundingBox(GeometryHandleId(1));
         let mut diags: Vec<Diagnostic> = Vec::new();
         let route = super::gate_query_capability(
@@ -6684,6 +6719,16 @@ mod tests {
         assert_eq!(
             diags[0].code,
             Some(reify_types::DiagnosticCode::QueryNotSupportedOnRepr)
+        );
+        assert!(
+            diags[0].message.contains("BRep or Mesh"),
+            "BRepAndMesh query on VolumeMesh must say 'BRep or Mesh'; got: {}",
+            diags[0].message
+        );
+        assert!(
+            diags[0].message.contains("VolumeMesh"),
+            "diagnostic must contain repr token 'VolumeMesh'; got: {}",
+            diags[0].message
         );
     }
 

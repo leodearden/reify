@@ -14,6 +14,14 @@ use reify_types::{DiagnosticCode, GeometryHandleId, GeometryQuery, QueryCapabili
 /// Perimeter, they must add `=> QueryCapability::BRepOnly` arms in
 /// `GeometryQuery::capability_kind()` — the exhaustive match enforces this.
 ///
+/// NOTE: The authoritative exhaustiveness guard is the `match self` in
+/// `GeometryQuery::capability_kind()` (geometry.rs), which has no `_` wildcard.
+/// This hand-list pins the §5.4 default classification at one point in time;
+/// the real compile-time guard against misclassification is that match.  If a
+/// future contributor adds a BRepAndMesh variant and forgets to update this list
+/// the test will under-cover it — but the compiler will still catch any variant
+/// that should be BRepOnly if it is omitted from `capability_kind()`.
+///
 /// RED until `QueryCapability` and `GeometryQuery::capability_kind()` are
 /// added to `reify-types`.
 #[test]
@@ -81,12 +89,9 @@ fn diagnostic_code_query_not_supported_on_repr_surface() {
     assert_eq!(code, code2);
     // Distinct from a sibling variant
     assert_ne!(code, DiagnosticCode::LongChainRealization);
-
-    #[cfg(feature = "serde")]
-    {
-        let s = serde_json::to_string(&code).unwrap();
-        assert_eq!(s, r#""QueryNotSupportedOnRepr""#);
-        let back: DiagnosticCode = serde_json::from_str(&s).unwrap();
-        assert_eq!(back, code);
-    }
+    // Note: the PascalCase serde wire format ("QueryNotSupportedOnRepr") is
+    // intentionally not pinned here — reify-eval has no `serde` feature and
+    // serde_json is not a dev-dependency of this crate.  That contract should
+    // be pinned in a reify-types unit test where `feature = "serde"` is
+    // meaningful.  See reviewer note on task 3623 amendment pass.
 }

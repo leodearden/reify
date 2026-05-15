@@ -906,12 +906,13 @@ pub enum DiagnosticCode {
     /// Origin: `crates/reify-eval/src/geometry_ops.rs::gate_query_capability`
     /// (task 3623 — PRD `docs/prds/v0_3/kernel-geometry-queries.md` §5.4).
     ///
-    /// Canonical message form:
-    /// `"'<helper>' requires BRep representation; this geometry is realized as <Repr>"`.
+    /// Canonical message form (the 'requires' clause is capability-dependent):
+    /// - `BRepOnly` query: `"'<helper>' requires BRep representation; this geometry is realized as <Repr>"`
+    /// - `MeshOnly` query: `"'<helper>' requires Mesh representation; this geometry is realized as <Repr>"`
+    /// - `BRepAndMesh` query: `"'<helper>' requires BRep or Mesh representation; this geometry is realized as <Repr>"`
     ///
-    /// Emitted as a `Severity::Error` by `gate_query_capability` when a
-    /// BRep-only query (e.g. `edge_length`, or future `curvature`/`perimeter`)
-    /// is dispatched against a non-BRep realization
+    /// Emitted as a `Severity::Error` by `gate_query_capability` when a query
+    /// is dispatched against an unsupported realization
     /// (`ReprKind::Mesh`/`Sdf`/`Voxel`/`VolumeMesh`). The gate fails closed:
     /// the caller maps `CapabilityRoute::Unsupported` → `None` → the cell
     /// retains `Value::Undef` (the existing fall-through-is-preservation
