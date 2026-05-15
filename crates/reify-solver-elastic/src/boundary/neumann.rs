@@ -1458,6 +1458,53 @@ mod tests {
         }
     }
 
+    /// P1Quad in the yz-plane (rotated out of the xy-plane). Outward normal
+    /// points in +x. Vertices `(0,-1,-1)`, `(0,+1,-1)`, `(0,+1,+1)`, `(0,-1,+1)`
+    /// in canonical CCW-from-outside order, area = 4. Apply traction
+    /// `(3.0, -1.0, 2.0)`. Asserts (a) each node receives `area/4 = 1.0` of
+    /// each traction component, (b) per-axis conservation
+    /// `Σ f = area · traction` holds. Exercises the `|t_ξ × t_η|`
+    /// cross-product on a non-axis-aligned face — mirrors the existing
+    /// `apply_traction_p1tri_rotated_yz_plane_conservation`.
+    #[test]
+    fn apply_traction_p1quad_rotated_yz_plane_conservation() {
+        let face_phys: [[f64; 3]; 4] = [
+            [0.0, -1.0, -1.0],
+            [0.0, 1.0, -1.0],
+            [0.0, 1.0, 1.0],
+            [0.0, -1.0, 1.0],
+        ];
+        let conn = [0usize, 1, 2, 3];
+        let traction = [3.0_f64, -1.0, 2.0];
+        let mut f = vec![0.0_f64; 12]; // 4 nodes × 3 DOFs
+        apply_traction_load(&mut f, FaceOrder::P1Quad, &conn, &face_phys, traction);
+
+        let area = 4.0_f64;
+        let expected_per_node = area / 4.0; // 1.0
+
+        // (a) Each node gets area/4 = 1.0 of each traction component.
+        for node in 0..4 {
+            for alpha in 0..3 {
+                let got = f[3 * node + alpha];
+                let expected = expected_per_node * traction[alpha];
+                assert!(
+                    (got - expected).abs() < TOL,
+                    "node {node} axis {alpha}: got {got}, expected {expected}",
+                );
+            }
+        }
+
+        // (b) Per-axis conservation.
+        for alpha in 0..3 {
+            let total: f64 = (0..4).map(|n| f[3 * n + alpha]).sum();
+            let expected_total = area * traction[alpha];
+            assert!(
+                (total - expected_total).abs() < TOL,
+                "axis {alpha}: total = {total}, expected {expected_total}",
+            );
+        }
+    }
+
     // =======================================================================
     // apply_traction_load — contract panics
     // =======================================================================
