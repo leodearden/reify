@@ -4353,6 +4353,90 @@ mod tests {
         );
     }
 
+    /// Amendment (suggestion 3): verify that `evict_over_cap` tolerates
+    /// `NotFound` from `std::fs::metadata(&file_path)` in the sidecar-absent
+    /// fallback path (race site #1).
+    ///
+    /// When the sidecar (`.meta`) is absent, the walker falls back to the `.bin`
+    /// mtime via `std::fs::metadata(&file_path)`.  If the `.bin` has also been
+    /// concurrently removed (simulated here with a dangling symlink so that
+    /// `metadata()` — which follows symlinks — returns `NotFound`), the new
+    /// `continue` arm at race site #1 must fire, skipping the phantom entry
+    /// rather than propagating the error.
+    ///
+    /// This complements step-1 (`evict_over_cap_tolerates_notfound_in_candidate_walker_when_bin_concurrently_removed`),
+    /// which covers race site #2 (sidecar present, `File::open` returns NotFound).
+    /// Here the sidecar is intentionally absent, exercising the distinct
+    /// `Err(e) if e.kind() == io::ErrorKind::NotFound => continue` arm inside
+    /// the sidecar-absent branch at ~line 1390.
+    #[cfg(unix)]
+    #[test]
+    fn evict_over_cap_tolerates_notfound_when_both_meta_and_bin_concurrently_removed() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "gg00000000000000000000000000gggg";
+        // inp1: no .meta + dangling .bin symlink → exercises race site #1
+        // (sidecar-absent fallback: metadata(&file_path) returns NotFound).
+        let inp1 = "hh00000000000000000000000000hhhh";
+        let inp2 = "ii00000000000000000000000000iiii"; // real entry
+        let inp3 = "jj00000000000000000000000000jjjj"; // real entry
+
+        let v = make_sample_result();
+        write_entry(root, eng, inp2, &v).unwrap();
+        write_entry(root, eng, inp3, &v).unwrap();
+
+        let sz = std::fs::metadata(entry_bin_path(root, eng, inp2))
+            .unwrap()
+            .len();
+
+        // Plant inp1 to exercise race site #1:
+        //   - NO .meta written → read_sidecar_mtime returns NotFound (sidecar absent).
+        //   - Dangling symlink as .bin → std::fs::metadata follows the symlink and
+        //     returns NotFound because the target does not exist.
+        //   Together these trigger `Err(e) if e.kind() == io::ErrorKind::NotFound =>
+        //   continue` inside the sidecar-absent fallback, the branch added at race
+        //   site #1.
+        let shard1 = shard_dir(root, eng, inp1);
+        std::fs::create_dir_all(&shard1).unwrap();
+        // Intentionally NO .meta for inp1 — the sidecar-absent code path.
+        let bin1 = entry_bin_path(root, eng, inp1);
+        std::os::unix::fs::symlink("/nonexistent/reify-race-simulation-site1", &bin1).unwrap();
+
+        // cap = sz (one entry): walker skips inp1 (both meta absent + bin dangling),
+        // observes two real candidates (inp2, inp3) summing to 2*sz > cap, evicts one.
+        let cap = sz;
+
+        // (a) Must not propagate Err(NotFound).
+        let report = evict_over_cap(root, eng, cap).expect(
+            "evict_over_cap must not propagate NotFound when both .meta is absent and .bin is concurrently removed",
+        );
+
+        // (b) Exactly one eviction — the phantom inp1 was skipped, not counted.
+        assert_eq!(report.evicted_count, 1, "evicted_count must be 1");
+
+        // (c) evicted_bytes must equal the size of the one real .bin removed.
+        assert_eq!(
+            report.evicted_bytes, sz,
+            "evicted_bytes must equal one entry's size"
+        );
+
+        // (d) On-disk .bin total (real files only; dangling symlink not measured) ≤ cap.
+        let on_disk: u64 = [inp2, inp3]
+            .iter()
+            .filter_map(|inp| {
+                std::fs::metadata(entry_bin_path(root, eng, inp))
+                    .ok()
+                    .map(|m| m.len())
+            })
+            .sum();
+        assert!(
+            on_disk <= cap,
+            "on-disk .bin total {} must be ≤ cap {}",
+            on_disk,
+            cap
+        );
+    }
+
     /// Step-3 RED: verify that `evict_over_cap` prunes the two-char shard dir
     /// after evicting ALL entries from it, reclaiming dirs that would otherwise
     /// accumulate forever as the cache turns over.
@@ -4411,6 +4495,106 @@ mod tests {
         assert!(
             root.join(eng).exists(),
             "engine-version subdir must survive after shard-dir pruning"
+        );
+    }
+
+    /// Amendment (suggestion 4): verify that `evict_over_cap` does NOT prune
+    /// the shard dir when entries remain in it after a partial eviction.
+    ///
+    /// Three entries share the same two-character shard prefix so they all land
+    /// in the same shard dir.  The cap is set so that exactly one entry is evicted
+    /// (cap = 2 × entry_size; after evicting one the remaining 2 × entry_size ≤ cap
+    /// triggers the break).  After the call the shard dir must still exist and must
+    /// contain the two surviving `.bin` + `.meta` pairs — locking in the
+    /// `DirectoryNotEmpty` branch and preventing accidental `force_remove_dir_all`
+    /// regressions.
+    #[test]
+    fn evict_over_cap_preserves_shard_dir_when_entries_remain_in_it() {
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "dd00000000000000000000000000dddd";
+        // All three hashes share "bb" prefix → same shard dir.
+        let inp1 = "bb01000000000000000000000000bb11";
+        let inp2 = "bb02000000000000000000000000bb22";
+        let inp3 = "bb03000000000000000000000000bb33";
+
+        let v = make_sample_result();
+        write_entry(root, eng, inp1, &v).unwrap();
+        write_entry(root, eng, inp2, &v).unwrap();
+        write_entry(root, eng, inp3, &v).unwrap();
+
+        // All entries are written with the same value → identical file size.
+        let sz = std::fs::metadata(entry_bin_path(root, eng, inp1))
+            .unwrap()
+            .len();
+        let total = 3 * sz;
+
+        // Back-date inp1's .meta so it is oldest and will be evicted first
+        // (highest eviction score: max age / same solve_time_ms).
+        let ancient = UNIX_EPOCH + Duration::from_secs(1_000);
+        let meta1 = entry_meta_path(root, eng, inp1);
+        {
+            let f = std::fs::File::options()
+                .write(true)
+                .open(&meta1)
+                .unwrap();
+            f.set_times(std::fs::FileTimes::new().set_modified(ancient))
+                .expect("must set .meta mtime for inp1");
+        }
+
+        // cap = 2*sz: total (3*sz) > cap → evict one; remaining (2*sz) = cap → stop.
+        let cap = 2 * sz;
+        assert!(total > cap, "test precondition: total must exceed cap");
+
+        let shard = shard_dir(root, eng, inp1);
+        assert!(
+            shard.exists(),
+            "shard dir must exist before call (test precondition)"
+        );
+        // All three share the same shard.
+        assert_eq!(shard, shard_dir(root, eng, inp2), "inp2 same shard as inp1");
+        assert_eq!(shard, shard_dir(root, eng, inp3), "inp3 same shard as inp1");
+
+        let report = evict_over_cap(root, eng, cap)
+            .expect("evict_over_cap must return Ok for partial eviction");
+
+        // Exactly one entry evicted (the oldest, inp1).
+        assert_eq!(report.evicted_count, 1, "evicted_count must be 1");
+        assert_eq!(
+            report.remaining_bytes, 2 * sz,
+            "remaining_bytes must equal 2 surviving entries"
+        );
+
+        // Shard dir must still exist because two entries remain inside it.
+        assert!(
+            shard.exists(),
+            "shard dir must be preserved when entries remain in it"
+        );
+
+        // Surviving entries (inp2, inp3) must still have both .bin and .meta.
+        assert!(
+            entry_bin_path(root, eng, inp2).exists(),
+            "inp2 .bin must survive"
+        );
+        assert!(
+            entry_meta_path(root, eng, inp2).exists(),
+            "inp2 .meta must survive"
+        );
+        assert!(
+            entry_bin_path(root, eng, inp3).exists(),
+            "inp3 .bin must survive"
+        );
+        assert!(
+            entry_meta_path(root, eng, inp3).exists(),
+            "inp3 .meta must survive"
+        );
+
+        // Evicted entry (inp1) must no longer have a .bin on disk.
+        assert!(
+            !entry_bin_path(root, eng, inp1).exists(),
+            "inp1 .bin must be removed"
         );
     }
 }
