@@ -136,10 +136,14 @@ are stable per PRD §3.2 (no `#[serde(rename_all)]`).
 
 - **Debug-server tests:** `gui/src-tauri/src/debug_server.rs` inline `#[cfg(test)] mod tests`:
   - `tool_defs_registers_morph_stats` — asserts `tool_defs()` has an entry with `name == "morph_stats"`,
-    `input_schema.type == "object"`, description mentions "morph", `body_id` not in `required`
-  - `dispatch_tool_morph_stats_returns_morph_stats_shape` — calls `handle_morph_stats(json!({}))` directly
-    (state-free), asserts `morph_count == 0`, `remesh_count == 0`, `last_rejection_reason` absent,
-    and that the `{ body_id: "..." }` form returns an identical response
+    `input_schema.type == "object"`, description (case-insensitively) contains `"morph"`, `body_id` not in `required`
+  - `handle_morph_stats_returns_morph_stats_shape` — calls `handle_morph_stats(json!({}))` directly
+    (state-free, not through dispatch), asserts `morph_count == 0`, `remesh_count == 0`,
+    `last_rejection_reason` absent, and that the `{ body_id: "..." }` form returns an identical response
+  - `dispatch_routes_morph_stats_through_stateless_arm` — calls
+    `dispatch_stateless_tool("morph_stats", json!({}))` (the seam `dispatch_tool` delegates to for
+    state-free arms), asserts `Some(Ok(..))` and the same zeroed shape; a typo or removal of the
+    `"morph_stats"` arm string causes this test to fail
 
 - **TS compile-fence:** `gui/src/__tests__/types.typecheck.ts` — import + four shape assertions
   for `MorphStats`; fails `tsc --noEmit` unless the interface is exported from `gui/src/types.ts`
