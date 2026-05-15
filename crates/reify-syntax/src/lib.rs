@@ -214,9 +214,10 @@ pub struct SubDecl {
     pub is_collection: bool,
     pub where_clause: Option<WhereClause>,
     /// Members of a specialization-scope body, when this `sub` opens one.
-    /// `None` for bare instantiation or collection forms (the only forms
-    /// the current grammar produces; the `{ body }` form is reserved for a
-    /// future grammar update).
+    /// `None` for bare instantiation or collection forms. The tree-sitter
+    /// grammar now admits `sub name : StructName { body }` (task 3569), but
+    /// `lower_sub` still yields `None` here until sibling task 3571 wires the
+    /// CST→AST mapping for the new `specialization_body` node.
     pub body: Option<Vec<MemberDecl>>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
