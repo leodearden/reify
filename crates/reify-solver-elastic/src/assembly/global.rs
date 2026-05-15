@@ -14,6 +14,17 @@ use faer::sparse::{SparseRowMat, Triplet};
 
 use super::ElementStiffness;
 
+/// Maximum number of `(node, axis)` pairs stored in
+/// [`OrphanDofsSummary::examples`].
+///
+/// Keeps the struct small on large meshes — production models can have 10K+
+/// tet-only nodes in a mixed tet+shell system (30K+ orphan pairs). 16 entries
+/// are enough to identify a clustered pattern in a debug log line; callers
+/// needing full enumeration can compute the orphan set directly from the
+/// element slice. [`OrphanDofsSummary::count`] always reflects the true total
+/// regardless of this cap.
+const MAX_EXAMPLES: usize = 16;
+
 /// One element's contribution to the global system.
 ///
 /// `connectivity` lists the global node IDs of the element's local nodes in
@@ -173,11 +184,11 @@ pub fn detect_orphan_dofs(
         }
     }
 
-    // Count orphan (node, axis) pairs and collect examples.
+    // Count orphan (node, axis) pairs and collect up to MAX_EXAMPLES of them.
     // Nodes that ARE touched (d_max_local > 0) but whose best-covering
     // element stops short of D contribute (d_global - d_local) orphan axes.
     // Both loops are ascending so examples are naturally sorted by (node, axis).
-    // Truncation (MAX_EXAMPLES cap) is added in step-8.
+    // count always reflects the true total; push is gated by the cap.
     let mut count = 0usize;
     let mut examples: Vec<(usize, usize)> = Vec::new();
     for node in 0..n_nodes {
@@ -185,7 +196,9 @@ pub fn detect_orphan_dofs(
         if d_local > 0 && d_local < d_global {
             for axis in d_local..d_global {
                 count += 1;
-                examples.push((node, axis));
+                if examples.len() < MAX_EXAMPLES {
+                    examples.push((node, axis));
+                }
             }
         }
     }
