@@ -253,6 +253,166 @@ pub structure Outer {
     );
 }
 
+// ─── step-2 (gap 1): binary boolean op — collection-sub geometry RIGHT operand ──
+
+/// When a **binary** boolean op's **right** argument (`args[1]`) is
+/// `self.<collection_sub>.<member>` where `<member>` is a geometry-typed
+/// realization on the child structure, the compiler must emit the specific v0.1
+/// cross-sub deferred diagnostic — not the generic "argument 2 must be a
+/// geometry expression" fallback.
+///
+/// This test covers the **distinct** `resolve_boolean_arg(&args[1], …)` call
+/// site at `geometry_boolean.rs:169`, which is separate from the left-operand
+/// call at line 155.  A refactor that bypasses `resolve_boolean_arg` for the
+/// right operand would break this test visibly.
+///
+/// Dependency note: `args[0]` (`base`, a `param : Solid`) must resolve
+/// successfully via `resolve_boolean_arg` for control to reach `args[1]`.
+/// The proof that `param : Solid` resolves correctly is the existing n-ary
+/// test above (arg-0 `a` is also a `param : Solid`).  If `base` ever stopped
+/// resolving the `?` would short-circuit before the right-operand diagnostic
+/// fires — this test would fail loudly, not silently pass.
+///
+/// GREEN on arrival: `resolve_boolean_arg` is the shared helper for both
+/// operands; task-3512's routing (impl at `geometry_boolean.rs:64-85`) already
+/// handles this shape.  This test is a regression guard so future changes that
+/// bypass the shared helper for the right operand are caught immediately.
+#[test]
+fn binary_boolean_op_with_collection_sub_geometry_right_operand_emits_specific_diagnostic() {
+    let source = r#"pub structure Bolt {
+    param body : Solid = cylinder(2mm, 10mm)
+}
+pub structure Rack {
+    sub bolts : List<Bolt>
+    param base : Solid = box(10mm, 10mm, 10mm)
+    let combined = union(base, self.bolts.body)
+}"#;
+    // args[0] = `base` (param : Solid) — resolves via geometry-param path.
+    // args[1] = `self.bolts.body` (collection-sub member) — exercises the
+    //           right-operand resolve_boolean_arg(&args[1], …) call site.
+    let compiled = compile_source(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    // (a) At least one Error-severity diagnostic fires.
+    assert!(
+        !errors.is_empty(),
+        "expected at least one Error diagnostic for collection-sub geometry right operand \
+         in union(); got no diagnostics"
+    );
+
+    // (b) At least one Error is the specific cross-sub-deferred diagnostic naming
+    //     both the sub ('bolts') and the member ('body').
+    let has_specific_diagnostic = errors.iter().any(|d| {
+        d.message.contains("geometry")
+            && has_deferred_keyword(&d.message)
+            && d.message.contains("bolts")
+            && d.message.contains("body")
+    });
+    assert!(
+        has_specific_diagnostic,
+        "expected the specific cross-sub-deferred geometry diagnostic naming 'bolts' and 'body' \
+         for the right operand of union(); got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // (c) Independent regression guard: the generic "must be a geometry expression"
+    //     fallback must be entirely ABSENT.  The early `return None` in
+    //     `resolve_boolean_arg` (triggered when `try_emit_cross_sub_geometry`
+    //     returns `Some`) suppresses the generic path.  (b) asserts the specific
+    //     diagnostic fires; (c) asserts the generic fallback does NOT fire at all.
+    let has_any_generic_fallback = errors
+        .iter()
+        .any(|d| d.message.contains("must be a geometry expression"));
+    assert!(
+        !has_any_generic_fallback,
+        "generic 'must be a geometry expression' must be absent when the specific \
+         cross-sub-deferred diagnostic fires for the right operand — the early return \
+         in resolve_boolean_arg should suppress it; errors: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+// ─── step-2 (gap 2): indexed collection-sub member falls back to generic ───────
+
+/// When a boolean op argument is `self.<collection_sub>[i].<member>`, the outer
+/// object of the `MemberAccess` is an `IndexAccess` rather than another
+/// `MemberAccess`.  This shape is **intentionally out of scope** for the
+/// task-3512 routing block (`geometry_boolean.rs:59-63` scope-boundary comment).
+///
+/// Trace for `union(base, self.bolts[0].body)`:
+/// - `args[1]` parses as `MemberAccess { object: IndexAccess{…}, member: "body" }`.
+/// - `try_resolve_cross_sub_geom_ref` requires the outer object to be a
+///   `MemberAccess` (the `self.<sub>.<member>` shape) → fails → returns `None`.
+/// - The task-3512 routing block also requires `outer_obj = MemberAccess` →
+///   skipped.
+/// - `compile_geometry_call` matches `FunctionCall` shapes only; the
+///   `MemberAccess` kind returns `None` without recursing into the value-level
+///   `try_emit_cross_sub_geometry` in `expr.rs`.
+/// - Fallback fires: "argument 2 must be a geometry expression".
+///
+/// This is a **negative** regression guard.  A future refactor that broadens
+/// boolean-arg routing to the indexed `self.<sub>[i].<member>` shape would flip
+/// assertion (b) — that's the signal to revisit this boundary deliberately.
+///
+/// Passes on arrival (the indexed form already falls through to the generic
+/// diagnostic).
+#[test]
+fn boolean_op_with_indexed_collection_sub_member_falls_back_to_generic_diagnostic() {
+    let source = r#"pub structure Bolt {
+    param body : Solid = cylinder(2mm, 10mm)
+}
+pub structure Rack {
+    sub bolts : List<Bolt>
+    param base : Solid = box(10mm, 10mm, 10mm)
+    let combined = union(base, self.bolts[0].body)
+}"#;
+    // args[0] = `base` (param : Solid) — resolves; control reaches args[1].
+    // args[1] = `self.bolts[0].body` — MemberAccess{ object: IndexAccess{…}, member: "body" }
+    //           The outer object is IndexAccess, NOT MemberAccess, so the
+    //           task-3512 routing block is skipped and the generic fallback fires.
+    let compiled = compile_source(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    // (a) The generic "argument 2 must be a geometry expression" fallback fires.
+    //     The "2" matches the right-operand position: args[0]=base (resolves),
+    //     args[1]=self.bolts[0].body (indexed form, falls through to generic).
+    let has_generic_fallback = errors
+        .iter()
+        .any(|d| d.message.contains("argument 2 must be a geometry expression"));
+    assert!(
+        has_generic_fallback,
+        "expected generic 'argument 2 must be a geometry expression' for indexed \
+         collection-sub member in boolean arg position; got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // (b) The cross-sub deferred diagnostic must NOT fire for the indexed form.
+    //     The task-3512 routing block (geometry_boolean.rs:59-63) is out-of-scope
+    //     for IndexAccess outer objects; try_resolve_cross_sub_geom_ref + the
+    //     routing block both require a MemberAccess outer_obj and
+    //     compile_geometry_call returns None at its FunctionCall arm without
+    //     recursing into the value-level try_emit_cross_sub_geometry.
+    let has_spurious_deferred_diagnostic = errors.iter().any(|d| {
+        has_deferred_keyword(&d.message)
+            && (d.message.contains("bolts") || d.message.contains("body"))
+    });
+    assert!(
+        !has_spurious_deferred_diagnostic,
+        "cross-sub deferred diagnostic must NOT fire for indexed form \
+         'self.bolts[0].body' — geometry_boolean.rs:59-63 scope-boundary limits \
+         the task-3512 routing to MemberAccess outer objects only. Got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
 // ─── step-5: working-path cross-sub arg lowers without diagnostic ─────────────
 
 /// When a boolean op argument is `self.<non_collection_sub>.<body>` where `body`
