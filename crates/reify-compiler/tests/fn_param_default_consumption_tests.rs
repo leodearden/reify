@@ -4,7 +4,7 @@
 //! Test E — defaulted call compiles without errors and emits UserFunctionCall.
 //! Test F — param without a default still produces the unchanged NoMatch error.
 
-use reify_types::{CompiledExprKind, ModulePath, Severity, Value};
+use reify_types::{CompiledExprKind, DiagnosticCode, ModulePath, Severity, Value};
 
 /// Test E: a call that omits all defaulted params compiles without errors
 /// and the resulting expression is a UserFunctionCall with the full arg count.
@@ -155,6 +155,46 @@ fn f(a : Real, b : Real = a) -> Real { b }
     assert!(
         errors.iter().any(|e| e.message.contains("unresolved name")),
         "expected 'unresolved name' diagnostic, got: {:?}",
+        errors
+    );
+}
+
+/// Test I (regression for task 3700): a function param with a declared type of `Int`
+/// but a default expression that produces `Real` must be caught at definition time.
+///
+/// Bug (suggestion #7 gap 1 from task 3688): `compile_function` compiled the default
+/// expression in a neutral scope but never compared its `result_type` against the
+/// resolved param type. So `fn f(x: Int = 1.5) -> Int { x }` compiled silently;
+/// the divergence only surfaced at eval time.
+///
+/// The check must use strict equality (matching `resolve_function_overload` and
+/// `try_default_padding`'s prefix-check) — a definition-site check cannot be more
+/// permissive than the call-site check that the synthesized default is inserted into.
+#[test]
+fn fn_param_default_int_param_real_default_type_mismatch_errors() {
+    let source = r#"
+fn f(x : Int = 1.5) -> Int { x }
+"#;
+    let parsed = reify_syntax::parse(source, ModulePath::single("test_consume_i"));
+    // The type mismatch is a compile-time error, not a parse-time error.
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::FnParamDefaultTypeMismatch)),
+        "expected at least one FnParamDefaultTypeMismatch error, got: {:?}",
         errors
     );
 }
