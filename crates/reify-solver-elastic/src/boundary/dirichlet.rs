@@ -351,6 +351,7 @@ mod tests {
         let k_e = element_stiffness_p1(&UNIT_TET_P1_NODES, &mat);
         let conn0 = [0usize, 1, 2, 3];
         let conn1 = [1usize, 2, 3, 4];
+        // Both elements reuse the unit-tet k_e — the test only needs an SPD CSR with realistic shared-DOF coupling, not a physically consistent assembly.
         let elements = [
             AssemblyElement {
                 id: 0,
