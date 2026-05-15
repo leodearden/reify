@@ -30,6 +30,10 @@ fn print_usage(out: &mut dyn std::io::Write) {
     );
     let _ = writeln!(
         out,
+        "  eval <file>               Evaluate and print every top-level value cell"
+    );
+    let _ = writeln!(
+        out,
         "  lsp                        Start language server (stdin/stdout)"
     );
     let _ = writeln!(
@@ -92,6 +96,7 @@ fn main() -> ExitCode {
         "check" => cmd_check(&args[2..]),
         "test" => cmd_test(&args[2..]),
         "build" => cmd_build(&args[2..]),
+        "eval" => cmd_eval(&args[2..]),
         "doc" => cmd_doc(&args[2..]),
         "lsp" => cmd_lsp(),
         "gui" => cmd_gui(&args[2..]),
@@ -319,6 +324,62 @@ fn cmd_build(args: &[String]) -> ExitCode {
             eprintln!("No geometry output produced");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// `reify eval <file>` — parse, compile, evaluate, and print every
+/// top-level value cell as `entity.member = value`.
+///
+/// This is the SIR-α user-observable signal (task 3540): structure
+/// constructors evaluate to inspectable `Value::StructureInstance` values
+/// (`TypeName { field: value, ... }` via `Value`'s `Display`) instead of
+/// opaque `undef`. Cells are sorted for deterministic output so the
+/// `structure_instance.txt` golden test is stable.
+fn cmd_eval(args: &[String]) -> ExitCode {
+    if args.is_empty() {
+        eprintln!("Usage: reify eval <file>");
+        return ExitCode::FAILURE;
+    }
+
+    let compiled = match parse_and_compile(&args[0]) {
+        Ok(c) => c,
+        Err(code) => return code,
+    };
+
+    if compiled
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Error)
+    {
+        return ExitCode::FAILURE;
+    }
+
+    let checker = SimpleConstraintChecker;
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.eval(&compiled);
+
+    let mut cells: Vec<(String, String)> = result
+        .values
+        .iter()
+        .map(|(id, v)| (format!("{}", id), format!("{}", v)))
+        .collect();
+    cells.sort();
+    for (id, v) in &cells {
+        println!("{} = {}", id, v);
+    }
+
+    for diag in &result.diagnostics {
+        eprintln!("{}: {}", diag.severity, diag.message);
+    }
+
+    if result
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Error)
+    {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
     }
 }
 
