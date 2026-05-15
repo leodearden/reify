@@ -67,10 +67,14 @@ pub fn check_pre_done(ctx: &AuditContext, task_id: &str) -> Vec<Finding> {
     findings
 }
 
-/// Shared inner routine for [`check`] and [`check_pre_done`]. Borrows the
-/// context (no clone of `task_metadata`) and threads the optional
-/// single-task override through the filter so both entry points share one
-/// code path for the P5 invariant.
+/// Inner loop for the [`check`] periodic-sweep entry point. Iterates all
+/// `status="done"` tasks in `ctx.task_metadata`, optionally restricted to
+/// `target_task_id` when the caller supplies a scoped sweep.
+///
+/// [`check_pre_done`] deliberately does NOT route through this function — it
+/// uses a direct O(1) `ctx.task_metadata.get(task_id)` HashMap lookup so the
+/// D-1 hot path stays constant-time rather than paying the O(n) iteration cost
+/// of this loop. Borrows the context (no clone of `task_metadata`).
 fn check_with_target(ctx: &AuditContext, target_task_id: Option<&str>) -> Vec<Finding> {
     let mut findings = Vec::new();
 

@@ -58,6 +58,15 @@ pub enum Severity {
 ///   `metadata.files` that should be stripped. Complement to `P5PhantomDone`
 ///   (medium-severity cleanliness signal, not a phantom-done).
 ///   See `project_steward_metadata_files_gitignore_falsepositive.md`.
+///
+/// ## Naming convention
+///
+/// `P5PhantomDone`, `P2ConsumerStub`, and `P1ProducerOrphan` carry section
+/// prefixes that map to `f-infra-design.md` (§10/§5). `MetadataFilesGitignored`
+/// intentionally has no numeric prefix: it is a metadata-hygiene complement
+/// described within the P5 section (§10) rather than a new independent detector
+/// section. If `f-infra-design.md` later assigns it a dedicated section number,
+/// this variant should be updated to carry the corresponding `§N` prefix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Pattern {
     /// P5 — phantom-done: a task marked `status=done` whose claimed
@@ -184,9 +193,12 @@ pub struct AuditContext<'a> {
     /// P1 (source-introspection behind a mockable seam).
     pub jcodemunch: &'a dyn JCodemunchOps,
     pub task_metadata: HashMap<String, TaskMetadata>,
-    /// When `Some`, detectors restrict their work to that single task.
-    /// The D-1 pre-done hook sets this; the periodic `/audit` sweep leaves
-    /// it `None`.
+    /// When `Some`, the periodic-sweep [`p5_phantom_done::check`] entry point
+    /// restricts its work to that single task. Honored by periodic-sweep
+    /// callers; intentionally ignored by [`p5_phantom_done::check_pre_done`],
+    /// which takes `task_id` as an explicit argument for O(1) HashMap lookup
+    /// on the D-1 hot path (setting both would be confusing and the explicit
+    /// parameter is unambiguous).
     pub target_task_id: Option<String>,
     /// Reserved for periodic-sweep scoping. None of the slice-1 detector
     /// paths consume this yet — see [`TimeWindow`].
