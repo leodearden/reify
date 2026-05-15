@@ -2814,6 +2814,25 @@ impl Engine {
                                     .filter(|(id, _)| id.entity == cell_id.entity)
                                     .count() as u32;
 
+                                // Extract `value_inputs` via a shallow walk over the
+                                // call args: each direct `ValueRef(cell)` arg
+                                // contributes the referenced cell. Literals, BinOps,
+                                // and other complex sub-expressions contribute no
+                                // entries in the γ slice — transitive-dependency
+                                // walking is deferred to P3.2 (the cache-key
+                                // composition slice that consumes `value_inputs`).
+                                // Crucially, the OUTPUT cell (`cell_id`) is NOT in
+                                // this list — that would be a graph self-loop.
+                                let value_inputs: Vec<reify_types::ValueCellId> = args
+                                    .iter()
+                                    .filter_map(|arg| match &arg.kind {
+                                        reify_types::CompiledExprKind::ValueRef(
+                                            target_cell,
+                                        ) => Some(target_cell.clone()),
+                                        _ => None,
+                                    })
+                                    .collect();
+
                                 // Record a ComputeNode in the graph so callers can
                                 // inspect which cells were routed through a trampoline.
                                 snapshot.graph.insert_compute_node(
@@ -2823,7 +2842,7 @@ impl Engine {
                                             next_index,
                                         ),
                                         target,
-                                        value_inputs: vec![cell_id.clone()],
+                                        value_inputs,
                                         realization_inputs: vec![],
                                         options_hash: reify_types::ContentHash(0),
                                         cache_key: reify_types::ContentHash(0),
