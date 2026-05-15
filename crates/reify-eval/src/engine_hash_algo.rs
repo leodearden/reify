@@ -159,6 +159,20 @@ fn is_editor_debris(file_name: &OsStr) -> bool {
         return true;
     }
 
+    // Bare dot-prefixed name with no stem (e.g. `.swp`, `.bak`).
+    // `Path::extension()` returns `None` for these because the leading dot is
+    // treated as the beginning of the stem, not as a separator — so the
+    // extension branch below would silently miss them.  Strip the leading dot
+    // and match the remainder against the same suffix set.
+    if let Some(stripped) = name_lower.strip_prefix('.') {
+        if matches!(
+            stripped,
+            "swp" | "swo" | "swn" | "bk" | "bak" | "orig" | "rej" | "tmp"
+        ) {
+            return true;
+        }
+    }
+
     // Extension-based matches: extract the last `.`-delimited component.
     if let Some(ext) = std::path::Path::new(&*name).extension() {
         let ext_lower = ext.to_string_lossy().to_lowercase();
