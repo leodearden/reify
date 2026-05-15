@@ -810,6 +810,11 @@ mod tests {
             "input_schema.type must be 'object'"
         );
         assert!(!entry.description.is_empty(), "morph_stats must have a non-empty description");
+        assert!(
+            entry.description.to_lowercase().contains("morph"),
+            "morph_stats description must mention 'morph': got {:?}",
+            entry.description
+        );
         // `body_id` is optional — the no-args `()` form must be valid per PRD §2.3.
         // `required` may be absent entirely; if present it must not list body_id.
         if let Some(required) = schema["required"].as_array() {
