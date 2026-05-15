@@ -119,11 +119,18 @@ pub fn cmd_cache(args: &[String]) -> ExitCode {
 /// design decision: stats is observability and must surface stale-engine
 /// entries so an operator can decide when to wipe an old version by hand).
 fn cmd_cache_stats(args: &[String]) -> ExitCode {
-    if !args.is_empty() {
-        eprintln!("Usage: reify cache stats");
+    let (cli_dir, rest) = match parse_cache_dir_flag(args) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("reify cache stats: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if !rest.is_empty() {
+        eprintln!("Usage: reify cache stats [--cache-dir <path>]");
         return ExitCode::FAILURE;
     }
-    let cache_root = match resolve_cache_root() {
+    let cache_root = match resolve_cache_root_with_cli_dir_only(cli_dir.as_deref()) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("reify cache stats: {e}");
@@ -184,11 +191,18 @@ const GC_USAGE: &str = "Usage: reify cache gc";
 /// the PRD).  No-op when the cache is already under cap; useful when the cap
 /// was lowered manually via `REIFY_CACHE_MAX_BYTES` or a config file edit.
 fn cmd_cache_gc(args: &[String]) -> ExitCode {
-    if !args.is_empty() {
+    let (cli_dir, rest) = match parse_cache_dir_flag(args) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("reify cache gc: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if !rest.is_empty() {
         eprintln!("{GC_USAGE}");
         return ExitCode::FAILURE;
     }
-    let (cache_root, max_bytes) = match resolve_cache_root_and_cap() {
+    let (cache_root, max_bytes) = match resolve_cache_root_with_cli(cli_dir.as_deref()) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("reify cache gc: {e}");
@@ -215,23 +229,30 @@ fn cmd_cache_gc(args: &[String]) -> ExitCode {
 /// guard.  Filesystem mutation lands in step-10/12; this commit only wires
 /// the dispatcher arm and the `--yes` refusal.
 fn cmd_cache_clear(args: &[String]) -> ExitCode {
+    let (cli_dir, rest) = match parse_cache_dir_flag(args) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("reify cache clear: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
     let mut yes = false;
     let mut engine_version: Option<String> = None;
     let mut i = 0;
-    while i < args.len() {
-        let a = args[i].as_str();
+    while i < rest.len() {
+        let a = rest[i].as_str();
         match a {
             "--yes" => {
                 yes = true;
                 i += 1;
             }
             "--engine-version" => {
-                if i + 1 >= args.len() {
+                if i + 1 >= rest.len() {
                     eprintln!("reify cache clear: --engine-version requires a value");
                     eprintln!("{CLEAR_USAGE}");
                     return ExitCode::FAILURE;
                 }
-                engine_version = Some(args[i + 1].clone());
+                engine_version = Some(rest[i + 1].clone());
                 i += 2;
             }
             flag if flag.starts_with("--") => {
@@ -253,7 +274,7 @@ fn cmd_cache_clear(args: &[String]) -> ExitCode {
         eprintln!("{CLEAR_USAGE}");
         return ExitCode::FAILURE;
     }
-    let cache_root = match resolve_cache_root() {
+    let cache_root = match resolve_cache_root_with_cli_dir_only(cli_dir.as_deref()) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("reify cache clear: {e}");
@@ -494,24 +515,34 @@ fn cmd_cache_export(args: &[String]) -> ExitCode {
 /// 2976 (cache stats/clear/gc CLI) will fold those in when it lands.  Both
 /// `export` and `import` use this helper so the precedence is identical.
 fn resolve_cache_root() -> Result<PathBuf, CacheError> {
-    resolve_cache_root_and_cap().map(|(dir, _)| dir)
+    resolve_cache_root_with_cli(None).map(|(dir, _)| dir)
 }
 
-/// Resolve both the cache root AND the max-bytes cap.
+/// Resolve the cache root, honouring an optional `--cache-dir` CLI override.
+///
+/// Calling sites are the new sub-subcommands (`stats`, `clear`, `gc`) that
+/// expose `--cache-dir`; `export`/`import` continue to use the no-arg
+/// `resolve_cache_root` facade.
+fn resolve_cache_root_with_cli_dir_only(cli_dir: Option<&Path>) -> Result<PathBuf, CacheError> {
+    resolve_cache_root_with_cli(cli_dir).map(|(dir, _)| dir)
+}
+
+/// Resolve both the cache root AND the max-bytes cap, honouring the optional
+/// `--cache-dir` CLI override.
 ///
 /// `cmd_cache_gc` needs the cap to call [`evict_over_cap`], and a future
 /// `cmd_cache_stats` extension that surfaces "% of cap used" will need it
 /// too.  Wrapping `resolve_cache` once here keeps the env-var plumbing in a
 /// single place — `resolve_cache_root` becomes a thin facade for callers that
 /// only need the dir.
-fn resolve_cache_root_and_cap() -> Result<(PathBuf, u64), CacheError> {
+fn resolve_cache_root_with_cli(cli_dir: Option<&Path>) -> Result<(PathBuf, u64), CacheError> {
     let env_dir = std::env::var("REIFY_CACHE_DIR").ok();
     let env_max_bytes = std::env::var("REIFY_CACHE_MAX_BYTES").ok();
     let xdg_cache_home = std::env::var("XDG_CACHE_HOME").ok();
     let home = std::env::var("HOME").unwrap_or_default();
 
     let inputs = CacheResolverInputs {
-        cli_dir: None,
+        cli_dir,
         env_dir: env_dir.as_deref(),
         env_max_bytes: env_max_bytes.as_deref(),
         user_config: None,
@@ -520,6 +551,33 @@ fn resolve_cache_root_and_cap() -> Result<(PathBuf, u64), CacheError> {
         xdg_cache_home: xdg_cache_home.as_deref(),
     };
     resolve_cache(&inputs).map(|r| (r.dir, r.max_bytes))
+}
+
+/// Strip a `--cache-dir <path>` flag from `args` and return the parsed path
+/// plus the remaining args (in original order).
+///
+/// Hand-rolled per-handler parsing keeps the flag schema local to each
+/// sub-subcommand and matches the existing `cmd_gui` / `cmd_doc` patterns
+/// in `main.rs`.  Unknown `--`-prefixed tokens are NOT rejected here — the
+/// caller is responsible for its own typo gate so it can use a
+/// subcommand-specific usage banner.
+fn parse_cache_dir_flag(args: &[String]) -> Result<(Option<PathBuf>, Vec<String>), String> {
+    let mut cache_dir: Option<PathBuf> = None;
+    let mut rest: Vec<String> = Vec::with_capacity(args.len());
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--cache-dir" {
+            if i + 1 >= args.len() {
+                return Err("--cache-dir requires a value".to_owned());
+            }
+            cache_dir = Some(PathBuf::from(&args[i + 1]));
+            i += 2;
+        } else {
+            rest.push(args[i].clone());
+            i += 1;
+        }
+    }
+    Ok((cache_dir, rest))
 }
 
 /// `reify cache import` — reads a cache tarball from stdin into the local
