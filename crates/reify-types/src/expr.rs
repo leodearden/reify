@@ -229,7 +229,11 @@ pub struct CompiledFunction {
     /// `reify-compiler/src/functions.rs`; consumed at call sites for argument
     /// defaulting (task 3688).
     ///
-    /// Length is always equal to `params.len()` (parallel / index-aligned).
+    /// **Length invariant:** either empty (legacy/test-stub constructions that use
+    /// `param_defaults: Vec::new()` directly) **or** exactly `params.len()` (parallel /
+    /// index-aligned, as set by `compile_function`). Consumers that index into both
+    /// vectors should check `param_defaults.len() == params.len()` before zipping;
+    /// `try_default_padding` in `reify-compiler/src/type_compat.rs` does this defensively.
     pub param_defaults: Vec<Option<CompiledExpr>>,
     pub return_type: Type,
     pub body: CompiledFnBody,

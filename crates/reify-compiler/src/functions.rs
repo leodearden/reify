@@ -102,8 +102,12 @@ pub(crate) fn compile_function(
         let param_hashes = params
             .iter()
             .map(|(n, t)| ContentHash::of_str(n).combine(ContentHash::of_str(&format!("{}", t))));
+        // Discriminate None and Some in disjoint hash subspaces so that absent and
+        // present defaults never collide: None → tag 0x00, Some(e) → tag 0x01 ‖ e.hash.
+        // Without the tag a Some(e) whose content_hash happened to equal of(&[0u8])
+        // would be indistinguishable from None.
         let default_hashes = param_defaults.iter().map(|d| match d {
-            Some(e) => e.content_hash,
+            Some(e) => ContentHash::of(&[1u8]).combine(e.content_hash),
             None => ContentHash::of(&[0u8]),
         });
         let body_hash = result_expr.content_hash;
