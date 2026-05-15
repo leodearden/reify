@@ -256,9 +256,23 @@ fn cmd_cache_import(args: &[String]) -> ExitCode {
             continue;
         }
 
-        // step-14 will gate writes on header.engine_version_hash ==
-        // ENGINE_VERSION_HASH.as_bytes() with warn-and-skip on mismatch.
-        // For now, derive the input hash from the header echo and write.
+        // Engine-version gate (PRD warn-and-skip semantics): bins whose
+        // header's `engine_version_hash` doesn't match the LIVE
+        // ENGINE_VERSION_HASH are version-incompatible with this binary's
+        // FEA engine, so we'd be poisoning the cache by accepting them.
+        // The check happens BEFORE any `fs::*` call so a mismatched entry
+        // leaves zero filesystem residue (the integrity invariant called
+        // out in the plan's Design Decisions).
+        if &header.engine_version_hash[..] != ENGINE_VERSION_HASH.as_bytes() {
+            eprintln!(
+                "reify cache import: warning: skipping entry {stem}: \
+                 engine-version mismatch (expected {}, got {})",
+                ENGINE_VERSION_HASH,
+                String::from_utf8_lossy(&header.engine_version_hash),
+            );
+            continue;
+        }
+
         let input_hash_str = match std::str::from_utf8(&header.input_hash) {
             Ok(s) => s,
             Err(e) => {
