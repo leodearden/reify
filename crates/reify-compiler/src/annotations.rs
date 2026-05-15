@@ -185,6 +185,27 @@ pub(crate) fn deprecation_message(annotations: &[reify_types::Annotation]) -> Op
     None
 }
 
+/// Extract the structure-def version from a compiled annotation list.
+///
+/// Returns the integer argument of the first well-formed `@version(N)`
+/// annotation (with `N >= 1`), or `1` when `@version` is absent or malformed.
+/// Malformed `@version` annotations are separately diagnosed by
+/// [`validate_annotations`] (`E_VERSION_ARG_TYPE_MISMATCH`); this reader is
+/// deliberately total — it never panics and always yields a usable version —
+/// so the structure registry can be populated unconditionally even in the
+/// presence of a (already-diagnosed) malformed annotation.
+pub(crate) fn annotation_version(annotations: &[reify_types::Annotation]) -> u32 {
+    for ann in annotations {
+        if ann.name == "version"
+            && let Some(reify_types::AnnotationArg::Int(n)) = ann.args.first()
+            && *n >= 1
+        {
+            return *n as u32;
+        }
+    }
+    1
+}
+
 /// Extract the optimization target from a parsed annotation list.
 ///
 /// Returns `Some(target)` for the first `@optimized("target")` annotation with a

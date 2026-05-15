@@ -585,6 +585,24 @@ impl TopologyTemplate {
     pub fn is_test(&self) -> bool {
         reify_types::annotation::has_test_annotation(&self.annotations)
     }
+
+    /// The declared structure version from a `@version(N)` annotation, or `1`
+    /// when absent/malformed (task 3540, PRD §6 / Q-SIR-3).
+    ///
+    /// Derived from `annotations` on each call (linear scan, symmetric with
+    /// `is_test`). Carried inline via the already-present `annotations` list
+    /// rather than as a stored `version: u32` field: a mandatory field would
+    /// force an edit to every `TopologyTemplate` struct-literal / builder
+    /// construction site workspace-wide (`auto_type_param.rs`, `scc.rs`,
+    /// `conformance/mod.rs`, `reify-test-support`'s `TopologyTemplateBuilder`,
+    /// and ~12 integration tests) — all outside task 3540's file charter. The
+    /// derived accessor delivers the same read-side contract (default 1, reads
+    /// `@version(N)`) the structure registry consumes, with zero out-of-scope
+    /// blast radius. See escalate_info esc-3540 (design_concern) for the
+    /// deviation note.
+    pub fn version(&self) -> u32 {
+        crate::annotations::annotation_version(&self.annotations)
+    }
 }
 
 /// Look up a topology template by name in a slice of compiled templates.
