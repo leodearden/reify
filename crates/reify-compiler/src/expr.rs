@@ -1333,6 +1333,15 @@ pub(crate) fn compile_expr_guarded(
                         // `unwrap_or(Type::Error)` ensures the literal carries the poison
                         // sentinel so `infer_binop_type` short-circuits correctly.
                         let fallback_type = match member.as_str() {
+                            // G-allow: `count`/`sum`/`keys`/`values` are
+                            // COLLECTION_AGGREGATION_MEMBERS — the diagnostic at lines
+                            // 1272–1282 ("cannot access aggregation through self") already
+                            // captures the root cause.  Returning the known concrete type
+                            // (Int for count, Real for sum/keys/values) avoids spurious
+                            // downstream type-mismatch diagnostics: the user knows the
+                            // intended return type of the aggregation method they typed, so
+                            // any downstream check against that concrete type is not cascade
+                            // (plan design decision #2, task 3639 review).
                             "count" => Type::Int,
                             "sum" | "keys" | "values" => Type::Real,
                             _ => scope
