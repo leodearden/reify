@@ -972,6 +972,53 @@ pub(crate) fn compile_expr_guarded(
                 .map(|a| a.result_type.clone())
                 .collect();
 
+            // ── task 3540 (SIR-α): structure-instance ctor lowering ─────────
+            // When the callee name resolves to a `structure def`
+            // `TopologyTemplate` in `scope.template_registry`, emit a
+            // `StructureInstanceCtor` instead of a stdlib `FunctionCall`
+            // (precedence over `eval_builtin` — design-decision-2). Identity
+            // is `(type_name, version)`; `type_id` is a baked
+            // `StructureTypeId(0)` placeholder re-stamped by name on any
+            // registry-keyed path (esc-3540-177 RULING 2). `version` is read
+            // from the `@version(N)` accessor `template.version()`
+            // (esc-3540-176 / RULING 3). Positional args bind to the
+            // template's `Param` cells in declaration order; uncovered params
+            // contribute their `default_expr`.
+            if let Some(registry) = scope.template_registry
+                && let Some(template) = registry.get(name.as_str())
+                && template.entity_kind == EntityKind::Structure
+            {
+                let params: Vec<(&str, Option<&CompiledExpr>)> = template
+                    .value_cells
+                    .iter()
+                    .filter(|vc| matches!(vc.kind, ValueCellKind::Param))
+                    .map(|vc| (vc.id.member.as_str(), vc.default_expr.as_ref()))
+                    .collect();
+                let mut ordered_args: Vec<(String, CompiledExpr)> =
+                    Vec::with_capacity(compiled_args.len());
+                for (i, arg) in compiled_args.iter().enumerate() {
+                    let pname = params
+                        .get(i)
+                        .map(|(n, _)| (*n).to_string())
+                        .unwrap_or_else(|| format!("__arg{}", i));
+                    ordered_args.push((pname, arg.clone()));
+                }
+                let covered = ordered_args.len();
+                let defaults: Vec<(String, CompiledExpr)> = params
+                    .iter()
+                    .skip(covered)
+                    .filter_map(|(n, d)| d.map(|e| ((*n).to_string(), e.clone())))
+                    .collect();
+                return CompiledExpr::structure_instance_ctor(
+                    reify_types::StructureTypeId(0),
+                    name.clone(),
+                    template.version(),
+                    ordered_args,
+                    defaults,
+                    Type::StructureRef(name.clone()),
+                );
+            }
+
             match resolve_function_overload(name, &arg_types, functions) {
                 OverloadResolution::Resolved(matched_fn) => {
                     // Exactly one user fn matches — emit UserFunctionCall

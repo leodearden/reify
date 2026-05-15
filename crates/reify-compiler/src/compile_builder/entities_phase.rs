@@ -88,6 +88,19 @@ pub(crate) fn phase_entities(
     // matches ImportDecl.path (see task 2226).
     let mut resolved_import_paths: Option<HashSet<String>> = None;
 
+    // task 3540 (SIR-α): prelude `structure def` templates, keyed by name, so
+    // the expression-lowering site can recognise `Foo()` as a structure
+    // constructor (esc-3540-177 RULING 1). Built once here (immutable borrow
+    // of `prelude` for the loop); `compile_entity` merges in local
+    // already-compiled structure-defs. Occurrences are excluded — only
+    // structure-defs are constructible via the ctor path.
+    let prelude_template_registry: HashMap<String, &TopologyTemplate> = prelude
+        .iter()
+        .flat_map(|m| m.templates.iter())
+        .filter(|t| t.entity_kind == EntityKind::Structure)
+        .map(|t| (t.name.clone(), t))
+        .collect();
+
     for decl in &parsed.declarations {
         match decl {
             reify_syntax::Declaration::Structure(structure) => {
@@ -107,6 +120,7 @@ pub(crate) fn phase_entities(
                         &mut ctx.pending_bound_checks,
                         &mut ctx.diagnostics,
                         &mut ctx.templates,
+                        &prelude_template_registry,
                     );
                 }
             }
@@ -165,6 +179,7 @@ pub(crate) fn phase_entities(
                         &mut ctx.pending_bound_checks,
                         &mut ctx.diagnostics,
                         &mut ctx.templates,
+                        &prelude_template_registry,
                     );
                 }
             }
@@ -216,6 +231,7 @@ fn compile_entity_decl(
     pending_bound_checks: &mut Vec<PendingBoundCheck>,
     diagnostics: &mut Vec<Diagnostic>,
     templates: &mut Vec<TopologyTemplate>,
+    prelude_template_registry: &HashMap<String, &TopologyTemplate>,
 ) {
     let template = compile_entity(
         &entity_ref,
@@ -232,6 +248,7 @@ fn compile_entity_decl(
         pending_bound_checks,
         diagnostics,
         templates,
+        prelude_template_registry,
     );
     templates.push(template);
 }

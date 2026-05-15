@@ -3322,6 +3322,19 @@ fn format_expr(expr: &reify_types::CompiledExpr) -> String {
             param_name,
             query_kind,
         } => format!("{}.{}", param_name, query_kind),
+        // task 3540 (SIR-α): exhaustiveness-forced adapter arm for the new
+        // shared-enum variant (step-16). Renders as the source-level
+        // constructor shape `TypeName(arg1, arg2, ...)` — same surface form
+        // as FunctionCall/UserFunctionCall for hover/debug views.
+        CompiledExprKind::StructureInstanceCtor {
+            type_name,
+            ordered_args,
+            ..
+        } => {
+            let arg_strs: Vec<String> =
+                ordered_args.iter().map(|(_, e)| format_expr(e)).collect();
+            format!("{}({})", type_name, arg_strs.join(", "))
+        }
     }
 }
 

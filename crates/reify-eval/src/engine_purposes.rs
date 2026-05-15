@@ -679,6 +679,23 @@ fn expand_purpose_reflective_placeholders(
                 expand_purpose_reflective_placeholders(arg, queries, entity_ref, value_cells);
             }
         }
+        // task 3540 (SIR-α): exhaustiveness-forced adapter arm for the new
+        // shared-enum variant (step-16). Recurse into the ctor's supplied
+        // args + captured defaults so nested purpose-reflective placeholders
+        // inside a structure constructor's argument expressions are still
+        // expanded — same posture as the FunctionCall/UserFunctionCall arms.
+        CompiledExprKind::StructureInstanceCtor {
+            ordered_args,
+            defaults,
+            ..
+        } => {
+            for (_, arg) in ordered_args {
+                expand_purpose_reflective_placeholders(arg, queries, entity_ref, value_cells);
+            }
+            for (_, def) in defaults {
+                expand_purpose_reflective_placeholders(def, queries, entity_ref, value_cells);
+            }
+        }
     }
 }
 

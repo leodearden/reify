@@ -764,6 +764,17 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             );
             Value::Undef
         }
+
+        // task 3540 (SIR-α): adapter-sweep placeholder for the new
+        // compiled-expr variant (step-16). Real eval semantics — evaluate
+        // ordered_args + uncovered defaults into a
+        // `Value::StructureInstance { type_id: StructureTypeId(0),
+        // type_name, version, fields }` with NO registry lookup (reify-expr
+        // stays registry-free, design-decision-2) — lands in step-18. Until
+        // then this returns Undef so step-17's RED test observes the missing
+        // behaviour. NOT a silent reject: the variant only reaches eval once
+        // step-16's lowering is wired, and step-17/18 immediately follow.
+        CompiledExprKind::StructureInstanceCtor { .. } => Value::Undef,
     }
 }
 
