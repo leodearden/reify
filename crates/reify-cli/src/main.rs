@@ -66,7 +66,7 @@ fn print_usage(out: &mut dyn std::io::Write) {
     );
     let _ = writeln!(
         out,
-        "  cache gc                   Force LRU eviction down to the configured cache cap"
+        "  cache gc                   Force LRU eviction down to the configured cache cap (live engine version only)"
     );
     let _ = writeln!(out, "  --version                  Print version");
     let _ = writeln!(out, "  --help                     Show this list");

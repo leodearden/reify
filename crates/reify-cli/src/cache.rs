@@ -130,8 +130,8 @@ fn cmd_cache_stats(args: &[String]) -> ExitCode {
         eprintln!("Usage: reify cache stats [--cache-dir <path>]");
         return ExitCode::FAILURE;
     }
-    let cache_root = match resolve_cache_root_with_cli_dir_only(cli_dir.as_deref()) {
-        Ok(p) => p,
+    let cache_root = match resolve_cache_root_with_cli(cli_dir.as_deref()) {
+        Ok((p, _)) => p,
         Err(e) => {
             eprintln!("reify cache stats: {e}");
             return ExitCode::FAILURE;
@@ -150,17 +150,21 @@ fn cmd_cache_stats(args: &[String]) -> ExitCode {
 
     println!("Cache directory: {}", cache_root.display());
     println!("Entry count: {entry_count}");
-    println!("Total size: {total_bytes} B");
+    // Bare-integer byte counts match `cmd_cache_gc`'s `Evicted bytes`/
+    // `Remaining bytes` lines — pick one convention for machine-parsing now
+    // so a future `--human` flag can do unit formatting separately, and
+    // operators don't have to remember which surface adds the ` B` suffix.
+    println!("Total size: {total_bytes}");
 
     // Top-N largest entries.  Sort descending by byte size, then take up to
     // STATS_TOP_N rows.  When the cache has fewer entries than the cap (or
     // is empty), the section header still prints — keeps the output schema
-    // stable and discoverable.  Row format: `  <hash>  <bytes> B`; the
+    // stable and discoverable.  Row format: `  <hash>  <bytes>`; the
     // trailing numeric token is the parseable byte size.
     entries.sort_by(|a, b| b.1.cmp(&a.1));
     println!("Top {STATS_TOP_N} largest entries:");
     for (hash, sz) in entries.iter().take(STATS_TOP_N) {
-        println!("  {hash}  {sz} B");
+        println!("  {hash}  {sz}");
     }
 
     // Hit-rate caveat.  Per the design decision, hit-rate is not tracked
@@ -179,10 +183,18 @@ fn cmd_cache_stats(args: &[String]) -> ExitCode {
 const STATS_TOP_N: usize = 5;
 
 /// Usage line for `reify cache clear` argument errors.
-const CLEAR_USAGE: &str = "Usage: reify cache clear [--engine-version <hash>] --yes";
+const CLEAR_USAGE: &str =
+    "Usage: reify cache clear [--cache-dir <path>] [--engine-version <hash>] --yes";
 
 /// Usage line for `reify cache gc` argument errors.
-const GC_USAGE: &str = "Usage: reify cache gc";
+///
+/// The `(live engine version only)` qualifier mirrors the design decision that
+/// `gc` operates only on the live `ENGINE_VERSION_HASH` subdir — cross-version
+/// reclaim is the startup-sweep concern called out in the PRD, not an operator
+/// surface here.  Surfacing the scope in the usage banner prevents the
+/// post-upgrade "I ran gc and disk usage didn't drop" confusion noted in the
+/// amendment-pass review.
+const GC_USAGE: &str = "Usage: reify cache gc [--cache-dir <path>] (live engine version only)";
 
 /// `reify cache gc` — force LRU eviction down to the configured cache cap.
 ///
@@ -274,8 +286,8 @@ fn cmd_cache_clear(args: &[String]) -> ExitCode {
         eprintln!("{CLEAR_USAGE}");
         return ExitCode::FAILURE;
     }
-    let cache_root = match resolve_cache_root_with_cli_dir_only(cli_dir.as_deref()) {
-        Ok(p) => p,
+    let cache_root = match resolve_cache_root_with_cli(cli_dir.as_deref()) {
+        Ok((p, _)) => p,
         Err(e) => {
             eprintln!("reify cache clear: {e}");
             return ExitCode::FAILURE;
@@ -361,6 +373,15 @@ fn cmd_cache_clear(args: &[String]) -> ExitCode {
 /// * `.meta` sidecars are skipped (`.bin` is the canonical entry).
 ///
 /// Returns `Ok(vec![])` when `cache_root` does not exist (treat as "empty").
+///
+/// Concurrency tolerance: stats is an observability surface and must survive
+/// concurrent mutation (a parallel `cache clear` / `gc`, or a long-lived
+/// process running `evict_over_cap` in the background).  Any `NotFound` error
+/// encountered mid-walk — directory snapshot taken before a concurrent
+/// `remove_dir_all`, or a `.bin` evicted between `read_dir` and `metadata` —
+/// is treated as "the entry disappeared, skip it" rather than a hard failure.
+/// Other I/O errors still propagate.  This mirrors `evict_over_cap`'s already-
+/// tolerant walk semantics.
 fn collect_cache_entries(cache_root: &Path) -> std::io::Result<Vec<(String, u64)>> {
     let mut out: Vec<(String, u64)> = Vec::new();
     let read_root = match std::fs::read_dir(cache_root) {
@@ -369,7 +390,11 @@ fn collect_cache_entries(cache_root: &Path) -> std::io::Result<Vec<(String, u64)
         Err(e) => return Err(e),
     };
     for ev_entry in read_root {
-        let ev_entry = ev_entry?;
+        let ev_entry = match ev_entry {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e),
+        };
         let ev_path = ev_entry.path();
         if !ev_path.is_dir() {
             continue;
@@ -381,14 +406,32 @@ fn collect_cache_entries(cache_root: &Path) -> std::io::Result<Vec<(String, u64)
         if !is_32_lowercase_hex(ev_name) {
             continue;
         }
-        for shard_entry in std::fs::read_dir(&ev_path)? {
-            let shard_entry = shard_entry?;
+        let shard_iter = match std::fs::read_dir(&ev_path) {
+            Ok(it) => it,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e),
+        };
+        for shard_entry in shard_iter {
+            let shard_entry = match shard_entry {
+                Ok(e) => e,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e),
+            };
             let shard_path = shard_entry.path();
             if !shard_path.is_dir() {
                 continue;
             }
-            for file_entry in std::fs::read_dir(&shard_path)? {
-                let file_entry = file_entry?;
+            let file_iter = match std::fs::read_dir(&shard_path) {
+                Ok(it) => it,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e),
+            };
+            for file_entry in file_iter {
+                let file_entry = match file_entry {
+                    Ok(e) => e,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(e) => return Err(e),
+                };
                 let file_path = file_entry.path();
                 if file_path.extension().and_then(|s| s.to_str()) != Some("bin") {
                     continue;
@@ -404,7 +447,11 @@ fn collect_cache_entries(cache_root: &Path) -> std::io::Result<Vec<(String, u64)
                     Some(s) => s.to_owned(),
                     None => continue,
                 };
-                let size = file_entry.metadata()?.len();
+                let size = match file_entry.metadata() {
+                    Ok(m) => m.len(),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(e) => return Err(e),
+                };
                 out.push((stem, size));
             }
         }
@@ -518,15 +565,6 @@ fn resolve_cache_root() -> Result<PathBuf, CacheError> {
     resolve_cache_root_with_cli(None).map(|(dir, _)| dir)
 }
 
-/// Resolve the cache root, honouring an optional `--cache-dir` CLI override.
-///
-/// Calling sites are the new sub-subcommands (`stats`, `clear`, `gc`) that
-/// expose `--cache-dir`; `export`/`import` continue to use the no-arg
-/// `resolve_cache_root` facade.
-fn resolve_cache_root_with_cli_dir_only(cli_dir: Option<&Path>) -> Result<PathBuf, CacheError> {
-    resolve_cache_root_with_cli(cli_dir).map(|(dir, _)| dir)
-}
-
 /// Resolve both the cache root AND the max-bytes cap, honouring the optional
 /// `--cache-dir` CLI override.
 ///
@@ -569,6 +607,14 @@ fn parse_cache_dir_flag(args: &[String]) -> Result<(Option<PathBuf>, Vec<String>
         if args[i] == "--cache-dir" {
             if i + 1 >= args.len() {
                 return Err("--cache-dir requires a value".to_owned());
+            }
+            // Reject repeated `--cache-dir` rather than silently
+            // last-write-wins.  A copy-paste mistake like
+            // `reify cache stats --cache-dir /a --cache-dir /b` would
+            // otherwise resolve to `/b` with no operator-visible cue;
+            // refusing it surfaces the typo at parse time.
+            if cache_dir.is_some() {
+                return Err("--cache-dir specified more than once".to_owned());
             }
             cache_dir = Some(PathBuf::from(&args[i + 1]));
             i += 2;
