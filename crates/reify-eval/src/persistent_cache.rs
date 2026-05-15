@@ -1367,11 +1367,29 @@ pub fn evict_over_cap(
             // `.bin` with no `.meta`), fall back to the `.bin` file's own mtime.
             // `.bin` mtime is set at write time and is a safe substitute until
             // the sidecar is recreated by the next `read_entry` hit.
-            // Any other I/O error propagates via `?`.
+            // Any other I/O error propagates.
+            //
+            // Race site #1 — concurrent eviction: another reify process may
+            // have removed this .bin between read_dir and here (see the remove
+            // loop comment at ~line 1446 for the same race on the eviction
+            // side).  On NotFound from either metadata() or modified(), skip
+            // to the next file_entry rather than propagating the transient
+            // error.
             let last_access = match read_sidecar_mtime(&meta_path) {
                 Ok(t) => t,
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                    std::fs::metadata(&file_path)?.modified()?
+                    // Sidecar absent — fall back to .bin mtime.  If .bin is
+                    // also gone (concurrent eviction hit after read_dir),
+                    // continue to the next file_entry.
+                    match std::fs::metadata(&file_path) {
+                        Ok(m) => match m.modified() {
+                            Ok(t) => t,
+                            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                            Err(e) => return Err(e),
+                        },
+                        Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                        Err(e) => return Err(e),
+                    }
                 }
                 Err(e) => return Err(e),
             };
@@ -1384,16 +1402,28 @@ pub fn evict_over_cap(
             // `solve_time_ms = 0` so the entry scores maximally high and self-heals
             // on the next GC run — mirroring `read_entry` which returns `Ok(None)`
             // on header mismatch rather than propagating the error.
-            let (bin_size, solve_time_ms) = {
-                use std::fs::File;
-                use std::io::BufReader;
-                let f = File::open(&file_path)?;
-                let bin_size = f.metadata()?.len();
-                let solve_time_ms = match CacheEntryHeader::read_from(&mut BufReader::new(f)) {
-                    Ok(hdr) => hdr.solve_time_ms,
-                    Err(_) => 0, // corrupt/truncated: treat as free-to-evict; self-heals
-                };
-                (bin_size, solve_time_ms)
+            //
+            // Race site #2/3 — concurrent eviction: File::open or f.metadata()
+            // returns NotFound when another process deletes the .bin after
+            // read_dir listed it but before we open it (race site #2), or in
+            // the narrow window between open(2) and fstat(2) (race site #3).
+            // Both cases: continue to the next file_entry.  Mirrors race site
+            // #1 and the remove-loop suppression at ~line 1446.
+            use std::fs::File;
+            use std::io::BufReader;
+            let f = match File::open(&file_path) {
+                Ok(f) => f,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => continue, // race site #2
+                Err(e) => return Err(e),
+            };
+            let bin_size = match f.metadata() {
+                Ok(m) => m.len(),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => continue, // race site #3
+                Err(e) => return Err(e),
+            };
+            let solve_time_ms = match CacheEntryHeader::read_from(&mut BufReader::new(f)) {
+                Ok(hdr) => hdr.solve_time_ms,
+                Err(_) => 0, // corrupt/truncated: treat as free-to-evict; self-heals
             };
 
             total_bytes += bin_size;
