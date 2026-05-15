@@ -47,8 +47,17 @@ pub enum Severity {
     High,
 }
 
-/// Detector pattern identifier. P1/P2 variants are reserved for T-2/T-3 of
-/// the F-infra rollout (`docs/architecture-audit/f-infra-design.md` §10).
+/// Detector pattern identifier. Each variant identifies one detector pattern;
+/// downstream consumers (T-4 CLI report renderer) dispatch on this field alone
+/// for severity routing.
+///
+/// - `P5PhantomDone` — phantom-done: commit provenance cannot be corroborated.
+/// - `P2ConsumerStub` — consumer task with stub markers in changed lines.
+/// - `P1ProducerOrphan` — producer with no non-test workspace callers.
+/// - `MetadataFilesGitignored` — metadata-hygiene: gitignored paths in
+///   `metadata.files` that should be stripped. Complement to `P5PhantomDone`
+///   (medium-severity cleanliness signal, not a phantom-done).
+///   See `project_steward_metadata_files_gitignore_falsepositive.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Pattern {
     /// P5 — phantom-done: a task marked `status=done` whose claimed
@@ -64,6 +73,10 @@ pub enum Pattern {
     /// consumer task; flagged Medium past the 14-day grace window, Low
     /// within it. See `docs/architecture-audit/f-infra-design.md` §5 P1.
     P1ProducerOrphan,
+    /// Metadata-hygiene: one or more entries in `metadata.files` are
+    /// gitignored paths that should be stripped. Distinct from `P5PhantomDone`
+    /// (medium-severity cleanliness signal, not a phantom-done).
+    MetadataFilesGitignored,
 }
 
 /// A pointer to forensic evidence supporting a [`Finding`]. Renders verbatim

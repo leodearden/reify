@@ -102,7 +102,7 @@ fn check_gitignored(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Finding> 
         return None;
     }
     Some(Finding {
-        pattern: Pattern::P5PhantomDone,
+        pattern: Pattern::MetadataFilesGitignored,
         severity: Severity::Medium,
         task_id: meta.task_id.clone(),
         summary:
