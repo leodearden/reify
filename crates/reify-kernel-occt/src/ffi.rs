@@ -759,6 +759,11 @@ pub mod ffi {
         /// (canonical TopExp::MapShapes order, deduplicated by IsSame).
         fn get_faces(shape: &OcctShape) -> Result<UniquePtr<OcctShapeVec>>;
 
+        /// Materialize the unique vertices of `shape` into an OcctShapeVec
+        /// (canonical `TopExp::MapShapes(.., TopAbs_VERTEX, ..)` order,
+        /// deduplicated by IsSame). Built per call (no `vertex_map()` cache).
+        fn get_vertices(shape: &OcctShape) -> Result<UniquePtr<OcctShapeVec>>;
+
         // --- Conformance queries ---
 
         /// Check whether `shape` is watertight (closed, no free edges).

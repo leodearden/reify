@@ -94,6 +94,16 @@ impl OcctKernel {
         Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
     }
 
+    /// Stub topology-extraction selector — always errors because OCCT is
+    /// unavailable. Mirrors the real `OcctKernel::extract_vertices` signature
+    /// so call sites compile under both `has_occt` and `!has_occt`.
+    pub fn extract_vertices(
+        &mut self,
+        _handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
+    }
+
     /// Stub interference probe — always errors because OCCT is unavailable.
     /// Mirrors the real `OcctKernel::shapes_intersect` signature so call sites
     /// compile under both `has_occt` and `!has_occt`.
@@ -339,6 +349,16 @@ impl OcctKernelHandle {
         Err(GeometryError::OperationFailed(NOT_AVAILABLE.into()))
     }
 
+    /// Stub `extract_vertices` — always errors because OCCT is unavailable.
+    /// Mirrors the real `OcctKernelHandle::extract_vertices` inherent method
+    /// so call sites compile under both `has_occt` and `!has_occt`.
+    pub fn extract_vertices(
+        &mut self,
+        _handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
+    }
+
     /// No-op shutdown (no thread to join).
     pub async fn shutdown(self) {}
 }
@@ -387,6 +407,15 @@ impl GeometryKernel for OcctKernelHandle {
     /// Override the trait default to surface the OCCT-unavailable message
     /// (matches the inherent stub `OcctKernel::extract_faces`).
     fn extract_faces(
+        &mut self,
+        _handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
+    }
+
+    /// Override the trait default to surface the OCCT-unavailable message
+    /// (matches the inherent stub `OcctKernel::extract_vertices`).
+    fn extract_vertices(
         &mut self,
         _handle: GeometryHandleId,
     ) -> Result<Vec<GeometryHandleId>, QueryError> {
@@ -534,6 +563,22 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let result = kernel.extract_faces(GeometryHandleId(1));
         let err = result.expect_err("stub extract_faces should error");
+        assert_stub_message(&format!("{err:?}"));
+    }
+
+    #[test]
+    fn stub_kernel_extract_vertices_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.extract_vertices(GeometryHandleId(1));
+        let err = result.expect_err("stub extract_vertices should error");
+        assert_stub_message(&format!("{err:?}"));
+    }
+
+    #[test]
+    fn stub_handle_extract_vertices_returns_error() {
+        let mut handle = OcctKernelHandle::spawn();
+        let result = handle.extract_vertices(GeometryHandleId(1));
+        let err = result.expect_err("stub handle extract_vertices should error");
         assert_stub_message(&format!("{err:?}"));
     }
 

@@ -3736,6 +3736,20 @@ std::unique_ptr<OcctShapeVec> get_faces(const OcctShape& shape) {
     });
 }
 
+std::unique_ptr<OcctShapeVec> get_vertices(const OcctShape& shape) {
+    return wrap_occt_call("get_vertices", [&]() {
+        TopTools_IndexedMapOfShape vmap;
+        TopExp::MapShapes(shape.shape, TopAbs_VERTEX, vmap);
+        auto out = std::make_unique<OcctShapeVec>();
+        const Standard_Integer n = vmap.Extent();
+        out->shapes.reserve(static_cast<size_t>(n));
+        for (Standard_Integer i = 1; i <= n; ++i) {
+            out->shapes.push_back(vmap.FindKey(i));
+        }
+        return out;
+    });
+}
+
 // --- Export ---
 
 // Process-global mutex for STEP export. OCCT's STEPControl_Writer (and its

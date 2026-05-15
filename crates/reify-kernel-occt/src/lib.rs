@@ -498,6 +498,16 @@ pub struct OcctKernel {
     /// previously-minted face handle list (canonical `TopExp::MapShapes`
     /// order). Sister to `extracted_edges`; same rationale.
     extracted_faces: HashMap<u64, Vec<GeometryHandleId>>,
+    /// Idempotency cache for [`Self::extract_vertices`]: parent handle id →
+    /// previously-minted vertex handle list (canonical
+    /// `TopExp::MapShapes(.., TopAbs_VERTEX, ..)` order). Required by the
+    /// PNv2 selector vocabulary v2 (task 3632): `extract_vertices` is called
+    /// by downstream consumers (task C CornerVertex/CapCornerVertex seeders)
+    /// to recover the canonical vertex index of a caller-supplied handle.
+    /// Without idempotency the second call would mint a fresh set of ids and
+    /// the caller's pre-extracted handles would no longer match. Cache is
+    /// invalidated on `with_warm_state` (same rationale as `extracted_edges`).
+    extracted_vertices: HashMap<u64, Vec<GeometryHandleId>>,
     /// Provenance map: child handle id → parent (body) handle id, populated
     /// inside [`Self::extract_edges`] / [`Self::extract_faces`] so a later
     /// `OwnerBody(child)` query can answer "what body did this sub-shape come
@@ -526,6 +536,7 @@ impl OcctKernel {
             reprs: HashMap::new(),
             extracted_edges: HashMap::new(),
             extracted_faces: HashMap::new(),
+            extracted_vertices: HashMap::new(),
             parent_handle: HashMap::new(),
             next_id: 1,
             last_warm_start_failures: 0,
@@ -686,6 +697,61 @@ impl OcctKernel {
             ids.push(h.id);
         }
         self.extracted_faces.insert(handle.0, ids.clone());
+        Ok(ids)
+    }
+
+    /// Extract every unique vertex of `handle` as a handle with
+    /// `BRepKind::Vertex`. Order follows the canonical
+    /// `TopExp::MapShapes(.., TopAbs_VERTEX, ..)` enumeration (a fresh local
+    /// map is built per call — there is no `vertex_map()` cache slot on
+    /// `OcctShape`; the Rust-side `extracted_vertices` cache below provides
+    /// idempotency without a C++ map slot).
+    ///
+    /// **Idempotent per parent**: a second call with the same `handle` on the
+    /// same kernel returns the previously-minted `Vec<GeometryHandleId>`
+    /// verbatim (cached in `extracted_vertices`). Required by the PNv2
+    /// selector vocabulary v2 (task 3632) and downstream task-C seeders that
+    /// re-call `extract_vertices` internally to recover the canonical vertex
+    /// index. The cache is invalidated on `with_warm_state` (when the kernel's
+    /// shape table is swapped wholesale).
+    ///
+    /// Child handle provenance is recorded in `parent_handle` so a later
+    /// `OwnerBody(vertex_id)` query can answer "what body did this vertex come
+    /// from?" — matches the `extract_edges`/`extract_faces` contract.
+    ///
+    /// Returns [`QueryError::InvalidHandle`] if `handle` is unknown.
+    pub fn extract_vertices(
+        &mut self,
+        handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        if let Some(cached) = self.extracted_vertices.get(&handle.0) {
+            return Ok(cached.clone());
+        }
+        let materialized: Vec<cxx::UniquePtr<ffi::ffi::OcctShape>> = {
+            let shape = self
+                .get_shape(handle)
+                .map_err(|_| QueryError::InvalidHandle(handle))?;
+            let vec = ffi::ffi::get_vertices(shape)
+                .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+            let len = ffi::ffi::shape_vec_len(&vec);
+            let mut buf = Vec::with_capacity(len);
+            for i in 0..len {
+                let sub = ffi::ffi::shape_vec_at(&vec, i)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                buf.push(sub);
+            }
+            buf
+        };
+
+        let mut ids = Vec::with_capacity(materialized.len());
+        for sub in materialized {
+            let h = self.store_with_repr(sub, BRepKind::Vertex);
+            // Record provenance so `OwnerBody(child)` can answer
+            // "what body did this vertex come from?" without re-extraction.
+            self.parent_handle.insert(h.id.0, handle);
+            ids.push(h.id);
+        }
+        self.extracted_vertices.insert(handle.0, ids.clone());
         Ok(ids)
     }
 
@@ -2607,9 +2673,10 @@ impl WarmStartable for OcctKernel {
             self.next_id = warm.next_id;
             // Wholesale shape replacement invalidates any cached parent →
             // children mapping (the cached child ids may not correspond to
-            // any face/edge of the freshly-restored parent shapes).
+            // any face/edge/vertex of the freshly-restored parent shapes).
             self.extracted_edges.clear();
             self.extracted_faces.clear();
+            self.extracted_vertices.clear();
         }
     }
 }
@@ -3246,6 +3313,110 @@ mod tests {
             kernel_b.repr_of(GeometryHandleId(99999)),
             None,
             "repr_of for unknown id should return None"
+        );
+    }
+
+    #[test]
+    fn extract_vertices_box_returns_eight_handles_with_brepkind_vertex() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(0.010),
+                height: Value::Real(0.010),
+                depth: Value::Real(0.010),
+            })
+            .expect("Box should succeed");
+        let box_id = box_h.id;
+        let vertices = kernel
+            .extract_vertices(box_id)
+            .expect("extract_vertices on a valid box should succeed");
+        assert_eq!(
+            vertices.len(),
+            8,
+            "a box should have 8 vertices, got {}",
+            vertices.len()
+        );
+        for v in &vertices {
+            assert_eq!(
+                kernel.repr_of(*v),
+                Some(BRepKind::Vertex),
+                "each extracted vertex should have BRepKind::Vertex, got {:?} for {:?}",
+                kernel.repr_of(*v),
+                v
+            );
+        }
+    }
+
+    #[test]
+    fn extract_vertices_idempotency_returns_same_handles() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(0.010),
+                height: Value::Real(0.010),
+                depth: Value::Real(0.010),
+            })
+            .expect("Box should succeed");
+        let box_id = box_h.id;
+        let v1 = kernel
+            .extract_vertices(box_id)
+            .expect("first extract_vertices should succeed");
+        let v2 = kernel
+            .extract_vertices(box_id)
+            .expect("second extract_vertices should succeed");
+        assert_eq!(
+            v1, v2,
+            "extract_vertices must be idempotent: second call must return same ids in same order"
+        );
+    }
+
+    #[test]
+    fn extract_vertices_invalidates_cache_on_warm_state() {
+        // Build a box, extract vertices (populates cache), then apply warm-state
+        // to the *same* kernel so the cache is non-empty when `with_warm_state`
+        // runs.  After the restore, re-extracting must mint fresh ids — proving
+        // that `extracted_vertices.clear()` inside `with_warm_state` is the
+        // load-bearing line (a version without the clear would return the stale
+        // cached vec rather than new ids).
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(0.010),
+                height: Value::Real(0.010),
+                depth: Value::Real(0.010),
+            })
+            .expect("Box should succeed");
+        let box_id = box_h.id;
+
+        // Populate the cache.
+        let vec1 = kernel
+            .extract_vertices(box_id)
+            .expect("extract_vertices before warm-state should succeed");
+        assert_eq!(vec1.len(), 8, "should yield 8 vertices before warm restore");
+
+        // Snapshot, then restore onto the *same* kernel (cache is now non-empty).
+        let state = kernel
+            .warm_state()
+            .expect("kernel should produce warm state");
+        kernel.with_warm_state(state);
+
+        // Re-extract: the clear() in with_warm_state must have evicted the cache,
+        // so this call mints 8 fresh ids instead of returning the cached vec1.
+        let vec2 = kernel
+            .extract_vertices(box_id)
+            .expect("extract_vertices after warm-state restore should succeed");
+        assert_eq!(vec2.len(), 8, "should yield 8 vertices after warm restore");
+
+        // Ids must be disjoint: warm-state restore clears extracted_vertices,
+        // so the re-extract mints fresh ids starting from warm.next_id (strictly
+        // greater than any id ever minted before the snapshot).
+        let set1: std::collections::HashSet<GeometryHandleId> = vec1.iter().copied().collect();
+        let set2: std::collections::HashSet<GeometryHandleId> = vec2.iter().copied().collect();
+        let intersection: std::collections::HashSet<_> = set1.intersection(&set2).collect();
+        assert!(
+            intersection.is_empty(),
+            "warm-state restore should clear the extracted_vertices cache so fresh ids are minted; \
+             found shared ids: {intersection:?}"
         );
     }
 

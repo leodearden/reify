@@ -72,3 +72,11 @@ pub unit gal   : Volume = 0.003785411784
 // the standard library. See docs/reify-language-spec.md §4.6.
 
 pub unit USD : Money
+
+// ── Physical Constants ──────────────────────────────────────────────────────
+// Dimensionful physical constants. Exposed as zero-arg `pub fn` because Reify
+// lacks top-level `const` (see `standard_stock.ri:5`); migrate when added.
+
+/// Standard acceleration of gravity (g_n), 9.80665 m/s² — BIPM/CGPM 1901 §70
+/// reference value. Use in body-force loads: `gravity(5 * STANDARD_GRAVITY())`.
+pub fn STANDARD_GRAVITY() -> Acceleration { 9.80665 * 1m / (1s * 1s) }

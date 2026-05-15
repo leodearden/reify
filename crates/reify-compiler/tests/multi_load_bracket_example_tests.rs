@@ -1,7 +1,8 @@
 //! Dedicated regression tests for `examples/multi_load_bracket.ri` (task 3587).
 //!
 //! Pins the four task-spec leaf signals from
-//! `docs/prds/v0_3/multi-load-case-fea.md` task #7:
+//! `docs/prds/v0_3/multi-load-case-fea.md` task #7, plus two additional
+//! signals added by task 3647 (STANDARD_GRAVITY stdlib constant):
 //!
 //!   1. The file parses with zero errors.
 //!   2. It compiles under the stdlib prelude with zero Error-severity diagnostics.
@@ -14,6 +15,9 @@
 //!      source-text markers for `box(` geometry and at least one realistic-load
 //!      constructor (`point_load(`, `pressure_load(`, `traction_load(`,
 //!      `body_force(`, or `gravity(`).
+//!   5. The source references `STANDARD_GRAVITY` (the std.units zero-arg pub fn)
+//!      and does not contain the magic number `9.80665` inline (catches any
+//!      identifier-renamed reconstruction, not just the original `let g_scalar` form).
 //!
 //! Mirrors the `cost_aggregation_example_compiles_under_stdlib_with_zero_errors`
 //! pattern at `cost_aggregation_tests.rs:218-283`, including the typed value-cell
@@ -171,5 +175,24 @@ fn multi_load_bracket_example_compiles_under_stdlib_with_zero_errors() {
         "leaf signal 'realistic loads': expected src to contain at least one of \
          point_load(, pressure_load(, traction_load(, body_force(, gravity( \
          but none found"
+    );
+
+    // Task 3647 leaf signals: stdlib gravity constant in use; inline magic-number removed.
+    // The positive STANDARD_GRAVITY pin verifies the stdlib symbol is consumed.
+    // The negative 9.80665 pin is stronger than checking for a specific identifier
+    // (e.g. `let g_scalar`): it catches any inline reconstruction regardless of the
+    // binding name chosen, directly encoding 'no inline magic-number for gravity'.
+    // Note: the comment in multi_load_bracket.ri deliberately does not repeat the
+    // numeric value so this assertion remains unambiguous.
+    assert!(
+        src.contains("STANDARD_GRAVITY"),
+        "leaf signal 'stdlib gravity constant in use': expected src to reference \
+         STANDARD_GRAVITY (the std.units zero-arg pub fn) in the gravity load construction"
+    );
+    assert!(
+        !src.contains("9.80665"),
+        "leaf signal 'no inline gravity magic-number': expected src NOT to contain \
+         the literal 9.80665 — gravity must be expressed via STANDARD_GRAVITY() rather \
+         than reconstructed inline (catches any binding name, not just `let g_scalar`)"
     );
 }

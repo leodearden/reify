@@ -12,6 +12,7 @@ use reify_eval::TestStatus;
 // unconditionally when the crate appears in `extern crate` position.
 extern crate reify_kernel_occt as _;
 
+mod cache;
 mod mcp_context;
 use reify_types::{ExportFormat, ModulePath, Satisfaction, Severity};
 
@@ -46,6 +47,14 @@ fn print_usage(out: &mut dyn std::io::Write) {
     let _ = writeln!(
         out,
         "  doc <file> [-o <path>] [--format html|markdown|json] [--split] [--compact]  Generate documentation"
+    );
+    let _ = writeln!(
+        out,
+        "  cache export <hash>        Write a single cache entry to stdout as a tarball"
+    );
+    let _ = writeln!(
+        out,
+        "  cache import               Read a cache tarball from stdin into the local cache"
     );
     let _ = writeln!(out, "  --version                  Print version");
     let _ = writeln!(out, "  --help                     Show this list");
@@ -84,6 +93,7 @@ fn main() -> ExitCode {
             cmd_gui(&forwarded)
         }
         "mcp-server" => cmd_mcp_server(&args[2..]),
+        "cache" => cache::cmd_cache(&args[2..]),
         other => {
             eprintln!("Unknown command: {}", other);
             print_usage(&mut std::io::stderr());

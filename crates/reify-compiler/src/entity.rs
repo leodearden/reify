@@ -1097,9 +1097,9 @@ pub(crate) fn compile_entity(
                 );
 
                 // Cross-sub bare geometry access (task 3441):
-                // `let copy = self.<sub>.<geom>` produces a CompiledExpr that
-                // is a `ValueRef(ValueCellId{entity:"<this>.<sub>", member:..})`
-                // with Type::Geometry via `try_resolve_cross_sub_geometry_value_ref`
+                // `let copy = self.<sub>.<geom>` produces a CompiledExpr of kind
+                // `CompiledExprKind::CrossSubGeometryRef` (task 3508) with
+                // `Type::Geometry` via `try_resolve_cross_sub_geometry_value_ref`
                 // (expr.rs).  Value cells with Type::Geometry are unrepresentable
                 // (rejected by `value_type_kind_matches` in reify-eval; runtime
                 // invariant `assert_value_cell_types_representable`).  Skip the
@@ -1110,25 +1110,26 @@ pub(crate) fn compile_entity(
                 // parallel `try_resolve_cross_sub_geom_ref` in geometry.rs
                 // lowers the access to a `GeomRef::Sub`.
                 //
-                // The check is narrowed to the exact synthetic ValueRef shape
-                // (scoped entity contains '.') so that other expressions that
-                // happen to inferentially resolve to Type::Geometry — e.g. an
-                // ident alias to a geometry let used in a BinaryOp like
-                // `alias + 1` — remain compiled as value cells.  Pinned by
-                // `let_scope_tests::ident_alias_scope_type_is_geometry` (must
-                // create a value cell for `x`) and by
+                // The check matches the typed `CompiledExprKind::CrossSubGeometryRef`
+                // marker emitted exclusively by
+                // `expr.rs::try_resolve_cross_sub_geometry_value_ref` (task 3508),
+                // so that other expressions that happen to inferentially resolve to
+                // Type::Geometry — e.g. an ident alias to a geometry let used in a
+                // BinaryOp like `alias + 1` — remain compiled as value cells.
+                // Pinned by `let_scope_tests::ident_alias_scope_type_is_geometry`
+                // (must create a value cell for `x`) and by
                 // `crates/reify-eval/tests/cross_sub_geometry_e2e.rs::bare_cross_sub_geometry_access_is_documented_v01_value_cell_only`
                 // (must NOT create a value cell for `copy`).
                 //
                 // Task 3454: emit a Warning at the drop site so the user knows
-                // the binding is a no-op.  Dual regression guards:
+                // the binding is a no-op.  Task 3508: replaced fragile heuristic
+                // (`ValueRef + entity.contains('.')`) with the typed variant tag.
+                // Dual regression guards:
                 // - `cross_sub_geometry_diagnostic_tests.rs::bare_cross_sub_geometry_let_emits_v01_no_op_warning`
                 //   (compiler-side; asserts Warning severity + keywords)
                 // - `cross_sub_geometry_e2e.rs::bare_cross_sub_geometry_access_is_documented_v01_value_cell_only`
                 //   (eval-side; filters by Severity::Error only — Warning is invisible to it)
-                if compiled_expr.result_type == Type::Geometry
-                    && let reify_types::CompiledExprKind::ValueRef(vid) = &compiled_expr.kind
-                    && vid.entity.contains('.')
+                if let reify_types::CompiledExprKind::CrossSubGeometryRef(vid) = &compiled_expr.kind
                 {
                     // Extract `<sub>` from the synthetic entity stamp `"<parent>.<sub>"`.
                     // Entity names cannot contain '.' (the parser's identifier rule rejects

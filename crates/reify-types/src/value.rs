@@ -153,9 +153,24 @@ impl SampledField {
     /// Same-bit-pattern NaN values compare as equal.
     #[doc(hidden)]
     pub fn grid_metadata_eq(&self, other: &Self) -> bool {
-        if self.name != other.name
-            || self.kind != other.kind
-            || self.interpolation != other.interpolation
+        // Destructure `self` so that adding a new field to `SampledField`
+        // without updating this method produces a compile error.  `data` and
+        // `oob_emitted` are bound to `_` because they are intentionally
+        // excluded from the geometry-only comparison.
+        let Self {
+            name,
+            kind,
+            bounds_min,
+            bounds_max,
+            spacing,
+            axis_grids,
+            interpolation,
+            data: _,
+            oob_emitted: _,
+        } = self;
+        if name != &other.name
+            || kind != &other.kind
+            || interpolation != &other.interpolation
         {
             return false;
         }
@@ -166,16 +181,16 @@ impl SampledField {
                     .zip(ys.iter())
                     .all(|(x, y)| x.to_bits() == y.to_bits())
         };
-        if !vecs_bit_eq(&self.bounds_min, &other.bounds_min)
-            || !vecs_bit_eq(&self.bounds_max, &other.bounds_max)
-            || !vecs_bit_eq(&self.spacing, &other.spacing)
+        if !vecs_bit_eq(bounds_min, &other.bounds_min)
+            || !vecs_bit_eq(bounds_max, &other.bounds_max)
+            || !vecs_bit_eq(spacing, &other.spacing)
         {
             return false;
         }
-        if self.axis_grids.len() != other.axis_grids.len() {
+        if axis_grids.len() != other.axis_grids.len() {
             return false;
         }
-        self.axis_grids
+        axis_grids
             .iter()
             .zip(other.axis_grids.iter())
             .all(|(ag, bg)| vecs_bit_eq(ag, bg))
@@ -7892,4 +7907,43 @@ mod tests {
             "+0.0 and -0.0 must compare as different (bit-equality semantics)"
         );
     }
+
+    // --- SampledField::grid_metadata_eq comprehensive contract tests (task 3650) ---
+
+    /// Two NaN values with **identical** bit patterns must compare as equal via
+    /// `grid_metadata_eq`, while two NaN values with **different** bit patterns
+    /// must compare as unequal.
+    ///
+    /// Pins the bidirectional NaN bit-equality contract documented on the method:
+    /// the impl uses `f64::to_bits()` comparison, so same-bit-pattern NaNs are
+    /// equal and distinct-bit-pattern NaNs are not.
+    ///
+    /// Both halves are needed:
+    /// - Same-bits-equal: fails if a contributor replaces `to_bits()==to_bits()`
+    ///   with plain `==` (NaN != NaN always, so the result would flip to false).
+    /// - Different-bits-unequal: fails if a contributor introduces NaN
+    ///   canonicalisation (all NaNs would be treated as equal).
+    #[test]
+    fn sampled_field_grid_metadata_eq_nan_bits_equal_returns_true() {
+        // Half 1: same bit-pattern NaN → equal.
+        let mut a = sample_field_1d_fixture();
+        let mut b = sample_field_1d_fixture();
+        a.spacing[0] = f64::NAN;
+        b.spacing[0] = f64::from_bits(f64::NAN.to_bits()); // identical bit pattern
+        assert!(
+            a.grid_metadata_eq(&b),
+            "same-bit-pattern NaN values must compare as equal (NaN bit-equality contract)"
+        );
+
+        // Half 2: distinct bit-pattern NaN → not equal.
+        let mut c = sample_field_1d_fixture();
+        let mut d = sample_field_1d_fixture();
+        c.spacing[0] = f64::NAN;
+        d.spacing[0] = f64::from_bits(f64::NAN.to_bits() | 1); // different payload bit
+        assert!(
+            !c.grid_metadata_eq(&d),
+            "distinct-bit-pattern NaN values must compare as unequal (NaN bit-equality contract)"
+        );
+    }
+
 }
