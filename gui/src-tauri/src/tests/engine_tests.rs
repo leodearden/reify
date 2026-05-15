@@ -5731,15 +5731,21 @@ fn load_file_unresolved_import_returns_clear_err() {
 /// - `main.ri`: `import helper\nstructure Top { sub h = Helper() }`
 ///
 /// Calls `load_file` on `main.ri`, asserts the baseline `Helper.x` value cell
-/// is present, and returns `(dir, session, main_path)` so the caller can
-/// proceed directly to the scenario under test without copy-pasting the
-/// scaffold.
+/// is present, and returns `(dir, session, main_path, main_content)` so the
+/// caller can proceed directly to the scenario under test without
+/// copy-pasting the scaffold.
+///
+/// The fourth field `main_content` is the exact string written to `main.ri`,
+/// so callers that pass it to `update_source` (e.g. for a round-trip or
+/// rollback-recovery call) are guaranteed to use the same literal the helper
+/// wrote to disk — preventing silent divergence if either copy is edited
+/// without updating the other.
 ///
 /// The [`TempDir`](tempfile::TempDir) is returned to keep the temporary
 /// directory alive for the duration of the test; dropping it early would
 /// delete the files before any follow-up `update_source` calls that re-read
 /// from disk.
-fn loaded_helper_session() -> (tempfile::TempDir, EngineSession, std::path::PathBuf) {
+fn loaded_helper_session() -> (tempfile::TempDir, EngineSession, std::path::PathBuf, String) {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
@@ -5767,7 +5773,7 @@ fn loaded_helper_session() -> (tempfile::TempDir, EngineSession, std::path::Path
         "loaded_helper_session: load_file should produce Helper.x value cell (baseline)"
     );
 
-    (dir, session, main_path)
+    (dir, session, main_path, main_content.to_string())
 }
 
 /// Contract test: `loaded_helper_session()` must return a `main_content` string
@@ -5803,11 +5809,10 @@ fn loaded_helper_session_returns_main_content_matching_on_disk_main_ri() {
 /// `Helper.x = 10mm` still present.
 #[test]
 fn update_source_after_load_file_preserves_multi_file_imports() {
-    let (_dir, mut session, main_path) = loaded_helper_session();
-    let main_content = "import helper\nstructure Top { sub h = Helper() }\n";
+    let (_dir, mut session, main_path, main_content) = loaded_helper_session();
 
     // update_source with the same content — import graph must be preserved
-    let update_result = session.update_source(main_path.to_str().unwrap(), main_content);
+    let update_result = session.update_source(main_path.to_str().unwrap(), &main_content);
 
     let state =
         update_result.expect("update_source after load_file should return Ok (import resolved)");
@@ -5848,7 +5853,7 @@ fn update_source_after_load_file_preserves_multi_file_imports() {
 /// `compile_entry_with_imports` (multi-file).
 #[test]
 fn update_source_after_load_file_dirty_buffer_edit_preserves_imports() {
-    let (_dir, mut session, main_path) = loaded_helper_session();
+    let (_dir, mut session, main_path, _main_content) = loaded_helper_session();
 
     // v2: keep the import, add a new top-level param — simulates a real keystroke edit
     let main_content_v2 =
@@ -6078,8 +6083,7 @@ fn update_source_on_fresh_session_compiles_single_file_source_without_disk_io() 
 #[test]
 fn update_source_failure_after_load_file_leaves_prior_compiled_source_map_and_file_path_intact() {
     // loaded_helper_session establishes the pre-failure baseline (load_file + Helper.x assert).
-    let (_dir, mut session, main_path) = loaded_helper_session();
-    let main_content = "import helper\nstructure Top { sub h = Helper() }\n";
+    let (_dir, mut session, main_path, main_content) = loaded_helper_session();
 
     // Capture pre-failure source_map state as owned Strings so the borrow releases.
     let (pre_key, pre_src) = session
@@ -6132,7 +6136,7 @@ fn update_source_failure_after_load_file_leaves_prior_compiled_source_map_and_fi
     // through to the single-file branch, silently drop the import, and the
     // Helper.x assertion below would flip red — proving the regression.
     let recovery_state = session
-        .update_source(main_path.to_str().unwrap(), main_content)
+        .update_source(main_path.to_str().unwrap(), &main_content)
         .expect("recovery update_source with original multi-file content should succeed");
     assert!(
         recovery_state
