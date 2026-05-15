@@ -10,7 +10,7 @@ use reify_compiler::{
 };
 use reify_types::{
     CompiledExpr, ComputeNodeId, ConstraintNodeId, ContentHash, OpaqueState, PersistentMap,
-    RealizationNodeId, ResolutionNodeId, Type, Value, ValueCellId, ValueMap,
+    RealizationNodeId, ReprKind, ResolutionNodeId, Type, Value, ValueCellId, ValueMap,
 };
 
 /// A value cell node in the evaluation graph.
@@ -46,6 +46,11 @@ pub struct RealizationNodeData {
     pub id: RealizationNodeId,
     pub operations: Vec<CompiledGeometryOp>,
     pub content_hash: ContentHash,
+    /// The repr-kind produced by the kernel adapter that last executed this realization.
+    /// Initialized to `ReprKind::BRep` at graph-construction time (v0.2 OCCT-only baseline).
+    /// Task ε (3436) will write the per-op dispatcher choice at execution time.
+    /// NOT included in `content_hash` — this is dispatcher/cache metadata, not identity.
+    pub produced_repr: ReprKind,
 }
 
 /// A resolution node in the evaluation graph.
@@ -319,6 +324,9 @@ impl EvaluationGraph {
                     id: realization.id.clone(),
                     operations: realization.operations.clone(),
                     content_hash: id_hash.combine(ops_hash),
+                    // v0.2 default — OCCT-only baseline; task ε (3436) writes the
+                    // per-op dispatcher choice at execution time.
+                    produced_repr: ReprKind::BRep,
                 };
                 graph.realizations.insert(realization.id.clone(), node);
             }
@@ -931,6 +939,7 @@ mod tests {
             id: id.clone(),
             operations: ops,
             content_hash: hash,
+            produced_repr: reify_types::ReprKind::BRep,
         };
 
         assert_eq!(node.id, id);
@@ -1365,6 +1374,7 @@ mod tests {
             id: rnid.clone(),
             operations: vec![],
             content_hash: ContentHash::of_str("r0"),
+            produced_repr: reify_types::ReprKind::BRep,
         };
         graph.realizations.insert(rnid.clone(), rnode);
         assert_eq!(graph.realizations.len(), 1);
@@ -1825,6 +1835,7 @@ mod tests {
                 id: RealizationNodeId::new("X", 0),
                 operations: vec![],
                 content_hash: hash_h,
+                produced_repr: reify_types::ReprKind::BRep,
             },
         );
 

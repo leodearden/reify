@@ -157,7 +157,7 @@ mod tests {
     use reify_compiler::ValueCellKind;
     use reify_eval::graph::{EvaluationGraph, RealizationNodeData, ValueCellNode};
     use reify_types::{
-        CapKind, ContentHash, FeatureId, RealizationNodeId, Role, TopologyAttribute,
+        CapKind, ContentHash, FeatureId, RealizationNodeId, ReprKind, Role, TopologyAttribute,
         TopologyAttributeTable, Type, Value, ValueCellId, ValueMap,
     };
 
@@ -266,6 +266,7 @@ mod tests {
                 id: rnid,
                 operations: Vec::new(),
                 content_hash: ContentHash::of_str("diverge"),
+                produced_repr: ReprKind::BRep,
             },
         );
 
@@ -313,6 +314,7 @@ mod tests {
                 id: rnid,
                 operations: Vec::new(),
                 content_hash: ContentHash::of_str("diverge2"),
+                produced_repr: ReprKind::BRep,
             },
         );
 

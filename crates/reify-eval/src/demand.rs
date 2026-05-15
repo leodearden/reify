@@ -506,7 +506,7 @@ mod tests {
         };
         use reify_compiler::{CompiledGeometryOp, PrimitiveKind, ValueCellKind};
         use reify_types::{
-            CompiledExpr, ComputeNodeId, ContentHash, RealizationNodeId, Type, Value,
+            CompiledExpr, ComputeNodeId, ContentHash, RealizationNodeId, ReprKind, Type, Value,
         };
 
         let mut graph = EvaluationGraph::default();
@@ -543,6 +543,7 @@ mod tests {
                 id: r0_id.clone(),
                 operations: r0_ops,
                 content_hash: ContentHash::of_str("r0"),
+                produced_repr: ReprKind::BRep,
             },
         );
 

@@ -162,7 +162,7 @@ mod tests {
     use super::compute_cache_key;
 
     use reify_compiler::ValueCellKind;
-    use reify_types::{ComputeNodeId, ContentHash, RealizationNodeId, Type, ValueCellId};
+    use reify_types::{ComputeNodeId, ContentHash, RealizationNodeId, ReprKind, Type, ValueCellId};
 
     use crate::graph::{ComputeNodeData, EvaluationGraph, RealizationNodeData, ValueCellNode};
 
@@ -203,6 +203,7 @@ mod tests {
                 id,
                 operations: vec![],
                 content_hash,
+                produced_repr: ReprKind::BRep,
             },
         );
     }
