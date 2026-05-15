@@ -371,3 +371,66 @@ fn e2e_two_optimized_calls_in_same_entity_yield_distinct_compute_nodes() {
     assert_eq!(*r1, Value::Int(7), "result1 should be Int(7), got {:?}", r1);
     assert_eq!(*r2, Value::Int(9), "result2 should be Int(9), got {:?}", r2);
 }
+
+// ── step-13: RED — value_inputs self-loop regression ─────────────────────────
+// Review feedback #2 (engine_eval.rs:2811, 2819): the lowering sets
+// `value_inputs: vec![cell_id.clone()]`, which is the OUTPUT cell — that's a
+// graph self-loop. Per graph.rs ComputeNodeData doc, `value_inputs` is the
+// "Inputs (drive cache key in P3.2)" field and must reference the actual
+// argument cells whose values feed the trampoline, not the output cell.
+//
+// This test pins the contract that `value_inputs` excludes the output cell
+// and includes the direct ValueRef argument cell.
+
+/// Test: the inserted ComputeNode has correct `value_inputs` (input cell,
+/// not the output cell), preserving `output_value_cells` as the output.
+#[test]
+fn e2e_compute_node_value_inputs_does_not_include_output_cell() {
+    let source = compute_identity_source();
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_simple_engine();
+    engine.register_compute_fn("test::identity", identity_fn as ComputeFn);
+
+    let _eval_result = engine.eval(&compiled);
+
+    let snapshot = engine
+        .eval_state()
+        .expect("eval_state must be Some after eval()")
+        .snapshot
+        .clone();
+
+    let (_id, data) = snapshot
+        .graph
+        .compute_nodes
+        .iter()
+        .find(|(_, d)| d.target == "test::identity")
+        .expect("expected a ComputeNode with target == \"test::identity\"");
+
+    let input_cell = ValueCellId::new("IdentityFixture", "input");
+    let result_cell = ValueCellId::new("IdentityFixture", "result");
+
+    // (a) value_inputs MUST NOT contain the output cell — that's a self-loop.
+    assert!(
+        !data.value_inputs.contains(&result_cell),
+        "value_inputs must not contain the output cell (self-loop bug). \
+         Got value_inputs: {:?}",
+        data.value_inputs
+    );
+
+    // (b) value_inputs MUST equal the direct argument cell list (just `input`).
+    assert_eq!(
+        data.value_inputs,
+        vec![input_cell.clone()],
+        "value_inputs should be [IdentityFixture.input], got {:?}",
+        data.value_inputs
+    );
+
+    // (c) output_value_cells is unchanged (still the result cell).
+    assert_eq!(
+        data.output_value_cells,
+        vec![result_cell],
+        "output_value_cells should be [IdentityFixture.result], got {:?}",
+        data.output_value_cells
+    );
+}
