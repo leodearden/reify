@@ -139,8 +139,12 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
                 let details: Vec<String> = matches
                     .iter()
                     .map(|(ln, snippet, label)| {
-                        let snip = if snippet.len() > 60 {
-                            format!("{}…", &snippet[..60])
+                        // Use char-boundary-safe truncation: count Unicode scalar
+                        // values rather than bytes so a multi-byte character that
+                        // straddles byte 60 never causes a panic.
+                        let snip = if snippet.chars().count() > 60 {
+                            let head: String = snippet.chars().take(60).collect();
+                            format!("{head}…")
                         } else {
                             snippet.clone()
                         };
