@@ -583,6 +583,55 @@ fn import_with_path_traversal_input_hash_warns_and_skips_no_filesystem_writes() 
 }
 
 #[test]
+fn cache_export_rejects_invalid_hash_without_panic() {
+    // Regression: `cmd_cache_export` previously passed the user-supplied hash
+    // straight to `shard_dir`, whose `&input_hash[..2]` slice panics in release
+    // builds on short hashes (`""`, `"a"`) and on multibyte UTF-8 that straddles
+    // byte boundary 2.  The fix gates on `is_32_lowercase_hex` and emits a
+    // usage-style error.  Exercise the three classes of bad input here; each
+    // must exit non-zero, surface the new error verbiage, and leave NO panic
+    // trace on stderr.
+    let cache_dir = tempdir().expect("tempdir");
+
+    let bad_hashes: &[&str] = &[
+        "",                                  // empty: would panic at &""[..2]
+        "a",                                 // shorter than 2 bytes
+        "a×",                                // multibyte char straddling byte 2
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",  // 32 chars but uppercase
+        "ZZ",                                // non-hex 2-byte string
+        "00112233445566778899aabbccddeeff0", // 33 chars (one over)
+    ];
+
+    for bad in bad_hashes {
+        let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+            .args(["cache", "export", bad])
+            .env("REIFY_CACHE_DIR", cache_dir.path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .expect("failed to execute reify binary");
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !output.status.success(),
+            "reify cache export {bad:?} should exit non-zero; stderr={stderr}"
+        );
+        let stderr_lc = stderr.to_ascii_lowercase();
+        assert!(
+            !stderr_lc.contains("panic")
+                && !stderr_lc.contains("byte index")
+                && !stderr_lc.contains("char boundary"),
+            "stderr should not contain panic-shaped output for {bad:?}, got: {stderr}"
+        );
+        assert!(
+            stderr.contains("hash must be 32 lowercase hex digits"),
+            "stderr should surface hash-shape error for {bad:?}, got: {stderr}"
+        );
+    }
+}
+
+#[test]
 fn cache_export_with_extra_positional_shows_export_usage() {
     // `reify cache export aaa bbb` (extra positional past the hash) should be
     // rejected with the export-specific usage banner.

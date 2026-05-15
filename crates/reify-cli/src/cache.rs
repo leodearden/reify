@@ -78,6 +78,20 @@ fn cmd_cache_export(args: &[String]) -> ExitCode {
     }
     let hash = &args[0];
 
+    // Hash-shape gate: production cache filenames are 32 lowercase hex
+    // chars by construction (the `input_hash` is the xxhash3-128 hex of
+    // the cache key).  Without this gate a user-supplied hash flows into
+    // `shard_dir` (persistent_cache.rs), whose `&input_hash[..2]` panics
+    // in release builds when the input is shorter than 2 bytes or when
+    // byte 2 is not a UTF-8 char boundary (e.g. `reify cache export ""`
+    // or `reify cache export a` or a 2-byte multibyte char).  Reject
+    // here with a usage-style error before reaching the slice.  Mirrors
+    // the import-side `is_32_lowercase_hex` defense.
+    if !is_32_lowercase_hex(hash) {
+        eprintln!("reify cache export: hash must be 32 lowercase hex digits");
+        return ExitCode::FAILURE;
+    }
+
     let cache_root = match resolve_cache_root() {
         Ok(p) => p,
         Err(e) => {
