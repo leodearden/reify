@@ -29,7 +29,7 @@ use crate::mid_surface::MidSurfaceMesh;
 use crate::mid_surface_naming::{MidSurfaceAttributes, MidSurfaceEdgeRecord};
 use crate::segmentation::{RegionClassification, RegionInfo, SegmentationResult};
 use reify_types::diagnostics::{Diagnostic, DiagnosticLabel, Severity, SourceSpan};
-use reify_types::geometry::{CapKind, FeatureId, ModEntry, Role, TopologyAttribute};
+use reify_types::geometry::{AxisSign, CapKind, FeatureId, ModEntry, Role, TopologyAttribute};
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
 
@@ -376,6 +376,20 @@ const ROLE_TAG_SWEPT_FACE: u8 = 0x14;
 const ROLE_TAG_LOFTED_FACE: u8 = 0x15;
 const ROLE_TAG_MID_SURFACE_FACE: u8 = 0x16;
 const ROLE_TAG_MID_SURFACE_EDGE: u8 = 0x17;
+// Vertex roles (0x2X): 8 CornerVertex sign-triples (bits: x<<2|y<<1|z) and
+// 4 CapCornerVertex CapKind slots.  High nibble 0x2 is reserved for vertices.
+const ROLE_TAG_CORNER_VERTEX_PPP: u8 = 0x20; // (+x, +y, +z)
+const ROLE_TAG_CORNER_VERTEX_PPN: u8 = 0x21; // (+x, +y, -z)
+const ROLE_TAG_CORNER_VERTEX_PNP: u8 = 0x22; // (+x, -y, +z)
+const ROLE_TAG_CORNER_VERTEX_PNN: u8 = 0x23; // (+x, -y, -z)
+const ROLE_TAG_CORNER_VERTEX_NPP: u8 = 0x24; // (-x, +y, +z)
+const ROLE_TAG_CORNER_VERTEX_NPN: u8 = 0x25; // (-x, +y, -z)
+const ROLE_TAG_CORNER_VERTEX_NNP: u8 = 0x26; // (-x, -y, +z)
+const ROLE_TAG_CORNER_VERTEX_NNN: u8 = 0x27; // (-x, -y, -z)
+const ROLE_TAG_CAP_CORNER_VERTEX_TOP: u8 = 0x28;
+const ROLE_TAG_CAP_CORNER_VERTEX_BOTTOM: u8 = 0x29;
+const ROLE_TAG_CAP_CORNER_VERTEX_START: u8 = 0x2a;
+const ROLE_TAG_CAP_CORNER_VERTEX_END: u8 = 0x2b;
 
 #[derive(Serialize, Deserialize)]
 struct MidSurfaceEdgeRecordOnDisk {
@@ -463,6 +477,18 @@ fn role_to_u8(r: Role) -> u8 {
         Role::LoftedFace => ROLE_TAG_LOFTED_FACE,
         Role::MidSurfaceFace => ROLE_TAG_MID_SURFACE_FACE,
         Role::MidSurfaceEdge => ROLE_TAG_MID_SURFACE_EDGE,
+        Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Pos, z: AxisSign::Pos } => ROLE_TAG_CORNER_VERTEX_PPP,
+        Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Pos, z: AxisSign::Neg } => ROLE_TAG_CORNER_VERTEX_PPN,
+        Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Neg, z: AxisSign::Pos } => ROLE_TAG_CORNER_VERTEX_PNP,
+        Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Neg, z: AxisSign::Neg } => ROLE_TAG_CORNER_VERTEX_PNN,
+        Role::CornerVertex { x: AxisSign::Neg, y: AxisSign::Pos, z: AxisSign::Pos } => ROLE_TAG_CORNER_VERTEX_NPP,
+        Role::CornerVertex { x: AxisSign::Neg, y: AxisSign::Pos, z: AxisSign::Neg } => ROLE_TAG_CORNER_VERTEX_NPN,
+        Role::CornerVertex { x: AxisSign::Neg, y: AxisSign::Neg, z: AxisSign::Pos } => ROLE_TAG_CORNER_VERTEX_NNP,
+        Role::CornerVertex { x: AxisSign::Neg, y: AxisSign::Neg, z: AxisSign::Neg } => ROLE_TAG_CORNER_VERTEX_NNN,
+        Role::CapCornerVertex { face: CapKind::Top } => ROLE_TAG_CAP_CORNER_VERTEX_TOP,
+        Role::CapCornerVertex { face: CapKind::Bottom } => ROLE_TAG_CAP_CORNER_VERTEX_BOTTOM,
+        Role::CapCornerVertex { face: CapKind::Start } => ROLE_TAG_CAP_CORNER_VERTEX_START,
+        Role::CapCornerVertex { face: CapKind::End } => ROLE_TAG_CAP_CORNER_VERTEX_END,
     }
 }
 
@@ -483,6 +509,18 @@ fn role_from_u8(b: u8) -> io::Result<Role> {
         ROLE_TAG_LOFTED_FACE => Ok(Role::LoftedFace),
         ROLE_TAG_MID_SURFACE_FACE => Ok(Role::MidSurfaceFace),
         ROLE_TAG_MID_SURFACE_EDGE => Ok(Role::MidSurfaceEdge),
+        ROLE_TAG_CORNER_VERTEX_PPP => Ok(Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Pos, z: AxisSign::Pos }),
+        ROLE_TAG_CORNER_VERTEX_PPN => Ok(Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Pos, z: AxisSign::Neg }),
+        ROLE_TAG_CORNER_VERTEX_PNP => Ok(Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Neg, z: AxisSign::Pos }),
+        ROLE_TAG_CORNER_VERTEX_PNN => Ok(Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Neg, z: AxisSign::Neg }),
+        ROLE_TAG_CORNER_VERTEX_NPP => Ok(Role::CornerVertex { x: AxisSign::Neg, y: AxisSign::Pos, z: AxisSign::Pos }),
+        ROLE_TAG_CORNER_VERTEX_NPN => Ok(Role::CornerVertex { x: AxisSign::Neg, y: AxisSign::Pos, z: AxisSign::Neg }),
+        ROLE_TAG_CORNER_VERTEX_NNP => Ok(Role::CornerVertex { x: AxisSign::Neg, y: AxisSign::Neg, z: AxisSign::Pos }),
+        ROLE_TAG_CORNER_VERTEX_NNN => Ok(Role::CornerVertex { x: AxisSign::Neg, y: AxisSign::Neg, z: AxisSign::Neg }),
+        ROLE_TAG_CAP_CORNER_VERTEX_TOP => Ok(Role::CapCornerVertex { face: CapKind::Top }),
+        ROLE_TAG_CAP_CORNER_VERTEX_BOTTOM => Ok(Role::CapCornerVertex { face: CapKind::Bottom }),
+        ROLE_TAG_CAP_CORNER_VERTEX_START => Ok(Role::CapCornerVertex { face: CapKind::Start }),
+        ROLE_TAG_CAP_CORNER_VERTEX_END => Ok(Role::CapCornerVertex { face: CapKind::End }),
         other => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("ShellExtractionResult unknown Role wire tag {other:#04x}"),
