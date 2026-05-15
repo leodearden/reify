@@ -63,13 +63,20 @@ fn electrical_module_loads_with_no_errors_and_three_traits() {
     );
 }
 
-// ─── (b) ElectricallyCharacterized refines MaterialSpec with 4 Real members ──
+// ─── (b) ElectricallyCharacterized refines MaterialSpec with 4 members ──────
 
 /// ElectricallyCharacterized must refine MaterialSpec and declare four required
-/// members, all typed as Real: resistivity, dielectric_constant,
-/// dielectric_strength, magnetic_permeability.
+/// members. Two composite-dimension params are now tightened to dimensioned
+/// scalar types by task #3115; dielectric_constant and magnetic_permeability
+/// stay Real (both are genuine-dimensionless ratios).
+///
+/// Per-member expected type:
+///   resistivity            → Type::Scalar { dimension: ELECTRIC_RESISTIVITY }
+///   dielectric_constant    → Type::Real (genuine-dimensionless)
+///   dielectric_strength    → Type::Scalar { dimension: DIELECTRIC_STRENGTH }
+///   magnetic_permeability  → Type::Real (genuine-dimensionless)
 #[test]
-fn electrically_characterized_refines_material_spec_with_four_real_members() {
+fn electrically_characterized_refines_material_spec_with_four_members() {
     let module = load_stdlib_module();
 
     let ec = module
@@ -94,22 +101,32 @@ fn electrically_characterized_refines_material_spec_with_four_real_members() {
             .collect::<Vec<_>>()
     );
 
-    let expected_members = [
-        "resistivity",
-        "dielectric_constant",
-        "dielectric_strength",
-        "magnetic_permeability",
+    let expected_members: [(&str, Type); 4] = [
+        (
+            "resistivity",
+            Type::Scalar {
+                dimension: DimensionVector::ELECTRIC_RESISTIVITY,
+            },
+        ),
+        ("dielectric_constant", Type::Real),
+        (
+            "dielectric_strength",
+            Type::Scalar {
+                dimension: DimensionVector::DIELECTRIC_STRENGTH,
+            },
+        ),
+        ("magnetic_permeability", Type::Real),
     ];
 
-    for expected in &expected_members {
+    for (expected_name, expected_ty) in &expected_members {
         let req = ec
             .required_members
             .iter()
-            .find(|r| r.name == *expected)
+            .find(|r| r.name == *expected_name)
             .unwrap_or_else(|| {
                 panic!(
                     "ElectricallyCharacterized missing required member '{}', got: {:?}",
-                    expected,
+                    expected_name,
                     ec.required_members
                         .iter()
                         .map(|r| &r.name)
@@ -118,15 +135,13 @@ fn electrically_characterized_refines_material_spec_with_four_real_members() {
             });
         match &req.kind {
             RequirementKind::Param(ty) => assert_eq!(
-                *ty,
-                Type::Real,
-                "ElectricallyCharacterized member '{}' should be Real, got {:?}",
-                expected,
-                ty
+                ty, expected_ty,
+                "ElectricallyCharacterized member '{}' expected {:?}, got {:?}",
+                expected_name, expected_ty, ty
             ),
             other => panic!(
                 "ElectricallyCharacterized member '{}' should be Param, got {:?}",
-                expected, other
+                expected_name, other
             ),
         }
     }
