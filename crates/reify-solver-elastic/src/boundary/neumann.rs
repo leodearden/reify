@@ -1167,6 +1167,47 @@ mod tests {
     }
 
     // =======================================================================
+    // apply_traction_load — P1Quad
+    // =======================================================================
+
+    /// Unit reference quad in the xy-plane with vertices `(-1,-1,0)`,
+    /// `(+1,-1,0)`, `(+1,+1,0)`, `(-1,+1,0)` traversed in the canonical
+    /// Hughes/Gmsh hex8 bottom-face order (counter-clockwise viewed from +ζ).
+    /// Physical area = 2·2 = 4 ⇒ each of 4 nodes receives `area/4 = 1.0` of
+    /// each traction component for unit traction `(1, 2, 3)`. Untouched DOFs
+    /// remain exactly 0.0.
+    #[test]
+    fn apply_traction_p1quad_unit_reference_quad_xy_plane() {
+        let face_phys: [[f64; 3]; 4] = [
+            [-1.0, -1.0, 0.0],
+            [1.0, -1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [-1.0, 1.0, 0.0],
+        ];
+        let conn = [0usize, 1, 2, 3];
+        let mut f = vec![0.0_f64; 18]; // 6 nodes (4 face + 2 untouched)
+        apply_traction_load(&mut f, FaceOrder::P1Quad, &conn, &face_phys, [1.0, 2.0, 3.0]);
+
+        let expected_per_node = 1.0; // area/4 = 4/4
+        let traction = [1.0, 2.0, 3.0];
+        for node in 0..4 {
+            for alpha in 0..3 {
+                let got = f[3 * node + alpha];
+                let expected = expected_per_node * traction[alpha];
+                assert!(
+                    (got - expected).abs() < TOL,
+                    "node {node} axis {alpha}: got {got}, expected {expected}",
+                );
+            }
+        }
+
+        // Untouched DOFs (nodes 4 and 5, indices 12..18) remain exactly 0.0.
+        for i in 12..18 {
+            assert_eq!(f[i], 0.0, "f[{i}] should remain 0.0 (untouched DOF)");
+        }
+    }
+
+    // =======================================================================
     // apply_traction_load — contract panics
     // =======================================================================
 
