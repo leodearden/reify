@@ -34,6 +34,12 @@ const EXPORT_USAGE: &str = "Usage: reify cache export <hash>";
 /// Usage line for `reify cache import` argument errors.
 const IMPORT_USAGE: &str = "Usage: reify cache import";
 
+/// Staged-entry value for the import walk: `(bin_bytes, meta_bytes)`.  Either
+/// may be absent depending on the tar order or whether the producer chose to
+/// include the sidecar.  Factored out to satisfy `clippy::type_complexity` on
+/// the `HashMap<String, _>` in `cmd_cache_import`.
+type StagedEntry = (Option<Vec<u8>>, Option<Vec<u8>>);
+
 /// Top-level `cache` subcommand dispatcher.
 ///
 /// `args` is everything after `cache` on the command line, i.e. for
@@ -161,7 +167,7 @@ fn cmd_cache_import(args: &[String]) -> ExitCode {
 
     // (stem → (bin_bytes, meta_bytes)). We tolerate either ordering of bin/meta
     // in the tar and only act on stems that have a `.bin` after the walk.
-    let mut staged: HashMap<String, (Option<Vec<u8>>, Option<Vec<u8>>)> = HashMap::new();
+    let mut staged: HashMap<String, StagedEntry> = HashMap::new();
     for entry_result in entries {
         let mut entry = match entry_result {
             Ok(e) => e,
