@@ -26,6 +26,7 @@ module.exports = grammar({
     [$.minimize_declaration],
     [$.maximize_declaration],
     [$.sub_declaration],
+    [$.param_assignment],
     [$.port_declaration],
     [$.pragma],
     [$.named_argument_list, $.argument_list],
@@ -493,6 +494,41 @@ module.exports = grammar({
         '>',
         optional(field('guard', $.where_clause)),
       ),
+      // Specialization form: sub name : StructName <typeargs>? where? { body }?
+      // 'List' is a string token with lexical precedence over the identifier regex,
+      // so this branch is only reached when the type name is not the literal 'List'.
+      seq(
+        'sub',
+        field('name', $.identifier),
+        ':',
+        field('structure_name', $.identifier),
+        optional(field('type_args', seq('<', $.type_arg_list, '>'))),
+        optional(field('guard', $.where_clause)),
+        optional(field('body', $.specialization_body)),
+      ),
+    ),
+
+    // ── Specialization body ──────────────────────────────────
+    // Body of a specialization-scope sub: `{ repeat(param_assignment | _member) }`.
+    // Accepts both permitted (let, constraint, connect, where) and forbidden
+    // (param, port, sub) member kinds — rejection is deferred to the validator
+    // (task 3571/3573) per spec §8.7 and triage-log §B3.
+    specialization_body: $ => seq(
+      '{',
+      repeat(choice($.param_assignment, $._member)),
+      '}',
+    ),
+
+    // ── Param assignment (specialization body only) ──────────
+    // Bare `name = expr where?` parameter assignments permitted in §8.7.
+    // Scoped to specialization_body only — not added to _member — because
+    // no existing _member starts with bare `identifier =`, so scoping avoids
+    // widening the general member grammar.
+    param_assignment: $ => seq(
+      field('name', $.identifier),
+      '=',
+      field('value', $._expression),
+      optional(field('guard', $.where_clause)),
     ),
 
     // ── Port ─────────────────────────────────────────────────
