@@ -4557,6 +4557,7 @@ dependencies = [
  "reify-kernel-occt",
  "reify-lsp",
  "reify-mcp",
+ "reify-mesh-morph",
  "reify-stdlib",
  "reify-syntax",
  "reify-test-support",
@@ -4678,6 +4679,8 @@ dependencies = [
  "reify-eval",
  "reify-solver-elastic",
  "reify-types",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
