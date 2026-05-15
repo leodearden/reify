@@ -1891,6 +1891,40 @@ mod tests {
         let s = serde_json::to_string(&DiagnosticCode::UnpinnedKernelLoaded).unwrap();
         assert_eq!(s, "\"UnpinnedKernelLoaded\"");
     }
+
+    // --- KernelVersionMismatch tests (task 3434 — E_KERNEL_VERSION_MISMATCH) ---
+    // Pairs with the dispatcher's version-mismatch diagnostic in
+    // `crates/reify-eval/src/dispatcher.rs::kernel_version_mismatch_diagnostic`
+    // (PRD `docs/prds/v0_3/multi-kernel-phase-3.md` §8 task γ + §5 "Pin
+    // version mismatch with adapter VERSION constant"). Variant-agnostic
+    // Copy/Clone/PartialEq/Eq/Hash/Debug derives are already covered by
+    // `diagnostic_code_derives` above; only the variant-specific round-trip
+    // and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::KernelVersionMismatch` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` carrying both the expected
+    /// `Severity::Error` and `Some(DiagnosticCode::KernelVersionMismatch)`.
+    /// Pins the error-severity contract and variant existence for the
+    /// reify.toml-vs-adapter version-mismatch failure (PRD §5 "error.
+    /// Determinism contract enforcement").
+    #[test]
+    fn diagnostic_code_kernel_version_mismatch_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::KernelVersionMismatch);
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::KernelVersionMismatch));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::KernelVersionMismatch`
+    /// serializes as `"KernelVersionMismatch"` (PascalCase, from
+    /// `rename_all = "PascalCase"`). Pins the wire-format contract for
+    /// downstream consumers (LSP / MCP).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_kernel_version_mismatch_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::KernelVersionMismatch).unwrap();
+        assert_eq!(s, "\"KernelVersionMismatch\"");
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
