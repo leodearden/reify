@@ -78,6 +78,7 @@ pub mod quality;
 pub mod stats;
 pub mod types;
 
+pub use stats::{MorphStats, record_morph_attempt, record_rejection, record_remesh, snapshot};
 pub use boundary::{
     BoundaryAssociation, NodeAttachment, ProjectionFailure, Projector, ProjectorPayload,
     compute_dirichlet_bcs,
