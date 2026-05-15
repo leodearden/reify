@@ -106,6 +106,15 @@ pub(crate) const CONTRIBUTORS_RELATIVE: &[&str] = &[
     "../../Cargo.lock",
 ];
 
+#[allow(dead_code)]
+/// Suffix set shared by the bare dot-prefix branch and the extension branch of
+/// [`is_editor_debris`].  Kept as a single constant so both branches always
+/// test the same set — a future addition to one cannot silently diverge from
+/// the other.
+const DEBRIS_SUFFIXES: &[&str] = &[
+    "swp", "swo", "swn", "bk", "bak", "orig", "rej", "tmp",
+];
+
 /// Returns true when `file_name` matches a known editor or OS debris pattern.
 ///
 /// Applied during directory iteration (after sorting, before recursion) so
@@ -147,14 +156,6 @@ pub(crate) const CONTRIBUTORS_RELATIVE: &[&str] = &[
 // Used by `walk_recursive` which is itself `#[allow(dead_code)]`.
 // See walk_contributor for inline-never workaround history (task 3429).
 #[allow(dead_code)]
-/// Suffix set shared by the bare dot-prefix branch and the extension branch of
-/// [`is_editor_debris`].  Kept as a single constant so both branches always
-/// test the same set — a future addition to one cannot silently diverge from
-/// the other.
-const DEBRIS_SUFFIXES: &[&str] = &[
-    "swp", "swo", "swn", "bk", "bak", "orig", "rej", "tmp",
-];
-
 fn is_editor_debris(file_name: &OsStr) -> bool {
     let name_lower = file_name.to_string_lossy().to_lowercase();
 
