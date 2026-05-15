@@ -965,6 +965,26 @@ pub enum DiagnosticCode {
     /// downstream task ο (ID 3443) which wires the `#kernel(...)` pragma
     /// surface into the dispatcher's preference path.
     KernelPragmaUnsatisfiable,
+    /// Origin: `crates/reify-eval/src/dispatcher.rs::pinned_kernel_missing_diagnostic`
+    /// (task 3434 — PRD `docs/prds/v0_3/multi-kernel-phase-3.md` §8 task γ +
+    /// §5 "Pin name not in registry").
+    ///
+    /// Canonical message form:
+    /// `"kernel '<kernel_id>' is pinned in reify.toml but not registered in \
+    /// this build; rebuild with the required kernel feature enabled"`.
+    ///
+    /// Emitted as a `Severity::Error` when `reify.toml` `[kernels]` names a
+    /// kernel that the current build did not register (typically because the
+    /// corresponding Cargo feature was not enabled). Per PRD §5: "error;
+    /// engine refuses to start" — the build's determinism contract requires
+    /// every pinned kernel to be present, so the engine fails closed at
+    /// startup rather than silently downgrading to a different kernel set.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_PINNED_KERNEL_MISSING`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error). Consumed by
+    /// downstream task π (ID 3444) which wires `reify.toml` parsing into
+    /// `Engine::with_registered_kernels`.
+    PinnedKernelMissing,
     /// Origin: `crates/reify-eval/src/geometry_ops.rs::gate_query_capability`
     /// (task 3623 — PRD `docs/prds/v0_3/kernel-geometry-queries.md` §5.4).
     ///
