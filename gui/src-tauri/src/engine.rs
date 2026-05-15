@@ -47,10 +47,11 @@ mod core_state {
     /// - `commit_check` — single-field commit for `last_check` (used by `set_parameter`)
     /// - `commit_file_path` — single-field commit for `file_path` (used by `load_file`)
     ///
-    /// `engine_mut()` exposes `&mut Engine` for method dispatch; the `#[cfg(test)]`
-    /// mutators (`break_module_name`, `break_source_map`, `inject_compiled`, `recheck`,
-    /// `inject_diagnostic`, `with_solver`) expose other mutation — but none of these
-    /// touch the invariant fields atomically, so the poison-recovery property still holds.
+    /// `engine_mut()` exposes `&mut Engine` for method dispatch and does not touch the
+    /// invariant-bearing fields.  The `#[cfg(test)]` mutators (`break_module_name`,
+    /// `break_source_map`, `inject_compiled`, `recheck`, `inject_diagnostic`, `with_solver`)
+    /// are intentional invariant-breakers — they are absent from production builds, so the
+    /// poison-recovery property holds in production.
     ///
     /// See `engine_lock.rs` for the invariant rationale.
     pub(crate) struct CoreState {
@@ -313,9 +314,10 @@ pub(crate) struct CompileFailure {
 /// in a private sub-struct whose fields have no visibility marker, so any direct
 /// field assignment from outside `CoreState`'s impl fails to compile.  The only
 /// commit points that touch the four invariant-bearing fields are `commit_state`,
-/// `commit_check`, and `commit_file_path`; `engine_mut()` and the `#[cfg(test)]`
-/// mutators expose other mutation but do not touch those fields atomically — the
-/// poison-recovery property still holds.  See `engine_lock.rs` for the rationale.
+/// `commit_check`, and `commit_file_path`; `engine_mut()` does not touch those fields,
+/// and the `#[cfg(test)]` mutators are intentional invariant-breakers absent from
+/// production builds — the poison-recovery property holds in production.
+/// See `engine_lock.rs` for the rationale.
 pub struct EngineSession {
     /// The six core fields protected by the type system via `CoreState`.
     ///

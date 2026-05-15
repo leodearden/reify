@@ -35,8 +35,9 @@ fn panic_message(payload: &(dyn Any + Send)) -> String {
 /// - `commit_check` — single-field commit for `last_check` (used by `set_parameter`)
 /// - `commit_file_path` — single-field commit for `file_path` (used by `load_file`)
 ///
-/// `engine_mut()` and the `#[cfg(test)]` mutators expose other mutation but do
-/// not touch those fields atomically — the poison-recovery property still holds.
+/// `engine_mut()` does not touch those fields; the `#[cfg(test)]` mutators are
+/// intentional invariant-breakers absent from production builds — the
+/// poison-recovery property holds in production.
 ///
 /// A panic inside `check()` or `build_gui_state` therefore leaves core fields
 /// at a consistent committed state; other fields are caches that tolerate
@@ -56,8 +57,9 @@ where
     // Safety: CoreState's fields are strictly private; the only commit points for
     // the four invariant-bearing fields are commit_state, commit_check, and
     // commit_file_path, each atomic with respect to the fields it owns.
-    // engine_mut() and the #[cfg(test)] mutators expose other mutation but do not
-    // touch those fields atomically — the poison-recovery property still holds.
+    // engine_mut() does not touch those fields; the #[cfg(test)] mutators are
+    // intentional invariant-breakers absent from production builds — the
+    // poison-recovery property holds in production.
     // Other fields on EngineSession are caches that tolerate partial state.
     // The inner state is therefore consistent even if the mutex was poisoned.
     let mut guard = engine.lock().unwrap_or_else(|p| p.into_inner());
