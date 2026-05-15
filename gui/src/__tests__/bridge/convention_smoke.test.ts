@@ -12,7 +12,7 @@
  * real channels.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { listen } from '@tauri-apps/api/event';
 
 // Must be declared at module scope before any imports from mockEvents.ts —
@@ -50,6 +50,11 @@ describe('convention smoke (GR-016 β)', () => {
     mockTauriEvent('convention-smoke').reset();
   });
 
+  afterEach(() => {
+    // Restore any spies (e.g. console.warn) so they don't leak across tests.
+    vi.restoreAllMocks();
+  });
+
   it('typed listen happy-path: callback fires with valid payload', async () => {
     const smokeHandle = mockTauriEvent<{ id: string; label: string }>('convention-smoke');
     const cb = vi.fn();
@@ -59,5 +64,45 @@ describe('convention smoke (GR-016 β)', () => {
 
     expect(cb).toHaveBeenCalledOnce();
     expect(cb).toHaveBeenCalledWith({ id: 'test-1', label: 'hello' });
+  });
+
+  it('malformed payload (release-mode behavior): callback not invoked, console.warn fires', async () => {
+    // §8.2 row 3 — validatePayload warns on missing required key; cb is not invoked.
+    const smokeHandle = mockTauriEvent<{ id: string }>('convention-smoke');
+    const cb = vi.fn();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await onConventionSmoke(cb);
+    // Emit a payload with 'id' but missing required 'label' key.
+    smokeHandle.emit({ id: 'x' } as unknown as { id: string });
+
+    expect(cb).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalled();
+    expect(warnSpy.mock.calls[0]?.[0]).toContain('convention-smoke');
+  });
+
+  it('missing-emitter degradation: never emit, no callback fires, no error', async () => {
+    // §8.2 row 5 — registering a listener but never emitting is a safe no-op.
+    const cb = vi.fn();
+
+    await onConventionSmoke(cb);
+    // Intentionally no .emit() call.
+
+    expect(cb).not.toHaveBeenCalled();
+  });
+
+  it('mockTauriEvent.reset() clears registered handlers', async () => {
+    // Pins the .reset() semantics of the §6.3 contract so any future regression
+    // that drops the registry clear surfaces immediately.
+    const smokeHandle = mockTauriEvent<{ id: string; label: string }>('convention-smoke');
+    const cb = vi.fn();
+
+    await onConventionSmoke(cb);
+    // Clear the handler registry for this channel.
+    smokeHandle.reset();
+    // Emit a well-formed payload — cb should NOT fire since handlers are gone.
+    smokeHandle.emit({ id: 'after-reset', label: 'should-not-fire' });
+
+    expect(cb).not.toHaveBeenCalled();
   });
 });
