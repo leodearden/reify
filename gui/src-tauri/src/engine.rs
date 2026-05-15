@@ -1,7 +1,7 @@
 // EngineSession — wraps Engine + CompiledModule + source text
 
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use tracing::warn;
@@ -25,6 +25,84 @@ use crate::types::{
     MechanismDescriptor, MeshData, SourceSpanInfo, ValueData, format_determinacy, format_freshness,
     format_value,
 };
+
+mod core_state {
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+
+    use reify_compiler::CompiledModule;
+    use reify_eval::{CheckResult, Engine};
+
+    /// The six core fields of `EngineSession` that must stay consistent across panics.
+    ///
+    /// Fields are marked `pub(super)` temporarily — this allows `engine.rs`'s outer module
+    /// to access them directly during the incremental migration.  The final step removes
+    /// `pub(super)`, making fields strictly private; any direct field assignment outside
+    /// this `impl` block then fails to compile, enforcing the poison-recovery invariant
+    /// at the type level.  See `engine_lock.rs:26-49` for the invariant rationale.
+    pub(crate) struct CoreState {
+        pub(super) engine: Engine,
+        pub(super) compiled: Option<CompiledModule>,
+        pub(super) source_map: HashMap<String, String>,
+        pub(super) file_path: Option<PathBuf>,
+        pub(super) last_check: Option<CheckResult>,
+        pub(super) module_name: Option<String>,
+    }
+
+    impl CoreState {
+        /// Construct a fresh `CoreState` wrapping the given engine.
+        pub(super) fn new(engine: Engine) -> Self {
+            Self {
+                engine,
+                compiled: None,
+                source_map: HashMap::new(),
+                file_path: None,
+                last_check: None,
+                module_name: None,
+            }
+        }
+
+        /// Return a shared reference to the underlying `Engine`.
+        pub(crate) fn engine(&self) -> &Engine {
+            &self.engine
+        }
+
+        /// Return a mutable reference to the underlying `Engine`.
+        ///
+        /// Used for method dispatch (`check`, `build`, `tessellate_snapshot`,
+        /// `set_panic_on_eval`, `cache_store_mut`).
+        pub(crate) fn engine_mut(&mut self) -> &mut Engine {
+            &mut self.engine
+        }
+
+        /// Return a reference to the compiled module, or `None` if no module is loaded.
+        pub(crate) fn compiled(&self) -> Option<&CompiledModule> {
+            self.compiled.as_ref()
+        }
+
+        /// Return a reference to the last check result, or `None` if no check has run.
+        pub(crate) fn last_check(&self) -> Option<&CheckResult> {
+            self.last_check.as_ref()
+        }
+
+        /// Return the current module name, or `None` if no module is loaded.
+        pub(crate) fn module_name(&self) -> Option<&str> {
+            self.module_name.as_deref()
+        }
+
+        /// Return a reference to the source map.
+        pub(crate) fn source_map(&self) -> &HashMap<String, String> {
+            &self.source_map
+        }
+
+        /// Return the file path of the currently loaded file, or `None` if not set.
+        pub(crate) fn file_path(&self) -> Option<&Path> {
+            self.file_path.as_deref()
+        }
+    }
+}
+
+pub(crate) use core_state::CoreState;
 
 /// Discriminant for a stored compile failure: records which execution path produced the error.
 ///
@@ -80,12 +158,12 @@ pub(crate) struct CompileFailure {
 /// point.  Neither method touches `compiled`/`module_name`/`source_map` until
 /// after parse, compile, and check have all succeeded.
 pub struct EngineSession {
-    engine: Engine,
-    compiled: Option<CompiledModule>,
-    source_map: HashMap<String, String>,
-    file_path: Option<PathBuf>,
-    last_check: Option<CheckResult>,
-    module_name: Option<String>,
+    /// The six core fields protected by the type system via `CoreState`.
+    ///
+    /// Direct field mutation from outside `CoreState`'s impl fails to compile once
+    /// fields are made strictly private in the final refactor step.  Use
+    /// `commit_state`, `commit_check`, or `commit_file_path` for mutation.
+    core: CoreState,
     /// In-memory cache for `get_def_preview` results.
     ///
     /// Keyed by `(definition_name, template.content_hash)` — the cache is
@@ -489,12 +567,7 @@ impl EngineSession {
     /// stays in one place and the two constructors cannot drift.
     fn from_engine(engine: Engine) -> Self {
         Self {
-            engine,
-            compiled: None,
-            source_map: HashMap::new(),
-            file_path: None,
-            last_check: None,
-            module_name: None,
+            core: CoreState::new(engine),
             def_preview_cache: HashMap::new(),
             parsed_cache: None,
             line_offsets_cache: None,
@@ -520,7 +593,7 @@ impl EngineSession {
     /// `main.rs` (solver installation in main.rs is a separate future task).
     #[cfg(test)]
     pub(crate) fn with_solver_for_test(mut self, solver: Box<dyn ConstraintSolver>) -> Self {
-        self.engine = self.engine.with_solver(solver);
+        self.core.engine = self.core.engine.with_solver(solver);
         self
     }
 
@@ -534,7 +607,7 @@ impl EngineSession {
     /// this helper (the test only cares about emitted events, not stored state).
     #[cfg(test)]
     pub(crate) fn check_and_emit_for_test(&mut self, compiled: &CompiledModule) {
-        let r = self.engine.check(compiled);
+        let r = self.core.engine_mut().check(compiled);
         self.emit_auto_resolve_if_any(&r);
     }
 
@@ -680,7 +753,7 @@ impl EngineSession {
 
         // Evaluate + check constraints (borrows compiled by shared ref, so all
         // field mutations can safely be deferred until after check() returns).
-        let check_result = self.engine.check(&compiled);
+        let check_result = self.core.engine_mut().check(&compiled);
 
         // Atomically commit all state after check() succeeds.
         self.commit_state(parsed, compiled, check_result, module_name, source);
@@ -688,7 +761,7 @@ impl EngineSession {
         // Emit auto-resolve events after committing state, consistent with the
         // panic-safety ordering story: all state mutations are complete before
         // any events fire.
-        self.emit_auto_resolve_if_any(self.last_check.as_ref().unwrap());
+        self.emit_auto_resolve_if_any(self.core.last_check().unwrap());
 
         self.build_gui_state()
     }
@@ -707,8 +780,8 @@ impl EngineSession {
 
         // Validate cell exists in compiled module
         let compiled = self
-            .compiled
-            .as_ref()
+            .core
+            .compiled()
             .ok_or_else(|| "No module loaded".to_string())?;
         let cell_exists = compiled
             .templates
@@ -719,12 +792,13 @@ impl EngineSession {
         }
 
         let check_result = self
-            .engine
+            .core
+            .engine_mut()
             .edit_check(cell_id, value)
             .map_err(|e| format!("Engine error: {}", e))?;
 
         self.emit_auto_resolve_if_any(&check_result);
-        self.last_check = Some(check_result);
+        self.core.last_check = Some(check_result);
         self.build_gui_state()
     }
 
@@ -754,10 +828,10 @@ impl EngineSession {
                 self.record_compile_failure(diags);
                 msg
             })?;
-        let check_result = self.engine.check(&compiled);
+        let check_result = self.core.engine_mut().check(&compiled);
         self.emit_auto_resolve_if_any(&check_result);
         self.commit_state(parsed, compiled, check_result, module_name, &source);
-        self.file_path = Some(path.to_path_buf());
+        self.core.file_path = Some(path.to_path_buf());
         self.build_gui_state()
     }
 
@@ -788,8 +862,8 @@ impl EngineSession {
         // path string the caller serialises.  See task 3370 (esc-3318-14, suggestion #1).
         // Owned String releases the self.file_path borrow before the closures below.
         let module_name_owned = self
-            .file_path
-            .as_deref()
+            .core
+            .file_path()
             .unwrap_or_else(|| Path::new(path))
             .file_stem()
             .and_then(|s| s.to_str())
@@ -797,7 +871,7 @@ impl EngineSession {
             .to_owned();
         let module_name = module_name_owned.as_str();
 
-        let (parsed, compiled) = if let Some(entry_path) = self.file_path.clone() {
+        let (parsed, compiled) = if let Some(entry_path) = self.core.file_path.clone() {
             // Multi-file flow — same as load_file. Preserves the import graph
             // resolved at load_file time so dirty-buffer edits don't silently drop
             // imports.  Both module_name and the project-root anchor come from
@@ -819,7 +893,7 @@ impl EngineSession {
 
         // Parse+compile succeeded — run check() before mutating any state, so
         // that a panic in check() leaves the session completely unchanged.
-        let check_result = self.engine.check(&compiled);
+        let check_result = self.core.engine_mut().check(&compiled);
 
         self.emit_auto_resolve_if_any(&check_result);
 
@@ -840,7 +914,7 @@ impl EngineSession {
     /// `Option<CompileFailure>` makes the at-most-one-non-empty invariant a type-level
     /// guarantee — no `debug_assert!` guards are needed.
     fn record_compile_failure(&mut self, diags: Vec<DiagnosticInfo>) {
-        let kind = if self.compiled.is_none() {
+        let kind = if self.core.compiled().is_none() {
             CompileFailureKind::ColdStart
         } else {
             CompileFailureKind::LiveEdit
@@ -872,12 +946,12 @@ impl EngineSession {
         module_name: &str,
         source: &str,
     ) {
-        self.source_map.clear();
-        self.source_map
+        self.core.source_map.clear();
+        self.core.source_map
             .insert(module_key(module_name), source.to_string());
-        self.module_name = Some(module_name.to_string());
-        self.compiled = Some(compiled);
-        self.last_check = Some(check_result);
+        self.core.module_name = Some(module_name.to_string());
+        self.core.compiled = Some(compiled);
+        self.core.last_check = Some(check_result);
         // Invalidate def preview cache — new module may have different content hashes.
         self.def_preview_cache.clear();
         // Cache the parse result so get_containing_definition can avoid re-parsing
@@ -900,12 +974,12 @@ impl EngineSession {
 
     /// Export geometry to a file.
     pub fn export(&mut self, format: ExportFormat, path: &Path) -> Result<(), String> {
-        let compiled = self
-            .compiled
-            .as_ref()
+        // Use direct field access so borrow checker can split the `core.compiled`
+        // (immutable) and `core.engine` (mutable for build) borrows simultaneously.
+        let compiled = self.core.compiled.as_ref()
             .ok_or_else(|| "No module loaded".to_string())?;
 
-        let result = self.engine.build(compiled, format);
+        let result = self.core.engine.build(compiled, format);
 
         for diag in &result.diagnostics {
             if diag.severity == Severity::Error {
@@ -936,10 +1010,10 @@ impl EngineSession {
     /// test helper like `break_module_name_for_test`); callers handle `None`
     /// gracefully instead of panicking.
     fn resolve_source(&self) -> Option<(&str, &str)> {
-        self.compiled.as_ref()?;
-        let name = self.module_name.as_deref()?;
+        self.core.compiled()?;
+        let name = self.core.module_name()?;
         let key = module_key(name);
-        let (k, v) = self.source_map.get_key_value(&key)?;
+        let (k, v) = self.core.source_map().get_key_value(&key)?;
         Some((k.as_str(), v.as_str()))
     }
 
@@ -952,7 +1026,7 @@ impl EngineSession {
     /// Returns `None` when the entity or member is not found, the compiled module is
     /// not loaded, or when the invariant is broken (e.g., via `break_source_map_for_test`).
     pub fn get_source_location(&self, entity_path: &str) -> Option<SourceLocationInfo> {
-        let compiled = self.compiled.as_ref()?;
+        let compiled = self.core.compiled()?;
         // Delegate source key resolution to resolve_source — returns None when
         // no module is loaded or when the invariant is broken (e.g., via
         // break_source_map_for_test), preserving the graceful-degradation contract
@@ -971,7 +1045,7 @@ impl EngineSession {
     ///
     /// Delegates source key resolution to [`resolve_source`].
     pub fn get_diagnostics(&self) -> Vec<DiagnosticInfo> {
-        let compiled = match self.compiled.as_ref() {
+        let compiled = match self.core.compiled() {
             Some(c) => c,
             None => return Vec::new(),
         };
@@ -1022,12 +1096,14 @@ impl EngineSession {
     /// fully synchronous — any in-progress work completes before the
     /// Tauri command returns.
     pub fn is_idle(&self) -> bool {
-        self.compiled.is_some() && self.last_check.is_some()
+        self.core.compiled().is_some() && self.core.last_check().is_some()
     }
 
     /// Build the full GUI state from the current engine state.
     pub fn build_gui_state(&mut self) -> Result<GuiState, String> {
-        let (compiled, check) = match (self.compiled.as_ref(), self.last_check.as_ref()) {
+        // Use direct field access so borrow checker can split the core.compiled /
+        // core.last_check (immutable) and core.engine (mutable) borrows later.
+        let (compiled, check) = match (self.core.compiled.as_ref(), self.core.last_check.as_ref()) {
             (Some(c), Some(k)) => (c, k),
             _ => {
                 // When `compiled` is `None` (the session has never completed a successful
@@ -1077,12 +1153,14 @@ impl EngineSession {
 
         // Build values and constraints via shared helpers (also used by
         // build_preview_gui_state) so both paths stay in sync.
-        let values = build_values(compiled, check, Some(&self.engine));
+        let values = build_values(compiled, check, Some(&self.core.engine));
         let constraints = build_constraints(compiled, check);
 
         // Build meshes (from tessellation of realizations) and capture any
         // tessellation diagnostics (e.g. OCCT kernel errors).
-        let (meshes, tessellation_diagnostics) = match self.engine.tessellate_snapshot(compiled) {
+        // Direct field access so borrow checker sees core.compiled (immutable) and
+        // core.engine (mutable) as distinct borrows.
+        let (meshes, tessellation_diagnostics) = match self.core.engine.tessellate_snapshot(compiled) {
             Some(result) => {
                 // Map tessellation diagnostics → DiagnosticInfo and emit backend
                 // log entries so headless/CI runs still surface these via tracing.
@@ -1131,7 +1209,8 @@ impl EngineSession {
 
         // Build files
         let files: Vec<FileData> = self
-            .source_map
+            .core
+            .source_map()
             .iter()
             .map(|(path, content)| FileData {
                 path: path.clone(),
@@ -1183,7 +1262,7 @@ impl EngineSession {
     /// AST-based driving-param resolution (`driving_param_cell_id`) is added in
     /// step 12 of the task plan. `current_value_si` is populated in step 24.
     pub fn get_mechanism_descriptors(&mut self) -> Vec<MechanismDescriptor> {
-        let (compiled, check) = match (self.compiled.as_ref(), self.last_check.as_ref()) {
+        let (compiled, check) = match (self.core.compiled(), self.core.last_check()) {
             (Some(c), Some(k)) => (c, k),
             _ => return Vec::new(),
         };
@@ -1344,7 +1423,7 @@ impl EngineSession {
     ///
     /// Returns an empty vec when no module is loaded.
     pub fn get_entity_tree(&self) -> Vec<EntityTreeNode> {
-        let compiled = match self.compiled.as_ref() {
+        let compiled = match self.core.compiled() {
             Some(c) => c,
             None => return Vec::new(),
         };
@@ -1378,7 +1457,7 @@ impl EngineSession {
         compiled
             .templates
             .iter()
-            .map(|t| build_template_node(t, &t.name, compiled, Some(&self.engine)))
+            .map(|t| build_template_node(t, &t.name, compiled, Some(self.core.engine())))
             .collect()
     }
 
@@ -1400,7 +1479,7 @@ impl EngineSession {
     ///
     /// Returns an empty map when no module is loaded.
     pub fn get_entity_identity_map(&self) -> HashMap<String, EntityIdentity> {
-        let compiled = match self.compiled.as_ref() {
+        let compiled = match self.core.compiled() {
             Some(c) => c,
             None => return HashMap::new(),
         };
@@ -1480,8 +1559,8 @@ impl EngineSession {
         // struct fields — no expensive clone is wasted on a cache hit.
         let content_hash = {
             let compiled = self
-                .compiled
-                .as_ref()
+                .core
+                .compiled()
                 .ok_or_else(|| "No module loaded".to_string())?;
             compiled
                 .templates
@@ -1503,8 +1582,8 @@ impl EngineSession {
         // templates list with only the one definition we want to preview.
         let preview_module = {
             let compiled = self
-                .compiled
-                .as_ref()
+                .core
+                .compiled()
                 .expect("compiled was Some in Phase 1");
             let template = compiled
                 .templates
@@ -1642,7 +1721,7 @@ impl EngineSession {
              whenever compiled is Some (i.e., whenever resolve_source succeeds)"
         );
 
-        let compiled = self.compiled.as_ref()?;
+        let compiled = self.core.compiled()?;
 
         reify_eval::resolve_entity_at_source_position(compiled, source, line, col)
     }
@@ -2492,6 +2571,14 @@ pub(crate) fn build_template_node(
 /// Test helpers — compiled out of production binaries.
 #[cfg(test)]
 impl EngineSession {
+    /// Return a reference to the `CoreState` for structural inspection in tests.
+    ///
+    /// Used by the structural lock-in test to verify that `CoreState` exposes
+    /// the expected read accessors after the refactor.
+    pub(crate) fn core_state_for_test(&self) -> &CoreState {
+        &self.core
+    }
+
     /// Inject a diagnostic directly into the compiled module's diagnostics vec,
     /// enabling tests to exercise the `diag.labels.first() == None` fallback path
     /// without needing the compiler to produce such a diagnostic.
@@ -2499,7 +2586,7 @@ impl EngineSession {
     /// # Panics
     /// Panics if no module is currently loaded (`self.compiled` is `None`).
     pub(crate) fn inject_diagnostic_for_test(&mut self, diag: reify_types::Diagnostic) {
-        self.compiled
+        self.core.compiled
             .as_mut()
             .expect("inject_diagnostic_for_test: no compiled module loaded")
             .diagnostics
@@ -2531,7 +2618,7 @@ impl EngineSession {
     /// - `get_source_location_returns_none_when_module_name_broken` (graceful `None`)
     /// - `get_diagnostics_debug_asserts_when_module_name_broken` (debug-build loud path)
     pub(crate) fn break_module_name_for_test(&mut self) {
-        self.module_name.take();
+        self.core.module_name.take();
     }
 
     /// Deliberately break the compiled/module_name/source_map invariant by
@@ -2549,7 +2636,7 @@ impl EngineSession {
     /// - `resolve_source_fallback_when_source_map_missing` (graceful `None`)
     /// - `get_diagnostics_debug_asserts_when_source_map_broken` (debug-build loud path)
     pub(crate) fn break_source_map_for_test(&mut self) {
-        self.source_map.clear();
+        self.core.source_map.clear();
     }
 
     /// Return a reference to the cached `ParsedModule`, or `None` if no module
@@ -2637,7 +2724,7 @@ impl EngineSession {
     /// session's invariant is intentionally broken.  Functions that rely on those
     /// fields (e.g. `get_diagnostics`, `resolve_source`) degrade gracefully.
     pub(crate) fn inject_compiled_for_test(&mut self, compiled: CompiledModule) {
-        self.compiled = Some(compiled);
+        self.core.compiled = Some(compiled);
     }
 
     /// Register a cell to panic during the next eval cycle.
@@ -2651,7 +2738,7 @@ impl EngineSession {
     /// per task #2337 pre-1).  Call `recheck_for_test` after this to
     /// re-run the evaluation with the forced panic in effect.
     pub(crate) fn set_panic_on_eval_for_test(&mut self, cell: reify_types::ValueCellId) {
-        self.engine.set_panic_on_eval(cell);
+        self.core.engine_mut().set_panic_on_eval(cell);
     }
 
     /// Re-run `engine.check` on the current compiled module and update `last_check`.
@@ -2666,10 +2753,10 @@ impl EngineSession {
     /// `&CompiledModule` for the check call) — the clone cost is acceptable
     /// in test code.  No-op when no module is loaded.
     pub(crate) fn recheck_for_test(&mut self) {
-        if let Some(compiled) = self.compiled.as_ref().cloned() {
-            let check_result = self.engine.check(&compiled);
-            self.compiled = Some(compiled);
-            self.last_check = Some(check_result);
+        if let Some(compiled) = self.core.compiled.as_ref().cloned() {
+            let check_result = self.core.engine.check(&compiled);
+            self.core.compiled = Some(compiled);
+            self.core.last_check = Some(check_result);
         }
     }
 
@@ -2691,9 +2778,9 @@ impl EngineSession {
     ///
     /// No-op when no module is loaded.
     pub(crate) fn build_for_freshness_test(&mut self) {
-        if let Some(compiled) = self.compiled.as_ref().cloned() {
+        if let Some(compiled) = self.core.compiled.as_ref().cloned() {
             // Discards the BuildResult — callers read freshness via get_entity_tree().
-            let _ = self.engine.build(&compiled, ExportFormat::Step);
+            let _ = self.core.engine.build(&compiled, ExportFormat::Step);
         }
     }
 
@@ -2717,7 +2804,8 @@ impl EngineSession {
         error_msg: &str,
     ) {
         let node = reify_eval::cache::NodeId::Value(cell);
-        self.engine
+        self.core
+            .engine_mut()
             .cache_store_mut()
             .mark_failed(&node, reify_types::ErrorRef::new(error_msg));
     }
