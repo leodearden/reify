@@ -1161,13 +1161,19 @@ impl<'a> Lowering<'a> {
         let type_node = node.child_by_field_name("type")?;
         let type_expr = self.lower_type_expr_node(type_node);
 
+        // Note: lower_fn_param diagnoses unrecognised defaults (user-facing error);
+        // lower_param silently drops via .and_then — see lower_param below for rationale.
         let default = if let Some(d) = node.child_by_field_name("default") {
             if let Some(expr) = self.lower_expr(d) {
                 Some(expr)
             } else {
-                // `default` field node is present but `lower_expr` could not
-                // lower it — push a diagnostic so downstream consumers can tell
-                // "unrecognised default form" apart from "no default supplied".
+                // Defensive branch: grammar.js:83-88 binds fn_param.default to
+                // $._expression, and lower_expr exhaustively matches every
+                // _expression kind (see ts_parser.rs ~line 2162), so this arm is
+                // unreachable from a well-formed CST. It is only reachable via
+                // error-recovery partial/ERROR nodes, which already set has_error().
+                // The diagnostic is retained as defense-in-depth so a malformed
+                // default surfaces a message rather than silently becoming "no default".
                 self.push_error(
                     format!(
                         "unrecognised expression in fn_param default: {}",
@@ -1570,6 +1576,9 @@ impl<'a> Lowering<'a> {
             .child_by_field_name("type")
             .map(|t| self.lower_type_expr_node(t));
 
+        // Silently drops unrecognised defaults via .and_then — intentional divergence
+        // from lower_fn_param, which diagnoses them. structure/trait param defaults are
+        // compiler-internal (auto_keyword handling) and not user-facing call-site defaults.
         let default = node.child_by_field_name("default").and_then(|d| {
             if d.kind() == "auto_keyword" {
                 let free = d.child_by_field_name("modifier").is_some();
