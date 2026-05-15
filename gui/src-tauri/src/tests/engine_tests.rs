@@ -6009,12 +6009,14 @@ fn update_source_with_divergent_path_keeps_loaded_module_name() {
 /// the single-file branch (`compile_single_file_with_stdlib`) and successfully
 /// compile valid self-contained source.
 ///
-/// The phantom path `/nonexistent/dir/solo.ri` cannot exist on disk.  This is
-/// intentional: if a future regression causes the single-file branch to attempt
-/// disk I/O (e.g. by accidentally routing through `compile_entry_with_imports`),
-/// the test will flip red with a clear filesystem error rather than passing
-/// silently.  The single-file branch's defining property is that the `path`
-/// argument is used only for module-stem derivation — no disk access occurs.
+/// The phantom path `/nonexistent/dir/solo.ri` documents the single-file
+/// branch's defining property: the `path` argument is used only for
+/// module-stem derivation — no disk access occurs for import-free source.
+/// The routing regression sentinel is assertion (2): `stored_key ==
+/// module_key("solo")`.  The multi-file branch derives the source_map key
+/// differently (from the resolved import graph rooted at the entry file's
+/// parent directory), so a routing regression would surface as a key
+/// mismatch rather than a filesystem error.
 #[test]
 fn update_source_on_fresh_session_compiles_single_file_source_without_disk_io() {
     let checker = SimpleConstraintChecker;
