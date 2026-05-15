@@ -82,6 +82,15 @@ fn line_matches_stub(line: &str) -> Option<&'static str> {
     None
 }
 
+/// Returns `true` when the path looks like a test file that should be
+/// excluded from P2 scanning (false-positive guard per design §5 P2):
+/// - paths containing `/tests/`      — Rust integration-test directories
+/// - paths ending with `_test.rs`    — Go-style test files
+/// - paths containing `__tests__/`   — JavaScript/TypeScript test directories
+fn is_test_path(p: &str) -> bool {
+    p.contains("/tests/") || p.ends_with("_test.rs") || p.contains("__tests__/")
+}
+
 /// Returns `true` when the task title itself signals that the task is
 /// intentionally a stub or placeholder (case-insensitive substring match).
 /// Used to downgrade finding severity from Medium to Low.
@@ -110,6 +119,11 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         };
 
         for path in &meta.files {
+            // Skip test-shaped paths to avoid false positives on intentional
+            // stubs inside test helpers (design §5 P2 false-positive guards).
+            if is_test_path(path) {
+                continue;
+            }
             let added = ctx.git.diff_added_lines("main", &task_branch, path);
             let mut matches: Vec<(usize, String, &'static str)> = Vec::new();
             for (line_no, content) in &added {
