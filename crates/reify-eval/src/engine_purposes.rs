@@ -559,6 +559,13 @@ fn expand_purpose_reflective_placeholders(
             // eval_quantifier's cell-iteration trigger fires only on this
             // placeholder-derived shape, not on user-written all-ValueRef
             // ListLiterals that share the same surface structure.
+            // G-allow: empty reflective cell-list ⇒ vacuous-true forall; element type
+            // is a conservative anti-cascade default for the empty match-set case —
+            // no objectives matched the purpose, so no element type can be inferred.
+            // The Type::Real default preserves the prior behaviour for the vacuous-true
+            // path and is acceptable here because an empty ReflectiveCellList triggers
+            // eval_quantifier's vacuous-true short-circuit before the element type is
+            // used for any arithmetic (task-2458, task 3639 review).
             let element_type = elements
                 .first()
                 .map(|e| e.result_type.clone())
