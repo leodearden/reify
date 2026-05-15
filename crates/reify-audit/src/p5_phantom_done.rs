@@ -33,6 +33,7 @@ const MAIN_BASE: &str = "main";
 ///    cite each contributing sibling SHA via `EvidenceRef::Commit`.
 ///
 /// Mismatches that survive both guards produce `Severity::High`.
+// G-allow: F-infra T-4 CLI consumer (crates/reify-audit-cli) — design pinned in docs/architecture-audit/f-infra-design.md
 pub fn check(ctx: &AuditContext) -> Vec<Finding> {
     check_with_target(ctx, ctx.target_task_id.as_deref())
 }
@@ -51,6 +52,7 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
 ///
 /// Slice-1 ships the wrapper; T-4 will host the CLI subprocess that the
 /// hook actually invokes.
+// G-allow: F-infra T-4 CLI consumer (crates/reify-audit-cli) — design pinned in docs/architecture-audit/f-infra-design.md
 pub fn check_pre_done(ctx: &AuditContext, task_id: &str) -> Vec<Finding> {
     check_with_target(ctx, Some(task_id))
 }
