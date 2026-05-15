@@ -75,7 +75,7 @@ fn rejected_insert_under_existing_entity_does_not_allocate_key() {
     );
 
     // Warm-up: the first insert legitimately allocates the entity String key once.
-    let inserted = cache.insert(entity, reify_types::ReprKind::BRep, 0.001, 1u32);
+    let inserted = cache.insert(entity, reify_types::ReprKind::BRep, 0.001, reify_types::ContentHash(0), 1u32);
     assert!(inserted, "warm-up insert must succeed");
 
     // Snapshot after warm-up — all legitimate allocations already counted.
@@ -87,7 +87,7 @@ fn rejected_insert_under_existing_entity_does_not_allocate_key() {
     // With the fix:   the fast `get_mut` path is taken → zero allocations.
     // Without the fix: `entity.to_owned()` runs unconditionally → 256 allocations.
     for _ in 0..256 {
-        let inserted = cache.insert(entity, reify_types::ReprKind::BRep, 0.1, 999u32);
+        let inserted = cache.insert(entity, reify_types::ReprKind::BRep, 0.1, reify_types::ContentHash(0), 999u32);
         assert!(
             !inserted,
             "looser insert must be rejected by ToleranceBucket"

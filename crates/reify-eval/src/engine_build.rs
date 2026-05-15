@@ -8,11 +8,12 @@ use reify_solver_elastic::{
     Mesh2d, Mesh2dError, Mesh2dReport, SweepError, SweepParams, SweptMesh3d,
 };
 use reify_types::{
-    AttributeHistory, CapabilityDescriptor, CompiledFunction, Diagnostic, DiagnosticLabel,
-    ErrorRef, ExportFormat, FeatureId, FeatureTag, FeatureTagTable, Freshness, GeometryError,
-    GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, LoftOpHistoryRecords, Mesh,
-    Operation, RealizationNodeId, ReprKind, SourceSpan, SweepOpHistoryRecords, TopologyAttribute,
-    TopologyAttributeTable, ValueMap, VersionId, VolumeMesh,
+    AttributeHistory, CapabilityDescriptor, CompiledFunction, ContentHash, Diagnostic,
+    DiagnosticLabel, ErrorRef, ExportFormat, FeatureId, FeatureTag, FeatureTagTable, Freshness,
+    GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery,
+    LoftOpHistoryRecords, Mesh, Operation, RealizationNodeId, ReprKind, SourceSpan,
+    SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable, ValueMap, VersionId,
+    VolumeMesh,
 };
 
 use crate::cache::{CacheStore, CachedResult, FAILED_REALIZATION_STUB_HANDLE, NodeCache, NodeId};
@@ -1663,7 +1664,7 @@ impl Engine {
         // (see step-13's pin).
         if let (Some(tol), Some(name)) = (demanded_tol, realization_name)
             && let Some(&cached_handle) =
-                realization_cache.lookup(&realization_id.entity, ReprKind::BRep, tol)
+                realization_cache.lookup(&realization_id.entity, ReprKind::BRep, tol, ContentHash(0))
         {
             // Internal-consistency invariant (amendment): the per-build
             // reset of `feature_tag_table` / `topology_attribute_table` at
@@ -1963,7 +1964,7 @@ impl Engine {
                     named_steps.insert(name.to_string(), last);
                 }
                 if let (Some(tol), Some(_name)) = (demanded_tol, realization_name) {
-                    realization_cache.insert(&realization_id.entity, ReprKind::BRep, tol, last);
+                    realization_cache.insert(&realization_id.entity, ReprKind::BRep, tol, ContentHash(0), last);
                 }
             }
         }

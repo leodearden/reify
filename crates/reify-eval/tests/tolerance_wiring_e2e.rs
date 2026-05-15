@@ -24,8 +24,8 @@ use reify_test_support::{
 };
 #[allow(unused_imports)]
 use reify_types::{
-    CapabilityDescriptor, CompiledExpr, DiagnosticCode, ExportFormat, GeometryHandleId, ModulePath,
-    Operation, ReprKind, Severity, Type, Value, ValueCellId,
+    CapabilityDescriptor, CompiledExpr, ContentHash, DiagnosticCode, ExportFormat, GeometryHandleId,
+    ModulePath, Operation, ReprKind, Severity, Type, Value, ValueCellId,
 };
 #[allow(unused_imports)]
 use std::collections::{BTreeMap, HashSet};
@@ -244,7 +244,7 @@ fn build_populates_realization_cache_keyed_on_demanded_tolerance() {
     assert!(
         engine
             .realization_cache()
-            .lookup("MyDesign", ReprKind::BRep, 1e-6)
+            .lookup("MyDesign", ReprKind::BRep, 1e-6, ContentHash(0))
             .is_some(),
         "expected RealizationCache to contain an entry at \
          (\"MyDesign\", ReprKind::BRep, 1e-6) after build() completes against a \
@@ -495,7 +495,7 @@ fn cache_lookup_misses_when_purpose_changes_demanded_tolerance() {
     assert!(
         engine
             .realization_cache()
-            .lookup("MyDesign", ReprKind::BRep, 1e-6)
+            .lookup("MyDesign", ReprKind::BRep, 1e-6, ContentHash(0))
             .is_some(),
         "expected first build to populate the cache at (MyDesign, BRep, 1e-6); \
          partial-order test premise requires this entry to exist before the \
@@ -669,7 +669,7 @@ fn per_stage_tolerance_for_plan_governs_tolerance_budget_for_two_stage_dispatch_
 ///    Pinned independently by step-11; this step locks it as part of the
 ///    integration-axis bundle.
 /// 3. **RealizationCache populated at the demanded tolerance**:
-///    `engine.realization_cache().lookup("MyDesign", ReprKind::BRep, 1e-6)`
+///    `engine.realization_cache().lookup("MyDesign", ReprKind::BRep, 1e-6, ContentHash(0))`
 ///    returns `Some(_)` after `tessellate_realizations()` completes. Pinned
 ///    independently by step-5 against `build()`; this step pins the same
 ///    cache-population contract on the `tessellate_realizations()` surface.
@@ -769,7 +769,7 @@ fn end_to_end_tolerance_wiring_threads_promise_diagnostic_cache_and_per_stage_bu
     assert!(
         engine
             .realization_cache()
-            .lookup("MyDesign", ReprKind::BRep, 1e-6)
+            .lookup("MyDesign", ReprKind::BRep, 1e-6, ContentHash(0))
             .is_some(),
         "axis 3: tessellate_realizations() must populate the RealizationCache \
          at (\"MyDesign\", ReprKind::BRep, 1e-6) after a successful realization \
@@ -812,13 +812,13 @@ fn end_to_end_tolerance_wiring_threads_promise_diagnostic_cache_and_per_stage_bu
 ///   (a) `engine.eval(&module)` → `engine.activate_purpose("manufacturing",
 ///       "MyDesign")` → `engine.build(&module, ExportFormat::Step)` →
 ///       assert `engine.realization_cache().lookup("MyDesign", ReprKind::BRep,
-///       1e-6).is_some()` (cache populated by step-6 wiring; pins the test
-///       premise).
+///       1e-6, ContentHash(0)).is_some()` (cache populated by step-6 wiring; pins
+///       the test premise).
 ///   (b) `engine.edit_param(ValueCellId::new("MyDesign", "thickness"),
 ///       Value::Real(<new>)).unwrap()`.
 ///   (c) Without calling `build_snapshot` yet, assert
 ///       `engine.realization_cache().lookup("MyDesign", ReprKind::BRep,
-///       1e-6).is_none()` — the entry was cleared on edit.
+///       1e-6, ContentHash(0)).is_none()` — the entry was cleared on edit.
 ///
 /// Today (pre step-18) `edit_param` does NOT touch `realization_cache`, so
 /// the cache entry persists across the edit and the next `build_snapshot()`
@@ -847,7 +847,7 @@ fn edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_bui
     assert!(
         engine
             .realization_cache()
-            .lookup("MyDesign", ReprKind::BRep, 1e-6)
+            .lookup("MyDesign", ReprKind::BRep, 1e-6, ContentHash(0))
             .is_some(),
         "test premise: expected RealizationCache to contain an entry at \
          (\"MyDesign\", ReprKind::BRep, 1e-6) after build() (per step-5/step-6 \
@@ -876,7 +876,7 @@ fn edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_bui
     assert!(
         engine
             .realization_cache()
-            .lookup("MyDesign", ReprKind::BRep, 1e-6)
+            .lookup("MyDesign", ReprKind::BRep, 1e-6, ContentHash(0))
             .is_none(),
         "expected edit_param to auto-invalidate the RealizationCache so a \
          subsequent build_snapshot() cannot return a stale GeometryHandleId. \
@@ -941,13 +941,13 @@ fn my_design_template_with_box_realization_dims(
 ///   (a) `engine.eval(&module1)` → `engine.activate_purpose("manufacturing",
 ///       "MyDesign")` → `engine.build(&module1, ExportFormat::Step)` →
 ///       assert `engine.realization_cache().lookup("MyDesign", ReprKind::BRep,
-///       1e-6).is_some()` (cache populated; pins the test premise).
+///       1e-6, ContentHash(0)).is_some()` (cache populated; pins the test premise).
 ///   (b) Build a second `CompiledModule` with the same templates and
 ///       purposes, but a `MyDesign` realization carrying different Box
 ///       dimensions. Call `engine.edit_source(&module2).unwrap()`.
 ///   (c) Without calling `build_snapshot` yet, assert
 ///       `engine.realization_cache().lookup("MyDesign", ReprKind::BRep,
-///       1e-6).is_none()` — the entry was cleared on edit_source.
+///       1e-6, ContentHash(0)).is_none()` — the entry was cleared on edit_source.
 ///
 /// Today (pre step-18) `edit_source` does NOT touch `realization_cache`, so
 /// the cache entry persists across the source edit and a subsequent
@@ -978,7 +978,7 @@ fn edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_bu
     assert!(
         engine
             .realization_cache()
-            .lookup("MyDesign", ReprKind::BRep, 1e-6)
+            .lookup("MyDesign", ReprKind::BRep, 1e-6, ContentHash(0))
             .is_some(),
         "test premise: expected RealizationCache to contain an entry at \
          (\"MyDesign\", ReprKind::BRep, 1e-6) after build() (per step-5/step-6 \
@@ -1015,7 +1015,7 @@ fn edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_bu
     assert!(
         engine
             .realization_cache()
-            .lookup("MyDesign", ReprKind::BRep, 1e-6)
+            .lookup("MyDesign", ReprKind::BRep, 1e-6, ContentHash(0))
             .is_none(),
         "expected edit_source to auto-invalidate the RealizationCache so a \
          subsequent build()/build_snapshot() cannot return a stale \
@@ -1086,7 +1086,7 @@ fn clear_realization_cache_public_api_resets_cache_for_production_callers() {
     assert!(
         engine
             .realization_cache()
-            .lookup("MyDesign", ReprKind::BRep, 1e-6)
+            .lookup("MyDesign", ReprKind::BRep, 1e-6, ContentHash(0))
             .is_some(),
         "test premise: expected RealizationCache to contain an entry at \
          (\"MyDesign\", ReprKind::BRep, 1e-6) after build() (per step-5/step-6 \
@@ -1113,7 +1113,7 @@ fn clear_realization_cache_public_api_resets_cache_for_production_callers() {
     assert!(
         engine
             .realization_cache()
-            .lookup("MyDesign", ReprKind::BRep, 1e-6)
+            .lookup("MyDesign", ReprKind::BRep, 1e-6, ContentHash(0))
             .is_none(),
         "expected Engine::clear_realization_cache() to flush the cache so \
          every (entity_id, repr_kind, demanded_tol) lookup returns None. \
@@ -1370,7 +1370,7 @@ fn edit_param_followed_by_build_snapshot_re_executes_kernel_so_geometry_handle_i
     assert!(
         engine
             .realization_cache()
-            .lookup("MyDesign", ReprKind::BRep, 1e-6)
+            .lookup("MyDesign", ReprKind::BRep, 1e-6, ContentHash(0))
             .is_some(),
         "sanity: expected RealizationCache to contain an entry at \
          (\"MyDesign\", ReprKind::BRep, 1e-6) after build() — without this the \
@@ -1474,7 +1474,7 @@ fn cache_hit_short_circuit_leaves_feature_tag_table_empty_for_cached_handle() {
     // Capture the handle that the first build stored in the RealizationCache.
     let cached_handle: GeometryHandleId = *engine
         .realization_cache()
-        .lookup("MyDesign", ReprKind::BRep, 1e-6)
+        .lookup("MyDesign", ReprKind::BRep, 1e-6, ContentHash(0))
         .expect(
             "sanity: first build() must populate the RealizationCache at \
              (\"MyDesign\", ReprKind::BRep, 1e-6)",
@@ -1530,7 +1530,7 @@ fn cache_hit_short_circuit_leaves_feature_tag_table_empty_for_cached_handle() {
     assert_eq!(
         engine
             .realization_cache()
-            .lookup("MyDesign", ReprKind::BRep, 1e-6),
+            .lookup("MyDesign", ReprKind::BRep, 1e-6, ContentHash(0)),
         Some(&cached_handle),
         "sanity: expected RealizationCache entry at \
          (\"MyDesign\", ReprKind::BRep, 1e-6) to survive the second build; got \
