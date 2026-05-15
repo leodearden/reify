@@ -19,7 +19,7 @@ import { listen } from '@tauri-apps/api/event';
 // matches the established pattern in bridge.test.ts:9, claudeBridge.test.ts:8, etc.
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn() }));
 
-import { mockTauriEvent } from '../test_utils/mockEvents';
+import { mockTauriEvent, clearAllMockEvents } from '../test_utils/mockEvents';
 import { validatePayload } from '../../bridge';
 
 // ── Convention smoke fixture ─────────────────────────────────────────────────
@@ -45,14 +45,13 @@ async function onConventionSmoke(
 
 describe('convention smoke (GR-016 β)', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
-    // Reset the channel to clear any handlers registered in previous tests.
-    mockTauriEvent('convention-smoke').reset();
-  });
-
-  afterEach(() => {
-    // Restore any spies (e.g. console.warn) so they don't leak across tests.
+    // vi.restoreAllMocks() (called first) clears mockImplementation on vi.fn()-based
+    // mocks like listen. clearAllMockEvents() then resets installed=false so that
+    // ensureMockInstalled() will reinstall the implementation in the next test.
+    // vi.clearAllMocks() afterwards clears call-history only (not implementations).
     vi.restoreAllMocks();
+    clearAllMockEvents();
+    vi.clearAllMocks();
   });
 
   it('typed listen happy-path: callback fires with valid payload', async () => {
