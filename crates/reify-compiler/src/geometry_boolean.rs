@@ -59,34 +59,29 @@ fn resolve_boolean_arg(
         object: outer_obj,
         member,
     } = &arg.kind
-    {
-        if let reify_syntax::ExprKind::MemberAccess {
+        && let reify_syntax::ExprKind::MemberAccess {
             object: inner_obj,
             member: sub_name,
         } = &outer_obj.kind
-        {
-            if let reify_syntax::ExprKind::Ident(self_name) = &inner_obj.kind {
-                if self_name == "self" {
-                    if try_emit_cross_sub_geometry(
-                        scope,
-                        sub_name.as_str(),
-                        member.as_str(),
-                        arg.span,
-                        diagnostics,
-                    )
-                    .is_some()
-                    {
-                        // Specific deferred diagnostic emitted; skip generic fallback.
-                        return None;
-                    }
-                    // Helper returned None: member is not a geometry realization on
-                    // this sub (e.g. scalar param). Fall through to compile_geometry_call
-                    // + generic fallback so the existing "must be a geometry expression"
-                    // message fires correctly for scalar-member shapes.
-                }
-            }
-        }
+        && let reify_syntax::ExprKind::Ident(self_name) = &inner_obj.kind
+        && self_name == "self"
+        && try_emit_cross_sub_geometry(
+            scope,
+            sub_name.as_str(),
+            member.as_str(),
+            arg.span,
+            diagnostics,
+        )
+        .is_some()
+    {
+        // Specific deferred diagnostic emitted; skip generic fallback.
+        return None;
     }
+    // Helper returned None: member is not a geometry realization on this sub
+    // (e.g. scalar param), or the arg is not a self.<sub>.<member> shape.
+    // Fall through to compile_geometry_call + generic fallback so the existing
+    // "must be a geometry expression" message fires correctly for scalar-member
+    // shapes.
     let ops = match compile_geometry_call(
         arg,
         scope,
