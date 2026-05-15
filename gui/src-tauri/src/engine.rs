@@ -99,6 +99,24 @@ mod core_state {
         pub(crate) fn file_path(&self) -> Option<&Path> {
             self.file_path.as_deref()
         }
+
+        /// Atomically commit a fresh `CheckResult` into `last_check`.
+        ///
+        /// This is the **single** write-point for `last_check` used by
+        /// `EngineSession::set_parameter` after a successful `engine.edit_check`.
+        /// Callers may rely on this method touching **only** `last_check` — no
+        /// other core field is modified.  This guarantee is what lets
+        /// `engine_lock::with_engine_lock` safely recover from a poisoned mutex:
+        /// a panic inside `set_parameter` between `edit_check` and `commit_check`
+        /// leaves `last_check` as the previous value, not a partially-updated one.
+        ///
+        /// Visibility is `pub(crate)` (rather than `pub(super)`) so that the
+        /// structural marker assertion in `tests/engine_tests.rs` can reference
+        /// the function pointer — the type-level enforcement comes from field
+        /// privacy, not from restricting who can call commit methods.
+        pub(crate) fn commit_check(&mut self, check: CheckResult) {
+            self.last_check = Some(check);
+        }
     }
 }
 
@@ -798,7 +816,7 @@ impl EngineSession {
             .map_err(|e| format!("Engine error: {}", e))?;
 
         self.emit_auto_resolve_if_any(&check_result);
-        self.core.last_check = Some(check_result);
+        self.core.commit_check(check_result);
         self.build_gui_state()
     }
 
