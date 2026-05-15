@@ -169,9 +169,15 @@ pub struct NodeCache {
     /// Transient: not preserved across clones (warm state is an optimization hint).
     pub warm_state: Option<OpaqueState>,
     /// Diagnostic-chain side-table: when `freshness == Pending`, this carries
-    /// the upstream `NodeId` that caused this node to be Pending (a Failed
-    /// leaf, or another Pending node forwarding its own cause). `None` when
-    /// the entry is not Pending or the chain root has not been recorded.
+    /// the upstream `NodeId` that caused this node to be Pending. Valid
+    /// chain-root variants (per `docs/prds/v0_3/compute-node-contract.md §3`):
+    ///
+    /// - `NodeId::Value(_)` — a Failed leaf whose error gated a downstream cell.
+    /// - `NodeId::Compute(_)` — an in-flight ComputeNode that is itself the
+    ///   chain root (admitted by PRD §3 "Chain-root contract extension").
+    ///
+    /// `None` when the entry is not Pending or the chain root has not been
+    /// recorded.
     ///
     /// This lives outside `Freshness::Pending` so the four-variant lifecycle
     /// tag stays untouched (see arch §7.1, plan task #2330 design decision).
@@ -685,9 +691,16 @@ impl CacheStore {
     /// `pending_transition_count`) and additionally records `cause` in the
     /// `pending_cause` side-table on the entry.
     ///
-    /// `cause` is the upstream `NodeId` that drove the transition — typically
-    /// either a Failed leaf or another Pending node forwarding its own cause.
-    /// See arch §9.2 lines 880-890 and arch §7.2 line 748.
+    /// `cause` is the upstream `NodeId` that drove the transition. Valid
+    /// chain-root variants (per `docs/prds/v0_3/compute-node-contract.md §3`):
+    ///
+    /// - `NodeId::Value(_)` — a Failed leaf whose error gated a downstream cell.
+    /// - `NodeId::Compute(_)` — an in-flight ComputeNode that is itself the
+    ///   chain root (admitted by PRD §3 "Chain-root contract extension").
+    /// - Another Pending node forwarding its own upstream cause.
+    ///
+    /// The `cause` field accepts any `NodeId` variant — no per-variant guard
+    /// is applied. See arch §9.2 lines 880-890 and arch §7.2 line 748.
     ///
     /// Returns `true` if the node was present and updated, `false` if no
     /// cache entry exists.
@@ -709,6 +722,13 @@ impl CacheStore {
     /// Returns the `Option<NodeId>` from the entry's `pending_cause`
     /// side-table when present; returns `None` when the node has no entry
     /// (consistent with the "default to None on absent" pattern).
+    ///
+    /// The returned `NodeId` may be any of the valid chain-root variants
+    /// (per `docs/prds/v0_3/compute-node-contract.md §3`):
+    ///
+    /// - `NodeId::Value(_)` — a Failed leaf whose error gated a downstream cell.
+    /// - `NodeId::Compute(_)` — an in-flight ComputeNode that is itself the
+    ///   chain root (admitted by PRD §3 "Chain-root contract extension").
     ///
     /// Failed entries return `None` here (they are chain roots, not
     /// forwarders); only Pending entries written via
@@ -1069,7 +1089,10 @@ pub fn derive_output_freshness(
 ///   root, not a forwarder).
 /// - **Pending input** forwards the upstream entry's `pending_cause` (or `None` if
 ///   the upstream chain was never recorded). The Pending node's own NodeId is not
-///   used as the cause — only a Failed leaf is a chain root.
+///   used as the cause. The forwarded cause may be any valid chain-root variant,
+///   including `NodeId::Compute(_)` (in-flight ComputeNode — admitted by
+///   `docs/prds/v0_3/compute-node-contract.md §3`); the forwarder branch is
+///   variant-agnostic.
 /// - All other input combinations return `(freshness, None)`.
 ///
 /// When multiple non-Final inputs are present, the **first Failed** input wins;
@@ -1098,6 +1121,8 @@ pub fn derive_output_freshness_with_cause(
                 if pending_cause.is_none() {
                     // Pending forwards the upstream entry's pending_cause; the Pending
                     // node's own NodeId is NOT used (only Failed leaves are chain roots).
+                    // The forwarded cause may be any NodeId variant, including
+                    // NodeId::Compute(_) (PRD §3 chain-root contract extension).
                     pending_cause = upstream_cause;
                 }
             }
