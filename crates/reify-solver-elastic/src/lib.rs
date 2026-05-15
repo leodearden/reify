@@ -129,11 +129,34 @@
 //! // Neumann BC smoke tests (T2918): verify public surface is callable.
 //! let _ = FaceOrder::P1Tri;
 //! let _ = FaceOrder::P2Tri;
+//! let _ = FaceOrder::P1Quad;
 //! let mut f_smoke = vec![0.0_f64; 12];
 //! apply_point_load(&mut f_smoke, 0, [1.0, 2.0, 3.0]);
 //! assert_eq!(f_smoke[0], 1.0, "apply_point_load smoke: f[0]");
 //! assert_eq!(f_smoke[1], 2.0, "apply_point_load smoke: f[1]");
 //! assert_eq!(f_smoke[2], 3.0, "apply_point_load smoke: f[2]");
+//!
+//! // Task 2986: pin FaceOrder::P1Quad dispatches through apply_traction_load.
+//! // Zero traction ⇒ result is exactly the input (no behavioral commitment
+//! // beyond compile-and-dispatch). API-surface check matching the P1Tri /
+//! // P2Tri pattern.
+//! let mut f_quad_smoke = vec![0.0_f64; 12];
+//! let quad_face_phys: [[f64; 3]; 4] = [
+//!     [-1.0, -1.0, 0.0],
+//!     [1.0, -1.0, 0.0],
+//!     [1.0, 1.0, 0.0],
+//!     [-1.0, 1.0, 0.0],
+//! ];
+//! apply_traction_load(
+//!     &mut f_quad_smoke,
+//!     FaceOrder::P1Quad,
+//!     &[0_usize, 1, 2, 3],
+//!     &quad_face_phys,
+//!     [0.0, 0.0, 0.0],
+//! );
+//! for v in &f_quad_smoke {
+//!     assert_eq!(*v, 0.0, "zero traction P1Quad smoke must leave f exactly 0.0");
+//! }
 //!
 //! // Shell BC smoke tests (T8): verify public surface is callable.
 //! let _ = SupportKind::Fixed;
