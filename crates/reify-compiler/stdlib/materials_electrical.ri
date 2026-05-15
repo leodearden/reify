@@ -8,9 +8,10 @@
 //
 // ── Decision #1: Real placeholder for dimensioned params ─────────────────────
 // Real-placeholder audit: see docs/notes/stdlib-real-placeholder-audit.md
-// resistivity (Ω·m) and dielectric_strength (V/m) are blocked-composite pending
-// named-dim aliases (task #3115); dielectric_constant and magnetic_permeability are
-// genuine-dimensionless (annotated below).
+// resistivity (Ω·m) and dielectric_strength (V/m) were tightened to dimensioned
+// aliases (ElectricResistivity, DielectricStrength) by task #3115;
+// dielectric_constant and magnetic_permeability are genuine-dimensionless
+// (annotated below).
 //
 // ── Decision #2: Parent trait name ───────────────────────────────────────────
 // The spec text says `: Material` but `Material` was renamed to `MaterialSpec`
@@ -45,9 +46,9 @@
 //   dielectric_strength  — V/m (breakdown field, using Real)
 //   magnetic_permeability — dimensionless (relative permeability)
 trait ElectricallyCharacterized : MaterialSpec {
-    param resistivity : Real
+    param resistivity : ElectricResistivity
     param dielectric_constant : Real // dimensionless
-    param dielectric_strength : Real
+    param dielectric_strength : DielectricStrength
     param magnetic_permeability : Real // dimensionless
 }
 

@@ -250,9 +250,9 @@ fn copper_conforms_to_conductive_with_constraint_injection() {
 structure def Copper : Conductive {
     param density : Real = 8960.0
     param name : String = "copper"
-    param resistivity : Real = 0.000000017
+    param resistivity : ElectricResistivity = 0.000000017 * 1ohm * 1m
     param dielectric_constant : Real = 1.0
-    param dielectric_strength : Real = 0.0
+    param dielectric_strength : DielectricStrength = 0.0 * 1V / 1m
     param magnetic_permeability : Real = 1.0
 }
 "#;
@@ -325,9 +325,9 @@ fn glass_conforms_to_insulating_with_constraint_injection() {
 structure def Glass : Insulating {
     param density : Real = 2500.0
     param name : String = "glass"
-    param resistivity : Real = 1000000000.0
+    param resistivity : ElectricResistivity = 1000000000.0 * 1ohm * 1m
     param dielectric_constant : Real = 7.0
-    param dielectric_strength : Real = 10000000.0
+    param dielectric_strength : DielectricStrength = 10000000.0 * 1V / 1m
     param magnetic_permeability : Real = 1.0
 }
 "#;
