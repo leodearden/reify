@@ -255,11 +255,31 @@ export async function isDebugEnabled(): Promise<boolean> {
 // ── Claude event subscription ───────────────────────────────────────
 
 /**
+ * GR-016 β convention helpers — see
+ * `docs/prds/v0_3/gui-event-channel-inventory.md` §3.5 and §5.2, plus the
+ * canonical inventory at `docs/gui-event-channels.md`.
+ *
+ * For each new event channel, the consumer-side wrapper follows this shape:
+ *   1. Define `KEYS_<NAME>` at module level (avoids per-call allocations).
+ *   2. Export `on<Name>(callback): Promise<UnlistenFn>` that calls `listen<T>`
+ *      with the channel name and passes `event.payload` through
+ *      `validatePayload(channel, payload, KEYS_<NAME>)`.
+ *   3. Hard-fail in DEV builds, console.warn in release builds (§5.2). Per the
+ *      Phase-1 boundary, DEV-mode throwing happens at the `on<Name>` call site
+ *      (e.g. `if (!p && import.meta.env.DEV) throw new Error(...)`), NOT inside
+ *      `validatePayload` itself — keeping the helper warn-only preserves existing
+ *      Claude-handler semantics.
+ *   4. For typed-serde payloads (most channels), `validatePayload` is skipped and
+ *      the `listen<T>` type-cast is trusted; downstream NPEs surface contract
+ *      violations naturally per §5.2 paragraph 3.
+ */
+
+/**
  * Validate that a Tauri event payload is a non-null plain object with all
  * required keys present and of type string.
  * Returns the payload as a Record on success, or null on failure (with a console.warn).
  */
-function validatePayload(
+export function validatePayload(
   eventName: string,
   payload: unknown,
   requiredKeys: string[],
