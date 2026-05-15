@@ -406,8 +406,8 @@ _fix12_stderr="$_tmpdir/fix12_stderr.txt"
 assert "--bidirectional does not classify §10 channel as §1 phantom" \
     bash -c "! grep -q 'should-not-be-scanned' '$_fix12_stderr'"
 
-assert "--bidirectional exits 0 with §10 section present" \
-    "$CHECK_SCRIPT" --repo-root "$_fix12dir" --bidirectional
+assert "--bidirectional --strict exits 0 when §10 channel is not misclassified as §1 phantom" \
+    "$CHECK_SCRIPT" --repo-root "$_fix12dir" --strict --bidirectional
 
 # -- Summary ------------------------------------------------------------------
 test_summary
