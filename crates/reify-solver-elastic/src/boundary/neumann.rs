@@ -1551,6 +1551,78 @@ mod tests {
         );
     }
 
+    /// P1Quad with non-contiguous, non-zero-based connectivity `[4, 0, 7, 9]`
+    /// into a 10-node global `f` (length 30). Each local node receives
+    /// `area/4 = 1.0` along x (traction = +x), area = 4 on the canonical
+    /// unit reference quad in the xy-plane. Verifies that the scatter step
+    /// places contributions at the correct global DOF indices and leaves
+    /// all other entries zero. Mirrors `apply_traction_p1tri_non_contiguous_connectivity_scatter`.
+    #[test]
+    fn apply_traction_p1quad_non_contiguous_connectivity_scatter() {
+        let face_phys: [[f64; 3]; 4] = [
+            [-1.0, -1.0, 0.0],
+            [1.0, -1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [-1.0, 1.0, 0.0],
+        ];
+        // Local face nodes 0, 1, 2, 3 → global nodes 4, 0, 7, 9.
+        let conn = [4usize, 0, 7, 9];
+        let traction = [1.0_f64, 0.0, 0.0];
+        let mut f = vec![0.0_f64; 30]; // 10 nodes
+        apply_traction_load(&mut f, FaceOrder::P1Quad, &conn, &face_phys, traction);
+
+        let expected = 1.0_f64; // area/4 = 4/4
+
+        // Global node 4: f[12..15]
+        assert!(
+            (f[12] - expected).abs() < TOL,
+            "f[12] (node 4 x-DOF) = {}, expected {expected}",
+            f[12]
+        );
+        assert_eq!(f[13], 0.0, "f[13] (node 4 y-DOF) should be 0");
+        assert_eq!(f[14], 0.0, "f[14] (node 4 z-DOF) should be 0");
+
+        // Global node 0: f[0..3]
+        assert!(
+            (f[0] - expected).abs() < TOL,
+            "f[0] (node 0 x-DOF) = {}, expected {expected}",
+            f[0]
+        );
+        assert_eq!(f[1], 0.0, "f[1] (node 0 y-DOF) should be 0");
+        assert_eq!(f[2], 0.0, "f[2] (node 0 z-DOF) should be 0");
+
+        // Global node 7: f[21..24]
+        assert!(
+            (f[21] - expected).abs() < TOL,
+            "f[21] (node 7 x-DOF) = {}, expected {expected}",
+            f[21]
+        );
+        assert_eq!(f[22], 0.0, "f[22] (node 7 y-DOF) should be 0");
+        assert_eq!(f[23], 0.0, "f[23] (node 7 z-DOF) should be 0");
+
+        // Global node 9: f[27..30]
+        assert!(
+            (f[27] - expected).abs() < TOL,
+            "f[27] (node 9 x-DOF) = {}, expected {expected}",
+            f[27]
+        );
+        assert_eq!(f[28], 0.0, "f[28] (node 9 y-DOF) should be 0");
+        assert_eq!(f[29], 0.0, "f[29] (node 9 z-DOF) should be 0");
+
+        // All other entries must remain zero.
+        let touched: std::collections::HashSet<usize> = [
+            0, 1, 2, 12, 13, 14, 21, 22, 23, 27, 28, 29,
+        ]
+        .iter()
+        .cloned()
+        .collect();
+        for i in 0..30 {
+            if !touched.contains(&i) {
+                assert_eq!(f[i], 0.0, "f[{i}] should be 0.0 (not a face DOF)");
+            }
+        }
+    }
+
     // =======================================================================
     // apply_traction_load — contract panics
     // =======================================================================
