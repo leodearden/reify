@@ -83,6 +83,8 @@ notify = "6"
 
 tempfile = "3"
 
+tar = "0.4"
+
 toml = "0.8"
 
 zstd = "0.13"
