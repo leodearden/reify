@@ -2141,4 +2141,17 @@ mod tests {
             }
         }
     }
+
+    /// Empty `elements` slice → `OrphanDofsSummary` with count=0 and
+    /// examples empty.
+    ///
+    /// Pins the empty-input contract for `detect_orphan_dofs`, paralleling
+    /// `empty_elements_returns_zero_3n_by_3n_sparse_matrix` for
+    /// `assemble_global_stiffness`.
+    #[test]
+    fn detect_orphan_dofs_empty_elements_returns_zero_summary() {
+        let summary = detect_orphan_dofs(4, &[]);
+        assert_eq!(summary.count, 0);
+        assert!(summary.examples.is_empty());
+    }
 }
