@@ -1161,9 +1161,30 @@ impl<'a> Lowering<'a> {
         let type_node = node.child_by_field_name("type")?;
         let type_expr = self.lower_type_expr_node(type_node);
 
+        let default = if let Some(d) = node.child_by_field_name("default") {
+            if let Some(expr) = self.lower_expr(d) {
+                Some(expr)
+            } else {
+                // `default` field node is present but `lower_expr` could not
+                // lower it — push a diagnostic so downstream consumers can tell
+                // "unrecognised default form" apart from "no default supplied".
+                self.push_error(
+                    format!(
+                        "unrecognised expression in fn_param default: {}",
+                        self.node_text(d)
+                    ),
+                    self.span(d),
+                );
+                None
+            }
+        } else {
+            None
+        };
+
         Some(FnParam {
             name,
             type_expr,
+            default,
             span: self.span(node),
         })
     }

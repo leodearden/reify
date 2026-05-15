@@ -35,13 +35,13 @@ For the naming/payload convention governing new entries see §3 of the source PR
 | `claude-sidecar-crashed` | `{reason: String}` | `claude_bridge.rs` `on_exit` hook | `subscribeToSidecarCrashed` | |
 | `debug-request` | (variant; see `debug.rs`) | `debug.rs::emit` | `gui/src` debug-bridge | REIFY_DEBUG=1 only; internal Tauri-event-routed RPC pattern |
 
-## §2 — Channels this PRD adds (FICTION → WIRED via GR-016 decomposition)
+## §2 — Channels this PRD adds (WIRED via GR-016 task δ / task 3539)
 
-| Channel | Payload (proposed) | Producer (proposed) | Consumer (already shipped) | Upstream prereq | Owning slice |
-|---|---|---|---|---|---|
-| `auto-resolve-start` | `()` | `reify-eval` auto-resolve orchestrator entry | `bridge.ts::onAutoResolveStart` → `AutoResolvePanel` | C-05 fix-now (param-x-auto wired into compile pipeline) | Phase 2 (proof slice) |
-| `auto-resolve-iteration` | `AutoResolveIteration {iteration: u32, parameters: Map<String,f64>, constraints: Map<String,f64>}` | same | `bridge.ts::onAutoResolveIteration` → AutoResolvePanel chart | same | Phase 2 |
-| `auto-resolve-complete` | `()` | same | `bridge.ts::onAutoResolveComplete` | same | Phase 2 |
+| Channel | Payload | Producer | Consumer | Upstream prereq | Owning slice | Spec |
+|---|---|---|---|---|---|---|
+| `auto-resolve-start` | `()` | `gui/src-tauri/src/engine.rs::emit_auto_resolve_if_any` (called from `EngineSession::{load_from_source, set_parameter, update_source}`) | `bridge.ts::onAutoResolveStart` → `AutoResolvePanel` | C-05 fix-now (param-x-auto wired into compile pipeline) | Phase 2 (proof slice) | [`auto-resolve-start.md`](gui-event-channels/auto-resolve-start.md) |
+| `auto-resolve-iteration` | `AutoResolveIteration {iteration: u32, parameters: Map<String, AutoResolveParameterValue>, constraints: Map<String, AutoResolveConstraintProgress>, driving_metric?: String, driving_metric_value?: f64}` | same | `bridge.ts::onAutoResolveIteration` → AutoResolvePanel chart | same | Phase 2 | [`auto-resolve-iteration.md`](gui-event-channels/auto-resolve-iteration.md) |
+| `auto-resolve-complete` | `()` | same | `bridge.ts::onAutoResolveComplete` | same | Phase 2 | [`auto-resolve-complete.md`](gui-event-channels/auto-resolve-complete.md) |
 | `warm-pool-event` | `WarmPoolEvent {kind: 'evicted'\|'donated', size_bytes: u64, node_id: String}` | `reify-eval` `WarmStatePool::drain_events()` → journal translator at eval boundary | (new) `WarmPoolDebugPanel` in `gui/src/debug/` | warm-state-eviction M-010 (drainer wiring) | Phase 3 |
 | `solver-progress` | `{solver_kind: String, iter: u32, residual: f64, eta_ms: Option<u64>}` | `reify-solver-elastic` CG callback at iteration boundary | (new) `SolverProgressOverlay` | task 2923 (FEA progressive framework); task 2965 (overlay component) | Phase 3 |
 | `fea-case-changed` | `{active_case_id: String, available_cases: Vec<String>}` | `reify-eval` multi-case ElasticResult dispatch at case-switch | (new) `FeaCasePickerDropdown` | task 3026 (multi-load case engine wiring) | Phase 3 |

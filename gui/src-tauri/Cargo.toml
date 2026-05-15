@@ -15,10 +15,11 @@ name = "reify_gui"
 path = "src/lib.rs"
 
 [features]
-gui = ["dep:tauri", "dep:reify-kernel-occt", "dep:tauri-plugin-dialog", "dep:tauri-plugin-shell"]
+gui = ["dep:tauri", "dep:reify-kernel-occt", "dep:tauri-plugin-dialog", "dep:tauri-plugin-shell", "dep:reify-mesh-morph"]
 
 [dependencies]
 reify-types.workspace = true
+reify-mesh-morph = { workspace = true, optional = true }
 reify-syntax.workspace = true
 reify-compiler.workspace = true
 reify-eval.workspace = true
@@ -50,4 +51,7 @@ reify-test-support.workspace = true
 reify-eval = { workspace = true, features = ["test-instrumentation"] }
 reify-mcp = { workspace = true, features = ["test-support"] }
 reify-lsp = { workspace = true, features = ["test-support"] }
+# Activates stats::reset_for_test() on the dep for cross-crate test isolation
+# in debug_server.rs once engine wiring (PRD #2947-#2949) lands.
+reify-mesh-morph = { workspace = true, features = ["testing"] }
 tempfile.workspace = true

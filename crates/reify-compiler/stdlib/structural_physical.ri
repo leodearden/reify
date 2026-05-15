@@ -5,8 +5,10 @@
 // Real-placeholder audit: see docs/notes/stdlib-real-placeholder-audit.md
 // Tightenable-now params: volume, centroid_x/y/z, moment_of_inertia, max_deflection,
 // hardening_modulus, max_service_temp, seal_pressure_rating (task #3114).
-// Blocked-composite params: stiffness (N/m), thermal_conductivity, electrical_conductivity,
-// resistivity — pending named-dim aliases (task #3115).
+// Previously blocked-composite params (stiffness, thermal_conductivity,
+// electrical_conductivity, resistivity) are now tightened to named-dimension
+// aliases (Stiffness, ThermalConductivity, ElectricalConductivity,
+// ElectricResistivity) by task #3115.
 
 // ── Physical body trait ─────────────────────────────────────────────────────
 
@@ -42,11 +44,15 @@ trait Rigid : Physical {
 // the deformation is recoverable or permanent.
 // The reversible-vs-permanent distinction is delegated to refining traits:
 // ElasticallyDeformable (recoverable/reversible) and Plastic (permanent/irreversible).
-// stiffness (N/m, using Real), max_deflection (m, using Real).
+// stiffness (N/m, Stiffness alias — tightened by task #3115),
+// max_deflection (m, using Real — tightenable-now, task #3114).
 trait Flexible {
-    param stiffness : Real
+    param stiffness : Stiffness
     param max_deflection : Real
-    constraint stiffness > 0
+    // RHS is dimensioned (N/m = Stiffness) so `eval_cmp` dim-equality succeeds
+    // at runtime; a bare `0` would yield Indeterminate per task #3115
+    // esc-3115-112 (compile-time accepted bare-numeric, runtime rejected it).
+    constraint stiffness > 0.0 * 1N / 1m
     constraint max_deflection > 0
 }
 
@@ -90,24 +96,28 @@ trait Plastic : Flexible {
 
 // ThermallyConductive refines Physical: a thermally conductive body is also a
 // physical body, inheriting volume, centroid, and mass.
-// thermal_conductivity (W/(m·K), using Real),
-// max_service_temp (K, using Real).
+// thermal_conductivity (W/(m·K), ThermalConductivity alias — tightened by #3115),
+// max_service_temp (K, using Real — tightenable-now, task #3114).
 trait ThermallyConductive : Physical {
-    param thermal_conductivity : Real
+    param thermal_conductivity : ThermalConductivity
     param max_service_temp : Real
-    constraint thermal_conductivity > 0
+    // RHS dimensioned (W/(m·K) = ThermalConductivity) — see Flexible above for
+    // rationale (esc-3115-112).
+    constraint thermal_conductivity > 0.0 * 1W / (1m * 1K)
 }
 
 // ── Electrical conductivity ─────────────────────────────────────────────────
 
 // ElectricallyConductive refines Physical: an electrically conductive body is
 // also a physical body, inheriting volume, centroid, and mass.
-// electrical_conductivity (S/m, using Real),
-// resistivity (Ω·m, using Real).
+// electrical_conductivity (S/m, ElectricalConductivity alias — tightened by #3115),
+// resistivity (Ω·m, ElectricResistivity alias — tightened by #3115).
 trait ElectricallyConductive : Physical {
-    param electrical_conductivity : Real
-    param resistivity : Real
-    constraint electrical_conductivity > 0
+    param electrical_conductivity : ElectricalConductivity
+    param resistivity : ElectricResistivity
+    // RHS dimensioned (S/m = ElectricalConductivity) — see Flexible above for
+    // rationale (esc-3115-112).
+    constraint electrical_conductivity > 0.0 * 1S / 1m
 }
 
 // ── Sealing ─────────────────────────────────────────────────────────────────

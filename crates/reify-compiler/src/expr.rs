@@ -183,7 +183,7 @@ fn make_cross_sub_geometry_error(
 /// populates `sub_realization_names` without `sub_component_types` panics
 /// loudly rather than silently producing a diagnostic that names the sub
 /// instance instead of its child structure.
-fn try_emit_cross_sub_geometry(
+pub(crate) fn try_emit_cross_sub_geometry(
     scope: &CompilationScope<'_>,
     sub_name: &str,
     member: &str,
@@ -221,9 +221,13 @@ fn try_emit_cross_sub_geometry(
 /// When `<sub_name>` is a non-collection sub of the current entity AND `<member>`
 /// is a geometry realisation on its child structure (per
 /// `scope.sub_realization_names[sub_name].contains(member)`), this helper
-/// produces a synthetic value-ref `CompiledExpr` whose entity stamp follows
+/// produces a synthetic `CompiledExpr` of kind
+/// `CompiledExprKind::CrossSubGeometryRef` (task 3508) whose entity stamp follows
 /// the same `format!("{}.{}", entity_name, sub_name)` convention used at
 /// expr.rs:1317 for scalar cross-sub member access, with `Type::Geometry`.
+/// The typed variant lets the bare-let drop site in entity.rs recognise the
+/// synthetic shape unambiguously via pattern match, rather than the fragile
+/// `entity.contains('.')` heuristic.
 ///
 /// Returns `None` when the member is not a realisation on the child template,
 /// allowing the caller to fall through to its existing "unknown member" branch.
@@ -261,7 +265,10 @@ fn try_resolve_cross_sub_geometry_value_ref(
     if scope.sub_member_is_cross_sub_geometry_or_forward_declared(sub_name, member) {
         let scoped_entity = format!("{}.{}", scope.entity_name, sub_name);
         let scoped_id = ValueCellId::new(&scoped_entity, member);
-        Some(CompiledExpr::value_ref(scoped_id, Type::Geometry))
+        // Emit the typed discriminator (task-3508) so the bare-let drop site in
+        // entity.rs can recognise this synthetic shape via pattern match on the
+        // variant, rather than the fragile `entity.contains('.')` heuristic.
+        Some(CompiledExpr::cross_sub_geometry_ref(scoped_id, Type::Geometry))
     } else {
         None
     }
@@ -1318,12 +1325,31 @@ pub(crate) fn compile_expr_guarded(
                                 .with_label(DiagnosticLabel::new(expr.span, "unknown member")),
                             );
                         }
-                        // Use the member's actual type as fallback so downstream expressions
-                        // do not cascade spurious type-mismatch diagnostics.
-                        // Aggregation members are not in sub_member_types (they're methods,
-                        // not struct fields), so infer their types the same way the general
-                        // method-call path does at the bottom of this arm.
+                        // Determine the fallback type to suppress cascading type-mismatch
+                        // diagnostics in downstream expressions.
+                        //
+                        // Known aggregation members (count/sum/keys/values) are NOT in
+                        // sub_member_types (they're methods, not struct fields); infer their
+                        // concrete types the same way the general method-call path does.
+                        //
+                        // For any *unknown* member, the diagnostic above already captures the
+                        // root cause.  We must NOT fall back to Type::Real here: doing so lets
+                        // downstream BinOp consumers see `Real + Real = Real` and swallow the
+                        // error, defeating the Type::Error anti-cascade policy described in
+                        // the `make_poison_literal` doc-block in this module and the
+                        // `infer_binop_type` Type::Error short-circuit in type_compat.rs.
+                        // `unwrap_or(Type::Error)` ensures the literal carries the poison
+                        // sentinel so `infer_binop_type` short-circuits correctly.
                         let fallback_type = match member.as_str() {
+                            // G-allow: `count`/`sum`/`keys`/`values` are
+                            // COLLECTION_AGGREGATION_MEMBERS — the diagnostic at lines
+                            // 1272–1282 ("cannot access aggregation through self") already
+                            // captures the root cause.  Returning the known concrete type
+                            // (Int for count, Real for sum/keys/values) avoids spurious
+                            // downstream type-mismatch diagnostics: the user knows the
+                            // intended return type of the aggregation method they typed, so
+                            // any downstream check against that concrete type is not cascade
+                            // (plan design decision #2, task 3639 review).
                             "count" => Type::Int,
                             "sum" | "keys" | "values" => Type::Real,
                             _ => scope
@@ -1331,7 +1357,10 @@ pub(crate) fn compile_expr_guarded(
                                 .get(sub_name.as_str())
                                 .and_then(|m| m.get(member.as_str()))
                                 .cloned()
-                                .unwrap_or(Type::Real),
+                                // G-allow: Type::Error is intentional here — unknown member on a
+                                // collection sub is an unrecoverable error; poison the literal so
+                                // downstream consumers short-circuit (task 3639 review).
+                                .unwrap_or(Type::Error),
                         };
                         return CompiledExpr::literal(Value::Undef, fallback_type);
                     }
@@ -3264,5 +3293,60 @@ pub structure Rack {
             "diagnostic must carry the cluster label; got labels: {:?}",
             label_msgs
         );
+    }
+
+    /// `try_resolve_cross_sub_geometry_value_ref` must emit
+    /// `CompiledExprKind::CrossSubGeometryRef` (the typed discriminator added in
+    /// task-3508), NOT `CompiledExprKind::ValueRef`.
+    ///
+    /// Before task-3508 the producer called `CompiledExpr::value_ref`, so the
+    /// bare-let drop site in entity.rs had to use the fragile
+    /// `entity.contains('.')` heuristic. After task-3508 the producer calls
+    /// `CompiledExpr::cross_sub_geometry_ref`, making the consumer's
+    /// pattern match structurally unambiguous.
+    ///
+    /// RED until step-4 flips the producer from `value_ref` to
+    /// `cross_sub_geometry_ref`.
+    #[test]
+    fn try_resolve_cross_sub_geometry_value_ref_emits_typed_discriminator() {
+        use std::collections::{BTreeMap, BTreeSet};
+        use reify_types::{CompiledExprKind, Type};
+
+        let mut scope = CompilationScope::new("Outer");
+        scope
+            .sub_component_types
+            .insert("inner".to_string(), "Inner".to_string());
+        // Empty inner member-type map so the realization-name branch governs.
+        scope
+            .sub_member_types
+            .insert("inner".to_string(), BTreeMap::new());
+        scope
+            .sub_realization_names
+            .insert("inner".to_string(), BTreeSet::from(["body".to_string()]));
+
+        // (a) helper must return Some.
+        let result = try_resolve_cross_sub_geometry_value_ref(&scope, "inner", "body");
+        assert!(result.is_some(), "expected Some from the helper for a known realization");
+
+        let result = result.unwrap();
+
+        // (b) kind must be CrossSubGeometryRef (not ValueRef) — the typed discriminator.
+        assert!(
+            matches!(result.kind, CompiledExprKind::CrossSubGeometryRef(_)),
+            "producer must emit CrossSubGeometryRef, not ValueRef, after task 3508 (got {:?})",
+            result.kind
+        );
+        // (c) kind must NOT be ValueRef.
+        assert!(
+            !matches!(result.kind, CompiledExprKind::ValueRef(_)),
+            "producer must not emit ValueRef after task 3508"
+        );
+        // (d) inner ValueCellId must carry the scoped entity stamp and member name.
+        if let CompiledExprKind::CrossSubGeometryRef(vid) = &result.kind {
+            assert_eq!(vid.entity, "Outer.inner");
+            assert_eq!(vid.member, "body");
+        }
+        // (e) result_type must be Type::Geometry.
+        assert_eq!(result.result_type, Type::Geometry);
     }
 }

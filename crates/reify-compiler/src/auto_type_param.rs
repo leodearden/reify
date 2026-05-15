@@ -764,9 +764,16 @@ pub fn filter_feasible_candidates(
 
     // Build the template's constraint list once — it does not change across
     // candidates in Phase B.
-    // TODO(post-substitution-mechanics): revert this hoist when the substitution
-    // pass lands (see `build_constraints_template` for the full deferred-substitution
-    // note and migration instructions).
+    //
+    // NOTE(substitution-pass-trigger): This hoist is sound TODAY because the empty
+    // `ValueMap` and the unchanged `template.constraints` slice means the
+    // `(ConstraintNodeId, &CompiledExpr)` list is identical across candidates.
+    // This changes the moment `Type::TypeParam(T) → Type::StructureRef(candidate)`
+    // substitution starts mutating per-candidate cell types in the expression graph.
+    // Revert this hoist when the substitution pass lands — move the build inside
+    // the per-candidate loop with per-candidate `ValueMap` setup. See
+    // `build_constraints_template` for the full deferred-substitution note.
+    // Audit: docs/architecture-audit/findings/auto-resolution-backtracking.md M-005/M-013.
     let constraints_template = build_constraints_template(parameterized_template);
 
     let mut accepted: Vec<String> = Vec::new();
@@ -1319,26 +1326,30 @@ pub fn resolve_auto_type_params_with_backtracking(
     // see `DiagnosticCode::AutoTypeParamDepthBoundExceeded` in
     // `crates/reify-types/src/diagnostics.rs`.
     //
-    // TODO(post-substitution-mechanics): the BFS fallback's soundness
-    // currently relies on the deferred type-substitution scope cut (see the
-    // PRD's "Constraint-feasibility incremental binding deferred" decision):
-    // because Phase B's verdict does not depend on the candidate binding
-    // today, BFS picking a per-param-feasible combination is equivalent to
-    // DFS finding any cross-product feasible. Once the deferred
-    // `Type::TypeParam(T) → Type::StructureRef(candidate)` substitution
-    // mechanics land, BFS may pick a per-param-feasible combination that is
-    // INFEASIBLE at the cross-product, silently producing a wrong
-    // substitution while the warning suggests merely "fell back to BFS". At
-    // that point this branch should be revisited — either by escalating the
-    // diagnostic from Warning to Error, or by replacing the BFS fallback
-    // with a hard error. Tracked alongside the substitution-mechanics task
-    // (separately deferred per the PRD; not one of the listed siblings
-    // 2660/2661/2662/2663/2664).
+    // NOTE(substitution-pass-trigger): The BFS fallback's soundness currently relies
+    // on the deferred type-substitution scope cut (see the PRD's "Constraint-feasibility
+    // incremental binding deferred" decision): because Phase B's verdict does not depend
+    // on the candidate binding today (empty `ValueMap`, `template.constraints` unchanged
+    // across candidates), BFS picking a per-param-feasible combination is equivalent to
+    // DFS finding any cross-product feasible. Once `Type::TypeParam(T) →
+    // Type::StructureRef(candidate)` substitution lands and per-candidate cell types
+    // diverge, BFS may pick a per-param-feasible combination that is INFEASIBLE at the
+    // cross-product. At that point this branch must be revisited — either escalating the
+    // diagnostic from Warning to Error, or replacing the BFS fallback with a hard error.
+    // The runtime diagnostic already self-documents this hazard via the NOTE clause in
+    // the format! strings at the depth-bound and cap-fallback sites (steps 2+4 of task
+    // 3637). Audit: docs/architecture-audit/findings/auto-resolution-backtracking.md
+    // M-005/M-006/M-013.
 
     // strict `>`: params.len()==max_depth still runs DFS; only params.len()>max_depth falls back.
     if params.len() > max_depth {
         let message = format!(
-            "auto type-parameter search exceeded depth bound: {n} auto-type-params declared, max_depth = {m}; falling back to per-parameter BFS (v0.1 algorithm)",
+            "auto type-parameter search exceeded depth bound: {n} auto-type-params declared, \
+             max_depth = {m}; falling back to per-parameter BFS (v0.1 algorithm). \
+             NOTE: BFS-fallback soundness is contingent on Type::TypeParam \u{2192} Type::StructureRef \
+             substitution remaining deferred; once the substitution pass lands, this fallback may \
+             silently pick wrong substitutions (audit: \
+             docs/architecture-audit/findings/auto-resolution-backtracking.md M-005).",
             n = params.len(),
             m = max_depth,
         );
@@ -1360,9 +1371,16 @@ pub fn resolve_auto_type_params_with_backtracking(
     // rebuilding it on every leaf. With max_depth=6 and ~10 candidates per
     // param the worst case is 10^6 leaves; the per-leaf rebuild was a
     // measurable hot-path allocation pin.
-    // TODO(post-substitution-mechanics): revert this hoist when the substitution
-    // pass lands (see `build_constraints_template` for the full deferred-substitution
-    // note and migration instructions).
+    //
+    // NOTE(substitution-pass-trigger): This hoist is sound TODAY because the empty
+    // `ValueMap` and the unchanged `template.constraints` slice means the
+    // `(ConstraintNodeId, &CompiledExpr)` list is byte-identical across DFS leaves.
+    // This changes the moment `Type::TypeParam(T) → Type::StructureRef(candidate)`
+    // substitution starts mutating per-candidate cell types in the expression graph.
+    // Revert this hoist when the substitution pass lands — move the build inside the
+    // DFS leaf with per-leaf (per-candidate) `ValueMap` setup. See
+    // `build_constraints_template` for the full deferred-substitution note.
+    // Audit: docs/architecture-audit/findings/auto-resolution-backtracking.md M-005/M-013.
     let constraints_template = build_constraints_template(parameterized_template);
     // The empty ValueMap used by every DFS leaf: built once here alongside
     // `constraints_template` so `dfs_leaf_feasible` doesn't construct a new
@@ -1474,7 +1492,11 @@ pub fn resolve_auto_type_params_with_backtracking(
             "auto type-parameter cross-product search exceeded size cap: \
              {n} auto-type-params declared ({names}) with per-param candidate counts {counts:?} \
              yielding cross-product size {size}, max_cross_product_size = {cap}; \
-             falling back to per-parameter BFS (v0.1 algorithm)",
+             falling back to per-parameter BFS (v0.1 algorithm). \
+             NOTE: BFS-fallback soundness is contingent on Type::TypeParam \u{2192} Type::StructureRef \
+             substitution remaining deferred; once the substitution pass lands, this fallback may \
+             silently pick wrong substitutions (audit: \
+             docs/architecture-audit/findings/auto-resolution-backtracking.md M-006).",
             n = params.len(),
             names = param_names.join(", "),
             counts = candidate_counts,
@@ -2008,8 +2030,11 @@ enum DfsControl {
 /// or removed together with the `filter_feasible_candidates` and
 /// `resolve_auto_type_params_with_backtracking` callers.
 ///
-/// TODO(post-substitution-mechanics): revert this hoist when the substitution
-/// pass lands (see matching TODOs at both call sites).
+/// NOTE(substitution-pass-trigger): Revert when `Type::TypeParam(T) →
+/// Type::StructureRef(candidate)` substitution lands — the build must move
+/// inside the per-candidate / per-leaf loop with per-candidate `ValueMap` setup.
+/// See matching NOTE(substitution-pass-trigger) comments at both call sites.
+/// Audit: docs/architecture-audit/findings/auto-resolution-backtracking.md M-005/M-013.
 fn build_constraints_template(
     template: &TopologyTemplate,
 ) -> Vec<(ConstraintNodeId, &reify_types::CompiledExpr)> {

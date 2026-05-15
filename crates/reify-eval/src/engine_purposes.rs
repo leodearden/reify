@@ -559,6 +559,13 @@ fn expand_purpose_reflective_placeholders(
             // eval_quantifier's cell-iteration trigger fires only on this
             // placeholder-derived shape, not on user-written all-ValueRef
             // ListLiterals that share the same surface structure.
+            // G-allow: empty reflective cell-list ⇒ vacuous-true forall; element type
+            // is a conservative anti-cascade default for the empty match-set case —
+            // no objectives matched the purpose, so no element type can be inferred.
+            // The Type::Real default preserves the prior behaviour for the vacuous-true
+            // path and is acceptable here because an empty ReflectiveCellList triggers
+            // eval_quantifier's vacuous-true short-circuit before the element type is
+            // used for any arithmetic (task-2458, task 3639 review).
             let element_type = elements
                 .first()
                 .map(|e| e.result_type.clone())
@@ -567,11 +574,14 @@ fn expand_purpose_reflective_placeholders(
                 CompiledExpr::reflective_cell_list(elements, Type::List(Box::new(element_type)));
         }
         CompiledExprKind::ValueRef(_)
+        | CompiledExprKind::CrossSubGeometryRef(_)
         | CompiledExprKind::Literal(_)
         | CompiledExprKind::OptionNone
         | CompiledExprKind::MetaAccess { .. }
         | CompiledExprKind::DeterminacyPredicate { .. } => {
             // No children carrying potential placeholders.
+            // CrossSubGeometryRef is a leaf consumed by entity.rs before
+            // activation — it never contains nested placeholders (task-3508).
         }
         CompiledExprKind::BinOp { left, right, .. } => {
             expand_purpose_reflective_placeholders(left, queries, entity_ref, value_cells);
@@ -729,6 +739,10 @@ mod tests {
                 other
             ),
         };
+        // `expand_purpose_reflective_placeholders` only ever emits `ValueRef`
+        // elements inside a ReflectiveCellList (task-3508: CrossSubGeometryRef
+        // is consumed by the entity.rs bare-let drop site before any reflective
+        // list is built, so it cannot appear here by construction).
         let expanded_order: Vec<&str> = elements
             .iter()
             .map(|e| match &e.kind {
@@ -870,6 +884,9 @@ mod tests {
                 "anti-cascade contract: both resolved-query cells \
                  (present + absent-fallback) produce ValueRef elements"
             );
+            // `expand_purpose_reflective_placeholders` only emits `ValueRef`
+            // elements inside a ReflectiveCellList (task-3508: CrossSubGeometryRef
+            // is consumed by entity.rs before any reflective list is built).
             for elem in elements {
                 assert_eq!(
                     elem.result_type,
@@ -1010,6 +1027,9 @@ mod tests {
                 other
             ),
         };
+        // `expand_purpose_reflective_placeholders` only ever emits `ValueRef`
+        // elements (task-3508: CrossSubGeometryRef is consumed by the entity.rs
+        // bare-let drop site before any reflective list is built).
         let expanded_order: Vec<&str> = elements
             .iter()
             .map(|e| match &e.kind {
@@ -1501,6 +1521,9 @@ mod tests {
             "expanded ReflectiveCellList must have one element per resolved_id"
         );
 
+        // `expand_purpose_reflective_placeholders` only ever emits `ValueRef`
+        // elements (task-3508: CrossSubGeometryRef is consumed by the entity.rs
+        // bare-let drop site before any reflective list is built).
         let members: Vec<&str> = elements
             .iter()
             .map(|e| match &e.kind {

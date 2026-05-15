@@ -567,7 +567,7 @@ mod tests {
             ComputeNodeData, EvaluationGraph, RealizationNodeData, ValueCellNode,
         };
         use reify_compiler::ValueCellKind;
-        use reify_types::{ComputeNodeId, ContentHash, RealizationNodeId, Type};
+        use reify_types::{ComputeNodeId, ContentHash, RealizationNodeId, ReprKind, Type};
 
         let mut graph = EvaluationGraph::default();
         let e = "E";
@@ -593,6 +593,7 @@ mod tests {
                 id: r0_id.clone(),
                 operations: vec![],
                 content_hash: ContentHash::of_str("r0"),
+                produced_repr: ReprKind::BRep,
             },
         );
 
@@ -660,7 +661,7 @@ mod tests {
             ComputeNodeData, EvaluationGraph, RealizationNodeData, ValueCellNode,
         };
         use reify_compiler::ValueCellKind;
-        use reify_types::{ComputeNodeId, ContentHash, RealizationNodeId, Type};
+        use reify_types::{ComputeNodeId, ContentHash, RealizationNodeId, ReprKind, Type};
 
         let mut graph = EvaluationGraph::default();
         let e = "E";
@@ -686,6 +687,7 @@ mod tests {
                 id: r0_id.clone(),
                 operations: vec![],
                 content_hash: ContentHash::of_str("r0"),
+                produced_repr: ReprKind::BRep,
             },
         );
 
@@ -747,7 +749,7 @@ mod tests {
         use crate::dirty::compute_dirty_cone_with_realizations;
         use crate::graph::{ComputeNodeData, EvaluationGraph, RealizationNodeData, ValueCellNode};
         use reify_compiler::ValueCellKind;
-        use reify_types::{ComputeNodeId, ContentHash, RealizationNodeId, Type};
+        use reify_types::{ComputeNodeId, ContentHash, RealizationNodeId, ReprKind, Type};
 
         let mut graph = EvaluationGraph::default();
         let e = "E";
@@ -773,6 +775,7 @@ mod tests {
                 id: r0_id.clone(),
                 operations: vec![],
                 content_hash: ContentHash::of_str("r0"),
+                produced_repr: ReprKind::BRep,
             },
         );
 

@@ -220,6 +220,23 @@ fn tool_defs() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
+            name: "morph_stats",
+            description: "Mesh-morph runtime stats: morph_count, remesh_count, last_rejection_reason. \
+                          Surfaces reify-mesh-morph::stats::snapshot(). Per GR-016 / \
+                          docs/prds/v0_3/gui-event-channel-inventory.md §2.3.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "body_id": {
+                        "type": "string",
+                        "description": "Optional body identifier (currently ignored; \
+                                        returns global stats — per-body filtering deferred \
+                                        to mesh-morphing PRD #2947+ engine wiring)."
+                    }
+                }
+            }),
+        },
+        ToolDef {
             name: "wait_for_idle",
             description: "Block until the engine is idle (no in-flight evaluation) and one frame has rendered. Returns {ok: true, idle_after_ms: N} or {error: 'timeout'}. Used by the visual-regression harness to replace engine_state polling.",
             input_schema: json!({
@@ -298,13 +315,25 @@ fn is_image_tool(name: &str) -> bool {
 
 // --- Tool dispatch ---
 
+// Handles state-free tool arms so they can be tested without a DebugServerState.
+// Returns Some(result) when the name matches a stateless arm, None otherwise.
+async fn dispatch_stateless_tool(name: &str, params: &Value) -> Option<Result<Value, String>> {
+    match name {
+        "health" => Some(Ok(json!({"ok": true}))),
+        "morph_stats" => Some(handle_morph_stats(params.clone()).await),
+        _ => None,
+    }
+}
+
 async fn dispatch_tool(
     state: &DebugServerState,
     name: &str,
     params: Value,
 ) -> Result<Value, String> {
+    if let Some(result) = dispatch_stateless_tool(name, &params).await {
+        return result;
+    }
     match name {
-        "health" => Ok(json!({"ok": true})),
         "engine_state" => handle_engine_state(state).await,
         "mesh_stats" => handle_mesh_stats(state).await,
         "open_file" => handle_open_file(state, params).await,
@@ -405,6 +434,20 @@ async fn handle_mesh_stats(state: &DebugServerState) -> Result<Value, String> {
         Ok(json!({"meshes": stats}))
     })
     .await
+}
+
+/// `morph_stats` debug-MCP RPC handler. Surfaces the process-global
+/// `reify_mesh_morph::stats::snapshot()`. State-free: mesh-morph stats are
+/// not engine-bound, so no DebugServerState / engine lock is needed.
+///
+/// `_params` may carry an optional `body_id` (per PRD §2.3 request shape) but
+/// it is intentionally ignored — per-body filtering is deferred to the
+/// mesh-morphing engine wiring (PRD tasks #2947-#2949). Both the `()` and
+/// `{body_id: ...}` request forms return the same global snapshot. See
+/// docs/prds/v0_3/gui-event-channel-inventory.md §2.3.
+async fn handle_morph_stats(_params: Value) -> Result<Value, String> {
+    let stats = reify_mesh_morph::stats::snapshot();
+    serde_json::to_value(&stats).map_err(|e| format!("failed to serialize MorphStats: {e}"))
 }
 
 async fn handle_open_file(state: &DebugServerState, params: Value) -> Result<Value, String> {
@@ -753,6 +796,31 @@ mod tests {
     }
 
     #[test]
+    fn tool_defs_registers_morph_stats() {
+        let defs = tool_defs();
+        let entry = defs
+            .iter()
+            .find(|t| t.name == "morph_stats")
+            .expect("morph_stats must be present in tool_defs()");
+
+        let schema = &entry.input_schema;
+        assert_eq!(
+            schema["type"].as_str(),
+            Some("object"),
+            "input_schema.type must be 'object'"
+        );
+        assert!(!entry.description.is_empty(), "morph_stats must have a non-empty description");
+        // `body_id` is optional — the no-args `()` form must be valid per PRD §2.3.
+        // `required` may be absent entirely; if present it must not list body_id.
+        if let Some(required) = schema["required"].as_array() {
+            assert!(
+                !required.iter().any(|v| v.as_str() == Some("body_id")),
+                "'body_id' must NOT be listed in required (it is optional)"
+            );
+        }
+    }
+
+    #[test]
     fn tool_defs_includes_wait_for_idle() {
         let defs = tool_defs();
         let entry = defs
@@ -785,5 +853,61 @@ mod tests {
                 "'timeout_ms' must NOT be listed in required (it is optional)"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn handle_morph_stats_returns_morph_stats_shape() {
+        // Precondition: pristine stats. reset_for_test() is exposed via the
+        // `testing` feature on reify-mesh-morph (activated by [dev-dependencies]
+        // features = ["testing"] in Cargo.toml). This keeps the test correct even
+        // after engine wiring (PRD #2947-#2949) lands and production code paths
+        // start recording morph activity — without this reset, parallel tests or
+        // leaked state from other test runs could produce non-zero counts.
+        reify_mesh_morph::stats::reset_for_test();
+
+        // State-free handler — call directly (not through dispatch). Zero snapshot expected after reset.
+        let result = super::handle_morph_stats(serde_json::json!({}))
+            .await
+            .expect("morph_stats handler must succeed");
+
+        assert!(result.is_object(), "response must be a JSON object");
+        assert_eq!(result["morph_count"].as_u64(), Some(0), "morph_count key present, default 0");
+        assert_eq!(result["remesh_count"].as_u64(), Some(0), "remesh_count key present, default 0");
+        // last_rejection_reason: skip_serializing_if Option::is_none on Rust ⇒
+        // key absent (Value::Null on index) when no rejection recorded.
+        assert!(
+            result.get("last_rejection_reason").is_none()
+                || result["last_rejection_reason"].is_null(),
+            "last_rejection_reason absent/null by default; got: {:?}",
+            result.get("last_rejection_reason")
+        );
+
+        // body_id is accepted but ignored — `{body_id}` form returns the
+        // identical response as the `()` form (forward-compat, per design).
+        let with_body = super::handle_morph_stats(serde_json::json!({"body_id": "Bracket.body"}))
+            .await
+            .expect("morph_stats with body_id must succeed");
+        assert_eq!(with_body, result, "body_id must be ignored — identical response");
+    }
+
+    #[tokio::test]
+    async fn dispatch_stateless_tool_handles_morph_stats_arm() {
+        // Unique coverage: the exact "morph_stats" match-arm string in
+        // dispatch_stateless_tool. A typo or deletion returns None, caught
+        // by the unwrap. Shape assertions live in
+        // handle_morph_stats_returns_morph_stats_shape; here we only verify
+        // delegation fidelity.
+        reify_mesh_morph::stats::reset_for_test();
+
+        let direct = super::handle_morph_stats(serde_json::json!({}))
+            .await
+            .expect("handle_morph_stats must succeed");
+
+        let via_dispatch = super::dispatch_stateless_tool("morph_stats", &serde_json::json!({}))
+            .await
+            .expect("dispatch_stateless_tool must return Some for 'morph_stats'")
+            .expect("morph_stats handler must succeed");
+
+        assert_eq!(via_dispatch, direct, "dispatch_stateless_tool must delegate to handle_morph_stats");
     }
 }

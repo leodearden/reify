@@ -68,6 +68,13 @@ pub enum BRepKind {
     ///
     /// Distinct from `Shell` (which is a collection of faces, possibly closed).
     Face,
+    /// Single vertex — produced by `extract_vertices`.
+    ///
+    /// Distinct from `Wire`/`Shell`/`Solid` (higher-dimensional aggregates).
+    /// 0-dimensional analogue of `Edge` (1-D) / `Face` (2-D). Registered by
+    /// `OcctKernel::extract_vertices` (task B) for each `TopoDS_Vertex`
+    /// enumerated by `TopExp::MapShapes(.., TopAbs_VERTEX, ..)`.
+    Vertex,
 }
 
 /// Multi-kernel representation family classifier.
@@ -1001,6 +1008,88 @@ impl GeometryQuery {
     }
 }
 
+/// Per-query capability flag: which geometry representations a query can
+/// operate on, as specified by PRD
+/// `docs/prds/v0_3/kernel-geometry-queries.md` §5.4.
+///
+/// Used by the multi-kernel dispatcher to fail closed when a BRep-only query
+/// is asked of a non-BRep (Mesh/Voxel/Sdf/VolumeMesh) realization. The gate
+/// function that maps `(ReprKind, QueryCapability)` to a routing decision is
+/// `reify_eval::geometry_ops::gate_query_capability`.
+///
+/// # Severity convention
+///
+/// | Variant       | Repr that satisfies it      |
+/// |---------------|-----------------------------|
+/// | `BRepOnly`    | [`ReprKind::BRep`] only     |
+/// | `MeshOnly`    | [`ReprKind::Mesh`] only     |
+/// | `BRepAndMesh` | Either [`ReprKind::BRep`] or [`ReprKind::Mesh`] |
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum QueryCapability {
+    /// Query can only be evaluated against a BRep (OCCT) representation.
+    ///
+    /// Examples from PRD §5.4: `edge_length`, `curvature` (KGQ-μ),
+    /// `surface_curvature` (KGQ-μ), `perimeter` (KGQ-ν).
+    BRepOnly,
+    /// Query can only be evaluated against a Mesh (Manifold) representation.
+    ///
+    /// Reserved for future mesh-native queries; no extant variants as of v0.3.
+    MeshOnly,
+    /// Query can be evaluated against either BRep or Mesh representations.
+    ///
+    /// The dispatcher routes BRep inputs to OCCT and Mesh inputs to Manifold.
+    BRepAndMesh,
+}
+
+impl GeometryQuery {
+    /// Map each query variant to its capability class per PRD §5.4.
+    ///
+    /// The match is EXHAUSTIVE with NO `_` wildcard — mirroring the
+    /// [`GeometryQuery::kind_name`] precedent. Adding a new `GeometryQuery`
+    /// variant requires adding an arm here at the same diff site; the
+    /// compiler enforces this, eliminating silent mis-routing of future
+    /// BRep-only variants (e.g. `CurveCurvatureAt`/`SurfaceCurvatureAt`
+    /// added by KGQ-μ, `Perimeter` by KGQ-ν) to the wrong kernel.
+    ///
+    /// # Adding new variants
+    ///
+    /// **BRep-only variants MUST add `=> QueryCapability::BRepOnly` here.**
+    /// A wildcard `_ => BRepAndMesh` would silently mis-route future
+    /// BRep-only queries to the Manifold kernel — the compiler enforces
+    /// correctness at the diff site.
+    pub fn capability_kind(&self) -> QueryCapability {
+        match self {
+            // §5.4 BRepOnly set (extant as of this commit; KGQ-μ adds
+            // CurveCurvatureAt + SurfaceCurvatureAt; KGQ-ν adds Perimeter)
+            GeometryQuery::EdgeLength(_) => QueryCapability::BRepOnly,
+
+            // All other extant variants default to BRepAndMesh.
+            GeometryQuery::Volume(_) => QueryCapability::BRepAndMesh,
+            GeometryQuery::SurfaceArea(_) => QueryCapability::BRepAndMesh,
+            GeometryQuery::Centroid(_) => QueryCapability::BRepAndMesh,
+            GeometryQuery::BoundingBox(_) => QueryCapability::BRepAndMesh,
+            GeometryQuery::Distance { .. } => QueryCapability::BRepAndMesh,
+            GeometryQuery::MomentOfInertia { .. } => QueryCapability::BRepAndMesh,
+            GeometryQuery::AdjacentFaces { .. } => QueryCapability::BRepAndMesh,
+            GeometryQuery::SharedEdges { .. } => QueryCapability::BRepAndMesh,
+            GeometryQuery::IsWatertight(_) => QueryCapability::BRepAndMesh,
+            GeometryQuery::IsManifold(_) => QueryCapability::BRepAndMesh,
+            GeometryQuery::IsOrientable(_) => QueryCapability::BRepAndMesh,
+            GeometryQuery::CenterOfMass { .. } => QueryCapability::BRepAndMesh,
+            GeometryQuery::InertiaTensor { .. } => QueryCapability::BRepAndMesh,
+            GeometryQuery::EdgeTangent(_) => QueryCapability::BRepAndMesh,
+            GeometryQuery::FaceNormal(_) => QueryCapability::BRepAndMesh,
+            GeometryQuery::FaceSurfaceKind(_) => QueryCapability::BRepAndMesh,
+            GeometryQuery::EdgeCurveKind(_) => QueryCapability::BRepAndMesh,
+            GeometryQuery::AncestorFacesOfEdge { .. } => QueryCapability::BRepAndMesh,
+            GeometryQuery::OwnerBody(_) => QueryCapability::BRepAndMesh,
+            GeometryQuery::ClosestPointOnShape { .. } => QueryCapability::BRepAndMesh,
+            GeometryQuery::PointOnShape { .. } => QueryCapability::BRepAndMesh,
+            GeometryQuery::SurfaceAngle { .. } => QueryCapability::BRepAndMesh,
+        }
+    }
+}
+
 /// Geometric kind of a face's underlying surface, matching OCCT's
 /// `GeomAbs_*` taxonomy via `BRepAdaptor_Surface::GetType()`.
 ///
@@ -1600,6 +1689,25 @@ pub trait GeometryKernel: Send + Sync {
         ))
     }
 
+    /// Extract the unique vertices of a shape, storing each as a new handle.
+    ///
+    /// Returns a `Vec<GeometryHandleId>` where each id names a freshly-stored
+    /// vertex sub-shape (with `BRepKind::Vertex`). The ordering follows the
+    /// kernel's canonical `TopExp::MapShapes(.., TopAbs_VERTEX, ..)` enumeration,
+    /// deduplicated by `TopoDS_Shape::IsSame`.
+    ///
+    /// Default implementation returns
+    /// `Err(QueryError::QueryFailed("topology extraction not supported by this kernel"))`,
+    /// keeping non-OCCT kernels (mocks, stubs) compiling without per-impl edits.
+    fn extract_vertices(
+        &mut self,
+        _handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        Err(QueryError::QueryFailed(
+            "topology extraction not supported by this kernel".into(),
+        ))
+    }
+
     /// Optional best-effort `TopologyAttribute` propagation hook for non-OCCT
     /// kernels with native parent→child correspondence (e.g. Manifold's
     /// `MeshGL` merge vectors + per-triangle `faceID` / `originalID`).
@@ -1787,6 +1895,18 @@ impl From<&crate::identity::RealizationNodeId> for FeatureId {
     }
 }
 
+/// Per-axis sign discriminator for box-primitive corner vertices.
+///
+/// `Pos` selects the positive face along an axis, `Neg` the negative face.
+/// Used for all three axes in `Role::CornerVertex { x, y, z }` to uniquely
+/// name each of a box's 8 corners as a sign triple.
+/// PRD `docs/prds/v0_3/mesh-morphing-phase-2.md` §3.1 (task α).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AxisSign {
+    Pos,
+    Neg,
+}
+
 /// Cap orientation for the `Role::Cap` variant.
 ///
 /// Two semantic flavours of cap exist:
@@ -1901,6 +2021,19 @@ pub enum Role {
     /// `reify_shell_extract::populate_mid_surface_attributes` from PRD
     /// `docs/prds/v0_4/structural-analysis-shells.md` line 81 (T20).
     MidSurfaceEdge,
+    /// A corner vertex of a box primitive — uniquely identified by the
+    /// three face-signs (±X, ±Y, ±Z) that meet at it. Produces 8 distinct
+    /// values per box. Emitted by per-primitive vertex seeders (task C).
+    ///
+    /// PRD `docs/prds/v0_3/mesh-morphing-phase-2.md` §3.1 (task α).
+    CornerVertex { x: AxisSign, y: AxisSign, z: AxisSign },
+    /// A corner vertex of a swept solid where a cap face meets the lateral
+    /// envelope. Emitted by per-op vertex seeders for extrude / revolve /
+    /// sweep / loft (task C). `face` records which cap (top/bottom for
+    /// gravitational sweeps; start/end for parametric sweeps).
+    ///
+    /// PRD `docs/prds/v0_3/mesh-morphing-phase-2.md` §3.1 (task α).
+    CapCornerVertex { face: CapKind },
 }
 
 /// Per-topology-entity attribute record for v0.2 persistent naming.
@@ -2989,6 +3122,23 @@ mod tests {
     }
 
     #[test]
+    fn brep_kind_vertex_variant_is_pattern_matchable_and_distinct() {
+        let v = BRepKind::Vertex;
+        match v {
+            BRepKind::Vertex => {}
+            other => panic!("expected BRepKind::Vertex, got {:?}", other),
+        }
+
+        // Vertex must be distinguishable from all other BRepKind variants.
+        assert_ne!(BRepKind::Vertex, BRepKind::Edge);
+        assert_ne!(BRepKind::Vertex, BRepKind::Face);
+        assert_ne!(BRepKind::Vertex, BRepKind::Solid);
+        assert_ne!(BRepKind::Vertex, BRepKind::Shell);
+        assert_ne!(BRepKind::Vertex, BRepKind::Wire);
+        assert_ne!(BRepKind::Vertex, BRepKind::Compound);
+    }
+
+    #[test]
     fn closest_point_on_shape_variant_is_constructible_and_matchable() {
         // Pin the shape of the new ClosestPointOnShape variant — the eval-side
         // dispatcher (task 2324) builds and reads back exactly these fields.
@@ -3282,6 +3432,57 @@ mod tests {
             "expected RevolvedFace in {dbg_rf}"
         );
         assert!(dbg_af.contains("AxisFace"), "expected AxisFace in {dbg_af}");
+    }
+
+    #[test]
+    fn role_corner_vertex_distinguishes_all_eight_box_corners() {
+        use std::collections::HashSet;
+        let mut set: HashSet<Role> = HashSet::new();
+        for x in [AxisSign::Pos, AxisSign::Neg] {
+            for y in [AxisSign::Pos, AxisSign::Neg] {
+                for z in [AxisSign::Pos, AxisSign::Neg] {
+                    set.insert(Role::CornerVertex { x, y, z });
+                }
+            }
+        }
+        assert_eq!(set.len(), 8, "8 sign-combo corners must be distinct Role values");
+
+        // Distinct from CapCornerVertex
+        assert_ne!(
+            Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Pos, z: AxisSign::Pos },
+            Role::CapCornerVertex { face: CapKind::Top },
+        );
+        // Distinct from pre-existing Role variants
+        assert_ne!(
+            Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Pos, z: AxisSign::Pos },
+            Role::Side,
+        );
+        assert_ne!(
+            Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Pos, z: AxisSign::Pos },
+            Role::NewEdge,
+        );
+        assert_ne!(
+            Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Pos, z: AxisSign::Pos },
+            Role::RevolvedFace,
+        );
+    }
+
+    #[test]
+    fn role_cap_corner_vertex_distinguishes_all_four_cap_faces() {
+        use std::collections::HashSet;
+        let cap_kinds = [CapKind::Top, CapKind::Bottom, CapKind::Start, CapKind::End];
+        let set: HashSet<Role> = cap_kinds.iter().map(|f| Role::CapCornerVertex { face: *f }).collect();
+        assert_eq!(set.len(), 4, "4 CapKind variants must yield 4 distinct CapCornerVertex roles");
+
+        // Distinct from CornerVertex
+        assert_ne!(
+            Role::CapCornerVertex { face: CapKind::Top },
+            Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Pos, z: AxisSign::Pos },
+        );
+        // Distinct from pre-existing Role variants
+        assert_ne!(Role::CapCornerVertex { face: CapKind::Top }, Role::Side);
+        assert_ne!(Role::CapCornerVertex { face: CapKind::Top }, Role::NewEdge);
+        assert_ne!(Role::CapCornerVertex { face: CapKind::Top }, Role::RevolvedFace);
     }
 
     #[test]
@@ -4371,7 +4572,7 @@ mod tests {
     /// Verify that `BRepKind` (renamed from `ReprKind`) retains `Hash + Eq + Copy + Debug`
     /// so it can act as a `HashMap` key and be compared / logged by callers.
     ///
-    /// All six B-rep sub-shape variants must be pairwise distinct.
+    /// All seven B-rep sub-shape variants must be pairwise distinct.
     #[test]
     fn b_rep_kind_variants_round_trip_through_hashmap_key() {
         use std::collections::HashMap;
@@ -4382,6 +4583,7 @@ mod tests {
             BRepKind::Compound,
             BRepKind::Edge,
             BRepKind::Face,
+            BRepKind::Vertex,
         ];
 
         // All variants are pairwise distinct.
@@ -4396,15 +4598,15 @@ mod tests {
             }
         }
 
-        // All six variants survive a HashMap round-trip (requires Hash + Eq).
+        // All seven variants survive a HashMap round-trip (requires Hash + Eq).
         let mut map: HashMap<BRepKind, u32> = HashMap::new();
         for (idx, v) in variants.iter().enumerate() {
             map.insert(*v, idx as u32); // *v requires Copy
         }
         assert_eq!(
             map.len(),
-            6,
-            "all 6 BRepKind variants must be stored as distinct keys"
+            7,
+            "all 7 BRepKind variants must be stored as distinct keys"
         );
         for (idx, v) in variants.iter().enumerate() {
             assert_eq!(
@@ -4839,6 +5041,22 @@ mod tests {
             "GeometryKernel::attribute_hook() default must return None — \
              enforces PRD line 70 'Fidget/OpenVDB selectors fall through to computed selectors' \
              without per-kernel opt-out code",
+        );
+    }
+
+    /// Mirror of `extract_edges` / `extract_faces` default-impl test (PRD task α):
+    /// any kernel that does NOT explicitly override `extract_vertices` must
+    /// inherit the trait default and return `Err(QueryError::QueryFailed(_))`.
+    /// The exact message text is informational and not part of the public contract —
+    /// callers that need to branch on "topology extraction unsupported" should use
+    /// a dedicated `QueryError` variant rather than substring matching.
+    #[test]
+    fn default_geometry_kernel_extract_vertices_returns_topology_not_supported_error() {
+        let mut kernel = DefaultsOnlyKernel;
+        let result = kernel.extract_vertices(GeometryHandleId(1));
+        assert!(
+            matches!(result, Err(QueryError::QueryFailed(_))),
+            "expected Err(QueryError::QueryFailed(_)), got: {result:?}",
         );
     }
 

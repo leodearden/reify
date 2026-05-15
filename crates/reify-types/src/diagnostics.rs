@@ -623,7 +623,7 @@ pub enum DiagnosticCode {
     /// Origin: `crates/reify-compiler/src/auto_type_param.rs::resolve_auto_type_params_with_backtracking`.
     ///
     /// Canonical message form:
-    /// `"auto type-parameter search exceeded depth bound: <N> auto-type-params declared, max_depth = <M>; falling back to per-parameter BFS (v0.1 algorithm)"`
+    /// `"auto type-parameter search exceeded depth bound: <N> auto-type-params declared, max_depth = <M>; falling back to per-parameter BFS (v0.1 algorithm). NOTE: BFS-fallback soundness is contingent on Type::TypeParam → Type::StructureRef substitution remaining deferred; once the substitution pass lands, this fallback may silently pick wrong substitutions (audit: docs/architecture-audit/findings/auto-resolution-backtracking.md M-005)."`
     /// where `<N>` is `params.len()` and `<M>` is the configured `max_depth`.
     ///
     /// Emitted as `Severity::Warning` when the v0.2 DFS-over-cross-product
@@ -647,7 +647,7 @@ pub enum DiagnosticCode {
     /// Origin: `crates/reify-compiler/src/auto_type_param.rs::resolve_auto_type_params_with_backtracking`.
     ///
     /// Canonical message form:
-    /// `"auto type-parameter cross-product search exceeded size cap: <N> auto-type-params declared (<P1>, <P2>, ...) with per-param candidate counts [<k1>, <k2>, ...] yielding cross-product size <S>, max_cross_product_size = <C>; falling back to per-parameter BFS (v0.1 algorithm)"`
+    /// `"auto type-parameter cross-product search exceeded size cap: <N> auto-type-params declared (<P1>, <P2>, ...) with per-param candidate counts [<k1>, <k2>, ...] yielding cross-product size <S>, max_cross_product_size = <C>; falling back to per-parameter BFS (v0.1 algorithm). NOTE: BFS-fallback soundness is contingent on Type::TypeParam → Type::StructureRef substitution remaining deferred; once the substitution pass lands, this fallback may silently pick wrong substitutions (audit: docs/architecture-audit/findings/auto-resolution-backtracking.md M-006)."`
     /// where `<N>` is `params.len()`, `<P*>` are the param names, `<k*>` are
     /// the per-param Phase A candidate counts, `<S>` is the computed
     /// cross-product size (`per_param_candidates.iter().map(|v| v.len()).fold(1, checked_mul)`),
@@ -903,6 +903,26 @@ pub enum DiagnosticCode {
     /// wants to surface this as a harder failure (e.g. CI gate) can filter
     /// by code at the consumer side.
     LongChainRealization,
+    /// Origin: `crates/reify-eval/src/geometry_ops.rs::gate_query_capability`
+    /// (task 3623 — PRD `docs/prds/v0_3/kernel-geometry-queries.md` §5.4).
+    ///
+    /// Canonical message form (the 'requires' clause is capability-dependent):
+    /// - `BRepOnly` query: `"'<helper>' requires BRep representation; this geometry is realized as <Repr>"`
+    /// - `MeshOnly` query: `"'<helper>' requires Mesh representation; this geometry is realized as <Repr>"`
+    /// - `BRepAndMesh` query: `"'<helper>' requires BRep or Mesh representation; this geometry is realized as <Repr>"`
+    ///
+    /// Emitted as a `Severity::Error` by `gate_query_capability` when a query
+    /// is dispatched against an unsupported realization
+    /// (`ReprKind::Mesh`/`Sdf`/`Voxel`/`VolumeMesh`). The gate fails closed:
+    /// the caller maps `CapabilityRoute::Unsupported` → `None` → the cell
+    /// retains `Value::Undef` (the existing fall-through-is-preservation
+    /// contract). The helper name (`<helper>`) is the user-written `.ri`
+    /// function name (e.g. `"curvature"`, `"edge_length"`); the repr token
+    /// is the `Debug` representation of `ReprKind` (e.g. `"Mesh"`, `"Voxel"`).
+    ///
+    /// The PRD-prose mnemonic for this code is `E_QUERY_NOT_SUPPORTED_ON_REPR`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    QueryNotSupportedOnRepr,
 }
 
 /// A diagnostic message with location and optional labels.

@@ -377,7 +377,7 @@ mod tests {
     #[test]
     fn reverse_index_realization_dependents_of_returns_compute_consumers() {
         use crate::graph::{ComputeNodeData, EvaluationGraph, RealizationNodeData};
-        use reify_types::{ComputeNodeId, ContentHash, RealizationNodeId};
+        use reify_types::{ComputeNodeId, ContentHash, RealizationNodeId, ReprKind};
 
         let mut graph = EvaluationGraph::default();
         let e = "E";
@@ -390,6 +390,7 @@ mod tests {
                 id: r0_id.clone(),
                 operations: vec![],
                 content_hash: ContentHash::of_str("r0"),
+                produced_repr: ReprKind::BRep,
             },
         );
 

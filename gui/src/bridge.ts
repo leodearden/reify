@@ -255,11 +255,37 @@ export async function isDebugEnabled(): Promise<boolean> {
 // ── Claude event subscription ───────────────────────────────────────
 
 /**
+ * GR-016 β convention helpers — see
+ * `docs/prds/v0_3/gui-event-channel-inventory.md` §3.5 and §5.2, plus the
+ * canonical inventory at `docs/gui-event-channels.md`.
+ *
+ * For each new event channel, the consumer-side wrapper follows this shape:
+ *   1. Define `KEYS_<NAME>` at module level (avoids per-call allocations).
+ *   2. Export `on<Name>(callback): Promise<UnlistenFn>` that calls `listen<T>`
+ *      with the channel name and passes `event.payload` through
+ *      `validatePayload(channel, payload, KEYS_<NAME>)`.
+ *   3. Hard-fail in DEV builds, console.warn in release builds (§5.2). Per the
+ *      Phase-1 boundary, DEV-mode throwing happens at the `on<Name>` call site
+ *      (e.g. `if (!p && import.meta.env.DEV) throw new Error(...)`), NOT inside
+ *      `validatePayload` itself — keeping the helper warn-only preserves existing
+ *      Claude-handler semantics.
+ *   4. For typed-serde payloads (most channels), `validatePayload` is skipped and
+ *      the `listen<T>` type-cast is trusted; downstream NPEs surface contract
+ *      violations naturally per §5.2 paragraph 3.
+ */
+
+/**
  * Validate that a Tauri event payload is a non-null plain object with all
  * required keys present and of type string.
  * Returns the payload as a Record on success, or null on failure (with a console.warn).
+ *
+ * @internal Exported for §8.2 boundary tests in
+ *   `src/__tests__/bridge/convention_smoke.test.ts`. Not a public API — the
+ *   warn-only contract may be tightened to a DEV-mode throw in a future
+ *   revision; production callers should compose this via `on<Name>` wrappers
+ *   in this module rather than importing it directly.
  */
-function validatePayload(
+export function validatePayload(
   eventName: string,
   payload: unknown,
   requiredKeys: string[],
@@ -577,10 +603,6 @@ export async function writeViewSidecar(riPath: string, state: PersistentViewStat
 }
 
 // ── Auto-resolve loop event listeners (Task 2967) ───────────────────
-// These listen for events emitted by the engine's param x = auto solver loop.
-// The backend event source is wired in a later task; the GUI side is ready ahead
-// of time. The engineStore.subscribeToEvents Promise.allSettled pattern means
-// unavailable events degrade to a console.warn rather than a startup crash.
 
 /** Subscribe to auto-resolve loop start events. Fires when a new solve loop begins. */
 export async function onAutoResolveStart(
@@ -595,10 +617,7 @@ export async function onAutoResolveStart(
 export async function onAutoResolveIteration(
   callback: (iter: AutoResolveIteration) => void,
 ): Promise<UnlistenFn> {
-  // The backend wire format is defined in a later task. Guard against malformed
-  // payloads so a field mismatch (missing `parameters`, `constraints`, etc.)
-  // logs a warning and drops the event rather than letting a downstream NPE
-  // crash the panel renderer.
+  // Payload shape: docs/gui-event-channels/auto-resolve-iteration.md (§2)
   return listen<unknown>('auto-resolve-iteration', (event) => {
     const p = event.payload;
     if (

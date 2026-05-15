@@ -3,6 +3,8 @@
 //! Include in a test binary with `mod common;` at the top of the file.
 //! Helpers are `pub` so they are visible after `use common::{...}`.
 
+pub mod alloc_counter;
+
 use std::fmt::Write as _;
 
 /// Build the canonical 10-group guarded-group fixture source string.

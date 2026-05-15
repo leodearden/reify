@@ -51,8 +51,9 @@ Breakdown by state: WIRED=6 (M-003,004,008,009,011,012), PARTIAL=4 (M-001,005,00
 
 - **State:** PARTIAL
 - **Failure mode:** F2 (mechanism wired, but soundness depends on a deferred mechanism)
-- **Evidence:** `auto_type_param.rs:1338-1356`; diagnostic registered at `crates/reify-types/src/diagnostics.rs:646`; explicit `TODO(post-substitution-mechanics)` at `auto_type_param.rs:1322-1336` flags that BFS-fallback is sound *only* because substitution is not yet active. Once the deferred `Type::TypeParam → Type::StructureRef` pass lands, BFS may silently pick wrong substitutions.
-- **Blocks:** Promotion to "warning" semantic vs. error is itself contingent on the substitution work; the TODO recommends revisiting at that point.
+- **Evidence:** `auto_type_param.rs:1338-1356`; diagnostic registered at `crates/reify-types/src/diagnostics.rs:646`; `NOTE(substitution-pass-trigger)` at `auto_type_param.rs:1322-1336` flags that BFS-fallback is sound *only* because substitution is not yet active. Once the deferred `Type::TypeParam → Type::StructureRef` pass lands, BFS may silently pick wrong substitutions.
+- **Blocks:** Promotion to "warning" semantic vs. error is itself contingent on the substitution work; the NOTE recommends revisiting at that point.
+- **Resolution (task 3637):** The latent-correctness-hazard portion is now mitigated by an in-line diagnostic caveat: the `AutoTypeParamDepthBoundExceeded` message produced at fallback time explicitly states "BFS-fallback soundness is contingent on … substitution remaining deferred". The `TODO(post-substitution-mechanics)` marker has been replaced with `NOTE(substitution-pass-trigger)` carrying an inline soundness rationale. PARTIAL state is retained — full resolution still requires the substitution pass to land and this entry to be revisited at that point.
 - **Note:** The PRD frames BFS fallback as a soft cap; the implementation flags it as a latent correctness hazard. This is a documented drift between PRD intent and implementation reality.
 
 ### M-006: Configurable `max_cross_product_size` cap (default 100,000) with BFS fallback
@@ -60,6 +61,7 @@ Breakdown by state: WIRED=6 (M-003,004,008,009,011,012), PARTIAL=4 (M-001,005,00
 - **State:** PARTIAL
 - **Failure mode:** F2 (same as M-005 — soundness gated on deferred substitution)
 - **Evidence:** `auto_type_param.rs:1442-1495`; `crates/reify-config/src/lib.rs` `DEFAULT_AUTO_TYPE_PARAM_MAX_CROSS_PRODUCT_SIZE = 100_000`; `crates/reify-config/tests/auto_type_params_config.rs:67-100`; diagnostic registered at `crates/reify-types/src/diagnostics.rs:677`. Task 2662 done.
+- **Resolution (task 3637):** Mirror of M-005 resolution. The `AutoTypeParamCrossProductSizeExceeded` message produced at fallback time now explicitly states "BFS-fallback soundness is contingent on … substitution remaining deferred" (M-006 audit citation). The `TODO(post-substitution-mechanics)` marker has been replaced with `NOTE(substitution-pass-trigger)`. PARTIAL state retained pending substitution pass.
 - **Note:** Saturating multiply guards `usize` overflow. Like M-005, the BFS fallback inherits the substitution-deferral soundness hazard.
 
 ### M-007: Backjumping via static constraint-blame map (`build_constraint_blame_map`)
@@ -108,8 +110,9 @@ Breakdown by state: WIRED=6 (M-003,004,008,009,011,012), PARTIAL=4 (M-001,005,00
 
 - **State:** TODO
 - **Failure mode:** F5 (PRD-declared deferred precondition; no production code exists)
-- **Evidence:** PRD §"Resolved design decisions" line 52 "Constraint-feasibility incremental binding deferred"; `auto_type_param.rs:32-35`, `:84-86`, `:766-769` (TODO blocks); `:1322-1336` (soundness implication of fallback); no production code in any crate substitutes `Type::TypeParam` to `Type::StructureRef`. No task in 2659-2664 owns this; PRD says "Tracker for the optimization filed separately as a v0.2.x bookmark task" — no such task located in the searched sample.
+- **Evidence:** PRD §"Resolved design decisions" line 52 "Constraint-feasibility incremental binding deferred"; `auto_type_param.rs:32-35`, `:84-86`; `NOTE(substitution-pass-trigger)` blocks at hoist sites (previously `TODO(post-substitution-mechanics)`, renamed by task 3637); `:1322-1336` (soundness implication of fallback); no production code in any crate substitutes `Type::TypeParam` to `Type::StructureRef`. No task in 2659-2664 owns this; PRD says "Tracker for the optimization filed separately as a v0.2.x bookmark task" — no such task located in the searched sample.
 - **Blocks:** True end-to-end exercise of M-007 backjumping; promotion of M-005/M-006 BFS fallbacks from "soft" to "sound".
+- **Cross-reference (task 3637):** Task 3637 wired diagnostic self-documentation for M-005/M-006 (the BFS-fallback messages now explicitly state the substitution-soundness hazard at emission time) and replaced dangling `TODO(post-substitution-mechanics)` markers with `NOTE(substitution-pass-trigger)` plus inline soundness rationale. The substitution pass itself (this entry) remains TODO.
 - **Note:** PRD self-declares this as deferred; calling it a gap is interpretive. Listing here so Phase 3 can decide whether the v0.2.x bookmark task actually exists.
 
 ### M-014: Compile-pipeline integration (call-site that invokes the orchestrator from `compile`/`compile_with_*`)

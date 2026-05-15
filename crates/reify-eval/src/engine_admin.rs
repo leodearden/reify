@@ -793,6 +793,18 @@ impl Engine {
     /// gate. See arch §9.2 lines 880-890 and the `pending_cause` side-table
     /// contract at `cache.rs:147-156`.
     ///
+    /// The returned `NodeId`, when `Some`, may be any of the valid chain-root
+    /// variants (per `docs/prds/v0_3/compute-node-contract.md §3`):
+    ///
+    /// - `NodeId::Compute(_)` — an **in-flight ComputeNode** is itself the
+    ///   chain root (PRD §3 "Chain-root contract extension"). UI tooling
+    ///   should render this as "computing" (recomputation in flight).
+    /// - `NodeId::Value(_)` — an **upstream Failed leaf** gated the downstream
+    ///   cell (existing behaviour). UI tooling should render this as "waiting
+    ///   on upstream error".
+    /// - `None` — the node is the originating cause (chain root) or has no
+    ///   recorded cause at all.
+    ///
     /// Returns `None` in three cases:
     /// - `node` has no cache entry (unknown node; identical to
     ///   [`CacheStore::pending_cause`]'s "default to None" behaviour).
@@ -802,6 +814,51 @@ impl Engine {
     ///   (cache.rs:482-513) that intentionally omits a cause.
     pub fn pending_cause(&self, node: &NodeId) -> Option<NodeId> {
         self.cache.pending_cause(node)
+    }
+
+    /// Drive a freshness-only propagation sweep from the supplied changed
+    /// ValueCells. This is the engine's production trigger surface for the
+    /// `freshness_walk::propagate_freshness_only` walk (arch §3.5 lines
+    /// 432-436): when upstream cells flip Pending/Intermediate → Final (or
+    /// any other freshness transition) WITHOUT a value change, callers
+    /// invoke this method so the freshness transition propagates through
+    /// the reverse-dependency graph WITHOUT firing any value evaluator.
+    ///
+    /// Intended consumers: a future kernel-completion handler that flips a
+    /// Compute or Realization node's freshness, GUI/LSP notifications,
+    /// async-job completion sinks, or any other site that observes an
+    /// upstream freshness transition (see audit M-013 in
+    /// `docs/architecture-audit/findings/freshness-4-variant.md`).
+    ///
+    /// Returns the set of [`NodeId`]s whose freshness was actually updated by
+    /// the walk; the early-cutoff gate prunes nodes whose derived freshness
+    /// matches their current freshness. Returns an empty set when no
+    /// `eval_state` is present (engine has not yet been initialised by a
+    /// successful `eval()` / `eval_cached()` / `edit_source()` call).
+    ///
+    /// The `generation` argument is forwarded verbatim to the §7.2 truth
+    /// table consulted by the walk — callers that care about Intermediate
+    /// fan-in should pass the current refinement generation; callers that
+    /// only care about Final propagation may pass any value.
+    pub fn propagate_freshness_only(
+        &mut self,
+        changed: &std::collections::HashSet<reify_types::ValueCellId>,
+        generation: u64,
+    ) -> std::collections::HashSet<crate::cache::NodeId> {
+        // `eval_state` and `cache` are disjoint Engine fields, so the
+        // borrow checker accepts a simultaneous immutable borrow of
+        // `eval_state` and a mutable borrow of `cache` — no clone needed.
+        // No-op when eval_state is None — there is no graph to walk.
+        let Some(state) = self.eval_state.as_ref() else {
+            return std::collections::HashSet::new();
+        };
+        crate::freshness_walk::propagate_freshness_only(
+            &mut self.cache,
+            &state.reverse_index,
+            &state.snapshot.graph,
+            changed,
+            generation,
+        )
     }
 
     /// **Test-instrumentation only — not a stable public metric.**
@@ -1179,6 +1236,59 @@ mod tests {
             "pending_cause of a transitively-Pending node must forward the chain root \
              (a), not the immediate Pending upstream (b); see cache.rs:147-156 and \
              derive_output_freshness_with_cause at cache.rs:961-1013"
+        );
+    }
+
+    /// `Engine::pending_cause` admits `NodeId::Compute(_)` as a valid chain-root
+    /// cause per PRD §3 "Chain-root contract extension". Exercises the engine-level
+    /// delegation contract using direct `cache_store_mut()` injection (no dispatch
+    /// machinery yet — that is task γ).
+    ///
+    /// Downstream `NodeId::Value(V)` whose `pending_cause = Some(Compute(N))`
+    /// → `engine.pending_cause(&V) == Some(NodeId::Compute(N))`.
+    #[test]
+    fn pending_cause_admits_compute_node_id_as_chain_root() {
+        use crate::cache::{CachedResult, NodeCache, NodeId};
+        use crate::deps::DependencyTrace;
+        use reify_test_support::mocks::MockConstraintChecker;
+        use reify_types::{ComputeNodeId, DeterminacyState, Freshness, Value, ValueCellId, VersionId};
+
+        let v_id = ValueCellId::new("T", "v");
+        let v_node = NodeId::Value(v_id.clone());
+        let compute_node = NodeId::Compute(ComputeNodeId::new("T", 0));
+
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+
+        // Seed a Value entry for v directly — no eval pipeline needed; the test
+        // exercises only the pending_cause delegation contract, not eval behaviour.
+        engine.cache_store_mut().put(
+            v_node.clone(),
+            NodeCache::new(
+                CachedResult::Value(Value::Int(42), DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+
+        // Wire: mark v as Pending with compute_node as the chain-root cause.
+        // No cache entry for `compute_node` is needed — `pending_cause` reads
+        // only the side-table on v's entry, never the cause node's entry.
+        let marked = engine
+            .cache_store_mut()
+            .mark_pending_with_cause(&v_node, compute_node.clone());
+        assert!(
+            marked,
+            "mark_pending_with_cause must return true for the existing Value entry"
+        );
+
+        // Engine delegation: v's pending_cause must be the Compute chain root.
+        assert_eq!(
+            engine.pending_cause(&v_node),
+            Some(compute_node.clone()),
+            "engine.pending_cause must return Some(NodeId::Compute(N)) for a Value \
+             entry whose pending_cause was set to a Compute node \
+             (PRD §3 chain-root contract extension)"
         );
     }
 }

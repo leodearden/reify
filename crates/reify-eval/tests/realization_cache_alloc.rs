@@ -23,34 +23,18 @@
 //! rejected calls is a clean, deterministic assertion:
 //!
 //! - **Before the fix** (unconditional `entity.to_owned()`): each of the 256 calls
-//!   allocates a fresh `String`, so `delta == 256` → test fails.
+//!   allocates a fresh `String`, so `delta ≈ 256` → test fails.
 //! - **After the fix** (`get_mut` fast path skips `to_owned()`): the rejected calls
-//!   take the allocation-free `get_mut` branch → `delta == 0` → test passes.
+//!   take the allocation-free `get_mut` branch → `delta ≈ 0` (modulo ≤2 allocations
+//!   from libtest's output-capture thread), hence the `delta <= 4` assertion bound.
 
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::Ordering;
 
-/// Thin wrapper around [`std::alloc::System`] that counts every `alloc` call.
-struct CountingAllocator;
-
-/// Global counter incremented on every allocation.
-static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
-
-unsafe impl GlobalAlloc for CountingAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
-        // SAFETY: delegating to the system allocator with the same layout.
-        unsafe { System.alloc(layout) }
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        // SAFETY: delegating to the system allocator with the same layout.
-        unsafe { System.dealloc(ptr, layout) }
-    }
-}
+mod common;
 
 #[global_allocator]
-static GLOBAL: CountingAllocator = CountingAllocator;
+static GLOBAL: common::alloc_counter::CountingAllocator =
+    common::alloc_counter::CountingAllocator;
 
 /// Rejected inserts under an existing entity must not allocate a new `String` key.
 ///
@@ -75,11 +59,11 @@ fn rejected_insert_under_existing_entity_does_not_allocate_key() {
     );
 
     // Warm-up: the first insert legitimately allocates the entity String key once.
-    let inserted = cache.insert(entity, reify_types::ReprKind::BRep, 0.001, 1u32);
+    let inserted = cache.insert(entity, reify_types::ReprKind::BRep, 0.001, reify_types::ContentHash(0), 1u32);
     assert!(inserted, "warm-up insert must succeed");
 
     // Snapshot after warm-up — all legitimate allocations already counted.
-    let before = ALLOCATIONS.load(Ordering::Relaxed);
+    let before = common::alloc_counter::ALLOCATIONS.load(Ordering::Relaxed);
 
     // Now fire 256 rejected inserts.  Each uses a looser tolerance (0.1 >> 0.001),
     // so `ToleranceBucket` short-circuits immediately (existing 0.001 ≤ 0.1 → reject).
@@ -87,14 +71,14 @@ fn rejected_insert_under_existing_entity_does_not_allocate_key() {
     // With the fix:   the fast `get_mut` path is taken → zero allocations.
     // Without the fix: `entity.to_owned()` runs unconditionally → 256 allocations.
     for _ in 0..256 {
-        let inserted = cache.insert(entity, reify_types::ReprKind::BRep, 0.1, 999u32);
+        let inserted = cache.insert(entity, reify_types::ReprKind::BRep, 0.1, reify_types::ContentHash(0), 999u32);
         assert!(
             !inserted,
             "looser insert must be rejected by ToleranceBucket"
         );
     }
 
-    let after = ALLOCATIONS.load(Ordering::Relaxed);
+    let after = common::alloc_counter::ALLOCATIONS.load(Ordering::Relaxed);
     let delta = after.saturating_sub(before);
 
     // Safety assumption: `ALLOCATIONS` is process-wide, so an allocation on another
@@ -113,9 +97,16 @@ fn rejected_insert_under_existing_entity_does_not_allocate_key() {
     // intermediate regressions; the honest justification is that CI consistently
     // observes ≤ 2 allocations from libtest's output-capture thread, and a
     // tighter bound costs nothing as long as the noise floor stays there.
-    // (This binary has a single `#[test]`, so background-thread noise comes
-    // exclusively from libtest's own output-capture thread — `--test-threads`
-    // parallelism between tests is not a factor.)
+    //
+    // INVARIANT: exactly one `#[test]` per alloc-counting binary.  Do NOT add a second
+    // `#[test]` here.  The `#[global_allocator]` ALLOCATIONS counter is process-wide and
+    // libtest runs tests in parallel by default (threads = nproc).  The pre-commit hook
+    // runs `cargo test --workspace --quiet` with NO `--test-threads` override, so two
+    // co-resident tests would race the shared counter and produce spurious non-zero deltas.
+    // The rotating-options-hash contract lives in its own binary:
+    //   crates/reify-eval/tests/realization_cache_alloc_rotating_options_hash.rs
+    // Add future alloc tests as new tests/*.rs files, never co-resident here.
+    // Regression history: commit a35a682f93 / task 3680.
     assert!(
         delta <= 4,
         "rejected inserts under existing entity must allocate at most a handful of times \

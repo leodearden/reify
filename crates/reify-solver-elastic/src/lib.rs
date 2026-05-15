@@ -99,7 +99,7 @@
 //! assert_eq!(ss.mid, field, "homogeneous: mid must equal input");
 //! assert_eq!(ss.bottom, field, "homogeneous: bottom must equal input");
 //!
-//! // T7 smoke tests: shell_element_frame orthonormality + shell_element_stress zero-DOF regression.
+//! // T7 smoke tests: shell_element_frame orthonormality + shell_element_stress API typecheck.
 //! let frame_mat: [[f64; 3]; 3] = shell_element_frame(&nodes);
 //! // All three rows of the local-to-global rotation matrix must have unit norm.
 //! for i in 0..3 {
@@ -114,11 +114,9 @@
 //!     + frame_mat[0][1]*frame_mat[1][1]
 //!     + frame_mat[0][2]*frame_mat[1][2];
 //! assert!(gram_01.abs() < 1e-12, "frame_mat rows 0·1 = {gram_01}, expected 0.0");
-//! // Zero DOFs → all stress components must be exactly 0.0 (regression guard).
-//! let ses: ShellElementStress = shell_element_stress(&nodes, 0.05, &mat, &[0.0_f64; 18]);
-//! assert_eq!(ses.top[0][0], 0.0, "zero-DOF top σ_xx must be 0.0");
-//! assert_eq!(ses.mid[0][0], 0.0, "zero-DOF mid σ_xx must be 0.0");
-//! assert_eq!(ses.bottom[0][0], 0.0, "zero-DOF bottom σ_xx must be 0.0");
+//! // shell_element_stress public-API typecheck; zero-DOF behaviour is covered by
+//! // shell_result::tests::shell_element_stress_zero_dofs_yields_all_zero_stress.
+//! let _: fn(&[[f64; 3]; 3], f64, &IsotropicElastic, &[f64; 18]) -> ShellElementStress = shell_element_stress;
 //!
 //! // DirichletBc smoke test (T2917): construct, clone, and verify round-trip.
 //! let bc = DirichletBc { dof: 0, value: 0.0 };
@@ -129,11 +127,34 @@
 //! // Neumann BC smoke tests (T2918): verify public surface is callable.
 //! let _ = FaceOrder::P1Tri;
 //! let _ = FaceOrder::P2Tri;
+//! let _ = FaceOrder::P1Quad;
 //! let mut f_smoke = vec![0.0_f64; 12];
 //! apply_point_load(&mut f_smoke, 0, [1.0, 2.0, 3.0]);
 //! assert_eq!(f_smoke[0], 1.0, "apply_point_load smoke: f[0]");
 //! assert_eq!(f_smoke[1], 2.0, "apply_point_load smoke: f[1]");
 //! assert_eq!(f_smoke[2], 3.0, "apply_point_load smoke: f[2]");
+//!
+//! // Task 2986: pin FaceOrder::P1Quad dispatches through apply_traction_load.
+//! // Zero traction ⇒ result is exactly the input (no behavioral commitment
+//! // beyond compile-and-dispatch). API-surface check matching the P1Tri /
+//! // P2Tri pattern.
+//! let mut f_quad_smoke = vec![0.0_f64; 12];
+//! let quad_face_phys: [[f64; 3]; 4] = [
+//!     [-1.0, -1.0, 0.0],
+//!     [1.0, -1.0, 0.0],
+//!     [1.0, 1.0, 0.0],
+//!     [-1.0, 1.0, 0.0],
+//! ];
+//! apply_traction_load(
+//!     &mut f_quad_smoke,
+//!     FaceOrder::P1Quad,
+//!     &[0_usize, 1, 2, 3],
+//!     &quad_face_phys,
+//!     [0.0, 0.0, 0.0],
+//! );
+//! for v in &f_quad_smoke {
+//!     assert_eq!(*v, 0.0, "zero traction P1Quad smoke must leave f exactly 0.0");
+//! }
 //!
 //! // Shell BC smoke tests (T8): verify public surface is callable.
 //! let _ = SupportKind::Fixed;
@@ -317,6 +338,7 @@
 pub mod assembly;
 pub mod boundary;
 pub mod constitutive;
+pub mod eigensolve;
 pub mod elements;
 pub mod error_estimator;
 pub mod interpolation;
@@ -369,6 +391,9 @@ pub use shell_result::{
 // Task 2996: Z-Z error indicator — kernel-layer a-posteriori error estimator.
 // PRD: docs/prds/v0_4/a-posteriori-error-estimation.md, Task decomposition #1.
 pub use error_estimator::{ZzIndicator, compute_zz_indicator};
+// Task 3451: buckling eigensolver kernel — shift-invert Lanczos + dense fallback.
+// PRD: docs/prds/v0_5/buckling-eigensolver.md §5 / §13 phase 2 task β.
+pub use eigensolve::{EigenSolverOptions, EigenSolverResult, solve_eigen_dense, solve_eigen_shift_invert};
 pub use solver::{CgResult, CgSolverOptions, SolverMode, solve_cg, solve_cg_warm};
 pub use warm_state::{CgWarmState, solve_cg_with_warm_state};
 // Task 2987: 2D cross-section meshing surface for the hex/wedge swept-body

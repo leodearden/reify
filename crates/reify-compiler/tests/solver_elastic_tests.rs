@@ -848,20 +848,21 @@ fn elastic_result_constrains_iterations_and_max_von_mises_nonneg() {
 /// `ElasticResult` is the FEA solver-output container. It must declare
 /// exactly six params with the canonical names and types:
 ///
-///   - `displacement  : Real`     (Real placeholder for Field<Point3<Length>, Vector3<Length>>;
-///     to be tightened in task #3117)
-///   - `stress        : Real`     (Real placeholder for Field<Point3<Length>, Tensor<2,3,Pressure>>;
-///     to be tightened in task #3117)
+///   - `displacement  : Field<Point3<Length>, Vector3<Length>>`
+///     (tightened from Real placeholder in task 3117; resolver arm at
+///     `type_resolution.rs:1313` confirmed to work in `param` positions)
+///   - `stress        : Field<Point3<Length>, Tensor<2,3,Pressure>>`
+///     (tightened from Real placeholder in task 3117; same resolver confirmation)
 ///   - `frame         : Field<Point3<Length>, Matrix<3,3,Real>>`
-///     (per-element local-to-global rotation; tightened in task #3641)
+///     (per-element local-to-global rotation; tightened in task #3641 using
+///     the resolver capability confirmed by task 3117)
 ///   - `max_von_mises : Pressure`
 ///   - `converged     : Bool`
 ///   - `iterations    : Int`
 ///
-/// `displacement` and `stress` use `Real` placeholders pending task #3117.
-/// `frame` was tightened from `Real` to its proper Field type in task #3641
-/// after task #3117 confirmed the resolver supports `Field<D,C>` in `param`
-/// positions (`type_resolution.rs:1313`).
+/// All three Field-typed slots have been tightened from `Real` placeholders:
+/// `displacement` and `stress` by task #3117, `frame` by task #3641 — both
+/// using the resolver arm at `type_resolution.rs:1313`.
 ///
 /// `frame` is the per-element local-to-global rotation:
 ///   - For tet results the engine sets `frame = Value::Undef` (tet stress is
@@ -886,8 +887,32 @@ fn elastic_result_struct_has_correct_param_shape() {
     );
 
     let expected: &[(&str, Type)] = &[
-        ("displacement", Type::Real),
-        ("stress", Type::Real),
+        (
+            "displacement",
+            Type::Field {
+                domain: Box::new(Type::point3(Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                })),
+                codomain: Box::new(Type::vec3(Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                })),
+            },
+        ),
+        (
+            "stress",
+            Type::Field {
+                domain: Box::new(Type::point3(Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                })),
+                codomain: Box::new(Type::tensor(
+                    2,
+                    3,
+                    Type::Scalar {
+                        dimension: DimensionVector::PRESSURE,
+                    },
+                )),
+            },
+        ),
         (
             "frame",
             Type::Field {

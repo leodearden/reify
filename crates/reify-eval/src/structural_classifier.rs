@@ -408,7 +408,7 @@ mod tests {
     #[test]
     fn stage_a_eligible_shape_hash_differs_returns_false() {
         use crate::graph::RealizationNodeData;
-        use reify_types::{RealizationNodeId, ValueMap};
+        use reify_types::{RealizationNodeId, ReprKind, ValueMap};
 
         let id = ValueCellId::new("Part", "width");
         let g1 = graph_with_cell(&id, Type::length());
@@ -421,6 +421,7 @@ mod tests {
                 id: rid,
                 operations: vec![],
                 content_hash: ContentHash::of_str("extra-shape"),
+                produced_repr: ReprKind::BRep,
             },
         );
         // Identical (empty) ValueMaps.
@@ -434,7 +435,7 @@ mod tests {
     #[test]
     fn stage_a_eligible_shape_hash_differs_with_dimensional_value_diff_still_returns_false() {
         use crate::graph::RealizationNodeData;
-        use reify_types::{RealizationNodeId, Value, ValueMap};
+        use reify_types::{RealizationNodeId, ReprKind, Value, ValueMap};
 
         let width_id = ValueCellId::new("Part", "width");
         let g1 = graph_with_cell(&width_id, Type::length());
@@ -447,6 +448,7 @@ mod tests {
                 id: rid,
                 operations: vec![],
                 content_hash: ContentHash::of_str("extra-shape-2"),
+                produced_repr: ReprKind::BRep,
             },
         );
         // A dimensional value diff alongside the shape mismatch.
@@ -637,7 +639,7 @@ mod tests {
     #[test]
     fn realization_graph_shape_hash_added_realization_diverges() {
         use crate::graph::RealizationNodeData;
-        use reify_types::RealizationNodeId;
+        use reify_types::{RealizationNodeId, ReprKind};
 
         let id = ValueCellId::new("Part", "width");
         let g1 = graph_with_cell(&id, Type::length());
@@ -650,6 +652,7 @@ mod tests {
                 id: rid,
                 operations: vec![],
                 content_hash: reify_types::ContentHash::of_str("extra-realization"),
+                produced_repr: ReprKind::BRep,
             },
         );
         assert_ne!(

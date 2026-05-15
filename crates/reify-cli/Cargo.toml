@@ -21,11 +21,13 @@ reify-stdlib.workspace = true
 reify-lsp.workspace = true
 reify-mcp.workspace = true
 reify-doc.workspace = true
+reify-config.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
+tar.workspace = true
+tempfile.workspace = true
 
 [dev-dependencies]
-tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 reify-test-support.workspace = true

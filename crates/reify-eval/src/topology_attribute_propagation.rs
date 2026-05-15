@@ -43,7 +43,7 @@
 use std::collections::HashMap;
 
 use reify_types::{
-    BooleanOpHistoryRecords, BooleanOpParents, CapKind, Diagnostic, DiagnosticCode,
+    AxisSign, BooleanOpHistoryRecords, BooleanOpParents, CapKind, Diagnostic, DiagnosticCode,
     DiagnosticLabel, FeatureId, GeometryHandleId, HistoryRecord, LoftOpHistoryRecords, ModEntry,
     QueryError, Role, SourceSpan, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable,
 };
@@ -907,6 +907,18 @@ fn role_sort_key(role: &Role) -> (u32, &'static str) {
         Role::LoftedFace => (9, "LoftedFace"),
         Role::MidSurfaceFace => (10, "MidSurfaceFace"),
         Role::MidSurfaceEdge => (11, "MidSurfaceEdge"),
+        Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Pos, z: AxisSign::Pos } => (12, "CornerVertex(+x,+y,+z)"),
+        Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Pos, z: AxisSign::Neg } => (13, "CornerVertex(+x,+y,-z)"),
+        Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Neg, z: AxisSign::Pos } => (14, "CornerVertex(+x,-y,+z)"),
+        Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Neg, z: AxisSign::Neg } => (15, "CornerVertex(+x,-y,-z)"),
+        Role::CornerVertex { x: AxisSign::Neg, y: AxisSign::Pos, z: AxisSign::Pos } => (16, "CornerVertex(-x,+y,+z)"),
+        Role::CornerVertex { x: AxisSign::Neg, y: AxisSign::Pos, z: AxisSign::Neg } => (17, "CornerVertex(-x,+y,-z)"),
+        Role::CornerVertex { x: AxisSign::Neg, y: AxisSign::Neg, z: AxisSign::Pos } => (18, "CornerVertex(-x,-y,+z)"),
+        Role::CornerVertex { x: AxisSign::Neg, y: AxisSign::Neg, z: AxisSign::Neg } => (19, "CornerVertex(-x,-y,-z)"),
+        Role::CapCornerVertex { face: CapKind::Top } => (20, "CapCornerVertex(Top)"),
+        Role::CapCornerVertex { face: CapKind::Bottom } => (21, "CapCornerVertex(Bottom)"),
+        Role::CapCornerVertex { face: CapKind::Start } => (22, "CapCornerVertex(Start)"),
+        Role::CapCornerVertex { face: CapKind::End } => (23, "CapCornerVertex(End)"),
     }
 }
 

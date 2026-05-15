@@ -1421,8 +1421,8 @@ impl QueryCounts {
 /// * **Counted via default** — `query_many()` (the trait default forwards
 ///   per-element to `query()`, so each element is counted; see section below).
 /// * **Forwarded uncounted** — `execute`, `export`, `tessellate`,
-///   `extract_edges`, and `extract_faces` are delegated to the inner kernel
-///   without touching any counter.
+///   `extract_edges`, `extract_faces`, and `extract_vertices` are delegated
+///   to the inner kernel without touching any counter.
 ///
 /// ## Arc-sharing contract
 ///
@@ -1498,6 +1498,10 @@ impl GeometryKernel for CountingMockKernel {
 
     fn extract_faces(&mut self, h: GeometryHandleId) -> Result<Vec<GeometryHandleId>, QueryError> {
         self.inner.extract_faces(h)
+    }
+
+    fn extract_vertices(&mut self, h: GeometryHandleId) -> Result<Vec<GeometryHandleId>, QueryError> {
+        self.inner.extract_vertices(h)
     }
 
     fn export(
@@ -3979,5 +3983,54 @@ mod tests {
             "IsManifold element must be counted"
         );
         assert_eq!(counts.total(), 2, "both elements contribute to grand total");
+    }
+
+    #[test]
+    fn counting_mock_kernel_extract_vertices_forwards_to_inner_uncounted() {
+        // Pins the "Forwarded uncounted" contract for extract_vertices:
+        // (a) the call returns the trait-default QueryFailed error (since
+        //     MockGeometryKernel has no extract_vertices override), and
+        // (b) no per-variant counter increments — grand total stays at zero.
+        //
+        // Note: this test passes both before and after the override is added
+        // because both paths resolve to the same trait-default error today.
+        // Its value is as a regression guard for when a sibling task adds a
+        // distinguishable MockGeometryKernel::extract_vertices impl.
+        let handle = GeometryHandleId(1);
+        let inner = MockGeometryKernel::new();
+        let mut kernel = CountingMockKernel::new(inner);
+
+        let result = kernel.extract_vertices(handle);
+
+        // Pin the error variant (Err(QueryFailed)) without locking to the
+        // upstream wording owned by the trait default in reify-types.  The
+        // exact message may change when MockGeometryKernel gains its own
+        // extract_vertices override; the forwarding contract is what matters.
+        match result {
+            Err(QueryError::QueryFailed(_)) => {}
+            other => panic!("expected Err(QueryFailed(…)), got {other:?}"),
+        }
+
+        let counts = kernel.counts();
+        assert_eq!(counts.total(), 0, "extract_vertices must not increment total");
+        // Belt-and-suspenders: these per-variant counters are only incremented
+        // by query()/query_many(), so they cannot be touched by extract_vertices
+        // today.  The assertions guard against any future refactor that
+        // accidentally routes extraction through the counting path.
+        assert_eq!(
+            counts.is_watertight(),
+            0,
+            "extract_vertices must not increment is_watertight"
+        );
+        assert_eq!(
+            counts.is_manifold(),
+            0,
+            "extract_vertices must not increment is_manifold"
+        );
+        assert_eq!(
+            counts.is_orientable(),
+            0,
+            "extract_vertices must not increment is_orientable"
+        );
     }
 }

@@ -84,6 +84,7 @@ module.exports = grammar({
       field('name', $.identifier),
       ':',
       field('type', $.type_expr),
+      optional(seq('=', field('default', $._expression))),
     ),
 
     fn_body: $ => seq(
@@ -363,6 +364,7 @@ module.exports = grammar({
       $.meta_block,
       $.annotation,
       $.pragma,
+      $.match_arm_decl_block,
     ),
 
     // ── Meta block ──────────────────────────────────────────
@@ -599,14 +601,30 @@ module.exports = grammar({
     ),
 
     // type_arg_list: comma-separated list of type arguments. Each element is either
-    // a type expression (`Box<T>`, `Vec3<Force>`) or an integer literal — required
-    // for parametric types like `Tensor<rank, n, quantity>` and `Matrix<m, n, q>`.
+    // a type expression (`Box<T>`, `Vec3<Force>`), an integer literal — required
+    // for parametric types like `Tensor<rank, n, quantity>` and `Matrix<m, n, q>` —
+    // or an auto type-arg (`auto: Seal`, `auto(free): Seal`).
     // The integer-vs-float / non-negative-integer constraint is enforced at type
     // resolution, not at parse time.
     type_arg_list: $ => seq(
-      choice($.type_expr, $.number_literal),
-      repeat(seq(',', choice($.type_expr, $.number_literal))),
+      choice($.type_expr, $.number_literal, $.auto_type_arg),
+      repeat(seq(',', choice($.type_expr, $.number_literal, $.auto_type_arg))),
       optional(','),
+    ),
+
+    // auto_type_arg: solver-determined type argument with a trait/kind bound.
+    // `Bearing<auto: Seal>` and `Bearing<auto(free): Seal>` — the auto_keyword
+    // child carries the strict-vs-free flag via its `modifier` field (same
+    // mechanism used at param-default position, grammar.js:430-433).
+    // The `bound` field is the trait or kind identifier the candidate must
+    // satisfy. Composite bounds (`auto: A + B`) and parametric bounds
+    // (`auto: Container<T>`) are deferred — start with a bare identifier,
+    // widen to `$.trait_bound_list` in a follow-up when the PRD AC criterion
+    // 9 work needs it.
+    auto_type_arg: $ => seq(
+      $.auto_keyword,
+      ':',
+      field('bound', $.identifier),
     ),
 
     // Dimensional type expression: supports `*`, `/` binary ops on types.
@@ -717,6 +735,39 @@ module.exports = grammar({
     match_pattern: $ => choice(
       seq($.identifier, repeat(seq('|', $.identifier))),
       '_',
+    ),
+
+    // ── Decl-level match block (B2, task 3563) ─────────────────────────────
+    // `match <discriminant> { Pattern => sub head : StructName, ... }` reachable
+    // from `_member`. Parallel to `match_expression` (grammar.js above) but the
+    // arm body is a declaration (sub form), not an expression. Lowering to
+    // `MemberDecl::MatchArmDeclGroup` (crates/reify-syntax/src/lib.rs:102-117) is
+    // deferred to sibling task 3564 — for now the new CST nodes fall through
+    // `lower_member`'s default and are silently dropped, mirroring the B1
+    // auto_type_arg interim pattern (task 3526, commit a46e7d3888).
+    match_arm_decl_block: $ => seq(
+      'match',
+      field('discriminant', $._expression),
+      '{',
+      seq($.match_arm_decl_arm, repeat(seq(',', $.match_arm_decl_arm)), optional(',')),
+      '}',
+    ),
+
+    match_arm_decl_arm: $ => seq(
+      field('pattern', $.match_pattern),
+      '=>',
+      field('member', $.match_arm_sub_decl),
+    ),
+
+    // Restricted arm-body form: `sub head : HexHead`. Audit M-006 (compiler
+    // entity.rs:2506-2521) explicitly rejects bodies and where clauses inside
+    // match-arm sub decls today, so the grammar matches that constraint. Body
+    // form `sub head : T { ... }` is deferred to B3 chain (task 3569).
+    match_arm_sub_decl: $ => seq(
+      'sub',
+      field('name', $.identifier),
+      ':',
+      field('structure_name', $.identifier),
     ),
 
     binary_expression: $ => choice(

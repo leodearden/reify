@@ -32,6 +32,8 @@ fn find_node<'a>(
         // Leaf variants — no subexpressions to recurse into.
         CompiledExprKind::Literal(_) => None,
         CompiledExprKind::ValueRef(_) => None,
+        // CrossSubGeometryRef is a leaf (consumed by entity.rs before eval).
+        CompiledExprKind::CrossSubGeometryRef(_) => None,
         CompiledExprKind::OptionNone => None,
         CompiledExprKind::MetaAccess { .. } => None,
         CompiledExprKind::DeterminacyPredicate { .. } => None,

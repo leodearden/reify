@@ -2951,6 +2951,16 @@ Point3 closest_point_on_shape(const OcctShape& shape, double px, double py, doub
     });
 }
 
+Point3 vertex_point(const OcctShape& shape) {
+    return wrap_occt_call("vertex_point", [&]() {
+        if (shape.shape.ShapeType() != TopAbs_VERTEX) {
+            throw std::runtime_error("vertex_point: shape must be a TopoDS_Vertex");
+        }
+        gp_Pnt p = BRep_Tool::Pnt(TopoDS::Vertex(shape.shape));
+        return Point3{p.X(), p.Y(), p.Z()};
+    });
+}
+
 bool point_on_shape(const OcctShape& shape, double px, double py, double pz, double tolerance) {
     // Validate tolerance early: negative or non-finite values silently produce wrong results.
     // Negative → always false (dist >= 0 means dist <= negative is never true).
@@ -3353,6 +3363,20 @@ std::unique_ptr<OcctShape> make_vertex_for_test() {
     });
 }
 
+std::unique_ptr<OcctShape> make_vertex_at_for_test(double x, double y, double z) {
+    // Parameterised companion to make_vertex_for_test for tests that need a
+    // pinned non-origin location (e.g. vertex_point round-trip verification).
+    return wrap_occt_call("make_vertex_at", [&]() {
+        BRepBuilderAPI_MakeVertex vertex_maker(gp_Pnt(x, y, z));
+        if (!vertex_maker.IsDone()) {
+            throw std::runtime_error("make_vertex_at: vertex construction failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = vertex_maker.Vertex();
+        return result;
+    });
+}
+
 std::unique_ptr<OcctShape> make_edge_for_test() {
     // A simple straight edge along the X axis: (0,0,0) → (10mm,0,0).
     // ShapeType() == TopAbs_EDGE; no face incidence → manifold trivially true;
@@ -3731,6 +3755,20 @@ std::unique_ptr<OcctShapeVec> get_faces(const OcctShape& shape) {
         out->shapes.reserve(static_cast<size_t>(n));
         for (Standard_Integer i = 1; i <= n; ++i) {
             out->shapes.push_back(face_map.FindKey(i));
+        }
+        return out;
+    });
+}
+
+std::unique_ptr<OcctShapeVec> get_vertices(const OcctShape& shape) {
+    return wrap_occt_call("get_vertices", [&]() {
+        TopTools_IndexedMapOfShape vmap;
+        TopExp::MapShapes(shape.shape, TopAbs_VERTEX, vmap);
+        auto out = std::make_unique<OcctShapeVec>();
+        const Standard_Integer n = vmap.Extent();
+        out->shapes.reserve(static_cast<size_t>(n));
+        for (Standard_Integer i = 1; i <= n; ++i) {
+            out->shapes.push_back(vmap.FindKey(i));
         }
         return out;
     });

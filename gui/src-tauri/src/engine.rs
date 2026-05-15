@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use tracing::warn;
 
@@ -9,14 +10,18 @@ use reify_compiler::{CompiledModule, ValueCellKind, Visibility};
 use reify_eval::cache::NodeId;
 use reify_eval::{CheckResult, Engine};
 use reify_types::{
-    ConstraintChecker, ContentHash, DeterminacyState, DimensionVector, ExportFormat,
-    GeometryKernel, ModulePath, Satisfaction, Severity, Value, ValueCellId,
+    ConstraintChecker, ContentHash, DeterminacyState, DimensionVector, ExportFormat, GeometryKernel,
+    ModulePath, Satisfaction, Severity, Value, ValueCellId,
 };
+
+#[cfg(test)]
+use reify_types::ConstraintSolver;
 
 use reify_types::{Diagnostic, DiagnosticInfo, DiagnosticLabel, SourceLocationInfo, SourceSpan};
 
 use crate::types::{
-    ConstraintData, DefInfo, EntityIdentity, EntityTreeNode, FileData, GuiState, JointDescriptor,
+    AutoResolveConstraintProgress, AutoResolveIteration, AutoResolveParameterValue, ConstraintData,
+    DefInfo, EntityIdentity, EntityTreeNode, FileData, GuiState, JointDescriptor,
     MechanismDescriptor, MeshData, SourceSpanInfo, ValueData, format_determinacy, format_freshness,
     format_value,
 };
@@ -121,6 +126,24 @@ pub struct EngineSession {
     /// `Option<CompileFailure>` makes the at-most-one-non-empty invariant inexpressible —
     /// the prior two-field representation enforced it only at runtime via `debug_assert!`s.
     compile_failure: Option<CompileFailure>,
+    /// Optional auto-resolve event sink installed by the GUI layer.
+    ///
+    /// When `Some`, `emit_auto_resolve_if_any` calls `start → iteration → complete`
+    /// after every check that produces non-empty `resolved_params`. When `None`
+    /// (the default), all emit paths are no-ops — existing tests that construct an
+    /// EngineSession without installing an emitter are unaffected.
+    auto_resolve_emitter: Option<Arc<dyn AutoResolveEmitter>>,
+}
+
+/// Trait for sinking auto-resolve loop events to the GUI transport layer.
+///
+/// Implemented by [`TauriAutoResolveEmitter`] in `main.rs` for the production
+/// path, and by `RecordingEmitter` in tests.  The trait is object-safe:
+/// no method takes or returns `Self`.
+pub trait AutoResolveEmitter: Send + Sync {
+    fn start(&self);
+    fn iteration(&self, iter: AutoResolveIteration);
+    fn complete(&self);
 }
 
 /// Build the normalized source-map key for a module name: `"{name}.ri"`.
@@ -477,7 +500,143 @@ impl EngineSession {
             line_offsets_cache: None,
             consumed_idents_cache: None,
             compile_failure: None,
+            auto_resolve_emitter: None,
         }
+    }
+
+    /// Install an auto-resolve event emitter on this session.
+    ///
+    /// After installation, every `Engine::check` / `edit_check` call that
+    /// produces non-empty `resolved_params` fires `start → iteration → complete`
+    /// on the emitter.  Replaces any previously installed emitter.
+    pub fn set_auto_resolve_emitter(&mut self, emitter: Arc<dyn AutoResolveEmitter>) {
+        self.auto_resolve_emitter = Some(emitter);
+    }
+
+    /// Install a constraint solver into the underlying Engine for testing.
+    ///
+    /// Mirrors [`Engine::with_solver`] at the session level.  Keeps production
+    /// paths untouched — test-only (pub(crate)) so it cannot be called from
+    /// `main.rs` (solver installation in main.rs is a separate future task).
+    #[cfg(test)]
+    pub(crate) fn with_solver_for_test(mut self, solver: Box<dyn ConstraintSolver>) -> Self {
+        self.engine = self.engine.with_solver(solver);
+        self
+    }
+
+    /// Run `engine.check(compiled)`, fire the emit-helper.
+    ///
+    /// Gives tests a single-call path that exercises the eval+emit pipeline without
+    /// going through the full load_from_source / update_source plumbing.  Only for
+    /// unit tests; not callable from production code.
+    ///
+    /// `CheckResult` does not implement `Clone`, so `last_check` is not updated by
+    /// this helper (the test only cares about emitted events, not stored state).
+    #[cfg(test)]
+    pub(crate) fn check_and_emit_for_test(&mut self, compiled: &CompiledModule) {
+        let r = self.engine.check(compiled);
+        self.emit_auto_resolve_if_any(&r);
+    }
+
+    /// Emit auto-resolve events if an emitter is installed and the check produced
+    /// resolved auto-parameter values.
+    ///
+    /// Early-returns silently when:
+    /// - No emitter is installed (`auto_resolve_emitter` is `None`), or
+    /// - `check.resolved_params` is empty (no auto params were resolved).
+    ///
+    /// When both conditions are met, fires `start → iteration → complete` in order.
+    fn emit_auto_resolve_if_any(&self, check: &CheckResult) {
+        let emitter = match &self.auto_resolve_emitter {
+            Some(e) => e,
+            None => return,
+        };
+        if check.resolved_params.is_empty() {
+            return;
+        }
+
+        let parameters = Self::build_parameters_payload(&check.resolved_params);
+        let constraints = Self::build_constraints_payload(&check.constraint_results);
+
+        let iter = AutoResolveIteration {
+            iteration: 0,
+            parameters,
+            constraints,
+            driving_metric: None,
+            driving_metric_value: None,
+        };
+
+        emitter.start();
+        emitter.iteration(iter);
+        emitter.complete();
+    }
+
+    /// Build the `parameters` map for an `AutoResolveIteration` payload.
+    ///
+    /// Only `Value::Scalar` resolved params are included; other variants are
+    /// filtered out (auto parameters are always physical quantities, so non-scalar
+    /// resolved values indicate an unexpected state — skip rather than emit garbage).
+    fn build_parameters_payload(
+        resolved: &HashMap<ValueCellId, Value>,
+    ) -> HashMap<String, AutoResolveParameterValue> {
+        let mut out = HashMap::new();
+        for (cell_id, value) in resolved {
+            if let Value::Scalar { si_value, dimension } = value {
+                let (display_value, unit) = dimension.to_display_units(*si_value);
+                let display = format!(
+                    "{}{}",
+                    reify_types::value::format_display_number(display_value),
+                    unit
+                );
+                out.insert(
+                    cell_id.to_string(),
+                    AutoResolveParameterValue {
+                        value: display_value,
+                        unit: unit.to_string(),
+                        display,
+                    },
+                );
+            } else {
+                warn!(
+                    "auto-resolve: resolved param {:?} is not a Scalar; skipping",
+                    cell_id
+                );
+            }
+        }
+        out
+    }
+
+    /// Build the `constraints` map for an `AutoResolveIteration` payload.
+    ///
+    /// Projects each `ConstraintCheckEntry` to `{ name, value: None, unit: None,
+    /// target_lower: None, target_upper: None, satisfied }`.  `value` is `None`
+    /// because the kernel does not yet expose per-constraint observed/target
+    /// scalars at the CheckResult boundary; emitting `0.0` would be a wire-level
+    /// lie (indistinguishable from a genuine zero observation).
+    ///
+    /// `name` prefers the user-authored `label` over the synthetic `id` so the
+    /// GUI panel indicator row shows human-readable names.  The map key is always
+    /// `id.to_string()` for stable lookup by the frontend.
+    fn build_constraints_payload(
+        results: &[reify_eval::ConstraintCheckEntry],
+    ) -> HashMap<String, AutoResolveConstraintProgress> {
+        let mut out = HashMap::new();
+        for r in results {
+            let id_str = r.id.to_string();
+            let name = r.label.clone().unwrap_or_else(|| id_str.clone());
+            out.insert(
+                id_str,
+                AutoResolveConstraintProgress {
+                    name,
+                    value: None,
+                    unit: None,
+                    target_lower: None,
+                    target_upper: None,
+                    satisfied: matches!(r.satisfaction, Satisfaction::Satisfied),
+                },
+            );
+        }
+        out
     }
 
     /// Create a new EngineSession with the given constraint checker and optional geometry kernel.
@@ -526,6 +685,11 @@ impl EngineSession {
         // Atomically commit all state after check() succeeds.
         self.commit_state(parsed, compiled, check_result, module_name, source);
 
+        // Emit auto-resolve events after committing state, consistent with the
+        // panic-safety ordering story: all state mutations are complete before
+        // any events fire.
+        self.emit_auto_resolve_if_any(self.last_check.as_ref().unwrap());
+
         self.build_gui_state()
     }
 
@@ -559,6 +723,7 @@ impl EngineSession {
             .edit_check(cell_id, value)
             .map_err(|e| format!("Engine error: {}", e))?;
 
+        self.emit_auto_resolve_if_any(&check_result);
         self.last_check = Some(check_result);
         self.build_gui_state()
     }
@@ -590,6 +755,7 @@ impl EngineSession {
                 msg
             })?;
         let check_result = self.engine.check(&compiled);
+        self.emit_auto_resolve_if_any(&check_result);
         self.commit_state(parsed, compiled, check_result, module_name, &source);
         self.file_path = Some(path.to_path_buf());
         self.build_gui_state()
@@ -607,29 +773,35 @@ impl EngineSession {
     /// When `self.file_path` is set (i.e. after a prior `load_file`), this method
     /// routes through `compile_entry_with_imports` to preserve the multi-file import
     /// graph resolved at `load_file` time — dirty-buffer edits no longer silently
-    /// drop imports.  See task 3318 (item 3).
+    /// drop imports.  See task 3318 (item 3).  Both `module_name` and the
+    /// project-root anchor are derived from `self.file_path`; the caller's `path`
+    /// argument is used only for the single-file fallback (when `self.file_path` is
+    /// `None`).  See task 3370.
     ///
     /// When `self.file_path` is `None` (i.e. `load_from_source`-only sessions with
     /// no project-root anchor), the original single-file `parse_with_stdlib +
     /// compile_with_stdlib` path is preserved unchanged.
     pub fn update_source(&mut self, path: &str, content: &str) -> Result<GuiState, String> {
-        let module_name = Path::new(path)
+        // When self.file_path is set (i.e. after a prior load_file), derive module_name
+        // from it — NOT from the caller's `path` arg.  This keeps module_name in lockstep
+        // with the entry-module key established at load_file time, regardless of what
+        // path string the caller serialises.  See task 3370 (esc-3318-14, suggestion #1).
+        // Owned String releases the self.file_path borrow before the closures below.
+        let module_name_owned = self
+            .file_path
+            .as_deref()
+            .unwrap_or_else(|| Path::new(path))
             .file_stem()
             .and_then(|s| s.to_str())
-            .unwrap_or("unnamed");
+            .unwrap_or("unnamed")
+            .to_owned();
+        let module_name = module_name_owned.as_str();
 
         let (parsed, compiled) = if let Some(entry_path) = self.file_path.clone() {
             // Multi-file flow — same as load_file. Preserves the import graph
             // resolved at load_file time so dirty-buffer edits don't silently drop
-            // imports.  See task 3318 (item 3) and task 3228 follow-up note.
-            //
-            // Caller contract: `path` is expected to name the same file that was
-            // originally passed to `load_file` (so that `module_name` derived from
-            // `path` matches the entry module).  `self.file_path` (not `path`) is
-            // used as the project-root anchor so `ModuleResolver` always resolves
-            // siblings relative to the directory of the originally-loaded file,
-            // regardless of how the GUI serialised `path`.  See design decision in
-            // task 3318 for rationale.
+            // imports.  Both module_name and the project-root anchor come from
+            // self.file_path.  See task 3318 (item 3), task 3228, and task 3370.
             let (compiled, parsed) = compile_entry_with_imports(&entry_path, content, module_name)
                 .map_err(|(msg, diags)| {
                     self.record_compile_failure(diags);
@@ -648,6 +820,8 @@ impl EngineSession {
         // Parse+compile succeeded — run check() before mutating any state, so
         // that a panic in check() leaves the session completely unchanged.
         let check_result = self.engine.check(&compiled);
+
+        self.emit_auto_resolve_if_any(&check_result);
 
         // Atomically commit all state after check() succeeds.
         self.commit_state(parsed, compiled, check_result, module_name, content);
@@ -2637,7 +2811,11 @@ fn format_expr(expr: &reify_types::CompiledExpr) -> String {
                 format!("{}{}", val, unit)
             }
         }
-        CompiledExprKind::ValueRef(id) => id.member.clone(),
+        CompiledExprKind::ValueRef(id) | CompiledExprKind::CrossSubGeometryRef(id) => {
+            // CrossSubGeometryRef formats identically to ValueRef — both name the
+            // member on the synthetic cross-sub entity stamp (task-3508).
+            id.member.clone()
+        }
         CompiledExprKind::BinOp { op, left, right } => {
             let op_str = match op {
                 reify_types::BinOp::Add => "+",

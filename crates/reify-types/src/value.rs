@@ -123,6 +123,80 @@ pub struct SampledField {
     pub oob_emitted: std::sync::atomic::AtomicBool,
 }
 
+impl SampledField {
+    /// Returns `true` if all spatial-geometry fields of `self` and `other` are
+    /// bit-identical, i.e. the two fields sample the same physical grid.
+    ///
+    /// ## Relationship to `PartialEq`
+    ///
+    /// This is a strict subset of `SampledField::PartialEq`: it compares every
+    /// field that `PartialEq` compares **except** `data` (the value payload,
+    /// compared element-wise with tolerance by callers) and `oob_emitted` (a
+    /// runtime-mutability slot deliberately excluded from all equality/ordering
+    /// impls).  When only grid geometry matters — regardless of what data values
+    /// happen to be stored at those coordinates — use this method.
+    ///
+    /// ## `#[doc(hidden)]` rationale
+    ///
+    /// This method is `pub` because its primary caller, `reify-eval`'s
+    /// significance filter, lives in a downstream crate.  It is `#[doc(hidden)]`
+    /// because it is an internal contract between the two crates and is not part
+    /// of `SampledField`'s stable public API.
+    ///
+    /// ## Bit-equality rationale
+    ///
+    /// Float fields (`bounds_min`, `bounds_max`, `spacing`, `axis_grids`) are
+    /// compared with `to_bits()` to match the behaviour of `PartialEq`.  This
+    /// means `+0.0` and `-0.0` compare as **different** (a grid spec that
+    /// switches sign on a spacing entry is a physically distinct grid even
+    /// though the two values are numerically equal under `f64::PartialEq`).
+    /// Same-bit-pattern NaN values compare as equal.
+    #[doc(hidden)]
+    pub fn grid_metadata_eq(&self, other: &Self) -> bool {
+        // Destructure `self` so that adding a new field to `SampledField`
+        // without updating this method produces a compile error.  `data` and
+        // `oob_emitted` are bound to `_` because they are intentionally
+        // excluded from the geometry-only comparison.
+        let Self {
+            name,
+            kind,
+            bounds_min,
+            bounds_max,
+            spacing,
+            axis_grids,
+            interpolation,
+            data: _,
+            oob_emitted: _,
+        } = self;
+        if name != &other.name
+            || kind != &other.kind
+            || interpolation != &other.interpolation
+        {
+            return false;
+        }
+        let vecs_bit_eq = |xs: &[f64], ys: &[f64]| -> bool {
+            xs.len() == ys.len()
+                && xs
+                    .iter()
+                    .zip(ys.iter())
+                    .all(|(x, y)| x.to_bits() == y.to_bits())
+        };
+        if !vecs_bit_eq(bounds_min, &other.bounds_min)
+            || !vecs_bit_eq(bounds_max, &other.bounds_max)
+            || !vecs_bit_eq(spacing, &other.spacing)
+        {
+            return false;
+        }
+        if axis_grids.len() != other.axis_grids.len() {
+            return false;
+        }
+        axis_grids
+            .iter()
+            .zip(other.axis_grids.iter())
+            .all(|(ag, bg)| vecs_bit_eq(ag, bg))
+    }
+}
+
 impl Clone for SampledField {
     /// Cloning a `SampledField` produces a fresh `oob_emitted = false`.
     /// Cloning is rare in normal operation (the `Arc<Value::SampledField>`
@@ -984,6 +1058,8 @@ impl Value {
     /// - empty `List` / `Set` → element type defaults to `Real`
     /// - empty `Map` → key defaults to `String`, value defaults to `Real`
     /// - `Option(None)` → inner type defaults to `Bool`
+    /// - empty `Point` / `Vector` → quantity type defaults to `Real`
+    /// - `Range` with no bounds → element type defaults to `Real`
     ///
     /// Use [`try_infer_type()`] when you need to distinguish "genuinely ambiguous"
     /// from "has a known fallback".
@@ -993,6 +1069,9 @@ impl Value {
             Some(ty) => ty,
             None => match self {
                 Value::List(items) => {
+                    // G-allow: documented `infer_type()` with-defaults contract (function
+                    // docstring above); `try_infer_type()` returns None for ambiguity
+                    // (task 3639 review).
                     let elem_ty = items.first().map(|v| v.infer_type()).unwrap_or(Type::Real);
                     Type::List(Box::new(elem_ty))
                 }
@@ -1001,6 +1080,9 @@ impl Value {
                         .iter()
                         .next()
                         .map(|v| v.infer_type())
+                        // G-allow: documented `infer_type()` with-defaults contract (function
+                        // docstring above); `try_infer_type()` returns None for ambiguity
+                        // (task 3639 review).
                         .unwrap_or(Type::Real);
                     Type::Set(Box::new(elem_ty))
                 }
@@ -1018,6 +1100,9 @@ impl Value {
                     let q = components
                         .first()
                         .map(|v| v.infer_type())
+                        // G-allow: documented `infer_type()` with-defaults contract (function
+                        // docstring above); `try_infer_type()` returns None for ambiguity
+                        // (task 3639 review).
                         .unwrap_or(Type::Real);
                     Type::Point {
                         n: components.len(),
@@ -1028,6 +1113,9 @@ impl Value {
                     let q = components
                         .first()
                         .map(|v| v.infer_type())
+                        // G-allow: documented `infer_type()` with-defaults contract (function
+                        // docstring above); `try_infer_type()` returns None for ambiguity
+                        // (task 3639 review).
                         .unwrap_or(Type::Real);
                     Type::Vector {
                         n: components.len(),
@@ -1039,6 +1127,9 @@ impl Value {
                         .as_ref()
                         .or(upper.as_ref())
                         .map(|v| v.infer_type())
+                        // G-allow: documented `infer_type()` with-defaults contract (function
+                        // docstring above); `try_infer_type()` returns None for ambiguity
+                        // (task 3639 review).
                         .unwrap_or(Type::Real);
                     Type::Range(Box::new(elem_ty))
                 }
@@ -7641,4 +7732,218 @@ mod tests {
         let sf2 = Value::SampledField(sample_field_1d_fixture());
         assert_eq!(sf.content_hash(), sf2.content_hash());
     }
+
+    // --- SampledField::grid_metadata_eq unit tests (task 3515) ---
+
+    /// Identical fixtures compare as equal via `grid_metadata_eq`.
+    #[test]
+    fn sampled_field_grid_metadata_eq_identical_returns_true() {
+        let a = sample_field_1d_fixture();
+        let b = sample_field_1d_fixture();
+        assert!(
+            a.grid_metadata_eq(&b),
+            "identical SampledFields must return true from grid_metadata_eq"
+        );
+    }
+
+    /// Mutating `name` alone must yield false.
+    #[test]
+    fn sampled_field_grid_metadata_eq_name_change_returns_false() {
+        let a = sample_field_1d_fixture();
+        let mut b = sample_field_1d_fixture();
+        b.name = "g".to_string();
+        assert!(
+            !a.grid_metadata_eq(&b),
+            "different name must return false from grid_metadata_eq"
+        );
+    }
+
+    /// Mutating `kind` alone must yield false.
+    #[test]
+    fn sampled_field_grid_metadata_eq_kind_change_returns_false() {
+        let a = sample_field_1d_fixture();
+        let mut b = sample_field_1d_fixture();
+        b.kind = SampledGridKind::Regular2D;
+        assert!(
+            !a.grid_metadata_eq(&b),
+            "different kind must return false from grid_metadata_eq"
+        );
+    }
+
+    /// Mutating `bounds_min[0]` alone must yield false.
+    #[test]
+    fn sampled_field_grid_metadata_eq_bounds_min_change_returns_false() {
+        let a = sample_field_1d_fixture();
+        let mut b = sample_field_1d_fixture();
+        b.bounds_min[0] = -1.0;
+        assert!(
+            !a.grid_metadata_eq(&b),
+            "different bounds_min must return false from grid_metadata_eq"
+        );
+    }
+
+    /// Mutating `bounds_max[0]` alone must yield false.
+    #[test]
+    fn sampled_field_grid_metadata_eq_bounds_max_change_returns_false() {
+        let a = sample_field_1d_fixture();
+        let mut b = sample_field_1d_fixture();
+        b.bounds_max[0] = 2.0;
+        assert!(
+            !a.grid_metadata_eq(&b),
+            "different bounds_max must return false from grid_metadata_eq"
+        );
+    }
+
+    /// Mutating `spacing[0]` alone must yield false.
+    #[test]
+    fn sampled_field_grid_metadata_eq_spacing_change_returns_false() {
+        let a = sample_field_1d_fixture();
+        let mut b = sample_field_1d_fixture();
+        b.spacing[0] = 0.25;
+        assert!(
+            !a.grid_metadata_eq(&b),
+            "different spacing must return false from grid_metadata_eq"
+        );
+    }
+
+    /// Mutating `axis_grids[0][1]` alone must yield false.
+    #[test]
+    fn sampled_field_grid_metadata_eq_axis_grids_change_returns_false() {
+        let a = sample_field_1d_fixture();
+        let mut b = sample_field_1d_fixture();
+        b.axis_grids[0][1] = 0.75;
+        assert!(
+            !a.grid_metadata_eq(&b),
+            "different axis_grids must return false from grid_metadata_eq"
+        );
+    }
+
+    /// Changing `interpolation` (Linear → NearestNeighbor) must yield false.
+    #[test]
+    fn sampled_field_grid_metadata_eq_interpolation_change_returns_false() {
+        let a = sample_field_1d_fixture();
+        let mut b = sample_field_1d_fixture();
+        b.interpolation = InterpolationKind::NearestNeighbor;
+        assert!(
+            !a.grid_metadata_eq(&b),
+            "different interpolation must return false from grid_metadata_eq"
+        );
+    }
+
+    /// Replacing `data` (same length, different values) must still return true —
+    /// `grid_metadata_eq` deliberately skips the value payload.
+    #[test]
+    fn sampled_field_grid_metadata_eq_data_change_returns_true() {
+        let a = sample_field_1d_fixture();
+        let mut b = sample_field_1d_fixture();
+        b.data = vec![9.0, 8.0, 7.0];
+        assert!(
+            a.grid_metadata_eq(&b),
+            "different data must still return true from grid_metadata_eq (data is skipped)"
+        );
+    }
+
+    /// Flipping `oob_emitted` must still return true —
+    /// `grid_metadata_eq` deliberately skips the runtime-mutability flag,
+    /// mirroring the AtomicBool exclusion in PartialEq.
+    #[test]
+    fn sampled_field_grid_metadata_eq_oob_emitted_change_returns_true() {
+        use std::sync::atomic::Ordering;
+        let a = sample_field_1d_fixture();
+        let b = sample_field_1d_fixture();
+        b.oob_emitted.store(true, Ordering::Release);
+        assert!(
+            a.grid_metadata_eq(&b),
+            "different oob_emitted must still return true from grid_metadata_eq (flag is skipped)"
+        );
+    }
+
+    /// A length mismatch in a `Vec<f64>` geometry field must yield false.
+    ///
+    /// Pins the `xs.len() == ys.len()` length-prefix check inside the
+    /// `vecs_bit_eq` closure.  A 1D vs 2D field (different number of dimension
+    /// coordinates) must not compare as equal even if the shorter prefix matches.
+    #[test]
+    fn sampled_field_grid_metadata_eq_bounds_min_length_mismatch_returns_false() {
+        let a = sample_field_1d_fixture();
+        let mut b = sample_field_1d_fixture();
+        b.bounds_min.push(0.0); // now length 2 vs. a's length 1
+        assert!(
+            !a.grid_metadata_eq(&b),
+            "bounds_min length mismatch must return false from grid_metadata_eq"
+        );
+    }
+
+    /// An outer-length mismatch in `axis_grids` must yield false.
+    ///
+    /// Pins the `self.axis_grids.len() != other.axis_grids.len()` early return.
+    /// A field with one axis vs. two axes must not compare as equal.
+    #[test]
+    fn sampled_field_grid_metadata_eq_axis_grids_length_mismatch_returns_false() {
+        let a = sample_field_1d_fixture();
+        let mut b = sample_field_1d_fixture();
+        b.axis_grids.push(vec![0.0, 1.0]); // outer length 2 vs. a's outer length 1
+        assert!(
+            !a.grid_metadata_eq(&b),
+            "axis_grids outer length mismatch must return false from grid_metadata_eq"
+        );
+    }
+
+    /// `+0.0` and `-0.0` must compare as **different** via `grid_metadata_eq`.
+    ///
+    /// Pins the bit-equality semantics documented on the method: `f64::to_bits()`
+    /// distinguishes `+0.0` (bit pattern 0x0000…) from `-0.0` (bit pattern
+    /// 0x8000…), so a spacing of `+0.0` is treated as a physically distinct grid
+    /// from `-0.0`.  If a future contributor replaces `to_bits()` with plain `==`,
+    /// this test will catch the regression.
+    #[test]
+    fn sampled_field_grid_metadata_eq_positive_zero_vs_negative_zero_returns_false() {
+        let mut a = sample_field_1d_fixture();
+        let mut b = sample_field_1d_fixture();
+        a.spacing[0] = 0.0_f64;           // +0.0
+        b.spacing[0] = -0.0_f64;          // -0.0  (different bit pattern)
+        assert!(
+            !a.grid_metadata_eq(&b),
+            "+0.0 and -0.0 must compare as different (bit-equality semantics)"
+        );
+    }
+
+    // --- SampledField::grid_metadata_eq comprehensive contract tests (task 3650) ---
+
+    /// Two NaN values with **identical** bit patterns must compare as equal via
+    /// `grid_metadata_eq`, while two NaN values with **different** bit patterns
+    /// must compare as unequal.
+    ///
+    /// Pins the bidirectional NaN bit-equality contract documented on the method:
+    /// the impl uses `f64::to_bits()` comparison, so same-bit-pattern NaNs are
+    /// equal and distinct-bit-pattern NaNs are not.
+    ///
+    /// Both halves are needed:
+    /// - Same-bits-equal: fails if a contributor replaces `to_bits()==to_bits()`
+    ///   with plain `==` (NaN != NaN always, so the result would flip to false).
+    /// - Different-bits-unequal: fails if a contributor introduces NaN
+    ///   canonicalisation (all NaNs would be treated as equal).
+    #[test]
+    fn sampled_field_grid_metadata_eq_nan_bits_equal_returns_true() {
+        // Half 1: same bit-pattern NaN → equal.
+        let mut a = sample_field_1d_fixture();
+        let mut b = sample_field_1d_fixture();
+        a.spacing[0] = f64::NAN;
+        b.spacing[0] = f64::from_bits(f64::NAN.to_bits()); // identical bit pattern
+        assert!(
+            a.grid_metadata_eq(&b),
+            "same-bit-pattern NaN values must compare as equal (NaN bit-equality contract)"
+        );
+
+        // Half 2: distinct bit-pattern NaN → not equal.
+        let mut c = sample_field_1d_fixture();
+        let mut d = sample_field_1d_fixture();
+        c.spacing[0] = f64::NAN;
+        d.spacing[0] = f64::from_bits(f64::NAN.to_bits() | 1); // different payload bit
+        assert!(
+            !c.grid_metadata_eq(&d),
+            "distinct-bit-pattern NaN values must compare as unequal (NaN bit-equality contract)"
+        );
+    }
+
 }

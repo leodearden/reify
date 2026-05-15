@@ -142,6 +142,7 @@ pub mod mesher;
 pub mod mid_surface;
 pub mod mid_surface_naming;
 pub mod pruning;
+pub mod result;
 pub mod segmentation;
 
 pub use grid_validation::GridValidationError;
@@ -152,6 +153,7 @@ pub use mid_surface_naming::{
     MidSurfaceAttributes, MidSurfaceEdgeRecord, populate_mid_surface_attributes,
 };
 pub use pruning::{PruneError, PruneMetrics, PruneOptions, PruneResult, prune_branches};
+pub use result::{ShellExtractionResult, ShellExtractionResultError};
 pub use segmentation::{
     RegionClassification, RegionInfo, SegmentationError, SegmentationOptions, SegmentationResult,
     SingleBodyMask, segment_regions,

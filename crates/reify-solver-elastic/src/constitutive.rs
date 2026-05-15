@@ -110,7 +110,7 @@ impl IsotropicElastic {
     /// range). Validation is delegated to [`Self::debug_assert_valid`] — the
     /// single source of truth for this crate. The stdlib `ElasticMaterial`
     /// constructor enforces the stricter `[0, 0.5)` policy bound upstream
-    /// (`crates/reify-compiler/stdlib/materials_fea.ri:97-103`), but this
+    /// (`crates/reify-compiler/stdlib/materials_fea.ri:94-103`), but this
     /// struct is publicly constructible, so we re-check the contract here in
     /// debug builds. A release-mode caller bypassing this gate is responsible
     /// for the resulting non-finite / garbage output.
@@ -414,6 +414,28 @@ mod tests {
         IsotropicElastic {
             youngs_modulus: 1.0,
             poisson_ratio: -1.5,
+        }
+        .d_matrix();
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "youngs_modulus")]
+    fn d_matrix_panics_when_youngs_modulus_is_zero() {
+        IsotropicElastic {
+            youngs_modulus: 0.0,
+            poisson_ratio: 0.3,
+        }
+        .d_matrix();
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "youngs_modulus")]
+    fn d_matrix_panics_when_youngs_modulus_is_negative() {
+        IsotropicElastic {
+            youngs_modulus: -1.0,
+            poisson_ratio: 0.3,
         }
         .d_matrix();
     }

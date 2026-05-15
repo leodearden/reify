@@ -1,0 +1,102 @@
+// Multi-load-case FEA — mounting bracket evaluated against three load
+// scenarios with envelope-stress design criterion.
+//
+// Demonstrates the v0.3.x multi-load-case FEA stdlib surface:
+//   - `LoadCase` solver-input bundles (per-case loads + supports)
+//   - `MultiCaseResult` solver-output container (Map<String, ElasticResult>)
+//   - `envelope_von_mises(...)` cross-case stress envelope
+//   - `linear_combine(...)` weighted superposition (LRFD-style code combinations)
+//
+// PRD: docs/prds/v0_3/multi-load-case-fea.md ("End-to-end example file" — task #7).
+//
+// Geometry is a parametric rectangular mounting plate (a stand-in for the PRD's
+// motivating L-bracket; full L-shape with fillet defers to the topology
+// selectors of `topology-selectors.md` task 5). Loads attach to opaque string
+// selectors — these are accepted today as selector-target placeholders per
+// `validate_selector_target` in `crates/reify-stdlib/src/helpers.rs`; the
+// runtime FEA solver will resolve them against the actual geometry once
+// topology-kind validation lands (PRD task 16).
+//
+// `MultiCaseResult` is constructed via the stdlib struct constructor; struct
+// constructors currently evaluate to `Value::Undef` at eval time, but they
+// parse and type-check cleanly so `reify check` passes — this matches the
+// smoke-test discipline in
+// `crates/reify-eval/tests/multi_load_case_stdlib_smoke.rs`. When the
+// `solve_load_cases` engine integration lands, the `let results = ...` form
+// will swap from the constructor stub to the engine call.
+
+structure MultiLoadBracket {
+    // ── Geometry ─────────────────────────────────────────────────────────────
+    param width        : Length = 80mm
+    param height       : Length = 100mm
+    param thickness    : Length = 6mm
+    param hole_diameter : Length = 6mm
+
+    constraint thickness > 2mm
+    constraint thickness < width / 4
+    constraint hole_diameter < thickness * 2
+
+    let body = box(width, height, thickness)
+
+    // ── Material ─────────────────────────────────────────────────────────────
+    let material = Steel_AISI_1045()
+
+    // ── Per-case load and support bundles ────────────────────────────────────
+    //
+    // Three scenarios bracket the design envelope:
+    //   "operating" — nominal in-service load (5 kN normal to the load face)
+    //   "overload"  — 2× safety-factor design overload (10 kN)
+    //   "transport" — 5g downward acceleration during shipping (body force)
+    //
+    // All three share the same fixed mounting-face support; only the applied
+    // load varies. This is the canonical multi-load shape: shared BCs across
+    // cases, per-case load variation. Mesh + factorisation cache hits once
+    // (the v0.3 cache key excludes loads from the mesh hash — see PRD
+    // "Cache reuse is the natural common case").
+
+    let mount = FixedSupport("mount_face")
+
+    let operating = LoadCase(
+        name:     "operating",
+        loads:    [point_load("load_face", vec3(0N,  -5000N, 0N))],
+        supports: [mount],
+    )
+
+    let overload = LoadCase(
+        name:     "overload",
+        loads:    [point_load("load_face", vec3(0N, -10000N, 0N))],
+        supports: [mount],
+    )
+
+    let transport = LoadCase(
+        name:     "transport",
+        loads:    [gravity(5 * STANDARD_GRAVITY())],   // 5 g downward; see STANDARD_GRAVITY() in std.units
+        supports: [mount],
+    )
+
+    // ── Solve all cases, envelope across them, drive the design ──────────────
+    //
+    // Engine wiring (`solve_load_cases`) is task-#3009 work; until then the
+    // `MultiCaseResult(...)` constructor stub stands in so the example is a
+    // type-checked, parse-clean reference for the API shape. Switching to the
+    // engine call is a one-line edit when the wiring lands.
+    let results = MultiCaseResult(
+        cases: map{
+            "operating" => operating,
+            "overload"  => overload,
+            "transport" => transport,
+        },
+    )
+
+    let envelope    = envelope_von_mises(results)
+    let critical_case = worst_case(results, |r| r)
+
+    // LRFD-style design combination: 1.4·D (transport, dead/inertial) +
+    // 1.7·L (operating, live). `linear_combine` is the linear-elastic
+    // superposition primitive — valid only for linear-elastic results,
+    // documented at `crates/reify-compiler/stdlib/fea_multi_case.ri:96-103`.
+    let lrfd = linear_combine(
+        results,
+        map{"transport" => 1.4, "operating" => 1.7},
+    )
+}

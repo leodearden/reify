@@ -5,8 +5,8 @@
 // Real-placeholder audit: see docs/notes/stdlib-real-placeholder-audit.md
 // Dimensioned params (density, youngs_modulus, shear_modulus, yield_strength,
 // uts, compressive_strength, endurance_limit, impact_energy) are tightenable-now
-// (task #3111); fracture_toughness is blocked-composite pending composite-dim
-// aliases (task #3115).
+// (task #3111). fracture_toughness was previously blocked-composite and is
+// now tightened to the `FractureToughness` (Pa·√m) alias by task #3115.
 //
 // ── BREAKING CHANGE (task 1876) ──────────────────────────────────────────────
 // The identifier `Material` changed meaning in this release:
@@ -107,9 +107,10 @@ trait FatigueRated : MaterialSpec {
 
 // ── Fracture toughness ────────────────────────────────────────────────────────
 
-// Critical stress intensity factor K_Ic (Pa·√m, using Real).
+// Critical stress intensity factor K_Ic (Pa·√m). Tightened from Real to the
+// FractureToughness alias by task #3115 (audit-derived composite-dim alias).
 trait FractureTough : MaterialSpec {
-    param fracture_toughness : Real
+    param fracture_toughness : FractureToughness
 }
 
 // ── Ductility ─────────────────────────────────────────────────────────────────

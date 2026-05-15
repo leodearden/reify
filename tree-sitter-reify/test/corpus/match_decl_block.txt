@@ -1,0 +1,78 @@
+================================================================================
+decl-level match block — union arms (two arms)
+================================================================================
+
+structure S {
+  match head_type { Hex => sub head : HexHead, Socket => sub head : SocketHead }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (match_arm_decl_block
+      discriminant: (identifier)
+      (match_arm_decl_arm
+        pattern: (match_pattern
+          (identifier))
+        member: (match_arm_sub_decl
+          name: (identifier)
+          structure_name: (identifier)))
+      (match_arm_decl_arm
+        pattern: (match_pattern
+          (identifier))
+        member: (match_arm_sub_decl
+          name: (identifier)
+          structure_name: (identifier))))))
+
+================================================================================
+decl-level match block — variant-pipe arm
+================================================================================
+
+structure S {
+  match head_type { Hex | Button => sub head : RecessedHead, Slider => sub head : SlideHead }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (match_arm_decl_block
+      discriminant: (identifier)
+      (match_arm_decl_arm
+        pattern: (match_pattern
+          (identifier)
+          (identifier))
+        member: (match_arm_sub_decl
+          name: (identifier)
+          structure_name: (identifier)))
+      (match_arm_decl_arm
+        pattern: (match_pattern
+          (identifier))
+        member: (match_arm_sub_decl
+          name: (identifier)
+          structure_name: (identifier))))))
+
+================================================================================
+decl-level match block — single arm (non-exhaustive)
+================================================================================
+
+structure S {
+  match head_type { Hex => sub head : HexHead }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (match_arm_decl_block
+      discriminant: (identifier)
+      (match_arm_decl_arm
+        pattern: (match_pattern
+          (identifier))
+        member: (match_arm_sub_decl
+          name: (identifier)
+          structure_name: (identifier))))))

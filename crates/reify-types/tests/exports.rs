@@ -224,15 +224,15 @@ fn node_traits_exported() {
     assert!(warm_committable.contains(reify_types::NodeTraits::WARM_STARTABLE));
     assert!(warm_committable.contains(reify_types::NodeTraits::COMMITTABLE));
 
-    // ResolutionNode.default_traits() == WARM_STARTABLE | COMMITTABLE
+    // NodeKind::Resolution.default_traits() == WARM_STARTABLE | COMMITTABLE
     assert_eq!(
-        reify_types::NodeArchKind::ResolutionNode.default_traits(),
+        reify_types::NodeKind::Resolution.default_traits(),
         warm_committable
     );
 
-    // ConstraintNode.default_traits().is_empty()
+    // NodeKind::Constraint.default_traits().is_empty() (Q-1 resolution)
     assert!(
-        reify_types::NodeArchKind::ConstraintNode
+        reify_types::NodeKind::Constraint
             .default_traits()
             .is_empty()
     );
@@ -260,4 +260,45 @@ fn presentation_info_types_exported() {
         end_line: 1,
         end_column: 10,
     };
+}
+
+#[test]
+fn cross_sub_geometry_ref_variant_exported_and_distinct_from_value_ref() {
+    let xref = reify_types::CompiledExpr::cross_sub_geometry_ref(
+        reify_types::ValueCellId::new("Outer.inner", "body"),
+        reify_types::Type::Geometry,
+    );
+    let vref = reify_types::CompiledExpr::value_ref(
+        reify_types::ValueCellId::new("Outer.inner", "body"),
+        reify_types::Type::Geometry,
+    );
+
+    // (a) xref kind IS CrossSubGeometryRef
+    assert!(matches!(
+        xref.kind,
+        reify_types::CompiledExprKind::CrossSubGeometryRef(_)
+    ));
+    // (b) xref kind is NOT ValueRef
+    assert!(!matches!(
+        xref.kind,
+        reify_types::CompiledExprKind::ValueRef(_)
+    ));
+    // (c) vref kind IS ValueRef
+    assert!(matches!(
+        vref.kind,
+        reify_types::CompiledExprKind::ValueRef(_)
+    ));
+    // (d) vref kind is NOT CrossSubGeometryRef
+    assert!(!matches!(
+        vref.kind,
+        reify_types::CompiledExprKind::CrossSubGeometryRef(_)
+    ));
+    // (e) content hashes must differ — TAG_CROSS_SUB_GEOMETRY_REF != TAG_VALUE_REF
+    assert_ne!(
+        xref.content_hash,
+        vref.content_hash,
+        "TAG_CROSS_SUB_GEOMETRY_REF must seed a distinct content hash"
+    );
+    // (f) result_type is preserved
+    assert_eq!(xref.result_type, reify_types::Type::Geometry);
 }

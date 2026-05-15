@@ -25,6 +25,14 @@
 //!       short-circuits via `infer_binop_type`), and
 //!   (b) No `"mismatch"` / `"incompatible"` cascade diagnostic is present.
 //!
+//! **Exception — `COLLECTION_AGGREGATION_MEMBERS` carve-out (task-3657 section):** the
+//! `count`/`sum`/`keys`/`values` aggregation members on collection subs intentionally pin a
+//! *concrete* fallback type (`Type::Int` for `count`; `Type::Real` for `sum`/`keys`/`values`)
+//! rather than `Type::Error`.  The two tests in the task-3657 section therefore assert a
+//! concrete type instead of `Type::Error` — per task-3639 design decision #2
+//! ("user-knows-the-type cascade-suppression": the return type is known, so downstream
+//! checks against it are legitimate, not spurious cascade).
+//!
 //! ## Policy reference
 //!
 //! See the module-header doc block in `crates/reify-compiler/src/expr.rs` for the full
@@ -454,4 +462,151 @@ structure S {
     );
 
     assert_no_type_cascade(&module.diagnostics, &["not yet supported"]);
+}
+
+// ── task 3639: self.<collection-sub>.<unknown-member> producer ─────────────
+
+/// `self.bolts.nonexistent` bare-collection-sub-through-self anti-cascade contract.
+///
+/// `self.bolts.nonexistent` hits the `_` arm of the `fallback_type` match inside
+/// the collection-sub `MemberAccess` branch, reached via the
+/// `MemberAccess { object: MemberAccess { Ident("self"), sub_name }, member }` path.
+///
+/// Before step-2 fixes the `_` arm of the `fallback_type` match (in `compile_expr`'s
+/// `self.<collection-sub>.<member>` branch), `unwrap_or(Type::Real)` causes the literal to
+/// carry `Type::Real` → BinOp sees `Real + Real = Real` → `result_type = Real ≠ Error`
+/// → RED.
+///
+/// After step-2 changes to `unwrap_or(Type::Error)`, the literal carries `Type::Error`
+/// → `infer_binop_type` short-circuits on the poisoned LHS → `result_type = Type::Error`
+/// → GREEN.
+#[test]
+fn self_collection_sub_unknown_member_no_cascade() {
+    let source = r#"
+structure Inner { param x : Scalar = 0mm }
+structure Outer {
+    sub bolts : List<Inner>
+    let broken = self.bolts.nonexistent + 5.0
+}
+"#;
+    let module = compile_source(source);
+
+    let expr = get_let_expr_in(&module, "Outer", "broken");
+
+    assert_eq!(
+        expr.result_type,
+        Type::Error,
+        "expected let-expr result_type == Type::Error (anti-cascade), got {:?}",
+        expr.result_type,
+    );
+
+    assert_no_type_cascade(&module.diagnostics, &["unknown member"]);
+}
+
+// ── task 3657: self.<collection-sub>.<aggregation-member> carve-out pins ──────
+
+/// Pins the `"count" => Type::Int` arm of the `fallback_type` match in
+/// `compile_expr`'s `self.<collection-sub>.<member>` branch
+/// (`COLLECTION_AGGREGATION_MEMBERS` carve-out, task 3639).
+///
+/// **Key contrast with the sibling `self_collection_sub_unknown_member_no_cascade`:**
+/// Every other test in this file asserts `result_type == Type::Error` (anti-cascade
+/// poison for unrecoverable unknowns).  This test deliberately asserts a *concrete*
+/// type (`Type::Int`) because the carve-out does **not** poison `count`/`sum`/`keys`/
+/// `values`: the user typed a known aggregation method whose return type they know,
+/// so downstream type checks against that concrete type are legitimate, not spurious
+/// cascade (design decision #2, task 3639 review; see the comment block above the
+/// `fallback_type` match in `compile_expr`).
+///
+/// Fixture shape: `let broken = self.bolts.count + 5`.
+/// - `self.bolts.count` → `CompiledExpr::literal(Value::Undef, Type::Int)` (carve-out arm),
+///   plus the "cannot access aggregation … through self" `Diagnostic::error`.
+/// - `5` → `Type::Int` (integer literal; `classify_number_literal` returns `NumberClass::Int`).
+/// - `infer_binop_type(Add, Int, Int)` = `left.clone()` = `Type::Int` (neither operand is
+///   `Type::Error`, so no short-circuit).
+/// - `(Int, Int)` hits `_ => {}` in the Add/Sub dimension check in `compile_expr` — no
+///   extra "incompatible" diagnostic.
+/// - Net: `result_type == Type::Int`; exactly one error ("cannot access aggregation").
+///
+/// If `"count" => Type::Int` regressed to `Type::Error`: `infer_binop_type` short-circuits
+/// on the poisoned LHS → `result_type = Type::Error ≠ Type::Int` → assertion fails (RED).
+///
+/// `assert_no_type_cascade(&diags, &["cannot access aggregation"])` dual-asserts:
+/// (a) ≥ 1 error contains that fragment (the diagnostic IS emitted), and
+/// (b) every error matches it (no cascade).
+#[test]
+fn self_collection_sub_count_aggregation_pins_int_fallback() {
+    let source = r#"
+structure Inner { param x : Scalar = 0mm }
+structure Outer {
+    sub bolts : List<Inner>
+    let broken = self.bolts.count + 5
+}
+"#;
+    let module = compile_source(source);
+
+    let expr = get_let_expr_in(&module, "Outer", "broken");
+
+    assert_eq!(
+        expr.result_type,
+        Type::Int,
+        "count carve-out must pin BinOp result_type == Type::Int (user-knows-the-type cascade-suppression); got {:?}",
+        expr.result_type,
+    );
+
+    assert_no_type_cascade(&module.diagnostics, &["cannot access aggregation"]);
+}
+
+/// Pins the `"sum" | "keys" | "values" => Type::Real` arm of the `fallback_type` match
+/// in `compile_expr`'s `self.<collection-sub>.<member>` branch
+/// (`COLLECTION_AGGREGATION_MEMBERS` carve-out, task 3639).
+///
+/// Iterates over all three members (`sum`, `keys`, `values`) to actively guard against a
+/// future split of the merged `expr.rs` arm (e.g. if `keys`/`values` were moved to
+/// `Type::List(...)` once collection-iteration lands). Each member is tested independently
+/// so the test goes RED immediately if any arm diverges from `Type::Real` (design decision
+/// #4, task 3657).
+///
+/// Fixture shape per member: `let broken = self.bolts.<member> + 5`.
+/// - `self.bolts.<member>` → `CompiledExpr::literal(Value::Undef, Type::Real)` (carve-out arm),
+///   plus the "cannot access aggregation … through self" `Diagnostic::error`.
+/// - `5` → `Type::Int` (integer literal).
+/// - `infer_binop_type(Add, Real, Int)` = `left.clone()` = `Type::Real` (neither operand
+///   is `Type::Error`; `infer_binop_type` returns `left.clone()` for matching-kind numeric
+///   operands).
+/// - `(Real, Int)` hits `_ => {}` in the Add/Sub dimension check — the
+///   dimensioned+dimensionless error arm only matches `Type::Scalar`, not `Type::Real`, so
+///   no extra diagnostic is emitted.
+/// - Net: `result_type == Type::Real`; exactly one error ("cannot access aggregation").
+///
+/// If `"sum" | "keys" | "values" => Type::Real` regressed to `Type::Error`:
+/// `infer_binop_type` short-circuits → `result_type = Type::Error ≠ Type::Real` → RED.
+///
+/// Same CONCRETE-type rationale as `self_collection_sub_count_aggregation_pins_int_fallback`;
+/// see that test's docstring for the contrast with sibling Type::Error-asserting tests.
+#[test]
+fn self_collection_sub_sum_keys_values_aggregation_pins_real_fallback() {
+    for member in ["sum", "keys", "values"] {
+        let source = format!(
+            r#"
+structure Inner {{ param x : Scalar = 0mm }}
+structure Outer {{
+    sub bolts : List<Inner>
+    let broken = self.bolts.{member} + 5
+}}
+"#
+        );
+        let module = compile_source(&source);
+
+        let expr = get_let_expr_in(&module, "Outer", "broken");
+
+        assert_eq!(
+            expr.result_type,
+            Type::Real,
+            "sum/keys/values carve-out must pin BinOp result_type == Type::Real for member `{member}`; got {:?}",
+            expr.result_type,
+        );
+
+        assert_no_type_cascade(&module.diagnostics, &["cannot access aggregation"]);
+    }
 }

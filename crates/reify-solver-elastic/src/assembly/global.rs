@@ -476,8 +476,13 @@ fn emit_element_triplets(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::assembly::test_support::{dimensionless_steel_like, scaled_p2_phys_nodes};
+    use crate::assembly::hex::element_stiffness_hex_p1;
+    use crate::assembly::test_support::{
+        dimensionless_steel_like, scaled_p2_phys_nodes, scaled_unit_hex_phys_nodes,
+        scaled_unit_wedge_phys_nodes,
+    };
     use crate::assembly::tet::{element_stiffness_p1, element_stiffness_p2};
+    use crate::assembly::wedge::element_stiffness_wedge_p1;
     use crate::constitutive::IsotropicElastic;
     use crate::shell_assembly::shell_element_stiffness;
 
@@ -1332,6 +1337,108 @@ mod tests {
         }
     }
 
+    /// Single P1 hex element with identity connectivity `[0..8]` → K_global
+    /// equals K_e bit-for-bit at every entry.
+    ///
+    /// Pins that the D-agnostic emission loop in `emit_element_triplets`
+    /// handles `n_local = 8`, `d_e = 3`. Identity connectivity ⇒ no
+    /// FP-summation reordering ⇒ bit-equality is achievable, not just
+    /// tolerance-equality. The 24×24 dim assertion is the first regression
+    /// pin for the hex element kind in `assemble_global_stiffness`.
+    ///
+    /// Pure-hex mesh ⇒ `D = max(d_e) = 3` (NOT 6 — shell isn't present),
+    /// so `K.nrows() == 24` and `K.ncols() == 24`, not 48.
+    #[test]
+    fn single_p1_hex_identity_connectivity_matches_k_e_bit_for_bit() {
+        let mat = dimensionless_steel_like();
+        let phys = scaled_unit_hex_phys_nodes(1.0);
+        let k_e = element_stiffness_hex_p1(&phys, &mat);
+        assert_eq!(k_e.n_dofs, 24);
+
+        let connectivity: [usize; 8] = std::array::from_fn(|i| i);
+        let element = AssemblyElement {
+            id: 0,
+            connectivity: &connectivity,
+            k_e: &k_e,
+        };
+        let k = assemble_global_stiffness(8, &[element], AssemblyMode::Deterministic);
+
+        // Pure-hex mesh ⇒ D = 3 (NOT 6), so dim = 3 · 8 = 24 (NOT 48).
+        assert_eq!(
+            k.nrows(),
+            24,
+            "pure-hex mesh must derive D = 3, giving 3·8 = 24 rows (not 6·8 = 48)",
+        );
+        assert_eq!(
+            k.ncols(),
+            24,
+            "pure-hex mesh must derive D = 3, giving 3·8 = 24 cols (not 6·8 = 48)",
+        );
+
+        // Bit-equality: identity connectivity ⇒ each entry has exactly one
+        // contributing triplet.
+        for i in 0..24 {
+            for j in 0..24 {
+                let actual = read(&k, i, j);
+                let expected = k_e.get(i, j);
+                assert_eq!(
+                    actual.to_bits(),
+                    expected.to_bits(),
+                    "K_global[{i}][{j}] = {actual} but K_e[{i}][{j}] = {expected}",
+                );
+            }
+        }
+    }
+
+    /// Single P1 wedge element with identity connectivity `[0..6]` → K_global
+    /// equals K_e bit-for-bit at every entry.
+    ///
+    /// First regression test for `n_local = 6` in `assemble_global_stiffness`.
+    /// Pins that the D-agnostic emission loop handles the wedge's 6-node
+    /// footprint (`d_e = 3`, `n_dofs = 18`) at identity connectivity.
+    ///
+    /// Pure-wedge mesh ⇒ `D = max(d_e) = 3`, so `K.nrows() == 18` and
+    /// `K.ncols() == 18`. A regression that special-cases `n_local ∈ {4, 8, 10}`
+    /// in `emit_element_triplets`'s loop bounds would surface here.
+    #[test]
+    fn single_p1_wedge_identity_connectivity_matches_k_e_bit_for_bit() {
+        let mat = dimensionless_steel_like();
+        let phys = scaled_unit_wedge_phys_nodes(1.0);
+        let k_e = element_stiffness_wedge_p1(&phys, &mat);
+        assert_eq!(k_e.n_dofs, 18);
+
+        let connectivity: [usize; 6] = std::array::from_fn(|i| i);
+        let element = AssemblyElement {
+            id: 0,
+            connectivity: &connectivity,
+            k_e: &k_e,
+        };
+        let k = assemble_global_stiffness(6, &[element], AssemblyMode::Deterministic);
+
+        assert_eq!(
+            k.nrows(),
+            18,
+            "pure-wedge mesh must derive D = 3, giving 3·6 = 18 rows",
+        );
+        assert_eq!(
+            k.ncols(),
+            18,
+            "pure-wedge mesh must derive D = 3, giving 3·6 = 18 cols",
+        );
+
+        for i in 0..18 {
+            for j in 0..18 {
+                let actual = read(&k, i, j);
+                let expected = k_e.get(i, j);
+                assert_eq!(
+                    actual.to_bits(),
+                    expected.to_bits(),
+                    "K_global[{i}][{j}] = {actual} but K_e[{i}][{j}] = {expected}",
+                );
+            }
+        }
+    }
+
     /// Existing P2-only mesh assembles with `D = 3` under the new
     /// max-over-elements DOFs-per-node derivation — i.e. pure-tet meshes
     /// keep their v0.3 `3 · n_nodes` global dim, *not* a 6-DOF/node shape.
@@ -1647,6 +1754,231 @@ mod tests {
         }
     }
 
+    /// One P1 tet, one P1 hex, and one P1 wedge sharing only node 0 →
+    /// unified 3-DOF/node global K with the right per-node-pair contributions.
+    ///
+    /// Mesh:
+    /// - tet on `[0, 1, 2, 3]` (P1, 12 DOFs)
+    /// - hex on `[0, 4, 5, 6, 7, 8, 9, 10]` (P1, 24 DOFs)
+    /// - wedge on `[0, 11, 12, 13, 14, 15]` (P1, 18 DOFs)
+    ///
+    /// All three elements share *only* node 0. `n_nodes = 16`, expected
+    /// global dim `3 · 16 = 48`. All three have `d_e = 3`, so the global
+    /// `D = max(d_e) = 3` (NOT 6).
+    ///
+    /// Pinning strategy:
+    /// - **dim**: pure-volume-element mesh ⇒ D = 3, dim = 48 (NOT 96).
+    /// - **node 0 displacement block (rows/cols 0..3)**: all three elements
+    ///   contribute. Encounter order matches slice order tet → hex → wedge;
+    ///   faer sums duplicates left-to-right so the bit-for-bit expected value
+    ///   is `K_e_tet[α][β] + K_e_hex[α][β] + K_e_wedge[α][β]` summed in that
+    ///   order. A three-summand left-fold has stable bit-equality with the
+    ///   `expected` construction order.
+    /// - **exclusive nodes**: tet-only (1..4), hex-only (4..11), wedge-only
+    ///   (11..16) — each 3×3 self-block matches the corresponding
+    ///   K_e[3·a_local..3·a_local+3, 3·b_local..3·b_local+3] bit-for-bit
+    ///   (only one summand from the owning element).
+    /// - **shared-to-exclusive cross-blocks**: pair the shared node 0 with
+    ///   one element-exclusive partner per kind (gn ∈ {1, 4, 11}). Each
+    ///   cross-block is single-summand (only the owning element touches the
+    ///   exclusive partner), so bit-equality with the per-element K_e sub-
+    ///   block holds. Both `(0, partner)` and `(partner, 0)` directions are
+    ///   checked — a regression that miscomputed the dest-row/col when the
+    ///   first connectivity entry is shared but the second is exclusive
+    ///   would slip past the (a)/(c)/(d)/(e) self-block cells.
+    #[test]
+    fn mixed_tet_hex_wedge_sharing_node_assembles_into_unified_3dof_per_node_global_k() {
+        let mat = dimensionless_steel_like();
+        let k_e_tet = element_stiffness_p1(&UNIT_TET_P1, &mat);
+        let k_e_hex = element_stiffness_hex_p1(&scaled_unit_hex_phys_nodes(1.0), &mat);
+        let k_e_wedge = element_stiffness_wedge_p1(&scaled_unit_wedge_phys_nodes(1.0), &mat);
+        assert_eq!(k_e_tet.n_dofs, 12);
+        assert_eq!(k_e_hex.n_dofs, 24);
+        assert_eq!(k_e_wedge.n_dofs, 18);
+
+        let conn_tet = [0usize, 1, 2, 3];
+        let conn_hex = [0usize, 4, 5, 6, 7, 8, 9, 10];
+        let conn_wedge = [0usize, 11, 12, 13, 14, 15];
+        let elements = [
+            AssemblyElement {
+                id: 0,
+                connectivity: &conn_tet,
+                k_e: &k_e_tet,
+            },
+            AssemblyElement {
+                id: 1,
+                connectivity: &conn_hex,
+                k_e: &k_e_hex,
+            },
+            AssemblyElement {
+                id: 2,
+                connectivity: &conn_wedge,
+                k_e: &k_e_wedge,
+            },
+        ];
+        let n_nodes = 16;
+        let k = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
+
+        // (a) dim = 3 · n_nodes (max(d_e) = 3, NOT 6).
+        let dim = 3 * n_nodes;
+        assert_eq!(k.nrows(), dim);
+        assert_eq!(k.ncols(), dim);
+
+        // (b) Node 0's displacement-displacement block (α, β ∈ 0..3): all
+        // three elements contribute, summed in tet → hex → wedge encounter
+        // order. Bit-equal to a three-summand left-fold of the K_e's
+        // [0..3, 0..3] sub-blocks.
+        for alpha in 0..3 {
+            for beta in 0..3 {
+                let i = alpha;
+                let j = beta;
+                let actual = read(&k, i, j);
+                // Three-summand left-fold in slice order:
+                //   ((K_tet[α,β] + K_hex[α,β]) + K_wedge[α,β])
+                let expected = k_e_tet.get(alpha, beta)
+                    + k_e_hex.get(alpha, beta)
+                    + k_e_wedge.get(alpha, beta);
+                assert_eq!(
+                    actual.to_bits(),
+                    expected.to_bits(),
+                    "K_global[{i}][{j}] (node 0 shared block): \
+                     actual = {actual}, expected = K_tet+K_hex+K_wedge = {expected}",
+                );
+            }
+        }
+
+        // (c) tet-exclusive nodes (1..=3): 3×3 self-blocks match
+        // K_e_tet[3·a_local..3·a_local+3, 3·b_local..3·b_local+3] bit-for-bit.
+        // Local indices: global node 1 = local 1, node 2 = local 2, node 3 = local 3.
+        for &gn_a in &[1usize, 2, 3] {
+            let la = gn_a; // identity local-from-global on tet-only nodes
+            for &gn_b in &[1usize, 2, 3] {
+                let lb = gn_b;
+                for alpha in 0..3 {
+                    for beta in 0..3 {
+                        let i = 3 * gn_a + alpha;
+                        let j = 3 * gn_b + beta;
+                        let actual = read(&k, i, j);
+                        let expected = k_e_tet.get(3 * la + alpha, 3 * lb + beta);
+                        assert_eq!(
+                            actual.to_bits(),
+                            expected.to_bits(),
+                            "K_global[{i}][{j}] (tet-only node-pair gn=({gn_a}, {gn_b}), \
+                             local ({la}, {lb}), α={alpha} β={beta}): \
+                             actual = {actual}, expected = {expected}",
+                        );
+                    }
+                }
+            }
+        }
+
+        // (d) hex-exclusive nodes (4..=10): 3×3 self-blocks match
+        // K_e_hex[3·a_local..3·a_local+3, 3·b_local..3·b_local+3] bit-for-bit.
+        // Local indices: global node 4 = local 1, 5 = local 2, ..., 10 = local 7.
+        for &gn_a in &[4usize, 5, 6, 7, 8, 9, 10] {
+            let la = gn_a - 3; // global 4..=10 → local 1..=7
+            for &gn_b in &[4usize, 5, 6, 7, 8, 9, 10] {
+                let lb = gn_b - 3;
+                for alpha in 0..3 {
+                    for beta in 0..3 {
+                        let i = 3 * gn_a + alpha;
+                        let j = 3 * gn_b + beta;
+                        let actual = read(&k, i, j);
+                        let expected = k_e_hex.get(3 * la + alpha, 3 * lb + beta);
+                        assert_eq!(
+                            actual.to_bits(),
+                            expected.to_bits(),
+                            "K_global[{i}][{j}] (hex-only node-pair gn=({gn_a}, {gn_b}), \
+                             local ({la}, {lb}), α={alpha} β={beta}): \
+                             actual = {actual}, expected = {expected}",
+                        );
+                    }
+                }
+            }
+        }
+
+        // (e) wedge-exclusive nodes (11..=15): 3×3 self-blocks match
+        // K_e_wedge[3·a_local..3·a_local+3, 3·b_local..3·b_local+3] bit-for-bit.
+        // Local indices: global node 11 = local 1, ..., 15 = local 5.
+        for &gn_a in &[11usize, 12, 13, 14, 15] {
+            let la = gn_a - 10; // global 11..=15 → local 1..=5
+            for &gn_b in &[11usize, 12, 13, 14, 15] {
+                let lb = gn_b - 10;
+                for alpha in 0..3 {
+                    for beta in 0..3 {
+                        let i = 3 * gn_a + alpha;
+                        let j = 3 * gn_b + beta;
+                        let actual = read(&k, i, j);
+                        let expected = k_e_wedge.get(3 * la + alpha, 3 * lb + beta);
+                        assert_eq!(
+                            actual.to_bits(),
+                            expected.to_bits(),
+                            "K_global[{i}][{j}] (wedge-only node-pair gn=({gn_a}, {gn_b}), \
+                             local ({la}, {lb}), α={alpha} β={beta}): \
+                             actual = {actual}, expected = {expected}",
+                        );
+                    }
+                }
+            }
+        }
+
+        // (f) Cross-blocks pairing the shared node (gn=0) with one
+        // element-exclusive partner per element kind: gn=1 (tet-only),
+        // gn=4 (hex-only), gn=11 (wedge-only). Each pair is owned by
+        // exactly one element (the non-shared partner is exclusive to
+        // it), so the cross-block is a single-summand triplet — bit-
+        // equality with `K_e[3·la..3·la+3, 3·lb..3·lb+3]` still works.
+        //
+        // Both orderings are checked: `(gn=0, gn=partner)` exercises the
+        // dest-row from the *shared* node and dest-col from the exclusive
+        // partner, and `(gn=partner, gn=0)` exercises the mirror direction.
+        // A regression that miscomputed the dest-row when the *first*
+        // connectivity entry is shared but the second is exclusive (e.g.
+        // a stale `local_a == 0` early-return in `emit_element_triplets`)
+        // would not be caught by the (a)/(c)/(d)/(e) self-block pinned
+        // cells alone — this section closes that gap.
+        for (gn_partner, k_e, local_partner, kind) in [
+            (1usize, &k_e_tet, 1usize, "tet"),
+            (4usize, &k_e_hex, 1usize, "hex"),
+            (11usize, &k_e_wedge, 1usize, "wedge"),
+        ] {
+            // Direction 1: K_global[3·0..3·0+3, 3·gn_partner..3·gn_partner+3]
+            //   = K_e[3·0..3·0+3, 3·local_partner..3·local_partner+3]
+            for alpha in 0..3 {
+                for beta in 0..3 {
+                    let i = alpha; // 3 · 0 + alpha
+                    let j = 3 * gn_partner + beta;
+                    let actual = read(&k, i, j);
+                    let expected = k_e.get(alpha, 3 * local_partner + beta);
+                    assert_eq!(
+                        actual.to_bits(),
+                        expected.to_bits(),
+                        "K_global[{i}][{j}] ({kind} cross-block (gn=0, gn={gn_partner}), \
+                         local (0, {local_partner}), α={alpha} β={beta}): \
+                         actual = {actual}, expected = {expected}",
+                    );
+                }
+            }
+            // Direction 2: K_global[3·gn_partner..3·gn_partner+3, 3·0..3·0+3]
+            //   = K_e[3·local_partner..3·local_partner+3, 3·0..3·0+3]
+            for alpha in 0..3 {
+                for beta in 0..3 {
+                    let i = 3 * gn_partner + alpha;
+                    let j = beta; // 3 · 0 + beta
+                    let actual = read(&k, i, j);
+                    let expected = k_e.get(3 * local_partner + alpha, beta);
+                    assert_eq!(
+                        actual.to_bits(),
+                        expected.to_bits(),
+                        "K_global[{i}][{j}] ({kind} cross-block (gn={gn_partner}, gn=0), \
+                         local ({local_partner}, 0), α={alpha} β={beta}): \
+                         actual = {actual}, expected = {expected}",
+                    );
+                }
+            }
+        }
+    }
+
     /// Mixed-element global K is symmetric within the same FP tolerance
     /// band the existing tet-only `global_k_is_symmetric_within_fp_tolerance`
     /// pins.
@@ -1726,6 +2058,84 @@ mod tests {
                 assert!(
                     delta <= tol,
                     "mixed-mesh K[{i}][{j}] = {kij}, K[{j}][{i}] = {kji}; \
+                     |Δ| = {delta} > tol = {tol}",
+                );
+            }
+        }
+    }
+
+    /// Global K assembled from a tet+hex+wedge fan mesh (same shape as
+    /// `mixed_tet_hex_wedge_sharing_node_assembles_into_unified_3dof_per_node_global_k`)
+    /// is symmetric within FP tolerance.
+    ///
+    /// Per-kind K_e symmetry is already pinned upstream:
+    /// - tet via Task 2915 / `tet::tests::p1_element_stiffness_is_symmetric_...`
+    /// - hex / wedge via Task 2985 / `run_element_stiffness_tests` block-(b)
+    ///   symmetry check.
+    ///
+    /// The full-block emission of `emit_element_triplets` (both `(a, b)` and
+    /// `(b, a)` triplets) combined with faer's stable duplicate-summation
+    /// order means `K_global[i][j]` and `K_global[j][i]` are sums of
+    /// mirror-pair triplets from the same K_e — the LSB of the encounter-
+    /// order summation at `(i, j)` versus `(j, i)` can differ, but both
+    /// reduce to the same value within the FP summation band.
+    ///
+    /// Mirrors `mixed_mesh_global_k_is_symmetric_within_fp_tolerance` (which
+    /// pins tet+shell symmetry); this test extends the contract to
+    /// tet+hex+wedge. A regression that breaks the full-block invariant
+    /// for any of the three volume kernels surfaces here even when the
+    /// per-kind symmetry tests stay green.
+    ///
+    /// Tolerance `1e-9 · max(|K[i][j]|, |K[j][i]|, 1)` matches the existing
+    /// pure-tet symmetry test.
+    #[test]
+    fn mixed_tet_hex_wedge_global_k_is_symmetric_within_fp_tolerance() {
+        let mat = dimensionless_steel_like();
+        let k_e_tet = element_stiffness_p1(&UNIT_TET_P1, &mat);
+        let k_e_hex = element_stiffness_hex_p1(&scaled_unit_hex_phys_nodes(1.0), &mat);
+        let k_e_wedge = element_stiffness_wedge_p1(&scaled_unit_wedge_phys_nodes(1.0), &mat);
+
+        // Same fan mesh as step-17. All three elements share node 0.
+        let conn_tet = [0usize, 1, 2, 3];
+        let conn_hex = [0usize, 4, 5, 6, 7, 8, 9, 10];
+        let conn_wedge = [0usize, 11, 12, 13, 14, 15];
+        let elements = [
+            AssemblyElement {
+                id: 0,
+                connectivity: &conn_tet,
+                k_e: &k_e_tet,
+            },
+            AssemblyElement {
+                id: 1,
+                connectivity: &conn_hex,
+                k_e: &k_e_hex,
+            },
+            AssemblyElement {
+                id: 2,
+                connectivity: &conn_wedge,
+                k_e: &k_e_wedge,
+            },
+        ];
+        let n_nodes = 16;
+        let k = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
+
+        // Pure-volume mesh ⇒ max(d_e) = 3 ⇒ dim = 48.
+        let dim = 3 * n_nodes;
+        assert_eq!(k.nrows(), dim);
+        assert_eq!(k.ncols(), dim);
+
+        // Iterate upper triangle only — (i, j) and (j, i) describe the same
+        // unordered pair, so j in i..dim halves the loop count without any
+        // coverage loss.
+        for i in 0..dim {
+            for j in i..dim {
+                let kij = read(&k, i, j);
+                let kji = read(&k, j, i);
+                let tol = 1e-9 * kij.abs().max(kji.abs()).max(1.0);
+                let delta = (kij - kji).abs();
+                assert!(
+                    delta <= tol,
+                    "tet+hex+wedge mesh K[{i}][{j}] = {kij}, K[{j}][{i}] = {kji}; \
                      |Δ| = {delta} > tol = {tol}",
                 );
             }

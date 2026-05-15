@@ -4,15 +4,15 @@ use std::sync::atomic::Ordering;
 use reify_compiler::find_template;
 use reify_constraints::SimpleConstraintChecker;
 use reify_test_support::{
-    CountingSubscriberBuilder, FailingMockGeometryKernel, MockGeometryKernel, bracket_source,
-    bracket_source_violating, bracket_source_with_width, warn_source_with_unknown_port_type,
-    warn_source_with_unknown_port_type_with_width,
+    CountingSubscriberBuilder, FailingMockGeometryKernel, MockConstraintSolver, MockGeometryKernel,
+    bracket_source, bracket_source_violating, bracket_source_with_width,
+    warn_source_with_unknown_port_type, warn_source_with_unknown_port_type_with_width,
 };
 use reify_types::ExportFormat;
 
-use reify_types::{DiagnosticInfo, SourceLocationInfo, ValueCellId};
+use reify_types::{DiagnosticInfo, ModulePath, SourceLocationInfo, Type, ValueCellId};
 
-use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
+use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, gt, literal, mm, value_ref};
 
 use crate::engine::{CompileFailure, CompileFailureKind, EngineSession, build_template_node, module_key, parse_value_string};
 use crate::types::EntityTreeNode;
@@ -5722,6 +5722,60 @@ fn load_file_unresolved_import_returns_clear_err() {
     );
 }
 
+// ── update_source multi-file fixture ─────────────────────────────────────────
+
+/// Multi-file project fixture used by `update_source` regression tests.
+///
+/// Creates a [`tempfile::TempDir`] containing:
+/// - `helper.ri`: `pub structure Helper { param x: Scalar = 10mm }`
+/// - `main.ri`: `import helper\nstructure Top { sub h = Helper() }`
+///
+/// Calls `load_file` on `main.ri`, asserts the baseline `Helper.x` value cell
+/// is present, and returns `(dir, session, main_path, main_content)` so the
+/// caller can proceed directly to the scenario under test without
+/// copy-pasting the scaffold.
+///
+/// The fourth field `main_content` is the exact string written to `main.ri`,
+/// so callers that pass it to `update_source` (e.g. for a round-trip or
+/// rollback-recovery call) are guaranteed to use the same literal the helper
+/// wrote to disk — preventing silent divergence if either copy is edited
+/// without updating the other.
+///
+/// The [`TempDir`](tempfile::TempDir) is returned to keep the temporary
+/// directory alive for the duration of the test; dropping it early would
+/// delete the files before any follow-up `update_source` calls that re-read
+/// from disk.
+fn loaded_helper_session() -> (tempfile::TempDir, EngineSession, std::path::PathBuf, String) {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+
+    std::fs::write(
+        dir.path().join("helper.ri"),
+        "pub structure Helper { param x: Scalar = 10mm }\n",
+    )
+    .expect("write helper.ri");
+
+    let main_content = "import helper\nstructure Top { sub h = Helper() }\n";
+    std::fs::write(dir.path().join("main.ri"), main_content).expect("write main.ri");
+
+    let main_path = dir.path().join("main.ri");
+    let load_state = session
+        .load_file(&main_path)
+        .expect("load_file should succeed with resolved import");
+    assert!(
+        load_state
+            .values
+            .iter()
+            .any(|v| v.name == "x" && v.entity_path == "Helper"),
+        "loaded_helper_session: load_file should produce Helper.x value cell (baseline)"
+    );
+
+    (dir, session, main_path, main_content.to_string())
+}
+
 // ── update_source multi-file regression (task 3318) ──────────────────────────
 
 /// Driver (RED → GREEN): after `load_file` resolves a multi-file project,
@@ -5737,40 +5791,10 @@ fn load_file_unresolved_import_returns_clear_err() {
 /// `Helper.x = 10mm` still present.
 #[test]
 fn update_source_after_load_file_preserves_multi_file_imports() {
-    let checker = SimpleConstraintChecker;
-    let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
-
-    let dir = tempfile::tempdir().expect("tempdir should be created");
-
-    // helper.ri: a public structure with one param
-    std::fs::write(
-        dir.path().join("helper.ri"),
-        "pub structure Helper { param x: Scalar = 10mm }\n",
-    )
-    .expect("write helper.ri");
-
-    let main_content = "import helper\nstructure Top { sub h = Helper() }\n";
-
-    // main.ri: imports helper and instantiates it as a sub-component.
-    std::fs::write(dir.path().join("main.ri"), main_content).expect("write main.ri");
-
-    // load_file must succeed and produce Helper.x = 10mm
-    let load_state = session
-        .load_file(&dir.path().join("main.ri"))
-        .expect("load_file should succeed with resolved import");
-    assert!(
-        load_state
-            .values
-            .iter()
-            .any(|v| v.name == "x" && v.entity_path == "Helper"),
-        "load_file should produce Helper.x value cell"
-    );
+    let (_dir, mut session, main_path, main_content) = loaded_helper_session();
 
     // update_source with the same content — import graph must be preserved
-    let main_path = dir.path().join("main.ri");
-    let main_path_str = main_path.to_str().unwrap();
-    let update_result = session.update_source(main_path_str, main_content);
+    let update_result = session.update_source(main_path.to_str().unwrap(), &main_content);
 
     let state =
         update_result.expect("update_source after load_file should return Ok (import resolved)");
@@ -5811,30 +5835,12 @@ fn update_source_after_load_file_preserves_multi_file_imports() {
 /// `compile_entry_with_imports` (multi-file).
 #[test]
 fn update_source_after_load_file_dirty_buffer_edit_preserves_imports() {
-    let checker = SimpleConstraintChecker;
-    let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
-
-    let dir = tempfile::tempdir().expect("tempdir should be created");
-
-    std::fs::write(
-        dir.path().join("helper.ri"),
-        "pub structure Helper { param x: Scalar = 10mm }\n",
-    )
-    .expect("write helper.ri");
-
-    let main_content_v1 = "import helper\nstructure Top { sub h = Helper() }\n";
-    std::fs::write(dir.path().join("main.ri"), main_content_v1).expect("write main.ri");
-
-    session
-        .load_file(&dir.path().join("main.ri"))
-        .expect("load_file should succeed");
+    let (_dir, mut session, main_path, _main_content) = loaded_helper_session();
 
     // v2: keep the import, add a new top-level param — simulates a real keystroke edit
     let main_content_v2 =
         "import helper\nstructure Top { sub h = Helper()\nparam top_size: Scalar = 20mm }\n";
 
-    let main_path = dir.path().join("main.ri");
     let state = session
         .update_source(main_path.to_str().unwrap(), main_content_v2)
         .expect("update_source with dirty-buffer edit should return Ok");
@@ -5904,6 +5910,225 @@ fn update_source_after_load_file_with_unresolved_import_returns_err() {
     assert!(
         err_msg.contains("not found") || err_msg.contains("failed to read"),
         "error message should mention 'not found' or 'failed to read'; got: {err_msg}"
+    );
+}
+
+// ── update_source divergent-path contract (task 3370) ────────────────────────
+
+/// Regression for task 3370 (esc-3318-14 suggestion #1):
+/// after `load_file`, calling `update_source` with a *divergent* path whose
+/// `file_stem` differs from the originally-loaded file must still derive
+/// `module_name` from `self.file_path.file_stem()`, not from the caller's `path`.
+///
+/// Pre-fix: `update_source` always derived `module_name` from `Path::new(path)`,
+/// so a divergent path like `renamed_buffer.ri` after loading `main.ri` would
+/// insert under key `"renamed_buffer.ri"` and set `module_name = "renamed_buffer"`,
+/// silently corrupting the session state.
+/// Post-fix: when `self.file_path` is set, `module_name` is derived from
+/// `self.file_path.file_stem()` — the originally-loaded file's stem — regardless
+/// of the caller's `path` argument.
+#[test]
+fn update_source_with_divergent_path_keeps_loaded_module_name() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+
+    // A self-contained structure — no imports needed; the bug is purely about
+    // module_name derivation, independent of multi-file resolution.
+    let initial_content = "structure Main { param w: Scalar = 10mm }\n";
+    std::fs::write(dir.path().join("main.ri"), initial_content).expect("write main.ri");
+
+    session
+        .load_file(&dir.path().join("main.ri"))
+        .expect("initial load_file should succeed");
+
+    // Build a divergent path: file_stem = "renamed_buffer", differs from "main".
+    let divergent = dir.path().join("renamed_buffer.ri");
+    let updated_content = "structure Main { param w: Scalar = 20mm }\n";
+
+    let state = session
+        .update_source(divergent.to_str().unwrap(), updated_content)
+        .expect("update_source with divergent path should succeed");
+
+    // 1. No phantom second entry under the divergent name.
+    assert_eq!(
+        state.files.len(),
+        1,
+        "should have exactly 1 file entry after load_file + divergent-path update_source, \
+         got {}: {:?}",
+        state.files.len(),
+        state.files.iter().map(|f| &f.path).collect::<Vec<_>>()
+    );
+
+    // 2. module_name is derived from the originally-loaded file's stem ("main"),
+    //    NOT from the divergent path's stem ("renamed_buffer").
+    let (stored_key, stored_src) = session
+        .resolve_source_for_test()
+        .expect("resolve_source_for_test should return Some after update_source");
+    assert_eq!(
+        stored_key,
+        module_key("main"),
+        "key should be derived from load_file's stem ('main'), not from divergent path; \
+         got '{stored_key}'"
+    );
+
+    // 3. The new content IS stored under the original key — the update took effect.
+    assert_eq!(
+        stored_src, updated_content,
+        "stored source should be the updated content"
+    );
+}
+
+// ── update_source single-file branch + atomic-rollback pins (task 3371) ──────
+
+/// Regression pin for the `self.file_path == None` branch of `update_source`'s
+/// task-3318 refactor (esc-3318-14, suggestion #2).
+///
+/// A "fresh session" means no prior `load_file` or `load_from_source` call, so
+/// `self.file_path` is `None`.  In this state `update_source` must route through
+/// the single-file branch (`compile_single_file_with_stdlib`) and successfully
+/// compile valid self-contained source.
+///
+/// The phantom path `/nonexistent/dir/solo.ri` documents the single-file
+/// branch's defining property: the `path` argument is used only for
+/// module-stem derivation — no disk access occurs for import-free source.
+/// The routing regression sentinel is assertion (2): `stored_key ==
+/// module_key("solo")`.  The multi-file branch derives the source_map key
+/// differently (from the resolved import graph rooted at the entry file's
+/// parent directory), so a routing regression would surface as a key
+/// mismatch rather than a filesystem error.
+#[test]
+fn update_source_on_fresh_session_compiles_single_file_source_without_disk_io() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let source = "structure Solo { param w: Scalar = 7mm }\n";
+    let state = session
+        .update_source("/nonexistent/dir/solo.ri", source)
+        .expect("fresh-session update_source with valid single-file source should return Ok");
+
+    // 1. The compiled state must contain the expected value cell.
+    let w_val = state
+        .values
+        .iter()
+        .find(|v| v.name == "w" && v.entity_path == "Solo")
+        .expect("should find parameter 'w' on entity 'Solo' after single-file update_source");
+    assert_eq!(
+        w_val.value, "7",
+        "Solo.w default is 7mm; got '{}' (unit: '{}')",
+        w_val.value, w_val.unit
+    );
+    assert_eq!(
+        w_val.unit, "mm",
+        "Solo.w should have unit 'mm', got '{}'",
+        w_val.unit
+    );
+
+    // 2. source_map must be keyed by module_key("solo") — the stem of the
+    //    phantom path — proving the single-file commit path ran and that
+    //    module_key derivation from the caller's path argument is correct.
+    let (stored_key, stored_src) = session
+        .resolve_source_for_test()
+        .expect("resolve_source_for_test should return Some after a successful update_source");
+    assert_eq!(
+        stored_key,
+        module_key("solo"),
+        "source_map key should be module_key(\"solo\") (stem of caller's path); got '{stored_key}'"
+    );
+    assert_eq!(
+        stored_src, source,
+        "stored source should equal the content passed to update_source"
+    );
+}
+
+/// Atomic-rollback regression pin for the multi-file branch (task 3318 follow-up,
+/// esc-3318-14 suggestion #2).
+///
+/// After `load_file` resolves a multi-file project, a failing `update_source`
+/// (parse-error content) must leave ALL of the following completely unchanged:
+///
+/// 1. **`source_map`** — `resolve_source_for_test()` returns the original key
+///    and source text, not the broken content.
+/// 2. **`compiled`** — `build_gui_state()` still returns a state containing
+///    `Helper.x` from the prior good compile.
+/// 3. **`file_path`** — verified behaviorally: a follow-up `update_source` with
+///    valid multi-file content succeeds and re-surfaces `Helper.x`.  The
+///    multi-file branch requires `file_path == Some(...)`; if rollback had cleared
+///    it, the recovery call would fall through to the single-file branch, silently
+///    drop `import helper`, and this assertion would flip red.
+///
+/// Parse-error content (`"totally broken {{{}}}"`) is used as the failure trigger
+/// because it bails out at the earliest possible point — before any compile-side
+/// or check-side state could plausibly be touched — giving the cleanest guarantee
+/// that "no state was mutated between call entry and Err return".
+#[test]
+fn update_source_failure_after_load_file_leaves_prior_compiled_source_map_and_file_path_intact() {
+    // loaded_helper_session establishes the pre-failure baseline (load_file + Helper.x assert).
+    let (_dir, mut session, main_path, main_content) = loaded_helper_session();
+
+    // Capture pre-failure source_map state as owned Strings so the borrow releases.
+    let (pre_key, pre_src) = session
+        .resolve_source_for_test()
+        .expect("resolve_source_for_test should return Some after load_file");
+    let pre_key = pre_key.to_owned();
+    let pre_src = pre_src.to_owned();
+
+    // Trigger failure with parse-error content.
+    let err = session
+        .update_source(main_path.to_str().unwrap(), "totally broken {{{}}}")
+        .expect_err("invalid source should return Err");
+    assert!(
+        err.contains("Parse errors"),
+        "error string should contain 'Parse errors'; got: {err}"
+    );
+
+    // ── Invariant 1: source_map unchanged ────────────────────────────────────
+    let (post_key, post_src) = session
+        .resolve_source_for_test()
+        .expect("resolve_source_for_test should return Some after failed update_source (rollback)");
+    assert_eq!(
+        post_key, pre_key,
+        "source_map key must be unchanged after failed update_source; was '{pre_key}', \
+         now '{post_key}'"
+    );
+    assert_eq!(
+        post_src, pre_src,
+        "source_map content must be the pre-failure source, not the broken content"
+    );
+
+    // ── Invariant 2: compiled unchanged ──────────────────────────────────────
+    let post_state = session
+        .build_gui_state()
+        .expect("build_gui_state should succeed (prior good compile still in compiled field)");
+    assert!(
+        post_state
+            .values
+            .iter()
+            .any(|v| v.name == "x" && v.entity_path == "Helper"),
+        "build_gui_state after failed update_source must still contain Helper.x \
+         (compiled field must be unchanged by rollback)"
+    );
+
+    // ── Invariant 3: file_path unchanged (behavioral check) ──────────────────
+    // A successful recovery update_source with valid multi-file content must
+    // re-surface Helper.x.  This is only possible if file_path is still Some(...):
+    // the multi-file branch (which resolves 'import helper') is only taken when
+    // file_path is set.  If rollback had cleared file_path, the call would fall
+    // through to the single-file branch, silently drop the import, and the
+    // Helper.x assertion below would flip red — proving the regression.
+    let recovery_state = session
+        .update_source(main_path.to_str().unwrap(), &main_content)
+        .expect("recovery update_source with original multi-file content should succeed");
+    assert!(
+        recovery_state
+            .values
+            .iter()
+            .any(|v| v.name == "x" && v.entity_path == "Helper"),
+        "recovery update_source must surface Helper.x — proving file_path was preserved \
+         through the failed update_source (behavioral file_path rollback check)"
     );
 }
 
@@ -6987,4 +7212,311 @@ fn get_entity_at_source_location_past_end_of_source_returns_none() {
         "cursor past end of source (16, 1) should return None, got {:?}",
         result
     );
+}
+
+// ---------------------------------------------------------------------------
+// Auto-resolve emitter tests (Task 3479)
+// ---------------------------------------------------------------------------
+
+/// Events recorded by [`RecordingEmitter`] for asserting the emit sequence.
+#[derive(Debug)]
+enum EmitEvent {
+    Start,
+    Iteration(crate::types::AutoResolveIteration),
+    Complete,
+}
+
+/// A recording AutoResolveEmitter that captures all events into an Arc<Mutex<Vec>>.
+///
+/// Shared via Arc so tests can hold an Arc::clone of the events handle and
+/// assert after the session call returns.
+struct RecordingEmitter {
+    events: std::sync::Arc<std::sync::Mutex<Vec<EmitEvent>>>,
+}
+
+impl RecordingEmitter {
+    fn new() -> Self {
+        Self {
+            events: std::sync::Arc::new(std::sync::Mutex::new(vec![])),
+        }
+    }
+}
+
+impl crate::engine::AutoResolveEmitter for RecordingEmitter {
+    fn start(&self) {
+        self.events.lock().unwrap().push(EmitEvent::Start);
+    }
+
+    fn iteration(&self, iter: crate::types::AutoResolveIteration) {
+        self.events.lock().unwrap().push(EmitEvent::Iteration(iter));
+    }
+
+    fn complete(&self) {
+        self.events.lock().unwrap().push(EmitEvent::Complete);
+    }
+}
+
+/// Step-4: No auto-resolve events should fire when the loaded source has no
+/// `auto` parameters — the emit-helper must guard on empty `resolved_params`.
+#[test]
+fn engine_session_no_auto_resolve_emission_when_no_auto_params() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let recorder = RecordingEmitter::new();
+    let events = std::sync::Arc::clone(&recorder.events);
+    session.set_auto_resolve_emitter(std::sync::Arc::new(recorder));
+
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+
+    let events = events.lock().unwrap();
+    assert!(
+        events.is_empty(),
+        "no auto-resolve events should fire when bracket has no auto params, got {} events",
+        events.len()
+    );
+}
+
+/// Step-8: Pin the AutoResolveParameterValue conversion contract.
+///
+/// Resolved `mm(4.2)` → `{ value: 4.2, unit: "mm", display: "4.2mm" }`.
+/// Tests `dimension.to_display_units` + `format_display_number` pipeline.
+#[test]
+fn engine_session_auto_resolve_iteration_parameter_payload_matches_resolved_value_shape() {
+    use std::sync::Arc;
+
+    let thickness_id = ValueCellId::new("S", "thickness");
+    let mut solved = std::collections::HashMap::new();
+    solved.insert(thickness_id.clone(), mm(4.2));
+    let solver = MockConstraintSolver::new_solved(solved);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "thickness", Type::length())
+        .constraint(
+            "S",
+            0,
+            None,
+            gt(value_ref("S", "thickness"), literal(mm(2.0))),
+        )
+        .build();
+
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None)
+        .with_solver_for_test(Box::new(solver));
+
+    let recorder = RecordingEmitter::new();
+    let events = Arc::clone(&recorder.events);
+    session.set_auto_resolve_emitter(Arc::new(recorder));
+
+    session.check_and_emit_for_test(&compiled);
+
+    let events = events.lock().unwrap();
+    assert_eq!(events.len(), 3, "expected [Start, Iteration, Complete]");
+
+    if let EmitEvent::Iteration(ref iter) = events[1] {
+        let param = iter
+            .parameters
+            .get("S.thickness")
+            .expect("S.thickness must be in parameters");
+        assert!(
+            (param.value - 4.2).abs() < 1e-10,
+            "value must be 4.2 (display units), got {}",
+            param.value
+        );
+        assert_eq!(param.unit, "mm", "unit must be 'mm'");
+        assert_eq!(param.display, "4.2mm", "display must be '4.2mm'");
+    } else {
+        panic!("events[1] must be Iteration");
+    }
+}
+
+/// Step-9: Pin the Satisfaction → bool projection in `AutoResolveConstraintProgress`.
+///
+/// Two constraints: `thickness > 2mm` (satisfied at 5mm) and `thickness > 10mm`
+/// (violated at 5mm). Asserts exactly one satisfied and one violated entry.
+#[test]
+fn engine_session_auto_resolve_constraint_progress_projects_satisfaction_to_bool() {
+    use std::sync::Arc;
+
+    let thickness_id = ValueCellId::new("S", "thickness");
+    let mut solved = std::collections::HashMap::new();
+    solved.insert(thickness_id.clone(), mm(5.0));
+    let solver = MockConstraintSolver::new_solved(solved);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "thickness", Type::length())
+        .constraint(
+            "S",
+            0,
+            None,
+            gt(value_ref("S", "thickness"), literal(mm(2.0))),
+        )
+        .constraint(
+            "S",
+            1,
+            None,
+            gt(value_ref("S", "thickness"), literal(mm(10.0))),
+        )
+        .build();
+
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None)
+        .with_solver_for_test(Box::new(solver));
+
+    let recorder = RecordingEmitter::new();
+    let events = Arc::clone(&recorder.events);
+    session.set_auto_resolve_emitter(Arc::new(recorder));
+
+    session.check_and_emit_for_test(&compiled);
+
+    let events = events.lock().unwrap();
+    assert_eq!(events.len(), 3, "expected [Start, Iteration, Complete]");
+
+    if let EmitEvent::Iteration(ref iter) = events[1] {
+        assert_eq!(iter.constraints.len(), 2, "must have 2 constraint entries");
+        let satisfied = iter.constraints.values().filter(|c| c.satisfied).count();
+        let violated = iter.constraints.values().filter(|c| !c.satisfied).count();
+        assert_eq!(satisfied, 1, "exactly one constraint should be satisfied (> 2mm at 5mm)");
+        assert_eq!(violated, 1, "exactly one constraint should be violated (> 10mm at 5mm)");
+    } else {
+        panic!("events[1] must be Iteration");
+    }
+}
+
+/// Step-6: With a solver-injected session loaded with an auto-param fixture,
+/// `check_and_emit_for_test` must fire exactly [Start, Iteration, Complete].
+#[test]
+fn engine_session_auto_resolve_emitter_fires_start_iter_complete_when_solver_resolves() {
+    use std::sync::Arc;
+
+    let thickness_id = ValueCellId::new("S", "thickness");
+    let mut solved = std::collections::HashMap::new();
+    solved.insert(thickness_id.clone(), mm(5.0));
+    let solver = MockConstraintSolver::new_solved(solved);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "thickness", Type::length())
+        .constraint(
+            "S",
+            0,
+            None,
+            gt(value_ref("S", "thickness"), literal(mm(2.0))),
+        )
+        .build();
+
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None)
+        .with_solver_for_test(Box::new(solver));
+
+    let recorder = RecordingEmitter::new();
+    let events = Arc::clone(&recorder.events);
+    session.set_auto_resolve_emitter(Arc::new(recorder));
+
+    session.check_and_emit_for_test(&compiled);
+
+    let events = events.lock().unwrap();
+    assert_eq!(
+        events.len(),
+        3,
+        "expected exactly 3 events (Start, Iteration, Complete), got {}",
+        events.len()
+    );
+    assert!(
+        matches!(events[0], EmitEvent::Start),
+        "event[0] must be Start"
+    );
+    assert!(
+        matches!(events[1], EmitEvent::Iteration(_)),
+        "event[1] must be Iteration"
+    );
+    assert!(
+        matches!(events[2], EmitEvent::Complete),
+        "event[2] must be Complete"
+    );
+
+    // Assert the iteration payload has the expected parameter
+    if let EmitEvent::Iteration(ref iter) = events[1] {
+        assert!(
+            iter.parameters.contains_key("S.thickness"),
+            "parameters must contain 'S.thickness', got keys: {:?}",
+            iter.parameters.keys().collect::<Vec<_>>()
+        );
+        assert!(!iter.constraints.is_empty(), "constraints must be non-empty");
+    }
+}
+
+/// Step-11: `set_parameter` must re-fire the emit sequence when the solver resolves auto params.
+///
+/// Setup: session with `S.x` (regular param, settable) + `S.thickness` (auto param).
+/// After initial check drains the recorder, `set_parameter("S.x", "10mm")` triggers
+/// `edit_check` → solver resolves `thickness` again → [Start, Iteration, Complete].
+#[test]
+fn engine_session_auto_resolve_emitter_fires_on_set_parameter_when_solver_present() {
+    use std::sync::Arc;
+
+    let thickness_id = ValueCellId::new("S", "thickness");
+    let mut solved = std::collections::HashMap::new();
+    solved.insert(thickness_id.clone(), mm(5.0));
+    let solver = MockConstraintSolver::new_solved(solved);
+
+    // The constraint references S.x so that changing S.x makes the constraint
+    // dirty → solver re-runs → resolved_params non-empty → emission fires.
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "x", Type::length(), Some(literal(mm(5.0))))
+        .auto_param("S", "thickness", Type::length())
+        .constraint(
+            "S",
+            0,
+            None,
+            gt(value_ref("S", "thickness"), value_ref("S", "x")),
+        )
+        .build();
+
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None)
+        .with_solver_for_test(Box::new(solver));
+
+    let recorder = RecordingEmitter::new();
+    let events = Arc::clone(&recorder.events);
+    session.set_auto_resolve_emitter(Arc::new(recorder));
+
+    // Initial check: gives engine a snapshot and fires 3 events.
+    session.check_and_emit_for_test(&compiled);
+    // Inject compiled so set_parameter can validate the cell exists.
+    session.inject_compiled_for_test(compiled);
+    // Drain recorder before the set_parameter call.
+    events.lock().unwrap().clear();
+
+    // Changing S.x dirties the constraint (which reads S.x) → solver re-runs → emit fires.
+    session.set_parameter("S.x", "10mm").expect("set_parameter should succeed");
+
+    let events = events.lock().unwrap();
+    assert_eq!(
+        events.len(),
+        3,
+        "set_parameter must emit [Start, Iteration, Complete], got {} events",
+        events.len()
+    );
+    assert!(matches!(events[0], EmitEvent::Start), "event[0] must be Start");
+    assert!(matches!(events[1], EmitEvent::Iteration(_)), "event[1] must be Iteration");
+    assert!(matches!(events[2], EmitEvent::Complete), "event[2] must be Complete");
 }

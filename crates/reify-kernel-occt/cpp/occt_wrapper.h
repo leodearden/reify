@@ -780,6 +780,12 @@ double min_clearance(const OcctShape& a, const OcctShape& b);
 /// dist<1e-10 shell-fallback rationale and multi-shell caveat.
 Point3 closest_point_on_shape(const OcctShape& shape, double px, double py, double pz);
 
+/// Return the geometric position of `shape` (a `TopoDS_Vertex`) via
+/// `BRep_Tool::Pnt`. Mandated by PRD `mesh-morphing-phase-2.md` §3.4
+/// `vertex_position`: snap to exact coordinates, no closest-point
+/// computation. Throws std::runtime_error if shape is not a vertex.
+Point3 vertex_point(const OcctShape& shape);
+
 /// Test whether the query point (px, py, pz) lies on the BREP boundary
 /// (face/edge/vertex) of `shape` within `tolerance`.
 ///
@@ -872,6 +878,13 @@ std::unique_ptr<OcctShapeVec> get_edges(const OcctShape& shape);
 /// `TopExp::MapShapes(.., TopAbs_FACE, ..)` order (deduplicated by
 /// `TopoDS_Shape::IsSame`). Reuses the cached `face_map()`.
 std::unique_ptr<OcctShapeVec> get_faces(const OcctShape& shape);
+
+/// Return the unique vertices of `shape` as an OcctShapeVec, in
+/// `TopExp::MapShapes(.., TopAbs_VERTEX, ..)` order (deduplicated by
+/// `TopoDS_Shape::IsSame`). Builds a fresh local map per call — no
+/// `vertex_map()` cache slot on OcctShape (the Rust-side `extracted_vertices`
+/// cache provides idempotency).
+std::unique_ptr<OcctShapeVec> get_vertices(const OcctShape& shape);
 
 /// Compute the total arc length of an edge (or any 1-dimensional sub-shape)
 /// in the same length units as the shape's coordinates. Backed by
@@ -1052,6 +1065,11 @@ std::unique_ptr<OcctShape> make_edge_for_test();
 /// Build a single vertex at the origin (0,0,0).
 /// The returned shape has TopAbs_ShapeType() == TopAbs_VERTEX.
 std::unique_ptr<OcctShape> make_vertex_for_test();
+
+/// Build a single vertex at (x, y, z). Parameterised variant of
+/// `make_vertex_for_test` for tests that need to pin a non-origin location
+/// (e.g. `vertex_point` round-trip verification).
+std::unique_ptr<OcctShape> make_vertex_at_for_test(double x, double y, double z);
 
 /// Build a CompSolid containing one 10×10×10 mm box solid.
 /// The returned shape has TopAbs_ShapeType() == TopAbs_COMPSOLID.

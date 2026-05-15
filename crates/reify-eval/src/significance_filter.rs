@@ -30,7 +30,7 @@
 //! [`FilterOutcome::Different`] — over-invalidate rather than under-invalidate.
 //! This includes mismatched sampling geometry on the `displacement` field:
 //! identical data values at physically different grid locations are always a
-//! material change (see [`sampled_field_grid_metadata_eq`]).
+//! material change (see [`reify_types::SampledField::grid_metadata_eq`]).
 //!
 //! # NaN handling
 //!
@@ -104,43 +104,6 @@ static NON_DISPLACEMENT_KEY_VALUES: std::sync::LazyLock<[reify_types::Value; 4]>
     std::sync::LazyLock::new(|| {
         NON_DISPLACEMENT_KEYS.map(|k| reify_types::Value::String(k.to_string()))
     });
-
-/// Compare all grid-metadata fields of two [`reify_types::SampledField`]s,
-/// excluding `data` (the value payload) and `oob_emitted` (runtime flag).
-///
-/// Returns `false` if any spatial-geometry field differs — different grids mean
-/// samples at physically different locations, which is always a material change
-/// regardless of whether the numerical data values happen to fall within
-/// tolerance. This mirrors the same bit-exact `f64` comparisons used in
-/// `SampledField`'s own `PartialEq` implementation but skips the `data` slice.
-fn sampled_field_grid_metadata_eq(
-    a: &reify_types::SampledField,
-    b: &reify_types::SampledField,
-) -> bool {
-    if a.name != b.name || a.kind != b.kind || a.interpolation != b.interpolation {
-        return false;
-    }
-    let vecs_bit_eq = |xs: &[f64], ys: &[f64]| -> bool {
-        xs.len() == ys.len()
-            && xs
-                .iter()
-                .zip(ys.iter())
-                .all(|(x, y)| x.to_bits() == y.to_bits())
-    };
-    if !vecs_bit_eq(&a.bounds_min, &b.bounds_min)
-        || !vecs_bit_eq(&a.bounds_max, &b.bounds_max)
-        || !vecs_bit_eq(&a.spacing, &b.spacing)
-    {
-        return false;
-    }
-    if a.axis_grids.len() != b.axis_grids.len() {
-        return false;
-    }
-    a.axis_grids
-        .iter()
-        .zip(b.axis_grids.iter())
-        .all(|(ag, bg)| vecs_bit_eq(ag, bg))
-}
 
 /// Compare a compute node's previous and new result with per-purpose tolerance.
 ///
@@ -261,7 +224,7 @@ pub fn significance_filter(
     // different results. Compares kind, name, bounds, spacing, axis_grids, and
     // interpolation (everything except data and oob_emitted).
     // Exercises: significance_filter_returns_different_for_shifted_grid_metadata
-    if !sampled_field_grid_metadata_eq(prev_sf, new_sf) {
+    if !prev_sf.grid_metadata_eq(new_sf) {
         return FilterOutcome::Different;
     }
 
@@ -694,7 +657,7 @@ mod tests {
     /// Identical data at different physical locations is a semantically material
     /// change — same conservative posture as the missing-tolerance fallback.
     ///
-    /// Pins the `sampled_field_grid_metadata_eq` check added in the amendment
+    /// Pins the `SampledField::grid_metadata_eq` check added in the amendment
     /// pass: the filter compares grid geometry (kind, name, bounds, spacing,
     /// axis_grids, interpolation) before the element-wise data comparison, so
     /// a shifted grid cannot sneak through as Equivalent.

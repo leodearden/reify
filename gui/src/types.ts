@@ -394,10 +394,13 @@ export interface AutoResolveParameterValue {
 /**
  * Progress for one FEA-derived constraint at a given iteration.
  * `satisfied` is true when the constraint bound is met.
+ * `value` is optional: the Rust side serialises it as `Option<f64>` with
+ * `skip_serializing_if`, so it is absent from the wire payload whenever the
+ * kernel has no observed scalar for the constraint (the common case).
  */
 export interface AutoResolveConstraintProgress {
   name: string;
-  value: number;
+  value?: number;
   unit?: string;
   target_lower?: number;
   target_upper?: number;
@@ -426,4 +429,22 @@ export interface AutoResolveIteration {
   constraints: Record<string, AutoResolveConstraintProgress>;
   driving_metric?: string;
   driving_metric_value?: number;
+}
+
+/**
+ * Mesh-morph runtime statistics — response shape for the
+ * `morph_stats` debug-MCP RPC (GR-016 / docs/prds/v0_3/gui-event-channel-inventory.md §2.3).
+ *
+ * The fields mirror `reify_mesh_morph::stats::MorphStats` (Rust). Per PRD §3.2
+ * the field names match exactly (no `#[serde(rename_all)]`). `last_rejection_reason`
+ * is `Option<String>` on Rust and serialized `skip_serializing_if = "Option::is_none"`,
+ * so it arrives as `undefined` (absent key) when no rejection has been recorded.
+ *
+ * Consumer: MCP debug session (claude-debug). No frontend listener — this is
+ * an RPC response shape, not a Tauri event payload.
+ */
+export interface MorphStats {
+  morph_count: number;
+  remesh_count: number;
+  last_rejection_reason?: string;
 }

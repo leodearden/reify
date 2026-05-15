@@ -12,6 +12,11 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use reify_eval::cache::NodeId;
+// Re-export the canonical NodeKind from reify-types so all existing call sites
+// (including reify_runtime::commitment::NodeKind in tests and concurrent_eval.rs)
+// continue to resolve transparently. The From<&NodeId> bridge impl lives in
+// reify-eval/src/cache.rs (the only orphan-rule-clean host; see PRD §4).
+pub use reify_types::NodeKind;
 
 /// Project-level configuration for the dual-threshold commitment policy.
 ///
@@ -26,39 +31,6 @@ pub struct CommitmentPolicy {
     pub always_commit_after: Duration,
     /// Commit when estimated progress exceeds this fraction (default: 0.5).
     pub commit_when_proportion_done: f64,
-}
-
-/// Discriminant for the "type" of a node in the evaluation graph.
-///
-/// Mirrors the variants of [`NodeId`] (§7.6 of the architecture) but without
-/// the per-instance identifier payload, making it usable as a lightweight
-/// key for per-type policy overrides (§7.3, lines 751–767).
-///
-/// Convert from a [`NodeId`] via `NodeKind::from(&node_id)` / `(&node_id).into()`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum NodeKind {
-    /// A value cell node.
-    Value,
-    /// A constraint node.
-    Constraint,
-    /// A realization (geometry output) node.
-    Realization,
-    /// A resolution (constraint solver) node.
-    Resolution,
-    /// A compute (ComputeNode) node — P3.3+, see §5 of the architecture.
-    Compute,
-}
-
-impl From<&NodeId> for NodeKind {
-    fn from(node_id: &NodeId) -> Self {
-        match node_id {
-            NodeId::Value(_) => Self::Value,
-            NodeId::Constraint(_) => Self::Constraint,
-            NodeId::Realization(_) => Self::Realization,
-            NodeId::Resolution(_) => Self::Resolution,
-            NodeId::Compute(_) => Self::Compute,
-        }
-    }
 }
 
 /// Per-node override for commitment behavior.
@@ -613,6 +585,10 @@ mod tests {
         NodeId::Resolution(reify_types::ResolutionNodeId::new(entity, idx))
     }
 
+    fn make_compute_node(entity: &str, idx: u32) -> NodeId {
+        NodeId::Compute(reify_types::ComputeNodeId::new(entity, idx))
+    }
+
     // --- NodePolicyOverrides tests ---
 
     #[test]
@@ -764,11 +740,21 @@ mod tests {
         let constraint_node = make_constraint_node("E", 0);
         let realization_node = make_realization_node("E", 0);
         let resolution_node = make_resolution_node("E", 0);
+        let compute_node = make_compute_node("E", 0);
 
         assert_eq!(NodeKind::from(&value_node), NodeKind::Value);
         assert_eq!(NodeKind::from(&constraint_node), NodeKind::Constraint);
         assert_eq!(NodeKind::from(&realization_node), NodeKind::Realization);
         assert_eq!(NodeKind::from(&resolution_node), NodeKind::Resolution);
+        assert_eq!(NodeKind::from(&compute_node), NodeKind::Compute);
+    }
+
+    #[test]
+    fn node_kind_reexport_identity() {
+        // Asserts that crate::commitment::NodeKind IS reify_types::NodeKind
+        // (the same type, not a wrapper). After step-6, this compiles because
+        // commitment re-exports via `pub use reify_types::NodeKind`.
+        let _: reify_types::NodeKind = crate::commitment::NodeKind::Value;
     }
 
     #[test]

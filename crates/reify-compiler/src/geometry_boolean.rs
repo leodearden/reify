@@ -43,6 +43,51 @@ fn resolve_boolean_arg(
     if let Some(sub_ref) = try_resolve_cross_sub_geom_ref(arg, scope) {
         return Some((sub_ref, Vec::new()));
     }
+    // Task 3512: near-miss cross-sub routing — when the working path returned
+    // None (e.g. because `<sub>` is a collection sub), pattern-match the
+    // `self.<sub>.<member>` shape and route through `try_emit_cross_sub_geometry`
+    // to emit the specific v0.1 deferred diagnostic naming the sub and member,
+    // rather than falling through to the generic "argument N must be a geometry
+    // expression" fallback.
+    //
+    // Mirrors the value-level call sites at expr.rs:1307 (bare collection sub)
+    // and expr.rs:1562 (indexed collection sub) that already use this helper.
+    // The returned `Option<CompiledExpr>` is consumed only for its is_some()
+    // signal — the CompiledExpr value is discarded because boolean-arg position
+    // needs a GeomRef, not a CompiledExpr (task 3512 design decision).
+    //
+    // Scope note: only the `self.<sub>.<member>` two-level MemberAccess shape is
+    // matched here.  Indexed forms such as `self.<sub>[i].<member>` (where the
+    // outer object is an IndexAccess rather than a MemberAccess) are intentionally
+    // out of scope for task 3512 and fall through to the generic diagnostic.
+    // Extending boolean-arg routing to that shape is a post-3512 follow-up.
+    if let reify_syntax::ExprKind::MemberAccess {
+        object: outer_obj,
+        member,
+    } = &arg.kind
+        && let reify_syntax::ExprKind::MemberAccess {
+            object: inner_obj,
+            member: sub_name,
+        } = &outer_obj.kind
+        && let reify_syntax::ExprKind::Ident(self_name) = &inner_obj.kind
+        && self_name == "self"
+        && try_emit_cross_sub_geometry(
+            scope,
+            sub_name.as_str(),
+            member.as_str(),
+            arg.span,
+            diagnostics,
+        )
+        .is_some()
+    {
+        // Specific deferred diagnostic emitted; skip generic fallback.
+        return None;
+    }
+    // Helper returned None: member is not a geometry realization on this sub
+    // (e.g. scalar param), or the arg is not a self.<sub>.<member> shape.
+    // Fall through to compile_geometry_call + generic fallback so the existing
+    // "must be a geometry expression" message fires correctly for scalar-member
+    // shapes.
     let ops = match compile_geometry_call(
         arg,
         scope,

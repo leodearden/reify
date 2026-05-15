@@ -970,6 +970,25 @@ structure def S7 : T7 { param x : Real = 7.0 }
         "depth-bound diagnostic must mention the max_depth '6'; got: {:?}",
         extra.message
     );
+    // task 3637 acceptance #2: substitution-soundness caveat must be present in the
+    // depth-bound fallback diagnostic so future agents implementing the
+    // Type::TypeParam → Type::StructureRef substitution pass see the hazard.
+    assert!(
+        extra.message.contains("BFS") || extra.message.contains("falling back"),
+        "depth-bound diagnostic must include 'BFS'/'falling back' in the caveat; got: {:?}",
+        extra.message
+    );
+    assert!(
+        extra.message.contains("substitution"),
+        "depth-bound diagnostic must contain 'substitution' (soundness caveat, task 3637 M-005); got: {:?}",
+        extra.message
+    );
+    assert!(
+        extra.message.contains("auto-resolution-backtracking.md M-005"),
+        "depth-bound diagnostic must contain the stable audit-citation path \
+         'auto-resolution-backtracking.md M-005' (task 3637 M-005); got: {:?}",
+        extra.message
+    );
 }
 
 // ─── DFS at max_depth runs DFS (no fallback diagnostic) ─────────────────────
@@ -1467,6 +1486,20 @@ structure def S4B : T4 { param x : Real = 4.5 }
         extra.message.contains("falling back") || extra.message.contains("BFS"),
         "cap diagnostic must include the canonical 'falling back'/'BFS' suffix \
          shared with the depth-bound diagnostic; got: {:?}",
+        extra.message
+    );
+    // task 3637 acceptance #2: substitution-soundness caveat must be present in the
+    // cap fallback diagnostic so future agents implementing the
+    // Type::TypeParam → Type::StructureRef substitution pass see the hazard.
+    assert!(
+        extra.message.contains("substitution"),
+        "cap diagnostic must contain 'substitution' (soundness caveat, task 3637 M-006); got: {:?}",
+        extra.message
+    );
+    assert!(
+        extra.message.contains("auto-resolution-backtracking.md M-006"),
+        "cap diagnostic must contain the stable audit-citation path \
+         'auto-resolution-backtracking.md M-006' (task 3637 M-006); got: {:?}",
         extra.message
     );
 

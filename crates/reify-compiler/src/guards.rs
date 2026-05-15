@@ -8,7 +8,9 @@ pub(crate) fn collect_body_refs(expr: &CompiledExpr) -> Vec<ValueCellId> {
 
 pub(crate) fn collect_body_refs_inner(expr: &CompiledExpr, refs: &mut Vec<ValueCellId>) {
     match &expr.kind {
-        CompiledExprKind::ValueRef(id) => refs.push(id.clone()),
+        CompiledExprKind::ValueRef(id) | CompiledExprKind::CrossSubGeometryRef(id) => {
+            refs.push(id.clone())
+        }
         CompiledExprKind::BinOp { left, right, .. } => {
             collect_body_refs_inner(left, refs);
             collect_body_refs_inner(right, refs);

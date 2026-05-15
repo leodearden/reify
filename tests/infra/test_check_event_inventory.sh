@@ -194,5 +194,220 @@ assert "dynamic emit produces no orphan warnings" \
 assert "dynamic emit exits 0" \
     "$CHECK_SCRIPT" --repo-root "$_fix5dir"
 
+# ==============================================================================
+# Check 6: --bidirectional flag accepted and detects §1 phantom channel
+# ==============================================================================
+echo ""
+echo "--- Check 6: --bidirectional flag accepted and detects §1 phantom ---"
+
+_fix6dir="$_tmpdir/fix6"
+mkdir -p "$_fix6dir/docs" "$_fix6dir/gui/src-tauri/src"
+
+cat > "$_fix6dir/docs/gui-event-channels.md" <<'INVENTORY'
+# GUI Event Channel Inventory
+
+## §1 — Wired channels (production today)
+
+| Channel | Notes |
+|---|---|
+| `mesh-update` | wired |
+| `phantom-channel` | wired |
+
+## §2 — Channels this PRD adds (FICTION → WIRED via GR-016 decomposition)
+
+| Channel | Notes |
+|---|---|
+INVENTORY
+
+cat > "$_fix6dir/gui/src-tauri/src/test_emit.rs" <<'RUST'
+fn emit_something(app: &AppHandle) {
+    app.emit("mesh-update", payload);
+}
+RUST
+
+_fix6_stderr="$_tmpdir/fix6_stderr.txt"
+"$CHECK_SCRIPT" --repo-root "$_fix6dir" --bidirectional 2>"$_fix6_stderr" || true
+
+assert "--bidirectional flag does not produce 'Unknown option' error" \
+    bash -c "! grep -q 'Unknown option' '$_fix6_stderr'"
+
+assert "--bidirectional emits phantom warning for phantom-channel" \
+    grep -q 'phantom-channel' "$_fix6_stderr"
+
+assert "--bidirectional exits 0 in warning mode with phantom present" \
+    "$CHECK_SCRIPT" --repo-root "$_fix6dir" --bidirectional
+
+# ==============================================================================
+# Check 7: --bidirectional dynamic-emit false-positive guard
+# A §1 channel whose name appears as a .to_string() literal (not .emit("…"))
+# must NOT be flagged as a phantom — permissive literal scan covers it.
+# ==============================================================================
+echo ""
+echo "--- Check 7: --bidirectional dynamic-emit no-false-positive ---"
+
+_fix7dir="$_tmpdir/fix7"
+mkdir -p "$_fix7dir/docs" "$_fix7dir/gui/src-tauri/src"
+
+cat > "$_fix7dir/docs/gui-event-channels.md" <<'INVENTORY'
+# GUI Event Channel Inventory
+
+## §1 — Wired channels (production today)
+
+| Channel | Notes |
+|---|---|
+| `dyn-channel` | wired |
+
+## §2 — Channels this PRD adds (FICTION → WIRED via GR-016 decomposition)
+
+| Channel | Notes |
+|---|---|
+INVENTORY
+
+cat > "$_fix7dir/gui/src-tauri/src/test_dyn.rs" <<'RUST'
+fn push_event(events: &mut Vec<(String, Payload)>, payload: Payload) {
+    events.push(("dyn-channel".to_string(), payload));
+}
+RUST
+
+_fix7_stderr="$_tmpdir/fix7_stderr.txt"
+"$CHECK_SCRIPT" --repo-root "$_fix7dir" --bidirectional 2>"$_fix7_stderr" || true
+
+assert "--bidirectional produces no phantom warning for dynamic-emit channel" \
+    bash -c "! grep -q 'phantom' '$_fix7_stderr'"
+
+assert "--bidirectional exits 0 for dynamic-emit channel" \
+    "$CHECK_SCRIPT" --repo-root "$_fix7dir" --bidirectional
+
+# ==============================================================================
+# Check 8: --bidirectional §2 FICTION exclusion
+# A channel in §2 with no source occurrence must NOT produce a phantom warning —
+# §2 is pre-implementation by design.
+# ==============================================================================
+echo ""
+echo "--- Check 8: --bidirectional §2 FICTION exclusion ---"
+
+_fix8dir="$_tmpdir/fix8"
+mkdir -p "$_fix8dir/docs" "$_fix8dir/gui/src-tauri/src"
+
+cat > "$_fix8dir/docs/gui-event-channels.md" <<'INVENTORY'
+# GUI Event Channel Inventory
+
+## §1 — Wired channels (production today)
+
+| Channel | Notes |
+|---|---|
+| `wired-ok` | wired |
+
+## §2 — Channels this PRD adds (FICTION → WIRED via GR-016 decomposition)
+
+| Channel | Notes |
+|---|---|
+| `fiction-channel` | pre-implementation |
+INVENTORY
+
+cat > "$_fix8dir/gui/src-tauri/src/test_emit.rs" <<'RUST'
+fn emit_something(app: &AppHandle) {
+    app.emit("wired-ok", payload);
+}
+RUST
+
+_fix8_stderr="$_tmpdir/fix8_stderr.txt"
+"$CHECK_SCRIPT" --repo-root "$_fix8dir" --bidirectional 2>"$_fix8_stderr" || true
+
+assert "--bidirectional produces no warning for §2 fiction-channel" \
+    bash -c "! grep -q 'fiction-channel' '$_fix8_stderr'"
+
+assert "--bidirectional exits 0 when only §2 channel is unimplemented" \
+    "$CHECK_SCRIPT" --repo-root "$_fix8dir" --bidirectional
+
+# ==============================================================================
+# Check 9: --bidirectional --strict exits non-zero on phantom
+# ==============================================================================
+echo ""
+echo "--- Check 9: --bidirectional --strict exits non-zero on phantom ---"
+
+# Reuse the Check 6 fixture (has phantom-channel with no source occurrence)
+assert "--bidirectional --strict exits non-zero on phantom channel" \
+    bash -c "! '$CHECK_SCRIPT' --repo-root '$_fix6dir' --bidirectional --strict"
+
+# ==============================================================================
+# Check 10: smoke --bidirectional against real worktree exits 0 (no phantoms)
+# ==============================================================================
+echo ""
+echo "--- Check 10: smoke --bidirectional against real worktree ---"
+
+_bidi_smoke_stderr="$_tmpdir/bidi_smoke_stderr.txt"
+"$CHECK_SCRIPT" --repo-root "$REPO_ROOT" --bidirectional 2>"$_bidi_smoke_stderr" || true
+
+assert "smoke --bidirectional exits 0 (no §1 phantoms in real worktree)" \
+    "$CHECK_SCRIPT" --repo-root "$REPO_ROOT" --bidirectional
+
+assert "smoke --bidirectional produces no phantom stderr lines" \
+    bash -c "! grep -q 'phantom' '$_bidi_smoke_stderr'"
+
+# ==============================================================================
+# Check 11: --help / -h output mentions --bidirectional
+# ==============================================================================
+echo ""
+echo "--- Check 11: --help output contains --bidirectional ---"
+
+_help_out="$_tmpdir/help_out.txt"
+"$CHECK_SCRIPT" --help > "$_help_out" 2>&1 || true
+
+assert "--help output contains --bidirectional" \
+    grep -q '\-\-bidirectional' "$_help_out"
+
+assert "--help output contains a description of the reverse pass" \
+    grep -q 'reverse pass' "$_help_out"
+
+# ==============================================================================
+# Check 12: --bidirectional §10+ heading ambiguity guard
+# A channel registered under §10 (or any §N with N ≥ 10) must NOT be classified
+# as a §1 channel by the awk filter — the un-anchored /^## §1/ pattern matches
+# §10, §11, … as a prefix, silently including their rows in the §1 phantom set.
+# With the fixed /^## §1 / (trailing-space anchor) this test passes.
+# ==============================================================================
+echo ""
+echo "--- Check 12: --bidirectional §10+ heading not misclassified as §1 ---"
+
+_fix12dir="$_tmpdir/fix12"
+mkdir -p "$_fix12dir/docs" "$_fix12dir/gui/src-tauri/src"
+
+cat > "$_fix12dir/docs/gui-event-channels.md" <<'INVENTORY'
+# GUI Event Channel Inventory
+
+## §1 — Wired channels (production today)
+
+| Channel | Notes |
+|---|---|
+| `wired-ok` | wired |
+
+## §2 — Channels this PRD adds (FICTION → WIRED via GR-016 decomposition)
+
+| Channel | Notes |
+|---|---|
+
+## §10 — Synthetic section (future expansion)
+
+| Channel | Notes |
+|---|---|
+| `should-not-be-scanned` | future |
+INVENTORY
+
+cat > "$_fix12dir/gui/src-tauri/src/test_emit.rs" <<'RUST'
+fn emit_something(app: &AppHandle) {
+    app.emit("wired-ok", payload);
+}
+RUST
+
+_fix12_stderr="$_tmpdir/fix12_stderr.txt"
+"$CHECK_SCRIPT" --repo-root "$_fix12dir" --bidirectional 2>"$_fix12_stderr" || true
+
+assert "--bidirectional does not classify §10 channel as §1 phantom" \
+    bash -c "! grep -q 'should-not-be-scanned' '$_fix12_stderr'"
+
+assert "--bidirectional --strict exits 0 when §10 channel is not misclassified as §1 phantom" \
+    "$CHECK_SCRIPT" --repo-root "$_fix12dir" --strict --bidirectional
+
 # -- Summary ------------------------------------------------------------------
 test_summary

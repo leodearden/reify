@@ -26,13 +26,20 @@ use crate::elements::ReferenceElement;
 use crate::elements::tet_p1::TetP1;
 use crate::elements::tet_p2::TetP2;
 
-/// Triangular face interpolation order.
+/// Face interpolation order.
 ///
-/// Distinguishes 3-node linear faces (`P1Tri`) from 6-node quadratic faces
-/// (`P2Tri`) of tetrahedral elements. Separate from
-/// [`crate::assembly::ElementOrder`] (which keys on volume-element node count)
-/// because surface tractions key on face node count — reusing `ElementOrder`
-/// would invite confusion at call sites.
+/// Distinguishes 3-node linear triangular faces (`P1Tri`), 6-node quadratic
+/// triangular faces (`P2Tri`), and 4-node bilinear quadrilateral faces
+/// (`P1Quad`). Separate from [`crate::assembly::ElementOrder`] (which keys on
+/// volume-element node count) because surface tractions key on face node
+/// count — reusing `ElementOrder` would invite confusion at call sites.
+///
+/// Mapping to volume element kinds:
+///
+/// - Tet faces ⇒ `P1Tri` (4-node tet) or `P2Tri` (10-node tet).
+/// - Hex faces ⇒ `P1Quad` (all 6 faces of an 8-node hex are bilinear quads).
+/// - Wedge faces ⇒ `P1Tri` (the two triangle end-caps) or `P1Quad` (the three
+///   bilinear quad side faces).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FaceOrder {
     /// 3-node linear triangular face (P1 tet face).
@@ -40,6 +47,16 @@ pub enum FaceOrder {
     /// 6-node quadratic triangular face (P2 tet face): 3 vertices followed by
     /// 3 edge-midpoints in canonical order `[v0, v1, v2, m_{01}, m_{12}, m_{20}]`.
     P2Tri,
+    /// 4-node bilinear quadrilateral face used by hex elements and the side
+    /// faces of wedge elements.
+    ///
+    /// Node ordering: canonical Hughes/Gmsh hex8 bottom-face order — vertices
+    /// at reference coords `(-1, -1)`, `(+1, -1)`, `(+1, +1)`, `(-1, +1)`
+    /// traversed counter-clockwise when viewed from the outward face normal.
+    /// This matches the four "ζ = −1" nodes of a hex
+    /// (`crate::elements::hex_p1::VERTEX_SIGNS[0..4]`) so callers extracting a
+    /// hex's bottom-face nodes can pass `&hex_phys[0..4]` directly.
+    P1Quad,
 }
 
 /// Maximum `E::N_NODES` across element types dispatched by [`apply_body_force`].
@@ -243,27 +260,35 @@ pub fn apply_body_force(
 // apply_traction_load (triangle quadrature + public dispatcher)
 // ---------------------------------------------------------------------------
 
-/// A 2D reference coordinate `(ξ, η)` on a reference triangle.
+/// A 2D reference coordinate `(ξ, η)` on a face element.
 ///
-/// The reference triangle has vertices at `(0,0), (1,0), (0,1)`.
+/// Shared between triangle faces (P1Tri/P2Tri, reference triangle vertices
+/// `(0,0), (1,0), (0,1)`) and quadrilateral faces (P1Quad, reference square
+/// vertices `(±1, ±1)`). The triangle and quad reference geometries differ in
+/// their valid coordinate domain, but the `(ξ, η)` storage is identical and
+/// `integrate_face_generic` is parametric over both via this single type plus
+/// caller-supplied shape / gradient / quadrature-rule values.
 #[derive(Clone, Copy)]
-struct TriRefCoord {
+struct FaceRefCoord {
     xi: f64,
     eta: f64,
 }
 
-/// A quadrature point on the reference triangle.
+/// A quadrature point on a face element.
+///
+/// See [`FaceRefCoord`] — shared between triangle and quad face quadrature
+/// rules.
 #[derive(Clone, Copy)]
-struct TriQuadPoint {
-    coord: TriRefCoord,
+struct FaceQuadPoint {
+    coord: FaceRefCoord,
     weight: f64,
 }
 
 /// 1-point centroid rule for the unit reference triangle (degree-1 exact).
 ///
 /// Point at `(1/3, 1/3)`, weight `1/2` (= reference-triangle area).
-const TRI_P1_QUAD: &[TriQuadPoint] = &[TriQuadPoint {
-    coord: TriRefCoord {
+const TRI_P1_QUADRATURE: &[FaceQuadPoint] = &[FaceQuadPoint {
+    coord: FaceRefCoord {
         xi: 1.0 / 3.0,
         eta: 1.0 / 3.0,
     },
@@ -274,17 +299,17 @@ const TRI_P1_QUAD: &[TriQuadPoint] = &[TriQuadPoint {
 ///
 /// Points at the midpoints of the three edges: `(1/2, 0)`, `(1/2, 1/2)`,
 /// `(0, 1/2)`, each with weight `1/6`. Total weight `1/2` = triangle area.
-const TRI_P2_QUAD: &[TriQuadPoint] = &[
-    TriQuadPoint {
-        coord: TriRefCoord { xi: 0.5, eta: 0.0 },
+const TRI_P2_QUADRATURE: &[FaceQuadPoint] = &[
+    FaceQuadPoint {
+        coord: FaceRefCoord { xi: 0.5, eta: 0.0 },
         weight: 1.0 / 6.0,
     },
-    TriQuadPoint {
-        coord: TriRefCoord { xi: 0.5, eta: 0.5 },
+    FaceQuadPoint {
+        coord: FaceRefCoord { xi: 0.5, eta: 0.5 },
         weight: 1.0 / 6.0,
     },
-    TriQuadPoint {
-        coord: TriRefCoord { xi: 0.0, eta: 0.5 },
+    FaceQuadPoint {
+        coord: FaceRefCoord { xi: 0.0, eta: 0.5 },
         weight: 1.0 / 6.0,
     },
 ];
@@ -292,7 +317,7 @@ const TRI_P2_QUAD: &[TriQuadPoint] = &[
 /// P1 triangle shape functions `[N_0, N_1, N_2]` at a reference coordinate.
 ///
 /// `N_0 = 1 - ξ - η`, `N_1 = ξ`, `N_2 = η`.
-fn tri_p1_shape(c: TriRefCoord) -> [f64; 3] {
+fn tri_p1_shape(c: FaceRefCoord) -> [f64; 3] {
     [1.0 - c.xi - c.eta, c.xi, c.eta]
 }
 
@@ -310,7 +335,7 @@ const TRI_P1_GRADS: [[f64; 2]; 3] = [[-1.0, -1.0], [1.0, 0.0], [0.0, 1.0]];
 /// - Edge-midpoint shapes: `4 λ_a λ_b`
 ///
 /// Follows the standard 6-node quadratic Lagrange triangle ordering.
-fn tri_p2_shape(c: TriRefCoord) -> [f64; 6] {
+fn tri_p2_shape(c: FaceRefCoord) -> [f64; 6] {
     let xi = c.xi;
     let eta = c.eta;
     let l0 = 1.0 - xi - eta;
@@ -327,7 +352,7 @@ fn tri_p2_shape(c: TriRefCoord) -> [f64; 6] {
 }
 
 /// P2 triangle shape-function gradients `[∂N_i/∂ξ, ∂N_i/∂η]`.
-fn tri_p2_grads(c: TriRefCoord) -> [[f64; 2]; 6] {
+fn tri_p2_grads(c: FaceRefCoord) -> [[f64; 2]; 6] {
     let xi = c.xi;
     let eta = c.eta;
     let l0 = 1.0 - xi - eta;
@@ -350,6 +375,98 @@ fn tri_p2_grads(c: TriRefCoord) -> [[f64; 2]; 6] {
     ]
 }
 
+// ---------------------------------------------------------------------------
+// Quad face reference geometry, quadrature, shape functions, and gradients.
+//
+// Reference geometry (`(±1, ±1)`, area 4) and quadrature rule live here;
+// the coordinate/quadrature-point types ([`FaceRefCoord`] / [`FaceQuadPoint`])
+// are shared with the triangle path so a single [`integrate_face_generic`]
+// drives both face shapes.
+// ---------------------------------------------------------------------------
+
+/// 1D 2-point Gauss-Legendre point on `[-1, +1]`: `1/√3`.
+///
+/// Same literal value as [`crate::elements::hex_p1::HEX_P1_GAUSS_PT`] —
+/// kept bit-identical so the quad-face surface integral and the hex
+/// volume integral share the same numeric building block.
+const QUAD_P1_GAUSS_PT: f64 = 0.5773502691896257;
+
+/// 2×2 Gauss-Legendre quadrature rule for the reference quad `[-1, 1]²`
+/// (degree-3-per-axis exact). Four points at `(±1/√3, ±1/√3)`, each with
+/// weight `1`; total weight `4` = reference-quad area.
+///
+/// Naming: `QUAD_P1_QUADRATURE` (not `QUAD_P1_QUAD`) so "quad" appears once
+/// — the `QUAD_` prefix already disambiguates the face shape, and the
+/// `_QUADRATURE` suffix names the rule itself; the previous spelling
+/// `QUAD_P1_QUAD` overloaded "quad" with two meanings (quadrilateral and
+/// quadrature) at the call site.
+const QUAD_P1_QUADRATURE: &[FaceQuadPoint] = &[
+    FaceQuadPoint {
+        coord: FaceRefCoord {
+            xi: -QUAD_P1_GAUSS_PT,
+            eta: -QUAD_P1_GAUSS_PT,
+        },
+        weight: 1.0,
+    },
+    FaceQuadPoint {
+        coord: FaceRefCoord {
+            xi: QUAD_P1_GAUSS_PT,
+            eta: -QUAD_P1_GAUSS_PT,
+        },
+        weight: 1.0,
+    },
+    FaceQuadPoint {
+        coord: FaceRefCoord {
+            xi: QUAD_P1_GAUSS_PT,
+            eta: QUAD_P1_GAUSS_PT,
+        },
+        weight: 1.0,
+    },
+    FaceQuadPoint {
+        coord: FaceRefCoord {
+            xi: -QUAD_P1_GAUSS_PT,
+            eta: QUAD_P1_GAUSS_PT,
+        },
+        weight: 1.0,
+    },
+];
+
+/// P1 bilinear quad shape functions `[N_0, N_1, N_2, N_3]` at a reference
+/// coordinate.
+///
+/// Canonical Hughes/Gmsh hex8 bottom-face ordering — node `i` is at vertex
+/// `(±1, ±1)` with the sign pattern `(-1,-1), (+1,-1), (+1,+1), (-1,+1)`
+/// traversed counter-clockwise.
+///
+/// `N_0 = (1-ξ)(1-η)/4`, `N_1 = (1+ξ)(1-η)/4`,
+/// `N_2 = (1+ξ)(1+η)/4`, `N_3 = (1-ξ)(1+η)/4`.
+fn quad_p1_shape(c: FaceRefCoord) -> [f64; 4] {
+    let xi = c.xi;
+    let eta = c.eta;
+    [
+        0.25 * (1.0 - xi) * (1.0 - eta),
+        0.25 * (1.0 + xi) * (1.0 - eta),
+        0.25 * (1.0 + xi) * (1.0 + eta),
+        0.25 * (1.0 - xi) * (1.0 + eta),
+    ]
+}
+
+/// P1 bilinear quad shape-function gradients `[∂N_i/∂ξ, ∂N_i/∂η]` per node.
+fn quad_p1_grads(c: FaceRefCoord) -> [[f64; 2]; 4] {
+    let xi = c.xi;
+    let eta = c.eta;
+    [
+        // N_0 = (1-ξ)(1-η)/4
+        [-0.25 * (1.0 - eta), -0.25 * (1.0 - xi)],
+        // N_1 = (1+ξ)(1-η)/4
+        [0.25 * (1.0 - eta), -0.25 * (1.0 + xi)],
+        // N_2 = (1+ξ)(1+η)/4
+        [0.25 * (1.0 + eta), 0.25 * (1.0 + xi)],
+        // N_3 = (1-ξ)(1+η)/4
+        [-0.25 * (1.0 + eta), 0.25 * (1.0 - xi)],
+    ]
+}
+
 /// 3D cross product of two vectors.
 #[inline]
 fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
@@ -366,12 +483,20 @@ fn norm3(v: [f64; 3]) -> f64 {
     (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
 }
 
-/// Generic surface-traction integrator over a single triangular face.
+/// Generic surface-traction integrator over a single face element.
 ///
 /// Computes `w_i = Σ_q N_i(q.coord) · |t_ξ × t_η|(q) · q.weight` for each
 /// face node `i` using the caller-supplied quadrature rule `quad` and shape /
 /// gradient functions `shape_fn` / `grad_fn`, then scatters
 /// `f[3 * connectivity[i] + α] += w_i * traction[α]`.
+///
+/// Drives all face shapes — the triangle path (`P1Tri`/`P2Tri`) and the
+/// quadrilateral path (`P1Quad`) both reduce to this single helper. The area-
+/// element `|t_ξ × t_η|` math and scatter step are identical regardless of
+/// the reference shape, since both triangle and quad reference geometries
+/// produce a 3D physical surface from a 2D `(ξ, η)` reference parameter
+/// space. The shape/grad/quad inputs encode the per-face-shape geometry and
+/// quadrature; the integrator itself is shape-agnostic.
 ///
 /// # Panics (unconditional, Task-2544 contract-explicitness convention)
 ///
@@ -384,9 +509,9 @@ fn integrate_face_generic<const N: usize>(
     connectivity: &[usize],
     phys_nodes: &[[f64; 3]],
     traction: [f64; 3],
-    quad: &[TriQuadPoint],
-    shape_fn: impl Fn(TriRefCoord) -> [f64; N],
-    grad_fn: impl Fn(TriRefCoord) -> [[f64; 2]; N],
+    quad: &[FaceQuadPoint],
+    shape_fn: impl Fn(FaceRefCoord) -> [f64; N],
+    grad_fn: impl Fn(FaceRefCoord) -> [[f64; 2]; N],
 ) {
     assert_eq!(
         connectivity.len(),
@@ -448,9 +573,9 @@ fn integrate_face_generic<const N: usize>(
     }
 }
 
-/// Apply a uniform surface traction over a single triangular face.
+/// Apply a uniform surface traction over a single face.
 ///
-/// Computes `∫_Γ N^T t dA` via triangle quadrature, using the surface area
+/// Computes `∫_Γ N^T t dA` via face quadrature, using the surface area
 /// element `|∂x/∂ξ × ∂x/∂η|` built from the face's physical-node coordinates.
 /// Accumulates the result into `f`.
 ///
@@ -463,6 +588,11 @@ fn integrate_face_generic<const N: usize>(
 ///   curved P2 faces the Jacobian `|t_ξ × t_η|` is non-polynomial and the
 ///   3-point rule is approximate; this situation does not arise in the standard
 ///   FEA practice of straight-edged tetrahedral meshes.
+/// - `FaceOrder::P1Quad` — 4-node bilinear quadrilateral (hex face or wedge
+///   side face) in canonical Hughes/Gmsh hex8 bottom-face order, 2×2
+///   Gauss-Legendre quadrature on the reference cube face `[-1, 1]²`
+///   (degree-3-per-axis exact for the bilinear-shape × constant-Jacobian
+///   integrand).
 ///
 /// # Additive semantics
 ///
@@ -471,7 +601,7 @@ fn integrate_face_generic<const N: usize>(
 /// # Panics
 ///
 /// - `connectivity.len()` does not match the face node count (3 for P1Tri,
-///   6 for P2Tri).
+///   6 for P2Tri, 4 for P1Quad).
 /// - `phys_nodes.len()` does not match.
 /// - `f.len() % 3 != 0`.
 /// - Any connectivity entry is `>= f.len() / 3`.
@@ -488,7 +618,7 @@ pub fn apply_traction_load(
             connectivity,
             phys_nodes,
             traction,
-            TRI_P1_QUAD,
+            TRI_P1_QUADRATURE,
             tri_p1_shape,
             |_| TRI_P1_GRADS,
         ),
@@ -497,9 +627,18 @@ pub fn apply_traction_load(
             connectivity,
             phys_nodes,
             traction,
-            TRI_P2_QUAD,
+            TRI_P2_QUADRATURE,
             tri_p2_shape,
             tri_p2_grads,
+        ),
+        FaceOrder::P1Quad => integrate_face_generic(
+            f,
+            connectivity,
+            phys_nodes,
+            traction,
+            QUAD_P1_QUADRATURE,
+            quad_p1_shape,
+            quad_p1_grads,
         ),
     }
 }
@@ -1167,6 +1306,250 @@ mod tests {
     }
 
     // =======================================================================
+    // apply_traction_load — P1Quad
+    // =======================================================================
+
+    /// Unit reference quad in the xy-plane with vertices `(-1,-1,0)`,
+    /// `(+1,-1,0)`, `(+1,+1,0)`, `(-1,+1,0)` traversed in the canonical
+    /// Hughes/Gmsh hex8 bottom-face order (counter-clockwise viewed from +ζ).
+    /// Physical area = 2·2 = 4 ⇒ each of 4 nodes receives `area/4 = 1.0` of
+    /// each traction component for unit traction `(1, 2, 3)`. Untouched DOFs
+    /// remain exactly 0.0.
+    #[test]
+    fn apply_traction_p1quad_unit_reference_quad_xy_plane() {
+        let face_phys: [[f64; 3]; 4] = [
+            [-1.0, -1.0, 0.0],
+            [1.0, -1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [-1.0, 1.0, 0.0],
+        ];
+        let conn = [0usize, 1, 2, 3];
+        let mut f = vec![0.0_f64; 18]; // 6 nodes (4 face + 2 untouched)
+        apply_traction_load(&mut f, FaceOrder::P1Quad, &conn, &face_phys, [1.0, 2.0, 3.0]);
+
+        let expected_per_node = 1.0; // area/4 = 4/4
+        let traction = [1.0, 2.0, 3.0];
+        for node in 0..4 {
+            for alpha in 0..3 {
+                let got = f[3 * node + alpha];
+                let expected = expected_per_node * traction[alpha];
+                assert!(
+                    (got - expected).abs() < TOL,
+                    "node {node} axis {alpha}: got {got}, expected {expected}",
+                );
+            }
+        }
+
+        // Untouched DOFs (nodes 4 and 5, indices 12..18) remain exactly 0.0.
+        for i in 12..18 {
+            assert_eq!(f[i], 0.0, "f[{i}] should remain 0.0 (untouched DOF)");
+        }
+    }
+
+    /// P1Quad conservation contract for an arbitrary traction vector.
+    ///
+    /// Reuses the unit reference quad fixture (area = 4) with a non-trivial
+    /// traction `(3.7, -1.2, 0.5)`. Asserts (a) per-axis conservation
+    /// `Σ_node f[3·node + α] == area · traction[α]` within TOL, and (b)
+    /// untouched DOFs remain exactly 0.0. Pins the conservation contract
+    /// independently of the equal-lumping spot check.
+    #[test]
+    fn apply_traction_p1quad_conservation_arbitrary_traction() {
+        let face_phys: [[f64; 3]; 4] = [
+            [-1.0, -1.0, 0.0],
+            [1.0, -1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [-1.0, 1.0, 0.0],
+        ];
+        let conn = [0usize, 1, 2, 3];
+        let traction = [3.7_f64, -1.2, 0.5];
+        let mut f = vec![0.0_f64; 18]; // 6 nodes (4 face + 2 untouched)
+        apply_traction_load(&mut f, FaceOrder::P1Quad, &conn, &face_phys, traction);
+
+        let area = 4.0_f64;
+
+        // (a) Per-axis conservation: Σ f = area · traction.
+        for alpha in 0..3 {
+            let total: f64 = (0..4).map(|n| f[3 * n + alpha]).sum();
+            let expected = area * traction[alpha];
+            assert!(
+                (total - expected).abs() < TOL,
+                "axis {alpha}: total = {total}, expected {expected}",
+            );
+        }
+
+        // (b) Untouched DOFs (nodes 4, 5) remain exactly 0.0.
+        for i in 12..18 {
+            assert_eq!(f[i], 0.0, "f[{i}] should remain 0.0 (untouched DOF)");
+        }
+    }
+
+    /// P1Quad in the yz-plane (rotated out of the xy-plane). Outward normal
+    /// points in +x. Vertices `(0,-1,-1)`, `(0,+1,-1)`, `(0,+1,+1)`, `(0,-1,+1)`
+    /// in canonical CCW-from-outside order, area = 4. Apply traction
+    /// `(3.0, -1.0, 2.0)`. Asserts (a) each node receives `area/4 = 1.0` of
+    /// each traction component, (b) per-axis conservation
+    /// `Σ f = area · traction` holds. Exercises the `|t_ξ × t_η|`
+    /// cross-product on a non-axis-aligned face — mirrors the existing
+    /// `apply_traction_p1tri_rotated_yz_plane_conservation`.
+    #[test]
+    fn apply_traction_p1quad_rotated_yz_plane_conservation() {
+        let face_phys: [[f64; 3]; 4] = [
+            [0.0, -1.0, -1.0],
+            [0.0, 1.0, -1.0],
+            [0.0, 1.0, 1.0],
+            [0.0, -1.0, 1.0],
+        ];
+        let conn = [0usize, 1, 2, 3];
+        let traction = [3.0_f64, -1.0, 2.0];
+        let mut f = vec![0.0_f64; 12]; // 4 nodes × 3 DOFs
+        apply_traction_load(&mut f, FaceOrder::P1Quad, &conn, &face_phys, traction);
+
+        let area = 4.0_f64;
+        let expected_per_node = area / 4.0; // 1.0
+
+        // (a) Each node gets area/4 = 1.0 of each traction component.
+        for node in 0..4 {
+            for alpha in 0..3 {
+                let got = f[3 * node + alpha];
+                let expected = expected_per_node * traction[alpha];
+                assert!(
+                    (got - expected).abs() < TOL,
+                    "node {node} axis {alpha}: got {got}, expected {expected}",
+                );
+            }
+        }
+
+        // (b) Per-axis conservation.
+        for alpha in 0..3 {
+            let total: f64 = (0..4).map(|n| f[3 * n + alpha]).sum();
+            let expected_total = area * traction[alpha];
+            assert!(
+                (total - expected_total).abs() < TOL,
+                "axis {alpha}: total = {total}, expected {expected_total}",
+            );
+        }
+    }
+
+    /// Affinely-mapped quad — a parallelogram in xy with vertices
+    /// `(0,0,0)`, `(2,0,0)`, `(2.5,1,0)`, `(0.5,1,0)`. Base × height = 2 × 1
+    /// ⇒ phys_area = 2. Unit traction along +x. Asserts (a) each of 4 nodes
+    /// receives `area/4 = 0.5` along x within TOL, (b) all y- and z-DOFs are
+    /// exactly 0.0, (c) conservation `Σ f_x = 2.0`. Pins that an affine map
+    /// (constant Jacobian) preserves equal-lumping for P1 quads, independent
+    /// of the rectangular special case.
+    #[test]
+    fn apply_traction_p1quad_sheared_parallelogram_lumps_evenly() {
+        let face_phys: [[f64; 3]; 4] = [
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [2.5, 1.0, 0.0],
+            [0.5, 1.0, 0.0],
+        ];
+        let conn = [0usize, 1, 2, 3];
+        let traction = [1.0_f64, 0.0, 0.0];
+        let mut f = vec![0.0_f64; 12]; // 4 nodes × 3 DOFs
+        apply_traction_load(&mut f, FaceOrder::P1Quad, &conn, &face_phys, traction);
+
+        let area = 2.0_f64;
+        let expected_per_node_x = area / 4.0; // 0.5
+
+        // (a) Each node receives area/4 = 0.5 along x within TOL.
+        for node in 0..4 {
+            let got = f[3 * node];
+            assert!(
+                (got - expected_per_node_x).abs() < TOL,
+                "node {node} x-DOF: got {got}, expected {expected_per_node_x}",
+            );
+        }
+
+        // (b) All y- and z-DOFs are exactly 0.0.
+        for node in 0..4 {
+            assert_eq!(f[3 * node + 1], 0.0, "node {node} y-DOF should be 0.0");
+            assert_eq!(f[3 * node + 2], 0.0, "node {node} z-DOF should be 0.0");
+        }
+
+        // (c) Conservation: Σ f_x = 2.0.
+        let total_x: f64 = (0..4).map(|n| f[3 * n]).sum();
+        assert!(
+            (total_x - area).abs() < TOL,
+            "total f_x = {total_x}, expected {area}",
+        );
+    }
+
+    /// P1Quad with non-contiguous, non-zero-based connectivity `[4, 0, 7, 9]`
+    /// into a 10-node global `f` (length 30). Each local node receives
+    /// `area/4 = 1.0` along x (traction = +x), area = 4 on the canonical
+    /// unit reference quad in the xy-plane. Verifies that the scatter step
+    /// places contributions at the correct global DOF indices and leaves
+    /// all other entries zero. Mirrors `apply_traction_p1tri_non_contiguous_connectivity_scatter`.
+    #[test]
+    fn apply_traction_p1quad_non_contiguous_connectivity_scatter() {
+        let face_phys: [[f64; 3]; 4] = [
+            [-1.0, -1.0, 0.0],
+            [1.0, -1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [-1.0, 1.0, 0.0],
+        ];
+        // Local face nodes 0, 1, 2, 3 → global nodes 4, 0, 7, 9.
+        let conn = [4usize, 0, 7, 9];
+        let traction = [1.0_f64, 0.0, 0.0];
+        let mut f = vec![0.0_f64; 30]; // 10 nodes
+        apply_traction_load(&mut f, FaceOrder::P1Quad, &conn, &face_phys, traction);
+
+        let expected = 1.0_f64; // area/4 = 4/4
+
+        // Global node 4: f[12..15]
+        assert!(
+            (f[12] - expected).abs() < TOL,
+            "f[12] (node 4 x-DOF) = {}, expected {expected}",
+            f[12]
+        );
+        assert_eq!(f[13], 0.0, "f[13] (node 4 y-DOF) should be 0");
+        assert_eq!(f[14], 0.0, "f[14] (node 4 z-DOF) should be 0");
+
+        // Global node 0: f[0..3]
+        assert!(
+            (f[0] - expected).abs() < TOL,
+            "f[0] (node 0 x-DOF) = {}, expected {expected}",
+            f[0]
+        );
+        assert_eq!(f[1], 0.0, "f[1] (node 0 y-DOF) should be 0");
+        assert_eq!(f[2], 0.0, "f[2] (node 0 z-DOF) should be 0");
+
+        // Global node 7: f[21..24]
+        assert!(
+            (f[21] - expected).abs() < TOL,
+            "f[21] (node 7 x-DOF) = {}, expected {expected}",
+            f[21]
+        );
+        assert_eq!(f[22], 0.0, "f[22] (node 7 y-DOF) should be 0");
+        assert_eq!(f[23], 0.0, "f[23] (node 7 z-DOF) should be 0");
+
+        // Global node 9: f[27..30]
+        assert!(
+            (f[27] - expected).abs() < TOL,
+            "f[27] (node 9 x-DOF) = {}, expected {expected}",
+            f[27]
+        );
+        assert_eq!(f[28], 0.0, "f[28] (node 9 y-DOF) should be 0");
+        assert_eq!(f[29], 0.0, "f[29] (node 9 z-DOF) should be 0");
+
+        // All other entries must remain zero.
+        let touched: std::collections::HashSet<usize> = [
+            0, 1, 2, 12, 13, 14, 21, 22, 23, 27, 28, 29,
+        ]
+        .iter()
+        .cloned()
+        .collect();
+        for i in 0..30 {
+            if !touched.contains(&i) {
+                assert_eq!(f[i], 0.0, "f[{i}] should be 0.0 (not a face DOF)");
+            }
+        }
+    }
+
+    // =======================================================================
     // apply_traction_load — contract panics
     // =======================================================================
 
@@ -1204,6 +1587,82 @@ mod tests {
         let conn = [0usize, 1, 99]; // 99 out of range for f.len()/3 = 3
         let mut f = vec![0.0_f64; 9];
         apply_traction_load(&mut f, FaceOrder::P1Tri, &conn, &phys, [0.0; 3]);
+    }
+
+    // P1Quad contract-panic tests — mirror the existing P1Tri / P2Tri set.
+
+    #[test]
+    #[should_panic(expected = "connectivity.len()")]
+    fn apply_traction_p1quad_wrong_connectivity_len() {
+        let phys: [[f64; 3]; 4] = [[0.0; 3]; 4];
+        let conn = [0usize, 1, 2]; // 3 instead of 4
+        let mut f = vec![0.0_f64; 12];
+        apply_traction_load(&mut f, FaceOrder::P1Quad, &conn, &phys, [0.0; 3]);
+    }
+
+    #[test]
+    #[should_panic(expected = "phys_nodes.len()")]
+    fn apply_traction_p1quad_wrong_phys_nodes_len() {
+        let phys: [[f64; 3]; 3] = [[0.0; 3]; 3]; // 3 instead of 4
+        let conn = [0usize, 1, 2, 3];
+        let mut f = vec![0.0_f64; 12];
+        apply_traction_load(&mut f, FaceOrder::P1Quad, &conn, &phys, [0.0; 3]);
+    }
+
+    #[test]
+    #[should_panic(expected = "f.len() = 7")]
+    fn apply_traction_p1quad_f_len_not_multiple_of_3() {
+        let phys: [[f64; 3]; 4] = [[0.0; 3]; 4];
+        let conn = [0usize, 1, 2, 3];
+        let mut f = vec![0.0_f64; 7];
+        apply_traction_load(&mut f, FaceOrder::P1Quad, &conn, &phys, [0.0; 3]);
+    }
+
+    #[test]
+    #[should_panic(expected = "out of range")]
+    fn apply_traction_p1quad_connectivity_out_of_range() {
+        let phys: [[f64; 3]; 4] = [
+            [-1.0, -1.0, 0.0],
+            [1.0, -1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [-1.0, 1.0, 0.0],
+        ];
+        let conn = [0usize, 1, 2, 99]; // 99 out of range for f.len()/3 = 4
+        let mut f = vec![0.0_f64; 12];
+        apply_traction_load(&mut f, FaceOrder::P1Quad, &conn, &phys, [0.0; 3]);
+    }
+
+    /// Second call accumulates rather than overwrites (`+=` semantics)
+    /// for the P1Quad arm — pins that `integrate_face_generic`'s
+    /// scatter step uses `+=` not `=` so two sequential applies of the
+    /// same traction produce a result exactly 2× the single-call value.
+    #[test]
+    fn apply_traction_p1quad_accumulates_on_second_call() {
+        let face_phys: [[f64; 3]; 4] = [
+            [-1.0, -1.0, 0.0],
+            [1.0, -1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [-1.0, 1.0, 0.0],
+        ];
+        let conn = [0usize, 1, 2, 3];
+        let traction = [1.0_f64, 2.0, 3.0];
+
+        let mut f_one = vec![0.0_f64; 12];
+        apply_traction_load(&mut f_one, FaceOrder::P1Quad, &conn, &face_phys, traction);
+
+        let mut f_two = vec![0.0_f64; 12];
+        apply_traction_load(&mut f_two, FaceOrder::P1Quad, &conn, &face_phys, traction);
+        apply_traction_load(&mut f_two, FaceOrder::P1Quad, &conn, &face_phys, traction);
+
+        for i in 0..12 {
+            let expected = 2.0 * f_one[i];
+            assert_eq!(
+                f_two[i].to_bits(),
+                expected.to_bits(),
+                "DOF {i}: f_two = {} but expected 2× f_one = {expected}",
+                f_two[i],
+            );
+        }
     }
 
     // =======================================================================

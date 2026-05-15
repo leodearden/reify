@@ -49,21 +49,21 @@ pub use expr::{
     UnOp,
 };
 pub use geometry::{
-    AttributeHistory, BRepKind, BooleanOpHistoryRecords, BooleanOpParents, BooleanOpParentsError,
-    CapKind, CapabilityDescriptor, DEFAULT_POINT_ON_SHAPE_TOLERANCE_M, DeletedRecord,
-    EdgeCurveKind, ElementOrderTag, ExportError, ExportFormat, FaceSurfaceKind, FeatureId,
-    FeatureTag, FeatureTagTable, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
-    GeometryOp, GeometryQuery, HistoryRecord, KernelAttributeHook, KernelAttributeOutcome,
-    KernelRegistration, LoftOpHistoryRecords, Mesh, ModEntry, Operation, QueryError, ReprKind,
-    Role, StepKind, SweepOpHistoryRecords, TessError, TopologyAttribute, TopologyAttributeTable,
-    VolumeMesh, debug_assert_query_many_invariant,
+    AttributeHistory, AxisSign, BRepKind, BooleanOpHistoryRecords, BooleanOpParents,
+    BooleanOpParentsError, CapKind, CapabilityDescriptor, DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
+    DeletedRecord, EdgeCurveKind, ElementOrderTag, ExportError, ExportFormat, FaceSurfaceKind,
+    FeatureId, FeatureTag, FeatureTagTable, GeometryError, GeometryHandle, GeometryHandleId,
+    GeometryKernel, GeometryOp, GeometryQuery, HistoryRecord, KernelAttributeHook,
+    KernelAttributeOutcome, KernelRegistration, LoftOpHistoryRecords, Mesh, ModEntry, Operation,
+    QueryCapability, QueryError, ReprKind, Role, StepKind, SweepOpHistoryRecords, TessError,
+    TopologyAttribute, TopologyAttributeTable, VolumeMesh, debug_assert_query_many_invariant,
 };
 pub use hash::ContentHash;
 pub use identity::*;
 pub use kernel_validation::{
     BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE,
 };
-pub use node_traits::{NodeArchKind, NodeTraits};
+pub use node_traits::{NodeKind, NodeTraits};
 pub use persistent::PersistentMap;
 pub use provenance::{FieldImportProvenance, SnapshotProvenance};
 pub use source_location::{SourceLocationInfo, byte_offset_to_line_col};

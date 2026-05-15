@@ -12,12 +12,15 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
+use tracing::warn;
+
 use tauri::{Emitter, Manager};
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_gui::commands::AppState;
 use reify_gui::diff::{StateDelta, compute_delta, delta_to_events};
-use reify_gui::engine::EngineSession;
+use reify_gui::engine::{AutoResolveEmitter, EngineSession};
+use reify_gui::event_bus::emit_typed;
 use reify_gui::lsp_bridge::LspBridge;
 use reify_gui::types::EvaluationStatus;
 use reify_gui::watcher::FileWatcher;
@@ -81,6 +84,31 @@ impl NotificationSink for TauriNotificationSink {
                 }),
             )
             .ok();
+    }
+}
+
+/// Emits auto-resolve lifecycle events to the frontend via Tauri.
+struct TauriAutoResolveEmitter {
+    app: tauri::AppHandle,
+}
+
+impl AutoResolveEmitter for TauriAutoResolveEmitter {
+    fn start(&self) {
+        if let Err(e) = emit_typed(&self.app, "auto-resolve-start", &()) {
+            warn!("auto-resolve emit 'auto-resolve-start' failed: {}", e);
+        }
+    }
+
+    fn iteration(&self, iter: reify_gui::types::AutoResolveIteration) {
+        if let Err(e) = emit_typed(&self.app, "auto-resolve-iteration", &iter) {
+            warn!("auto-resolve emit 'auto-resolve-iteration' failed: {}", e);
+        }
+    }
+
+    fn complete(&self) {
+        if let Err(e) = emit_typed(&self.app, "auto-resolve-complete", &()) {
+            warn!("auto-resolve emit 'auto-resolve-complete' failed: {}", e);
+        }
     }
 }
 
@@ -548,6 +576,15 @@ fn main() {
             });
             let lsp_bridge = LspBridge::with_sink(sink);
             app.manage(lsp_bridge);
+
+            // Install the auto-resolve emitter so the frontend receives lifecycle events
+            // whenever the constraint solver resolves auto parameters.
+            let emitter = Arc::new(TauriAutoResolveEmitter {
+                app: app.handle().clone(),
+            });
+            if let Ok(mut session) = engine_arc.lock() {
+                session.set_auto_resolve_emitter(emitter);
+            }
 
             // Always create DebugBridge (inert when debug disabled — no JS listener, no HTTP server)
             let debug_bridge = Arc::new(reify_gui::debug::DebugBridge::new(app.handle().clone()));

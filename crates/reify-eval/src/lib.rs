@@ -84,7 +84,7 @@ pub use kernel_registry::{
     collect_registry, pick_lexmin_brep_kernel, pick_lexmin_kernel, registry,
 };
 pub use primitive_attribute_seed::seed_primitive_attributes;
-pub use realization_cache::RealizationCache;
+pub use realization_cache::{NO_OPTIONS, RealizationCache};
 pub use test_runner::{TestResult, TestStatus, run_tests};
 pub use topology_attribute_propagation::{
     LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M, detect_local_index_reassignment_diagnostics,

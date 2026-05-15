@@ -1,6 +1,8 @@
 // EvaluationGraph: typed graph nodes backed by PersistentMap.
 
 use std::collections::HashSet;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use reify_compiler::{
     CompiledConnection, CompiledForallTemplate, CompiledGeometryOp, TopologyTemplate,
@@ -8,7 +10,7 @@ use reify_compiler::{
 };
 use reify_types::{
     CompiledExpr, ComputeNodeId, ConstraintNodeId, ContentHash, OpaqueState, PersistentMap,
-    RealizationNodeId, ResolutionNodeId, Type, Value, ValueCellId, ValueMap,
+    RealizationNodeId, ReprKind, ResolutionNodeId, Type, Value, ValueCellId, ValueMap,
 };
 
 /// A value cell node in the evaluation graph.
@@ -44,6 +46,11 @@ pub struct RealizationNodeData {
     pub id: RealizationNodeId,
     pub operations: Vec<CompiledGeometryOp>,
     pub content_hash: ContentHash,
+    /// The repr-kind produced by the kernel adapter that last executed this realization.
+    /// Initialized to `ReprKind::BRep` at graph-construction time (v0.2 OCCT-only baseline).
+    /// Task ε (3436) will write the per-op dispatcher choice at execution time.
+    /// NOT included in `content_hash` — this is dispatcher/cache metadata, not identity.
+    pub produced_repr: ReprKind,
 }
 
 /// A resolution node in the evaluation graph.
@@ -58,14 +65,44 @@ pub struct ResolutionNodeData {
     pub content_hash: ContentHash,
 }
 
-/// Placeholder for the in-flight cancellation handle carried by a running
-/// ComputeNode. P3.1 only ships this unit-type stand-in so `ComputeNodeData`
-/// has a stable field shape; P3.5 replaces it with the real cooperative-
-/// cancellation type (likely `Arc<AtomicBool>` per PRD §"Lifecycle: pending
-/// + cancellation"). Kept module-private (not re-exported) so the eventual
-///   real type can land without an API break.
-#[derive(Debug, Clone, Default)]
-pub struct CancellationHandle;
+/// Cooperative-cancellation handle for an in-flight ComputeNode dispatch.
+///
+/// A thin wrapper around `Arc<AtomicBool>`. Cloning shares the same
+/// underlying flag, so cancelling via any clone propagates to all holders
+/// (including graph snapshots taken mid-dispatch). See
+/// `docs/prds/v0_3/compute-node-contract.md` §2 for the full contract.
+///
+/// Both `cancel()` and `is_cancelled()` use `Ordering::Relaxed`: the flag is
+/// a one-shot monotonic signal (false → true; never resets within a handle's
+/// lifetime). There is no other memory operation whose ordering needs to be
+/// enforced relative to this flag, so stronger orderings buy nothing.
+///
+/// Module-private (not re-exported from `lib.rs`) until task γ (3422) adds
+/// the dispatch-registry consumer and export.
+#[derive(Debug, Clone)]
+pub struct CancellationHandle {
+    inner: Arc<AtomicBool>,
+}
+
+#[allow(clippy::new_without_default)] // Default intentionally omitted: keeps API minimal and leaves room to swap inner to a non-Default-able primitive (e.g. tokio_util::sync::CancellationToken) — see compute-node-contract.md §2
+impl CancellationHandle {
+    /// Create a new, non-cancelled handle.
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Signal cancellation. All clones of this handle will observe the change.
+    pub fn cancel(&self) {
+        self.inner.store(true, Ordering::Relaxed);
+    }
+
+    /// Returns `true` if `cancel()` has been called on this handle or any clone.
+    pub fn is_cancelled(&self) -> bool {
+        self.inner.load(Ordering::Relaxed)
+    }
+}
 
 /// A compute node in the evaluation graph.
 /// Parallel to RealizationNodeData / ResolutionNodeData. See
@@ -97,11 +134,13 @@ pub struct ComputeNodeData {
 // None on clone. Warm state is transient — best-effort recovery is the
 // existing WarmStatePool contract.
 //
-// `running` is propagated by value here because P3.1's `CancellationHandle`
-// is a unit-struct placeholder that is trivially Clone. When P3.5 replaces it
-// with the real type (likely `Arc<AtomicBool>`), the Clone impl MUST be
-// revisited: the desired semantics for an in-flight handle on clone — share
-// via Arc, reset to None, or cancel-on-clone — are a P3.5 lifecycle decision.
+// `running` is Arc-shared on clone: `CancellationHandle` wraps `Arc<AtomicBool>`,
+// so `self.running.clone()` produces a second handle pointing at the same flag.
+// A graph snapshot taken mid-dispatch therefore represents the same in-flight
+// operation; cancelling via either snapshot propagates through the shared channel.
+// (Decision recorded in task 3421: Arc-sharing is preferred over reset-to-None
+// because resetting would silently orphan the cancellation channel, and
+// cancel-on-clone is a footgun for callers that snapshot for read-only inspection.)
 impl Clone for ComputeNodeData {
     fn clone(&self) -> Self {
         Self {
@@ -285,6 +324,9 @@ impl EvaluationGraph {
                     id: realization.id.clone(),
                     operations: realization.operations.clone(),
                     content_hash: id_hash.combine(ops_hash),
+                    // v0.2 default — OCCT-only baseline; task ε (3436) writes the
+                    // per-op dispatcher choice at execution time.
+                    produced_repr: ReprKind::BRep,
                 };
                 graph.realizations.insert(realization.id.clone(), node);
             }
@@ -897,6 +939,7 @@ mod tests {
             id: id.clone(),
             operations: ops,
             content_hash: hash,
+            produced_repr: reify_types::ReprKind::BRep,
         };
 
         assert_eq!(node.id, id);
@@ -909,6 +952,28 @@ mod tests {
         let cloned = node.clone();
         assert_eq!(cloned.id, node.id);
         assert_eq!(cloned.operations.len(), 1);
+    }
+
+    #[test]
+    fn realization_node_data_carries_produced_repr_brep_default() {
+        use reify_test_support::TopologyTemplateBuilder;
+        use reify_types::ReprKind;
+
+        // from_templates must initialize produced_repr to ReprKind::BRep (v0.2 OCCT default).
+        let template = TopologyTemplateBuilder::new("A")
+            .realization("A", 0, vec![])
+            .build();
+        let graph = EvaluationGraph::from_templates(&[template]);
+        let r_node = graph
+            .realizations
+            .get(&RealizationNodeId::new("A", 0))
+            .unwrap();
+        assert_eq!(
+            r_node.produced_repr,
+            ReprKind::BRep,
+            "from_templates must initialize produced_repr to ReprKind::BRep \
+             (v0.2 default; task ε (3436) wires the per-op dispatcher choice)"
+        );
     }
 
     #[test]
@@ -1000,7 +1065,7 @@ mod tests {
             cached_result: Some(Value::Real(1.5)),
             result_content_hash: Some(ContentHash::of_str("rh")),
             opaque_state: Some(OpaqueState::new(42i32, 4)),
-            running: Some(CancellationHandle),
+            running: Some(CancellationHandle::new()),
             output_value_cells: vec![ValueCellId::new("Bracket", "stress")],
         };
 
@@ -1008,7 +1073,7 @@ mod tests {
 
         // Manual-Clone contract: opaque_state is transient, dropped to None
         assert!(cloned.opaque_state.is_none());
-        // CancellationHandle placeholder IS Clone, so running is preserved
+        // CancellationHandle IS Clone (Arc-shared flag); running is preserved
         assert!(cloned.running.is_some());
         // Other fields are preserved
         assert_eq!(cloned.computation_id, ComputeNodeId::new("Bracket", 0));
@@ -1292,6 +1357,7 @@ mod tests {
             id: rnid.clone(),
             operations: vec![],
             content_hash: ContentHash::of_str("r0"),
+            produced_repr: reify_types::ReprKind::BRep,
         };
         graph.realizations.insert(rnid.clone(), rnode);
         assert_eq!(graph.realizations.len(), 1);
@@ -1752,6 +1818,7 @@ mod tests {
                 id: RealizationNodeId::new("X", 0),
                 operations: vec![],
                 content_hash: hash_h,
+                produced_repr: reify_types::ReprKind::BRep,
             },
         );
 
@@ -2456,6 +2523,49 @@ mod tests {
             g1.topology_fingerprint(),
             g2.topology_fingerprint(),
             "connection insertion order must not affect fingerprint",
+        );
+    }
+
+    // --- CancellationHandle API tests (PRD §8 task β observable signal) ---
+
+    #[test]
+    fn cancellation_handle_new_is_not_cancelled() {
+        let handle = CancellationHandle::new();
+        assert!(!handle.is_cancelled(), "fresh handle must not be cancelled");
+    }
+
+    #[test]
+    fn cancellation_handle_cancel_makes_is_cancelled_true() {
+        let handle = CancellationHandle::new();
+        handle.cancel();
+        assert!(
+            handle.is_cancelled(),
+            "handle must be cancelled after cancel()"
+        );
+    }
+
+    #[test]
+    fn cancellation_handle_clones_share_cancellation_state() {
+        let original = CancellationHandle::new();
+        let clone = original.clone();
+        clone.cancel();
+        assert!(
+            original.is_cancelled(),
+            "cancelling a clone must be visible on the original (Arc-sharing)"
+        );
+    }
+
+    #[test]
+    fn cancellation_handle_thread_safety_cancel_from_spawned_thread() {
+        let handle = CancellationHandle::new();
+        let clone = handle.clone();
+        let t = std::thread::spawn(move || {
+            clone.cancel();
+        });
+        t.join().expect("spawned thread panicked");
+        assert!(
+            handle.is_cancelled(),
+            "cancellation from spawned thread must be visible on the main-thread handle"
         );
     }
 }

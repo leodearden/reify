@@ -507,6 +507,42 @@ fn remaining_five_traits_exist() {
     );
 }
 
+// ─── FractureTough fracture_toughness member type (task #3115) ──────────────
+
+/// Task #3115: `FractureTough.fracture_toughness` is the canonical
+/// fracture-toughness alias `FractureToughness` (Pa·√m), the fractional-Length
+/// composite. The audit doc flagged this as blocked-composite pending the
+/// composite-dim aliases delivered in this task; pin the dimension here so a
+/// future loosening would fail loudly.
+#[test]
+fn fracture_tough_member_type_is_fracture_toughness_dimension() {
+    let module = load_stdlib_module();
+
+    let fracture = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "FractureTough")
+        .expect("expected 'FractureTough' trait in compiled module");
+
+    let req = fracture
+        .required_members
+        .iter()
+        .find(|r| r.name == "fracture_toughness")
+        .expect("FractureTough should have 'fracture_toughness' member");
+
+    match &req.kind {
+        RequirementKind::Param(ty) => assert_eq!(
+            *ty,
+            Type::Scalar {
+                dimension: DimensionVector::FRACTURE_TOUGHNESS,
+            },
+            "fracture_toughness should be Scalar{{FRACTURE_TOUGHNESS}}, got {:?}",
+            ty
+        ),
+        other => panic!("fracture_toughness should be Param, got {:?}", other),
+    }
+}
+
 // ─── four mechanical traits refine MaterialSpec ───────────────────────────────
 
 /// FatigueRated, FractureTough, ImpactResistant, Damping must each declare
@@ -558,7 +594,7 @@ fn four_refining_traits_without_material_members_is_conformance_error() {
         ("FatigueRated", "    param endurance_limit : Real = 500.0"),
         (
             "FractureTough",
-            "    param fracture_toughness : Real = 50.0",
+            "    param fracture_toughness : FractureToughness = 50.0 * 1Pa * sqrt(1m)",
         ),
         ("ImpactResistant", "    param impact_energy : Real = 30.0"),
         (
@@ -616,7 +652,7 @@ fn four_refining_traits_with_all_material_members_conform_cleanly() {
         ("FatigueRated", "    param endurance_limit : Real = 500.0"),
         (
             "FractureTough",
-            "    param fracture_toughness : Real = 50.0",
+            "    param fracture_toughness : FractureToughness = 50.0 * 1Pa * sqrt(1m)",
         ),
         ("ImpactResistant", "    param impact_energy : Real = 30.0"),
         (

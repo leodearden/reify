@@ -75,8 +75,10 @@ pub mod eligibility;
 pub mod laplacian;
 pub mod options;
 pub mod quality;
+pub mod stats;
 pub mod types;
 
+pub use stats::{MorphStats, record_morph_attempt, record_rejection, record_remesh, snapshot};
 pub use boundary::{
     BoundaryAssociation, NodeAttachment, ProjectionFailure, Projector, ProjectorPayload,
     compute_dirichlet_bcs,
@@ -163,7 +165,7 @@ mod tests {
     use reify_compiler::ValueCellKind;
     use reify_eval::graph::{EvaluationGraph, RealizationNodeData, ValueCellNode};
     use reify_types::{
-        CapKind, ContentHash, FeatureId, GeometryHandleId, RealizationNodeId, Role,
+        CapKind, ContentHash, FeatureId, GeometryHandleId, RealizationNodeId, ReprKind, Role,
         TopologyAttribute, TopologyAttributeTable, Type, Value, ValueCellId, ValueMap,
     };
 
@@ -193,6 +195,7 @@ mod tests {
                 id: rnid,
                 operations: Vec::new(),
                 content_hash: ContentHash::of_str("diverge"),
+                produced_repr: ReprKind::BRep,
             },
         );
         g

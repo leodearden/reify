@@ -1,8 +1,9 @@
 //! Composable execution-trait flags for node-kind classification.
 //!
 //! Implements the [`NodeTraits`] bitflag newtype (four trait flags from §7.6 "Node Traits")
-//! and the [`NodeArchKind`] enum (seven-kind taxonomy from §2.1 "Node Taxonomy (7 Types)");
-//! see `docs/reify-implementation-architecture.md`.
+//! and the [`NodeKind`] enum (five-variant canonical taxonomy mirroring `NodeId`'s 5 variants
+//! in `reify-eval`); see `docs/reify-implementation-architecture.md` and
+//! `docs/prds/v0_3/node-traits-unification.md`.
 //!
 //! ### Trait semantics (§7.6 table)
 //!
@@ -135,65 +136,50 @@ impl Not for NodeTraits {
     }
 }
 
-/// Architectural node-kind taxonomy used to carry [`NodeTraits`] defaults.
+/// Canonical node-kind discriminant: mirrors the 5 variants of `NodeId` in `reify-eval`.
 ///
-/// Declares the seven node kinds from `docs/reify-implementation-architecture.md
-/// §2.1 "Node Taxonomy (7 Types)"` and their documented default [`NodeTraits`] sets
-/// (trait flags defined in §7.6 "Node Traits").
+/// Carries the architecture-specified default [`NodeTraits`] sets for each kind
+/// (trait flags from §7.6 "Node Traits"); see `docs/reify-implementation-architecture.md`
+/// §2.1, §7.6, and `docs/prds/v0_3/node-traits-unification.md §4`.
 ///
-/// **Note on naming:** A 4-variant runtime/instance taxonomy also named `NodeKind`
-/// exists in `reify_runtime::commitment` (introduced by task 2353 to key per-type
-/// commitment policy overrides under §7.3). This enum is intentionally distinct:
-/// it operates at the *type/architectural* level, includes three kinds
-/// (`SchemaNode`, `SourceNode`, `ComputeNode`) whose Rust struct counterparts do not
-/// yet exist in the codebase, and lives in `reify-types` (a lower layer that
-/// `reify-runtime` depends on — the dependency arrow is `reify-runtime` → `reify-types`,
-/// so this crate cannot reference `commitment::NodeKind`). Once future tasks introduce
-/// the missing struct counterparts, a follow-up pass can decide whether to converge
-/// the two enums.
+/// `NodeKind` lives in `reify-types` so that any crate depending on `reify-types`
+/// can use it without pulling in `reify-eval`. The conversion bridge
+/// `impl From<&NodeId> for NodeKind` is hosted in `reify-eval` (the only crate where
+/// both types are visible without an orphan-rule violation — see PRD §4).
+///
+/// `reify-runtime` re-exports this type via `pub use reify_types::NodeKind`, keeping
+/// all existing `reify_runtime::commitment::NodeKind` call sites working without change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum NodeArchKind {
-    /// A scalar value cell. Default traits: [`NodeTraits::IMMEDIATE`].
+pub enum NodeKind {
+    /// A value cell node. Default traits: [`NodeTraits::IMMEDIATE`].
     ///
-    /// See §2.1 "Node Taxonomy (7 Types)" and §7.6 "Node Traits" in
+    /// See §2.1 "Node Taxonomy" and §7.6 "Node Traits" in
     /// `docs/reify-implementation-architecture.md`.
-    ValueCellScalar,
-    /// A schema node (structural type declaration). Default traits: [`NodeTraits::IMMEDIATE`].
-    ///
-    /// See §2.1 "Node Taxonomy (7 Types)" and §7.6 "Node Traits" in
-    /// `docs/reify-implementation-architecture.md`.
-    /// (No corresponding Rust struct in the codebase yet.)
-    SchemaNode,
-    /// A source/input node. Default traits: [`NodeTraits::IMMEDIATE`].
-    ///
-    /// See §2.1 "Node Taxonomy (7 Types)" and §7.6 "Node Traits" in
-    /// `docs/reify-implementation-architecture.md`.
-    /// (No corresponding Rust struct in the codebase yet.)
-    SourceNode,
-    /// A resolution node. Default traits: `WARM_STARTABLE | COMMITTABLE`.
-    ///
-    /// See §2.1 "Node Taxonomy (7 Types)" and §7.6 "Node Traits" in
-    /// `docs/reify-implementation-architecture.md`.
-    ResolutionNode,
-    /// A realization node. Default traits: `WARM_STARTABLE | COMMITTABLE`.
-    ///
-    /// See §2.1 "Node Taxonomy (7 Types)" and §7.6 "Node Traits" in
-    /// `docs/reify-implementation-architecture.md`.
-    RealizationNode,
-    /// A compute node. Default traits: `WARM_STARTABLE | COMMITTABLE`.
-    ///
-    /// See §2.1 "Node Taxonomy (7 Types)" and §7.6 "Node Traits" in
-    /// `docs/reify-implementation-architecture.md`.
-    /// (No corresponding Rust struct in the codebase yet.)
-    ComputeNode,
+    Value,
     /// A constraint node. Default traits: empty (no flags set).
     ///
-    /// See §2.1 "Node Taxonomy (7 Types)" and §7.6 "Node Traits" in
+    /// See §2.1 "Node Taxonomy" and §7.6 "Node Traits" in
     /// `docs/reify-implementation-architecture.md`.
-    ConstraintNode,
+    Constraint,
+    /// A realization (geometry output) node. Default traits: `WARM_STARTABLE | COMMITTABLE`.
+    ///
+    /// See §2.1 "Node Taxonomy" and §7.6 "Node Traits" in
+    /// `docs/reify-implementation-architecture.md`.
+    Realization,
+    /// A resolution (constraint solver) node. Default traits: `WARM_STARTABLE | COMMITTABLE`.
+    ///
+    /// See §2.1 "Node Taxonomy" and §7.6 "Node Traits" in
+    /// `docs/reify-implementation-architecture.md`.
+    Resolution,
+    /// A compute node (e.g. an @optimized FEA/solver computation). Default traits:
+    /// `WARM_STARTABLE | COMMITTABLE`.
+    ///
+    /// See §2.1 "Node Taxonomy" and §7.6 "Node Traits" in
+    /// `docs/reify-implementation-architecture.md`.
+    Compute,
 }
 
-impl NodeArchKind {
+impl NodeKind {
     /// Returns the architecture-specified default [`NodeTraits`] for this node kind.
     ///
     /// ## Derivation
@@ -209,33 +195,27 @@ impl NodeArchKind {
     /// | §7.3 "Task Commitment Policy" | May run past commitment thresholds → `COMMITTABLE` |
     /// | §7.6 "Node Traits" | Authoritative definition of the four trait flags |
     ///
-    /// **`IMMEDIATE` kinds** (`ValueCellScalar`, `SchemaNode`, `SourceNode`): §3.3 classifies
-    /// these as P0/P1-fast — cheap, sub-frame reads evaluable inline. No warm-start or
-    /// commitment machinery is required.
+    /// **`IMMEDIATE` kinds** (`Value`): §3.3 classifies value cell reads as P0/P1-fast —
+    /// cheap, sub-frame reads evaluable inline. No warm-start or commitment machinery is
+    /// required.
     ///
-    /// **`WARM_STARTABLE | COMMITTABLE` kinds** (`ResolutionNode`, `RealizationNode`,
-    /// `ComputeNode`): §4.1 targets these as the long-running iterative/incremental
-    /// computations that benefit from resuming a saved warm state. §7.3 notes that they
-    /// may run past a commitment threshold and must therefore finish against their original
-    /// snapshot, justifying `COMMITTABLE`.
+    /// **`WARM_STARTABLE | COMMITTABLE` kinds** (`Resolution`, `Realization`, `Compute`):
+    /// §4.1 targets these as the long-running iterative/incremental computations that
+    /// benefit from resuming a saved warm state. §7.3 notes that they may run past a
+    /// commitment threshold and must therefore finish against their original snapshot,
+    /// justifying `COMMITTABLE`.
     ///
-    /// **`ConstraintNode` (empty)**: Predicate evaluation is cheap but §7.6 does not yet
+    /// **`Constraint` (empty)**: Predicate evaluation is cheap but §7.6 does not yet
     /// classify it under any of the four traits. Assigning `IMMEDIATE` would conflate it
     /// with sub-frame `ValueCell` reads; leaving the set empty is the conservative choice
-    /// until a downstream scheduler task formalises the policy.
+    /// until a downstream scheduler task formalises the policy (PRD §12 Q-1).
     pub const fn default_traits(self) -> NodeTraits {
         match self {
-            NodeArchKind::ValueCellScalar => NodeTraits::IMMEDIATE,
-            NodeArchKind::SchemaNode => NodeTraits::IMMEDIATE,
-            NodeArchKind::SourceNode => NodeTraits::IMMEDIATE,
-            NodeArchKind::ResolutionNode => {
-                NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE)
-            }
-            NodeArchKind::RealizationNode => {
-                NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE)
-            }
-            NodeArchKind::ComputeNode => NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE),
-            NodeArchKind::ConstraintNode => NodeTraits::empty(),
+            NodeKind::Value => NodeTraits::IMMEDIATE,
+            NodeKind::Constraint => NodeTraits::empty(),
+            NodeKind::Realization => NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE),
+            NodeKind::Resolution => NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE),
+            NodeKind::Compute => NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE),
         }
     }
 }
@@ -387,75 +367,55 @@ mod tests {
         assert_eq!(FOO, NodeTraits::WARM_STARTABLE | NodeTraits::COMMITTABLE);
     }
 
-    // --- Step 7: NodeArchKind variants and default_traits() ---
+    // --- NodeKind (canonical 5-variant enum, mirrors NodeId) ---
 
     #[test]
-    fn node_arch_kind_variants_are_distinct() {
-        use NodeArchKind::*;
-        assert_ne!(ValueCellScalar, SchemaNode);
-        assert_ne!(ValueCellScalar, SourceNode);
-        assert_ne!(ValueCellScalar, ResolutionNode);
-        assert_ne!(ValueCellScalar, RealizationNode);
-        assert_ne!(ValueCellScalar, ComputeNode);
-        assert_ne!(ValueCellScalar, ConstraintNode);
-        assert_ne!(SchemaNode, SourceNode);
-        assert_ne!(ResolutionNode, RealizationNode);
-        assert_ne!(RealizationNode, ComputeNode);
+    fn node_kind_variants_are_distinct() {
+        use NodeKind::*;
+        assert_ne!(Value, Constraint);
+        assert_ne!(Value, Realization);
+        assert_ne!(Value, Resolution);
+        assert_ne!(Value, Compute);
+        assert_ne!(Constraint, Realization);
+        assert_ne!(Constraint, Resolution);
+        assert_ne!(Constraint, Compute);
+        assert_ne!(Realization, Resolution);
+        assert_ne!(Realization, Compute);
+        assert_ne!(Resolution, Compute);
     }
 
     #[test]
-    fn value_cell_scalar_default_traits() {
-        assert_eq!(
-            NodeArchKind::ValueCellScalar.default_traits(),
-            NodeTraits::IMMEDIATE
-        );
+    fn node_kind_value_default_traits() {
+        assert_eq!(NodeKind::Value.default_traits(), NodeTraits::IMMEDIATE);
     }
 
     #[test]
-    fn schema_node_default_traits() {
-        assert_eq!(
-            NodeArchKind::SchemaNode.default_traits(),
-            NodeTraits::IMMEDIATE
-        );
+    fn node_kind_constraint_default_traits() {
+        // Q-1 resolution: empty, preserving the prior ConstraintNode default-traits behavior (now NodeKind::Constraint).
+        assert_eq!(NodeKind::Constraint.default_traits(), NodeTraits::empty());
     }
 
     #[test]
-    fn source_node_default_traits() {
+    fn node_kind_resolution_default_traits() {
         assert_eq!(
-            NodeArchKind::SourceNode.default_traits(),
-            NodeTraits::IMMEDIATE
-        );
-    }
-
-    #[test]
-    fn resolution_node_default_traits() {
-        assert_eq!(
-            NodeArchKind::ResolutionNode.default_traits(),
+            NodeKind::Resolution.default_traits(),
             NodeTraits::WARM_STARTABLE | NodeTraits::COMMITTABLE
         );
     }
 
     #[test]
-    fn realization_node_default_traits() {
+    fn node_kind_realization_default_traits() {
         assert_eq!(
-            NodeArchKind::RealizationNode.default_traits(),
+            NodeKind::Realization.default_traits(),
             NodeTraits::WARM_STARTABLE | NodeTraits::COMMITTABLE
         );
     }
 
     #[test]
-    fn compute_node_default_traits() {
+    fn node_kind_compute_default_traits() {
         assert_eq!(
-            NodeArchKind::ComputeNode.default_traits(),
+            NodeKind::Compute.default_traits(),
             NodeTraits::WARM_STARTABLE | NodeTraits::COMMITTABLE
-        );
-    }
-
-    #[test]
-    fn constraint_node_default_traits() {
-        assert_eq!(
-            NodeArchKind::ConstraintNode.default_traits(),
-            NodeTraits::empty()
         );
     }
 }
