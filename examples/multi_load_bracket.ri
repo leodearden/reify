@@ -70,7 +70,7 @@ structure MultiLoadBracket {
 
     let transport = LoadCase(
         name:     "transport",
-        loads:    [gravity(5 * STANDARD_GRAVITY())],   // 5 g downward; STANDARD_GRAVITY = 9.80665 m/s² (std.units)
+        loads:    [gravity(5 * STANDARD_GRAVITY())],   // 5 g downward; see STANDARD_GRAVITY() in std.units
         supports: [mount],
     )
 
