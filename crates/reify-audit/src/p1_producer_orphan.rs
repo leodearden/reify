@@ -39,6 +39,18 @@ fn is_test_path(p: &str) -> bool {
         || p.contains(".spec.")  // JS/TS: foo.spec.ts
 }
 
+/// Returns `true` when some `pending`/`in-progress` task's `consumer_ref`
+/// points at `producer_prd` — i.e. a downstream consumer is already queued,
+/// so the producer's symbols are not truly orphaned (design §5 P1
+/// false-positive guard). Status strings follow Taskmaster's canonical form
+/// (`in-progress`, hyphenated); the T-4 CLI normalizes at the boundary.
+fn has_pending_consumer(ctx: &AuditContext, producer_prd: &str) -> bool {
+    ctx.task_metadata.values().any(|t| {
+        matches!(t.status.as_str(), "pending" | "in-progress")
+            && t.consumer_ref.as_deref() == Some(producer_prd)
+    })
+}
+
 // G-allow: F-infra T-4 CLI consumer (crates/reify-audit-cli) — design pinned in docs/architecture-audit/f-infra-design.md
 pub fn check(ctx: &AuditContext) -> Vec<Finding> {
     let mut findings = Vec::new();
@@ -59,7 +71,31 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
             continue;
         };
 
+        // Per-task guard: foundation/scaffold task — its symbols are
+        // intentionally not yet consumed (design §5 P1 false-positive guard).
+        if meta.audit_foundation == Some(true) {
+            continue;
+        }
+        // Per-task guard: a pending/in-progress consumer task already
+        // references this producer's PRD (design §5 P1 false-positive guard).
+        if let Some(prd) = meta.prd.as_deref()
+            && has_pending_consumer(ctx, prd)
+        {
+            continue;
+        }
+
         for symbol in ctx.jcodemunch.get_changed_symbols("main", done_at) {
+            // Per-symbol guard: stdlib `.ri` defs are scope-excluded — every
+            // `structure_def` is technically "orphan" until something calls
+            // it (design §5 P1 invariant).
+            if symbol.file.starts_with("crates/reify-stdlib/") {
+                continue;
+            }
+            // Per-symbol guard: intentional-orphan opt-outs —
+            // `#[allow(dead_code)]` / `#[cfg(test)]` (design §5 P1).
+            if symbol.has_allow_dead_code || symbol.has_cfg_test {
+                continue;
+            }
             // A non-test workspace caller proves the symbol is consumed —
             // suppress (design §5 P1: refs filtered to non-`*/tests/*`).
             let has_non_test_caller = ctx
