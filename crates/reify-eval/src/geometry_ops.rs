@@ -1798,7 +1798,7 @@ pub(crate) fn try_eval_topology_selector(
     expr: &reify_types::CompiledExpr,
     named_steps: &HashMap<String, GeometryHandleId>,
     values: &reify_types::ValueMap,
-    kernel: &dyn reify_types::GeometryKernel,
+    kernel: &mut dyn reify_types::GeometryKernel,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<reify_types::Value> {
     // (1) Must be a FunctionCall — anything else is unsupported.
@@ -1951,7 +1951,7 @@ fn resolve_geometry_handle_arg(
 /// `Some(Value::Undef)` (with a Warning diagnostic) on a kernel error or a
 /// malformed JSON-Point3 reply.
 fn dispatch_closest_point(
-    kernel: &dyn reify_types::GeometryKernel,
+    kernel: &mut dyn reify_types::GeometryKernel,
     query: &reify_types::GeometryQuery,
     helper_name: &str,
     diagnostics: &mut Vec<Diagnostic>,
@@ -1985,7 +1985,7 @@ fn dispatch_closest_point(
 /// `Some(Value::Undef)` (with a Warning diagnostic) on a kernel error or a
 /// non-Bool reply.
 fn dispatch_point_on_shape(
-    kernel: &dyn reify_types::GeometryKernel,
+    kernel: &mut dyn reify_types::GeometryKernel,
     query: &reify_types::GeometryQuery,
     helper_name: &str,
     diagnostics: &mut Vec<Diagnostic>,
@@ -2013,7 +2013,7 @@ fn dispatch_point_on_shape(
 /// `Some(Value::Undef)` (with a Warning diagnostic) on a kernel error or a
 /// non-numeric reply.
 fn dispatch_surface_angle(
-    kernel: &dyn reify_types::GeometryKernel,
+    kernel: &mut dyn reify_types::GeometryKernel,
     query: &reify_types::GeometryQuery,
     helper_name: &str,
     diagnostics: &mut Vec<Diagnostic>,
@@ -5789,7 +5789,7 @@ mod tests {
         // `ClosestPointOnShape` (lib.rs JSON-Point3 encoding). The dispatcher
         // is expected to parse it and produce a `Value::Point(vec![length(...),
         // length(...), length(...)])`.
-        let kernel = MockGeometryKernel::new().with_closest_point_on_shape_result(
+        let mut kernel = MockGeometryKernel::new().with_closest_point_on_shape_result(
             body_handle,
             [10.0, 0.0, 0.0],
             reify_types::Value::String("{\"x\":5.0,\"y\":0.0,\"z\":0.0}".to_string()),
@@ -5819,7 +5819,7 @@ mod tests {
             &expr,
             &named_steps,
             &values,
-            &kernel,
+            &mut kernel,
             &mut diagnostics,
         );
 
@@ -5842,7 +5842,7 @@ mod tests {
         // form. Recording the mock under exactly this tolerance pins the contract —
         // if the dispatcher ever changes the default, the recorded reply would not
         // be served and the test would fail with `None`.
-        let kernel = MockGeometryKernel::new().with_point_on_shape_result(
+        let mut kernel = MockGeometryKernel::new().with_point_on_shape_result(
             body_handle,
             [5.0, 0.0, 0.0],
             reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
@@ -5873,7 +5873,7 @@ mod tests {
             &expr,
             &named_steps,
             &values,
-            &kernel,
+            &mut kernel,
             &mut diagnostics,
         );
 
@@ -5894,7 +5894,7 @@ mod tests {
         // Kernel returns a raw f64 (radians) — the dispatcher is expected to
         // wrap as `Value::angle(rad)` to match the cell type
         // `Type::angle()`.
-        let kernel = MockGeometryKernel::new().with_surface_angle_result(
+        let mut kernel = MockGeometryKernel::new().with_surface_angle_result(
             face_a,
             face_b,
             reify_types::Value::Real(std::f64::consts::FRAC_PI_2),
@@ -5921,7 +5921,7 @@ mod tests {
             &expr,
             &named_steps,
             &values,
-            &kernel,
+            &mut kernel,
             &mut diagnostics,
         );
 
@@ -5942,7 +5942,7 @@ mod tests {
         // consult the kernel, mirroring `try_eval_conformance_query`'s
         // literal-arg-fall-through contract.
         let inner = reify_test_support::mocks::MockGeometryKernel::new();
-        let kernel = CountingMockKernel::new(inner);
+        let mut kernel = CountingMockKernel::new(inner);
 
         let named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
         let values = reify_types::ValueMap::new();
@@ -5954,7 +5954,7 @@ mod tests {
             &expr,
             &named_steps,
             &values,
-            &kernel,
+            &mut kernel,
             &mut diagnostics,
         );
 
@@ -5974,7 +5974,7 @@ mod tests {
     fn try_eval_topology_selector_is_on_literal_args_falls_through_to_none() {
         use reify_test_support::mocks::CountingMockKernel;
         let inner = reify_test_support::mocks::MockGeometryKernel::new();
-        let kernel = CountingMockKernel::new(inner);
+        let mut kernel = CountingMockKernel::new(inner);
 
         let named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
         let values = reify_types::ValueMap::new();
@@ -5986,7 +5986,7 @@ mod tests {
             &expr,
             &named_steps,
             &values,
-            &kernel,
+            &mut kernel,
             &mut diagnostics,
         );
 
@@ -6006,7 +6006,7 @@ mod tests {
     fn try_eval_topology_selector_angle_between_surfaces_literal_args_falls_through_to_none() {
         use reify_test_support::mocks::CountingMockKernel;
         let inner = reify_test_support::mocks::MockGeometryKernel::new();
-        let kernel = CountingMockKernel::new(inner);
+        let mut kernel = CountingMockKernel::new(inner);
 
         let named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
         let values = reify_types::ValueMap::new();
@@ -6018,7 +6018,7 @@ mod tests {
             &expr,
             &named_steps,
             &values,
-            &kernel,
+            &mut kernel,
             &mut diagnostics,
         );
 
@@ -6038,7 +6038,7 @@ mod tests {
     fn try_eval_topology_selector_non_helper_name_returns_none_no_kernel_call() {
         use reify_test_support::mocks::CountingMockKernel;
         let inner = reify_test_support::mocks::MockGeometryKernel::new();
-        let kernel = CountingMockKernel::new(inner);
+        let mut kernel = CountingMockKernel::new(inner);
 
         let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
         named_steps.insert("body".to_string(), reify_types::GeometryHandleId(7));
@@ -6067,7 +6067,7 @@ mod tests {
             &expr,
             &named_steps,
             &values,
-            &kernel,
+            &mut kernel,
             &mut diagnostics,
         );
 
@@ -6095,7 +6095,7 @@ mod tests {
         // dimensioned Scalar does not regress silently.
         let face_a = reify_types::GeometryHandleId(31);
         let face_b = reify_types::GeometryHandleId(37);
-        let kernel = MockGeometryKernel::new().with_surface_angle_result(
+        let mut kernel = MockGeometryKernel::new().with_surface_angle_result(
             face_a,
             face_b,
             reify_types::Value::Scalar {
@@ -6125,7 +6125,7 @@ mod tests {
             &expr,
             &named_steps,
             &values,
-            &kernel,
+            &mut kernel,
             &mut diagnostics,
         );
 
@@ -6155,7 +6155,7 @@ mod tests {
         use reify_test_support::mocks::MockGeometryKernel;
         let face_a = reify_types::GeometryHandleId(31);
         let face_b = reify_types::GeometryHandleId(37);
-        let kernel = MockGeometryKernel::new().with_surface_angle_result(
+        let mut kernel = MockGeometryKernel::new().with_surface_angle_result(
             face_a,
             face_b,
             reify_types::Value::Scalar {
@@ -6185,7 +6185,7 @@ mod tests {
             &expr,
             &named_steps,
             &values,
-            &kernel,
+            &mut kernel,
             &mut diagnostics,
         );
 
@@ -6257,14 +6257,14 @@ mod tests {
     #[test]
     fn try_eval_topology_selector_angle_between_surfaces_kernel_reply_scalar_wrong_dimension_emits_warning_and_returns_undef()
      {
-        let (expr, named_steps, values, kernel) = wrong_dim_scalar_fixture();
+        let (expr, named_steps, values, mut kernel) = wrong_dim_scalar_fixture();
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
         let result = super::try_eval_topology_selector(
             &expr,
             &named_steps,
             &values,
-            &kernel,
+            &mut kernel,
             &mut diagnostics,
         );
 
@@ -6326,13 +6326,13 @@ mod tests {
     #[should_panic(expected = "expected ANGLE")]
     fn try_eval_topology_selector_angle_between_surfaces_kernel_reply_scalar_wrong_dimension_panics_in_debug_build()
      {
-        let (expr, named_steps, values, kernel) = wrong_dim_scalar_fixture();
+        let (expr, named_steps, values, mut kernel) = wrong_dim_scalar_fixture();
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
         // The debug_assert! in dispatch_surface_angle's Scalar arm must panic
         // with a message containing "expected ANGLE". No assert_eq! after this
         // call — the #[should_panic] attribute drives the assertion.
-        super::try_eval_topology_selector(&expr, &named_steps, &values, &kernel, &mut diagnostics);
+        super::try_eval_topology_selector(&expr, &named_steps, &values, &mut kernel, &mut diagnostics);
     }
 
     #[test]
@@ -6344,7 +6344,7 @@ mod tests {
         // the contract against a future kernel that mistakenly returns the
         // wrong-typed Value.
         let body_handle = reify_types::GeometryHandleId(11);
-        let kernel = MockGeometryKernel::new().with_point_on_shape_result(
+        let mut kernel = MockGeometryKernel::new().with_point_on_shape_result(
             body_handle,
             [5.0, 0.0, 0.0],
             reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
@@ -6376,7 +6376,7 @@ mod tests {
             &expr,
             &named_steps,
             &values,
-            &kernel,
+            &mut kernel,
             &mut diagnostics,
         );
 
@@ -6422,7 +6422,7 @@ mod tests {
         // diagnostic naming the helper. Defends the contract against a future
         // kernel that emits a malformed JSON string.
         let body_handle = reify_types::GeometryHandleId(7);
-        let kernel = MockGeometryKernel::new().with_closest_point_on_shape_result(
+        let mut kernel = MockGeometryKernel::new().with_closest_point_on_shape_result(
             body_handle,
             [10.0, 0.0, 0.0],
             // Not a JSON-Point3 payload — should trigger the parse-failure
@@ -6454,7 +6454,7 @@ mod tests {
             &expr,
             &named_steps,
             &values,
-            &kernel,
+            &mut kernel,
             &mut diagnostics,
         );
 

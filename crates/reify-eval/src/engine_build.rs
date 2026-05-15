@@ -649,7 +649,7 @@ impl Engine {
                     template,
                     &named_steps,
                     &mut values,
-                    kernel.as_ref(),
+                    kernel.as_mut(),
                     &mut diagnostics,
                 );
                 // Task 3441: snapshot this template's `named_steps` so a
@@ -899,7 +899,7 @@ impl Engine {
                     template,
                     &named_steps,
                     &mut values,
-                    kernel.as_ref(),
+                    kernel.as_mut(),
                     &mut diagnostics,
                 );
                 // Task 3441: snapshot this template's `named_steps` so a
@@ -1503,7 +1503,7 @@ impl Engine {
                 template,
                 &named_steps,
                 values,
-                kernel.as_ref(),
+                kernel.as_mut(),
                 diagnostics,
             );
             // Task 3441: snapshot this template's `named_steps` so a later
@@ -2181,7 +2181,7 @@ impl Engine {
         template: &reify_compiler::TopologyTemplate,
         named_steps: &HashMap<String, GeometryHandleId>,
         values: &mut ValueMap,
-        kernel: &dyn GeometryKernel,
+        kernel: &mut dyn GeometryKernel,
         diagnostics: &mut Vec<Diagnostic>,
     ) {
         // Iterate `values` directly without snapshotting (parallels the
