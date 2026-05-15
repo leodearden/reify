@@ -1999,4 +1999,82 @@ mod tests {
             }
         }
     }
+
+    /// Global K assembled from a tet+hex+wedge fan mesh (same shape as
+    /// `mixed_tet_hex_wedge_sharing_node_assembles_into_unified_3dof_per_node_global_k`)
+    /// is symmetric within FP tolerance.
+    ///
+    /// Per-kind K_e symmetry is already pinned upstream:
+    /// - tet via Task 2915 / `tet::tests::p1_element_stiffness_is_symmetric_...`
+    /// - hex / wedge via Task 2985 / `run_element_stiffness_tests` block-(b)
+    ///   symmetry check.
+    ///
+    /// The full-block emission of `emit_element_triplets` (both `(a, b)` and
+    /// `(b, a)` triplets) combined with faer's stable duplicate-summation
+    /// order means `K_global[i][j]` and `K_global[j][i]` are sums of
+    /// mirror-pair triplets from the same K_e — the LSB of the encounter-
+    /// order summation at `(i, j)` versus `(j, i)` can differ, but both
+    /// reduce to the same value within the FP summation band.
+    ///
+    /// Mirrors `mixed_mesh_global_k_is_symmetric_within_fp_tolerance` (which
+    /// pins tet+shell symmetry); this test extends the contract to
+    /// tet+hex+wedge. A regression that breaks the full-block invariant
+    /// for any of the three volume kernels surfaces here even when the
+    /// per-kind symmetry tests stay green.
+    ///
+    /// Tolerance `1e-9 · max(|K[i][j]|, |K[j][i]|, 1)` matches the existing
+    /// pure-tet symmetry test.
+    #[test]
+    fn mixed_tet_hex_wedge_global_k_is_symmetric_within_fp_tolerance() {
+        let mat = dimensionless_steel_like();
+        let k_e_tet = element_stiffness_p1(&UNIT_TET_P1, &mat);
+        let k_e_hex = element_stiffness_hex_p1(&scaled_unit_hex_phys_nodes(1.0), &mat);
+        let k_e_wedge = element_stiffness_wedge_p1(&scaled_unit_wedge_phys_nodes(1.0), &mat);
+
+        // Same fan mesh as step-17. All three elements share node 0.
+        let conn_tet = [0usize, 1, 2, 3];
+        let conn_hex = [0usize, 4, 5, 6, 7, 8, 9, 10];
+        let conn_wedge = [0usize, 11, 12, 13, 14, 15];
+        let elements = [
+            AssemblyElement {
+                id: 0,
+                connectivity: &conn_tet,
+                k_e: &k_e_tet,
+            },
+            AssemblyElement {
+                id: 1,
+                connectivity: &conn_hex,
+                k_e: &k_e_hex,
+            },
+            AssemblyElement {
+                id: 2,
+                connectivity: &conn_wedge,
+                k_e: &k_e_wedge,
+            },
+        ];
+        let n_nodes = 16;
+        let k = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
+
+        // Pure-volume mesh ⇒ max(d_e) = 3 ⇒ dim = 48.
+        let dim = 3 * n_nodes;
+        assert_eq!(k.nrows(), dim);
+        assert_eq!(k.ncols(), dim);
+
+        // Iterate upper triangle only — (i, j) and (j, i) describe the same
+        // unordered pair, so j in i..dim halves the loop count without any
+        // coverage loss.
+        for i in 0..dim {
+            for j in i..dim {
+                let kij = read(&k, i, j);
+                let kji = read(&k, j, i);
+                let tol = 1e-9 * kij.abs().max(kji.abs()).max(1.0);
+                let delta = (kij - kji).abs();
+                assert!(
+                    delta <= tol,
+                    "tet+hex+wedge mesh K[{i}][{j}] = {kij}, K[{j}][{i}] = {kji}; \
+                     |Δ| = {delta} > tol = {tol}",
+                );
+            }
+        }
+    }
 }
