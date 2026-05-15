@@ -41,12 +41,18 @@ mod core_state {
     /// Fields have **no visibility marker** — they are strictly private to this `impl`
     /// block.  Any direct field assignment from outside (e.g. `session.core.compiled = …`)
     /// fails to compile, enforcing the poison-recovery invariant at the type level.
-    /// Mutation is exposed only through the three commit methods:
+    /// The only commit points that touch the four invariant-bearing fields (`compiled`,
+    /// `source_map`, `module_name`, `last_check`) are:
     /// - `commit_state` — four-field atomic commit after a successful compile cycle
     /// - `commit_check` — single-field commit for `last_check` (used by `set_parameter`)
     /// - `commit_file_path` — single-field commit for `file_path` (used by `load_file`)
     ///
-    /// See `engine_lock.rs:26-49` for the invariant rationale.
+    /// `engine_mut()` exposes `&mut Engine` for method dispatch; the `#[cfg(test)]`
+    /// mutators (`break_module_name`, `break_source_map`, `inject_compiled`, `recheck`,
+    /// `inject_diagnostic`, `with_solver`) expose other mutation — but none of these
+    /// touch the invariant fields atomically, so the poison-recovery property still holds.
+    ///
+    /// See `engine_lock.rs` for the invariant rationale.
     pub(crate) struct CoreState {
         engine: Engine,
         compiled: Option<CompiledModule>,
@@ -305,17 +311,17 @@ pub(crate) struct CompileFailure {
 ///
 /// **Mutation is type-enforced via `CoreState`:** the six core fields are held
 /// in a private sub-struct whose fields have no visibility marker, so any direct
-/// field assignment from outside `CoreState`'s impl fails to compile.  Mutation
-/// is exposed only through `commit_state` (four-field atomic commit after a
-/// successful compile cycle), `commit_check` (single-field for `last_check`
-/// after `set_parameter`), and `commit_file_path` (single-field for `file_path`
-/// after `load_file`).  See `engine_lock.rs` for the poison-recovery rationale.
+/// field assignment from outside `CoreState`'s impl fails to compile.  The only
+/// commit points that touch the four invariant-bearing fields are `commit_state`,
+/// `commit_check`, and `commit_file_path`; `engine_mut()` and the `#[cfg(test)]`
+/// mutators expose other mutation but do not touch those fields atomically — the
+/// poison-recovery property still holds.  See `engine_lock.rs` for the rationale.
 pub struct EngineSession {
     /// The six core fields protected by the type system via `CoreState`.
     ///
     /// Fields are strictly private — direct assignment from outside `CoreState`'s
     /// impl fails to compile.  Use `commit_state`, `commit_check`, or
-    /// `commit_file_path` for mutation.
+    /// `commit_file_path` to commit the four invariant-bearing fields atomically.
     core: CoreState,
     /// In-memory cache for `get_def_preview` results.
     ///
