@@ -58,13 +58,21 @@ fn optical_module_loads_with_no_errors_and_one_trait() {
     );
 }
 
-// ─── (b) OpticallyCharacterized refines MaterialSpec with 4 Real members ─────
+// ─── (b) OpticallyCharacterized refines MaterialSpec with 4 members ──────────
 
 /// OpticallyCharacterized must refine MaterialSpec and declare four required
-/// members, all typed as Real: refractive_index, absorption_coefficient,
-/// transmittance, reference_thickness.
+/// members. The composite-dimension param `absorption_coefficient` is now
+/// tightened to `AbsorptionCoeff` (1/m) by task #3115; the other three stay
+/// Real (refractive_index and transmittance are genuine-dimensionless,
+/// reference_thickness is sibling task #3113's territory).
+///
+/// Per-member expected type:
+///   refractive_index        → Type::Real (genuine-dimensionless)
+///   absorption_coefficient  → Type::Scalar { dimension: ABSORPTION_COEFF }
+///   transmittance           → Type::Real (genuine-dimensionless)
+///   reference_thickness     → Type::Real (sibling task #3113)
 #[test]
-fn optically_characterized_refines_material_spec_with_four_real_members() {
+fn optically_characterized_refines_material_spec_with_four_members() {
     let module = load_stdlib_module();
 
     let oc = module
@@ -89,22 +97,27 @@ fn optically_characterized_refines_material_spec_with_four_real_members() {
             .collect::<Vec<_>>()
     );
 
-    let expected_members = [
-        "refractive_index",
-        "absorption_coefficient",
-        "transmittance",
-        "reference_thickness",
+    let expected_members: [(&str, Type); 4] = [
+        ("refractive_index", Type::Real),
+        (
+            "absorption_coefficient",
+            Type::Scalar {
+                dimension: DimensionVector::ABSORPTION_COEFF,
+            },
+        ),
+        ("transmittance", Type::Real),
+        ("reference_thickness", Type::Real),
     ];
 
-    for expected in &expected_members {
+    for (expected_name, expected_ty) in &expected_members {
         let req = oc
             .required_members
             .iter()
-            .find(|r| r.name == *expected)
+            .find(|r| r.name == *expected_name)
             .unwrap_or_else(|| {
                 panic!(
                     "OpticallyCharacterized missing required member '{}', got: {:?}",
-                    expected,
+                    expected_name,
                     oc.required_members
                         .iter()
                         .map(|r| &r.name)
@@ -113,15 +126,13 @@ fn optically_characterized_refines_material_spec_with_four_real_members() {
             });
         match &req.kind {
             RequirementKind::Param(ty) => assert_eq!(
-                *ty,
-                Type::Real,
-                "OpticallyCharacterized member '{}' should be Real, got {:?}",
-                expected,
-                ty
+                ty, expected_ty,
+                "OpticallyCharacterized member '{}' expected {:?}, got {:?}",
+                expected_name, expected_ty, ty
             ),
             other => panic!(
                 "OpticallyCharacterized member '{}' should be Param, got {:?}",
-                expected, other
+                expected_name, other
             ),
         }
     }
