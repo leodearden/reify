@@ -378,14 +378,14 @@ fn csr_matvec(m: &SparseRowMat<usize, f64>, x: &[f64]) -> Vec<f64> {
     let m_ref = m.as_ref();
     let m_sym = m_ref.symbolic();
     let mut y = vec![0.0_f64; n];
-    for i in 0..n {
+    for (i, y_i) in y.iter_mut().enumerate() {
         let cols = m_sym.col_idx_of_row_raw(i);
         let vals = m_ref.val_of_row(i);
         let mut acc = 0.0_f64;
         for (col_idx, &val) in cols.iter().zip(vals.iter()) {
             acc += val * x[*col_idx];
         }
-        y[i] = acc;
+        *y_i = acc;
     }
     y
 }

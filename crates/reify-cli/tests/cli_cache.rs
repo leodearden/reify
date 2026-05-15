@@ -833,7 +833,7 @@ fn cache_stats_reports_correct_entry_count_and_total_size_for_seeded_cache() {
     let cache_dir = tempdir().expect("tempdir");
     let fixture = make_elastic_result_fixture();
     for c in ['a', 'b', 'c'] {
-        let input_hash: String = std::iter::repeat(c).take(32).collect();
+        let input_hash: String = std::iter::repeat_n(c, 32).collect();
         write_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
             .expect("write_entry must seed the cache");
     }
@@ -897,7 +897,7 @@ fn cache_stats_output_schema_golden_with_top_n_and_hit_rate_caveat() {
     // from the test (largest = 'g'×32 = idx 6, smallest = 'a'×32 = idx 0).
     let chars = ['a', 'b', 'c', 'd', 'e', 'f', 'g'];
     for (i, ch) in chars.iter().enumerate() {
-        let input_hash: String = std::iter::repeat(*ch).take(32).collect();
+        let input_hash: String = std::iter::repeat_n(*ch, 32).collect();
         let displacement: Vec<f64> = (0..(i + 1) * 64).map(|n| n as f64).collect();
         let stress: Vec<f64> = (0..(i + 1) * 64).map(|n| (n as f64) * 1.5).collect();
         let fixture = ElasticResult {
@@ -987,7 +987,7 @@ fn cache_stats_output_schema_golden_with_top_n_and_hit_rate_caveat() {
     for row in &top_lines {
         let mut found_hash = None;
         for ch in chars.iter() {
-            let hash: String = std::iter::repeat(*ch).take(32).collect();
+            let hash: String = std::iter::repeat_n(*ch, 32).collect();
             if row.contains(&hash) {
                 found_hash = Some(hash);
                 break;
@@ -1158,7 +1158,7 @@ fn cache_clear_yes_then_stats_round_trip_reports_empty() {
     let cache_dir = tempdir().expect("tempdir");
     let fixture = make_elastic_result_fixture();
     for c in ['a', 'b', 'c'] {
-        let input_hash: String = std::iter::repeat(c).take(32).collect();
+        let input_hash: String = std::iter::repeat_n(c, 32).collect();
         write_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
             .expect("write_entry must seed the cache");
     }
@@ -1282,7 +1282,7 @@ fn cache_gc_under_cap_is_no_op_and_preserves_all_entries() {
     let cache_dir = tempdir().expect("tempdir");
     let fixture = make_elastic_result_fixture();
     for c in ['a', 'b', 'c'] {
-        let input_hash: String = std::iter::repeat(c).take(32).collect();
+        let input_hash: String = std::iter::repeat_n(c, 32).collect();
         write_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
             .expect("write_entry must seed the cache");
     }
@@ -1337,7 +1337,7 @@ fn cache_gc_evicts_when_forced_over_cap() {
     let cache_dir = tempdir().expect("tempdir");
     let chars = ['a', 'b', 'c', 'd', 'e'];
     for ch in chars.iter() {
-        let input_hash: String = std::iter::repeat(*ch).take(32).collect();
+        let input_hash: String = std::iter::repeat_n(*ch, 32).collect();
         // 4096 doubles = 32 KiB uncompressed displacement; the compressed
         // .bin will still exceed 1 KiB on disk for each entry, ensuring the
         // total tops the synthetic cap by a wide margin.
@@ -1433,12 +1433,12 @@ fn cache_stats_honors_cache_dir_flag_overriding_env_var() {
     let env_dir = tempdir().expect("env tempdir");
     let fixture = make_elastic_result_fixture();
     for c in ['a', 'b'] {
-        let input_hash: String = std::iter::repeat(c).take(32).collect();
+        let input_hash: String = std::iter::repeat_n(c, 32).collect();
         write_entry(flag_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
             .expect("write_entry must seed flag_dir");
     }
     {
-        let input_hash: String = std::iter::repeat('c').take(32).collect();
+        let input_hash: String = "c".repeat(32);
         write_entry(env_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
             .expect("write_entry must seed env_dir");
     }
