@@ -63,7 +63,7 @@ pub use identity::*;
 pub use kernel_validation::{
     BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE,
 };
-pub use node_traits::{NodeKind, NodeTraits};
+pub use node_traits::{HasNodeKind, NodeKind, NodeTraits, NodeTraitsMap};
 pub use persistent::PersistentMap;
 pub use provenance::{FieldImportProvenance, SnapshotProvenance};
 pub use source_location::{SourceLocationInfo, byte_offset_to_line_col};

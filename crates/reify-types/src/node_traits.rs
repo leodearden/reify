@@ -5,6 +5,11 @@
 //! in `reify-eval`); see `docs/reify-implementation-architecture.md` and
 //! `docs/prds/v0_3/node-traits-unification.md`.
 //!
+//! Also provides [`HasNodeKind`] and [`NodeTraitsMap`] (PRD §5 B1): a per-instance /
+//! per-kind override map with kind-derived fallback, generic over key type so that
+//! `NodeId` (which lives in `reify-eval`) can be used as the key in `reify-runtime`
+//! without violating the crate dependency order.
+//!
 //! ### Trait semantics (§7.6 table)
 //!
 //! | Flag              | Meaning |
@@ -17,6 +22,8 @@
 //! Nothing in this crate or its dependents currently dispatches on these traits.
 //! They are purely declarative scaffolding for downstream scheduler/cache tasks to adopt.
 
+use std::collections::HashMap;
+use std::hash::Hash;
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, Not};
 
 /// Composable execution-trait flags for a node kind.
@@ -217,6 +224,74 @@ impl NodeKind {
             NodeKind::Resolution => NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE),
             NodeKind::Compute => NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE),
         }
+    }
+}
+
+/// Marker trait for keys that can be projected to a [`NodeKind`] discriminant.
+///
+/// Implemented by `reify_eval::cache::NodeId` (orphan-rule-clean host alongside
+/// the existing `From<&NodeId> for NodeKind` bridge in `reify-eval/src/cache.rs`).
+/// Test code may impl this for a local key type to exercise `NodeTraitsMap` in
+/// `reify-types` unit tests without pulling in `reify-eval`. See PRD §5 B1.
+pub trait HasNodeKind {
+    fn node_kind(&self) -> NodeKind;
+}
+
+/// Per-instance / per-kind override map for [`NodeTraits`], with kind-derived
+/// fallback. Bridges audit findings M-002 and M-005 (per-NodeId trait map).
+///
+/// Resolution precedence (see PRD §6 trait-resolution-chain): per-instance >
+/// per-kind > kind-derived `default_traits()`. Default-empty preserves
+/// the prior scheduler behaviour because every `resolve` call still returns
+/// the §7.6 architecture default for un-overridden nodes.
+///
+/// Generic over key type K so the production wiring uses
+/// `NodeTraitsMap<reify_eval::cache::NodeId>` while reify-types unit tests can
+/// substitute a local key (NodeId lives in reify-eval per PRD §11 / task α).
+#[derive(Clone, Debug)]
+pub struct NodeTraitsMap<K: Eq + Hash + HasNodeKind> {
+    instance: HashMap<K, NodeTraits>,
+    by_kind: HashMap<NodeKind, NodeTraits>,
+}
+
+impl<K: Eq + Hash + HasNodeKind> Default for NodeTraitsMap<K> {
+    /// Returns an empty map. Does not require `K: Default` (unlike `#[derive(Default)]`).
+    fn default() -> Self {
+        Self {
+            instance: HashMap::new(),
+            by_kind: HashMap::new(),
+        }
+    }
+}
+
+impl<K: Eq + Hash + HasNodeKind> NodeTraitsMap<K> {
+    /// Creates a new empty `NodeTraitsMap`.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set a per-instance trait override for `node_id`. Overwrites any prior value.
+    ///
+    /// Allows full per-instance freedom — including Constraint+IMMEDIATE per PRD §12 Q-6.
+    pub fn set_instance(&mut self, node_id: K, traits: NodeTraits) {
+        self.instance.insert(node_id, traits);
+    }
+
+    /// Set a per-kind trait override applied to all keys of that kind absent an instance entry.
+    pub fn set_type(&mut self, kind: NodeKind, traits: NodeTraits) {
+        self.by_kind.insert(kind, traits);
+    }
+
+    /// Resolve effective traits, consulting instance → by_kind → kind-derived default in turn.
+    pub fn resolve(&self, node_id: &K) -> NodeTraits {
+        if let Some(t) = self.instance.get(node_id) {
+            return *t;
+        }
+        let kind = node_id.node_kind();
+        if let Some(t) = self.by_kind.get(&kind) {
+            return *t;
+        }
+        kind.default_traits()
     }
 }
 
