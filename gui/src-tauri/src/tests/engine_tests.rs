@@ -7571,3 +7571,94 @@ fn engine_session_exposes_core_state_with_read_accessors() {
     // compile if the accessor is absent or returns the wrong type.
     let _: &Engine = core.engine();
 }
+
+/// Behavioral test for `CoreState::commit_check`:
+/// `set_parameter` must update `last_check` and leave the other five core fields
+/// (`engine`, `compiled`, `source_map`, `file_path`, `module_name`) untouched.
+///
+/// The compile-time marker `let _: fn(&mut CoreState, CheckResult) =
+/// CoreState::commit_check;` fails before step-4 adds the method — that compile
+/// failure IS the RED state.  After step-4 lands it must pass and stay green.
+#[test]
+fn set_parameter_updates_only_last_check_via_commit_check() {
+    use reify_eval::CheckResult;
+
+    // Pre-step-4 compile-time marker: fails to compile until CoreState::commit_check
+    // is added with at least pub(crate) visibility.  This line exercises the symbol
+    // existence; it is never called at runtime.
+    let _: fn(&mut CoreState, CheckResult) = CoreState::commit_check;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed");
+
+    // Snapshot the five non-last_check core fields before calling set_parameter.
+    let pre_module_name: Option<String> = session
+        .core_state_for_test()
+        .module_name()
+        .map(|s| s.to_string());
+    let pre_compiled_is_some: bool = session.core_state_for_test().compiled().is_some();
+    let pre_source_map_keys: std::collections::BTreeSet<String> = session
+        .core_state_for_test()
+        .source_map()
+        .keys()
+        .cloned()
+        .collect();
+    let pre_file_path: Option<std::path::PathBuf> = session
+        .core_state_for_test()
+        .file_path()
+        .map(|p| p.to_path_buf());
+
+    // Trigger commit_check internally via set_parameter.
+    session
+        .set_parameter("Bracket.width", "100mm")
+        .expect("set_parameter ok");
+
+    // last_check must be Some after set_parameter.
+    assert!(
+        session.core_state_for_test().last_check().is_some(),
+        "last_check must be Some after set_parameter"
+    );
+
+    // The other five core fields must be byte-for-byte identical to the pre-call
+    // snapshot — commit_check must not touch anything other than last_check.
+    assert_eq!(
+        session.core_state_for_test().module_name().map(|s| s.to_string()),
+        pre_module_name,
+        "module_name must not change after set_parameter"
+    );
+    assert_eq!(
+        session.core_state_for_test().compiled().is_some(),
+        pre_compiled_is_some,
+        "compiled presence must not change after set_parameter"
+    );
+    let post_source_map_keys: std::collections::BTreeSet<String> = session
+        .core_state_for_test()
+        .source_map()
+        .keys()
+        .cloned()
+        .collect();
+    assert_eq!(
+        post_source_map_keys,
+        pre_source_map_keys,
+        "source_map keys must not change after set_parameter"
+    );
+    assert_eq!(
+        session.core_state_for_test().file_path().map(|p| p.to_path_buf()),
+        pre_file_path,
+        "file_path must not change after set_parameter"
+    );
+
+    // A second set_parameter call must also keep last_check Some.
+    session
+        .set_parameter("Bracket.width", "80mm")
+        .expect("second set_parameter ok");
+    assert!(
+        session.core_state_for_test().last_check().is_some(),
+        "last_check must remain Some after second set_parameter"
+    );
+}
