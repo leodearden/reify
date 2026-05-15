@@ -134,11 +134,6 @@ mod core_state {
         /// `engine_lock::with_engine_lock` safely recover from a poisoned mutex:
         /// a panic inside `set_parameter` between `edit_check` and `commit_check`
         /// leaves `last_check` as the previous value, not a partially-updated one.
-        ///
-        /// Visibility is `pub(crate)` (rather than `pub(super)`) so that the
-        /// structural marker assertion in `tests/engine_tests.rs` can reference
-        /// the function pointer — the type-level enforcement comes from field
-        /// privacy, not from restricting who can call commit methods.
         pub(crate) fn commit_check(&mut self, check: CheckResult) {
             self.last_check = Some(check);
         }
@@ -151,9 +146,6 @@ mod core_state {
         /// `commit_state` — means a failed parse/compile leaves `file_path` as `None`
         /// (or its previous value) while the core fields remain at the last-good
         /// committed state.  See the deferred-assignment comment in `load_file`.
-        ///
-        /// `pub(crate)` for the same reason as `commit_check`: the marker assertion
-        /// in `tests/engine_tests.rs` requires symbol visibility.
         pub(crate) fn commit_file_path(&mut self, path: PathBuf) {
             self.file_path = Some(path);
         }
