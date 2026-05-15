@@ -985,6 +985,27 @@ pub enum DiagnosticCode {
     /// downstream task π (ID 3444) which wires `reify.toml` parsing into
     /// `Engine::with_registered_kernels`.
     PinnedKernelMissing,
+    /// Origin: `crates/reify-eval/src/dispatcher.rs::unpinned_kernel_loaded_diagnostic`
+    /// (task 3434 — PRD `docs/prds/v0_3/multi-kernel-phase-3.md` §8 task γ +
+    /// §5 "Registry name not pinned").
+    ///
+    /// Canonical message form:
+    /// `"kernel '<kernel_id>' is registered but not listed in reify.toml \
+    /// [kernels]; consider pinning it for build determinism"`.
+    ///
+    /// Emitted as a `Severity::Warning` when a kernel is present in the
+    /// registry but not listed in `reify.toml` `[kernels]`. Per PRD §5:
+    /// "warning; engine starts" — the realization proceeds (the kernel is
+    /// usable), but the missing pin weakens the determinism contract: a
+    /// future build that omits the same kernel feature could shift kernel
+    /// selection unexpectedly. Mirrors the advisory-warning posture of
+    /// `LongChainRealization` and `ImportedTolerancePromiseInsufficient`.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_UNPINNED_KERNEL_LOADED`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error). Consumed by
+    /// downstream task π (ID 3444) which wires `reify.toml` parsing into
+    /// `Engine::with_registered_kernels`.
+    UnpinnedKernelLoaded,
     /// Origin: `crates/reify-eval/src/geometry_ops.rs::gate_query_capability`
     /// (task 3623 — PRD `docs/prds/v0_3/kernel-geometry-queries.md` §5.4).
     ///
