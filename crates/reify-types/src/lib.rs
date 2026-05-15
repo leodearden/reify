@@ -20,6 +20,7 @@ pub mod provenance;
 pub mod sampled;
 pub mod source_location;
 pub mod spanned_ident;
+pub mod structure_registry;
 pub mod traits;
 pub mod ty;
 pub mod value;
@@ -69,6 +70,7 @@ pub use persistent::PersistentMap;
 pub use provenance::{FieldImportProvenance, SnapshotProvenance};
 pub use source_location::{SourceLocationInfo, byte_offset_to_line_col};
 pub use spanned_ident::SpannedIdent;
+pub use structure_registry::{StructureMeta, StructureRegistry, StructureTypeId};
 pub use traits::{EnumDef, PortDirection, TraitBound, TraitDef, TraitMember, TraitRef, TypeParam};
 pub use ty::Type;
 pub use value::{
