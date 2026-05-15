@@ -1390,6 +1390,55 @@ mod tests {
         }
     }
 
+    /// Single P1 wedge element with identity connectivity `[0..6]` → K_global
+    /// equals K_e bit-for-bit at every entry.
+    ///
+    /// First regression test for `n_local = 6` in `assemble_global_stiffness`.
+    /// Pins that the D-agnostic emission loop handles the wedge's 6-node
+    /// footprint (`d_e = 3`, `n_dofs = 18`) at identity connectivity.
+    ///
+    /// Pure-wedge mesh ⇒ `D = max(d_e) = 3`, so `K.nrows() == 18` and
+    /// `K.ncols() == 18`. A regression that special-cases `n_local ∈ {4, 8, 10}`
+    /// in `emit_element_triplets`'s loop bounds would surface here.
+    #[test]
+    fn single_p1_wedge_identity_connectivity_matches_k_e_bit_for_bit() {
+        let mat = dimensionless_steel_like();
+        let phys = scaled_unit_wedge_phys_nodes(1.0);
+        let k_e = element_stiffness_wedge_p1(&phys, &mat);
+        assert_eq!(k_e.n_dofs, 18);
+
+        let connectivity: [usize; 6] = std::array::from_fn(|i| i);
+        let element = AssemblyElement {
+            id: 0,
+            connectivity: &connectivity,
+            k_e: &k_e,
+        };
+        let k = assemble_global_stiffness(6, &[element], AssemblyMode::Deterministic);
+
+        assert_eq!(
+            k.nrows(),
+            18,
+            "pure-wedge mesh must derive D = 3, giving 3·6 = 18 rows",
+        );
+        assert_eq!(
+            k.ncols(),
+            18,
+            "pure-wedge mesh must derive D = 3, giving 3·6 = 18 cols",
+        );
+
+        for i in 0..18 {
+            for j in 0..18 {
+                let actual = read(&k, i, j);
+                let expected = k_e.get(i, j);
+                assert_eq!(
+                    actual.to_bits(),
+                    expected.to_bits(),
+                    "K_global[{i}][{j}] = {actual} but K_e[{i}][{j}] = {expected}",
+                );
+            }
+        }
+    }
+
     /// Existing P2-only mesh assembles with `D = 3` under the new
     /// max-over-elements DOFs-per-node derivation — i.e. pure-tet meshes
     /// keep their v0.3 `3 · n_nodes` global dim, *not* a 6-DOF/node shape.
