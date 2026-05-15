@@ -1294,16 +1294,21 @@ mod tests {
 
     // ─── Step-3: per-alias unit tests for the 9 new named-dimension aliases ───
     //
-    // Each test pins the (a) exponent vector and (b) canonical PascalCase name
-    // for one of the 9 new aliases.  Sibling-distinctness regression-guards
-    // pin the slots that distinguish look-alike pairs (Resistivity vs
-    // Resistance, Conductivity vs Conductance) and the only fractional case
-    // (FractureToughness Length slot).
+    // Each test (a) verifies the exponent vector by *composing* the alias from
+    // already-established named/base SI dimensions (POWER, ENERGY, RESISTANCE,
+    // …) via the mul/div/pow/root algebra — NOT by re-stating the literal
+    // `from_exps(&[…])` used in the constant's own definition, so the assertion
+    // independently checks the physics rather than acting as a pure
+    // change-detector; and (b) pins the canonical PascalCase name.
+    // Sibling-distinctness regression-guards pin the slots that distinguish
+    // look-alike pairs (Resistivity vs Resistance, Conductivity vs
+    // Conductance) and the only fractional case (FractureToughness Length slot).
 
     #[test]
     fn thermal_conductivity_dimension_exponents() {
-        // W/(m·K) = kg·m·s⁻³·K⁻¹
-        let expected = DimensionVector::from_exps(&[(0, 1), (1, 1), (2, -3), (4, -1)]);
+        // W/(m·K) = POWER / (LENGTH · TEMPERATURE)
+        let expected = DimensionVector::POWER
+            .div(&DimensionVector::LENGTH.mul(&DimensionVector::TEMPERATURE));
         assert_eq!(DimensionVector::THERMAL_CONDUCTIVITY, expected);
         assert_eq!(
             DimensionVector::THERMAL_CONDUCTIVITY.canonical_name(),
@@ -1313,8 +1318,9 @@ mod tests {
 
     #[test]
     fn specific_heat_dimension_exponents() {
-        // J/(kg·K) = m²·s⁻²·K⁻¹
-        let expected = DimensionVector::from_exps(&[(0, 2), (2, -2), (4, -1)]);
+        // J/(kg·K) = ENERGY / (MASS · TEMPERATURE)
+        let expected = DimensionVector::ENERGY
+            .div(&DimensionVector::MASS.mul(&DimensionVector::TEMPERATURE));
         assert_eq!(DimensionVector::SPECIFIC_HEAT, expected);
         assert_eq!(
             DimensionVector::SPECIFIC_HEAT.canonical_name(),
@@ -1324,8 +1330,8 @@ mod tests {
 
     #[test]
     fn thermal_expansion_dimension_exponents() {
-        // 1/K
-        let expected = DimensionVector::from_exps(&[(4, -1)]);
+        // 1/K = reciprocal of TEMPERATURE
+        let expected = DimensionVector::TEMPERATURE.pow(-1);
         assert_eq!(DimensionVector::THERMAL_EXPANSION, expected);
         assert_eq!(
             DimensionVector::THERMAL_EXPANSION.canonical_name(),
@@ -1335,8 +1341,8 @@ mod tests {
 
     #[test]
     fn electric_resistivity_dimension_exponents() {
-        // Ω·m = kg·m³·s⁻³·A⁻²
-        let expected = DimensionVector::from_exps(&[(0, 3), (1, 1), (2, -3), (3, -2)]);
+        // Ω·m = RESISTANCE · LENGTH
+        let expected = DimensionVector::RESISTANCE.mul(&DimensionVector::LENGTH);
         assert_eq!(DimensionVector::ELECTRIC_RESISTIVITY, expected);
         assert_eq!(
             DimensionVector::ELECTRIC_RESISTIVITY.canonical_name(),
@@ -1346,8 +1352,8 @@ mod tests {
 
     #[test]
     fn electrical_conductivity_dimension_exponents() {
-        // S/m = kg⁻¹·m⁻³·s³·A²
-        let expected = DimensionVector::from_exps(&[(0, -3), (1, -1), (2, 3), (3, 2)]);
+        // S/m = CONDUCTANCE / LENGTH
+        let expected = DimensionVector::CONDUCTANCE.div(&DimensionVector::LENGTH);
         assert_eq!(DimensionVector::ELECTRICAL_CONDUCTIVITY, expected);
         assert_eq!(
             DimensionVector::ELECTRICAL_CONDUCTIVITY.canonical_name(),
@@ -1357,8 +1363,8 @@ mod tests {
 
     #[test]
     fn dielectric_strength_dimension_exponents() {
-        // V/m = kg·m·s⁻³·A⁻¹
-        let expected = DimensionVector::from_exps(&[(0, 1), (1, 1), (2, -3), (3, -1)]);
+        // V/m = VOLTAGE / LENGTH
+        let expected = DimensionVector::VOLTAGE.div(&DimensionVector::LENGTH);
         assert_eq!(DimensionVector::DIELECTRIC_STRENGTH, expected);
         assert_eq!(
             DimensionVector::DIELECTRIC_STRENGTH.canonical_name(),
@@ -1368,8 +1374,8 @@ mod tests {
 
     #[test]
     fn stiffness_dimension_exponents() {
-        // N/m = kg·s⁻² (Length cancels)
-        let expected = DimensionVector::from_exps(&[(1, 1), (2, -2)]);
+        // N/m = FORCE / LENGTH (Length cancels → kg·s⁻²)
+        let expected = DimensionVector::FORCE.div(&DimensionVector::LENGTH);
         assert_eq!(DimensionVector::STIFFNESS, expected);
         assert_eq!(
             DimensionVector::STIFFNESS.canonical_name(),
@@ -1379,8 +1385,8 @@ mod tests {
 
     #[test]
     fn absorption_coeff_dimension_exponents() {
-        // 1/m
-        let expected = DimensionVector::from_exps(&[(0, -1)]);
+        // 1/m = reciprocal of LENGTH
+        let expected = DimensionVector::LENGTH.pow(-1);
         assert_eq!(DimensionVector::ABSORPTION_COEFF, expected);
         assert_eq!(
             DimensionVector::ABSORPTION_COEFF.canonical_name(),
@@ -1390,9 +1396,10 @@ mod tests {
 
     #[test]
     fn fracture_toughness_dimension_exponents() {
-        // Pa·√m = kg·m^(-1/2)·s⁻²  — the only fractional-exponent alias.
-        let expected =
-            DimensionVector::from_rational_exps(&[(0, -1, 2), (1, 1, 1), (2, -2, 1)]);
+        // Pa·√m = PRESSURE · √LENGTH — the only fractional-exponent alias;
+        // derived via LENGTH.root(2) so the test exercises the rational path
+        // independently of the constant's own `from_rational_exps` literal.
+        let expected = DimensionVector::PRESSURE.mul(&DimensionVector::LENGTH.root(2));
         assert_eq!(DimensionVector::FRACTURE_TOUGHNESS, expected);
         assert_eq!(
             DimensionVector::FRACTURE_TOUGHNESS.canonical_name(),
