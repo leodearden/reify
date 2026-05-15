@@ -1303,6 +1303,54 @@ mod tests {
         );
     }
 
+    // ── Engine structure_registry prelude population (task 3540 / step-11) ───
+
+    /// `Engine::new()` must populate `structure_registry` from the prelude
+    /// modules. `Steel_AISI_1045` is a `structure def : ElasticMaterial` in
+    /// `crates/reify-compiler/stdlib/materials_fea.ri`, so after construction
+    /// it must be interned with its declared trait bound, default version 1,
+    /// and a declaration-order `field_layout`. Unknown names resolve to `None`.
+    #[test]
+    fn engine_new_populates_structure_registry_from_prelude() {
+        use reify_test_support::mocks::MockConstraintChecker;
+        let engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let reg = engine.structure_registry();
+
+        let id = reg
+            .id_for("Steel_AISI_1045")
+            .expect("Steel_AISI_1045 must be interned from the prelude");
+        let meta = reg.meta(id).expect("meta present for interned id");
+
+        assert_eq!(meta.name, "Steel_AISI_1045");
+        assert_eq!(
+            meta.version, 1,
+            "default version is 1 until @version(N) wiring (step-14)"
+        );
+        assert_eq!(
+            meta.declared_trait_bounds,
+            vec!["ElasticMaterial".to_string()],
+            "structure def Steel_AISI_1045 : ElasticMaterial"
+        );
+
+        // field_layout preserves materials_fea.ri declaration order.
+        let names: Vec<&str> = meta.field_layout.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(
+            names.len() >= 4,
+            "Steel_AISI_1045 declares at least 4 params, got {names:?}"
+        );
+        assert_eq!(
+            &names[..4],
+            &["youngs_modulus", "poisson_ratio", "density", "yield_stress"],
+            "first four params in declaration order"
+        );
+
+        assert_eq!(
+            reg.id_for("NonExistentStructure"),
+            None,
+            "unknown structure name resolves to None"
+        );
+    }
+
     // execute_realization_ops_* tests moved to engine_build.rs
 
     // ── Engine.functions accumulation regression (task 506 / 1873) ───────────
