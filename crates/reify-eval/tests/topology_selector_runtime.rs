@@ -277,6 +277,62 @@ fn angle_between_surfaces_with_literal_int_arg_falls_through_to_undef() {
     );
 }
 
+// ── Topology-selector-vocabulary v1 (task 3560) ─────────────────────────────
+//
+// Per-selector happy-path mock-kernel tests covering the 11 §3.9 selector
+// names that gained eval-time dispatch in task 3560:
+//
+//   - 1-arg list returns: edges, faces
+//   - 2-arg Range-filtered list returns: edges_by_length, faces_by_area
+//   - 3-arg predicate-filtered list returns: faces_by_normal, edges_parallel_to,
+//     edges_at_height
+//   - 2-arg topology-graph queries: adjacent_faces, shared_edges
+//   - 2-arg physical-property returns: center_of_mass, moment_of_inertia
+//
+// Each test mirrors the existing closest_point/is_on/angle_between_surfaces
+// pattern at the top of this file: parse + compile with stdlib, pre-stage a
+// MockGeometryKernel via the appropriate `with_*_result` builder, run
+// `engine.build`, and assert the cell value the post-process patches in.
+//
+// Test-fixture convention: non-trivial args use let-bound intermediates
+// (e.g. `let dir = vec3(0,0,1); let tol = 1deg; let top = faces_by_normal(body, dir, tol)`)
+// so the dispatcher resolves them via the ValueRef path — inline FunctionCall
+// args (e.g. `vec3(0,0,1)` written inline) fall through to None per the
+// literal-args contract in the dispatcher.
+
+/// `let es = edges(body)` on a structure containing `let body = box(10mm, 10mm, 10mm)`
+/// must resolve to `Value::List(vec![Int(2), Int(3), Int(4)])` when the mock
+/// kernel pre-stages `extract_edges(GeometryHandleId(1)) = [2, 3, 4]`. Pins the
+/// 1-arg list-return shape end-to-end through the dispatch.
+#[test]
+fn edges_let_resolves_to_list_of_int_via_extract_edges() {
+    let source = "structure def Bracket {\n    \
+        let body = box(10mm, 10mm, 10mm)\n    \
+        let es = edges(body)\n}";
+    let compiled = compile_no_errors(source);
+    let mut engine = engine_with_mock_kernel(|k| {
+        k.with_extracted_edges(
+            GeometryHandleId(1),
+            vec![GeometryHandleId(2), GeometryHandleId(3), GeometryHandleId(4)],
+        )
+    });
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let cell = ValueCellId::new("Bracket", "es");
+    assert_eq!(
+        result.values.get(&cell),
+        Some(&Value::List(vec![
+            Value::Int(2),
+            Value::Int(3),
+            Value::Int(4),
+        ])),
+        "Bracket.es must resolve to Value::List of three Value::Int sub-handles \
+         via kernel extract_edges, got {:?}",
+        result.values.get(&cell),
+    );
+}
+
 // ── Tessellate-path parity test ─────────────────────────────────────────────
 
 /// The post-process must run on the `tessellate_realizations` path too, so
