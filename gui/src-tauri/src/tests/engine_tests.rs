@@ -7256,10 +7256,14 @@ impl crate::engine::AutoResolveEmitter for RecordingEmitter {
     }
 }
 
-/// Step-4: No auto-resolve events should fire when the loaded source has no
-/// `auto` parameters — the emit-helper must guard on empty `resolved_params`.
+/// Step-4: No auto-resolve events should fire when the loaded source declares no
+/// `auto` parameters.
+///
+/// This test pins the "source has no auto params" branch only. The complementary
+/// "source has auto params but solver returns empty Solved" branch is covered
+/// separately by `engine_session_no_auto_resolve_emission_when_solver_returns_empty_solved`.
 #[test]
-fn engine_session_no_auto_resolve_emission_when_no_auto_params() {
+fn engine_session_no_auto_resolve_emission_when_source_has_no_auto_params() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
