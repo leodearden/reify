@@ -464,6 +464,40 @@ fn moment_of_inertia_let_resolves_to_rank2_tensor_via_kernel_reply() {
     );
 }
 
+/// `let es = edges_by_length(body, r)` with `let r = 0mm..50mm` must resolve
+/// to the filtered `Value::List` of edge sub-handles whose `EdgeLength` falls
+/// in `[0, 0.05] m`. Both staged edges (10 mm and 20 mm) are within range, so
+/// both survive. Pins the Range-arg resolution + delegation to
+/// `topology_selectors::edges_by_length`.
+#[test]
+fn edges_by_length_let_resolves_to_filtered_list_via_helper() {
+    let source = "structure def Bracket {\n    \
+        let body = box(10mm, 10mm, 10mm)\n    \
+        let r = 0mm..50mm\n    \
+        let es = edges_by_length(body, r)\n}";
+    let compiled = compile_no_errors(source);
+    let mut engine = engine_with_mock_kernel(|k| {
+        k.with_extracted_edges(
+            GeometryHandleId(1),
+            vec![GeometryHandleId(2), GeometryHandleId(3)],
+        )
+        .with_edge_length_result(GeometryHandleId(2), Value::Real(0.010))
+        .with_edge_length_result(GeometryHandleId(3), Value::Real(0.020))
+    });
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let cell = ValueCellId::new("Bracket", "es");
+    assert_eq!(
+        result.values.get(&cell),
+        Some(&Value::List(vec![Value::Int(2), Value::Int(3)])),
+        "Bracket.es must resolve to the length-filtered Value::List (both \
+         edges within [0, 50] mm) via topology_selectors::edges_by_length, \
+         got {:?}",
+        result.values.get(&cell),
+    );
+}
+
 // ── Tessellate-path parity test ─────────────────────────────────────────────
 
 /// The post-process must run on the `tessellate_realizations` path too, so
