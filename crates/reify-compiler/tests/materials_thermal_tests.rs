@@ -56,13 +56,22 @@ fn thermal_module_loads_with_no_errors() {
     );
 }
 
-// ─── (b) ThermallyCharacterized has MaterialSpec refinement and 6 Real members ─
+// ─── (b) ThermallyCharacterized has MaterialSpec refinement and 6 members ────
 
 /// ThermallyCharacterized must refine MaterialSpec and declare six required
-/// members, all typed as Real: thermal_conductivity, specific_heat,
-/// thermal_expansion, melting_point, max_service_temperature, glass_transition.
+/// members. Three composite-dimension params are now tightened to dimensioned
+/// scalar types by task #3115; the three temperature params remain Real
+/// (their tightening belongs to sibling task #3112).
+///
+/// Per-member expected type:
+///   thermal_conductivity     → Type::Scalar { dimension: THERMAL_CONDUCTIVITY }
+///   specific_heat            → Type::Scalar { dimension: SPECIFIC_HEAT }
+///   thermal_expansion        → Type::Scalar { dimension: THERMAL_EXPANSION }
+///   melting_point            → Type::Real (sibling task #3112)
+///   max_service_temperature  → Type::Real (sibling task #3112)
+///   glass_transition         → Type::Real (sibling task #3112)
 #[test]
-fn thermally_characterized_refines_material_spec_with_six_real_members() {
+fn thermally_characterized_refines_material_spec_with_six_members() {
     let module = load_stdlib_module();
 
     let tc = module
@@ -89,24 +98,39 @@ fn thermally_characterized_refines_material_spec_with_six_real_members() {
             .collect::<Vec<_>>()
     );
 
-    let expected_members = [
-        "thermal_conductivity",
-        "specific_heat",
-        "thermal_expansion",
-        "melting_point",
-        "max_service_temperature",
-        "glass_transition",
+    let expected_members: [(&str, Type); 6] = [
+        (
+            "thermal_conductivity",
+            Type::Scalar {
+                dimension: DimensionVector::THERMAL_CONDUCTIVITY,
+            },
+        ),
+        (
+            "specific_heat",
+            Type::Scalar {
+                dimension: DimensionVector::SPECIFIC_HEAT,
+            },
+        ),
+        (
+            "thermal_expansion",
+            Type::Scalar {
+                dimension: DimensionVector::THERMAL_EXPANSION,
+            },
+        ),
+        ("melting_point", Type::Real),
+        ("max_service_temperature", Type::Real),
+        ("glass_transition", Type::Real),
     ];
 
-    for expected in &expected_members {
+    for (expected_name, expected_ty) in &expected_members {
         let req = tc
             .required_members
             .iter()
-            .find(|r| r.name == *expected)
+            .find(|r| r.name == *expected_name)
             .unwrap_or_else(|| {
                 panic!(
                     "ThermallyCharacterized missing required member '{}', got: {:?}",
-                    expected,
+                    expected_name,
                     tc.required_members
                         .iter()
                         .map(|r| &r.name)
@@ -115,15 +139,13 @@ fn thermally_characterized_refines_material_spec_with_six_real_members() {
             });
         match &req.kind {
             RequirementKind::Param(ty) => assert_eq!(
-                *ty,
-                Type::Real,
-                "ThermallyCharacterized member '{}' should be Real, got {:?}",
-                expected,
-                ty
+                ty, expected_ty,
+                "ThermallyCharacterized member '{}' expected {:?}, got {:?}",
+                expected_name, expected_ty, ty
             ),
             other => panic!(
                 "ThermallyCharacterized member '{}' should be Param, got {:?}",
-                expected, other
+                expected_name, other
             ),
         }
     }
