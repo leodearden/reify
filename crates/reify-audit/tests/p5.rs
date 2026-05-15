@@ -658,6 +658,87 @@ mod tests {
         );
     }
 
+    /// Coverage gap pin — verifies the Err arm of `has_task_completed_event`
+    /// survives future refactors. No production-code change required; this
+    /// branch was added in amend e5e8932cb6 but never had a direct test.
+    ///
+    /// Trigger: open a bare `Connection::open_in_memory()` WITHOUT seeding the
+    /// schema. `stmt.prepare("SELECT 1 FROM events ...")` returns
+    /// `Err(SqliteFailure(... "no such table: events" ...))`, which exercises
+    /// the Err arm → Medium "runs.db unreadable" finding with EvidenceRef::RunsDb.
+    #[test]
+    fn runs_db_unreadable_emits_medium_breadcrumb() {
+        // Bare connection — no schema seeded, so `events` table does not exist.
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+
+        let git = MockGitOps::new();
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "8000".to_string(),
+            TaskMetadata {
+                task_id: "8000".to_string(),
+                status: "done".to_string(),
+                files: vec!["crates/x/foo.rs".to_string()],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("abc123".to_string()),
+                    note: None,
+                }),
+                title: "Wire foo into bar".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+        };
+
+        let findings = p5_phantom_done::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly one finding (runs.db unreadable); got {:?}",
+            findings
+        );
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::P5PhantomDone);
+        assert_eq!(
+            f.severity,
+            Severity::Medium,
+            "unreadable runs.db must emit Medium; got {:?}",
+            f.severity
+        );
+        assert_eq!(f.task_id, "8000");
+        assert!(
+            f.summary.to_lowercase().contains("runs.db unreadable"),
+            "summary should mention 'runs.db unreadable'; got {:?}",
+            f.summary
+        );
+        // Evidence must be RunsDb citing the events table and task_id.
+        let runsdb_ev = f.evidence.iter().find_map(|e| match e {
+            EvidenceRef::RunsDb { table, key } => Some((table, key)),
+            _ => None,
+        });
+        let (table, key) = runsdb_ev.expect("EvidenceRef::RunsDb must be present");
+        assert_eq!(table, "events");
+        assert!(
+            key.contains("8000"),
+            "RunsDb key should contain task_id '8000'; got {:?}",
+            key
+        );
+    }
+
     /// Degenerate Cargo.lock-only case: when `metadata.files` contains ONLY
     /// `Cargo.lock` (no other entries to corroborate), the `is_cargo_lock_only`
     /// guard's precondition is violated — there are no "other entries" that
