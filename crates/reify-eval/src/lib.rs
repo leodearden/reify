@@ -14,6 +14,7 @@ pub mod deps;
 pub mod dirty;
 pub mod dispatcher;
 mod engine_admin;
+pub use engine_admin::sweep_persistent_cache_at_startup;
 mod engine_build;
 mod engine_constraints;
 mod engine_edit;

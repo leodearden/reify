@@ -952,6 +952,32 @@ impl Engine {
     }
 }
 
+/// Perform the full startup-sweep of `cache_root`, binding the current build's
+/// engine-version hash so the live cache directory is never pruned.
+///
+/// This is the single engine-admin startup seam that callers (reify-cli, GUI
+/// startup) should invoke with their resolved `cache_root` before the first
+/// cache lookup. The `Engine` struct itself is cache-root-agnostic — it has no
+/// persistent-cache field — so the resolved `cache_root` is supplied by the
+/// caller, mirroring how `reify-cli` supplies `cache_root` to `evict_over_cap`.
+///
+/// Delegates to [`crate::persistent_cache::sweep_on_startup`] with
+/// [`crate::persistent_cache::ENGINE_VERSION_HASH`] as the `current_engine_version`
+/// argument, which ensures that the live cache subdir (`<cache_root>/<hash>`)
+/// is excluded from the orphan-dir prune even if its mtime is somehow old.
+///
+/// Returns the aggregated [`crate::persistent_cache::SweepReport`]. An absent
+/// or inaccessible `cache_root` is a no-op that returns
+/// `SweepReport::default()` — the sweep never fails startup.
+pub fn sweep_persistent_cache_at_startup(
+    cache_root: &std::path::Path,
+) -> crate::persistent_cache::SweepReport {
+    crate::persistent_cache::sweep_on_startup(
+        cache_root,
+        crate::persistent_cache::ENGINE_VERSION_HASH,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::ParamOverrideRejection;
@@ -1251,7 +1277,9 @@ mod tests {
         use crate::cache::{CachedResult, NodeCache, NodeId};
         use crate::deps::DependencyTrace;
         use reify_test_support::mocks::MockConstraintChecker;
-        use reify_types::{ComputeNodeId, DeterminacyState, Freshness, Value, ValueCellId, VersionId};
+        use reify_types::{
+            ComputeNodeId, DeterminacyState, Freshness, Value, ValueCellId, VersionId,
+        };
 
         let v_id = ValueCellId::new("T", "v");
         let v_node = NodeId::Value(v_id.clone());
@@ -1310,7 +1338,7 @@ mod tests {
     #[test]
     fn sweep_persistent_cache_at_startup_binds_live_engine_version() {
         use crate::persistent_cache::{
-            shard_dir, SweepReport, ENGINE_VERSION_HASH, ORPHAN_DIR_AGE, STALE_TEMPFILE_AGE,
+            ENGINE_VERSION_HASH, ORPHAN_DIR_AGE, STALE_TEMPFILE_AGE, SweepReport, shard_dir,
         };
         use std::fs::FileTimes;
         use std::time::{Duration, SystemTime};
@@ -1365,10 +1393,7 @@ mod tests {
             current_dir.exists(),
             "ENGINE_VERSION_HASH subdir must never be pruned (wrapper must pass it as current)"
         );
-        assert_eq!(
-            report.tempfiles_removed, 1,
-            "tempfiles_removed must be 1"
-        );
+        assert_eq!(report.tempfiles_removed, 1, "tempfiles_removed must be 1");
         assert_eq!(
             report.orphan_dirs_removed, 1,
             "orphan_dirs_removed must be 1"

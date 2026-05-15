@@ -494,11 +494,7 @@ fn read_shell_channels_tail<R: Read>(r: &mut R) -> io::Result<Option<ShellChanne
     let top = read_f64_slab(r, top_cap)?;
     let bottom = read_f64_slab(r, bottom_cap)?;
     let frame = read_f64_slab(r, frame_cap)?;
-    Ok(Some(ShellChannels {
-        top,
-        bottom,
-        frame,
-    }))
+    Ok(Some(ShellChannels { top, bottom, frame }))
 }
 
 /// Opt-in trait for `ComputeNode` output value types that may be persisted
@@ -1130,7 +1126,11 @@ pub fn write_entry<V: PersistentlyCacheable>(
     // non-existent .bin. write_sidecar (not touch_sidecar) is used here
     // because the .meta may not exist yet on the first write of a fresh entry
     // — write_sidecar creates-or-overwrites, covering both cases.
-    write_sidecar(&entry_meta_path(cache_root, engine_version_hash, input_hash))?;
+    write_sidecar(&entry_meta_path(
+        cache_root,
+        engine_version_hash,
+        input_hash,
+    ))?;
 
     Ok(())
 }
@@ -1156,7 +1156,7 @@ pub fn read_entry<V: PersistentlyCacheable>(
     // non-ASCII-boundary input. Computing the expected echo bytes up front also
     // means we never advance to file open with an unusable key.
     let expected_engine = cache_key_to_ascii_32(engine_version_hash)?;
-    let expected_input  = cache_key_to_ascii_32(input_hash)?;
+    let expected_input = cache_key_to_ascii_32(input_hash)?;
 
     let bin_path = entry_bin_path(cache_root, engine_version_hash, input_hash);
     // NotFound is the cache-miss signal per PRD; any other Err is an
@@ -1471,8 +1471,7 @@ pub fn evict_over_cap(
     candidates.sort_by(|a, b| {
         let sa = eviction_score(now, a.last_access, a.solve_time_ms);
         let sb = eviction_score(now, b.last_access, b.solve_time_ms);
-        sb.partial_cmp(&sa)
-            .unwrap_or(std::cmp::Ordering::Equal)
+        sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
     });
 
     // Evict candidates in order until remaining ≤ cap_bytes.
@@ -1615,8 +1614,7 @@ pub const STALE_TEMPFILE_AGE: std::time::Duration = std::time::Duration::from_se
 ///
 /// 30 days ensures an older build's cache is not discarded during rapid
 /// iteration, while still reclaiming disk space over time.
-pub const ORPHAN_DIR_AGE: std::time::Duration =
-    std::time::Duration::from_secs(30 * 24 * 3600);
+pub const ORPHAN_DIR_AGE: std::time::Duration = std::time::Duration::from_secs(30 * 24 * 3600);
 
 /// Outcome of a startup-sweep operation.
 ///
@@ -1754,10 +1752,7 @@ fn sweep_stale_tempfiles_recursive(
                 // Concurrently removed by another process — not an error.
             }
             Err(e) => {
-                tracing::debug!(
-                    "sweep_stale_tempfiles: cannot remove {:?}: {e}",
-                    path
-                );
+                tracing::debug!("sweep_stale_tempfiles: cannot remove {:?}: {e}", path);
             }
         }
     }
@@ -3743,7 +3738,7 @@ mod tests {
         write_entry(root, eng, inp, &original).unwrap();
 
         let meta_path = entry_meta_path(root, eng, inp);
-        let bin_path  = entry_bin_path(root, eng, inp);
+        let bin_path = entry_bin_path(root, eng, inp);
 
         // Sidecar must exist and contain exactly the magic byte.
         assert!(
@@ -3767,7 +3762,8 @@ mod tests {
     }
 
     #[test]
-    fn read_entry_advances_meta_sidecar_mtime_above_backdated_baseline_on_hit_and_succeeds_when_sidecar_pre_deleted() {
+    fn read_entry_advances_meta_sidecar_mtime_above_backdated_baseline_on_hit_and_succeeds_when_sidecar_pre_deleted()
+     {
         use std::time::{Duration, UNIX_EPOCH};
 
         let tmp = tempfile::TempDir::new().unwrap();
@@ -3793,7 +3789,11 @@ mod tests {
 
         // read_entry must succeed and return the value.
         let hit = read_entry::<ElasticResult>(root, eng, inp).unwrap();
-        assert_eq!(hit, Some(original.clone()), "phase 1: cache hit must return the original value");
+        assert_eq!(
+            hit,
+            Some(original.clone()),
+            "phase 1: cache hit must return the original value"
+        );
 
         // Sidecar mtime must have advanced above the backdated baseline.
         let new_mtime = std::fs::metadata(&meta_path)
@@ -3811,11 +3811,16 @@ mod tests {
         // read_entry must still succeed (data is in the .bin).
         std::fs::remove_file(&meta_path).unwrap();
         let hit2 = read_entry::<ElasticResult>(root, eng, inp).unwrap();
-        assert_eq!(hit2, Some(original), "phase 2: read must succeed even if sidecar was pre-deleted");
+        assert_eq!(
+            hit2,
+            Some(original),
+            "phase 2: read must succeed even if sidecar was pre-deleted"
+        );
     }
 
     #[test]
-    fn concurrent_write_entry_calls_for_same_input_both_succeed_and_final_read_entry_decodes_to_original_value() {
+    fn concurrent_write_entry_calls_for_same_input_both_succeed_and_final_read_entry_decodes_to_original_value()
+     {
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path();
         let eng = "0011223344556677889900aabbccddee";
@@ -3883,7 +3888,7 @@ mod tests {
         CacheEntryHeader {
             format_version: ENTRY_FORMAT_VERSION,
             engine_version_hash: *eng.as_bytes().first_chunk::<32>().unwrap(),
-            input_hash:          *inp.as_bytes().first_chunk::<32>().unwrap(),
+            input_hash: *inp.as_bytes().first_chunk::<32>().unwrap(),
             solve_time_ms: 0,
             byte_size: 0,
             written_at: 0,
@@ -3903,7 +3908,10 @@ mod tests {
             let h = make_correct_header(eng, inp);
             write_header_and_body_to_bin(root, eng, inp, &h, &[]);
             let result = read_entry::<ElasticResult>(root, eng, inp).unwrap();
-            assert_eq!(result, None, "zero body bytes must be treated as cache miss");
+            assert_eq!(
+                result, None,
+                "zero body bytes must be treated as cache miss"
+            );
         }
 
         // Sub-scenario (b): valid header + 16 bytes of garbage.
@@ -3915,19 +3923,17 @@ mod tests {
             let garbage = b"not-a-zstd-frame";
             write_header_and_body_to_bin(root, eng, inp, &h, garbage);
             let result = read_entry::<ElasticResult>(root, eng, inp).unwrap();
-            assert_eq!(result, None, "garbage body bytes must be treated as cache miss");
+            assert_eq!(
+                result, None,
+                "garbage body bytes must be treated as cache miss"
+            );
         }
     }
 
     /// Helper: write a raw CacheEntryHeader (and nothing else) to the .bin path
     /// for a given key in `root`. The caller controls the header fields, allowing
     /// sub-tests to inject mismatched echoes or other corruption.
-    fn write_raw_header_to_bin(
-        root: &Path,
-        eng: &str,
-        inp: &str,
-        header: &CacheEntryHeader,
-    ) {
+    fn write_raw_header_to_bin(root: &Path, eng: &str, inp: &str, header: &CacheEntryHeader) {
         let sd = shard_dir(root, eng, inp);
         std::fs::create_dir_all(&sd).unwrap();
         let mut f = std::fs::File::create(entry_bin_path(root, eng, inp)).unwrap();
@@ -3995,7 +4001,7 @@ mod tests {
         let stale_header = CacheEntryHeader {
             format_version: ENTRY_FORMAT_VERSION + 99,
             engine_version_hash: *eng.as_bytes().first_chunk::<32>().unwrap(),
-            input_hash:          *inp.as_bytes().first_chunk::<32>().unwrap(),
+            input_hash: *inp.as_bytes().first_chunk::<32>().unwrap(),
             solve_time_ms: 0,
             byte_size: 0,
             written_at: 0,
@@ -4007,11 +4013,15 @@ mod tests {
         drop(bin_file);
 
         let result = read_entry::<ElasticResult>(root, eng, inp).unwrap();
-        assert_eq!(result, None, "format_version mismatch must be treated as cache miss");
+        assert_eq!(
+            result, None,
+            "format_version mismatch must be treated as cache miss"
+        );
     }
 
     #[test]
-    fn read_entry_returns_ok_none_when_bin_file_is_absent_even_with_orphaned_tempfile_in_shard_dir() {
+    fn read_entry_returns_ok_none_when_bin_file_is_absent_even_with_orphaned_tempfile_in_shard_dir()
+    {
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path();
         let eng = "1111111111111111111111111111111a";
@@ -4138,8 +4148,8 @@ mod tests {
     /// With naive LRU: evict (b) → remaining = sz(a); sz(a) ≤ cap = sz(b)
     ///   → (b) evicted, (a) survives: assertion "(a) .bin must be evicted" FAILS.
     #[test]
-    fn evict_over_cap_evicts_cheap_stale_first_keeps_expensive_old_removes_meta_and_respects_engine_version_scope(
-    ) {
+    fn evict_over_cap_evicts_cheap_stale_first_keeps_expensive_old_removes_meta_and_respects_engine_version_scope()
+     {
         use std::time::{Duration, UNIX_EPOCH};
 
         let tmp = tempfile::TempDir::new().unwrap();
@@ -4251,15 +4261,10 @@ mod tests {
             for f in std::fs::read_dir(shard.path()).unwrap() {
                 let f = f.unwrap();
                 if f.path().extension().and_then(|e| e.to_str()) == Some("meta") {
-                    let stem = f
-                        .path()
-                        .file_stem()
-                        .unwrap()
-                        .to_str()
-                        .unwrap()
-                        .to_owned();
+                    let stem = f.path().file_stem().unwrap().to_str().unwrap().to_owned();
                     assert_eq!(
-                        stem, inp_b,
+                        stem,
+                        inp_b,
                         "unexpected orphaned .meta in eng_A: {:?}",
                         f.path()
                     );
@@ -4283,7 +4288,9 @@ mod tests {
         write_entry(root, eng, inp3, &v).unwrap();
 
         // Measure one entry size and set cap so only ~1 entry can remain.
-        let sz = std::fs::metadata(entry_bin_path(root, eng, inp1)).unwrap().len();
+        let sz = std::fs::metadata(entry_bin_path(root, eng, inp1))
+            .unwrap()
+            .len();
         let total = sz * 3;
         // Cap just above one entry → at least two must evict.
         let cap = sz + sz / 2;
@@ -4315,8 +4322,7 @@ mod tests {
             })
             .sum();
         assert_eq!(
-            on_disk,
-            report.remaining_bytes,
+            on_disk, report.remaining_bytes,
             "on-disk total must equal report.remaining_bytes"
         );
     }
@@ -4345,20 +4351,31 @@ mod tests {
         let cap = total + 1024;
         let report = evict_over_cap(root, eng, cap).unwrap();
 
-        assert_eq!(report.evicted_count, 0, "evicted_count must be 0 when under cap");
-        assert_eq!(report.evicted_bytes, 0, "evicted_bytes must be 0 when under cap");
+        assert_eq!(
+            report.evicted_count, 0,
+            "evicted_count must be 0 when under cap"
+        );
+        assert_eq!(
+            report.evicted_bytes, 0,
+            "evicted_bytes must be 0 when under cap"
+        );
         assert_eq!(
             report.remaining_bytes, total,
             "remaining_bytes must equal total .bin size: got {} expected {}",
-            report.remaining_bytes,
-            total
+            report.remaining_bytes, total
         );
 
         // Both .bin and .meta files must still exist.
         assert!(bin1.exists(), ".bin for inp1 must survive under-cap call");
         assert!(bin2.exists(), ".bin for inp2 must survive under-cap call");
-        assert!(entry_meta_path(root, eng, inp1).exists(), ".meta for inp1 must survive");
-        assert!(entry_meta_path(root, eng, inp2).exists(), ".meta for inp2 must survive");
+        assert!(
+            entry_meta_path(root, eng, inp1).exists(),
+            ".meta for inp1 must survive"
+        );
+        assert!(
+            entry_meta_path(root, eng, inp2).exists(),
+            ".meta for inp2 must survive"
+        );
     }
 
     #[test]
@@ -4491,12 +4508,24 @@ mod tests {
             report.remaining_bytes, real_sz,
             "remaining_bytes must equal only the real .bin size; decoys must not be counted"
         );
-        assert_eq!(report.evicted_count, 0, "nothing should be evicted when under cap");
-        assert_eq!(report.evicted_bytes, 0, "evicted_bytes must be 0 when under cap");
+        assert_eq!(
+            report.evicted_count, 0,
+            "nothing should be evicted when under cap"
+        );
+        assert_eq!(
+            report.evicted_bytes, 0,
+            "evicted_bytes must be 0 when under cap"
+        );
 
         // All decoy files must be untouched.
-        assert!(decoy_tmp.exists(), ".tmp.* in-flight file must not be touched");
-        assert!(decoy_meta.exists(), "orphaned .meta file must not be touched");
+        assert!(
+            decoy_tmp.exists(),
+            ".tmp.* in-flight file must not be touched"
+        );
+        assert!(
+            decoy_meta.exists(),
+            "orphaned .meta file must not be touched"
+        );
         assert!(decoy_txt.exists(), "non-.bin file must not be touched");
     }
 
@@ -4526,8 +4555,7 @@ mod tests {
         // Remove the orphan's sidecar to simulate a crash between write_entry's
         // persist(.bin) step and its write_sidecar(.meta) step.
         let meta_orphan = entry_meta_path(root, eng, inp_orphan);
-        std::fs::remove_file(&meta_orphan)
-            .expect("orphan .meta must be present to remove");
+        std::fs::remove_file(&meta_orphan).expect("orphan .meta must be present to remove");
 
         // Back-date the orphan .bin mtime so it is the oldest on disk and will
         // be chosen for eviction (highest LRU score via .bin mtime fallback).
@@ -4544,8 +4572,9 @@ mod tests {
 
         // Measure sizes; set cap so only one entry can survive.
         let sz_orphan = std::fs::metadata(&bin_orphan).unwrap().len();
-        let sz_normal =
-            std::fs::metadata(entry_bin_path(root, eng, inp_normal)).unwrap().len();
+        let sz_normal = std::fs::metadata(entry_bin_path(root, eng, inp_normal))
+            .unwrap()
+            .len();
         let total = sz_orphan + sz_normal;
         // cap = sz_normal → exactly one eviction required.
         let cap = sz_normal;
@@ -4634,9 +4663,8 @@ mod tests {
         let cap = sz;
 
         // (a) Must not propagate Err(NotFound).
-        let report = evict_over_cap(root, eng, cap).expect(
-            "evict_over_cap must not propagate NotFound when .bin is concurrently removed",
-        );
+        let report = evict_over_cap(root, eng, cap)
+            .expect("evict_over_cap must not propagate NotFound when .bin is concurrently removed");
 
         // (b) Exactly one eviction — credit only THIS call's work; the phantom
         //     inp1 was skipped and is NOT counted.
@@ -4850,10 +4878,7 @@ mod tests {
         let ancient = UNIX_EPOCH + Duration::from_secs(1_000);
         let meta1 = entry_meta_path(root, eng, inp1);
         {
-            let f = std::fs::File::options()
-                .write(true)
-                .open(&meta1)
-                .unwrap();
+            let f = std::fs::File::options().write(true).open(&meta1).unwrap();
             f.set_times(std::fs::FileTimes::new().set_modified(ancient))
                 .expect("must set .meta mtime for inp1");
         }
@@ -4877,7 +4902,8 @@ mod tests {
         // Exactly one entry evicted (the oldest, inp1).
         assert_eq!(report.evicted_count, 1, "evicted_count must be 1");
         assert_eq!(
-            report.remaining_bytes, 2 * sz,
+            report.remaining_bytes,
+            2 * sz,
             "remaining_bytes must equal 2 surviving entries"
         );
 
@@ -5264,7 +5290,10 @@ mod tests {
             current_dir.exists(),
             "current engine-version subdir must survive"
         );
-        assert!(live_bin.exists(), "live entry in current subdir must survive");
+        assert!(
+            live_bin.exists(),
+            "live entry in current subdir must survive"
+        );
 
         // Second call: idempotent — tree is already clean.
         let report2 = sweep_on_startup(root, current);
