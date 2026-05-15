@@ -541,3 +541,32 @@ impl JCodemunchOps for MockJCodemunchOps {
             .unwrap_or_default()
     }
 }
+
+// -----------------------------------------------------------------------
+// Shared path predicate
+// -----------------------------------------------------------------------
+
+/// Returns `true` when the path looks like a test file.
+///
+/// The crate's *single* canonical test-path predicate. A non-test caller of
+/// a `done`-task symbol proves the symbol is genuinely consumed (P1), and
+/// test-shaped paths are skipped when scanning for stub markers (P2).
+/// Defining it once here makes every detector's test-path semantics
+/// compiler-guaranteed identical instead of relying on a hand-synced copy
+/// (the prior P1/P2 duplication could silently diverge under a one-sided
+/// edit). Private to the crate root, so all detector submodules reach it via
+/// `crate::is_test_path`.
+///
+/// NOTE: `p2_consumer_stub` still carries an unmigrated private copy;
+/// repointing it at this fn is a trivial follow-up but touches a file
+/// outside this task's lock scope (escalated as a non-blocking cleanup).
+fn is_test_path(p: &str) -> bool {
+    // `tests/` with and without a leading slash covers both repo-root paths
+    // (e.g. `tests/foo.rs`) and nested paths (e.g. `crates/x/tests/foo.rs`).
+    p.starts_with("tests/")
+        || p.contains("/tests/")
+        || p.ends_with("_test.rs")
+        || p.contains("__tests__/")
+        || p.contains(".test.")  // JS/TS: foo.test.ts
+        || p.contains(".spec.")  // JS/TS: foo.spec.ts
+}

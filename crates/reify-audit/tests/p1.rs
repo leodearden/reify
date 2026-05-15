@@ -514,6 +514,138 @@ mod tests {
             f.evidence
         );
     }
+
+    /// Coverage for the three per-symbol false-positive guards the required
+    /// suite never exercises (the `changed_symbol` helper leaves them at
+    /// their orphan-candidate defaults, so no other test flips them). One
+    /// done task past grace, four symbols, zero workspace refs:
+    ///   - `stdlib_widget` under `crates/reify-stdlib/` → scope-excluded;
+    ///   - `dead_widget` with `has_allow_dead_code` → opt-out;
+    ///   - `cfg_test_widget` with `has_cfg_test` → test-only;
+    ///   - `live_widget` (no guard) → the only surviving finding.
+    ///
+    /// Inverting any guard boolean or changing the stdlib prefix makes the
+    /// count != 1 and fails here — catching exactly the regressions that
+    /// cause audit false-positive floods.
+    #[test]
+    fn per_symbol_guards_suppress_individually() {
+        let done_at = NOW - 15 * DAY;
+
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+        let mut jc = MockJCodemunchOps::new();
+        jc.set_changed_symbols(
+            "main",
+            done_at,
+            vec![
+                changed_symbol("stdlib_widget", "crates/reify-stdlib/src/prelude.rs"),
+                ChangedSymbol {
+                    has_allow_dead_code: true,
+                    ..changed_symbol("dead_widget", "crates/reify-x/src/dead.rs")
+                },
+                ChangedSymbol {
+                    has_cfg_test: true,
+                    ..changed_symbol("cfg_test_widget", "crates/reify-x/src/cfgt.rs")
+                },
+                changed_symbol("live_widget", "crates/reify-x/src/live.rs"),
+            ],
+        );
+        for name in ["stdlib_widget", "dead_widget", "cfg_test_widget", "live_widget"] {
+            jc.set_find_references(name, vec![]);
+        }
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "7100".to_string(),
+            done_meta("7100", done_at, Some("docs/x.md")),
+        );
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: Some(NOW),
+        };
+
+        let findings = p1_producer_orphan::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "only live_widget should survive the per-symbol guards; got {:?}",
+            findings
+        );
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::P1ProducerOrphan);
+        assert!(
+            f.evidence.iter().any(|e| matches!(
+                e,
+                EvidenceRef::File { path } if path == "crates/reify-x/src/live.rs"
+            )),
+            "surviving finding must cite live.rs; got {:?}",
+            f.evidence
+        );
+    }
+
+    /// Pins the grace-window boundary to the design's strict ">14 days"
+    /// wording (`f-infra-design.md` §5 P1 line 83). Three done tasks, one
+    /// symbol each, zero refs, ages straddling the boundary:
+    ///   - exactly `14 * DAY` old  → Low (the boundary is *inside* the window);
+    ///   - `14 * DAY - 1` old      → Low;
+    ///   - `14 * DAY + 1` old      → Medium.
+    ///
+    /// A `>=` regression (Medium at exactly 14 days) fails the first case.
+    #[test]
+    fn grace_window_boundary_is_strict() {
+        const WINDOW: i64 = 14 * DAY;
+
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+
+        let cases = [
+            (WINDOW, "at_boundary", "crates/reify-x/src/at.rs", Severity::Low),
+            (WINDOW - 1, "inside_window", "crates/reify-x/src/in.rs", Severity::Low),
+            (WINDOW + 1, "past_window", "crates/reify-x/src/past.rs", Severity::Medium),
+        ];
+
+        for (age, name, file, expected) in cases {
+            let done_at = NOW - age;
+            let mut jc = MockJCodemunchOps::new();
+            jc.set_changed_symbols("main", done_at, vec![changed_symbol(name, file)]);
+            jc.set_find_references(name, vec![]);
+
+            let mut task_metadata = HashMap::new();
+            task_metadata.insert(name.to_string(), done_meta(name, done_at, Some("docs/x.md")));
+
+            let ctx = AuditContext {
+                project_root: PathBuf::from("/tmp/fake-project"),
+                conn: &conn,
+                git: &git,
+                jcodemunch: &jc,
+                task_metadata,
+                target_task_id: None,
+                window: None,
+                now: Some(NOW),
+            };
+
+            let findings = p1_producer_orphan::check(&ctx);
+            assert_eq!(
+                findings.len(),
+                1,
+                "{}: expected exactly one finding; got {:?}",
+                name,
+                findings
+            );
+            assert_eq!(
+                findings[0].severity, expected,
+                "{}: age {}s vs window {}s → expected {:?}; got {:?}",
+                name, age, WINDOW, expected, findings[0].severity
+            );
+        }
+    }
 }
 
 } // mod p1

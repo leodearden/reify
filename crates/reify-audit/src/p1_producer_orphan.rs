@@ -16,40 +16,34 @@
 //! - Per symbol: `crates/reify-stdlib/` scope-exclude; `#[allow(dead_code)]`
 //!   / `#[cfg(test)]` attribute opt-out; a non-blank `// G-allow:` marker;
 //!   a non-test workspace caller.
-//! - Surviving symbols: severity is Medium past the 14-day grace window,
-//!   Low within it ("log only").
+//! - Surviving symbols: severity is Medium only once *strictly more than*
+//!   14 days have elapsed since the done-flip (design §5 P1, line 83:
+//!   ">14 days"); at exactly the boundary and anywhere inside the window it
+//!   is Low ("log only").
 
 use crate::{AuditContext, ChangedSymbol, EvidenceRef, Finding, Pattern, Severity};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// 14-day grace window (per `f-infra-design.md` §5 P1): a producer-orphan is
-/// flagged Medium only after this elapses since the done-flip; within it the
-/// finding is downgraded to Low ("log only").
+/// 14-day grace window. `f-infra-design.md` §5 P1 line 83 specifies a
+/// producer-orphan is "flagged only if **>14 days** have passed since
+/// done-flip", so the comparison is *strict*: the finding is Medium only
+/// once the elapsed time exceeds this many seconds. At exactly the boundary
+/// (`age == GRACE_WINDOW_SECS`) and anywhere inside the window the finding
+/// is downgraded to Low ("log only").
 const GRACE_WINDOW_SECS: i64 = 14 * 86_400;
-
-/// Returns `true` when the path looks like a test file that should be
-/// excluded when deciding whether a workspace caller exists (false-positive
-/// guard per `f-infra-design.md` §5 P1).
-///
-/// VERBATIM copy of `p2_consumer_stub::is_test_path` — that helper is private
-/// (not importable), so mirroring its body byte-for-byte keeps the crate's
-/// two detectors' test-path semantics provably identical.
-fn is_test_path(p: &str) -> bool {
-    // `tests/` with and without a leading slash covers both repo-root paths
-    // (e.g. `tests/foo.rs`) and nested paths (e.g. `crates/x/tests/foo.rs`).
-    p.starts_with("tests/")
-        || p.contains("/tests/")
-        || p.ends_with("_test.rs")
-        || p.contains("__tests__/")
-        || p.contains(".test.")  // JS/TS: foo.test.ts
-        || p.contains(".spec.")  // JS/TS: foo.spec.ts
-}
 
 /// Returns `true` when some `pending`/`in-progress` task's `consumer_ref`
 /// points at `producer_prd` — i.e. a downstream consumer is already queued,
 /// so the producer's symbols are not truly orphaned (design §5 P1
 /// false-positive guard). Status strings follow Taskmaster's canonical form
 /// (`in-progress`, hyphenated); the T-4 CLI normalizes at the boundary.
+// TODO(perf): this rescans every task for each done producer that has a
+//   `prd`, so the producer↔consumer correlation is O(tasks²). Harmless at
+//   solo-OSS task volumes (the audit window is ~14 days of done-flips), but
+//   if `task_metadata` ever grows, precompute a `HashSet<&str>` of the
+//   `consumer_ref`s of pending/in-progress tasks once before the producer
+//   loop and do an O(1) membership check here. Not required at current
+//   scale. Reference: docs/architecture-audit/f-infra-design.md §5 P1.
 fn has_pending_consumer(ctx: &AuditContext, producer_prd: &str) -> bool {
     ctx.task_metadata.values().any(|t| {
         matches!(t.status.as_str(), "pending" | "in-progress")
@@ -126,13 +120,15 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
                 .jcodemunch
                 .find_references(&symbol.name)
                 .iter()
-                .any(|r| !is_test_path(&r.file));
+                .any(|r| !crate::is_test_path(&r.file));
             if has_non_test_caller {
                 continue;
             }
 
             let age = now_secs.saturating_sub(done_at);
-            let (severity, summary) = if age >= GRACE_WINDOW_SECS {
+            // Strict `>` per design §5 P1 line 83 (">14 days"): at exactly
+            // the boundary the finding stays Low (still inside the window).
+            let (severity, summary) = if age > GRACE_WINDOW_SECS {
                 (
                     Severity::Medium,
                     format!(
