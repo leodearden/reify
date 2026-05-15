@@ -261,7 +261,10 @@ fn try_resolve_cross_sub_geometry_value_ref(
     if scope.sub_member_is_cross_sub_geometry_or_forward_declared(sub_name, member) {
         let scoped_entity = format!("{}.{}", scope.entity_name, sub_name);
         let scoped_id = ValueCellId::new(&scoped_entity, member);
-        Some(CompiledExpr::value_ref(scoped_id, Type::Geometry))
+        // Emit the typed discriminator (task-3508) so the bare-let drop site in
+        // entity.rs can recognise this synthetic shape via pattern match on the
+        // variant, rather than the fragile `entity.contains('.')` heuristic.
+        Some(CompiledExpr::cross_sub_geometry_ref(scoped_id, Type::Geometry))
     } else {
         None
     }
