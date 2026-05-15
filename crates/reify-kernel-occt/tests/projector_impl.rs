@@ -92,3 +92,22 @@ fn occt_projector_project_onto_edge_returns_distance_5_sqrt_2_witness_for_box_ed
         }
     }
 }
+
+/// `OcctProjector::vertex_position` snaps to the vertex's exact stored
+/// coordinates (PRD §3.4 "BRep_Tool::Pnt direct; no closest-point"). Pin a
+/// non-origin location so a buggy "always-zero" impl can't pass.
+#[test]
+fn occt_projector_vertex_position_returns_exact_stored_coordinates() {
+    let mut kernel = OcctKernel::new();
+    let vertex_id = kernel.store_vertex_at_for_test(1.5, -2.5, 3.5);
+
+    let projector = OcctProjector::new(&kernel);
+    match projector.vertex_position(vertex_id) {
+        Ok([x, y, z]) => {
+            assert!((x - 1.5).abs() < 1e-9, "expected x≈1.5, got {x}");
+            assert!((y - (-2.5)).abs() < 1e-9, "expected y≈-2.5, got {y}");
+            assert!((z - 3.5).abs() < 1e-9, "expected z≈3.5, got {z}");
+        }
+        Err(e) => panic!("expected Ok([1.5, -2.5, 3.5]), got Err({e:?})"),
+    }
+}

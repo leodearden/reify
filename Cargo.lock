@@ -4618,6 +4618,7 @@ dependencies = [
  "cxx-build",
  "inventory",
  "reify-kernel-occt",
+ "reify-mesh-morph",
  "reify-test-support",
  "reify-types",
  "serde_json",
