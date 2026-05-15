@@ -460,11 +460,12 @@ structure S {
 
 /// `self.bolts.nonexistent` bare-collection-sub-through-self anti-cascade contract.
 ///
-/// `self.bolts.nonexistent` hits `expr.rs:1334` (the `_` arm of the `fallback_type`
-/// match inside the collection-sub `MemberAccess` branch, reached via the
-/// `MemberAccess { object: MemberAccess { Ident("self"), sub_name }, member }` path).
+/// `self.bolts.nonexistent` hits the `_` arm of the `fallback_type` match inside
+/// the collection-sub `MemberAccess` branch, reached via the
+/// `MemberAccess { object: MemberAccess { Ident("self"), sub_name }, member }` path.
 ///
-/// Before step-2 fixes expr.rs:1334, `unwrap_or(Type::Real)` causes the literal to
+/// Before step-2 fixes the `_` arm of the `fallback_type` match (in `compile_expr`'s
+/// `self.<collection-sub>.<member>` branch), `unwrap_or(Type::Real)` causes the literal to
 /// carry `Type::Real` → BinOp sees `Real + Real = Real` → `result_type = Real ≠ Error`
 /// → RED.
 ///
