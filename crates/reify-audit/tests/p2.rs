@@ -304,6 +304,83 @@ mod tests {
         assert_eq!(findings_b[0].pattern, Pattern::P2ConsumerStub);
     }
 
+    /// Pins the UTF-8-safety invariant for snippet truncation.
+    ///
+    /// A `+` line that straddles byte 60 with a multi-byte UTF-8 character
+    /// (`…` = U+2026 = `e2 80 a6`, 3 bytes) must NOT cause a panic inside
+    /// the truncation branch.  Before the fix, `&snippet[..60]` panics with
+    /// "byte index 60 is not a char boundary".
+    ///
+    /// The prefix is 22 bytes, padding is 36 bytes → cumulative 58 bytes;
+    /// the `…` glyph occupies bytes 58, 59, 60 so byte 60 is mid-char.
+    #[test]
+    fn truncates_long_snippet_on_char_boundary_without_panicking() {
+        let prefix = "// TODO(impl pending) "; // 22 bytes; matches TODO(pending) family
+        let padding = "x".repeat(36); // 36 ASCII bytes → cumulative 58 bytes
+        let stub_line = format!(
+            "{prefix}{padding}\u{2026}and trailing content to exceed sixty bytes total here."
+        );
+        // Self-documenting precondition asserts so the construction is
+        // robust to future edits.
+        assert_eq!(
+            prefix.len() + padding.len(),
+            58,
+            "precondition: boundary starts at byte 58"
+        );
+        assert!(
+            stub_line.len() > 60,
+            "precondition: stub_line must exceed 60 bytes"
+        );
+        assert!(
+            !stub_line.is_char_boundary(60),
+            "precondition: byte 60 must be mid-char (inside the U+2026 glyph)"
+        );
+
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let mut git = MockGitOps::new();
+        git.set_diff_added_lines(
+            "main",
+            "task/9020",
+            "src/foo.rs",
+            vec![(7, stub_line.clone())],
+        );
+
+        let mut task_metadata = HashMap::new();
+        task_metadata
+            .insert("9020".to_string(), benign_meta("9020", vec!["src/foo.rs".to_string()]));
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+        };
+
+        // Before the fix this panics with "byte index 60 is not a char boundary".
+        let findings = p2_consumer_stub::check(&ctx);
+
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly 1 finding; got {:?}",
+            findings
+        );
+        assert_eq!(findings[0].pattern, Pattern::P2ConsumerStub);
+        assert_eq!(findings[0].severity, Severity::Medium);
+        assert!(
+            findings[0].summary.contains("src/foo.rs"),
+            "summary must reference the path; got: {}",
+            findings[0].summary
+        );
+        assert!(
+            findings[0].summary.contains("TODO(pending)"),
+            "summary must include the pattern label; got: {}",
+            findings[0].summary
+        );
+    }
+
 } // mod tests
 
 } // mod p2
