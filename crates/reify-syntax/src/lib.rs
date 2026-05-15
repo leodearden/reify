@@ -733,11 +733,12 @@ pub struct TypeParamDecl {
     pub span: SourceSpan,
 }
 
-/// A function parameter: `w: Scalar`
+/// A function parameter: `w: Scalar` or `w: Scalar = default_expr`
 #[derive(Debug, Clone)]
 pub struct FnParam {
     pub name: String,
     pub type_expr: TypeExpr,
+    pub default: Option<Expr>,
     pub span: SourceSpan,
 }
 

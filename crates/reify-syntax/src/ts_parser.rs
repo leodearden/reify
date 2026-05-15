@@ -1161,9 +1161,14 @@ impl<'a> Lowering<'a> {
         let type_node = node.child_by_field_name("type")?;
         let type_expr = self.lower_type_expr_node(type_node);
 
+        let default = node
+            .child_by_field_name("default")
+            .and_then(|d| self.lower_expr(d));
+
         Some(FnParam {
             name,
             type_expr,
+            default,
             span: self.span(node),
         })
     }
