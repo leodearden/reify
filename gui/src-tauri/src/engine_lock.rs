@@ -25,13 +25,18 @@ fn panic_message(payload: &(dyn Any + Send)) -> String {
 ///
 /// # Poison recovery
 ///
-/// `EngineSession` uses an atomic-commit invariant: `commit_state` is the
-/// only mutation point for core fields (`engine`, `compiled`, `source_map`,
-/// `file_path`, `last_check`, `module_name`).  A panic inside `check()` or
-/// `build_gui_state` leaves those core fields unchanged; other fields are
-/// caches that tolerate partial state after a panic.  Recovering via
-/// `PoisonError::into_inner()` is therefore safe — the inner state is
-/// consistent even after a poisoning panic.
+/// `EngineSession`'s six core fields (`engine`, `compiled`, `source_map`,
+/// `file_path`, `last_check`, `module_name`) live inside a private `CoreState`
+/// struct whose fields are strictly private — direct field assignment outside
+/// `CoreState`'s impl fails to compile.  Mutation is exposed only through:
+/// - `commit_state` — four-field atomic commit after a successful compile cycle
+/// - `commit_check` — single-field commit for `last_check` (used by `set_parameter`)
+/// - `commit_file_path` — single-field commit for `file_path` (used by `load_file`)
+///
+/// A panic inside `check()` or `build_gui_state` therefore leaves core fields
+/// at a consistent committed state; other fields are caches that tolerate
+/// partial state after a panic.  Recovering via `PoisonError::into_inner()` is
+/// therefore safe — the inner state is consistent even after a poisoning panic.
 ///
 /// # No-poison guarantee
 ///
@@ -43,10 +48,11 @@ where
     F: FnOnce(&mut EngineSession) -> T,
 {
     // Recover from any pre-existing poisoning via into_inner().
-    // Safety: EngineSession's atomic-commit invariant — commit_state is the
-    // only mutation point for core fields; other fields are caches that
-    // tolerate partial state after a panic.  The inner state is therefore
-    // consistent even if the mutex was poisoned by an external panic.
+    // Safety: CoreState's fields are strictly private; mutation is only possible
+    // via the three commit methods (commit_state, commit_check, commit_file_path),
+    // each of which is atomic with respect to the fields it owns.  Other fields
+    // on EngineSession are caches that tolerate partial state after a panic.
+    // The inner state is therefore consistent even if the mutex was poisoned.
     let mut guard = engine.lock().unwrap_or_else(|p| p.into_inner());
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&mut guard)));
     // Explicit drop BEFORE the match: releases the lock as soon as possible

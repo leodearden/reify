@@ -107,6 +107,24 @@ mod core_state {
             self.file_path.as_deref()
         }
 
+        /// Split borrow: return an immutable ref to `compiled` alongside a mutable
+        /// ref to `engine`.
+        ///
+        /// The two return values come from disjoint struct fields (`compiled` and
+        /// `engine`), so the compiler proves they do not alias.  This method
+        /// surfaces that split through the encapsulation boundary so callers can
+        /// hold both simultaneously — something that would otherwise require direct
+        /// field access (which the private-field invariant forbids).
+        ///
+        /// Typical use: callers that need `compiled` immutably AND need to call a
+        /// mutating method on `engine` (e.g. `build`, `tessellate_snapshot`) in the
+        /// same expression or closely-coupled block.
+        pub(super) fn split_compiled_and_engine_mut(
+            &mut self,
+        ) -> (Option<&CompiledModule>, &mut Engine) {
+            (self.compiled.as_ref(), &mut self.engine)
+        }
+
         /// Atomically commit a fresh `CheckResult` into `last_check`.
         ///
         /// This is the **single** write-point for `last_check` used by
@@ -288,16 +306,19 @@ pub(crate) struct CompileFailure {
 /// returns `None`, and `get_diagnostics` / `get_source_location` degrade
 /// gracefully rather than panicking.
 ///
-/// **Current safe mutation sites:** `load_from_source` and `update_source` both
-/// delegate all field writes to `commit_state`, which is the single atomic commit
-/// point.  Neither method touches `compiled`/`module_name`/`source_map` until
-/// after parse, compile, and check have all succeeded.
+/// **Mutation is type-enforced via `CoreState`:** the six core fields are held
+/// in a private sub-struct whose fields have no visibility marker, so any direct
+/// field assignment from outside `CoreState`'s impl fails to compile.  Mutation
+/// is exposed only through `commit_state` (four-field atomic commit after a
+/// successful compile cycle), `commit_check` (single-field for `last_check`
+/// after `set_parameter`), and `commit_file_path` (single-field for `file_path`
+/// after `load_file`).  See `engine_lock.rs` for the poison-recovery rationale.
 pub struct EngineSession {
     /// The six core fields protected by the type system via `CoreState`.
     ///
-    /// Direct field mutation from outside `CoreState`'s impl fails to compile once
-    /// fields are made strictly private in the final refactor step.  Use
-    /// `commit_state`, `commit_check`, or `commit_file_path` for mutation.
+    /// Fields are strictly private — direct assignment from outside `CoreState`'s
+    /// impl fails to compile.  Use `commit_state`, `commit_check`, or
+    /// `commit_file_path` for mutation.
     core: CoreState,
     /// In-memory cache for `get_def_preview` results.
     ///
@@ -1006,7 +1027,7 @@ impl EngineSession {
             .to_owned();
         let module_name = module_name_owned.as_str();
 
-        let (parsed, compiled) = if let Some(entry_path) = self.core.file_path.clone() {
+        let (parsed, compiled) = if let Some(entry_path) = self.core.file_path().map(|p| p.to_path_buf()) {
             // Multi-file flow — same as load_file. Preserves the import graph
             // resolved at load_file time so dirty-buffer edits don't silently drop
             // imports.  Both module_name and the project-root anchor come from
@@ -1108,12 +1129,12 @@ impl EngineSession {
 
     /// Export geometry to a file.
     pub fn export(&mut self, format: ExportFormat, path: &Path) -> Result<(), String> {
-        // Use direct field access so borrow checker can split the `core.compiled`
-        // (immutable) and `core.engine` (mutable for build) borrows simultaneously.
-        let compiled = self.core.compiled.as_ref()
-            .ok_or_else(|| "No module loaded".to_string())?;
+        // split_compiled_and_engine_mut surfaces the compiled-immutable /
+        // engine-mutable disjoint-field borrow through the encapsulation boundary.
+        let (compiled_opt, engine) = self.core.split_compiled_and_engine_mut();
+        let compiled = compiled_opt.ok_or_else(|| "No module loaded".to_string())?;
 
-        let result = self.core.engine.build(compiled, format);
+        let result = engine.build(compiled, format);
 
         for diag in &result.diagnostics {
             if diag.severity == Severity::Error {
@@ -1235,66 +1256,76 @@ impl EngineSession {
 
     /// Build the full GUI state from the current engine state.
     pub fn build_gui_state(&mut self) -> Result<GuiState, String> {
-        // Use direct field access so borrow checker can split the core.compiled /
-        // core.last_check (immutable) and core.engine (mutable) borrows later.
-        let (compiled, check) = match (self.core.compiled.as_ref(), self.core.last_check.as_ref()) {
-            (Some(c), Some(k)) => (c, k),
-            _ => {
-                // When `compiled` is `None` (the session has never completed a successful
-                // parse+compile+check cycle), surface the most recent failure diagnostics
-                // so users see the error in the diagnostics panel rather than a silent
-                // empty viewport.
-                //
-                // `compile_failure` is populated by `load_from_source`, `update_source`,
-                // and `load_file` on the failure path and cleared to `None` by
-                // `commit_state` on every successful cycle — so here it always reflects
-                // exactly the most-recent failed-load error (or is `None` when no load has
-                // been attempted yet).
-                //
-                // Only `ColdStart` failures belong on this branch: a `LiveEdit` failure
-                // can only be stored when `compiled` was `Some` at failure time, which
-                // means `compiled` is still `Some` now — so this branch (`compiled is None`)
-                // can only carry a `ColdStart` failure or `None`.
-                //
-                // `last_check is None` while `compiled is Some` cannot occur with the
-                // current `commit_state` atomic-commit (both fields are assigned together),
-                // so this branch is reached only when `compiled` has never been set.
-                return Ok(GuiState {
-                    meshes: Vec::new(),
-                    values: Vec::new(),
-                    constraints: Vec::new(),
-                    files: Vec::new(),
-                    tessellation_diagnostics: Vec::new(),
-                    compile_diagnostics: match &self.compile_failure {
-                        Some(f) if f.kind == CompileFailureKind::ColdStart => f.diags.clone(),
-                        Some(f) => {
-                            // `compiled` is `None` on this branch, so only `ColdStart`
-                            // failures are expected.  A `LiveEdit` failure here means
-                            // `self.compiled` was set back to `None` without clearing
-                            // `compile_failure`, which is an invariant violation.
-                            debug_assert!(
-                                matches!(f.kind, CompileFailureKind::ColdStart),
-                                "LiveEdit failure stored while compiled is None — invariant broken; kind = {:?}",
-                                f.kind
-                            );
-                            f.diags.clone()
-                        }
-                        None => Vec::new(),
-                    },
-                });
-            }
-        };
+        // When `compiled` is `None` (the session has never completed a successful
+        // parse+compile+check cycle), surface the most recent failure diagnostics
+        // so users see the error in the diagnostics panel rather than a silent
+        // empty viewport.
+        //
+        // `compile_failure` is populated by `load_from_source`, `update_source`,
+        // and `load_file` on the failure path and cleared to `None` by
+        // `commit_state` on every successful cycle — so here it always reflects
+        // exactly the most-recent failed-load error (or is `None` when no load has
+        // been attempted yet).
+        //
+        // Only `ColdStart` failures belong on this branch: a `LiveEdit` failure
+        // can only be stored when `compiled` was `Some` at failure time, which
+        // means `compiled` is still `Some` now — so this branch (`compiled is None`)
+        // can only carry a `ColdStart` failure or `None`.
+        //
+        // `last_check is None` while `compiled is Some` cannot occur with the
+        // current `commit_state` atomic-commit (both fields are assigned together),
+        // so this branch is reached only when `compiled` has never been set.
+        if self.core.compiled().is_none() || self.core.last_check().is_none() {
+            return Ok(GuiState {
+                meshes: Vec::new(),
+                values: Vec::new(),
+                constraints: Vec::new(),
+                files: Vec::new(),
+                tessellation_diagnostics: Vec::new(),
+                compile_diagnostics: match &self.compile_failure {
+                    Some(f) if f.kind == CompileFailureKind::ColdStart => f.diags.clone(),
+                    Some(f) => {
+                        // `compiled` is `None` on this branch, so only `ColdStart`
+                        // failures are expected.  A `LiveEdit` failure here means
+                        // `self.compiled` was set back to `None` without clearing
+                        // `compile_failure`, which is an invariant violation.
+                        debug_assert!(
+                            matches!(f.kind, CompileFailureKind::ColdStart),
+                            "LiveEdit failure stored while compiled is None — invariant broken; kind = {:?}",
+                            f.kind
+                        );
+                        f.diags.clone()
+                    }
+                    None => Vec::new(),
+                },
+            });
+        }
 
         // Build values and constraints via shared helpers (also used by
-        // build_preview_gui_state) so both paths stay in sync.
-        let values = build_values(compiled, check, Some(&self.core.engine));
-        let constraints = build_constraints(compiled, check);
+        // build_preview_gui_state) so both paths stay in sync.  Scoped block so
+        // the immutable borrows on `compiled` and `check` are released before the
+        // mutable engine borrow in the tessellation step below.
+        let (values, constraints) = {
+            let compiled = self.core.compiled().unwrap();
+            let check = self.core.last_check().unwrap();
+            (
+                build_values(compiled, check, Some(self.core.engine())),
+                build_constraints(compiled, check),
+            )
+        };
 
         // Build meshes (from tessellation of realizations) and capture any
         // tessellation diagnostics (e.g. OCCT kernel errors).
-        // Direct field access so borrow checker sees core.compiled (immutable) and
-        // core.engine (mutable) as distinct borrows.
-        let (meshes, tessellation_diagnostics) = match self.core.engine.tessellate_snapshot(compiled) {
+        // split_compiled_and_engine_mut surfaces the compiled-immutable /
+        // engine-mutable disjoint-field borrow through the encapsulation boundary.
+        // Scoped so the mutable engine borrow is released before resolve_source()
+        // is called inside the diagnostics-mapping branch below.
+        let tess_result = {
+            let (compiled, engine) = self.core.split_compiled_and_engine_mut();
+            compiled.and_then(|c| engine.tessellate_snapshot(c))
+        };
+
+        let (meshes, tessellation_diagnostics) = match tess_result {
             Some(result) => {
                 // Map tessellation diagnostics → DiagnosticInfo and emit backend
                 // log entries so headless/CI runs still surface these via tracing.
@@ -2904,9 +2935,10 @@ impl EngineSession {
     ///
     /// No-op when no module is loaded.
     pub(crate) fn build_for_freshness_test(&mut self) {
-        if let Some(compiled) = self.core.compiled.as_ref().cloned() {
+        if let Some(compiled) = self.core.compiled().cloned() {
             // Discards the BuildResult — callers read freshness via get_entity_tree().
-            let _ = self.core.engine.build(&compiled, ExportFormat::Step);
+            // compiled() borrow is released after cloned(), so engine_mut() is safe.
+            let _ = self.core.engine_mut().build(&compiled, ExportFormat::Step);
         }
     }
 
