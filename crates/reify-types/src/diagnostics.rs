@@ -1783,6 +1783,40 @@ mod tests {
         let s = serde_json::to_string(&DiagnosticCode::KernelPragmaUnsatisfiable).unwrap();
         assert_eq!(s, "\"KernelPragmaUnsatisfiable\"");
     }
+
+    // --- PinnedKernelMissing tests (task 3434 — E_PINNED_KERNEL_MISSING) ---
+    // Pairs with the dispatcher's pinned-kernel-missing diagnostic in
+    // `crates/reify-eval/src/dispatcher.rs::pinned_kernel_missing_diagnostic`
+    // (PRD `docs/prds/v0_3/multi-kernel-phase-3.md` §8 task γ + §5 "Pin name
+    // not in registry"). Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug
+    // derives are already covered by `diagnostic_code_derives` above; only
+    // the variant-specific round-trip and serde wire-format tests are added
+    // here.
+
+    /// `DiagnosticCode::PinnedKernelMissing` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` carrying both the expected
+    /// `Severity::Error` and `Some(DiagnosticCode::PinnedKernelMissing)`.
+    /// Pins the error-severity contract and variant existence for the
+    /// reify.toml pin-not-registered failure (PRD §5 "error; engine
+    /// refuses to start").
+    #[test]
+    fn diagnostic_code_pinned_kernel_missing_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::PinnedKernelMissing);
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::PinnedKernelMissing));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::PinnedKernelMissing`
+    /// serializes as `"PinnedKernelMissing"` (PascalCase, from
+    /// `rename_all = "PascalCase"`). Pins the wire-format contract for
+    /// downstream consumers (LSP / MCP).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_pinned_kernel_missing_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::PinnedKernelMissing).unwrap();
+        assert_eq!(s, "\"PinnedKernelMissing\"");
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
