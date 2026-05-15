@@ -1336,7 +1336,8 @@ pub(crate) fn compile_expr_guarded(
                         // root cause.  We must NOT fall back to Type::Real here: doing so lets
                         // downstream BinOp consumers see `Real + Real = Real` and swallow the
                         // error, defeating the Type::Error anti-cascade policy described in
-                        // `make_poison_literal` (expr.rs:76-85) and ty.rs:123-131.
+                        // the `make_poison_literal` doc-block in this module and the
+                        // `infer_binop_type` Type::Error short-circuit in type_compat.rs.
                         // `unwrap_or(Type::Error)` ensures the literal carries the poison
                         // sentinel so `infer_binop_type` short-circuits correctly.
                         let fallback_type = match member.as_str() {
