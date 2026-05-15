@@ -3,6 +3,7 @@ mod commands_tests;
 mod diff_tests;
 mod engine_lock_tests;
 mod engine_tests;
+mod event_bus_tests;
 mod kernel_status_tests;
 mod lsp_bridge_tests;
 mod mcp_context_tests;

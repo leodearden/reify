@@ -14,6 +14,8 @@ pub mod commands;
 pub mod debug;
 #[cfg(feature = "gui")]
 pub mod debug_server;
+#[cfg(feature = "gui")]
+pub mod event_bus;
 pub mod diff;
 pub mod engine;
 pub mod engine_lock;
