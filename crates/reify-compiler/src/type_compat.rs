@@ -240,6 +240,35 @@ pub fn type_compatible(param_ty: &Type, arg_ty: &Type) -> bool {
     false
 }
 
+/// Check that a function-param default expression's type is compatible with the
+/// declared parameter type.
+///
+/// **Policy: strict equality, not bidirectional `type_compatible`.**
+///
+/// Call-site overload resolution (`resolve_function_overload`) and
+/// `try_default_padding`'s prefix check both use exact type equality — `f(1)` is
+/// already rejected today for `fn f(x: Real)` because `Type::Int != Type::Real`.
+/// A default value is conceptually inserted at the padded call site, so the
+/// definition-site check must be at least as strict as the call-site check;
+/// otherwise a default could synthesize an argument that an explicit call would
+/// refuse, creating a type-system inconsistency.
+///
+/// **Anti-cascade guard.** If either type is `Type::Error` (poison sentinel from
+/// a failed `compile_expr`), silently accept — the root-cause diagnostic was
+/// already emitted. Mirrors the same short-circuit in `implicitly_converts_to`
+/// and `type_compatible` (task-448 / task-1918 cascade-safety contract).
+///
+/// Note: `param_ty` is always a concrete resolved type (never `Type::Error`) in
+/// production — `resolve_type_expr_with_aliases` always falls back to `Type::Real`
+/// on failure. The `param_ty.is_error()` branch is therefore dead code in practice
+/// but is included for symmetry and belt-and-braces safety.
+pub(crate) fn fn_param_default_compatible(param_ty: &Type, default_ty: &Type) -> bool {
+    if param_ty.is_error() || default_ty.is_error() {
+        return true;
+    }
+    param_ty == default_ty
+}
+
 /// Result of attempting to resolve a function call against user-defined functions.
 pub(crate) enum OverloadResolution<'a> {
     /// Exactly one user-defined function matches by name, arity, and exact param types.

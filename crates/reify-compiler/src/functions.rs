@@ -46,6 +46,40 @@ pub(crate) fn compile_function(
         })
         .collect();
 
+    // Type-check default expressions against their declared param types.
+    //
+    // Uses strict equality (via `fn_param_default_compatible`) matching the policy
+    // in `resolve_function_overload` and `try_default_padding`'s prefix check —
+    // a default value is conceptually inserted at the padded call site, so the
+    // definition-site check must be at least as strict as the call-site check.
+    //
+    // `param_defaults` and `params` are built in lockstep above (one entry per
+    // fn_def.params element), so index alignment is guaranteed.
+    for i in 0..fn_def.params.len() {
+        if let Some(default) = &param_defaults[i] {
+            let param_ty = &params[i].1;
+            if !fn_param_default_compatible(param_ty, &default.result_type) {
+                let p = &fn_def.params[i];
+                let default_span = p
+                    .default
+                    .as_ref()
+                    .expect("param_defaults[i] is Some iff fn_def.params[i].default is Some")
+                    .span;
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "function '{}' param '{}' default type mismatch: declared param type `{}`, default expression produces `{}`",
+                        fn_def.name, p.name, param_ty, default.result_type
+                    ))
+                    .with_code(DiagnosticCode::FnParamDefaultTypeMismatch)
+                    .with_label(DiagnosticLabel::new(
+                        default_span,
+                        "default expression type does not match declared param type",
+                    )),
+                );
+            }
+        }
+    }
+
     // Resolve return type
     let return_type = match &fn_def.return_type {
         Some(te) => {
