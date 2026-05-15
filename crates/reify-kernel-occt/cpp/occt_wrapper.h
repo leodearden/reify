@@ -873,6 +873,13 @@ std::unique_ptr<OcctShapeVec> get_edges(const OcctShape& shape);
 /// `TopoDS_Shape::IsSame`). Reuses the cached `face_map()`.
 std::unique_ptr<OcctShapeVec> get_faces(const OcctShape& shape);
 
+/// Return the unique vertices of `shape` as an OcctShapeVec, in
+/// `TopExp::MapShapes(.., TopAbs_VERTEX, ..)` order (deduplicated by
+/// `TopoDS_Shape::IsSame`). Builds a fresh local map per call — no
+/// `vertex_map()` cache slot on OcctShape (the Rust-side `extracted_vertices`
+/// cache provides idempotency).
+std::unique_ptr<OcctShapeVec> get_vertices(const OcctShape& shape);
+
 /// Compute the total arc length of an edge (or any 1-dimensional sub-shape)
 /// in the same length units as the shape's coordinates. Backed by
 /// `BRepGProp::LinearProperties` followed by `props.Mass()` — for edges,

@@ -498,6 +498,16 @@ pub struct OcctKernel {
     /// previously-minted face handle list (canonical `TopExp::MapShapes`
     /// order). Sister to `extracted_edges`; same rationale.
     extracted_faces: HashMap<u64, Vec<GeometryHandleId>>,
+    /// Idempotency cache for [`Self::extract_vertices`]: parent handle id →
+    /// previously-minted vertex handle list (canonical
+    /// `TopExp::MapShapes(.., TopAbs_VERTEX, ..)` order). Required by the
+    /// PNv2 selector vocabulary v2 (task 3632): `extract_vertices` is called
+    /// by downstream consumers (task C CornerVertex/CapCornerVertex seeders)
+    /// to recover the canonical vertex index of a caller-supplied handle.
+    /// Without idempotency the second call would mint a fresh set of ids and
+    /// the caller's pre-extracted handles would no longer match. Cache is
+    /// invalidated on `with_warm_state` (same rationale as `extracted_edges`).
+    extracted_vertices: HashMap<u64, Vec<GeometryHandleId>>,
     /// Provenance map: child handle id → parent (body) handle id, populated
     /// inside [`Self::extract_edges`] / [`Self::extract_faces`] so a later
     /// `OwnerBody(child)` query can answer "what body did this sub-shape come
@@ -526,6 +536,7 @@ impl OcctKernel {
             reprs: HashMap::new(),
             extracted_edges: HashMap::new(),
             extracted_faces: HashMap::new(),
+            extracted_vertices: HashMap::new(),
             parent_handle: HashMap::new(),
             next_id: 1,
             last_warm_start_failures: 0,
@@ -686,6 +697,61 @@ impl OcctKernel {
             ids.push(h.id);
         }
         self.extracted_faces.insert(handle.0, ids.clone());
+        Ok(ids)
+    }
+
+    /// Extract every unique vertex of `handle` as a handle with
+    /// `BRepKind::Vertex`. Order follows the canonical
+    /// `TopExp::MapShapes(.., TopAbs_VERTEX, ..)` enumeration (a fresh local
+    /// map is built per call — there is no `vertex_map()` cache slot on
+    /// `OcctShape`; the Rust-side `extracted_vertices` cache below provides
+    /// idempotency without a C++ map slot).
+    ///
+    /// **Idempotent per parent**: a second call with the same `handle` on the
+    /// same kernel returns the previously-minted `Vec<GeometryHandleId>`
+    /// verbatim (cached in `extracted_vertices`). Required by the PNv2
+    /// selector vocabulary v2 (task 3632) and downstream task-C seeders that
+    /// re-call `extract_vertices` internally to recover the canonical vertex
+    /// index. The cache is invalidated on `with_warm_state` (when the kernel's
+    /// shape table is swapped wholesale).
+    ///
+    /// Child handle provenance is recorded in `parent_handle` so a later
+    /// `OwnerBody(vertex_id)` query can answer "what body did this vertex come
+    /// from?" — matches the `extract_edges`/`extract_faces` contract.
+    ///
+    /// Returns [`QueryError::InvalidHandle`] if `handle` is unknown.
+    pub fn extract_vertices(
+        &mut self,
+        handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        if let Some(cached) = self.extracted_vertices.get(&handle.0) {
+            return Ok(cached.clone());
+        }
+        let materialized: Vec<cxx::UniquePtr<ffi::ffi::OcctShape>> = {
+            let shape = self
+                .get_shape(handle)
+                .map_err(|_| QueryError::InvalidHandle(handle))?;
+            let vec = ffi::ffi::get_vertices(shape)
+                .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+            let len = ffi::ffi::shape_vec_len(&vec);
+            let mut buf = Vec::with_capacity(len);
+            for i in 0..len {
+                let sub = ffi::ffi::shape_vec_at(&vec, i)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                buf.push(sub);
+            }
+            buf
+        };
+
+        let mut ids = Vec::with_capacity(materialized.len());
+        for sub in materialized {
+            let h = self.store_with_repr(sub, BRepKind::Vertex);
+            // Record provenance so `OwnerBody(child)` can answer
+            // "what body did this vertex come from?" without re-extraction.
+            self.parent_handle.insert(h.id.0, handle);
+            ids.push(h.id);
+        }
+        self.extracted_vertices.insert(handle.0, ids.clone());
         Ok(ids)
     }
 
@@ -2607,9 +2673,10 @@ impl WarmStartable for OcctKernel {
             self.next_id = warm.next_id;
             // Wholesale shape replacement invalidates any cached parent →
             // children mapping (the cached child ids may not correspond to
-            // any face/edge of the freshly-restored parent shapes).
+            // any face/edge/vertex of the freshly-restored parent shapes).
             self.extracted_edges.clear();
             self.extracted_faces.clear();
+            self.extracted_vertices.clear();
         }
     }
 }
