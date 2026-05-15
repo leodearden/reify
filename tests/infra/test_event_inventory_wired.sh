@@ -42,10 +42,10 @@ echo ""
 echo "--- (d): invocation is in warning mode (no --strict, no --bidirectional) ---"
 
 assert "lint_command does NOT invoke check_event_inventory.sh with --strict" \
-    bash -c "! grep 'lint_command:' '$ORCH' | grep -q 'check_event_inventory\.sh.*--strict'"
+    bash -c "! grep 'lint_command:' '$ORCH' | grep -qE 'bash scripts/check_event_inventory\.sh[^;|&]*--strict'"
 
 assert "lint_command does NOT invoke check_event_inventory.sh with --bidirectional" \
-    bash -c "! grep 'lint_command:' '$ORCH' | grep -q 'check_event_inventory\.sh.*--bidirectional'"
+    bash -c "! grep 'lint_command:' '$ORCH' | grep -qE 'bash scripts/check_event_inventory\.sh[^;|&]*--bidirectional'"
 
 # -- (e): invocation is wrapped with timeout --kill-after=60 ------------------
 echo ""
@@ -77,5 +77,8 @@ echo "--- (h): check_event_inventory.sh exits 0 in warning mode ---"
 
 assert "bash scripts/check_event_inventory.sh --repo-root REPO_ROOT exits 0" \
     bash "$REPO_ROOT/scripts/check_event_inventory.sh" --repo-root "$REPO_ROOT"
+
+assert "bash scripts/check_event_inventory.sh exits 0 with CWD=repo root (mirrors lint_command invocation)" \
+    bash -c "cd '$REPO_ROOT' && bash scripts/check_event_inventory.sh"
 
 test_summary
