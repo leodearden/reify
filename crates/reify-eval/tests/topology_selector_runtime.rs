@@ -377,6 +377,44 @@ fn faces_let_resolves_to_list_of_int_via_extract_faces() {
     );
 }
 
+/// `let com = center_of_mass(body, density)` on a structure containing
+/// `let body = box(10mm, 10mm, 10mm)` and `let density = 7850.0` must resolve
+/// to `Value::Point(vec![length(0), length(0), length(0)])` when the mock
+/// kernel pre-stages a JSON-Point3 reply for `CenterOfMass(handle=1,
+/// density=7850.0)`. Pins the JSON-decode → `Value::Point<Length>` round-trip
+/// for the physical-property selector (density routed via the new
+/// `resolve_real_scalar_arg`).
+#[test]
+fn center_of_mass_let_resolves_to_point3_length_via_kernel_reply() {
+    let source = "structure def Bracket {\n    \
+        let body = box(10mm, 10mm, 10mm)\n    \
+        let density = 7850.0\n    \
+        let com = center_of_mass(body, density)\n}";
+    let compiled = compile_no_errors(source);
+    let mut engine = engine_with_mock_kernel(|k| {
+        k.with_center_of_mass_result(
+            GeometryHandleId(1),
+            7850.0,
+            Value::String("{\"x\":0.0,\"y\":0.0,\"z\":0.0}".to_string()),
+        )
+    });
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let cell = ValueCellId::new("Bracket", "com");
+    assert_eq!(
+        result.values.get(&cell),
+        Some(&Value::Point(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ])),
+        "Bracket.com must resolve to Value::Point of three Length scalars via \
+         kernel CenterOfMass JSON reply, got {:?}",
+        result.values.get(&cell),
+    );
+}
+
 // ── Tessellate-path parity test ─────────────────────────────────────────────
 
 /// The post-process must run on the `tessellate_realizations` path too, so
