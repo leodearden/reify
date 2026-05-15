@@ -104,6 +104,7 @@ pub fn cmd_cache(args: &[String]) -> ExitCode {
         Some("export") => cmd_cache_export(&args[1..]),
         Some("import") => cmd_cache_import(&args[1..]),
         Some("stats") => cmd_cache_stats(&args[1..]),
+        Some("clear") => cmd_cache_clear(&args[1..]),
         _ => {
             eprintln!("{CACHE_USAGE}");
             ExitCode::FAILURE
@@ -168,6 +169,61 @@ fn cmd_cache_stats(args: &[String]) -> ExitCode {
 /// per the design decision (smallest fixed N that surfaces a useful "what's
 /// eating disk?" signal without producing an unbounded report).
 const STATS_TOP_N: usize = 5;
+
+/// Usage line for `reify cache clear` argument errors.
+const CLEAR_USAGE: &str = "Usage: reify cache clear [--engine-version <hash>] --yes";
+
+/// `reify cache clear` — empty the cache (or one engine-version subdir when
+/// `--engine-version <hash>` is given).  Requires `--yes` consent (project
+/// guidance: destructive ops must confirm) and validates the engine-version
+/// hash via [`is_32_lowercase_hex`] as a defense-in-depth path-traversal
+/// guard.  Filesystem mutation lands in step-10/12; this commit only wires
+/// the dispatcher arm and the `--yes` refusal.
+fn cmd_cache_clear(args: &[String]) -> ExitCode {
+    let mut yes = false;
+    let mut engine_version: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        match a {
+            "--yes" => {
+                yes = true;
+                i += 1;
+            }
+            "--engine-version" => {
+                if i + 1 >= args.len() {
+                    eprintln!("reify cache clear: --engine-version requires a value");
+                    eprintln!("{CLEAR_USAGE}");
+                    return ExitCode::FAILURE;
+                }
+                engine_version = Some(args[i + 1].clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--") => {
+                eprintln!("reify cache clear: unknown flag: {flag}");
+                eprintln!("{CLEAR_USAGE}");
+                return ExitCode::FAILURE;
+            }
+            _ => {
+                eprintln!("reify cache clear: unexpected positional argument: {a}");
+                eprintln!("{CLEAR_USAGE}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    if !yes {
+        eprintln!(
+            "reify cache clear: refusing to clear without --yes (destructive operation)"
+        );
+        eprintln!("{CLEAR_USAGE}");
+        return ExitCode::FAILURE;
+    }
+    // Filesystem mutation lands in step-10/12.  For now the --yes path is a
+    // no-op SUCCESS so we don't accidentally satisfy the round-trip RED
+    // before its own GREEN runs.
+    let _ = engine_version;
+    ExitCode::SUCCESS
+}
 
 /// Walk `cache_root/<engine_version_subdir>/<shard>/*.bin` across ALL
 /// engine-version subdirs and return `(input_hash_stem, byte_size)` tuples.
