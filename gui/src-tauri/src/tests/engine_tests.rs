@@ -14,7 +14,7 @@ use reify_types::{DiagnosticInfo, ModulePath, SourceLocationInfo, Type, ValueCel
 
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, gt, literal, mm, value_ref};
 
-use crate::engine::{CompileFailure, CompileFailureKind, EngineSession, build_template_node, module_key, parse_value_string};
+use crate::engine::{CompileFailure, CompileFailureKind, CoreState, EngineSession, build_template_node, module_key, parse_value_string};
 use crate::types::EntityTreeNode;
 
 #[test]
@@ -7519,4 +7519,55 @@ fn engine_session_auto_resolve_emitter_fires_on_set_parameter_when_solver_presen
     assert!(matches!(events[0], EmitEvent::Start), "event[0] must be Start");
     assert!(matches!(events[1], EmitEvent::Iteration(_)), "event[1] must be Iteration");
     assert!(matches!(events[2], EmitEvent::Complete), "event[2] must be Complete");
+}
+
+// ── Structural lock-in test ──────────────────────────────────────────────────
+
+/// Structural lock-in test: verifies that `EngineSession` exposes `CoreState`
+/// via `core_state_for_test()` and that `CoreState` provides the expected six
+/// read accessors.  This test fails to compile before the CoreState refactor
+/// (neither the type nor the accessor method exists) — that compile failure IS
+/// the RED state.  After step-2 lands it must pass and continue passing forever.
+#[test]
+fn engine_session_exposes_core_state_with_read_accessors() {
+    use reify_eval::Engine;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed");
+
+    let core: &CoreState = session.core_state_for_test();
+
+    // compiled() must be Some after a successful load
+    assert!(core.compiled().is_some(), "compiled should be Some after load");
+
+    // last_check() must be Some after a successful load
+    assert!(core.last_check().is_some(), "last_check should be Some after load");
+
+    // module_name() must be Some("bracket")
+    assert_eq!(
+        core.module_name(),
+        Some("bracket"),
+        "module_name should be Some(\"bracket\") after load_from_source"
+    );
+
+    // source_map() must contain "bracket.ri" (the canonical key for module "bracket")
+    assert!(
+        core.source_map().contains_key("bracket.ri"),
+        "source_map should contain key \"bracket.ri\" after loading bracket source"
+    );
+
+    // file_path() must be None — load_from_source does NOT set file_path
+    assert!(
+        core.file_path().is_none(),
+        "file_path should be None after load_from_source (only load_file sets it)"
+    );
+
+    // engine() must return &Engine — this is a type-level assertion: it fails to
+    // compile if the accessor is absent or returns the wrong type.
+    let _: &Engine = core.engine();
 }
