@@ -6,7 +6,7 @@
 //!
 //! Reference: `docs/architecture-audit/f-infra-design.md` §5 P2.
 
-use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity, TaskMetadata};
+use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
 
 /// Returns `Some(label)` if the line matches any canonical stub-pattern family,
 /// or `None` if the line is clean.
@@ -38,7 +38,7 @@ fn line_matches_stub(line: &str) -> Option<&'static str> {
             // Confirm the numeric part exists: look for "task_" followed by at least one digit.
             if let Some(idx) = lower.find("task_") {
                 let after = &lower[idx + 5..];
-                if after.chars().next().map_or(false, |c| c.is_ascii_digit()) {
+                if after.chars().next().is_some_and(|c| c.is_ascii_digit()) {
                     return Some("TODO(task_N)");
                 }
             }
@@ -61,10 +61,10 @@ fn line_matches_stub(line: &str) -> Option<&'static str> {
     }
 
     // Family 5 — Value::Undef arm with pending/stub/placeholder in comment.
-    if lower.contains("value::undef") {
-        if lower.contains("pending") || lower.contains("stub") || lower.contains("placeholder") {
-            return Some("Value::Undef(pending/stub/placeholder)");
-        }
+    if lower.contains("value::undef")
+        && (lower.contains("pending") || lower.contains("stub") || lower.contains("placeholder"))
+    {
+        return Some("Value::Undef(pending/stub/placeholder)");
     }
 
     // Family 6 — bare line-comment markers.

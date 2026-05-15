@@ -291,9 +291,9 @@ impl GitOps for RealGitOps {
                 }
             } else if !in_hunk {
                 // Pre-hunk header lines (diff/index/---/+++ headers): skip.
-            } else if line.starts_with('+') {
+            } else if let Some(stripped) = line.strip_prefix('+') {
                 new_line += 1;
-                result.push((new_line, line[1..].to_string()));
+                result.push((new_line, stripped.to_string()));
             } else if line.starts_with('-') {
                 // Removed line: new-side counter does not advance.
             } else if line.starts_with('\\') {
