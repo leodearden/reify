@@ -79,6 +79,7 @@ pub struct CancellationHandle {
     inner: Arc<AtomicBool>,
 }
 
+#[allow(clippy::new_without_default)] // Default intentionally omitted: keeps API minimal and leaves room to swap inner to a non-Default-able primitive (e.g. tokio_util::sync::CancellationToken) — see compute-node-contract.md §2
 impl CancellationHandle {
     /// Create a new, non-cancelled handle.
     pub fn new() -> Self {
