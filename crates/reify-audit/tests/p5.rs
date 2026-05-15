@@ -16,8 +16,8 @@
 mod p5 {
 
 use reify_audit::{
-    AuditContext, DoneProvenance, EvidenceRef, Finding, GitCommit, MockGitOps, Pattern, Severity,
-    TaskMetadata, p5_phantom_done,
+    AuditContext, DoneProvenance, EvidenceRef, Finding, GitCommit, MockGitOps, MockJCodemunchOps,
+    Pattern, Severity, TaskMetadata, p5_phantom_done,
 };
 use rusqlite::Connection;
 use std::collections::HashMap;
@@ -142,16 +142,23 @@ mod tests {
                     note: None,
                 }),
                 title: "Wire foo into bar".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
             },
         );
 
+        let jc = MockJCodemunchOps::new();
         let ctx = AuditContext {
             project_root: PathBuf::from("/tmp/fake-project"),
             conn: &conn,
             git: &git,
+            jcodemunch: &jc,
             task_metadata,
             target_task_id: None,
             window: None,
+            now: None,
         };
 
         let findings = p5_phantom_done::check(&ctx);
@@ -185,6 +192,7 @@ mod tests {
         match Pattern::P5PhantomDone {
             Pattern::P5PhantomDone => {}
             Pattern::P2ConsumerStub => {}
+            Pattern::P1ProducerOrphan => {}
         }
 
         // EvidenceRef: every variant exhaustively destructured.
@@ -241,6 +249,10 @@ mod tests {
             files: _,
             done_provenance: _,
             title: _,
+            prd: _,
+            consumer_ref: _,
+            audit_foundation: _,
+            done_at: _,
         } = TaskMetadata {
             task_id: "0".to_string(),
             status: "done".to_string(),
@@ -251,6 +263,10 @@ mod tests {
                 note: None,
             }),
             title: "Wire foo into bar".to_string(),
+            prd: None,
+            consumer_ref: None,
+            audit_foundation: None,
+            done_at: None,
         };
         let DoneProvenance {
             kind: _,
@@ -302,16 +318,23 @@ mod tests {
                     note: None,
                 }),
                 title: "Wire foo into bar".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
             },
         );
 
+        let jc = MockJCodemunchOps::new();
         let ctx = AuditContext {
             project_root: PathBuf::from("/tmp/fake-project"),
             conn: &conn,
             git: &git,
+            jcodemunch: &jc,
             task_metadata,
             target_task_id: None,
             window: None,
+            now: None,
         };
 
         let findings = p5_phantom_done::check(&ctx);
@@ -380,16 +403,23 @@ mod tests {
                     note: None,
                 }),
                 title: "Wire foo into bar".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
             },
         );
 
+        let jc = MockJCodemunchOps::new();
         let ctx = AuditContext {
             project_root: PathBuf::from("/tmp/fake-project"),
             conn: &conn,
             git: &git,
+            jcodemunch: &jc,
             task_metadata,
             target_task_id: None,
             window: None,
+            now: None,
         };
 
         let findings = p5_phantom_done::check(&ctx);
@@ -473,16 +503,23 @@ mod tests {
                     note: None,
                 }),
                 title: "Wire foo into bar".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
             },
         );
 
+        let jc = MockJCodemunchOps::new();
         let ctx = AuditContext {
             project_root: PathBuf::from("/tmp/fake-project"),
             conn: &conn,
             git: &git,
+            jcodemunch: &jc,
             task_metadata,
             target_task_id: None,
             window: None,
+            now: None,
         };
 
         let findings = p5_phantom_done::check(&ctx);
@@ -562,16 +599,23 @@ mod tests {
                     note: None,
                 }),
                 title: "Wire foo into bar".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
             },
         );
 
+        let jc = MockJCodemunchOps::new();
         let ctx = AuditContext {
             project_root: PathBuf::from("/tmp/fake-project"),
             conn: &conn,
             git: &git,
+            jcodemunch: &jc,
             task_metadata,
             target_task_id: None,
             window: None,
+            now: None,
         };
 
         let findings = p5_phantom_done::check(&ctx);
@@ -650,6 +694,10 @@ mod tests {
                     note: None,
                 }),
                 title: "Wire foo into bar".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
             },
         );
         task_metadata.insert(
@@ -664,16 +712,23 @@ mod tests {
                     note: None,
                 }),
                 title: "Wire foo into bar".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
             },
         );
 
+        let jc = MockJCodemunchOps::new();
         let ctx = AuditContext {
             project_root: PathBuf::from("/tmp/fake-project"),
             conn: &conn,
             git: &git,
+            jcodemunch: &jc,
             task_metadata,
             target_task_id: None,
             window: None,
+            now: None,
         };
 
         // Sanity: full check returns the single phantom finding.

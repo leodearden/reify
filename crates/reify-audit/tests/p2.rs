@@ -14,8 +14,8 @@
 mod p2 {
 
 use reify_audit::{
-    AuditContext, EvidenceRef, Finding, MockGitOps, Pattern, Severity, TaskMetadata,
-    p2_consumer_stub,
+    AuditContext, EvidenceRef, Finding, MockGitOps, MockJCodemunchOps, Pattern, Severity,
+    TaskMetadata, p2_consumer_stub,
 };
 use rusqlite::Connection;
 use std::collections::HashMap;
@@ -30,6 +30,10 @@ fn benign_meta(task_id: &str, files: Vec<String>) -> TaskMetadata {
         files,
         done_provenance: None,
         title: "Wire foo into bar".to_string(),
+        prd: None,
+        consumer_ref: None,
+        audit_foundation: None,
+        done_at: None,
     }
 }
 
@@ -104,13 +108,16 @@ mod tests {
             benign_meta(task_id, paths.iter().map(|p| p.to_string()).collect()),
         );
 
+        let jc = MockJCodemunchOps::new();
         let ctx = AuditContext {
             project_root: PathBuf::from("/tmp/fake-project"),
             conn: &conn,
             git: &git,
+            jcodemunch: &jc,
             task_metadata,
             target_task_id: None,
             window: None,
+            now: None,
         };
 
         let findings = p2_consumer_stub::check(&ctx);
@@ -172,13 +179,16 @@ mod tests {
             benign_meta(task_id, vec![path.to_string()]),
         );
 
+        let jc = MockJCodemunchOps::new();
         let ctx = AuditContext {
             project_root: PathBuf::from("/tmp/fake-project"),
             conn: &conn,
             git: &git,
+            jcodemunch: &jc,
             task_metadata,
             target_task_id: None,
             window: None,
+            now: None,
         };
 
         let findings = p2_consumer_stub::check(&ctx);
@@ -230,13 +240,16 @@ mod tests {
         let mut task_metadata = HashMap::new();
         task_metadata.insert(task_id.to_string(), benign_meta(task_id, all_files));
 
+        let jc = MockJCodemunchOps::new();
         let ctx = AuditContext {
             project_root: PathBuf::from("/tmp/fake-project"),
             conn: &conn,
             git: &git,
+            jcodemunch: &jc,
             task_metadata,
             target_task_id: None,
             window: None,
+            now: None,
         };
 
         let findings = p2_consumer_stub::check(&ctx);
@@ -295,15 +308,22 @@ mod tests {
                     files: vec![path.to_string()],
                     done_provenance: None,
                     title: title.to_string(),
+                    prd: None,
+                    consumer_ref: None,
+                    audit_foundation: None,
+                    done_at: None,
                 },
             );
+            let jc = MockJCodemunchOps::new();
             let ctx = AuditContext {
                 project_root: PathBuf::from("/tmp/fake-project"),
                 conn: &conn,
                 git: &git,
+                jcodemunch: &jc,
                 task_metadata,
                 target_task_id: None,
                 window: None,
+                now: None,
             };
             p2_consumer_stub::check(&ctx)
         };
@@ -376,13 +396,16 @@ mod tests {
         task_metadata
             .insert("9020".to_string(), benign_meta("9020", vec!["src/foo.rs".to_string()]));
 
+        let jc = MockJCodemunchOps::new();
         let ctx = AuditContext {
             project_root: PathBuf::from("/tmp/fake-project"),
             conn: &conn,
             git: &git,
+            jcodemunch: &jc,
             task_metadata,
             target_task_id: None,
             window: None,
+            now: None,
         };
 
         // Before the fix this panics with "byte index 60 is not a char boundary".

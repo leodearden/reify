@@ -27,6 +27,7 @@ use std::path::PathBuf;
 
 pub mod p5_phantom_done;
 pub mod p2_consumer_stub;
+pub mod p1_producer_orphan;
 
 // -----------------------------------------------------------------------
 // Public surface — finding shape
@@ -58,6 +59,11 @@ pub enum Pattern {
     /// canonical stub markers (TODO(pending), unimplemented!, etc.).
     /// See `docs/architecture-audit/f-infra-design.md` §5 P2.
     P2ConsumerStub,
+    /// P1 — producer-orphan: a `done` task introduced a public symbol that
+    /// has no non-test caller in the workspace and no pending/in-progress
+    /// consumer task; flagged Medium past the 14-day grace window, Low
+    /// within it. See `docs/architecture-audit/f-infra-design.md` §5 P1.
+    P1ProducerOrphan,
 }
 
 /// A pointer to forensic evidence supporting a [`Finding`]. Renders verbatim
@@ -106,6 +112,26 @@ pub struct TaskMetadata {
     /// to `Severity::Low` when the title itself signals a stub/placeholder.
     /// Populated by the T-4 CLI loader; defaulted to descriptive strings in tests.
     pub title: String,
+    /// PRD path this task was decomposed from (`/prd`-decomposed tasks carry
+    /// it; pre-`/prd` legacy tasks have `None`). P1 correlates a producer's
+    /// `prd` against other tasks' `consumer_ref` to suppress orphan findings
+    /// when a downstream consumer is queued. Per `f-infra-design.md` §5 P1.
+    pub prd: Option<String>,
+    /// The producing PRD this task consumes (set on `/prd`-decomposed
+    /// consumer tasks). P1's "downstream consumer task exists" guard matches
+    /// a pending/in-progress task whose `consumer_ref` equals a producer's
+    /// `prd`. `None` for legacy tasks. Per `f-infra-design.md` §5 P1.
+    pub consumer_ref: Option<String>,
+    /// `true` when the task is a foundation/scaffold task whose symbols are
+    /// intentionally not yet consumed (`audit_foundation=true` metadata or a
+    /// `## Phase N (foundation)` PRD header). P1 suppresses orphan findings
+    /// for such tasks. Per `f-infra-design.md` §5 P1 false-positive guards.
+    pub audit_foundation: Option<bool>,
+    /// Epoch-seconds timestamp of the task's done-flip. P1's grace-window
+    /// math compares `ctx.now - done_at` against the 14-day window. `None`
+    /// for non-`done` tasks (P1 skips them). The T-4 CLI converts the ISO
+    /// timestamp once at the boundary. Per `f-infra-design.md` §5 P1.
+    pub done_at: Option<i64>,
 }
 
 /// `metadata.done_provenance` payload as written by reify-orchestrator's
@@ -138,6 +164,12 @@ pub struct AuditContext<'a> {
     pub project_root: PathBuf,
     pub conn: &'a rusqlite::Connection,
     pub git: &'a dyn GitOps,
+    /// Source-introspection seam for P1 (changed-symbol / reference queries).
+    /// Required and object-safe, mirroring [`git`](Self::git): production
+    /// supplies a real jcodemunch-MCP-backed impl; tests use
+    /// [`MockJCodemunchOps`]. Per `f-infra-design.md` §3 (pure-logic) and §5
+    /// P1 (source-introspection behind a mockable seam).
+    pub jcodemunch: &'a dyn JCodemunchOps,
     pub task_metadata: HashMap<String, TaskMetadata>,
     /// When `Some`, detectors restrict their work to that single task.
     /// The D-1 pre-done hook sets this; the periodic `/audit` sweep leaves
@@ -146,6 +178,11 @@ pub struct AuditContext<'a> {
     /// Reserved for periodic-sweep scoping. None of the slice-1 detector
     /// paths consume this yet — see [`TimeWindow`].
     pub window: Option<TimeWindow>,
+    /// Synthetic clock (epoch-seconds) for P1's grace-window math. `None`
+    /// falls back to `SystemTime::now()`; tests pass `Some(e)` so grace-window
+    /// boundaries are deterministic. Epoch-seconds keeps the crate's dep-set
+    /// minimal (no chrono/time) per `f-infra-design.md` §12.
+    pub now: Option<i64>,
 }
 
 // -----------------------------------------------------------------------
@@ -385,6 +422,121 @@ impl GitOps for MockGitOps {
     fn diff_added_lines(&self, from: &str, to: &str, path: &str) -> Vec<(usize, String)> {
         self.diff_added_lines
             .get(&(from.to_string(), to.to_string(), path.to_string()))
+            .cloned()
+            .unwrap_or_default()
+    }
+}
+
+// -----------------------------------------------------------------------
+// JCodemunchOps seam (P1)
+// -----------------------------------------------------------------------
+
+/// A public symbol introduced (or changed) by a `done` task, as reported by
+/// `mcp__jcodemunch__get_changed_symbols`. Carries pre-extracted suppression
+/// metadata so the detector stays pure-logic (it never reads source files —
+/// symmetric with how [`GitOps::diff_added_lines`] pre-extracts strings).
+/// Per `f-infra-design.md` §3 and §5 P1.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChangedSymbol {
+    /// The symbol's name, used as the key for [`JCodemunchOps::find_references`].
+    pub name: String,
+    /// Workspace-relative path of the file declaring the symbol.
+    pub file: String,
+    /// 1-based line of the declaration (forensic evidence locator).
+    pub line: usize,
+    /// `true` when the declaration carries `#[allow(dead_code)]` — an
+    /// intentional-orphan opt-out (suppresses the finding). Per
+    /// `f-infra-design.md` §5 P1.
+    pub has_allow_dead_code: bool,
+    /// `true` when the declaration is `#[cfg(test)]`-gated (test-only symbol;
+    /// suppresses the finding). Per `f-infra-design.md` §5 P1.
+    pub has_cfg_test: bool,
+    /// The reason text of a `// G-allow:` marker on the declaration, if any.
+    /// A `Some` with non-blank content suppresses the finding; `Some("")` /
+    /// whitespace does NOT (mirrors `scripts/audit-orphan-producers.sh:150`
+    /// `G_ALLOW_RE = //\s*G-allow:\s*(.+)` where `(.+)` requires content).
+    pub g_allow_marker: Option<String>,
+}
+
+/// A non-declaration reference (caller site) of a symbol, as reported by
+/// `mcp__jcodemunch__find_references`. P1 filters these to non-test paths to
+/// decide whether a workspace consumer exists. Per `f-infra-design.md` §5 P1.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SymbolReference {
+    /// Workspace-relative path of the referencing file.
+    pub file: String,
+    /// 1-based line of the reference.
+    pub line: usize,
+}
+
+/// Source-introspection operations the P1 detector needs. Production: a
+/// jcodemunch-MCP-backed impl supplied by the T-4 CLI. Tests:
+/// [`MockJCodemunchOps`] (gated behind `feature = "test-support"`) holds
+/// canned answers.
+///
+/// Object-safe by design — `AuditContext` holds `&'a dyn JCodemunchOps` so
+/// the production and mock impls coexist behind the same vtable (mirrors
+/// [`GitOps`]).
+pub trait JCodemunchOps {
+    /// Equivalent of `mcp__jcodemunch__get_changed_symbols(branch, since)`:
+    /// the public symbols introduced/changed on `branch` since the
+    /// `since_epoch` (epoch-seconds) cutoff. Returns an empty vec when
+    /// nothing changed or the branch does not exist.
+    fn get_changed_symbols(&self, branch: &str, since_epoch: i64) -> Vec<ChangedSymbol>;
+
+    /// Equivalent of `mcp__jcodemunch__find_references(symbol_name)`: every
+    /// non-declaration reference of the symbol across the workspace. Returns
+    /// an empty vec when the symbol has no callers (an orphan candidate).
+    fn find_references(&self, symbol_name: &str) -> Vec<SymbolReference>;
+}
+
+/// HashMap-backed [`JCodemunchOps`] for tests. Gated behind
+/// `feature = "test-support"` so it never pollutes the production public API
+/// (mirrors [`MockGitOps`]). The crate self-pulls this feature in its own
+/// `[dev-dependencies]` so integration tests in `tests/p1.rs` see it.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Debug, Default)]
+pub struct MockJCodemunchOps {
+    get_changed_symbols: HashMap<(String, i64), Vec<ChangedSymbol>>,
+    find_references: HashMap<String, Vec<SymbolReference>>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl MockJCodemunchOps {
+    // G-allow: F-infra T-4 CLI consumer (crates/reify-audit-cli) — design pinned in docs/architecture-audit/f-infra-design.md
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    // G-allow: F-infra T-4 CLI consumer (crates/reify-audit-cli) — design pinned in docs/architecture-audit/f-infra-design.md
+    pub fn set_changed_symbols(
+        &mut self,
+        branch: &str,
+        since_epoch: i64,
+        symbols: Vec<ChangedSymbol>,
+    ) {
+        self.get_changed_symbols
+            .insert((branch.to_string(), since_epoch), symbols);
+    }
+
+    // G-allow: F-infra T-4 CLI consumer (crates/reify-audit-cli) — design pinned in docs/architecture-audit/f-infra-design.md
+    pub fn set_find_references(&mut self, symbol_name: &str, refs: Vec<SymbolReference>) {
+        self.find_references.insert(symbol_name.to_string(), refs);
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl JCodemunchOps for MockJCodemunchOps {
+    fn get_changed_symbols(&self, branch: &str, since_epoch: i64) -> Vec<ChangedSymbol> {
+        self.get_changed_symbols
+            .get(&(branch.to_string(), since_epoch))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn find_references(&self, symbol_name: &str) -> Vec<SymbolReference> {
+        self.find_references
+            .get(symbol_name)
             .cloned()
             .unwrap_or_default()
     }
