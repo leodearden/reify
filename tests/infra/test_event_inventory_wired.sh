@@ -51,8 +51,30 @@ assert "lint_command does NOT invoke check_event_inventory.sh with --bidirection
 echo ""
 echo "--- (e): timeout --kill-after=60 wraps the invocation in lint_command ---"
 
+# TIMEOUT_PATTERN is the exact-shape regex that matches only the scoped
+# timeout wrapping check_event_inventory.sh's own invocation.  It cannot
+# span across &&-separated clauses because every segment between
+# 'timeout --kill-after=60' and 'check_event_inventory.sh' is a short
+# literal/anchored class — no greedy '.*' that would cross clause boundaries.
+# (step-3: intentionally left as the OLD loose greedy form so the synthetic-
+# negative sub-assertions below fail and demonstrate the bug they catch.)
+TIMEOUT_PATTERN='timeout --kill-after=60.*check_event_inventory\.sh'
+
 assert "lint_command wraps check_event_inventory.sh with 'timeout --kill-after=60'" \
-    bash -c "grep 'lint_command:' '$ORCH' | grep -qE 'timeout --kill-after=60.*check_event_inventory\.sh'"
+    bash -c "grep 'lint_command:' '$ORCH' | grep -qE '$TIMEOUT_PATTERN'"
+
+# Synthetic-negative: TIMEOUT_PATTERN must NOT match a malformed invocation
+# where 'timeout' appears on a *different* clause from check_event_inventory.sh.
+# A greedy '.*' regex silently passes this case; the tight pattern rejects it.
+assert "TIMEOUT_PATTERN rejects: timeout on different clause than check_event_inventory.sh" \
+    bash -c "! echo 'lint_command: timeout --kill-after=60 30m cargo clippy && bash scripts/check_event_inventory.sh' | grep -qE '$TIMEOUT_PATTERN'"
+
+# Synthetic-negative (defense-in-depth): TIMEOUT_PATTERN must NOT match a
+# path-only reference where the script is invoked with 'cat' (not 'bash')
+# and has no scoped timeout.  Confirms the 'bash scripts/' literal in the
+# tight pattern blocks false positives even for path-only matches.
+assert "TIMEOUT_PATTERN rejects: path-only reference without scoped timeout (cat instead of bash)" \
+    bash -c "! echo 'lint_command: stuff && timeout --kill-after=60 30m cargo clippy && cat scripts/check_event_inventory.sh' | grep -qE '$TIMEOUT_PATTERN'"
 
 # -- (f): script is NOT in test_command (placement in lint only) ---------------
 echo ""
