@@ -191,6 +191,71 @@ fn sub_decl_specialization_body_cst_has_guard_and_body() {
         .expect("sub_declaration must have a `body` field for where-guard-before-body form");
 }
 
+/// Regression lock: the `where high_torque` clause inside a specialization body
+/// must attach to the inner `param_assignment` as its `guard` field, NOT be
+/// absorbed by the enclosing `sub_declaration`'s own optional `guard` field.
+///
+/// The `where_clause` grammar rule is shared across `param_assignment`,
+/// `sub_declaration` (specialization form), `param`, `let`, `constraint`,
+/// `minimize`, `maximize`, and `port`. The grammar also declares GLR conflicts
+/// for `[$.sub_declaration]` and `[$.param_assignment]`. A future grammar
+/// reshuffle could silently re-route this attachment with zero CST ERROR nodes,
+/// so a pass-only test on `!has_error()` alone would not catch it. This test
+/// fully constrains the attachment by asserting both halves:
+///
+/// * POSITIVE: `param_assignment.guard` is a `where_clause` whose `condition`
+///   text is `"high_torque"`.
+/// * NEGATIVE: the enclosing `sub_declaration` has NO `guard` field (the `where`
+///   is NOT absorbed by the sub).
+#[test]
+fn sub_decl_specialization_body_cst_where_guard_binds_to_param_assignment_not_sub() {
+    let source = "structure S { sub motor : ElectricMotor { shaft_diameter = 8mm where high_torque } }";
+    let mut parser = make_ts_parser();
+    let tree = parser
+        .parse(source.as_bytes(), None)
+        .expect("parse failed");
+
+    // Defensive pre-check: a future parse regression yields a clear message
+    // instead of an opaque Option::expect panic during child navigation.
+    assert!(
+        !tree.root_node().has_error(),
+        "expected no CST ERROR nodes; has_error() returned true for source: {source:?}",
+    );
+
+    // POSITIVE half: the where-guard must be bound to param_assignment.
+    let pa = find_cst_node(tree.root_node(), "param_assignment")
+        .expect("expected a param_assignment node in the CST");
+
+    let guard = pa
+        .child_by_field_name("guard")
+        .expect("param_assignment must carry the where-guard as its `guard` field");
+    assert_eq!(
+        guard.kind(),
+        "where_clause",
+        "param_assignment.guard must be a where_clause node, got: {:?}",
+        guard.kind(),
+    );
+
+    let cond = guard
+        .child_by_field_name("condition")
+        .expect("where_clause must have a `condition` field");
+    let cond_text = cond
+        .utf8_text(source.as_bytes())
+        .expect("condition node must be valid utf8");
+    assert_eq!(
+        cond_text, "high_torque",
+        "where_clause condition text must be 'high_torque', got: {cond_text:?}",
+    );
+
+    // NEGATIVE half: the enclosing sub_declaration must NOT absorb the inner where-guard.
+    let sub_decl = find_cst_node(tree.root_node(), "sub_declaration")
+        .expect("expected a sub_declaration node in the CST");
+    assert!(
+        sub_decl.child_by_field_name("guard").is_none(),
+        "enclosing sub_declaration must NOT absorb the inner where-guard as its own `guard` field",
+    );
+}
+
 /// `structure S { sub a : Foo }` (bare colon, no body) must parse without ERROR
 /// nodes and produce a `sub_declaration` with a `structure_name` field but NO
 /// `body` child — this is the new grammar branch that previously would have been
