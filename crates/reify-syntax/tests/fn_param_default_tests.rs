@@ -127,3 +127,98 @@ fn fn_param_cst_without_default_has_no_default_field_child() {
         param.child_by_field_name("default").map(|n| n.kind()),
     );
 }
+
+// ── AST-level tests ───────────────────────────────────────────────────────────
+//
+// These tests access `FnParam.default` — a field added in step-4.
+// They fail to COMPILE until step-4 wires `pub default: Option<Expr>` onto
+// `FnParam` in lib.rs.  This is the expected RED state for step-3.
+
+use reify_syntax::*;
+
+/// `fn f(x : T = Foo.bar) -> T { x }` — AST must carry `FnParam.default`
+/// as `Some(Expr { kind: ExprKind::MemberAccess { .. }, .. })`.
+#[test]
+fn fn_param_ast_with_default_carries_lowered_expr() {
+    let source = "fn f(x : T = Foo.bar) -> T { x }";
+    let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+
+    assert!(
+        module.errors.is_empty(),
+        "expected no parse errors for `{source}`; got: {:?}",
+        module.errors,
+    );
+
+    let fn_def = match module.declarations.as_slice() {
+        [Declaration::Function(f)] => f,
+        other => panic!("expected a single function declaration; got: {other:?}"),
+    };
+
+    assert_eq!(fn_def.params.len(), 1, "expected exactly 1 fn_param");
+
+    let default = fn_def.params[0]
+        .default
+        .as_ref()
+        .expect("fn_param[0].default must be Some for `x : T = Foo.bar`");
+
+    assert!(
+        matches!(&default.kind, ExprKind::MemberAccess { .. }),
+        "default expr for `Foo.bar` must be ExprKind::MemberAccess; got: {:?}",
+        default.kind,
+    );
+}
+
+/// `fn f(x : T) -> T { x }` — AST must carry `FnParam.default` as `None`.
+#[test]
+fn fn_param_ast_without_default_is_none() {
+    let source = "fn f(x : T) -> T { x }";
+    let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+
+    assert!(
+        module.errors.is_empty(),
+        "expected no parse errors for `{source}`; got: {:?}",
+        module.errors,
+    );
+
+    let fn_def = match module.declarations.as_slice() {
+        [Declaration::Function(f)] => f,
+        other => panic!("expected a single function declaration; got: {other:?}"),
+    };
+
+    assert_eq!(fn_def.params.len(), 1, "expected exactly 1 fn_param");
+
+    assert!(
+        fn_def.params[0].default.is_none(),
+        "fn_param[0].default must be None when no default is present",
+    );
+}
+
+/// `fn f(x : T = 1, y : U) -> T { x }` — multi-param mix: first param has
+/// default, second does not.  Verifies param order is preserved.
+#[test]
+fn fn_param_ast_multi_param_mixed_defaults() {
+    let source = "fn f(x : T = 1, y : U) -> T { x }";
+    let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+
+    assert!(
+        module.errors.is_empty(),
+        "expected no parse errors for `{source}`; got: {:?}",
+        module.errors,
+    );
+
+    let fn_def = match module.declarations.as_slice() {
+        [Declaration::Function(f)] => f,
+        other => panic!("expected a single function declaration; got: {other:?}"),
+    };
+
+    assert_eq!(fn_def.params.len(), 2, "expected exactly 2 fn_params");
+
+    assert!(
+        fn_def.params[0].default.is_some(),
+        "fn_param[0] (`x : T = 1`) must have Some default",
+    );
+    assert!(
+        fn_def.params[1].default.is_none(),
+        "fn_param[1] (`y : U`) must have None default",
+    );
+}
