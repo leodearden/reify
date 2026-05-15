@@ -275,10 +275,10 @@ structure def MultiCaseResult {
 // for shell-result data. Three of these are grouped into a companion structure,
 // `ShellStress` (also in `std/solver/elastic`):
 //
-//   ElasticResult.stress  — per-mesh-node Cauchy stress field
-//                           (Field<Point3<Length>, Tensor<2,3,Pressure>>);
-//                           tightened from Real placeholder in task 3117.
-//                           Legacy tet-compatible alias.
+//   ElasticResult.stress  — legacy tet-compatible stress alias. Still
+//                           declared as `Real`; tightening to
+//                           `Field<Point3<Length>, Tensor<2,3,Pressure>>`
+//                           tracked as task #3117.
 //   ElasticResult.frame   — new in T16: per-element local-to-global rotation
 //                           (Field<Point3<Length>, Matrix<3,3,Real>>;
 //                           tightened from Real placeholder in task 3641).
