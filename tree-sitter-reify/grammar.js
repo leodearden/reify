@@ -524,6 +524,9 @@ module.exports = grammar({
     // Scoped to specialization_body only — not added to _member — because
     // no existing _member starts with bare `identifier =`, so scoping avoids
     // widening the general member grammar.
+    // Related: `connect_param_assignment` (below, line ~600) has the same
+    // `name = value` shape but is scoped to connect-body and has no `where`
+    // guard.  The distinct names prevent confusion between the two contexts.
     param_assignment: $ => seq(
       field('name', $.identifier),
       '=',
