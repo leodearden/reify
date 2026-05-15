@@ -438,17 +438,22 @@ mod tests {
         );
     }
 
-    /// Pure bending mode (θ_y at node 1 only) must produce anti-symmetric in-plane
-    /// stress across top/bottom and zero stress at mid-surface.
+    /// Single-node θ_y = α DOF state on UNIT_TRI produces in-plane stress that is
+    /// LINEAR through thickness: anti-symmetric top vs bottom, zero in-plane at mid.
     ///
     /// For UNIT_TRI, dN_1/dx = 1, so κ_xx = −∂θ_y/∂x = −α·dN_1/dx = −α,
     /// κ_yy = 2κ_xy = 0.  Analytical per-layer in-plane Voigt stress:
     ///   σ_voigt(z) = z · D_pl · [−α, 0, 0]
     ///
+    /// **NOT a Kirchhoff/MITC3+ pure-bending kinematic.** A single-node θ_y also
+    /// induces a non-zero MITC3+-projected transverse shear at the centroid, which
+    /// this test intentionally does NOT assert.  That behaviour is pinned separately
+    /// by `shell_element_stress_uniform_theta_y_yields_constant_transverse_shear`.
+    ///
     /// Asserted: top[0][0] ≈ −(t/2)·α·D_pl[0][0]; bottom = −top (in-plane);
     /// mid in-plane block ≈ 0; top[0][1] ≈ 0 (no in-plane shear).
     #[test]
-    fn shell_element_stress_pure_bending_mode_yields_anti_symmetric_through_thickness() {
+    fn single_node_theta_y_yields_linear_in_plane_stress_through_thickness() {
         let mat = steel_like();
         let t = 0.05_f64;
         let alpha = 0.002_f64;
