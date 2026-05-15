@@ -84,7 +84,7 @@ pub use dispatcher::{
     LONG_CHAIN_THRESHOLD_ENV_VAR, dispatch, is_long_chain_realization,
     kernel_pragma_unsatisfiable_diagnostic, long_chain_diagnostic, long_chain_threshold_from_env,
     long_chain_threshold_from_env_value, no_kernel_chain_diagnostic, per_stage_tolerance_for_plan,
-    pinned_kernel_missing_diagnostic,
+    pinned_kernel_missing_diagnostic, unpinned_kernel_loaded_diagnostic,
 };
 pub use kernel_attribute_hook::propagate_via_kernel_attribute_hook;
 pub use kernel_registry::{
