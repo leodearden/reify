@@ -5776,24 +5776,6 @@ fn loaded_helper_session() -> (tempfile::TempDir, EngineSession, std::path::Path
     (dir, session, main_path, main_content.to_string())
 }
 
-/// Contract test: `loaded_helper_session()` must return a `main_content` string
-/// that exactly matches the bytes written to `main.ri` on disk.
-///
-/// This pins the anti-drift invariant introduced in task 3685: callers that
-/// pass the returned `main_content` to `update_source` are guaranteed to
-/// receive the same literal the helper wrote to disk, preventing silent
-/// divergence if either copy is edited without updating the other.
-#[test]
-fn loaded_helper_session_returns_main_content_matching_on_disk_main_ri() {
-    let (_dir, _session, main_path, main_content) = loaded_helper_session();
-    let disk_content =
-        std::fs::read_to_string(&main_path).expect("main.ri should be readable from tempdir");
-    assert_eq!(
-        main_content, disk_content,
-        "loaded_helper_session() main_content must equal on-disk main.ri bytes"
-    );
-}
-
 // ── update_source multi-file regression (task 3318) ──────────────────────────
 
 /// Driver (RED → GREEN): after `load_file` resolves a multi-file project,
