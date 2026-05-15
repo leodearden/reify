@@ -1,6 +1,8 @@
 // EvaluationGraph: typed graph nodes backed by PersistentMap.
 
 use std::collections::HashSet;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use reify_compiler::{
     CompiledConnection, CompiledForallTemplate, CompiledGeometryOp, TopologyTemplate,
@@ -58,14 +60,43 @@ pub struct ResolutionNodeData {
     pub content_hash: ContentHash,
 }
 
-/// Placeholder for the in-flight cancellation handle carried by a running
-/// ComputeNode. P3.1 only ships this unit-type stand-in so `ComputeNodeData`
-/// has a stable field shape; P3.5 replaces it with the real cooperative-
-/// cancellation type (likely `Arc<AtomicBool>` per PRD §"Lifecycle: pending
-/// + cancellation"). Kept module-private (not re-exported) so the eventual
-///   real type can land without an API break.
-#[derive(Debug, Clone, Default)]
-pub struct CancellationHandle;
+/// Cooperative-cancellation handle for an in-flight ComputeNode dispatch.
+///
+/// A thin wrapper around `Arc<AtomicBool>`. Cloning shares the same
+/// underlying flag, so cancelling via any clone propagates to all holders
+/// (including graph snapshots taken mid-dispatch). See
+/// `docs/prds/v0_3/compute-node-contract.md` §2 for the full contract.
+///
+/// Both `cancel()` and `is_cancelled()` use `Ordering::Relaxed`: the flag is
+/// a one-shot monotonic signal (false → true; never resets within a handle's
+/// lifetime). There is no other memory operation whose ordering needs to be
+/// enforced relative to this flag, so stronger orderings buy nothing.
+///
+/// Module-private (not re-exported from `lib.rs`) until task γ (3422) adds
+/// the dispatch-registry consumer and export.
+#[derive(Debug, Clone)]
+pub struct CancellationHandle {
+    inner: Arc<AtomicBool>,
+}
+
+impl CancellationHandle {
+    /// Create a new, non-cancelled handle.
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Signal cancellation. All clones of this handle will observe the change.
+    pub fn cancel(&self) {
+        self.inner.store(true, Ordering::Relaxed);
+    }
+
+    /// Returns `true` if `cancel()` has been called on this handle or any clone.
+    pub fn is_cancelled(&self) -> bool {
+        self.inner.load(Ordering::Relaxed)
+    }
+}
 
 /// A compute node in the evaluation graph.
 /// Parallel to RealizationNodeData / ResolutionNodeData. See
@@ -97,11 +128,13 @@ pub struct ComputeNodeData {
 // None on clone. Warm state is transient — best-effort recovery is the
 // existing WarmStatePool contract.
 //
-// `running` is propagated by value here because P3.1's `CancellationHandle`
-// is a unit-struct placeholder that is trivially Clone. When P3.5 replaces it
-// with the real type (likely `Arc<AtomicBool>`), the Clone impl MUST be
-// revisited: the desired semantics for an in-flight handle on clone — share
-// via Arc, reset to None, or cancel-on-clone — are a P3.5 lifecycle decision.
+// `running` is Arc-shared on clone: `CancellationHandle` wraps `Arc<AtomicBool>`,
+// so `self.running.clone()` produces a second handle pointing at the same flag.
+// A graph snapshot taken mid-dispatch therefore represents the same in-flight
+// operation; cancelling via either snapshot propagates through the shared channel.
+// (Decision recorded in task 3421: Arc-sharing is preferred over reset-to-None
+// because resetting would silently orphan the cancellation channel, and
+// cancel-on-clone is a footgun for callers that snapshot for read-only inspection.)
 impl Clone for ComputeNodeData {
     fn clone(&self) -> Self {
         Self {
@@ -1000,7 +1033,7 @@ mod tests {
             cached_result: Some(Value::Real(1.5)),
             result_content_hash: Some(ContentHash::of_str("rh")),
             opaque_state: Some(OpaqueState::new(42i32, 4)),
-            running: Some(CancellationHandle),
+            running: Some(CancellationHandle::new()),
             output_value_cells: vec![ValueCellId::new("Bracket", "stress")],
         };
 
@@ -1008,7 +1041,7 @@ mod tests {
 
         // Manual-Clone contract: opaque_state is transient, dropped to None
         assert!(cloned.opaque_state.is_none());
-        // CancellationHandle placeholder IS Clone, so running is preserved
+        // CancellationHandle IS Clone (Arc-shared flag); running is preserved
         assert!(cloned.running.is_some());
         // Other fields are preserved
         assert_eq!(cloned.computation_id, ComputeNodeId::new("Bracket", 0));
