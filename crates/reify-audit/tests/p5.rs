@@ -23,55 +23,13 @@ use rusqlite::Connection;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// Schema pin for the live `data/orchestrator/runs.db`. Verified via
-/// `SELECT sql FROM sqlite_master ...` against the production file.
-/// Production code never CREATE TABLEs (read-only). If dark-factory migrates
-/// the schema, these tests fail meaningfully and we update in lockstep with
-/// the production query.
+/// Minimal schema — pin reflects only the columns the production
+/// `has_task_completed_event` query reads (`events.task_id` and
+/// `events.event_type`). P1/P2 detectors (landed via T-2/T-3) issue zero SQL,
+/// so they add no columns here; future detectors that DO query the DB will add
+/// the columns they need when those queries land.
 const RUNS_DB_SCHEMA: &str = r#"
-CREATE TABLE runs (
-    run_id         TEXT PRIMARY KEY,
-    project_id     TEXT NOT NULL,
-    prd_path       TEXT,
-    started_at     TEXT NOT NULL,
-    completed_at   TEXT,
-    total_tasks    INTEGER DEFAULT 0,
-    completed      INTEGER DEFAULT 0,
-    blocked        INTEGER DEFAULT 0,
-    escalated      INTEGER DEFAULT 0,
-    total_cost_usd REAL DEFAULT 0.0,
-    paused_for_cap INTEGER DEFAULT 0,
-    cap_pause_secs REAL DEFAULT 0.0
-);
-CREATE TABLE task_results (
-    run_id              TEXT NOT NULL REFERENCES runs(run_id),
-    task_id             TEXT NOT NULL,
-    project_id          TEXT NOT NULL,
-    title               TEXT,
-    outcome             TEXT NOT NULL,
-    cost_usd            REAL DEFAULT 0.0,
-    duration_ms         INTEGER DEFAULT 0,
-    agent_invocations   INTEGER DEFAULT 0,
-    execute_iterations  INTEGER DEFAULT 0,
-    verify_attempts     INTEGER DEFAULT 0,
-    review_cycles       INTEGER DEFAULT 0,
-    steward_cost_usd    REAL DEFAULT 0.0,
-    steward_invocations INTEGER DEFAULT 0,
-    completed_at        TEXT,
-    PRIMARY KEY (run_id, task_id)
-);
-CREATE TABLE events (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp   TEXT    NOT NULL,
-    run_id      TEXT    NOT NULL,
-    task_id     TEXT,
-    event_type  TEXT    NOT NULL,
-    phase       TEXT,
-    role        TEXT,
-    data        TEXT    DEFAULT '{}',
-    cost_usd    REAL,
-    duration_ms INTEGER
-);
+CREATE TABLE events (task_id TEXT, event_type TEXT);
 "#;
 
 fn seed_db() -> Connection {
@@ -80,28 +38,10 @@ fn seed_db() -> Connection {
     conn
 }
 
-fn insert_run(conn: &Connection, run_id: &str) {
+fn insert_task_completed_event(conn: &Connection, task_id: &str) {
     conn.execute(
-        "INSERT INTO runs (run_id, project_id, started_at) VALUES (?, 'reify', '2026-05-14T00:00:00Z')",
-        rusqlite::params![run_id],
-    )
-    .unwrap();
-}
-
-fn insert_task_result(conn: &Connection, run_id: &str, task_id: &str, outcome: &str) {
-    conn.execute(
-        "INSERT INTO task_results (run_id, task_id, project_id, title, outcome) \
-         VALUES (?, ?, 'reify', 'test task', ?)",
-        rusqlite::params![run_id, task_id, outcome],
-    )
-    .unwrap();
-}
-
-fn insert_task_completed_event(conn: &Connection, run_id: &str, task_id: &str) {
-    conn.execute(
-        "INSERT INTO events (timestamp, run_id, task_id, event_type, data) \
-         VALUES ('2026-05-14T00:01:00Z', ?, ?, 'task_completed', '{\"outcome\":\"done\"}')",
-        rusqlite::params![run_id, task_id],
+        "INSERT INTO events (task_id, event_type) VALUES (?, 'task_completed')",
+        rusqlite::params![task_id],
     )
     .unwrap();
 }
@@ -114,9 +54,7 @@ mod tests {
         // Seed runs.db with a clean done task: a `task_completed` event exists
         // and metadata.files is corroborated by the claimed merge commit.
         let conn = seed_db();
-        insert_run(&conn, "run-happy");
-        insert_task_result(&conn, "run-happy", "1000", "done");
-        insert_task_completed_event(&conn, "run-happy", "1000");
+        insert_task_completed_event(&conn, "1000");
 
         // MockGitOps reports the claimed commit's diff covers metadata.files
         // and nothing is gitignored.
@@ -294,11 +232,9 @@ mod tests {
     #[test]
     fn task_3242_shape_returns_high_severity_phantom_done() {
         let conn = seed_db();
-        insert_run(&conn, "run-3242");
-        insert_task_result(&conn, "run-3242", "3242", "done");
         // Task completed event is present (the orchestrator did write one) —
         // the smoking gun is that the *git* corroboration fails, not the DB.
-        insert_task_completed_event(&conn, "run-3242", "3242");
+        insert_task_completed_event(&conn, "3242");
 
         let mut git = MockGitOps::new();
         // log_grep returns empty → no sibling-FF rescue.
@@ -380,9 +316,7 @@ mod tests {
     #[test]
     fn cargo_lock_only_divergence_downgrades_to_low() {
         let conn = seed_db();
-        insert_run(&conn, "run-cargo-lock");
-        insert_task_result(&conn, "run-cargo-lock", "2000", "done");
-        insert_task_completed_event(&conn, "run-cargo-lock", "2000");
+        insert_task_completed_event(&conn, "2000");
 
         let mut git = MockGitOps::new();
         // Claimed commit's diff covers ONLY foo.rs — Cargo.lock is missing.
@@ -470,9 +404,7 @@ mod tests {
     #[test]
     fn convergent_fast_forward_downgrades_to_low() {
         let conn = seed_db();
-        insert_run(&conn, "run-conv-ff");
-        insert_task_result(&conn, "run-conv-ff", "4000", "done");
-        insert_task_completed_event(&conn, "run-conv-ff", "4000");
+        insert_task_completed_event(&conn, "4000");
 
         let mut git = MockGitOps::new();
         // Primary corroboration FAILS: the claimed branch tip diffs empty
@@ -571,9 +503,7 @@ mod tests {
     #[test]
     fn gitignored_metadata_files_flagged() {
         let conn = seed_db();
-        insert_run(&conn, "run-gi");
-        insert_task_result(&conn, "run-gi", "6000", "done");
-        insert_task_completed_event(&conn, "run-gi", "6000");
+        insert_task_completed_event(&conn, "6000");
 
         let mut git = MockGitOps::new();
         // Corroboration is otherwise clean: diff covers BOTH files.
@@ -748,9 +678,7 @@ mod tests {
     #[test]
     fn cargo_lock_only_with_single_metadata_file_does_not_downgrade() {
         let conn = seed_db();
-        insert_run(&conn, "run-degen");
-        insert_task_result(&conn, "run-degen", "7000", "done");
-        insert_task_completed_event(&conn, "run-degen", "7000");
+        insert_task_completed_event(&conn, "7000");
 
         let mut git = MockGitOps::new();
         // Empty primary diff: claimed commit covers nothing, so Cargo.lock is
@@ -821,13 +749,10 @@ mod tests {
     #[test]
     fn check_pre_done_filters_to_single_task() {
         let conn = seed_db();
-        insert_run(&conn, "run-mixed");
         // Phantom-done task 5000 (task-3242 shape).
-        insert_task_result(&conn, "run-mixed", "5000", "done");
-        insert_task_completed_event(&conn, "run-mixed", "5000");
+        insert_task_completed_event(&conn, "5000");
         // Clean done task 5001 (happy-path shape).
-        insert_task_result(&conn, "run-mixed", "5001", "done");
-        insert_task_completed_event(&conn, "run-mixed", "5001");
+        insert_task_completed_event(&conn, "5001");
 
         let mut git = MockGitOps::new();
         // Task 5000: claimed commit's diff doesn't cover the metadata file.
