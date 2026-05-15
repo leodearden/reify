@@ -139,11 +139,20 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
     match &expr.kind {
         CompiledExprKind::Literal(v) => v.clone(),
 
-        CompiledExprKind::ValueRef(id) | CompiledExprKind::CrossSubGeometryRef(id) => {
-            // CrossSubGeometryRef: synthetic cell never resolves to a value cell,
-            // so get_or_undef returns Undef — preserving today's ValueRef semantics.
-            // This variant is consumed by entity.rs before reaching eval; this arm
-            // exists only to satisfy Rust's exhaustive-match requirement (task-3508).
+        CompiledExprKind::ValueRef(id) => ctx.values.get_or_undef(id),
+
+        CompiledExprKind::CrossSubGeometryRef(id) => {
+            // This variant is consumed by entity.rs before reaching eval (task-3508).
+            // Reaching this arm is a bug — a CrossSubGeometryRef escaped the
+            // compile-time drop site. The debug_assert fires immediately in debug
+            // builds; in release we fall back to Undef (the synthetic cell
+            // `<entity>.<sub>.<member>` has no value cell, so get_or_undef is Undef
+            // regardless).
+            debug_assert!(
+                false,
+                "CrossSubGeometryRef should not reach eval; \
+                 must be consumed by entity.rs bare-let drop site (task-3508)"
+            );
             ctx.values.get_or_undef(id)
         }
 

@@ -301,32 +301,35 @@ impl CompiledExpr {
 
     /// Create a value reference expression.
     pub fn value_ref(id: ValueCellId, result_type: Type) -> Self {
-        let content_hash =
-            ContentHash::of(&[TAG_VALUE_REF]).combine(ContentHash::of_str(&format!("{}", id)));
         CompiledExpr {
+            content_hash: Self::hash_ref(TAG_VALUE_REF, &id),
             kind: CompiledExprKind::ValueRef(id),
             result_type,
-            content_hash,
         }
     }
 
     /// Create a cross-sub geometry reference expression (task-3508).
     ///
-    /// Mirrors `value_ref`'s content-hash composition but uses
-    /// `TAG_CROSS_SUB_GEOMETRY_REF` (27) as the seed, producing a distinct
-    /// `content_hash` from a structurally-identical `ValueRef`. The variant
-    /// is emitted exclusively by
+    /// Uses `TAG_CROSS_SUB_GEOMETRY_REF` (27) as the seed via `hash_ref`,
+    /// producing a distinct `content_hash` from a structurally-identical
+    /// `ValueRef`. The variant is emitted exclusively by
     /// `expr.rs::try_resolve_cross_sub_geometry_value_ref` and consumed by
     /// the bare-let drop site in `entity.rs` (replaced the fragile
     /// `entity.contains('.')` heuristic).
     pub fn cross_sub_geometry_ref(id: ValueCellId, result_type: Type) -> Self {
-        let content_hash = ContentHash::of(&[TAG_CROSS_SUB_GEOMETRY_REF])
-            .combine(ContentHash::of_str(&format!("{}", id)));
         CompiledExpr {
+            content_hash: Self::hash_ref(TAG_CROSS_SUB_GEOMETRY_REF, &id),
             kind: CompiledExprKind::CrossSubGeometryRef(id),
             result_type,
-            content_hash,
         }
+    }
+
+    /// Shared hash formula for ref-shaped variants: TAG-byte seed combined with
+    /// the `ValueCellId` Display string.  Centralises the formula so that both
+    /// `value_ref` and `cross_sub_geometry_ref` stay in sync if the hashing
+    /// convention for ref-shaped variants ever changes.
+    fn hash_ref(tag: u8, id: &ValueCellId) -> ContentHash {
+        ContentHash::of(&[tag]).combine(ContentHash::of_str(&format!("{}", id)))
     }
 
     /// Create a binary operation expression.

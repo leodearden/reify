@@ -739,6 +739,10 @@ mod tests {
                 other
             ),
         };
+        // `expand_purpose_reflective_placeholders` only ever emits `ValueRef`
+        // elements inside a ReflectiveCellList (task-3508: CrossSubGeometryRef
+        // is consumed by the entity.rs bare-let drop site before any reflective
+        // list is built, so it cannot appear here by construction).
         let expanded_order: Vec<&str> = elements
             .iter()
             .map(|e| match &e.kind {
@@ -880,6 +884,9 @@ mod tests {
                 "anti-cascade contract: both resolved-query cells \
                  (present + absent-fallback) produce ValueRef elements"
             );
+            // `expand_purpose_reflective_placeholders` only emits `ValueRef`
+            // elements inside a ReflectiveCellList (task-3508: CrossSubGeometryRef
+            // is consumed by entity.rs before any reflective list is built).
             for elem in elements {
                 assert_eq!(
                     elem.result_type,
@@ -1020,6 +1027,9 @@ mod tests {
                 other
             ),
         };
+        // `expand_purpose_reflective_placeholders` only ever emits `ValueRef`
+        // elements (task-3508: CrossSubGeometryRef is consumed by the entity.rs
+        // bare-let drop site before any reflective list is built).
         let expanded_order: Vec<&str> = elements
             .iter()
             .map(|e| match &e.kind {
@@ -1511,6 +1521,9 @@ mod tests {
             "expanded ReflectiveCellList must have one element per resolved_id"
         );
 
+        // `expand_purpose_reflective_placeholders` only ever emits `ValueRef`
+        // elements (task-3508: CrossSubGeometryRef is consumed by the entity.rs
+        // bare-let drop site before any reflective list is built).
         let members: Vec<&str> = elements
             .iter()
             .map(|e| match &e.kind {
