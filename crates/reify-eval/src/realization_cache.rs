@@ -73,6 +73,18 @@ use reify_types::{ContentHash, ReprKind};
 
 use crate::tolerance_bucket::ToleranceBucket;
 
+/// Sentinel value for the "no options" case — pass at call sites that carry no
+/// per-op parameterisation.
+///
+/// Defined in PRD §4 (`docs/prds/v0_3/multi-kernel-phase-3.md`); matches the
+/// `ContentHash(0)` baseline convention in `compute_cache_key.rs`.
+///
+/// Task δ (3435) and task ξ (3442) will replace `NO_OPTIONS` at their
+/// respective BRep / volume-mesh call sites with real per-op option hashes
+/// once the option structs expose `ContentHash` output.  Grep for
+/// `NO_OPTIONS` to locate every replacement target.
+pub const NO_OPTIONS: ContentHash = ContentHash(0);
+
 /// The PRD §4-named logical four-tuple key for the realization cache.
 ///
 /// Aggregates `(entity_id, repr_kind, tol, options_hash)` into a named struct for

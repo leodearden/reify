@@ -22,7 +22,7 @@ use crate::dispatcher::{dispatch, per_stage_tolerance_for_plan};
 use crate::geometry_ops::compile_geometry_op;
 use crate::journal::{EvalEvent, EventJournal, EventKind};
 use crate::primitive_attribute_seed::seed_primitive_attributes_for_handle;
-use crate::realization_cache::RealizationCache;
+use crate::realization_cache::{NO_OPTIONS, RealizationCache};
 use crate::sweep_classifier::{
     SweptKind, SweptKindTable, classify_swept_body, swept_kind_to_sweep_params,
 };
@@ -1572,7 +1572,7 @@ impl Engine {
     /// start of the helper — BEFORE the `for (op_idx, op) in
     /// operations.iter().enumerate()` op loop — when both `demanded_tol`
     /// and `realization_name` are `Some(_)` AND
-    /// `realization_cache.lookup(realization_id.entity, ReprKind::BRep, t)`
+    /// `realization_cache.lookup(realization_id.entity, ReprKind::BRep, t, NO_OPTIONS)`
     /// returns `Some(&handle)`, the helper:
     ///   - pushes the cached handle onto `step_handles` (mirrors the
     ///     successful-realization handle-stack post-condition),
@@ -1584,8 +1584,12 @@ impl Engine {
     ///     `feature_tag_table` / `topology_attribute_table` populations, the
     ///     rollback-truncation gate, and the post-loop cache-insert
     ///     (idempotent: the entry already exists, and re-inserting at the
-    ///     same `(entity, repr, tol)` key would be a no-op under the
-    ///     partial-order semantics).
+    ///     same `(entity, repr, tol, NO_OPTIONS)` key would be a no-op under
+    ///     the partial-order semantics).
+    ///
+    ///   `NO_OPTIONS` = `ContentHash(0)` is the PRD §4 "no options" sentinel;
+    ///   tasks δ (3435) and ξ (3442) will thread real per-op option hashes
+    ///   here when wiring `TessellateOptions` / `VolumeMeshOptions`.
     ///
     /// `realization_name = None` paths (anonymous realizations) bypass the
     /// short-circuit so the named_steps write is never skipped where it
@@ -1664,7 +1668,7 @@ impl Engine {
         // (see step-13's pin).
         if let (Some(tol), Some(name)) = (demanded_tol, realization_name)
             && let Some(&cached_handle) =
-                realization_cache.lookup(&realization_id.entity, ReprKind::BRep, tol, ContentHash(0))
+                realization_cache.lookup(&realization_id.entity, ReprKind::BRep, tol, NO_OPTIONS)
         {
             // Internal-consistency invariant (amendment): the per-build
             // reset of `feature_tag_table` / `topology_attribute_table` at
@@ -1964,7 +1968,7 @@ impl Engine {
                     named_steps.insert(name.to_string(), last);
                 }
                 if let (Some(tol), Some(_name)) = (demanded_tol, realization_name) {
-                    realization_cache.insert(&realization_id.entity, ReprKind::BRep, tol, ContentHash(0), last);
+                    realization_cache.insert(&realization_id.entity, ReprKind::BRep, tol, NO_OPTIONS, last);
                 }
             }
         }
