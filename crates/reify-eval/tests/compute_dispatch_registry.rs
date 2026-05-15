@@ -13,6 +13,49 @@ use reify_eval::{
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 use reify_types::{OpaqueState, Severity, Value, ValueCellId};
 
+// ── step-9: RED — public seam API-surface pin ─────────────────────────────────
+// Compile-time test that coerces a concrete fn to `reify_eval::ComputeFn`,
+// constructs all `ComputeOutcome` variants, names `ComputeDispatchRegistry`,
+// and exercises the re-exported `reify_eval::CancellationHandle` API
+// (cancel()/is_cancelled()). Pinning the cross-crate seam shape that later
+// slices and downstream PRDs (buckling-eigensolver, shell-extract-engine-bridge)
+// depend on. No prose assertions — compile success is the signal.
+
+#[allow(dead_code)]
+fn _seam_pin_api_surface() {
+    // ComputeFn is a plain fn-pointer type
+    let _f: ComputeFn = identity_fn;
+
+    // ComputeOutcome::Completed
+    let _completed = ComputeOutcome::Completed {
+        result: Value::Int(0),
+        new_warm_state: None,
+        cost_per_byte: None,
+        diagnostics: vec![],
+    };
+
+    // ComputeOutcome::Cancelled
+    let _cancelled = ComputeOutcome::Cancelled;
+
+    // ComputeOutcome::Failed
+    let _failed = ComputeOutcome::Failed {
+        diagnostics: vec![],
+    };
+
+    // ComputeDispatchRegistry is constructible
+    let _registry = ComputeDispatchRegistry::new();
+
+    // RealizationReadHandle is constructible
+    let _handle = RealizationReadHandle {
+        node_id: reify_types::RealizationNodeId::new("test", 0),
+    };
+
+    // CancellationHandle: cancel() and is_cancelled()
+    let ch = CancellationHandle::new();
+    ch.cancel();
+    let _cancelled_flag: bool = ch.is_cancelled();
+}
+
 // ── Identity trampoline used by multiple tests ────────────────────────────────
 
 fn identity_fn(
