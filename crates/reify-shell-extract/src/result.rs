@@ -1843,9 +1843,16 @@ mod tests {
 
         // Unknown discriminants (gap in the table) must be rejected with
         // `InvalidData` — mirrors `severity_from_u8` / `classification_from_u8`.
-        // 0x28 = first byte after CornerVertex range; 0x34 = first byte after
-        // CapCornerVertex range; 0x40 = next high-nibble region beyond all known tags.
-        for unknown in [0x04u8, 0x0Fu8, 0x18u8, 0x28u8, 0x34u8, 0x40u8, 0xFFu8] {
+        // Boundary samples cover the edges of each gap region; the full interiors
+        // of the CornerVertex (0x28..=0x2F) and CapCornerVertex (0x34..=0x3F) gaps
+        // are chained in to close the low-nibble-mask aliasing hole: a hypothetical
+        // `b & 0x07` decode regression would alias 0x2F→0x27 / 0x3F→a CapKind and
+        // silently pass if only boundary bytes were probed (tamper-evidence per task 3658).
+        for unknown in [0x04u8, 0x0Fu8, 0x18u8, 0x40u8, 0xFFu8]
+            .into_iter()
+            .chain(0x28u8..=0x2F)
+            .chain(0x34u8..=0x3F)
+        {
             let err =
                 role_from_u8(unknown).expect_err(&format!("unknown tag {unknown:#04x} must fail"));
             assert_eq!(err.kind(), io::ErrorKind::InvalidData);
