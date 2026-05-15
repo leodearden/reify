@@ -58,7 +58,7 @@ const PLASTIC_BODY_SRC: &str = r#"
 structure def PlasticBody : Plastic {
     param plastic_strain : Real = 0.0
     param hardening_modulus : Real = 500.0
-    param stiffness : Real = 1000.0
+    param stiffness : Stiffness = 1000.0 * 1N / 1m
     param max_deflection : Real = 0.1
 }
 "#;
@@ -437,7 +437,7 @@ structure def HeatSink : ThermallyConductive {
     param centroid_x : Real = 0.0
     param centroid_y : Real = 0.0
     param centroid_z : Real = 0.0
-    param thermal_conductivity : Real = 205.0
+    param thermal_conductivity : ThermalConductivity = 205.0 * 1W / (1m * 1K)
     param max_service_temp : Real = 573.0
 }
 "#,
@@ -484,8 +484,8 @@ structure def Wire : ElectricallyConductive {
     param centroid_x : Real = 0.0
     param centroid_y : Real = 0.0
     param centroid_z : Real = 0.0
-    param electrical_conductivity : Real = 1000.0
-    param resistivity : Real = 0.001
+    param electrical_conductivity : ElectricalConductivity = 1000.0 * 1S / 1m
+    param resistivity : ElectricResistivity = 0.001 * 1ohm * 1m
 }
 "#,
     );
@@ -524,7 +524,7 @@ structure def Wire : ElectricallyConductive {
 fn structure_conforms_to_elastically_deformable_with_inherited_flexible_members() {
     let source = r#"
 structure def Rubber : ElasticallyDeformable {
-    param stiffness : Real = 1000.0
+    param stiffness : Stiffness = 1000.0 * 1N / 1m
     param max_deflection : Real = 0.1
     param max_elastic_strain : Real = 5.0
 }
@@ -689,7 +689,7 @@ fn plastic_conforming_structure_has_constraints_injected() {
 structure def PlasticBody : Plastic {
     param plastic_strain : Real = 0.05
     param hardening_modulus : Real = 1000.0
-    param stiffness : Real = 1000.0
+    param stiffness : Stiffness = 1000.0 * 1N / 1m
     param max_deflection : Real = 0.1
 }
 "#,
@@ -727,7 +727,7 @@ fn plastic_constraint_expressions_use_correct_operators() {
 structure def PlasticBody : Plastic {
     param plastic_strain : Real = 0.05
     param hardening_modulus : Real = 1000.0
-    param stiffness : Real = 1000.0
+    param stiffness : Stiffness = 1000.0 * 1N / 1m
     param max_deflection : Real = 0.1
 }
 "#,
@@ -819,7 +819,7 @@ fn plastic_strain_zero_boundary_compiles() {
 structure def PlasticBody : Plastic {
     param plastic_strain : Real = 0.0
     param hardening_modulus : Real = 500.0
-    param stiffness : Real = 1000.0
+    param stiffness : Stiffness = 1000.0 * 1N / 1m
     param max_deflection : Real = 0.1
 }
 "#,
@@ -850,7 +850,7 @@ fn hardening_modulus_zero_boundary_compiles() {
 structure def PlasticBody : Plastic {
     param plastic_strain : Real = 0.05
     param hardening_modulus : Real = 0.0
-    param stiffness : Real = 1000.0
+    param stiffness : Stiffness = 1000.0 * 1N / 1m
     param max_deflection : Real = 0.1
 }
 "#,
