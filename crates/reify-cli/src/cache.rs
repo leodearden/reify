@@ -28,7 +28,7 @@ use std::process::ExitCode;
 use reify_config::cache::{CacheError, CacheResolverInputs, resolve_cache};
 use reify_eval::persistent_cache::{
     CacheEntryHeader, ENGINE_VERSION_HASH, ENTRY_HEADER_ENCODED_LEN, entry_bin_path,
-    entry_meta_path, shard_dir, write_sidecar,
+    entry_meta_path, evict_over_cap, shard_dir, write_sidecar,
 };
 
 /// Upper bound on a single tar entry's body size (header + compressed body).
@@ -105,6 +105,7 @@ pub fn cmd_cache(args: &[String]) -> ExitCode {
         Some("import") => cmd_cache_import(&args[1..]),
         Some("stats") => cmd_cache_stats(&args[1..]),
         Some("clear") => cmd_cache_clear(&args[1..]),
+        Some("gc") => cmd_cache_gc(&args[1..]),
         _ => {
             eprintln!("{CACHE_USAGE}");
             ExitCode::FAILURE
@@ -172,6 +173,40 @@ const STATS_TOP_N: usize = 5;
 
 /// Usage line for `reify cache clear` argument errors.
 const CLEAR_USAGE: &str = "Usage: reify cache clear [--engine-version <hash>] --yes";
+
+/// Usage line for `reify cache gc` argument errors.
+const GC_USAGE: &str = "Usage: reify cache gc";
+
+/// `reify cache gc` — force LRU eviction down to the configured cache cap.
+///
+/// Per the design decision, gc operates ONLY on the live `ENGINE_VERSION_HASH`
+/// subdir (cross-version GC is a separate startup-sweep concern, scheduled in
+/// the PRD).  No-op when the cache is already under cap; useful when the cap
+/// was lowered manually via `REIFY_CACHE_MAX_BYTES` or a config file edit.
+fn cmd_cache_gc(args: &[String]) -> ExitCode {
+    if !args.is_empty() {
+        eprintln!("{GC_USAGE}");
+        return ExitCode::FAILURE;
+    }
+    let (cache_root, max_bytes) = match resolve_cache_root_and_cap() {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("reify cache gc: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let report = match evict_over_cap(&cache_root, ENGINE_VERSION_HASH, max_bytes) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("reify cache gc: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    println!("Evicted entries: {}", report.evicted_count);
+    println!("Evicted bytes: {}", report.evicted_bytes);
+    println!("Remaining bytes: {}", report.remaining_bytes);
+    ExitCode::SUCCESS
+}
 
 /// `reify cache clear` — empty the cache (or one engine-version subdir when
 /// `--engine-version <hash>` is given).  Requires `--yes` consent (project
@@ -459,6 +494,17 @@ fn cmd_cache_export(args: &[String]) -> ExitCode {
 /// 2976 (cache stats/clear/gc CLI) will fold those in when it lands.  Both
 /// `export` and `import` use this helper so the precedence is identical.
 fn resolve_cache_root() -> Result<PathBuf, CacheError> {
+    resolve_cache_root_and_cap().map(|(dir, _)| dir)
+}
+
+/// Resolve both the cache root AND the max-bytes cap.
+///
+/// `cmd_cache_gc` needs the cap to call [`evict_over_cap`], and a future
+/// `cmd_cache_stats` extension that surfaces "% of cap used" will need it
+/// too.  Wrapping `resolve_cache` once here keeps the env-var plumbing in a
+/// single place — `resolve_cache_root` becomes a thin facade for callers that
+/// only need the dir.
+fn resolve_cache_root_and_cap() -> Result<(PathBuf, u64), CacheError> {
     let env_dir = std::env::var("REIFY_CACHE_DIR").ok();
     let env_max_bytes = std::env::var("REIFY_CACHE_MAX_BYTES").ok();
     let xdg_cache_home = std::env::var("XDG_CACHE_HOME").ok();
@@ -473,7 +519,7 @@ fn resolve_cache_root() -> Result<PathBuf, CacheError> {
         home: Path::new(&home),
         xdg_cache_home: xdg_cache_home.as_deref(),
     };
-    resolve_cache(&inputs).map(|r| r.dir)
+    resolve_cache(&inputs).map(|r| (r.dir, r.max_bytes))
 }
 
 /// `reify cache import` — reads a cache tarball from stdin into the local
