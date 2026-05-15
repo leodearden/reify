@@ -568,7 +568,7 @@ mod tests {
         LONG_CHAIN_THRESHOLD_ENV_VAR, dispatch, is_long_chain_realization,
         kernel_pragma_unsatisfiable_diagnostic, long_chain_diagnostic,
         long_chain_threshold_from_env_value, no_kernel_chain_diagnostic,
-        per_stage_tolerance_for_plan,
+        per_stage_tolerance_for_plan, pinned_kernel_missing_diagnostic,
     };
     use crate::tolerance_budget::{SAFETY_FACTOR, per_stage_tolerance};
     use std::time::Duration;
@@ -1639,5 +1639,46 @@ mod tests {
                 diag.message,
             );
         }
+    }
+
+    /// Pins the wire-contract of [`pinned_kernel_missing_diagnostic`]:
+    /// `Severity::Error` + `Some(DiagnosticCode::PinnedKernelMissing)`.
+    /// Error per PRD `docs/prds/v0_3/multi-kernel-phase-3.md` §5 "error;
+    /// engine refuses to start". Consumed by task π (ID 3444).
+    #[test]
+    fn pinned_kernel_missing_diagnostic_carries_error_severity_and_code() {
+        use reify_types::{DiagnosticCode, Severity};
+
+        let diag = pinned_kernel_missing_diagnostic("truck");
+
+        assert_eq!(
+            diag.severity,
+            Severity::Error,
+            "diagnostic severity must be Error (PRD §5: error; engine \
+             refuses to start — the determinism contract requires every \
+             pinned kernel to be present)"
+        );
+        assert_eq!(
+            diag.code,
+            Some(DiagnosticCode::PinnedKernelMissing),
+            "diagnostic code must round-trip the typed variant for downstream \
+             filter-by-code consumers (task π wiring + LSP / MCP)"
+        );
+    }
+
+    /// Pins the user-visible-content requirement: the message must name the
+    /// missing pinned kernel so the user can see which `reify.toml` pin is
+    /// unsatisfied. Asserts only `contains()` — wording-churn-resistant.
+    #[test]
+    fn pinned_kernel_missing_diagnostic_message_names_kernel_id() {
+        let diag = pinned_kernel_missing_diagnostic("truck");
+
+        assert!(
+            diag.message.contains("truck"),
+            "diagnostic message must surface the missing pinned kernel id \
+             so the user can see which reify.toml pin is unsatisfied \
+             (got: {:?})",
+            diag.message,
+        );
     }
 }
