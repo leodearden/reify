@@ -1,24 +1,7 @@
-//! Integration test: PRD §8 task α construction-default pin.
-//!
-//! Pins the contract that, after `Engine::eval`, every realization node in
-//! the snapshot graph retains the construction-time BRep default set by
-//! `EvaluationGraph::from_templates`.
-//!
-//! In v0.2, `produced_repr` is initialized to `ReprKind::BRep` at
-//! graph-construction time (`EvaluationGraph::from_templates`) — the BRep
-//! constant matches the only output type any v0.2 kernel adapter (OCCT)
-//! produces. Task ε (3436) will wire the per-op dispatcher choice at
-//! execution time; if that wiring accidentally stops writing BRep for the
-//! OCCT path, this test will fail, surfacing the regression before merge.
-//!
-//! What this test guards today:
-//! "after `Engine::eval`, the construction-time BRep default on every
-//!  realization node survives — eval must not clear or overwrite
-//!  `produced_repr` before task ε (3436) wires the dispatcher."
-//!
-//! Note: this test does NOT compare `produced_repr` against the actual stored
-//! Value/handle's ReprKind; that cross-check belongs to task ε once
-//! `execute_realization_ops` writes the field dynamically.
+//! After `Engine::eval`, every realization node must retain the
+//! construction-time `ReprKind::BRep` default. Eval must not clear or
+//! overwrite `produced_repr` before task ε (3436) wires the per-op
+//! dispatcher.
 
 use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
 use reify_eval::Engine;
@@ -58,23 +41,8 @@ fn single_box_realization_module() -> reify_compiler::CompiledModule {
         .build()
 }
 
-/// Guards that the construction-time BRep default survives a full `Engine::eval`.
-///
-/// In v0.2, `produced_repr` is initialized at graph-construction time inside
-/// `EvaluationGraph::from_templates` to the constant `ReprKind::BRep` — the
-/// sole output kind produced by the OCCT kernel adapter (the only wired
-/// non-stub adapter in this release). `MockGeometryKernel` mirrors this
-/// contract (BRep-tagged handles only), so the assertion holds on both
-/// OCCT-enabled and CI (mock-kernel) build configurations.
-///
-/// This test asserts that eval does not accidentally clear or overwrite
-/// `produced_repr`. It does NOT compare the field against the actual stored
-/// Value/handle's ReprKind — that cross-check is deferred to task ε (3436),
-/// which wires `execute_realization_ops` to write the field dynamically.
-///
-/// Future regression guard: when task ε lands, this test will catch any
-/// accidental non-BRep output on the OCCT path before it reaches the merge
-/// queue.
+/// Forward-guard: eval must not clear/overwrite the construction-time
+/// `ReprKind::BRep` default on any realization node.
 #[test]
 fn every_realization_node_has_produced_repr_brep_after_eval() {
     let module = single_box_realization_module();
