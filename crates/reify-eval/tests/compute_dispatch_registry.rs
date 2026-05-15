@@ -177,3 +177,71 @@ fn e2e_optimized_fn_lowers_to_compute_node_and_evaluates() {
             .collect::<Vec<_>>()
     );
 }
+
+// ── step-7: RED — unregistered @optimized target fallback diagnostic ──────────
+// PRD §7.2: when the engine encounters an @optimized fn call whose target is not
+// registered, it must emit an Error diagnostic naming the target, then fall back
+// to body-inlining so the cell still evaluates correctly (no ComputeNode inserted).
+
+/// Test: @optimized fn with unregistered target emits an Error diagnostic naming
+/// the target, body-inlines (cell value == input), and inserts no ComputeNode.
+#[test]
+fn e2e_unregistered_optimized_target_emits_diagnostic_and_inlines() {
+    // Use compute_identity.ri but register NO trampoline for "test::identity".
+    let source = compute_identity_source();
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_simple_engine();
+    // Deliberately no register_compute_fn — "test::identity" is unregistered.
+    let eval_result = engine.eval(&compiled);
+
+    // (a) Must emit at least one Error diagnostic naming the unknown target.
+    let error_diags: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !error_diags.is_empty(),
+        "expected Error diagnostic for unregistered @optimized target, \
+         got diagnostics: {:?}",
+        eval_result.diagnostics
+    );
+    let target_named = error_diags.iter().any(|d| d.message.contains("test::identity"));
+    assert!(
+        target_named,
+        "expected at least one Error diagnostic to name \"test::identity\", \
+         got: {:?}",
+        error_diags
+    );
+
+    // (b) Body inlines: cell value still equals the input (42).
+    let result_cell = ValueCellId::new("IdentityFixture", "result");
+    let result_val = eval_result
+        .values
+        .get(&result_cell)
+        .unwrap_or_else(|| panic!("cell IdentityFixture.result not found in eval result"));
+    assert_eq!(
+        *result_val,
+        Value::Int(42),
+        "expected IdentityFixture.result == Int(42) (inline fallback), got {:?}",
+        result_val
+    );
+
+    // (c) No ComputeNode inserted for the unregistered target.
+    let snapshot = engine
+        .eval_state()
+        .expect("eval_state must be Some after eval()")
+        .snapshot
+        .clone();
+    let rogue_node = snapshot
+        .graph
+        .compute_nodes
+        .iter()
+        .find(|(_, data)| data.target == "test::identity");
+    assert!(
+        rogue_node.is_none(),
+        "expected no ComputeNode for unregistered target, found: {:?}",
+        rogue_node.map(|(id, _)| id)
+    );
+}
