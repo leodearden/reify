@@ -7280,6 +7280,56 @@ fn engine_session_no_auto_resolve_emission_when_no_auto_params() {
     );
 }
 
+/// Disambiguation test (suggestion 5): no auto-resolve events fire when the solver
+/// returns `Solved {}` with an empty values map, even when the source has auto params.
+///
+/// This explicitly pins the `if check.resolved_params.is_empty() { return; }` guard in
+/// `emit_auto_resolve_if_any` (engine.rs) — distinct from the "no auto params declared"
+/// case covered by `engine_session_no_auto_resolve_emission_when_source_has_no_auto_params`.
+///
+/// Passes immediately (guard already present).
+#[test]
+fn engine_session_no_auto_resolve_emission_when_solver_returns_empty_solved() {
+    use std::sync::Arc;
+
+    // Solver returns Solved with empty values — simulates a solver that finds
+    // no resolved auto-params for this check (e.g., constraints not tight enough).
+    let solver = MockConstraintSolver::new_solved(std::collections::HashMap::new());
+
+    // Auto-param fixture: source HAS an auto param, so the no-auto-params guard
+    // is NOT responsible for the suppression — only the empty-Solved guard is.
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "thickness", Type::length())
+        .constraint(
+            "S",
+            0,
+            None,
+            gt(value_ref("S", "thickness"), literal(mm(2.0))),
+        )
+        .build();
+
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None)
+        .with_solver_for_test(Box::new(solver));
+
+    let recorder = RecordingEmitter::new();
+    let events = Arc::clone(&recorder.events);
+    session.set_auto_resolve_emitter(Arc::new(recorder));
+
+    session.check_and_emit_for_test(&compiled);
+
+    let events = events.lock().unwrap();
+    assert!(
+        events.is_empty(),
+        "no auto-resolve events should fire when solver returns empty Solved, got {} events",
+        events.len()
+    );
+}
+
 /// Step-8: Pin the AutoResolveParameterValue conversion contract.
 ///
 /// Resolved `mm(4.2)` → `{ value: 4.2, unit: "mm", display: "4.2mm" }`.
