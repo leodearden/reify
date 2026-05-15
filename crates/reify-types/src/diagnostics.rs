@@ -1837,6 +1837,39 @@ mod tests {
         let s = serde_json::to_string(&DiagnosticCode::PinnedKernelMissing).unwrap();
         assert_eq!(s, "\"PinnedKernelMissing\"");
     }
+
+    // --- UnpinnedKernelLoaded tests (task 3434 — W_UNPINNED_KERNEL_LOADED) ---
+    // Pairs with the dispatcher's unpinned-kernel-loaded diagnostic in
+    // `crates/reify-eval/src/dispatcher.rs::unpinned_kernel_loaded_diagnostic`
+    // (PRD `docs/prds/v0_3/multi-kernel-phase-3.md` §8 task γ + §5 "Registry
+    // name not pinned"). Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug
+    // derives are already covered by `diagnostic_code_derives` above; only
+    // the variant-specific round-trip and serde wire-format tests are added
+    // here.
+
+    /// `DiagnosticCode::UnpinnedKernelLoaded` round-trips through
+    /// `Diagnostic::warning(...).with_code(...)` carrying both the expected
+    /// `Severity::Warning` and `Some(DiagnosticCode::UnpinnedKernelLoaded)`.
+    /// Pins the warning-severity contract and variant existence for the
+    /// registered-but-unpinned advisory (PRD §5 "warning; engine starts").
+    #[test]
+    fn diagnostic_code_unpinned_kernel_loaded_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::warning("x").with_code(DiagnosticCode::UnpinnedKernelLoaded);
+        assert_eq!(d.severity, Severity::Warning);
+        assert_eq!(d.code, Some(DiagnosticCode::UnpinnedKernelLoaded));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::UnpinnedKernelLoaded`
+    /// serializes as `"UnpinnedKernelLoaded"` (PascalCase, from
+    /// `rename_all = "PascalCase"`). Pins the wire-format contract for
+    /// downstream consumers (LSP / MCP).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_unpinned_kernel_loaded_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::UnpinnedKernelLoaded).unwrap();
+        assert_eq!(s, "\"UnpinnedKernelLoaded\"");
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
