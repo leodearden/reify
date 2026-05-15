@@ -36,21 +36,26 @@ fn benign_meta(task_id: &str, files: Vec<String>) -> TaskMetadata {
 mod tests {
     use super::*;
 
-    /// Verify that all nine canonical stub-pattern families are detected when
+    /// Verify that all eleven canonical stub-pattern families are detected when
     /// they appear on the added-lines side of a diff (i.e. as `+` lines).
     ///
     /// Families covered (one synthetic path per family):
-    ///   a) `crates/x/a.rs` — `// TODO(impl pending)`  (TODO.*pending)
-    ///   b) `crates/x/b.rs` — `// TODO(post-merge)`    (TODO post-\w+)
-    ///   c) `crates/x/c.rs` — `// TODO(wire later)`    (TODO.*later)
-    ///   d) `crates/x/d.rs` — `// TODO(task_9999)`     (TODO task_\d+)
+    ///   a) `crates/x/a.rs` — `// TODO(impl pending)`        (TODO.*pending)
+    ///   b) `crates/x/b.rs` — `// TODO(post-merge)`          (TODO post-\w+)
+    ///   c) `crates/x/c.rs` — `// TODO(wire later)`          (TODO.*later)
+    ///   d) `crates/x/d.rs` — `// TODO(task_9999)`           (TODO task_\d+)
     ///   e) `crates/x/e.rs` — `unimplemented!()`
     ///   f) `crates/x/f.rs` — `panic!("not yet wired")`
     ///   g) `crates/x/g.rs` — `tracing::warn!(reason="task_foo_pending", "x")`
     ///   h) `crates/x/h.rs` — `Value::Undef => { /* pending */ }`  (Undef+pending)
     ///   i) `crates/x/i.rs` — `// fixme`
+    ///   j) `crates/x/j.rs` — `// stub: wire later`          (Family 6 // stub)
+    ///   k) `crates/x/k.rs` — `// placeholder: TBD`          (Family 6 // placeholder)
     ///
-    /// Each path has exactly one stub line → nine findings expected.
+    /// Each path has exactly one stub line → eleven findings expected.
+    /// Having all three Family 6 sub-patterns covered ensures that removing or
+    /// reordering any `// stub` / `// placeholder` / `// fixme` arm in
+    /// `line_matches_stub` would make this test fail.
     #[test]
     fn detects_canonical_stub_patterns_on_added_lines() {
         let conn = Connection::open_in_memory().expect("open in-memory sqlite");
@@ -65,6 +70,8 @@ mod tests {
             "crates/x/g.rs",
             "crates/x/h.rs",
             "crates/x/i.rs",
+            "crates/x/j.rs",
+            "crates/x/k.rs",
         ];
         let stub_lines: Vec<&str> = vec![
             "    // TODO(impl pending)",
@@ -76,6 +83,8 @@ mod tests {
             "    tracing::warn!(reason=\"task_foo_pending\", \"x\")",
             "    Value::Undef => { /* pending */ }",
             "    // fixme",
+            "    // stub: wire later",
+            "    // placeholder: TBD",
         ];
 
         let mut git = MockGitOps::new();
@@ -107,8 +116,8 @@ mod tests {
         let findings = p2_consumer_stub::check(&ctx);
         assert_eq!(
             findings.len(),
-            9,
-            "expected 9 findings (one per stub-pattern path); got {:?}",
+            11,
+            "expected 11 findings (one per stub-pattern path); got {:?}",
             findings
         );
         for f in &findings {
@@ -131,6 +140,11 @@ mod tests {
     /// added by this branch) are NOT flagged.  This pins the "added-lines seam
     /// only" invariant: the detector must consult `diff_added_lines`, never the
     /// full file contents.
+    ///
+    /// The mock returns a *non-empty* vec of added lines — all genuine
+    /// implementation lines with no stub markers — to confirm the detector
+    /// correctly classifies clean added content as non-findings, not just that
+    /// an empty seam produces no output.
     #[test]
     fn moved_code_preexisting_not_flagged() {
         let conn = Connection::open_in_memory().expect("open in-memory sqlite");
@@ -138,8 +152,19 @@ mod tests {
         let path = "crates/x/moved.rs";
 
         let mut git = MockGitOps::new();
-        // Empty added-lines: the stub marker existed pre-branch and was not touched.
-        git.set_diff_added_lines("main", &format!("task/{}", task_id), path, vec![]);
+        // Non-empty added-lines containing clean implementation code (no stubs).
+        // The pre-existing `// TODO(pending)` in the file was NOT touched by this
+        // branch, so it does not appear as a `+` line here.
+        git.set_diff_added_lines(
+            "main",
+            &format!("task/{}", task_id),
+            path,
+            vec![
+                (5, "    let x = compute_value();".to_string()),
+                (6, "    Ok(())".to_string()),
+                (7, "    // Proper implementation comment".to_string()),
+            ],
+        );
 
         let mut task_metadata = HashMap::new();
         task_metadata.insert(
@@ -166,13 +191,14 @@ mod tests {
 
     /// Verify that paths whose shape indicates a test file are excluded from
     /// P2 scanning, even when they carry real stub markers on the added-lines
-    /// side.  Three test-shaped paths and one non-test path:
+    /// side.  Four test-shaped paths and one non-test path:
     ///   - `crates/foo/tests/integration_bar.rs`  — contains `/tests/`
     ///   - `src/lexer_test.rs`                    — ends with `_test.rs`
     ///   - `frontend/__tests__/foo.ts`             — contains `__tests__/`
+    ///   - `tests/root_foo.rs`                    — starts with `tests/` (no leading slash)
     ///   - `src/foo.rs`                            — production file → flagged
     ///
-    /// All four carry `// TODO(impl pending)` as an added line.  Exactly one
+    /// All five carry `// TODO(impl pending)` as an added line.  Exactly one
     /// finding must emerge and it must reference `src/foo.rs`.
     #[test]
     fn test_file_paths_excluded() {
@@ -184,6 +210,7 @@ mod tests {
             "crates/foo/tests/integration_bar.rs",
             "src/lexer_test.rs",
             "frontend/__tests__/foo.ts",
+            "tests/root_foo.rs",
         ];
         let prod_path = "src/foo.rs";
         let stub_line = (1usize, "    // TODO(impl pending)".to_string());

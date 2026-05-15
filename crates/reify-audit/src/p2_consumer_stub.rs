@@ -23,24 +23,31 @@ use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
 fn line_matches_stub(line: &str) -> Option<&'static str> {
     let lower = line.to_lowercase();
 
-    // Family 1 — TODO variants.
-    if lower.contains("todo(") {
-        if lower.contains("pending") {
+    // Family 1 — TODO variants.  Sub-checks run only on the content INSIDE
+    // the TODO(...) parens to prevent cross-talk with unrelated tokens on the
+    // same line (e.g. `// TODO(refactor) // see task_123` must NOT match
+    // TODO(task_N) because `task_123` lives outside the parens).
+    if let Some(paren_start) = lower.find("todo(") {
+        let inner_start = paren_start + 5; // skip "todo("
+        let inner = if let Some(paren_end) = lower[inner_start..].find(')') {
+            &lower[inner_start..inner_start + paren_end]
+        } else {
+            &lower[inner_start..]
+        };
+        if inner.contains("pending") {
             return Some("TODO(pending)");
         }
-        if lower.contains("post-") {
+        if inner.contains("post-") {
             return Some("TODO(post-\\w+)");
         }
-        if lower.contains("later") {
+        if inner.contains("later") {
             return Some("TODO(later)");
         }
-        if lower.contains("task_") {
-            // Confirm the numeric part exists: look for "task_" followed by at least one digit.
-            if let Some(idx) = lower.find("task_") {
-                let after = &lower[idx + 5..];
-                if after.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-                    return Some("TODO(task_N)");
-                }
+        // Numeric task reference: "task_" followed by at least one digit.
+        if let Some(idx) = inner.find("task_") {
+            let after = &inner[idx + 5..];
+            if after.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+                return Some("TODO(task_N)");
             }
         }
     }
@@ -67,17 +74,13 @@ fn line_matches_stub(line: &str) -> Option<&'static str> {
         return Some("Value::Undef(pending/stub/placeholder)");
     }
 
-    // Family 6 — bare line-comment markers.
-    // Match `// stub`, `// placeholder`, `// fixme` anywhere in the line (case-insensitive).
-    if lower.contains("// stub") || lower.contains("// placeholder") || lower.contains("// fixme") {
-        if lower.contains("// stub") {
-            return Some("// stub");
-        }
-        if lower.contains("// placeholder") {
-            return Some("// placeholder");
-        }
-        return Some("// fixme");
-    }
+    // Family 6 — bare line-comment markers (case-insensitive).
+    // Three independent checks rather than an outer guard + inner ladder to
+    // avoid evaluating each substring twice (maintenance hazard if a fourth
+    // marker is added later).
+    if lower.contains("// stub") { return Some("// stub"); }
+    if lower.contains("// placeholder") { return Some("// placeholder"); }
+    if lower.contains("// fixme") { return Some("// fixme"); }
 
     None
 }
@@ -88,7 +91,14 @@ fn line_matches_stub(line: &str) -> Option<&'static str> {
 /// - paths ending with `_test.rs`    — Go-style test files
 /// - paths containing `__tests__/`   — JavaScript/TypeScript test directories
 fn is_test_path(p: &str) -> bool {
-    p.contains("/tests/") || p.ends_with("_test.rs") || p.contains("__tests__/")
+    // `tests/` with and without a leading slash covers both repo-root paths
+    // (e.g. `tests/foo.rs`) and nested paths (e.g. `crates/x/tests/foo.rs`).
+    p.starts_with("tests/")
+        || p.contains("/tests/")
+        || p.ends_with("_test.rs")
+        || p.contains("__tests__/")
+        || p.contains(".test.")  // JS/TS: foo.test.ts
+        || p.contains(".spec.")  // JS/TS: foo.spec.ts
 }
 
 /// Returns `true` when the task title itself signals that the task is
@@ -118,6 +128,12 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
             Severity::Medium
         };
 
+        // TODO(perf): coalesce paths per task into a single
+        //   `git diff main..task/<id> -- <p1> <p2> ...` invocation instead of
+        //   one subprocess per (task, file) — avoids N×M cost in production
+        //   sweeps over hundreds of tasks. The `+++ b/path` hunk headers
+        //   already delimit per-file sections in a multi-path diff output.
+        //   Reference: docs/architecture-audit/f-infra-design.md §5 P2.
         for path in &meta.files {
             // Skip test-shaped paths to avoid false positives on intentional
             // stubs inside test helpers (design §5 P2 false-positive guards).
