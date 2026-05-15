@@ -14,8 +14,8 @@
 mod p2 {
 
 use reify_audit::{
-    AuditContext, EvidenceRef, Finding, MockGitOps, MockJCodemunchOps, Pattern, Severity,
-    TaskMetadata, p2_consumer_stub,
+    AuditContext, EvidenceRef, MockGitOps, MockJCodemunchOps, Pattern, Severity, TaskMetadata,
+    p2_consumer_stub,
 };
 use rusqlite::Connection;
 use std::collections::HashMap;

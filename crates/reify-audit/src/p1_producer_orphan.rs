@@ -8,12 +8,18 @@
 //!
 //! Reference: `docs/architecture-audit/f-infra-design.md` §5 P1.
 //!
-//! Guards (each suppresses the finding; firing order built up across
-//! steps 6/8/10/12): `audit_foundation` → stdlib-scope → symbol attributes
-//! (`#[allow(dead_code)]`/`#[cfg(test)]`) → `// G-allow:` marker →
-//! pending-consumer task → non-test workspace caller → grace window.
+//! False-positive guards, in firing order (each short-circuits the finding):
+//!
+//! - Per task: not `done`, or no `done_at` → skipped; `audit_foundation`
+//!   (foundation/scaffold task); a pending/in-progress consumer task whose
+//!   `consumer_ref` matches this producer's `prd`.
+//! - Per symbol: `crates/reify-stdlib/` scope-exclude; `#[allow(dead_code)]`
+//!   / `#[cfg(test)]` attribute opt-out; a non-blank `// G-allow:` marker;
+//!   a non-test workspace caller.
+//! - Surviving symbols: severity is Medium past the 14-day grace window,
+//!   Low within it ("log only").
 
-use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
+use crate::{AuditContext, ChangedSymbol, EvidenceRef, Finding, Pattern, Severity};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// 14-day grace window (per `f-infra-design.md` §5 P1): a producer-orphan is
@@ -49,6 +55,19 @@ fn has_pending_consumer(ctx: &AuditContext, producer_prd: &str) -> bool {
         matches!(t.status.as_str(), "pending" | "in-progress")
             && t.consumer_ref.as_deref() == Some(producer_prd)
     })
+}
+
+/// Returns `true` when the symbol carries a non-blank `// G-allow:` marker.
+///
+/// Mirrors `scripts/audit-orphan-producers.sh:150`
+/// `G_ALLOW_RE = //\s*G-allow:\s*(.+)`: the `(.+)` requires at least one
+/// non-whitespace character, so a blank/whitespace-only marker does NOT
+/// suppress — keeping this detector and the orphan script in lockstep.
+fn is_g_allow_suppressed(symbol: &ChangedSymbol) -> bool {
+    symbol
+        .g_allow_marker
+        .as_deref()
+        .is_some_and(|r| !r.trim().is_empty())
 }
 
 // G-allow: F-infra T-4 CLI consumer (crates/reify-audit-cli) — design pinned in docs/architecture-audit/f-infra-design.md
@@ -94,6 +113,11 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
             // Per-symbol guard: intentional-orphan opt-outs —
             // `#[allow(dead_code)]` / `#[cfg(test)]` (design §5 P1).
             if symbol.has_allow_dead_code || symbol.has_cfg_test {
+                continue;
+            }
+            // Per-symbol guard: a non-blank `// G-allow:` marker on the
+            // declaration (design §5 P1; mirrors the orphan-script regex).
+            if is_g_allow_suppressed(&symbol) {
                 continue;
             }
             // A non-test workspace caller proves the symbol is consumed —
