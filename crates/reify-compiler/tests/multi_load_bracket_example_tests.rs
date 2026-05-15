@@ -1,7 +1,8 @@
 //! Dedicated regression tests for `examples/multi_load_bracket.ri` (task 3587).
 //!
 //! Pins the four task-spec leaf signals from
-//! `docs/prds/v0_3/multi-load-case-fea.md` task #7:
+//! `docs/prds/v0_3/multi-load-case-fea.md` task #7, plus two additional
+//! signals added by task 3647 (STANDARD_GRAVITY stdlib constant):
 //!
 //!   1. The file parses with zero errors.
 //!   2. It compiles under the stdlib prelude with zero Error-severity diagnostics.
@@ -14,6 +15,8 @@
 //!      source-text markers for `box(` geometry and at least one realistic-load
 //!      constructor (`point_load(`, `pressure_load(`, `traction_load(`,
 //!      `body_force(`, or `gravity(`).
+//!   5. The source references `STANDARD_GRAVITY` (the std.units zero-arg pub fn)
+//!      rather than redefining 9.80665 m/s² inline via a `let g_scalar` binding.
 //!
 //! Mirrors the `cost_aggregation_example_compiles_under_stdlib_with_zero_errors`
 //! pattern at `cost_aggregation_tests.rs:218-283`, including the typed value-cell
@@ -171,5 +174,20 @@ fn multi_load_bracket_example_compiles_under_stdlib_with_zero_errors() {
         "leaf signal 'realistic loads': expected src to contain at least one of \
          point_load(, pressure_load(, traction_load(, body_force(, gravity( \
          but none found"
+    );
+
+    // Task 3647 leaf signals: stdlib gravity constant in use; inline definition removed.
+    // These patterns do not appear inside comments in the example file, so
+    // substring matching is unambiguous here.
+    assert!(
+        src.contains("STANDARD_GRAVITY"),
+        "leaf signal 'stdlib gravity constant in use': expected src to reference \
+         STANDARD_GRAVITY (the std.units zero-arg pub fn) in the gravity load construction"
+    );
+    assert!(
+        !src.contains("let g_scalar"),
+        "leaf signal 'inline gravity reconstruction removed': expected src NOT to \
+         contain a `let g_scalar` binding — the example must consume STANDARD_GRAVITY() \
+         rather than redefine 9.80665 m/s² inline"
     );
 }
