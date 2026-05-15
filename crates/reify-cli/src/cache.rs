@@ -25,6 +25,20 @@ use reify_eval::persistent_cache::{
 /// that.  Defends against a tar-bomb that claims a huge size in its header.
 const IMPORT_ENTRY_MAX_BYTES: usize = ENTRY_HEADER_ENCODED_LEN + 256 * 1024 * 1024;
 
+/// Upper bound on the number of tar entries we will buffer during an import.
+///
+/// 2977's stated distribution mode is single-entry (one `<hash>.bin` plus an
+/// optional sidecar), so 1024 entries leaves multiple orders of magnitude of
+/// headroom for any plausible legitimate batch while bounding the worst-case
+/// memory footprint at `IMPORT_ENTRY_MAX_COUNT * IMPORT_ENTRY_MAX_BYTES`
+/// (~256 GiB nominal, but reached only by an adversarial tar that simulta-
+/// neously declares the maximum entry size for every entry).  Without this
+/// cap a tar with many large entries could drive the staging `HashMap` to
+/// OOM before any per-entry decode/validation runs.  Reaching the cap is a
+/// hard FAILURE — distribution-tarballs honest about their format will never
+/// trip it, and an unbounded stream is treated as malformed.
+const IMPORT_ENTRY_MAX_COUNT: usize = 1024;
+
 /// Usage line printed to stderr for any `reify cache` dispatcher error.
 const CACHE_USAGE: &str = "Usage: reify cache (export <hash>|import)";
 
@@ -95,17 +109,50 @@ fn cmd_cache_export(args: &[String]) -> ExitCode {
     let cache_root = match resolve_cache_root() {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("reify cache export: {e:?}");
+            // Use `Display` (`{e}`) not `Debug` (`{e:?}`): `CacheError`
+            // implements `fmt::Display` (reify-config/src/cache.rs) with a
+            // user-facing message like "failed to parse cache config: ...";
+            // the `Debug` form would print the bare enum-variant shape.
+            eprintln!("reify cache export: {e}");
             return ExitCode::FAILURE;
         }
     };
 
     let bin_path = entry_bin_path(&cache_root, ENGINE_VERSION_HASH, hash);
-    if !bin_path.exists() {
-        eprintln!("reify cache export: no such cache entry: {hash}");
-        return ExitCode::FAILURE;
-    }
+    // Open the bin file ONCE up front (before tar header construction) so the
+    // export sees a stable file descriptor for the whole emission.  This
+    // closes the TOCTOU race that would otherwise exist between the
+    // `bin_path.exists()` probe and the tar reader's open: when sibling task
+    // 2976 (cache stats/clear/gc) lands and adds concurrent eviction, an
+    // export interleaved with a GC sweep could otherwise observe a missing
+    // file mid-emission, producing a half-written tar on stdout.  Opening
+    // up front means an inflight export holds an unlinked-but-still-alive
+    // inode; `tar::Builder::append_file` reads from the handle, not the
+    // path.
+    let mut bin_file = match std::fs::File::open(&bin_path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("reify cache export: no such cache entry: {hash}");
+            return ExitCode::FAILURE;
+        }
+        Err(e) => {
+            eprintln!("reify cache export: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
     let meta_path = entry_meta_path(&cache_root, ENGINE_VERSION_HASH, hash);
+    // Open the sidecar opportunistically: absence is non-fatal (the read
+    // path recreates the sidecar on cache hit per persistent_cache.rs), so
+    // a concurrent eviction between the bin open above and this open just
+    // means we export the bin alone.  Any non-NotFound error is bubbled.
+    let mut meta_file: Option<std::fs::File> = match std::fs::File::open(&meta_path) {
+        Ok(f) => Some(f),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            eprintln!("reify cache export: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
 
     // Build the tar over a stdout lock.  Tar entry names are flat
     // `<hash>.bin` / `<hash>.meta`; the sharded directory layout is
@@ -113,15 +160,12 @@ fn cmd_cache_export(args: &[String]) -> ExitCode {
     // See plan.json "Tar entry layout" design decision for rationale.
     let stdout = std::io::stdout();
     let mut builder = tar::Builder::new(stdout.lock());
-    if let Err(e) = builder.append_path_with_name(&bin_path, format!("{hash}.bin")) {
+    if let Err(e) = builder.append_file(format!("{hash}.bin"), &mut bin_file) {
         eprintln!("reify cache export: {e}");
         return ExitCode::FAILURE;
     }
-    // The sidecar is recoverable per persistent_cache.rs (the read path
-    // recreates it on a cache hit), so absence is non-fatal — we just
-    // export what we have.
-    if meta_path.exists()
-        && let Err(e) = builder.append_path_with_name(&meta_path, format!("{hash}.meta"))
+    if let Some(ref mut mf) = meta_file
+        && let Err(e) = builder.append_file(format!("{hash}.meta"), mf)
     {
         eprintln!("reify cache export: {e}");
         return ExitCode::FAILURE;
@@ -177,7 +221,28 @@ fn cmd_cache_import(args: &[String]) -> ExitCode {
     let cache_root = match resolve_cache_root() {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("reify cache import: {e:?}");
+            // Use `Display` (`{e}`) not `Debug` — same rationale as the
+            // export site above.
+            eprintln!("reify cache import: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // Materialize the live `ENGINE_VERSION_HASH` as a fixed-size byte array
+    // ONCE up front (it's a `const &str` so this is a constant value across
+    // the import), and convert via a runtime check rather than `expect`: a
+    // future refactor that changes the constant's length (or its byte width
+    // via non-ASCII) should produce a controlled diagnostic, not panic
+    // every `cache import` invocation.  The `engine_version_hash_const_is_32_chars`
+    // test in persistent_cache.rs pins the invariant — this guard is for
+    // the case where that test is removed or its invariant is broken.
+    let evh_bytes: [u8; 32] = match ENGINE_VERSION_HASH.as_bytes().try_into() {
+        Ok(b) => b,
+        Err(_) => {
+            eprintln!(
+                "reify cache import: internal error: ENGINE_VERSION_HASH is not 32 bytes (len={})",
+                ENGINE_VERSION_HASH.len()
+            );
             return ExitCode::FAILURE;
         }
     };
@@ -260,6 +325,19 @@ fn cmd_cache_import(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
 
+        // Cap entry-count BEFORE inserting into the staging map — a tar
+        // claiming `IMPORT_ENTRY_MAX_COUNT` entries each at the body cap
+        // would otherwise drive memory to OOM before any per-entry decode
+        // runs.  We don't bother to be clever here: hitting the cap is a
+        // hard FAILURE and we abandon the import (no partial cache writes
+        // because writes only happen in the second loop after the walk
+        // finishes).  Bounded by stem-uniqueness: the cap counts distinct
+        // stems, not raw tar entries, so a producer that sends both `.bin`
+        // and `.meta` for each of N stems counts as N (not 2N).
+        if !staged.contains_key(&stem) && staged.len() >= IMPORT_ENTRY_MAX_COUNT {
+            eprintln!("reify cache import: tar archive exceeds {IMPORT_ENTRY_MAX_COUNT}-entry cap");
+            return ExitCode::FAILURE;
+        }
         let slot = staged.entry(stem).or_insert((None, None));
         match ext {
             Some("bin") => slot.0 = Some(buf),
@@ -318,24 +396,20 @@ fn cmd_cache_import(args: &[String]) -> ExitCode {
         }
 
         // `stem` is provably 32 lowercase ASCII hex from the tar-walk gate
-        // above, so it converts to a [u8; 32] infallibly. The live
-        // ENGINE_VERSION_HASH constant is likewise 32 ASCII bytes by the
-        // `engine_version_hash_const_is_32_chars` invariant in
-        // `persistent_cache.rs`. We hand both to `verify_field_echoes` —
-        // the same helper `read_entry` uses for on-disk corruption detection
-        // — to confirm the bin's internal echo fields agree with the
-        // tar-layer stem and the live engine. Engine-version equality was
-        // already verified above; the only remaining failure mode here is a
-        // stem-vs-header input_hash mismatch (corrupted or tampered echo,
-        // including path-traversal payloads in `header.input_hash`).
+        // above, so it converts to a [u8; 32] infallibly. We hand both
+        // `stem_bytes` and the hoisted `evh_bytes` (computed once at the top
+        // of `cmd_cache_import` via a runtime check, not `expect`) to
+        // `verify_field_echoes` — the same helper `read_entry` uses for
+        // on-disk corruption detection — to confirm the bin's internal echo
+        // fields agree with the tar-layer stem and the live engine.
+        // Engine-version equality was already verified above; the only
+        // remaining failure mode here is a stem-vs-header input_hash mismatch
+        // (corrupted or tampered echo, including path-traversal payloads in
+        // `header.input_hash`).
         let stem_bytes: [u8; 32] = stem
             .as_bytes()
             .try_into()
             .expect("stem validated as 32 hex bytes by tar-walk gate");
-        let evh_bytes: [u8; 32] = ENGINE_VERSION_HASH
-            .as_bytes()
-            .try_into()
-            .expect("ENGINE_VERSION_HASH is 32 ASCII bytes by const invariant");
         if let Err(e) = header.verify_field_echoes(&evh_bytes, &stem_bytes) {
             eprintln!(
                 "reify cache import: warning: skipping entry {stem}: \
