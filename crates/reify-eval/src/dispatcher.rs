@@ -638,10 +638,10 @@ mod tests {
     use super::{
         DispatchPlan, LONG_CHAIN_DEFAULT_THRESHOLD_MS, LONG_CHAIN_MIN_STAGES,
         LONG_CHAIN_THRESHOLD_ENV_VAR, dispatch, is_long_chain_realization,
-        kernel_pragma_unsatisfiable_diagnostic, long_chain_diagnostic,
-        long_chain_threshold_from_env_value, no_kernel_chain_diagnostic,
-        per_stage_tolerance_for_plan, pinned_kernel_missing_diagnostic,
-        unpinned_kernel_loaded_diagnostic,
+        kernel_pragma_unsatisfiable_diagnostic, kernel_version_mismatch_diagnostic,
+        long_chain_diagnostic, long_chain_threshold_from_env_value,
+        no_kernel_chain_diagnostic, per_stage_tolerance_for_plan,
+        pinned_kernel_missing_diagnostic, unpinned_kernel_loaded_diagnostic,
     };
     use crate::tolerance_budget::{SAFETY_FACTOR, per_stage_tolerance};
     use std::time::Duration;
@@ -1792,6 +1792,60 @@ mod tests {
             diag.message.contains("fidget"),
             "diagnostic message must surface the unpinned kernel id so the \
              user can see which kernel to pin for build determinism \
+             (got: {:?})",
+            diag.message,
+        );
+    }
+
+    /// Pins the wire-contract of [`kernel_version_mismatch_diagnostic`]:
+    /// `Severity::Error` + `Some(DiagnosticCode::KernelVersionMismatch)`.
+    /// Error per PRD `docs/prds/v0_3/multi-kernel-phase-3.md` §5 "error.
+    /// Determinism contract enforcement" — matching versions is
+    /// load-bearing for reproducible realization. Consumed by task π
+    /// (ID 3444).
+    #[test]
+    fn kernel_version_mismatch_diagnostic_carries_error_severity_and_code() {
+        use reify_types::{DiagnosticCode, Severity};
+
+        let diag = kernel_version_mismatch_diagnostic("manifold", "1.2.0", "1.3.0");
+
+        assert_eq!(
+            diag.severity,
+            Severity::Error,
+            "diagnostic severity must be Error (PRD §5: error — \
+             determinism contract enforcement; the engine fails closed \
+             rather than using a different adapter than the project pins)"
+        );
+        assert_eq!(
+            diag.code,
+            Some(DiagnosticCode::KernelVersionMismatch),
+            "diagnostic code must round-trip the typed variant for downstream \
+             filter-by-code consumers (task π wiring + LSP / MCP)"
+        );
+    }
+
+    /// Pins the user-visible-content requirement: the message must name the
+    /// kernel id, the pinned version, and the actual adapter version so the
+    /// user can see exactly which pin is unsatisfied and by how much.
+    /// Asserts only `contains()` — wording-churn-resistant.
+    #[test]
+    fn kernel_version_mismatch_diagnostic_message_names_kernel_and_versions() {
+        let diag = kernel_version_mismatch_diagnostic("manifold", "1.2.0", "1.3.0");
+
+        assert!(
+            diag.message.contains("manifold"),
+            "diagnostic message must surface the kernel id (got: {:?})",
+            diag.message,
+        );
+        assert!(
+            diag.message.contains("1.2.0"),
+            "diagnostic message must surface the pinned reify.toml version \
+             (got: {:?})",
+            diag.message,
+        );
+        assert!(
+            diag.message.contains("1.3.0"),
+            "diagnostic message must surface the actual adapter VERSION \
              (got: {:?})",
             diag.message,
         );
