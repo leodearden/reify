@@ -7,11 +7,23 @@
 //! Sibling task 2976 (`cache stats/clear/gc`) will extend this module with
 //! additional sub-subcommands; the dispatcher is structured for that.
 
+use std::collections::HashMap;
+use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use reify_config::cache::{CacheError, CacheResolverInputs, resolve_cache};
-use reify_eval::persistent_cache::{ENGINE_VERSION_HASH, entry_bin_path, entry_meta_path};
+use reify_eval::persistent_cache::{
+    CacheEntryHeader, ENGINE_VERSION_HASH, ENTRY_HEADER_ENCODED_LEN, entry_bin_path,
+    entry_meta_path, shard_dir, write_sidecar,
+};
+
+/// Upper bound on a single tar entry's body size (header + compressed body).
+/// 256 MiB is the workstation-scale ceiling — an `ElasticResult` uncompressed
+/// body caps at ~256 MiB per `persistent_cache.rs` (2 × MAX_F64_ELEMENTS × 8
+/// bytes for displacement+stress) and the compressed body is bounded below
+/// that.  Defends against a tar-bomb that claims a huge size in its header.
+const IMPORT_ENTRY_MAX_BYTES: usize = ENTRY_HEADER_ENCODED_LEN + 256 * 1024 * 1024;
 
 /// Usage line printed to stderr for any `reify cache` dispatcher error.
 const CACHE_USAGE: &str = "Usage: reify cache (export <hash>|import)";
@@ -114,17 +126,22 @@ fn resolve_cache_root() -> Result<PathBuf, CacheError> {
 }
 
 /// `reify cache import` — reads a cache tarball from stdin into the local
-/// cache.  This step drives the tar reader and surfaces parse errors; the
-/// per-entry write body lands in step-12.
+/// cache.  Tar entries are accumulated into a `HashMap<stem, (bin, meta)>`
+/// keyed on the file stem (the input hash); after the walk we decode each
+/// `.bin`'s `CacheEntryHeader`, reconstruct the destination shard path from
+/// the header's echo fields, and atomic-rename the `.bin` into place via
+/// `tempfile::persist`.  The `.meta` body is ignored — `write_sidecar`
+/// stamps a fresh single-byte payload with destination-clock mtime so the
+/// LRU heuristic isn't polluted by the source machine's clock.
+///
+/// Engine-version-mismatch warn-and-skip lands in step-14.
 fn cmd_cache_import(args: &[String]) -> ExitCode {
     if !args.is_empty() {
         eprintln!("{IMPORT_USAGE}");
         return ExitCode::FAILURE;
     }
 
-    // Resolve the cache root up front even though step-10 doesn't write
-    // anything yet — surfaces config errors before we start reading stdin.
-    let _cache_root = match resolve_cache_root() {
+    let cache_root = match resolve_cache_root() {
         Ok(p) => p,
         Err(e) => {
             eprintln!("reify cache import: {e:?}");
@@ -141,16 +158,158 @@ fn cmd_cache_import(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+
+    // (stem → (bin_bytes, meta_bytes)). We tolerate either ordering of bin/meta
+    // in the tar and only act on stems that have a `.bin` after the walk.
+    let mut staged: HashMap<String, (Option<Vec<u8>>, Option<Vec<u8>>)> = HashMap::new();
     for entry_result in entries {
-        match entry_result {
-            Ok(_entry) => {
-                // TODO(step-12): decode header, validate, atomic-rename.
-            }
+        let mut entry = match entry_result {
+            Ok(e) => e,
             Err(e) => {
                 eprintln!("reify cache import: tar entry decode error: {e}");
                 return ExitCode::FAILURE;
             }
+        };
+
+        let entry_path = match entry.path() {
+            Ok(p) => p.into_owned(),
+            Err(e) => {
+                eprintln!("reify cache import: tar entry path error: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        // Tar-slip defense: reject `..` or absolute paths.  Our own export
+        // emits flat names, so anything else is suspect — bail rather than
+        // attempt to interpret.
+        if entry_path.is_absolute() || entry_path.components().count() != 1 {
+            eprintln!(
+                "reify cache import: rejecting tar entry with traversal-shaped path: {}",
+                entry_path.display()
+            );
+            return ExitCode::FAILURE;
+        }
+        let stem = match entry_path.file_stem().and_then(|s| s.to_str()) {
+            Some(s) => s.to_owned(),
+            None => {
+                eprintln!(
+                    "reify cache import: rejecting tar entry with non-utf8 stem: {}",
+                    entry_path.display()
+                );
+                return ExitCode::FAILURE;
+            }
+        };
+        let ext = entry_path.extension().and_then(|s| s.to_str());
+
+        let mut buf = Vec::new();
+        // Use `take` to cap the body read at IMPORT_ENTRY_MAX_BYTES + 1 — if we
+        // hit the +1 byte the entry exceeded the budget.
+        let cap = IMPORT_ENTRY_MAX_BYTES as u64 + 1;
+        if let Err(e) = entry.by_ref().take(cap).read_to_end(&mut buf) {
+            eprintln!("reify cache import: tar entry body read error: {e}");
+            return ExitCode::FAILURE;
+        }
+        if buf.len() > IMPORT_ENTRY_MAX_BYTES {
+            eprintln!(
+                "reify cache import: tar entry {} exceeds {IMPORT_ENTRY_MAX_BYTES} byte cap",
+                entry_path.display()
+            );
+            return ExitCode::FAILURE;
+        }
+
+        let slot = staged.entry(stem).or_insert((None, None));
+        match ext {
+            Some("bin") => slot.0 = Some(buf),
+            Some("meta") => slot.1 = Some(buf),
+            _ => {
+                // Unknown extension — log and skip rather than fail.  Future
+                // distribution-format additions may include sidecar files we
+                // don't recognise yet; we acknowledge them by skipping.
+                eprintln!(
+                    "reify cache import: skipping unrecognised entry {}",
+                    entry_path.display()
+                );
+            }
         }
     }
+
+    for (stem, (bin_opt, _meta_opt)) in staged {
+        let Some(bin_bytes) = bin_opt else {
+            eprintln!("reify cache import: warning: stem {stem} has no .bin entry, skipping");
+            continue;
+        };
+
+        let header = match CacheEntryHeader::read_from(&mut Cursor::new(&bin_bytes)) {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!(
+                    "reify cache import: warning: skipping entry {stem}: \
+                     header decode failed: {e}"
+                );
+                continue;
+            }
+        };
+        if let Err(e) = header.verify_format_version() {
+            eprintln!(
+                "reify cache import: warning: skipping entry {stem}: \
+                 incompatible header format: {e}"
+            );
+            continue;
+        }
+
+        // step-14 will gate writes on header.engine_version_hash ==
+        // ENGINE_VERSION_HASH.as_bytes() with warn-and-skip on mismatch.
+        // For now, derive the input hash from the header echo and write.
+        let input_hash_str = match std::str::from_utf8(&header.input_hash) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!(
+                    "reify cache import: warning: skipping entry {stem}: \
+                     non-utf8 input_hash echo: {e}"
+                );
+                continue;
+            }
+        };
+
+        let sd = shard_dir(&cache_root, ENGINE_VERSION_HASH, input_hash_str);
+        if let Err(e) = std::fs::create_dir_all(&sd) {
+            eprintln!("reify cache import: shard dir create error: {e}");
+            return ExitCode::FAILURE;
+        }
+        let bin_path = entry_bin_path(&cache_root, ENGINE_VERSION_HASH, input_hash_str);
+
+        // Atomic-rename via tempfile-in-shard — mirrors `write_entry`'s
+        // pattern (persistent_cache.rs).  Skipping the post-persist directory
+        // fsync is intentional (see Design Decisions in plan.json).
+        let mut tmp = match tempfile::Builder::new().prefix(".tmp.").tempfile_in(&sd) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("reify cache import: tempfile create error: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        if let Err(e) = tmp.write_all(&bin_bytes) {
+            eprintln!("reify cache import: tempfile write error: {e}");
+            return ExitCode::FAILURE;
+        }
+        if let Err(e) = tmp.as_file().sync_all() {
+            eprintln!("reify cache import: tempfile sync error: {e}");
+            return ExitCode::FAILURE;
+        }
+        if let Err(persist_err) = tmp.persist(&bin_path) {
+            eprintln!("reify cache import: persist error: {}", persist_err.error);
+            return ExitCode::FAILURE;
+        }
+
+        // Recreate the sidecar via `write_sidecar` rather than streaming the
+        // tar's `.meta` bytes verbatim — see Design Decisions: the `.meta`
+        // body is just a single magic byte, and we want destination-clock
+        // mtime for the LRU heuristic, not the source machine's mtime.
+        let meta_path = entry_meta_path(&cache_root, ENGINE_VERSION_HASH, input_hash_str);
+        if let Err(e) = write_sidecar(&meta_path) {
+            eprintln!("reify cache import: sidecar write error: {e}");
+            return ExitCode::FAILURE;
+        }
+    }
+
     ExitCode::SUCCESS
 }
