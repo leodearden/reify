@@ -10,7 +10,7 @@ use std::io::{Cursor, Read, Write};
 use std::process::{Command, Stdio};
 
 use reify_eval::persistent_cache::{
-    CacheEntryHeader, ENGINE_VERSION_HASH, ElasticResult, write_entry,
+    CacheEntryHeader, ENGINE_VERSION_HASH, ElasticResult, read_entry, write_entry,
 };
 use tempfile::tempdir;
 
@@ -311,6 +311,69 @@ fn import_malformed_tar_exits_failure_and_leaves_cache_empty() {
     assert!(
         cache_files.is_empty(),
         "cache dir should remain empty after failed import, found: {cache_files:?}"
+    );
+}
+
+#[test]
+fn round_trip_export_import_preserves_elastic_result() {
+    // Full pipeline: seed `src` cache, export to a tar byte buffer, import the
+    // buffer into a fresh `dst` cache, then read the entry back and verify it
+    // round-trips by `PartialEq` (covers all fields including
+    // `shell_channels: None`).
+    let src = tempdir().expect("src tempdir");
+    let dst = tempdir().expect("dst tempdir");
+    let input_hash = "b".repeat(32);
+    let fixture = make_elastic_result_fixture();
+
+    write_entry(src.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
+        .expect("write_entry must seed source cache");
+
+    // (1) Export from src.
+    let export_output = Command::new(env!("CARGO_BIN_EXE_reify"))
+        .args(["cache", "export", &input_hash])
+        .env("REIFY_CACHE_DIR", src.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("spawn reify cache export");
+    assert!(
+        export_output.status.success(),
+        "export must succeed; stderr={}",
+        String::from_utf8_lossy(&export_output.stderr)
+    );
+    let tar_bytes = export_output.stdout;
+    assert!(!tar_bytes.is_empty(), "exported tar must be non-empty");
+
+    // (2) Import into dst.
+    let mut import_child = Command::new(env!("CARGO_BIN_EXE_reify"))
+        .args(["cache", "import"])
+        .env("REIFY_CACHE_DIR", dst.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn reify cache import");
+    {
+        let stdin = import_child.stdin.as_mut().expect("import stdin");
+        stdin.write_all(&tar_bytes).expect("write tar to import stdin");
+    }
+    let import_output = import_child
+        .wait_with_output()
+        .expect("wait import process");
+    assert!(
+        import_output.status.success(),
+        "import must succeed; stderr={}",
+        String::from_utf8_lossy(&import_output.stderr)
+    );
+
+    // (3) Read the entry back from dst and verify equality.
+    let round_tripped = read_entry::<ElasticResult>(dst.path(), ENGINE_VERSION_HASH, &input_hash)
+        .expect("read_entry must not error");
+    let round_tripped = round_tripped.expect("dst cache must contain the imported entry");
+    assert_eq!(
+        round_tripped, fixture,
+        "round-tripped ElasticResult must equal the seeded fixture"
     );
 }
 
