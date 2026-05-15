@@ -122,7 +122,7 @@ fi
 phantom_count=0
 if [[ $BIDIRECTIONAL -eq 1 ]]; then
     sec1_channels=$(
-        awk '/^## §1/{f=1;next} /^## §[0-9]/{f=0} f' "$INVENTORY" \
+        awk '/^## §1 /{f=1;next} /^## §[0-9]+ /{f=0} f' "$INVENTORY" \
         | grep -oP '\| `\K[a-z0-9-]+(?=` \|)' | sort -u || true
     )
     while IFS= read -r ch; do
