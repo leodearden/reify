@@ -111,3 +111,80 @@ fn occt_projector_vertex_position_returns_exact_stored_coordinates() {
         Err(e) => panic!("expected Ok([1.5, -2.5, 3.5]), got Err({e:?})"),
     }
 }
+
+// ── Error-propagation contract ────────────────────────────────────────────────
+//
+// PRD §7.3 specifies: an unresolvable kernel handle yields
+// `Err(ProjectorPayload { message: "kernel returned error: ..." })` with the
+// kernel's error text preserved. The three tests below pin that contract for
+// the face / edge / vertex Projector methods using a deliberately unknown
+// `GeometryHandleId(999)`. The kernel's `InvalidHandle` Display impl emits
+// `"invalid handle for query: GeometryHandleId(999)"`, which `wrap_kernel_error`
+// prefixes with `"kernel returned error: "` — so both the prefix and the
+// handle-id text are observable in the payload.
+
+/// `project_onto_face` on an unknown handle wraps the kernel error with the
+/// `"kernel returned error: "` prefix and preserves the handle-id text.
+#[test]
+fn occt_projector_project_onto_face_unknown_handle_wraps_kernel_error_with_prefix() {
+    let kernel = OcctKernel::new();
+    let projector = OcctProjector::new(&kernel);
+    match projector.project_onto_face(GeometryHandleId(999), [0.0, 0.0, 0.0]) {
+        Ok(p) => panic!("expected Err for unknown handle, got Ok({p:?})"),
+        Err(payload) => {
+            let msg = payload.message();
+            assert!(
+                msg.starts_with("kernel returned error: "),
+                "payload message must start with PRD §7.3 prefix; got {msg:?}"
+            );
+            assert!(
+                msg.contains("999"),
+                "payload message must preserve the kernel's handle-id text; got {msg:?}"
+            );
+        }
+    }
+}
+
+/// `project_onto_edge` on an unknown handle wraps the kernel error with the
+/// `"kernel returned error: "` prefix and preserves the handle-id text.
+#[test]
+fn occt_projector_project_onto_edge_unknown_handle_wraps_kernel_error_with_prefix() {
+    let kernel = OcctKernel::new();
+    let projector = OcctProjector::new(&kernel);
+    match projector.project_onto_edge(GeometryHandleId(999), [0.0, 0.0, 0.0]) {
+        Ok(p) => panic!("expected Err for unknown handle, got Ok({p:?})"),
+        Err(payload) => {
+            let msg = payload.message();
+            assert!(
+                msg.starts_with("kernel returned error: "),
+                "payload message must start with PRD §7.3 prefix; got {msg:?}"
+            );
+            assert!(
+                msg.contains("999"),
+                "payload message must preserve the kernel's handle-id text; got {msg:?}"
+            );
+        }
+    }
+}
+
+/// `vertex_position` on an unknown handle wraps the kernel error with the
+/// `"kernel returned error: "` prefix and preserves the handle-id text.
+#[test]
+fn occt_projector_vertex_position_unknown_handle_wraps_kernel_error_with_prefix() {
+    let kernel = OcctKernel::new();
+    let projector = OcctProjector::new(&kernel);
+    match projector.vertex_position(GeometryHandleId(999)) {
+        Ok(p) => panic!("expected Err for unknown handle, got Ok({p:?})"),
+        Err(payload) => {
+            let msg = payload.message();
+            assert!(
+                msg.starts_with("kernel returned error: "),
+                "payload message must start with PRD §7.3 prefix; got {msg:?}"
+            );
+            assert!(
+                msg.contains("999"),
+                "payload message must preserve the kernel's handle-id text; got {msg:?}"
+            );
+        }
+    }
+}
