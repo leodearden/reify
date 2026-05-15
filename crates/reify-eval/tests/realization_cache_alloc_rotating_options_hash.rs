@@ -26,30 +26,13 @@
 //! Each file under `tests/` compiles to its own separate integration test binary, so
 //! isolating the allocator here confines the instrumentation to this one binary.
 
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::Ordering;
 
-/// Thin wrapper around [`std::alloc::System`] that counts every `alloc` call.
-struct CountingAllocator;
-
-/// Global counter incremented on every allocation.
-static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
-
-unsafe impl GlobalAlloc for CountingAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
-        // SAFETY: delegating to the system allocator with the same layout.
-        unsafe { System.alloc(layout) }
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        // SAFETY: delegating to the system allocator with the same layout.
-        unsafe { System.dealloc(ptr, layout) }
-    }
-}
+mod common;
 
 #[global_allocator]
-static GLOBAL: CountingAllocator = CountingAllocator;
+static GLOBAL: common::alloc_counter::CountingAllocator =
+    common::alloc_counter::CountingAllocator;
 
 /// Rejected inserts at rotating `options_hash` values under an existing entity must not
 /// allocate a new `String` key — locking the "regardless of `options_hash`" clause of the
@@ -89,7 +72,7 @@ fn rejected_insert_with_rotating_options_hash_does_not_allocate_entity_string() 
     }
 
     // Snapshot after warm-up — all legitimate allocations already counted.
-    let before = ALLOCATIONS.load(Ordering::Relaxed);
+    let before = common::alloc_counter::ALLOCATIONS.load(Ordering::Relaxed);
 
     // Rejected inserts: loose tol 0.1 >> warm-up 0.001, so ToleranceBucket
     // short-circuits immediately without touching the Vec.
@@ -101,7 +84,7 @@ fn rejected_insert_with_rotating_options_hash_does_not_allocate_entity_string() 
         assert!(!inserted, "looser insert must be rejected by ToleranceBucket");
     }
 
-    let after = ALLOCATIONS.load(Ordering::Relaxed);
+    let after = common::alloc_counter::ALLOCATIONS.load(Ordering::Relaxed);
     let delta = after.saturating_sub(before);
 
     // Same reasoning as the sibling test (realization_cache_alloc.rs): background-thread
