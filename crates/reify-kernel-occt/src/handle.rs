@@ -64,6 +64,10 @@ enum OcctRequest {
         handle: GeometryHandleId,
         reply: oneshot::Sender<Result<Vec<GeometryHandleId>, QueryError>>,
     },
+    ExtractVertices {
+        handle: GeometryHandleId,
+        reply: oneshot::Sender<Result<Vec<GeometryHandleId>, QueryError>>,
+    },
     BooleanFuseWithHistory {
         left: GeometryHandleId,
         right: GeometryHandleId,
@@ -313,6 +317,23 @@ impl OcctKernelHandle {
     ) -> Result<Vec<GeometryHandleId>, QueryError> {
         self.send_request_blocking(
             |reply| OcctRequest::ExtractFaces { handle, reply },
+            || QueryError::QueryFailed("kernel thread died".into()),
+        )?
+    }
+
+    /// Extract the unique vertices of a shape, storing each as a new handle on
+    /// the kernel thread, and return the resulting list of handle ids.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from within a tokio async execution context. Use
+    /// [`extract_vertices_async`](Self::extract_vertices_async) instead.
+    pub fn extract_vertices(
+        &self,
+        handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        self.send_request_blocking(
+            |reply| OcctRequest::ExtractVertices { handle, reply },
             || QueryError::QueryFailed("kernel thread died".into()),
         )?
     }
@@ -809,6 +830,10 @@ impl OcctKernelHandle {
                         let result = kernel.extract_faces(handle);
                         let _ = reply.send(result);
                     }
+                    OcctRequest::ExtractVertices { handle, reply } => {
+                        let result = kernel.extract_vertices(handle);
+                        let _ = reply.send(result);
+                    }
                     OcctRequest::BooleanFuseWithHistory { left, right, reply } => {
                         let result = kernel.boolean_fuse_with_history(left, right);
                         let _ = reply.send(result);
@@ -1079,6 +1104,20 @@ impl OcctKernelHandle {
         .await?
     }
 
+    /// Extract the unique vertices of a shape (async version).
+    ///
+    /// Safe to call from within a tokio async execution context.
+    pub async fn extract_vertices_async(
+        &self,
+        handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        self.send_request_async(
+            |reply| OcctRequest::ExtractVertices { handle, reply },
+            || QueryError::QueryFailed("kernel thread died".into()),
+        )
+        .await?
+    }
+
     /// Extract warm-start state from the kernel thread (async version).
     ///
     /// Safe to call from within a tokio async execution context.
@@ -1268,6 +1307,15 @@ impl GeometryKernel for OcctKernelHandle {
         handle: GeometryHandleId,
     ) -> Result<Vec<GeometryHandleId>, QueryError> {
         OcctKernelHandle::extract_faces(self, handle)
+    }
+
+    /// Override the trait default with a real channel-routed implementation.
+    /// Delegates to the inherent `extract_vertices` (which only needs `&self`).
+    fn extract_vertices(
+        &mut self,
+        handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        OcctKernelHandle::extract_vertices(self, handle)
     }
 
     /// Override the trait default with a real channel-routed implementation
