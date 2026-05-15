@@ -201,7 +201,11 @@ impl std::error::Error for EngineError {}
 /// would be a cascade.  Mirrors the guards in
 /// `reify_compiler::type_compat::{implicitly_converts_to, type_compatible}`
 /// (task-448 / task-1922).
-fn value_type_kind_matches(value: &reify_types::Value, ty: &reify_types::Type) -> bool {
+fn value_type_kind_matches(
+    value: &reify_types::Value,
+    ty: &reify_types::Type,
+    registry: Option<&reify_types::StructureRegistry>,
+) -> bool {
     use reify_types::{Type, Value};
     // Anti-cascade guard — see function doc.
     if ty.is_error() {
@@ -245,6 +249,26 @@ fn value_type_kind_matches(value: &reify_types::Value, ty: &reify_types::Type) -
         // surface Type. Rejecting here is correct (the default-reject case
         // would also reject) but the explicit arm makes the intent obvious.
         Value::SampledField(_) => false,
+        // Structure instances (task 3540 / SIR-α). Nominal conformance check:
+        // a `Value::StructureInstance` satisfies a `Type::StructureRef(n)` of
+        // its own canonical name, or a `Type::TraitObject(b)` for any trait
+        // bound it declares conformance to. Declared bounds live in the
+        // per-Engine `StructureRegistry` side-table, keyed by the opaque
+        // `type_id`. Without a registry the trait-bound lookup is unprovable
+        // and conservatively returns `false` (the conformance is still proven
+        // at compile time by the trait-typed-param machinery; this runtime
+        // check is the defence-in-depth arm). Any non-structure target type
+        // (Int, Real, List, …) default-rejects via the inner `_` arm.
+        Value::StructureInstance {
+            type_id, type_name, ..
+        } => match ty {
+            Type::StructureRef(n) => n == type_name,
+            Type::TraitObject(bound) => registry
+                .and_then(|r| r.meta(*type_id))
+                .map(|m| m.declared_trait_bounds.iter().any(|b| b == bound))
+                .unwrap_or(false),
+            _ => false,
+        },
         // Note: `Type::Geometry` and `Type::TypeParam` have no corresponding
         // `Value` variant, so any non-Undef value supplied to a cell of those
         // types falls through this `match` and returns `false`, triggering
@@ -255,27 +279,19 @@ fn value_type_kind_matches(value: &reify_types::Value, ty: &reify_types::Type) -
         // `crate::engine_eval::Engine::eval` (task 1867), and regression-locked
         // in CI by `crates/reify-eval/tests/value_cell_type_invariants.rs`.
         //
-        // `Type::StructureRef` is allowed on value cells (task 1876): user
-        // code may write `param material : Material = Material(...)` where
-        // `Material` is a canonical struct. The struct-call default evaluates
-        // to `Value::Undef` via `reify_stdlib::eval_builtin`'s fallthrough
-        // path (structure constructors are not builtins), and `Value::Undef`
-        // is accepted for any type by the arm above. No Value variant exists
-        // for structure instances yet — if one is added later, add a matching
-        // arm here. The `Type::StructureRef` _arm itself_ is intentionally
-        // omitted: the default-reject case is correct for any non-Undef
-        // value because we have no way to represent a structure instance.
+        // `Type::StructureRef` / `Type::TraitObject` are allowed on value
+        // cells (tasks 1876 / 2287). As of task 3540 / SIR-α these are
+        // satisfied by the `Value::StructureInstance` arm above (nominal
+        // name / declared-trait-bound conformance). A *non-structure* value
+        // (e.g. a `Value::Map` or a struct-call default that still evaluates
+        // to `Value::Undef` via `reify_stdlib::eval_builtin`'s fallthrough)
+        // supplied to such a cell is handled by `Value::Undef` (always
+        // accepted) or default-rejects here — there is no representable
+        // non-Undef, non-StructureInstance value for those types.
         //
-        // `Type::TraitObject` is allowed for the same reason (task 2287):
-        // trait-typed params default to `Value::Undef` via the same fallthrough
-        // path, and `Value::Undef` is accepted for any type by the arm above.
-        // The `Type::TraitObject` arm is intentionally omitted: the
-        // default-reject case is correct for any non-Undef value because we
-        // have no way to represent a trait-object instance.
-        //
-        // If a future `Value::GeometryHandle`, `Value::TraitObjectInstance`, or
-        // `Value::StructureInstance` variant is added, add a matching arm here
-        // AND relax the runtime assertion so the compiler enforces completeness.
+        // If a future `Value::GeometryHandle` or `Value::TraitObjectInstance`
+        // variant is added, add a matching arm here AND relax the runtime
+        // assertion so the compiler enforces completeness.
     }
 }
 
@@ -1005,7 +1021,7 @@ mod tests {
             quantity: Box::new(Type::Real),
         };
         assert!(
-            value_type_kind_matches(&v, &t),
+            value_type_kind_matches(&v, &t, None),
             "Value::Matrix should be accepted by Type::Tensor (cross-variant Ok-path)"
         );
     }
@@ -1026,7 +1042,7 @@ mod tests {
             quantity: Box::new(Type::Real),
         };
         assert!(
-            value_type_kind_matches(&v, &t),
+            value_type_kind_matches(&v, &t, None),
             "Value::Tensor should be accepted by Type::Matrix (cross-variant Ok-path)"
         );
     }
@@ -1041,7 +1057,7 @@ mod tests {
         let v = Value::Tensor(vec![]);
         let t = Type::Real;
         assert!(
-            !value_type_kind_matches(&v, &t),
+            !value_type_kind_matches(&v, &t, None),
             "Value::Tensor should be rejected by Type::Real (negative kind-check path)"
         );
     }
@@ -1055,7 +1071,7 @@ mod tests {
         let v = Value::Matrix(vec![]);
         let t = Type::Real;
         assert!(
-            !value_type_kind_matches(&v, &t),
+            !value_type_kind_matches(&v, &t, None),
             "Value::Matrix should be rejected by Type::Real (negative kind-check path)"
         );
     }
@@ -1076,7 +1092,7 @@ mod tests {
         let v = Value::Real(1.0);
         let t = Type::Error;
         assert!(
-            value_type_kind_matches(&v, &t),
+            value_type_kind_matches(&v, &t, None),
             "Value::Real against Type::Error must return true (anti-cascade guard)"
         );
     }
@@ -1092,7 +1108,7 @@ mod tests {
         let v = Value::Bool(true);
         let t = Type::Error;
         assert!(
-            value_type_kind_matches(&v, &t),
+            value_type_kind_matches(&v, &t, None),
             "Value::Bool against Type::Error must return true (anti-cascade guard)"
         );
     }
@@ -1108,7 +1124,7 @@ mod tests {
         let v = Value::List(vec![Value::Int(1)]);
         let t = Type::Error;
         assert!(
-            value_type_kind_matches(&v, &t),
+            value_type_kind_matches(&v, &t, None),
             "Value::List against Type::Error must return true (anti-cascade guard)"
         );
     }
@@ -1125,7 +1141,7 @@ mod tests {
         let v = Value::Undef;
         let t = Type::Error;
         assert!(
-            value_type_kind_matches(&v, &t),
+            value_type_kind_matches(&v, &t, None),
             "Value::Undef against Type::Error must return true (Undef sentinel always accepted)"
         );
     }
@@ -1143,7 +1159,7 @@ mod tests {
         let v = Value::Bool(true);
         let t = Type::Int;
         assert!(
-            !value_type_kind_matches(&v, &t),
+            !value_type_kind_matches(&v, &t, None),
             "Value::Bool against Type::Int must return false (Type::Error guard must not over-fire)"
         );
     }
@@ -1160,7 +1176,7 @@ mod tests {
         let v = Value::Int(1);
         let t = Type::Bool;
         assert!(
-            !value_type_kind_matches(&v, &t),
+            !value_type_kind_matches(&v, &t, None),
             "Value::Int against Type::Bool must return false"
         );
     }
@@ -1172,7 +1188,7 @@ mod tests {
         let v = Value::Bool(true);
         let t = Type::Bool;
         assert!(
-            value_type_kind_matches(&v, &t),
+            value_type_kind_matches(&v, &t, None),
             "Value::Bool against Type::Bool must return true"
         );
     }

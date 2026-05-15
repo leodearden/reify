@@ -75,7 +75,11 @@ pub(crate) fn validate_param_override(
     value: &reify_types::Value,
     cell_type: &reify_types::Type,
 ) -> Result<(), ParamOverrideRejection> {
-    if !crate::value_type_kind_matches(value, cell_type) {
+    // `registry: None` for now — param-override validation does not yet
+    // consult the per-Engine structure side-table. Trait-bound conformance
+    // for `Value::StructureInstance` is proven at compile time; the registry
+    // is plumbed into the eval path in a later step (3540 / SIR-α step-12).
+    if !crate::value_type_kind_matches(value, cell_type, None) {
         return Err(ParamOverrideRejection::TypeKindMismatch);
     }
     if let reify_types::Type::Scalar {
