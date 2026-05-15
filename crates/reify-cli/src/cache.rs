@@ -7,7 +7,11 @@
 //! Sibling task 2976 (`cache stats/clear/gc`) will extend this module with
 //! additional sub-subcommands; the dispatcher is structured for that.
 
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+
+use reify_config::cache::{CacheError, CacheResolverInputs, resolve_cache};
+use reify_eval::persistent_cache::{ENGINE_VERSION_HASH, entry_bin_path};
 
 /// Usage line printed to stderr for any `reify cache` dispatcher error.
 const CACHE_USAGE: &str = "Usage: reify cache (export <hash>|import)";
@@ -31,17 +35,55 @@ pub fn cmd_cache(args: &[String]) -> ExitCode {
 }
 
 /// `reify cache export <hash>` — writes a single cache entry to stdout as a
-/// tar archive.  The body lookup + tar emission land in later steps; this
-/// step only handles arg validation.
+/// tar archive.  Tar emission lands in step-8; this step probes for the
+/// entry's existence and short-circuits on miss.
 fn cmd_cache_export(args: &[String]) -> ExitCode {
     if args.len() != 1 {
         eprintln!("{EXPORT_USAGE}");
         return ExitCode::FAILURE;
     }
-    let _hash = &args[0];
-    // TODO(step-6): resolve cache root and probe for the entry's `.bin`.
-    eprintln!("reify cache export: not yet implemented");
-    ExitCode::FAILURE
+    let hash = &args[0];
+
+    let cache_root = match resolve_cache_root() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("reify cache export: {e:?}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let bin_path = entry_bin_path(&cache_root, ENGINE_VERSION_HASH, hash);
+    if !bin_path.exists() {
+        eprintln!("reify cache export: no such cache entry: {hash}");
+        return ExitCode::FAILURE;
+    }
+
+    // TODO(step-8): build the tar archive and stream it to stdout.
+    ExitCode::SUCCESS
+}
+
+/// Resolve the cache root via [`reify_config::cache::resolve_cache`] using the
+/// environment-variable layer plus `$HOME` / `$XDG_CACHE_HOME` defaults.
+///
+/// Config-file layers are deliberately not plumbed in for 2977: sibling task
+/// 2976 (cache stats/clear/gc CLI) will fold those in when it lands.  Both
+/// `export` and `import` use this helper so the precedence is identical.
+fn resolve_cache_root() -> Result<PathBuf, CacheError> {
+    let env_dir = std::env::var("REIFY_CACHE_DIR").ok();
+    let env_max_bytes = std::env::var("REIFY_CACHE_MAX_BYTES").ok();
+    let xdg_cache_home = std::env::var("XDG_CACHE_HOME").ok();
+    let home = std::env::var("HOME").unwrap_or_default();
+
+    let inputs = CacheResolverInputs {
+        cli_dir: None,
+        env_dir: env_dir.as_deref(),
+        env_max_bytes: env_max_bytes.as_deref(),
+        user_config: None,
+        project_config: None,
+        home: Path::new(&home),
+        xdg_cache_home: xdg_cache_home.as_deref(),
+    };
+    resolve_cache(&inputs).map(|r| r.dir)
 }
 
 /// Placeholder implementation of `cache import` — wired in later steps.
