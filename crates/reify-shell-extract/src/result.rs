@@ -1772,6 +1772,20 @@ mod tests {
             Role::LoftedFace,
             Role::MidSurfaceFace,
             Role::MidSurfaceEdge,
+            // CornerVertex: high nibble 0x2X, low nibble = bit-packed signs (PPP→NNN)
+            Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Pos, z: AxisSign::Pos },
+            Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Pos, z: AxisSign::Neg },
+            Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Neg, z: AxisSign::Pos },
+            Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Neg, z: AxisSign::Neg },
+            Role::CornerVertex { x: AxisSign::Neg, y: AxisSign::Pos, z: AxisSign::Pos },
+            Role::CornerVertex { x: AxisSign::Neg, y: AxisSign::Pos, z: AxisSign::Neg },
+            Role::CornerVertex { x: AxisSign::Neg, y: AxisSign::Neg, z: AxisSign::Pos },
+            Role::CornerVertex { x: AxisSign::Neg, y: AxisSign::Neg, z: AxisSign::Neg },
+            // CapCornerVertex: high nibble 0x3X, low nibble mirrors CapKind (Top→End)
+            Role::CapCornerVertex { face: CapKind::Top },
+            Role::CapCornerVertex { face: CapKind::Bottom },
+            Role::CapCornerVertex { face: CapKind::Start },
+            Role::CapCornerVertex { face: CapKind::End },
         ];
         for r in all_roles {
             let tag = role_to_u8(r);
@@ -1779,15 +1793,28 @@ mod tests {
             assert_eq!(decoded, r, "Role {r:?} round-trip via tag {tag:#04x}");
         }
         // Pin tag-table layout: Cap variants live at 0x00-0x03, unit variants
-        // at 0x10-0x17. Any change here forces a `FORMAT_VERSION` bump.
+        // at 0x10-0x17, CornerVertex at 0x20-0x27, CapCornerVertex at 0x30-0x33.
+        // Any change here forces a `FORMAT_VERSION` bump.
         assert_eq!(role_to_u8(Role::Cap(CapKind::Top)), 0x00);
         assert_eq!(role_to_u8(Role::Cap(CapKind::End)), 0x03);
         assert_eq!(role_to_u8(Role::Side), 0x10);
         assert_eq!(role_to_u8(Role::MidSurfaceEdge), 0x17);
+        assert_eq!(
+            role_to_u8(Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Pos, z: AxisSign::Pos }),
+            0x20
+        );
+        assert_eq!(
+            role_to_u8(Role::CornerVertex { x: AxisSign::Neg, y: AxisSign::Neg, z: AxisSign::Neg }),
+            0x27
+        );
+        assert_eq!(role_to_u8(Role::CapCornerVertex { face: CapKind::Top }), 0x30);
+        assert_eq!(role_to_u8(Role::CapCornerVertex { face: CapKind::End }), 0x33);
 
         // Unknown discriminants (gap in the table) must be rejected with
         // `InvalidData` — mirrors `severity_from_u8` / `classification_from_u8`.
-        for unknown in [0x04u8, 0x0Fu8, 0x18u8, 0xFFu8] {
+        // 0x28 = first byte after CornerVertex range; 0x34 = first byte after
+        // CapCornerVertex range; 0x40 = next high-nibble region beyond all known tags.
+        for unknown in [0x04u8, 0x0Fu8, 0x18u8, 0x28u8, 0x34u8, 0x40u8, 0xFFu8] {
             let err =
                 role_from_u8(unknown).expect_err(&format!("unknown tag {unknown:#04x} must fail"));
             assert_eq!(err.kind(), io::ErrorKind::InvalidData);
