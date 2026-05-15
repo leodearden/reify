@@ -523,6 +523,35 @@ fn resolve_collection_sub_to_list(scope: &CompilationScope, sub_name: &str) -> C
     CompiledExpr::value_ref(list_id, list_type)
 }
 
+/// Build a `CompiledExpr` for a `UserFunctionCall` node.
+///
+/// Centralises the `TAG_USER_FUNCTION_CALL` ContentHash fold so both the
+/// `OverloadResolution::Resolved` arm and the default-padding branch produce
+/// identical construction logic.  Deprecation-warning emission stays at each
+/// call site: the annotation source differs between the two branches and the
+/// helper has no business taking a diagnostics sink.
+fn build_user_function_call_expr(
+    name: &str,
+    args: Vec<CompiledExpr>,
+    return_type: Type,
+) -> CompiledExpr {
+    let content_hash = {
+        let mut h = ContentHash::of(&[TAG_USER_FUNCTION_CALL]).combine(ContentHash::of_str(name));
+        for arg in &args {
+            h = h.combine(arg.content_hash);
+        }
+        h
+    };
+    CompiledExpr {
+        kind: CompiledExprKind::UserFunctionCall {
+            function_name: name.to_string(),
+            args,
+        },
+        result_type: return_type,
+        content_hash,
+    }
+}
+
 /// Compile an `Expr` from the AST into a `CompiledExpr`, with guard context.
 ///
 /// When `current_guard` is Some, references to names guarded by a different
@@ -950,22 +979,7 @@ pub(crate) fn compile_expr_guarded(
                         emit_deprecation_warning("function", name, msg, expr.span, diagnostics);
                     }
                     let result_type = matched_fn.return_type.clone();
-                    let content_hash = {
-                        let mut h = ContentHash::of(&[TAG_USER_FUNCTION_CALL])
-                            .combine(ContentHash::of_str(name));
-                        for arg in &compiled_args {
-                            h = h.combine(arg.content_hash);
-                        }
-                        h
-                    };
-                    CompiledExpr {
-                        kind: CompiledExprKind::UserFunctionCall {
-                            function_name: name.clone(),
-                            args: compiled_args,
-                        },
-                        result_type,
-                        content_hash,
-                    }
+                    build_user_function_call_expr(name, compiled_args, result_type)
                 }
                 OverloadResolution::Ambiguous(candidates) => {
                     // Multiple user fns match — ambiguous call
@@ -996,24 +1010,20 @@ pub(crate) fn compile_expr_guarded(
                         try_default_padding(&named_candidates, &compiled_args, &arg_types)
                     {
                         let result_type = padded_fn.return_type.clone();
+                        // Deprecation check: mirror the Resolved arm — warn if the
+                        // padded function is @deprecated.
+                        if let Some(msg) = deprecation_message(&padded_fn.annotations) {
+                            emit_deprecation_warning(
+                                "function",
+                                name,
+                                msg,
+                                expr.span,
+                                diagnostics,
+                            );
+                        }
                         let mut padded_args = compiled_args;
                         padded_args.extend(default_exprs);
-                        let content_hash = {
-                            let mut h = ContentHash::of(&[TAG_USER_FUNCTION_CALL])
-                                .combine(ContentHash::of_str(name));
-                            for arg in &padded_args {
-                                h = h.combine(arg.content_hash);
-                            }
-                            h
-                        };
-                        return CompiledExpr {
-                            kind: CompiledExprKind::UserFunctionCall {
-                                function_name: name.clone(),
-                                args: padded_args,
-                            },
-                            result_type,
-                            content_hash,
-                        };
+                        return build_user_function_call_expr(name, padded_args, result_type);
                     }
                     // User functions with this name exist, but none match — error with candidates
                     let candidate_sigs: Vec<String> = named_candidates
