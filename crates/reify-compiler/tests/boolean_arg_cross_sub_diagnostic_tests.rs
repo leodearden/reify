@@ -180,3 +180,61 @@ pub structure Rack {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
+
+// ─── step-4: scalar-member falls back to generic diagnostic ───────────────────
+
+/// When a boolean op argument is `self.<non_collection_sub>.<scalar_member>`,
+/// `try_emit_cross_sub_geometry` returns `None` (the member is not in
+/// `sub_realization_names`, so it is not a geometry realization) and the
+/// existing generic "argument N must be a geometry expression" fallback fires.
+///
+/// Pins the conditional gate in `try_emit_cross_sub_geometry` on
+/// `sub_realization_names`: a future refactor that broadens the diagnostic to
+/// any cross-sub shape (dropping the realization-name guard) would cause the
+/// cross-sub deferred wording to fire for `value` on `inner`, breaking this test.
+///
+/// Passes on arrival after step-2 (the helper's gate correctly excludes scalar
+/// members not in `sub_realization_names`).
+#[test]
+fn boolean_op_with_non_realization_scalar_member_falls_back_to_generic_diagnostic() {
+    let source = r#"pub structure Inner {
+    param value : Scalar = 5mm
+}
+pub structure Outer {
+    sub inner = Inner()
+    param base : Solid = box(10mm, 10mm, 10mm)
+    let combined = difference(self.inner.value, base)
+}"#;
+    let compiled = compile_source(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    // (a) The generic "argument 1 must be a geometry expression" fallback fires.
+    let has_generic_fallback = errors
+        .iter()
+        .any(|d| d.message.contains("argument 1 must be a geometry expression"));
+    assert!(
+        has_generic_fallback,
+        "expected generic 'argument 1 must be a geometry expression' for scalar member \
+         in boolean arg position; got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // (b) The cross-sub deferred diagnostic must NOT fire for 'value' on 'inner'
+    //     — sub_realization_names[inner] does not contain 'value' (it is a scalar
+    //     param, not a geometry realization), so try_emit_cross_sub_geometry
+    //     returns None and falls through to the generic path.
+    let has_spurious_deferred_diagnostic = errors.iter().any(|d| {
+        d.message.contains("value") && has_deferred_keyword(&d.message)
+    });
+    assert!(
+        !has_spurious_deferred_diagnostic,
+        "cross-sub deferred diagnostic ('not yet supported in v0.1') must NOT fire for \
+         scalar member 'value' on sub 'inner'; the realization-name gate in \
+         try_emit_cross_sub_geometry should exclude it. Got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
