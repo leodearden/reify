@@ -1778,6 +1778,20 @@ pub fn prune_orphan_engine_version_dirs(
     current_engine_version: &str,
 ) -> SweepReport {
     let mut report = SweepReport::default();
+
+    // Safety net: an empty current_engine_version means the caller could not
+    // determine the live build's version (e.g. a build-time env var
+    // resolution failure that silently fell back to ""). In that case we have
+    // no reliable way to identify the live cache subdir and must skip the
+    // prune entirely rather than risk deleting it.
+    if current_engine_version.is_empty() {
+        tracing::warn!(
+            "prune_orphan_engine_version_dirs: current_engine_version is empty; \
+             skipping prune to avoid destroying live cache subdirs"
+        );
+        return report;
+    }
+
     let now = std::time::SystemTime::now();
 
     // Guard: absent cache_root → silent no-op.
@@ -1839,6 +1853,15 @@ pub fn prune_orphan_engine_version_dirs(
         }
 
         // Age check via directory mtime.
+        //
+        // Note: a directory's mtime advances only when a *direct* child is
+        // created, removed, or renamed — not when files deeper in the tree
+        // are modified or accessed. For an engine-version subdir, direct
+        // children are shard dirs (2-hex prefix dirs), so the mtime
+        // essentially freezes once all ~256 possible shards exist. This is
+        // intentional: non-current engine-version dirs receive no new writes
+        // after a build transition, so a stale mtime reliably signals
+        // "this version is no longer in use".
         let mtime = match entry.metadata().and_then(|m| m.modified()) {
             Ok(t) => t,
             Err(e) => {
@@ -1899,6 +1922,16 @@ pub fn prune_orphan_engine_version_dirs(
 /// are correct. Each pass is independently idempotent, so the composition is
 /// also idempotent.
 ///
+/// **Performance note:** because the tempfile sweep runs first and recurses the
+/// entire `cache_root` subtree unconditionally, it descends into orphan
+/// engine-version dirs that the subsequent prune pass will remove wholesale.
+/// For a long-lived cache with several stale build dirs this is a small amount
+/// of wasted stat(2) work. It is accepted for v1 given the startup-sweep
+/// framing ("cheap, run synchronously") and the simplicity of keeping the two
+/// passes independent. A future optimisation could run prune first and then
+/// limit the tempfile walk to surviving subdirs, but that would couple the
+/// passes.
+///
 /// Returns the field-wise sum of the two [`SweepReport`]s. An absent
 /// `cache_root` returns `SweepReport::default()`.
 pub fn sweep_on_startup(cache_root: &Path, current_engine_version: &str) -> SweepReport {
@@ -1907,6 +1940,33 @@ pub fn sweep_on_startup(cache_root: &Path, current_engine_version: &str) -> Swee
     SweepReport {
         tempfiles_removed: a.tempfiles_removed + b.tempfiles_removed,
         orphan_dirs_removed: a.orphan_dirs_removed + b.orphan_dirs_removed,
+    }
+}
+
+/// Backdate the mtime of `path` to `age_secs` seconds in the past.
+///
+/// Works for both regular files (opened write-only) and directories
+/// (opened read-only; on Linux `futimens` only requires ownership of the
+/// inode, not write access on the file descriptor).
+///
+/// Exposed `pub(crate)` so test modules across the crate can share this
+/// helper without duplicating it.
+#[cfg(test)]
+pub(crate) fn backdate_mtime(path: &std::path::Path, age_secs: u64) {
+    use std::fs::FileTimes;
+    use std::time::{Duration, SystemTime};
+    let t = SystemTime::now()
+        .checked_sub(Duration::from_secs(age_secs))
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    let times = FileTimes::new().set_modified(t);
+    if path.is_dir() {
+        // Directories can be opened O_RDONLY; futimens checks ownership not
+        // fd write-access on Linux.
+        let f = std::fs::File::open(path).unwrap();
+        f.set_times(times).unwrap();
+    } else {
+        let f = std::fs::File::options().write(true).open(path).unwrap();
+        f.set_times(times).unwrap();
     }
 }
 
@@ -4939,29 +4999,6 @@ mod tests {
     }
 
     // ── startup-sweep tests ──────────────────────────────────────────────────
-
-    /// Set the mtime of `path` to `age_secs` seconds in the past.
-    ///
-    /// Works for both regular files (opened write-only) and directories
-    /// (opened read-only; on Linux `futimens` only requires ownership of the
-    /// inode, not write access on the file descriptor).
-    fn backdate_mtime(path: &std::path::Path, age_secs: u64) {
-        use std::fs::FileTimes;
-        use std::time::{Duration, SystemTime};
-        let t = SystemTime::now()
-            .checked_sub(Duration::from_secs(age_secs))
-            .unwrap_or(SystemTime::UNIX_EPOCH);
-        let times = FileTimes::new().set_modified(t);
-        if path.is_dir() {
-            // Directories can be opened O_RDONLY; futimens checks ownership not
-            // fd write-access on Linux.
-            let f = std::fs::File::open(path).unwrap();
-            f.set_times(times).unwrap();
-        } else {
-            let f = std::fs::File::options().write(true).open(path).unwrap();
-            f.set_times(times).unwrap();
-        }
-    }
 
     /// Step-1 RED: `sweep_stale_tempfiles` removes only old `.tmp.*` files.
     ///

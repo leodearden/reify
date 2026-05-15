@@ -1338,24 +1338,9 @@ mod tests {
     #[test]
     fn sweep_persistent_cache_at_startup_binds_live_engine_version() {
         use crate::persistent_cache::{
-            ENGINE_VERSION_HASH, ORPHAN_DIR_AGE, STALE_TEMPFILE_AGE, SweepReport, shard_dir,
+            ENGINE_VERSION_HASH, ORPHAN_DIR_AGE, STALE_TEMPFILE_AGE, SweepReport, backdate_mtime,
+            shard_dir,
         };
-        use std::fs::FileTimes;
-        use std::time::{Duration, SystemTime};
-
-        fn backdate(path: &std::path::Path, age_secs: u64) {
-            let t = SystemTime::now()
-                .checked_sub(Duration::from_secs(age_secs))
-                .unwrap_or(SystemTime::UNIX_EPOCH);
-            let times = FileTimes::new().set_modified(t);
-            if path.is_dir() {
-                let f = std::fs::File::open(path).unwrap();
-                f.set_times(times).unwrap();
-            } else {
-                let f = std::fs::File::options().write(true).open(path).unwrap();
-                f.set_times(times).unwrap();
-            }
-        }
 
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path();
@@ -1366,18 +1351,18 @@ mod tests {
         std::fs::create_dir_all(&sd).unwrap();
         let stale_tmp = sd.join(".tmp.stale");
         std::fs::write(&stale_tmp, b"crash-leftover").unwrap();
-        backdate(&stale_tmp, STALE_TEMPFILE_AGE.as_secs() + 120);
+        backdate_mtime(&stale_tmp, STALE_TEMPFILE_AGE.as_secs() + 120);
 
         // (ii) Old orphan engine-version subdir.
         let orphan_eng = "beef000000000000000000000000beef";
         let orphan_dir = root.join(orphan_eng);
         std::fs::create_dir_all(&orphan_dir).unwrap();
-        backdate(&orphan_dir, ORPHAN_DIR_AGE.as_secs() + 60);
+        backdate_mtime(&orphan_dir, ORPHAN_DIR_AGE.as_secs() + 60);
 
         // (iii) Current engine-version subdir backdated > 30d — must survive.
         let current_dir = root.join(ENGINE_VERSION_HASH);
         // current_dir already exists (created via sd above); backdate it.
-        backdate(&current_dir, ORPHAN_DIR_AGE.as_secs() + 60);
+        backdate_mtime(&current_dir, ORPHAN_DIR_AGE.as_secs() + 60);
 
         let report = crate::engine_admin::sweep_persistent_cache_at_startup(root);
 
@@ -1397,12 +1382,6 @@ mod tests {
         assert_eq!(
             report.orphan_dirs_removed, 1,
             "orphan_dirs_removed must be 1"
-        );
-        // Sanity: returned report is not the zero value (both passes ran).
-        assert_ne!(
-            report,
-            SweepReport::default(),
-            "report must not be default — both passes must have run"
         );
     }
 }
