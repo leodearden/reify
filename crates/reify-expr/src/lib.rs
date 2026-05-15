@@ -3753,6 +3753,170 @@ mod tests {
         }
     }
 
+    // ── task 3540 step-17: StructureInstanceCtor eval (RED) ─────────────────
+    //
+    // `eval_expr` on `CompiledExprKind::StructureInstanceCtor` must build a
+    // `Value::StructureInstance { type_id: StructureTypeId(0), type_name,
+    // version, fields }`. `fields` = each ordered_arg evaluated in order,
+    // PLUS each default whose name is not covered by ordered_args, evaluated
+    // in the SAME `EvalContext`. No registry lookup (reify-expr stays
+    // registry-free — design-decision-2); type_id/type_name/version are baked
+    // at lowering time. Undef field values stay Undef IN THEIR SLOT (the
+    // ctor does NOT strict-short-circuit the whole structure to Undef the
+    // way `FunctionCall` does). RED until step-18 replaces the placeholder
+    // arm (currently returns `Value::Undef`).
+
+    /// Build a `CompiledExpr::structure_instance_ctor` test fixture.
+    fn sct(
+        name: &str,
+        version: u32,
+        ordered: Vec<(&str, CompiledExpr)>,
+        defaults: Vec<(&str, CompiledExpr)>,
+    ) -> CompiledExpr {
+        CompiledExpr::structure_instance_ctor(
+            reify_types::StructureTypeId(0),
+            name.to_string(),
+            version,
+            ordered
+                .into_iter()
+                .map(|(n, e)| (n.to_string(), e))
+                .collect(),
+            defaults
+                .into_iter()
+                .map(|(n, e)| (n.to_string(), e))
+                .collect(),
+            Type::StructureRef(name.to_string()),
+        )
+    }
+
+    #[test]
+    fn structure_instance_ctor_all_args_supplied() {
+        let expr = sct(
+            "Steel_AISI_1045",
+            1,
+            vec![
+                ("youngs_modulus", lit(Value::Int(200), Type::Int)),
+                ("poisson", lit(Value::Real(0.3), Type::Real)),
+            ],
+            vec![],
+        );
+        let values = ValueMap::new();
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
+            Value::StructureInstance {
+                type_id,
+                type_name,
+                version,
+                fields,
+            } => {
+                assert_eq!(type_id, reify_types::StructureTypeId(0));
+                assert_eq!(type_name, "Steel_AISI_1045");
+                assert_eq!(version, 1);
+                assert_eq!(
+                    fields.get(&"youngs_modulus".to_string()),
+                    Some(&Value::Int(200))
+                );
+                assert_eq!(fields.get(&"poisson".to_string()), Some(&Value::Real(0.3)));
+                assert_eq!(fields.len(), 2);
+            }
+            other => panic!("expected StructureInstance, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn structure_instance_ctor_omitted_args_use_defaults() {
+        // `target` supplied; `magnitude` omitted → its default fills the slot.
+        let expr = sct(
+            "PointLoad",
+            1,
+            vec![("target", lit(Value::Int(7), Type::Int))],
+            vec![("magnitude", lit(Value::Int(0), Type::Int))],
+        );
+        let values = ValueMap::new();
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
+            Value::StructureInstance { fields, .. } => {
+                assert_eq!(fields.get(&"target".to_string()), Some(&Value::Int(7)));
+                assert_eq!(
+                    fields.get(&"magnitude".to_string()),
+                    Some(&Value::Int(0)),
+                    "omitted param filled from its captured default"
+                );
+                assert_eq!(fields.len(), 2);
+            }
+            other => panic!("expected StructureInstance, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn structure_instance_ctor_nested_default_recurses() {
+        // A default expression that is itself a structure ctor recurses
+        // through the same eval path → nested Value::StructureInstance.
+        let inner = sct(
+            "Steel_AISI_1045",
+            1,
+            vec![("youngs_modulus", lit(Value::Int(200), Type::Int))],
+            vec![],
+        );
+        let outer = sct("Beam", 2, vec![], vec![("material", inner)]);
+        let values = ValueMap::new();
+        match eval_expr(&outer, &EvalContext::simple(&values)) {
+            Value::StructureInstance {
+                type_name,
+                version,
+                fields,
+                ..
+            } => {
+                assert_eq!(type_name, "Beam");
+                assert_eq!(version, 2);
+                match fields.get(&"material".to_string()) {
+                    Some(Value::StructureInstance {
+                        type_name: inner_name,
+                        fields: inner_fields,
+                        ..
+                    }) => {
+                        assert_eq!(inner_name, "Steel_AISI_1045");
+                        assert_eq!(
+                            inner_fields.get(&"youngs_modulus".to_string()),
+                            Some(&Value::Int(200))
+                        );
+                    }
+                    other => panic!(
+                        "expected nested StructureInstance for 'material', got {:?}",
+                        other
+                    ),
+                }
+            }
+            other => panic!("expected StructureInstance, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn structure_instance_ctor_undef_field_propagates_in_slot() {
+        // An unbound ValueRef evals to Undef. The ctor keeps the structure
+        // (does NOT strict-short-circuit to Undef like FunctionCall): the
+        // Undef stays in that one slot.
+        let expr = sct(
+            "Beam",
+            1,
+            vec![
+                ("length", lit(Value::Int(5), Type::Int)),
+                ("mystery", vref("Nowhere", "missing", Type::Real)),
+            ],
+            vec![],
+        );
+        let values = ValueMap::new();
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
+            Value::StructureInstance { fields, .. } => {
+                assert_eq!(fields.get(&"length".to_string()), Some(&Value::Int(5)));
+                assert_eq!(
+                    fields.get(&"mystery".to_string()),
+                    Some(&Value::Undef),
+                    "Undef field value stays Undef in its own slot"
+                );
+            }
+            other => panic!("expected StructureInstance, got {:?}", other),
+        }
+    }
+
     // ── User function evaluation tests ──────────────────────────────────
 
     use reify_types::{CompiledFnBody, CompiledFunction, ContentHash};
