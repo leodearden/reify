@@ -30,6 +30,103 @@ pub(crate) const DEGENERATE_ANGLE_RAD: f64 = 1e-12;
 /// (e.g. rejecting near-zero revolve axes).
 pub(crate) const GEOMETRY_EPSILON: f64 = 1e-12;
 
+/// Routing outcome returned by [`gate_query_capability`].
+///
+/// Maps directly to the downstream dispatcher choice:
+/// - `Occt` → invoke the OCCT BRep kernel
+/// - `Manifold` → invoke the Manifold Mesh kernel
+/// - `Unsupported` → fail closed; the caller maps this to `None` so the cell
+///   retains `Value::Undef` (the existing fall-through-is-preservation
+///   contract invariant).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CapabilityRoute {
+    /// Route to the OCCT BRep kernel.
+    Occt,
+    /// Route to the Manifold Mesh kernel.
+    Manifold,
+    /// Query is unsupported for this repr; fail closed.
+    ///
+    /// The gate has already pushed a `Diagnostic::error` carrying
+    /// [`reify_types::DiagnosticCode::QueryNotSupportedOnRepr`] onto the
+    /// diagnostics vec.
+    Unsupported,
+}
+
+/// Capability-gating decision + diagnostic helper (PRD §5.4).
+///
+/// Maps `(produced_repr, query.capability_kind())` to a [`CapabilityRoute`]:
+///
+/// | repr          | capability    | route       | diagnostic |
+/// |---------------|---------------|-------------|------------|
+/// | BRep          | BRepOnly      | Occt        | —          |
+/// | BRep          | BRepAndMesh   | Occt        | —          |
+/// | BRep          | MeshOnly      | Unsupported | Error      |
+/// | Mesh          | MeshOnly      | Manifold    | —          |
+/// | Mesh          | BRepAndMesh   | Manifold    | —          |
+/// | Mesh          | BRepOnly      | Unsupported | Error      |
+/// | Sdf/Voxel/VolumeMesh | any    | Unsupported | Error      |
+///
+/// # Fail-closed contract
+///
+/// Every `Unsupported` branch pushes exactly one
+/// `Diagnostic::error(...).with_code(DiagnosticCode::QueryNotSupportedOnRepr)`
+/// onto `diagnostics`, then returns `Unsupported`. The caller must map
+/// `Unsupported` → `None` → `Value::Undef` (the existing fall-through-
+/// is-preservation contract). This function never panics.
+///
+/// # Message text
+///
+/// `'<query_display_name>' requires BRep representation; this geometry is
+/// realized as <produced_repr:?>`
+///
+/// `query_display_name` is the user-written `.ri` helper name (e.g.
+/// `"curvature"`, `"edge_length"`) — thread it like existing `&function.name`
+/// callers. `produced_repr` is rendered via `{:?}` (`"Mesh"`, `"BRep"`, …).
+///
+/// # Exhaustiveness
+///
+/// The inner `match produced_repr` covers all five [`reify_types::ReprKind`]
+/// variants explicitly (no `_` wildcard) so a future repr addition is a
+/// compile error at this site.
+pub(crate) fn gate_query_capability(
+    query: &reify_types::GeometryQuery,
+    produced_repr: reify_types::ReprKind,
+    query_display_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CapabilityRoute {
+    use reify_types::{DiagnosticCode, QueryCapability, ReprKind};
+
+    let capability = query.capability_kind();
+
+    let unsupported = |diagnostics: &mut Vec<Diagnostic>| {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "'{query_display_name}' requires BRep representation; \
+                 this geometry is realized as {produced_repr:?}"
+            ))
+            .with_code(DiagnosticCode::QueryNotSupportedOnRepr),
+        );
+        CapabilityRoute::Unsupported
+    };
+
+    match produced_repr {
+        ReprKind::BRep => match capability {
+            QueryCapability::BRepOnly | QueryCapability::BRepAndMesh => CapabilityRoute::Occt,
+            QueryCapability::MeshOnly => unsupported(diagnostics),
+        },
+        ReprKind::Mesh => match capability {
+            QueryCapability::MeshOnly | QueryCapability::BRepAndMesh => CapabilityRoute::Manifold,
+            QueryCapability::BRepOnly => unsupported(diagnostics),
+        },
+        // Sdf, Voxel, VolumeMesh: no query is currently supported;
+        // fail closed for every capability to ensure a future repr addition
+        // is consciously classified here (no wildcard).
+        ReprKind::Sdf => unsupported(diagnostics),
+        ReprKind::Voxel => unsupported(diagnostics),
+        ReprKind::VolumeMesh => unsupported(diagnostics),
+    }
+}
+
 /// Look up a named argument in `args`, evaluate it, and return the resulting
 /// `Value`.  If the argument is absent, push a `Warning` diagnostic and return
 /// `None`.  Callers that need a finite `f64` should use [`eval_named_arg_f64`],
