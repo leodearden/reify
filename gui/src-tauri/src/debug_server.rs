@@ -324,6 +324,7 @@ async fn dispatch_tool(
         "health" => Ok(json!({"ok": true})),
         "engine_state" => handle_engine_state(state).await,
         "mesh_stats" => handle_mesh_stats(state).await,
+        "morph_stats" => handle_morph_stats(params).await,
         "open_file" => handle_open_file(state, params).await,
         "wait_for_idle" => handle_wait_for_idle(state, params).await,
         _ => {
@@ -422,6 +423,20 @@ async fn handle_mesh_stats(state: &DebugServerState) -> Result<Value, String> {
         Ok(json!({"meshes": stats}))
     })
     .await
+}
+
+/// `morph_stats` debug-MCP RPC handler. Surfaces the process-global
+/// `reify_mesh_morph::stats::snapshot()`. State-free: mesh-morph stats are
+/// not engine-bound, so no DebugServerState / engine lock is needed.
+///
+/// `_params` may carry an optional `body_id` (per PRD §2.3 request shape) but
+/// it is intentionally ignored — per-body filtering is deferred to the
+/// mesh-morphing engine wiring (PRD tasks #2947-#2949). Both the `()` and
+/// `{body_id: ...}` request forms return the same global snapshot. See
+/// docs/prds/v0_3/gui-event-channel-inventory.md §2.3.
+async fn handle_morph_stats(_params: Value) -> Result<Value, String> {
+    let stats = reify_mesh_morph::stats::snapshot();
+    serde_json::to_value(&stats).map_err(|e| format!("failed to serialize MorphStats: {e}"))
 }
 
 async fn handle_open_file(state: &DebugServerState, params: Value) -> Result<Value, String> {
