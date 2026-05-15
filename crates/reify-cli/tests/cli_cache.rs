@@ -470,6 +470,124 @@ fn import_with_mismatched_engine_version_warns_and_skips() {
 }
 
 #[test]
+fn import_with_path_traversal_input_hash_warns_and_skips_no_filesystem_writes() {
+    // Hand-build a tar with one entry whose tar-path stem is well-formed (32
+    // 'a' hex digits — passes the existing single-component tar-slip check)
+    // but whose internal `CacheEntryHeader::input_hash` carries a
+    // path-traversal payload (`../pwn...`, 32 bytes total). Critically the
+    // `engine_version_hash` field is forged to the LIVE ENGINE_VERSION_HASH
+    // so the entry sails past the engine-version gate from step-14 and
+    // reaches the placement code — only step-16's hex/echo validation can
+    // stop the malicious write.
+    //
+    // Resolution of the traversal: `header.input_hash =
+    // "../pwn0000000000000000000000000a"` makes `shard_dir = <cache>/<engine>/..`
+    // (OS-resolves to `<cache>/`) and `entry_bin_path = <cache>/<engine>/../../
+    // pwn...a.bin` (OS-resolves to `<outer>/pwn...a.bin`), so the vulnerable
+    // path writes a file at `<outer>/pwn...a.bin` outside the cache root.
+    let evh_bytes: [u8; 32] = ENGINE_VERSION_HASH
+        .as_bytes()
+        .try_into()
+        .expect("ENGINE_VERSION_HASH is 32 ASCII bytes");
+    let malicious_input_hash: [u8; 32] = *b"../pwn0000000000000000000000000a";
+    let header = CacheEntryHeader {
+        format_version: ENTRY_FORMAT_VERSION,
+        engine_version_hash: evh_bytes,
+        input_hash: malicious_input_hash,
+        solve_time_ms: 0,
+        byte_size: 0,
+        written_at: -1,
+    };
+    let mut bin_body: Vec<u8> = Vec::new();
+    header.write_to(&mut bin_body).expect("header must encode");
+    // ~16 bytes of arbitrary trailing data — won't be decoded since the
+    // echo/path validation short-circuits before body decode.
+    bin_body.extend_from_slice(&[0u8; 16]);
+
+    // Tar entry stem is a well-formed 32-hex string. The tar-path layer is
+    // intentionally innocent — only the header echo carries the traversal.
+    let tar_stem = "a".repeat(32);
+    let mut tar_bytes: Vec<u8> = Vec::new();
+    {
+        let mut builder = tar::Builder::new(&mut tar_bytes);
+        let mut tar_header = tar::Header::new_gnu();
+        tar_header.set_size(bin_body.len() as u64);
+        tar_header.set_mode(0o644);
+        tar_header
+            .set_path(format!("{tar_stem}.bin"))
+            .expect("set_path");
+        tar_header.set_cksum();
+        builder
+            .append(&tar_header, bin_body.as_slice())
+            .expect("append synthesized bin");
+        builder.finish().expect("tar finish");
+    }
+
+    // NESTED-tempdir setup for hermetic outside-cache-root assertions: the
+    // cache lives at `outer/cache/`, so if the malicious entry escapes the
+    // cache root it lands in `outer/` where we can detect it (and tempdir
+    // cleanup still reaps it).
+    let outer = tempdir().expect("outer tempdir");
+    let cache_dir = outer.path().join("cache");
+    std::fs::create_dir(&cache_dir).expect("create cache subdir");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_reify"))
+        .args(["cache", "import"])
+        .env("REIFY_CACHE_DIR", &cache_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn reify import");
+    {
+        let stdin = child.stdin.as_mut().expect("import stdin");
+        stdin
+            .write_all(&tar_bytes)
+            .expect("write tar to import stdin");
+    }
+    let output = child.wait_with_output().expect("wait import");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // (i) Warn-and-skip is non-fatal per PRD.
+    assert!(
+        output.status.success(),
+        "import should exit SUCCESS on path-traversal warn-and-skip (non-fatal); \
+         stderr={stderr}"
+    );
+    // (ii) stderr surfaces a 'skip' verb so operators see the rejection.
+    let stderr_lc = stderr.to_ascii_lowercase();
+    assert!(
+        stderr_lc.contains("skip"),
+        "stderr should mention 'skip', got: {stderr}"
+    );
+    // (iii) No `.bin`/`.meta` anywhere under the cache root.
+    let cache_files = collect_cache_files(&cache_dir);
+    assert!(
+        cache_files.is_empty(),
+        "cache dir should remain empty after warn-and-skip, found: {cache_files:?}"
+    );
+    // (iv) The malicious path-traversal target file must not exist anywhere
+    // outside the cache root.
+    let pwn_path = outer.path().join("pwn0000000000000000000000000a.bin");
+    assert!(
+        !pwn_path.exists(),
+        "path-traversal target must not exist: {pwn_path:?}"
+    );
+    // (v) Defense-in-depth: `outer/` must contain exactly `cache/` — nothing
+    // else leaked into the parent.
+    let outer_entries: Vec<std::ffi::OsString> = std::fs::read_dir(outer.path())
+        .expect("read_dir outer")
+        .flatten()
+        .map(|e| e.file_name())
+        .collect();
+    assert_eq!(
+        outer_entries.len(),
+        1,
+        "outer dir should contain only `cache/`, found: {outer_entries:?}"
+    );
+}
+
+#[test]
 fn cache_export_with_extra_positional_shows_export_usage() {
     // `reify cache export aaa bbb` (extra positional past the hash) should be
     // rejected with the export-specific usage banner.
