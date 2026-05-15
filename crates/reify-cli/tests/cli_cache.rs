@@ -109,6 +109,35 @@ fn cache_export_with_no_hash_shows_export_usage() {
 }
 
 #[test]
+fn export_with_missing_entry_writes_error_and_exits_failure() {
+    // `reify cache export <hash>` against a hash that doesn't exist in the
+    // cache must print a `no such cache entry` error to stderr and exit
+    // non-zero.
+    let cache_dir = tempdir().expect("tempdir");
+    let hash = "00112233445566778899aabbccddeeff";
+
+    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+        .args(["cache", "export", hash])
+        .env("REIFY_CACHE_DIR", cache_dir.path())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .expect("failed to execute reify binary");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !output.status.success(),
+        "reify cache export with no such entry should exit non-zero"
+    );
+    assert!(
+        stderr.contains("no such cache entry"),
+        "stderr should mention 'no such cache entry', got: {stderr}"
+    );
+}
+
+#[test]
 fn cache_export_with_extra_positional_shows_export_usage() {
     // `reify cache export aaa bbb` (extra positional past the hash) should be
     // rejected with the export-specific usage banner.
