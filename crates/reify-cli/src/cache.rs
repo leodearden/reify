@@ -225,9 +225,31 @@ fn cmd_cache_clear(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    // --engine-version branch lands in step-12; for now the unscoped branch
-    // wipes every engine-version subdir under cache_root.
-    let _ = engine_version;
+    // --engine-version <hash>: scope the wipe to a single engine-version
+    // subdir. Validate the hash via is_32_lowercase_hex BEFORE joining onto
+    // cache_root — defense-in-depth against path-traversal payloads
+    // (`../foo`, etc.) on the same surface as a hostile script.
+    if let Some(hash) = engine_version {
+        if !is_32_lowercase_hex(&hash) {
+            eprintln!(
+                "reify cache clear: --engine-version must be 32 lowercase hex digits"
+            );
+            return ExitCode::FAILURE;
+        }
+        let target = cache_root.join(&hash);
+        match std::fs::remove_dir_all(&target) {
+            Ok(()) => return ExitCode::SUCCESS,
+            // No-op SUCCESS when the target subdir doesn't exist (idempotent).
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!(
+                    "reify cache clear: failed to remove {}: {e}",
+                    target.display()
+                );
+                return ExitCode::FAILURE;
+            }
+        }
+    }
     // Tolerate the root not existing — a clear of an empty cache is an
     // idempotent no-op SUCCESS.
     let read_root = match std::fs::read_dir(&cache_root) {
