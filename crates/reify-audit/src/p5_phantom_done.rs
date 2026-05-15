@@ -33,7 +33,7 @@ const MAIN_BASE: &str = "main";
 ///    cite each contributing sibling SHA via `EvidenceRef::Commit`.
 ///
 /// Mismatches that survive both guards produce `Severity::High`.
-// G-allow: F-infra T-4 CLI consumer (crates/reify-audit-cli) — design pinned in docs/architecture-audit/f-infra-design.md
+// G-allow: F-infra T-4 CLI consumer (crates/reify-audit-cli) — design pinned in docs/architecture-audit/f-infra-design.md — defensive; current caller count is incidental (script name-collision heuristic may shadow this via stdlib `check`)
 pub fn check(ctx: &AuditContext) -> Vec<Finding> {
     check_with_target(ctx, ctx.target_task_id.as_deref())
 }

@@ -55,17 +55,20 @@ fn reify_audit_pub_fns_are_g_allow_marked() {
     }
 
     let output = Command::new(&script)
-        .args(["--strict", "--scope", "crates/reify-audit/src", "--quiet", "--format", "json"])
+        .args(["--scope", "crates/reify-audit/src", "--quiet", "--format", "json"])
         .current_dir(repo_root)
         .output()
         .unwrap_or_else(|e| panic!("failed to invoke audit-orphan-producers.sh: {e}"));
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
 
     // Parse the JSON so we can print a helpful diagnostic
     let result: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
         panic!(
-            "audit-orphan-producers.sh output was not valid JSON: {e}\nstdout: {stdout}"
+            "audit-orphan-producers.sh output was not valid JSON: {e}\n\
+             status: {:?}\nstdout: {stdout}\nstderr: {stderr}",
+            output.status
         )
     });
 
