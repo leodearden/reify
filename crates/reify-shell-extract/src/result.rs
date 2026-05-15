@@ -65,11 +65,15 @@ const MAX_VOXELS_PER_REGION: u64 = 1 << 24;
 /// `regions: 1 << 60` would attempt a gigabyte-scale `try_reserve`
 /// before EOF is ever observed. `with_limit` short-circuits that path:
 /// once bincode has consumed `MAX_HEADER_BYTES`, deserialization fails
-/// with `SizeLimit`. 256 MiB sits comfortably above any realistic
-/// shell-extract producer's header (the slab data itself is uncompressed
-/// and not subject to this cap — that path is bounded by the per-field
-/// `MAX_*` constants above).
-const MAX_HEADER_BYTES: u64 = 1 << 28;
+/// with `SizeLimit`. 4 MiB (`1 << 22`) sits comfortably above any
+/// realistic shell-extract producer's header — real headers are
+/// KB-range, since the bulk f64/u32 data lives in uncompressed slabs
+/// (not subject to this cap) bounded by the per-field `MAX_*` constants
+/// above. The previous 256 MiB ceiling left a quarter-gigabyte
+/// `Vec::with_capacity` window on a tampered nested-Vec length prefix;
+/// 4 MiB closes that window while remaining well above any realistic
+/// header size.
+const MAX_HEADER_BYTES: u64 = 1 << 22;
 
 /// Construct the bincode `Options` chain used for both encode and decode
 /// paths. Pinning the chain in one place ensures byte-shape parity
