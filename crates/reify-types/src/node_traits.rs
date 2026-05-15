@@ -432,6 +432,19 @@ mod node_traits_map_tests {
             NodeKind::Resolution.default_traits()
         );
     }
+
+    #[test]
+    fn new_is_equivalent_to_default() {
+        // NodeTraitsMap::new() and ::default() must be interchangeable constructors.
+        // Covers the public `new()` method so it doesn't ship as untested surface area.
+        let m = NodeTraitsMap::<TestKey>::new();
+        assert_eq!(m.resolve(&value_key(0)), NodeKind::Value.default_traits());
+        assert_eq!(m.resolve(&compute_key(0)), NodeKind::Compute.default_traits());
+        assert_eq!(
+            m.resolve(&constraint_key(0)),
+            NodeKind::Constraint.default_traits()
+        );
+    }
 }
 
 #[cfg(test)]

@@ -38,43 +38,29 @@ fn compute_node(idx: u32) -> NodeId {
 
 // ── default-fallback tests ───────────────────────────────────────────────────
 
+/// Sweep all five NodeId variants against `default_traits()` in one loop.
+///
+/// This is the unique coverage for the production `impl HasNodeKind for NodeId`
+/// bridge in `cache.rs` — unlike the reify-types unit tests which use a `TestKey`
+/// stub. The loop form avoids hard-coding the per-kind expected values as literals
+/// that would need to be updated in lockstep with the §7.6 table if it ever changes.
 #[test]
-fn node_traits_map_with_node_id_resolves_value_default() {
+fn node_traits_map_with_node_id_resolves_all_kind_defaults() {
     let m = NodeTraitsMap::<NodeId>::default();
-    assert_eq!(m.resolve(&value_node()), NodeTraits::IMMEDIATE);
-}
-
-#[test]
-fn node_traits_map_with_node_id_resolves_constraint_default() {
-    let m = NodeTraitsMap::<NodeId>::default();
-    assert_eq!(m.resolve(&constraint_node()), NodeTraits::empty());
-}
-
-#[test]
-fn node_traits_map_with_node_id_resolves_realization_default() {
-    let m = NodeTraitsMap::<NodeId>::default();
-    assert_eq!(
-        m.resolve(&realization_node()),
-        NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE)
-    );
-}
-
-#[test]
-fn node_traits_map_with_node_id_resolves_resolution_default() {
-    let m = NodeTraitsMap::<NodeId>::default();
-    assert_eq!(
-        m.resolve(&resolution_node()),
-        NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE)
-    );
-}
-
-#[test]
-fn node_traits_map_with_node_id_resolves_compute_default() {
-    let m = NodeTraitsMap::<NodeId>::default();
-    assert_eq!(
-        m.resolve(&compute_node(0)),
-        NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE)
-    );
+    let cases: Vec<(NodeId, NodeKind)> = vec![
+        (value_node(), NodeKind::Value),
+        (constraint_node(), NodeKind::Constraint),
+        (realization_node(), NodeKind::Realization),
+        (resolution_node(), NodeKind::Resolution),
+        (compute_node(0), NodeKind::Compute),
+    ];
+    for (node, kind) in cases {
+        assert_eq!(
+            m.resolve(&node),
+            kind.default_traits(),
+            "unexpected default for {kind:?}"
+        );
+    }
 }
 
 // ── T4 (lite): instance > kind precedence with real NodeId ───────────────────
