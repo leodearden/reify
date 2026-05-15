@@ -708,6 +708,7 @@ fn prelude_function_merging_path() {
         name: "double".to_string(),
         is_pub: true,
         params: vec![("x".to_string(), Type::Real)],
+        param_defaults: Vec::new(),
         return_type: Type::Real,
         body: CompiledFnBody {
             let_bindings: vec![],

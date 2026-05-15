@@ -657,6 +657,7 @@ mod tests {
             name: "fn_collection".to_string(),
             is_pub: false,
             params: vec![],
+            param_defaults: Vec::new(),
             return_type: Type::Real,
             body: CompiledFnBody {
                 let_bindings: vec![],

@@ -112,6 +112,7 @@ pub(crate) fn compile_function(
         name: fn_def.name.clone(),
         is_pub: fn_def.is_pub,
         params,
+        param_defaults: Vec::new(),
         return_type,
         body: CompiledFnBody {
             let_bindings: compiled_lets,

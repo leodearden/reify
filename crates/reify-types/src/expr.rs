@@ -224,6 +224,13 @@ pub struct CompiledFunction {
     pub name: String,
     pub is_pub: bool,
     pub params: Vec<(String, Type)>,
+    /// Compiled default-value expression for each param, by position; `None` when
+    /// the param has no default. Populated by `compile_function` in
+    /// `reify-compiler/src/functions.rs`; consumed at call sites for argument
+    /// defaulting (task 3688).
+    ///
+    /// Length is always equal to `params.len()` (parallel / index-aligned).
+    pub param_defaults: Vec<Option<CompiledExpr>>,
     pub return_type: Type,
     pub body: CompiledFnBody,
     pub content_hash: ContentHash,

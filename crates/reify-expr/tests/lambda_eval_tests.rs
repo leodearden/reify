@@ -439,6 +439,7 @@ fn apply_lambda_with_user_function_registry() {
         name: "double".to_string(),
         is_pub: false,
         params: vec![("x".to_string(), Type::Int)],
+        param_defaults: Vec::new(),
         return_type: Type::Int,
         body: CompiledFnBody {
             let_bindings: vec![],
@@ -523,6 +524,7 @@ fn nested_lambda_calls_user_function() {
         name: "double".to_string(),
         is_pub: false,
         params: vec![("x".to_string(), Type::Int)],
+        param_defaults: Vec::new(),
         return_type: Type::Int,
         body: CompiledFnBody {
             let_bindings: vec![],

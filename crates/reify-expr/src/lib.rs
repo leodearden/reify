@@ -3634,6 +3634,7 @@ mod tests {
             name: "double".to_string(),
             is_pub: false,
             params: vec![("x".to_string(), Type::Real)],
+            param_defaults: Vec::new(),
             return_type: Type::Real,
             body: CompiledFnBody {
                 let_bindings: vec![],
@@ -3656,6 +3657,7 @@ mod tests {
             name: "f".to_string(),
             is_pub: false,
             params: vec![("x".to_string(), Type::Real)],
+            param_defaults: Vec::new(),
             return_type: Type::Real,
             body: CompiledFnBody {
                 let_bindings: vec![(
@@ -3709,6 +3711,7 @@ mod tests {
             name: "factorial".to_string(),
             is_pub: false,
             params: vec![("n".to_string(), Type::Int)],
+            param_defaults: Vec::new(),
             return_type: Type::Int,
             body: CompiledFnBody {
                 let_bindings: vec![],
@@ -3756,6 +3759,7 @@ mod tests {
             name: "infinite".to_string(),
             is_pub: false,
             params: vec![("x".to_string(), Type::Int)],
+            param_defaults: Vec::new(),
             return_type: Type::Int,
             body: CompiledFnBody {
                 let_bindings: vec![],
@@ -3875,6 +3879,7 @@ mod tests {
                 ("w".to_string(), Type::length()),
                 ("h".to_string(), Type::length()),
             ],
+            param_defaults: Vec::new(),
             return_type: Type::Scalar {
                 dimension: DimensionVector::AREA,
             },
@@ -3945,6 +3950,7 @@ mod tests {
             name: "process".to_string(),
             is_pub: false,
             params: vec![("x".to_string(), Type::Real)],
+            param_defaults: Vec::new(),
             return_type: Type::Real,
             body: CompiledFnBody {
                 let_bindings: vec![],
@@ -3964,6 +3970,7 @@ mod tests {
             name: "process".to_string(),
             is_pub: false,
             params: vec![("x".to_string(), Type::Real), ("y".to_string(), Type::Real)],
+            param_defaults: Vec::new(),
             return_type: Type::Real,
             body: CompiledFnBody {
                 let_bindings: vec![],

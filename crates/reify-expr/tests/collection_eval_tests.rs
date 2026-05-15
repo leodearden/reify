@@ -1537,6 +1537,7 @@ fn eval_method_map_with_user_function() {
         name: "double".to_string(),
         is_pub: false,
         params: vec![("x".to_string(), Type::Int)],
+        param_defaults: Vec::new(),
         return_type: Type::Int,
         body: CompiledFnBody {
             let_bindings: vec![],
@@ -1603,6 +1604,7 @@ fn eval_method_filter_with_user_function() {
         name: "is_even".to_string(),
         is_pub: false,
         params: vec![("x".to_string(), Type::Int)],
+        param_defaults: Vec::new(),
         return_type: Type::Bool,
         body: CompiledFnBody {
             let_bindings: vec![],
@@ -1676,6 +1678,7 @@ fn eval_method_fold_with_user_function() {
         name: "add".to_string(),
         is_pub: false,
         params: vec![("a".to_string(), Type::Int), ("b".to_string(), Type::Int)],
+        param_defaults: Vec::new(),
         return_type: Type::Int,
         body: CompiledFnBody {
             let_bindings: vec![],
@@ -1751,6 +1754,7 @@ fn eval_method_all_any_with_user_function() {
         name: "is_even".to_string(),
         is_pub: false,
         params: vec![("x".to_string(), Type::Int)],
+        param_defaults: Vec::new(),
         return_type: Type::Bool,
         body: CompiledFnBody {
             let_bindings: vec![],
