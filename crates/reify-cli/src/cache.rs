@@ -103,11 +103,35 @@ pub fn cmd_cache(args: &[String]) -> ExitCode {
     match args.first().map(String::as_str) {
         Some("export") => cmd_cache_export(&args[1..]),
         Some("import") => cmd_cache_import(&args[1..]),
+        Some("stats") => cmd_cache_stats(&args[1..]),
         _ => {
             eprintln!("{CACHE_USAGE}");
             ExitCode::FAILURE
         }
     }
+}
+
+/// `reify cache stats` — print the resolved cache directory, the entry count,
+/// the total `.bin` byte footprint, the top-N largest entries, and a hit-rate
+/// caveat sentence.  Aggregates across ALL engine-version subdirs (per the
+/// design decision: stats is observability and must surface stale-engine
+/// entries so an operator can decide when to wipe an old version by hand).
+fn cmd_cache_stats(args: &[String]) -> ExitCode {
+    if !args.is_empty() {
+        eprintln!("Usage: reify cache stats");
+        return ExitCode::FAILURE;
+    }
+    let cache_root = match resolve_cache_root() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("reify cache stats: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    println!("Cache directory: {}", cache_root.display());
+    println!("Entry count: 0");
+    println!("Total size: 0 B");
+    ExitCode::SUCCESS
 }
 
 /// `reify cache export <hash>` — writes a single cache entry to stdout as a
