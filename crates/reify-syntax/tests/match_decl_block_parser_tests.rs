@@ -10,7 +10,7 @@
 use reify_types::ModulePath;
 
 mod common;
-use common::{find_all_cst_nodes, find_cst_node, make_ts_parser};
+use common::{find_cst_node, find_outermost_cst_nodes, make_ts_parser};
 
 // ── High-level parse tests (user-observable signal) ─────────────────────────
 
@@ -106,7 +106,7 @@ fn match_decl_block_cst_two_arms_each_carry_one_pattern() {
         .parse(source.as_bytes(), None)
         .expect("parse failed");
 
-    let arms = find_all_cst_nodes(tree.root_node(), "match_arm_decl_arm");
+    let arms = find_outermost_cst_nodes(tree.root_node(), "match_arm_decl_arm");
     assert_eq!(
         arms.len(),
         2,
@@ -118,7 +118,7 @@ fn match_decl_block_cst_two_arms_each_carry_one_pattern() {
         let pattern = arm
             .child_by_field_name("pattern")
             .expect("match_arm_decl_arm must have a `pattern` field");
-        let idents = find_all_cst_nodes(pattern, "identifier");
+        let idents = find_outermost_cst_nodes(pattern, "identifier");
         assert_eq!(
             idents.len(),
             1,
@@ -139,7 +139,7 @@ fn match_decl_block_cst_variant_pipe_arm_carries_multiple_patterns() {
         .parse(source.as_bytes(), None)
         .expect("parse failed");
 
-    let arms = find_all_cst_nodes(tree.root_node(), "match_arm_decl_arm");
+    let arms = find_outermost_cst_nodes(tree.root_node(), "match_arm_decl_arm");
     assert!(
         !arms.is_empty(),
         "expected at least one match_arm_decl_arm node in the CST",
@@ -150,7 +150,7 @@ fn match_decl_block_cst_variant_pipe_arm_carries_multiple_patterns() {
         .child_by_field_name("pattern")
         .expect("match_arm_decl_arm must have a `pattern` field");
 
-    let idents: Vec<&str> = find_all_cst_nodes(pattern, "identifier")
+    let idents: Vec<&str> = find_outermost_cst_nodes(pattern, "identifier")
         .iter()
         .map(|n| {
             n.utf8_text(source.as_bytes())

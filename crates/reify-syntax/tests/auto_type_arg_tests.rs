@@ -18,7 +18,7 @@
 use reify_types::ModulePath;
 
 mod common;
-use common::{find_all_cst_nodes, find_cst_node, make_ts_parser};
+use common::{find_cst_node, find_outermost_cst_nodes, make_ts_parser};
 
 // ── Parse-pipeline smoke check ──────────────────────────────────────────────
 
@@ -118,7 +118,7 @@ fn auto_type_arg_cst_bound_identifiers_multi_param() {
     let mut parser = make_ts_parser();
     let tree = parser.parse(source.as_bytes(), None).expect("parse failed");
 
-    let nodes = find_all_cst_nodes(tree.root_node(), "auto_type_arg");
+    let nodes = find_outermost_cst_nodes(tree.root_node(), "auto_type_arg");
     assert_eq!(
         nodes.len(),
         2,
