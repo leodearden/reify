@@ -224,15 +224,15 @@ fn node_traits_exported() {
     assert!(warm_committable.contains(reify_types::NodeTraits::WARM_STARTABLE));
     assert!(warm_committable.contains(reify_types::NodeTraits::COMMITTABLE));
 
-    // ResolutionNode.default_traits() == WARM_STARTABLE | COMMITTABLE
+    // NodeKind::Resolution.default_traits() == WARM_STARTABLE | COMMITTABLE
     assert_eq!(
-        reify_types::NodeArchKind::ResolutionNode.default_traits(),
+        reify_types::NodeKind::Resolution.default_traits(),
         warm_committable
     );
 
-    // ConstraintNode.default_traits().is_empty()
+    // NodeKind::Constraint.default_traits().is_empty() (Q-1 resolution)
     assert!(
-        reify_types::NodeArchKind::ConstraintNode
+        reify_types::NodeKind::Constraint
             .default_traits()
             .is_empty()
     );

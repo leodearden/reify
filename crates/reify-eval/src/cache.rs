@@ -54,6 +54,24 @@ impl From<ComputeNodeId> for NodeId {
     }
 }
 
+/// Bridge from [`NodeId`] to the canonical [`reify_types::NodeKind`] discriminant.
+///
+/// This impl lives in `reify-eval` (not `reify-runtime` or `reify-types`) because
+/// it is the unique orphan-rule-clean host: `NodeId` is local to this crate, and
+/// RFC 2451 permits `impl From<&LocalType> for ForeignType` when the local type
+/// appears in the `From` argument. See `docs/prds/v0_3/node-traits-unification.md §4`.
+impl From<&NodeId> for reify_types::NodeKind {
+    fn from(node_id: &NodeId) -> Self {
+        match node_id {
+            NodeId::Value(_) => Self::Value,
+            NodeId::Constraint(_) => Self::Constraint,
+            NodeId::Realization(_) => Self::Realization,
+            NodeId::Resolution(_) => Self::Resolution,
+            NodeId::Compute(_) => Self::Compute,
+        }
+    }
+}
+
 impl fmt::Display for NodeId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
