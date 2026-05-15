@@ -1816,6 +1816,7 @@ pub(crate) fn try_eval_topology_selector(
         "faces" => TopologySelectorHelper::Faces,
         "center_of_mass" => TopologySelectorHelper::CenterOfMass,
         "moment_of_inertia" => TopologySelectorHelper::MomentOfInertia,
+        "edges_by_length" => TopologySelectorHelper::EdgesByLength,
         _ => return None,
     };
 
@@ -1898,7 +1899,36 @@ pub(crate) fn try_eval_topology_selector(
             let query = reify_types::GeometryQuery::InertiaTensor { handle, density };
             dispatch_inertia_tensor(kernel, &query, &function.name, diagnostics)
         }
+        TopologySelectorHelper::EdgesByLength => {
+            // args[0]: geometry ValueRef → named_steps map → GeometryHandleId.
+            let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
+            // args[1]: Range<Length> ValueRef/Literal → (lo_m, hi_m).
+            let (lo, hi) =
+                resolve_range_dim_arg(&args[1], values, reify_types::DimensionVector::LENGTH)?;
+            match crate::topology_selectors::edges_by_length(kernel, handle, lo, hi) {
+                Ok(handles) => Some(handle_list_value(handles)),
+                Err(err) => {
+                    diagnostics.push(Diagnostic::warning(format!(
+                        "{} kernel query failed: {}",
+                        function.name, err
+                    )));
+                    Some(reify_types::Value::Undef)
+                }
+            }
+        }
     }
+}
+
+/// Wrap a `Vec<GeometryHandleId>` as `Value::List(Vec<Value::Int>)` whose
+/// elements are the raw u64 handle ids cast to `i64`. Shared by all
+/// list-returning topology selectors (task 3560).
+fn handle_list_value(handles: Vec<GeometryHandleId>) -> reify_types::Value {
+    reify_types::Value::List(
+        handles
+            .into_iter()
+            .map(|h| reify_types::Value::Int(h.0 as i64))
+            .collect(),
+    )
 }
 
 #[derive(Clone, Copy)]
@@ -1918,6 +1948,9 @@ enum TopologySelectorHelper {
     /// `moment_of_inertia(geometry, density) -> Tensor<2,3,MomentOfInertia>` —
     /// mass-weighted 3×3 inertia tensor about the centroid (task 3560).
     MomentOfInertia,
+    /// `edges_by_length(geometry, Range<Length>) -> List<Geometry>` — edges
+    /// whose length falls in the range (task 3560).
+    EdgesByLength,
 }
 
 impl TopologySelectorHelper {
@@ -1931,7 +1964,8 @@ impl TopologySelectorHelper {
             | TopologySelectorHelper::IsOn
             | TopologySelectorHelper::AngleBetweenSurfaces
             | TopologySelectorHelper::CenterOfMass
-            | TopologySelectorHelper::MomentOfInertia => 2,
+            | TopologySelectorHelper::MomentOfInertia
+            | TopologySelectorHelper::EdgesByLength => 2,
             TopologySelectorHelper::Edges | TopologySelectorHelper::Faces => 1,
         }
     }
@@ -1966,12 +2000,7 @@ fn dispatch_extract_subshapes(
         ExtractKind::Faces => kernel.extract_faces(handle),
     };
     match result {
-        Ok(sub_handles) => Some(reify_types::Value::List(
-            sub_handles
-                .into_iter()
-                .map(|h| reify_types::Value::Int(h.0 as i64))
-                .collect(),
-        )),
+        Ok(sub_handles) => Some(handle_list_value(sub_handles)),
         Err(err) => {
             diagnostics.push(Diagnostic::warning(format!(
                 "{}({:?}): kernel error: {}",
@@ -2057,6 +2086,84 @@ fn resolve_real_scalar_arg(
             si_value,
             dimension,
         } if *dimension == reify_types::DimensionVector::DIMENSIONLESS => Some(*si_value),
+        _ => None,
+    }
+}
+
+/// Read a `Value::Scalar` whose `dimension` is `expected_dim` and return its
+/// SI value. `None` for any other shape (wrong dimension, non-Scalar).
+fn scalar_si_with_dim(value: &reify_types::Value, expected_dim: reify_types::DimensionVector) -> Option<f64> {
+    match value {
+        reify_types::Value::Scalar {
+            si_value,
+            dimension,
+        } if *dimension == expected_dim => Some(*si_value),
+        _ => None,
+    }
+}
+
+/// Resolve a single range-bound `CompiledExpr` (the `lower`/`upper` slot of a
+/// `RangeConstructor`) to its SI value, accepting a `Literal(Value::Scalar)`
+/// or a `ValueRef → Value::Scalar`, both dimensioned `expected_dim`.
+fn resolve_scalar_bound_expr(
+    expr: &reify_types::CompiledExpr,
+    values: &reify_types::ValueMap,
+    expected_dim: reify_types::DimensionVector,
+) -> Option<f64> {
+    match &expr.kind {
+        reify_types::CompiledExprKind::Literal(v) => scalar_si_with_dim(v, expected_dim),
+        reify_types::CompiledExprKind::ValueRef(id) => {
+            scalar_si_with_dim(values.get(id)?, expected_dim)
+        }
+        _ => None,
+    }
+}
+
+/// Resolve a `Range<Quantity>` arg to its `(lower_si, upper_si)` SI bounds,
+/// both dimensioned `expected_dim`. Accepts three arg shapes:
+///
+///  (a) `Literal(Value::Range { lower: Some, upper: Some, .. })`,
+///  (b) `ValueRef → Value::Range { lower: Some, upper: Some, .. }` (the
+///      common let-bound `let r = 0mm..50mm` form — the regular eval path
+///      evaluates the `RangeConstructor` RHS into the cell as a
+///      `Value::Range`),
+///  (c) `RangeConstructor { lower: Some, upper: Some, .. }` written inline,
+///      whose bound exprs each resolve via Literal/ValueRef.
+///
+/// Both bounds must be present (a half-open range falls through to `None` —
+/// the v0.1 filtered selectors require a closed `[lo, hi]` window) and
+/// dimensioned `expected_dim`. Returns `None` for any other shape — caller
+/// maps to the "unsupported arg shape → fall through" behaviour.
+fn resolve_range_dim_arg(
+    expr: &reify_types::CompiledExpr,
+    values: &reify_types::ValueMap,
+    expected_dim: reify_types::DimensionVector,
+) -> Option<(f64, f64)> {
+    // Range-from-Value: shared by the Literal and ValueRef arms.
+    let from_range_value = |v: &reify_types::Value| -> Option<(f64, f64)> {
+        match v {
+            reify_types::Value::Range {
+                lower: Some(lo),
+                upper: Some(hi),
+                ..
+            } => Some((
+                scalar_si_with_dim(lo, expected_dim)?,
+                scalar_si_with_dim(hi, expected_dim)?,
+            )),
+            _ => None,
+        }
+    };
+    match &expr.kind {
+        reify_types::CompiledExprKind::Literal(v) => from_range_value(v),
+        reify_types::CompiledExprKind::ValueRef(id) => from_range_value(values.get(id)?),
+        reify_types::CompiledExprKind::RangeConstructor {
+            lower: Some(lo),
+            upper: Some(hi),
+            ..
+        } => Some((
+            resolve_scalar_bound_expr(lo, values, expected_dim)?,
+            resolve_scalar_bound_expr(hi, values, expected_dim)?,
+        )),
         _ => None,
     }
 }
