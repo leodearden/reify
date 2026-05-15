@@ -71,8 +71,13 @@ pub fn record_rejection(reason: impl Into<String>) {
     guard.last_rejection_reason = Some(reason.into());
 }
 
-/// Reset state to defaults. Only callable from same-crate test code.
-#[cfg(test)]
+/// Reset state to defaults.
+///
+/// Available in same-crate `#[cfg(test)]` context, and also when the crate is
+/// compiled with `features = ["testing"]` — enabling cross-crate test isolation
+/// (e.g. from `reify-gui`'s `[dev-dependencies]`) once engine wiring lands and
+/// recorders are called from production code paths (PRD #2947-#2949).
+#[cfg(any(test, feature = "testing"))]
 pub fn reset_for_test() {
     let mut guard = state().lock().unwrap_or_else(|e| e.into_inner());
     *guard = StatsState::default();
@@ -138,6 +143,29 @@ mod tests {
         let roundtripped: MorphStats =
             serde_json::from_value(json_val).expect("deserialize must succeed");
         assert_eq!(original, roundtripped, "roundtrip must be identity");
+
+        // Verify `#[serde(skip_serializing_if = "Option::is_none")]` contract:
+        // when last_rejection_reason is None it must be absent from the JSON (no null key).
+        let default_val = serde_json::to_value(&MorphStats::default())
+            .expect("serialize default must succeed");
+        assert!(
+            default_val.get("last_rejection_reason").is_none(),
+            "last_rejection_reason must be absent from JSON when None (skip_serializing_if); \
+             got: {:?}",
+            default_val.get("last_rejection_reason")
+        );
+
+        // Deserializing a payload that omits last_rejection_reason must yield None.
+        let no_reason_json = serde_json::json!({
+            "morph_count": 0u32,
+            "remesh_count": 0u32
+        });
+        let deserialized: MorphStats =
+            serde_json::from_value(no_reason_json).expect("deserialize without key must succeed");
+        assert!(
+            deserialized.last_rejection_reason.is_none(),
+            "last_rejection_reason must be None when key is absent from payload"
+        );
     }
 
     #[test]

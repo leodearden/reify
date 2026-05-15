@@ -5,6 +5,13 @@ edition.workspace = true
 license.workspace = true
 description = "Mesh morphing classifier and engine for Reify"
 
+[features]
+# Enables `stats::reset_for_test()` in the compiled artifact (not just in the
+# same-crate `#[cfg(test)]` context). Activate from any crate's
+# `[dev-dependencies]` to reset the process-global stats between cross-crate
+# test cases once engine wiring (PRD #2947-#2949) lands.
+testing = []
+
 [dependencies]
 reify-types.workspace = true
 reify-eval.workspace = true

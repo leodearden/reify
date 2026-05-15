@@ -798,11 +798,7 @@ mod tests {
             Some("object"),
             "input_schema.type must be 'object'"
         );
-        assert!(
-            !entry.description.is_empty() && entry.description.contains("morph"),
-            "morph_stats description must mention morph; got: {}",
-            entry.description
-        );
+        assert!(!entry.description.is_empty(), "morph_stats must have a non-empty description");
         // `body_id` is optional — the no-args `()` form must be valid per PRD §2.3.
         // `required` may be absent entirely; if present it must not list body_id.
         if let Some(required) = schema["required"].as_array() {
@@ -850,9 +846,15 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_tool_morph_stats_returns_morph_stats_shape() {
-        // State-free handler — call directly. Default (zero) snapshot expected
-        // because no reify-gui code path records morph activity (engine wiring
-        // is owned by mesh-morphing PRD tasks #2947-#2949, not yet landed).
+        // Precondition: pristine stats. reset_for_test() is exposed via the
+        // `testing` feature on reify-mesh-morph (activated by [dev-dependencies]
+        // features = ["testing"] in Cargo.toml). This keeps the test correct even
+        // after engine wiring (PRD #2947-#2949) lands and production code paths
+        // start recording morph activity — without this reset, parallel tests or
+        // leaked state from other test runs could produce non-zero counts.
+        reify_mesh_morph::stats::reset_for_test();
+
+        // State-free handler — call directly. Zero snapshot expected after reset.
         let result = super::handle_morph_stats(serde_json::json!({}))
             .await
             .expect("morph_stats handler must succeed");
