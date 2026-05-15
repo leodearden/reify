@@ -1028,6 +1028,54 @@ fn cache_stats_output_schema_golden_with_top_n_and_hit_rate_caveat() {
 }
 
 #[test]
+fn cache_clear_without_yes_refuses_and_exits_failure_and_preserves_entries() {
+    // `reify cache clear` (no `--yes`) must refuse the destructive op,
+    // exit non-zero, mention `--yes` on stderr, and leave the seeded
+    // entry untouched.
+    let cache_dir = tempdir().expect("tempdir");
+    let input_hash = "c".repeat(32);
+    let fixture = make_elastic_result_fixture();
+    write_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
+        .expect("write_entry must seed the cache");
+    // Sanity-check the seed.
+    let pre = collect_cache_files(cache_dir.path());
+    assert!(
+        pre.iter()
+            .any(|p| p.extension().and_then(|e| e.to_str()) == Some("bin")),
+        "test setup: cache must contain a .bin before clear; found: {pre:?}"
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+        .args(["cache", "clear"])
+        .env("REIFY_CACHE_DIR", cache_dir.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute reify binary");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "reify cache clear without --yes should exit non-zero; stderr={stderr}"
+    );
+    assert!(
+        stderr.contains("--yes"),
+        "stderr should explicitly mention '--yes' for the destructive-op refusal, got: {stderr}"
+    );
+
+    let post: Vec<_> = collect_cache_files(cache_dir.path())
+        .into_iter()
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("bin"))
+        .collect();
+    assert_eq!(
+        post.len(),
+        1,
+        "seeded .bin must remain after the refused clear, found: {post:?}"
+    );
+}
+
+#[test]
 fn cache_export_with_extra_positional_shows_export_usage() {
     // `reify cache export aaa bbb` (extra positional past the hash) should be
     // rejected with the export-specific usage banner.
