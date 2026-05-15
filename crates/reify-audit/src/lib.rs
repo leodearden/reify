@@ -263,29 +263,47 @@ impl RealGitOps {
         Self { project_root: project_root.into() }
     }
 
-    fn run(&self, args: &[&str]) -> Option<String> {
+    /// Run a git command and return its stdout as `Ok(String)`, or an error
+    /// description as `Err(String)`. Three failure modes:
+    ///   1. `Command::output()` failed (spawn error) → Err("git invocation failed: …")
+    ///   2. Non-zero exit status → Err("git exited N: <stderr>")
+    ///   3. Non-UTF-8 stdout → Err("git output not valid UTF-8")
+    fn run(&self, args: &[&str]) -> Result<String, String> {
         let out = std::process::Command::new("git")
             .arg("-C")
             .arg(&self.project_root)
             .args(args)
             .output()
-            .ok()?;
+            .map_err(|e| format!("git invocation failed: {}", e))?;
         if !out.status.success() {
-            return None;
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            return Err(format!(
+                "git exited {:?}: {}",
+                out.status.code(),
+                stderr.trim()
+            ));
         }
-        String::from_utf8(out.stdout).ok()
+        String::from_utf8(out.stdout).map_err(|_| "git output not valid UTF-8".to_string())
     }
 }
 
 impl GitOps for RealGitOps {
     fn log_grep(&self, branch: &str, pattern: &str) -> Vec<GitCommit> {
-        let Some(stdout) = self.run(&[
+        let stdout = match self.run(&[
             "log",
             branch,
             &format!("--grep={}", pattern),
             &format!("--format={}", LOG_GREP_FORMAT),
-        ]) else {
-            return vec![];
+        ]) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!(
+                    "reify-audit: git log --grep failed in {}: {}",
+                    self.project_root.display(),
+                    e
+                );
+                return vec![];
+            }
         };
         stdout
             .lines()
@@ -299,8 +317,16 @@ impl GitOps for RealGitOps {
     }
 
     fn diff_changed_paths(&self, from: &str, to: &str) -> Vec<String> {
-        let Some(stdout) = self.run(&["diff", "--name-only", &format!("{}..{}", from, to)]) else {
-            return vec![];
+        let stdout = match self.run(&["diff", "--name-only", &format!("{}..{}", from, to)]) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!(
+                    "reify-audit: git diff --name-only failed in {}: {}",
+                    self.project_root.display(),
+                    e
+                );
+                return vec![];
+            }
         };
         stdout
             .lines()
@@ -311,18 +337,37 @@ impl GitOps for RealGitOps {
 
     fn is_gitignored(&self, path: &str) -> bool {
         // `git check-ignore` exit code 0 = ignored, 1 = not ignored.
-        std::process::Command::new("git")
+        // Any other outcome (spawn error, exit code other than 0/1) is a git
+        // failure — log a breadcrumb and default to false.
+        match std::process::Command::new("git")
             .arg("-C")
             .arg(&self.project_root)
             .args(["check-ignore", "--quiet", path])
             .status()
-            .map(|s| s.code() == Some(0))
-            .unwrap_or(false)
+        {
+            Ok(s) => s.code() == Some(0),
+            Err(e) => {
+                eprintln!(
+                    "reify-audit: git check-ignore failed in {}: {}",
+                    self.project_root.display(),
+                    e
+                );
+                false
+            }
+        }
     }
 
     fn diff_added_lines(&self, from: &str, to: &str, path: &str) -> Vec<(usize, String)> {
-        let Some(stdout) = self.run(&["diff", &format!("{}..{}", from, to), "--", path]) else {
-            return vec![];
+        let stdout = match self.run(&["diff", &format!("{}..{}", from, to), "--", path]) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!(
+                    "reify-audit: git diff failed in {}: {}",
+                    self.project_root.display(),
+                    e
+                );
+                return vec![];
+            }
         };
         let mut result = Vec::new();
         let mut new_line: usize = 0;
