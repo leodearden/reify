@@ -455,3 +455,41 @@ structure S {
 
     assert_no_type_cascade(&module.diagnostics, &["not yet supported"]);
 }
+
+// ── task 3639: self.<collection-sub>.<unknown-member> producer ─────────────
+
+/// `self.bolts.nonexistent` bare-collection-sub-through-self anti-cascade contract.
+///
+/// `self.bolts.nonexistent` hits `expr.rs:1334` (the `_` arm of the `fallback_type`
+/// match inside the collection-sub `MemberAccess` branch, reached via the
+/// `MemberAccess { object: MemberAccess { Ident("self"), sub_name }, member }` path).
+///
+/// Before step-2 fixes expr.rs:1334, `unwrap_or(Type::Real)` causes the literal to
+/// carry `Type::Real` → BinOp sees `Real + Real = Real` → `result_type = Real ≠ Error`
+/// → RED.
+///
+/// After step-2 changes to `unwrap_or(Type::Error)`, the literal carries `Type::Error`
+/// → `infer_binop_type` short-circuits on the poisoned LHS → `result_type = Type::Error`
+/// → GREEN.
+#[test]
+fn self_collection_sub_unknown_member_no_cascade() {
+    let source = r#"
+structure Inner { param x : Scalar = 0mm }
+structure Outer {
+    sub bolts : List<Inner>
+    let broken = self.bolts.nonexistent + 5.0
+}
+"#;
+    let module = compile_source(source);
+
+    let expr = get_let_expr_in(&module, "Outer", "broken");
+
+    assert_eq!(
+        expr.result_type,
+        Type::Error,
+        "expected let-expr result_type == Type::Error (anti-cascade), got {:?}",
+        expr.result_type,
+    );
+
+    assert_no_type_cascade(&module.diagnostics, &["unknown member"]);
+}
