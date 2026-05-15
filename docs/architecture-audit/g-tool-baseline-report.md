@@ -78,9 +78,9 @@ Public functions in `crates/reify-*/src/` whose only callers are
 tests, the defining file itself, comments, or `use`/`pub use`
 re-exports.
 
-- **Scanned:** 1306 `pub fn` declarations across 280 files
-- **Orphan candidates:** 422  (zero non-test callers, no `// G-allow:`)
-- **Allow-listed:** 0  (zero callers; marked legitimate API surface)
+- **Scanned:** 1337 `pub fn` declarations across 287 files
+- **Orphan candidates:** 420  (zero non-test callers, no `// G-allow:`)
+- **Allow-listed:** 7  (zero callers; marked legitimate API surface)
 
 ## Orphan candidates
 
@@ -91,9 +91,9 @@ re-exports.
 | `reify-compiler` | `crates/reify-compiler/src/annotations.rs:277` | `is_module_only_pragma` |
 | `reify-compiler` | `crates/reify-compiler/src/auto_type_param.rs:556` | `enumerate_candidates` |
 | `reify-compiler` | `crates/reify-compiler/src/auto_type_param.rs:750` | `filter_feasible_candidates` |
-| `reify-compiler` | `crates/reify-compiler/src/auto_type_param.rs:873` | `select_candidate` |
-| `reify-compiler` | `crates/reify-compiler/src/auto_type_param.rs:1291` | `resolve_auto_type_params_with_backtracking` |
-| `reify-compiler` | `crates/reify-compiler/src/auto_type_param.rs:1902` | `build_constraint_blame_map` |
+| `reify-compiler` | `crates/reify-compiler/src/auto_type_param.rs:880` | `select_candidate` |
+| `reify-compiler` | `crates/reify-compiler/src/auto_type_param.rs:1298` | `resolve_auto_type_params_with_backtracking` |
+| `reify-compiler` | `crates/reify-compiler/src/auto_type_param.rs:1924` | `build_constraint_blame_map` |
 | `reify-compiler` | `crates/reify-compiler/src/compile_builder/defs_phase.rs:34` | `format_shadow_warning` |
 | `reify-compiler` | `crates/reify-compiler/src/conformance/checker.rs:32` | `resolve_let_advertised_type` |
 | `reify-compiler` | `crates/reify-compiler/src/conformance/mod.rs:302` | `emit_geometry_unbounded` |
@@ -118,8 +118,8 @@ re-exports.
 | `reify-compiler` | `crates/reify-compiler/src/geometry_traits_inference.rs:525` | `try_infer_traits_for_function_call` |
 | `reify-compiler` | `crates/reify-compiler/src/geometry_traits_inference.rs:539` | `try_infer_traits_for_function_call_in_env` |
 | `reify-compiler` | `crates/reify-compiler/src/guards.rs:9` | `collect_body_refs_inner` |
-| `reify-compiler` | `crates/reify-compiler/src/guards.rs:332` | `compile_guarded_members` |
-| `reify-compiler` | `crates/reify-compiler/src/guards.rs:674` | `narrow_arms_under_guard` |
+| `reify-compiler` | `crates/reify-compiler/src/guards.rs:334` | `compile_guarded_members` |
+| `reify-compiler` | `crates/reify-compiler/src/guards.rs:676` | `narrow_arms_under_guard` |
 | `reify-compiler` | `crates/reify-compiler/src/ice.rs:16` | `as_phrase` |
 | `reify-compiler` | `crates/reify-compiler/src/lib.rs:246` | `compile_with_prelude_context` |
 | `reify-compiler` | `crates/reify-compiler/src/module_dag.rs:275` | `compile_module` |
@@ -149,7 +149,6 @@ re-exports.
 | `reify-compiler` | `crates/reify-compiler/src/types.rs:341` | `non_test_functions` |
 | `reify-config` | `crates/reify-config/src/cache.rs:41` | `default_cache_dir` |
 | `reify-config` | `crates/reify-config/src/cache.rs:77` | `parse_cache_config` |
-| `reify-config` | `crates/reify-config/src/cache.rs:199` | `resolve_cache` |
 | `reify-config` | `crates/reify-config/src/cache.rs:256` | `load_cache_config_from_path` |
 | `reify-config` | `crates/reify-config/src/lib.rs:146` | `from_toml_str` |
 | `reify-config` | `crates/reify-config/src/lib.rs:206` | `load_from_path` |
@@ -200,11 +199,12 @@ re-exports.
 | `reify-eval` | `crates/reify-eval/src/engine_admin.rs:504` | `unregister_solver` |
 | `reify-eval` | `crates/reify-eval/src/engine_admin.rs:512` | `registered_solvers` |
 | `reify-eval` | `crates/reify-eval/src/engine_admin.rs:593` | `cache_store` |
-| `reify-eval` | `crates/reify-eval/src/engine_admin.rs:832` | `warm_pool_mut` |
-| `reify-eval` | `crates/reify-eval/src/engine_admin.rs:845` | `cache_store_mut` |
-| `reify-eval` | `crates/reify-eval/src/engine_admin.rs:866` | `set_panic_on_eval` |
-| `reify-eval` | `crates/reify-eval/src/engine_admin.rs:880` | `remove_panic_on_eval` |
-| `reify-eval` | `crates/reify-eval/src/engine_admin.rs:893` | `clear_panic_on_eval` |
+| `reify-eval` | `crates/reify-eval/src/engine_admin.rs:831` | `propagate_freshness_only` |
+| `reify-eval` | `crates/reify-eval/src/engine_admin.rs:877` | `warm_pool_mut` |
+| `reify-eval` | `crates/reify-eval/src/engine_admin.rs:890` | `cache_store_mut` |
+| `reify-eval` | `crates/reify-eval/src/engine_admin.rs:911` | `set_panic_on_eval` |
+| `reify-eval` | `crates/reify-eval/src/engine_admin.rs:925` | `remove_panic_on_eval` |
+| `reify-eval` | `crates/reify-eval/src/engine_admin.rs:938` | `clear_panic_on_eval` |
 | `reify-eval` | `crates/reify-eval/src/engine_build.rs:489` | `build_snapshot` |
 | `reify-eval` | `crates/reify-eval/src/engine_build.rs:986` | `tessellate_realizations` |
 | `reify-eval` | `crates/reify-eval/src/engine_build.rs:1145` | `compute_realization_tolerance_budget` |
@@ -213,6 +213,7 @@ re-exports.
 | `reify-eval` | `crates/reify-eval/src/engine_build.rs:1273` | `compute_tessellation_budgets` |
 | `reify-eval` | `crates/reify-eval/src/engine_build.rs:2211` | `tessellate_snapshot` |
 | `reify-eval` | `crates/reify-eval/src/engine_build.rs:2403` | `dispatch_volume_mesh` |
+| `reify-eval` | `crates/reify-eval/src/engine_build.rs:4962` | `p2_substitution_diagnostic` |
 | `reify-eval` | `crates/reify-eval/src/engine_constraints.rs:29` | `dispatch_constraints` |
 | `reify-eval` | `crates/reify-eval/src/engine_constraints.rs:213` | `labeled_diagnostics` |
 | `reify-eval` | `crates/reify-eval/src/engine_constraints.rs:408` | `collect_active_constraints` |
@@ -221,8 +222,8 @@ re-exports.
 | `reify-eval` | `crates/reify-eval/src/engine_edit.rs:530` | `diff_value_cells` |
 | `reify-eval` | `crates/reify-eval/src/engine_edit.rs:548` | `diff_constraints` |
 | `reify-eval` | `crates/reify-eval/src/engine_edit.rs:566` | `diff_realizations` |
-| `reify-eval` | `crates/reify-eval/src/engine_edit.rs:1965` | `edit_source` |
-| `reify-eval` | `crates/reify-eval/src/engine_edit.rs:3232` | `edit_check` |
+| `reify-eval` | `crates/reify-eval/src/engine_edit.rs:1968` | `edit_source` |
+| `reify-eval` | `crates/reify-eval/src/engine_edit.rs:3237` | `edit_check` |
 | `reify-eval` | `crates/reify-eval/src/engine_eval.rs:66` | `is_representable_cell_type` |
 | `reify-eval` | `crates/reify-eval/src/engine_eval.rs:673` | `hash_imported_file_content` |
 | `reify-eval` | `crates/reify-eval/src/engine_hash_algo.rs:201` | `compose_engine_version_hash` |
@@ -233,14 +234,13 @@ re-exports.
 | `reify-eval` | `crates/reify-eval/src/engine_tolerance.rs:69` | `check_imported_tolerance_promise` |
 | `reify-eval` | `crates/reify-eval/src/engine_tolerance.rs:126` | `active_tolerance_for` |
 | `reify-eval` | `crates/reify-eval/src/field_import_provenance.rs:65` | `build_field_import_provenance` |
-| `reify-eval` | `crates/reify-eval/src/freshness_walk.rs:100` | `propagate_freshness_only` |
 | `reify-eval` | `crates/reify-eval/src/gating.rs:102` | `unblocked_gated_nodes` |
 | `reify-eval` | `crates/reify-eval/src/geometry_ops.rs:45` | `eval_named_arg` |
 | `reify-eval` | `crates/reify-eval/src/geometry_ops.rs:79` | `eval_named_arg_f64` |
 | `reify-eval` | `crates/reify-eval/src/geometry_ops.rs:114` | `eval_all_args_to_f64` |
-| `reify-eval` | `crates/reify-eval/src/graph.rs:522` | `insert_compute_node` |
-| `reify-eval` | `crates/reify-eval/src/graph.rs:528` | `get_compute_node` |
-| `reify-eval` | `crates/reify-eval/src/graph.rs:532` | `get_compute_node_mut` |
+| `reify-eval` | `crates/reify-eval/src/graph.rs:530` | `insert_compute_node` |
+| `reify-eval` | `crates/reify-eval/src/graph.rs:536` | `get_compute_node` |
+| `reify-eval` | `crates/reify-eval/src/graph.rs:540` | `get_compute_node_mut` |
 | `reify-eval` | `crates/reify-eval/src/journal.rs:118` | `all_events` |
 | `reify-eval` | `crates/reify-eval/src/journal.rs:123` | `events_in_range` |
 | `reify-eval` | `crates/reify-eval/src/journal.rs:135` | `events_since` |
@@ -254,16 +254,11 @@ re-exports.
 | `reify-eval` | `crates/reify-eval/src/kernel_registry.rs:345` | `warn_if_duplicate_op_repr_pairs` |
 | `reify-eval` | `crates/reify-eval/src/persistent_cache.rs:64` | `read_sidecar_mtime` |
 | `reify-eval` | `crates/reify-eval/src/persistent_cache.rs:98` | `touch_sidecar` |
-| `reify-eval` | `crates/reify-eval/src/persistent_cache.rs:122` | `write_sidecar` |
-| `reify-eval` | `crates/reify-eval/src/persistent_cache.rs:226` | `verify_format_version` |
-| `reify-eval` | `crates/reify-eval/src/persistent_cache.rs:255` | `verify_field_echoes` |
 | `reify-eval` | `crates/reify-eval/src/persistent_cache.rs:283` | `write_to` |
-| `reify-eval` | `crates/reify-eval/src/persistent_cache.rs:291` | `read_from` |
-| `reify-eval` | `crates/reify-eval/src/persistent_cache.rs:652` | `shard_dir` |
-| `reify-eval` | `crates/reify-eval/src/persistent_cache.rs:672` | `entry_meta_path` |
-| `reify-eval` | `crates/reify-eval/src/persistent_cache.rs:693` | `entry_bin_path` |
-| `reify-eval` | `crates/reify-eval/src/persistent_cache.rs:872` | `write_entry` |
-| `reify-eval` | `crates/reify-eval/src/persistent_cache.rs:956` | `read_entry` |
+| `reify-eval` | `crates/reify-eval/src/persistent_cache.rs:1051` | `write_entry` |
+| `reify-eval` | `crates/reify-eval/src/persistent_cache.rs:1135` | `read_entry` |
+| `reify-eval` | `crates/reify-eval/src/persistent_cache.rs:1315` | `evict_over_cap` |
+| `reify-eval` | `crates/reify-eval/src/persistent_cache.rs:1516` | `eviction_score` |
 | `reify-eval` | `crates/reify-eval/src/primitive_attribute_seed.rs:187` | `seed_primitive_attributes` |
 | `reify-eval` | `crates/reify-eval/src/realization_cache.rs:119` | `bucket_len` |
 | `reify-eval` | `crates/reify-eval/src/selector_vocabulary_v2.rs:103` | `as_byte` |
@@ -300,17 +295,17 @@ re-exports.
 | `reify-eval` | `crates/reify-eval/src/topology_selectors.rs:824` | `parse_bbox_z_extents` |
 | `reify-eval` | `crates/reify-eval/src/topology_selectors.rs:843` | `parse_bbox_z_extents_json` |
 | `reify-eval` | `crates/reify-eval/src/topology_selectors.rs:893` | `parse_bbox_axis_extents_json` |
-| `reify-eval` | `crates/reify-eval/src/warm_pool.rs:134` | `with_budget` |
-| `reify-eval` | `crates/reify-eval/src/warm_pool.rs:148` | `unlimited` |
-| `reify-eval` | `crates/reify-eval/src/warm_pool.rs:182` | `from_env_value` |
-| `reify-eval` | `crates/reify-eval/src/warm_pool.rs:218` | `with_test_events_cap` |
-| `reify-eval` | `crates/reify-eval/src/warm_pool.rs:234` | `donate_with_cost` |
-| `reify-eval` | `crates/reify-eval/src/warm_pool.rs:355` | `cost_per_byte_of` |
-| `reify-eval` | `crates/reify-eval/src/warm_pool.rs:455` | `checkout` |
-| `reify-eval` | `crates/reify-eval/src/warm_pool.rs:481` | `used_bytes` |
-| `reify-eval` | `crates/reify-eval/src/warm_pool.rs:491` | `budget_bytes` |
-| `reify-eval` | `crates/reify-eval/src/warm_pool.rs:500` | `drain_events` |
-| `reify-eval` | `crates/reify-eval/src/warm_pool.rs:513` | `dropped_events` |
+| `reify-eval` | `crates/reify-eval/src/warm_pool.rs:136` | `with_budget` |
+| `reify-eval` | `crates/reify-eval/src/warm_pool.rs:150` | `unlimited` |
+| `reify-eval` | `crates/reify-eval/src/warm_pool.rs:184` | `from_env_value` |
+| `reify-eval` | `crates/reify-eval/src/warm_pool.rs:220` | `with_test_events_cap` |
+| `reify-eval` | `crates/reify-eval/src/warm_pool.rs:236` | `donate_with_cost` |
+| `reify-eval` | `crates/reify-eval/src/warm_pool.rs:357` | `cost_per_byte_of` |
+| `reify-eval` | `crates/reify-eval/src/warm_pool.rs:457` | `checkout` |
+| `reify-eval` | `crates/reify-eval/src/warm_pool.rs:483` | `used_bytes` |
+| `reify-eval` | `crates/reify-eval/src/warm_pool.rs:493` | `budget_bytes` |
+| `reify-eval` | `crates/reify-eval/src/warm_pool.rs:502` | `drain_events` |
+| `reify-eval` | `crates/reify-eval/src/warm_pool.rs:515` | `dropped_events` |
 | `reify-expr` | `crates/reify-expr/src/lib.rs:81` | `_test_at_depth` |
 | `reify-geometry` | `crates/reify-geometry/src/lib.rs:39` | `register_kernel` |
 | `reify-geometry` | `crates/reify-geometry/src/lib.rs:44` | `has_kernel` |
@@ -341,7 +336,7 @@ re-exports.
 | `reify-kernel-gmsh` | `crates/reify-kernel-gmsh/src/ffi.rs:198` | `gmshModelGeoAddCurveLoop` |
 | `reify-kernel-gmsh` | `crates/reify-kernel-gmsh/src/ffi.rs:207` | `gmshModelGeoAddPlaneSurface` |
 | `reify-kernel-gmsh` | `crates/reify-kernel-gmsh/src/ffi.rs:215` | `gmshModelMeshSetRecombine` |
-| `reify-kernel-gmsh` | `crates/reify-kernel-gmsh/src/ffi.rs:313` | `finalize` |
+| `reify-kernel-gmsh` | `crates/reify-kernel-gmsh/src/ffi.rs:332` | `finalize` |
 | `reify-kernel-gmsh` | `crates/reify-kernel-gmsh/src/mesh_volume.rs:64` | `apply_repair_if_requested` |
 | `reify-kernel-gmsh` | `crates/reify-kernel-gmsh/src/mesh_volume.rs:91` | `resolve_mesh_size` |
 | `reify-kernel-gmsh` | `crates/reify-kernel-gmsh/src/mesh_volume.rs:130` | `compute_thickness_warnings` |
@@ -350,33 +345,34 @@ re-exports.
 | `reify-kernel-manifold` | `crates/reify-kernel-manifold/src/kernel.rs:131` | `store_mesh_for_test` |
 | `reify-kernel-manifold` | `crates/reify-kernel-manifold/src/register.rs:58` | `manifold_factory` |
 | `reify-kernel-manifold` | `crates/reify-kernel-manifold/src/register.rs:100` | `manifold_capability_descriptor` |
-| `reify-kernel-occt` | `crates/reify-kernel-occt/src/handle.rs:453` | `extrude_with_history` |
-| `reify-kernel-occt` | `crates/reify-kernel-occt/src/handle.rs:495` | `revolve_with_history` |
-| `reify-kernel-occt` | `crates/reify-kernel-occt/src/handle.rs:541` | `sweep_with_history` |
-| `reify-kernel-occt` | `crates/reify-kernel-occt/src/handle.rs:584` | `loft_with_history` |
-| `reify-kernel-occt` | `crates/reify-kernel-occt/src/handle.rs:617` | `make_rect_profile_for_test` |
-| `reify-kernel-occt` | `crates/reify-kernel-occt/src/handle.rs:649` | `make_rect_profile_at_for_test` |
-| `reify-kernel-occt` | `crates/reify-kernel-occt/src/handle.rs:682` | `make_triangle_profile_at_for_test` |
-| `reify-kernel-occt` | `crates/reify-kernel-occt/src/handle.rs:728` | `face_outward_unit_normal_for_test` |
-| `reify-kernel-occt` | `crates/reify-kernel-occt/src/handle.rs:987` | `execute_async` |
-| `reify-kernel-occt` | `crates/reify-kernel-occt/src/handle.rs:1001` | `query_async` |
-| `reify-kernel-occt` | `crates/reify-kernel-occt/src/handle.rs:1019` | `export_async` |
-| `reify-kernel-occt` | `crates/reify-kernel-occt/src/handle.rs:1038` | `tessellate_async` |
-| `reify-kernel-occt` | `crates/reify-kernel-occt/src/handle.rs:1057` | `extract_edges_async` |
-| `reify-kernel-occt` | `crates/reify-kernel-occt/src/handle.rs:1071` | `extract_faces_async` |
-| `reify-kernel-occt` | `crates/reify-kernel-occt/src/handle.rs:1093` | `warm_state_async` |
-| `reify-kernel-occt` | `crates/reify-kernel-occt/src/handle.rs:1113` | `with_warm_state_async` |
-| `reify-kernel-occt` | `crates/reify-kernel-occt/src/lib.rs:542` | `repr_of` |
-| `reify-kernel-occt` | `crates/reify-kernel-occt/src/lib.rs:2637` | `warm_start_failures` |
-| `reify-kernel-occt` | `crates/reify-kernel-occt/src/lib.rs:2687` | `store_circle_face_for_test` |
-| `reify-kernel-occt` | `crates/reify-kernel-occt/src/lib.rs:2771` | `store_nonmanifold_compound_for_test` |
-| `reify-kernel-occt` | `crates/reify-kernel-occt/src/lib.rs:2783` | `store_malformed_solid_for_test` |
-| `reify-kernel-occt` | `crates/reify-kernel-occt/src/lib.rs:2796` | `store_nonorientable_shell_for_test` |
-| `reify-kernel-occt` | `crates/reify-kernel-occt/src/lib.rs:2809` | `store_closed_shell_for_test` |
-| `reify-kernel-occt` | `crates/reify-kernel-occt/src/lib.rs:2821` | `store_edge_for_test` |
-| `reify-kernel-occt` | `crates/reify-kernel-occt/src/lib.rs:2832` | `store_vertex_for_test` |
-| `reify-kernel-occt` | `crates/reify-kernel-occt/src/lib.rs:2843` | `store_compsolid_for_test` |
-| `reify-kernel-occt` | `crates/reify-kernel-occt/src/lib.rs:2863` | `store_placed_for_test` |
+| `reify-kernel-occt` | `crates/reify-kernel-occt/src/handle.rs:474` | `extrude_with_history` |
+| `reify-kernel-occt` | `crates/reify-kernel-occt/src/handle.rs:516` | `revolve_with_history` |
+| `reify-kernel-occt` | `crates/reify-kernel-occt/src/handle.rs:562` | `sweep_with_history` |
+| `reify-kernel-occt` | `crates/reify-kernel-occt/src/handle.rs:605` | `loft_with_history` |
+| `reify-kernel-occt` | `crates/reify-kernel-occt/src/handle.rs:638` | `make_rect_profile_for_test` |
+| `reify-kernel-occt` | `crates/reify-kernel-occt/src/handle.rs:670` | `make_rect_profile_at_for_test` |
+| `reify-kernel-occt` | `crates/reify-kernel-occt/src/handle.rs:703` | `make_triangle_profile_at_for_test` |
+| `reify-kernel-occt` | `crates/reify-kernel-occt/src/handle.rs:749` | `face_outward_unit_normal_for_test` |
+| `reify-kernel-occt` | `crates/reify-kernel-occt/src/handle.rs:1012` | `execute_async` |
+| `reify-kernel-occt` | `crates/reify-kernel-occt/src/handle.rs:1026` | `query_async` |
+| `reify-kernel-occt` | `crates/reify-kernel-occt/src/handle.rs:1044` | `export_async` |
+| `reify-kernel-occt` | `crates/reify-kernel-occt/src/handle.rs:1063` | `tessellate_async` |
+| `reify-kernel-occt` | `crates/reify-kernel-occt/src/handle.rs:1082` | `extract_edges_async` |
+| `reify-kernel-occt` | `crates/reify-kernel-occt/src/handle.rs:1096` | `extract_faces_async` |
+| `reify-kernel-occt` | `crates/reify-kernel-occt/src/handle.rs:1110` | `extract_vertices_async` |
+| `reify-kernel-occt` | `crates/reify-kernel-occt/src/handle.rs:1132` | `warm_state_async` |
+| `reify-kernel-occt` | `crates/reify-kernel-occt/src/handle.rs:1152` | `with_warm_state_async` |
+| `reify-kernel-occt` | `crates/reify-kernel-occt/src/lib.rs:553` | `repr_of` |
+| `reify-kernel-occt` | `crates/reify-kernel-occt/src/lib.rs:2704` | `warm_start_failures` |
+| `reify-kernel-occt` | `crates/reify-kernel-occt/src/lib.rs:2754` | `store_circle_face_for_test` |
+| `reify-kernel-occt` | `crates/reify-kernel-occt/src/lib.rs:2838` | `store_nonmanifold_compound_for_test` |
+| `reify-kernel-occt` | `crates/reify-kernel-occt/src/lib.rs:2850` | `store_malformed_solid_for_test` |
+| `reify-kernel-occt` | `crates/reify-kernel-occt/src/lib.rs:2863` | `store_nonorientable_shell_for_test` |
+| `reify-kernel-occt` | `crates/reify-kernel-occt/src/lib.rs:2876` | `store_closed_shell_for_test` |
+| `reify-kernel-occt` | `crates/reify-kernel-occt/src/lib.rs:2888` | `store_edge_for_test` |
+| `reify-kernel-occt` | `crates/reify-kernel-occt/src/lib.rs:2899` | `store_vertex_for_test` |
+| `reify-kernel-occt` | `crates/reify-kernel-occt/src/lib.rs:2910` | `store_compsolid_for_test` |
+| `reify-kernel-occt` | `crates/reify-kernel-occt/src/lib.rs:2930` | `store_placed_for_test` |
 | `reify-kernel-occt` | `crates/reify-kernel-occt/src/register.rs:91` | `occt_capability_descriptor` |
 | `reify-kernel-occt` | `crates/reify-kernel-occt/src/register.rs:172` | `occt_factory` |
 | `reify-kernel-openvdb` | `crates/reify-kernel-openvdb/src/ingest.rs:296` | `lower_to_sampled` |
@@ -451,6 +447,8 @@ re-exports.
 | `reify-solver-elastic` | `crates/reify-solver-elastic/src/boundary/neumann.rs:79` | `apply_point_load` |
 | `reify-solver-elastic` | `crates/reify-solver-elastic/src/boundary/neumann.rs:225` | `apply_body_force` |
 | `reify-solver-elastic` | `crates/reify-solver-elastic/src/boundary/neumann.rs:478` | `apply_traction_load` |
+| `reify-solver-elastic` | `crates/reify-solver-elastic/src/eigensolve.rs:165` | `solve_eigen_dense` |
+| `reify-solver-elastic` | `crates/reify-solver-elastic/src/eigensolve.rs:343` | `solve_eigen_shift_invert` |
 | `reify-solver-elastic` | `crates/reify-solver-elastic/src/elements/mitc3_plus.rs:120` | `bubble_grad_at` |
 | `reify-solver-elastic` | `crates/reify-solver-elastic/src/elements/mitc3_plus.rs:135` | `bubble_at` |
 | `reify-solver-elastic` | `crates/reify-solver-elastic/src/elements/mod.rs:80` | `from_matrix` |
@@ -495,19 +493,31 @@ re-exports.
 | `reify-types` | `crates/reify-types/src/dimension.rs:36` | `is_zero` |
 | `reify-types` | `crates/reify-types/src/dimension.rs:40` | `is_integer` |
 | `reify-types` | `crates/reify-types/src/dimension.rs:44` | `as_i8` |
-| `reify-types` | `crates/reify-types/src/expr.rs:1357` | `user_function_call` |
-| `reify-types` | `crates/reify-types/src/expr.rs:1383` | `match_expr` |
-| `reify-types` | `crates/reify-types/src/geometry.rs:2342` | `try_nary` |
-| `reify-types` | `crates/reify-types/src/geometry.rs:2366` | `nary` |
+| `reify-types` | `crates/reify-types/src/expr.rs:1403` | `user_function_call` |
+| `reify-types` | `crates/reify-types/src/expr.rs:1429` | `match_expr` |
+| `reify-types` | `crates/reify-types/src/geometry.rs:2393` | `try_nary` |
+| `reify-types` | `crates/reify-types/src/geometry.rs:2417` | `nary` |
 | `reify-types` | `crates/reify-types/src/node_traits.rs:226` | `default_traits` |
 | `reify-types` | `crates/reify-types/src/persistent.rs:45` | `insert_functional` |
-| `reify-types` | `crates/reify-types/src/value.rs:601` | `try_into_matrix` |
-| `reify-types` | `crates/reify-types/src/value.rs:990` | `infer_type` |
-| `reify-types` | `crates/reify-types/src/value.rs:1086` | `try_infer_type` |
-| `reify-types` | `crates/reify-types/src/value.rs:1336` | `format_display` |
-| `reify-types` | `crates/reify-types/src/value.rs:1477` | `format_display_pair` |
-| `reify-types` | `crates/reify-types/src/value.rs:1519` | `format_display_number` |
-| `reify-types` | `crates/reify-types/src/value.rs:2334` | `has_hash` |
+| `reify-types` | `crates/reify-types/src/value.rs:675` | `try_into_matrix` |
+| `reify-types` | `crates/reify-types/src/value.rs:1066` | `infer_type` |
+| `reify-types` | `crates/reify-types/src/value.rs:1177` | `try_infer_type` |
+| `reify-types` | `crates/reify-types/src/value.rs:1427` | `format_display` |
+| `reify-types` | `crates/reify-types/src/value.rs:1568` | `format_display_pair` |
+| `reify-types` | `crates/reify-types/src/value.rs:1610` | `format_display_number` |
+| `reify-types` | `crates/reify-types/src/value.rs:2425` | `has_hash` |
+
+## Allow-listed (zero callers, intentional)
+
+| Crate | File:Line | Function | Reason |
+|---|---|---|---|
+| `reify-audit` | `crates/reify-audit/src/lib.rs:282` | `set_log_grep` | F-infra T-4 CLI consumer (crates/reify-audit-cli) — design pinned in docs/architecture-audit/f-infra-design.md |
+| `reify-audit` | `crates/reify-audit/src/lib.rs:288` | `set_diff_changed_paths` | F-infra T-4 CLI consumer (crates/reify-audit-cli) — design pinned in docs/architecture-audit/f-infra-design.md |
+| `reify-audit` | `crates/reify-audit/src/lib.rs:294` | `set_is_gitignored` | F-infra T-4 CLI consumer (crates/reify-audit-cli) — design pinned in docs/architecture-audit/f-infra-design.md |
+| `reify-audit` | `crates/reify-audit/src/p5_phantom_done.rs:56` | `check_pre_done` | F-infra T-4 CLI consumer (crates/reify-audit-cli) — design pinned in docs/architecture-audit/f-infra-design.md |
+| `reify-kernel-gmsh` | `crates/reify-kernel-gmsh/src/ffi.rs:229` | `gmshModelMeshSetSize` | same-file consumer `mesh_set_size_at_entity` → refine_volume.rs:262 (G-tool same-file-caller heuristic limitation). |
+| `reify-solver-elastic` | `crates/reify-solver-elastic/src/volume_refine.rs:125` | `project_per_element_sizes_to_vertices` | same-file consumer `refine_with_size_field` (G-tool same-file-caller heuristic limitation). |
+| `reify-solver-elastic` | `crates/reify-solver-elastic/src/volume_refine.rs:181` | `refine_with_size_field` | producer for pending task #2997 (a-posteriori-error-estimation PRD #2: adaptive refinement loop). |
 
 ---
 
