@@ -1067,9 +1067,20 @@ pub fn write_entry<V: PersistentlyCacheable>(
     let sd = shard_dir(cache_root, engine_version_hash, input_hash);
     std::fs::create_dir_all(&sd)?;
 
-    let mut temp = tempfile::Builder::new()
-        .prefix(".tmp.")
-        .tempfile_in(&sd)?;
+    // Retry once if tempfile_in returns NotFound — a concurrent evict_over_cap
+    // call may have pruned the now-empty shard dir in the window between
+    // create_dir_all (above) and tempfile_in here.  One re-create covers the
+    // race; unbounded retries are unnecessary because the freshly re-created dir
+    // is empty and cannot be pruned again until another entry is written into it
+    // and then fully evicted.
+    let mut temp = match tempfile::Builder::new().prefix(".tmp.").tempfile_in(&sd) {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            std::fs::create_dir_all(&sd)?;
+            tempfile::Builder::new().prefix(".tmp.").tempfile_in(&sd)?
+        }
+        Err(e) => return Err(e),
+    };
 
     let written_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1517,7 +1528,18 @@ pub fn evict_over_cap(
                         e.kind(),
                         io::ErrorKind::NotFound | io::ErrorKind::DirectoryNotEmpty
                     ) => {}
-                Err(_) => {} // best-effort: swallow PermissionDenied etc.
+                Err(e) => {
+                    // Unexpected error kind (e.g. PermissionDenied, Interrupted,
+                    // ReadOnlyFilesystem from a FUSE backend).  Best-effort:
+                    // shard-dir housekeeping must never abort an otherwise-successful
+                    // eviction run.  Log at debug so the error is observable in
+                    // diagnostics without surfacing to the caller.
+                    tracing::debug!(
+                        ?e,
+                        shard_dir = %parent.display(),
+                        "evict_over_cap: unexpected error pruning shard dir (suppressed; best-effort)"
+                    );
+                }
             }
         }
     }
