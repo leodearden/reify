@@ -5068,4 +5068,65 @@ mod tests {
         );
         assert_eq!(report.orphan_dirs_removed, 0);
     }
+
+    // ── prune_orphan_engine_version_dirs core behavior (step-5) ─────────────
+
+    /// Step-5 RED: core behavior of `prune_orphan_engine_version_dirs`.
+    ///
+    /// Fixture: `cache_root` with three immediate subdirs:
+    /// * `"old_orphan"` — backdated `> ORPHAN_DIR_AGE`, contains a file → must
+    ///   be removed recursively.
+    /// * `"fresh_orphan"` — recent mtime → must be kept.
+    /// * one subdir named exactly equal to `current` and backdated `> 30d` →
+    ///   must be kept (never prune the live cache dir).
+    ///
+    /// After the call:
+    /// * `old_orphan` is gone (recursively),
+    /// * `fresh_orphan` and the current-named subdir both remain,
+    /// * `SweepReport { orphan_dirs_removed: 1, tempfiles_removed: 0 }`.
+    #[test]
+    fn prune_orphan_engine_version_dirs_removes_old_orphan_keeps_fresh_and_current() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let current = "cccc000000000000000000000000cccc";
+
+        // old_orphan: old dir with a file inside → must be pruned recursively.
+        let old_orphan = root.join("aaaa111111111111111111111111aaaa");
+        std::fs::create_dir_all(&old_orphan).unwrap();
+        std::fs::write(old_orphan.join("some_entry.bin"), b"data").unwrap();
+        backdate_mtime(&old_orphan, ORPHAN_DIR_AGE.as_secs() + 60);
+
+        // fresh_orphan: recent mtime → must be kept.
+        let fresh_orphan = root.join("bbbb222222222222222222222222bbbb");
+        std::fs::create_dir_all(&fresh_orphan).unwrap();
+        // mtime = now (just created)
+
+        // current subdir: old mtime, but must NEVER be pruned.
+        let current_dir = root.join(current);
+        std::fs::create_dir_all(&current_dir).unwrap();
+        backdate_mtime(&current_dir, ORPHAN_DIR_AGE.as_secs() + 60);
+
+        let report = prune_orphan_engine_version_dirs(root, current);
+
+        assert!(
+            !old_orphan.exists(),
+            "old_orphan must be removed (older than ORPHAN_DIR_AGE)"
+        );
+        assert!(
+            fresh_orphan.exists(),
+            "fresh_orphan must survive (mtime is recent)"
+        );
+        assert!(
+            current_dir.exists(),
+            "current engine-version subdir must NEVER be pruned, even if old"
+        );
+        assert_eq!(
+            report.orphan_dirs_removed, 1,
+            "orphan_dirs_removed must be 1"
+        );
+        assert_eq!(
+            report.tempfiles_removed, 0,
+            "prune_orphan_engine_version_dirs must not touch tempfiles"
+        );
+    }
 }
