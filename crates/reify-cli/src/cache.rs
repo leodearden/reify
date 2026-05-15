@@ -12,6 +12,9 @@ use std::process::ExitCode;
 /// Usage line printed to stderr for any `reify cache` dispatcher error.
 const CACHE_USAGE: &str = "Usage: reify cache (export <hash>|import)";
 
+/// Usage line for `reify cache export` argument errors.
+const EXPORT_USAGE: &str = "Usage: reify cache export <hash>";
+
 /// Top-level `cache` subcommand dispatcher.
 ///
 /// `args` is everything after `cache` on the command line, i.e. for
@@ -27,8 +30,16 @@ pub fn cmd_cache(args: &[String]) -> ExitCode {
     }
 }
 
-/// Placeholder implementation of `cache export <hash>` — wired in later steps.
-fn cmd_cache_export(_args: &[String]) -> ExitCode {
+/// `reify cache export <hash>` — writes a single cache entry to stdout as a
+/// tar archive.  The body lookup + tar emission land in later steps; this
+/// step only handles arg validation.
+fn cmd_cache_export(args: &[String]) -> ExitCode {
+    if args.len() != 1 {
+        eprintln!("{EXPORT_USAGE}");
+        return ExitCode::FAILURE;
+    }
+    let _hash = &args[0];
+    // TODO(step-6): resolve cache root and probe for the entry's `.bin`.
     eprintln!("reify cache export: not yet implemented");
     ExitCode::FAILURE
 }
