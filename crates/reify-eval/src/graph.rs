@@ -946,6 +946,45 @@ mod tests {
     }
 
     #[test]
+    fn realization_node_data_carries_produced_repr_brep_default() {
+        use reify_test_support::TopologyTemplateBuilder;
+        use reify_types::ReprKind;
+
+        // (a) Construct a RealizationNodeData literal with produced_repr: ReprKind::BRep.
+        // This pins the literal-construction surface for the new field.
+        let id = RealizationNodeId::new("Bracket", 0);
+        let node = RealizationNodeData {
+            id: id.clone(),
+            operations: vec![],
+            content_hash: ContentHash::of_str("r0"),
+            produced_repr: ReprKind::BRep,
+        };
+
+        // (b) The field must round-trip through Debug and Clone.
+        assert_eq!(node.produced_repr, ReprKind::BRep);
+        let debug = format!("{:?}", node);
+        assert!(debug.contains("BRep"), "Debug output should contain BRep: {debug}");
+        let cloned = node.clone();
+        assert_eq!(cloned.produced_repr, ReprKind::BRep);
+
+        // (c) from_templates must initialize produced_repr to ReprKind::BRep (v0.2 OCCT default).
+        let template = TopologyTemplateBuilder::new("A")
+            .realization("A", 0, vec![])
+            .build();
+        let graph = EvaluationGraph::from_templates(&[template]);
+        let r_node = graph
+            .realizations
+            .get(&RealizationNodeId::new("A", 0))
+            .unwrap();
+        assert_eq!(
+            r_node.produced_repr,
+            ReprKind::BRep,
+            "from_templates must initialize produced_repr to ReprKind::BRep \
+             (v0.2 default; task ε (3436) wires the per-op dispatcher choice)"
+        );
+    }
+
+    #[test]
     fn resolution_node_data_construction() {
         use reify_types::ResolutionNodeId;
 
