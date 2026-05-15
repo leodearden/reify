@@ -201,9 +201,9 @@ fn ceramic_liner_conforms_to_refractory_with_full_member_chain() {
 structure def CeramicLiner : Refractory {
     param density : Real = 3900.0
     param name : String = "alumina"
-    param thermal_conductivity : Real = 30.0
-    param specific_heat : Real = 880.0
-    param thermal_expansion : Real = 0.0000081
+    param thermal_conductivity : ThermalConductivity = 30.0 * 1W / (1m * 1K)
+    param specific_heat : SpecificHeat = 880.0 * 1J / (1kg * 1K)
+    param thermal_expansion : ThermalExpansion = 0.0000081 / 1K
     param melting_point : Real = 2345.0
     param max_service_temperature : Real = 2050.0
     param glass_transition : Real = 0.0
