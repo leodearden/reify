@@ -387,6 +387,49 @@ pub fn unpinned_kernel_loaded_diagnostic(kernel_id: &str) -> Diagnostic {
     Diagnostic::warning(message).with_code(DiagnosticCode::UnpinnedKernelLoaded)
 }
 
+/// Build the `Severity::Error` diagnostic emitted when `reify.toml` pins a
+/// kernel version that disagrees with the adapter's compiled-in `VERSION`
+/// constant.
+///
+/// Unconditional [`Diagnostic`]-returning builder (the caller has already
+/// compared the pinned version against the adapter `VERSION`). Carries
+/// [`DiagnosticCode::KernelVersionMismatch`] for filter-by-code consumers
+/// and a message naming the kernel id, the pinned version, and the actual
+/// adapter version.
+///
+/// # Integration status
+///
+/// TODO(task-3444/π): wire this builder into `reify.toml` parsing in
+/// `Engine::with_registered_kernels` once it lands (PRD
+/// `docs/prds/v0_3/multi-kernel-phase-3.md` §5 + §8 DAG; consumer π =
+/// ID 3444). Until then, scaffolding — public API with no in-tree caller
+/// — mirroring the `long_chain_diagnostic` precedent (task 2646).
+///
+/// # Severity rationale
+///
+/// PRD `docs/prds/v0_3/multi-kernel-phase-3.md` §5: "error. Determinism
+/// contract enforcement." Matching versions is load-bearing for
+/// reproducible realization across build hosts; the engine fails closed
+/// rather than silently using a different adapter than the project pins.
+///
+/// # Arguments
+///
+/// - `kernel_id` — the kernel name whose version disagrees.
+/// - `pinned` — the version string pinned in `reify.toml` `[kernels]`.
+/// - `actual` — the adapter's compiled-in `VERSION` constant.
+pub fn kernel_version_mismatch_diagnostic(
+    kernel_id: &str,
+    pinned: &str,
+    actual: &str,
+) -> Diagnostic {
+    let message = format!(
+        "kernel '{kernel_id}' version mismatch: reify.toml pins '{pinned}' \
+         but adapter VERSION = '{actual}'; determinism contract requires \
+         matching versions"
+    );
+    Diagnostic::error(message).with_code(DiagnosticCode::KernelVersionMismatch)
+}
+
 /// Resolve the long-chain wall-time threshold from the
 /// [`LONG_CHAIN_THRESHOLD_ENV_VAR`] environment variable, falling back to
 /// [`LONG_CHAIN_DEFAULT_THRESHOLD_MS`] when unset or unparseable.
