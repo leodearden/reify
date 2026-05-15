@@ -150,11 +150,44 @@ pub fn detect_orphan_dofs(
     if elements.is_empty() {
         return OrphanDofsSummary::default();
     }
-    // Minimal skeleton: full logic is implemented in step-4 (count) and
-    // step-6 (examples) of task 3293's plan. For now return default so the
-    // empty-input contract (step-1) passes; pure-tet and mixed-mesh tests
-    // will be added in steps 3 and 5 respectively.
-    OrphanDofsSummary::default()
+
+    // Global DOFs-per-node D = max(d_e_e) over all elements, mirroring the
+    // formula in assemble_global_stiffness. unwrap_or(3) matches the assembly
+    // default (pure-empty returns 3N×3N), but elements is non-empty here so
+    // the max is always Some.
+    let d_global: usize = elements
+        .iter()
+        .map(|e| e.k_e.n_dofs / e.connectivity.len())
+        .max()
+        .unwrap_or(3);
+
+    // Build per-node d_e_max_local: the highest d_e of any element touching
+    // that node. Nodes never mentioned in any connectivity stay 0 (untouched).
+    let mut d_max_local = vec![0usize; n_nodes];
+    for e in elements {
+        let d_e = e.k_e.n_dofs / e.connectivity.len();
+        for &node in e.connectivity {
+            if d_e > d_max_local[node] {
+                d_max_local[node] = d_e;
+            }
+        }
+    }
+
+    // Count orphan (node, axis) pairs: nodes that ARE touched (d_max_local > 0)
+    // but whose best-covering element stops short of D.
+    // examples populated in step-6.
+    let mut count = 0usize;
+    for node in 0..n_nodes {
+        let d_local = d_max_local[node];
+        if d_local > 0 && d_local < d_global {
+            count += d_global - d_local;
+        }
+    }
+
+    OrphanDofsSummary {
+        count,
+        examples: Vec::new(),
+    }
 }
 
 /// Scatter per-element stiffness matrices into a global `D·N × D·N` sparse
