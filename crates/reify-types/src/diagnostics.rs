@@ -298,6 +298,20 @@ pub enum DiagnosticCode {
     /// implicitly convert to the declared codomain type. The human-readable
     /// mnemonic used in PRD prose is `E_FIELD_CODOMAIN_MISMATCH`.
     FieldCodomainMismatch,
+    /// Origin: `crates/reify-compiler/src/functions.rs::compile_function`.
+    ///
+    /// Canonical message form:
+    /// `"function '<fn>' param '<p>' default type mismatch: declared param type '<P>', default expression produces '<D>'"`.
+    ///
+    /// Emitted when the compiled default expression for a function parameter has a
+    /// `result_type` that does not exactly equal the resolved parameter type. The check
+    /// uses strict equality (matching the policy used by `resolve_function_overload` and
+    /// `try_default_padding`'s prefix check) rather than bidirectional `type_compatible`.
+    /// The diagnostic is anchored to the default expression's span so the user sees the
+    /// offending literal or sub-expression, not just the param declaration.
+    ///
+    /// The human-readable mnemonic used in task prose is `E_FN_PARAM_DEFAULT_TYPE_MISMATCH`.
+    FnParamDefaultTypeMismatch,
     /// Origin: `crates/reify-compiler/src/compile_builder/dot_chain_lint.rs`.
     /// Emitted as a Warning when a left-associative `MemberAccess` chain in
     /// the parsed AST exceeds the configured depth threshold (currently
