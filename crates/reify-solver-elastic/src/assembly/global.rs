@@ -81,6 +81,82 @@ pub enum AssemblyMode {
     },
 }
 
+/// Summary returned by [`detect_orphan_dofs`] describing nodes whose DOF
+/// coverage falls short of the global `D` in a mixed-element mesh.
+///
+/// An *orphan DOF* at node `n`, axis `α` is a `(D·n + α)` row/col in the
+/// global stiffness matrix `K` that receives **no nonzero contribution from
+/// any element** because `α >= d_e_max_local(n)` (the highest per-element
+/// DOF count touching that node). In a pure-tet mesh every node has
+/// `d_e_max_local = 3 = D`, so there are no orphans. In a mixed tet+shell
+/// mesh (`D = 6`) tet-only nodes have `d_e_max_local = 3 < 6`, leaving axes
+/// 3, 4, 5 as orphan zeros — the signature of a singular K unless a BC or
+/// MPC layer (task 2917 / task 3020) clamps them.
+///
+/// This is the diagnostic surface added in task 3293. Call
+/// [`detect_orphan_dofs`] before or after assembly to check whether the mesh
+/// configuration requires BC/MPC stabilisation.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct OrphanDofsSummary {
+    /// Total number of orphan `(node, axis)` pairs across the whole mesh.
+    /// This is the true count even when `examples` is truncated to
+    /// `MAX_EXAMPLES`.
+    pub count: usize,
+    /// First up to `MAX_EXAMPLES` representative orphan `(node, axis)` pairs,
+    /// sorted ascending by `(node, axis)`. When `examples.len() < count` the
+    /// list is truncated; callers that need the full set can derive it
+    /// directly from the element slice.
+    pub examples: Vec<(usize, usize)>,
+}
+
+/// Detect orphan DOFs in a mesh described by `elements`, returning a summary
+/// of all `(node, axis)` pairs whose row/col in the global stiffness matrix
+/// would be structurally zero because no touching element covers that axis.
+///
+/// ## Semantics
+///
+/// Computes, for each node `n` in `0..n_nodes`:
+///
+/// ```text
+/// d_e_max_local(n) = max(d_e_e  for elements e where n in e.connectivity)
+/// ```
+///
+/// with `d_e_e = e.k_e.n_dofs / e.connectivity.len()` (the same formula used
+/// by [`assemble_global_stiffness`] to derive the global `D`). The global
+/// `D = max(d_e_max_local)` over all elements (`unwrap_or(3)` for empty
+/// inputs, matching the assembly default).
+///
+/// Node `n` carries orphan DOFs at axes `α ∈ [d_e_max_local(n)..D)` **only
+/// if the node is touched** (`d_e_max_local(n) > 0`). Completely-untouched
+/// nodes (never in any element's connectivity) have `d_e_max_local = 0`
+/// and are not reported — their empty rows/cols are a mesh-completeness
+/// issue, not a DOF-coverage violation.
+///
+/// ## In debug builds
+///
+/// [`assemble_global_stiffness`] calls this function internally under
+/// `#[cfg(debug_assertions)]` and emits an `eprintln!` warning if
+/// `count > 0`. See the design note at the assembly boundary.
+///
+/// ## Task marker
+///
+/// Diagnostic surface added per task 3293. See also task 2917 (Dirichlet BC)
+/// and task 3020 (MPC tying) for the stabilisation layers that suppress
+/// singular-K failures from orphan DOFs.
+pub fn detect_orphan_dofs(
+    n_nodes: usize,
+    elements: &[AssemblyElement<'_>],
+) -> OrphanDofsSummary {
+    if elements.is_empty() {
+        return OrphanDofsSummary::default();
+    }
+    // Minimal skeleton: full logic is implemented in step-4 (count) and
+    // step-6 (examples) of task 3293's plan. For now return default so the
+    // empty-input contract (step-1) passes; pure-tet and mixed-mesh tests
+    // will be added in steps 3 and 5 respectively.
+    OrphanDofsSummary::default()
+}
+
 /// Scatter per-element stiffness matrices into a global `D·N × D·N` sparse
 /// stiffness matrix, where `D` is the global DOFs-per-node count derived
 /// from the element slice (see below) and `N = n_nodes`.
