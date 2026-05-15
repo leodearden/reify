@@ -5975,6 +5975,180 @@ fn update_source_with_divergent_path_keeps_loaded_module_name() {
     );
 }
 
+// ── update_source single-file branch + atomic-rollback pins (task 3371) ──────
+
+/// Regression pin for the `self.file_path == None` branch of `update_source`'s
+/// task-3318 refactor (esc-3318-14, suggestion #2).
+///
+/// A "fresh session" means no prior `load_file` or `load_from_source` call, so
+/// `self.file_path` is `None`.  In this state `update_source` must route through
+/// the single-file branch (`compile_single_file_with_stdlib`) and successfully
+/// compile valid self-contained source.
+///
+/// The phantom path `/nonexistent/dir/solo.ri` cannot exist on disk.  This is
+/// intentional: if a future regression causes the single-file branch to attempt
+/// disk I/O (e.g. by accidentally routing through `compile_entry_with_imports`),
+/// the test will flip red with a clear filesystem error rather than passing
+/// silently.  The single-file branch's defining property is that the `path`
+/// argument is used only for module-stem derivation — no disk access occurs.
+#[test]
+fn update_source_on_fresh_session_compiles_single_file_source_without_disk_io() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let source = "structure Solo { param w: Scalar = 7mm }\n";
+    let state = session
+        .update_source("/nonexistent/dir/solo.ri", source)
+        .expect("fresh-session update_source with valid single-file source should return Ok");
+
+    // 1. The compiled state must contain the expected value cell.
+    let w_val = state
+        .values
+        .iter()
+        .find(|v| v.name == "w" && v.entity_path == "Solo")
+        .expect("should find parameter 'w' on entity 'Solo' after single-file update_source");
+    assert_eq!(
+        w_val.value, "7",
+        "Solo.w default is 7mm; got '{}' (unit: '{}')",
+        w_val.value, w_val.unit
+    );
+    assert_eq!(
+        w_val.unit, "mm",
+        "Solo.w should have unit 'mm', got '{}'",
+        w_val.unit
+    );
+
+    // 2. source_map must be keyed by module_key("solo") — the stem of the
+    //    phantom path — proving the single-file commit path ran and that
+    //    module_key derivation from the caller's path argument is correct.
+    let (stored_key, stored_src) = session
+        .resolve_source_for_test()
+        .expect("resolve_source_for_test should return Some after a successful update_source");
+    assert_eq!(
+        stored_key,
+        module_key("solo"),
+        "source_map key should be module_key(\"solo\") (stem of caller's path); got '{stored_key}'"
+    );
+    assert_eq!(
+        stored_src, source,
+        "stored source should equal the content passed to update_source"
+    );
+}
+
+/// Atomic-rollback regression pin for the multi-file branch (task 3318 follow-up,
+/// esc-3318-14 suggestion #2).
+///
+/// After `load_file` resolves a multi-file project, a failing `update_source`
+/// (parse-error content) must leave ALL of the following completely unchanged:
+///
+/// 1. **`source_map`** — `resolve_source_for_test()` returns the original key
+///    and source text, not the broken content.
+/// 2. **`compiled`** — `build_gui_state()` still returns a state containing
+///    `Helper.x` from the prior good compile.
+/// 3. **`file_path`** — verified behaviorally: a follow-up `update_source` with
+///    valid multi-file content succeeds and re-surfaces `Helper.x`.  The
+///    multi-file branch requires `file_path == Some(...)`; if rollback had cleared
+///    it, the recovery call would fall through to the single-file branch, silently
+///    drop `import helper`, and this assertion would flip red.
+///
+/// Parse-error content (`"totally broken {{{}}}"`) is used as the failure trigger
+/// because it bails out at the earliest possible point — before any compile-side
+/// or check-side state could plausibly be touched — giving the cleanest guarantee
+/// that "no state was mutated between call entry and Err return".
+#[test]
+fn update_source_failure_after_load_file_leaves_prior_compiled_source_map_and_file_path_intact() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+
+    std::fs::write(
+        dir.path().join("helper.ri"),
+        "pub structure Helper { param x: Scalar = 10mm }\n",
+    )
+    .expect("write helper.ri");
+
+    let main_content = "import helper\nstructure Top { sub h = Helper() }\n";
+    std::fs::write(dir.path().join("main.ri"), main_content).expect("write main.ri");
+
+    // Establish pre-failure state: load_file must succeed and produce Helper.x.
+    let load_state = session
+        .load_file(&dir.path().join("main.ri"))
+        .expect("load_file should succeed with resolved import");
+    assert!(
+        load_state
+            .values
+            .iter()
+            .any(|v| v.name == "x" && v.entity_path == "Helper"),
+        "load_file should produce Helper.x value cell (pre-failure baseline)"
+    );
+
+    // Capture pre-failure source_map state as owned Strings so the borrow releases.
+    let (pre_key, pre_src) = session
+        .resolve_source_for_test()
+        .expect("resolve_source_for_test should return Some after load_file");
+    let pre_key = pre_key.to_owned();
+    let pre_src = pre_src.to_owned();
+
+    // Trigger failure with parse-error content.
+    let main_path = dir.path().join("main.ri");
+    let err = session
+        .update_source(main_path.to_str().unwrap(), "totally broken {{{}}}")
+        .expect_err("invalid source should return Err");
+    assert!(
+        err.contains("Parse errors"),
+        "error string should contain 'Parse errors'; got: {err}"
+    );
+
+    // ── Invariant 1: source_map unchanged ────────────────────────────────────
+    let (post_key, post_src) = session
+        .resolve_source_for_test()
+        .expect("resolve_source_for_test should return Some after failed update_source (rollback)");
+    assert_eq!(
+        post_key, pre_key,
+        "source_map key must be unchanged after failed update_source; was '{pre_key}', \
+         now '{post_key}'"
+    );
+    assert_eq!(
+        post_src, pre_src,
+        "source_map content must be the pre-failure source, not the broken content"
+    );
+
+    // ── Invariant 2: compiled unchanged ──────────────────────────────────────
+    let post_state = session
+        .build_gui_state()
+        .expect("build_gui_state should succeed (prior good compile still in compiled field)");
+    assert!(
+        post_state
+            .values
+            .iter()
+            .any(|v| v.name == "x" && v.entity_path == "Helper"),
+        "build_gui_state after failed update_source must still contain Helper.x \
+         (compiled field must be unchanged by rollback)"
+    );
+
+    // ── Invariant 3: file_path unchanged (behavioral check) ──────────────────
+    // A successful recovery update_source with valid multi-file content must
+    // re-surface Helper.x.  This is only possible if file_path is still Some(...):
+    // the multi-file branch (which resolves 'import helper') is only taken when
+    // file_path is set.  If rollback had cleared file_path, the call would fall
+    // through to the single-file branch, silently drop the import, and the
+    // Helper.x assertion below would flip red — proving the regression.
+    let recovery_state = session
+        .update_source(main_path.to_str().unwrap(), main_content)
+        .expect("recovery update_source with original multi-file content should succeed");
+    assert!(
+        recovery_state
+            .values
+            .iter()
+            .any(|v| v.name == "x" && v.entity_path == "Helper"),
+        "recovery update_source must surface Helper.x — proving file_path was preserved \
+         through the failed update_source (behavioral file_path rollback check)"
+    );
+}
+
 // ── Collision-diagnostic test helpers ────────────────────────────────────────
 
 /// Create an `EngineSession` configured with the standard mock checker/kernel,
