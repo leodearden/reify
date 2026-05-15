@@ -34,13 +34,110 @@ use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef};
 use reify_test_support::compile_source;
 use reify_types::Severity;
 
-// ─── helper ───────────────────────────────────────────────────────────────────
+// ─── helpers ──────────────────────────────────────────────────────────────────
 
 /// Returns true if the message contains at least one of the "not yet" / "v0.1" /
 /// "not supported" keywords indicating the geometry-specific deferred diagnostic
 /// from `make_cross_sub_geometry_error`.
 fn has_deferred_keyword(msg: &str) -> bool {
     msg.contains("not yet") || msg.contains("v0.1") || msg.contains("not supported")
+}
+
+/// Compiles `source`, filters to Error-severity diagnostics, and asserts:
+/// (a) at least one Error fires;
+/// (b) at least one Error is the specific cross-sub-deferred diagnostic — its
+///     message contains `"geometry"`, a deferred keyword, `sub`, and `member`;
+/// (c) the generic `"must be a geometry expression"` fallback is entirely absent.
+///
+/// Use for tests that exercise the `resolve_boolean_arg` →
+/// `try_emit_cross_sub_geometry` routing path (task-3512).
+fn assert_specific_cross_sub_diagnostic(source: &str, sub: &str, member: &str) {
+    let compiled = compile_source(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    // (a) At least one Error-severity diagnostic fires.
+    assert!(
+        !errors.is_empty(),
+        "expected at least one Error diagnostic for collection-sub geometry arg; \
+         got no diagnostics"
+    );
+
+    // (b) At least one Error is the specific cross-sub-deferred diagnostic naming
+    //     both the sub and the member.
+    let has_specific_diagnostic = errors.iter().any(|d| {
+        d.message.contains("geometry")
+            && has_deferred_keyword(&d.message)
+            && d.message.contains(sub)
+            && d.message.contains(member)
+    });
+    assert!(
+        has_specific_diagnostic,
+        "expected the specific cross-sub-deferred geometry diagnostic naming '{}' and '{}'; \
+         got: {:?}",
+        sub,
+        member,
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // (c) Independent regression guard: the generic "must be a geometry expression"
+    //     fallback must be entirely ABSENT — the early `return None` in
+    //     `resolve_boolean_arg` (triggered when `try_emit_cross_sub_geometry`
+    //     returns `Some`) suppresses the generic path.
+    let has_any_generic_fallback = errors
+        .iter()
+        .any(|d| d.message.contains("must be a geometry expression"));
+    assert!(
+        !has_any_generic_fallback,
+        "generic 'must be a geometry expression' must be absent when the specific \
+         cross-sub-deferred diagnostic fires; errors: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// Compiles `source`, filters to Error-severity diagnostics, and asserts:
+/// (a) at least one Error contains `"argument {arg_n} must be a geometry expression"`
+///     (the generic fallback from `resolve_boolean_arg`'s `compile_geometry_call`
+///     `None`-branch);
+/// (b) NO Error satisfies `has_deferred_keyword` AND contains `sub` or `member` —
+///     the cross-sub v0.1-deferred wording must not fire.
+///
+/// Use for negative tests that verify the generic fallback fires for shapes outside
+/// the task-3512 routing block scope.
+fn assert_generic_fallback_no_cross_sub(source: &str, arg_n: usize, sub: &str, member: &str) {
+    let compiled = compile_source(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    // (a) The generic "argument N must be a geometry expression" fallback fires.
+    let expected_msg = format!("argument {} must be a geometry expression", arg_n);
+    let has_generic_fallback = errors.iter().any(|d| d.message.contains(&expected_msg));
+    assert!(
+        has_generic_fallback,
+        "expected generic '{}'; got: {:?}",
+        expected_msg,
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // (b) The cross-sub deferred diagnostic must NOT fire for this shape.
+    let has_spurious_deferred_diagnostic = errors.iter().any(|d| {
+        has_deferred_keyword(&d.message)
+            && (d.message.contains(sub) || d.message.contains(member))
+    });
+    assert!(
+        !has_spurious_deferred_diagnostic,
+        "cross-sub deferred diagnostic must NOT fire for '{}'/'{}'  — \
+         the routing block should not match this shape. Got: {:?}",
+        sub,
+        member,
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
 }
 
 // ─── step-1: binary boolean op with collection-sub geometry arg ───────────────
@@ -68,51 +165,7 @@ pub structure Rack {
     param base : Solid = box(10mm, 10mm, 10mm)
     let combined = union(self.bolts.body, base)
 }"#;
-    let compiled = compile_source(source);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-
-    // (a) At least one Error-severity diagnostic fires.
-    assert!(
-        !errors.is_empty(),
-        "expected at least one Error diagnostic for collection-sub geometry arg in union(); \
-         got no diagnostics"
-    );
-
-    // (b) At least one Error is the specific cross-sub-deferred diagnostic naming
-    //     both the sub ('bolts') and the member ('body').
-    let has_specific_diagnostic = errors.iter().any(|d| {
-        d.message.contains("geometry")
-            && has_deferred_keyword(&d.message)
-            && d.message.contains("bolts")
-            && d.message.contains("body")
-    });
-    assert!(
-        has_specific_diagnostic,
-        "expected the specific cross-sub-deferred geometry diagnostic naming 'bolts' and 'body'; \
-         got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-
-    // (c) Independent regression guard: the generic "must be a geometry expression"
-    //     fallback must be entirely ABSENT — the early `return None` in
-    //     `resolve_boolean_arg` (triggered when `try_emit_cross_sub_geometry`
-    //     returns `Some`) suppresses the generic path.  This check is independent
-    //     of (b): (b) asserts the specific diagnostic fires; (c) asserts the
-    //     generic fallback does NOT fire at all.
-    let has_any_generic_fallback = errors
-        .iter()
-        .any(|d| d.message.contains("must be a geometry expression"));
-    assert!(
-        !has_any_generic_fallback,
-        "generic 'must be a geometry expression' must be absent when the specific \
-         cross-sub-deferred diagnostic fires — the early return in resolve_boolean_arg \
-         should suppress it; errors: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
+    assert_specific_cross_sub_diagnostic(source, "bolts", "body");
 }
 
 // ─── step-3: n-ary boolean op with collection-sub geometry arg ────────────────
@@ -149,50 +202,7 @@ pub structure Rack {
     // not silently pass.  Should this become unexpectedly flaky due to
     // param/geometry-let classification changes, consider moving the collection-sub
     // arg to arg-0 position in a separate test.
-    let compiled = compile_source(source);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-
-    // (a) At least one Error-severity diagnostic fires.
-    assert!(
-        !errors.is_empty(),
-        "expected at least one Error diagnostic for collection-sub geometry arg in union_all(); \
-         got no diagnostics"
-    );
-
-    // (b) At least one Error is the specific cross-sub-deferred diagnostic naming
-    //     both 'bolts' and 'body'.
-    let has_specific_diagnostic = errors.iter().any(|d| {
-        d.message.contains("geometry")
-            && has_deferred_keyword(&d.message)
-            && d.message.contains("bolts")
-            && d.message.contains("body")
-    });
-    assert!(
-        has_specific_diagnostic,
-        "expected the specific cross-sub-deferred geometry diagnostic naming 'bolts' and 'body'; \
-         got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-
-    // (c) Independent regression guard: the generic "must be a geometry expression"
-    //     fallback must be entirely ABSENT — the early `return None` in
-    //     `resolve_boolean_arg` suppresses the generic path when the specific
-    //     deferred diagnostic fires.  This check is independent of (b): (b) asserts
-    //     the specific diagnostic fires; (c) asserts the generic fallback does NOT
-    //     fire at all (including for arg-0 or arg-2 which resolved correctly).
-    let has_any_generic_fallback = errors
-        .iter()
-        .any(|d| d.message.contains("must be a geometry expression"));
-    assert!(
-        !has_any_generic_fallback,
-        "generic 'must be a geometry expression' must be absent when the specific \
-         cross-sub-deferred diagnostic fires in union_all() n-ary path; errors: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
+    assert_specific_cross_sub_diagnostic(source, "bolts", "body");
 }
 
 // ─── step-4: scalar-member falls back to generic diagnostic ───────────────────
@@ -219,38 +229,7 @@ pub structure Outer {
     param base : Solid = box(10mm, 10mm, 10mm)
     let combined = difference(self.inner.value, base)
 }"#;
-    let compiled = compile_source(source);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-
-    // (a) The generic "argument 1 must be a geometry expression" fallback fires.
-    let has_generic_fallback = errors
-        .iter()
-        .any(|d| d.message.contains("argument 1 must be a geometry expression"));
-    assert!(
-        has_generic_fallback,
-        "expected generic 'argument 1 must be a geometry expression' for scalar member \
-         in boolean arg position; got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-
-    // (b) The cross-sub deferred diagnostic must NOT fire for 'value' on 'inner'
-    //     — sub_realization_names[inner] does not contain 'value' (it is a scalar
-    //     param, not a geometry realization), so try_emit_cross_sub_geometry
-    //     returns None and falls through to the generic path.
-    let has_spurious_deferred_diagnostic = errors.iter().any(|d| {
-        d.message.contains("value") && has_deferred_keyword(&d.message)
-    });
-    assert!(
-        !has_spurious_deferred_diagnostic,
-        "cross-sub deferred diagnostic ('not yet supported in v0.1') must NOT fire for \
-         scalar member 'value' on sub 'inner'; the realization-name gate in \
-         try_emit_cross_sub_geometry should exclude it. Got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
+    assert_generic_fallback_no_cross_sub(source, 1, "inner", "value");
 }
 
 // ─── step-2 (gap 1): binary boolean op — collection-sub geometry RIGHT operand ──
@@ -290,50 +269,7 @@ pub structure Rack {
     // args[0] = `base` (param : Solid) — resolves via geometry-param path.
     // args[1] = `self.bolts.body` (collection-sub member) — exercises the
     //           right-operand resolve_boolean_arg(&args[1], …) call site.
-    let compiled = compile_source(source);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-
-    // (a) At least one Error-severity diagnostic fires.
-    assert!(
-        !errors.is_empty(),
-        "expected at least one Error diagnostic for collection-sub geometry right operand \
-         in union(); got no diagnostics"
-    );
-
-    // (b) At least one Error is the specific cross-sub-deferred diagnostic naming
-    //     both the sub ('bolts') and the member ('body').
-    let has_specific_diagnostic = errors.iter().any(|d| {
-        d.message.contains("geometry")
-            && has_deferred_keyword(&d.message)
-            && d.message.contains("bolts")
-            && d.message.contains("body")
-    });
-    assert!(
-        has_specific_diagnostic,
-        "expected the specific cross-sub-deferred geometry diagnostic naming 'bolts' and 'body' \
-         for the right operand of union(); got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-
-    // (c) Independent regression guard: the generic "must be a geometry expression"
-    //     fallback must be entirely ABSENT.  The early `return None` in
-    //     `resolve_boolean_arg` (triggered when `try_emit_cross_sub_geometry`
-    //     returns `Some`) suppresses the generic path.  (b) asserts the specific
-    //     diagnostic fires; (c) asserts the generic fallback does NOT fire at all.
-    let has_any_generic_fallback = errors
-        .iter()
-        .any(|d| d.message.contains("must be a geometry expression"));
-    assert!(
-        !has_any_generic_fallback,
-        "generic 'must be a geometry expression' must be absent when the specific \
-         cross-sub-deferred diagnostic fires for the right operand — the early return \
-         in resolve_boolean_arg should suppress it; errors: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
+    assert_specific_cross_sub_diagnostic(source, "bolts", "body");
 }
 
 // ─── step-2 (gap 2): indexed collection-sub member falls back to generic ───────
@@ -374,43 +310,7 @@ pub structure Rack {
     // args[1] = `self.bolts[0].body` — MemberAccess{ object: IndexAccess{…}, member: "body" }
     //           The outer object is IndexAccess, NOT MemberAccess, so the
     //           task-3512 routing block is skipped and the generic fallback fires.
-    let compiled = compile_source(source);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-
-    // (a) The generic "argument 2 must be a geometry expression" fallback fires.
-    //     The "2" matches the right-operand position: args[0]=base (resolves),
-    //     args[1]=self.bolts[0].body (indexed form, falls through to generic).
-    let has_generic_fallback = errors
-        .iter()
-        .any(|d| d.message.contains("argument 2 must be a geometry expression"));
-    assert!(
-        has_generic_fallback,
-        "expected generic 'argument 2 must be a geometry expression' for indexed \
-         collection-sub member in boolean arg position; got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-
-    // (b) The cross-sub deferred diagnostic must NOT fire for the indexed form.
-    //     The task-3512 routing block (geometry_boolean.rs:59-63) is out-of-scope
-    //     for IndexAccess outer objects; try_resolve_cross_sub_geom_ref + the
-    //     routing block both require a MemberAccess outer_obj and
-    //     compile_geometry_call returns None at its FunctionCall arm without
-    //     recursing into the value-level try_emit_cross_sub_geometry.
-    let has_spurious_deferred_diagnostic = errors.iter().any(|d| {
-        has_deferred_keyword(&d.message)
-            && (d.message.contains("bolts") || d.message.contains("body"))
-    });
-    assert!(
-        !has_spurious_deferred_diagnostic,
-        "cross-sub deferred diagnostic must NOT fire for indexed form \
-         'self.bolts[0].body' — geometry_boolean.rs:59-63 scope-boundary limits \
-         the task-3512 routing to MemberAccess outer objects only. Got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
+    assert_generic_fallback_no_cross_sub(source, 2, "bolts", "body");
 }
 
 // ─── step-5: working-path cross-sub arg lowers without diagnostic ─────────────
