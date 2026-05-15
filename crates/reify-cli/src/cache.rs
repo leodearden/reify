@@ -307,7 +307,14 @@ fn cmd_cache_clear(args: &[String]) -> ExitCode {
         // regular files.  `Path::is_dir()` returns false for both a missing
         // path and a non-directory (regular file / symlink-to-file), so this
         // single guard covers both cases without surfacing ENOTDIR as a generic
-        // I/O FAILURE.
+        // I/O FAILURE.  Edge: `is_dir()` also returns false when `stat` itself
+        // fails (e.g. EACCES on the parent directory, transient FS error); in
+        // that case the guard silently reports SUCCESS without having removed an
+        // existing directory.  This is consistent-by-design with the bulk-clear
+        // branch (which uses the identical predicate at cache.rs:358) and with
+        // the esc-2976-107 idempotent contract.  The `NotFound` arm below is
+        // retained as TOCTOU defense for the race where the directory is removed
+        // concurrently between this check and `remove_dir_all`.
         if !target.is_dir() {
             return ExitCode::SUCCESS;
         }
