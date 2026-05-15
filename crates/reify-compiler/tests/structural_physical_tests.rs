@@ -58,7 +58,7 @@ const PLASTIC_BODY_SRC: &str = r#"
 structure def PlasticBody : Plastic {
     param plastic_strain : Real = 0.0
     param hardening_modulus : Real = 500.0
-    param stiffness : Real = 1000.0
+    param stiffness : Stiffness = 1000.0 * 1N / 1m
     param max_deflection : Real = 0.1
 }
 "#;
@@ -437,7 +437,7 @@ structure def HeatSink : ThermallyConductive {
     param centroid_x : Real = 0.0
     param centroid_y : Real = 0.0
     param centroid_z : Real = 0.0
-    param thermal_conductivity : Real = 205.0
+    param thermal_conductivity : ThermalConductivity = 205.0 * 1W / (1m * 1K)
     param max_service_temp : Real = 573.0
 }
 "#,
@@ -484,8 +484,8 @@ structure def Wire : ElectricallyConductive {
     param centroid_x : Real = 0.0
     param centroid_y : Real = 0.0
     param centroid_z : Real = 0.0
-    param electrical_conductivity : Real = 1000.0
-    param resistivity : Real = 0.001
+    param electrical_conductivity : ElectricalConductivity = 1000.0 * 1S / 1m
+    param resistivity : ElectricResistivity = 0.001 * 1ohm * 1m
 }
 "#,
     );
@@ -524,7 +524,7 @@ structure def Wire : ElectricallyConductive {
 fn structure_conforms_to_elastically_deformable_with_inherited_flexible_members() {
     let source = r#"
 structure def Rubber : ElasticallyDeformable {
-    param stiffness : Real = 1000.0
+    param stiffness : Stiffness = 1000.0 * 1N / 1m
     param max_deflection : Real = 0.1
     param max_elastic_strain : Real = 5.0
 }
@@ -689,7 +689,7 @@ fn plastic_conforming_structure_has_constraints_injected() {
 structure def PlasticBody : Plastic {
     param plastic_strain : Real = 0.05
     param hardening_modulus : Real = 1000.0
-    param stiffness : Real = 1000.0
+    param stiffness : Stiffness = 1000.0 * 1N / 1m
     param max_deflection : Real = 0.1
 }
 "#,
@@ -727,7 +727,7 @@ fn plastic_constraint_expressions_use_correct_operators() {
 structure def PlasticBody : Plastic {
     param plastic_strain : Real = 0.05
     param hardening_modulus : Real = 1000.0
-    param stiffness : Real = 1000.0
+    param stiffness : Stiffness = 1000.0 * 1N / 1m
     param max_deflection : Real = 0.1
 }
 "#,
@@ -819,7 +819,7 @@ fn plastic_strain_zero_boundary_compiles() {
 structure def PlasticBody : Plastic {
     param plastic_strain : Real = 0.0
     param hardening_modulus : Real = 500.0
-    param stiffness : Real = 1000.0
+    param stiffness : Stiffness = 1000.0 * 1N / 1m
     param max_deflection : Real = 0.1
 }
 "#,
@@ -850,7 +850,7 @@ fn hardening_modulus_zero_boundary_compiles() {
 structure def PlasticBody : Plastic {
     param plastic_strain : Real = 0.05
     param hardening_modulus : Real = 0.0
-    param stiffness : Real = 1000.0
+    param stiffness : Stiffness = 1000.0 * 1N / 1m
     param max_deflection : Real = 0.1
 }
 "#,
@@ -1017,4 +1017,135 @@ structure def Beam : Rigid {
         "missing 'mass' computed default from Physical, cells: {:?}",
         cell_names
     );
+}
+
+// ─── task #3115: blocked-composite trait members now carry dimension aliases ─
+
+/// Task #3115: `Flexible.stiffness` is the named-dimension alias `Stiffness`
+/// (N/m), tightened from the prior blocked-composite `Real` placeholder.
+/// Pin the dimension so a future loosening would fail loudly.
+#[test]
+fn flexible_stiffness_member_is_stiffness_dimension() {
+    let module = load_stdlib_module();
+
+    let flexible = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "Flexible")
+        .expect("expected 'Flexible' trait in compiled module");
+
+    let req = flexible
+        .required_members
+        .iter()
+        .find(|r| r.name == "stiffness")
+        .expect("Flexible should have 'stiffness' member");
+
+    match &req.kind {
+        RequirementKind::Param(ty) => assert_eq!(
+            *ty,
+            Type::Scalar {
+                dimension: DimensionVector::STIFFNESS,
+            },
+            "stiffness should be Scalar{{STIFFNESS}}, got {:?}",
+            ty
+        ),
+        other => panic!("stiffness should be Param, got {:?}", other),
+    }
+}
+
+/// Task #3115: `ThermallyConductive.thermal_conductivity` is the named-dimension
+/// alias `ThermalConductivity` (W/(m·K)), tightened from the prior
+/// blocked-composite `Real` placeholder.
+#[test]
+fn thermally_conductive_thermal_conductivity_member_is_thermal_conductivity_dimension() {
+    let module = load_stdlib_module();
+
+    let tc = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "ThermallyConductive")
+        .expect("expected 'ThermallyConductive' trait in compiled module");
+
+    let req = tc
+        .required_members
+        .iter()
+        .find(|r| r.name == "thermal_conductivity")
+        .expect("ThermallyConductive should have 'thermal_conductivity' member");
+
+    match &req.kind {
+        RequirementKind::Param(ty) => assert_eq!(
+            *ty,
+            Type::Scalar {
+                dimension: DimensionVector::THERMAL_CONDUCTIVITY,
+            },
+            "thermal_conductivity should be Scalar{{THERMAL_CONDUCTIVITY}}, got {:?}",
+            ty
+        ),
+        other => panic!("thermal_conductivity should be Param, got {:?}", other),
+    }
+}
+
+/// Task #3115: `ElectricallyConductive.electrical_conductivity` is the
+/// named-dimension alias `ElectricalConductivity` (S/m), tightened from the
+/// prior blocked-composite `Real` placeholder.
+#[test]
+fn electrically_conductive_electrical_conductivity_member_is_electrical_conductivity_dimension() {
+    let module = load_stdlib_module();
+
+    let ec = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "ElectricallyConductive")
+        .expect("expected 'ElectricallyConductive' trait in compiled module");
+
+    let req = ec
+        .required_members
+        .iter()
+        .find(|r| r.name == "electrical_conductivity")
+        .expect("ElectricallyConductive should have 'electrical_conductivity' member");
+
+    match &req.kind {
+        RequirementKind::Param(ty) => assert_eq!(
+            *ty,
+            Type::Scalar {
+                dimension: DimensionVector::ELECTRICAL_CONDUCTIVITY,
+            },
+            "electrical_conductivity should be Scalar{{ELECTRICAL_CONDUCTIVITY}}, got {:?}",
+            ty
+        ),
+        other => panic!("electrical_conductivity should be Param, got {:?}", other),
+    }
+}
+
+/// Task #3115: `ElectricallyConductive.resistivity` is the named-dimension
+/// alias `ElectricResistivity` (Ω·m), tightened from the prior
+/// blocked-composite `Real` placeholder. Distinct from the bare `Resistance`
+/// dimension (Ω) so the alias name is `ElectricResistivity`.
+#[test]
+fn electrically_conductive_resistivity_member_is_electric_resistivity_dimension() {
+    let module = load_stdlib_module();
+
+    let ec = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "ElectricallyConductive")
+        .expect("expected 'ElectricallyConductive' trait in compiled module");
+
+    let req = ec
+        .required_members
+        .iter()
+        .find(|r| r.name == "resistivity")
+        .expect("ElectricallyConductive should have 'resistivity' member");
+
+    match &req.kind {
+        RequirementKind::Param(ty) => assert_eq!(
+            *ty,
+            Type::Scalar {
+                dimension: DimensionVector::ELECTRIC_RESISTIVITY,
+            },
+            "resistivity should be Scalar{{ELECTRIC_RESISTIVITY}}, got {:?}",
+            ty
+        ),
+        other => panic!("resistivity should be Param, got {:?}", other),
+    }
 }

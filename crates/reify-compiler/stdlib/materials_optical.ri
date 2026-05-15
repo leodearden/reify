@@ -2,8 +2,8 @@
 // Provides optical characterization trait definitions for engineering materials.
 //
 // Real-placeholder audit: see docs/notes/stdlib-real-placeholder-audit.md
-// reference_thickness is tightenable-now (task #3113); absorption_coefficient is
-// blocked-composite pending a PerLength alias (task #3115); refractive_index and
+// reference_thickness is tightenable-now (task #3113); absorption_coefficient was
+// tightened to AbsorptionCoeff (1/m) by task #3115; refractive_index and
 // transmittance are genuine-dimensionless (annotated below).
 //
 // Spec reference: docs/reify-stdlib-reference.md §6.5 lines 713-722.
@@ -26,7 +26,7 @@
 //   reference_thickness    — m (thickness at which transmittance is measured)
 trait OpticallyCharacterized : MaterialSpec {
     param refractive_index : Real // dimensionless
-    param absorption_coefficient : Real
+    param absorption_coefficient : AbsorptionCoeff
     param transmittance : Real // dimensionless
     param reference_thickness : Real
 }

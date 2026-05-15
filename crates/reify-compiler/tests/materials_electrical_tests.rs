@@ -63,13 +63,20 @@ fn electrical_module_loads_with_no_errors_and_three_traits() {
     );
 }
 
-// ─── (b) ElectricallyCharacterized refines MaterialSpec with 4 Real members ──
+// ─── (b) ElectricallyCharacterized refines MaterialSpec with 4 members ──────
 
 /// ElectricallyCharacterized must refine MaterialSpec and declare four required
-/// members, all typed as Real: resistivity, dielectric_constant,
-/// dielectric_strength, magnetic_permeability.
+/// members. Two composite-dimension params are now tightened to dimensioned
+/// scalar types by task #3115; dielectric_constant and magnetic_permeability
+/// stay Real (both are genuine-dimensionless ratios).
+///
+/// Per-member expected type:
+///   resistivity            → Type::Scalar { dimension: ELECTRIC_RESISTIVITY }
+///   dielectric_constant    → Type::Real (genuine-dimensionless)
+///   dielectric_strength    → Type::Scalar { dimension: DIELECTRIC_STRENGTH }
+///   magnetic_permeability  → Type::Real (genuine-dimensionless)
 #[test]
-fn electrically_characterized_refines_material_spec_with_four_real_members() {
+fn electrically_characterized_refines_material_spec_with_four_members() {
     let module = load_stdlib_module();
 
     let ec = module
@@ -94,22 +101,32 @@ fn electrically_characterized_refines_material_spec_with_four_real_members() {
             .collect::<Vec<_>>()
     );
 
-    let expected_members = [
-        "resistivity",
-        "dielectric_constant",
-        "dielectric_strength",
-        "magnetic_permeability",
+    let expected_members: [(&str, Type); 4] = [
+        (
+            "resistivity",
+            Type::Scalar {
+                dimension: DimensionVector::ELECTRIC_RESISTIVITY,
+            },
+        ),
+        ("dielectric_constant", Type::Real),
+        (
+            "dielectric_strength",
+            Type::Scalar {
+                dimension: DimensionVector::DIELECTRIC_STRENGTH,
+            },
+        ),
+        ("magnetic_permeability", Type::Real),
     ];
 
-    for expected in &expected_members {
+    for (expected_name, expected_ty) in &expected_members {
         let req = ec
             .required_members
             .iter()
-            .find(|r| r.name == *expected)
+            .find(|r| r.name == *expected_name)
             .unwrap_or_else(|| {
                 panic!(
                     "ElectricallyCharacterized missing required member '{}', got: {:?}",
-                    expected,
+                    expected_name,
                     ec.required_members
                         .iter()
                         .map(|r| &r.name)
@@ -118,15 +135,13 @@ fn electrically_characterized_refines_material_spec_with_four_real_members() {
             });
         match &req.kind {
             RequirementKind::Param(ty) => assert_eq!(
-                *ty,
-                Type::Real,
-                "ElectricallyCharacterized member '{}' should be Real, got {:?}",
-                expected,
-                ty
+                ty, expected_ty,
+                "ElectricallyCharacterized member '{}' expected {:?}, got {:?}",
+                expected_name, expected_ty, ty
             ),
             other => panic!(
                 "ElectricallyCharacterized member '{}' should be Param, got {:?}",
-                expected, other
+                expected_name, other
             ),
         }
     }
@@ -235,9 +250,9 @@ fn copper_conforms_to_conductive_with_constraint_injection() {
 structure def Copper : Conductive {
     param density : Real = 8960.0
     param name : String = "copper"
-    param resistivity : Real = 0.000000017
+    param resistivity : ElectricResistivity = 0.000000017 * 1ohm * 1m
     param dielectric_constant : Real = 1.0
-    param dielectric_strength : Real = 0.0
+    param dielectric_strength : DielectricStrength = 0.0 * 1V / 1m
     param magnetic_permeability : Real = 1.0
 }
 "#;
@@ -273,14 +288,43 @@ structure def Copper : Conductive {
         "Copper template must have injected constraints from Conductive trait"
     );
 
-    // Verify the constraint references 'resistivity' via a BinOp.
+    // Verify the injected constraint is `resistivity < 0.0001 * 1ohm * 1m`:
+    // the `Lt` operator, LHS `ValueRef(resistivity)`, AND a dimensioned RHS
+    // (Mul/Div unit chain typed `Scalar { dimension: ELECTRIC_RESISTIVITY }`).
+    // The dimensioned-RHS pin is the contract esc-3115-112 enforces — a bare
+    // numeric RHS would make runtime `eval_cmp` dim-equality Indeterminate
+    // against the dimensioned LHS member. (The earlier check only asserted
+    // *some* BinOp referenced resistivity, leaving op and RHS-dimension
+    // unverified — the same blind spot closed in the Glass test below.)
     let resistivity_constraint = template.constraints.iter().find(|cc| {
-        matches!(&cc.expr.kind, CompiledExprKind::BinOp { left, .. }
-            if matches!(&left.kind, CompiledExprKind::ValueRef(id) if id.member == "resistivity"))
+        if let CompiledExprKind::BinOp { op: BinOp::Lt, left, right } = &cc.expr.kind {
+            let left_match = matches!(
+                &left.kind,
+                CompiledExprKind::ValueRef(id) if id.member == "resistivity"
+            );
+            // chain_match is defense-in-depth: it is logically subsumed by
+            // dim_match (a bare Real RHS can never carry an ELECTRIC_RESISTIVITY
+            // result_type), but kept deliberately as an explicit shape check so
+            // the expected `Mul/Div unit chain` structure is self-documenting at
+            // the assertion site. dim_match is the load-bearing contract.
+            let chain_match = matches!(
+                &right.kind,
+                CompiledExprKind::BinOp { op: BinOp::Mul | BinOp::Div, .. }
+            );
+            let dim_match = right.result_type
+                == Type::Scalar {
+                    dimension: DimensionVector::ELECTRIC_RESISTIVITY,
+                };
+            left_match && chain_match && dim_match
+        } else {
+            false
+        }
     });
     assert!(
         resistivity_constraint.is_some(),
-        "expected a constraint referencing 'resistivity' in Copper template, got constraints: {:?}",
+        "expected dimensioned constraint `resistivity < 0.0001 * 1ohm * 1m` in Copper \
+         template — Lt with RHS typed Scalar{{ dimension: ELECTRIC_RESISTIVITY }}, not \
+         bare Real; got constraints: {:?}",
         template.constraints
     );
 }
@@ -310,9 +354,9 @@ fn glass_conforms_to_insulating_with_constraint_injection() {
 structure def Glass : Insulating {
     param density : Real = 2500.0
     param name : String = "glass"
-    param resistivity : Real = 1000000000.0
+    param resistivity : ElectricResistivity = 1000000000.0 * 1ohm * 1m
     param dielectric_constant : Real = 7.0
-    param dielectric_strength : Real = 10000000.0
+    param dielectric_strength : DielectricStrength = 10000000.0 * 1V / 1m
     param magnetic_permeability : Real = 1.0
 }
 "#;
@@ -349,27 +393,88 @@ structure def Glass : Insulating {
         "Glass template must have injected constraints from Insulating trait"
     );
 
-    // Helper: assert a `member > rhs_real` BinOp constraint is injected.
-    // Verifies the operator is Gt and the right-hand-side is the expected real literal.
-    // Decimal-form source tokens (e.g. `1000000.0`, `0.0`) compile to Value::Real
-    // after task 3184 added the int-vs-real syntactic distinction to the AST.
-    let assert_gt_constraint = |member: &str, rhs_real: f64, epsilon: f64| {
-        let found = template.constraints.iter().find(|cc| {
-            matches!(
-                &cc.expr.kind,
-                CompiledExprKind::BinOp { op: BinOp::Gt, left, right }
-                if matches!(&left.kind, CompiledExprKind::ValueRef(id) if id.member == member)
-                    && matches!(&right.kind, CompiledExprKind::Literal(Value::Real(v)) if (*v - rhs_real).abs() <= epsilon)
-            )
-        });
-        assert!(
-            found.is_some(),
-            "expected constraint `{member} > {rhs_real}` injected into Glass template, got: {:?}",
-            template.constraints
-        );
-    };
+    // Helper: assert a `member > rhs_real * <unit-chain>` BinOp constraint is
+    // injected, pinning THREE independent properties so the test fails if any
+    // regresses:
+    //
+    //  1. operator + LHS — the injected constraint is `Gt` with LHS
+    //     `ValueRef(member)`;
+    //  2. numeric magnitude — the leading coefficient on the RHS spine matches
+    //     `rhs_real` (guards the bound value);
+    //  3. dimensioned RHS — the RHS is a `Mul`/`Div` unit chain whose inferred
+    //     `result_type` is `Scalar { dimension: expected_dim }`, NOT bare
+    //     `Real`.
+    //
+    // Property (3) is the contract esc-3115-112 exists to enforce: a
+    // bare-numeric trait-constraint RHS would make runtime `eval_cmp`
+    // dim-equality return Indeterminate against the now-dimensioned LHS member.
+    // The earlier version only walked the left spine for a numeric literal, so
+    // it passed whether or not the stdlib RHS literal was dimensioned — that
+    // blind spot is closed by the `result_type` / Mul-Div-root assertions.
+    //
+    // Decimal-form source tokens (e.g. `1000000.0`, `0.0`) compile to
+    // Value::Real after task 3184 added the int-vs-real syntactic distinction;
+    // they sit at the head of the RHS spine, so walk the left spine to find
+    // the leading coefficient.
+    fn rhs_coefficient(expr: &reify_types::expr::CompiledExpr) -> Option<f64> {
+        let mut cursor = expr;
+        loop {
+            match &cursor.kind {
+                CompiledExprKind::Literal(Value::Real(v)) => return Some(*v),
+                CompiledExprKind::BinOp { op, left, .. }
+                    if matches!(op, BinOp::Mul | BinOp::Div) =>
+                {
+                    cursor = left;
+                }
+                _ => return None,
+            }
+        }
+    }
+    let assert_gt_constraint =
+        |member: &str, rhs_real: f64, epsilon: f64, expected_dim: DimensionVector| {
+            let found = template.constraints.iter().find(|cc| {
+                if let CompiledExprKind::BinOp { op: BinOp::Gt, left, right } = &cc.expr.kind {
+                    let left_match = matches!(&left.kind, CompiledExprKind::ValueRef(id) if id.member == member);
+                    let coeff_match = rhs_coefficient(right)
+                        .map(|v| (v - rhs_real).abs() <= epsilon)
+                        .unwrap_or(false);
+                    // chain_match is defense-in-depth: logically subsumed by
+                    // dim_match below (a bare Real RHS can never carry the
+                    // expected_dim result_type), but kept as an explicit shape
+                    // check so the expected Mul/Div unit-chain structure is
+                    // self-documenting here. dim_match is the load-bearing pin.
+                    let chain_match = matches!(
+                        &right.kind,
+                        CompiledExprKind::BinOp { op: BinOp::Mul | BinOp::Div, .. }
+                    );
+                    let dim_match =
+                        right.result_type == Type::Scalar { dimension: expected_dim };
+                    left_match && coeff_match && chain_match && dim_match
+                } else {
+                    false
+                }
+            });
+            assert!(
+                found.is_some(),
+                "expected dimensioned constraint `{member} > {rhs_real} * <units>` injected \
+                 into Glass template — RHS must be a Mul/Div unit chain typed \
+                 Scalar{{ dimension: {expected_dim:?} }}, not bare Real; got: {:?}",
+                template.constraints
+            );
+        };
 
-    // Both inherited Insulating constraints must have correct operator and literal injected.
-    assert_gt_constraint("dielectric_strength", 0.0, 0.0); // dielectric_strength > 0.0
-    assert_gt_constraint("resistivity", 1_000_000.0, 0.0); // resistivity > 1000000.0
+    // Both inherited Insulating constraints must have correct operator, literal,
+    // AND dimensioned RHS injected (esc-3115-112).
+    assert_gt_constraint(
+        "dielectric_strength",
+        0.0,
+        0.0,
+        DimensionVector::DIELECTRIC_STRENGTH,
+    ); // dielectric_strength > 0.0 * 1V / 1m
+    assert_gt_constraint(
+        "resistivity",
+        1_000_000.0,
+        0.0,
+        DimensionVector::ELECTRIC_RESISTIVITY,
+    ); // resistivity > 1000000.0 * 1ohm * 1m
 }
