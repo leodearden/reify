@@ -221,9 +221,13 @@ fn try_emit_cross_sub_geometry(
 /// When `<sub_name>` is a non-collection sub of the current entity AND `<member>`
 /// is a geometry realisation on its child structure (per
 /// `scope.sub_realization_names[sub_name].contains(member)`), this helper
-/// produces a synthetic value-ref `CompiledExpr` whose entity stamp follows
+/// produces a synthetic `CompiledExpr` of kind
+/// `CompiledExprKind::CrossSubGeometryRef` (task 3508) whose entity stamp follows
 /// the same `format!("{}.{}", entity_name, sub_name)` convention used at
 /// expr.rs:1317 for scalar cross-sub member access, with `Type::Geometry`.
+/// The typed variant lets the bare-let drop site in entity.rs recognise the
+/// synthetic shape unambiguously via pattern match, rather than the fragile
+/// `entity.contains('.')` heuristic.
 ///
 /// Returns `None` when the member is not a realisation on the child template,
 /// allowing the caller to fall through to its existing "unknown member" branch.
