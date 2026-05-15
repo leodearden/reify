@@ -6,8 +6,8 @@
 //! `tempfile::tempdir()` for hermetic cache roots and steer the binary at
 //! that root via the `REIFY_CACHE_DIR` env var.
 
-use std::io::{Cursor, Read};
-use std::process::Command;
+use std::io::{Cursor, Read, Write};
+use std::process::{Command, Stdio};
 
 use reify_eval::persistent_cache::{
     CacheEntryHeader, ENGINE_VERSION_HASH, ElasticResult, write_entry,
@@ -232,6 +232,85 @@ fn export_with_missing_entry_writes_error_and_exits_failure() {
     assert!(
         stderr.contains("no such cache entry"),
         "stderr should mention 'no such cache entry', got: {stderr}"
+    );
+}
+
+/// Walk `dir` recursively and return paths to any `.bin` or `.meta` files.
+/// Used by import tests to verify the destination cache is (or isn't) populated.
+fn collect_cache_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(p) = stack.pop() {
+        let read = match std::fs::read_dir(&p) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        for entry in read.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if matches!(
+                path.extension().and_then(|s| s.to_str()),
+                Some("bin") | Some("meta")
+            ) {
+                out.push(path);
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn import_malformed_tar_exits_failure_and_leaves_cache_empty() {
+    // Pipe random non-tar bytes (sized large enough that the tar parser
+    // actually tries to read the first header) and verify `reify cache
+    // import` rejects them cleanly without writing to the cache.
+    let cache_dir = tempdir().expect("tempdir");
+    let garbage: Vec<u8> = std::iter::repeat_n(b'X', 4096).collect();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_reify"))
+        .args(["cache", "import"])
+        .env("REIFY_CACHE_DIR", cache_dir.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn reify");
+    {
+        let stdin = child.stdin.as_mut().expect("stdin");
+        stdin.write_all(&garbage).expect("write garbage to stdin");
+    }
+    let output = child.wait_with_output().expect("wait_with_output");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !output.status.success(),
+        "import of garbage bytes should fail; stderr={stderr}"
+    );
+    assert!(
+        stderr.contains("reify cache import:"),
+        "stderr should mention 'reify cache import:', got: {stderr}"
+    );
+    // The stderr must surface tar-parser-shaped error verbiage so we know
+    // the import body actually attempted to parse — not just that the stub
+    // returned FAILURE.  Tar errors usually mention "archive" or "header"
+    // or "block" or "tar"; we accept any of those.
+    let stderr_lc = stderr.to_ascii_lowercase();
+    assert!(
+        stderr_lc.contains("tar")
+            || stderr_lc.contains("archive")
+            || stderr_lc.contains("header")
+            || stderr_lc.contains("block")
+            || stderr_lc.contains("checksum")
+            || stderr_lc.contains("invalid")
+            || stderr_lc.contains("magic"),
+        "stderr should surface tar-parser error verbiage, got: {stderr}"
+    );
+
+    let cache_files = collect_cache_files(cache_dir.path());
+    assert!(
+        cache_files.is_empty(),
+        "cache dir should remain empty after failed import, found: {cache_files:?}"
     );
 }
 
