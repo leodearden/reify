@@ -302,6 +302,11 @@ structure def Copper : Conductive {
                 &left.kind,
                 CompiledExprKind::ValueRef(id) if id.member == "resistivity"
             );
+            // chain_match is defense-in-depth: it is logically subsumed by
+            // dim_match (a bare Real RHS can never carry an ELECTRIC_RESISTIVITY
+            // result_type), but kept deliberately as an explicit shape check so
+            // the expected `Mul/Div unit chain` structure is self-documenting at
+            // the assertion site. dim_match is the load-bearing contract.
             let chain_match = matches!(
                 &right.kind,
                 CompiledExprKind::BinOp { op: BinOp::Mul | BinOp::Div, .. }
@@ -433,13 +438,15 @@ structure def Glass : Insulating {
                     let coeff_match = rhs_coefficient(right)
                         .map(|v| (v - rhs_real).abs() <= epsilon)
                         .unwrap_or(false);
-                    // RHS must be a unit chain (Mul/Div root), not a bare numeric
-                    // literal — guards against a regression to an undimensioned RHS.
+                    // chain_match is defense-in-depth: logically subsumed by
+                    // dim_match below (a bare Real RHS can never carry the
+                    // expected_dim result_type), but kept as an explicit shape
+                    // check so the expected Mul/Div unit-chain structure is
+                    // self-documenting here. dim_match is the load-bearing pin.
                     let chain_match = matches!(
                         &right.kind,
                         CompiledExprKind::BinOp { op: BinOp::Mul | BinOp::Div, .. }
                     );
-                    // …and its inferred dimension must be the expected alias.
                     let dim_match =
                         right.result_type == Type::Scalar { dimension: expected_dim };
                     left_match && coeff_match && chain_match && dim_match

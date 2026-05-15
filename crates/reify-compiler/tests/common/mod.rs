@@ -305,6 +305,17 @@ pub fn assert_trait_constraint_binop(
     // runtime, so stdlib RHS literals are dimensioned). The shape parses as
     // `((coefficient * unit_a) * unit_b)` (or with a `/` instead of `*`); walk
     // the left spine of any `*`/`/` BinOp until we find the NumberLiteral.
+    //
+    // Coverage note (deliberate): this helper verifies only the operator and
+    // the numeric coefficient — NOT that the RHS is dimensioned. That means a
+    // regression dropping the unit chain (e.g. back to bare `resistivity <
+    // 0.0001`) would still pass trait-def-level callers here. The
+    // dimensioned-RHS contract from esc-3115-112 is intentionally pinned at the
+    // template-injection level instead (the Copper/Glass `result_type ==
+    // Scalar { dimension: … }` assertions in materials_electrical_tests.rs),
+    // which catches the propagated regression end-to-end. Keeping this helper
+    // shape-only avoids re-deriving expected dimensions at every trait-def call
+    // site; the gap is a documented, deliberate choice, not silent erosion.
     let coefficient_value = {
         let mut cursor = right.as_ref();
         loop {
