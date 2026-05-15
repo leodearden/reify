@@ -608,6 +608,16 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     items.get(i).cloned().unwrap_or(Value::Undef)
                 }
                 (Value::Map(entries), key) => entries.get(key).cloned().unwrap_or(Value::Undef),
+                // task 3540 (SIR-α), handler esc-3540-182 (A)(1): field
+                // projection on a `Value::StructureInstance`. The compiler
+                // lowers `structure_instance.member` to
+                // `IndexAccess { object, index: Literal(String("member")) }`
+                // (reusing the existing IndexAccess node rather than a new
+                // CompiledExprKind). A missing field reads as `Undef`, matching
+                // the Map arm's absent-key behaviour.
+                (Value::StructureInstance { fields, .. }, Value::String(k)) => {
+                    fields.get(k).cloned().unwrap_or(Value::Undef)
+                }
                 _ => Value::Undef,
             }
         }

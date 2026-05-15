@@ -1900,6 +1900,49 @@ pub(crate) fn compile_expr_guarded(
             }
             // ── End purpose-subject member access ──────────────────────────────
 
+            // ── task 3540 (SIR-α): StructureInstance field projection ──────────
+            //
+            // Handler esc-3540-182 (A): when the object resolves to a
+            // structure/trait-typed value, `.member` projects the field out of
+            // the runtime `Value::StructureInstance`. This is the entity-scope
+            // member-access path for chains like
+            // `self.primary.material.youngs_modulus` — `self.primary.material`
+            // already resolves (via the `self.sub.member` branch above) to a
+            // value-ref whose runtime value is a `Value::StructureInstance`
+            // (the structure-def param/let default lowered by the
+            // StructureInstanceCtor path). Reuse `IndexAccess` with a
+            // string-literal key (handler (A)(1) — no new CompiledExprKind);
+            // the eval-side IndexAccess arm reads `fields[member]`.
+            //
+            // (A)(2) member-Type resolution: for a concrete `StructureRef`,
+            // resolve the declared field type from the structure-def template
+            // in `scope.template_registry` (esc-3540-177-threaded). For a
+            // `TraitObject` the concrete runtime type is not statically known
+            // (traits are not in `template_registry`); fall back to `Type::Real`
+            // — a permissive, non-poison type so the chain neither cascades nor
+            // is rejected. The runtime `Value` is whatever the field actually
+            // holds (e.g. a `Value::Scalar`), independent of this static type.
+            //
+            // The poison short-circuit must run first so an already-errored
+            // object propagates rather than being treated as a structure.
+            if !compiled_obj.result_type.is_error()
+                && let Type::StructureRef(struct_name) | Type::TraitObject(struct_name) =
+                    &compiled_obj.result_type
+            {
+                let member_type = scope
+                    .template_registry
+                    .and_then(|r| r.get(struct_name.as_str()))
+                    .and_then(|t| {
+                        t.value_cells
+                            .iter()
+                            .find(|vc| vc.id.member == *member)
+                            .map(|vc| vc.cell_type.clone())
+                    })
+                    .unwrap_or(Type::Real);
+                let key = CompiledExpr::literal(Value::String(member.clone()), Type::String);
+                return CompiledExpr::index_access(compiled_obj, key, member_type);
+            }
+
             if COLLECTION_AGGREGATION_MEMBERS.contains(&member.as_str()) {
                 // Anti-cascade consumer (task-448 / task-1921 S4): if the object
                 // is already poisoned, propagate via propagate_poison() (a

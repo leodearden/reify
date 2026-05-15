@@ -260,10 +260,26 @@ fn compile_entity_decl(
 /// The `trait_registry` and `template_registry` are rebuilt phase-locally
 /// from `ctx.trait_defs` (plus `prelude` trait defs) and `ctx.templates`.
 pub(crate) fn phase_pending_bound_checks(ctx: &mut CompilationCtx, prelude: &[&CompiledModule]) {
-    let template_registry: HashMap<String, &TopologyTemplate> = ctx
-        .templates
+    // task 3540 (SIR-α): seed with prelude `structure def` templates first,
+    // then overlay local `ctx.templates` (local overrides prelude on name
+    // collision — same "prelude first, then local" composition as
+    // `build_trait_registry` and the `prelude_template_registry` in
+    // `phase_entities`). Before SIR-α, `point_load(...)`/`fixed_support(...)`
+    // were `Value::Map` stdlib builtins, so trait-arg conformance never needed
+    // to resolve a *prelude* structure's `trait_bounds`. Now that those wave-1
+    // structures lower to `StructureInstanceCtor` with a
+    // `Type::StructureRef("PointLoad")` result type, the post-pass conformance
+    // walker must see the prelude `PointLoad`/`FixedSupport` templates to read
+    // their declared `trait_bounds` — otherwise
+    // `emit_leaf_conformance_for_arg_type` early-returns on a registry miss and
+    // a non-conforming ctor arg (e.g. `Beam(mat: PointLoad())` where
+    // `mat : ElasticMaterial`) is silently admitted.
+    let template_registry: HashMap<String, &TopologyTemplate> = prelude
         .iter()
+        .flat_map(|m| m.templates.iter())
+        .filter(|t| t.entity_kind == EntityKind::Structure)
         .map(|t: &TopologyTemplate| (t.name.clone(), t))
+        .chain(ctx.templates.iter().map(|t| (t.name.clone(), t)))
         .collect();
 
     // Rebuild the trait registry (same composition as phase_entities).

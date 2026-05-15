@@ -1768,6 +1768,41 @@ impl Engine {
                     &self.meta_map,
                     &mut diagnostics,
                 );
+
+                // task 3540 (SIR-α), handler esc-3540-182 (A): expose the
+                // elaborated non-collection sub as a single
+                // `Value::StructureInstance` at `ValueCellId(parent, sub.name)`.
+                // The per-member scoped cells `ValueCellId(parent.sub, member)`
+                // are left intact (the existing `self.<sub>.<member>` cross-sub
+                // access path still reads them); this adds the collapsed value
+                // so `self.<sub>` member-access chains — and direct inspection
+                // of the sub cell — see a structure-shaped Value rather than a
+                // missing cell. Fields are gathered from the just-populated
+                // scoped cells in the child template's declaration order.
+                // `type_id` is the ephemeral `StructureTypeId(0)` placeholder
+                // (identity is name+version per esc-3540-173); `version` is the
+                // child structure-def's `@version(N)` (esc-3540-176).
+                {
+                    let mut fields: PersistentMap<String, Value> = PersistentMap::new();
+                    for cell in &child_template.value_cells {
+                        if let Some(v) =
+                            values.get(&ValueCellId::new(&scoped_entity, &cell.id.member))
+                        {
+                            fields.insert(cell.id.member.clone(), v.clone());
+                        }
+                    }
+                    let si = Value::StructureInstance {
+                        type_id: reify_types::StructureTypeId(0),
+                        type_name: sub.structure_name.clone(),
+                        version: child_template.version(),
+                        fields,
+                    };
+                    let sub_id = ValueCellId::new(&template.name, &sub.name);
+                    values.insert(sub_id.clone(), si.clone());
+                    snapshot
+                        .values
+                        .insert(sub_id, (si, DeterminacyState::Determined));
+                }
             }
 
             // Re-evaluate let bindings that may depend on sub-component cells:
