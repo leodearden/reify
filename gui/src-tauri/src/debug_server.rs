@@ -220,6 +220,23 @@ fn tool_defs() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
+            name: "morph_stats",
+            description: "Mesh-morph runtime stats: morph_count, remesh_count, last_rejection_reason. \
+                          Surfaces reify-mesh-morph::stats::snapshot(). Per GR-016 / \
+                          docs/prds/v0_3/gui-event-channel-inventory.md §2.3.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "body_id": {
+                        "type": "string",
+                        "description": "Optional body identifier (currently ignored; \
+                                        returns global stats — per-body filtering deferred \
+                                        to mesh-morphing PRD #2947+ engine wiring)."
+                    }
+                }
+            }),
+        },
+        ToolDef {
             name: "wait_for_idle",
             description: "Block until the engine is idle (no in-flight evaluation) and one frame has rendered. Returns {ok: true, idle_after_ms: N} or {error: 'timeout'}. Used by the visual-regression harness to replace engine_state polling.",
             input_schema: json!({
