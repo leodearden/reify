@@ -294,6 +294,62 @@ mod tests {
             f.evidence
         );
     }
+
+    /// Required #2 — a producer-orphan whose done-flip is only 5 days old
+    /// (inside the 14-day grace window) is flagged Low, not Medium, with a
+    /// summary that mentions the grace window for human readers.
+    #[test]
+    fn low_severity_inside_grace_window() {
+        let done_at = NOW - 5 * DAY;
+
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+        let mut jc = MockJCodemunchOps::new();
+        jc.set_changed_symbols(
+            "main",
+            done_at,
+            vec![changed_symbol("fresh_widget", "crates/reify-x/src/fresh.rs")],
+        );
+        jc.set_find_references("fresh_widget", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "7002".to_string(),
+            done_meta("7002", done_at, Some("docs/x.md")),
+        );
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: Some(NOW),
+        };
+
+        let findings = p1_producer_orphan::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly one P1 finding; got {:?}",
+            findings
+        );
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::P1ProducerOrphan);
+        assert_eq!(
+            f.severity,
+            Severity::Low,
+            "5 days < 14-day grace → Low; got {:?}",
+            f.severity
+        );
+        assert!(
+            f.summary.to_lowercase().contains("grace window"),
+            "summary must mention the grace window for human readers; got {:?}",
+            f.summary
+        );
+    }
 }
 
 } // mod p1
