@@ -6,9 +6,30 @@
 //! `tempfile::tempdir()` for hermetic cache roots and steer the binary at
 //! that root via the `REIFY_CACHE_DIR` env var.
 
+use std::io::{Cursor, Read};
 use std::process::Command;
 
+use reify_eval::persistent_cache::{
+    CacheEntryHeader, ENGINE_VERSION_HASH, ElasticResult, write_entry,
+};
 use tempfile::tempdir;
+
+/// Build a tet-only `ElasticResult` fixture for cache round-trip tests.
+///
+/// Tet-only is signalled by `shell_channels: None`; the v2 encoder emits a
+/// single zero discriminator byte after the existing slabs and the v2 reader
+/// decodes back to `None`, so write-then-read round-trips by `PartialEq`.
+fn make_elastic_result_fixture() -> ElasticResult {
+    ElasticResult {
+        displacement: vec![1.0, 2.0, 3.0],
+        stress: vec![4.0, 5.0, 6.0],
+        max_von_mises: 7.5,
+        converged: true,
+        iterations: 9,
+        solve_time_ms: 42,
+        shell_channels: None,
+    }
+}
 
 #[test]
 fn help_text_mentions_cache_export_subcommand() {
@@ -105,6 +126,83 @@ fn cache_export_with_no_hash_shows_export_usage() {
     assert!(
         stderr.contains("Usage: reify cache export <hash>"),
         "should show export-specific usage, got: {stderr}"
+    );
+}
+
+#[test]
+fn export_existing_entry_writes_tar_with_bin_and_meta_to_stdout() {
+    // Seed a cache entry, run `reify cache export <hash>`, and verify the
+    // captured stdout is a tar containing `<hash>.bin` and `<hash>.meta`.
+    // The bin's leading 92 bytes must decode as a `CacheEntryHeader` whose
+    // `engine_version_hash` matches the live `ENGINE_VERSION_HASH`.
+    let cache_dir = tempdir().expect("tempdir");
+    let input_hash = "a".repeat(32);
+    let fixture = make_elastic_result_fixture();
+
+    write_entry(
+        cache_dir.path(),
+        ENGINE_VERSION_HASH,
+        &input_hash,
+        &fixture,
+    )
+    .expect("write_entry must seed the source cache");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+        .args(["cache", "export", &input_hash])
+        .env("REIFY_CACHE_DIR", cache_dir.path())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .expect("failed to execute reify binary");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "reify cache export should succeed; status={:?} stderr={stderr}",
+        output.status
+    );
+
+    let mut archive = tar::Archive::new(Cursor::new(output.stdout));
+    let mut entries_seen: Vec<(String, Vec<u8>)> = Vec::new();
+    for entry_result in archive
+        .entries()
+        .expect("tar entries iterator must construct")
+    {
+        let mut entry = entry_result.expect("tar entry must decode");
+        let path = entry
+            .path()
+            .expect("tar entry path must decode")
+            .display()
+            .to_string();
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).expect("read entry body");
+        entries_seen.push((path, bytes));
+    }
+
+    let names: Vec<&str> = entries_seen.iter().map(|(p, _)| p.as_str()).collect();
+    let expected_bin = format!("{input_hash}.bin");
+    let expected_meta = format!("{input_hash}.meta");
+    assert!(
+        names.iter().any(|n| *n == expected_bin),
+        "tar must contain {expected_bin}, got entries: {names:?}"
+    );
+    assert!(
+        names.iter().any(|n| *n == expected_meta),
+        "tar must contain {expected_meta}, got entries: {names:?}"
+    );
+
+    let bin_bytes = &entries_seen
+        .iter()
+        .find(|(p, _)| p == &expected_bin)
+        .expect("bin entry found")
+        .1;
+    let header = CacheEntryHeader::read_from(&mut Cursor::new(bin_bytes))
+        .expect("bin header must decode");
+    assert_eq!(
+        &header.engine_version_hash[..],
+        ENGINE_VERSION_HASH.as_bytes(),
+        "exported bin header must carry the live ENGINE_VERSION_HASH"
     );
 }
 
