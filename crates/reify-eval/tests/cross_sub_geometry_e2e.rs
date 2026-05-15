@@ -78,10 +78,7 @@ pub structure Outer {
     assert!(
         unresolvable.is_empty(),
         "expected no 'unresolvable GeomRef::Sub' diagnostic; got: {:?}",
-        unresolvable
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+        unresolvable.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
     // (b) The kernel recorded a Box (Inner.body) and a Translate whose
@@ -206,10 +203,7 @@ pub structure Outer {
     assert!(
         unresolvable.is_empty(),
         "expected no 'unresolvable GeomRef::Sub' diagnostic; got: {:?}",
-        unresolvable
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+        unresolvable.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
     // (c) Kernel recorded a Box (Inner.body) and a Translate targeting it.
@@ -540,7 +534,8 @@ pub structure Outer {
         .filter(|rec| matches!(rec.op, GeometryOp::Translate { .. }))
         .count();
     assert_eq!(
-        box_count, 1,
+        box_count,
+        1,
         "expected exactly 1 Box op (Inner.body); got {} in {:?}",
         box_count,
         recorded
@@ -549,7 +544,8 @@ pub structure Outer {
             .collect::<Vec<_>>()
     );
     assert_eq!(
-        rotate_count, 1,
+        rotate_count,
+        1,
         "expected exactly 1 Rotate op (inner of Outer.composed); got {} in {:?}",
         rotate_count,
         recorded
@@ -558,7 +554,8 @@ pub structure Outer {
             .collect::<Vec<_>>()
     );
     assert_eq!(
-        translate_count, 1,
+        translate_count,
+        1,
         "expected exactly 1 Translate op (outer of Outer.composed); got {} in {:?}",
         translate_count,
         recorded
@@ -794,8 +791,7 @@ pub structure Inner {
         .diagnostics
         .iter()
         .filter(|d| {
-            d.message.contains("unresolvable GeomRef::Sub")
-                || d.message.contains("inner.body")
+            d.message.contains("unresolvable GeomRef::Sub") || d.message.contains("inner.body")
         })
         .collect();
     assert!(
@@ -877,7 +873,8 @@ pub structure Outer {
         .filter(|rec| matches!(rec.op, GeometryOp::Translate { .. }))
         .count();
     assert_eq!(
-        translate_count, 0,
+        translate_count,
+        0,
         "bare cross-sub access must NOT synthesize a Translate or any op for `copy`; \
          got translate_count={} in {:?}",
         translate_count,
@@ -897,9 +894,6 @@ pub structure Outer {
         unresolvable.is_empty(),
         "bare cross-sub access must NOT trigger 'unresolvable GeomRef::Sub'; \
          got: {:?}",
-        unresolvable
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+        unresolvable.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }

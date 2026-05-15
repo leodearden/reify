@@ -501,9 +501,7 @@ mod tests {
     /// FEA pass over a meshed geometry).
     #[test]
     fn rebuild_cone_compute_with_realization_input_pulls_in_realization_and_its_reads() {
-        use crate::graph::{
-            ComputeNodeData, EvaluationGraph, RealizationNodeData, ValueCellNode,
-        };
+        use crate::graph::{ComputeNodeData, EvaluationGraph, RealizationNodeData, ValueCellNode};
         use reify_compiler::{CompiledGeometryOp, PrimitiveKind, ValueCellKind};
         use reify_types::{
             CompiledExpr, ComputeNodeId, ContentHash, RealizationNodeId, ReprKind, Type, Value,
@@ -520,10 +518,7 @@ mod tests {
                 id: width.clone(),
                 kind: ValueCellKind::Param,
                 cell_type: Type::length(),
-                default_expr: Some(CompiledExpr::literal(
-                    Value::length(0.08),
-                    Type::length(),
-                )),
+                default_expr: Some(CompiledExpr::literal(Value::length(0.08), Type::length())),
                 content_hash: ContentHash::of_str("width"),
             },
         );

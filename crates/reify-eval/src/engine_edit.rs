@@ -2118,11 +2118,8 @@ impl Engine {
         //     compute_dirty_cone helper excludes the roots themselves, so
         //     we also splice in NodeId::Value for each changed/added cell
         //     — their own default_expr must be re-evaluated.
-        let mut dirty_cone = crate::dirty::compute_dirty_cone(
-            &changed_set,
-            &new_reverse_index,
-            &new_snapshot.graph,
-        );
+        let mut dirty_cone =
+            crate::dirty::compute_dirty_cone(&changed_set, &new_reverse_index, &new_snapshot.graph);
         for id in &changed_set {
             dirty_cone.insert(NodeId::Value(id.clone()));
         }

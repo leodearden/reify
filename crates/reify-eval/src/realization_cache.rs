@@ -439,7 +439,10 @@ mod tests {
         let inserted_a = cache.insert("A", ReprKind::BRep, 0.01, hash_a, 1);
         let inserted_b = cache.insert("A", ReprKind::BRep, 0.01, hash_b, 2);
         assert!(inserted_a, "insert under hash_a must succeed");
-        assert!(inserted_b, "insert under hash_b must succeed (distinct slot)");
+        assert!(
+            inserted_b,
+            "insert under hash_b must succeed (distinct slot)"
+        );
 
         assert_eq!(
             cache.lookup("A", ReprKind::BRep, 0.01, hash_a),
@@ -499,8 +502,14 @@ mod tests {
         let mut cache = RealizationCache::<u32>::new();
         let inserted_sentinel = cache.insert("B", ReprKind::BRep, 0.01, sentinel, 10);
         let inserted_other = cache.insert("B", ReprKind::BRep, 0.01, other, 20);
-        assert!(inserted_sentinel, "insert under ContentHash(0) must succeed");
-        assert!(inserted_other, "insert under non-zero hash must succeed (distinct slot)");
+        assert!(
+            inserted_sentinel,
+            "insert under ContentHash(0) must succeed"
+        );
+        assert!(
+            inserted_other,
+            "insert under non-zero hash must succeed (distinct slot)"
+        );
 
         assert_eq!(
             cache.lookup("B", ReprKind::BRep, 0.01, sentinel),
@@ -587,14 +596,8 @@ mod tests {
         let tightest = tols[SOFT_CAPACITY - 1];
         let val_a = cache.lookup(entity, ReprKind::BRep, tightest, hash_a);
         let val_b = cache.lookup(entity, ReprKind::BRep, tightest, hash_b);
-        assert!(
-            val_a.is_some(),
-            "hash_a lookup at tightest tol must hit"
-        );
-        assert!(
-            val_b.is_some(),
-            "hash_b lookup at tightest tol must hit"
-        );
+        assert!(val_a.is_some(), "hash_a lookup at tightest tol must hit");
+        assert!(val_b.is_some(), "hash_b lookup at tightest tol must hit");
         // Values must differ — each bucket stored different u32 values.
         assert_ne!(
             val_a, val_b,

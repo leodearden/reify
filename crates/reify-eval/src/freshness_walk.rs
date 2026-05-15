@@ -238,9 +238,7 @@ fn process_dependent_freshness(
     // never fires for already-Pending dependents and would re-bump
     // `pending_transition_count` on every walk.
     if new == current {
-        if push_value_on_all_branches
-            && let NodeId::Value(vcid) = dependent
-        {
+        if push_value_on_all_branches && let NodeId::Value(vcid) = dependent {
             frontier.push_back(vcid.clone());
         }
         return false;
@@ -254,9 +252,7 @@ fn process_dependent_freshness(
         && matches!(current, Freshness::Pending { .. })
         && cache.pending_cause(dependent) == cause
     {
-        if push_value_on_all_branches
-            && let NodeId::Value(vcid) = dependent
-        {
+        if push_value_on_all_branches && let NodeId::Value(vcid) = dependent {
             frontier.push_back(vcid.clone());
         }
         return false;
@@ -281,9 +277,7 @@ fn process_dependent_freshness(
         if let NodeId::Value(vcid) = dependent {
             frontier.push_back(vcid.clone());
         }
-    } else if push_value_on_all_branches
-        && let NodeId::Value(vcid) = dependent
-    {
+    } else if push_value_on_all_branches && let NodeId::Value(vcid) = dependent {
         // Belt-and-suspenders: the §7.2/§9.2 helper returns (Final, None)
         // for an absent dependent and `freshness()` returns Final by
         // default (cache.rs:617-621), so `new == current == Final` fires
@@ -389,7 +383,13 @@ mod tests {
         let mut changed = HashSet::new();
         changed.insert(a.clone());
 
-        let updated = super::propagate_freshness_only(&mut cache, &reverse_index, &EvaluationGraph::default(), &changed, 1);
+        let updated = super::propagate_freshness_only(
+            &mut cache,
+            &reverse_index,
+            &EvaluationGraph::default(),
+            &changed,
+            1,
+        );
 
         assert_eq!(
             cache.freshness(&NodeId::Value(b.clone())),
@@ -446,7 +446,13 @@ mod tests {
         let mut changed = HashSet::new();
         changed.insert(a.clone());
 
-        let updated = super::propagate_freshness_only(&mut cache, &reverse_index, &EvaluationGraph::default(), &changed, 1);
+        let updated = super::propagate_freshness_only(
+            &mut cache,
+            &reverse_index,
+            &EvaluationGraph::default(),
+            &changed,
+            1,
+        );
 
         assert_eq!(
             cache.freshness(&NodeId::Value(b.clone())),
@@ -531,7 +537,13 @@ mod tests {
         let mut changed = HashSet::new();
         changed.insert(a.clone());
 
-        let updated = super::propagate_freshness_only(&mut cache, &reverse_index, &EvaluationGraph::default(), &changed, 1);
+        let updated = super::propagate_freshness_only(
+            &mut cache,
+            &reverse_index,
+            &EvaluationGraph::default(),
+            &changed,
+            1,
+        );
 
         assert_eq!(
             cache.freshness(&NodeId::Value(b.clone())),
@@ -608,7 +620,13 @@ mod tests {
         let mut changed = HashSet::new();
         changed.insert(a.clone());
 
-        let updated = super::propagate_freshness_only(&mut cache, &reverse_index, &EvaluationGraph::default(), &changed, 1);
+        let updated = super::propagate_freshness_only(
+            &mut cache,
+            &reverse_index,
+            &EvaluationGraph::default(),
+            &changed,
+            1,
+        );
         assert!(
             updated.contains(&b_node),
             "sanity: b must be updated by the walk, got: {:?}",
@@ -691,8 +709,13 @@ mod tests {
         let mut changed = HashSet::new();
         changed.insert(a.clone());
 
-        let updated_first =
-            super::propagate_freshness_only(&mut cache, &reverse_index, &EvaluationGraph::default(), &changed, 1);
+        let updated_first = super::propagate_freshness_only(
+            &mut cache,
+            &reverse_index,
+            &EvaluationGraph::default(),
+            &changed,
+            1,
+        );
         assert!(
             updated_first.contains(&b_node),
             "sanity: first walk must update b, got: {:?}",
@@ -709,8 +732,13 @@ mod tests {
         let b_after_first = cache.get(&b_node).expect("b cached").clone();
 
         // Run the walk again with the same arguments.
-        let updated_second =
-            super::propagate_freshness_only(&mut cache, &reverse_index, &EvaluationGraph::default(), &changed, 1);
+        let updated_second = super::propagate_freshness_only(
+            &mut cache,
+            &reverse_index,
+            &EvaluationGraph::default(),
+            &changed,
+            1,
+        );
 
         assert!(
             updated_second.is_empty(),
@@ -835,7 +863,13 @@ mod tests {
         let mut changed = HashSet::new();
         changed.insert(a.clone());
 
-        let updated = super::propagate_freshness_only(&mut cache, &reverse_index, &EvaluationGraph::default(), &changed, 1);
+        let updated = super::propagate_freshness_only(
+            &mut cache,
+            &reverse_index,
+            &EvaluationGraph::default(),
+            &changed,
+            1,
+        );
 
         // (i) b's freshness must STILL be Failed — the walk must skip it as
         //     a write target (re-derivation would destroy the chain root).
@@ -926,7 +960,13 @@ mod tests {
         let mut changed = HashSet::new();
         changed.insert(a.clone());
 
-        let updated = super::propagate_freshness_only(&mut cache, &reverse_index, &EvaluationGraph::default(), &changed, 1);
+        let updated = super::propagate_freshness_only(
+            &mut cache,
+            &reverse_index,
+            &EvaluationGraph::default(),
+            &changed,
+            1,
+        );
 
         assert!(
             updated.contains(&b_node),
@@ -1006,8 +1046,13 @@ mod tests {
         let mut changed = HashSet::new();
         changed.insert(a.clone());
 
-        let updated_first =
-            super::propagate_freshness_only(&mut cache, &reverse_index, &EvaluationGraph::default(), &changed, 1);
+        let updated_first = super::propagate_freshness_only(
+            &mut cache,
+            &reverse_index,
+            &EvaluationGraph::default(),
+            &changed,
+            1,
+        );
         assert!(
             updated_first.contains(&b_node),
             "sanity: first walk must Pending-flip b, got: {:?}",
@@ -1026,8 +1071,13 @@ mod tests {
 
         // Re-run with identical arguments — the Pending idempotency cutoff
         // must short-circuit at b.
-        let updated_second =
-            super::propagate_freshness_only(&mut cache, &reverse_index, &EvaluationGraph::default(), &changed, 1);
+        let updated_second = super::propagate_freshness_only(
+            &mut cache,
+            &reverse_index,
+            &EvaluationGraph::default(),
+            &changed,
+            1,
+        );
 
         assert!(
             updated_second.is_empty(),
@@ -1148,7 +1198,13 @@ mod tests {
         let mut changed = HashSet::new();
         changed.insert(a.clone());
 
-        let updated = super::propagate_freshness_only(&mut cache, &reverse_index, &EvaluationGraph::default(), &changed, 1);
+        let updated = super::propagate_freshness_only(
+            &mut cache,
+            &reverse_index,
+            &EvaluationGraph::default(),
+            &changed,
+            1,
+        );
 
         // (i) R's freshness must STILL be Failed — the walk must skip it as a
         //     write target (re-derivation would silently flip Failed → Final,
@@ -1247,7 +1303,13 @@ mod tests {
         let mut changed = HashSet::new();
         changed.insert(a.clone());
 
-        let updated = super::propagate_freshness_only(&mut cache, &reverse_index, &EvaluationGraph::default(), &changed, 1);
+        let updated = super::propagate_freshness_only(
+            &mut cache,
+            &reverse_index,
+            &EvaluationGraph::default(),
+            &changed,
+            1,
+        );
 
         // (i) b, c, d must all be Final after the walk.
         assert_eq!(

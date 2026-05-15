@@ -24,8 +24,8 @@ use reify_test_support::{
 };
 #[allow(unused_imports)]
 use reify_types::{
-    CapabilityDescriptor, CompiledExpr, ContentHash, DiagnosticCode, ExportFormat, GeometryHandleId,
-    ModulePath, Operation, ReprKind, Severity, Type, Value, ValueCellId,
+    CapabilityDescriptor, CompiledExpr, ContentHash, DiagnosticCode, ExportFormat,
+    GeometryHandleId, ModulePath, Operation, ReprKind, Severity, Type, Value, ValueCellId,
 };
 #[allow(unused_imports)]
 use std::collections::{BTreeMap, HashSet};

@@ -563,9 +563,7 @@ mod tests {
     #[test]
     fn compute_dirty_cone_with_realizations_marks_consuming_compute_nodes_and_their_outputs() {
         use crate::dirty::compute_dirty_cone_with_realizations;
-        use crate::graph::{
-            ComputeNodeData, EvaluationGraph, RealizationNodeData, ValueCellNode,
-        };
+        use crate::graph::{ComputeNodeData, EvaluationGraph, RealizationNodeData, ValueCellNode};
         use reify_compiler::ValueCellKind;
         use reify_types::{ComputeNodeId, ContentHash, RealizationNodeId, ReprKind, Type};
 
@@ -657,9 +655,7 @@ mod tests {
     #[test]
     fn compute_dirty_cone_with_realizations_negative_case_does_not_propagate_with_empty_seed() {
         use crate::dirty::compute_dirty_cone_with_realizations;
-        use crate::graph::{
-            ComputeNodeData, EvaluationGraph, RealizationNodeData, ValueCellNode,
-        };
+        use crate::graph::{ComputeNodeData, EvaluationGraph, RealizationNodeData, ValueCellNode};
         use reify_compiler::ValueCellKind;
         use reify_types::{ComputeNodeId, ContentHash, RealizationNodeId, ReprKind, Type};
 
@@ -744,8 +740,8 @@ mod tests {
     /// Reverse-index entries: R0 → Compute(C) (edge #10); b → Constraint(C0)
     /// (manually added like step-9 does).
     #[test]
-    fn compute_dirty_cone_with_realizations_propagates_transitively_to_constraint_reading_output_vc(
-    ) {
+    fn compute_dirty_cone_with_realizations_propagates_transitively_to_constraint_reading_output_vc()
+     {
         use crate::dirty::compute_dirty_cone_with_realizations;
         use crate::graph::{ComputeNodeData, EvaluationGraph, RealizationNodeData, ValueCellNode};
         use reify_compiler::ValueCellKind;

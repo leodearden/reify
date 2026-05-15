@@ -31,8 +31,7 @@ use std::sync::atomic::Ordering;
 mod common;
 
 #[global_allocator]
-static GLOBAL: common::alloc_counter::CountingAllocator =
-    common::alloc_counter::CountingAllocator;
+static GLOBAL: common::alloc_counter::CountingAllocator = common::alloc_counter::CountingAllocator;
 
 /// Rejected inserts at rotating `options_hash` values under an existing entity must not
 /// allocate a new `String` key — locking the "regardless of `options_hash`" clause of the
@@ -53,7 +52,10 @@ static GLOBAL: common::alloc_counter::CountingAllocator =
 #[test]
 fn rejected_insert_with_rotating_options_hash_does_not_allocate_entity_string() {
     let entity = "long_entity_name_to_defeat_any_potential_short_string_optimization_buffer_xxxxx";
-    assert!(entity.len() >= 64, "entity must be ≥64 bytes (belt-and-suspenders guard)");
+    assert!(
+        entity.len() >= 64,
+        "entity must be ≥64 bytes (belt-and-suspenders guard)"
+    );
 
     const N_HASHES: usize = 32;
     let hashes: Vec<reify_types::ContentHash> = (0..N_HASHES)
@@ -66,8 +68,7 @@ fn rejected_insert_with_rotating_options_hash_does_not_allocate_entity_string() 
     // The first call allocates the entity String once; each subsequent call takes
     // the get_mut fast path and allocates only the new ToleranceBucket Vec.
     for (i, &hash) in hashes.iter().enumerate() {
-        let inserted =
-            cache.insert(entity, reify_types::ReprKind::BRep, 0.001, hash, i as u32);
+        let inserted = cache.insert(entity, reify_types::ReprKind::BRep, 0.001, hash, i as u32);
         assert!(inserted, "warm-up insert at hash {i} must succeed");
     }
 
@@ -79,9 +80,11 @@ fn rejected_insert_with_rotating_options_hash_does_not_allocate_entity_string() 
     // With the fix:    get_mut(entity) finds the key → zero entity String allocs.
     // Without the fix: entity.to_owned() runs → N entity String allocs (≈ 32).
     for &hash in &hashes {
-        let inserted =
-            cache.insert(entity, reify_types::ReprKind::BRep, 0.1, hash, 999u32);
-        assert!(!inserted, "looser insert must be rejected by ToleranceBucket");
+        let inserted = cache.insert(entity, reify_types::ReprKind::BRep, 0.1, hash, 999u32);
+        assert!(
+            !inserted,
+            "looser insert must be rejected by ToleranceBucket"
+        );
     }
 
     let after = common::alloc_counter::ALLOCATIONS.load(Ordering::Relaxed);

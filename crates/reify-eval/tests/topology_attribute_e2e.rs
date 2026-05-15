@@ -1066,11 +1066,12 @@ fn local_index_reassignment_diagnostic_fires_for_geometrically_tied_faces() {
 // synthetic helper-level tests they complement.
 
 fn compile_no_errors_for_engine(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(
-        source,
-        ModulePath::single("test_topology_attr_engine_e2e"),
+    let parsed = reify_syntax::parse(source, ModulePath::single("test_topology_attr_engine_e2e"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
     );
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
     let compiled = compile_with_stdlib(&parsed);
     let errors: Vec<_> = compiled
         .diagnostics

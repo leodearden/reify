@@ -360,11 +360,8 @@ impl Engine {
             }
 
             // Compute dirty cone from changed cells
-            let dirty_cone = crate::dirty::compute_dirty_cone(
-                &setup.changed_cells,
-                reverse_index,
-                &setup.graph,
-            );
+            let dirty_cone =
+                crate::dirty::compute_dirty_cone(&setup.changed_cells, reverse_index, &setup.graph);
 
             // Union of all resolved auto param IDs across groups for second wave
             let mut all_resolved_ids: HashSet<ValueCellId> = HashSet::new();
@@ -466,8 +463,11 @@ impl Engine {
             // Re-resolved auto params may have changed value. Let bindings
             // depending on them may NOT be in the original dirty cone.
             if !all_resolved_ids.is_empty() {
-                let wave2_dirty =
-                    crate::dirty::compute_dirty_cone(&all_resolved_ids, reverse_index, &setup.graph);
+                let wave2_dirty = crate::dirty::compute_dirty_cone(
+                    &all_resolved_ids,
+                    reverse_index,
+                    &setup.graph,
+                );
                 let wave2_eval =
                     crate::dirty::compute_eval_set(&wave2_dirty, &self.demand, trace_map);
 

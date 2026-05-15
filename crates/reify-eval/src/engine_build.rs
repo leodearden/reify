@@ -8,12 +8,11 @@ use reify_solver_elastic::{
     Mesh2d, Mesh2dError, Mesh2dReport, SweepError, SweepParams, SweptMesh3d,
 };
 use reify_types::{
-    AttributeHistory, CapabilityDescriptor, CompiledFunction, Diagnostic,
-    DiagnosticLabel, ErrorRef, ExportFormat, FeatureId, FeatureTag, FeatureTagTable, Freshness,
-    GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery,
-    LoftOpHistoryRecords, Mesh, Operation, RealizationNodeId, ReprKind, SourceSpan,
-    SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable, ValueMap, VersionId,
-    VolumeMesh,
+    AttributeHistory, CapabilityDescriptor, CompiledFunction, Diagnostic, DiagnosticLabel,
+    ErrorRef, ExportFormat, FeatureId, FeatureTag, FeatureTagTable, Freshness, GeometryError,
+    GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, LoftOpHistoryRecords, Mesh,
+    Operation, RealizationNodeId, ReprKind, SourceSpan, SweepOpHistoryRecords, TopologyAttribute,
+    TopologyAttributeTable, ValueMap, VersionId, VolumeMesh,
 };
 
 use crate::cache::{CacheStore, CachedResult, FAILED_REALIZATION_STUB_HANDLE, NodeCache, NodeId};
@@ -1968,7 +1967,13 @@ impl Engine {
                     named_steps.insert(name.to_string(), last);
                 }
                 if let (Some(tol), Some(_name)) = (demanded_tol, realization_name) {
-                    realization_cache.insert(&realization_id.entity, ReprKind::BRep, tol, NO_OPTIONS, last);
+                    realization_cache.insert(
+                        &realization_id.entity,
+                        ReprKind::BRep,
+                        tol,
+                        NO_OPTIONS,
+                        last,
+                    );
                 }
             }
         }
