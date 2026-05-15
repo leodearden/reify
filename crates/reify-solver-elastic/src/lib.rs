@@ -364,8 +364,9 @@ pub mod volume_refine;
 pub mod warm_state;
 
 pub use assembly::{
-    AssemblyElement, AssemblyMode, ElementOrder, ElementStiffness, assemble_global_stiffness,
-    element_stiffness, hex::element_stiffness_hex_p1, wedge::element_stiffness_wedge_p1,
+    AssemblyElement, AssemblyMode, ElementOrder, ElementStiffness, OrphanDofsSummary,
+    assemble_global_stiffness, detect_orphan_dofs, element_stiffness,
+    hex::element_stiffness_hex_p1, wedge::element_stiffness_wedge_p1,
 };
 pub use boundary::{
     DirichletBc, FaceOrder, apply_body_force, apply_dirichlet_row_elimination, apply_point_load,
