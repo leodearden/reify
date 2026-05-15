@@ -492,6 +492,71 @@ impl Engine {
         self.compute_registry.fns.get(target).copied()
     }
 
+    /// Synchronous dispatch helper — invoke the trampoline registered for
+    /// `target` with the provided inputs and return the result or diagnostics.
+    ///
+    /// # Arguments
+    ///
+    /// - `target`: the `@optimized("…")` target string to dispatch to
+    /// - `value_inputs`: resolved `Value` inputs for this invocation
+    /// - `realization_inputs`: resolved geometry inputs (read-only handles)
+    /// - `options`: per-invocation option map (`Value::Map` or `Value::Undef`)
+    /// - `prior_warm_state`: warm-start state from a previous invocation, if any
+    ///
+    /// A fresh [`CancellationHandle`][crate::engine_compute::CancellationHandle]
+    /// is created per invocation (pending/cancel lifecycle is deferred to δ/ε).
+    ///
+    /// # Returns
+    ///
+    /// - `Ok((result, diagnostics))` — trampoline returned `Completed`
+    /// - `Err(diagnostics)` — target unregistered, `Failed`, or `Cancelled`
+    ///   (in each case at least one `Severity::Error` diagnostic is present)
+    ///
+    /// See `docs/prds/v0_3/compute-node-contract.md` §4 and task γ (3422).
+    pub fn dispatch_compute_node(
+        &self,
+        target: &str,
+        value_inputs: &[reify_types::Value],
+        realization_inputs: &[crate::engine_compute::RealizationReadHandle],
+        options: &reify_types::Value,
+        prior_warm_state: Option<&reify_types::OpaqueState>,
+    ) -> Result<(reify_types::Value, Vec<reify_types::Diagnostic>), Vec<reify_types::Diagnostic>>
+    {
+        use crate::engine_compute::ComputeOutcome;
+        use crate::graph::CancellationHandle;
+
+        match self.compute_registry.fns.get(target).copied() {
+            Some(f) => {
+                let handle = CancellationHandle::new();
+                match f(
+                    value_inputs,
+                    realization_inputs,
+                    options,
+                    prior_warm_state,
+                    &handle,
+                ) {
+                    ComputeOutcome::Completed {
+                        result,
+                        diagnostics,
+                        ..
+                    } => Ok((result, diagnostics)),
+                    ComputeOutcome::Failed { diagnostics } => Err(diagnostics),
+                    ComputeOutcome::Cancelled => Err(vec![reify_types::Diagnostic::error(
+                        format!(
+                            "@optimized target {:?}: compute trampoline was cancelled",
+                            target
+                        ),
+                    )]),
+                }
+            }
+            None => Err(vec![reify_types::Diagnostic::error(format!(
+                "@optimized target {:?}: no registered compute trampoline \
+                 (falling back to body-inlining)",
+                target
+            ))]),
+        }
+    }
+
     /// Returns the compiled stdlib prelude modules stored by this engine.
     pub fn prelude(&self) -> &[CompiledModule] {
         self.prelude
