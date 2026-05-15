@@ -3372,11 +3372,14 @@ mod tests {
 
     #[test]
     fn extract_vertices_invalidates_cache_on_warm_state() {
-        // Build box in kernel_a, extract vertices, round-trip through warm state.
-        // The restored kernel_b must be able to re-extract (8 vertices), and
-        // the new ids must be disjoint from the pre-warm ids (cache was cleared).
-        let mut kernel_a = OcctKernel::new();
-        let box_h = kernel_a
+        // Build a box, extract vertices (populates cache), then apply warm-state
+        // to the *same* kernel so the cache is non-empty when `with_warm_state`
+        // runs.  After the restore, re-extracting must mint fresh ids — proving
+        // that `extracted_vertices.clear()` inside `with_warm_state` is the
+        // load-bearing line (a version without the clear would return the stale
+        // cached vec rather than new ids).
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
             .execute(&GeometryOp::Box {
                 width: Value::Real(0.010),
                 height: Value::Real(0.010),
@@ -3384,26 +3387,29 @@ mod tests {
             })
             .expect("Box should succeed");
         let box_id = box_h.id;
-        let vec1 = kernel_a
-            .extract_vertices(box_id)
-            .expect("extract_vertices in kernel_a should succeed");
-        assert_eq!(vec1.len(), 8, "kernel_a should yield 8 vertices");
 
-        // Round-trip through warm state.
-        let state = kernel_a
+        // Populate the cache.
+        let vec1 = kernel
+            .extract_vertices(box_id)
+            .expect("extract_vertices before warm-state should succeed");
+        assert_eq!(vec1.len(), 8, "should yield 8 vertices before warm restore");
+
+        // Snapshot, then restore onto the *same* kernel (cache is now non-empty).
+        let state = kernel
             .warm_state()
-            .expect("kernel_a should produce warm state");
-        let mut kernel_b = OcctKernel::new();
-        kernel_b.with_warm_state(state);
+            .expect("kernel should produce warm state");
+        kernel.with_warm_state(state);
 
-        let vec2 = kernel_b
+        // Re-extract: the clear() in with_warm_state must have evicted the cache,
+        // so this call mints 8 fresh ids instead of returning the cached vec1.
+        let vec2 = kernel
             .extract_vertices(box_id)
-            .expect("extract_vertices in kernel_b (post-warm) should succeed");
-        assert_eq!(vec2.len(), 8, "kernel_b should yield 8 vertices after warm restore");
+            .expect("extract_vertices after warm-state restore should succeed");
+        assert_eq!(vec2.len(), 8, "should yield 8 vertices after warm restore");
 
         // Ids must be disjoint: warm-state restore clears extracted_vertices,
-        // so kernel_b mints fresh ids starting from warm.next_id which is
-        // strictly greater than any id minted in kernel_a.
+        // so the re-extract mints fresh ids starting from warm.next_id (strictly
+        // greater than any id ever minted before the snapshot).
         let set1: std::collections::HashSet<GeometryHandleId> = vec1.iter().copied().collect();
         let set2: std::collections::HashSet<GeometryHandleId> = vec2.iter().copied().collect();
         let intersection: std::collections::HashSet<_> = set1.intersection(&set2).collect();
