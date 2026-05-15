@@ -9,6 +9,9 @@
 
 use reify_types::ModulePath;
 
+mod common;
+use common::{find_all_cst_nodes, find_cst_node, make_ts_parser};
+
 // ── High-level parse tests (user-observable signal) ─────────────────────────
 
 /// User-signal test: all three forms of decl-level match block parse without
@@ -62,57 +65,6 @@ fn match_decl_block_parses_from_source() {
              has_error() returned true for source: {source:?}",
         );
     }
-}
-
-// ── CST-level helpers ────────────────────────────────────────────────────────
-
-/// Build a tree-sitter parser loaded with the Reify grammar.
-fn make_ts_parser() -> tree_sitter::Parser {
-    let mut parser = tree_sitter::Parser::new();
-    parser
-        .set_language(&tree_sitter_reify::language().into())
-        .expect("Error loading Reify grammar");
-    parser
-}
-
-/// Depth-first search — returns the first node with the given kind.
-fn find_cst_node<'a>(root: tree_sitter::Node<'a>, kind: &str) -> Option<tree_sitter::Node<'a>> {
-    if root.kind() == kind {
-        return Some(root);
-    }
-    let mut cursor = root.walk();
-    if cursor.goto_first_child() {
-        loop {
-            if let Some(found) = find_cst_node(cursor.node(), kind) {
-                return Some(found);
-            }
-            if !cursor.goto_next_sibling() {
-                break;
-            }
-        }
-    }
-    None
-}
-
-/// Depth-first search — returns all nodes with the given kind.
-fn find_all_cst_nodes<'a>(root: tree_sitter::Node<'a>, kind: &str) -> Vec<tree_sitter::Node<'a>> {
-    let mut results = Vec::new();
-    if root.kind() == kind {
-        results.push(root);
-        // Don't descend into a matching node — its children are not separate
-        // occurrences of the same node-kind at the same semantic level.
-        return results;
-    }
-    let mut cursor = root.walk();
-    if cursor.goto_first_child() {
-        loop {
-            results.extend(find_all_cst_nodes(cursor.node(), kind));
-            if !cursor.goto_next_sibling() {
-                break;
-            }
-        }
-    }
-    results
 }
 
 // ── CST-shape assertions ─────────────────────────────────────────────────────
