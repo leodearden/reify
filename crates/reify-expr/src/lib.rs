@@ -765,16 +765,81 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             Value::Undef
         }
 
-        // task 3540 (SIR-α): adapter-sweep placeholder for the new
-        // compiled-expr variant (step-16). Real eval semantics — evaluate
-        // ordered_args + uncovered defaults into a
-        // `Value::StructureInstance { type_id: StructureTypeId(0),
-        // type_name, version, fields }` with NO registry lookup (reify-expr
-        // stays registry-free, design-decision-2) — lands in step-18. Until
-        // then this returns Undef so step-17's RED test observes the missing
-        // behaviour. NOT a silent reject: the variant only reaches eval once
-        // step-16's lowering is wired, and step-17/18 immediately follow.
-        CompiledExprKind::StructureInstanceCtor { .. } => Value::Undef,
+        // task 3540 step-18 (SIR-α): build the structure instance with NO
+        // registry lookup — `type_id`/`type_name`/`version` are baked at
+        // lowering time (reify-expr stays registry-free,
+        // design-decision-2; type_id is the StructureTypeId(0) placeholder,
+        // identity is (name, version) per esc-3540-177 RULING 2+3).
+        // Evaluate every supplied `ordered_arg` in declaration order, then
+        // fill each `default` whose name is NOT covered by an ordered_arg,
+        // evaluated in the SAME `EvalContext` — so a default that is itself
+        // a structure ctor recurses through `eval_expr` and yields a nested
+        // `Value::StructureInstance`. An `Undef` field value is kept in its
+        // own slot: the structure is still constructed (no
+        // `FunctionCall`-style strict whole-value short-circuit).
+        CompiledExprKind::StructureInstanceCtor {
+            type_id,
+            type_name,
+            version,
+            ordered_args,
+            defaults,
+        } => eval_structure_instance_ctor(
+            *type_id,
+            type_name,
+            *version,
+            ordered_args,
+            defaults,
+            ctx,
+        ),
+    }
+}
+
+/// Build a `Value::StructureInstance` for a compile-lowered structure
+/// constructor (task 3540 step-18; the eval half of design-decision-2).
+///
+/// Extracted from `eval_expr`'s match arm and marked `#[inline(never)]` on
+/// purpose: the locals here (a `PersistentMap` plus loop temporaries) must
+/// NOT inflate `eval_expr`'s stack frame. `eval_expr` is the hot mutually-
+/// recursive evaluator, and `eval_user_fn_recursion_depth_exceeded` is a
+/// safety test that drives `MAX_RECURSION_DEPTH` (256) deep and asserts the
+/// guard trips *before* the native stack is exhausted. Inlining this body
+/// into every recursive `eval_expr` frame regressed that test into a real
+/// stack overflow; keeping it in a separate non-inlined frame (allocated
+/// only when a ctor is actually evaluated, never on the deep user-fn path)
+/// restores the lean frame the guard relies on.
+///
+/// No registry lookup — reify-expr stays registry-free (design-decision-2);
+/// `type_id` is the `StructureTypeId(0)` placeholder, identity is
+/// `(type_name, version)` per esc-3540-177 RULING 2+3. `ordered_args`
+/// evaluate in declaration order; each `default` whose name is not covered
+/// by an ordered arg fills its slot, evaluated in the SAME `EvalContext`
+/// (so a default that is itself a structure ctor recurses through
+/// `eval_expr` → nested `Value::StructureInstance`). An `Undef` field value
+/// is kept in its own slot — the structure is still constructed (no
+/// `FunctionCall`-style strict whole-value short-circuit).
+#[inline(never)]
+fn eval_structure_instance_ctor(
+    type_id: reify_types::StructureTypeId,
+    type_name: &str,
+    version: u32,
+    ordered_args: &[(String, CompiledExpr)],
+    defaults: &[(String, CompiledExpr)],
+    ctx: &EvalContext,
+) -> Value {
+    let mut fields: PersistentMap<String, Value> = PersistentMap::new();
+    for (name, arg) in ordered_args {
+        fields.insert(name.clone(), eval_expr(arg, ctx));
+    }
+    for (name, def) in defaults {
+        if !fields.contains_key(name) {
+            fields.insert(name.clone(), eval_expr(def, ctx));
+        }
+    }
+    Value::StructureInstance {
+        type_id,
+        type_name: type_name.to_string(),
+        version,
+        fields,
     }
 }
 
