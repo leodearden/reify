@@ -1485,7 +1485,8 @@ fn auto_resolve_constraint_progress_omits_unset_targets_and_unit() {
 /// changes NaN handling (e.g. from null to an error) will be caught immediately.
 #[test]
 fn auto_resolve_parameter_value_nan_sentinel_serializes_value_field_as_null() {
-    use crate::types::AutoResolveParameterValue;
+    use crate::types::{AutoResolveIteration, AutoResolveParameterValue};
+    use std::collections::HashMap;
 
     let param = AutoResolveParameterValue {
         value: f64::NAN,
@@ -1493,20 +1494,78 @@ fn auto_resolve_parameter_value_nan_sentinel_serializes_value_field_as_null() {
         display: "<non-scalar>".to_string(),
     };
 
-    // serde_json::to_value maps f64::NAN → Value::Null (not an error).
-    let v = serde_json::to_value(&param)
-        .expect("AutoResolveParameterValue with NaN value must serialize without error");
+    // --- 1. Wire path: serde_json::to_string of the bare AutoResolveParameterValue ---
+    // Tauri's AppHandle::emit serialises the payload via serde_json::to_string internally;
+    // calling to_string directly is the faithful unit-test proxy for that path.
+    let wire_param = serde_json::to_string(&param)
+        .expect("AutoResolveParameterValue with NaN value must serialize without error via the Tauri to_string wire path");
+    let vp: serde_json::Value =
+        serde_json::from_str(&wire_param).expect("wire JSON must reparse");
+    assert_eq!(
+        vp["value"],
+        serde_json::Value::Null,
+        "NaN sentinel must serialize as JSON null on the to_string wire path — \
+         frontend TypeScript must type value as `number | null`"
+    );
+    assert_eq!(vp["unit"], json!(""), "unit must be empty string (to_string path)");
+    assert_eq!(
+        vp["display"],
+        json!("<non-scalar>"),
+        "display must be '<non-scalar>' (to_string path)"
+    );
 
+    // --- 2. Legacy: serde_json::to_value of the bare param (kept to show both entry points agree) ---
+    // serde_json::to_value maps f64::NAN → Value::Null (not an error).
+    let v_val = serde_json::to_value(&param)
+        .expect("AutoResolveParameterValue with NaN value must serialize without error");
     // The wire contract: NaN serializes as null so the frontend can distinguish
     // a genuine zero from a non-scalar sentinel.
     assert_eq!(
-        v["value"],
+        v_val["value"],
         serde_json::Value::Null,
         "NaN sentinel must serialize as JSON null — \
          frontend TypeScript must type value as `number | null`"
     );
-    assert_eq!(v["unit"], json!(""), "unit must be empty string");
-    assert_eq!(v["display"], json!("<non-scalar>"), "display must be '<non-scalar>'");
+    assert_eq!(v_val["unit"], json!(""), "unit must be empty string");
+    assert_eq!(v_val["display"], json!("<non-scalar>"), "display must be '<non-scalar>'");
+
+    // --- 3. Wire path: serde_json::to_string of the full AutoResolveIteration payload ---
+    // emit_typed(&app, "auto-resolve-iteration", &iter) → tauri::AppHandle::emit →
+    // serde_json::to_string(&iter) is the actual Tauri wire path for the emitted event.
+    // The NaN-bearing AutoResolveParameterValue is nested under parameters: HashMap<String, _>.
+    let param_key = "Bracket.thickness";
+    let mut parameters = HashMap::new();
+    parameters.insert(param_key.to_string(), param);
+
+    let iter = AutoResolveIteration {
+        iteration: 0,
+        parameters,
+        constraints: HashMap::new(),
+        driving_metric: None,
+        driving_metric_value: None,
+    };
+
+    let wire = serde_json::to_string(&iter).expect(
+        "AutoResolveIteration with NaN value must serialize without error via the Tauri to_string wire path",
+    );
+    let v: serde_json::Value = serde_json::from_str(&wire).expect("wire JSON must reparse");
+
+    assert_eq!(v["iteration"], json!(0), "iteration must be 0");
+    assert_eq!(
+        v["parameters"][param_key]["value"],
+        serde_json::Value::Null,
+        "NaN sentinel nested in AutoResolveIteration must serialize as JSON null on the to_string wire path"
+    );
+    assert_eq!(
+        v["parameters"][param_key]["unit"],
+        json!(""),
+        "unit must be empty string in nested payload"
+    );
+    assert_eq!(
+        v["parameters"][param_key]["display"],
+        json!("<non-scalar>"),
+        "display must be '<non-scalar>' in nested payload"
+    );
 }
 
 /// Positive case: a correct-length scalar_channels entry serializes successfully.
