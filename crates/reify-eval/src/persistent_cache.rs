@@ -1266,6 +1266,49 @@ pub fn read_entry<V: PersistentlyCacheable>(
     Ok(Some(value))
 }
 
+// ── Eviction primitive ────────────────────────────────────────────────────────
+
+/// Compute the cost-weighted LRU eviction score for a cache entry.
+///
+/// Formula per PRD `docs/prds/v0_3/persistent-fea-cache.md` §"GC policy":
+///
+/// ```text
+/// score = age_secs / max(solve_time_ms, 1)
+/// ```
+///
+/// A **higher** score means the entry should be evicted **first** — it is
+/// old (large numerator) and cheap to re-compute (small denominator).
+///
+/// # Arguments
+///
+/// * `now` — wall-clock instant used as the reference for age calculation.
+///   Pass `SystemTime::now()` once per eviction run and reuse it for all
+///   candidates to produce a stable total ordering.
+/// * `last_access` — mtime of the `.meta` sidecar file, or `.bin` mtime as
+///   a fallback (see [`evict_over_cap`]).
+/// * `solve_time_ms` — solver wall-time from [`CacheEntryHeader::solve_time_ms`].
+///   The `max(_, 1)` clamp prevents division-by-zero for sub-millisecond
+///   solves (those entries are essentially free to recompute and score very
+///   high, which is correct behaviour — evict them first).
+///
+/// # Clock-skew safety
+///
+/// If `last_access` is in the future relative to `now`
+/// (`SystemTime::duration_since` returns `Err`), the age is treated as `0.0`
+/// seconds — the entry is considered just-touched and scores low. This is the
+/// conservative choice for clock-skew scenarios.
+pub fn eviction_score(
+    now: std::time::SystemTime,
+    last_access: std::time::SystemTime,
+    solve_time_ms: u64,
+) -> f64 {
+    let age_secs = now
+        .duration_since(last_access)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    age_secs / solve_time_ms.max(1) as f64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
