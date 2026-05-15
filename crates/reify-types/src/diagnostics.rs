@@ -917,6 +917,32 @@ pub enum DiagnosticCode {
     /// wants to surface this as a harder failure (e.g. CI gate) can filter
     /// by code at the consumer side.
     LongChainRealization,
+    /// Origin: `crates/reify-eval/src/dispatcher.rs::no_kernel_chain_diagnostic`
+    /// (task 3434 — PRD `docs/prds/v0_3/multi-kernel-phase-3.md` §8 task γ +
+    /// §2 "failing closed is the failure mode").
+    ///
+    /// Canonical message form:
+    /// `"no kernel chain found for op '<Operation:?>' to produce '<ReprKind:?>'; \
+    /// available reprs: [<ReprKind:?>, ...]"`.
+    ///
+    /// Emitted as a `Severity::Error` when the multi-kernel dispatcher's BFS
+    /// over reachable [`ReprKind`](super::ReprKind) states exhausts without
+    /// reaching the demanded repr (or no registered kernel claims `(op,
+    /// demanded)` in its supports table). Mirrors PRD §2: the dispatcher
+    /// fails closed rather than silently picking an incompatible kernel —
+    /// the user gets a typed error and can adjust their kernel set or
+    /// `#kernel(...)` pragma. Available reprs are rendered from a
+    /// [`BTreeSet`](std::collections::BTreeSet) for deterministic ordering
+    /// across runs (the underlying `HashSet<ReprKind>` iteration is
+    /// hash-seeded; see `dispatch_seeding_order_is_deterministic` at
+    /// `dispatcher.rs:1010-1080`).
+    ///
+    /// The PRD-prose mnemonic for this code is `E_NO_KERNEL_CHAIN`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error). Consumed by
+    /// downstream tasks δ/ε (IDs 3435/3436) which wire the dispatcher None-
+    /// return into op-execution; until then this is scaffolding alongside
+    /// `LongChainRealization`'s established precedent (task 2646).
+    NoKernelChain,
     /// Origin: `crates/reify-eval/src/geometry_ops.rs::gate_query_capability`
     /// (task 3623 — PRD `docs/prds/v0_3/kernel-geometry-queries.md` §5.4).
     ///
