@@ -1814,6 +1814,7 @@ pub(crate) fn try_eval_topology_selector(
         "angle_between_surfaces" => TopologySelectorHelper::AngleBetweenSurfaces,
         "edges" => TopologySelectorHelper::Edges,
         "faces" => TopologySelectorHelper::Faces,
+        "center_of_mass" => TopologySelectorHelper::CenterOfMass,
         _ => return None,
     };
 
@@ -1840,7 +1841,7 @@ pub(crate) fn try_eval_topology_selector(
                         py: point[1],
                         pz: point[2],
                     };
-                    dispatch_closest_point(kernel, &query, &function.name, diagnostics)
+                    dispatch_point3_length_reply(kernel, &query, &function.name, diagnostics)
                 }
                 TopologySelectorHelper::IsOn => {
                     // Use `reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` (= OCCT's
@@ -1880,6 +1881,14 @@ pub(crate) fn try_eval_topology_selector(
             };
             dispatch_extract_subshapes(kernel, handle, kind, &function.name, diagnostics)
         }
+        TopologySelectorHelper::CenterOfMass => {
+            // args[0]: geometry ValueRef → named_steps map → GeometryHandleId.
+            let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
+            // args[1]: density ValueRef → values map → Real / dimensionless Scalar.
+            let density = resolve_real_scalar_arg(&args[1], values)?;
+            let query = reify_types::GeometryQuery::CenterOfMass { handle, density };
+            dispatch_point3_length_reply(kernel, &query, &function.name, diagnostics)
+        }
     }
 }
 
@@ -1894,6 +1903,9 @@ enum TopologySelectorHelper {
     /// `faces(geometry) -> List<Geometry>` — extract the unique faces of a
     /// shape (task 3560).
     Faces,
+    /// `center_of_mass(geometry, density) -> Point3<Length>` — uniform-density
+    /// center of mass (task 3560).
+    CenterOfMass,
 }
 
 impl TopologySelectorHelper {
@@ -1905,7 +1917,8 @@ impl TopologySelectorHelper {
         match self {
             TopologySelectorHelper::ClosestPoint
             | TopologySelectorHelper::IsOn
-            | TopologySelectorHelper::AngleBetweenSurfaces => 2,
+            | TopologySelectorHelper::AngleBetweenSurfaces
+            | TopologySelectorHelper::CenterOfMass => 2,
             TopologySelectorHelper::Edges | TopologySelectorHelper::Faces => 1,
         }
     }
@@ -1926,7 +1939,7 @@ enum ExtractKind {
 /// elements are the raw u64 handle ids cast to `i64`. Returns
 /// `Some(Value::Undef)` (with a Warning diagnostic) on kernel error.
 ///
-/// Sibling to `dispatch_closest_point` / `dispatch_point_on_shape` /
+/// Sibling to `dispatch_point3_length_reply` / `dispatch_point_on_shape` /
 /// `dispatch_surface_angle` — same defensive-downgrade contract.
 fn dispatch_extract_subshapes(
     kernel: &mut dyn reify_types::GeometryKernel,
@@ -2010,6 +2023,31 @@ fn resolve_point3_length_arg(
     Some(out)
 }
 
+/// Resolve a `CompiledExprKind::ValueRef` arg to a raw f64 from a
+/// `Value::Real` or a dimensionless `Value::Scalar`. Used for the `density`
+/// argument of `center_of_mass` / `moment_of_inertia` (a dimensionless
+/// numeric in v0.1 — the kernel multiplies OCCT's volume-weighted result by
+/// this scalar). Returns `None` for any non-`ValueRef` shape, missing cell,
+/// or a dimensioned Scalar — caller maps to the "unsupported arg shape →
+/// fall through" behaviour.
+fn resolve_real_scalar_arg(
+    expr: &reify_types::CompiledExpr,
+    values: &reify_types::ValueMap,
+) -> Option<f64> {
+    let id = match &expr.kind {
+        reify_types::CompiledExprKind::ValueRef(id) => id,
+        _ => return None,
+    };
+    match values.get(id)? {
+        reify_types::Value::Real(v) => Some(*v),
+        reify_types::Value::Scalar {
+            si_value,
+            dimension,
+        } if *dimension == reify_types::DimensionVector::DIMENSIONLESS => Some(*si_value),
+        _ => None,
+    }
+}
+
 /// Resolve a `CompiledExprKind::ValueRef` geometry-arg to a `GeometryHandleId`
 /// via `named_steps`. Returns `None` for any non-`ValueRef` shape or missing
 /// `named_steps` entry — caller maps to the "unsupported arg shape → fall
@@ -2025,11 +2063,15 @@ fn resolve_geometry_handle_arg(
     named_steps.get(&cell_id.member).copied()
 }
 
-/// Issue a `ClosestPointOnShape` query and unwrap to a
+/// Issue a query whose kernel reply is the canonical JSON-Point3
+/// (`{"x":_,"y":_,"z":_}`) wire format and unwrap to a
 /// `Value::Point(vec![length, length, length])`. Returns
 /// `Some(Value::Undef)` (with a Warning diagnostic) on a kernel error or a
-/// malformed JSON-Point3 reply.
-fn dispatch_closest_point(
+/// malformed reply. Shared by `closest_point` (`ClosestPointOnShape`) and
+/// `center_of_mass` (`CenterOfMass`) — both return the identical JSON-Point3
+/// encoding per the `GeometryQuery` doc, so a single decode path serves
+/// both.
+fn dispatch_point3_length_reply(
     kernel: &mut dyn reify_types::GeometryKernel,
     query: &reify_types::GeometryQuery,
     helper_name: &str,
@@ -6495,7 +6537,7 @@ mod tests {
     fn try_eval_topology_selector_closest_point_malformed_json_reply_emits_warning_and_returns_undef()
      {
         use reify_test_support::mocks::MockGeometryKernel;
-        // Pin the `Err(err)` parse-failure arm of `dispatch_closest_point`: a
+        // Pin the `Err(err)` parse-failure arm of `dispatch_point3_length_reply`: a
         // kernel reply whose `Value::String(_)` payload is not parseable as a
         // JSON-Point3 must produce `Some(Value::Undef)` with a Warning
         // diagnostic naming the helper. Defends the contract against a future
