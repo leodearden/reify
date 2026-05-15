@@ -807,9 +807,14 @@ impl EngineSession {
 
     /// Build the `parameters` map for an `AutoResolveIteration` payload.
     ///
-    /// Only `Value::Scalar` resolved params are included; other variants are
-    /// filtered out (auto parameters are always physical quantities, so non-scalar
-    /// resolved values indicate an unexpected state — skip rather than emit garbage).
+    /// For `Value::Scalar` resolved params, emits the engineering-unit display
+    /// value, formatted number string, and unit symbol.
+    ///
+    /// For non-Scalar resolved params (which indicate a buggy or unexpected
+    /// solver implementation — auto parameters are always physical quantities),
+    /// emits a sentinel `{ value: f64::NAN, unit: "", display: "<non-scalar>" }`
+    /// so the GUI panel can render an error chip instead of silently omitting the
+    /// cell.  The `warn!` log is kept for ops observability.
     fn build_parameters_payload(
         resolved: &HashMap<ValueCellId, Value>,
     ) -> HashMap<String, AutoResolveParameterValue> {
@@ -827,8 +832,16 @@ impl EngineSession {
                 );
             } else {
                 warn!(
-                    "auto-resolve: resolved param {:?} is not a Scalar; skipping",
+                    "auto-resolve: resolved param {:?} is not a Scalar; emitted NaN sentinel",
                     cell_id
+                );
+                out.insert(
+                    cell_id.to_string(),
+                    AutoResolveParameterValue {
+                        value: f64::NAN,
+                        unit: String::new(),
+                        display: "<non-scalar>".to_string(),
+                    },
                 );
             }
         }
