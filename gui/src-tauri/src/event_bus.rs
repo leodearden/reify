@@ -9,6 +9,12 @@
 //!   (b) a stable API surface that lets emitter call sites stay unchanged
 //!       when Phase 5 lint enforcement lands (PRD §9 task μ).
 //!
+//! **Near-term landing**: the first production call site is wired by PRD §9
+//! task γ (`auto-resolve` channel emitter), the immediate follow-on in the
+//! same PRD task sequence. Phase 2/3 emitter tasks (δ, ε, ζ, η, θ) will
+//! migrate the remaining channels. Until then `emit_typed` is scaffolding —
+//! direct `app.emit()` calls in existing code are not regressions.
+//!
 //! Hand-call to `app.emit()` remains permitted for variant-shaped payloads
 //! (LSP diagnostics, MCP-routed events) — see §3.4 final paragraph.
 

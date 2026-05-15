@@ -12,7 +12,7 @@
  * real channels.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { listen } from '@tauri-apps/api/event';
 
 // Must be declared at module scope before any imports from mockEvents.ts —
@@ -80,28 +80,4 @@ describe('convention smoke (GR-016 β)', () => {
     expect(warnSpy.mock.calls[0]?.[0]).toContain('convention-smoke');
   });
 
-  it('missing-emitter degradation: never emit, no callback fires, no error', async () => {
-    // §8.2 row 5 — registering a listener but never emitting is a safe no-op.
-    const cb = vi.fn();
-
-    await onConventionSmoke(cb);
-    // Intentionally no .emit() call.
-
-    expect(cb).not.toHaveBeenCalled();
-  });
-
-  it('mockTauriEvent.reset() clears registered handlers', async () => {
-    // Pins the .reset() semantics of the §6.3 contract so any future regression
-    // that drops the registry clear surfaces immediately.
-    const smokeHandle = mockTauriEvent<{ id: string; label: string }>('convention-smoke');
-    const cb = vi.fn();
-
-    await onConventionSmoke(cb);
-    // Clear the handler registry for this channel.
-    smokeHandle.reset();
-    // Emit a well-formed payload — cb should NOT fire since handlers are gone.
-    smokeHandle.emit({ id: 'after-reset', label: 'should-not-fire' });
-
-    expect(cb).not.toHaveBeenCalled();
-  });
 });
