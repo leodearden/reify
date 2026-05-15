@@ -1325,7 +1325,74 @@ pub fn evict_over_cap(
         }
         Err(e) => return Err(e),
     }
-    Ok(EvictionReport::default())
+
+    // Walk engine-version subdir: shard_dirs are the two-char subdirs under subdir.
+    // Collect all .bin candidates (skip .tmp.* in-flight writes and .meta sidecars).
+    let mut candidates: Vec<EvictionCandidate> = Vec::new();
+    let mut total_bytes: u64 = 0;
+
+    for shard_entry in std::fs::read_dir(&subdir)? {
+        let shard_entry = shard_entry?;
+        let shard_path = shard_entry.path();
+        if !shard_path.is_dir() {
+            continue;
+        }
+        for file_entry in std::fs::read_dir(&shard_path)? {
+            let file_entry = file_entry?;
+            let file_path = file_entry.path();
+            // Only include .bin files; skip .tmp.*, .meta, and anything else.
+            match file_path.extension().and_then(|e| e.to_str()) {
+                Some("bin") => {}
+                _ => continue,
+            }
+            // Also skip .tmp.* prefixed files (in-flight tempfile writes).
+            if file_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.starts_with(".tmp."))
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let bin_size = file_entry.metadata()?.len();
+            // Derive .meta path: same stem, .meta extension.
+            let meta_path = file_path.with_extension("meta");
+            total_bytes += bin_size;
+            candidates.push(EvictionCandidate {
+                bin_path: file_path,
+                meta_path,
+                bin_size,
+                // Placeholder values filled after sorting decision is added (step 8).
+                last_access: std::time::SystemTime::UNIX_EPOCH,
+                solve_time_ms: 0,
+            });
+        }
+    }
+
+    // Under cap — nothing to evict; report the actual on-disk total.
+    if total_bytes <= cap_bytes {
+        return Ok(EvictionReport {
+            evicted_count: 0,
+            evicted_bytes: 0,
+            remaining_bytes: total_bytes,
+        });
+    }
+
+    // Eviction loop deferred to step 8 — for now propagate no error.
+    Ok(EvictionReport {
+        evicted_count: 0,
+        evicted_bytes: 0,
+        remaining_bytes: total_bytes,
+    })
+}
+
+/// Internal candidate record used by the eviction loop.
+struct EvictionCandidate {
+    bin_path: PathBuf,
+    meta_path: PathBuf,
+    bin_size: u64,
+    last_access: std::time::SystemTime,
+    solve_time_ms: u64,
 }
 
 /// Compute the cost-weighted LRU eviction score for a cache entry.
