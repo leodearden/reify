@@ -20,7 +20,8 @@ use std::collections::HashSet;
 use reify_eval::seed_primitive_attributes;
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
 use reify_types::{
-    CapKind, FeatureId, GeometryOp, RealizationNodeId, Role, TopologyAttributeTable, Value,
+    AxisSign, CapKind, FeatureId, GeometryOp, RealizationNodeId, Role, TopologyAttributeTable,
+    Value,
 };
 
 /// 10×10×10 mm box, expressed in SI metres at the kernel boundary.
@@ -622,6 +623,218 @@ fn seed_primitive_attributes_records_new_edge_for_every_extracted_edge() {
                     attr.local_index
                 );
             }
+        }
+    }
+}
+
+// ─── task-3633 step-1: Box → 8 corner vertex entries (CornerVertex role) ──────
+
+#[test]
+fn seed_primitive_attributes_box_records_eight_corner_vertex_entries_with_distinct_payloads() {
+    if !OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let mut kernel = OcctKernelHandle::spawn();
+    let box_id = kernel.execute(&box_op()).expect("box should build").id;
+
+    let face_handles = kernel
+        .extract_faces(box_id)
+        .expect("extract_faces(box) should succeed");
+    let edge_handles = kernel
+        .extract_edges(box_id)
+        .expect("extract_edges(box) should succeed");
+    let vertex_handles = kernel
+        .extract_vertices(box_id)
+        .expect("extract_vertices(box) should succeed");
+    assert_eq!(
+        vertex_handles.len(),
+        8,
+        "a 10mm box should have exactly 8 vertices"
+    );
+
+    let feature_id = body_realization_feature_id();
+    let mut table = TopologyAttributeTable::default();
+    seed_primitive_attributes(
+        &mut table,
+        &mut kernel,
+        &face_handles,
+        &edge_handles,
+        &vertex_handles,
+        &feature_id,
+        &box_op(),
+    )
+    .expect("seed_primitive_attributes for a 10mm box with vertices should succeed");
+
+    // Collect all CornerVertex entries by their (x,y,z) sign triple.
+    let mut sign_combo_to_local_index: std::collections::HashMap<
+        (AxisSign, AxisSign, AxisSign),
+        u32,
+    > = std::collections::HashMap::new();
+
+    for (idx, &vertex_id) in vertex_handles.iter().enumerate() {
+        let attr = table.lookup(vertex_id).unwrap_or_else(|| {
+            panic!(
+                "box vertex #{} (handle {:?}) must have a TopologyAttribute entry",
+                idx, vertex_id
+            )
+        });
+        assert_eq!(
+            attr.feature_id, feature_id,
+            "box vertex #{idx} feature_id should equal Body#realization[0]"
+        );
+        assert_eq!(
+            attr.user_label, None,
+            "box vertex #{idx} user_label should be None per task-1 invariant"
+        );
+        assert!(
+            attr.mod_history.is_empty(),
+            "box vertex #{idx} mod_history should be empty per task-1 invariant"
+        );
+        match attr.role {
+            Role::CornerVertex { x, y, z } => {
+                let prev = sign_combo_to_local_index.insert((x, y, z), attr.local_index);
+                assert!(
+                    prev.is_none(),
+                    "box vertex #{idx} has duplicate (x={x:?}, y={y:?}, z={z:?}) sign combo"
+                );
+            }
+            other => panic!(
+                "box vertex #{idx} role should be Role::CornerVertex {{ .. }}, got {:?}",
+                other
+            ),
+        }
+    }
+
+    // All 8 sign combos must be present.
+    let expected_combos: std::collections::HashSet<(AxisSign, AxisSign, AxisSign)> = {
+        use AxisSign::{Neg, Pos};
+        [
+            (Pos, Pos, Pos),
+            (Pos, Pos, Neg),
+            (Pos, Neg, Pos),
+            (Pos, Neg, Neg),
+            (Neg, Pos, Pos),
+            (Neg, Pos, Neg),
+            (Neg, Neg, Pos),
+            (Neg, Neg, Neg),
+        ]
+        .iter()
+        .copied()
+        .collect()
+    };
+    let actual_combos: std::collections::HashSet<(AxisSign, AxisSign, AxisSign)> =
+        sign_combo_to_local_index.keys().copied().collect();
+    assert_eq!(
+        actual_combos, expected_combos,
+        "box vertex sign combos must cover all 8 (±X, ±Y, ±Z) combinations"
+    );
+
+    // Each local_index must be in 0..8 and distinct.
+    let mut local_indices: HashSet<u32> = HashSet::new();
+    for &li in sign_combo_to_local_index.values() {
+        assert!(li < 8, "box vertex local_index {li} must be in 0..8");
+        assert!(
+            local_indices.insert(li),
+            "box vertex local_index {li} appears twice — must be unique across the 8 corners"
+        );
+    }
+    assert_eq!(
+        local_indices.len(),
+        8,
+        "box vertex local_indices must cover 8 distinct values"
+    );
+}
+
+// ─── task-3633 step-1: Cylinder + Sphere → no vertex entries seeded ───────────
+
+#[test]
+fn cylinder_and_sphere_do_not_record_any_vertex_entries() {
+    if !OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    // ── Sub-case (1): Cylinder ────────────────────────────────────────────────
+    {
+        let mut kernel = OcctKernelHandle::spawn();
+        let cyl_id = kernel
+            .execute(&cylinder_op())
+            .expect("cylinder should build")
+            .id;
+        let face_handles = kernel
+            .extract_faces(cyl_id)
+            .expect("extract_faces(cylinder) should succeed");
+        let edge_handles = kernel
+            .extract_edges(cyl_id)
+            .expect("extract_edges(cylinder) should succeed");
+        let vertex_handles = kernel
+            .extract_vertices(cyl_id)
+            .expect("extract_vertices(cylinder) should succeed");
+
+        let feature_id = body_realization_feature_id();
+        let mut table = TopologyAttributeTable::default();
+        seed_primitive_attributes(
+            &mut table,
+            &mut kernel,
+            &face_handles,
+            &edge_handles,
+            &vertex_handles,
+            &feature_id,
+            &cylinder_op(),
+        )
+        .expect("seed_primitive_attributes for a cylinder should succeed");
+
+        // No vertex entries: cylinder has no analytic vertices per PRD §2 Q-MM2-1.
+        for (idx, &vertex_id) in vertex_handles.iter().enumerate() {
+            assert!(
+                table.lookup(vertex_id).is_none(),
+                "cylinder vertex #{idx} (handle {:?}) must NOT have an entry — \
+                 Cylinder has no analytic vertices per PRD §2 Q-MM2-1",
+                vertex_id
+            );
+        }
+    }
+
+    // ── Sub-case (2): Sphere ──────────────────────────────────────────────────
+    {
+        let mut kernel = OcctKernelHandle::spawn();
+        let sphere_id = kernel
+            .execute(&sphere_op())
+            .expect("sphere should build")
+            .id;
+        let face_handles = kernel
+            .extract_faces(sphere_id)
+            .expect("extract_faces(sphere) should succeed");
+        let edge_handles = kernel
+            .extract_edges(sphere_id)
+            .expect("extract_edges(sphere) should succeed");
+        let vertex_handles = kernel
+            .extract_vertices(sphere_id)
+            .expect("extract_vertices(sphere) should succeed");
+
+        let feature_id = body_realization_feature_id();
+        let mut table = TopologyAttributeTable::default();
+        seed_primitive_attributes(
+            &mut table,
+            &mut kernel,
+            &face_handles,
+            &edge_handles,
+            &vertex_handles,
+            &feature_id,
+            &sphere_op(),
+        )
+        .expect("seed_primitive_attributes for a sphere should succeed");
+
+        // No vertex entries: sphere has no analytic vertices per PRD §2 Q-MM2-1.
+        for (idx, &vertex_id) in vertex_handles.iter().enumerate() {
+            assert!(
+                table.lookup(vertex_id).is_none(),
+                "sphere vertex #{idx} (handle {:?}) must NOT have an entry — \
+                 Sphere has no analytic vertices per PRD §2 Q-MM2-1",
+                vertex_id
+            );
         }
     }
 }
