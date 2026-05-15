@@ -138,11 +138,23 @@ pub(crate) const CONTRIBUTORS_RELATIVE: &[&str] = &[
 /// | Pattern | Examples |
 /// |---------|---------|
 /// | Extension in `{swp, swo, swn, bk, bak, orig, rej, tmp}` | `.foo.swp`, `bar.orig` |
+/// | Bare dot-prefixed name in `{swp, swo, swn, bk, bak, orig, rej, tmp}` | `.swp`, `.bak` |
 /// | Exact name (case-insensitive) `{.ds_store, thumbs.db, desktop.ini}` | `.DS_Store` |
 /// | Name ending with `~` | `foo.rs~` (Emacs backup) |
+///
+/// All four rules apply uniformly to both files and directory names encountered
+/// during enumeration.
 // Used by `walk_recursive` which is itself `#[allow(dead_code)]`.
 // See walk_contributor for inline-never workaround history (task 3429).
 #[allow(dead_code)]
+/// Suffix set shared by the bare dot-prefix branch and the extension branch of
+/// [`is_editor_debris`].  Kept as a single constant so both branches always
+/// test the same set — a future addition to one cannot silently diverge from
+/// the other.
+const DEBRIS_SUFFIXES: &[&str] = &[
+    "swp", "swo", "swn", "bk", "bak", "orig", "rej", "tmp",
+];
+
 fn is_editor_debris(file_name: &OsStr) -> bool {
     let name_lower = file_name.to_string_lossy().to_lowercase();
 
@@ -163,12 +175,9 @@ fn is_editor_debris(file_name: &OsStr) -> bool {
     // `Path::extension()` returns `None` for these because the leading dot is
     // treated as the beginning of the stem, not as a separator — so the
     // extension branch below would silently miss them.  Strip the leading dot
-    // and match the remainder against the same suffix set.
+    // and match the remainder against DEBRIS_SUFFIXES.
     if let Some(stripped) = name_lower.strip_prefix('.')
-        && matches!(
-            stripped,
-            "swp" | "swo" | "swn" | "bk" | "bak" | "orig" | "rej" | "tmp"
-        )
+        && DEBRIS_SUFFIXES.contains(&stripped)
     {
         return true;
     }
@@ -176,10 +185,7 @@ fn is_editor_debris(file_name: &OsStr) -> bool {
     // Extension-based matches: extract the last `.`-delimited component.
     if let Some(ext) = std::path::Path::new(file_name).extension() {
         let ext_lower = ext.to_string_lossy().to_lowercase();
-        if matches!(
-            ext_lower.as_str(),
-            "swp" | "swo" | "swn" | "bk" | "bak" | "orig" | "rej" | "tmp"
-        ) {
+        if DEBRIS_SUFFIXES.contains(&ext_lower.as_str()) {
             return true;
         }
     }
