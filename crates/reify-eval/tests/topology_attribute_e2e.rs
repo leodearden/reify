@@ -1145,16 +1145,28 @@ fn engine_build_emits_local_index_reassignment_for_coincident_box_union() {
         build_result.diagnostics
     );
 
-    // The warning must name both the realization's feature_id AND the role in
+    // Each warning must name both the realization's feature_id AND the role in
     // the SAME message — proves the engine's `realization_feature_id` path and
     // `detect_local_index_reassignment_diagnostics` role formatting together.
     // Two separate `.any()` checks would pass even if a regression split the
     // fields across distinct diagnostics; a single combined check prevents that.
+    //
+    // A coincident-box union emits two warnings per realization: one for Role::Side
+    // (tied face centroids) and one for Role::NewEdge (tied seam-edge centroids).
+    // Both are pinned here to match the cross-realization test's per-role coverage.
     assert!(
         warnings
             .iter()
             .any(|d| d.message.contains("S#realization[0]") && d.message.contains("Side")),
         "expected a warning naming both 'S#realization[0]' and 'Side' in the same message; \
+         messages: {:?}",
+        warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|d| d.message.contains("S#realization[0]") && d.message.contains("NewEdge")),
+        "expected a warning naming both 'S#realization[0]' and 'NewEdge' in the same message; \
          messages: {:?}",
         warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
@@ -1341,9 +1353,9 @@ fn engine_build_local_index_reassignment_warning_filters_cross_realization() {
     //
     // Cross-realization isolation: a broken per-realization filter in
     // `execute_realization_ops` would cause realization 1's detector pass to
-    // re-see realization 0's still-resident table entries and emit two spurious
-    // additional warnings naming `S#realization[0]`, making r0_count == 4 and
-    // tripping the assert below.
+    // re-see realization 0's still-resident table entries, emitting at least two
+    // additional warnings naming `S#realization[0]` (one per role), making
+    // r0_count ≥ 4 and tripping the assert below.
     let r0_count = warnings
         .iter()
         .filter(|d| d.message.contains("S#realization[0]"))
@@ -1356,12 +1368,13 @@ fn engine_build_local_index_reassignment_warning_filters_cross_realization() {
     // one for Role::Side and one for Role::NewEdge. So each realization contributes
     // exactly 2 warnings naming its feature_id. A broken per-realization filter
     // would cause realization 1's detector pass to re-see realization 0's entries,
-    // doubling r0_count from 2 to 4 and tripping the assert.
+    // emitting at least two additional warnings naming S#realization[0] (one per role),
+    // making r0_count ≥ 4 and tripping the assert.
     assert_eq!(
         r0_count,
         2,
         "expected exactly 2 warnings naming S#realization[0] (one per role: Side + NewEdge); \
-         broken per-realization filter would yield 4; \
+         broken per-realization filter would yield ≥ 4; \
          messages: {:?}",
         warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
