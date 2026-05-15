@@ -3839,4 +3839,72 @@ mod tests {
             "differing hash must signal invalidation (changed == true)"
         );
     }
+
+    /// Pins that `CacheStore` admits `NodeId::Compute(_)` as a valid chain-root
+    /// cause — PRD §3 "Chain-root contract extension". Two sub-assertions:
+    ///
+    /// (a) **Direct admission via `mark_pending_with_cause`.**  A
+    ///     `NodeId::Compute(N)` may be stored as the `pending_cause` of a
+    ///     downstream `NodeId::Value(V)` entry; reading back via
+    ///     `pending_cause` must return `Some(NodeId::Compute(N))`.
+    ///
+    /// (b) **Forwarder semantics through `derive_output_freshness_with_cause`.**
+    ///     A Pending Value input whose `upstream_cause = Some(NodeId::Compute(N))`
+    ///     must forward the Compute chain root unchanged through the
+    ///     Pending-forwarding branch (cache.rs:1080-1135).
+    ///
+    /// Both sub-assertions are contract-pinning of already-correct behaviour
+    /// (the underlying `Option<NodeId>` field and the forwarder branch are
+    /// variant-agnostic); the test makes the admission explicit per PRD §8 task α.
+    #[test]
+    fn cache_store_admits_compute_node_id_as_pending_cause_chain_root() {
+        use reify_types::{ComputeNodeId, Freshness, ResultRef};
+
+        // Build the ComputeNode ID that will act as the chain root.
+        let cn_id = ComputeNodeId::new("T", 0);
+        let compute_node = NodeId::Compute(cn_id.clone());
+
+        // ── (a) Direct admission via mark_pending_with_cause ─────────────────
+        let mut store = CacheStore::new();
+        let v_id = ValueCellId::new("T", "v");
+        store.put(NodeId::Value(v_id.clone()), make_seed_entry());
+
+        assert!(
+            store.mark_pending_with_cause(&NodeId::Value(v_id.clone()), compute_node.clone()),
+            "mark_pending_with_cause must return true for an existing entry \
+             (PRD §3 chain-root contract extension)"
+        );
+        assert_eq!(
+            store.pending_cause(&NodeId::Value(v_id.clone())),
+            Some(compute_node.clone()),
+            "pending_cause must admit NodeId::Compute(_) as chain root \
+             (PRD §3 chain-root contract extension)"
+        );
+
+        // ── (b) Forwarder semantics through derive_output_freshness_with_cause
+        // A Pending Value input carrying upstream_cause = Some(Compute(N)) must
+        // forward the Compute chain root unchanged (cache.rs:1080-1135 Pending branch).
+        let mid_id = ValueCellId::new("T", "mid");
+        let (fresh, cause) = derive_output_freshness_with_cause(
+            false,
+            [(
+                NodeId::Value(mid_id),
+                Freshness::Pending {
+                    last_substantive: ResultRef::none(),
+                },
+                Some(compute_node.clone()),
+            )],
+            0u64,
+        );
+        assert!(
+            matches!(fresh, Freshness::Pending { .. }),
+            "Pending input must yield Pending output (cache.rs:1080-1135)"
+        );
+        assert_eq!(
+            cause,
+            Some(compute_node),
+            "Pending-forwarding branch must carry NodeId::Compute(_) cause unchanged \
+             (PRD §3 chain-root contract extension; cache.rs:1080-1135)"
+        );
+    }
 }
