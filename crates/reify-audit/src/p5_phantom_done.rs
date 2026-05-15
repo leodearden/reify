@@ -40,21 +40,31 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
 
 /// Single-task entry point for the D-1 dark-factory pre-done hook
 /// (`docs/architecture-audit/f-infra-design.md` §3 + §11). Scopes the
-/// otherwise-identical [`check`] pass to one `task_id` so the orchestrator
-/// can call us synchronously before flipping a task to `done` without
-/// auditing its entire backlog.
+/// detector to one `task_id` so the orchestrator can call us synchronously
+/// before flipping a task to `done` without auditing its entire backlog.
 ///
-/// Hot-path note: the D-1 hook fires on every status flip, so this wrapper
-/// passes `target_task_id` through to the inner routine without cloning
-/// the `task_metadata` HashMap — at backlog sizes of hundreds of tasks the
-/// clone would dominate the per-flip cost while the inner filter already
-/// skips non-target rows in O(n) anyway.
+/// Hot path: D-1 fires on every status flip. Direct HashMap lookup keeps
+/// this wrapper O(1) rather than the O(n) linear scan that `check_with_target`
+/// does across all rows.
 ///
 /// Slice-1 ships the wrapper; T-4 will host the CLI subprocess that the
 /// hook actually invokes.
 // G-allow: F-infra T-4 CLI consumer (crates/reify-audit-cli) — design pinned in docs/architecture-audit/f-infra-design.md
 pub fn check_pre_done(ctx: &AuditContext, task_id: &str) -> Vec<Finding> {
-    check_with_target(ctx, Some(task_id))
+    let Some(meta) = ctx.task_metadata.get(task_id) else {
+        return vec![];
+    };
+    if meta.status != "done" {
+        return vec![];
+    }
+    let mut findings = Vec::new();
+    if let Some(f) = check_one(ctx, meta) {
+        findings.push(f);
+    }
+    if let Some(f) = check_gitignored(ctx, meta) {
+        findings.push(f);
+    }
+    findings
 }
 
 /// Shared inner routine for [`check`] and [`check_pre_done`]. Borrows the
