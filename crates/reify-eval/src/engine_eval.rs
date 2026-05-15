@@ -2857,9 +2857,16 @@ impl Engine {
                                 diagnostics.extend(diags);
                             }
                         }
+                    } else {
+                        // Unregistered target (PRD §9 Q1, task γ): emit Error
+                        // diagnostic, then fall through to body-inlining.
+                        // Release-hard-error is deferred to slice η.
+                        diagnostics.push(Diagnostic::error(format!(
+                            "@optimized target {:?}: no registered compute trampoline \
+                             (falling back to body-inlining)",
+                            target
+                        )));
                     }
-                    // Unregistered target: fall through to eval_expr below.
-                    // step-8 adds the fallback diagnostic in this branch.
                 }
             }
 
