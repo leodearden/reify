@@ -164,8 +164,8 @@ Contract document authored 2026-05-12: `docs/prds/v0_3/structure-instance-runtim
 | Failure mode | F1 |
 | Evidence | `findings/auto-type-param-resolution.md` M-009/M-010/M-014; `findings/auto-resolution-backtracking.md` M-002/M-014; `findings/kleene-logic.md` M-002 (sibling — `implies` operator no parser); `findings/match-block-decls.md` M-001; `findings/specialization-scope.md` M-002; `findings/shadowing-warning.md` M-015/M-016 |
 | Cited by PRDs | auto-type-param-resolution, auto-resolution-backtracking, kleene-logic, match-block-decls, specialization-scope, shadowing-warning |
-| Blocks tasks | Per cluster C-05; **task 3465 filed** (`phase-3-fixnow-filing-log.md`) |
-| Disposition | **fix-now → task #3465 filed** ("Auto-type-param resolver: invoke Phase A/B/C orchestrator from compile pipeline; populate CompiledModule.auto_type_substitution"). Leaf observable: fixture .ri with inferable type-param compiles AND eval yields correctly-typed value (not Real placeholder); negative-path emits `E_AUTO_TYPE_PARAM_UNRESOLVED`. |
+| Blocks tasks | Per cluster C-05; **task 3522 filed** (originally 3465; remapped via 2026-05-13 SIGABRT recovery — see `phase-3-fixnow-filing-log.md` top banner) |
+| Disposition | **fix-now → task #3522 filed** ("Auto-type-param resolver: invoke Phase A/B/C orchestrator from compile pipeline; populate CompiledModule.auto_type_substitution"). Leaf observable: fixture .ri with inferable type-param compiles AND eval yields correctly-typed value (not Real placeholder); negative-path emits `E_AUTO_TYPE_PARAM_UNRESOLVED`. |
 | Discovered | 2026-05-12 architecture audit |
 | Notes | Phase-3 scaffold-pattern critique flags this as exemplar Type A (scaffold-without-caller) — substantial orchestrator code shipped behind tests, no production call site. Sibling grammar gaps (kleene `implies`, match-block decls, sub bodies) live in C-06 (GR-009) and are PRD-shape work rather than fix-now. |
 
