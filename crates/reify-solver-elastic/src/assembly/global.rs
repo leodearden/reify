@@ -223,8 +223,7 @@ pub fn detect_orphan_dofs(
     // count always reflects the true total; push is gated by the cap.
     let mut count = 0usize;
     let mut examples: Vec<(usize, usize)> = Vec::new();
-    for node in 0..n_nodes {
-        let d_local = d_max_local[node];
+    for (node, &d_local) in d_max_local.iter().enumerate().take(n_nodes) {
         if d_local > 0 && d_local < d_global {
             for axis in d_local..d_global {
                 count += 1;
