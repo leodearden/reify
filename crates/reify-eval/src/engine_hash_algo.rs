@@ -164,13 +164,13 @@ fn is_editor_debris(file_name: &OsStr) -> bool {
     // treated as the beginning of the stem, not as a separator — so the
     // extension branch below would silently miss them.  Strip the leading dot
     // and match the remainder against the same suffix set.
-    if let Some(stripped) = name_lower.strip_prefix('.') {
-        if matches!(
+    if let Some(stripped) = name_lower.strip_prefix('.')
+        && matches!(
             stripped,
             "swp" | "swo" | "swn" | "bk" | "bak" | "orig" | "rej" | "tmp"
-        ) {
-            return true;
-        }
+        )
+    {
+        return true;
     }
 
     // Extension-based matches: extract the last `.`-delimited component.
