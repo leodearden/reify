@@ -59,8 +59,11 @@ impl<'k> Projector for OcctProjector<'k> {
 
     fn vertex_position(
         &self,
-        _vertex: GeometryHandleId,
+        vertex: GeometryHandleId,
     ) -> Result<[f64; 3], ProjectorPayload> {
-        unimplemented!("step-10")
+        // PRD §3.4: BRep_Tool::Pnt direct; no closest-point. Short-circuits
+        // the BRepExtrema path entirely (`vertex_point` is a direct wrapper
+        // around `BRep_Tool::Pnt(TopoDS::Vertex(shape))`).
+        self.kernel.vertex_point(vertex).map_err(wrap_kernel_error)
     }
 }
