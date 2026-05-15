@@ -522,7 +522,8 @@ mod tests {
 
     use super::{
         DispatchPlan, LONG_CHAIN_DEFAULT_THRESHOLD_MS, LONG_CHAIN_MIN_STAGES,
-        LONG_CHAIN_THRESHOLD_ENV_VAR, dispatch, is_long_chain_realization, long_chain_diagnostic,
+        LONG_CHAIN_THRESHOLD_ENV_VAR, dispatch, is_long_chain_realization,
+        kernel_pragma_unsatisfiable_diagnostic, long_chain_diagnostic,
         long_chain_threshold_from_env_value, no_kernel_chain_diagnostic,
         per_stage_tolerance_for_plan,
     };
@@ -1538,6 +1539,59 @@ mod tests {
                 diag.message.contains(needle),
                 "diagnostic message must surface {:?} so the user can see \
                  which op/repr conversion was impossible (got: {:?})",
+                needle,
+                diag.message,
+            );
+        }
+    }
+
+    /// Pins the wire-contract of [`kernel_pragma_unsatisfiable_diagnostic`]:
+    /// `Severity::Warning` + `Some(DiagnosticCode::KernelPragmaUnsatisfiable)`.
+    /// Warning (not Error) per PRD `docs/prds/v0_3/multi-kernel-phase-3.md`
+    /// §5 "warning, not error — fall through to default lex-min selection so
+    /// the user's design still evaluates". Consumed by task ο (ID 3443).
+    #[test]
+    fn kernel_pragma_unsatisfiable_diagnostic_carries_warning_severity_and_code() {
+        use reify_types::{DiagnosticCode, Severity};
+
+        let diag = kernel_pragma_unsatisfiable_diagnostic(
+            "manifold",
+            Operation::BooleanUnion,
+            ReprKind::Mesh,
+        );
+
+        assert_eq!(
+            diag.severity,
+            Severity::Warning,
+            "diagnostic severity must be Warning (PRD §5: warning, not \
+             error — fall through to default kernel selection)"
+        );
+        assert_eq!(
+            diag.code,
+            Some(DiagnosticCode::KernelPragmaUnsatisfiable),
+            "diagnostic code must round-trip the typed variant for downstream \
+             filter-by-code consumers (task ο wiring + LSP / MCP)"
+        );
+    }
+
+    /// Pins the user-visible-content requirement: the message must name the
+    /// pragma kernel, the op (Debug-rendered), and the demanded repr so the
+    /// user can see which `#kernel(...)` preference could not be honoured.
+    /// Asserts only `contains()` — wording-churn-resistant per the
+    /// long-chain precedent.
+    #[test]
+    fn kernel_pragma_unsatisfiable_diagnostic_message_names_pragma_op_demanded() {
+        let diag = kernel_pragma_unsatisfiable_diagnostic(
+            "manifold",
+            Operation::BooleanUnion,
+            ReprKind::Mesh,
+        );
+
+        for needle in ["manifold", "BooleanUnion", "Mesh"] {
+            assert!(
+                diag.message.contains(needle),
+                "diagnostic message must surface {:?} so the user can see \
+                 which pragma preference was unmet (got: {:?})",
                 needle,
                 diag.message,
             );
