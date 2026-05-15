@@ -759,7 +759,7 @@ pub(crate) fn try_default_padding<'a>(
         // All trailing params must carry Some compiled default.
         let defaults: Option<Vec<CompiledExpr>> = cand.param_defaults[provided..]
             .iter()
-            .map(|d| d.clone())
+            .cloned()
             .collect();
         if let Some(defaults) = defaults {
             satisfiable.push((cand, defaults));
