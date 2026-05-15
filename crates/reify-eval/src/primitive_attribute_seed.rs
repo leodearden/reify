@@ -98,18 +98,22 @@ use reify_types::{
 /// `topology_selectors` filters.
 const NORMAL_Z_EPSILON: f64 = 1.0e-6;
 
-/// Extract the primitive's faces/edges from `kernel` and seed
+/// Extract the primitive's faces/edges/vertices from `kernel` and seed
 /// `TopologyAttribute` records for each, in one call.
 ///
 /// Convenience wrapper for callers (e.g. `Engine::execute_realization_ops`)
-/// that don't already have pre-extracted face/edge handle vectors and
+/// that don't already have pre-extracted face/edge/vertex handle vectors and
 /// don't need to reuse them downstream. For seedable primitive variants
 /// (`Box`, `Cylinder`, `Sphere`), this calls `kernel.extract_faces` /
-/// `kernel.extract_edges` and then delegates to
-/// [`seed_primitive_attributes`]. For non-seedable variants, it returns
-/// `Ok(())` without calling into the kernel — the dispatch by op kind
-/// happens here so non-primitive ops (Translate / boolean / sweep / …)
-/// pay zero kernel overhead per realization op.
+/// `kernel.extract_edges` and delegates to [`seed_primitive_attributes`].
+/// For `GeometryOp::Box` specifically, it also calls
+/// `kernel.extract_vertices` and passes the resulting handles through so
+/// that `record_box_corner_vertices` populates the 8 `CornerVertex` entries.
+/// For `Cylinder` / `Sphere`, vertex extraction is skipped at zero cost
+/// (no analytic vertices per PRD §2 Q-MM2-1).
+/// For non-seedable variants, returns `Ok(())` without calling into the
+/// kernel — the dispatch by op kind happens here so non-primitive ops
+/// (Translate / boolean / sweep / …) pay zero kernel overhead per op.
 ///
 /// `Engine::execute_realization_ops` cannot use the underlying
 /// [`seed_primitive_attributes`] directly because the kernel is not
@@ -121,14 +125,14 @@ const NORMAL_Z_EPSILON: f64 = 1.0e-6;
 /// should treat any `Err(QueryError)` as auxiliary-metadata failure
 /// (warn and continue) rather than primary geometry failure.
 ///
-/// Visibility: `pub(crate)` — this wrapper exists solely to keep
-/// `Engine::execute_realization_ops`'s borrow brackets clean (see the
-/// rationale paragraph above). The module-level
-/// [`seed_primitive_attributes`] is the public entry point that
-/// integration tests in `tests/topology_attribute_primitives_direct.rs`
-/// consume directly. Re-exporting this wrapper would grow the crate's
-/// public API for a single-call-site helper.
-pub(crate) fn seed_primitive_attributes_for_handle(
+/// Visibility: `pub` — widened from `pub(crate)` in task 3633 (step-4)
+/// so that the integration test
+/// `topology_attribute_primitives_direct::seed_primitive_attributes_for_handle_box_extracts_and_seeds_vertices_too`
+/// (which lives in `tests/` and links against the crate as an external
+/// consumer) can call it directly. The function is a thin wrapper whose
+/// contract is already documented; there is no meaningful privacy boundary
+/// worth preserving here.
+pub fn seed_primitive_attributes_for_handle(
     table: &mut TopologyAttributeTable,
     kernel: &mut dyn GeometryKernel,
     result_handle: GeometryHandleId,
@@ -146,9 +150,24 @@ pub(crate) fn seed_primitive_attributes_for_handle(
     }
     let face_handles = kernel.extract_faces(result_handle)?;
     let edge_handles = kernel.extract_edges(result_handle)?;
-    // vertex_handles is left as &[] here — step-4 (task 3633) widens this
-    // wrapper to extract vertices for Box ops and pass them through.
-    seed_primitive_attributes(table, kernel, &face_handles, &edge_handles, &[], feature_id, op)
+    // Extract vertices only for Box ops — vertex enumeration includes shape
+    // exploration and is more expensive than face/edge extraction.
+    // Cylinder/Sphere have no analytic vertices (PRD §2 Q-MM2-1), so their
+    // vertex slices stay empty at zero kernel cost.
+    let vertex_handles: Vec<GeometryHandleId> = if matches!(op, GeometryOp::Box { .. }) {
+        kernel.extract_vertices(result_handle)?
+    } else {
+        Vec::new()
+    };
+    seed_primitive_attributes(
+        table,
+        kernel,
+        &face_handles,
+        &edge_handles,
+        &vertex_handles,
+        feature_id,
+        op,
+    )
 }
 
 /// Returns `true` for `GeometryOp` variants that this seeder originates
