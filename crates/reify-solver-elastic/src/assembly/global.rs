@@ -123,11 +123,16 @@ pub struct OrphanDofsSummary {
 impl std::fmt::Display for OrphanDofsSummary {
     /// Single-line summary suitable for `eprintln!` and grep.
     ///
-    /// Format (non-empty, no truncation):
-    /// `orphan DOFs: count=9, examples=[(1, 3), (1, 4), (1, 5), ...]`
+    /// Format (non-empty, no truncation — all examples listed explicitly):
+    /// `orphan DOFs: count=9, examples=[(1, 3), (1, 4), (1, 5), (2, 3), (2, 4), (2, 5), (3, 3), (3, 4), (3, 5)]`
     ///
-    /// Format (truncated, `examples.len() < count`):
-    /// `orphan DOFs: count=24, examples=[(1, 3), ..., (6, 3)] (first 16 of 24)`
+    /// Format (truncated, `examples.len() < count` — all `MAX_EXAMPLES`
+    /// entries listed explicitly, then a trailing parenthetical):
+    /// `orphan DOFs: count=24, examples=[(1, 3), (1, 4), (1, 5), (2, 3), ... (16 entries total)] (first 16 of 24)`
+    ///
+    /// Note: there is no `...` ellipsis inside the brackets — all stored
+    /// examples are emitted verbatim. The parenthetical `(first N of M)` only
+    /// appears when the list is truncated (`examples.len() < count`).
     ///
     /// Format (empty / no orphans):
     /// `orphan DOFs: count=0, examples=[]`
@@ -186,12 +191,41 @@ impl std::fmt::Display for OrphanDofsSummary {
 /// Diagnostic surface added per task 3293. See also task 2917 (Dirichlet BC)
 /// and task 3020 (MPC tying) for the stabilisation layers that suppress
 /// singular-K failures from orphan DOFs.
+///
+/// # Panics
+///
+/// Panics (index out of bounds) if any node index in an element's connectivity
+/// is `>= n_nodes`. Panics (divide by zero) if any element's connectivity is
+/// empty (`e.connectivity.len() == 0`). These contracts match those of
+/// [`assemble_global_stiffness`] — callers should validate the mesh before
+/// calling this function as a pre-assembly check.
+///
+/// In debug builds, two `debug_assert!`s enforce these contracts eagerly:
+/// one on non-empty connectivity and one on all node indices being in-bounds.
 pub fn detect_orphan_dofs(
     n_nodes: usize,
     elements: &[AssemblyElement<'_>],
 ) -> OrphanDofsSummary {
     if elements.is_empty() {
         return OrphanDofsSummary::default();
+    }
+
+    // Validate input contracts (matches assemble_global_stiffness's implicit
+    // contract): every element must have non-empty connectivity, and every
+    // referenced node must be in-bounds for n_nodes.
+    #[cfg(debug_assertions)]
+    for e in elements {
+        debug_assert!(
+            !e.connectivity.is_empty(),
+            "detect_orphan_dofs: element {} has empty connectivity",
+            e.id
+        );
+        debug_assert!(
+            e.connectivity.iter().all(|&n| n < n_nodes),
+            "detect_orphan_dofs: element {} has a node index >= n_nodes ({})",
+            e.id,
+            n_nodes
+        );
     }
 
     // Global DOFs-per-node D = max(d_e_e) over all elements, mirroring the
@@ -223,7 +257,7 @@ pub fn detect_orphan_dofs(
     // count always reflects the true total; push is gated by the cap.
     let mut count = 0usize;
     let mut examples: Vec<(usize, usize)> = Vec::new();
-    for (node, &d_local) in d_max_local.iter().enumerate().take(n_nodes) {
+    for (node, &d_local) in d_max_local.iter().enumerate() {
         if d_local > 0 && d_local < d_global {
             for axis in d_local..d_global {
                 count += 1;
@@ -2394,6 +2428,19 @@ mod tests {
 
         assert_eq!(k.nrows(), dim);
         assert_eq!(k.ncols(), dim);
+
+        // Precondition: the fixture's orphan count must fit within MAX_EXAMPLES
+        // so that every orphan is covered by summary.examples. If the fixture
+        // ever grows past the cap this assert fires loudly rather than silently
+        // weakening the loop below.
+        assert!(
+            summary.examples.len() == summary.count,
+            "fixture has more orphans ({}) than MAX_EXAMPLES ({}); \
+             the consistency loop below only covers summary.examples — \
+             either raise MAX_EXAMPLES or use a smaller fixture",
+            summary.count,
+            summary.examples.len(),
+        );
 
         // For every reported orphan (node, α) the entire DOF row and column
         // must be zero.
