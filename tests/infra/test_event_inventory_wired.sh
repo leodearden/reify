@@ -56,9 +56,12 @@ echo "--- (e): timeout --kill-after=60 wraps the invocation in lint_command ---"
 # span across &&-separated clauses because every segment between
 # 'timeout --kill-after=60' and 'check_event_inventory.sh' is a short
 # literal/anchored class — no greedy '.*' that would cross clause boundaries.
-# (step-3: intentionally left as the OLD loose greedy form so the synthetic-
-# negative sub-assertions below fail and demonstrate the bug they catch.)
-TIMEOUT_PATTERN='timeout --kill-after=60.*check_event_inventory\.sh'
+# The exact-shape pattern:
+#   timeout --kill-after=60 <digits>m bash scripts/check_event_inventory.sh
+# cannot cross clause boundaries because every segment between
+# 'timeout --kill-after=60' and 'check_event_inventory.sh' is a short
+# literal/anchored class with no greedy '.*'.
+TIMEOUT_PATTERN='timeout --kill-after=60 [0-9]+m bash scripts/check_event_inventory\.sh'
 
 assert "lint_command wraps check_event_inventory.sh with 'timeout --kill-after=60'" \
     bash -c "grep 'lint_command:' '$ORCH' | grep -qE '$TIMEOUT_PATTERN'"
