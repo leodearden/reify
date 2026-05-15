@@ -1601,6 +1601,320 @@ pub fn eviction_score(
     age_secs / solve_time_ms.max(1) as f64
 }
 
+// ── Startup-sweep public API ─────────────────────────────────────────────────
+
+/// Minimum mtime age for a `.tmp.*` file to be considered a crashed-writer
+/// leftover and removed by [`sweep_stale_tempfiles`].
+///
+/// 1 hour gives any in-flight `write_entry` call plenty of time to finish
+/// before its tempfile is collected.
+pub const STALE_TEMPFILE_AGE: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// Minimum mtime age for a non-current engine-version subdirectory to be
+/// pruned by [`prune_orphan_engine_version_dirs`].
+///
+/// 30 days ensures an older build's cache is not discarded during rapid
+/// iteration, while still reclaiming disk space over time.
+pub const ORPHAN_DIR_AGE: std::time::Duration =
+    std::time::Duration::from_secs(30 * 24 * 3600);
+
+/// Outcome of a startup-sweep operation.
+///
+/// Mirrors [`EvictionReport`] in shape: a plain `Copy` value returned from
+/// each sweep function so callers can log or assert on the results without
+/// coupling to internal bookkeeping types.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SweepReport {
+    /// Number of stale `.tmp.*` files removed by [`sweep_stale_tempfiles`].
+    pub tempfiles_removed: u64,
+    /// Number of orphan engine-version subdirectories removed by
+    /// [`prune_orphan_engine_version_dirs`].
+    pub orphan_dirs_removed: u64,
+}
+
+/// Delete stale `.tmp.*` crashed-writer leftovers under `cache_root`.
+///
+/// Recursively walks the entire `cache_root` subtree. Any regular file whose
+/// name starts with `.tmp.` and whose mtime is older than [`STALE_TEMPFILE_AGE`]
+/// is removed. Files and directories that cannot be read or removed are skipped
+/// with a `tracing::debug!` log entry — individual failures never abort the
+/// sweep or propagate to the caller.
+///
+/// Returns a [`SweepReport`] with `tempfiles_removed` set to the number of
+/// files actually deleted. `orphan_dirs_removed` is always 0 (this function
+/// does not prune directories; see [`prune_orphan_engine_version_dirs`]).
+///
+/// # Non-blocking
+///
+/// If `cache_root` does not exist, returns `SweepReport::default()` immediately
+/// without any error — the sweep is a no-op on a first run or a clean system.
+pub fn sweep_stale_tempfiles(cache_root: &Path) -> SweepReport {
+    let mut report = SweepReport::default();
+    let now = std::time::SystemTime::now();
+
+    // Guard: absent cache_root → silent no-op (mirrors evict_over_cap's
+    // NotFound → Ok(default) idiom).
+    match std::fs::metadata(cache_root) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return report,
+        Err(e) => {
+            tracing::debug!(
+                "sweep_stale_tempfiles: cannot stat cache_root {:?}: {e}",
+                cache_root
+            );
+            return report;
+        }
+    }
+
+    sweep_stale_tempfiles_recursive(cache_root, now, &mut report);
+    report
+}
+
+/// Recursive helper for [`sweep_stale_tempfiles`].
+fn sweep_stale_tempfiles_recursive(
+    dir: &Path,
+    now: std::time::SystemTime,
+    report: &mut SweepReport,
+) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::debug!("sweep_stale_tempfiles: cannot read_dir {:?}: {e}", dir);
+            return;
+        }
+    };
+
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::debug!(
+                    "sweep_stale_tempfiles: cannot read dir entry in {:?}: {e}",
+                    dir
+                );
+                continue;
+            }
+        };
+        let path = entry.path();
+        let file_type = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(e) => {
+                tracing::debug!(
+                    "sweep_stale_tempfiles: cannot get file_type for {:?}: {e}",
+                    path
+                );
+                continue;
+            }
+        };
+
+        if file_type.is_dir() {
+            sweep_stale_tempfiles_recursive(&path, now, report);
+            continue;
+        }
+
+        // Only act on regular files whose name starts with ".tmp.".
+        if !file_type.is_file() {
+            continue;
+        }
+        let is_tmp = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.starts_with(".tmp."))
+            .unwrap_or(false);
+        if !is_tmp {
+            continue;
+        }
+
+        // Age check: Err from duration_since (mtime in the future / clock
+        // skew) → treat as age 0 → NOT stale (conservative).
+        let mtime = match entry.metadata().and_then(|m| m.modified()) {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::debug!(
+                    "sweep_stale_tempfiles: cannot read mtime for {:?}: {e}",
+                    path
+                );
+                continue;
+            }
+        };
+        let age = match now.duration_since(mtime) {
+            Ok(d) => d,
+            Err(_) => continue, // mtime in the future → keep
+        };
+        if age <= STALE_TEMPFILE_AGE {
+            continue;
+        }
+
+        match std::fs::remove_file(&path) {
+            Ok(()) => {
+                tracing::debug!("sweep_stale_tempfiles: removed stale tempfile {:?}", path);
+                report.tempfiles_removed += 1;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // Concurrently removed by another process — not an error.
+            }
+            Err(e) => {
+                tracing::debug!(
+                    "sweep_stale_tempfiles: cannot remove {:?}: {e}",
+                    path
+                );
+            }
+        }
+    }
+}
+
+/// Prune engine-version subdirectories of `cache_root` that have not been
+/// touched in [`ORPHAN_DIR_AGE`] (30 days) and are not the current build's
+/// directory.
+///
+/// Only the immediate subdirectories of `cache_root` are inspected — each
+/// represents one engine-version-hash. The subdirectory named
+/// `current_engine_version` is **never** removed, even if its mtime is
+/// somehow older than the threshold.
+///
+/// Returns a [`SweepReport`] with `orphan_dirs_removed` set to the number of
+/// directories recursively deleted. `tempfiles_removed` is always 0.
+///
+/// Individual metadata-read or `remove_dir_all` failures are swallowed with a
+/// `tracing::debug!` and the loop continues (best-effort). An absent
+/// `cache_root` returns `SweepReport::default()`.
+pub fn prune_orphan_engine_version_dirs(
+    cache_root: &Path,
+    current_engine_version: &str,
+) -> SweepReport {
+    let mut report = SweepReport::default();
+    let now = std::time::SystemTime::now();
+
+    // Guard: absent cache_root → silent no-op.
+    match std::fs::metadata(cache_root) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return report,
+        Err(e) => {
+            tracing::debug!(
+                "prune_orphan_engine_version_dirs: cannot stat cache_root {:?}: {e}",
+                cache_root
+            );
+            return report;
+        }
+    }
+
+    let entries = match std::fs::read_dir(cache_root) {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::debug!(
+                "prune_orphan_engine_version_dirs: cannot read_dir {:?}: {e}",
+                cache_root
+            );
+            return report;
+        }
+    };
+
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::debug!(
+                    "prune_orphan_engine_version_dirs: cannot read entry in {:?}: {e}",
+                    cache_root
+                );
+                continue;
+            }
+        };
+
+        // Only inspect directories.
+        let file_type = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(e) => {
+                tracing::debug!(
+                    "prune_orphan_engine_version_dirs: cannot get file_type for {:?}: {e}",
+                    entry.path()
+                );
+                continue;
+            }
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+
+        // Never prune the current-build subdir — check by exact name BEFORE
+        // any age check, as specified in the task design decisions.
+        let dir_name = entry.file_name();
+        if dir_name.to_str() == Some(current_engine_version) {
+            continue;
+        }
+
+        // Age check via directory mtime.
+        let mtime = match entry.metadata().and_then(|m| m.modified()) {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::debug!(
+                    "prune_orphan_engine_version_dirs: cannot read mtime for {:?}: {e}",
+                    entry.path()
+                );
+                continue;
+            }
+        };
+        let age = match now.duration_since(mtime) {
+            Ok(d) => d,
+            Err(_) => continue, // mtime in the future → keep (conservative)
+        };
+        if age <= ORPHAN_DIR_AGE {
+            continue;
+        }
+
+        // Prune this orphan subtree.
+        let path = entry.path();
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => {
+                tracing::debug!(
+                    "prune_orphan_engine_version_dirs: removed orphan dir {:?}",
+                    path
+                );
+                report.orphan_dirs_removed += 1;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // Concurrently removed — not an error.
+            }
+            Err(e) => {
+                tracing::debug!(
+                    "prune_orphan_engine_version_dirs: cannot remove {:?}: {e}",
+                    path
+                );
+            }
+        }
+    }
+
+    report
+}
+
+/// Perform the full startup-sweep of `cache_root`: stale tempfiles first,
+/// then orphan engine-version directories.
+///
+/// This is the canonical entry point for the two-pass startup cleanup. It
+/// composites [`sweep_stale_tempfiles`] and
+/// [`prune_orphan_engine_version_dirs`] in a fixed order:
+///
+/// 1. **Tempfile sweep** — removes `.tmp.*` crashed-writer leftovers.
+/// 2. **Orphan-dir prune** — removes engine-version subdirs older than 30 days
+///    (except `current_engine_version`).
+///
+/// The fixed order is documented so callers can reason about the interaction:
+/// a `.tmp.*` file inside an orphan dir may be collected by the tempfile pass
+/// before the dir is pruned, or the dir prune may subsume it — both outcomes
+/// are correct. Each pass is independently idempotent, so the composition is
+/// also idempotent.
+///
+/// Returns the field-wise sum of the two [`SweepReport`]s. An absent
+/// `cache_root` returns `SweepReport::default()`.
+pub fn sweep_on_startup(cache_root: &Path, current_engine_version: &str) -> SweepReport {
+    let a = sweep_stale_tempfiles(cache_root);
+    let b = prune_orphan_engine_version_dirs(cache_root, current_engine_version);
+    SweepReport {
+        tempfiles_removed: a.tempfiles_removed + b.tempfiles_removed,
+        orphan_dirs_removed: a.orphan_dirs_removed + b.orphan_dirs_removed,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
