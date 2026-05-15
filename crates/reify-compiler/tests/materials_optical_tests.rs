@@ -151,7 +151,7 @@ structure def BorosilicateGlass : OpticallyCharacterized {
     param density : Real = 2230.0
     param name : String = "borosilicate_glass"
     param refractive_index : Real = 1.52
-    param absorption_coefficient : Real = 0.001
+    param absorption_coefficient : AbsorptionCoeff = 0.001 / 1m
     param transmittance : Real = 0.92
     param reference_thickness : Real = 0.001
 }
