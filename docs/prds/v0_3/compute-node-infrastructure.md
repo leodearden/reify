@@ -17,7 +17,7 @@ Land the `ComputeNode` graph type plus the dispatch / cache-key / lifecycle / si
 - **§6.1 / §6.2:** "One FEA run = one node"; cache-key = "Hashes of all dependency values/input-hashes" (line 468); content hash = "Domain-specific, typically result hash" (line 425).
 - **§13:** "an FEA solver node might be `warm_startable + progressive + committable`" — the trait combinations PRD-task-16 (2924) exercises.
 
-The taxonomy enum (`NodeArchKind::ComputeNode` in `reify-types/src/node_traits.rs:188`) exists. The struct, graph integration, cache wiring, and dispatch path do not — the enum variant has an explicit "(No corresponding Rust struct in the codebase yet.)" annotation.
+The taxonomy enum (`NodeKind::Compute` in `crates/reify-types/src/node_traits.rs:179`) exists. The struct, graph integration, cache wiring, and dispatch path do not.
 
 ## Why now
 
