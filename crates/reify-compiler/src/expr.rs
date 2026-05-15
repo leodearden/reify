@@ -989,6 +989,32 @@ pub(crate) fn compile_expr_guarded(
                     )
                 }
                 OverloadResolution::NoMatch(named_candidates) => {
+                    // Before emitting an error, attempt default-padding: find the unique
+                    // same-name candidate whose trailing params all have compiled defaults
+                    // and whose provided-arg prefix types match exactly.
+                    if let Some((padded_fn, default_exprs)) =
+                        try_default_padding(&named_candidates, &compiled_args, &arg_types)
+                    {
+                        let result_type = padded_fn.return_type.clone();
+                        let mut padded_args = compiled_args;
+                        padded_args.extend(default_exprs);
+                        let content_hash = {
+                            let mut h = ContentHash::of(&[TAG_USER_FUNCTION_CALL])
+                                .combine(ContentHash::of_str(name));
+                            for arg in &padded_args {
+                                h = h.combine(arg.content_hash);
+                            }
+                            h
+                        };
+                        return CompiledExpr {
+                            kind: CompiledExprKind::UserFunctionCall {
+                                function_name: name.clone(),
+                                args: padded_args,
+                            },
+                            result_type,
+                            content_hash,
+                        };
+                    }
                     // User functions with this name exist, but none match — error with candidates
                     let candidate_sigs: Vec<String> = named_candidates
                         .iter()

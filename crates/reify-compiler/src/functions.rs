@@ -33,6 +33,19 @@ pub(crate) fn compile_function(
         params.push((p.name.clone(), ty));
     }
 
+    // Compile default expressions in a neutral scope (no params registered) so
+    // defaults cannot reference sibling params — definition-time semantics.
+    let neutral_scope = CompilationScope::new(&fn_def.name);
+    let param_defaults: Vec<Option<CompiledExpr>> = fn_def
+        .params
+        .iter()
+        .map(|p| {
+            p.default
+                .as_ref()
+                .map(|d| compile_expr(d, &neutral_scope, enum_defs, functions, diagnostics))
+        })
+        .collect();
+
     // Resolve return type
     let return_type = match &fn_def.return_type {
         Some(te) => {
@@ -83,17 +96,22 @@ pub(crate) fn compile_function(
         diagnostics,
     );
 
-    // Compute content hash
+    // Compute content hash — fold in default hashes so fn f(x:Real=1) ≠ fn f(x:Real=2).
     let content_hash = {
         let name_hash = ContentHash::of_str(&fn_def.name);
         let param_hashes = params
             .iter()
             .map(|(n, t)| ContentHash::of_str(n).combine(ContentHash::of_str(&format!("{}", t))));
+        let default_hashes = param_defaults.iter().map(|d| match d {
+            Some(e) => e.content_hash,
+            None => ContentHash::of(&[0u8]),
+        });
         let body_hash = result_expr.content_hash;
         let let_hashes = compiled_lets.iter().map(|(_, e)| e.content_hash);
 
         let all_hashes = std::iter::once(name_hash)
             .chain(param_hashes)
+            .chain(default_hashes)
             .chain(std::iter::once(body_hash))
             .chain(let_hashes);
 
@@ -112,7 +130,7 @@ pub(crate) fn compile_function(
         name: fn_def.name.clone(),
         is_pub: fn_def.is_pub,
         params,
-        param_defaults: Vec::new(),
+        param_defaults,
         return_type,
         body: CompiledFnBody {
             let_bindings: compiled_lets,
