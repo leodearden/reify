@@ -5722,6 +5722,54 @@ fn load_file_unresolved_import_returns_clear_err() {
     );
 }
 
+// ── update_source multi-file fixture ─────────────────────────────────────────
+
+/// Multi-file project fixture used by `update_source` regression tests.
+///
+/// Creates a [`tempfile::TempDir`] containing:
+/// - `helper.ri`: `pub structure Helper { param x: Scalar = 10mm }`
+/// - `main.ri`: `import helper\nstructure Top { sub h = Helper() }`
+///
+/// Calls `load_file` on `main.ri`, asserts the baseline `Helper.x` value cell
+/// is present, and returns `(dir, session, main_path)` so the caller can
+/// proceed directly to the scenario under test without copy-pasting the
+/// scaffold.
+///
+/// The [`TempDir`](tempfile::TempDir) is returned to keep the temporary
+/// directory alive for the duration of the test; dropping it early would
+/// delete the files before any follow-up `update_source` calls that re-read
+/// from disk.
+fn loaded_helper_session() -> (tempfile::TempDir, EngineSession, std::path::PathBuf) {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+
+    std::fs::write(
+        dir.path().join("helper.ri"),
+        "pub structure Helper { param x: Scalar = 10mm }\n",
+    )
+    .expect("write helper.ri");
+
+    let main_content = "import helper\nstructure Top { sub h = Helper() }\n";
+    std::fs::write(dir.path().join("main.ri"), main_content).expect("write main.ri");
+
+    let main_path = dir.path().join("main.ri");
+    let load_state = session
+        .load_file(&main_path)
+        .expect("load_file should succeed with resolved import");
+    assert!(
+        load_state
+            .values
+            .iter()
+            .any(|v| v.name == "x" && v.entity_path == "Helper"),
+        "loaded_helper_session: load_file should produce Helper.x value cell (baseline)"
+    );
+
+    (dir, session, main_path)
+}
+
 // ── update_source multi-file regression (task 3318) ──────────────────────────
 
 /// Driver (RED → GREEN): after `load_file` resolves a multi-file project,
@@ -5737,40 +5785,11 @@ fn load_file_unresolved_import_returns_clear_err() {
 /// `Helper.x = 10mm` still present.
 #[test]
 fn update_source_after_load_file_preserves_multi_file_imports() {
-    let checker = SimpleConstraintChecker;
-    let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
-
-    let dir = tempfile::tempdir().expect("tempdir should be created");
-
-    // helper.ri: a public structure with one param
-    std::fs::write(
-        dir.path().join("helper.ri"),
-        "pub structure Helper { param x: Scalar = 10mm }\n",
-    )
-    .expect("write helper.ri");
-
+    let (_dir, mut session, main_path) = loaded_helper_session();
     let main_content = "import helper\nstructure Top { sub h = Helper() }\n";
 
-    // main.ri: imports helper and instantiates it as a sub-component.
-    std::fs::write(dir.path().join("main.ri"), main_content).expect("write main.ri");
-
-    // load_file must succeed and produce Helper.x = 10mm
-    let load_state = session
-        .load_file(&dir.path().join("main.ri"))
-        .expect("load_file should succeed with resolved import");
-    assert!(
-        load_state
-            .values
-            .iter()
-            .any(|v| v.name == "x" && v.entity_path == "Helper"),
-        "load_file should produce Helper.x value cell"
-    );
-
     // update_source with the same content — import graph must be preserved
-    let main_path = dir.path().join("main.ri");
-    let main_path_str = main_path.to_str().unwrap();
-    let update_result = session.update_source(main_path_str, main_content);
+    let update_result = session.update_source(main_path.to_str().unwrap(), main_content);
 
     let state =
         update_result.expect("update_source after load_file should return Ok (import resolved)");
@@ -5811,30 +5830,12 @@ fn update_source_after_load_file_preserves_multi_file_imports() {
 /// `compile_entry_with_imports` (multi-file).
 #[test]
 fn update_source_after_load_file_dirty_buffer_edit_preserves_imports() {
-    let checker = SimpleConstraintChecker;
-    let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
-
-    let dir = tempfile::tempdir().expect("tempdir should be created");
-
-    std::fs::write(
-        dir.path().join("helper.ri"),
-        "pub structure Helper { param x: Scalar = 10mm }\n",
-    )
-    .expect("write helper.ri");
-
-    let main_content_v1 = "import helper\nstructure Top { sub h = Helper() }\n";
-    std::fs::write(dir.path().join("main.ri"), main_content_v1).expect("write main.ri");
-
-    session
-        .load_file(&dir.path().join("main.ri"))
-        .expect("load_file should succeed");
+    let (_dir, mut session, main_path) = loaded_helper_session();
 
     // v2: keep the import, add a new top-level param — simulates a real keystroke edit
     let main_content_v2 =
         "import helper\nstructure Top { sub h = Helper()\nparam top_size: Scalar = 20mm }\n";
 
-    let main_path = dir.path().join("main.ri");
     let state = session
         .update_source(main_path.to_str().unwrap(), main_content_v2)
         .expect("update_source with dirty-buffer edit should return Ok");
@@ -6058,32 +6059,9 @@ fn update_source_on_fresh_session_compiles_single_file_source_without_disk_io() 
 /// that "no state was mutated between call entry and Err return".
 #[test]
 fn update_source_failure_after_load_file_leaves_prior_compiled_source_map_and_file_path_intact() {
-    let checker = SimpleConstraintChecker;
-    let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
-
-    let dir = tempfile::tempdir().expect("tempdir should be created");
-
-    std::fs::write(
-        dir.path().join("helper.ri"),
-        "pub structure Helper { param x: Scalar = 10mm }\n",
-    )
-    .expect("write helper.ri");
-
+    // loaded_helper_session establishes the pre-failure baseline (load_file + Helper.x assert).
+    let (_dir, mut session, main_path) = loaded_helper_session();
     let main_content = "import helper\nstructure Top { sub h = Helper() }\n";
-    std::fs::write(dir.path().join("main.ri"), main_content).expect("write main.ri");
-
-    // Establish pre-failure state: load_file must succeed and produce Helper.x.
-    let load_state = session
-        .load_file(&dir.path().join("main.ri"))
-        .expect("load_file should succeed with resolved import");
-    assert!(
-        load_state
-            .values
-            .iter()
-            .any(|v| v.name == "x" && v.entity_path == "Helper"),
-        "load_file should produce Helper.x value cell (pre-failure baseline)"
-    );
 
     // Capture pre-failure source_map state as owned Strings so the borrow releases.
     let (pre_key, pre_src) = session
@@ -6093,7 +6071,6 @@ fn update_source_failure_after_load_file_leaves_prior_compiled_source_map_and_fi
     let pre_src = pre_src.to_owned();
 
     // Trigger failure with parse-error content.
-    let main_path = dir.path().join("main.ri");
     let err = session
         .update_source(main_path.to_str().unwrap(), "totally broken {{{}}}")
         .expect_err("invalid source should return Err");
