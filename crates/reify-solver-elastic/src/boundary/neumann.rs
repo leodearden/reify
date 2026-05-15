@@ -1663,6 +1663,82 @@ mod tests {
         apply_traction_load(&mut f, FaceOrder::P1Tri, &conn, &phys, [0.0; 3]);
     }
 
+    // P1Quad contract-panic tests — mirror the existing P1Tri / P2Tri set.
+
+    #[test]
+    #[should_panic(expected = "connectivity.len()")]
+    fn apply_traction_p1quad_wrong_connectivity_len() {
+        let phys: [[f64; 3]; 4] = [[0.0; 3]; 4];
+        let conn = [0usize, 1, 2]; // 3 instead of 4
+        let mut f = vec![0.0_f64; 12];
+        apply_traction_load(&mut f, FaceOrder::P1Quad, &conn, &phys, [0.0; 3]);
+    }
+
+    #[test]
+    #[should_panic(expected = "phys_nodes.len()")]
+    fn apply_traction_p1quad_wrong_phys_nodes_len() {
+        let phys: [[f64; 3]; 3] = [[0.0; 3]; 3]; // 3 instead of 4
+        let conn = [0usize, 1, 2, 3];
+        let mut f = vec![0.0_f64; 12];
+        apply_traction_load(&mut f, FaceOrder::P1Quad, &conn, &phys, [0.0; 3]);
+    }
+
+    #[test]
+    #[should_panic(expected = "f.len() = 7")]
+    fn apply_traction_p1quad_f_len_not_multiple_of_3() {
+        let phys: [[f64; 3]; 4] = [[0.0; 3]; 4];
+        let conn = [0usize, 1, 2, 3];
+        let mut f = vec![0.0_f64; 7];
+        apply_traction_load(&mut f, FaceOrder::P1Quad, &conn, &phys, [0.0; 3]);
+    }
+
+    #[test]
+    #[should_panic(expected = "out of range")]
+    fn apply_traction_p1quad_connectivity_out_of_range() {
+        let phys: [[f64; 3]; 4] = [
+            [-1.0, -1.0, 0.0],
+            [1.0, -1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [-1.0, 1.0, 0.0],
+        ];
+        let conn = [0usize, 1, 2, 99]; // 99 out of range for f.len()/3 = 4
+        let mut f = vec![0.0_f64; 12];
+        apply_traction_load(&mut f, FaceOrder::P1Quad, &conn, &phys, [0.0; 3]);
+    }
+
+    /// Second call accumulates rather than overwrites (`+=` semantics)
+    /// for the P1Quad arm — pins that `integrate_quad_face_generic`'s
+    /// scatter step uses `+=` not `=` so two sequential applies of the
+    /// same traction produce a result exactly 2× the single-call value.
+    #[test]
+    fn apply_traction_p1quad_accumulates_on_second_call() {
+        let face_phys: [[f64; 3]; 4] = [
+            [-1.0, -1.0, 0.0],
+            [1.0, -1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [-1.0, 1.0, 0.0],
+        ];
+        let conn = [0usize, 1, 2, 3];
+        let traction = [1.0_f64, 2.0, 3.0];
+
+        let mut f_one = vec![0.0_f64; 12];
+        apply_traction_load(&mut f_one, FaceOrder::P1Quad, &conn, &face_phys, traction);
+
+        let mut f_two = vec![0.0_f64; 12];
+        apply_traction_load(&mut f_two, FaceOrder::P1Quad, &conn, &face_phys, traction);
+        apply_traction_load(&mut f_two, FaceOrder::P1Quad, &conn, &face_phys, traction);
+
+        for i in 0..12 {
+            let expected = 2.0 * f_one[i];
+            assert_eq!(
+                f_two[i].to_bits(),
+                expected.to_bits(),
+                "DOF {i}: f_two = {} but expected 2× f_one = {expected}",
+                f_two[i],
+            );
+        }
+    }
+
     // =======================================================================
     // Additive accumulation: all three primitives compose into shared f
     // =======================================================================
