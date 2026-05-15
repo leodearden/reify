@@ -333,6 +333,50 @@ fn edges_let_resolves_to_list_of_int_via_extract_edges() {
     );
 }
 
+/// `let fs = faces(body)` on a structure containing `let body = box(10mm, 10mm, 10mm)`
+/// must resolve to `Value::List` of six `Value::Int`s when the mock kernel
+/// pre-stages `extract_faces(GeometryHandleId(1)) = [10, 11, 12, 13, 14, 15]`
+/// (matching a box's six faces). Pins the 1-arg list-return shape for the
+/// face variant.
+#[test]
+fn faces_let_resolves_to_list_of_int_via_extract_faces() {
+    let source = "structure def Bracket {\n    \
+        let body = box(10mm, 10mm, 10mm)\n    \
+        let fs = faces(body)\n}";
+    let compiled = compile_no_errors(source);
+    let mut engine = engine_with_mock_kernel(|k| {
+        k.with_extracted_faces(
+            GeometryHandleId(1),
+            vec![
+                GeometryHandleId(10),
+                GeometryHandleId(11),
+                GeometryHandleId(12),
+                GeometryHandleId(13),
+                GeometryHandleId(14),
+                GeometryHandleId(15),
+            ],
+        )
+    });
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let cell = ValueCellId::new("Bracket", "fs");
+    assert_eq!(
+        result.values.get(&cell),
+        Some(&Value::List(vec![
+            Value::Int(10),
+            Value::Int(11),
+            Value::Int(12),
+            Value::Int(13),
+            Value::Int(14),
+            Value::Int(15),
+        ])),
+        "Bracket.fs must resolve to Value::List of six Value::Int sub-handles \
+         via kernel extract_faces, got {:?}",
+        result.values.get(&cell),
+    );
+}
+
 // ── Tessellate-path parity test ─────────────────────────────────────────────
 
 /// The post-process must run on the `tessellate_realizations` path too, so
