@@ -80,7 +80,7 @@ re-exports.
 
 - **Scanned:** 1337 `pub fn` declarations across 287 files
 - **Orphan candidates:** 420  (zero non-test callers, no `// G-allow:`)
-- **Allow-listed:** 7  (zero callers; marked legitimate API surface)
+- **Allow-listed:** 10  (zero callers; marked legitimate API surface)
 
 ## Orphan candidates
 
@@ -518,6 +518,9 @@ re-exports.
 | `reify-kernel-gmsh` | `crates/reify-kernel-gmsh/src/ffi.rs:229` | `gmshModelMeshSetSize` | same-file consumer `mesh_set_size_at_entity` → refine_volume.rs:262 (G-tool same-file-caller heuristic limitation). |
 | `reify-solver-elastic` | `crates/reify-solver-elastic/src/volume_refine.rs:125` | `project_per_element_sizes_to_vertices` | same-file consumer `refine_with_size_field` (G-tool same-file-caller heuristic limitation). |
 | `reify-solver-elastic` | `crates/reify-solver-elastic/src/volume_refine.rs:181` | `refine_with_size_field` | producer for pending task #2997 (a-posteriori-error-estimation PRD #2: adaptive refinement loop). |
+| `reify-mesh-morph` | `crates/reify-mesh-morph/src/stats.rs:56` | `record_morph_attempt` | mesh-morph engine call-site wiring deferred to tasks #2947-#2949 |
+| `reify-mesh-morph` | `crates/reify-mesh-morph/src/stats.rs:65` | `record_remesh` | mesh-morph engine call-site wiring deferred to tasks #2947-#2949 |
+| `reify-mesh-morph` | `crates/reify-mesh-morph/src/stats.rs:72` | `record_rejection` | mesh-morph engine call-site wiring deferred to tasks #2947-#2949 |
 
 ---
 
