@@ -2471,4 +2471,34 @@ mod tests {
             "different param_name must change the hash"
         );
     }
+
+    // ── task-3663 tests ───────────────────────────────────────────────────────
+
+    /// The consumer at `entity.rs:1140` uses `split_once('.')` to extract the
+    /// sub-geometry name from the entity stamp (`"<parent>.<sub>"`).  If a
+    /// caller constructs a `CrossSubGeometryRef` with a dot-free entity,
+    /// `split_once` returns `None` and the consumer silently falls back to the
+    /// full entity string as the sub name — a hard-to-diagnose bug.
+    ///
+    /// Moving the invariant into `cross_sub_geometry_ref` (step-4, task-3663)
+    /// makes `CompiledExpr::cross_sub_geometry_ref` the canonical chokepoint:
+    /// every future creator (direct or via `map_value_refs` rebuild) is
+    /// protected automatically.  The check was introduced alongside the typed
+    /// variant in task-3508 but left to the caller; this closes the gap.
+    ///
+    /// Modelled after `reflective_cell_list_panics_in_debug_when_element_is_not_value_ref`
+    /// (task-2552, above).
+    ///
+    /// RED before step-4: the constructor has no `debug_assert`, so no panic
+    /// fires and the test fails.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "CrossSubGeometryRef entity must be a `<parent>.<sub>` stamp")]
+    fn cross_sub_geometry_ref_panics_in_debug_when_entity_lacks_dot() {
+        // "NoDotEntity" contains no '.', violating the <parent>.<sub> invariant.
+        let _expr = CompiledExpr::cross_sub_geometry_ref(
+            ValueCellId::new("NoDotEntity", "member"),
+            Type::Geometry,
+        );
+    }
 }
