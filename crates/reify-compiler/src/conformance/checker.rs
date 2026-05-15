@@ -36,6 +36,9 @@ pub(super) fn resolve_let_advertised_type(
     cell_type.clone().unwrap_or_else(|| {
         inferred
             .map(|e| e.result_type.clone())
+            // G-allow: defensive default for unreachable arm; debug_assert! at
+            // checker.rs:761-767 catches any drift between the pass2_compile_errors
+            // filter set and this helper (task 1914 suggestion #1, task 3639 review).
             .unwrap_or(Type::Real)
     })
 }
