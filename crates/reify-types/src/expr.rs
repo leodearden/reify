@@ -328,6 +328,14 @@ impl CompiledExpr {
     /// the bare-let drop site in `entity.rs` (replaced the fragile
     /// `entity.contains('.')` heuristic).
     pub fn cross_sub_geometry_ref(id: ValueCellId, result_type: Type) -> Self {
+        // The consumer at entity.rs:1140 uses `split_once('.')` to extract the
+        // sub-geometry name. This assert is the canonical chokepoint for the
+        // `<parent>.<sub>` shape invariant — any future creator routing through
+        // this constructor is protected automatically (task-3663).
+        debug_assert!(
+            id.entity.contains('.'),
+            "CrossSubGeometryRef entity must be a `<parent>.<sub>` stamp (task-3508)"
+        );
         CompiledExpr {
             content_hash: Self::hash_ref(TAG_CROSS_SUB_GEOMETRY_REF, &id),
             kind: CompiledExprKind::CrossSubGeometryRef(id),
