@@ -606,12 +606,17 @@ mod tests {
             .expect("query_map")
             .map(|r| r.expect("row"))
             .collect();
-        assert_eq!(
-            column_names,
-            vec!["task_id", "event_type"],
-            "events table columns differ from production query contract — \
-             update RUNS_DB_SCHEMA and has_task_completed_event if dark-factory \
-             migrated the schema"
+        assert!(
+            column_names.iter().any(|c| c == "task_id"),
+            "events table missing `task_id` column — production query in \
+             has_task_completed_event reads it; got {:?}",
+            column_names
+        );
+        assert!(
+            column_names.iter().any(|c| c == "event_type"),
+            "events table missing `event_type` column — production query in \
+             has_task_completed_event reads it; got {:?}",
+            column_names
         );
     }
 
