@@ -129,7 +129,7 @@ fn cmd_cache_stats(args: &[String]) -> ExitCode {
         }
     };
 
-    let entries = match collect_cache_entries(&cache_root) {
+    let mut entries = match collect_cache_entries(&cache_root) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("reify cache stats: {e}");
@@ -142,8 +142,32 @@ fn cmd_cache_stats(args: &[String]) -> ExitCode {
     println!("Cache directory: {}", cache_root.display());
     println!("Entry count: {entry_count}");
     println!("Total size: {total_bytes} B");
+
+    // Top-N largest entries.  Sort descending by byte size, then take up to
+    // STATS_TOP_N rows.  When the cache has fewer entries than the cap (or
+    // is empty), the section header still prints — keeps the output schema
+    // stable and discoverable.  Row format: `  <hash>  <bytes> B`; the
+    // trailing numeric token is the parseable byte size.
+    entries.sort_by(|a, b| b.1.cmp(&a.1));
+    println!("Top {STATS_TOP_N} largest entries:");
+    for (hash, sz) in entries.iter().take(STATS_TOP_N) {
+        println!("  {hash}  {sz} B");
+    }
+
+    // Hit-rate caveat.  Per the design decision, hit-rate is not tracked
+    // across processes — surface a one-sentence note rather than a stale
+    // number.
+    println!(
+        "Note: hit rate is per-process and only reflects the current process \
+         so far; cross-session aggregates are not tracked."
+    );
     ExitCode::SUCCESS
 }
+
+/// Top-N cap for the `cache stats` "largest entries" section.  Pinned at 5
+/// per the design decision (smallest fixed N that surfaces a useful "what's
+/// eating disk?" signal without producing an unbounded report).
+const STATS_TOP_N: usize = 5;
 
 /// Walk `cache_root/<engine_version_subdir>/<shard>/*.bin` across ALL
 /// engine-version subdirs and return `(input_hash_stem, byte_size)` tuples.
