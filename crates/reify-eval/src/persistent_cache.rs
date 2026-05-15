@@ -5129,4 +5129,78 @@ mod tests {
             "prune_orphan_engine_version_dirs must not touch tempfiles"
         );
     }
+
+    // ── prune_orphan_engine_version_dirs defensiveness (step-7) ─────────────
+
+    /// Step-7(a): `prune_orphan_engine_version_dirs` on a non-existent
+    /// `cache_root` returns `SweepReport::default()` without panicking.
+    #[test]
+    fn prune_orphan_engine_version_dirs_absent_cache_root_returns_default() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let nonexistent = tmp.path().join("no_such_cache");
+        let report =
+            prune_orphan_engine_version_dirs(&nonexistent, "aaaa0000000000000000000000000000");
+        assert_eq!(
+            report,
+            SweepReport::default(),
+            "absent cache_root must yield SweepReport::default()"
+        );
+    }
+
+    /// Step-7(b): a stray non-directory file directly under `cache_root`
+    /// (even if old) is ignored — only directories are candidates for pruning.
+    /// `orphan_dirs_removed` counts only dirs, never plain files.
+    #[test]
+    fn prune_orphan_engine_version_dirs_ignores_stray_files_at_top_level() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let current = "cccc000000000000000000000000cccc";
+
+        // Stray non-directory file at cache_root level (e.g. leftover index).
+        let stray = root.join(".tmp.junk");
+        std::fs::write(&stray, b"stray").unwrap();
+        backdate_mtime(&stray, ORPHAN_DIR_AGE.as_secs() + 60);
+
+        let report = prune_orphan_engine_version_dirs(root, current);
+
+        // Stray file must not be removed (only dirs are candidates).
+        assert!(stray.exists(), "stray non-dir file must not be removed");
+        assert_eq!(
+            report.orphan_dirs_removed, 0,
+            "orphan_dirs_removed must be 0 (no dirs pruned)"
+        );
+    }
+
+    /// Step-7(c): an unfamiliar-named subdir (not 32-hex) that is old IS
+    /// pruned by age alone — no hash-format validation is applied. The current
+    /// subdir is still never touched.
+    #[test]
+    fn prune_orphan_engine_version_dirs_prunes_unfamiliar_named_old_subdir() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let current = "cccc000000000000000000000000cccc";
+
+        // Old subdir with an unusual name (not 32-hex).
+        let weird_old = root.join("legacy-build-2024");
+        std::fs::create_dir_all(&weird_old).unwrap();
+        backdate_mtime(&weird_old, ORPHAN_DIR_AGE.as_secs() + 60);
+
+        // Current subdir (old mtime but must not be pruned).
+        let current_dir = root.join(current);
+        std::fs::create_dir_all(&current_dir).unwrap();
+        backdate_mtime(&current_dir, ORPHAN_DIR_AGE.as_secs() + 60);
+
+        let report = prune_orphan_engine_version_dirs(root, current);
+
+        assert!(
+            !weird_old.exists(),
+            "unfamiliar-named old subdir must be pruned by age alone"
+        );
+        assert!(
+            current_dir.exists(),
+            "current engine-version subdir must never be pruned"
+        );
+        assert_eq!(report.orphan_dirs_removed, 1);
+        assert_eq!(report.tempfiles_removed, 0);
+    }
 }
