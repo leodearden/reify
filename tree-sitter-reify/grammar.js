@@ -84,6 +84,7 @@ module.exports = grammar({
       field('name', $.identifier),
       ':',
       field('type', $.type_expr),
+      optional(seq('=', field('default', $._expression))),
     ),
 
     fn_body: $ => seq(
