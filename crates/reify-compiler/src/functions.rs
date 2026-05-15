@@ -83,20 +83,20 @@ pub(crate) fn compile_function(
         // Match on both the compiled default and the syntactic default simultaneously.
         // `compiled_default.is_some() ↔ p.default.is_some()` (they are built in lockstep
         // in the param_defaults map above), so both arms are always in sync — no `.expect()`.
-        if let (Some(default), Some(syntax_default)) = (compiled_default, &p.default) {
-            if !fn_param_default_compatible(param_ty, &default.result_type) {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "function '{}' param '{}' default type mismatch: declared param type `{}`, default expression produces `{}`",
-                        fn_def.name, p.name, param_ty, default.result_type
-                    ))
-                    .with_code(DiagnosticCode::FnParamDefaultTypeMismatch)
-                    .with_label(DiagnosticLabel::new(
-                        syntax_default.span,
-                        "default expression type does not match declared param type",
-                    )),
-                );
-            }
+        if let (Some(default), Some(syntax_default)) = (compiled_default, &p.default)
+            && !fn_param_default_compatible(param_ty, &default.result_type)
+        {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "function '{}' param '{}' default type mismatch: declared param type `{}`, default expression produces `{}`",
+                    fn_def.name, p.name, param_ty, default.result_type
+                ))
+                .with_code(DiagnosticCode::FnParamDefaultTypeMismatch)
+                .with_label(DiagnosticLabel::new(
+                    syntax_default.span,
+                    "default expression type does not match declared param type",
+                )),
+            );
         }
     }
 
