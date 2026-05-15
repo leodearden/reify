@@ -1421,8 +1421,8 @@ impl QueryCounts {
 /// * **Counted via default** — `query_many()` (the trait default forwards
 ///   per-element to `query()`, so each element is counted; see section below).
 /// * **Forwarded uncounted** — `execute`, `export`, `tessellate`,
-///   `extract_edges`, and `extract_faces` are delegated to the inner kernel
-///   without touching any counter.
+///   `extract_edges`, `extract_faces`, and `extract_vertices` are delegated
+///   to the inner kernel without touching any counter.
 ///
 /// ## Arc-sharing contract
 ///
@@ -1498,6 +1498,13 @@ impl GeometryKernel for CountingMockKernel {
 
     fn extract_faces(&mut self, h: GeometryHandleId) -> Result<Vec<GeometryHandleId>, QueryError> {
         self.inner.extract_faces(h)
+    }
+
+    fn extract_vertices(
+        &mut self,
+        h: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        self.inner.extract_vertices(h)
     }
 
     fn export(
