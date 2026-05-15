@@ -7600,6 +7600,63 @@ fn engine_session_auto_resolve_emitter_emits_nan_sentinel_for_non_scalar_resolve
     }
 }
 
+/// Integration test (suggestion 4): auto-resolve emitter fires through the full
+/// `load_from_source` → `commit_state` → `emit_auto_resolve_if_any(last_check().unwrap())`
+/// path.
+///
+/// Pins that load_from_source emits AFTER state is committed (correct ordering).
+/// Acts as a characterization safety-net for the step-7 reorder of load_file /
+/// update_source / set_parameter.
+///
+/// Expected to pass immediately — load_from_source already has correct ordering.
+#[test]
+fn engine_session_auto_resolve_emitter_fires_through_load_from_source_real_path() {
+    use std::sync::Arc;
+
+    let source = r#"structure S {
+    param thickness: Scalar = auto
+    constraint thickness > 2mm
+}"#;
+
+    let thickness_id = ValueCellId::new("S", "thickness");
+    let mut solved = std::collections::HashMap::new();
+    solved.insert(thickness_id.clone(), mm(5.0));
+    let solver = MockConstraintSolver::new_solved(solved);
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None)
+        .with_solver_for_test(Box::new(solver));
+
+    let recorder = RecordingEmitter::new();
+    let events = Arc::clone(&recorder.events);
+    session.set_auto_resolve_emitter(Arc::new(recorder));
+
+    session
+        .load_from_source(source, "S")
+        .expect("load_from_source with auto-param source should succeed");
+
+    let events = events.lock().unwrap();
+    assert_eq!(
+        events.len(),
+        3,
+        "load_from_source must emit [Start, Iteration, Complete], got {} events",
+        events.len()
+    );
+    assert!(matches!(events[0], EmitEvent::Start), "event[0] must be Start");
+    assert!(matches!(events[1], EmitEvent::Iteration(_)), "event[1] must be Iteration");
+    assert!(matches!(events[2], EmitEvent::Complete), "event[2] must be Complete");
+
+    if let EmitEvent::Iteration(ref iter) = events[1] {
+        assert!(
+            iter.parameters.contains_key("S.thickness"),
+            "parameters must contain 'S.thickness', got keys: {:?}",
+            iter.parameters.keys().collect::<Vec<_>>()
+        );
+    } else {
+        panic!("events[1] must be Iteration");
+    }
+}
+
 // ── Structural lock-in test ──────────────────────────────────────────────────
 
 /// Structural lock-in test: verifies that `EngineSession` exposes `CoreState`
