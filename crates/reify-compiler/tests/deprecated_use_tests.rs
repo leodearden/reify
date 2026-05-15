@@ -146,6 +146,47 @@ fn deprecated_function_called_emits_warning() {
     );
 }
 
+// ── Step 3b: deprecated function called via default-padding emits warning ────
+
+#[test]
+fn deprecated_function_called_via_default_padding_emits_warning() {
+    // A zero-arg call to a fn with one defaulted param forces OverloadResolution::NoMatch →
+    // try_default_padding, which historically skipped the deprecation check.
+    let source = r#"
+        @deprecated("Use new_calc")
+        fn old_calc(x: Real = 1.0) -> Real { x }
+
+        structure S {
+            let y = old_calc()
+        }
+    "#;
+    let module = compile_source(source);
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+
+    let warns = deprecation_warnings(&module, "old_calc");
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly one deprecation warning for old_calc (via default-padding), got: {:?}",
+        warns
+    );
+    assert!(
+        warns[0].message.contains("Use new_calc"),
+        "expected warning to mention 'Use new_calc', got: {}",
+        warns[0].message
+    );
+    // Format parity with the Resolved arm (deprecation_warning_message_format_contract).
+    assert_eq!(
+        &warns[0].message,
+        "use of deprecated function 'old_calc': Use new_calc",
+        "message format must match the explicit-call path"
+    );
+}
+
 // ── Step 5: deprecated trait used as trait bound emits warning ──────────────
 
 #[test]
