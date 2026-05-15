@@ -199,6 +199,75 @@ fn f(x : Int = 1.5) -> Int { x }
     );
 }
 
+/// Test J: a function param declared as `Real` but given an integer-literal default (`1`)
+/// must produce a `FnParamDefaultTypeMismatch` error under the strict-equality policy.
+///
+/// This documents the deliberate divergence from let-binding semantics: `let x: Real = 42`
+/// is accepted via Int→Real widening (see `field_codomain_compatible`), but fn-param defaults
+/// use strict equality (matching `resolve_function_overload` / `try_default_padding`'s
+/// prefix check) because a default is conceptually inserted at the padded call site, and
+/// `f(1)` is already rejected for `fn f(x: Real)`.
+#[test]
+fn fn_param_default_real_param_int_literal_default_type_mismatch_errors() {
+    let source = r#"
+fn f(x : Real = 1) -> Real { x }
+"#;
+    let parsed = reify_syntax::parse(source, ModulePath::single("test_consume_j"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::FnParamDefaultTypeMismatch)),
+        "expected a FnParamDefaultTypeMismatch error (Int literal default for Real param \
+         diverges from let-binding widening — strict policy matches call-site check), \
+         got: {:?}",
+        errors
+    );
+}
+
+/// Test K (negative control): a function param declared as `Int` with an integer-literal
+/// default (`1`) must NOT produce a `FnParamDefaultTypeMismatch` error — the types match.
+///
+/// This guards against the check over-firing on correct code.
+#[test]
+fn fn_param_default_int_param_int_literal_default_no_type_mismatch() {
+    let source = r#"
+fn f(x : Int = 1) -> Int { x }
+"#;
+    let parsed = reify_syntax::parse(source, ModulePath::single("test_consume_k"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    let mismatch_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::FnParamDefaultTypeMismatch))
+        .collect();
+    assert!(
+        mismatch_errors.is_empty(),
+        "expected no FnParamDefaultTypeMismatch for matching Int param / Int default, \
+         got: {:?}",
+        mismatch_errors
+    );
+}
+
 /// Test H (ambiguous-padding regression): when two or more same-name candidates are
 /// both satisfiable via default-padding for the same call, `try_default_padding` returns
 /// `None` and the caller falls through to the generic "no matching overload" error.

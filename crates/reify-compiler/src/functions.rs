@@ -10,10 +10,17 @@ pub(crate) fn compile_function(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<CompiledFunction> {
     let empty_params = HashSet::new();
-    // Resolve parameter types
-    let mut params = Vec::new();
+    // Resolve parameter types.
+    //
+    // `param_type_resolved[i]` is `true` when the i-th param's declared type resolved
+    // successfully. It is used below to gate the default-type check: if the type failed
+    // to resolve, the root-cause "unresolved type" diagnostic is already queued and
+    // emitting a secondary FnParamDefaultTypeMismatch (against the `Type::Real` fallback)
+    // would be confusing noise.
+    let mut params: Vec<(String, Type)> = Vec::new();
+    let mut param_type_resolved: Vec<bool> = Vec::new();
     for p in &fn_def.params {
-        let ty = match resolve_type_expr_with_aliases(
+        let (ty, resolved) = match resolve_type_expr_with_aliases(
             &p.type_expr,
             &empty_params,
             alias_registry,
@@ -21,16 +28,17 @@ pub(crate) fn compile_function(
             structure_names,
             trait_names,
         ) {
-            Some(t) => t,
+            Some(t) => (t, true),
             None => {
                 diagnostics.push(
                     Diagnostic::error(format!("unresolved type: {}", p.type_expr))
                         .with_label(DiagnosticLabel::new(p.type_expr.span, "unknown type name")),
                 );
-                Type::Real // fallback
+                (Type::Real, false) // fallback; `resolved` flag prevents cascade in default check
             }
         };
         params.push((p.name.clone(), ty));
+        param_type_resolved.push(resolved);
     }
 
     // Compile default expressions in a neutral scope (no params registered) so
@@ -53,18 +61,30 @@ pub(crate) fn compile_function(
     // a default value is conceptually inserted at the padded call site, so the
     // definition-site check must be at least as strict as the call-site check.
     //
-    // `param_defaults` and `params` are built in lockstep above (one entry per
-    // fn_def.params element), so index alignment is guaranteed.
-    for i in 0..fn_def.params.len() {
-        if let Some(default) = &param_defaults[i] {
-            let param_ty = &params[i].1;
+    // The zip over three lockstep collections (fn_def.params, param_defaults, params)
+    // makes index alignment structurally obvious: all three are built from the same
+    // fn_def.params slice so they have identical length and ordering.
+    //
+    // The `type_ok` gate skips params whose declared type failed to resolve. The
+    // root-cause "unresolved type" diagnostic is already queued; emitting a
+    // secondary FnParamDefaultTypeMismatch (against the Type::Real fallback) would
+    // be confusing noise — e.g. `fn f(x: Bogus = "hi")` would otherwise show both
+    // "unresolved type: Bogus" AND "default type mismatch: Real vs String".
+    for (((p, compiled_default), (_, param_ty)), &type_ok) in fn_def
+        .params
+        .iter()
+        .zip(param_defaults.iter())
+        .zip(params.iter())
+        .zip(param_type_resolved.iter())
+    {
+        if !type_ok {
+            continue;
+        }
+        // Match on both the compiled default and the syntactic default simultaneously.
+        // `compiled_default.is_some() ↔ p.default.is_some()` (they are built in lockstep
+        // in the param_defaults map above), so both arms are always in sync — no `.expect()`.
+        if let (Some(default), Some(syntax_default)) = (compiled_default, &p.default) {
             if !fn_param_default_compatible(param_ty, &default.result_type) {
-                let p = &fn_def.params[i];
-                let default_span = p
-                    .default
-                    .as_ref()
-                    .expect("param_defaults[i] is Some iff fn_def.params[i].default is Some")
-                    .span;
                 diagnostics.push(
                     Diagnostic::error(format!(
                         "function '{}' param '{}' default type mismatch: declared param type `{}`, default expression produces `{}`",
@@ -72,7 +92,7 @@ pub(crate) fn compile_function(
                     ))
                     .with_code(DiagnosticCode::FnParamDefaultTypeMismatch)
                     .with_label(DiagnosticLabel::new(
-                        default_span,
+                        syntax_default.span,
                         "default expression type does not match declared param type",
                     )),
                 );
