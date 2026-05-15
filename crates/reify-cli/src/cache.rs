@@ -218,10 +218,55 @@ fn cmd_cache_clear(args: &[String]) -> ExitCode {
         eprintln!("{CLEAR_USAGE}");
         return ExitCode::FAILURE;
     }
-    // Filesystem mutation lands in step-10/12.  For now the --yes path is a
-    // no-op SUCCESS so we don't accidentally satisfy the round-trip RED
-    // before its own GREEN runs.
+    let cache_root = match resolve_cache_root() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("reify cache clear: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    // --engine-version branch lands in step-12; for now the unscoped branch
+    // wipes every engine-version subdir under cache_root.
     let _ = engine_version;
+    // Tolerate the root not existing — a clear of an empty cache is an
+    // idempotent no-op SUCCESS.
+    let read_root = match std::fs::read_dir(&cache_root) {
+        Ok(it) => it,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("reify cache clear: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    for entry in read_root {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("reify cache clear: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let path = entry.path();
+        let name = match path.file_name().and_then(|s| s.to_str()) {
+            Some(s) => s,
+            None => continue,
+        };
+        // Defense-in-depth: only remove subdirs whose name passes the
+        // 32-lowercase-hex predicate (the engine-version naming
+        // invariant).  An operator who points --cache-dir at a shared
+        // filesystem with adjacent unrelated state should not have
+        // those entries silently nuked.
+        if !is_32_lowercase_hex(name) {
+            continue;
+        }
+        if !path.is_dir() {
+            continue;
+        }
+        if let Err(e) = std::fs::remove_dir_all(&path) {
+            eprintln!("reify cache clear: failed to remove {}: {}", path.display(), e);
+            return ExitCode::FAILURE;
+        }
+    }
     ExitCode::SUCCESS
 }
 
