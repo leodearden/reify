@@ -438,6 +438,82 @@ mod tests {
             findings_b
         );
     }
+
+    /// Required #5 — a non-blank `// G-allow:` marker on the symbol
+    /// suppresses the finding; a blank marker (`Some("")`) does NOT,
+    /// pinning the script's `//\s*G-allow:\s*(.+)` rule where `(.+)`
+    /// requires non-empty content. One done task, two symbols → exactly
+    /// one surviving finding (the blank-marker one).
+    #[test]
+    fn g_allow_marker_suppresses_finding() {
+        let done_at = NOW - 15 * DAY;
+
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+        let mut jc = MockJCodemunchOps::new();
+        jc.set_changed_symbols(
+            "main",
+            done_at,
+            vec![
+                ChangedSymbol {
+                    g_allow_marker: Some(
+                        "F-infra T-4 CLI consumer (crates/reify-audit-cli)".to_string(),
+                    ),
+                    ..changed_symbol("marked_widget", "crates/reify-x/src/marked.rs")
+                },
+                ChangedSymbol {
+                    g_allow_marker: Some(String::new()),
+                    ..changed_symbol("blank_marked_widget", "crates/reify-x/src/blank.rs")
+                },
+            ],
+        );
+        jc.set_find_references("marked_widget", vec![]);
+        jc.set_find_references("blank_marked_widget", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "9001".to_string(),
+            done_meta("9001", done_at, Some("docs/x.md")),
+        );
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: Some(NOW),
+        };
+
+        let findings = p1_producer_orphan::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "only the blank-marker symbol should flag (a non-blank marker \
+             suppresses); got {:?}",
+            findings
+        );
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::P1ProducerOrphan);
+        assert!(
+            f.evidence.iter().any(|e| matches!(
+                e,
+                EvidenceRef::File { path } if path == "crates/reify-x/src/blank.rs"
+            )),
+            "surviving finding must cite blank.rs; got {:?}",
+            f.evidence
+        );
+        assert!(
+            !f.evidence.iter().any(|e| matches!(
+                e,
+                EvidenceRef::File { path } if path == "crates/reify-x/src/marked.rs"
+            )),
+            "marked_widget (non-blank G-allow) must not appear; got {:?}",
+            f.evidence
+        );
+    }
 }
 
 } // mod p1
