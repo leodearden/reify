@@ -1076,6 +1076,67 @@ fn cache_clear_without_yes_refuses_and_exits_failure_and_preserves_entries() {
 }
 
 #[test]
+fn cache_clear_yes_then_stats_round_trip_reports_empty() {
+    // Canonical clear+stats round-trip from the task description: seed three
+    // entries via write_entry, run `reify cache clear --yes`, then run
+    // `reify cache stats` against the same cache root and assert the
+    // filesystem is empty AND stats reports zero entries.
+    let cache_dir = tempdir().expect("tempdir");
+    let fixture = make_elastic_result_fixture();
+    for c in ['a', 'b', 'c'] {
+        let input_hash: String = std::iter::repeat(c).take(32).collect();
+        write_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
+            .expect("write_entry must seed the cache");
+    }
+
+    // (1) clear --yes
+    let clear_output = Command::new(env!("CARGO_BIN_EXE_reify"))
+        .args(["cache", "clear", "--yes"])
+        .env("REIFY_CACHE_DIR", cache_dir.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute reify clear");
+    assert!(
+        clear_output.status.success(),
+        "reify cache clear --yes should succeed; stderr={}",
+        String::from_utf8_lossy(&clear_output.stderr)
+    );
+
+    // (2) stats reports 0
+    let stats_output = Command::new(env!("CARGO_BIN_EXE_reify"))
+        .args(["cache", "stats"])
+        .env("REIFY_CACHE_DIR", cache_dir.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute reify stats");
+    let stats_stdout = String::from_utf8_lossy(&stats_output.stdout);
+    assert!(
+        stats_output.status.success(),
+        "reify cache stats post-clear should succeed; stderr={}",
+        String::from_utf8_lossy(&stats_output.stderr)
+    );
+    assert!(
+        stats_stdout.contains("Entry count: 0"),
+        "post-clear stats should report 'Entry count: 0', got: {stats_stdout}"
+    );
+    assert!(
+        stats_stdout.contains("Total size: 0"),
+        "post-clear stats should report 'Total size: 0', got: {stats_stdout}"
+    );
+
+    // (3) Filesystem is empty.
+    let post = collect_cache_files(cache_dir.path());
+    assert!(
+        post.is_empty(),
+        "cache root should contain no .bin/.meta files after clear --yes; found: {post:?}"
+    );
+}
+
+#[test]
 fn cache_export_with_extra_positional_shows_export_usage() {
     // `reify cache export aaa bbb` (extra positional past the hash) should be
     // rejected with the export-specific usage banner.
