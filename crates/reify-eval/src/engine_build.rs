@@ -270,6 +270,9 @@ fn populate_single_parent_sweep_op(
             &result_faces,
             &result_edges,
             history,
+            &[],
+            &[],
+            &[],
         ),
         SingleParentSweepKind::Revolve => populate_revolve_attributes(
             table,
@@ -279,6 +282,9 @@ fn populate_single_parent_sweep_op(
             &result_faces,
             &result_edges,
             history,
+            &[],
+            &[],
+            &[],
         ),
         SingleParentSweepKind::Sweep => populate_sweep_attributes(
             table,
@@ -288,6 +294,9 @@ fn populate_single_parent_sweep_op(
             &result_faces,
             &result_edges,
             history,
+            &[],
+            &[],
+            &[],
         ),
     }
 }
@@ -348,6 +357,9 @@ fn populate_loft_op(
         &result_faces,
         &result_edges,
         history,
+        &[],
+        &[],
+        &[],
     )
 }
 

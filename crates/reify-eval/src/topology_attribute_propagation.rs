@@ -1936,6 +1936,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect("step-11 history is well-formed");
 
@@ -1964,6 +1967,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect("step-11 history is well-formed");
 
@@ -1992,6 +1998,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect("step-11 history is well-formed");
 
@@ -2029,6 +2038,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect("step-11 history is well-formed");
 
@@ -2064,6 +2076,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect_err("expected QueryFailed for out-of-range start_cap index");
         match err {
@@ -2099,6 +2114,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect_err("expected QueryFailed for out-of-range result_subshape_index");
         match err {
@@ -2127,6 +2145,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect("empty history is a no-op");
         assert!(table.is_empty());
@@ -2206,6 +2227,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect("step-13 partial-revolve history is well-formed");
 
@@ -2243,6 +2267,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect("step-13 partial-revolve history is well-formed");
 
@@ -2299,6 +2326,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect("step-13 full-revolve history is well-formed");
 
@@ -2335,6 +2365,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect_err("expected QueryFailed for out-of-range start_cap index");
         match err {
@@ -2370,6 +2403,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect_err("expected QueryFailed for out-of-range result_subshape_index");
         match err {
@@ -2448,6 +2484,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect("step-7 history is well-formed");
 
@@ -2476,6 +2515,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect("step-7 history is well-formed");
 
@@ -2504,6 +2546,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect("step-7 history is well-formed");
 
@@ -2541,6 +2586,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect("empty history is a no-op");
         assert!(table.is_empty());
@@ -2564,6 +2612,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect_err("expected QueryFailed for out-of-range start_cap index");
         match err {
@@ -2599,6 +2650,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect_err("expected QueryFailed for out-of-range result_subshape_index");
         match err {
@@ -2634,6 +2688,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect_err("expected QueryFailed for out-of-range parent_subshape_index");
         match err {
@@ -2734,6 +2791,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect("step-9 history is well-formed");
 
@@ -2762,6 +2822,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect("step-9 history is well-formed");
 
@@ -2790,6 +2853,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect("step-9 history is well-formed");
 
@@ -2832,6 +2898,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect("empty history is a no-op");
         assert!(table.is_empty());
@@ -2859,6 +2928,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect_err("expected QueryFailed for out-of-range parent_index");
         match err {
@@ -2899,6 +2971,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect_err("expected QueryFailed for out-of-range parent_subshape_index");
         match err {
@@ -2934,6 +3009,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect_err("expected QueryFailed for out-of-range result_subshape_index");
         match err {
@@ -2965,6 +3043,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect_err("expected QueryFailed for out-of-range start_cap index");
         match err {
@@ -3007,6 +3088,9 @@ mod tests {
                     &result_faces,
                     &result_edges,
                     &history,
+                    &[],
+                    &[],
+                    &[],
                 );
             }));
             assert!(
