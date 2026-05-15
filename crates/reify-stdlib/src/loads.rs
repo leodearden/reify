@@ -1154,6 +1154,34 @@ mod tests {
         assert_vector3_approx!(Vector, accel.clone(), [0.0, 0.0, -9.81]);
     }
 
+    // ── task 3540 step-19 (RED): post-retirement contract ────────────────────
+    //
+    // After step-20 (SIR-α stdlib swap), `point_load` is no longer a
+    // name-dispatched builtin — its role is taken by the
+    // `structure def PointLoad : Load { ... }` declaration in
+    // `crates/reify-compiler/stdlib/fea_multi_case.ri`. Source-level
+    // `PointLoad(...)` calls then lower to `CompiledExprKind::StructureInstanceCtor`
+    // (the precedence path landed in step-16) and eval into a
+    // `Value::StructureInstance`. The `eval_builtin("point_load", ...)` Rust API
+    // path (used by tests below) returns `Value::Undef` because the dispatch
+    // arm in `eval_loads` is removed.
+    //
+    // RED: this test currently fails because `eval_builtin("point_load", ...)`
+    // returns a `Value::Map` (the pre-retirement happy path). Step-20 retires
+    // the arm and updates `LOAD_KINDS` so the partition guard stays green.
+
+    #[test]
+    fn point_load_eval_builtin_returns_undef_post_retirement() {
+        let selector = selector_stub("point_stub");
+        let force = make_scalar_vec3([5000.0, 0.0, 0.0], DimensionVector::FORCE);
+        assert!(
+            eval_builtin("point_load", &[selector, force]).is_undef(),
+            "after step-20 retirement, eval_builtin('point_load', ...) must \
+             return Undef; the structure-instance ctor path replaces the \
+             builtin entirely (PRD §6, Q-SIR-4 — rename point_load → PointLoad)"
+        );
+    }
+
     // ── LOAD_KINDS partition test ─────────────────────────────────────────────
 
     /// Guard that every kind listed in `LOAD_KINDS` is actually dispatched by
