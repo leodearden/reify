@@ -773,29 +773,35 @@ impl EngineSession {
     /// When `self.file_path` is set (i.e. after a prior `load_file`), this method
     /// routes through `compile_entry_with_imports` to preserve the multi-file import
     /// graph resolved at `load_file` time — dirty-buffer edits no longer silently
-    /// drop imports.  See task 3318 (item 3).
+    /// drop imports.  See task 3318 (item 3).  Both `module_name` and the
+    /// project-root anchor are derived from `self.file_path`; the caller's `path`
+    /// argument is used only for the single-file fallback (when `self.file_path` is
+    /// `None`).  See task 3370.
     ///
     /// When `self.file_path` is `None` (i.e. `load_from_source`-only sessions with
     /// no project-root anchor), the original single-file `parse_with_stdlib +
     /// compile_with_stdlib` path is preserved unchanged.
     pub fn update_source(&mut self, path: &str, content: &str) -> Result<GuiState, String> {
-        let module_name = Path::new(path)
+        // When self.file_path is set (i.e. after a prior load_file), derive module_name
+        // from it — NOT from the caller's `path` arg.  This keeps module_name in lockstep
+        // with the entry-module key established at load_file time, regardless of what
+        // path string the caller serialises.  See task 3370 (esc-3318-14, suggestion #1).
+        // Owned String releases the self.file_path borrow before the closures below.
+        let module_name_owned = self
+            .file_path
+            .as_deref()
+            .unwrap_or_else(|| Path::new(path))
             .file_stem()
             .and_then(|s| s.to_str())
-            .unwrap_or("unnamed");
+            .unwrap_or("unnamed")
+            .to_owned();
+        let module_name = module_name_owned.as_str();
 
         let (parsed, compiled) = if let Some(entry_path) = self.file_path.clone() {
             // Multi-file flow — same as load_file. Preserves the import graph
             // resolved at load_file time so dirty-buffer edits don't silently drop
-            // imports.  See task 3318 (item 3) and task 3228 follow-up note.
-            //
-            // Caller contract: `path` is expected to name the same file that was
-            // originally passed to `load_file` (so that `module_name` derived from
-            // `path` matches the entry module).  `self.file_path` (not `path`) is
-            // used as the project-root anchor so `ModuleResolver` always resolves
-            // siblings relative to the directory of the originally-loaded file,
-            // regardless of how the GUI serialised `path`.  See design decision in
-            // task 3318 for rationale.
+            // imports.  Both module_name and the project-root anchor come from
+            // self.file_path.  See task 3318 (item 3), task 3228, and task 3370.
             let (compiled, parsed) = compile_entry_with_imports(&entry_path, content, module_name)
                 .map_err(|(msg, diags)| {
                     self.record_compile_failure(diags);

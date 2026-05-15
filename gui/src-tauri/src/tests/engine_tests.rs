@@ -5907,6 +5907,74 @@ fn update_source_after_load_file_with_unresolved_import_returns_err() {
     );
 }
 
+// ── update_source divergent-path contract (task 3370) ────────────────────────
+
+/// Regression for task 3370 (esc-3318-14 suggestion #1):
+/// after `load_file`, calling `update_source` with a *divergent* path whose
+/// `file_stem` differs from the originally-loaded file must still derive
+/// `module_name` from `self.file_path.file_stem()`, not from the caller's `path`.
+///
+/// Pre-fix: `update_source` always derived `module_name` from `Path::new(path)`,
+/// so a divergent path like `renamed_buffer.ri` after loading `main.ri` would
+/// insert under key `"renamed_buffer.ri"` and set `module_name = "renamed_buffer"`,
+/// silently corrupting the session state.
+/// Post-fix: when `self.file_path` is set, `module_name` is derived from
+/// `self.file_path.file_stem()` — the originally-loaded file's stem — regardless
+/// of the caller's `path` argument.
+#[test]
+fn update_source_with_divergent_path_keeps_loaded_module_name() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+
+    // A self-contained structure — no imports needed; the bug is purely about
+    // module_name derivation, independent of multi-file resolution.
+    let initial_content = "structure Main { param w: Scalar = 10mm }\n";
+    std::fs::write(dir.path().join("main.ri"), initial_content).expect("write main.ri");
+
+    session
+        .load_file(&dir.path().join("main.ri"))
+        .expect("initial load_file should succeed");
+
+    // Build a divergent path: file_stem = "renamed_buffer", differs from "main".
+    let divergent = dir.path().join("renamed_buffer.ri");
+    let updated_content = "structure Main { param w: Scalar = 20mm }\n";
+
+    let state = session
+        .update_source(divergent.to_str().unwrap(), updated_content)
+        .expect("update_source with divergent path should succeed");
+
+    // 1. No phantom second entry under the divergent name.
+    assert_eq!(
+        state.files.len(),
+        1,
+        "should have exactly 1 file entry after load_file + divergent-path update_source, \
+         got {}: {:?}",
+        state.files.len(),
+        state.files.iter().map(|f| &f.path).collect::<Vec<_>>()
+    );
+
+    // 2. module_name is derived from the originally-loaded file's stem ("main"),
+    //    NOT from the divergent path's stem ("renamed_buffer").
+    let (stored_key, stored_src) = session
+        .resolve_source_for_test()
+        .expect("resolve_source_for_test should return Some after update_source");
+    assert_eq!(
+        stored_key,
+        module_key("main"),
+        "key should be derived from load_file's stem ('main'), not from divergent path; \
+         got '{stored_key}'"
+    );
+
+    // 3. The new content IS stored under the original key — the update took effect.
+    assert_eq!(
+        stored_src, updated_content,
+        "stored source should be the updated content"
+    );
+}
+
 // ── Collision-diagnostic test helpers ────────────────────────────────────────
 
 /// Create an `EngineSession` configured with the standard mock checker/kernel,
