@@ -280,9 +280,7 @@ fn cmd_cache_clear(args: &[String]) -> ExitCode {
         }
     }
     if !yes {
-        eprintln!(
-            "reify cache clear: refusing to clear without --yes (destructive operation)"
-        );
+        eprintln!("reify cache clear: refusing to clear without --yes (destructive operation)");
         eprintln!("{CLEAR_USAGE}");
         return ExitCode::FAILURE;
     }
@@ -299,9 +297,7 @@ fn cmd_cache_clear(args: &[String]) -> ExitCode {
     // (`../foo`, etc.) on the same surface as a hostile script.
     if let Some(hash) = engine_version {
         if !is_32_lowercase_hex(&hash) {
-            eprintln!(
-                "reify cache clear: --engine-version must be 32 lowercase hex digits"
-            );
+            eprintln!("reify cache clear: --engine-version must be 32 lowercase hex digits");
             return ExitCode::FAILURE;
         }
         let target = cache_root.join(&hash);
@@ -353,7 +349,11 @@ fn cmd_cache_clear(args: &[String]) -> ExitCode {
             continue;
         }
         if let Err(e) = std::fs::remove_dir_all(&path) {
-            eprintln!("reify cache clear: failed to remove {}: {}", path.display(), e);
+            eprintln!(
+                "reify cache clear: failed to remove {}: {}",
+                path.display(),
+                e
+            );
             return ExitCode::FAILURE;
         }
     }
