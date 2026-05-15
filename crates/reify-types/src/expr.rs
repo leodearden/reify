@@ -2509,4 +2509,53 @@ mod tests {
             Type::Geometry,
         );
     }
+
+    /// `map_value_refs` on a `CrossSubGeometryRef` preserves the `<parent>.<sub>`
+    /// entity-stamp shape.
+    ///
+    /// The `map_value_refs` arm at `expr.rs:513-518` reconstructs the variant via
+    /// `CompiledExpr::cross_sub_geometry_ref(f(id), result_type)`.  Because the
+    /// constructor contains the canonical `debug_assert!(id.entity.contains('.'))`,
+    /// any remap closure `f` that strips the dot is caught in debug builds.
+    ///
+    /// This test confirms the positive case: a closure that remaps one dotted
+    /// entity to another dotted entity round-trips without panic and yields a
+    /// `CrossSubGeometryRef` whose entity still satisfies the shape invariant.
+    /// It makes the coupling between the `map_value_refs` rebuild path and the
+    /// constructor assertion explicit and regression-guarded.
+    ///
+    /// task-3508 introduced the typed variant; task-3663 introduced the constructor
+    /// assert and this test.
+    #[test]
+    fn map_value_refs_preserves_cross_sub_geometry_ref_stamp_shape() {
+        let original_id = ValueCellId::new("Parent.sub", "body");
+        let expected_id = ValueCellId::new("OtherParent.outer", "body");
+
+        let expr = CompiledExpr::cross_sub_geometry_ref(original_id.clone(), Type::Geometry);
+
+        // Remap "Parent.sub" → "OtherParent.outer", preserving the dotted shape.
+        let remapped = expr.map_value_refs(&mut |id| {
+            if id.entity == "Parent.sub" {
+                ValueCellId::new("OtherParent.outer", id.member)
+            } else {
+                id
+            }
+        });
+
+        // Must remain a CrossSubGeometryRef after the remap.
+        match &remapped.kind {
+            CompiledExprKind::CrossSubGeometryRef(id) => {
+                assert_eq!(
+                    *id, expected_id,
+                    "entity stamp must be remapped to OtherParent.outer.body"
+                );
+                assert!(
+                    id.entity.contains('.'),
+                    "remapped entity stamp must still satisfy the <parent>.<sub> shape invariant"
+                );
+            }
+            other => panic!("expected CrossSubGeometryRef after map_value_refs, got {other:?}"),
+        }
+        assert_eq!(remapped.result_type, Type::Geometry);
+    }
 }

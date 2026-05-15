@@ -149,6 +149,33 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             // `unreachable!()` fires identically in debug and release builds,
             // unlike the former `debug_assert!(false, ...) + get_or_undef` which
             // silently returned Undef in release and could mask downstream bugs.
+            //
+            // Why a nested CrossSubGeometryRef cannot reach eval_expr (task-3663):
+            //
+            // (a) `CrossSubGeometryRef` always carries `Type::Geometry`.
+            //     `Type::Geometry` values are unrepresentable as value cells —
+            //     entity.rs:1104 explicitly skips value-cell creation for them
+            //     and the runtime invariant `assert_value_cell_types_representable`
+            //     enforces this. A CrossSubGeometryRef nested inside a larger
+            //     expression (e.g. a BinOp) would make the outer expression's type
+            //     depend on `Type::Geometry`, which the type checker rejects with a
+            //     diagnostic and replaces with a poison literal long before the
+            //     compiled tree is handed to eval.
+            //
+            // (b) The sole producer is `try_resolve_cross_sub_geometry_value_ref`
+            //     (reify-compiler/src/expr.rs:256), which fires only for bare
+            //     `self.<sub>.<member>` in the MemberAccess branch — a terminal
+            //     return site. The caller does `return e;` immediately, so the
+            //     CrossSubGeometryRef is always the top-level kind of the compiled
+            //     sub-expression, never a child of a larger operator node.
+            //
+            // (c) Therefore, a CrossSubGeometryRef can only appear as the top-level
+            //     kind of a let binding's rhs. Entity.rs drops it there. If a future
+            //     refactor ever violates premises (a) or (b), this `unreachable!()`
+            //     immediately surfaces the regression in both debug and release builds.
+            // A compiler-side test pinning premise (b) would live in
+            // crates/reify-compiler (outside this task's scope); this comment
+            // is the narrative invariant documentation until that test is added.
             unreachable!(
                 "CrossSubGeometryRef should be consumed by entity.rs bare-let drop site (task-3508)"
             )
