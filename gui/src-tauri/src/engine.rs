@@ -1110,11 +1110,11 @@ impl EngineSession {
 
     /// Atomically commit all session state after a successful parse+compile+check cycle.
     ///
-    /// Enforces the invariant that the canonical compiled state, all derived caches,
-    /// and the failure-diagnostic field move together: either every field below is
-    /// updated/cleared in this single call, or none are.  The fields, grouped by role:
+    /// This wrapper first delegates the four-field core commit to
+    /// [`CoreState::commit_state`] (see that method's doc for the canonical-field
+    /// contract: `source_map`, `module_name`, `compiled`, `last_check`), then
+    /// updates the five cache/failure-tracking fields owned by `EngineSession`:
     ///
-    /// - **Canonical compiled state**: `source_map`, `module_name`, `compiled`, `last_check`
     /// - **Derived caches**: `def_preview_cache`, `parsed_cache`, `line_offsets_cache`, `consumed_idents_cache`
     /// - **Failure-diagnostic state**: `compile_failure`
     ///
