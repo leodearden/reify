@@ -658,6 +658,82 @@ mod tests {
         );
     }
 
+    /// Degenerate Cargo.lock-only case: when `metadata.files` contains ONLY
+    /// `Cargo.lock` (no other entries to corroborate), the `is_cargo_lock_only`
+    /// guard's precondition is violated — there are no "other entries" that
+    /// were covered by the diff to validate the low-noise claim. Should NOT
+    /// downgrade to Low; instead fall through to sibling-FF rescue (empty) and
+    /// emit High. See S1.5 in the carry-forward plan.
+    #[test]
+    fn cargo_lock_only_with_single_metadata_file_does_not_downgrade() {
+        let conn = seed_db();
+        insert_run(&conn, "run-degen");
+        insert_task_result(&conn, "run-degen", "7000", "done");
+        insert_task_completed_event(&conn, "run-degen", "7000");
+
+        let mut git = MockGitOps::new();
+        // Empty primary diff: claimed commit covers nothing, so Cargo.lock is
+        // in `missing`. No sibling-FF rescue either.
+        git.set_diff_changed_paths("main", "degenerate_sha", vec![]);
+        git.set_log_grep("main", "7000", vec![]);
+        // (gitignored: default false for any path not explicitly set)
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "7000".to_string(),
+            TaskMetadata {
+                task_id: "7000".to_string(),
+                status: "done".to_string(),
+                // Only one file: Cargo.lock. No corroborating entries exist.
+                files: vec!["Cargo.lock".to_string()],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("degenerate_sha".to_string()),
+                    note: None,
+                }),
+                title: "Wire foo into bar".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+        };
+
+        let findings = p5_phantom_done::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly one finding; got {:?}",
+            findings
+        );
+        let f = &findings[0];
+        assert_eq!(
+            f.severity,
+            Severity::High,
+            "degenerate single-file Cargo.lock must NOT downgrade to Low; got {:?}",
+            f.severity
+        );
+        assert_eq!(f.pattern, Pattern::P5PhantomDone);
+        assert!(
+            f.summary.to_lowercase().contains("mismatch")
+                || f.summary.to_lowercase().contains("not reachable"),
+            "summary should mention mismatch or not reachable; got {:?}",
+            f.summary
+        );
+    }
+
     /// `check_pre_done` is the entry point for the eventual D-1 dark-factory
     /// hook (see `f-infra-design.md` §11). It must scope to a single task_id
     /// even when other phantom-done tasks coexist in `task_metadata`.
