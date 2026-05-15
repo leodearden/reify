@@ -136,7 +136,7 @@ fn stats_record_fns_are_g_allow_marked() {
             .as_str()
             .unwrap_or_default();
         assert!(
-            reason.contains("2947") && reason.contains("2949"),
+            reason.contains("#2947") && reason.contains("#2949"),
             "`{fn_name}` allow_reason must cite tasks #2947 and #2949; got: {reason:?}"
         );
     }

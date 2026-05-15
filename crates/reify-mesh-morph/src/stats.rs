@@ -49,9 +49,7 @@ pub fn snapshot() -> MorphStats {
 
 /// Increment the morph-attempt counter.
 ///
-/// To be wired into the engine call site by mesh-morphing PRD tasks #2947-#2949;
-/// until then, only test code calls this. `saturating_add` ensures no panic on
-/// `u32::MAX` overflow (production stability concern).
+/// `saturating_add` ensures no panic on `u32::MAX` overflow (production stability concern).
 // G-allow: mesh-morph engine call-site wiring deferred to tasks #2947-#2949
 pub fn record_morph_attempt() {
     let mut guard = state().lock().unwrap_or_else(|e| e.into_inner());
