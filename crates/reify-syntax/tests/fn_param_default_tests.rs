@@ -8,7 +8,6 @@
 //!    regressions independently of the lowering pipeline.
 //! 2. **AST-level** (via `reify_syntax::parse`) — catches lowering regressions
 //!    and verifies that `FnParam.default` round-trips the source expression.
-//!    (Added in step-3 / step-4 of the TDD plan.)
 //!
 //! Design decision: `fn_param` defaults accept `$._expression` only — NOT
 //! `choice($.auto_keyword, $._expression)` like `param_declaration` does.
@@ -44,39 +43,10 @@ fn find_cst_node<'a>(root: tree_sitter::Node<'a>, kind: &str) -> Option<tree_sit
     None
 }
 
-/// Depth-first search — returns all **outermost** nodes with the given kind.
-///
-/// **No-nesting precondition**: when a matching node is found, the search does
-/// not recurse into its children.  This is correct for node kinds that cannot
-/// legitimately nest (e.g. `fn_param`).
-fn find_outermost_cst_nodes<'a>(
-    root: tree_sitter::Node<'a>,
-    kind: &str,
-) -> Vec<tree_sitter::Node<'a>> {
-    let mut results = Vec::new();
-    if root.kind() == kind {
-        results.push(root);
-        return results;
-    }
-    let mut cursor = root.walk();
-    if cursor.goto_first_child() {
-        loop {
-            results.extend(find_outermost_cst_nodes(cursor.node(), kind));
-            if !cursor.goto_next_sibling() {
-                break;
-            }
-        }
-    }
-    results
-}
-
 // ── CST-level tests ───────────────────────────────────────────────────────────
 
 /// `fn f(x : T = Foo.bar) -> T { x }` — CST must contain an `fn_param` node
 /// with a `default` field child whose kind is `member_access`.
-///
-/// **RED state (step-1)**: fails because the grammar does not yet accept the
-/// `= default` form — the parser produces an ERROR node.
 #[test]
 fn fn_param_cst_with_default_has_default_field_child() {
     let source = "fn f(x : T = Foo.bar) -> T { x }";
@@ -129,10 +99,6 @@ fn fn_param_cst_without_default_has_no_default_field_child() {
 }
 
 // ── AST-level tests ───────────────────────────────────────────────────────────
-//
-// These tests access `FnParam.default` — a field added in step-4.
-// They fail to COMPILE until step-4 wires `pub default: Option<Expr>` onto
-// `FnParam` in lib.rs.  This is the expected RED state for step-3.
 
 use reify_syntax::*;
 
@@ -231,10 +197,6 @@ fn fn_param_ast_multi_param_mixed_defaults() {
 /// This is a regression guard ensuring the optional default clause does NOT
 /// make the colon-and-type optional.  The grammar keeps `:` and `type_expr`
 /// inside `seq(...)` before the `optional(seq('=', ...))` clause.
-///
-/// The test should PASS after step-4 (grammar makes `:` mandatory).  It is
-/// filed as a RED step in case a future grammar edit accidentally regresses
-/// this — if it passes immediately the implementation is sound.
 #[test]
 fn fn_param_rejects_default_without_type() {
     let source = "fn f(x = 1) -> T { x }";
