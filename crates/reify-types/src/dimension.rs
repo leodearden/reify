@@ -1222,4 +1222,164 @@ mod tests {
             assert_eq!(V.0[i], Rational::ZERO, "slot {} should be zero", i);
         }
     }
+
+    // ─── Step-3: per-alias unit tests for the 9 new named-dimension aliases ───
+    //
+    // Each test pins the (a) exponent vector and (b) canonical PascalCase name
+    // for one of the 9 new aliases.  Sibling-distinctness regression-guards
+    // pin the slots that distinguish look-alike pairs (Resistivity vs
+    // Resistance, Conductivity vs Conductance) and the only fractional case
+    // (FractureToughness Length slot).
+
+    #[test]
+    fn thermal_conductivity_dimension_exponents() {
+        // W/(m·K) = kg·m·s⁻³·K⁻¹
+        let expected = DimensionVector::from_exps(&[(0, 1), (1, 1), (2, -3), (4, -1)]);
+        assert_eq!(DimensionVector::THERMAL_CONDUCTIVITY, expected);
+        assert_eq!(
+            DimensionVector::THERMAL_CONDUCTIVITY.canonical_name(),
+            Some("ThermalConductivity")
+        );
+    }
+
+    #[test]
+    fn specific_heat_dimension_exponents() {
+        // J/(kg·K) = m²·s⁻²·K⁻¹
+        let expected = DimensionVector::from_exps(&[(0, 2), (2, -2), (4, -1)]);
+        assert_eq!(DimensionVector::SPECIFIC_HEAT, expected);
+        assert_eq!(
+            DimensionVector::SPECIFIC_HEAT.canonical_name(),
+            Some("SpecificHeat")
+        );
+    }
+
+    #[test]
+    fn thermal_expansion_dimension_exponents() {
+        // 1/K
+        let expected = DimensionVector::from_exps(&[(4, -1)]);
+        assert_eq!(DimensionVector::THERMAL_EXPANSION, expected);
+        assert_eq!(
+            DimensionVector::THERMAL_EXPANSION.canonical_name(),
+            Some("ThermalExpansion")
+        );
+    }
+
+    #[test]
+    fn electric_resistivity_dimension_exponents() {
+        // Ω·m = kg·m³·s⁻³·A⁻²
+        let expected = DimensionVector::from_exps(&[(0, 3), (1, 1), (2, -3), (3, -2)]);
+        assert_eq!(DimensionVector::ELECTRIC_RESISTIVITY, expected);
+        assert_eq!(
+            DimensionVector::ELECTRIC_RESISTIVITY.canonical_name(),
+            Some("ElectricResistivity")
+        );
+    }
+
+    #[test]
+    fn electrical_conductivity_dimension_exponents() {
+        // S/m = kg⁻¹·m⁻³·s³·A²
+        let expected = DimensionVector::from_exps(&[(0, -3), (1, -1), (2, 3), (3, 2)]);
+        assert_eq!(DimensionVector::ELECTRICAL_CONDUCTIVITY, expected);
+        assert_eq!(
+            DimensionVector::ELECTRICAL_CONDUCTIVITY.canonical_name(),
+            Some("ElectricalConductivity")
+        );
+    }
+
+    #[test]
+    fn dielectric_strength_dimension_exponents() {
+        // V/m = kg·m·s⁻³·A⁻¹
+        let expected = DimensionVector::from_exps(&[(0, 1), (1, 1), (2, -3), (3, -1)]);
+        assert_eq!(DimensionVector::DIELECTRIC_STRENGTH, expected);
+        assert_eq!(
+            DimensionVector::DIELECTRIC_STRENGTH.canonical_name(),
+            Some("DielectricStrength")
+        );
+    }
+
+    #[test]
+    fn stiffness_dimension_exponents() {
+        // N/m = kg·s⁻² (Length cancels)
+        let expected = DimensionVector::from_exps(&[(1, 1), (2, -2)]);
+        assert_eq!(DimensionVector::STIFFNESS, expected);
+        assert_eq!(
+            DimensionVector::STIFFNESS.canonical_name(),
+            Some("Stiffness")
+        );
+    }
+
+    #[test]
+    fn absorption_coeff_dimension_exponents() {
+        // 1/m
+        let expected = DimensionVector::from_exps(&[(0, -1)]);
+        assert_eq!(DimensionVector::ABSORPTION_COEFF, expected);
+        assert_eq!(
+            DimensionVector::ABSORPTION_COEFF.canonical_name(),
+            Some("AbsorptionCoeff")
+        );
+    }
+
+    #[test]
+    fn fracture_toughness_dimension_exponents() {
+        // Pa·√m = kg·m^(-1/2)·s⁻²  — the only fractional-exponent alias.
+        let expected =
+            DimensionVector::from_rational_exps(&[(0, -1, 2), (1, 1, 1), (2, -2, 1)]);
+        assert_eq!(DimensionVector::FRACTURE_TOUGHNESS, expected);
+        assert_eq!(
+            DimensionVector::FRACTURE_TOUGHNESS.canonical_name(),
+            Some("FractureToughness")
+        );
+    }
+
+    /// ELECTRIC_RESISTIVITY (Ω·m) and RESISTANCE (Ω) differ only in the
+    /// Length slot (3 vs 2). Pin the distinction so future edits cannot
+    /// silently collapse them.
+    #[test]
+    fn electric_resistivity_distinct_from_resistance() {
+        assert_ne!(
+            DimensionVector::ELECTRIC_RESISTIVITY,
+            DimensionVector::RESISTANCE
+        );
+        assert_eq!(
+            DimensionVector::ELECTRIC_RESISTIVITY.0[0],
+            Rational::new(3, 1),
+            "ElectricResistivity Length slot should be 3 (Ω·m)"
+        );
+        assert_eq!(
+            DimensionVector::RESISTANCE.0[0],
+            Rational::new(2, 1),
+            "Resistance Length slot should be 2 (Ω)"
+        );
+    }
+
+    /// ELECTRICAL_CONDUCTIVITY (S/m) and CONDUCTANCE (S) differ only in the
+    /// Length slot (-3 vs -2). Pin the distinction.
+    #[test]
+    fn electrical_conductivity_distinct_from_conductance() {
+        assert_ne!(
+            DimensionVector::ELECTRICAL_CONDUCTIVITY,
+            DimensionVector::CONDUCTANCE
+        );
+        assert_eq!(
+            DimensionVector::ELECTRICAL_CONDUCTIVITY.0[0],
+            Rational::new(-3, 1),
+            "ElectricalConductivity Length slot should be -3 (S/m)"
+        );
+        assert_eq!(
+            DimensionVector::CONDUCTANCE.0[0],
+            Rational::new(-2, 1),
+            "Conductance Length slot should be -2 (S)"
+        );
+    }
+
+    /// FRACTURE_TOUGHNESS is the only alias with a fractional Length exponent.
+    /// Pin the (-1, 2) value so any silent integer-collapse is caught.
+    #[test]
+    fn fracture_toughness_has_fractional_length_exponent() {
+        assert_eq!(
+            DimensionVector::FRACTURE_TOUGHNESS.0[0],
+            Rational::new(-1, 2),
+            "FractureToughness Length slot should be Rational(-1, 2)"
+        );
+    }
 }
