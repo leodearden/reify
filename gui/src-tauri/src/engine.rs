@@ -38,18 +38,22 @@ mod core_state {
 
     /// The six core fields of `EngineSession` that must stay consistent across panics.
     ///
-    /// Fields are marked `pub(super)` temporarily — this allows `engine.rs`'s outer module
-    /// to access them directly during the incremental migration.  The final step removes
-    /// `pub(super)`, making fields strictly private; any direct field assignment outside
-    /// this `impl` block then fails to compile, enforcing the poison-recovery invariant
-    /// at the type level.  See `engine_lock.rs:26-49` for the invariant rationale.
+    /// Fields have **no visibility marker** — they are strictly private to this `impl`
+    /// block.  Any direct field assignment from outside (e.g. `session.core.compiled = …`)
+    /// fails to compile, enforcing the poison-recovery invariant at the type level.
+    /// Mutation is exposed only through the three commit methods:
+    /// - `commit_state` — four-field atomic commit after a successful compile cycle
+    /// - `commit_check` — single-field commit for `last_check` (used by `set_parameter`)
+    /// - `commit_file_path` — single-field commit for `file_path` (used by `load_file`)
+    ///
+    /// See `engine_lock.rs:26-49` for the invariant rationale.
     pub(crate) struct CoreState {
-        pub(super) engine: Engine,
-        pub(super) compiled: Option<CompiledModule>,
-        pub(super) source_map: HashMap<String, String>,
-        pub(super) file_path: Option<PathBuf>,
-        pub(super) last_check: Option<CheckResult>,
-        pub(super) module_name: Option<String>,
+        engine: Engine,
+        compiled: Option<CompiledModule>,
+        source_map: HashMap<String, String>,
+        file_path: Option<PathBuf>,
+        last_check: Option<CheckResult>,
+        module_name: Option<String>,
     }
 
     impl CoreState {
