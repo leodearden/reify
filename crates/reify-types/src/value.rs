@@ -1588,6 +1588,37 @@ impl Value {
             _ => (self.format_display(), String::new()),
         }
     }
+
+    /// Format this value for auto-resolve emit, returning
+    /// `(display_value_f64, formatted_number_string, unit_string)`.
+    ///
+    /// For `Value::Scalar`, the `f64` component is the engineering-unit value
+    /// (e.g. millimetres, degrees) and the strings are the formatted number
+    /// and unit symbol respectively.
+    ///
+    /// For `Value::Option(Some(inner))`, this recurses into `inner`.
+    ///
+    /// For all other variants the `f64` component is `f64::NAN` (a sentinel
+    /// indicating the value is not a physical scalar), and the two strings
+    /// are taken from [`format_display_pair`](Value::format_display_pair) for
+    /// consistency.  Callers that need the f64 for arithmetic must guard on
+    /// `.is_nan()` or restrict to variants where the value is meaningful.
+    pub fn format_display_triple(&self) -> (f64, String, String) {
+        match self {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                let (display_value, unit) = dimension.to_display_units(*si_value);
+                (display_value, format_display_number(display_value), unit.to_string())
+            }
+            Value::Option(Some(inner)) => inner.format_display_triple(),
+            _ => {
+                let (s, u) = self.format_display_pair();
+                (f64::NAN, s, u)
+            }
+        }
+    }
 }
 
 /// Return `true` iff all four quaternion components are finite (not NaN,
