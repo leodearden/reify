@@ -203,6 +203,47 @@ impl DimensionVector {
     pub const FORCE_DENSITY: DimensionVector =
         DimensionVector::from_exps(&[(0, -2), (1, 1), (2, -2)]);
 
+    // ─── Composite-quantity aliases for stdlib material/structural traits ──────
+    //
+    // Added by task #3115 to tighten 11 blocked-composite param sites in the
+    // stdlib (materials_thermal, materials_optical, materials_electrical,
+    // materials_mechanical, structural_physical) from `: Real` to dimensioned
+    // scalar types. See `docs/notes/stdlib-real-placeholder-audit.md` task-E.
+
+    /// Thermal conductivity: W/(m·K) = kg·m·s⁻³·K⁻¹
+    pub const THERMAL_CONDUCTIVITY: DimensionVector =
+        DimensionVector::from_exps(&[(0, 1), (1, 1), (2, -3), (4, -1)]);
+    /// Specific heat capacity: J/(kg·K) = m²·s⁻²·K⁻¹
+    pub const SPECIFIC_HEAT: DimensionVector =
+        DimensionVector::from_exps(&[(0, 2), (2, -2), (4, -1)]);
+    /// Coefficient of thermal expansion: 1/K
+    pub const THERMAL_EXPANSION: DimensionVector = DimensionVector::from_exps(&[(4, -1)]);
+    /// Electric resistivity: Ω·m = kg·m³·s⁻³·A⁻²
+    ///
+    /// Distinct from `RESISTANCE` (Ω = kg·m²·s⁻³·A⁻²) by the Length slot
+    /// (3 vs 2). Pinned in `electric_resistivity_distinct_from_resistance`.
+    pub const ELECTRIC_RESISTIVITY: DimensionVector =
+        DimensionVector::from_exps(&[(0, 3), (1, 1), (2, -3), (3, -2)]);
+    /// Electrical conductivity: S/m = kg⁻¹·m⁻³·s³·A²
+    ///
+    /// Distinct from `CONDUCTANCE` (S = kg⁻¹·m⁻²·s³·A²) by the Length slot
+    /// (-3 vs -2). Pinned in `electrical_conductivity_distinct_from_conductance`.
+    pub const ELECTRICAL_CONDUCTIVITY: DimensionVector =
+        DimensionVector::from_exps(&[(0, -3), (1, -1), (2, 3), (3, 2)]);
+    /// Dielectric strength: V/m = kg·m·s⁻³·A⁻¹
+    pub const DIELECTRIC_STRENGTH: DimensionVector =
+        DimensionVector::from_exps(&[(0, 1), (1, 1), (2, -3), (3, -1)]);
+    /// Translational stiffness: N/m = kg·s⁻² (Length cancels)
+    pub const STIFFNESS: DimensionVector = DimensionVector::from_exps(&[(1, 1), (2, -2)]);
+    /// Absorption coefficient: 1/m
+    pub const ABSORPTION_COEFF: DimensionVector = DimensionVector::from_exps(&[(0, -1)]);
+    /// Fracture toughness: Pa·√m = kg·m^(-1/2)·s⁻²
+    ///
+    /// The only fractional-exponent named alias — Length slot is Rational(-1, 2).
+    /// Built via the sibling `from_rational_exps` helper.
+    pub const FRACTURE_TOUGHNESS: DimensionVector =
+        DimensionVector::from_rational_exps(&[(0, -1, 2), (1, 1, 1), (2, -2, 1)]);
+
     const fn basis(index: usize) -> DimensionVector {
         let mut v = [Rational::ZERO; 10];
         v[index] = Rational::ONE;
@@ -410,6 +451,19 @@ pub static NAMED_DIMENSIONS: &[(DimensionVector, &str)] = &[
     (DimensionVector::MASS_DENSITY, "Density"),
     (DimensionVector::ACCELERATION, "Acceleration"),
     (DimensionVector::FORCE_DENSITY, "ForceDensity"),
+    // ── Composite-quantity aliases added by task #3115 (see task-E in the audit) ──
+    (DimensionVector::THERMAL_CONDUCTIVITY, "ThermalConductivity"),
+    (DimensionVector::SPECIFIC_HEAT, "SpecificHeat"),
+    (DimensionVector::THERMAL_EXPANSION, "ThermalExpansion"),
+    (DimensionVector::ELECTRIC_RESISTIVITY, "ElectricResistivity"),
+    (
+        DimensionVector::ELECTRICAL_CONDUCTIVITY,
+        "ElectricalConductivity",
+    ),
+    (DimensionVector::DIELECTRIC_STRENGTH, "DielectricStrength"),
+    (DimensionVector::STIFFNESS, "Stiffness"),
+    (DimensionVector::ABSORPTION_COEFF, "AbsorptionCoeff"),
+    (DimensionVector::FRACTURE_TOUGHNESS, "FractureToughness"),
 ];
 
 impl fmt::Display for DimensionVector {
