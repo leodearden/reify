@@ -1,8 +1,9 @@
 //! Composable execution-trait flags for node-kind classification.
 //!
 //! Implements the [`NodeTraits`] bitflag newtype (four trait flags from §7.6 "Node Traits")
-//! and the [`NodeArchKind`] enum (seven-kind taxonomy from §2.1 "Node Taxonomy (7 Types)");
-//! see `docs/reify-implementation-architecture.md`.
+//! and the [`NodeKind`] enum (five-variant canonical taxonomy mirroring `NodeId`'s 5 variants
+//! in `reify-eval`); see `docs/reify-implementation-architecture.md` and
+//! `docs/prds/v0_3/node-traits-unification.md`.
 //!
 //! ### Trait semantics (§7.6 table)
 //!
@@ -132,6 +133,90 @@ impl Not for NodeTraits {
     #[inline]
     fn not(self) -> Self {
         Self(!self.0 & Self::ALL_MASK)
+    }
+}
+
+/// Canonical node-kind discriminant: mirrors the 5 variants of `NodeId` in `reify-eval`.
+///
+/// Carries the architecture-specified default [`NodeTraits`] sets for each kind
+/// (trait flags from §7.6 "Node Traits"); see `docs/reify-implementation-architecture.md`
+/// §2.1, §7.6, and `docs/prds/v0_3/node-traits-unification.md §4`.
+///
+/// `NodeKind` lives in `reify-types` so that any crate depending on `reify-types`
+/// can use it without pulling in `reify-eval`. The conversion bridge
+/// `impl From<&NodeId> for NodeKind` is hosted in `reify-eval` (the only crate where
+/// both types are visible without an orphan-rule violation — see PRD §4).
+///
+/// `reify-runtime` re-exports this type via `pub use reify_types::NodeKind`, keeping
+/// all existing `reify_runtime::commitment::NodeKind` call sites working without change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NodeKind {
+    /// A value cell node. Default traits: [`NodeTraits::IMMEDIATE`].
+    ///
+    /// See §2.1 "Node Taxonomy" and §7.6 "Node Traits" in
+    /// `docs/reify-implementation-architecture.md`.
+    Value,
+    /// A constraint node. Default traits: empty (no flags set).
+    ///
+    /// See §2.1 "Node Taxonomy" and §7.6 "Node Traits" in
+    /// `docs/reify-implementation-architecture.md`.
+    Constraint,
+    /// A realization (geometry output) node. Default traits: `WARM_STARTABLE | COMMITTABLE`.
+    ///
+    /// See §2.1 "Node Taxonomy" and §7.6 "Node Traits" in
+    /// `docs/reify-implementation-architecture.md`.
+    Realization,
+    /// A resolution (constraint solver) node. Default traits: `WARM_STARTABLE | COMMITTABLE`.
+    ///
+    /// See §2.1 "Node Taxonomy" and §7.6 "Node Traits" in
+    /// `docs/reify-implementation-architecture.md`.
+    Resolution,
+    /// A compute node (e.g. an @optimized FEA/solver computation). Default traits:
+    /// `WARM_STARTABLE | COMMITTABLE`.
+    ///
+    /// See §2.1 "Node Taxonomy" and §7.6 "Node Traits" in
+    /// `docs/reify-implementation-architecture.md`.
+    Compute,
+}
+
+impl NodeKind {
+    /// Returns the architecture-specified default [`NodeTraits`] for this node kind.
+    ///
+    /// ## Derivation
+    ///
+    /// Each per-kind default is drawn from several sections of
+    /// `docs/reify-implementation-architecture.md`:
+    ///
+    /// | Section | Role in this function |
+    /// |---------|----------------------|
+    /// | §2.1 "Node Taxonomy (7 Types)" | Canonical description of each kind's purpose |
+    /// | §3.3 "Two-Cone Scheduling Model" | P0/P1-fast scheduling → `IMMEDIATE` |
+    /// | §4.1 "The WarmStartable Protocol" | Iterative/incremental computation → `WARM_STARTABLE` |
+    /// | §7.3 "Task Commitment Policy" | May run past commitment thresholds → `COMMITTABLE` |
+    /// | §7.6 "Node Traits" | Authoritative definition of the four trait flags |
+    ///
+    /// **`IMMEDIATE` kinds** (`Value`): §3.3 classifies value cell reads as P0/P1-fast —
+    /// cheap, sub-frame reads evaluable inline. No warm-start or commitment machinery is
+    /// required.
+    ///
+    /// **`WARM_STARTABLE | COMMITTABLE` kinds** (`Resolution`, `Realization`, `Compute`):
+    /// §4.1 targets these as the long-running iterative/incremental computations that
+    /// benefit from resuming a saved warm state. §7.3 notes that they may run past a
+    /// commitment threshold and must therefore finish against their original snapshot,
+    /// justifying `COMMITTABLE`.
+    ///
+    /// **`Constraint` (empty)**: Predicate evaluation is cheap but §7.6 does not yet
+    /// classify it under any of the four traits. Assigning `IMMEDIATE` would conflate it
+    /// with sub-frame `ValueCell` reads; leaving the set empty is the conservative choice
+    /// until a downstream scheduler task formalises the policy (PRD §12 Q-1).
+    pub const fn default_traits(self) -> NodeTraits {
+        match self {
+            NodeKind::Value => NodeTraits::IMMEDIATE,
+            NodeKind::Constraint => NodeTraits::empty(),
+            NodeKind::Realization => NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE),
+            NodeKind::Resolution => NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE),
+            NodeKind::Compute => NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE),
+        }
     }
 }
 
