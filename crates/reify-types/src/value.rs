@@ -1043,6 +1043,8 @@ impl Value {
     /// - empty `List` / `Set` → element type defaults to `Real`
     /// - empty `Map` → key defaults to `String`, value defaults to `Real`
     /// - `Option(None)` → inner type defaults to `Bool`
+    /// - empty `Point` / `Vector` → quantity type defaults to `Real`
+    /// - `Range` with no bounds → element type defaults to `Real`
     ///
     /// Use [`try_infer_type()`] when you need to distinguish "genuinely ambiguous"
     /// from "has a known fallback".
@@ -1052,6 +1054,9 @@ impl Value {
             Some(ty) => ty,
             None => match self {
                 Value::List(items) => {
+                    // G-allow: documented `infer_type()` with-defaults contract (function
+                    // docstring above); `try_infer_type()` returns None for ambiguity
+                    // (task 3639 review).
                     let elem_ty = items.first().map(|v| v.infer_type()).unwrap_or(Type::Real);
                     Type::List(Box::new(elem_ty))
                 }
@@ -1060,6 +1065,9 @@ impl Value {
                         .iter()
                         .next()
                         .map(|v| v.infer_type())
+                        // G-allow: documented `infer_type()` with-defaults contract (function
+                        // docstring above); `try_infer_type()` returns None for ambiguity
+                        // (task 3639 review).
                         .unwrap_or(Type::Real);
                     Type::Set(Box::new(elem_ty))
                 }
@@ -1077,6 +1085,9 @@ impl Value {
                     let q = components
                         .first()
                         .map(|v| v.infer_type())
+                        // G-allow: documented `infer_type()` with-defaults contract (function
+                        // docstring above); `try_infer_type()` returns None for ambiguity
+                        // (task 3639 review).
                         .unwrap_or(Type::Real);
                     Type::Point {
                         n: components.len(),
@@ -1087,6 +1098,9 @@ impl Value {
                     let q = components
                         .first()
                         .map(|v| v.infer_type())
+                        // G-allow: documented `infer_type()` with-defaults contract (function
+                        // docstring above); `try_infer_type()` returns None for ambiguity
+                        // (task 3639 review).
                         .unwrap_or(Type::Real);
                     Type::Vector {
                         n: components.len(),
@@ -1098,6 +1112,9 @@ impl Value {
                         .as_ref()
                         .or(upper.as_ref())
                         .map(|v| v.infer_type())
+                        // G-allow: documented `infer_type()` with-defaults contract (function
+                        // docstring above); `try_infer_type()` returns None for ambiguity
+                        // (task 3639 review).
                         .unwrap_or(Type::Real);
                     Type::Range(Box::new(elem_ty))
                 }
