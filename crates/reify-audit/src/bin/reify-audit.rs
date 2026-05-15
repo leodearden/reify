@@ -22,7 +22,6 @@
 //! into `reify-audit`. See design §12 (minimal deps).
 
 use std::collections::HashMap;
-use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
