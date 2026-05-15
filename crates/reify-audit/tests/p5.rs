@@ -141,6 +141,7 @@ mod tests {
                     commit: Some("abc123".to_string()),
                     note: None,
                 }),
+                title: "Wire foo into bar".to_string(),
             },
         );
 
@@ -183,6 +184,7 @@ mod tests {
         // must force this test to gain arms.
         match Pattern::P5PhantomDone {
             Pattern::P5PhantomDone => {}
+            Pattern::P2ConsumerStub => {}
         }
 
         // EvidenceRef: every variant exhaustively destructured.
@@ -238,6 +240,7 @@ mod tests {
             status: _,
             files: _,
             done_provenance: _,
+            title: _,
         } = TaskMetadata {
             task_id: "0".to_string(),
             status: "done".to_string(),
@@ -247,6 +250,7 @@ mod tests {
                 commit: None,
                 note: None,
             }),
+            title: "Wire foo into bar".to_string(),
         };
         let DoneProvenance {
             kind: _,
@@ -297,6 +301,7 @@ mod tests {
                     commit: Some("7958491da22f".to_string()),
                     note: None,
                 }),
+                title: "Wire foo into bar".to_string(),
             },
         );
 
@@ -374,6 +379,7 @@ mod tests {
                     commit: Some("def456".to_string()),
                     note: None,
                 }),
+                title: "Wire foo into bar".to_string(),
             },
         );
 
@@ -466,6 +472,7 @@ mod tests {
                     commit: Some("old_branch_tip".to_string()),
                     note: None,
                 }),
+                title: "Wire foo into bar".to_string(),
             },
         );
 
@@ -554,6 +561,7 @@ mod tests {
                     commit: Some("abc123".to_string()),
                     note: None,
                 }),
+                title: "Wire foo into bar".to_string(),
             },
         );
 
@@ -641,6 +649,7 @@ mod tests {
                     commit: Some("phantom_sha".to_string()),
                     note: None,
                 }),
+                title: "Wire foo into bar".to_string(),
             },
         );
         task_metadata.insert(
@@ -654,6 +663,7 @@ mod tests {
                     commit: Some("clean_sha".to_string()),
                     note: None,
                 }),
+                title: "Wire foo into bar".to_string(),
             },
         );
 

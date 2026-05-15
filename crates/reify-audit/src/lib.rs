@@ -26,6 +26,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 pub mod p5_phantom_done;
+pub mod p2_consumer_stub;
 
 // -----------------------------------------------------------------------
 // Public surface — finding shape
@@ -53,6 +54,10 @@ pub enum Pattern {
     /// provenance commit cannot be corroborated against runs.db /
     /// `git log main`.
     P5PhantomDone,
+    /// P2 — consumer-with-stub: added lines in `metadata.files` contain
+    /// canonical stub markers (TODO(pending), unimplemented!, etc.).
+    /// See `docs/architecture-audit/f-infra-design.md` §5 P2.
+    P2ConsumerStub,
 }
 
 /// A pointer to forensic evidence supporting a [`Finding`]. Renders verbatim
@@ -97,6 +102,10 @@ pub struct TaskMetadata {
     pub status: String,
     pub files: Vec<String>,
     pub done_provenance: Option<DoneProvenance>,
+    /// The task's title from Taskmaster `tasks.json`. Used by P2 to downgrade
+    /// to `Severity::Low` when the title itself signals a stub/placeholder.
+    /// Populated by the T-4 CLI loader; defaulted to descriptive strings in tests.
+    pub title: String,
 }
 
 /// `metadata.done_provenance` payload as written by reify-orchestrator's
@@ -179,6 +188,14 @@ pub trait GitOps {
     /// `git check-ignore <path>` — true iff `path` is gitignored
     /// (or matches a negated rule that re-ignores).
     fn is_gitignored(&self, path: &str) -> bool;
+
+    /// Returns the added lines in `git diff <from>..<to> -- <path>` as
+    /// `(new_side_line_no, content)` pairs — one entry per `+` line in the
+    /// unified diff, with the leading `+` stripped. Line numbers track the
+    /// new-file side (the `+c` field of each `@@ -a,b +c,d @@` hunk header).
+    /// Returns an empty vec when the branch does not exist or the path has no
+    /// added lines.
+    fn diff_added_lines(&self, from: &str, to: &str, path: &str) -> Vec<(usize, String)>;
 }
 
 /// Production [`GitOps`] impl that shells out to `git`. Untested by the
@@ -252,6 +269,42 @@ impl GitOps for RealGitOps {
             .map(|s| s.code() == Some(0))
             .unwrap_or(false)
     }
+
+    fn diff_added_lines(&self, from: &str, to: &str, path: &str) -> Vec<(usize, String)> {
+        let Some(stdout) = self.run(&["diff", &format!("{}..{}", from, to), "--", path]) else {
+            return vec![];
+        };
+        let mut result = Vec::new();
+        let mut new_line: usize = 0;
+        let mut in_hunk = false;
+        for line in stdout.lines() {
+            if line.starts_with("@@ ") {
+                in_hunk = true;
+                // Parse "@@ -a,b +c,d @@" to extract c (new-file start line).
+                if let Some(plus_pos) = line.find(" +") {
+                    let rest = &line[plus_pos + 2..];
+                    let delim = rest.find([',', ' ']).unwrap_or(rest.len());
+                    if let Ok(c) = rest[..delim].parse::<usize>() {
+                        // Set counter so first context/+ line yields c.
+                        new_line = c.saturating_sub(1);
+                    }
+                }
+            } else if !in_hunk {
+                // Pre-hunk header lines (diff/index/---/+++ headers): skip.
+            } else if line.starts_with('+') {
+                new_line += 1;
+                result.push((new_line, line[1..].to_string()));
+            } else if line.starts_with('-') {
+                // Removed line: new-side counter does not advance.
+            } else if line.starts_with('\\') {
+                // "\ No newline at end of file" — ignore.
+            } else {
+                // Context line (starts with ' '): both sides advance.
+                new_line += 1;
+            }
+        }
+        result
+    }
 }
 
 // -----------------------------------------------------------------------
@@ -269,6 +322,7 @@ pub struct MockGitOps {
     log_grep: HashMap<(String, String), Vec<GitCommit>>,
     diff_changed_paths: HashMap<(String, String), Vec<String>>,
     is_gitignored: HashMap<String, bool>,
+    diff_added_lines: HashMap<(String, String, String), Vec<(usize, String)>>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -294,6 +348,18 @@ impl MockGitOps {
     pub fn set_is_gitignored(&mut self, path: &str, ignored: bool) {
         self.is_gitignored.insert(path.to_string(), ignored);
     }
+
+    // G-allow: F-infra T-4 CLI consumer (crates/reify-audit-cli) — design pinned in docs/architecture-audit/f-infra-design.md
+    pub fn set_diff_added_lines(
+        &mut self,
+        from: &str,
+        to: &str,
+        path: &str,
+        added: Vec<(usize, String)>,
+    ) {
+        self.diff_added_lines
+            .insert((from.to_string(), to.to_string(), path.to_string()), added);
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -314,5 +380,12 @@ impl GitOps for MockGitOps {
 
     fn is_gitignored(&self, path: &str) -> bool {
         self.is_gitignored.get(path).copied().unwrap_or(false)
+    }
+
+    fn diff_added_lines(&self, from: &str, to: &str, path: &str) -> Vec<(usize, String)> {
+        self.diff_added_lines
+            .get(&(from.to_string(), to.to_string(), path.to_string()))
+            .cloned()
+            .unwrap_or_default()
     }
 }
