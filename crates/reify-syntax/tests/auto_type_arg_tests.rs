@@ -15,19 +15,17 @@
 
 use reify_types::ModulePath;
 
-// ── High-level parse test (API-surface smoke check) ─────────────────────────
-//
-// Pins the `reify_syntax::parse` pipeline, not just tree-sitter directly.
-// WEAK — cannot detect grammar regressions; see module doc and CST-level tests below.
+// ── Parse-pipeline smoke check ──────────────────────────────────────────────
 
 #[test]
-fn auto_type_arg_does_not_surface_through_lowering_errors_yet() {
-    let source = "fn f() -> Bearing<auto: Seal> { 0 }";
-    let module = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        module.errors.is_empty(),
-        "expected zero parse errors for `auto: Seal` in type-arg position, got: {:?}",
-        module.errors,
+fn parse_pipeline_smoke_auto_type_arg() {
+    // No assertion beyond "does not panic": the lowering pipeline does not
+    // propagate CST ERROR nodes from return-type expressions into module.errors,
+    // so a meaningful grammar-regression check has to live at the CST level.
+    // See `auto_type_arg_rejects_unrecognized_modifier` for that load-bearing guard.
+    let _ = reify_syntax::parse(
+        "fn f() -> Bearing<auto: Seal> { 0 }",
+        ModulePath::single("test"),
     );
 }
 
