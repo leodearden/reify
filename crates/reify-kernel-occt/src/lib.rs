@@ -3250,6 +3250,104 @@ mod tests {
     }
 
     #[test]
+    fn extract_vertices_box_returns_eight_handles_with_brepkind_vertex() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(0.010),
+                height: Value::Real(0.010),
+                depth: Value::Real(0.010),
+            })
+            .expect("Box should succeed");
+        let box_id = box_h.id;
+        let vertices = kernel
+            .extract_vertices(box_id)
+            .expect("extract_vertices on a valid box should succeed");
+        assert_eq!(
+            vertices.len(),
+            8,
+            "a box should have 8 vertices, got {}",
+            vertices.len()
+        );
+        for v in &vertices {
+            assert_eq!(
+                kernel.repr_of(*v),
+                Some(BRepKind::Vertex),
+                "each extracted vertex should have BRepKind::Vertex, got {:?} for {:?}",
+                kernel.repr_of(*v),
+                v
+            );
+        }
+    }
+
+    #[test]
+    fn extract_vertices_idempotency_returns_same_handles() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(0.010),
+                height: Value::Real(0.010),
+                depth: Value::Real(0.010),
+            })
+            .expect("Box should succeed");
+        let box_id = box_h.id;
+        let v1 = kernel
+            .extract_vertices(box_id)
+            .expect("first extract_vertices should succeed");
+        let v2 = kernel
+            .extract_vertices(box_id)
+            .expect("second extract_vertices should succeed");
+        assert_eq!(
+            v1, v2,
+            "extract_vertices must be idempotent: second call must return same ids in same order"
+        );
+    }
+
+    #[test]
+    fn extract_vertices_invalidates_cache_on_warm_state() {
+        // Build box in kernel_a, extract vertices, round-trip through warm state.
+        // The restored kernel_b must be able to re-extract (8 vertices), and
+        // the new ids must be disjoint from the pre-warm ids (cache was cleared).
+        let mut kernel_a = OcctKernel::new();
+        let box_h = kernel_a
+            .execute(&GeometryOp::Box {
+                width: Value::Real(0.010),
+                height: Value::Real(0.010),
+                depth: Value::Real(0.010),
+            })
+            .expect("Box should succeed");
+        let box_id = box_h.id;
+        let vec1 = kernel_a
+            .extract_vertices(box_id)
+            .expect("extract_vertices in kernel_a should succeed");
+        assert_eq!(vec1.len(), 8, "kernel_a should yield 8 vertices");
+
+        // Round-trip through warm state.
+        let state = kernel_a
+            .warm_state()
+            .expect("kernel_a should produce warm state");
+        let mut kernel_b = OcctKernel::new();
+        kernel_b.with_warm_state(state);
+
+        let vec2 = kernel_b
+            .extract_vertices(box_id)
+            .expect("extract_vertices in kernel_b (post-warm) should succeed");
+        assert_eq!(vec2.len(), 8, "kernel_b should yield 8 vertices after warm restore");
+
+        // Ids must be disjoint: warm-state restore clears extracted_vertices,
+        // so kernel_b mints fresh ids starting from warm.next_id which is
+        // strictly greater than any id minted in kernel_a.
+        let set1: std::collections::HashSet<GeometryHandleId> = vec1.iter().copied().collect();
+        let set2: std::collections::HashSet<GeometryHandleId> = vec2.iter().copied().collect();
+        let intersection: std::collections::HashSet<_> = set1.intersection(&set2).collect();
+        assert!(
+            intersection.is_empty(),
+            "warm-state restore should clear the extracted_vertices cache so fresh ids are minted; \
+             found shared ids: {intersection:?}"
+        );
+    }
+
+    #[test]
     fn with_warm_state_ignores_wrong_type() {
         let mut kernel = OcctKernel::new();
         // Pass a String instead of OcctWarmState — should be silently ignored
