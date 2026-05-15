@@ -1137,6 +1137,70 @@ fn cache_clear_yes_then_stats_round_trip_reports_empty() {
 }
 
 #[test]
+fn cache_clear_with_engine_version_yes_clears_only_target_subdir_and_preserves_others() {
+    // Seed entries under TWO synthesized engine-version subdirs by passing
+    // distinct fake 32-hex strings to write_entry — bypassing the live
+    // ENGINE_VERSION_HASH so the test isn't sensitive to build-time hash
+    // drift.  Run `reify cache clear --yes --engine-version <hash_a>` and
+    // assert (a) exit SUCCESS, (b) the hash_a subdir is gone, (c) the hash_b
+    // subdir and its entries still exist.
+    let cache_dir = tempdir().expect("tempdir");
+    let hash_a = "1".repeat(32);
+    let hash_b = "2".repeat(32);
+    let input_hash_a = "a".repeat(32);
+    let input_hash_b = "b".repeat(32);
+    let fixture = make_elastic_result_fixture();
+    write_entry(cache_dir.path(), &hash_a, &input_hash_a, &fixture)
+        .expect("write_entry must seed engine-version A");
+    write_entry(cache_dir.path(), &hash_b, &input_hash_b, &fixture)
+        .expect("write_entry must seed engine-version B");
+
+    let subdir_a = cache_dir.path().join(&hash_a);
+    let subdir_b = cache_dir.path().join(&hash_b);
+    assert!(
+        subdir_a.is_dir(),
+        "test setup: subdir_a must exist before clear: {subdir_a:?}"
+    );
+    assert!(
+        subdir_b.is_dir(),
+        "test setup: subdir_b must exist before clear: {subdir_b:?}"
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+        .args(["cache", "clear", "--yes", "--engine-version", &hash_a])
+        .env("REIFY_CACHE_DIR", cache_dir.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute reify clear");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "reify cache clear --yes --engine-version <hash_a> should succeed; stderr={stderr}"
+    );
+
+    assert!(
+        !subdir_a.exists(),
+        "subdir_a must be removed after clear --engine-version: {subdir_a:?}"
+    );
+    assert!(
+        subdir_b.is_dir(),
+        "subdir_b must remain after clear --engine-version <hash_a>: {subdir_b:?}"
+    );
+    // The hash_b entry's .bin must still be on disk.
+    let surviving: Vec<_> = collect_cache_files(cache_dir.path())
+        .into_iter()
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("bin"))
+        .collect();
+    assert_eq!(
+        surviving.len(),
+        1,
+        "exactly one .bin (under engine_version B) must survive, found: {surviving:?}"
+    );
+}
+
+#[test]
 fn cache_export_with_extra_positional_shows_export_usage() {
     // `reify cache export aaa bbb` (extra positional past the hash) should be
     // rejected with the export-specific usage banner.
