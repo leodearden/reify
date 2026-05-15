@@ -793,6 +793,18 @@ impl Engine {
     /// gate. See arch §9.2 lines 880-890 and the `pending_cause` side-table
     /// contract at `cache.rs:147-156`.
     ///
+    /// The returned `NodeId`, when `Some`, may be any of the valid chain-root
+    /// variants (per `docs/prds/v0_3/compute-node-contract.md §3`):
+    ///
+    /// - `NodeId::Compute(_)` — an **in-flight ComputeNode** is itself the
+    ///   chain root (PRD §3 "Chain-root contract extension"). UI tooling
+    ///   should render this as "computing" (recomputation in flight).
+    /// - `NodeId::Value(_)` — an **upstream Failed leaf** gated the downstream
+    ///   cell (existing behaviour). UI tooling should render this as "waiting
+    ///   on upstream error".
+    /// - `None` — the node is the originating cause (chain root) or has no
+    ///   recorded cause at all.
+    ///
     /// Returns `None` in three cases:
     /// - `node` has no cache entry (unknown node; identical to
     ///   [`CacheStore::pending_cause`]'s "default to None" behaviour).
