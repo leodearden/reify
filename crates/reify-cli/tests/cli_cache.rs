@@ -140,13 +140,8 @@ fn export_existing_entry_writes_tar_with_bin_and_meta_to_stdout() {
     let input_hash = "a".repeat(32);
     let fixture = make_elastic_result_fixture();
 
-    write_entry(
-        cache_dir.path(),
-        ENGINE_VERSION_HASH,
-        &input_hash,
-        &fixture,
-    )
-    .expect("write_entry must seed the source cache");
+    write_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
+        .expect("write_entry must seed the source cache");
 
     let output = Command::new(env!("CARGO_BIN_EXE_reify"))
         .args(["cache", "export", &input_hash])
@@ -198,8 +193,8 @@ fn export_existing_entry_writes_tar_with_bin_and_meta_to_stdout() {
         .find(|(p, _)| p == &expected_bin)
         .expect("bin entry found")
         .1;
-    let header = CacheEntryHeader::read_from(&mut Cursor::new(bin_bytes))
-        .expect("bin header must decode");
+    let header =
+        CacheEntryHeader::read_from(&mut Cursor::new(bin_bytes)).expect("bin header must decode");
     assert_eq!(
         &header.engine_version_hash[..],
         ENGINE_VERSION_HASH.as_bytes(),
@@ -357,7 +352,9 @@ fn round_trip_export_import_preserves_elastic_result() {
         .expect("spawn reify cache import");
     {
         let stdin = import_child.stdin.as_mut().expect("import stdin");
-        stdin.write_all(&tar_bytes).expect("write tar to import stdin");
+        stdin
+            .write_all(&tar_bytes)
+            .expect("write tar to import stdin");
     }
     let import_output = import_child
         .wait_with_output()
@@ -398,9 +395,7 @@ fn import_with_mismatched_engine_version_warns_and_skips() {
         written_at: -1,
     };
     let mut bin_body: Vec<u8> = Vec::new();
-    header
-        .write_to(&mut bin_body)
-        .expect("header must encode");
+    header.write_to(&mut bin_body).expect("header must encode");
     // ~16 bytes of arbitrary trailing data — won't be decoded since the
     // engine-version check short-circuits before body decode.
     bin_body.extend_from_slice(&[0u8; 16]);

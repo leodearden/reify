@@ -40,6 +40,19 @@ const IMPORT_USAGE: &str = "Usage: reify cache import";
 /// the `HashMap<String, _>` in `cmd_cache_import`.
 type StagedEntry = (Option<Vec<u8>>, Option<Vec<u8>>);
 
+/// True iff `s` is exactly 32 ASCII lowercase hex digits (`[0-9a-f]{32}`).
+///
+/// Stem-shape gate for the import tar walk.  Production cache filenames are
+/// 32 lowercase hex chars by construction (the `input_hash` is the
+/// xxhash3-128 hex of the cache key); any other shape on a tar entry is
+/// either malformed or a path-traversal attempt, both of which we warn-and-
+/// skip rather than feeding into `shard_dir` + `format!("{stem}.bin")`.
+fn is_32_lowercase_hex(s: &str) -> bool {
+    s.len() == 32
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 /// Top-level `cache` subcommand dispatcher.
 ///
 /// `args` is everything after `cache` on the command line, i.e. for
@@ -204,6 +217,17 @@ fn cmd_cache_import(args: &[String]) -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
+        // Stem-shape gate (defense-in-depth against path traversal): any stem
+        // that is not exactly 32 lowercase hex digits is either malformed or
+        // an attempt to smuggle traversal bytes into `shard_dir` /
+        // `entry_bin_path`.  Warn-and-skip; do NOT enter the staged map.
+        if !is_32_lowercase_hex(&stem) {
+            eprintln!(
+                "reify cache import: warning: skipping tar entry with non-hex stem: {}",
+                entry_path.display()
+            );
+            continue;
+        }
         let ext = entry_path.extension().and_then(|s| s.to_str());
 
         let mut buf = Vec::new();
@@ -279,23 +303,43 @@ fn cmd_cache_import(args: &[String]) -> ExitCode {
             continue;
         }
 
-        let input_hash_str = match std::str::from_utf8(&header.input_hash) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!(
-                    "reify cache import: warning: skipping entry {stem}: \
-                     non-utf8 input_hash echo: {e}"
-                );
-                continue;
-            }
-        };
+        // `stem` is provably 32 lowercase ASCII hex from the tar-walk gate
+        // above, so it converts to a [u8; 32] infallibly. The live
+        // ENGINE_VERSION_HASH constant is likewise 32 ASCII bytes by the
+        // `engine_version_hash_const_is_32_chars` invariant in
+        // `persistent_cache.rs`. We hand both to `verify_field_echoes` —
+        // the same helper `read_entry` uses for on-disk corruption detection
+        // — to confirm the bin's internal echo fields agree with the
+        // tar-layer stem and the live engine. Engine-version equality was
+        // already verified above; the only remaining failure mode here is a
+        // stem-vs-header input_hash mismatch (corrupted or tampered echo,
+        // including path-traversal payloads in `header.input_hash`).
+        let stem_bytes: [u8; 32] = stem
+            .as_bytes()
+            .try_into()
+            .expect("stem validated as 32 hex bytes by tar-walk gate");
+        let evh_bytes: [u8; 32] = ENGINE_VERSION_HASH
+            .as_bytes()
+            .try_into()
+            .expect("ENGINE_VERSION_HASH is 32 ASCII bytes by const invariant");
+        if let Err(e) = header.verify_field_echoes(&evh_bytes, &stem_bytes) {
+            eprintln!(
+                "reify cache import: warning: skipping entry {stem}: \
+                 header echo does not match tar-entry stem: {e}"
+            );
+            continue;
+        }
 
-        let sd = shard_dir(&cache_root, ENGINE_VERSION_HASH, input_hash_str);
+        // Path construction now uses the validated `stem` (NEVER
+        // `header.input_hash`), so `&stem[..2]` is provably a 2-char hex
+        // shard name and `format!("{stem}.bin")` is a single-segment
+        // filename — no `..`, `/`, `\`, or NUL bytes can appear.
+        let sd = shard_dir(&cache_root, ENGINE_VERSION_HASH, &stem);
         if let Err(e) = std::fs::create_dir_all(&sd) {
             eprintln!("reify cache import: shard dir create error: {e}");
             return ExitCode::FAILURE;
         }
-        let bin_path = entry_bin_path(&cache_root, ENGINE_VERSION_HASH, input_hash_str);
+        let bin_path = entry_bin_path(&cache_root, ENGINE_VERSION_HASH, &stem);
 
         // Atomic-rename via tempfile-in-shard — mirrors `write_entry`'s
         // pattern (persistent_cache.rs).  Skipping the post-persist directory
@@ -324,7 +368,7 @@ fn cmd_cache_import(args: &[String]) -> ExitCode {
         // tar's `.meta` bytes verbatim — see Design Decisions: the `.meta`
         // body is just a single magic byte, and we want destination-clock
         // mtime for the LRU heuristic, not the source machine's mtime.
-        let meta_path = entry_meta_path(&cache_root, ENGINE_VERSION_HASH, input_hash_str);
+        let meta_path = entry_meta_path(&cache_root, ENGINE_VERSION_HASH, &stem);
         if let Err(e) = write_sidecar(&meta_path) {
             eprintln!("reify cache import: sidecar write error: {e}");
             return ExitCode::FAILURE;
