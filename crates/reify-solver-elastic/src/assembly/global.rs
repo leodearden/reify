@@ -2230,4 +2230,24 @@ mod tests {
         assert_eq!(summary.count, 0);
         assert!(summary.examples.is_empty());
     }
+
+    /// Single P1 tet on `[0,1,2,3]` → no orphan DOFs.
+    ///
+    /// In a pure-tet mesh `D = 3` and every node has `d_e_max_local = 3 = D`,
+    /// so no axis at any node is orphaned. Pins that `detect_orphan_dofs`
+    /// reports zero orphans for a homogeneous-D mesh (no false positives).
+    #[test]
+    fn detect_orphan_dofs_pure_tet_mesh_reports_zero_orphans() {
+        let mat = dimensionless_steel_like();
+        let k_e = element_stiffness_p1(&UNIT_TET_P1, &mat);
+        let conn = [0usize, 1, 2, 3];
+        let elements = [AssemblyElement {
+            id: 0,
+            connectivity: &conn,
+            k_e: &k_e,
+        }];
+        let summary = detect_orphan_dofs(4, &elements);
+        assert_eq!(summary.count, 0);
+        assert!(summary.examples.is_empty());
+    }
 }
