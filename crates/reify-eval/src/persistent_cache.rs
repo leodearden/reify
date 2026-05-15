@@ -3197,6 +3197,56 @@ mod tests {
         );
     }
 
+    /// Regression guard: a debris file whose name is a bare dot-prefixed
+    /// extension with no stem (e.g. `.swp`, `.bak`) must be excluded from the
+    /// hash and from `rerun_paths`.
+    ///
+    /// `std::path::Path::extension()` returns `None` for filenames like `.swp`
+    /// because the leading dot is treated as the start of the stem, not as a
+    /// separator — there is no suffix to extract.  The extension-branch in
+    /// `is_editor_debris` therefore silently misses such names.  A separate
+    /// dot-prefix branch (`name_lower.strip_prefix('.')`) is required to catch
+    /// them.  This test pins that the branch exists and fires correctly.
+    #[test]
+    fn walk_contributor_filters_bare_dot_prefixed_debris_names_with_no_stem() {
+        let tmpdir = tempfile::TempDir::new().expect("must create tempdir");
+        let root = tmpdir.path().to_path_buf();
+
+        // Real source file that must be included in the hash.
+        std::fs::write(root.join("clean.rs"), b"// real source").expect("must write clean.rs");
+
+        // Bare dot-prefixed name: `Path::new(".swp").extension()` returns
+        // `None`, so only a dedicated strip_prefix('.') branch catches this.
+        std::fs::write(root.join(".swp"), b"DEBRIS - must not appear in hash")
+            .expect("must write .swp debris file");
+
+        let walk = crate::engine_hash_algo::walk_contributor("root", &root);
+
+        // --- rerun_paths must NOT include the bare-name debris path ---
+        let debris_path = root.join(".swp");
+        assert!(
+            !walk.rerun_paths.contains(&debris_path),
+            "bare '.swp' debris file must not appear in rerun_paths but it did; \
+             Path::extension() returns None for names with no stem before the dot, \
+             so is_editor_debris needs a dedicated dot-prefix branch to catch these"
+        );
+
+        // --- hash must equal the hash of [clean.rs path, clean.rs content] ---
+        let walk_refs: Vec<&[u8]> = walk.parts.iter().map(|v| v.as_slice()).collect();
+        let hash_from_walk = compose_engine_version_hash(&walk_refs);
+
+        let expected_parts: &[&[u8]] = &[b"root/clean.rs", b"// real source"];
+        let expected_hash = compose_engine_version_hash(expected_parts);
+
+        assert_eq!(
+            hash_from_walk, expected_hash,
+            "walk_contributor must produce the same hash as a clean-only parts list; \
+             the bare '.swp' debris file must not enter the hash input. \
+             If this fails, is_editor_debris is missing the dot-prefix branch \
+             that handles names like '.swp' where Path::extension() returns None."
+        );
+    }
+
     /// Regression guard for symlinks leaking into the cache key.
     ///
     /// `Path::is_file()` follows symlinks via `fs::metadata()` (std docs).
