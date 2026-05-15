@@ -1470,19 +1470,29 @@ fn auto_resolve_constraint_progress_omits_unset_targets_and_unit() {
 // --- NaN-sentinel serialization contract test (Task 3648 amendment, suggestion 4) ---
 
 /// Pins the wire-level JSON serialization of the NaN sentinel for
-/// `AutoResolveParameterValue`.
+/// `AutoResolveParameterValue` on the real Tauri emit path.
 ///
-/// `serde_json::to_value` maps `f64::NAN` to `Value::Null` (not an error) —
-/// this is the internal `to_value` serializer behavior in serde_json.  The
-/// resulting JSON wire payload is `{ "value": null, "unit": "", "display": "<non-scalar>" }`.
+/// **Production wire path:**
+/// `emit_typed(&self.app, "auto-resolve-iteration", &iter)` (main.rs)
+/// → `tauri::AppHandle::emit` (event_bus.rs)
+/// → `serde_json::to_string(&iter)` (Tauri's internal serialization step).
+/// The `AutoResolveIteration` payload — with the NaN-bearing
+/// `AutoResolveParameterValue` nested under `parameters: HashMap<String, _>`
+/// — is the literal bytes Tauri puts on the wire.
+///
+/// `serde_json::to_string` (like `to_value`) maps `f64::NAN` to JSON `null`.
+/// This test approximates the un-unit-testable real `AppHandle::emit` by
+/// calling `serde_json::to_string` directly; no live Tauri `AppHandle` or
+/// webview is available in this unit-test module.
 ///
 /// **Frontend contract (action required in gui/src/types.ts — out of scope for this task):**
 /// The TypeScript `AutoResolveParameterValue` interface must type `value` as
 /// `number | null` (not `number`) so the auto-resolve panel can render an error chip
 /// when `value === null` rather than displaying `NaN` or crashing.
 ///
-/// This test pins the current wire format so any future serde_json upgrade that
-/// changes NaN handling (e.g. from null to an error) will be caught immediately.
+/// This test pins the current `serde_json::to_string` wire format so any future
+/// serde_json upgrade that changes NaN handling (e.g. from null to an error) will
+/// be caught immediately.
 #[test]
 fn auto_resolve_parameter_value_nan_sentinel_serializes_value_field_as_null() {
     use crate::types::{AutoResolveIteration, AutoResolveParameterValue};
