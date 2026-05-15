@@ -260,27 +260,35 @@ pub fn apply_body_force(
 // apply_traction_load (triangle quadrature + public dispatcher)
 // ---------------------------------------------------------------------------
 
-/// A 2D reference coordinate `(ξ, η)` on a reference triangle.
+/// A 2D reference coordinate `(ξ, η)` on a face element.
 ///
-/// The reference triangle has vertices at `(0,0), (1,0), (0,1)`.
+/// Shared between triangle faces (P1Tri/P2Tri, reference triangle vertices
+/// `(0,0), (1,0), (0,1)`) and quadrilateral faces (P1Quad, reference square
+/// vertices `(±1, ±1)`). The triangle and quad reference geometries differ in
+/// their valid coordinate domain, but the `(ξ, η)` storage is identical and
+/// `integrate_face_generic` is parametric over both via this single type plus
+/// caller-supplied shape / gradient / quadrature-rule values.
 #[derive(Clone, Copy)]
-struct TriRefCoord {
+struct FaceRefCoord {
     xi: f64,
     eta: f64,
 }
 
-/// A quadrature point on the reference triangle.
+/// A quadrature point on a face element.
+///
+/// See [`FaceRefCoord`] — shared between triangle and quad face quadrature
+/// rules.
 #[derive(Clone, Copy)]
-struct TriQuadPoint {
-    coord: TriRefCoord,
+struct FaceQuadPoint {
+    coord: FaceRefCoord,
     weight: f64,
 }
 
 /// 1-point centroid rule for the unit reference triangle (degree-1 exact).
 ///
 /// Point at `(1/3, 1/3)`, weight `1/2` (= reference-triangle area).
-const TRI_P1_QUAD: &[TriQuadPoint] = &[TriQuadPoint {
-    coord: TriRefCoord {
+const TRI_P1_QUADRATURE: &[FaceQuadPoint] = &[FaceQuadPoint {
+    coord: FaceRefCoord {
         xi: 1.0 / 3.0,
         eta: 1.0 / 3.0,
     },
@@ -291,17 +299,17 @@ const TRI_P1_QUAD: &[TriQuadPoint] = &[TriQuadPoint {
 ///
 /// Points at the midpoints of the three edges: `(1/2, 0)`, `(1/2, 1/2)`,
 /// `(0, 1/2)`, each with weight `1/6`. Total weight `1/2` = triangle area.
-const TRI_P2_QUAD: &[TriQuadPoint] = &[
-    TriQuadPoint {
-        coord: TriRefCoord { xi: 0.5, eta: 0.0 },
+const TRI_P2_QUADRATURE: &[FaceQuadPoint] = &[
+    FaceQuadPoint {
+        coord: FaceRefCoord { xi: 0.5, eta: 0.0 },
         weight: 1.0 / 6.0,
     },
-    TriQuadPoint {
-        coord: TriRefCoord { xi: 0.5, eta: 0.5 },
+    FaceQuadPoint {
+        coord: FaceRefCoord { xi: 0.5, eta: 0.5 },
         weight: 1.0 / 6.0,
     },
-    TriQuadPoint {
-        coord: TriRefCoord { xi: 0.0, eta: 0.5 },
+    FaceQuadPoint {
+        coord: FaceRefCoord { xi: 0.0, eta: 0.5 },
         weight: 1.0 / 6.0,
     },
 ];
@@ -309,7 +317,7 @@ const TRI_P2_QUAD: &[TriQuadPoint] = &[
 /// P1 triangle shape functions `[N_0, N_1, N_2]` at a reference coordinate.
 ///
 /// `N_0 = 1 - ξ - η`, `N_1 = ξ`, `N_2 = η`.
-fn tri_p1_shape(c: TriRefCoord) -> [f64; 3] {
+fn tri_p1_shape(c: FaceRefCoord) -> [f64; 3] {
     [1.0 - c.xi - c.eta, c.xi, c.eta]
 }
 
@@ -327,7 +335,7 @@ const TRI_P1_GRADS: [[f64; 2]; 3] = [[-1.0, -1.0], [1.0, 0.0], [0.0, 1.0]];
 /// - Edge-midpoint shapes: `4 λ_a λ_b`
 ///
 /// Follows the standard 6-node quadratic Lagrange triangle ordering.
-fn tri_p2_shape(c: TriRefCoord) -> [f64; 6] {
+fn tri_p2_shape(c: FaceRefCoord) -> [f64; 6] {
     let xi = c.xi;
     let eta = c.eta;
     let l0 = 1.0 - xi - eta;
@@ -344,7 +352,7 @@ fn tri_p2_shape(c: TriRefCoord) -> [f64; 6] {
 }
 
 /// P2 triangle shape-function gradients `[∂N_i/∂ξ, ∂N_i/∂η]`.
-fn tri_p2_grads(c: TriRefCoord) -> [[f64; 2]; 6] {
+fn tri_p2_grads(c: FaceRefCoord) -> [[f64; 2]; 6] {
     let xi = c.xi;
     let eta = c.eta;
     let l0 = 1.0 - xi - eta;
@@ -369,24 +377,12 @@ fn tri_p2_grads(c: TriRefCoord) -> [[f64; 2]; 6] {
 
 // ---------------------------------------------------------------------------
 // Quad face reference geometry, quadrature, shape functions, and gradients.
+//
+// Reference geometry (`(±1, ±1)`, area 4) and quadrature rule live here;
+// the coordinate/quadrature-point types ([`FaceRefCoord`] / [`FaceQuadPoint`])
+// are shared with the triangle path so a single [`integrate_face_generic`]
+// drives both face shapes.
 // ---------------------------------------------------------------------------
-
-/// A 2D reference coordinate `(ξ, η)` on a reference quadrilateral.
-///
-/// The reference quad has vertices at `(-1, -1)`, `(+1, -1)`, `(+1, +1)`,
-/// `(-1, +1)`. Area = 4.
-#[derive(Clone, Copy)]
-struct QuadRefCoord {
-    xi: f64,
-    eta: f64,
-}
-
-/// A quadrature point on the reference quad.
-#[derive(Clone, Copy)]
-struct QuadQuadPoint {
-    coord: QuadRefCoord,
-    weight: f64,
-}
 
 /// 1D 2-point Gauss-Legendre point on `[-1, +1]`: `1/√3`.
 ///
@@ -395,33 +391,39 @@ struct QuadQuadPoint {
 /// volume integral share the same numeric building block.
 const QUAD_P1_GAUSS_PT: f64 = 0.5773502691896257;
 
-/// 2×2 Gauss-Legendre rule for the reference quad `[-1, 1]²` (degree-3-per-axis
-/// exact). Four points at `(±1/√3, ±1/√3)`, each with weight `1`; total weight
-/// `4` = reference-quad area.
-const QUAD_P1_QUAD: &[QuadQuadPoint] = &[
-    QuadQuadPoint {
-        coord: QuadRefCoord {
+/// 2×2 Gauss-Legendre quadrature rule for the reference quad `[-1, 1]²`
+/// (degree-3-per-axis exact). Four points at `(±1/√3, ±1/√3)`, each with
+/// weight `1`; total weight `4` = reference-quad area.
+///
+/// Naming: `QUAD_P1_QUADRATURE` (not `QUAD_P1_QUAD`) so "quad" appears once
+/// — the `QUAD_` prefix already disambiguates the face shape, and the
+/// `_QUADRATURE` suffix names the rule itself; the previous spelling
+/// `QUAD_P1_QUAD` overloaded "quad" with two meanings (quadrilateral and
+/// quadrature) at the call site.
+const QUAD_P1_QUADRATURE: &[FaceQuadPoint] = &[
+    FaceQuadPoint {
+        coord: FaceRefCoord {
             xi: -QUAD_P1_GAUSS_PT,
             eta: -QUAD_P1_GAUSS_PT,
         },
         weight: 1.0,
     },
-    QuadQuadPoint {
-        coord: QuadRefCoord {
+    FaceQuadPoint {
+        coord: FaceRefCoord {
             xi: QUAD_P1_GAUSS_PT,
             eta: -QUAD_P1_GAUSS_PT,
         },
         weight: 1.0,
     },
-    QuadQuadPoint {
-        coord: QuadRefCoord {
+    FaceQuadPoint {
+        coord: FaceRefCoord {
             xi: QUAD_P1_GAUSS_PT,
             eta: QUAD_P1_GAUSS_PT,
         },
         weight: 1.0,
     },
-    QuadQuadPoint {
-        coord: QuadRefCoord {
+    FaceQuadPoint {
+        coord: FaceRefCoord {
             xi: -QUAD_P1_GAUSS_PT,
             eta: QUAD_P1_GAUSS_PT,
         },
@@ -438,7 +440,7 @@ const QUAD_P1_QUAD: &[QuadQuadPoint] = &[
 ///
 /// `N_0 = (1-ξ)(1-η)/4`, `N_1 = (1+ξ)(1-η)/4`,
 /// `N_2 = (1+ξ)(1+η)/4`, `N_3 = (1-ξ)(1+η)/4`.
-fn quad_p1_shape(c: QuadRefCoord) -> [f64; 4] {
+fn quad_p1_shape(c: FaceRefCoord) -> [f64; 4] {
     let xi = c.xi;
     let eta = c.eta;
     [
@@ -450,7 +452,7 @@ fn quad_p1_shape(c: QuadRefCoord) -> [f64; 4] {
 }
 
 /// P1 bilinear quad shape-function gradients `[∂N_i/∂ξ, ∂N_i/∂η]` per node.
-fn quad_p1_grads(c: QuadRefCoord) -> [[f64; 2]; 4] {
+fn quad_p1_grads(c: FaceRefCoord) -> [[f64; 2]; 4] {
     let xi = c.xi;
     let eta = c.eta;
     [
@@ -481,12 +483,20 @@ fn norm3(v: [f64; 3]) -> f64 {
     (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
 }
 
-/// Generic surface-traction integrator over a single triangular face.
+/// Generic surface-traction integrator over a single face element.
 ///
 /// Computes `w_i = Σ_q N_i(q.coord) · |t_ξ × t_η|(q) · q.weight` for each
 /// face node `i` using the caller-supplied quadrature rule `quad` and shape /
 /// gradient functions `shape_fn` / `grad_fn`, then scatters
 /// `f[3 * connectivity[i] + α] += w_i * traction[α]`.
+///
+/// Drives all face shapes — the triangle path (`P1Tri`/`P2Tri`) and the
+/// quadrilateral path (`P1Quad`) both reduce to this single helper. The area-
+/// element `|t_ξ × t_η|` math and scatter step are identical regardless of
+/// the reference shape, since both triangle and quad reference geometries
+/// produce a 3D physical surface from a 2D `(ξ, η)` reference parameter
+/// space. The shape/grad/quad inputs encode the per-face-shape geometry and
+/// quadrature; the integrator itself is shape-agnostic.
 ///
 /// # Panics (unconditional, Task-2544 contract-explicitness convention)
 ///
@@ -499,9 +509,9 @@ fn integrate_face_generic<const N: usize>(
     connectivity: &[usize],
     phys_nodes: &[[f64; 3]],
     traction: [f64; 3],
-    quad: &[TriQuadPoint],
-    shape_fn: impl Fn(TriRefCoord) -> [f64; N],
-    grad_fn: impl Fn(TriRefCoord) -> [[f64; 2]; N],
+    quad: &[FaceQuadPoint],
+    shape_fn: impl Fn(FaceRefCoord) -> [f64; N],
+    grad_fn: impl Fn(FaceRefCoord) -> [[f64; 2]; N],
 ) {
     assert_eq!(
         connectivity.len(),
@@ -528,90 +538,6 @@ fn integrate_face_generic<const N: usize>(
         assert!(
             global_node < n_global_nodes,
             "integrate_face_generic: connectivity[{}] = {} is out of range; \
-             f.len() / 3 = {} global nodes",
-            local_i,
-            global_node,
-            n_global_nodes,
-        );
-    }
-
-    // Accumulate per-node integration weights w_i = Σ_q N_i(q) · |t_ξ × t_η|(q) · q.weight.
-    let mut nodal_weights = [0.0_f64; N];
-    for qp in quad {
-        let shapes = shape_fn(qp.coord);
-        let grads = grad_fn(qp.coord);
-        // Tangent vectors: t_ξ = Σ_i (∂N_i/∂ξ) · phys_nodes[i]
-        let mut t_xi = [0.0_f64; 3];
-        let mut t_eta = [0.0_f64; 3];
-        for i in 0..N {
-            for d in 0..3 {
-                t_xi[d] += grads[i][0] * phys_nodes[i][d];
-                t_eta[d] += grads[i][1] * phys_nodes[i][d];
-            }
-        }
-        let area_elem = norm3(cross(t_xi, t_eta));
-        for i in 0..N {
-            nodal_weights[i] += shapes[i] * area_elem * qp.weight;
-        }
-    }
-
-    // Scatter into global f.
-    for (i, &global_node) in connectivity.iter().enumerate() {
-        for alpha in 0..3 {
-            f[3 * global_node + alpha] += nodal_weights[i] * traction[alpha];
-        }
-    }
-}
-
-/// Generic surface-traction integrator over a single quadrilateral face.
-///
-/// Quad-reference counterpart to [`integrate_face_generic`]. The body is a
-/// verbatim copy of the triangle integrator except the reference-coord and
-/// quadrature-point types are [`QuadRefCoord`] / [`QuadQuadPoint`] instead of
-/// `TriRefCoord` / `TriQuadPoint`. The area-element `|t_ξ × t_η|` math and
-/// scatter step are identical, since both produce a 3D physical surface from
-/// a 2D reference parameter space.
-///
-/// # Panics (unconditional, Task-2544 contract-explicitness convention)
-///
-/// - `connectivity.len() != N`
-/// - `phys_nodes.len() != N`
-/// - `f.len() % 3 != 0`
-/// - Any entry in `connectivity` is `>= f.len() / 3` (out-of-range global node)
-fn integrate_quad_face_generic<const N: usize>(
-    f: &mut [f64],
-    connectivity: &[usize],
-    phys_nodes: &[[f64; 3]],
-    traction: [f64; 3],
-    quad: &[QuadQuadPoint],
-    shape_fn: impl Fn(QuadRefCoord) -> [f64; N],
-    grad_fn: impl Fn(QuadRefCoord) -> [[f64; 2]; N],
-) {
-    assert_eq!(
-        connectivity.len(),
-        N,
-        "integrate_quad_face_generic: connectivity.len() = {} but expected {} face nodes",
-        connectivity.len(),
-        N,
-    );
-    assert_eq!(
-        phys_nodes.len(),
-        N,
-        "integrate_quad_face_generic: phys_nodes.len() = {} but expected {} face nodes",
-        phys_nodes.len(),
-        N,
-    );
-    assert!(
-        f.len().is_multiple_of(3),
-        "integrate_quad_face_generic: f.len() = {} is not a multiple of 3; \
-         the global load vector must have exactly 3 DOFs per node",
-        f.len(),
-    );
-    let n_global_nodes = f.len() / 3;
-    for (local_i, &global_node) in connectivity.iter().enumerate() {
-        assert!(
-            global_node < n_global_nodes,
-            "integrate_quad_face_generic: connectivity[{}] = {} is out of range; \
              f.len() / 3 = {} global nodes",
             local_i,
             global_node,
@@ -692,7 +618,7 @@ pub fn apply_traction_load(
             connectivity,
             phys_nodes,
             traction,
-            TRI_P1_QUAD,
+            TRI_P1_QUADRATURE,
             tri_p1_shape,
             |_| TRI_P1_GRADS,
         ),
@@ -701,16 +627,16 @@ pub fn apply_traction_load(
             connectivity,
             phys_nodes,
             traction,
-            TRI_P2_QUAD,
+            TRI_P2_QUADRATURE,
             tri_p2_shape,
             tri_p2_grads,
         ),
-        FaceOrder::P1Quad => integrate_quad_face_generic::<4>(
+        FaceOrder::P1Quad => integrate_face_generic(
             f,
             connectivity,
             phys_nodes,
             traction,
-            QUAD_P1_QUAD,
+            QUAD_P1_QUADRATURE,
             quad_p1_shape,
             quad_p1_grads,
         ),
