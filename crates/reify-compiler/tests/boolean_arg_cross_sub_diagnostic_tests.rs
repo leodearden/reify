@@ -112,3 +112,71 @@ pub structure Rack {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
+
+// ─── step-3: n-ary boolean op with collection-sub geometry arg ────────────────
+
+/// When an **n-ary** boolean op's argument (`union_all`) is
+/// `self.<collection_sub>.<member>` where `<member>` is a geometry-typed
+/// realization, the specific v0.1 deferred diagnostic must fire — not the
+/// generic fallback.
+///
+/// The collection-sub arg is in the **middle** position (arg index 2, 1-based)
+/// of the `union_all(a, self.bolts.body, b)` call, exercising the loop-iter
+/// branch of `compile_boolean_op` rather than the first-arg branch.  Both
+/// paths share `resolve_boolean_arg`, so step-2's fix covers both; this test
+/// functions as an explicit regression guard so a future refactor that bypasses
+/// `resolve_boolean_arg` for n-ary args breaks visibly.
+///
+/// Passes on arrival after step-2.
+#[test]
+fn nary_boolean_op_with_collection_sub_geometry_arg_emits_specific_diagnostic() {
+    let source = r#"pub structure Bolt {
+    param body : Solid = cylinder(2mm, 10mm)
+}
+pub structure Rack {
+    sub bolts : List<Bolt>
+    param a : Solid = box(5mm, 5mm, 5mm)
+    param b : Solid = box(6mm, 6mm, 6mm)
+    let combined = union_all(a, self.bolts.body, b)
+}"#;
+    let compiled = compile_source(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    // (a) At least one Error-severity diagnostic fires.
+    assert!(
+        !errors.is_empty(),
+        "expected at least one Error diagnostic for collection-sub geometry arg in union_all(); \
+         got no diagnostics"
+    );
+
+    // (b) At least one Error is the specific cross-sub-deferred diagnostic naming
+    //     both 'bolts' and 'body'.
+    let has_specific_diagnostic = errors.iter().any(|d| {
+        d.message.contains("geometry")
+            && has_deferred_keyword(&d.message)
+            && d.message.contains("bolts")
+            && d.message.contains("body")
+    });
+    assert!(
+        has_specific_diagnostic,
+        "expected the specific cross-sub-deferred geometry diagnostic naming 'bolts' and 'body'; \
+         got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // (c) Regression guard: specific diagnostic preferred over generic fallback.
+    let has_generic_without_specific = errors
+        .iter()
+        .any(|d| d.message.contains("argument 2 must be a geometry expression"))
+        && !has_specific_diagnostic;
+    assert!(
+        !has_generic_without_specific,
+        "generic 'argument 2 must be a geometry expression' fired without the specific \
+         cross-sub-deferred diagnostic in union_all() n-ary path; errors: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
