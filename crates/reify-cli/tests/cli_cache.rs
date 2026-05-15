@@ -1201,6 +1201,55 @@ fn cache_clear_with_engine_version_yes_clears_only_target_subdir_and_preserves_o
 }
 
 #[test]
+fn cache_gc_under_cap_is_no_op_and_preserves_all_entries() {
+    // With REIFY_CACHE_MAX_BYTES set well above the seeded total, `reify
+    // cache gc` must (a) succeed, (b) report 0 evicted entries / 0 evicted
+    // bytes, and (c) leave all seeded .bin files on disk.
+    let cache_dir = tempdir().expect("tempdir");
+    let fixture = make_elastic_result_fixture();
+    for c in ['a', 'b', 'c'] {
+        let input_hash: String = std::iter::repeat(c).take(32).collect();
+        write_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
+            .expect("write_entry must seed the cache");
+    }
+
+    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+        .args(["cache", "gc"])
+        .env("REIFY_CACHE_DIR", cache_dir.path())
+        .env("REIFY_CACHE_MAX_BYTES", "10000000000") // 10 GB — well above the seeded footprint
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute reify gc");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "reify cache gc under cap should succeed; stderr={stderr}"
+    );
+    assert!(
+        stdout.contains("Evicted entries: 0"),
+        "stdout should report 'Evicted entries: 0' under cap, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("Evicted bytes: 0"),
+        "stdout should report 'Evicted bytes: 0' under cap, got: {stdout}"
+    );
+
+    let bins: Vec<_> = collect_cache_files(cache_dir.path())
+        .into_iter()
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("bin"))
+        .collect();
+    assert_eq!(
+        bins.len(),
+        3,
+        "all three seeded .bins must remain after no-op gc, found: {bins:?}"
+    );
+}
+
+#[test]
 fn cache_export_with_extra_positional_shows_export_usage() {
     // `reify cache export aaa bbb` (extra positional past the hash) should be
     // rejected with the export-specific usage banner.
