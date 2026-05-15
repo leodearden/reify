@@ -753,6 +753,35 @@ mod tests {
     }
 
     #[test]
+    fn tool_defs_registers_morph_stats() {
+        let defs = tool_defs();
+        let entry = defs
+            .iter()
+            .find(|t| t.name == "morph_stats")
+            .expect("morph_stats must be present in tool_defs()");
+
+        let schema = &entry.input_schema;
+        assert_eq!(
+            schema["type"].as_str(),
+            Some("object"),
+            "input_schema.type must be 'object'"
+        );
+        assert!(
+            !entry.description.is_empty() && entry.description.contains("morph"),
+            "morph_stats description must mention morph; got: {}",
+            entry.description
+        );
+        // `body_id` is optional — the no-args `()` form must be valid per PRD §2.3.
+        // `required` may be absent entirely; if present it must not list body_id.
+        if let Some(required) = schema["required"].as_array() {
+            assert!(
+                !required.iter().any(|v| v.as_str() == Some("body_id")),
+                "'body_id' must NOT be listed in required (it is optional)"
+            );
+        }
+    }
+
+    #[test]
     fn tool_defs_includes_wait_for_idle() {
         let defs = tool_defs();
         let entry = defs
