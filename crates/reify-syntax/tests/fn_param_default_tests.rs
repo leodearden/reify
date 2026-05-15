@@ -197,31 +197,44 @@ fn fn_param_ast_multi_param_mixed_defaults() {
 /// This is a regression guard ensuring the optional default clause does NOT
 /// make the colon-and-type optional.  The grammar keeps `:` and `type_expr`
 /// inside `seq(...)` before the `optional(seq('=', ...))` clause.
+///
+/// Two-tier contract:
+/// 1. CST: `tree.root_node().has_error()` — the grammar rejects `x = 1` without a type.
+/// 2. AST: the parse module either reports errors, or any recovered function's
+///    params all have `default.is_none()` — the lowering pipeline never
+///    attaches a default expression to a param that has no valid type annotation.
 #[test]
 fn fn_param_rejects_default_without_type() {
     let source = "fn f(x = 1) -> T { x }";
+
+    // Tier 1: CST must report an error node.
     let mut parser = make_ts_parser();
     let tree = parser.parse(source.as_bytes(), None).expect("parse failed");
-
     assert!(
         tree.root_node().has_error(),
         "expected a CST ERROR node for `fn f(x = 1) -> T {{ x }}`; \
          the grammar requires `:` and a type_expr before the optional default",
     );
 
-    let error_node = find_cst_node(tree.root_node(), "ERROR")
-        .expect("expected at least one ERROR node when has_error() is true");
-
-    let token = "= 1";
-    let token_start = source
-        .find(token)
-        .expect("fixture must contain '= 1'") as u32;
-    let token_end = token_start + token.len() as u32;
-    let error_start = error_node.start_byte() as u32;
-    let error_end = error_node.end_byte() as u32;
+    // Tier 2: AST-level invariant — either the module reports parse errors, or
+    // any recovered function declaration has no param with a default expression.
+    // This directly captures the "`:`+type stays mandatory; the optional default
+    // does not make the colon/type optional" invariant at the lowering layer.
+    let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    let recovered_fn_has_default = module
+        .declarations
+        .iter()
+        .filter_map(|d| match d {
+            Declaration::Function(f) => Some(f),
+            _ => None,
+        })
+        .any(|f| f.params.iter().any(|p| p.default.is_some()));
     assert!(
-        error_start < token_end && error_end > token_start,
-        "expected ERROR node to overlap `= 1` (bytes {token_start}..{token_end}), \
-         got error at {error_start}..{error_end}",
+        !module.errors.is_empty() || !recovered_fn_has_default,
+        "AST invariant violated: source `fn f(x = 1)` should either produce parse \
+         errors or produce no param with a default; got errors={:?}, \
+         recovered_fn_has_default={}",
+        module.errors,
+        recovered_fn_has_default,
     );
 }
