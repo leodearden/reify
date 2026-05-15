@@ -19,6 +19,10 @@ serde_json.workspace = true
 # of pinning self-contained deps to keep builds deterministic across distros.
 rusqlite = { version = "0.31", features = ["bundled"] }
 
+[[bin]]
+name = "reify-audit"
+path = "src/bin/reify-audit.rs"
+
 [dev-dependencies]
 tempfile.workspace = true
 # Self-pull with the test-support feature so integration tests in tests/p5.rs

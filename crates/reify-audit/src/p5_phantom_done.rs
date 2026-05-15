@@ -133,6 +133,14 @@ fn check_one(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Finding> {
     let prov = meta.done_provenance.as_ref()?;
     let kind = prov.kind.as_deref().unwrap_or("");
 
+    // No files claimed → no provenance to corroborate; treat as clean.
+    // Prevents spurious git-diff calls (which would fail in non-git repos)
+    // when the caller supplies an empty `files` list for testing or
+    // for tasks whose provenance is verified solely by the runs.db trail.
+    if meta.files.is_empty() {
+        return None;
+    }
+
     // Corroboration (a) — runs.db trail. For kind="merged", absence of a
     // task_completed event means the orchestrator never recorded the
     // completion at all — definitive phantom-done, no sibling rescue.

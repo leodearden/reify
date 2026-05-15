@@ -357,13 +357,18 @@ impl GitOps for RealGitOps {
         // `git check-ignore` exit code 0 = ignored, 1 = not ignored.
         // Any other outcome (spawn error, exit code other than 0/1) is a git
         // failure — log a breadcrumb and default to false.
+        //
+        // Use `.output()` (not `.status()`) to capture git's own stderr so
+        // that "fatal: not a git repository" and similar diagnostics do not
+        // leak to *our* process's stderr and corrupt the machine-readable
+        // JSON output written there by the CLI dispatcher.
         match std::process::Command::new("git")
             .arg("-C")
             .arg(&self.project_root)
             .args(["check-ignore", "--quiet", path])
-            .status()
+            .output()
         {
-            Ok(s) => s.code() == Some(0),
+            Ok(out) => out.status.code() == Some(0),
             Err(e) => {
                 eprintln!(
                     "reify-audit: git check-ignore failed in {}: {}",

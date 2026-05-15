@@ -70,6 +70,26 @@ fn insert_completed_event(db_path: &Path, task_id: &str) {
     .expect("insert task_completed event");
 }
 
+/// Extract the JSON findings array from binary stderr.
+///
+/// The binary writes git diagnostic messages (from `RealGitOps::run_or_warn`)
+/// to stderr BEFORE writing the JSON array. Those messages start with
+/// "reify-audit: " and appear on lines before the `[` that opens the JSON.
+/// We scan for the first `[` to locate the JSON portion.
+///
+/// This keeps tests robust to git failures in temp dirs (which aren't real
+/// git repositories).
+fn parse_findings_from_stderr(stderr: &str) -> Vec<serde_json::Value> {
+    let json_start = stderr
+        .find('[')
+        .unwrap_or_else(|| panic!("no '[' found in stderr; full stderr:\n{stderr}"));
+    serde_json::from_str(&stderr[json_start..]).unwrap_or_else(|e| {
+        panic!(
+            "stderr does not contain valid JSON after '[': {e}\nstderr: {stderr}"
+        )
+    })
+}
+
 // -----------------------------------------------------------------------
 // Tests
 // -----------------------------------------------------------------------
@@ -143,16 +163,9 @@ mod cli {
             String::from_utf8_lossy(&out.stderr)
         );
 
-        // Stderr must parse as JSON array of findings
+        // Stderr must contain the JSON array of findings
         let stderr = String::from_utf8_lossy(&out.stderr);
-        let findings: Vec<serde_json::Value> =
-            serde_json::from_str(&stderr).unwrap_or_else(|e| {
-                panic!(
-                    "stderr is not valid JSON: {e}\nstderr: {}\nstdout: {}",
-                    stderr,
-                    String::from_utf8_lossy(&out.stdout)
-                )
-            });
+        let findings = parse_findings_from_stderr(&stderr);
 
         // Must contain a P5PhantomDone High finding for task 3242
         let p5_high = findings.iter().find(|f| {
@@ -210,10 +223,7 @@ mod cli {
         assert!(code >= 1, "expected non-zero exit for 3242 spot-check");
 
         let stderr = String::from_utf8_lossy(&out.stderr);
-        let findings: Vec<serde_json::Value> =
-            serde_json::from_str(&stderr).unwrap_or_else(|e| {
-                panic!("stderr not valid JSON: {e}\nstderr: {stderr}")
-            });
+        let findings = parse_findings_from_stderr(&stderr);
 
         let p5_high = findings.iter().find(|f| {
             f["pattern"].as_str() == Some("P5PhantomDone")
@@ -250,10 +260,7 @@ mod cli {
         );
 
         let stderr2 = String::from_utf8_lossy(&out2.stderr);
-        let findings2: Vec<serde_json::Value> =
-            serde_json::from_str(&stderr2).unwrap_or_else(|e| {
-                panic!("stderr not valid JSON: {e}\nstderr: {stderr2}")
-            });
+        let findings2 = parse_findings_from_stderr(&stderr2);
         assert!(
             findings2.is_empty(),
             "pending task 7777 must yield zero findings; got:\n{:#}",
@@ -268,14 +275,29 @@ mod cli {
         let tmp = tempfile::tempdir().expect("create tempdir");
         let dir = tmp.path();
 
+        // Task 9999 has files=[] so P5's git-diff check trivially passes
+        // (files_missing_from(&[], &[]) is empty). The task_completed event
+        // satisfies the runs.db corroboration leg; together these ensure 9999
+        // produces no P5 finding even though we don't have a real git repo.
+        let task_9999 = serde_json::json!({
+            "task_id": "9999",
+            "status": "done",
+            "files": [],
+            "done_provenance": {"kind": "merged", "commit": "cafebabe", "note": null},
+            "title": "Task 9999",
+            "prd": null,
+            "consumer_ref": null,
+            "audit_foundation": null,
+            "done_at": null
+        });
         let tasks = vec![
             task_fixture("3242", "done", Some("merged"), Some("deadbeef")),
-            task_fixture("9999", "done", Some("merged"), Some("cafebabe")),
+            task_9999,
         ];
         let tasks_file = write_tasks_json(dir, &tasks);
         let runs_db = write_empty_runs_db(dir);
 
-        // Corroborate 9999 so it produces no P5 finding.
+        // Corroborate 9999: runs.db check passes, git check trivially passes (no files).
         insert_completed_event(&runs_db, "9999");
 
         let bin = env!("CARGO_BIN_EXE_reify-audit");
@@ -296,10 +318,7 @@ mod cli {
             .expect("invoke reify-audit --since --pattern P5");
 
         let stderr = String::from_utf8_lossy(&out.stderr);
-        let findings: Vec<serde_json::Value> =
-            serde_json::from_str(&stderr).unwrap_or_else(|e| {
-                panic!("stderr not valid JSON: {e}\nstderr: {stderr}")
-            });
+        let findings = parse_findings_from_stderr(&stderr);
 
         // 3242 must appear with P5 High
         let p5_3242 = findings.iter().find(|f| {
@@ -369,10 +388,7 @@ mod cli {
         );
 
         let stderr = String::from_utf8_lossy(&out.stderr);
-        let findings: Vec<serde_json::Value> =
-            serde_json::from_str(&stderr).unwrap_or_else(|e| {
-                panic!("stderr not valid JSON: {e}\nstderr: {stderr}")
-            });
+        let findings = parse_findings_from_stderr(&stderr);
         assert!(
             findings.is_empty(),
             "--pattern P1 with Noop must yield zero findings; got:\n{:#}",
