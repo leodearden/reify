@@ -30,6 +30,7 @@
 //! there would mix concerns.  This file keeps the boolean-op call-site coverage
 //! atomic and discoverable by name when a boolean-op regression occurs.
 
+use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef};
 use reify_test_support::compile_source;
 use reify_types::Severity;
 
@@ -236,5 +237,77 @@ pub structure Outer {
          scalar member 'value' on sub 'inner'; the realization-name gate in \
          try_emit_cross_sub_geometry should exclude it. Got: {:?}",
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+// ─── step-5: working-path cross-sub arg lowers without diagnostic ─────────────
+
+/// When a boolean op argument is `self.<non_collection_sub>.<body>` where `body`
+/// IS a geometry realization on the child structure, `try_resolve_cross_sub_geom_ref`
+/// in step-1 of `resolve_boolean_arg` succeeds and returns `GeomRef::Sub("inner.body")`.
+/// The new routing inserted in step-2 of `resolve_boolean_arg` must NOT fire for
+/// this case — it only runs after `try_resolve_cross_sub_geom_ref` returns `None`.
+///
+/// Asserts:
+/// (a) NO Error-severity diagnostics — the working path completes silently.
+/// (b) `Outer.combined.operations` contains a `CompiledGeometryOp::Boolean` whose
+///     `left` is `GeomRef::Sub("inner.body")` — the compound-key lowering is intact.
+///
+/// Passes both today (before step-2) and after step-2, because the new routing
+/// is gated behind the `try_resolve_cross_sub_geom_ref` early return.
+/// Closes the regression surface against accidentally calling
+/// `try_emit_cross_sub_geometry` for working-path arms.
+#[test]
+fn boolean_op_with_working_path_cross_sub_arg_lowers_without_diagnostic() {
+    let source = r#"pub structure Inner {
+    let body = box(10mm, 10mm, 10mm)
+}
+pub structure Outer {
+    sub inner = Inner()
+    param base : Solid = box(20mm, 20mm, 20mm)
+    let combined = union(self.inner.body, base)
+}"#;
+    let compiled = compile_source(source);
+
+    // (a) No Error diagnostics — the working path lowers silently.
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics for working-path cross-sub boolean arg; \
+         got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // (b) Outer.combined lowers to a Boolean op whose left is GeomRef::Sub("inner.body").
+    let outer = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Outer")
+        .expect("Outer template should be present");
+    let combined = outer
+        .realizations
+        .iter()
+        .find(|r| r.name.as_deref() == Some("combined"))
+        .expect("Outer.combined realization should be present");
+
+    let has_expected_boolean = combined.operations.iter().any(|op| {
+        matches!(
+            op,
+            CompiledGeometryOp::Boolean {
+                op: BooleanOp::Union,
+                left: GeomRef::Sub(name),
+                ..
+            } if name == "inner.body"
+        )
+    });
+    assert!(
+        has_expected_boolean,
+        "expected a Boolean(Union) op with left=GeomRef::Sub(\"inner.body\") in \
+         Outer.combined; got: {:?}",
+        combined.operations
     );
 }
