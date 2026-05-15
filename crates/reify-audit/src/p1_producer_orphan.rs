@@ -64,7 +64,6 @@ fn is_g_allow_suppressed(symbol: &ChangedSymbol) -> bool {
         .is_some_and(|r| !r.trim().is_empty())
 }
 
-// G-allow: F-infra T-4 CLI consumer (crates/reify-audit-cli) — design pinned in docs/architecture-audit/f-infra-design.md
 pub fn check(ctx: &AuditContext) -> Vec<Finding> {
     let mut findings = Vec::new();
 

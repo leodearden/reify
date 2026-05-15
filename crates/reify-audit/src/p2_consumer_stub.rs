@@ -109,7 +109,6 @@ fn title_signals_stub(title: &str) -> bool {
     t.contains("stub") || t.contains("placeholder")
 }
 
-// G-allow: F-infra T-4 CLI consumer (crates/reify-audit-cli) — design pinned in docs/architecture-audit/f-infra-design.md
 pub fn check(ctx: &AuditContext) -> Vec<Finding> {
     let mut findings = Vec::new();
 

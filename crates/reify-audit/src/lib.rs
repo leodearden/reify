@@ -270,7 +270,6 @@ pub struct RealGitOps {
 }
 
 impl RealGitOps {
-    // G-allow: F-infra T-4 CLI consumer (crates/reify-audit-cli) — design pinned in docs/architecture-audit/f-infra-design.md
     pub fn new(project_root: impl Into<PathBuf>) -> Self {
         Self { project_root: project_root.into() }
     }
@@ -440,29 +439,29 @@ pub struct MockGitOps {
 
 #[cfg(any(test, feature = "test-support"))]
 impl MockGitOps {
-    // G-allow: F-infra T-4 CLI consumer (crates/reify-audit-cli) — design pinned in docs/architecture-audit/f-infra-design.md
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
     pub fn new() -> Self {
         Self::default()
     }
 
-    // G-allow: F-infra T-4 CLI consumer (crates/reify-audit-cli) — design pinned in docs/architecture-audit/f-infra-design.md
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
     pub fn set_log_grep(&mut self, branch: &str, pattern: &str, commits: Vec<GitCommit>) {
         self.log_grep
             .insert((branch.to_string(), pattern.to_string()), commits);
     }
 
-    // G-allow: F-infra T-4 CLI consumer (crates/reify-audit-cli) — design pinned in docs/architecture-audit/f-infra-design.md
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
     pub fn set_diff_changed_paths(&mut self, from: &str, to: &str, paths: Vec<String>) {
         self.diff_changed_paths
             .insert((from.to_string(), to.to_string()), paths);
     }
 
-    // G-allow: F-infra T-4 CLI consumer (crates/reify-audit-cli) — design pinned in docs/architecture-audit/f-infra-design.md
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
     pub fn set_is_gitignored(&mut self, path: &str, ignored: bool) {
         self.is_gitignored.insert(path.to_string(), ignored);
     }
 
-    // G-allow: F-infra T-4 CLI consumer (crates/reify-audit-cli) — design pinned in docs/architecture-audit/f-infra-design.md
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
     pub fn set_diff_added_lines(
         &mut self,
         from: &str,
@@ -579,12 +578,12 @@ pub struct MockJCodemunchOps {
 
 #[cfg(any(test, feature = "test-support"))]
 impl MockJCodemunchOps {
-    // G-allow: F-infra T-4 CLI consumer (crates/reify-audit-cli) — design pinned in docs/architecture-audit/f-infra-design.md
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
     pub fn new() -> Self {
         Self::default()
     }
 
-    // G-allow: F-infra T-4 CLI consumer (crates/reify-audit-cli) — design pinned in docs/architecture-audit/f-infra-design.md
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
     pub fn set_changed_symbols(
         &mut self,
         branch: &str,
@@ -595,7 +594,7 @@ impl MockJCodemunchOps {
             .insert((branch.to_string(), since_epoch), symbols);
     }
 
-    // G-allow: F-infra T-4 CLI consumer (crates/reify-audit-cli) — design pinned in docs/architecture-audit/f-infra-design.md
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
     pub fn set_find_references(&mut self, symbol_name: &str, refs: Vec<SymbolReference>) {
         self.find_references.insert(symbol_name.to_string(), refs);
     }
