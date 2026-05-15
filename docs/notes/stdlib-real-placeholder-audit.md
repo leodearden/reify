@@ -292,18 +292,21 @@ Source: `crates/reify-compiler/stdlib/solver_elastic.ri`
 | 166 | `ElasticOptions` struct | `cg_tolerance` | `Real` | `Real` | genuine-dimensionless | — |
 | 168 | `ElasticOptions` struct | `shell_threshold` | `Real` | `Real` | genuine-dimensionless | — |
 | 171 | `ElasticOptions` struct | `shell_branch_prune_ratio` | `Real` | `Real` | genuine-dimensionless | — |
-| 284 | `ElasticResult` struct | `displacement` | `Real` | `Field<Point3<Length>, Vector3<Length>>` | blocked-field-in-param | task-G |
-| 285 | `ElasticResult` struct | `stress` | `Real` | `Field<Point3<Length>, Tensor<2,3,Pressure>>` | blocked-field-in-param | task-G |
+| 284 | `ElasticResult` struct | `displacement` | `Field<Point3<Length>, Vector3<Length>>` | `Field<Point3<Length>, Vector3<Length>>` | resolved ✓ task-G #3117 | — |
+| 285 | `ElasticResult` struct | `stress` | `Field<Point3<Length>, Tensor<2,3,Pressure>>` | `Field<Point3<Length>, Tensor<2,3,Pressure>>` | resolved ✓ task-G #3117 | — |
 
 **Notes:**
 - `cg_tolerance` (relative residual norm), `shell_threshold` (thickness/extent ratio),
   and `shell_branch_prune_ratio` (branch/thickness ratio) are all dimensionless;
   `Real` is correct.
-- `displacement` and `stress` are `Field<X,Y>` types. The resolver registers a `Field`
-  arm at `type_resolution.rs:1397` for parametric forms, but the existing TODO comment
-  at `solver_elastic.ri:243-254` claims Field is only registered for top-level `field
-  def` declarations, not `param` positions. These two statements may be inconsistent —
-  the TODO may be stale. → blocked-field-in-param (task-G to investigate).
+- `displacement` and `stress`: task 3117 confirmed the TODO at `solver_elastic.ri:243-260`
+  was stale — task 3088 had already added the `Field<D, C>` arm to
+  `resolve_parameterized_builtin_type` (type_resolution.rs:1313) and its `_with_subst`
+  mirror (:1509). Both params are now declared with their precise Field types.
+  Regression-locked by `tests/solver_elastic_tests.rs::elastic_result_struct_has_correct_param_shape`
+  and `tests/parametric_field_resolution_tests.rs` (covers identical forms with the `Body` fixture).
+- `frame` and `ShellStress.top/mid/bottom`: added post-audit; resolver supports Field for
+  these forms too (confirmed by task 3117). Tightening tracked as task #3641.
 
 ---
 
@@ -340,7 +343,7 @@ rejected by the dimension checker. **No follow-up task is filed for this module.
 | `genuine-dimensionless` | 21 | Annotated `// dimensionless` in-place |
 | `blocked-composite` | 15 | Filed composite-dim alias follow-up task (task-E) |
 | `blocked-geometry-type` | 24 | Filed geometry-type follow-up task (task-F) |
-| `blocked-field-in-param` | 2 | Filed Field-in-param investigation task (task-G) |
+| `blocked-field-in-param` | 0 | Resolved by task 3117; both sites tightened to Field types |
 | `structural-contract` | 7 | Rationale recorded; no tightening needed or intended |
 | **Total** | **99** | |
 
@@ -364,4 +367,5 @@ rejected by the dimension checker. **No follow-up task is filed for this module.
 | task-D | Tighten `structural_physical.ri` dimensioned params | volume→Volume, centroid_x/y/z→Length, moment_of_inertia→MomentOfInertia, max_deflection→Length, hardening_modulus→Pressure, max_service_temp→Temperature, seal_pressure_rating→Pressure; update call sites | #3114 |
 | task-E | Add named-dimension aliases for composite quantities | Introduce ThermalConductivity (W/(m·K)), SpecificHeat (J/(kg·K)), ThermalExpansion (1/K), ElectricResistivity (Ω·m), DielectricStrength (V/m), Stiffness (N/m), AbsorptionCoeff (1/m) to NAMED_DIMENSIONS + resolve_type_name; then re-classify all blocked-composite sites | #3115 |
 | task-F | Introduce `Geometry` / `DatumRef` resolver capability | Add a `Geometry` opaque type and `DatumRef` type to the resolver so `tolerancing.ri::feature` (16 sites) and `datum_refs` (8 sites) can be tightened away from `Real` | #3116 |
-| task-G | Investigate and resolve `Field<X,Y>` in `param` positions | Confirm whether `type_resolution.rs:1397` Field arm works in `param` context or is restricted to `field def`; write a probe test; either tighten `ElasticResult::displacement` and `::stress` or extend the resolver | #3117 |
+| task-G ✓ | Investigate and resolve `Field<X,Y>` in `param` positions | Confirmed: resolver arm at `type_resolution.rs:1313` (added by task 3088) works in `param` positions. TODO was stale. Both `ElasticResult::displacement` and `::stress` tightened to Field types. | #3117 (resolved) |
+| task-H | Tighten `frame` and `ShellStress.top/mid/bottom` to Field types | `ElasticResult.frame → Field<Point3<Length>, Matrix<3,3,Real>>`, `ShellStress.{top,mid,bottom} → Field<Point3<Length>, Tensor<2,3,Pressure>>`. Resolver already supports these forms (confirmed task 3117). Post-audit sites not in task-G scope. | #3641 |
