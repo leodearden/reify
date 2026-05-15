@@ -75,6 +75,7 @@ pub mod eligibility;
 pub mod laplacian;
 pub mod options;
 pub mod quality;
+pub mod stats;
 pub mod types;
 
 pub use boundary::{
