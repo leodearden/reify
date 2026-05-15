@@ -2194,4 +2194,43 @@ mod tests {
         );
         assert_distinct_valid(&faces, gh.id);
     }
+
+    #[test]
+    fn extract_vertices_through_handle_channel_returns_eight_handles() {
+        let (handle, box_id) = handle_with_box(10.0, 20.0, 30.0);
+        let vertices = handle
+            .extract_vertices(box_id)
+            .expect("extract_vertices through channel should succeed");
+        assert_eq!(
+            vertices.len(),
+            8,
+            "a box should have 8 vertices, got {}",
+            vertices.len()
+        );
+        assert_distinct_valid(&vertices, box_id);
+    }
+
+    #[tokio::test]
+    async fn extract_vertices_async_through_handle_channel_returns_eight_handles() {
+        let handle = super::OcctKernelHandle::spawn();
+        let gh = handle
+            .execute_async(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .await
+            .unwrap();
+        let vertices = handle
+            .extract_vertices_async(gh.id)
+            .await
+            .expect("extract_vertices_async through channel should succeed");
+        assert_eq!(
+            vertices.len(),
+            8,
+            "a box should have 8 vertices, got {}",
+            vertices.len()
+        );
+        assert_distinct_valid(&vertices, gh.id);
+    }
 }
