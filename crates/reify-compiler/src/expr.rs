@@ -3286,4 +3286,59 @@ pub structure Rack {
             label_msgs
         );
     }
+
+    /// `try_resolve_cross_sub_geometry_value_ref` must emit
+    /// `CompiledExprKind::CrossSubGeometryRef` (the typed discriminator added in
+    /// task-3508), NOT `CompiledExprKind::ValueRef`.
+    ///
+    /// Before task-3508 the producer called `CompiledExpr::value_ref`, so the
+    /// bare-let drop site in entity.rs had to use the fragile
+    /// `entity.contains('.')` heuristic. After task-3508 the producer calls
+    /// `CompiledExpr::cross_sub_geometry_ref`, making the consumer's
+    /// pattern match structurally unambiguous.
+    ///
+    /// RED until step-4 flips the producer from `value_ref` to
+    /// `cross_sub_geometry_ref`.
+    #[test]
+    fn try_resolve_cross_sub_geometry_value_ref_emits_typed_discriminator() {
+        use std::collections::{BTreeMap, BTreeSet};
+        use reify_types::{CompiledExprKind, Type};
+
+        let mut scope = CompilationScope::new("Outer");
+        scope
+            .sub_component_types
+            .insert("inner".to_string(), "Inner".to_string());
+        // Empty inner member-type map so the realization-name branch governs.
+        scope
+            .sub_member_types
+            .insert("inner".to_string(), BTreeMap::new());
+        scope
+            .sub_realization_names
+            .insert("inner".to_string(), BTreeSet::from(["body".to_string()]));
+
+        // (a) helper must return Some.
+        let result = try_resolve_cross_sub_geometry_value_ref(&scope, "inner", "body");
+        assert!(result.is_some(), "expected Some from the helper for a known realization");
+
+        let result = result.unwrap();
+
+        // (b) kind must be CrossSubGeometryRef (not ValueRef) — the typed discriminator.
+        assert!(
+            matches!(result.kind, CompiledExprKind::CrossSubGeometryRef(_)),
+            "producer must emit CrossSubGeometryRef, not ValueRef, after task 3508 (got {:?})",
+            result.kind
+        );
+        // (c) kind must NOT be ValueRef.
+        assert!(
+            !matches!(result.kind, CompiledExprKind::ValueRef(_)),
+            "producer must not emit ValueRef after task 3508"
+        );
+        // (d) inner ValueCellId must carry the scoped entity stamp and member name.
+        if let CompiledExprKind::CrossSubGeometryRef(vid) = &result.kind {
+            assert_eq!(vid.entity, "Outer.inner");
+            assert_eq!(vid.member, "body");
+        }
+        // (e) result_type must be Type::Geometry.
+        assert_eq!(result.result_type, Type::Geometry);
+    }
 }
