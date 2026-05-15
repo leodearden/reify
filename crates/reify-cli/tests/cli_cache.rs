@@ -1275,6 +1275,52 @@ fn cache_clear_with_engine_version_yes_clears_only_target_subdir_and_preserves_o
 }
 
 #[test]
+fn cache_clear_engine_version_nondir_target_is_idempotent_success_and_preserves_file() {
+    // Regression guard for esc-2976-107: `reify cache clear --yes
+    // --engine-version <hash>` against a *regular file* (not a directory) at
+    // cache_root/<hash> must return SUCCESS, not FAILURE (ENOTDIR from
+    // remove_dir_all).  This mirrors the bulk-clear branch's `if !path.is_dir()
+    // { continue }` guard (cache.rs:348-350) which already silently skips stray
+    // regular files.
+    let cache_dir = tempdir().expect("tempdir");
+    let hash = "0123456789abcdef0123456789abcdef".to_string();
+
+    // Seed a regular file (not a directory) at the would-be engine-version path.
+    let stray = cache_dir.path().join(&hash);
+    std::fs::write(&stray, b"not a directory").expect("seed stray regular file");
+    assert!(
+        stray.is_file(),
+        "test setup: stray must be a regular file before running the command: {stray:?}"
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+        .args(["cache", "clear", "--yes", "--engine-version", &hash])
+        .env("REIFY_CACHE_DIR", cache_dir.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute reify cache clear");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "reify cache clear --yes --engine-version against a stray regular file \
+         should succeed (idempotent no-op); stderr={stderr}"
+    );
+
+    // Defense-in-depth: the stray file must not have been deleted.
+    assert!(
+        stray.is_file(),
+        "stray regular file must still exist after idempotent clear; stray={stray:?}"
+    );
+    assert_eq!(
+        std::fs::read(&stray).expect("stray file must be readable"),
+        b"not a directory",
+        "stray file contents must be unchanged after idempotent clear"
+    );
+}
+
+#[test]
 fn cache_gc_under_cap_is_no_op_and_preserves_all_entries() {
     // With REIFY_CACHE_MAX_BYTES set well above the seeded total, `reify
     // cache gc` must (a) succeed, (b) report 0 evicted entries / 0 evicted
