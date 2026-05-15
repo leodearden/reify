@@ -8,7 +8,7 @@ use reify_solver_elastic::{
     Mesh2d, Mesh2dError, Mesh2dReport, SweepError, SweepParams, SweptMesh3d,
 };
 use reify_types::{
-    AttributeHistory, CapabilityDescriptor, CompiledFunction, ContentHash, Diagnostic,
+    AttributeHistory, CapabilityDescriptor, CompiledFunction, Diagnostic,
     DiagnosticLabel, ErrorRef, ExportFormat, FeatureId, FeatureTag, FeatureTagTable, Freshness,
     GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery,
     LoftOpHistoryRecords, Mesh, Operation, RealizationNodeId, ReprKind, SourceSpan,
