@@ -183,7 +183,7 @@ fn make_cross_sub_geometry_error(
 /// populates `sub_realization_names` without `sub_component_types` panics
 /// loudly rather than silently producing a diagnostic that names the sub
 /// instance instead of its child structure.
-fn try_emit_cross_sub_geometry(
+pub(crate) fn try_emit_cross_sub_geometry(
     scope: &CompilationScope<'_>,
     sub_name: &str,
     member: &str,
