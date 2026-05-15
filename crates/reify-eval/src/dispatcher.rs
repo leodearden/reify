@@ -206,6 +206,72 @@ pub fn long_chain_diagnostic(
     Some(Diagnostic::warning(message).with_code(DiagnosticCode::LongChainRealization))
 }
 
+/// Build the `Severity::Error` diagnostic emitted when the multi-kernel
+/// dispatcher cannot find any kernel + conversion chain that performs `op`
+/// to produce the `demanded` repr from the currently-`available` reprs.
+///
+/// Unlike [`long_chain_diagnostic`] (which carries an internal predicate
+/// gate and returns `Option<Diagnostic>` because the caller cannot know
+/// whether to skip), this builder is *unconditional*: the caller has
+/// already walked the BFS to exhaustion and decided the failure applies, so
+/// it returns [`Diagnostic`] directly (mirroring
+/// [`crate::tolerance_promise::imported_tolerance_promise_diagnostic`]). The
+/// diagnostic carries [`DiagnosticCode::NoKernelChain`] for filter-by-code
+/// downstream consumers and a human-readable message naming the op, the
+/// demanded repr, and every available repr so the user can see exactly
+/// which conversion was impossible.
+///
+/// # Integration status
+///
+/// TODO(task-3435/δ): wire this builder into the dispatcher's `None`-return
+/// path in op-execution once the multi-kernel dispatch surface lands (PRD
+/// `docs/prds/v0_3/multi-kernel-phase-3.md` §8 DAG; consumers δ/ε =
+/// IDs 3435/3436). Until then, `no_kernel_chain_diagnostic` is scaffolding
+/// — public API with no in-tree caller — exactly mirroring the scope
+/// boundary documented at the module level and the `long_chain_diagnostic`
+/// precedent (task 2646). Greppable callout intentionally duplicated here so
+/// a future wiring pass can locate the seam without re-reading module docs.
+///
+/// # Severity rationale
+///
+/// PRD `docs/prds/v0_3/multi-kernel-phase-3.md` §2: "The error is
+/// user-visible — failing closed is the failure mode." The dispatcher
+/// refuses to silently pick an incompatible kernel; the user gets a typed
+/// error and can adjust their kernel set or `#kernel(...)` pragma.
+///
+/// # Determinism
+///
+/// `available` is collected into a [`BTreeSet`] before rendering so the
+/// message is stable across runs — the caller's `HashSet<ReprKind>`
+/// iteration order is salted by the process hash seed (see
+/// `dispatch`'s `seeds: BTreeSet<ReprKind>` step and the
+/// `dispatch_seeding_order_is_deterministic` test for the same
+/// load-bearing convention).
+///
+/// # Arguments
+///
+/// - `op` — the [`Operation`] the dispatcher failed to route.
+/// - `demanded` — the [`ReprKind`] the op was required to produce.
+/// - `available` — the reprs the inputs were realised in when dispatch
+///   failed; rendered sorted via [`ReprKind`]'s `Ord` derive.
+pub fn no_kernel_chain_diagnostic(
+    op: Operation,
+    demanded: ReprKind,
+    available: &[ReprKind],
+) -> Diagnostic {
+    let available_sorted: BTreeSet<ReprKind> = available.iter().copied().collect();
+    let available_rendered = available_sorted
+        .iter()
+        .map(|r| format!("{r:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let message = format!(
+        "no kernel chain found for op '{op:?}' to produce '{demanded:?}'; \
+         available reprs: [{available_rendered}]"
+    );
+    Diagnostic::error(message).with_code(DiagnosticCode::NoKernelChain)
+}
+
 /// Resolve the long-chain wall-time threshold from the
 /// [`LONG_CHAIN_THRESHOLD_ENV_VAR`] environment variable, falling back to
 /// [`LONG_CHAIN_DEFAULT_THRESHOLD_MS`] when unset or unparseable.
