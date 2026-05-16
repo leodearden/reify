@@ -347,3 +347,60 @@ describe('AutoResolvePanel (d) per-parameter sparklines', () => {
     expect(labels.length).toBeGreaterThanOrEqual(1);
   });
 });
+
+// ── Test group (e): sparkline null-filter for non-scalar values ──────────────
+
+describe('AutoResolvePanel (e) non-scalar value sparkline null-filter', () => {
+  it('(e.1) sparkline polyline excludes a null-value iteration', () => {
+    // 3 iterations for 'thickness' with values [4.2, null, 4.8].
+    // Without null-filtering the coercion null→0 would produce 3 points;
+    // with filtering only 2 finite points remain → polyline has exactly 2 pairs.
+    const iterations = [
+      makeIteration(1, { parameters: { thickness: { value: 4.2, unit: 'mm', display: '4.2mm' } } }),
+      makeIteration(2, { parameters: { thickness: { value: null, unit: '', display: '<non-scalar>' } } }),
+      makeIteration(3, { parameters: { thickness: { value: 4.8, unit: 'mm', display: '4.8mm' } } }),
+    ];
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+    const sparklineSvg = screen.getByTestId('auto-resolve-sparkline');
+    const polyline = sparklineSvg.querySelector('polyline');
+    expect(polyline).toBeTruthy();
+    const points = (polyline!.getAttribute('points') ?? '').trim().split(/\s+/);
+    // Exactly 2 coordinate pairs — the null iteration is filtered out
+    expect(points).toHaveLength(2);
+  });
+
+  it('(e.2) all-null sparkline draws no polyline but the sparkline SVG still renders', () => {
+    // 2 iterations, both with thickness.value = null.
+    // After null-filtering the series is empty → hasLine = false → no polyline.
+    // The SVG row itself must still render (cellId remains in the union set).
+    const iterations = [
+      makeIteration(1, { parameters: { thickness: { value: null, unit: '', display: '<non-scalar>' } } }),
+      makeIteration(2, { parameters: { thickness: { value: null, unit: '', display: '<non-scalar>' } } }),
+    ];
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+    const sparklineSvg = screen.getByTestId('auto-resolve-sparkline');
+    expect(sparklineSvg).toBeTruthy();
+    // No polyline — after filtering, 0 finite values remain
+    expect(sparklineSvg.querySelector('polyline')).toBeNull();
+  });
+
+  it('(e.3) mixed [5.0, null] sparkline: no polyline, cellId label still renders', () => {
+    // 2 iterations with values [5.0, null] → after filter: [5.0] → length 1 → no polyline.
+    // The sparkline SVG row and its cellId label must still be present.
+    const iterations = [
+      makeIteration(1, { parameters: { thickness: { value: 5.0, unit: 'mm', display: '5mm' } } }),
+      makeIteration(2, { parameters: { thickness: { value: null, unit: '', display: '<non-scalar>' } } }),
+    ];
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+    const sparklineSvg = screen.getByTestId('auto-resolve-sparkline');
+    // SVG exists but no polyline (only 1 finite value after filtering)
+    expect(sparklineSvg).toBeTruthy();
+    expect(sparklineSvg.querySelector('polyline')).toBeNull();
+    // cellId label still renders in the sparkline row
+    const sparklineRow = sparklineSvg.closest('div')!;
+    expect(within(sparklineRow).getByText('thickness')).toBeTruthy();
+  });
+});
