@@ -9,14 +9,20 @@ How the `/audit` skill shells out to `reify-audit`. This is the first skill in t
 Prefer the pre-built release binary if present; fall back to `cargo run`:
 
 ```bash
+# Resolve repo root — anchor all paths against it.
+# Makes /audit safe to invoke from any subdirectory of the worktree.
+REPO_ROOT=$(git rev-parse --show-toplevel)
+
 # Preferred — release binary already built
-if [ -x target/release/reify-audit ]; then
-    REIFY_AUDIT_BIN="target/release/reify-audit"
+if [ -x "$REPO_ROOT/target/release/reify-audit" ]; then
+    REIFY_AUDIT_BIN="$REPO_ROOT/target/release/reify-audit"
 else
     # Fallback — build and run (quiet suppresses cargo progress chatter on stdout)
     REIFY_AUDIT_BIN="cargo run --release --quiet -p reify-audit --"
 fi
 ```
+
+**Pre-flight:** Always resolve `REPO_ROOT` first — every subsequent path (`--tasks-file`, `--runs-db`, `--project-root`) is anchored against it. This makes `/audit` safe to invoke from any subdirectory of the worktree; without it, relative paths like `.taskmaster/tasks/tasks.json` resolve against whatever directory the user invoked the skill from, hitting the "missing tasks-file" error path.
 
 **Why release?** The binary will be invoked the same way by the dark-factory D-1 pre-done hook (`REIFY_AUDIT_PREDONE_CMD`). Using the release binary in the skill keeps the invocation in parity with how D-1 sees it.
 
@@ -29,15 +35,16 @@ fi
 The `reify-audit` binary emits **JSON on stderr** and a human-readable summary on **stdout**. Capture stderr to a tempfile so both streams stay cleanly separated:
 
 ```bash
-TMPFILE="/tmp/reify-audit-$$.json"
+TMPFILE=$(mktemp /tmp/reify-audit-XXXXXX.json)
+trap 'rm -f "$TMPFILE"' EXIT   # clean up on early exit, interrupt, or error
 
 $REIFY_AUDIT_BIN \
   [--task <id>] \
   [--since <iso-date>] \
   [--pattern P1|P2|P5] \
-  --tasks-file .taskmaster/tasks/tasks.json \
-  --runs-db data/orchestrator/runs.db \
-  --project-root . \
+  --tasks-file "$REPO_ROOT/.taskmaster/tasks/tasks.json" \
+  --runs-db    "$REPO_ROOT/data/orchestrator/runs.db" \
+  --project-root "$REPO_ROOT" \
   2>"$TMPFILE"
 
 EXIT_CODE=$?
@@ -45,11 +52,11 @@ EXIT_CODE=$?
 # Parse the JSON findings from the tempfile.
 FINDINGS=$(cat "$TMPFILE")
 
-# Clean up.
+# Clean up (EXIT trap above also covers abnormal exits).
 rm -f "$TMPFILE"
 ```
 
-**Why a tempfile?** The CLI writes the human-readable summary to stdout and the JSON array to stderr in a single run. A tempfile sink for stderr survives multi-line pretty-printed JSON without the LLM needing to parse a mixed stream inline. Using `$$` (the shell's PID) for the suffix ensures uniqueness across concurrent skill invocations.
+**Why a tempfile?** The CLI writes the human-readable summary to stdout and the JSON array to stderr in a single run. A tempfile sink for stderr survives multi-line pretty-printed JSON without the LLM needing to parse a mixed stream inline. `mktemp` generates a collision-free name (`XXXXXX` entropy), safer than a `$$`-based name (which reuses the parent shell PID in long-lived shells and risks stale-file cross-contamination across runs). The `trap 'rm -f "$TMPFILE"' EXIT` guard ensures cleanup even on early exit (parse failure, exception, `Ctrl-C`).
 
 **Source:** The JSON-on-stderr convention is documented in `crates/reify-audit/src/bin/reify-audit.rs` lines 29–41 and in the `--help` output:
 
@@ -74,7 +81,7 @@ If you need JSON on stdout (for piping to `jq` in a one-off shell session), redi
 
 When `exit_code == 125`, the skill **MUST** attempt to parse the tempfile as a JSON array before treating it as an infra error:
 
-- **Parse succeeds** (tempfile contains a valid JSON array): treat as **125 High findings** — route each via `references/severity-routing.md`. This is NOT an infra error.
+- **Parse succeeds** (tempfile contains a valid JSON array): additionally verify that `len(findings) == 125` and every element has `severity == "High"`. If both checks pass, treat as **125 High findings** — route each via `references/severity-routing.md`. This is NOT an infra error. If either check fails (unexpected array length or non-High severity present), the tempfile may contain a JSON array from an unexpected code path — fall through to the infra-error branch.
 - **Parse fails or tempfile is empty**: treat as an **infra error** — surface the tempfile contents verbatim to the user and stop.
 
 **Why this works:** The CLI's successful runs always emit a JSON array on stderr (via `serde_json::to_writer_pretty`). Error paths emit human-readable text via `eprintln!` and never produce parseable JSON. A non-empty JSON array on stderr always wins over the `exit_code == 125` infra-error reading.

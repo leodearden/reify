@@ -45,7 +45,7 @@ mcp__fused-memory__submit_task(
 )
 ```
 
-`planning_mode=True` is **synchronous** (curator-bypassing) and returns `task_id` directly — no `resolve_ticket` round trip. Tasks are filed as `deferred` (not `pending`), awaiting human triage. The skill does **not** call `set_task_status` to flip them to `pending`.
+`planning_mode=True` is **synchronous** (curator-bypassing) and returns `task_id` directly — no `resolve_ticket` round trip. This is the same pattern used by `/prd` decompose mode (see `.claude/skills/prd/references/decompose-mode.md` Step 3); the contract is captured in fused-memory entity `feedback_planning_mode_scope`. Tasks are filed as `deferred` (not `pending`), awaiting human triage. The skill does **not** call `set_task_status` to flip them to `pending`.
 
 ---
 
@@ -90,6 +90,10 @@ P5 findings never reach Medium in the periodic sweep context, so no Medium title
    - Append a new entry to `data/audit-runs/index.json` (see `output-format.md` §3 for the entry schema).
 
 The `index.json` file is **append-only within a run** (entries from prior runs are preserved) and is **rewritten in full** at the end of each run (so the file always reflects the current state of all known dedupe keys).
+
+**Atomic rewrite:** Write the updated contents to `data/audit-runs/index.json.tmp`, then `rename()` over `data/audit-runs/index.json`. Without atomicity, an interrupted rewrite (Ctrl-C, OOM, host crash) leaves a truncated or corrupt `index.json`. The next run would then fail to parse it and silently re-file every duplicate finding — the exact failure dedupe was designed to prevent.
+
+**Recovery from corrupt index:** If `data/audit-runs/index.json` exists but fails to parse (e.g. left truncated by an interrupted atomic rewrite), the skill must **surface the parse error to the user and stop** — do NOT silently treat a parse failure as an empty index. This preserves the user's ability to inspect and manually repair the file rather than losing dedupe history silently.
 
 ---
 
