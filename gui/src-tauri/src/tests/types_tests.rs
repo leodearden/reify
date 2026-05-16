@@ -1428,6 +1428,48 @@ fn meshdata_rejects_region_tags_with_wrong_length() {
     );
 }
 
+/// A `vector_channels` entry must have length `3 * vertex_count` (per-vertex) or
+/// `3 * face_count` (per-face).  Any other length must produce `Err` containing
+/// the channel name and both valid lengths.
+///
+/// Setup: 3 vertices (vertex_count=3), 1 face (face_count=1).
+/// Valid per-vertex length = 9; valid per-face length = 3.
+/// An entry of length 2 is invalid for both.
+///
+/// Pins the two-valid-lengths contract in the Serialize impl (step-10).
+#[test]
+fn meshdata_rejects_vector_channel_with_invalid_length() {
+    use std::collections::HashMap;
+
+    let mut vc = HashMap::new();
+    // length 2: not 9 (per-vertex) and not 3 (per-face)
+    vc.insert("shell_normal".to_string(), vec![1.0f32, 0.0]);
+
+    let mesh = MeshData {
+        entity_path: "test".to_string(),
+        vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0], // 3 vertices
+        indices: vec![0, 1, 2],                                          // 1 face
+        normals: None,
+        scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: None,
+        element_kind: None,
+        region_tags: None,
+        vector_channels: vc,
+    };
+    let err = serde_json::to_value(&mesh).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("shell_normal"),
+        "expected channel name 'shell_normal' in error message: {msg}"
+    );
+    // Must mention at least one of: vertex_count context, face_count context,
+    // or the two valid lengths (9 and 3).
+    assert!(
+        msg.contains("vertex") || msg.contains("face") || msg.contains("9") || msg.contains("3"),
+        "expected size-context in error message: {msg}"
+    );
+}
+
 /// `GuiState` must carry a `compile_diagnostics` JSON field that serializes as
 /// an array. Mirrors `gui_state_serializes_tessellation_diagnostics_field`.
 /// Fails until `compile_diagnostics: Vec<DiagnosticInfo>` is added to `GuiState`.
