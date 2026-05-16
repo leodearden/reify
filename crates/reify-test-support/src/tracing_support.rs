@@ -1671,6 +1671,39 @@ mod tests {
         capture.assert_any_message_equals("lock poisoned, recovering");
     }
 
+    // ── CapturingSubscriberBuilder tests ──────────────────────────────────────
+
+    /// `CapturingSubscriberBuilder` captures only events at the registered level
+    /// and rejects all other levels.
+    ///
+    /// Installs an INFO-level subscriber; emits INFO, WARN, DEBUG, and ERROR
+    /// events; asserts count==1 and messages contains only "captured".
+    #[test]
+    fn capturing_subscriber_captures_target_level_rejects_others() {
+        use crate::prime_tracing_callsite_cache;
+        use crate::CapturingSubscriberBuilder;
+
+        prime_tracing_callsite_cache();
+
+        let (subscriber, capture) = CapturingSubscriberBuilder::new()
+            .level(tracing::Level::INFO)
+            .build();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!("captured");
+            tracing::warn!("ignored_warn");
+            tracing::debug!("ignored_debug");
+            tracing::error!("ignored_err");
+        });
+
+        assert_eq!(capture.count(), 1, "only INFO events should be captured");
+        assert_eq!(
+            capture.messages(),
+            vec!["captured".to_string()],
+            "only the INFO message should appear"
+        );
+    }
+
     // ── WarnCapture::assert_any_event_field_contains tests ────────────────────
 
     /// `assert_any_event_field_contains` succeeds when a captured field value
