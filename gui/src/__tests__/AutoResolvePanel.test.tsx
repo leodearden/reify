@@ -404,3 +404,64 @@ describe('AutoResolvePanel (e) non-scalar value sparkline null-filter', () => {
     expect(within(sparklineRow).getByText('thickness')).toBeTruthy();
   });
 });
+
+// ── Test group (f): non-scalar error chip in Parameters section ──────────────
+
+describe('AutoResolvePanel (f) non-scalar error chip in Parameters section', () => {
+  it('(f.1) non-scalar row renders display text and carries data-non-scalar="true"', () => {
+    // One iteration with thickness.value = null → display '<non-scalar>'.
+    // The value span must have data-non-scalar="true" and contain the display text.
+    const iterations = [
+      makeIteration(1, {
+        parameters: { thickness: { value: null, unit: '', display: '<non-scalar>' } },
+      }),
+    ];
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+    const parametersSection = screen.getByTestId('auto-resolve-parameters');
+    // Display text renders inside the Parameters section
+    expect(within(parametersSection).getByText('<non-scalar>')).toBeTruthy();
+    // An element with data-non-scalar="true" exists in the Parameters section
+    const chip = parametersSection.querySelector('[data-non-scalar="true"]');
+    expect(chip).toBeTruthy();
+    // That element contains the display text
+    expect(chip!.textContent).toBe('<non-scalar>');
+  });
+
+  it('(f.2) scalar parameter row does NOT carry data-non-scalar attribute', () => {
+    // One iteration with a normal scalar value → no data-non-scalar attribute.
+    const iterations = [
+      makeIteration(1, {
+        parameters: { thickness: { value: 4.2, unit: 'mm', display: '4.2mm' } },
+      }),
+    ];
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+    const parametersSection = screen.getByTestId('auto-resolve-parameters');
+    // Display value renders normally
+    expect(within(parametersSection).getByText('4.2mm')).toBeTruthy();
+    // No data-non-scalar attribute present
+    expect(parametersSection.querySelector('[data-non-scalar="true"]')).toBeNull();
+  });
+
+  it('(f.3) mixed rows: only the null-value row carries data-non-scalar="true"', () => {
+    // One iteration with two parameters: one scalar, one non-scalar.
+    // Exactly one element in the Parameters section must have data-non-scalar="true".
+    const iterations = [
+      makeIteration(1, {
+        parameters: {
+          thickness: { value: 4.2, unit: 'mm', display: '4.2mm' },
+          area: { value: null, unit: '', display: '<non-scalar>' },
+        },
+      }),
+    ];
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+    const parametersSection = screen.getByTestId('auto-resolve-parameters');
+    const chips = parametersSection.querySelectorAll('[data-non-scalar="true"]');
+    // Exactly one chip
+    expect(chips).toHaveLength(1);
+    // That chip's text is the non-scalar display string
+    expect(chips[0].textContent).toBe('<non-scalar>');
+  });
+});
