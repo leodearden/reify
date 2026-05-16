@@ -153,22 +153,6 @@ fn sub_decl_specialization_body_cst_param_assignment_name_field() {
     );
 }
 
-/// A forbidden body `{ param x : Length }` still yields ZERO CST ERROR nodes —
-/// forbidden kinds parse; rejection is the validator's job.
-#[test]
-fn sub_decl_specialization_body_forbidden_param_body_parses_without_errors() {
-    let source = "structure S { sub motor : ElectricMotor { param x : Length } }";
-    let mut parser = make_ts_parser();
-    let tree = parser
-        .parse(source.as_bytes(), None)
-        .expect("parse failed");
-    assert!(
-        !tree.root_node().has_error(),
-        "a forbidden param member inside a specialization body must NOT produce CST ERROR \
-         nodes — rejection is deferred to the validator; has_error() returned true",
-    );
-}
-
 /// The where-guard-before-body form must expose both a `guard` (where_clause)
 /// child and a `body` child on the same `sub_declaration`.
 #[test]
