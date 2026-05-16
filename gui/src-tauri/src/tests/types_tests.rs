@@ -1360,6 +1360,74 @@ fn meshdata_rejects_displaced_positions_with_wrong_length() {
     );
 }
 
+// --- MeshData new-shell-field length-contract tests (Task 3597 steps 5–10) ---
+
+/// `element_kind`, when `Some`, must have exactly `face_count == indices.len() / 3`
+/// elements.  A length mismatch must produce `Err` with "element_kind" and
+/// face-count information in the message.
+///
+/// Pins the length-contract enforcement added in step-6.
+#[test]
+fn meshdata_rejects_element_kind_with_wrong_length() {
+    // 3 vertices, 2 faces (6 indices) → face_count = 2
+    // element_kind has only 1 element → length mismatch
+    let mesh = MeshData {
+        entity_path: "test".to_string(),
+        vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        indices: vec![0, 1, 2, 0, 1, 2],
+        normals: None,
+        scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: None,
+        element_kind: Some(vec![0u8]), // length 1, face_count = 2 → mismatch
+        region_tags: None,
+        vector_channels: std::collections::HashMap::new(),
+    };
+    let err = serde_json::to_value(&mesh).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("element_kind"),
+        "expected 'element_kind' in error message: {msg}"
+    );
+    // Error message must contain face-count context ("face count" or the literal numbers)
+    assert!(
+        msg.contains("face count") || (msg.contains("1") && msg.contains("2")),
+        "expected face-count context in error message: {msg}"
+    );
+}
+
+/// `region_tags`, when `Some`, must have exactly `face_count == indices.len() / 3`
+/// elements.  A length mismatch must produce `Err` with "region_tags" and
+/// face-count information in the message.
+///
+/// Pins the length-contract enforcement added in step-8.
+#[test]
+fn meshdata_rejects_region_tags_with_wrong_length() {
+    // 3 vertices, 2 faces (6 indices) → face_count = 2
+    // region_tags has only 1 element → length mismatch
+    let mesh = MeshData {
+        entity_path: "test".to_string(),
+        vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        indices: vec![0, 1, 2, 0, 1, 2],
+        normals: None,
+        scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: None,
+        element_kind: None,
+        region_tags: Some(vec![100u32]), // length 1, face_count = 2 → mismatch
+        vector_channels: std::collections::HashMap::new(),
+    };
+    let err = serde_json::to_value(&mesh).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("region_tags"),
+        "expected 'region_tags' in error message: {msg}"
+    );
+    // Error message must contain face-count context
+    assert!(
+        msg.contains("face count") || (msg.contains("1") && msg.contains("2")),
+        "expected face-count context in error message: {msg}"
+    );
+}
+
 /// `GuiState` must carry a `compile_diagnostics` JSON field that serializes as
 /// an array. Mirrors `gui_state_serializes_tessellation_diagnostics_field`.
 /// Fails until `compile_diagnostics: Vec<DiagnosticInfo>` is added to `GuiState`.
