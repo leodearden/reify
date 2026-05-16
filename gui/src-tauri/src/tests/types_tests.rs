@@ -1504,11 +1504,7 @@ fn auto_resolve_parameter_value_nan_sentinel_serializes_value_field_as_null() {
         display: "<non-scalar>".to_string(),
     };
 
-    // Wire path: serde_json::to_string of the full AutoResolveIteration payload —
-    // the faithful production proxy.
-    // emit_typed(&app, "auto-resolve-iteration", &iter) → tauri::AppHandle::emit →
-    // serde_json::to_string(&iter) is the actual Tauri wire path for the emitted event.
-    // The NaN-bearing AutoResolveParameterValue is nested under parameters: HashMap<String, _>.
+    // See doc comment above for production wire path.
     let param_key = "Bracket.thickness";
     let mut parameters = HashMap::new();
     parameters.insert(param_key.to_string(), param);
