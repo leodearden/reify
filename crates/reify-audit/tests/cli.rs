@@ -75,17 +75,26 @@ fn insert_completed_event(db_path: &Path, task_id: &str) {
 /// The binary writes git diagnostic messages (from `RealGitOps::run_or_warn`)
 /// to stderr BEFORE writing the JSON array. Those messages start with
 /// "reify-audit: " and appear on lines before the `[` that opens the JSON.
-/// We scan for the first `[` to locate the JSON portion.
+///
+/// We search for the LAST `\n[` in the output so that any earlier diagnostic
+/// line that happens to contain `[` (e.g. a path with brackets, a git error
+/// message like `[detached HEAD]`) doesn't corrupt the parse boundary. The
+/// JSON array is always the final block; `rfind("\n[")` reliably locates it.
 ///
 /// This keeps tests robust to git failures in temp dirs (which aren't real
 /// git repositories).
 fn parse_findings_from_stderr(stderr: &str) -> Vec<serde_json::Value> {
     let json_start = stderr
-        .find('[')
-        .unwrap_or_else(|| panic!("no '[' found in stderr; full stderr:\n{stderr}"));
+        .rfind("\n[")
+        .map(|pos| pos + 1) // skip the '\n', keep the '['
+        .or_else(|| {
+            // Fallback: JSON starts at position 0 (no preceding diagnostic lines).
+            if stderr.starts_with('[') { Some(0) } else { None }
+        })
+        .unwrap_or_else(|| panic!("no JSON array found in stderr; full stderr:\n{stderr}"));
     serde_json::from_str(&stderr[json_start..]).unwrap_or_else(|e| {
         panic!(
-            "stderr does not contain valid JSON after '[': {e}\nstderr: {stderr}"
+            "stderr does not contain valid JSON after '[': {e}\nstderr:\n{stderr}"
         )
     })
 }
@@ -190,8 +199,12 @@ mod cli {
 
     /// `--task <id>` (no `--pre-done`) runs all three detectors; P5 finds the
     /// phantom-done; a pending-status task yields zero findings.
+    ///
+    /// Note: P1 is quiet under `NoopJCodemunchOps` and P2 has no trigger
+    /// fixture here — only P5 fires. The test verifies all three detectors
+    /// run without error (not that all three produce findings).
     #[test]
-    fn task_spot_check_runs_all_three_detectors() {
+    fn task_spot_check_finds_phantom_done_when_running_all_detectors() {
         let tmp = tempfile::tempdir().expect("create tempdir");
         let dir = tmp.path();
 
@@ -352,6 +365,69 @@ mod cli {
             non_p5.is_none(),
             "--pattern P5 must not include P1/P2 findings; got:\n{:#}",
             serde_json::Value::Array(findings)
+        );
+    }
+
+    /// `--pre-done --pattern P1` must error with exit 125 (infrastructure error),
+    /// not silently run P5 or P1.
+    #[test]
+    fn pre_done_and_pattern_is_an_error() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let dir = tmp.path();
+        let tasks = vec![task_fixture("1", "done", Some("merged"), Some("abc"))];
+        let tasks_file = write_tasks_json(dir, &tasks);
+        let runs_db = write_empty_runs_db(dir);
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task", "1",
+                "--pre-done",
+                "--pattern", "P1",
+                "--tasks-file", tasks_file.to_str().unwrap(),
+                "--runs-db", runs_db.to_str().unwrap(),
+                "--project-root", dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit --pre-done --pattern P1");
+
+        assert_eq!(
+            out.status.code(),
+            Some(125),
+            "--pre-done --pattern must exit 125; got {:?}\nstderr: {}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// `--pre-done --since <date>` must error with exit 125.
+    #[test]
+    fn pre_done_and_since_is_an_error() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let dir = tmp.path();
+        let tasks = vec![task_fixture("1", "done", Some("merged"), Some("abc"))];
+        let tasks_file = write_tasks_json(dir, &tasks);
+        let runs_db = write_empty_runs_db(dir);
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task", "1",
+                "--pre-done",
+                "--since", "2026-05-01",
+                "--tasks-file", tasks_file.to_str().unwrap(),
+                "--runs-db", runs_db.to_str().unwrap(),
+                "--project-root", dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit --pre-done --since");
+
+        assert_eq!(
+            out.status.code(),
+            Some(125),
+            "--pre-done --since must exit 125; got {:?}\nstderr: {}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr)
         );
     }
 
