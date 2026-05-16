@@ -38,7 +38,7 @@ fn line_matches_stub(line: &str) -> Option<&'static str> {
             return Some("TODO(pending)");
         }
         if inner.contains("post-") {
-            return Some("TODO(post-\\w+)");
+            return Some("TODO(post-)");
         }
         if inner.contains("later") {
             return Some("TODO(later)");
@@ -136,11 +136,16 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         //   Additionally: `line_matches_stub` allocates a fresh `String` per
         //   added line via `to_lowercase()` (see line_matches_stub, top of
         //   function). When the per-task coalescing follow-up lands, consider
-        //   folding in either (a) an ASCII fast-path (`if line.is_ascii() { …
-        //   byte-level lowercase comparison … }`) — most stub markers in Rust
-        //   source are pure-ASCII — or (b) a per-task lowercase scratch buffer
-        //   reused across the added lines, to avoid N allocations on 100+-task
-        //   sweeps.
+        //   reusing a per-task `String` scratch buffer via `clear();
+        //   push_str(line); make_ascii_lowercase()` guarded by
+        //   `line.is_ascii()`, falling back to `to_lowercase()` for the
+        //   non-ASCII tail. This collapses the ASCII fast-path and
+        //   scratch-buffer goals into one coherent strategy: zero allocations
+        //   on all-ASCII input (the common case for Rust stub markers), one
+        //   allocation per non-ASCII line (same cost as today). Note: do NOT
+        //   call `make_ascii_lowercase()` on non-ASCII input without the
+        //   `is_ascii()` guard — it silently skips non-ASCII bytes rather than
+        //   case-folding them, changing semantics vs. `to_lowercase()`.
         for path in &meta.files {
             // Skip test-shaped paths to avoid false positives on intentional
             // stubs inside test helpers (design §5 P2 false-positive guards).

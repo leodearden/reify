@@ -150,7 +150,7 @@ mod tests {
         // position and guards against accidental fragment matches inside snippets.
         let expected_labels: Vec<&str> = vec![
             "TODO(pending)",                           // [0] a.rs — TODO(impl pending)
-            "TODO(post-\\w+)",                         // [1] b.rs — TODO(post-merge)
+            "TODO(post-)",                              // [1] b.rs — TODO(post-merge); label is human description not a regex
             "TODO(later)",                             // [2] c.rs — TODO(wire later)
             "TODO(task_N)",                            // [3] d.rs — TODO(task_9999)
             "unimplemented!",                          // [4] e.rs — unimplemented!()
@@ -474,7 +474,7 @@ mod tests {
     /// §10 acceptance-criterion: "seven canonical stub patterns detected, seven
     /// non-stub patterns not" — this test covers the "not" side (regression-guard).
     ///
-    /// Six near-miss added lines, each probing the discrimination boundary of one
+    /// Seven near-miss added lines, each probing the discrimination boundary of one
     /// family:
     ///   (a) `// TODO(refactor) // see task_123` — `task_123` outside `TODO(...)`
     ///       parens must NOT match `TODO(task_N)` (Family 1 paren-scoping).
@@ -487,6 +487,9 @@ mod tests {
     ///       `task_*_pending` reason must NOT match Family 4.
     ///   (f) `// TODO_LIST.md note about followup` — "todo" not followed by `(`
     ///       must NOT match any family (lexical `todo(` guard in Family 1).
+    ///   (g) `let result = unimplemented_macro();` — "unimplemented" as a
+    ///       substring but WITHOUT the trailing `!(` must NOT match Family 2
+    ///       (`unimplemented!(`-exact check).
     ///
     /// Expected outcome: `findings.is_empty()`. If this test fails, a real
     /// regression in `line_matches_stub`'s discrimination logic has been introduced.
@@ -501,6 +504,7 @@ mod tests {
             "crates/x/near_d.rs",
             "crates/x/near_e.rs",
             "crates/x/near_f.rs",
+            "crates/x/near_g.rs",
         ];
         let near_miss_lines: Vec<&str> = vec![
             "    // TODO(refactor) // see task_123",
@@ -509,6 +513,7 @@ mod tests {
             "    Value::Undef => { /* unhandled */ }",
             "    tracing::warn!(reason=\"some_other_reason\", \"x\")",
             "    // TODO_LIST.md note about followup",
+            "    let result = unimplemented_macro();",
         ];
 
         let mut git = MockGitOps::new();
