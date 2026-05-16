@@ -1,24 +1,21 @@
 //! Declarative annotation schema registry for `validate_annotations`.
 //!
-//! This module defines the [`AnnotationSchema`] type, a lazy-initialized registry
-//! of all known annotations, and the [`validate_via_schema`] dispatcher that
-//! replaces the per-annotation match-arm in `annotations.rs`.
+//! This module defines the [`AnnotationSchema`] type, a const-initialized slice
+//! of all known annotations (`SCHEMAS`), and the [`validate_via_schema`] dispatcher
+//! that replaces the per-annotation match-arm in `annotations.rs`.
 //!
 //! ## Phase-1 hybrid: registry + per-annotation helpers
 //!
 //! The schema struct is pure declarative data (valid contexts, staged fields for
 //! later phases). Per-annotation arg-shape rules live in three private helper
 //! functions (`check_optimized_args`, `check_shell_args`, `check_solid_args`)
-//! called via a `match schema.name` in [`validate_via_schema`]. This is a
-//! deliberate Phase-1 trade-off: the registry centralises cross-cutting metadata
+//! stored as fn-pointer fields (`arg_check`) on each schema entry and dispatched
+//! via `if let Some(check) = schema.arg_check` in [`validate_via_schema`]. This is
+//! a deliberate Phase-1 trade-off: the registry centralises cross-cutting metadata
 //! while the helpers preserve bit-for-bit wording from the legacy match-arm.
-//! Later phases (δ, ζ, η) can migrate rules into the schema struct and remove
-//! the name-match once the framework matures.
+//! Later phases (δ, ζ, η) can migrate rules into the schema struct.
 //!
 //! See `docs/prds/annotation-args.md` §4 (Phase-1 scope) for the full rationale.
-
-use std::collections::HashMap;
-use std::sync::OnceLock;
 
 use reify_types::{Annotation, Diagnostic, DiagnosticLabel};
 
@@ -106,18 +103,12 @@ pub(crate) struct AnnotationSchema {
 
 // ─── Registry ────────────────────────────────────────────────────────────────
 
-/// Lazy-initialized annotation registry, keyed by canonical annotation name.
-///
-/// Seeded on first access via `OnceLock::get_or_init`. The pattern mirrors
-/// `si_units.rs` and `stdlib_loader.rs` in this crate.
-static ANNOTATION_REGISTRY: OnceLock<HashMap<&'static str, AnnotationSchema>> = OnceLock::new();
-
 /// All contexts that `validate_annotations` can be called with, as observed
 /// across the 9 call-sites in entity.rs, traits.rs, functions.rs, guards.rs,
 /// and compile_builder/defs_phase.rs.
 ///
 /// Used as the `valid_contexts` for `@deprecated`, which is valid everywhere.
-static ALL_VALID_CONTEXTS: &[&str] = &[
+const ALL_VALID_CONTEXTS: &[&str] = &[
     "structure",
     "occurrence",
     "function",
@@ -129,103 +120,84 @@ static ALL_VALID_CONTEXTS: &[&str] = &[
     "field",
 ];
 
-fn build_registry() -> HashMap<&'static str, AnnotationSchema> {
-    let mut map = HashMap::new();
-
+/// Const-initialized slice of all known annotation schemas.
+///
+/// Linear scan over n=6 entries is faster than HashMap probing at this scale
+/// (no hash computation, no OnceLock barrier, cache-friendly layout). Adding a
+/// new annotation requires only a new entry here — no separate `build_registry`
+/// edit needed.
+const SCHEMAS: &[AnnotationSchema] = &[
     // @test — valid on structure, occurrence, function, constraint_def
-    map.insert(
-        reify_types::TEST_ANNOTATION,
-        AnnotationSchema {
-            name: reify_types::TEST_ANNOTATION,
-            label: "@test",
-            valid_contexts: &["structure", "occurrence", "function", "constraint_def"],
-            args: &[],
-            flag_set: None,
-            on_extra: ExtraArgsPolicy::WarnIgnore,
-            arg_check: None,
-        },
-    );
-
+    AnnotationSchema {
+        name: reify_types::TEST_ANNOTATION,
+        label: "@test",
+        valid_contexts: &["structure", "occurrence", "function", "constraint_def"],
+        args: &[],
+        flag_set: None,
+        on_extra: ExtraArgsPolicy::WarnIgnore,
+        arg_check: None,
+    },
     // @deprecated — valid on any context
-    map.insert(
-        reify_types::DEPRECATED_ANNOTATION,
-        AnnotationSchema {
-            name: reify_types::DEPRECATED_ANNOTATION,
-            label: "@deprecated",
-            valid_contexts: ALL_VALID_CONTEXTS,
-            args: &[],
-            flag_set: None,
-            on_extra: ExtraArgsPolicy::WarnIgnore,
-            arg_check: None,
-        },
-    );
-
+    AnnotationSchema {
+        name: reify_types::DEPRECATED_ANNOTATION,
+        label: "@deprecated",
+        valid_contexts: ALL_VALID_CONTEXTS,
+        args: &[],
+        flag_set: None,
+        on_extra: ExtraArgsPolicy::WarnIgnore,
+        arg_check: None,
+    },
     // @optimized — valid on structure, occurrence, constraint_def, function
-    map.insert(
-        reify_types::OPTIMIZED_ANNOTATION,
-        AnnotationSchema {
-            name: reify_types::OPTIMIZED_ANNOTATION,
-            label: "@optimized",
-            valid_contexts: &["structure", "occurrence", "constraint_def", "function"],
-            args: &[],
-            flag_set: None,
-            on_extra: ExtraArgsPolicy::WarnIgnore,
-            arg_check: Some(check_optimized_args),
-        },
-    );
-
+    AnnotationSchema {
+        name: reify_types::OPTIMIZED_ANNOTATION,
+        label: "@optimized",
+        valid_contexts: &["structure", "occurrence", "constraint_def", "function"],
+        args: &[],
+        flag_set: None,
+        on_extra: ExtraArgsPolicy::WarnIgnore,
+        arg_check: Some(check_optimized_args),
+    },
     // @solver_hint — valid on structure, occurrence, param, let
-    map.insert(
-        reify_types::SOLVER_HINT_ANNOTATION,
-        AnnotationSchema {
-            name: reify_types::SOLVER_HINT_ANNOTATION,
-            label: "@solver_hint",
-            valid_contexts: &["structure", "occurrence", "param", "let"],
-            args: &[],
-            flag_set: None,
-            on_extra: ExtraArgsPolicy::WarnIgnore,
-            arg_check: None,
-        },
-    );
-
+    AnnotationSchema {
+        name: reify_types::SOLVER_HINT_ANNOTATION,
+        label: "@solver_hint",
+        valid_contexts: &["structure", "occurrence", "param", "let"],
+        args: &[],
+        flag_set: None,
+        on_extra: ExtraArgsPolicy::WarnIgnore,
+        arg_check: None,
+    },
     // @shell — valid on structure, occurrence (zero or one Length-typed thickness arg)
-    map.insert(
-        reify_types::SHELL_ANNOTATION,
-        AnnotationSchema {
-            name: reify_types::SHELL_ANNOTATION,
-            label: "@shell",
-            valid_contexts: &["structure", "occurrence"],
-            args: &[],
-            flag_set: None,
-            on_extra: ExtraArgsPolicy::WarnIgnore,
-            arg_check: Some(check_shell_args),
-        },
-    );
-
+    AnnotationSchema {
+        name: reify_types::SHELL_ANNOTATION,
+        label: "@shell",
+        valid_contexts: &["structure", "occurrence"],
+        args: &[],
+        flag_set: None,
+        on_extra: ExtraArgsPolicy::WarnIgnore,
+        arg_check: Some(check_shell_args),
+    },
     // @solid — valid on structure, occurrence (bare marker — no args)
-    map.insert(
-        reify_types::SOLID_ANNOTATION,
-        AnnotationSchema {
-            name: reify_types::SOLID_ANNOTATION,
-            label: "@solid",
-            valid_contexts: &["structure", "occurrence"],
-            args: &[],
-            flag_set: None,
-            // WarnIgnore matches the Warning severity emitted by check_solid_args.
-            // Error is reserved for a future phase that intentionally upgrades severity.
-            on_extra: ExtraArgsPolicy::WarnIgnore,
-            arg_check: Some(check_solid_args),
-        },
-    );
-
-    map
-}
+    AnnotationSchema {
+        name: reify_types::SOLID_ANNOTATION,
+        label: "@solid",
+        valid_contexts: &["structure", "occurrence"],
+        args: &[],
+        flag_set: None,
+        // WarnIgnore matches the Warning severity emitted by check_solid_args.
+        // Error is reserved for a future phase that intentionally upgrades severity.
+        on_extra: ExtraArgsPolicy::WarnIgnore,
+        arg_check: Some(check_solid_args),
+    },
+];
 
 /// Look up the schema for a known annotation by its canonical name.
 ///
 /// Returns `None` for names that are not registered (i.e. unknown annotations).
+/// Linear scan over the 6-entry `SCHEMAS` const slice — faster than HashMap
+/// at this scale (no hashing, no OnceLock barrier).
 pub(crate) fn lookup_schema(name: &str) -> Option<&'static AnnotationSchema> {
-    ANNOTATION_REGISTRY.get_or_init(build_registry).get(name)
+    SCHEMAS.iter().find(|s| s.name == name)
 }
 
 // ─── Per-annotation arg-shape helpers ────────────────────────────────────────
