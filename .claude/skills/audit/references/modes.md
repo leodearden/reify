@@ -16,12 +16,10 @@ Five invocation modes. All modes write a per-run JSON artifact; `--format markdo
 # Materialize TaskMetadata snapshot from fused-memory (required before invoking reify-audit).
 SNAPSHOT=$(mktemp /tmp/reify-audit-snapshot-XXXXXX.json)
 trap 'rm -f "$SNAPSHOT"' EXIT
-mcp__fused-memory__get_tasks project_root="$REPO_ROOT" | jq '
-  .tasks | map({task_id:(.id|tostring), status, files:(.metadata.files//[]),
-    done_provenance:(.metadata.done_provenance//null), title,
-    prd:(.metadata.prd//null), consumer_ref:(.metadata.consumer_ref//null),
-    audit_foundation:(.metadata.audit_foundation//null), done_at:null})
-' > "$SNAPSHOT"
+# Filter derives done_at from updatedAt for done tasks (required for P1).
+# Single point of truth shared with the systemd pre-done hook wrapper.
+mcp__fused-memory__get_tasks project_root="$REPO_ROOT" \
+  | jq -f "$REPO_ROOT/scripts/reify-audit-snapshot-filter.jq" > "$SNAPSHOT"
 
 reify-audit \
   --since <14d-ago-iso> \
@@ -52,12 +50,10 @@ reify-audit \
 # Materialize TaskMetadata snapshot from fused-memory (required before invoking reify-audit).
 SNAPSHOT=$(mktemp /tmp/reify-audit-snapshot-XXXXXX.json)
 trap 'rm -f "$SNAPSHOT"' EXIT
-mcp__fused-memory__get_tasks project_root="$REPO_ROOT" | jq '
-  .tasks | map({task_id:(.id|tostring), status, files:(.metadata.files//[]),
-    done_provenance:(.metadata.done_provenance//null), title,
-    prd:(.metadata.prd//null), consumer_ref:(.metadata.consumer_ref//null),
-    audit_foundation:(.metadata.audit_foundation//null), done_at:null})
-' > "$SNAPSHOT"
+# Filter derives done_at from updatedAt for done tasks (required for P1).
+# Single point of truth shared with the systemd pre-done hook wrapper.
+mcp__fused-memory__get_tasks project_root="$REPO_ROOT" \
+  | jq -f "$REPO_ROOT/scripts/reify-audit-snapshot-filter.jq" > "$SNAPSHOT"
 
 reify-audit \
   --task <id> \
@@ -90,12 +86,10 @@ reify-audit \
 # Materialize TaskMetadata snapshot from fused-memory (required before invoking reify-audit).
 SNAPSHOT=$(mktemp /tmp/reify-audit-snapshot-XXXXXX.json)
 trap 'rm -f "$SNAPSHOT"' EXIT
-mcp__fused-memory__get_tasks project_root="$REPO_ROOT" | jq '
-  .tasks | map({task_id:(.id|tostring), status, files:(.metadata.files//[]),
-    done_provenance:(.metadata.done_provenance//null), title,
-    prd:(.metadata.prd//null), consumer_ref:(.metadata.consumer_ref//null),
-    audit_foundation:(.metadata.audit_foundation//null), done_at:null})
-' > "$SNAPSHOT"
+# Filter derives done_at from updatedAt for done tasks (required for P1).
+# Single point of truth shared with the systemd pre-done hook wrapper.
+mcp__fused-memory__get_tasks project_root="$REPO_ROOT" \
+  | jq -f "$REPO_ROOT/scripts/reify-audit-snapshot-filter.jq" > "$SNAPSHOT"
 
 reify-audit \
   --since <iso-date> \
@@ -126,12 +120,10 @@ reify-audit \
 # Materialize TaskMetadata snapshot from fused-memory (required before invoking reify-audit).
 SNAPSHOT=$(mktemp /tmp/reify-audit-snapshot-XXXXXX.json)
 trap 'rm -f "$SNAPSHOT"' EXIT
-mcp__fused-memory__get_tasks project_root="$REPO_ROOT" | jq '
-  .tasks | map({task_id:(.id|tostring), status, files:(.metadata.files//[]),
-    done_provenance:(.metadata.done_provenance//null), title,
-    prd:(.metadata.prd//null), consumer_ref:(.metadata.consumer_ref//null),
-    audit_foundation:(.metadata.audit_foundation//null), done_at:null})
-' > "$SNAPSHOT"
+# Filter derives done_at from updatedAt for done tasks (required for P1).
+# Single point of truth shared with the systemd pre-done hook wrapper.
+mcp__fused-memory__get_tasks project_root="$REPO_ROOT" \
+  | jq -f "$REPO_ROOT/scripts/reify-audit-snapshot-filter.jq" > "$SNAPSHOT"
 
 reify-audit \
   --since <14d-ago-iso> \

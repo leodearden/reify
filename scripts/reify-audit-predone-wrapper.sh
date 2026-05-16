@@ -16,6 +16,10 @@
 # fused-memory MCP (http://localhost:8002/mcp) into a tempfile, then execs
 # reify-audit with --tasks-file <tempfile>. The snapshot is cleaned up on EXIT.
 #
+# The JSON-RPC response is mapped to TaskMetadata objects via the canonical
+# sidecar filter: scripts/reify-audit-snapshot-filter.jq
+# (single point of truth shared with the /audit skill references).
+#
 # DESIGN REFERENCE
 # ----------------
 # docs/architecture-audit/f-infra-design.md §11 (D-1 row), §11.1
@@ -120,22 +124,8 @@ if ! curl -sf \
     -H "Content-Type: application/json" \
     -H "Accept: application/json, text/event-stream" \
     -d "$get_tasks_payload" 2>/dev/null \
-    | jq -r '
-        .result.content[0].text
-        | fromjson
-        | .tasks
-        | map({
-            task_id:         (.id | tostring),
-            status:          .status,
-            files:           (.metadata.files // []),
-            done_provenance: (.metadata.done_provenance // null),
-            title:           .title,
-            prd:             (.metadata.prd // null),
-            consumer_ref:    (.metadata.consumer_ref // null),
-            audit_foundation:(.metadata.audit_foundation // null),
-            done_at:         null
-          })
-    ' > "$SNAPSHOT" 2>/dev/null; then
+    | jq -r -f "$REPO_ROOT/scripts/reify-audit-snapshot-filter.jq" \
+    > "$SNAPSHOT" 2>/dev/null; then
     echo "reify-audit-predone-wrapper.sh: error: failed to fetch tasks from fused-memory MCP at $MCP_URL" >&2
     echo "  Check: systemctl --user status fused-memory" >&2
     echo "  Snapshot path (may be empty): $SNAPSHOT" >&2
@@ -147,6 +137,15 @@ if ! jq -e 'type == "array"' "$SNAPSHOT" >/dev/null 2>&1; then
     echo "reify-audit-predone-wrapper.sh: error: fused-memory get_tasks returned unexpected shape (not a JSON array)" >&2
     echo "  Snapshot: $(cat "$SNAPSHOT" 2>/dev/null | head -5)" >&2
     exit 125
+fi
+
+# Post-snapshot sanity: if any done task lacks done_at, P1 will silently
+# skip it. Warn loudly to stderr (but don't block — legacy fused-memory
+# rows may legitimately lack updatedAt). See task 3731 review feedback
+# and docs/architecture-audit/f-infra-design.md §11.2.
+missing_done_at=$(jq -r '[ .[] | select(.status == "done" and .done_at == null) | .task_id ] | join(",")' "$SNAPSHOT")
+if [ -n "$missing_done_at" ]; then
+    echo "reify-audit-predone-wrapper.sh: WARNING: done tasks with no done_at (P1 will skip them): $missing_done_at" >&2
 fi
 
 # ── Invoke reify-audit with explicit --tasks-file ────────────────────────────

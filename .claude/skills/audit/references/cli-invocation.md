@@ -36,16 +36,14 @@ The `reify-audit` binary emits **JSON on stderr** and a human-readable summary o
 
 ```bash
 # Step 1: Materialize a TaskMetadata JSON snapshot from fused-memory.
-# reify-audit requires an explicit --tasks-file; there is no default.
+# The filter lives in scripts/reify-audit-snapshot-filter.jq (single
+# point of truth, shared with the systemd pre-done hook wrapper).
+# It derives done_at from updatedAt for done tasks (required for P1).
 SNAPSHOT=$(mktemp /tmp/reify-audit-snapshot-XXXXXX.json)
 trap 'rm -f "$SNAPSHOT" "$TMPFILE"' EXIT
 
-mcp__fused-memory__get_tasks project_root="$REPO_ROOT" | jq '
-  .tasks | map({task_id:(.id|tostring), status, files:(.metadata.files//[]),
-    done_provenance:(.metadata.done_provenance//null), title,
-    prd:(.metadata.prd//null), consumer_ref:(.metadata.consumer_ref//null),
-    audit_foundation:(.metadata.audit_foundation//null), done_at:null})
-' > "$SNAPSHOT"
+mcp__fused-memory__get_tasks project_root="$REPO_ROOT" \
+  | jq -f "$REPO_ROOT/scripts/reify-audit-snapshot-filter.jq" > "$SNAPSHOT"
 
 # Step 2: Invoke reify-audit with the snapshot as --tasks-file.
 TMPFILE=$(mktemp /tmp/reify-audit-XXXXXX.json)
