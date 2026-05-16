@@ -439,22 +439,41 @@ fn auto_type_expr_display_free() {
 // prevents the diagnostic from covering well-formed sibling arguments.
 
 /// When a nested `type_arg_list` contains a malformed interior (e.g. `Vec<,>`)
-/// alongside a well-formed sibling (e.g. `String`), the diagnostic span emitted
-/// by `lower_type_args_from_node` must lie strictly inside the malformed
-/// portion and must NOT extend into the well-formed sibling.
+/// alongside a well-formed sibling (e.g. `String`), the "syntax error in type
+/// argument list" diagnostics from `lower_type_args_from_node` must satisfy
+/// two invariants: ALL must end before the well-formed sibling; AT LEAST ONE
+/// must lie strictly within the malformed region.
 ///
 /// Fixture: `fn f() -> Map<Vec<,>, String> { 0 }`.
 /// Malformed portion: `Vec<,>` — the inner `type_arg_list` `<,>` contains a
 /// bare comma which tree-sitter surfaces as an ERROR/MISSING descendant.
 /// Well-formed sibling: `String`.
 ///
-/// RED state (before step-2): `lower_type_args_from_node` emits
-/// `self.span(child)` for the whole outer `type_arg_list` `<Vec<,>, String>`,
-/// whose end byte extends past `String` — the narrow-span assertion fails.
+/// # Two-assertion structure (and why a single `.any()` is not enough)
 ///
-/// GREEN state (after step-2): `first_error_or_missing_descendant` finds the
-/// first ERROR/MISSING node inside the malformed portion and uses its (narrow)
-/// span — the assertion passes.
+/// The inner recursive `lower_type_args_from_node` call on the inner `Vec<,>`
+/// `parameterized_type` ALSO emits its own narrow "syntax error in type
+/// argument list" diagnostic — regardless of what the OUTER call does.  So a
+/// single unfiltered `.any()` check would be trivially satisfied by the inner
+/// call's diagnostic even on the pre-fix code path (where the outer call
+/// still emits a wide span extending past `String`), making it useless as a
+/// regression guard.
+///
+/// **(a) Regression-protection (`.all()`):** every "syntax error in type
+/// argument list" diagnostic must end strictly before `String`'s byte offset.
+/// Without step-2, the outer `lower_type_args_from_node` call emits
+/// `self.span(child)` for the whole `<Vec<,>, String>` type_arg_list — whose
+/// end byte lies PAST `String` — so this assertion fails.  After step-2,
+/// `first_error_or_missing_descendant` narrows the outer span to the first
+/// ERROR/MISSING descendant, ending before `String`, and the assertion passes.
+///
+/// **(b) Positive-presence (`.any()`):** at least one such diagnostic starts
+/// at or after `Vec<`'s byte offset AND ends before `String`'s byte offset.
+/// Ensures the type-arg-list error is actually emitted and not swallowed.
+///
+/// Both assertions filter by `message == "syntax error in type argument list"`
+/// so unrelated parser-recovery diagnostics with wider spans don't trigger
+/// false failures.
 #[test]
 fn type_arg_list_error_span_narrows_to_first_error_descendant() {
     let source = "fn f() -> Map<Vec<,>, String> { 0 }";
@@ -473,31 +492,54 @@ fn type_arg_list_error_span_narrows_to_first_error_descendant() {
     let well_formed_start = source
         .find("String")
         .expect("fixture must contain 'String'") as u32;
-    // At least one diagnostic must be *strictly within* the malformed `Vec<,>`
-    // region — starting at or after `malformed_start` AND ending before the
-    // well-formed `String` sibling.
-    //
-    // The two-sided check prevents false passes from a degenerate span that
-    // merely happens to end before `String` (e.g. a span anchored at byte 0
-    // that covers the whole preamble) or one that starts after `Vec<` but
-    // extends into `String`.
-    //
-    // Before step-2: `lower_type_args_from_node` emits `self.span(child)` for
-    // the whole `<Vec<,>, String>` type_arg_list — end byte lies past `String`,
-    // so the assertion fails.
-    //
-    // After step-2: `first_error_or_missing_descendant` finds the first
-    // ERROR/MISSING descendant inside `Vec<,>` — span is confined to that
-    // region, satisfying both bounds.
-    let has_narrow_span = m.errors.iter().any(|e| {
-        e.span.start >= malformed_start && e.span.end <= well_formed_start
-    });
+    // Filter to type-arg-list diagnostics only.  Unrelated parser-recovery
+    // errors may have wider spans for legitimate reasons; we don't want a
+    // future parser-recovery improvement to break this span-narrowing test.
+    let type_arg_errors: Vec<_> = m
+        .errors
+        .iter()
+        .filter(|e| e.message == "syntax error in type argument list")
+        .collect();
+    assert!(
+        !type_arg_errors.is_empty(),
+        "expected at least one 'syntax error in type argument list' diagnostic; \
+         got module errors: {:?}",
+        m.errors
+            .iter()
+            .map(|e| (&e.message, e.span.start, e.span.end))
+            .collect::<Vec<_>>(),
+    );
+    // (a) Regression-protection: ALL type-arg-list diagnostics must end before
+    // the well-formed `String` sibling.  Without step-2 (first_error_or_missing_descendant),
+    // the outer `lower_type_args_from_node` call emits self.span(child) for the
+    // whole `<Vec<,>, String>` type_arg_list — whose end byte lies PAST `String`
+    // — so this assertion fails.  After step-2, every span ends before `String`.
+    let all_end_before_sibling = type_arg_errors
+        .iter()
+        .all(|e| e.span.end <= well_formed_start);
+    assert!(
+        all_end_before_sibling,
+        "expected ALL 'syntax error in type argument list' diagnostics to end \
+         before `String` (byte {well_formed_start}); at least one extends into \
+         the well-formed sibling — the outer type_arg_list span was not narrowed; \
+         got type-arg errors: {:?}",
+        type_arg_errors
+            .iter()
+            .map(|e| (&e.message, e.span.start, e.span.end))
+            .collect::<Vec<_>>(),
+    );
+    // (b) Positive-presence: at least one type-arg-list diagnostic must lie
+    // strictly within the malformed `Vec<,>` region — starting at or after
+    // `malformed_start` AND ending before `well_formed_start`.
+    let has_narrow_span = type_arg_errors
+        .iter()
+        .any(|e| e.span.start >= malformed_start && e.span.end <= well_formed_start);
     assert!(
         has_narrow_span,
-        "expected at least one diagnostic span to lie within the malformed \
-         `Vec<,>` region (bytes {malformed_start}..{well_formed_start}); \
-         got errors: {:?}",
-        m.errors
+        "expected at least one 'syntax error in type argument list' span to lie \
+         within the malformed `Vec<,>` region (bytes {malformed_start}..{well_formed_start}); \
+         got type-arg errors: {:?}",
+        type_arg_errors
             .iter()
             .map(|e| (&e.message, e.span.start, e.span.end))
             .collect::<Vec<_>>(),
