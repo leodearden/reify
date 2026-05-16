@@ -188,6 +188,72 @@ pub(crate) fn lookup_schema(name: &str) -> Option<&'static AnnotationSchema> {
     ANNOTATION_REGISTRY.get_or_init(build_registry).get(name)
 }
 
+// ─── Per-annotation arg-shape helpers ────────────────────────────────────────
+
+/// Check @optimized arg shape on contexts where the target string is consumed
+/// (`constraint_def` and `function`). Mirrors annotations.rs:114-133 verbatim.
+fn check_optimized_args(ann: &Annotation, context: &str, diagnostics: &mut Vec<Diagnostic>) {
+    if matches!(context, "constraint_def" | "function") && !super::is_valid_optimized(ann) {
+        diagnostics.push(
+            Diagnostic::warning(
+                "annotation @optimized requires a string literal target, \
+                 e.g. @optimized(\"kernel::foo\")"
+                    .to_string(),
+            )
+            .with_label(DiagnosticLabel::new(ann.span, "@optimized missing target")),
+        );
+    }
+}
+
+/// Check @shell arg shape. Mirrors annotations.rs:153-188 verbatim.
+///
+/// Only called when context is valid (structure/occurrence); the caller's
+/// `else` branch enforces the short-circuit so this never fires on wrong-context.
+fn check_shell_args(ann: &Annotation, diagnostics: &mut Vec<Diagnostic>) {
+    match ann.args.as_slice() {
+        [] => {} // bare @shell — defer thickness to medial analysis.
+        [
+            reify_types::AnnotationArg::Int(_)
+            | reify_types::AnnotationArg::Real(_),
+        ] => {}
+        [_] => {
+            diagnostics.push(
+                Diagnostic::warning(
+                    "@shell thickness argument must be a numeric literal, \
+                     e.g. @shell(0.5)"
+                        .to_string(),
+                )
+                .with_label(DiagnosticLabel::new(ann.span, "non-numeric thickness")),
+            );
+        }
+        _ => {
+            diagnostics.push(
+                Diagnostic::warning(
+                    "@shell accepts at most one argument (thickness); \
+                     extra arguments will be ignored"
+                        .to_string(),
+                )
+                .with_label(DiagnosticLabel::new(ann.span, "too many arguments")),
+            );
+        }
+    }
+}
+
+/// Check @solid arg shape. Mirrors annotations.rs:198-205 verbatim.
+///
+/// Only called when context is valid (structure/occurrence); the caller's
+/// `else` branch enforces the short-circuit so this never fires on wrong-context.
+fn check_solid_args(ann: &Annotation, diagnostics: &mut Vec<Diagnostic>) {
+    if !ann.args.is_empty() {
+        diagnostics.push(
+            Diagnostic::warning(
+                "@solid takes no arguments; force-tet is unconditional".to_string(),
+            )
+            .with_label(DiagnosticLabel::new(ann.span, "@solid takes no arguments")),
+        );
+    }
+}
+
 // ─── Dispatcher ──────────────────────────────────────────────────────────────
 
 /// Validate a slice of compiled annotations against the schema registry.
@@ -228,8 +294,23 @@ pub(crate) fn validate_via_schema(
                             format!("@{}", schema.name),
                         )),
                     );
+                } else {
+                    // Valid context — dispatch into per-annotation arg-shape helpers.
+                    // The `else` enforces the short-circuit: arg-shape warnings must
+                    // not fire when the context is wrong (mirrors `else if` in legacy arms).
+                    match schema.name {
+                        reify_types::OPTIMIZED_ANNOTATION => {
+                            check_optimized_args(ann, context, diagnostics);
+                        }
+                        reify_types::SHELL_ANNOTATION => {
+                            check_shell_args(ann, diagnostics);
+                        }
+                        reify_types::SOLID_ANNOTATION => {
+                            check_solid_args(ann, diagnostics);
+                        }
+                        _ => {}
+                    }
                 }
-                // Arg-shape dispatch wired in step-6.
             }
         }
     }
