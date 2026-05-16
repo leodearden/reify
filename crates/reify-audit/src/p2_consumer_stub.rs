@@ -97,6 +97,20 @@ fn title_signals_stub(title: &str) -> bool {
 pub fn check(ctx: &AuditContext) -> Vec<Finding> {
     let mut findings = Vec::new();
 
+    // NOTE: unlike `p5_phantom_done::check_task` (which filters `meta.status != "done"`
+    //   to skip non-`done` tasks), P2 deliberately iterates EVERY task regardless of
+    //   status. Reason: the D-1 pre-done hook calls into P2 *before* the orchestrator
+    //   flips `status` from `in_progress` to `done`, so a `status != "done"` filter
+    //   would suppress every finding on the primary call path (`check_pre_done`-style
+    //   single-task narrowing via `target_task_id`).
+    //
+    //   Constraint on periodic-sweep callers (e.g. T-4 CLI in `--mode sweep`): they
+    //   MUST narrow `ctx.task_metadata` to closing-window tasks themselves before
+    //   calling `check`. Passing the full backlog will surface every in-progress
+    //   task carrying a legitimate WIP `TODO(... pending)` as a finding — the marker
+    //   is what P2 looks for, and there is no further filter inside this function.
+    //
+    //   Reference: `docs/architecture-audit/f-infra-design.md` §5 P2 and §10.
     for meta in ctx.task_metadata.values() {
         // Optional single-task narrowing (mirrors p5_phantom_done::check_with_target).
         if let Some(target) = ctx.target_task_id.as_deref()
