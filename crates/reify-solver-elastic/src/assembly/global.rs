@@ -2531,6 +2531,96 @@ mod tests {
         );
     }
 
+    /// `Display` for `OrphanDofsSummary` in the truncated regime
+    /// (`examples.len() < count`) lists all stored entries verbatim — no
+    /// `...` ellipsis — followed by a trailing parenthetical.
+    ///
+    /// Pins:
+    /// 1. Single line: `!s.contains('\n')`.
+    /// 2. Names the true (untruncated) count: `s.contains("count=24")`.
+    /// 3. No `...` ellipsis anywhere in the output — the formatter emits all
+    ///    stored entries verbatim and never inserts an ellipsis (regression guard
+    ///    against any future "fix" of the formatter to match the buggy rustdoc
+    ///    example that implied an ellipsis inside the brackets).
+    /// 4. Every one of the 16 stored `(node, axis)` pairs appears literally as
+    ///    a substring in the formatted output.
+    /// 5. Trailing parenthetical: `s.ends_with("] (first 16 of 24)")`.
+    #[test]
+    fn orphan_dofs_summary_display_truncated_form_lists_all_stored_examples_verbatim() {
+        // Truncating fixture: shell on [0,9,10] + two P1 tets on [1,2,3,4] and
+        // [5,6,7,8], n_nodes=11. D=6 (shell). Tet-only nodes {1..=8}: 8 nodes ×
+        // 3 orphan axes {3,4,5} = 24 total, capped to MAX_EXAMPLES=16 stored.
+        let mat = dimensionless_steel_like();
+        let k_e_tet1 = element_stiffness_p1(&UNIT_TET_P1, &mat);
+        let k_e_tet2 = element_stiffness_p1(&UNIT_TET_P1, &mat);
+        let k_e_shell = shell_element_stiffness(&UNIT_TRI, SHELL_T, &mat);
+
+        let n_nodes = 11;
+        let conn_shell = [0usize, 9, 10];
+        let conn_tet1 = [1usize, 2, 3, 4];
+        let conn_tet2 = [5usize, 6, 7, 8];
+        let elements = [
+            AssemblyElement {
+                id: 0,
+                connectivity: &conn_shell,
+                k_e: &k_e_shell,
+            },
+            AssemblyElement {
+                id: 1,
+                connectivity: &conn_tet1,
+                k_e: &k_e_tet1,
+            },
+            AssemblyElement {
+                id: 2,
+                connectivity: &conn_tet2,
+                k_e: &k_e_tet2,
+            },
+        ];
+        let summary = detect_orphan_dofs(n_nodes, &elements);
+        assert_eq!(summary.count, 24, "fixture must produce 24 orphans");
+        assert_eq!(summary.examples.len(), 16, "fixture must be truncated to 16");
+
+        let s = format!("{}", summary);
+
+        // Pin 1: single line.
+        assert!(!s.contains('\n'), "Display must not contain newlines; got: {s:?}");
+
+        // Pin 2: names the true (untruncated) count.
+        assert!(s.contains("count=24"), "Display must contain 'count=24'; got: {s:?}");
+
+        // Pin 3: no `...` ellipsis — all stored entries are emitted verbatim.
+        assert!(
+            !s.contains("..."),
+            "Display must not contain '...' — entries are verbatim, no ellipsis; got: {s:?}",
+        );
+
+        // Pin 4: every one of the 16 stored (node, axis) pairs appears literally.
+        // First 16 sorted pairs: nodes 1..=5 fully (3 axes each = 15 entries)
+        // + node 6 axis 3 (16th entry).
+        let expected_first_16: Vec<(usize, usize)> = (1usize..=6)
+            .flat_map(|n| {
+                if n < 6 {
+                    (3usize..6).map(|a| (n, a)).collect::<Vec<_>>()
+                } else {
+                    vec![(n, 3)]
+                }
+            })
+            .collect();
+        for (node, axis) in &expected_first_16 {
+            let pair = format!("({node}, {axis})");
+            assert!(
+                s.contains(&pair),
+                "Display must contain '{pair}'; got: {s:?}",
+            );
+        }
+
+        // Pin 5: trailing parenthetical indicates truncation with exact counts.
+        assert!(
+            s.ends_with("] (first 16 of 24)"),
+            "Display must end with '] (first 16 of 24)'; got: {s:?}",
+        );
+    }
+
     /// Mesh with > MAX_EXAMPLES orphan pairs → count is the true total but
     /// examples is capped at MAX_EXAMPLES.
     ///
