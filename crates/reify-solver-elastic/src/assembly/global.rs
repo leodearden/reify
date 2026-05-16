@@ -2433,11 +2433,10 @@ mod tests {
         // weakening the loop below.
         assert!(
             summary.examples.len() == summary.count,
-            "fixture has more orphans ({}) than MAX_EXAMPLES ({}); \
-             the consistency loop below only covers summary.examples — \
+            "examples truncated: stored {} of {} total orphans — \
              either raise MAX_EXAMPLES or use a smaller fixture",
-            summary.count,
             summary.examples.len(),
+            summary.count,
         );
 
         // For every reported orphan (node, α) the entire DOF row and column
