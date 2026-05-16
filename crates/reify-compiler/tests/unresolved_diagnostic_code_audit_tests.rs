@@ -36,6 +36,32 @@
 
 use reify_types::{DiagnosticCode, ModulePath};
 
+/// Asserts that `compiled` contains at least one diagnostic whose `code` equals
+/// `expected_code` AND whose `message` starts with `expected_message_prefix`.
+///
+/// `site_label` is a human-readable identifier (e.g. `"functions.rs:122 — return type"`)
+/// included in the panic message when the assertion fails, making it easy to trace
+/// which emit site the failing test was targeting.
+fn assert_diagnostic_with_code_and_prefix(
+    compiled: &reify_compiler::CompiledModule,
+    expected_code: DiagnosticCode,
+    expected_message_prefix: &str,
+    site_label: &str,
+) {
+    assert!(
+        compiled
+            .diagnostics
+            .iter()
+            .any(|d| d.code == Some(expected_code) && d.message.starts_with(expected_message_prefix)),
+        "expected a diagnostic with code {:?} and message starting with {:?} \
+         at site '{}', but got: {:#?}",
+        expected_code,
+        expected_message_prefix,
+        site_label,
+        compiled.diagnostics
+    );
+}
+
 // ── UnresolvedType emit-site tests ──────────────────────────────────────────
 
 /// `functions.rs:122` — function return type fails to resolve.
