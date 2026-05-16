@@ -1540,6 +1540,98 @@ fn auto_resolve_parameter_value_nan_sentinel_serializes_value_field_as_null() {
     );
 }
 
+// --- MeshData new shell-extract fields (Task 3597) ---
+
+/// Serializing a MeshData with `element_kind: Some(vec![0, 1])` must produce
+/// a JSON field `element_kind` containing the byte values `[0, 1]`.
+///
+/// Fails to compile until `element_kind: Option<Vec<u8>>` is added to `MeshData`.
+#[test]
+fn mesh_data_element_kind_some_serializes_with_field() {
+    // 3 vertices, 2 faces (6 indices) → face_count = 2
+    let mesh = MeshData {
+        entity_path: "Bracket.shell".to_string(),
+        vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        indices: vec![0, 1, 2, 0, 1, 2],
+        normals: None,
+        scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: None,
+        element_kind: Some(vec![0u8, 1u8]),
+        region_tags: None,
+        vector_channels: std::collections::HashMap::new(),
+    };
+    let v = serde_json::to_value(&mesh).unwrap();
+    let ek = v.get("element_kind").expect("element_kind must be present in JSON");
+    assert!(ek.is_array(), "element_kind must serialize as a JSON array");
+    let arr = ek.as_array().unwrap();
+    assert_eq!(arr.len(), 2, "element_kind array must have 2 elements");
+    assert_eq!(arr[0], serde_json::json!(0), "element_kind[0] must be 0");
+    assert_eq!(arr[1], serde_json::json!(1), "element_kind[1] must be 1");
+}
+
+/// Serializing a MeshData with `region_tags: Some(vec![100, 200])` must produce
+/// a JSON field `region_tags` containing the u32 values `[100, 200]`.
+///
+/// Fails to compile until `region_tags: Option<Vec<u32>>` is added to `MeshData`.
+#[test]
+fn mesh_data_region_tags_some_serializes_with_field() {
+    // 3 vertices, 2 faces (6 indices) → face_count = 2
+    let mesh = MeshData {
+        entity_path: "Bracket.shell".to_string(),
+        vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        indices: vec![0, 1, 2, 0, 1, 2],
+        normals: None,
+        scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: None,
+        element_kind: None,
+        region_tags: Some(vec![100u32, 200u32]),
+        vector_channels: std::collections::HashMap::new(),
+    };
+    let v = serde_json::to_value(&mesh).unwrap();
+    let rt = v.get("region_tags").expect("region_tags must be present in JSON");
+    assert!(rt.is_array(), "region_tags must serialize as a JSON array");
+    let arr = rt.as_array().unwrap();
+    assert_eq!(arr.len(), 2, "region_tags array must have 2 elements");
+    assert_eq!(arr[0], serde_json::json!(100), "region_tags[0] must be 100");
+    assert_eq!(arr[1], serde_json::json!(200), "region_tags[1] must be 200");
+}
+
+/// Serializing a MeshData with a populated `vector_channels` entry must produce
+/// a JSON object `vector_channels` containing the channel key and its float values.
+///
+/// Fails to compile until `vector_channels: HashMap<String, Vec<f32>>` is added to `MeshData`.
+#[test]
+fn mesh_data_vector_channels_populated_serializes_with_field() {
+    // 3 vertices, 2 faces (6 indices) → per-face length = 3*2 = 6
+    let mut vc = std::collections::HashMap::new();
+    vc.insert(
+        "shell_normal_per_face".to_string(),
+        vec![0.0f32, 0.0, 1.0, 0.0, 0.0, 1.0],
+    );
+    let mesh = MeshData {
+        entity_path: "Bracket.shell".to_string(),
+        vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        indices: vec![0, 1, 2, 0, 1, 2],
+        normals: None,
+        scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: None,
+        element_kind: None,
+        region_tags: None,
+        vector_channels: vc,
+    };
+    let v = serde_json::to_value(&mesh).unwrap();
+    let vc_json = v.get("vector_channels").expect("vector_channels must be present in JSON");
+    assert!(vc_json.is_object(), "vector_channels must serialize as a JSON object");
+    let ch = vc_json.get("shell_normal_per_face")
+        .expect("shell_normal_per_face key must be present");
+    assert!(ch.is_array(), "vector channel must serialize as a JSON array");
+    assert_eq!(
+        ch.as_array().unwrap().len(),
+        6,
+        "shell_normal_per_face must have 6 elements (3 * face_count=2)"
+    );
+}
+
 /// Positive case: a correct-length scalar_channels entry serializes successfully.
 #[test]
 fn meshdata_accepts_matching_scalar_channel_length() {
