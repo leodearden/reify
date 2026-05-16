@@ -25,8 +25,10 @@ const MAIN_BASE: &str = "main";
 /// # Visibility note
 /// This constant is exposed as `pub` solely to allow the integration test
 /// `p5::tests::runs_db_schema_pin` (a separate compilation unit) to reference
-/// it. It is **not** part of the stable public API of this crate and may be
-/// made `pub(crate)` if the test is ever moved inline.
+/// it. It is **not** part of the stable public API of this crate;
+/// `#[doc(hidden)]` removes it from rendered rustdoc and IDE autocomplete
+/// while keeping it linkable from the separate-crate integration test.
+#[doc(hidden)]
 pub const PRODUCTION_QUERY: &str =
     "SELECT 1 FROM events WHERE task_id = ? AND event_type = 'task_completed' LIMIT 1";
 
