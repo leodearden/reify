@@ -102,95 +102,92 @@ fn node_traits_map_with_node_id_instance_wins_over_kind() {
 // scheduler reaches the assertion site. The assertion firing — or not firing —
 // is the observable signal; the actual node evaluation is incidental.
 //
-// The whole T5 region is gated on `#[cfg(debug_assertions)]` because the only
-// remaining case (T5a) is itself debug-only — the release-mode no-op invariant
-// is pinned more cheaply by `release_mode_no_op_on_empty_registry` in
-// `crates/reify-runtime/src/warm_startable_assert.rs`. Gating the region
-// avoids unused-import / dead-code warnings in `cargo test --release` builds.
+// The whole T5 region is gated on `#[cfg(debug_assertions)]` (one gate on the
+// `t5` submodule, not six per-item gates) because the only remaining case
+// (T5a) is itself debug-only — the release-mode no-op invariant is pinned
+// more cheaply by `release_mode_no_op_on_empty_registry` in
+// `crates/reify-runtime/src/warm_startable_assert.rs`. Module-level gating
+// avoids the per-item-cfg drift hazard (where one item silently drops its
+// cfg and fails to compile in release).
 
 #[cfg(debug_assertions)]
-use std::collections::{HashMap, HashSet};
-#[cfg(debug_assertions)]
-use std::sync::Arc;
+mod t5 {
+    use super::*;
 
-#[cfg(debug_assertions)]
-use reify_eval::cache::EvalOutcome;
-#[cfg(debug_assertions)]
-use reify_eval::deps::DependencyTrace;
-#[cfg(debug_assertions)]
-use reify_runtime::concurrent::{
-    AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler, SchedulerConfig,
-};
-#[cfg(debug_assertions)]
-use reify_types::WarmStartableRegistry;
+    use std::collections::{HashMap, HashSet};
+    use std::sync::Arc;
 
-/// Minimal no-op evaluator: every node evaluates to `Changed`. The T5 cases
-/// don't care about the evaluation result — they care only whether the
-/// pre-spawn assertion fires.
-#[cfg(debug_assertions)]
-struct NoopEvaluator;
-
-#[cfg(debug_assertions)]
-impl AsyncNodeEvaluator for NoopEvaluator {
-    async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
-        EvalOutcome::Changed
-    }
-}
-
-/// Common scheduler-driver harness for T5 cases.
-///
-/// Builds a single-node eval set (the registry assertion fires after the
-/// empty-set short-circuit per `execute_with_config`) with the given
-/// fixture registry attached to the config, then awaits the scheduler.
-#[cfg(debug_assertions)]
-async fn drive_scheduler_with_registry(registry: WarmStartableRegistry) {
-    // Single Compute node, no upstream reads — dirty by safety default.
-    let node = compute_node(0);
-    let eval_set = vec![node.clone()];
-    let mut traces = HashMap::new();
-    traces.insert(node, DependencyTrace::default());
-
-    let config = SchedulerConfig {
-        warm_startable_registry: Some(registry),
-        ..SchedulerConfig::default()
+    use reify_eval::cache::EvalOutcome;
+    use reify_eval::deps::DependencyTrace;
+    use reify_runtime::concurrent::{
+        AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler, SchedulerConfig,
     };
+    use reify_types::WarmStartableRegistry;
 
-    let cancel = CancellationToken::new();
-    let changed_cells = HashSet::new();
-    let scheduler = ConcurrentScheduler;
-    let evaluator = Arc::new(NoopEvaluator);
+    /// Minimal no-op evaluator: every node evaluates to `Changed`. The T5 cases
+    /// don't care about the evaluation result — they care only whether the
+    /// pre-spawn assertion fires.
+    struct NoopEvaluator;
 
-    // The assertion fires synchronously in `execute_with_config` before any
-    // spawn — `.await` is required because the function is async even though
-    // the panic happens pre-spawn in debug builds.
-    let _ = scheduler
-        .execute_with_config(eval_set, evaluator, &traces, &cancel, &changed_cells, config)
-        .await;
-}
+    impl AsyncNodeEvaluator for NoopEvaluator {
+        async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
+            EvalOutcome::Changed
+        }
+    }
 
-/// T5a — declared-without-registered (debug): an empty `WarmStartableRegistry`
-/// trips the bidirectional assertion because Realization / Resolution / Compute
-/// all declare `WARM_STARTABLE` via `default_traits()` but no producer
-/// registered presence. PRD §5 B5 / I-3 (M-013 fix).
-///
-/// This is the single T5 wiring-pin case: it demonstrates that
-/// `execute_with_config` reaches the assertion site. The opposite
-/// (registered-without-declared) direction of the coextension is covered by
-/// the runtime-internal unit test `extra_value_panics_registered_without_declared`
-/// in `crates/reify-runtime/src/warm_startable_assert.rs`; pinning it a
-/// second time here would add a redundant tokio-runtime + cyclic dev-dep
-/// without strengthening the observation.
-///
-/// The release-mode no-op invariant (empty registry compiles to no-op under
-/// `cfg(not(debug_assertions))`) is covered by
-/// `release_mode_no_op_on_empty_registry` in
-/// `crates/reify-runtime/src/warm_startable_assert.rs`; a parallel `T5c` case
-/// here would duplicate that observation at the higher cost of a tokio runtime
-/// and a cyclic dev-dep without strengthening it.
-#[cfg(debug_assertions)]
-#[tokio::test]
-#[should_panic(expected = "WARM_STARTABLE")]
-async fn t5a_empty_registry_panics_in_debug() {
-    let empty = WarmStartableRegistry::new();
-    drive_scheduler_with_registry(empty).await;
+    /// Common scheduler-driver harness for T5 cases.
+    ///
+    /// Builds a single-node eval set (the registry assertion fires after the
+    /// empty-set short-circuit per `execute_with_config`) with the given
+    /// fixture registry attached to the config, then awaits the scheduler.
+    async fn drive_scheduler_with_registry(registry: WarmStartableRegistry) {
+        // Single Compute node, no upstream reads — dirty by safety default.
+        let node = compute_node(0);
+        let eval_set = vec![node.clone()];
+        let mut traces = HashMap::new();
+        traces.insert(node, DependencyTrace::default());
+
+        let config = SchedulerConfig {
+            warm_startable_registry: Some(registry),
+            ..SchedulerConfig::default()
+        };
+
+        let cancel = CancellationToken::new();
+        let changed_cells = HashSet::new();
+        let scheduler = ConcurrentScheduler;
+        let evaluator = Arc::new(NoopEvaluator);
+
+        // The assertion fires synchronously in `execute_with_config` before any
+        // spawn — `.await` is required because the function is async even though
+        // the panic happens pre-spawn in debug builds.
+        let _ = scheduler
+            .execute_with_config(eval_set, evaluator, &traces, &cancel, &changed_cells, config)
+            .await;
+    }
+
+    /// T5a — declared-without-registered (debug): an empty `WarmStartableRegistry`
+    /// trips the bidirectional assertion because Realization / Resolution / Compute
+    /// all declare `WARM_STARTABLE` via `default_traits()` but no producer
+    /// registered presence. PRD §5 B5 / I-3 (M-013 fix).
+    ///
+    /// This is the single T5 wiring-pin case: it demonstrates that
+    /// `execute_with_config` reaches the assertion site. The opposite
+    /// (registered-without-declared) direction of the coextension is covered by
+    /// the runtime-internal unit test `extra_value_panics_registered_without_declared`
+    /// in `crates/reify-runtime/src/warm_startable_assert.rs`; pinning it a
+    /// second time here would add a redundant tokio-runtime + cyclic dev-dep
+    /// without strengthening the observation.
+    ///
+    /// The release-mode no-op invariant (empty registry compiles to no-op under
+    /// `cfg(not(debug_assertions))`) is covered by
+    /// `release_mode_no_op_on_empty_registry` in
+    /// `crates/reify-runtime/src/warm_startable_assert.rs`; a parallel `T5c` case
+    /// here would duplicate that observation at the higher cost of a tokio runtime
+    /// and a cyclic dev-dep without strengthening it.
+    #[tokio::test]
+    #[should_panic(expected = "WARM_STARTABLE")]
+    async fn t5a_empty_registry_panics_in_debug() {
+        let empty = WarmStartableRegistry::new();
+        drive_scheduler_with_registry(empty).await;
+    }
 }
