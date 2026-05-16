@@ -540,51 +540,15 @@ fn compile_purpose_reflective_material_params_compiles_as_placeholder() {
     assert_reflective_member_compiles_as_placeholder("material_params");
 }
 
-// ── Amendment (task-2181 review-1): entity-scope StructureRef regression ──────
-
-/// Regression guard: entity-scope `StructureRef` member access must NOT be
-/// silently routed through the purpose-subject branch.
-///
-/// When two structures are compiled together, `param material : Material` in an
-/// entity body registers `material` as `Type::StructureRef("Material")` (because
-/// `Material` is a known structure name).  The purpose-subject branch in
-/// `expr.rs` is gated by `!scope.is_entity_scope`; without that guard,
-/// `material.density > 0` in a structure constraint would silently emit
-/// `ValueRef(entity_name, "density")` — a dangling ref to a non-existent cell —
-/// instead of the correct "member access not yet supported" error.
-#[test]
-fn entity_scope_structureref_member_access_still_errors() {
-    // Two structures in the same compilation unit so `Material` lands in
-    // `structure_names` and `param material : Material` resolves to
-    // `Type::StructureRef("Material")` rather than falling back to Type::Real.
-    let source = r#"
-structure Material {
-    param density : Real = 7850.0
-}
-
-structure Widget {
-    param material : Material = Material(density: 7850.0)
-    constraint material.density > 0
-}
-"#;
-    let module = compile_module_with_diagnostics(source);
-
-    // The "member access not yet supported" diagnostic must still fire.
-    // If the purpose-subject branch misfired, this would be empty.
-    let unsupported: Vec<_> = module
-        .diagnostics
-        .iter()
-        .filter(|d| d.message.contains("member access not yet supported"))
-        .collect();
-    assert!(
-        !unsupported.is_empty(),
-        "expected 'member access not yet supported' for entity-scope StructureRef member \
-         access, but no such diagnostic was emitted.\n\
-         This likely means the purpose-subject branch misfired in entity scope.\n\
-         All diagnostics: {:?}",
-        module.diagnostics
-    );
-}
+// ── Note: the task-2181 regression guard for entity-scope StructureRef member
+// access was removed by task 3540 (SIR-α). The limitation it guarded —
+// `material.density` in a structure constraint erroring with "member access
+// not yet supported" — has been intentionally lifted: the compile-side
+// member-access path now lowers `StructureRef`/`TraitObject` projections to
+// `CompiledExpr::index_access`, and the eval-side IndexAccess arm reads from
+// `Value::StructureInstance.fields`. The positive case (entity-scope
+// `self.<sub>.<field>` chains evaluating through cleanly) is covered by
+// `crates/reify-eval/tests/structure_instance_e2e.rs::nested_compositional_construction_member_access`.
 
 // ── Step 3 (task-2181): regular member access on StructureRef subject ────────
 
