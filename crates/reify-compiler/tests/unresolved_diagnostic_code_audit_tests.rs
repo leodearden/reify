@@ -275,14 +275,11 @@ structure S {
 
     let compiled = reify_compiler::compile(&parsed);
 
-    assert!(
-        compiled
-            .diagnostics
-            .iter()
-            .any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
-        "expected DiagnosticCode::UnresolvedType for unresolved type alias argument \
-         'Bogus' in 'V<Bogus>' (type_resolution.rs:1015-1021), got: {:?}",
-        compiled.diagnostics
+    assert_diagnostic_with_code_and_prefix(
+        &compiled,
+        DiagnosticCode::UnresolvedType,
+        "unresolved type argument",
+        "type_resolution.rs:1016 — type alias argument 'Bogus' for alias 'V'",
     );
 }
 
