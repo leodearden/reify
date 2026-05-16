@@ -7842,11 +7842,13 @@ fn set_parameter_updates_only_last_check_via_commit_check() {
     );
 }
 
-/// Behavioral test for `CoreState::commit_file_path`:
-/// `load_file` must set `file_path` and leave the other five core fields consistent
-/// (compiled and last_check become Some; module_name matches the file stem).
+/// Behavioral test for the five-field atomic commit via `EngineSession::commit_state`:
+/// `load_file` must commit all five core fields atomically — `file_path`, `compiled`,
+/// `last_check`, `module_name`, and the `source_map` entry keyed by the file stem.
+/// Previously `file_path` was a separate `commit_file_path` step; now it is folded
+/// into the single `commit_state` call, making this the post-refactor regression pin.
 #[test]
-fn load_file_updates_only_file_path_via_commit_file_path() {
+fn load_file_commits_file_path_atomically_via_commit_state() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
@@ -7863,7 +7865,7 @@ fn load_file_updates_only_file_path_via_commit_file_path() {
     let tmp_path = dir.path().join("bracket.ri");
     std::fs::write(&tmp_path, bracket_source()).expect("write bracket.ri to tempdir");
 
-    // load_file triggers commit_file_path internally.
+    // load_file commits all five core fields atomically via commit_state.
     session
         .load_file(&tmp_path)
         .expect("load_file should succeed");
@@ -7891,5 +7893,68 @@ fn load_file_updates_only_file_path_via_commit_file_path() {
         core.module_name(),
         Some("bracket"),
         "module_name must be 'bracket' (from file stem) after load_file"
+    );
+
+    // source_map must contain "bracket.ri" — five-field atomic commit pin.
+    // This key is produced by module_key("bracket") and proves commit_state
+    // wrote the source_map as part of the same atomic call that wrote file_path.
+    assert!(
+        core.source_map().contains_key("bracket.ri"),
+        "source_map must contain 'bracket.ri' after load_file (five-field atomic commit pin)"
+    );
+}
+
+/// Regression test for the `None`-preserves-`file_path` contract in `commit_state`:
+/// when `update_source` passes `None` as the `file_path` argument to `commit_state`,
+/// the existing `file_path` must be preserved — NOT cleared to `None`.
+///
+/// This test is RED against the naive `self.file_path = file_path;` implementation
+/// (which would clear `file_path` on every `update_source` call, breaking the
+/// multi-file edit-routing that derives `module_name` and project-root from
+/// `self.core.file_path()` in `update_source`).  It must be GREEN after step-2.
+#[test]
+fn update_source_preserves_file_path_when_commit_state_gets_none() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // Write bracket.ri to a tempdir and load it — file_path becomes Some(tmp_path).
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+    let tmp_path = dir.path().join("bracket.ri");
+    std::fs::write(&tmp_path, bracket_source()).expect("write bracket.ri to tempdir");
+    session
+        .load_file(&tmp_path)
+        .expect("load_file should succeed");
+
+    // Pre-condition: file_path must be Some after load_file.
+    assert_eq!(
+        session.core_state_for_test().file_path(),
+        Some(tmp_path.as_path()),
+        "file_path must be Some(tmp_path) after load_file (pre-condition)"
+    );
+
+    // update_source passes None for file_path to commit_state — must PRESERVE, not clear.
+    let new_source = bracket_source_with_width("120mm");
+    session
+        .update_source(tmp_path.to_str().unwrap(), &new_source)
+        .expect("update_source should succeed");
+
+    // file_path must still be Some(tmp_path) — None-preserves contract.
+    let core = session.core_state_for_test();
+    assert_eq!(
+        core.file_path(),
+        Some(tmp_path.as_path()),
+        "file_path must still be Some(tmp_path) after update_source (None-preserves contract)"
+    );
+
+    // compiled and module_name must remain consistent after update_source.
+    assert!(
+        core.compiled().is_some(),
+        "compiled must still be Some after update_source"
+    );
+    assert_eq!(
+        core.module_name(),
+        Some("bracket"),
+        "module_name must still be 'bracket' after update_source"
     );
 }
