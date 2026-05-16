@@ -2215,11 +2215,20 @@ fn resolve_string_literal_arg(expr: &reify_types::CompiledExpr) -> Option<&str> 
 /// Translate a canonical face/edge label into a `(Role, local_index)` pair for
 /// the `AttributeQuery::role_and_index` field.
 ///
-/// The translation covers the four labels wired by the Cylinder seeder
+/// The translation covers canonical labels wired by the Cylinder seeder
 /// (`seed_primitive_attributes`), making `@face("top")` / `@face("bottom")`
-/// / `@face("start")` / `@face("end")` work against Cylinder and Extrude /
-/// Revolve primitives without requiring a `name = "..."` source annotation on
-/// the face (which is deferred per the PRD).
+/// / `@face("start")` / `@face("end")` / `@face("side")` work against
+/// Cylinder and Extrude / Revolve primitives without requiring a
+/// `name = "..."` source annotation on the face (which is deferred per the
+/// PRD).
+///
+/// **`"side"` note:** `Role::Side` with `local_index = 0` is the entry
+/// seeded for the single lateral face of a Cylinder. For primitives with
+/// multiple side faces (future Boolean / Loft results) this match selects
+/// index 0 only; if the resolver finds multiple `Role::Side` entries it will
+/// return `AmbiguousAfterSplit`, surfacing a `TopologyAttributeStale` Warning
+/// and leaving the cell at `Value::Undef` — the same graceful-degradation
+/// path as all other Unresolved outcomes.
 ///
 /// Any unrecognised label returns `None` — the query then relies entirely on
 /// `user_label` and will Unresolve if no `user_label` entry exists in the table.
@@ -2230,12 +2239,24 @@ pub fn cap_kind_translation(label: &str) -> Option<(reify_types::Role, u32)> {
         "bottom" => Some((Role::Cap(CapKind::Bottom), 0)),
         "start" => Some((Role::Cap(CapKind::Start), 0)),
         "end" => Some((Role::Cap(CapKind::End), 0)),
+        "side" => Some((Role::Side, 0)),
         _ => None,
     }
 }
 
 /// Query the kernel for centroid and normal/tangent of `target_id`, then
 /// construct a `Value::Frame { origin, basis }`.
+///
+/// **Axis convention:**
+/// - For *faces*: the face normal maps to the frame's **+Z** axis.
+///   This is the standard CAD convention (Z-up frames for planar features).
+/// - For *edges*: the edge tangent also maps to the frame's **+Z** axis.
+///   Downstream consumers (sweep ports, path-mating jigs) that expect the
+///   tangent along **+X** should apply a 90° R_Y pre-rotation. This is
+///   documented here rather than baked in so that future consumers can choose
+///   the convention that suits them without the call site growing parameters.
+///   A `quaternion_from_z_to_axis` call with the tangent vector produces a
+///   basis whose +Z column equals the tangent direction.
 ///
 /// On centroid failure: push a Warning and return `Some(Value::Undef)`.
 /// On normal/tangent failure: push a Warning and use identity basis, so the
@@ -2340,15 +2361,27 @@ fn construct_frame_from_kernel(
 ///
 /// Special case: `b ≈ -Z` makes `q_unnorm ≈ (0,0,0,0)` — degenerate.
 /// Fall back to a 180° rotation around the +X axis.
+///
+/// **Numerical note:** the degenerate threshold is `1e-12` rather than a
+/// smaller value. When `nz` is near -1, `(1 + nz) ≈ ε` and the cross
+/// components `(nx, ny)` are also small; dividing them by `√(2ε)` loses
+/// precision rapidly. `1e-12` detects inputs within ~`1e-6` of `-Z` and
+/// falls back to the exact 180° rotation before the cross-product
+/// normalization becomes dominated by rounding error.
 fn quaternion_from_z_to_axis(nx: f64, ny: f64, nz: f64) -> reify_types::Value {
     let w_unnorm = 1.0 + nz;
-    let x_unnorm = -ny;
+    // Use `0.0 - ny` instead of `-ny` to avoid producing -0.0 when ny = 0.0.
+    // In IEEE 754, `0.0 - 0.0 = +0.0` (round-to-nearest), whereas the unary
+    // negation `-0.0 = -0.0`.  The bit-exact `PartialEq` on `Value::Orientation`
+    // would treat -0.0 and +0.0 as unequal, causing spurious test failures when
+    // the input has a zero component.
+    let x_unnorm = 0.0 - ny;
     let y_unnorm = nx;
     // z component of cross(+Z, b) is always 0.
 
     let len_sq = w_unnorm * w_unnorm + x_unnorm * x_unnorm + y_unnorm * y_unnorm;
 
-    if len_sq < 1e-18 {
+    if len_sq < 1e-12 {
         // (nx, ny, nz) ≈ -Z: degenerate case. Rotate 180° around +X.
         return reify_types::Value::Orientation {
             w: 0.0,
@@ -7067,5 +7100,131 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Unit tests for `quaternion_from_z_to_axis` (task 3463 amend pass)
+    //
+    // Covers the four canonical axis directions and the degenerate (-Z) fallback.
+    // Each test verifies unit norm AND correct component values.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Helper: apply quaternion `(w, qx, qy, qz)` to a pure vector `(vx, vy, vz)`.
+    /// Returns the rotated vector `[rx, ry, rz]`.
+    ///
+    /// Uses the Rodrigues-style formula:
+    ///   `v' = v + 2w*(q_vec × v) + 2*(q_vec × (q_vec × v))`
+    fn quat_rotate(w: f64, qx: f64, qy: f64, qz: f64, vx: f64, vy: f64, vz: f64) -> [f64; 3] {
+        let cx = qy * vz - qz * vy;
+        let cy = qz * vx - qx * vz;
+        let cz = qx * vy - qy * vx;
+        let dx = qy * cz - qz * cy;
+        let dy = qz * cx - qx * cz;
+        let dz = qx * cy - qy * cx;
+        [
+            vx + 2.0 * w * cx + 2.0 * dx,
+            vy + 2.0 * w * cy + 2.0 * dy,
+            vz + 2.0 * w * cz + 2.0 * dz,
+        ]
+    }
+
+    /// Helper: extract `(w, x, y, z)` from a `Value::Orientation`.
+    fn orientation_components(v: reify_types::Value) -> (f64, f64, f64, f64) {
+        match v {
+            reify_types::Value::Orientation { w, x, y, z } => (w, x, y, z),
+            other => panic!("expected Value::Orientation, got {other:?}"),
+        }
+    }
+
+    /// `+Z → +Z`: shortest arc is zero rotation → identity quaternion.
+    ///
+    /// All arithmetic is exact (w_unnorm = 2.0, len = 2.0, components are
+    /// integer multiples of 0.5), so `assert_eq!` with bit-exact comparison
+    /// is appropriate here.
+    #[test]
+    fn quaternion_from_z_to_axis_z_plus_is_identity() {
+        let q = super::quaternion_from_z_to_axis(0.0, 0.0, 1.0);
+        assert_eq!(
+            q,
+            reify_types::Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0
+            },
+            "+Z → +Z should yield identity quaternion"
+        );
+    }
+
+    /// `(0, 0, -1)` is the degenerate case (anti-parallel). The function
+    /// falls back to a 180° rotation around +X: `{w:0, x:1, y:0, z:0}`.
+    #[test]
+    fn quaternion_from_z_to_axis_z_minus_gives_180_around_x() {
+        let q = super::quaternion_from_z_to_axis(0.0, 0.0, -1.0);
+        assert_eq!(
+            q,
+            reify_types::Value::Orientation {
+                w: 0.0,
+                x: 1.0,
+                y: 0.0,
+                z: 0.0
+            },
+            "-Z degenerate case should fall back to 180° around +X"
+        );
+        // Round-trip: applying the quaternion to (0,0,1) should give (0,0,-1).
+        let (w, x, y, z) = orientation_components(q);
+        let rotated = quat_rotate(w, x, y, z, 0.0, 0.0, 1.0);
+        assert!(
+            rotated[0].abs() < 1e-12 && rotated[1].abs() < 1e-12 && (rotated[2] + 1.0).abs() < 1e-12,
+            "180°/+X applied to +Z should give -Z, got {rotated:?}"
+        );
+    }
+
+    /// `+X axis`: shortest arc from +Z to +X is 90° around +Y.
+    /// `quaternion_from_z_to_axis(1,0,0)` → `{w: 1/√2, x: 0, y: 1/√2, z: 0}`.
+    #[test]
+    fn quaternion_from_z_to_axis_x_plus_unit_norm_and_round_trip() {
+        let q = super::quaternion_from_z_to_axis(1.0, 0.0, 0.0);
+        let (w, x, y, z) = orientation_components(q);
+        let norm = (w * w + x * x + y * y + z * z).sqrt();
+        assert!(
+            (norm - 1.0).abs() < 1e-12,
+            "+X axis: quaternion should be unit-norm; norm={norm}"
+        );
+        let sqrt2_inv = std::f64::consts::FRAC_1_SQRT_2;
+        assert!((w - sqrt2_inv).abs() < 1e-12, "+X axis: w should be 1/√2; got {w}");
+        assert!(x.abs() < 1e-12, "+X axis: x should be 0; got {x}");
+        assert!((y - sqrt2_inv).abs() < 1e-12, "+X axis: y should be 1/√2; got {y}");
+        assert!(z.abs() < 1e-12, "+X axis: z should be 0; got {z}");
+        // Round-trip: q applied to (0,0,1) should give (1,0,0).
+        let rotated = quat_rotate(w, x, y, z, 0.0, 0.0, 1.0);
+        assert!(
+            (rotated[0] - 1.0).abs() < 1e-12 && rotated[1].abs() < 1e-12 && rotated[2].abs() < 1e-12,
+            "+X round-trip: expected (1,0,0), got {rotated:?}"
+        );
+    }
+
+    /// `+Y axis`: shortest arc from +Z to +Y is 90° around -X.
+    /// `quaternion_from_z_to_axis(0,1,0)` → `{w: 1/√2, x: -1/√2, y: 0, z: 0}`.
+    #[test]
+    fn quaternion_from_z_to_axis_y_plus_unit_norm_and_round_trip() {
+        let q = super::quaternion_from_z_to_axis(0.0, 1.0, 0.0);
+        let (w, x, y, z) = orientation_components(q);
+        let norm = (w * w + x * x + y * y + z * z).sqrt();
+        assert!(
+            (norm - 1.0).abs() < 1e-12,
+            "+Y axis: quaternion should be unit-norm; norm={norm}"
+        );
+        let sqrt2_inv = std::f64::consts::FRAC_1_SQRT_2;
+        assert!((w - sqrt2_inv).abs() < 1e-12, "+Y axis: w should be 1/√2; got {w}");
+        assert!((x + sqrt2_inv).abs() < 1e-12, "+Y axis: x should be -1/√2; got {x}");
+        assert!(y.abs() < 1e-12, "+Y axis: y should be 0; got {y}");
+        assert!(z.abs() < 1e-12, "+Y axis: z should be 0; got {z}");
+        // Round-trip: q applied to (0,0,1) should give (0,1,0).
+        let rotated = quat_rotate(w, x, y, z, 0.0, 0.0, 1.0);
+        assert!(
+            rotated[0].abs() < 1e-12 && (rotated[1] - 1.0).abs() < 1e-12 && rotated[2].abs() < 1e-12,
+            "+Y round-trip: expected (0,1,0), got {rotated:?}"
+        );
     }
 }

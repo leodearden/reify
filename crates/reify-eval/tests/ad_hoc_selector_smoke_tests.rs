@@ -46,6 +46,8 @@ const TOP_FACE: GeometryHandleId = GeometryHandleId(10);
 const BOTTOM_FACE: GeometryHandleId = GeometryHandleId(11);
 /// Side face handle (Role::Side).
 const SIDE_FACE: GeometryHandleId = GeometryHandleId(12);
+/// An edge handle for the edge-selector smoke test.
+const EDGE_HANDLE: GeometryHandleId = GeometryHandleId(20);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared fixture helpers
@@ -170,11 +172,30 @@ fn try_eval_ad_hoc_selector_face_top_resolves_to_frame_via_attribute_table() {
 
     let result = try_eval_ad_hoc_selector(&expr, &named_steps, &mut kernel, &table, &mut diagnostics);
 
-    assert!(
-        matches!(result, Some(Value::Frame { .. })),
-        "@face(\"top\") against a seeded cylinder should resolve to Some(Value::Frame {{ .. }}), \
-         got {:?}",
-        result
+    // ── Verify exact Frame contents ──────────────────────────────────────────
+    // Kernel returns centroid {"x":0.0,"y":0.0,"z":0.01} → origin at (0m, 0m, 0.01m)
+    // and normal {"x":0.0,"y":0.0,"z":1.0} → +Z → +Z = identity quaternion
+    // (quaternion_from_z_to_axis(0,0,1): w_unnorm=2, len=2, w=1 — exact IEEE 754).
+    let Some(Value::Frame { ref origin, ref basis }) = result else {
+        panic!(
+            "@face(\"top\") against a seeded cylinder should resolve to Some(Value::Frame {{ .. }}), \
+             got {:?}",
+            result
+        );
+    };
+    assert_eq!(
+        **origin,
+        Value::Point(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.01),
+        ]),
+        "@face(\"top\") origin should be (0m, 0m, 0.01m)"
+    );
+    assert_eq!(
+        **basis,
+        Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
+        "@face(\"top\") basis should be identity (normal +Z → +Z is zero rotation)"
     );
     assert!(
         diagnostics.is_empty(),
@@ -403,11 +424,31 @@ fn engine_build_post_processes_ad_hoc_face_selector_to_frame() {
         .get(&top_frame_id)
         .unwrap_or_else(|| panic!("AdHocCylinder.top_frame not found in build result values"));
 
-    assert!(
-        matches!(top_frame_val, Value::Frame { .. }),
-        "AdHocCylinder.top_frame should resolve to Value::Frame {{ .. }} after \
-         post_process_ad_hoc_selectors wires @face(\"top\"); got {:?}",
-        top_frame_val
+    // ── Verify exact Frame contents ──────────────────────────────────────────
+    // Same kernel config as test 1: centroid {"x":0.0,"y":0.0,"z":0.01},
+    // normal {"x":0.0,"y":0.0,"z":1.0} → identity basis.
+    // `top_frame_val` is `&Value`; match ergonomics auto-borrows, so `ref`
+    // must be omitted (origin: &Box<Value>, basis: &Box<Value>).
+    let Value::Frame { origin, basis } = top_frame_val else {
+        panic!(
+            "AdHocCylinder.top_frame should resolve to Value::Frame {{ .. }} after \
+             post_process_ad_hoc_selectors wires @face(\"top\"); got {:?}",
+            top_frame_val
+        );
+    };
+    assert_eq!(
+        **origin,
+        Value::Point(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.01),
+        ]),
+        "engine-level @face(\"top\") origin should be (0m, 0m, 0.01m)"
+    );
+    assert_eq!(
+        **basis,
+        Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
+        "engine-level @face(\"top\") basis should be identity"
     );
 }
 
@@ -545,10 +586,219 @@ fn face_selector_ri_example_compiles_and_evaluates_to_frame() {
         .get(&top_frame_id)
         .unwrap_or_else(|| panic!("TopCapBracket.top_frame not found in build result values"));
 
+    // ── Verify exact Frame contents ──────────────────────────────────────────
+    // Same configured_engine_kernel() fixture: centroid {"x":0.0,"y":0.0,"z":0.01},
+    // normal {"x":0.0,"y":0.0,"z":1.0} → +Z → +Z = identity quaternion.
+    // `top_frame_val` is `&Value`; match ergonomics auto-borrows, so `ref`
+    // must be omitted (origin: &Box<Value>, basis: &Box<Value>).
+    let Value::Frame { origin, basis } = top_frame_val else {
+        panic!(
+            "TopCapBracket.top_frame should resolve to Value::Frame {{ .. }} via \
+             post_process_ad_hoc_selectors wiring @face(\"top\"); got {:?}",
+            top_frame_val
+        );
+    };
+    assert_eq!(
+        **origin,
+        Value::Point(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.01),
+        ]),
+        ".ri example @face(\"top\") origin should be (0m, 0m, 0.01m)"
+    );
+    assert_eq!(
+        **basis,
+        Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
+        ".ri example @face(\"top\") basis should be identity"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test 7: @edge("top_edge") resolves via user_label to Some(Value::Frame)
+// (Suggestion 2 — edge convention smoke test)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Build a `TopologyAttributeTable` with a single edge entry whose
+/// `user_label = Some("top_edge")`.  The resolver will match via user_label
+/// since there is no edge-role entry in `cap_kind_translation`.
+fn seeded_edge_table() -> TopologyAttributeTable {
+    let feature_id = cylinder_feature_id();
+    let mut table = TopologyAttributeTable::default();
+    table.record(
+        EDGE_HANDLE,
+        TopologyAttribute {
+            feature_id,
+            role: Role::NewEdge,
+            local_index: 0,
+            user_label: Some("top_edge".to_string()),
+            mod_history: Vec::new(),
+        },
+    );
+    table
+}
+
+/// Build a `MockGeometryKernel` for the edge smoke test:
+///   - `extract_edges(BODY_HANDLE)` → `[EDGE_HANDLE]`
+///   - `Centroid(EDGE_HANDLE)` → centroid at `{"x":0.0,"y":0.0,"z":0.005}`
+///     (an arbitrary point 5mm up the cylinder axis)
+///   - `EdgeTangent(EDGE_HANDLE)` → `{"x":0.0,"y":0.0,"z":1.0}` (+Z direction)
+///
+/// The +Z tangent is chosen to produce an identity basis quaternion, making
+/// the assertion exact.  See `construct_frame_from_kernel` doc comment for
+/// the convention: the edge tangent maps to the frame's **+Z** axis.
+fn configured_edge_kernel() -> MockGeometryKernel {
+    let centroid_json = Value::String(r#"{"x":0.0,"y":0.0,"z":0.005}"#.to_string());
+    let tangent_json = Value::String(r#"{"x":0.0,"y":0.0,"z":1.0}"#.to_string());
+    MockGeometryKernel::new()
+        .with_extracted_edges(BODY_HANDLE, vec![EDGE_HANDLE])
+        .with_centroid_result(EDGE_HANDLE, centroid_json)
+        .with_edge_tangent_result(EDGE_HANDLE, tangent_json)
+}
+
+/// `try_eval_ad_hoc_selector` must resolve `@edge("top_edge")` against an
+/// edge whose `user_label = "top_edge"` to `Some(Value::Frame { .. })`.
+///
+/// This test pins the **edge frame convention**: the edge tangent maps to the
+/// frame's **+Z** axis (`construct_frame_from_kernel` doc comment).  With a
+/// +Z tangent the expected basis is the identity quaternion — exact IEEE 754.
+///
+/// The test also verifies that `@edge` expressions are dispatched by the
+/// `SelectorKind::Edge` arm (confirming `try_eval_ad_hoc_selector` handles
+/// both Face and Edge selectors).
+#[test]
+fn try_eval_ad_hoc_selector_edge_resolves_to_frame_via_user_label() {
+    // `@edge("top_edge")` expression: base="body", kind=Edge, args=["top_edge"]
+    let expr = CompiledExpr::ad_hoc_selector(
+        CompiledExpr::literal(Value::String("body".to_string()), Type::String),
+        SelectorKind::Edge,
+        vec![CompiledExpr::literal(
+            Value::String("top_edge".to_string()),
+            Type::String,
+        )],
+    );
+
+    let named_steps = named_steps_with_body();
+    let table = seeded_edge_table();
+    let mut kernel = configured_edge_kernel();
+    let mut diagnostics = Vec::new();
+
+    let result = try_eval_ad_hoc_selector(&expr, &named_steps, &mut kernel, &table, &mut diagnostics);
+
+    // ── Verify exact Frame contents ──────────────────────────────────────────
+    // Edge tangent {"x":0.0,"y":0.0,"z":1.0} → +Z → +Z = identity quaternion.
+    // Edge centroid {"x":0.0,"y":0.0,"z":0.005} → origin at (0m, 0m, 0.005m).
+    // Convention: tangent aligns to frame +Z (documented in construct_frame_from_kernel).
+    let Some(Value::Frame { ref origin, ref basis }) = result else {
+        panic!(
+            "@edge(\"top_edge\") against a user-labelled edge should resolve to \
+             Some(Value::Frame {{ .. }}), got {:?}",
+            result
+        );
+    };
+    assert_eq!(
+        **origin,
+        Value::Point(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.005),
+        ]),
+        "@edge(\"top_edge\") origin should be (0m, 0m, 0.005m)"
+    );
+    assert_eq!(
+        **basis,
+        Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
+        "@edge(\"top_edge\") basis should be identity (tangent +Z → +Z is zero rotation)"
+    );
     assert!(
-        matches!(top_frame_val, Value::Frame { .. }),
-        "TopCapBracket.top_frame should resolve to Value::Frame {{ .. }} via \
-         post_process_ad_hoc_selectors wiring @face(\"top\"); got {:?}",
-        top_frame_val
+        diagnostics.is_empty(),
+        "no diagnostic expected on a clean resolution; got {:?}",
+        diagnostics
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test 8: @face("side") resolves via cap_kind_translation to Some(Value::Frame)
+// (Suggestion 4 — "side" added to cap_kind_translation)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Build a `MockGeometryKernel` for the side-face smoke test:
+///   - `extract_faces(BODY_HANDLE)` → `[TOP_FACE, BOTTOM_FACE, SIDE_FACE]`
+///   - `Centroid(SIDE_FACE)` → `{"x":0.0,"y":0.0,"z":0.0}` (world origin)
+///   - `FaceNormal(SIDE_FACE)` → `{"x":0.0,"y":0.0,"z":1.0}` (+Z, mock-only)
+///
+/// Note: the +Z normal is geometrically incorrect for a Cylinder's side face
+/// (which normally has a radial normal in XY).  The mock value is chosen for
+/// exact-assertion simplicity: `quaternion_from_z_to_axis(0,0,1) = identity`.
+fn configured_side_kernel() -> MockGeometryKernel {
+    let centroid_json = Value::String(r#"{"x":0.0,"y":0.0,"z":0.0}"#.to_string());
+    let normal_json = Value::String(r#"{"x":0.0,"y":0.0,"z":1.0}"#.to_string());
+    MockGeometryKernel::new()
+        .with_extracted_faces(BODY_HANDLE, vec![TOP_FACE, BOTTOM_FACE, SIDE_FACE])
+        .with_centroid_result(SIDE_FACE, centroid_json)
+        .with_face_normal_result(SIDE_FACE, normal_json)
+}
+
+/// `try_eval_ad_hoc_selector` must resolve `@face("side")` against a Cylinder
+/// body (whose side face is seeded with `Role::Side`) to `Some(Value::Frame { .. })`
+/// after `"side"` is added to `cap_kind_translation`.
+///
+/// Resolution path: `cap_kind_translation("side")` → `Some((Role::Side, 0))` →
+/// `role_and_index` match against the table entry `SIDE_FACE { role: Role::Side,
+/// local_index: 0 }` → `Resolved(SIDE_FACE)` → Frame construction.
+///
+/// This test verifies that the `cap_kind_translation` vocabulary extension
+/// (suggestion 4) closes the `@face("side")` → `TopologyAttributeStale`
+/// regression for Cylinder users.
+#[test]
+fn try_eval_ad_hoc_selector_face_side_resolves_via_cap_kind_translation() {
+    // `@face("side")` expression: base="body", kind=Face, args=["side"]
+    let expr = CompiledExpr::ad_hoc_selector(
+        CompiledExpr::literal(Value::String("body".to_string()), Type::String),
+        SelectorKind::Face,
+        vec![CompiledExpr::literal(
+            Value::String("side".to_string()),
+            Type::String,
+        )],
+    );
+
+    let named_steps = named_steps_with_body();
+    // seeded_cylinder_table() contains SIDE_FACE with Role::Side, local_index=0,
+    // user_label=None — the resolver matches via role_and_index only.
+    let table = seeded_cylinder_table();
+    let mut kernel = configured_side_kernel();
+    let mut diagnostics = Vec::new();
+
+    let result = try_eval_ad_hoc_selector(&expr, &named_steps, &mut kernel, &table, &mut diagnostics);
+
+    // ── Verify exact Frame contents ──────────────────────────────────────────
+    // centroid {"x":0.0,"y":0.0,"z":0.0} → origin at world origin.
+    // normal {"x":0.0,"y":0.0,"z":1.0} → +Z → +Z = identity quaternion.
+    let Some(Value::Frame { ref origin, ref basis }) = result else {
+        panic!(
+            "@face(\"side\") against a Cylinder side face should resolve to \
+             Some(Value::Frame {{ .. }}) after cap_kind_translation adds \"side\", \
+             got {:?}",
+            result
+        );
+    };
+    assert_eq!(
+        **origin,
+        Value::Point(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]),
+        "@face(\"side\") origin should be (0m, 0m, 0m)"
+    );
+    assert_eq!(
+        **basis,
+        Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
+        "@face(\"side\") basis should be identity for mock +Z normal"
+    );
+    assert!(
+        diagnostics.is_empty(),
+        "no diagnostic expected on a clean resolution; got {:?}",
+        diagnostics
     );
 }
