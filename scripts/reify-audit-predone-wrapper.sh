@@ -7,8 +7,8 @@
 # -----------------------
 # reify-audit is a pure-logic library (no MCP client, no scheduler) and
 # requires an explicit --tasks-file with a JSON array of TaskMetadata. Before
-# task 3731, the CLI silently defaulted to .taskmaster/tasks/tasks.json, which
-# was deleted in commit 1402b46c63 (2026-05-12). Any invocation without an
+# task 3731, the CLI had a dead default tasks-file path (the Taskmaster artifact
+# deleted in commit 1402b46c63 on 2026-05-12). Any invocation without an
 # explicit --tasks-file exited 125 ("infrastructure error") and silently
 # blocked done-flips via the fused-memory pre-done hook.
 #
