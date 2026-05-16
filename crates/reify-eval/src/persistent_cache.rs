@@ -5639,6 +5639,11 @@ mod tests {
         // Forward-date the orphan engine-version dir itself well past
         // ORPHAN_DIR_AGE: if the function treated future mtimes as stale this
         // dir would be pruned.
+        // NOTE: this call must come AFTER creating the shard dir and writing the
+        // tmp file above — those fs operations update orphan_dir's mtime to ~now,
+        // which would make it look fresh (age <= ORPHAN_DIR_AGE) and let it
+        // survive for the wrong reason, masking any regression in the Err(_)
+        // branch.
         let orphan_dir = root.join(orphan_eng);
         forward_mtime(&orphan_dir, ORPHAN_DIR_AGE.as_secs() + 60);
 
