@@ -20,7 +20,7 @@
 // its static so the const path likely works too, but a true symbol reference
 // is the unambiguous shape.
 use reify_kernel_occt::register::occt_capability_descriptor;
-use reify_types::{CapabilityDescriptor, NodeKind, WarmStartableRegistration, WarmStartableRegistry};
+use reify_types::{CapabilityDescriptor, NodeKind, WarmStartableRegistry};
 
 // Silence dead-code lints on the linkage-forcing reference — its only purpose
 // is to keep the OCCT lib's static-init records from being stripped.
@@ -35,24 +35,5 @@ fn from_inventory_contains_realization() {
     assert!(
         r.contains_kind(NodeKind::Realization),
         "expected reify-kernel-occt's static-init submission to register NodeKind::Realization"
-    );
-}
-
-#[test]
-fn at_least_one_realization_registration() {
-    // Presence pin: at least one WarmStartableRegistration with
-    // kind == Realization must appear in inventory. The registry's contract is
-    // presence-only — duplicate registrations are idempotent at the `HashSet`
-    // layer, so a future second Realization producer (e.g. an alternative
-    // geometry backend gated behind a feature flag) would be perfectly
-    // legitimate. A strict `== 1` pin would lock in a stricter contract than
-    // the production code requires; `>= 1` matches the registry semantics.
-    let count = inventory::iter::<WarmStartableRegistration>
-        .into_iter()
-        .filter(|reg| matches!(reg.kind, NodeKind::Realization))
-        .count();
-    assert!(
-        count >= 1,
-        "expected at least one WarmStartableRegistration for NodeKind::Realization, got {count}"
     );
 }

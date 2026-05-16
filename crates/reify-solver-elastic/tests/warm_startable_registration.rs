@@ -16,7 +16,7 @@
 // `OCCT_AVAILABLE` import in
 // `reify-kernel-occt/tests/warm_startable_registration.rs`).
 use reify_solver_elastic::CgWarmState;
-use reify_types::{NodeKind, WarmStartableRegistration, WarmStartableRegistry};
+use reify_types::{NodeKind, WarmStartableRegistry};
 
 // Silence dead-code lints on the linkage-forcing reference — its only
 // purpose is to keep the solver-elastic lib's static-init records from
@@ -32,24 +32,5 @@ fn from_inventory_contains_compute() {
     assert!(
         r.contains_kind(NodeKind::Compute),
         "expected reify-solver-elastic's static-init submission to register NodeKind::Compute"
-    );
-}
-
-#[test]
-fn at_least_one_compute_registration() {
-    // Presence pin: at least one WarmStartableRegistration with
-    // kind == Compute must appear in inventory. The registry's contract is
-    // presence-only — duplicate registrations are idempotent at the `HashSet`
-    // layer, so a future second Compute producer (e.g. a multigrid solver
-    // variant gated behind a feature flag) would be perfectly legitimate. A
-    // strict `== 1` pin would lock in a stricter contract than the production
-    // code requires; `>= 1` matches the registry semantics.
-    let count = inventory::iter::<WarmStartableRegistration>
-        .into_iter()
-        .filter(|reg| matches!(reg.kind, NodeKind::Compute))
-        .count();
-    assert!(
-        count >= 1,
-        "expected at least one WarmStartableRegistration for NodeKind::Compute, got {count}"
     );
 }
