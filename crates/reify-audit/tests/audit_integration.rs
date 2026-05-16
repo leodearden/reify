@@ -12,9 +12,23 @@
 //! becomes `audit_integration::tests::<name>` — matching the p5.rs/p1.rs/p2.rs
 //! convention.
 //!
-//! Re-exercises the three detectors through the public lib surface with no
-//! detector-internal seams. All fixtures are in-memory; no git repo, no
-//! runs.db file required.
+//! ## Relationship to per-detector test files
+//!
+//! `tests/p5.rs`, `tests/p1.rs`, and `tests/p2.rs` are the authoritative
+//! detectors for their respective detectors and already cover each scenario in
+//! depth. The three single-detector tests here (`p5_phantom_done_task_3242_*`,
+//! `p1_producer_orphan_c04_*`, `p2_consumer_stub_c39_*`) are minimal smoke
+//! anchors that confirm this binary compiles and links against the public lib
+//! surface correctly — they are intentionally thin.
+//!
+//! The genuinely unique contribution of this binary is the
+//! `seven_prepd_legacy_tasks_produce_no_false_positives` test, which exercises
+//! a single shared `AuditContext` against all three detectors simultaneously and
+//! asserts no cross-detector false positives on the pre-`/prd` legacy task shape.
+//! That cross-detector scenario cannot be expressed as a single test in any of
+//! the per-detector files.
+//!
+//! All fixtures are in-memory; no git repo, no runs.db file required.
 
 mod audit_integration {
 
@@ -28,9 +42,9 @@ use std::path::PathBuf;
 
 /// Minimal schema — pin reflects only the columns the production
 /// `has_task_completed_event` query reads (`events.task_id` and
-/// `events.event_type`). Verbatim from p5.rs:32 — intentional duplication;
-/// if the schema changes, both p5.rs and this file must be updated, giving
-/// two pinning sites that catch missed updates.
+/// `events.event_type`). Mirrors p5.rs:32; integration-test binaries are
+/// standalone compilation units so a shared helper module is the right fix,
+/// but that requires touching p5.rs (outside this task's locked scope).
 const RUNS_DB_SCHEMA: &str = r#"
 CREATE TABLE events (task_id TEXT, event_type TEXT);
 "#;
@@ -322,12 +336,9 @@ mod tests {
             "expected EvidenceRef::File for selector_resolution.rs; got {:?}",
             f.evidence
         );
-        // Summary must mention the grace window in the post-grace wording.
-        assert!(
-            f.summary.to_lowercase().contains("grace window"),
-            "summary must mention grace window; got {:?}",
-            f.summary
-        );
+        // Severity::Medium + Pattern::P1ProducerOrphan already prove the post-grace
+        // branch executed; a summary-substring check would pin prose rather than
+        // behaviour and is already covered by tests/p1.rs.
     }
 
     /// Seeded incident #1 — P5 phantom-done, May-09 task-3242 shape:
