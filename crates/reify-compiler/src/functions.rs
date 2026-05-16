@@ -121,6 +121,7 @@ pub(crate) fn compile_function(
                 None => {
                     diagnostics.push(
                         Diagnostic::error(format!("unresolved return type: {}", te))
+                            .with_code(DiagnosticCode::UnresolvedType)
                             .with_label(DiagnosticLabel::new(te.span, "unknown type name")),
                     );
                     Type::Real
@@ -279,6 +280,7 @@ pub(crate) fn compile_field(
         reify_syntax::TypeExprKind::DimensionalOp { .. } => {
             diagnostics.push(
                 Diagnostic::error(format!("unresolved field type: {}", field_def.domain_type))
+                    .with_code(DiagnosticCode::UnresolvedType)
                     .with_label(DiagnosticLabel::new(
                         field_def.domain_type.span,
                         "unexpected dimensional expression",
@@ -289,6 +291,7 @@ pub(crate) fn compile_field(
         reify_syntax::TypeExprKind::IntegerLiteral(_) => {
             diagnostics.push(
                 Diagnostic::error(format!("unresolved field type: {}", field_def.domain_type))
+                    .with_code(DiagnosticCode::UnresolvedType)
                     .with_label(DiagnosticLabel::new(
                         field_def.domain_type.span,
                         "integer literal not allowed in this position",
@@ -300,6 +303,7 @@ pub(crate) fn compile_field(
         reify_syntax::TypeExprKind::Auto { .. } => {
             diagnostics.push(
                 Diagnostic::error(format!("unresolved field type: {}", field_def.domain_type))
+                    .with_code(DiagnosticCode::UnresolvedType)
                     .with_label(DiagnosticLabel::new(
                         field_def.domain_type.span,
                         "auto type-arg not allowed in this position",
@@ -321,6 +325,7 @@ pub(crate) fn compile_field(
                     "unresolved field type: {}",
                     field_def.codomain_type
                 ))
+                .with_code(DiagnosticCode::UnresolvedType)
                 .with_label(DiagnosticLabel::new(
                     field_def.codomain_type.span,
                     "unexpected dimensional expression",
@@ -334,6 +339,7 @@ pub(crate) fn compile_field(
                     "unresolved field type: {}",
                     field_def.codomain_type
                 ))
+                .with_code(DiagnosticCode::UnresolvedType)
                 .with_label(DiagnosticLabel::new(
                     field_def.codomain_type.span,
                     "integer literal not allowed in this position",
@@ -348,6 +354,7 @@ pub(crate) fn compile_field(
                     "unresolved field type: {}",
                     field_def.codomain_type
                 ))
+                .with_code(DiagnosticCode::UnresolvedType)
                 .with_label(DiagnosticLabel::new(
                     field_def.codomain_type.span,
                     "auto type-arg not allowed in this position",

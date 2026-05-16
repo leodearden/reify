@@ -2297,7 +2297,8 @@ pub(crate) fn compile_expr_guarded(
                                     Diagnostic::error(format!(
                                         "unresolved type in lambda param '{}': {}",
                                         param.name, name
-                                    )),
+                                    ))
+                                    .with_code(DiagnosticCode::UnresolvedType),
                                 )
                             }
                         }
@@ -2308,7 +2309,8 @@ pub(crate) fn compile_expr_guarded(
                             Diagnostic::error(format!(
                                 "unresolved type in lambda param '{}': {}",
                                 param.name, type_expr
-                            )),
+                            ))
+                            .with_code(DiagnosticCode::UnresolvedType),
                         )
                     }
                 } else {
