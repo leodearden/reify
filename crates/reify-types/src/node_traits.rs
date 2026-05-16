@@ -233,6 +233,10 @@ impl NodeKind {
     /// has a producer registered in the [`crate::WarmStartableRegistry`] (PRD §5 B5
     /// / I-3, M-013 fix). A const array is the minimal idiomatic shape for a
     /// closed 5-variant enum — avoids pulling in `strum` for one iteration site.
+    ///
+    /// Compile-time exhaustiveness is enforced by `_all_exhaustive_guard`
+    /// below: adding a new `NodeKind` variant fails to compile in that match
+    /// arm, prompting the author to also extend this array.
     pub const ALL: [NodeKind; 5] = [
         NodeKind::Value,
         NodeKind::Constraint,
@@ -240,6 +244,29 @@ impl NodeKind {
         NodeKind::Resolution,
         NodeKind::Compute,
     ];
+}
+
+/// Compile-time exhaustiveness guard for [`NodeKind::ALL`].
+///
+/// The match below is exhaustive over `NodeKind` — adding a new variant fails
+/// compilation with a non-exhaustive-match error, which is the build-time
+/// prompt to extend `NodeKind::ALL` accordingly. The function is never
+/// called; its body is type-checked at compile time regardless.
+///
+/// Belt-and-suspenders alongside the unit tests
+/// `node_kind_all_covers_five_variants` and `_contains_every_variant` —
+/// the tests fire at `cargo test` time, this guard fires at `cargo check`
+/// time, and the two together catch a missing-from-ALL regression at either
+/// surface.
+#[allow(dead_code)]
+const fn _all_exhaustive_guard(k: NodeKind) {
+    match k {
+        NodeKind::Value
+        | NodeKind::Constraint
+        | NodeKind::Realization
+        | NodeKind::Resolution
+        | NodeKind::Compute => {}
+    }
 }
 
 /// Marker trait for keys that can be projected to a [`NodeKind`] discriminant.
