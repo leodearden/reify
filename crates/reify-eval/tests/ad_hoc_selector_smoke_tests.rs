@@ -1,35 +1,33 @@
-//! Smoke tests for the `try_eval_ad_hoc_selector` function (task 3463).
+//! Smoke tests for the `try_eval_ad_hoc_selector` function AND the
+//! engine-level `post_process_ad_hoc_selectors` wiring (task 3463).
 //!
-//! Tests that `try_eval_ad_hoc_selector` correctly:
-//! 1. Resolves `@face("top")` against a Cylinder body (seeded table) to
-//!    `Some(Value::Frame { .. })` — the happy path.
+//! Layer-1 (function-level) tests — steps 5/6:
+//! 1. Resolves `@face("top")` against a Cylinder body (manually-seeded table)
+//!    to `Some(Value::Frame { .. })` — the happy path.
 //! 2. Returns `Some(Value::Undef)` with a `TopologyAttributeStale` Warning for
 //!    an unresolvable label ("nonexistent") — the diagnostic degradation path.
-//! 3. Returns `None` for expressions that are not `AdHocSelector` nodes — the
-//!    "not applicable" early-return.
+//! 3. Returns `None` for expressions that are not `AdHocSelector` nodes.
 //!
-//! All three tests are RED on HEAD because `try_eval_ad_hoc_selector` does not
-//! exist yet; they turn GREEN when step-6 implements the function and re-exports
-//! it from `reify_eval::lib`.
+//! Layer-2 (engine-level) tests — steps 7/8:
+//! 4. `engine_build_post_processes_ad_hoc_face_selector_to_frame` — full
+//!    `engine.build()` pipeline patches `body @ face("top")` to `Value::Frame`.
+//! 5. `engine_build_emits_warning_on_unresolved_face_name` — full pipeline
+//!    leaves `body @ face("nonexistent")` at `Value::Undef` with a Warning.
 //!
-//! Test setup pattern:
-//!   - Deterministic handle ids (no OCCT runtime required).
-//!   - `TopologyAttributeTable` seeded by direct `table.record(...)` calls
-//!     (mirrors the `test/topology_attribute_resolver_e2e.rs` pattern but
-//!     without the OCCT kernel).
-//!   - `MockGeometryKernel` configured with `with_extracted_faces`,
-//!     `with_centroid_result`, and `with_face_normal_result`.
+//! Tests 4 and 5 are RED until step-8 wires `post_process_ad_hoc_selectors`
+//! into `engine_build.rs`.
 //!
-//! Naming convention: every test name begins with the function it exercises
-//! (`try_eval_ad_hoc_selector_*`) so `cargo test ad_hoc_selector` captures them all.
+//! Naming convention: function-level tests begin with `try_eval_ad_hoc_selector_*`;
+//! engine-level tests begin with `engine_build_*`.
 
 use std::collections::HashMap;
 
+use reify_constraints::SimpleConstraintChecker;
 use reify_eval::try_eval_ad_hoc_selector;
-use reify_test_support::MockGeometryKernel;
+use reify_test_support::{MockGeometryKernel, compile_source};
 use reify_types::{
-    CapKind, CompiledExpr, DiagnosticCode, FeatureId, GeometryHandleId, Role, SelectorKind,
-    Severity, TopologyAttribute, TopologyAttributeTable, Type, Value,
+    CapKind, CompiledExpr, DiagnosticCode, ExportFormat, FeatureId, GeometryHandleId, Role,
+    SelectorKind, Severity, TopologyAttribute, TopologyAttributeTable, Type, Value, ValueCellId,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -292,5 +290,189 @@ fn try_eval_ad_hoc_selector_non_ad_hoc_expr_returns_none() {
         diagnostics_b.is_empty(),
         "None-path should emit no diagnostics; got {:?}",
         diagnostics_b
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Engine-level tests (step-7 / step-8)
+//
+// These tests exercise the FULL `engine.build()` pipeline — parse → compile →
+// execute kernel ops → seed topology_attribute_table → eval_expr → post-process.
+// They are RED on HEAD because `Engine::post_process_ad_hoc_selectors` does not
+// exist yet; they turn GREEN when step-8 wires it into `engine_build.rs`.
+//
+// Handle numbering discipline:
+//   `MockGeometryKernel.next_id` starts at 1. The cylinder is the first
+//   `execute()` call → BODY_HANDLE = GeometryHandleId(1) (same constant as
+//   above). The sub-shape face handles (10/11/12) are configured manually via
+//   `with_extracted_faces` and are never allocated by `execute()`, so there
+//   is no conflict.
+//
+// Kernel configuration for the engine-level tests:
+//   The seeder (`seed_primitive_attributes_for_handle`) calls:
+//     - `kernel.extract_faces(BODY_HANDLE)` → [TOP_FACE, BOTTOM_FACE, SIDE_FACE]
+//     - `kernel.extract_edges(BODY_HANDLE)` → [] (empty; seeder ok with no edges)
+//     - `kernel.query(FaceNormal(f))` for each face → z-component classifies role
+//   Then `post_process_ad_hoc_selectors` (step-8) calls:
+//     - `kernel.extract_faces(BODY_HANDLE)` again (safe: MockKernel caches it)
+//     - `kernel.query(Centroid(TOP_FACE))` → Frame origin
+//     - `kernel.query(FaceNormal(TOP_FACE))` → Frame basis
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Build a `MockGeometryKernel` configured for the full engine-level pipeline:
+/// seeder classification AND post-process Frame construction.
+///
+/// Differences from `configured_kernel()` (used by function-level tests):
+///   - Adds `with_extracted_edges(BODY_HANDLE, vec![])` so the seeder
+///     does not fail at `extract_edges`.
+///   - Adds `with_face_normal_result` for BOTTOM_FACE and SIDE_FACE so the
+///     seeder can classify all three faces of the cylinder.
+///   - The TOP_FACE centroid and normal are already included (same as the
+///     function-level fixture) for the post-process Frame construction.
+fn configured_engine_kernel() -> MockGeometryKernel {
+    let centroid_json = Value::String(r#"{"x":0.0,"y":0.0,"z":0.01}"#.to_string());
+    // +Z normal → Role::Cap(CapKind::Top)
+    let top_normal_json = Value::String(r#"{"x":0.0,"y":0.0,"z":1.0}"#.to_string());
+    // −Z normal → Role::Cap(CapKind::Bottom)
+    let bottom_normal_json = Value::String(r#"{"x":0.0,"y":0.0,"z":-1.0}"#.to_string());
+    // Horizontal normal (z≈0) → Role::Side
+    let side_normal_json = Value::String(r#"{"x":1.0,"y":0.0,"z":0.0}"#.to_string());
+
+    MockGeometryKernel::new()
+        // Sub-shape extraction — used by both the seeder and the post-process.
+        .with_extracted_faces(BODY_HANDLE, vec![TOP_FACE, BOTTOM_FACE, SIDE_FACE])
+        .with_extracted_edges(BODY_HANDLE, vec![]) // empty is fine for the seeder
+        // Per-face normals consumed by the seeder for role classification.
+        .with_face_normal_result(TOP_FACE, top_normal_json.clone())
+        .with_face_normal_result(BOTTOM_FACE, bottom_normal_json)
+        .with_face_normal_result(SIDE_FACE, side_normal_json)
+        // Centroid of TOP_FACE for Frame origin in post_process_ad_hoc_selectors.
+        .with_centroid_result(TOP_FACE, centroid_json)
+        // The TOP_FACE FaceNormal is already registered above (top_normal_json).
+        // MockGeometryKernel reuses the same entry for both the seeder query
+        // and the post-process basis-derivation query.
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test 4: engine.build() patches @face("top") → Value::Frame
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `Engine::build()` must patch the `top_frame` cell from `Value::Undef`
+/// (produced by `eval_expr` for `SelectorKind::Face`) to `Value::Frame { .. }`
+/// via `post_process_ad_hoc_selectors` + `try_eval_ad_hoc_selector`.
+///
+/// End-to-end pipeline:
+///   1. `cylinder(10mm, 20mm)` → kernel execute → `BODY_HANDLE`
+///   2. Seeder: seeds `TOP_FACE → Role::Cap(Top)`, etc. into the attribute table
+///   3. `eval_expr` for `top_frame = body @ face("top")` → `Value::Undef` (Face arm)
+///   4. `post_process_ad_hoc_selectors` (step-8) →
+///      `try_eval_ad_hoc_selector` →
+///      `resolve_unique_by_attribute` → `Resolved(TOP_FACE)` →
+///      `Centroid(TOP_FACE)` + `FaceNormal(TOP_FACE)` →
+///      `Value::Frame { origin: Point([0m, 0m, 0.01m]), basis: .. }`
+///   5. Cell is patched from `Undef` to `Frame`.
+///
+/// RED until step-8 wires `post_process_ad_hoc_selectors` into `engine_build.rs`.
+#[test]
+fn engine_build_post_processes_ad_hoc_face_selector_to_frame() {
+    let source = r#"structure AdHocCylinder {
+    let body = cylinder(10mm, 20mm)
+    let top_frame = body @ face("top")
+}"#;
+
+    let compiled = compile_source(source);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "expected no compile-time Error diagnostics; got: {:#?}",
+        compile_errors
+    );
+
+    let checker = SimpleConstraintChecker;
+    let kernel = configured_engine_kernel();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let top_frame_id = ValueCellId::new("AdHocCylinder", "top_frame");
+    let top_frame_val = result
+        .values
+        .get(&top_frame_id)
+        .unwrap_or_else(|| panic!("AdHocCylinder.top_frame not found in build result values"));
+
+    assert!(
+        matches!(top_frame_val, Value::Frame { .. }),
+        "AdHocCylinder.top_frame should resolve to Value::Frame {{ .. }} after \
+         post_process_ad_hoc_selectors wires @face(\"top\"); got {:?}",
+        top_frame_val
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test 5: engine.build() leaves @face("nonexistent") at Undef + Warning
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `Engine::build()` must leave a `body @ face("nonexistent")` cell at
+/// `Value::Undef` AND emit a `Severity::Warning` with
+/// `DiagnosticCode::TopologyAttributeStale` when the label does not match
+/// any entry in the attribute table.
+///
+/// This mirrors the function-level test
+/// `try_eval_ad_hoc_selector_face_unresolved_name_returns_undef_with_warning`
+/// but exercises the full engine pipeline including seeder and wiring.
+///
+/// RED until step-8 wires `post_process_ad_hoc_selectors` into `engine_build.rs`.
+#[test]
+fn engine_build_emits_warning_on_unresolved_face_name() {
+    let source = r#"structure AdHocCylinderUnresolved {
+    let body = cylinder(10mm, 20mm)
+    let mystery_frame = body @ face("nonexistent")
+}"#;
+
+    let compiled = compile_source(source);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "expected no compile-time Error diagnostics; got: {:#?}",
+        compile_errors
+    );
+
+    let checker = SimpleConstraintChecker;
+    // The seeder still needs FaceNormal results to populate the table
+    // (so the resolver has candidates to enumerate). The centroid/normal
+    // for the post-process Frame construction are never reached because the
+    // label resolves to Unresolved.
+    let kernel = configured_engine_kernel();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let mystery_id = ValueCellId::new("AdHocCylinderUnresolved", "mystery_frame");
+    let mystery_val = result
+        .values
+        .get(&mystery_id)
+        .unwrap_or_else(|| panic!("AdHocCylinderUnresolved.mystery_frame not found in build result values"));
+
+    assert!(
+        matches!(mystery_val, Value::Undef),
+        "@face(\"nonexistent\") should leave the cell at Value::Undef on Unresolved; \
+         got {:?}",
+        mystery_val
+    );
+
+    assert!(
+        result.diagnostics.iter().any(|d| {
+            d.code == Some(DiagnosticCode::TopologyAttributeStale)
+                && d.severity == Severity::Warning
+        }),
+        "expected a Severity::Warning with code TopologyAttributeStale on unresolved \
+         @face(\"nonexistent\"); got: {:?}",
+        result.diagnostics
     );
 }
