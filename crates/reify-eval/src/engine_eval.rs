@@ -2763,7 +2763,7 @@ impl Engine {
             } = &expr.kind
             {
                 let maybe_target: Option<String> =
-                    reify_expr::find_matching_compiled_function(&functions, function_name, args)
+                    reify_expr::find_matching_compiled_function(functions, function_name, args)
                         .and_then(|f| f.optimized_target.clone());
 
                 if let Some(target) = maybe_target {
