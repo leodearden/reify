@@ -516,7 +516,8 @@ module.exports = grammar({
       //
       // Together these two rules give: `List<X>` → collection arm; everything
       // else (`Foo<X>`, `Listicle<X>`, `MyList<X>`, …) → this specialization
-      // arm. The invariant is pinned by `sub_decl_disambiguation_invariant` in
+      // arm. The invariant is pinned by
+      // `sub_decl_list_vs_specialization_disambiguation_invariant` in
       // `crates/reify-syntax/tests/sub_decl_specialization_body_parser_tests.rs`
       // (Cases 1–4), which is the regression lock for this disambiguation.
       //
