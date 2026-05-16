@@ -76,9 +76,15 @@ if ! echo "$service_env" | grep -qE "\b${ENV_VAR}="; then
 fi
 
 # Extract the value of ENV_VAR from the Environment= output.
-# systemd prints: Environment=KEY1=VAL1 KEY2=VAL2 KEY3=...
-# We need the value for ENV_VAR (everything from '=' to next unquoted space or end).
-env_value=$(echo "$service_env" | grep -oE "${ENV_VAR}=[^ ]+" | head -1 | cut -d= -f2-)
+# systemd --property=Environment output format:
+#   Environment=KEY1=VAL1 KEY2=VAL2 "KEY3=val with spaces" ...
+# Values containing spaces are surrounded by double-quotes in the output.
+# Try the quoted form first (handles values with spaces such as our templated hook),
+# then fall back to the bare (no-space) form.
+env_value=$(echo "$service_env" | grep -oE '"'"${ENV_VAR}"'=[^"]*"' | head -1 | tr -d '"' | cut -d= -f2-)
+if [[ -z "$env_value" ]]; then
+    env_value=$(echo "$service_env" | grep -oE "${ENV_VAR}=[^ ]+" | head -1 | cut -d= -f2-)
+fi
 
 if [[ -z "$env_value" ]]; then
     echo "FAIL: ${ENV_VAR} is set but has an empty value." >&2
