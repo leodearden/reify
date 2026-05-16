@@ -801,7 +801,13 @@ where
                     thread::sleep(Duration::from_millis(10));
                     continue;
                 }
-                Err(_) => continue,
+                Err(_) => {
+                    // Backoff for non-WouldBlock errors (e.g. EMFILE on
+                    // a constrained CI box) so the accept loop doesn't
+                    // peg a CPU until the test's overall timeout.
+                    thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
             };
             // Restore blocking semantics on the accepted stream so the
             // BufReader inside read_request_body() doesn't busy-loop.
@@ -1170,6 +1176,50 @@ mod http_loader {
             Some(125),
             "connection refused must exit 125; stderr: {}",
             String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// Sweep path via HTTP loader: server returns a well-formed JSON-RPC
+    /// envelope but the `tools/call get_tasks` result lacks the `tasks`
+    /// array. The loader must refuse this — otherwise the sweep would
+    /// silently return zero tasks and exit 0, looking healthy while
+    /// actually masking a server-side bug. Guards the `missing or
+    /// non-array \`tasks\` field` branch in `FusedMemoryClient::get_tasks`.
+    #[test]
+    fn sweep_via_http_loader_malformed_tasks_payload_exits_125() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let runs_db = write_empty_runs_db(dir);
+
+        // Responder returns an empty object — well-formed envelope,
+        // missing `tasks` field. The mock wraps this in
+        // `result.structuredContent`, so the wire shape after the MCP
+        // adapter is `{}` (no `tasks` array).
+        let mock = spawn_mock_mcp(|_args| Some(serde_json::json!({})));
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--since", "1970-01-01",
+                "--fused-memory-url", mock.url(),
+                "--runs-db", runs_db.to_str().unwrap(),
+                "--project-root", dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit");
+
+        mock.stop();
+
+        assert_eq!(
+            out.status.code(),
+            Some(125),
+            "malformed get_tasks payload must exit 125; stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("get_tasks") && stderr.contains("tasks"),
+            "stderr should breadcrumb the malformed-tasks reason; got: {stderr}"
         );
     }
 }
