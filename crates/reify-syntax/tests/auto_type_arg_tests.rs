@@ -624,3 +624,60 @@ fn auto_type_arg_missing_auto_keyword_recovery_emits_diagnostic() {
     }
 }
 
+
+// ── Task 3735: bound-missing recovery regression test ───────────────────────
+
+/// Contract regression guard for the bound-missing recovery path in
+/// `lower_type_args_from_node` (task 3735, step-3).
+///
+/// # Probe result (CASE B — no triggering input found)
+///
+/// A CST probe on four candidate malformed inputs was run at task-3735
+/// implementation time (probe results: `bound=Some(("identifier", true))`
+/// for every input that produced an `auto_type_arg` CST node):
+///
+/// - `fn f() -> Bearing<auto: ,> { 0 }`  → bound=Some(MISSING identifier)
+/// - `fn f() -> Bearing<auto: 42> { 0 }` → no `auto_type_arg` node at all
+/// - `fn f() -> Bearing<auto:> { 0 }`    → bound=Some(MISSING identifier)
+/// - `fn f() -> Coupling<auto: A, auto:> { 0 }` → bound=Some(MISSING identifier)
+///
+/// tree-sitter-reify ALWAYS inserts a MISSING `identifier` recovery node for
+/// the `bound` field of `auto_type_arg`, so `child_by_field_name("bound")`
+/// returns `Some(…)` — never `None`.  The push_error else-arm at
+/// `lower_type_args_from_node` lines 704-710 is therefore unreachable from
+/// any currently-known input, mirroring the situation for the auto_keyword-
+/// missing else-arm (see step-1 test for the contract-guard rationale).
+///
+/// # What this test asserts
+///
+/// (a) Parsing completes without a panic (the `lower_type_args_from_node`
+///     code path is exercised across representative malformed `auto:` shapes).
+/// (b) `module.errors` is non-empty — no malformed `auto:` input is silently
+///     accepted with a clean AST.
+///
+/// If a future grammar change makes the bound-missing path reachable, this
+/// test CONTINUES TO PASS (push_error fires, errors stays non-empty).
+#[test]
+fn auto_type_arg_missing_bound_emits_diagnostic() {
+    // CASE B probe set: inputs where tree-sitter inserts a MISSING `identifier`
+    // for the `bound` field rather than returning None from
+    // child_by_field_name("bound").  All produce ≥1 ERROR/MISSING in the CST,
+    // triggering the AC#1 scan and surfacing ≥1 entry in module.errors.
+    let probes: &[&str] = &[
+        "fn f() -> Bearing<auto: ,> { 0 }",
+        "fn f() -> Bearing<auto:> { 0 }",
+        "fn f() -> Coupling<auto: A, auto:> { 0 }",
+    ];
+    for source in probes {
+        let m = reify_syntax::parse(source, ModulePath::single("t"));
+        // (a) No panic: reaching this line proves the parse completed.
+        // (b) Non-empty errors: malformed `auto:` must never be silently
+        //     accepted with a clean AST.
+        assert!(
+            !m.errors.is_empty(),
+            "expected ≥1 parse error for malformed auto input {source:?}; \
+             module.errors was empty — a malformed `auto:` input is being \
+             silently accepted with a clean AST"
+        );
+    }
+}
