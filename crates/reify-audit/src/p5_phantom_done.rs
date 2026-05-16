@@ -97,7 +97,7 @@ fn check_with_target(ctx: &AuditContext, target_task_id: Option<&str>) -> Vec<Fi
 
 /// Per-task pass set shared by [`check_pre_done`] (D-1 hot path, O(1) lookup)
 /// and the inner loop of [`check_with_target`] (periodic sweep, O(n) iteration).
-/// Centralising the pass list here prevents drift when future P1/P2 detectors
+/// Centralising the pass list here prevents drift when future per-task detectors
 /// join the per-task pass set — they get added in exactly one place.
 fn check_task(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Finding> {
     if meta.status != "done" {
