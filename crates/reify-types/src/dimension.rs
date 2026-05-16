@@ -1307,8 +1307,8 @@ mod tests {
     #[test]
     fn thermal_conductivity_dimension_exponents() {
         // W/(m·K) = POWER / (LENGTH · TEMPERATURE)
-        let expected = DimensionVector::POWER
-            .div(&DimensionVector::LENGTH.mul(&DimensionVector::TEMPERATURE));
+        let expected =
+            DimensionVector::POWER.div(&DimensionVector::LENGTH.mul(&DimensionVector::TEMPERATURE));
         assert_eq!(DimensionVector::THERMAL_CONDUCTIVITY, expected);
         assert_eq!(
             DimensionVector::THERMAL_CONDUCTIVITY.canonical_name(),
@@ -1319,8 +1319,8 @@ mod tests {
     #[test]
     fn specific_heat_dimension_exponents() {
         // J/(kg·K) = ENERGY / (MASS · TEMPERATURE)
-        let expected = DimensionVector::ENERGY
-            .div(&DimensionVector::MASS.mul(&DimensionVector::TEMPERATURE));
+        let expected =
+            DimensionVector::ENERGY.div(&DimensionVector::MASS.mul(&DimensionVector::TEMPERATURE));
         assert_eq!(DimensionVector::SPECIFIC_HEAT, expected);
         assert_eq!(
             DimensionVector::SPECIFIC_HEAT.canonical_name(),

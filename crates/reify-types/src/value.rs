@@ -168,10 +168,7 @@ impl SampledField {
             data: _,
             oob_emitted: _,
         } = self;
-        if name != &other.name
-            || kind != &other.kind
-            || interpolation != &other.interpolation
-        {
+        if name != &other.name || kind != &other.kind || interpolation != &other.interpolation {
             return false;
         }
         let vecs_bit_eq = |xs: &[f64], ys: &[f64]| -> bool {
@@ -1617,7 +1614,11 @@ impl Value {
                 dimension,
             } => {
                 let (display_value, unit) = dimension.to_display_units(*si_value);
-                Some((display_value, format_display_number(display_value), unit.to_string()))
+                Some((
+                    display_value,
+                    format_display_number(display_value),
+                    unit.to_string(),
+                ))
             }
             Value::Option(Some(inner)) => inner.format_display_triple(),
             _ => None,
@@ -8022,8 +8023,8 @@ mod tests {
     fn sampled_field_grid_metadata_eq_positive_zero_vs_negative_zero_returns_false() {
         let mut a = sample_field_1d_fixture();
         let mut b = sample_field_1d_fixture();
-        a.spacing[0] = 0.0_f64;           // +0.0
-        b.spacing[0] = -0.0_f64;          // -0.0  (different bit pattern)
+        a.spacing[0] = 0.0_f64; // +0.0
+        b.spacing[0] = -0.0_f64; // -0.0  (different bit pattern)
         assert!(
             !a.grid_metadata_eq(&b),
             "+0.0 and -0.0 must compare as different (bit-equality semantics)"
@@ -8058,9 +8059,8 @@ mod tests {
             si_value: 0.0042,
             dimension: DimensionVector::LENGTH,
         };
-        let (display_value, formatted, unit) = v
-            .format_display_triple()
-            .expect("Scalar must return Some");
+        let (display_value, formatted, unit) =
+            v.format_display_triple().expect("Scalar must return Some");
         assert!(
             (display_value - 4.2).abs() < 1e-10,
             "display_value must be 4.2, got {}",
@@ -8081,9 +8081,8 @@ mod tests {
             si_value: 0.080,
             dimension: DimensionVector::LENGTH,
         };
-        let (display_value, formatted, unit) = v
-            .format_display_triple()
-            .expect("Scalar must return Some");
+        let (display_value, formatted, unit) =
+            v.format_display_triple().expect("Scalar must return Some");
         assert!(
             (display_value - 80.0).abs() < 1e-10,
             "display_value must be 80.0, got {}",
@@ -8150,5 +8149,4 @@ mod tests {
             "distinct-bit-pattern NaN values must compare as unequal (NaN bit-equality contract)"
         );
     }
-
 }
