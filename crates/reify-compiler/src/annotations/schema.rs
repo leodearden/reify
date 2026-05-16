@@ -94,6 +94,10 @@ pub(crate) struct AnnotationSchema {
     pub(crate) flag_set: Option<&'static [&'static str]>,
     /// Policy for extra positional arguments beyond `args`.
     pub(crate) on_extra: ExtraArgsPolicy,
+    /// `@<name>` label string used in context-mismatch diagnostics.
+    /// Stored as a `&'static str` literal to eliminate the `format!("@{}", name)`
+    /// allocation per warning and to pin label to a single source of truth.
+    pub(crate) label: &'static str,
     /// Per-annotation arg-shape checker. `None` for annotations with no arg rules.
     /// Unified signature `fn(&Annotation, &str, &mut Vec<Diagnostic>)` so all helpers
     /// share a single fn-pointer type; helpers that don't need `context` accept `_context`.
@@ -133,6 +137,7 @@ fn build_registry() -> HashMap<&'static str, AnnotationSchema> {
         reify_types::TEST_ANNOTATION,
         AnnotationSchema {
             name: reify_types::TEST_ANNOTATION,
+            label: "@test",
             valid_contexts: &["structure", "occurrence", "function", "constraint_def"],
             args: &[],
             flag_set: None,
@@ -146,6 +151,7 @@ fn build_registry() -> HashMap<&'static str, AnnotationSchema> {
         reify_types::DEPRECATED_ANNOTATION,
         AnnotationSchema {
             name: reify_types::DEPRECATED_ANNOTATION,
+            label: "@deprecated",
             valid_contexts: ALL_VALID_CONTEXTS,
             args: &[],
             flag_set: None,
@@ -159,6 +165,7 @@ fn build_registry() -> HashMap<&'static str, AnnotationSchema> {
         reify_types::OPTIMIZED_ANNOTATION,
         AnnotationSchema {
             name: reify_types::OPTIMIZED_ANNOTATION,
+            label: "@optimized",
             valid_contexts: &["structure", "occurrence", "constraint_def", "function"],
             args: &[],
             flag_set: None,
@@ -172,6 +179,7 @@ fn build_registry() -> HashMap<&'static str, AnnotationSchema> {
         reify_types::SOLVER_HINT_ANNOTATION,
         AnnotationSchema {
             name: reify_types::SOLVER_HINT_ANNOTATION,
+            label: "@solver_hint",
             valid_contexts: &["structure", "occurrence", "param", "let"],
             args: &[],
             flag_set: None,
@@ -185,6 +193,7 @@ fn build_registry() -> HashMap<&'static str, AnnotationSchema> {
         reify_types::SHELL_ANNOTATION,
         AnnotationSchema {
             name: reify_types::SHELL_ANNOTATION,
+            label: "@shell",
             valid_contexts: &["structure", "occurrence"],
             args: &[],
             flag_set: None,
@@ -198,6 +207,7 @@ fn build_registry() -> HashMap<&'static str, AnnotationSchema> {
         reify_types::SOLID_ANNOTATION,
         AnnotationSchema {
             name: reify_types::SOLID_ANNOTATION,
+            label: "@solid",
             valid_contexts: &["structure", "occurrence"],
             args: &[],
             flag_set: None,
@@ -360,7 +370,7 @@ pub(crate) fn validate_via_schema(
                         ))
                         .with_label(DiagnosticLabel::new(
                             ann.span,
-                            format!("@{}", schema.name),
+                            schema.label, // &'static str — no allocation per warning
                         )),
                     );
                 } else {
