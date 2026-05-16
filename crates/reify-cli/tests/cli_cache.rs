@@ -10,8 +10,8 @@ use std::io::{Cursor, Read, Write};
 use std::process::{Command, Stdio};
 
 use reify_eval::persistent_cache::{
-    CacheEntryHeader, ENGINE_VERSION_HASH, ENTRY_FORMAT_VERSION, ElasticResult, read_entry,
-    write_entry,
+    CacheEntryHeader, ENGINE_VERSION_HASH, ENTRY_FORMAT_VERSION, ElasticResult, STALE_TEMPFILE_AGE,
+    read_entry, shard_dir, write_entry,
 };
 use tempfile::tempdir;
 
@@ -1543,5 +1543,71 @@ fn cache_export_with_extra_positional_shows_export_usage() {
     assert!(
         stderr.contains("Usage: reify cache export <hash>"),
         "should show export-specific usage, got: {stderr}"
+    );
+}
+
+#[test]
+fn cli_check_sweeps_stale_persistent_cache_tempfile_at_startup() {
+    // Seed a stale .tmp.* file at the correct cache layout location:
+    //   <cache_root>/<ENGINE_VERSION_HASH>/<shard>/.tmp.stale_seed
+    // Backdate its mtime past STALE_TEMPFILE_AGE, then run
+    // `reify check bracket.ri` with REIFY_CACHE_DIR pointing at the tempdir.
+    //
+    // Asserts: (a) exit success, (b) stale file gone.
+    //
+    // Exercises the wiring added by task 3698: the CLI calls
+    // cache::run_startup_sweep() before the command dispatcher so every
+    // engine-using invocation inherits the cleanup for free.
+    //
+    // RED until step-2 wires cache::run_startup_sweep() into main().
+    use std::fs::{self, File, OpenOptions};
+    use std::io::Write as _;
+    use std::time::{Duration, SystemTime};
+
+    let cache_dir = tempdir().expect("tempdir");
+
+    // 32-char hex hash; two-char prefix "aa" determines the shard subdir.
+    let input_hash = "aa00000000000000000000000000dead";
+    let shard = shard_dir(cache_dir.path(), ENGINE_VERSION_HASH, input_hash);
+    fs::create_dir_all(&shard).expect("create shard dir");
+
+    let stale_path = shard.join(".tmp.stale_seed");
+    {
+        let mut f = File::create(&stale_path).expect("create stale tempfile");
+        f.write_all(b"stale content").expect("write stale content");
+    }
+
+    // Backdate mtime to > STALE_TEMPFILE_AGE (1 h) in the past; 2-min buffer
+    // guards against races on slow CI machines.
+    let stale_mtime = SystemTime::now() - (STALE_TEMPFILE_AGE + Duration::from_secs(120));
+    let times = std::fs::FileTimes::new().set_modified(stale_mtime);
+    {
+        let file = OpenOptions::new()
+            .write(true)
+            .open(&stale_path)
+            .expect("open stale file to backdate mtime");
+        file.set_times(times).expect("backdate mtime");
+    }
+
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/bracket.ri");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+        .args(["check", fixture.to_str().unwrap()])
+        .env("REIFY_CACHE_DIR", cache_dir.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute reify binary");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "reify check bracket.ri should exit 0; stderr={stderr}"
+    );
+    assert!(
+        !stale_path.exists(),
+        "stale .tmp.* file must be removed by startup sweep; path={stale_path:?}"
     );
 }
