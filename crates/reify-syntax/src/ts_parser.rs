@@ -620,25 +620,19 @@ impl<'a> Lowering<'a> {
                         // lower_param (ts_parser.rs:1582-1592) — auto_keyword is shared between
                         // param-default and type-arg positions (grammar.js:433-436, 654-657).
                         let mut kw_cursor = inner.walk();
-                        // Defensive guard mirroring the bound-missing branch below and the
-                        // `unrecognised expression in fn_param default` precedent at
-                        // ts_parser.rs:1214-1232. The grammar (grammar.js:663-667) requires
-                        // `auto_keyword` as the first child of `auto_type_arg`, and tree-sitter
-                        // inserts a MISSING auto_keyword node under error recovery, so this
-                        // arm is not reachable from a well-formed CST or any currently-known
-                        // malformed CST. It is retained as defense-in-depth so a future
-                        // grammar refactor that weakens the invariant surfaces a diagnostic
-                        // rather than silently dropping the entry (task 3724).
-                        let Some(kw) = inner
+                        let kw_opt = inner
                             .named_children(&mut kw_cursor)
-                            .find(|n| n.kind() == "auto_keyword")
-                        else {
-                            self.push_error(
-                                "auto type-arg missing auto keyword".to_string(),
-                                self.span(inner),
-                            );
-                            continue;
-                        };
+                            .find(|n| n.kind() == "auto_keyword");
+                        // Grammar invariant (grammar.js:663-667): tree-sitter-reify always
+                        // inserts a MISSING `auto_keyword` child for malformed `auto_type_arg`
+                        // nodes (verified by a 15-input CST probe; task 3724), so kw_opt is
+                        // always Some under any currently-known input.  debug_assert makes
+                        // the invariant explicit without adding an untestable recovery path.
+                        debug_assert!(
+                            kw_opt.is_some(),
+                            "auto_type_arg missing auto_keyword child — grammar invariant violated"
+                        );
+                        let Some(kw) = kw_opt else { continue };
                         let free = kw.child_by_field_name("modifier").is_some();
                         // The grammar guarantees a `bound` field (bare identifier) on every
                         // well-formed auto_type_arg. Guard defensively: if error recovery
