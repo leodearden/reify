@@ -1,53 +1,37 @@
 //! Tests for `auto:` / `auto(free):` in `type_arg_list` position (task 3526).
 //!
 //! User-observable signal: `cargo test -p reify-syntax --test auto_type_arg_tests`
-//! passes.  The load-bearing coverage is in the CST-level bound-identifier tests
-//! (`auto_type_arg_cst_bound_identifier_strict`, `_multi_param`) and the
-//! negative-coverage test `auto_type_arg_rejects_unrecognized_modifier`.
+//! passes.  The load-bearing coverage spans three layers:
 //!
-//! A small `parse_pipeline_smoke_auto_type_arg` test pins that
-//! `reify_syntax::parse` returns without panicking on `auto: Seal` in type-arg
-//! position.  It cannot detect grammar regressions on its own — the lowering
-//! pipeline does not propagate CST ERROR nodes from return-type expressions
-//! into `module.errors`.  See the doc comment on
-//! `auto_type_arg_rejects_unrecognized_modifier` for detail.
+//! * **CST level** — `auto_type_arg_cst_bound_identifier_strict`, `_multi_param`,
+//!   `auto_type_arg_cst_strict_has_no_modifier_field`,
+//!   `auto_type_arg_cst_free_has_modifier_field_with_text_free`, and the
+//!   grammar-layer negative test `auto_type_arg_rejects_unrecognized_modifier`.
 //!
-//! AST-shape assertions (e.g. the bound identifier is surfaced in TypeExprKind)
-//! are deferred to sibling task 3477, which wires the lowering extension.
+//! * **AST level** — `auto_type_arg_lowers_to_ast_strict`, `_free`, and
+//!   `auto_type_arg_multi_param_lowers_both` (task 3665: `TypeExprKind::Auto`
+//!   variant + `lower_type_args_from_node` extension).
+//!
+//! * **Error propagation** — `auto_type_arg_cst_error_propagates_to_module_errors`
+//!   and `auto_type_arg_clean_input_has_no_spurious_errors` (task 3665: CST ERROR
+//!   nodes inside `type_arg_list` are now surfaced in `module.errors`).
+//!
+//! Task 3662 references task 3665 as its gate for parse-level free/multi-param
+//! coverage; the lowering extension (Auto variant + ERROR propagation) landed here.
 
 use reify_types::ModulePath;
 
 mod common;
 use common::{find_cst_node, find_outermost_cst_nodes, make_ts_parser};
 
-/// Recursive helper: returns `true` if any node in `root`'s subtree satisfies
-/// `is_error() || is_missing() || kind == "ERROR"`.
-fn subtree_has_error(node: tree_sitter::Node) -> bool {
-    if node.is_error() || node.is_missing() || node.kind() == "ERROR" {
-        return true;
-    }
-    let mut cursor = node.walk();
-    if cursor.goto_first_child() {
-        loop {
-            if subtree_has_error(cursor.node()) {
-                return true;
-            }
-            if !cursor.goto_next_sibling() {
-                break;
-            }
-        }
-    }
-    false
-}
-
 // ── Parse-pipeline smoke check ──────────────────────────────────────────────
 
 #[test]
 fn parse_pipeline_smoke_auto_type_arg() {
-    // No assertion beyond "does not panic": the lowering pipeline does not
-    // propagate CST ERROR nodes from return-type expressions into module.errors,
-    // so a meaningful grammar-regression check has to live at the CST level.
-    // See `auto_type_arg_rejects_unrecognized_modifier` for that load-bearing guard.
+    // Keeps the "does not panic" contract for well-formed auto type-args.
+    // Richer assertions (Auto variant, error propagation) live in the step-1 /
+    // step-3 tests below.  The grammar-layer negative test is
+    // `auto_type_arg_rejects_unrecognized_modifier`.
     let _ = reify_syntax::parse(
         "fn f() -> Bearing<auto: Seal> { 0 }",
         ModulePath::single("test"),
@@ -170,11 +154,10 @@ fn auto_type_arg_cst_bound_identifiers_multi_param() {
 // type-arg position.  If someone widens `auto_keyword` to accept arbitrary
 // identifiers, this test will fail and force an explicit decision.
 //
-// Note: this test operates at the CST level rather than via `module.errors`.
-// The `reify_syntax` lowering pipeline does not propagate CST ERROR nodes that
-// appear inside function return-type expressions to `module.errors` (that gap
-// is in `ts_parser.rs`, outside this task's scope).  Using the tree-sitter API
-// directly is the correct layer for a grammar-layer regression guard.
+// This CST-level test guards that the grammar PRODUCES an ERROR node.  The
+// higher-level test `auto_type_arg_cst_error_propagates_to_module_errors`
+// (task 3665, step-3) guards that the lowering pipeline propagates that ERROR
+// into `module.errors`.  Both layers are complementary.
 
 /// `auto(constrained): Seal` must produce a CST ERROR node in type-arg position.
 ///
@@ -213,12 +196,11 @@ fn auto_type_arg_rejects_unrecognized_modifier() {
     );
 }
 
-// ── Step-1 (task 3665): RED tests — TypeExprKind::Auto variant ───────────────
+// ── Step-1/2 (task 3665): TypeExprKind::Auto variant — GREEN ────────────────
 //
-// These tests reference `reify_syntax::TypeExprKind::Auto { free, bound }` which
-// does not exist yet.  They are intentionally non-compiling (the compile failure
-// IS the RED signal).  They turn green in step-2 when the variant is added and
-// lower_type_args_from_node is extended.
+// Added in step-1 as non-compiling RED tests (TypeExprKind::Auto was absent);
+// turned GREEN in step-2 when the variant was added to lib.rs and
+// lower_type_args_from_node was extended to handle auto_type_arg children.
 
 /// Helper: parse `source`, find the single Function declaration, and return its
 /// return-type's `type_args` slice. Panics with a clear message if any step fails.
@@ -274,38 +256,12 @@ fn auto_type_arg_lowers_to_ast_free() {
     }
 }
 
-// ── pre-1 characterization tests (task 3665) ─────────────────────────────────
-//
-// These pin current behavior to de-risk AC#1 placement and will be removed in
-// step-6 of task 3665 once the real tests land and supersede them.
-
-/// Characterization: the CST ERROR node for `auto(constrained): Seal` lands
-/// *within* the `type_arg_list` subtree, not above it.
-///
-/// This confirms that `lower_type_args_from_node`'s inner subtree scan is the
-/// correct placement for AC#1 ERROR detection. If this assertion were to fail
-/// (the ERROR escaped above `type_arg_list`), the call-site approach would need
-/// to be adjusted — but it passes, so the placement stands.
-///
-/// Removed in step-6 when `auto_type_arg_cst_error_propagates_to_module_errors`
-/// covers the same guarantee at the higher-level parse API.
-#[test]
-fn pre1_error_node_is_within_type_arg_list_subtree() {
-    let source = "fn f() -> Bearing<auto(constrained): Seal> { 0 }";
-    let mut parser = make_ts_parser();
-    let tree = parser.parse(source.as_bytes(), None).expect("parse failed");
-    assert!(tree.root_node().has_error(), "precondition: tree must have an error");
-
-    let type_arg_list = find_cst_node(tree.root_node(), "type_arg_list")
-        .expect("expected a type_arg_list node in the CST for the `Bearing<...>` type");
-
-    assert!(
-        subtree_has_error(type_arg_list),
-        "expected an ERROR/MISSING node within the type_arg_list subtree; \
-         if this fails, lower_type_args_from_node cannot detect the error internally \
-         and the detection must move to the call-site (a follow-up for task 3665)"
-    );
-}
+// pre-1 characterization tests (task 3665) were removed in step-6:
+// - pre1_error_node_is_within_type_arg_list_subtree: the higher-level
+//   auto_type_arg_cst_error_propagates_to_module_errors (step-3) covers the
+//   same guarantee; the CST-placement characterization is no longer needed.
+// - pre1_silent_drop_auto_type_arg_before_3665: removed in step-2 when the
+//   TypeExprKind::Auto lowering made the "silent drop" assertion contradictory.
 
 // pre1_silent_drop_auto_type_arg_before_3665 was removed in step-2 of task 3665:
 // the lowering now surfaces auto_type_arg children as TypeExprKind::Auto, so the
