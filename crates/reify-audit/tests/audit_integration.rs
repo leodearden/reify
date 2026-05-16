@@ -78,6 +78,95 @@ const DAY: i64 = 86_400;
 mod tests {
     use super::*;
 
+    /// Seeded incident #2 — P1 producer-orphan, synthetic cluster C-04 shape:
+    /// public symbol `resolve_unique_by_attribute` introduced by a done task
+    /// 15 days ago (past the 14-day grace window); zero workspace callers;
+    /// no audit_foundation or pending consumer task → exactly one Medium finding.
+    #[test]
+    fn p1_producer_orphan_c04_shape_flagged_medium_post_grace() {
+        // 15 days past done-flip: strictly beyond the 14-day grace window.
+        let done_at = NOW - 15 * DAY;
+
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        // P1 issues zero SQL; in-memory connection satisfies AuditContext.conn.
+        let git = MockGitOps::new(); // P1 doesn't touch git
+
+        let mut jc = MockJCodemunchOps::new();
+        jc.set_changed_symbols(
+            "main",
+            done_at,
+            vec![ChangedSymbol {
+                name: "resolve_unique_by_attribute".to_string(),
+                file: "crates/reify-eval/src/selector_resolution.rs".to_string(),
+                line: 42,
+                has_allow_dead_code: false,
+                has_cfg_test: false,
+                g_allow_marker: None,
+            }],
+        );
+        // Zero callers → true orphan.
+        jc.set_find_references("resolve_unique_by_attribute", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "7301".to_string(),
+            TaskMetadata {
+                task_id: "7301".to_string(),
+                status: "done".to_string(),
+                files: vec![],
+                done_provenance: None,
+                title: "Wire persistent naming resolution".to_string(),
+                prd: Some("docs/persistent-naming-v2.md".to_string()),
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: Some(done_at),
+            },
+        );
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: Some(NOW),
+        };
+
+        let findings = p1_producer_orphan::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly one P1 finding; got {:?}",
+            findings
+        );
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::P1ProducerOrphan, "wrong pattern: {:?}", f);
+        assert_eq!(
+            f.severity,
+            Severity::Medium,
+            "15 days > 14-day grace → Medium; got {:?}",
+            f.severity
+        );
+        assert_eq!(f.task_id, "7301");
+        // Evidence must include EvidenceRef::File for the symbol's declaring file.
+        assert!(
+            f.evidence.iter().any(|e| matches!(
+                e,
+                EvidenceRef::File { path } if path == "crates/reify-eval/src/selector_resolution.rs"
+            )),
+            "expected EvidenceRef::File for selector_resolution.rs; got {:?}",
+            f.evidence
+        );
+        // Summary must mention the grace window in the post-grace wording.
+        assert!(
+            f.summary.to_lowercase().contains("grace window"),
+            "summary must mention grace window; got {:?}",
+            f.summary
+        );
+    }
+
     /// Seeded incident #1 — P5 phantom-done, May-09 task-3242 shape:
     /// kind=merged, claimed commit's diff does NOT cover `metadata.files`;
     /// `git log main --grep` returns empty (no sibling-FF rescue).
