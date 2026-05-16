@@ -1704,6 +1704,29 @@ mod tests {
         }
     }
 
+    /// Pins the empty-`available` rendering boundary: when the caller passes
+    /// `&[]` (e.g. a dispatcher whose inputs were realised in zero reprs, or
+    /// a future op that demands a fresh-synthesis repr from nothing), the
+    /// available-reprs list must render as `[]` rather than panicking or
+    /// producing a malformed string like `[, ]`. Locks the rendering
+    /// contract that downstream tasks δ/ε (3435/3436) can rely on when
+    /// wiring this builder into op-execution. Also implicitly covers
+    /// the dedup contract: `BTreeSet` silently drops duplicates, which is
+    /// load-bearing for deterministic rendering — empty input is the
+    /// degenerate-but-valid case at one end of that spectrum.
+    #[test]
+    fn no_kernel_chain_diagnostic_renders_empty_available_as_brackets() {
+        let diag = no_kernel_chain_diagnostic(Operation::BooleanUnion, ReprKind::BRep, &[]);
+
+        assert!(
+            diag.message.contains("[]"),
+            "empty `available` slice must render as `[]` so the message stays \
+             well-formed when the dispatcher fails before any input is \
+             realised (got: {:?})",
+            diag.message,
+        );
+    }
+
     /// Pins the wire-contract of [`kernel_pragma_unsatisfiable_diagnostic`]:
     /// `Severity::Warning` + `Some(DiagnosticCode::KernelPragmaUnsatisfiable)`.
     /// Warning (not Error) per PRD `docs/prds/v0_3/multi-kernel-phase-3.md`
