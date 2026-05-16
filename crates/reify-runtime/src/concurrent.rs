@@ -42,8 +42,19 @@ use crate::warm_startable_assert::assert_warm_startable_coextensive;
 ///   registry.contains_kind(kind)` for every variant in `NodeKind::ALL`.
 ///   The assertion uses `debug_assert_eq!`, so release builds compile to a
 ///   no-op even when `Some`. `Default` is `None` to preserve every existing
-///   scheduler test — production binaries opt in once a Resolution-side
-///   `WarmStartable` producer lands (see PRD §5 B5).
+///   scheduler test.
+///
+///   **Known gap (PRD §5 B5):** `NodeKind::Resolution` declares
+///   `WARM_STARTABLE` in [`reify_types::NodeKind::default_traits`] but no
+///   producer crate currently submits a
+///   `WarmStartableRegistration { kind: NodeKind::Resolution }` into
+///   `inventory`. Passing `Some(WarmStartableRegistry::from_inventory())` in
+///   debug builds therefore trips the *declared-without-registered* direction
+///   of the assertion. Production opt-in is blocked on a Resolution-side
+///   `WarmStartable` producer landing (likely in `reify-constraints` or a
+///   sibling solver-adapter crate); see the note on
+///   `reify_types::NodeKind::Resolution` and PRD §5 B5 in
+///   `docs/prds/v0_3/node-traits-unification.md`.
 pub struct SchedulerConfig<'a> {
     /// Optional commitment tracker for commitment-aware cancellation.
     pub commitment_tracker: Option<Arc<Mutex<CommitmentTracker>>>,

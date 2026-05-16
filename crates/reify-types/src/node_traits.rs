@@ -177,6 +177,20 @@ pub enum NodeKind {
     ///
     /// See §2.1 "Node Taxonomy" and §7.6 "Node Traits" in
     /// `docs/reify-implementation-architecture.md`.
+    ///
+    /// **PRD §5 B5 gap (open):** Resolution declares `WARM_STARTABLE` here but
+    /// **no producer crate** currently submits a
+    /// `WarmStartableRegistration { kind: NodeKind::Resolution }`. Until a
+    /// Resolution-side `WarmStartable` producer lands (likely in
+    /// `reify-constraints` or a sibling solver-adapter crate),
+    /// `WarmStartableRegistry::from_inventory()` will fail the bidirectional
+    /// [`crate::WarmStartableRegistry`] coextension check in
+    /// `assert_warm_startable_coextensive` on the *declared-without-registered*
+    /// direction. That's why
+    /// `reify_runtime::concurrent::SchedulerConfig.warm_startable_registry`
+    /// defaults to `None`; the production wiring of `from_inventory()` is
+    /// blocked on this gap. Track via PRD §5 B5 in
+    /// `docs/prds/v0_3/node-traits-unification.md`.
     Resolution,
     /// A compute node (e.g. an @optimized FEA/solver computation). Default traits:
     /// `WARM_STARTABLE | COMMITTABLE`.
@@ -253,11 +267,13 @@ impl NodeKind {
 /// prompt to extend `NodeKind::ALL` accordingly. The function is never
 /// called; its body is type-checked at compile time regardless.
 ///
-/// Belt-and-suspenders alongside the unit tests
-/// `node_kind_all_covers_five_variants` and `_contains_every_variant` —
-/// the tests fire at `cargo test` time, this guard fires at `cargo check`
-/// time, and the two together catch a missing-from-ALL regression at either
-/// surface.
+/// Paired with the `node_kind_all_covers_five_variants` length pin in the
+/// `tests` module below — the const guard catches missing or stale variants
+/// at `cargo check` time, the length pin catches any drift between the const
+/// guard and the slice literal at `cargo test` time. The earlier per-variant
+/// `contains` and duplicate-check tests were dropped after reviewer feedback
+/// noted they were belt-and-suspenders for cases already structurally
+/// prevented by the guard + length pair.
 #[allow(dead_code)]
 const fn _all_exhaustive_guard(k: NodeKind) {
     match k {
@@ -714,6 +730,14 @@ mod tests {
 
     // --- NodeKind::ALL exhaustive const slice (PRD §5 B5 / I-3) ---
 
+    /// Length pin on [`NodeKind::ALL`]: paired with the compile-time
+    /// `_all_exhaustive_guard` match (in this file, above) this is sufficient
+    /// to catch every realistic drift mode — adding a new variant fails
+    /// compilation in the guard, removing-and-not-shortening-`ALL` fails
+    /// compilation in the guard, removing-and-shortening-`ALL` fails this
+    /// length pin. Per-variant `contains` and duplicate-check tests were
+    /// dropped after reviewer feedback noted they were belt-and-suspenders
+    /// for cases already structurally prevented.
     #[test]
     fn node_kind_all_covers_five_variants() {
         // ALL must enumerate the closed 5-variant universe used by the
@@ -721,23 +745,5 @@ mod tests {
         // (PRD §5 B5). A literal-length pin here keeps any future variant
         // addition from silently skipping the assertion's coverage.
         assert_eq!(NodeKind::ALL.len(), 5);
-    }
-
-    #[test]
-    fn node_kind_all_has_no_duplicates() {
-        let mut seen = std::collections::HashSet::new();
-        for k in NodeKind::ALL {
-            assert!(seen.insert(k), "duplicate variant in NodeKind::ALL: {k:?}");
-        }
-    }
-
-    #[test]
-    fn node_kind_all_contains_every_variant() {
-        use NodeKind::*;
-        assert!(NodeKind::ALL.contains(&Value));
-        assert!(NodeKind::ALL.contains(&Constraint));
-        assert!(NodeKind::ALL.contains(&Realization));
-        assert!(NodeKind::ALL.contains(&Resolution));
-        assert!(NodeKind::ALL.contains(&Compute));
     }
 }
