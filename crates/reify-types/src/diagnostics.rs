@@ -1845,6 +1845,69 @@ mod tests {
         }
     }
 
+    // --- UnresolvedType tests (task 3721 — E_UNRESOLVED_TYPE) ---
+    // Pairs with every "unresolved type" emit site across the compiler crate:
+    // functions.rs (param, return, field domain/codomain), guards.rs, entity.rs,
+    // expr.rs (lambda param), traits.rs, conformance/checker.rs, type_resolution.rs.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::UnresolvedType` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` and Debug-prints as `"UnresolvedType"`.
+    /// Shape mirrors `diagnostic_code_geometry_unbounded_with_code_round_trips`
+    /// (which targets a different variant); a future enum reorganisation that
+    /// drops `UnresolvedType` is caught here.
+    #[test]
+    fn diagnostic_code_unresolved_type_with_code_round_trips() {
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::UnresolvedType);
+        assert_eq!(d.code, Some(DiagnosticCode::UnresolvedType));
+        assert_eq!(
+            format!("{:?}", DiagnosticCode::UnresolvedType),
+            "UnresolvedType"
+        );
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::UnresolvedType` serializes as
+    /// `"UnresolvedType"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_unresolved_type_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::UnresolvedType).unwrap();
+        assert_eq!(s, "\"UnresolvedType\"");
+    }
+
+    // --- UnresolvedName tests (task 3721 — E_UNRESOLVED_NAME) ---
+    // Pairs with "unresolved name" emit sites: expr.rs:679 (KEY — unbound identifier
+    // in expression context) and annotations.rs:321 (solver-hint collection reference).
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::UnresolvedName` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` and Debug-prints as `"UnresolvedName"`.
+    /// Shape mirrors `diagnostic_code_geometry_unbounded_with_code_round_trips`
+    /// (which targets a different variant); a future enum reorganisation that
+    /// drops `UnresolvedName` is caught here.
+    #[test]
+    fn diagnostic_code_unresolved_name_with_code_round_trips() {
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::UnresolvedName);
+        assert_eq!(d.code, Some(DiagnosticCode::UnresolvedName));
+        assert_eq!(
+            format!("{:?}", DiagnosticCode::UnresolvedName),
+            "UnresolvedName"
+        );
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::UnresolvedName` serializes as
+    /// `"UnresolvedName"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_unresolved_name_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::UnresolvedName).unwrap();
+        assert_eq!(s, "\"UnresolvedName\"");
+    }
+
     /// Pins per-variant severity + variant-existence at the reify-types layer
     /// for all five multi-kernel-phase-3 variants in one table. Although the
     /// dispatcher-side `<builder>_carries_<severity>_severity_and_code` tests
