@@ -590,13 +590,19 @@ fn resolve_cache_root() -> Result<PathBuf, CacheError> {
 /// inherits the cleanup for free without per-command wiring.
 ///
 /// The sweep is best-effort: resolver errors (e.g. `REIFY_CACHE_MAX_BYTES`
-/// parse failure) are silently ignored so the missing sweep never blocks any
-/// command.  The returned `SweepReport` is discarded — callers get the same
+/// parse failure) are logged at `tracing::debug!` level and the sweep is
+/// skipped — matching the GUI's policy so both entry points behave identically
+/// on bad env.  The returned `SweepReport` is discarded — callers get the same
 /// "never fails startup" contract documented on
 /// [`reify_eval::sweep_persistent_cache_at_startup`].
 pub(crate) fn run_startup_sweep() {
-    if let Ok(cache_root) = resolve_cache_root() {
-        let _ = reify_eval::sweep_persistent_cache_at_startup(&cache_root);
+    match resolve_cache_root() {
+        Ok(cache_root) => {
+            let _ = reify_eval::sweep_persistent_cache_at_startup(&cache_root);
+        }
+        Err(e) => {
+            tracing::debug!("persistent-cache sweep skipped — resolver error: {e}");
+        }
     }
 }
 

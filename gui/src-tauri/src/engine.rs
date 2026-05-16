@@ -31,12 +31,13 @@ use crate::types::{
 /// Test-friendly seam: sweep a caller-supplied `cache_root`.
 ///
 /// Thin wrapper over [`reify_eval::sweep_persistent_cache_at_startup`] exposed
-/// as a `pub` function so unit tests can drive a hermetic `TempDir` without
-/// manipulating process env (which is not thread-safe in in-process tests).
+/// as a `pub(crate)` function so unit tests can drive a hermetic `TempDir`
+/// without manipulating process env (which is not thread-safe in in-process
+/// tests).  Not part of `reify_gui`'s public API.
 ///
 /// Returns the [`reify_eval::persistent_cache::SweepReport`] so tests can
 /// assert on `tempfiles_removed` / `orphan_dirs_removed`.
-pub fn sweep_persistent_cache(
+pub(crate) fn sweep_persistent_cache(
     cache_root: &std::path::Path,
 ) -> reify_eval::persistent_cache::SweepReport {
     reify_eval::sweep_persistent_cache_at_startup(cache_root)
@@ -51,12 +52,12 @@ pub fn sweep_persistent_cache(
 ///
 /// Resolution mirrors `reify-cli`'s `resolve_cache_root` pipeline:
 /// `REIFY_CACHE_DIR` → `REIFY_CACHE_MAX_BYTES` / `HOME` / `XDG_CACHE_HOME`.
-/// On resolver error (e.g. malformed `REIFY_CACHE_MAX_BYTES`) the function
-/// falls back to `default_cache_dir(home, xdg_cache_home)` so the sweep still
-/// runs on the standard path — the wrapper's contract guarantees a silent no-op
-/// on a missing or inaccessible `cache_root`.  The `SweepReport` is discarded.
+/// On resolver error (e.g. malformed `REIFY_CACHE_MAX_BYTES`) the sweep is
+/// skipped and the error is logged at `tracing::debug!` level — matching the
+/// CLI's policy so both entry points behave identically on bad env.
+/// The `SweepReport` is discarded.
 pub fn bootstrap_persistent_cache_sweep() {
-    use reify_config::cache::{CacheResolverInputs, default_cache_dir, resolve_cache};
+    use reify_config::cache::{CacheResolverInputs, resolve_cache};
 
     let env_dir = std::env::var("REIFY_CACHE_DIR").ok();
     let env_max_bytes = std::env::var("REIFY_CACHE_MAX_BYTES").ok();
@@ -73,13 +74,14 @@ pub fn bootstrap_persistent_cache_sweep() {
         xdg_cache_home: xdg_cache_home.as_deref(),
     };
 
-    let cache_root = resolve_cache(&inputs)
-        .map(|r| r.dir)
-        .unwrap_or_else(|_| {
-            default_cache_dir(std::path::Path::new(&home), xdg_cache_home.as_deref())
-        });
-
-    let _ = sweep_persistent_cache(&cache_root);
+    match resolve_cache(&inputs) {
+        Ok(r) => {
+            let _ = sweep_persistent_cache(&r.dir);
+        }
+        Err(e) => {
+            tracing::debug!("persistent-cache sweep skipped — resolver error: {e}");
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
