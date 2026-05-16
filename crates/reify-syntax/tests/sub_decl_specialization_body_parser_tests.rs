@@ -351,8 +351,9 @@ fn sub_decl_collection_form_regression() {
 // Disambiguation between the collection arm (`sub a : List<Foo>`) and the
 // specialization arm (`sub a : Foo<Bar>`) relies on two documented tree-sitter
 // lexer rules — NOT on `token(prec(...))` (which was considered and rejected
-// because it overrides rule #1 and breaks the longest-match case; see
-// grammar.js lines 523–528 and escalation esc-3712-201):
+// because it overrides rule #1 and breaks the longest-match case; see the
+// "Disambiguation from the collection arm" comment on `sub_declaration` in
+// tree-sitter-reify/grammar.js and escalation esc-3712-201):
 //
 //   Rule #1 (longest-match, evaluated FIRST): for `Listicle<Foo>` the
 //   `$.identifier` regex matches 8 chars vs `'List'`'s 4 — identifier wins.
