@@ -94,6 +94,10 @@ impl FusedMemoryClient {
     }
 
     fn initialize(&self) -> Result<(), LoadError> {
+        // `post()` checks every JSON-RPC response for the `error` field, so
+        // a server that 200-OKs `initialize` with a `{"error":{...}}` body
+        // surfaces here instead of being silently accepted and masked as a
+        // confusing `get_task` failure later.
         let _ = self.post(&json!({
             "jsonrpc": "2.0",
             "id": self.next_id(),
@@ -122,6 +126,10 @@ impl FusedMemoryClient {
     }
 
     fn post(&self, payload: &Value) -> Result<Value, LoadError> {
+        // Maps each `ureq::Error` shape (Status/Transport) to
+        // `LoadError::Http(format!("POST {url}: {e}"))` so the
+        // connection-refused / timeout / non-2xx breadcrumb is preserved
+        // on the binary's stderr before it exits 125.
         let response = self
             .agent
             .post(&self.url)
@@ -143,37 +151,55 @@ impl FusedMemoryClient {
             .into_string()
             .map_err(|e| LoadError::Http(format!("read body: {e}")))?;
 
-        if ctype.contains("text/event-stream") {
+        let value = if ctype.contains("text/event-stream") {
+            let mut parsed: Option<Value> = None;
             for line in body.lines() {
                 if let Some(rest) = line.strip_prefix("data:") {
-                    return serde_json::from_str(rest.trim()).map_err(|e| {
+                    parsed = Some(serde_json::from_str(rest.trim()).map_err(|e| {
                         LoadError::Protocol(format!(
                             "SSE data parse: {e}; body={body}"
                         ))
-                    });
+                    })?);
+                    break;
                 }
             }
-            Err(LoadError::Protocol(format!(
-                "no SSE data line in response: {body}"
-            )))
+            parsed.ok_or_else(|| {
+                LoadError::Protocol(format!("no SSE data line in response: {body}"))
+            })?
         } else if body.is_empty() {
-            Ok(Value::Null)
+            return Ok(Value::Null);
         } else {
-            serde_json::from_str(&body)
-                .map_err(|e| LoadError::Protocol(format!("body parse: {e}; body={body}")))
+            serde_json::from_str(&body).map_err(|e| {
+                LoadError::Protocol(format!("body parse: {e}; body={body}"))
+            })?
+        };
+
+        // Centralised JSON-RPC error-envelope check. Every response that
+        // goes through `post()` (initialize, notifications/initialized,
+        // tools/call) gets the same treatment, so a server that 200-OKs
+        // any of them with `{"error":{...}}` fails loudly here instead of
+        // being silently accepted and masked as a downstream error.
+        if let Some(err) = value.get("error") {
+            return Err(LoadError::Protocol(format!("JSON-RPC error: {err}")));
         }
+        Ok(value)
     }
 
     fn call_tool(&self, name: &str, arguments: Value) -> Result<Value, LoadError> {
-        let resp = self.post(&json!({
-            "jsonrpc": "2.0",
-            "id": self.next_id(),
-            "method": "tools/call",
-            "params": {"name": name, "arguments": arguments},
-        }))?;
-        if let Some(err) = resp.get("error") {
-            return Err(LoadError::Protocol(format!("{name}: {err}")));
-        }
+        let resp = self
+            .post(&json!({
+                "jsonrpc": "2.0",
+                "id": self.next_id(),
+                "method": "tools/call",
+                "params": {"name": name, "arguments": arguments},
+            }))
+            .map_err(|e| match e {
+                // Decorate Protocol errors from `post()` with the tool name so
+                // the breadcrumb says e.g. "get_task: JSON-RPC error: …"
+                // instead of a bare "JSON-RPC error: …".
+                LoadError::Protocol(m) => LoadError::Protocol(format!("{name}: {m}")),
+                other => other,
+            })?;
         let result = resp.get("result").cloned().unwrap_or(Value::Null);
         if let Some(s) = result.get("structuredContent").cloned() {
             return Ok(s);
@@ -224,11 +250,24 @@ impl FusedMemoryClient {
             "get_tasks",
             json!({"project_root": project_root, "with_subtasks": true}),
         )?;
+        // Refuse to treat a missing/non-array `tasks` field as an
+        // (empty) success — a server response like `{}` or an
+        // unexpectedly-shaped success payload would otherwise let the
+        // sweep silently return zero tasks and exit 0 (looking
+        // healthy). Raising Protocol routes through the binary's
+        // load-error arm and exits 125, matching the get_task
+        // refuse-on-malformed contract.
+        let tasks = v
+            .get("tasks")
+            .and_then(|t| t.as_array())
+            .ok_or_else(|| {
+                LoadError::Protocol(format!(
+                    "get_tasks: missing or non-array `tasks` field in response: {v}"
+                ))
+            })?;
         let mut out = Vec::new();
-        if let Some(tasks) = v.get("tasks").and_then(|t| t.as_array()) {
-            for t in tasks {
-                collect_tasks_recursive(t, &mut out);
-            }
+        for t in tasks {
+            collect_tasks_recursive(t, &mut out);
         }
         Ok(out)
     }
@@ -294,6 +333,16 @@ fn task_metadata_from_wire(v: &Value) -> Option<TaskMetadata> {
         .map(String::from);
     let audit_foundation = metadata.get("audit_foundation").and_then(|p| p.as_bool());
 
+    // `done_at` approximation: fused-memory does not currently expose a
+    // dedicated done-flip timestamp on the `get_task`/`get_tasks` payload,
+    // so we fall back to `updatedAt` (last-edit time) for done tasks. This
+    // means any post-done metadata edit (re-label, status round-trip, etc.)
+    // will shift the recorded `done_at` and can subtly affect the P5
+    // detector's time window. The JSON-file loader (`--tasks-file`) gets a
+    // `done_at` field stored explicitly at done-flip time, so the two loader
+    // paths can disagree for the same task. If fused-memory grows a real
+    // `doneAt` field, prefer it here and fall back to `updatedAt` only when
+    // it's absent.
     let done_at = if status == "done" {
         v.get("updatedAt")
             .and_then(|s| s.as_str())
