@@ -34,20 +34,44 @@ fi
 
 The `reify-audit` binary emits **JSON on stderr** and a human-readable summary on **stdout**. Capture stderr to a tempfile so both streams stay cleanly separated:
 
+**Step 1: Materialize a TaskMetadata JSON snapshot from fused-memory.**
+
+The skill executes as an LLM (this Claude session), not as a pure bash script,
+so this step is split into two stages — an MCP-tool call the LLM makes
+directly, and a bash filter step. Do **not** try to pipe the MCP tool through
+`jq` from a shell: `mcp__fused-memory__get_tasks` is a JSON-RPC tool
+invocation that travels over the MCP transport, not a shell command.
+
+1. Create the tempfiles and EXIT trap (bash):
+
+   ```bash
+   SNAPSHOT=$(mktemp /tmp/reify-audit-snapshot-XXXXXX.json)
+   RESPONSE=$(mktemp /tmp/reify-audit-response-XXXXXX.json)
+   TMPFILE=$(mktemp /tmp/reify-audit-XXXXXX.json)
+   trap 'rm -f "$SNAPSHOT" "$RESPONSE" "$TMPFILE"' EXIT
+   ```
+
+2. From the LLM, call `mcp__fused-memory__get_tasks` with
+   `project_root="$REPO_ROOT"` and write the returned JSON object to
+   `$RESPONSE`. (If a pure-bash equivalent is needed — e.g. from a script
+   outside the LLM — use the curl + JSON-RPC recipe in
+   `scripts/reify-audit-predone-wrapper.sh` against
+   `$FUSED_MEMORY_MCP_URL`. The wrapper is the canonical non-LLM path.)
+
+3. Filter the response through the canonical jq sidecar (bash):
+
+   ```bash
+   jq -f "$REPO_ROOT/scripts/reify-audit-snapshot-filter.jq" \
+      < "$RESPONSE" > "$SNAPSHOT"
+   ```
+
+   The filter (`scripts/reify-audit-snapshot-filter.jq`) is the single point
+   of truth, shared with the systemd pre-done hook wrapper. It derives
+   `done_at` from `updatedAt` for done tasks (required for P1).
+
+**Step 2: Invoke reify-audit with the snapshot as `--tasks-file`** (bash):
+
 ```bash
-# Step 1: Materialize a TaskMetadata JSON snapshot from fused-memory.
-# The filter lives in scripts/reify-audit-snapshot-filter.jq (single
-# point of truth, shared with the systemd pre-done hook wrapper).
-# It derives done_at from updatedAt for done tasks (required for P1).
-SNAPSHOT=$(mktemp /tmp/reify-audit-snapshot-XXXXXX.json)
-trap 'rm -f "$SNAPSHOT" "$TMPFILE"' EXIT
-
-mcp__fused-memory__get_tasks project_root="$REPO_ROOT" \
-  | jq -f "$REPO_ROOT/scripts/reify-audit-snapshot-filter.jq" > "$SNAPSHOT"
-
-# Step 2: Invoke reify-audit with the snapshot as --tasks-file.
-TMPFILE=$(mktemp /tmp/reify-audit-XXXXXX.json)
-
 $REIFY_AUDIT_BIN \
   [--task <id>] \
   [--since <iso-date>] \
@@ -63,7 +87,7 @@ EXIT_CODE=$?
 FINDINGS=$(cat "$TMPFILE")
 
 # Clean up (EXIT trap above also covers abnormal exits).
-rm -f "$SNAPSHOT" "$TMPFILE"
+rm -f "$SNAPSHOT" "$RESPONSE" "$TMPFILE"
 ```
 
 **Why a tempfile?** The CLI writes the human-readable summary to stdout and the JSON array to stderr in a single run. A tempfile sink for stderr survives multi-line pretty-printed JSON without the LLM needing to parse a mixed stream inline. `mktemp` generates a collision-free name (`XXXXXX` entropy), safer than a `$$`-based name (which reuses the parent shell PID in long-lived shells and risks stale-file cross-contamination across runs). The `trap 'rm -f "$TMPFILE"' EXIT` guard ensures cleanup even on early exit (parse failure, exception, `Ctrl-C`).
