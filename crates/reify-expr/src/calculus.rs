@@ -2387,4 +2387,72 @@ mod tests {
             other => panic!("expected Value::Field, got {:?}", other),
         }
     }
+
+    // --- n==0 guard regression tests ---
+
+    /// Pin that `compute_numerical_gradient_at_point` returns `Value::Undef` without
+    /// panicking when handed an empty `Value::Point(vec![])` (zero-dimension path).
+    ///
+    /// Today this Undef result is reached via `extract_coords` returning `None` for an
+    /// empty Point (items_to_f64_vec's empty-input → None contract).  After step-02 the
+    /// same Undef result is reached via an explicit `if n == 0` guard, decoupling the
+    /// contract from extract_coords's implementation detail (task 3749).
+    #[test]
+    fn gradient_empty_point_returns_undef_no_panic() {
+        let lambda = make_scalar_lambda("p");
+        let values = ValueMap::new();
+        let ctx = EvalContext::simple(&values);
+        let result = compute_numerical_gradient_at_point(
+            &lambda,
+            &Value::Point(vec![]),
+            &Type::Real,
+            &Type::Real,
+            &ctx,
+        );
+        assert_eq!(result, Value::Undef);
+    }
+
+    /// Pin that `compute_numerical_divergence_at_point` returns `Value::Undef` without
+    /// panicking when handed an empty `Value::Point(vec![])` (zero-dimension path).
+    ///
+    /// Divergence codomain must be scalar (Type::Real) per the function's debug_assert.
+    /// Undef is returned before any arithmetic because no coordinates can be extracted
+    /// from an empty point; the explicit n==0 guard added in step-02 makes this
+    /// contract independently true (task 3749).
+    #[test]
+    fn divergence_empty_point_returns_undef_no_panic() {
+        let lambda = make_scalar_lambda("p");
+        let values = ValueMap::new();
+        let ctx = EvalContext::simple(&values);
+        let result = compute_numerical_divergence_at_point(
+            &lambda,
+            &Value::Point(vec![]),
+            &Type::Real,
+            &Type::Real,
+            &ctx,
+        );
+        assert_eq!(result, Value::Undef);
+    }
+
+    /// Pin that `compute_numerical_laplacian_at_point` returns `Value::Undef` without
+    /// panicking when handed an empty `Value::Point(vec![])` (zero-dimension path).
+    ///
+    /// Laplacian codomain must be scalar (Type::Real) per the function's debug_assert.
+    /// Undef is returned before any arithmetic because no coordinates can be extracted
+    /// from an empty point; the explicit n==0 guard added in step-02 makes this
+    /// contract independently true (task 3749).
+    #[test]
+    fn laplacian_empty_point_returns_undef_no_panic() {
+        let lambda = make_scalar_lambda("p");
+        let values = ValueMap::new();
+        let ctx = EvalContext::simple(&values);
+        let result = compute_numerical_laplacian_at_point(
+            &lambda,
+            &Value::Point(vec![]),
+            &Type::Real,
+            &Type::Real,
+            &ctx,
+        );
+        assert_eq!(result, Value::Undef);
+    }
 }
