@@ -582,6 +582,21 @@ impl<'a> Lowering<'a> {
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             if child.kind() == "type_arg_list" {
+                // AC#1: recursively scan the type_arg_list subtree for any ERROR
+                // or MISSING node (tree-sitter's has_error() does this in O(1)).
+                // Mirrors the "ERROR" => arm in lower_source_file (ts_parser.rs:305-313).
+                // Emit exactly ONE aggregated diagnostic per malformed type_arg_list to
+                // avoid per-ERROR-node spam when recovery produces multiple fragments.
+                // Do NOT early-return: well-formed siblings of the error node are still
+                // lowered so callers see a partial AST instead of an empty type_args list.
+                // ERROR-bearing children naturally fail to match any inner kind branch and
+                // are skipped; only the aggregated diagnostic is emitted.
+                if child.has_error() {
+                    self.push_error(
+                        "syntax error in type argument list".to_string(),
+                        self.span(child),
+                    );
+                }
                 let mut inner_cursor = child.walk();
                 for inner in child.named_children(&mut inner_cursor) {
                     if inner.kind() == "type_expr"
@@ -599,6 +614,35 @@ impl<'a> Lowering<'a> {
                             kind: TypeExprKind::IntegerLiteral(value),
                             span: self.span(inner),
                         });
+                    } else if inner.kind() == "auto_type_arg" {
+                        // Locate the auto_keyword child to check for the free modifier.
+                        // Reuses the same child_by_field_name("modifier").is_some() pattern as
+                        // lower_param (ts_parser.rs:1582-1592) — auto_keyword is shared between
+                        // param-default and type-arg positions (grammar.js:433-436, 654-657).
+                        let mut kw_cursor = inner.walk();
+                        if let Some(kw) = inner
+                            .named_children(&mut kw_cursor)
+                            .find(|n| n.kind() == "auto_keyword")
+                        {
+                            let free = kw.child_by_field_name("modifier").is_some();
+                            // The grammar guarantees a `bound` field (bare identifier) on every
+                            // well-formed auto_type_arg. Guard defensively: if error recovery
+                            // produces an auto_type_arg without a bound, emit a diagnostic and
+                            // skip the entry rather than propagating an empty string into the
+                            // AST (which would corrupt Display output and collect_type_expr_names).
+                            let Some(bound_node) = inner.child_by_field_name("bound") else {
+                                self.push_error(
+                                    "auto type-arg missing bound identifier".to_string(),
+                                    self.span(inner),
+                                );
+                                continue;
+                            };
+                            let bound = self.node_text(bound_node).to_string();
+                            args.push(TypeExpr {
+                                kind: TypeExprKind::Auto { free, bound },
+                                span: self.span(inner),
+                            });
+                        }
                     }
                 }
                 return args;
