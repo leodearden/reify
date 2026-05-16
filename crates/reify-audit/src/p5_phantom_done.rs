@@ -16,6 +16,14 @@ use crate::{AuditContext, EvidenceRef, Finding, GitCommit, Pattern, Severity, Ta
 /// this exact string so the keys line up.
 const MAIN_BASE: &str = "main";
 
+/// Production SQL used by [`has_task_completed_event`] to corroborate a
+/// merged task's `task_completed` event in runs.db. Hoisted to a `pub const`
+/// so the integration test `p5::tests::runs_db_schema_pin` can pin the test
+/// schema against the exact string the detector executes — preventing schema
+/// and query drift.
+pub const PRODUCTION_QUERY: &str =
+    "SELECT 1 FROM events WHERE task_id = ? AND event_type = 'task_completed' LIMIT 1";
+
 /// Run the P5 detector across every `status="done"` task in
 /// `ctx.task_metadata`. Returns one [`Finding`] per phantom-done task.
 ///
@@ -302,9 +310,7 @@ fn has_task_completed_event(
     ctx: &AuditContext,
     task_id: &str,
 ) -> Result<bool, rusqlite::Error> {
-    let mut stmt = ctx.conn.prepare(
-        "SELECT 1 FROM events WHERE task_id = ? AND event_type = 'task_completed' LIMIT 1",
-    )?;
+    let mut stmt = ctx.conn.prepare(PRODUCTION_QUERY)?;
     match stmt.query_row::<i64, _, _>(rusqlite::params![task_id], |row| row.get(0)) {
         Ok(_) => Ok(true),
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
