@@ -587,15 +587,15 @@ impl<'a> Lowering<'a> {
                 // Mirrors the "ERROR" => arm in lower_source_file (ts_parser.rs:305-313).
                 // Emit exactly ONE aggregated diagnostic per malformed type_arg_list to
                 // avoid per-ERROR-node spam when recovery produces multiple fragments.
+                // Do NOT early-return: well-formed siblings of the error node are still
+                // lowered so callers see a partial AST instead of an empty type_args list.
+                // ERROR-bearing children naturally fail to match any inner kind branch and
+                // are skipped; only the aggregated diagnostic is emitted.
                 if child.has_error() {
                     self.push_error(
-                        format!(
-                            "syntax error in type argument list: {}",
-                            self.node_text(child)
-                        ),
+                        "syntax error in type argument list".to_string(),
                         self.span(child),
                     );
-                    return args; // skip lowering a malformed list
                 }
                 let mut inner_cursor = child.walk();
                 for inner in child.named_children(&mut inner_cursor) {
@@ -625,10 +625,19 @@ impl<'a> Lowering<'a> {
                             .find(|n| n.kind() == "auto_keyword")
                         {
                             let free = kw.child_by_field_name("modifier").is_some();
-                            let bound = inner
-                                .child_by_field_name("bound")
-                                .map(|n| self.node_text(n).to_string())
-                                .unwrap_or_default();
+                            // The grammar guarantees a `bound` field (bare identifier) on every
+                            // well-formed auto_type_arg. Guard defensively: if error recovery
+                            // produces an auto_type_arg without a bound, emit a diagnostic and
+                            // skip the entry rather than propagating an empty string into the
+                            // AST (which would corrupt Display output and collect_type_expr_names).
+                            let Some(bound_node) = inner.child_by_field_name("bound") else {
+                                self.push_error(
+                                    "auto type-arg missing bound identifier".to_string(),
+                                    self.span(inner),
+                                );
+                                continue;
+                            };
+                            let bound = self.node_text(bound_node).to_string();
                             args.push(TypeExpr {
                                 kind: TypeExprKind::Auto { free, bound },
                                 span: self.span(inner),
