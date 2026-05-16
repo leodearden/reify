@@ -342,7 +342,7 @@ pub(crate) fn validate_via_schema(
                         ))
                         .with_label(DiagnosticLabel::new(
                             ann.span,
-                            schema.label, // &'static str — eliminates format!("@{}", name) per warning
+                            schema.label, // &'static str — drops the format! machinery (allocation still occurs via Into<String>)
                         )),
                     );
                 } else {
