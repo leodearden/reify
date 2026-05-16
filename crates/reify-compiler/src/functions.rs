@@ -32,6 +32,7 @@ pub(crate) fn compile_function(
             None => {
                 diagnostics.push(
                     Diagnostic::error(format!("unresolved type: {}", p.type_expr))
+                        .with_code(DiagnosticCode::UnresolvedType)
                         .with_label(DiagnosticLabel::new(p.type_expr.span, "unknown type name")),
                 );
                 (Type::Real, false) // fallback; `resolved` flag prevents cascade in default check

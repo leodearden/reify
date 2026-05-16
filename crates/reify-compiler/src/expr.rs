@@ -677,6 +677,7 @@ pub(crate) fn compile_expr_guarded(
                     make_poison_literal(
                         diagnostics,
                         Diagnostic::error(msg)
+                            .with_code(DiagnosticCode::UnresolvedName)
                             .with_label(DiagnosticLabel::new(expr.span, "not found in scope")),
                     )
                 }
