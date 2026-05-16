@@ -2989,7 +2989,7 @@ fn resolve_string_literal_arg(expr: &reify_types::CompiledExpr) -> Option<&str> 
 /// Any unrecognised label returns `None` — the query then relies entirely on
 /// `user_label` and will Unresolve if no `user_label` entry exists in the table.
 // G-allow: task #3463 cap/role vocabulary table; consumer is try_eval_ad_hoc_selector @face/@edge dispatch (same-file, task #3463) + ad_hoc_selector smoke tests
-pub fn cap_kind_translation(label: &str) -> Option<(reify_types::Role, u32)> {
+pub(crate) fn cap_kind_translation(label: &str) -> Option<(reify_types::Role, u32)> {
     use reify_types::{CapKind, Role};
     match label {
         "top" => Some((Role::Cap(CapKind::Top), 0)),
