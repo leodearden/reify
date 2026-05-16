@@ -14,12 +14,12 @@
 //! pre-existing baseline orphans in boundary/elasticity/laplacian/lib/quality
 //! that are outside this task's scope and would make such an assertion spurious.
 //!
-//! Graceful skip: if `python3` or the script are absent from PATH/disk, the
-//! test prints a note to stderr and returns. Mirrors
+//! Graceful skip: if `python3`, `git`, or the script are absent from PATH/disk,
+//! the test prints a note to stderr and returns. Mirrors
 //! `crates/reify-audit/tests/g_allow.rs`.
+//! The shared helper is in `reify_test_support::run_orphan_audit`.
 
-use std::path::Path;
-use std::process::Command;
+use reify_test_support::run_orphan_audit;
 
 /// The three `pub fn` in stats.rs whose only callers are same-crate
 /// `#[cfg(test)]` code; engine wiring is deferred to tasks #2947-#2949.
@@ -27,63 +27,9 @@ const TARGET_FNS: &[&str] = &["record_morph_attempt", "record_remesh", "record_r
 
 #[test]
 fn stats_record_fns_are_g_allow_marked() {
-    // Resolve script path: CARGO_MANIFEST_DIR = crates/reify-mesh-morph
-    // Go up two parents → repo root → scripts/audit-orphan-producers.sh
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let script = Path::new(manifest_dir)
-        .parent()
-        .expect("crates/reify-mesh-morph has a parent")
-        .parent()
-        .expect("crates/ has a parent (repo root)")
-        .join("scripts/audit-orphan-producers.sh");
-
-    let repo_root = script
-        .parent()
-        .expect("scripts/ dir exists")
-        .parent()
-        .expect("repo root exists");
-
-    // Graceful skip: check python3 is available
-    match Command::new("python3").arg("--version").output() {
-        Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            eprintln!("python3 not on PATH; skipping stats_g_allow orphan check");
-            return;
-        }
-        Err(e) => panic!("unexpected error probing python3: {e}"),
-    }
-
-    // Graceful skip: check the script itself exists
-    if !script.exists() {
-        eprintln!(
-            "scripts/audit-orphan-producers.sh not found at {:?}; skipping",
-            script
-        );
+    let Some(result) = run_orphan_audit("crates/reify-mesh-morph/src") else {
         return;
-    }
-
-    let output = Command::new(&script)
-        .args([
-            "--scope",
-            "crates/reify-mesh-morph/src",
-            "--quiet",
-            "--format",
-            "json",
-        ])
-        .current_dir(repo_root)
-        .output()
-        .unwrap_or_else(|e| panic!("failed to invoke audit-orphan-producers.sh: {e}"));
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    let result: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
-        panic!(
-            "audit-orphan-producers.sh output was not valid JSON: {e}\n\
-             status: {:?}\nstdout: {stdout}\nstderr: {stderr}",
-            output.status
-        )
-    });
+    };
 
     let stats_suffix = "crates/reify-mesh-morph/src/stats.rs";
 
