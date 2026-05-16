@@ -24,7 +24,7 @@ use std::collections::HashMap;
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_eval::try_eval_ad_hoc_selector;
-use reify_test_support::{MockGeometryKernel, compile_source};
+use reify_test_support::{MockGeometryKernel, compile_source, errors_only, parse_and_compile_with_stdlib};
 use reify_types::{
     CapKind, CompiledExpr, DiagnosticCode, ExportFormat, FeatureId, GeometryHandleId, Role,
     SelectorKind, Severity, TopologyAttribute, TopologyAttributeTable, Type, Value, ValueCellId,
@@ -474,5 +474,81 @@ fn engine_build_emits_warning_on_unresolved_face_name() {
         "expected a Severity::Warning with code TopologyAttributeStale on unresolved \
          @face(\"nonexistent\"); got: {:?}",
         result.diagnostics
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test 6: .ri example file compiles and evaluates @face("top") to Frame
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Path to the user-observable `.ri` witness for task 3463.
+///
+/// RED until step-10 creates `examples/ad_hoc_face_selector.ri`.
+const AD_HOC_FACE_SELECTOR_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/ad_hoc_face_selector.ri"
+);
+
+/// `examples/ad_hoc_face_selector.ri` must compile with no error-severity
+/// diagnostics AND the `top_frame` cell in `TopCapBracket` must evaluate
+/// to `Value::Frame { .. }` through the full `engine.build()` pipeline.
+///
+/// Pipeline under test (mirrors `engine_build_post_processes_ad_hoc_face_selector_to_frame`
+/// but reads a real `.ri` file compiled with stdlib, not an inline source string):
+///   1. `std::fs::read_to_string(AD_HOC_FACE_SELECTOR_PATH)` — reads the file.
+///   2. `parse_and_compile_with_stdlib(&source)` — compiles with stdlib so that
+///      `cylinder`, `transform3`, `orient_identity`, `vec3` etc. are resolved.
+///   3. `errors_only(&compiled).is_empty()` — no compile-time Error diagnostics.
+///   4. `engine.build(&compiled, ExportFormat::Step)` with `configured_engine_kernel()` —
+///      seeder populates `TopologyAttributeTable`, then
+///      `post_process_ad_hoc_selectors` patches `top_frame` from `Value::Undef`
+///      (Face arm from `eval_expr`) to `Value::Frame { .. }`.
+///   5. Asserts `TopCapBracket.top_frame` is `Value::Frame { .. }`.
+///
+/// Mirrors the smoke-test pattern from
+/// `tests/topology_selector_smoke_tests.rs::block_inertia_compiles_with_stdlib_no_errors`
+/// (compile-side assertion) plus the engine-level assertion from
+/// `engine_build_post_processes_ad_hoc_face_selector_to_frame` (value assertion).
+///
+/// RED until step-10 creates `examples/ad_hoc_face_selector.ri`.
+#[test]
+fn face_selector_ri_example_compiles_and_evaluates_to_frame() {
+    let source = std::fs::read_to_string(AD_HOC_FACE_SELECTOR_PATH)
+        .expect("examples/ad_hoc_face_selector.ri should exist (created by step-10)");
+
+    // Compile with stdlib so cylinder, transform3, orient_identity, vec3 resolve.
+    let compiled = parse_and_compile_with_stdlib(&source);
+
+    // `parse_and_compile_with_stdlib` already panics on compile errors; this
+    // explicit assertion surfaces a clearer failure message in case of a
+    // Warning-promoted-to-Error regression in the future.
+    let compile_errors = errors_only(&compiled);
+    assert!(
+        compile_errors.is_empty(),
+        "examples/ad_hoc_face_selector.ri should compile with no error-severity diagnostics; \
+         got:\n{:#?}",
+        compile_errors
+    );
+
+    // Build with the same kernel fixture used by the engine-level tests —
+    // `configured_engine_kernel()` configures extract_faces, FaceNormal for role
+    // classification (seeder), and Centroid + FaceNormal for TOP_FACE post-process.
+    let checker = SimpleConstraintChecker;
+    let kernel = configured_engine_kernel();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    // Assert the primary user-observable witness: @face("top") → Value::Frame.
+    let top_frame_id = ValueCellId::new("TopCapBracket", "top_frame");
+    let top_frame_val = result
+        .values
+        .get(&top_frame_id)
+        .unwrap_or_else(|| panic!("TopCapBracket.top_frame not found in build result values"));
+
+    assert!(
+        matches!(top_frame_val, Value::Frame { .. }),
+        "TopCapBracket.top_frame should resolve to Value::Frame {{ .. }} via \
+         post_process_ad_hoc_selectors wiring @face(\"top\"); got {:?}",
+        top_frame_val
     );
 }
