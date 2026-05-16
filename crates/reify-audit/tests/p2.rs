@@ -201,14 +201,16 @@ mod tests {
 
     /// Verify that paths whose shape indicates a test file are excluded from
     /// P2 scanning, even when they carry real stub markers on the added-lines
-    /// side.  Four test-shaped paths and one non-test path:
+    /// side.  Six test-shaped paths and one non-test path:
     ///   - `crates/foo/tests/integration_bar.rs`  — contains `/tests/`
     ///   - `src/lexer_test.rs`                    — ends with `_test.rs`
     ///   - `frontend/__tests__/foo.ts`             — contains `__tests__/`
     ///   - `tests/root_foo.rs`                    — starts with `tests/` (no leading slash)
+    ///   - `frontend/foo.test.ts`                  — contains `.test.` (JS/TS)
+    ///   - `frontend/bar.spec.ts`                  — contains `.spec.` (JS/TS)
     ///   - `src/foo.rs`                            — production file → flagged
     ///
-    /// All five carry `// TODO(impl pending)` as an added line.  Exactly one
+    /// All seven carry `// TODO(impl pending)` as an added line.  Exactly one
     /// finding must emerge and it must reference `src/foo.rs`.
     #[test]
     fn test_file_paths_excluded() {
@@ -221,6 +223,8 @@ mod tests {
             "src/lexer_test.rs",
             "frontend/__tests__/foo.ts",
             "tests/root_foo.rs",
+            "frontend/foo.test.ts",
+            "frontend/bar.spec.ts",
         ];
         let prod_path = "src/foo.rs";
         let stub_line = (1usize, "    // TODO(impl pending)".to_string());

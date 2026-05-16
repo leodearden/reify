@@ -631,10 +631,6 @@ impl JCodemunchOps for MockJCodemunchOps {
 /// (the prior P1/P2 duplication could silently diverge under a one-sided
 /// edit). Private to the crate root, so all detector submodules reach it via
 /// `crate::is_test_path`.
-///
-/// NOTE: `p2_consumer_stub` still carries an unmigrated private copy;
-/// repointing it at this fn is a trivial follow-up but touches a file
-/// outside this task's lock scope (escalated as a non-blocking cleanup).
 fn is_test_path(p: &str) -> bool {
     // `tests/` with and without a leading slash covers both repo-root paths
     // (e.g. `tests/foo.rs`) and nested paths (e.g. `crates/x/tests/foo.rs`).
