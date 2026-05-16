@@ -1428,6 +1428,105 @@ fn meshdata_rejects_region_tags_with_wrong_length() {
     );
 }
 
+/// A NaN value in a `vector_channels` entry must produce `Err` containing both
+/// `"non-finite f32 value"` and the channel key — mirroring the existing
+/// `scalar_channels` finite-value guard.
+///
+/// Setup: 1 vertex (vertex_count=1), 0 faces (face_count=0).
+/// Per-vertex length = 3*1 = 3 → satisfies the length contract.
+/// The NaN at position 0 triggers the FiniteF32MapRef guard (step-12).
+#[test]
+fn vector_channels_nan_causes_error_with_channel_key() {
+    use std::collections::HashMap;
+
+    let mut vc = HashMap::new();
+    vc.insert("shell_normal".to_string(), vec![f32::NAN, 0.0, 0.0]);
+
+    let mesh = MeshData {
+        entity_path: "test".to_string(),
+        vertices: vec![0.0, 0.0, 0.0], // 1 vertex
+        indices: vec![],                // 0 faces; per-vertex len=3 satisfies contract
+        normals: None,
+        scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: None,
+        element_kind: None,
+        region_tags: None,
+        vector_channels: vc,
+    };
+    let err = serde_json::to_value(&mesh).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("non-finite f32 value"),
+        "expected 'non-finite f32 value' in error message: {msg}"
+    );
+    assert!(
+        msg.contains("shell_normal"),
+        "expected channel key 'shell_normal' in error message: {msg}"
+    );
+}
+
+/// Same as above for f32::INFINITY.
+#[test]
+fn vector_channels_infinity_causes_error_with_channel_key() {
+    use std::collections::HashMap;
+
+    let mut vc = HashMap::new();
+    vc.insert("shell_normal".to_string(), vec![f32::INFINITY, 0.0, 0.0]);
+
+    let mesh = MeshData {
+        entity_path: "test".to_string(),
+        vertices: vec![0.0, 0.0, 0.0],
+        indices: vec![],
+        normals: None,
+        scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: None,
+        element_kind: None,
+        region_tags: None,
+        vector_channels: vc,
+    };
+    let err = serde_json::to_value(&mesh).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("non-finite f32 value"),
+        "expected 'non-finite f32 value' in error message: {msg}"
+    );
+    assert!(
+        msg.contains("shell_normal"),
+        "expected channel key 'shell_normal' in error message: {msg}"
+    );
+}
+
+/// Same as above for f32::NEG_INFINITY.
+#[test]
+fn vector_channels_neg_infinity_causes_error_with_channel_key() {
+    use std::collections::HashMap;
+
+    let mut vc = HashMap::new();
+    vc.insert("shell_normal".to_string(), vec![f32::NEG_INFINITY, 0.0, 0.0]);
+
+    let mesh = MeshData {
+        entity_path: "test".to_string(),
+        vertices: vec![0.0, 0.0, 0.0],
+        indices: vec![],
+        normals: None,
+        scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: None,
+        element_kind: None,
+        region_tags: None,
+        vector_channels: vc,
+    };
+    let err = serde_json::to_value(&mesh).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("non-finite f32 value"),
+        "expected 'non-finite f32 value' in error message: {msg}"
+    );
+    assert!(
+        msg.contains("shell_normal"),
+        "expected channel key 'shell_normal' in error message: {msg}"
+    );
+}
+
 /// A `vector_channels` entry must have length `3 * vertex_count` (per-vertex) or
 /// `3 * face_count` (per-face).  Any other length must produce `Err` containing
 /// the channel name and both valid lengths.
