@@ -2800,19 +2800,32 @@ impl Engine {
                                 diagnostics.extend(diags);
 
                                 // Derive a unique per-entity ComputeNodeId index by
-                                // counting already-inserted ComputeNodes in the same
-                                // entity. `insert_compute_node` does NOT dedupe
-                                // (graph.rs:565-571 "Duplicate targets" doc), so this
-                                // caller-side counter discharges the unique-ID contract.
-                                // Without it, two `@optimized` calls in the same entity
-                                // would collide on `PersistentMap<ComputeNodeId, _>`,
-                                // silently overwriting the first node.
+                                // taking `max(existing.index) + 1` over already-inserted
+                                // ComputeNodes in the same entity. `insert_compute_node`
+                                // does NOT dedupe (graph.rs:565-571 "Duplicate targets"
+                                // doc), so this caller-side counter discharges the
+                                // unique-ID contract. Without it, two `@optimized` calls
+                                // in the same entity would collide on
+                                // `PersistentMap<ComputeNodeId, _>`, silently overwriting
+                                // the first node.
+                                //
+                                // `max(index) + 1` is preferred over `count()` because
+                                // the latter assumes densely-allocated indices [0..N).
+                                // That happens to be true today (this is the only
+                                // insertion site), but any future code path that removes
+                                // a ComputeNode or reserves an index out-of-order would
+                                // let `count()` collide with a still-present id.
+                                // `max + 1` discharges the unique-ID contract without
+                                // relying on an insertion-only / no-gaps invariant.
                                 let next_index: u32 = snapshot
                                     .graph
                                     .compute_nodes
                                     .iter()
                                     .filter(|(id, _)| id.entity == cell_id.entity)
-                                    .count() as u32;
+                                    .map(|(id, _)| id.index)
+                                    .max()
+                                    .map(|m| m + 1)
+                                    .unwrap_or(0);
 
                                 // Extract `value_inputs` via a shallow walk over the
                                 // call args: each direct `ValueRef(cell)` arg

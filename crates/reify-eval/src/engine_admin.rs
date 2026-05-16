@@ -549,9 +549,15 @@ impl Engine {
                     )]),
                 }
             }
+            // The "(falling back to body-inlining)" clause is intentionally
+            // omitted here: fallback is the eval-loop caller's behaviour, not
+            // this helper's. Direct callers of `dispatch_compute_node`
+            // (including the unit tests in this crate) do NOT body-inline,
+            // so the diagnostic would be misleading. The lowering site in
+            // `engine_eval.rs` emits its own diagnostic that DOES mention
+            // body-inline fallback, where that wording is accurate.
             None => Err(vec![reify_types::Diagnostic::error(format!(
-                "@optimized target {:?}: no registered compute trampoline \
-                 (falling back to body-inlining)",
+                "@optimized target {:?}: no registered compute trampoline",
                 target
             ))]),
         }
