@@ -240,7 +240,6 @@ mod core_state {
         pub(crate) fn recheck(&mut self) {
             if let Some(compiled) = self.compiled.as_ref().cloned() {
                 let check_result = self.engine.check(&compiled);
-                self.compiled = Some(compiled);
                 self.last_check = Some(check_result);
             }
         }
