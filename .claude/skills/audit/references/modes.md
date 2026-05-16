@@ -141,7 +141,7 @@ Slice-2 deeper rendering (per-finding evidence expansion, links to task URLs) is
 |---|---|
 | `--task <id> --pattern P5` | Spot-check task `<id>`, P5 only |
 | `--since <date> --pattern P1` | Window sweep from `<date>`, P1 only |
-| `--task <id> --since <date>` | Both flags → CLI uses `--task` for task scope + `--since` for window; detectors see the intersection |
+| `--task <id> --since <date>` | Both flags accepted; `AuditContext` receives both `target_task_id` and `window` (CLI source: `reify-audit.rs` lines 333–342). Whether detectors treat this as a strict scope intersection depends on the detector implementation — verify against the detector source or CLI `--help` if exact semantics matter. |
 | `--format markdown` | Adds markdown output to **any** of the above |
 
 **`--pre-done` is NOT composable from the skill.** It is reserved exclusively for the dark-factory D-1 pre-done hook (`REIFY_AUDIT_PREDONE_CMD`). The skill never passes `--pre-done` to the CLI. If a user asks to simulate a pre-done check, use `--task <id> --pattern P5` instead, which runs P5 in periodic-sweep (not blocking) mode.

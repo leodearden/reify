@@ -72,6 +72,6 @@ See `references/output-format.md` for the full JSON schema, `index.json` format,
 - `docs/architecture-audit/f-infra-design.md` — the canonical design for this skill and its CLI dependency.
 - `docs/architecture-audit/audit-brief.md` — failure-mode catalog (F1–F7); P1/P2/P5 map to F1/F3/F4.
 - `docs/architecture-audit/gap-register.md` — the gap register this skill's findings may reference.
-- `feedback_task_chain_user_observable` — user-observable signal discipline (why G2 matters and how it connects to phantom-done detection).
-- `project_phantom_done_metadata_files_strip_may09` — the strip-metadata event that motivated P5 phantom-done detection.
-- `preferences_implementation_chain_portfolio` — the 8-approach portfolio; F-infra is approach F.
+- fused-memory entity `feedback_task_chain_user_observable` — user-observable signal discipline (why G2 matters and how it connects to phantom-done detection).
+- fused-memory entity `project_phantom_done_metadata_files_strip_may09` — the strip-metadata event that motivated P5 phantom-done detection.
+- fused-memory entity `preferences_implementation_chain_portfolio` — the 8-approach portfolio; F-infra is approach F.

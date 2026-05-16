@@ -28,13 +28,7 @@ Use UTC (`Z` suffix). `ls data/audit-runs/` produces chronological order because
 ```jsonc
 {
   "timestamp": "2026-05-16T07:30:45Z",     // ISO-8601 UTC, full colons (not filename-safe form)
-  "scope": {
-    // Exactly one of the following, matching the invocation mode:
-    "window": "14d",                         // default or --since 14d
-    "window": "2026-05-02..now",             // --since <date>
-    "task": "3242",                          // --task <id>
-    "patterns": ["P1"]                       // --pattern P1 (or ["P2"], ["P5"])
-  },
+  "scope": { /* see scope examples below */ },
   "cli": {
     "argv": ["--since", "2026-05-02", "--tasks-file", "…"],  // exact argv passed to reify-audit
     "exit_code": 0                           // 0, 1-254, or 125
@@ -63,6 +57,48 @@ Use UTC (`Z` suffix). `ls data/audit-runs/` produces chronological order because
   ]
 }
 ```
+
+### Scope object — per-mode examples
+
+The `scope` field carries exactly the flags used for the invocation. When flags compose, include all relevant keys:
+
+**Default / `--since` modes (`"window"` key):**
+```json
+{ "window": "14d" }
+```
+```json
+{ "window": "2026-05-02..now" }
+```
+
+**`--task` mode (`"task"` key):**
+```json
+{ "task": "3242" }
+```
+
+**`--pattern` mode (`"patterns"` key):**
+```json
+{ "patterns": ["P1"] }
+```
+```json
+{ "patterns": ["P5"] }
+```
+
+**Composed — `--task` + `--pattern`:**
+```json
+{ "task": "3242", "patterns": ["P5"] }
+```
+
+**Composed — `--since` + `--pattern`:**
+```json
+{ "window": "2026-04-01..now", "patterns": ["P1"] }
+```
+
+When `--task` and `--since` are both given, include both keys:
+```json
+{ "task": "3242", "window": "2026-05-02..now" }
+```
+
+---
 
 ### Worked example — mixed-severity run
 

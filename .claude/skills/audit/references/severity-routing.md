@@ -39,7 +39,7 @@ mcp__fused-memory__submit_task(
         "audit_cluster": finding.pattern,        # e.g. "P1", "P2"
         "audit_origin": "<run-timestamp>",       # ISO timestamp of this run
         "parent_task": finding.task_id,          # the offending task
-        "policy_ref": "feedback_task_chain_user_observable.md",
+        "policy_ref": "feedback_task_chain_user_observable",
     },
     project_root="/home/leo/src/reify",
 )
