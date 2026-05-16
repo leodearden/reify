@@ -4642,6 +4642,103 @@ mod tests {
     /// "CrossSubGeometryRef should not reach eval; ...")` message does NOT contain
     /// the expected substring `"should be consumed"`, so `should_panic`'s
     /// substring check fails in debug; and in release no panic fires at all.
+    // ── AdHocSelector (@point) unit tests ────────────────────────────────────
+
+    /// Build a length-dimensioned scalar for a given mm value.
+    fn mm_lit(v_mm: f64) -> CompiledExpr {
+        lit(
+            Value::Scalar {
+                si_value: v_mm * 1e-3,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        )
+    }
+
+    /// `@point(1mm, 2mm, 3mm)` should evaluate to a `Value::Frame` whose origin
+    /// is a `Value::Point` of three length-dimensioned scalars (in SI metres) and
+    /// whose basis is the identity orientation `Orientation { w: 1, x: 0, y: 0, z: 0 }`.
+    ///
+    /// RED on HEAD: current arm returns `Value::Undef` unconditionally.
+    #[test]
+    fn ad_hoc_selector_point_constructs_frame_at_world_coords() {
+        use reify_types::SelectorKind;
+        let base = lit(Value::String("ignored".into()), Type::String);
+        let args = vec![mm_lit(1.0), mm_lit(2.0), mm_lit(3.0)];
+        let expr = CompiledExpr::ad_hoc_selector(base, SelectorKind::Point, args);
+        let values = ValueMap::new();
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
+        match result {
+            Value::Frame { origin, basis } => {
+                // Check origin is a Point of three length scalars (SI metres)
+                match *origin {
+                    Value::Point(ref comps) => {
+                        assert_eq!(comps.len(), 3, "origin Point should have 3 components");
+                        let expected = [1e-3_f64, 2e-3_f64, 3e-3_f64];
+                        for (i, (comp, &exp)) in comps.iter().zip(&expected).enumerate() {
+                            match comp {
+                                Value::Scalar { si_value, dimension } => {
+                                    assert_eq!(
+                                        *dimension, DimensionVector::LENGTH,
+                                        "origin[{i}] dimension should be LENGTH"
+                                    );
+                                    assert!(
+                                        (si_value - exp).abs() < 1e-15,
+                                        "origin[{i}] si_value: expected {exp}, got {si_value}"
+                                    );
+                                }
+                                other => panic!(
+                                    "origin[{i}] should be Value::Scalar, got {:?}", other
+                                ),
+                            }
+                        }
+                    }
+                    other => panic!("origin should be Value::Point, got {:?}", other),
+                }
+                // Check basis is identity orientation
+                match *basis {
+                    Value::Orientation { w, x, y, z } => {
+                        assert!(
+                            (w - 1.0).abs() < 1e-15 && x.abs() < 1e-15
+                                && y.abs() < 1e-15 && z.abs() < 1e-15,
+                            "basis should be identity orientation (w=1,x=0,y=0,z=0), got w={w},x={x},y={y},z={z}"
+                        );
+                    }
+                    other => panic!("basis should be Value::Orientation, got {:?}", other),
+                }
+            }
+            other => panic!(
+                "ad_hoc_selector @point(1mm,2mm,3mm) should return Value::Frame, got {:?}",
+                other
+            ),
+        }
+    }
+
+    /// When one of the coordinate args is `Value::Undef`, `@point` should return
+    /// `Value::Undef` as a defensive degraded path.
+    ///
+    /// RED on HEAD: current arm already returns `Value::Undef`, but for the wrong
+    /// reason (blanket arm). After step-2 this test stays GREEN via the explicit
+    /// Undef-propagation logic.
+    #[test]
+    fn ad_hoc_selector_point_with_undef_arg_returns_undef() {
+        use reify_types::SelectorKind;
+        let base = lit(Value::String("ignored".into()), Type::String);
+        let args = vec![
+            mm_lit(1.0),
+            lit(Value::Undef, Type::length()), // <-- Undef arg
+            mm_lit(3.0),
+        ];
+        let expr = CompiledExpr::ad_hoc_selector(base, SelectorKind::Point, args);
+        let values = ValueMap::new();
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
+        assert!(
+            matches!(result, Value::Undef),
+            "@point with Undef coord arg should return Value::Undef, got {:?}",
+            result
+        );
+    }
+
     #[test]
     #[should_panic(expected = "CrossSubGeometryRef should be consumed by entity.rs")]
     fn cross_sub_geometry_ref_panics_in_eval_when_not_consumed() {
