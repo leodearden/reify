@@ -352,13 +352,15 @@ describe('AutoResolvePanel (d) per-parameter sparklines', () => {
 
 describe('AutoResolvePanel (e) non-scalar value sparkline null-filter', () => {
   it('(e.1) sparkline polyline excludes a null-value iteration', () => {
-    // 3 iterations for 'thickness' with values [4.2, null, 4.8].
-    // Without null-filtering the coercion null→0 would produce 3 points;
-    // with filtering only 2 finite points remain → polyline has exactly 2 pairs.
+    // 4 iterations for 'thickness' with values [1.0, 2.0, null, 4.0].
+    // After null-filtering, 3 finite points survive (iterations 1, 2, 4).
+    // The x-axis uses original iteration numbers, not filtered array indices,
+    // so the gap introduced by the null at iteration 3 is preserved in x-spacing.
     const iterations = [
-      makeIteration(1, { parameters: { thickness: { value: 4.2, unit: 'mm', display: '4.2mm' } } }),
-      makeIteration(2, { parameters: { thickness: { value: null, unit: '', display: '<non-scalar>' } } }),
-      makeIteration(3, { parameters: { thickness: { value: 4.8, unit: 'mm', display: '4.8mm' } } }),
+      makeIteration(1, { parameters: { thickness: { value: 1.0, unit: 'mm', display: '1mm' } } }),
+      makeIteration(2, { parameters: { thickness: { value: 2.0, unit: 'mm', display: '2mm' } } }),
+      makeIteration(3, { parameters: { thickness: { value: null, unit: '', display: '<non-scalar>' } } }),
+      makeIteration(4, { parameters: { thickness: { value: 4.0, unit: 'mm', display: '4mm' } } }),
     ];
     const state: AutoResolveLoopState = { active: true, iterations };
     render(() => <AutoResolvePanel state={state} />);
@@ -366,26 +368,24 @@ describe('AutoResolvePanel (e) non-scalar value sparkline null-filter', () => {
     const polyline = sparklineSvg.querySelector('polyline');
     expect(polyline).toBeTruthy();
     const points = (polyline!.getAttribute('points') ?? '').trim().split(/\s+/);
-    // Exactly 2 coordinate pairs — the null iteration is filtered out
-    expect(points).toHaveLength(2);
-    // Parse the two coordinate pairs and verify both y-values are finite and
-    // distinct — guards against a filter inversion that kept the null and dropped
-    // a finite value, which would emit a 2-point polyline at y=NaN or identical y.
+    // Exactly 3 coordinate pairs — the null iteration is filtered out
+    expect(points).toHaveLength(3);
+    // Parse the three coordinate pairs and verify all y-values are finite and
+    // the outer y-values are distinct — guards against a filter inversion that
+    // kept the null and dropped a finite value.
     const yValues = points.map((pair) => parseFloat(pair.split(',')[1]!));
     expect(Number.isFinite(yValues[0]!)).toBe(true);
     expect(Number.isFinite(yValues[1]!)).toBe(true);
-    expect(yValues[0]).not.toBe(yValues[1]); // 4.2 and 4.8 map to different y coords
-    // X-axis anchor pin: iteration 1 (xMin) maps to SPARK_PAD=2 and iteration 3
-    // (xMax) maps to SPARK_W - SPARK_PAD = 80 - 2 = 78.  Literals are intentional
-    // here — they're stable endpoint values whose derivation is explained in this
-    // comment, and they keep SPARK_W/SPARK_PAD as module-private implementation
-    // details rather than widening the panel's exported surface for test purposes.
-    // This locks the gap-preservation contract: if a regression swapped to
-    // filtered-index x-axis the x-domain would collapse to [0,1] instead of [1,3]
-    // and the anchors would still hit the endpoints, but the gap would be lost.
+    expect(Number.isFinite(yValues[2]!)).toBe(true);
+    expect(yValues[0]).not.toBe(yValues[2]); // 1.0 and 4.0 map to different y coords
+    // Middle-point x assertion: iteration-indexed x for point[1] (iteration 2,
+    // xMin=1, xMax=4) = SPARK_PAD + (2-1)/(4-1) * (SPARK_W - 2*SPARK_PAD)
+    //   = 2 + (1/3)*76 ≈ 27.33
+    // A filtered-index regression would place it at linearScale(1,0,2,2,78) = 40.
+    // The ≈12.7-unit separation is well above toFixed(1) rounding error, so
+    // this assertion cleanly distinguishes the two implementations.
     const xs = points.map((pair) => parseFloat(pair.split(',')[0]!));
-    expect(xs[0]).toBeCloseTo(2);  // SPARK_PAD
-    expect(xs[1]).toBeCloseTo(78); // SPARK_W - SPARK_PAD
+    expect(xs[1]).toBeCloseTo(27.333, 1);
   });
 
   it('(e.2) all-null sparkline draws no polyline but the sparkline SVG still renders', () => {
