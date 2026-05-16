@@ -349,6 +349,7 @@ pub mod constitutive;
 pub mod eigensolve;
 pub mod elements;
 pub mod error_estimator;
+pub mod geometric_stiffness;
 pub mod interpolation;
 pub mod mesher;
 pub mod mpc;
@@ -406,6 +407,12 @@ pub use error_estimator::{ZzIndicator, compute_zz_indicator};
 // Task 3451: buckling eigensolver kernel — shift-invert Lanczos + dense fallback.
 // PRD: docs/prds/v0_5/buckling-eigensolver.md §5 / §13 phase 2 task β.
 pub use eigensolve::{EigenSolverOptions, EigenSolverResult, solve_eigen_dense, solve_eigen_shift_invert};
+// Task 3452: P1-tet K_g element kernel + global assembly + shell/hex/wedge stubs.
+// PRD: docs/prds/v0_5/buckling-eigensolver.md §13 task γ.
+pub use geometric_stiffness::{
+    InitialStress3, geometric_element_stiffness_hex_p1, geometric_element_stiffness_shell,
+    geometric_element_stiffness_tet_p1, geometric_element_stiffness_wedge_p1,
+};
 pub use solver::{CgResult, CgSolverOptions, SolverMode, solve_cg, solve_cg_warm};
 pub use warm_state::{CgWarmState, solve_cg_with_warm_state};
 // Task 2987: 2D cross-section meshing surface for the hex/wedge swept-body
