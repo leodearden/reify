@@ -117,6 +117,20 @@ pub fn run_orphan_audit(scope: &str) -> Option<serde_json::Value> {
 mod tests {
     use super::*;
 
+    /// Covers the empty-stdout → `None` branch: `crates/reify-test-support/src` is in
+    /// `EXCLUDE_CRATES` so the script exits 0 with no output. A flat `is_none()` assertion
+    /// is environment-safe — all four `None`-yielding branches converge on the same outcome.
+    #[test]
+    fn run_orphan_audit_on_excluded_crate_returns_none() {
+        let result = run_orphan_audit("crates/reify-test-support/src");
+        assert!(
+            result.is_none(),
+            "expected None for EXCLUDE_CRATES scope `crates/reify-test-support/src` \
+             (the script emits empty stdout for excluded crates); got Some(_): {:#?}",
+            result
+        );
+    }
+
     /// Smoke-test: run the audit against `crates/reify-audit/src`.
     ///
     /// `crates/reify-audit/src` is a stable, assertion-friendly baseline: it
@@ -139,33 +153,6 @@ mod tests {
     ///
     /// The test applies the same graceful-skip pattern as all downstream
     /// callers: if the environment lacks `python3` or `git`, we return early.
-    /// Exercises the EXCLUDE_CRATES → empty-stdout → `None` branch (lines 96-103
-    /// of `run_orphan_audit`).
-    ///
-    /// `reify-test-support` is the sole entry in `EXCLUDE_CRATES` in
-    /// `scripts/audit-orphan-producers.sh:92`. Passing this scope causes the
-    /// script's `discover_sources` to return zero files; the script then exits
-    /// 0 with empty stdout, and the helper's empty-stdout guard returns `None`.
-    ///
-    /// Why no graceful-skip dance: all four `None`-yielding branches in
-    /// `run_orphan_audit` (python3 missing, git missing, script missing,
-    /// EXCLUDE_CRATES) yield `None`, so a flat `assert!(result.is_none())` is
-    /// universally valid across CI environments. Do NOT add a `python3
-    /// --version` probe — it would be redundant.
-    ///
-    /// Mutation property: removing the empty-stdout guard (lines 96-103) causes
-    /// `serde_json::from_str("")` to panic, which fails this test.
-    #[test]
-    fn run_orphan_audit_on_excluded_crate_returns_none() {
-        let result = run_orphan_audit("crates/reify-test-support/src");
-        assert!(
-            result.is_none(),
-            "expected None for EXCLUDE_CRATES scope `crates/reify-test-support/src` \
-             (the script emits empty stdout for excluded crates); got Some(_): {:#?}",
-            result
-        );
-    }
-
     #[test]
     fn run_orphan_audit_on_self_scope_returns_well_formed_envelope() {
         let Some(json) = run_orphan_audit("crates/reify-audit/src") else {
