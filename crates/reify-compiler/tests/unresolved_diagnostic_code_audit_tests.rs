@@ -248,14 +248,11 @@ structure Bolt : HasLength {
 
     let compiled = reify_compiler::compile(&parsed);
 
-    assert!(
-        compiled
-            .diagnostics
-            .iter()
-            .any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
-        "expected DiagnosticCode::UnresolvedType for unresolved conformance-check type \
-         'Bogus' (conformance/checker.rs:185-188), got: {:?}",
-        compiled.diagnostics
+    assert_diagnostic_with_code_and_prefix(
+        &compiled,
+        DiagnosticCode::UnresolvedType,
+        "unresolved type in conformance check",
+        "conformance/checker.rs:187 — conforming structure member type 'Bogus'",
     );
 }
 
