@@ -365,3 +365,74 @@ fn build_high_finding(meta: &TaskMetadata, missing: &[String], summary: &str) ->
         }],
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{DoneProvenance, MockGitOps, MockJCodemunchOps};
+    use rusqlite::Connection;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    /// Pins the empty-files short-circuit at `p5_phantom_done.rs:215`.
+    ///
+    /// A `done`/`merged` task whose `metadata.files` is empty has no git
+    /// provenance to corroborate beyond the runs.db `task_completed` row. The
+    /// short-circuit returns `None` from `check_one`; this test asserts that
+    /// `check_pre_done` emits zero findings (no panic, no spurious High).
+    ///
+    /// The runs.db `task_completed` row is required: without it, the runs.db
+    /// leg returns `Ok(false)` and emits a High before reaching the empty-files
+    /// guard, which would mask the invariant being pinned here.
+    #[test]
+    fn empty_files_returns_no_findings() {
+        let conn = Connection::open_in_memory().expect("open in-memory runs.db");
+        conn.execute_batch("CREATE TABLE events (task_id TEXT, event_type TEXT);")
+            .expect("create events table");
+        conn.execute(
+            "INSERT INTO events (task_id, event_type) VALUES ('9001', 'task_completed')",
+            [],
+        )
+        .expect("insert task_completed event");
+
+        let git = MockGitOps::new();
+        let jc = MockJCodemunchOps::new();
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "9001".to_string(),
+            TaskMetadata {
+                task_id: "9001".to_string(),
+                status: "done".to_string(),
+                files: vec![],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("deadbeef".to_string()),
+                    note: None,
+                }),
+                title: "empty-files done task".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+        };
+
+        let findings = check_pre_done(&ctx, "9001");
+        assert!(
+            findings.is_empty(),
+            "empty-files done task must yield no findings; got {findings:?}"
+        );
+    }
+}
