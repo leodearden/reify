@@ -468,10 +468,14 @@ mod cli {
             .expect("invoke reify-audit --task 4200 --pre-done");
 
         let stderr = String::from_utf8_lossy(&out.stderr);
+        // Pin both the format string (locks in the breadcrumb text) and the
+        // specific exit code (128 = git's "fatal: not a git repository"), so
+        // that a future change accidentally remapping 128 to a recognised arm
+        // would still fail this test.
         assert!(
-            stderr.contains("reify-audit: git check-ignore exited"),
-            "stderr must contain 'reify-audit: git check-ignore exited' breadcrumb when \
-             git exits with a non-0/1 code (128 for non-git dir); full stderr:\n{}",
+            stderr.contains("reify-audit: git check-ignore exited Some(128)"),
+            "stderr must contain 'reify-audit: git check-ignore exited Some(128)' breadcrumb \
+             when git exits 128 (non-git dir); full stderr:\n{}",
             stderr
         );
     }
