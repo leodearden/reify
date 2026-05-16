@@ -13,6 +13,7 @@ use reify_types::{Annotation, Diagnostic, DiagnosticLabel};
 
 /// Evaluation time of an annotation argument.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Phase-1 scaffold; consumed in later phases (δ, ζ, ι).
 pub(crate) enum EvalTime {
     /// Argument must be a compile-time constant expression.
     CompileConst,
@@ -33,6 +34,7 @@ pub(crate) enum ExtraArgsPolicy {
 ///
 /// Phase-1 subset per PRD §4. `Field<X,Y>` is deferred to task ι.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Phase-1 scaffold; consumed in later phases (δ, ζ, ι).
 pub(crate) enum ArgType {
     String,
     Int,
@@ -45,6 +47,7 @@ pub(crate) enum ArgType {
 
 /// Declaration of a single named annotation parameter.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // Phase-1 scaffold; fields consumed in later phases (δ, ζ, ι).
 pub(crate) struct ArgSchema {
     /// Parameter name (for named-arg syntax in future phases).
     pub(crate) name: &'static str,
@@ -64,6 +67,7 @@ pub(crate) struct ArgSchema {
 /// `valid_contexts` lists the `context` strings (passed to `validate_annotations`)
 /// on which this annotation is allowed.
 #[derive(Debug)]
+#[allow(dead_code)] // `args`, `flag_set`, `on_extra` are Phase-1 scaffold; used in later phases.
 pub(crate) struct AnnotationSchema {
     /// Canonical annotation name (e.g. `"test"`, `"deprecated"`).
     pub(crate) name: &'static str,
