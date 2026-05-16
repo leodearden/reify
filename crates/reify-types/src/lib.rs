@@ -76,4 +76,4 @@ pub use value::{
     ResultRef, SampledField, SampledGridKind, Satisfaction, Value, ValueMap, quaternion_is_finite,
 };
 pub use warm::{OpaqueState, WarmStartable};
-pub use warm_registry::WarmStartableRegistry;
+pub use warm_registry::{WarmStartableRegistration, WarmStartableRegistry};

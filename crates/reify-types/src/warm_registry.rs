@@ -62,7 +62,39 @@ impl WarmStartableRegistry {
     pub fn kinds(&self) -> impl Iterator<Item = NodeKind> + '_ {
         self.kinds.iter().copied()
     }
+
+    /// Build a registry by collecting every [`WarmStartableRegistration`]
+    /// linked into the current binary at static-init time.
+    ///
+    /// Iterates `inventory::iter::<WarmStartableRegistration>` and folds each
+    /// entry's `kind` into a fresh registry. Idempotent — multiple calls
+    /// observe the same static-init set and produce equivalent registries.
+    /// Mirrors `reify_eval::kernel_registry::registry()` over
+    /// [`crate::KernelRegistration`].
+    pub fn from_inventory() -> Self {
+        let mut r = Self::default();
+        for reg in inventory::iter::<WarmStartableRegistration> {
+            r.register(reg.kind);
+        }
+        r
+    }
 }
+
+/// Static registration record submitted via `inventory::submit!` by each
+/// producer crate (`reify-kernel-occt` for `NodeKind::Realization`,
+/// `reify-solver-elastic` for `NodeKind::Compute`).
+///
+/// Collected at scheduler init via [`WarmStartableRegistry::from_inventory`].
+/// Mirrors the design of [`crate::KernelRegistration`] in `geometry.rs` —
+/// presence-only, no factory function pointer, by deliberate design (see
+/// module-level docs and PRD §5 B5).
+pub struct WarmStartableRegistration {
+    /// The [`NodeKind`] whose producers in the submitting crate impl
+    /// [`WarmStartable`](crate::warm::WarmStartable).
+    pub kind: NodeKind,
+}
+
+inventory::collect!(WarmStartableRegistration);
 
 #[cfg(test)]
 mod tests {
