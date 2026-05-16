@@ -431,6 +431,51 @@ mod cli {
         );
     }
 
+    /// `--task <id> --pre-done` on a done/merged task whose `files` includes at
+    /// least one path, run against a non-git tempdir, must emit a
+    /// `"reify-audit: git check-ignore exited"` breadcrumb to stderr.
+    ///
+    /// When `git check-ignore` is run against a non-git directory it exits 128
+    /// ("fatal: not a git repository"). The third arm added to
+    /// `RealGitOps::is_gitignored` should emit the breadcrumb for any exit
+    /// code other than 0 or 1.  On current code there is no such breadcrumb,
+    /// so this test is RED until the impl step lands.
+    #[test]
+    fn git_check_ignore_non_standard_exit_logs_breadcrumb() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let dir = tmp.path();
+
+        // task_fixture includes files: ["crates/reify-audit/src/lib.rs"]
+        // which is enough to trigger is_gitignored for that path.
+        let tasks = vec![task_fixture("4200", "done", Some("merged"), Some("deadbeef"))];
+        let tasks_file = write_tasks_json(dir, &tasks);
+        let runs_db = write_empty_runs_db(dir);
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task",
+                "4200",
+                "--pre-done",
+                "--tasks-file",
+                tasks_file.to_str().unwrap(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit --task 4200 --pre-done");
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("reify-audit: git check-ignore exited"),
+            "stderr must contain 'reify-audit: git check-ignore exited' breadcrumb when \
+             git exits with a non-0/1 code (128 for non-git dir); full stderr:\n{}",
+            stderr
+        );
+    }
+
     /// `--pattern P1` over the same fixture yields an empty array (Noop
     /// JCodemunchOps means P1 never fires), proving P5 is NOT invoked.
     #[test]
