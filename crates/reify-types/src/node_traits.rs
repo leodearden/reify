@@ -225,6 +225,21 @@ impl NodeKind {
             NodeKind::Compute => NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE),
         }
     }
+
+    /// Exhaustive enumeration of every [`NodeKind`] variant.
+    ///
+    /// Iterated by `reify_runtime::assert_warm_startable_coextensive` to check
+    /// that every kind whose `default_traits().contains(NodeTraits::WARM_STARTABLE)`
+    /// has a producer registered in the [`crate::WarmStartableRegistry`] (PRD §5 B5
+    /// / I-3, M-013 fix). A const array is the minimal idiomatic shape for a
+    /// closed 5-variant enum — avoids pulling in `strum` for one iteration site.
+    pub const ALL: [NodeKind; 5] = [
+        NodeKind::Value,
+        NodeKind::Constraint,
+        NodeKind::Realization,
+        NodeKind::Resolution,
+        NodeKind::Compute,
+    ];
 }
 
 /// Marker trait for keys that can be projected to a [`NodeKind`] discriminant.

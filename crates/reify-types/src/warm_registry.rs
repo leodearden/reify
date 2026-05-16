@@ -27,6 +27,43 @@
 //! inversion (reify-runtime does not depend on the adapter/solver crates).
 //! Mirrors the existing [`crate::geometry::KernelRegistration`] pattern.
 
+use std::collections::HashSet;
+
+use crate::NodeKind;
+
+/// Presence-only registry of [`NodeKind`]s whose producers implement
+/// [`WarmStartable`](crate::warm::WarmStartable).
+///
+/// See the [module-level docs](self) for the rationale behind the
+/// presence-only shape (instead of a factory map).
+#[derive(Clone, Debug, Default)]
+pub struct WarmStartableRegistry {
+    kinds: HashSet<NodeKind>,
+}
+
+impl WarmStartableRegistry {
+    /// Returns an empty registry.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record that `kind` has at least one [`WarmStartable`](crate::warm::WarmStartable)
+    /// producer registered. Idempotent: repeated calls with the same kind are a no-op.
+    pub fn register(&mut self, kind: NodeKind) {
+        self.kinds.insert(kind);
+    }
+
+    /// Returns `true` if `kind` has been registered.
+    pub fn contains_kind(&self, kind: NodeKind) -> bool {
+        self.kinds.contains(&kind)
+    }
+
+    /// Iterate the registered kinds. Order is unspecified (HashSet-backed).
+    pub fn kinds(&self) -> impl Iterator<Item = NodeKind> + '_ {
+        self.kinds.iter().copied()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
