@@ -545,4 +545,3 @@ fn type_arg_list_error_span_narrows_to_first_error_descendant() {
             .collect::<Vec<_>>(),
     );
 }
-
