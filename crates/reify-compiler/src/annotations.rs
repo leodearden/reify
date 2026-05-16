@@ -1,5 +1,7 @@
 use super::*;
 
+pub(crate) mod schema;
+
 /// Lower parsed syntax annotations to compiled annotation types.
 pub(crate) fn lower_annotations(
     parsed: &[reify_syntax::Annotation],
