@@ -111,14 +111,11 @@ structure S {
 
     let compiled = reify_compiler::compile(&parsed);
 
-    assert!(
-        compiled
-            .diagnostics
-            .iter()
-            .any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
-        "expected DiagnosticCode::UnresolvedType for unresolved guarded-block param type \
-         'Bogus' (guards.rs:155), got: {:?}",
-        compiled.diagnostics
+    assert_diagnostic_with_code_and_prefix(
+        &compiled,
+        DiagnosticCode::UnresolvedType,
+        "unresolved type:",
+        "guards.rs:155 — guarded-block param type 'Bogus'",
     );
 }
 
