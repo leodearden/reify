@@ -5,6 +5,13 @@ edition.workspace = true
 license.workspace = true
 description = "Name resolution and elaboration from ParsedModule to CompiledModule"
 
+[features]
+# Exposes `__validate_annotations_for_parity_test` to the integration test in
+# tests/annotation_schema_registry_parity.rs. Activated automatically by this
+# crate's own [dev-dependencies] self-pull below — never reaches downstream
+# crates or production builds.
+test-support = []
+
 [dependencies]
 reify-types.workspace = true
 reify-syntax.workspace = true
@@ -15,3 +22,9 @@ tracing.workspace = true
 reify-test-support.workspace = true
 reify-expr.workspace = true
 tempfile.workspace = true
+# Self-pull with the test-support feature so the integration test in
+# tests/annotation_schema_registry_parity.rs can call
+# `__validate_annotations_for_parity_test`. Standard Rust pattern for
+# integration-test-visible internal shims; keeps the symbol out of the
+# production public API.
+reify-compiler = { path = ".", features = ["test-support"] }
