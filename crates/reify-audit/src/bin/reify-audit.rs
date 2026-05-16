@@ -13,7 +13,18 @@
 //! ## Output
 //!
 //! JSON array of [`Finding`]s on **stderr**; human-readable summary on
-//! **stdout**. Exit code = high-severity count, capped at 255.
+//! **stdout**. Exit-code convention (documented in `--help`):
+//!
+//! | Exit code | Meaning |
+//! |-----------|---------|
+//! | 0         | No High-severity findings |
+//! | 1–254     | Count of High-severity findings (capped at 254) |
+//! | 125       | Infrastructure/setup error (arg parse, IO, serialization) |
+//!
+//! Exit code 125 is reserved for errors so it never collides with a
+//! finding-count result — callers (D-1 hook, T-5 skill) can branch on
+//! `exit == 125` to detect misconfigured invocations without misreading
+//! them as "125 phantom-done tasks".
 //!
 //! ## Arg parsing
 //!
@@ -69,10 +80,14 @@ fn print_usage(out: &mut dyn Write) {
     let _ = writeln!(out, "  --help, -h               Show this help");
     let _ = writeln!(out, "  --version, -V            Print version");
     let _ = writeln!(out);
+    let _ = writeln!(out, "Conflicts: --pre-done cannot be combined with --pattern or --since.");
+    let _ = writeln!(out);
     let _ = writeln!(out, "Output:");
     let _ = writeln!(out, "  stderr: JSON array of Finding objects");
     let _ = writeln!(out, "  stdout: human-readable summary");
-    let _ = writeln!(out, "  exit code: high-severity finding count, capped at 255");
+    let _ = writeln!(out, "  exit 0:    no High-severity findings");
+    let _ = writeln!(out, "  exit 1-254: count of High-severity findings (capped at 254)");
+    let _ = writeln!(out, "  exit 125:  infrastructure/setup error (arg parse, IO failure)");
     let _ = writeln!(out);
     let _ = writeln!(out, "Note: --tasks-file must be a JSON array of TaskMetadata objects");
     let _ = writeln!(out, "(all 9 fields required: task_id, status, files, done_provenance,");
@@ -83,16 +98,27 @@ fn print_usage(out: &mut dyn Write) {
 use std::io::Write;
 
 // -----------------------------------------------------------------------
-// Exit-code helper
+// Exit-code convention
 // -----------------------------------------------------------------------
 
-/// Count High-severity findings and clamp to u8 (cap at 255).
+/// Infrastructure/setup error exit code.
+///
+/// Reserved so it never collides with a High-severity finding count.
+/// D-1 hook and T-5 skill should branch on `exit == ERROR_EXIT` to detect
+/// misconfigured invocations separately from finding counts.
+const ERROR_EXIT: u8 = 125;
+
+/// Count High-severity findings and clamp to u8.
+///
+/// Capped at **254** (not 255) so that exit code 125 remains unambiguously
+/// reserved for infrastructure errors. A run with 255+ High findings returns
+/// 254, which is still a clear "many problems" signal to the caller.
 fn high_severity_exit_code(findings: &[Finding]) -> u8 {
     let count = findings
         .iter()
         .filter(|f| f.severity == Severity::High)
         .count();
-    count.min(255) as u8
+    count.min(254) as u8
 }
 
 // -----------------------------------------------------------------------
@@ -220,7 +246,7 @@ fn main() -> ExitCode {
     }
     if argv.is_empty() {
         print_usage(&mut std::io::stderr());
-        return ExitCode::from(2);
+        return ExitCode::from(ERROR_EXIT);
     }
 
     let args = match parse_args(&argv) {
@@ -228,14 +254,23 @@ fn main() -> ExitCode {
         Err(e) => {
             eprintln!("reify-audit: error: {}", e);
             print_usage(&mut std::io::stderr());
-            return ExitCode::from(2);
+            return ExitCode::from(ERROR_EXIT);
         }
     };
 
     // --pre-done requires --task.
     if args.pre_done && args.task_id.is_none() {
         eprintln!("reify-audit: error: --pre-done requires --task");
-        return ExitCode::from(2);
+        return ExitCode::from(ERROR_EXIT);
+    }
+    // --pre-done cannot be combined with --pattern or --since.
+    if args.pre_done && args.pattern.is_some() {
+        eprintln!("reify-audit: error: --pre-done cannot be combined with --pattern");
+        return ExitCode::from(ERROR_EXIT);
+    }
+    if args.pre_done && args.since.is_some() {
+        eprintln!("reify-audit: error: --pre-done cannot be combined with --since");
+        return ExitCode::from(ERROR_EXIT);
     }
 
     // Load tasks.json.
@@ -243,7 +278,7 @@ fn main() -> ExitCode {
         Ok(s) => s,
         Err(e) => {
             eprintln!("reify-audit: error reading tasks-file '{}': {}", args.tasks_file, e);
-            return ExitCode::from(2);
+            return ExitCode::from(ERROR_EXIT);
         }
     };
     let tasks_vec: Vec<TaskMetadata> = match serde_json::from_str(&tasks_json) {
@@ -253,7 +288,7 @@ fn main() -> ExitCode {
                 "reify-audit: error parsing tasks-file '{}': {}",
                 args.tasks_file, e
             );
-            return ExitCode::from(2);
+            return ExitCode::from(ERROR_EXIT);
         }
     };
     let task_metadata: HashMap<String, TaskMetadata> = tasks_vec
@@ -266,7 +301,7 @@ fn main() -> ExitCode {
         Ok(c) => c,
         Err(e) => {
             eprintln!("reify-audit: error opening runs-db '{}': {}", args.runs_db, e);
-            return ExitCode::from(2);
+            return ExitCode::from(ERROR_EXIT);
         }
     };
 
@@ -316,21 +351,27 @@ fn main() -> ExitCode {
         all
     };
 
-    // Emit JSON findings on stderr.
-    {
+    // Emit JSON findings on stderr. Scope the lock so it's dropped before any
+    // subsequent writes; if serialization fails, exit with ERROR_EXIT rather
+    // than falling through with a misleading finding-count exit code.
+    let serialized_ok = {
         let stderr = std::io::stderr();
         let mut lock = stderr.lock();
-        if let Err(e) = serde_json::to_writer_pretty(&mut lock, &findings) {
-            eprintln!("\nreify-audit: error serializing findings: {}", e);
-        }
-        // Ensure a trailing newline after the JSON block.
+        let result = serde_json::to_writer_pretty(&mut lock, &findings);
+        // Ensure a trailing newline after the JSON block (inside the lock).
         let _ = writeln!(lock);
+        result.is_ok()
+    };
+    if !serialized_ok {
+        // Lock is now released; write the error to stderr cleanly.
+        eprintln!("reify-audit: error serializing findings to JSON (broken stderr?)");
+        return ExitCode::from(ERROR_EXIT);
     }
 
     // Emit human-readable summary on stdout.
     print_summary(&findings);
 
-    // Exit code = high-severity count, capped at 255.
+    // Exit code = high-severity count, capped at 254 (125 reserved for errors).
     let code = high_severity_exit_code(&findings);
     ExitCode::from(code)
 }
@@ -342,7 +383,7 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_audit::{DoneProvenance, EvidenceRef, Pattern, Severity};
+    use reify_audit::{Pattern, Severity};
 
     fn make_high() -> Finding {
         Finding {
@@ -375,7 +416,7 @@ mod tests {
     }
 
     #[test]
-    fn exit_code_caps_high_severity_at_255() {
+    fn exit_code_caps_high_severity_at_254() {
         // (a) empty slice → 0
         assert_eq!(high_severity_exit_code(&[]), 0);
 
@@ -383,8 +424,8 @@ mod tests {
         let mixed = vec![make_high(), make_medium(), make_medium(), make_low()];
         assert_eq!(high_severity_exit_code(&mixed), 1);
 
-        // (c) 300 High findings → 255 (the cap)
+        // (c) 300 High findings → 254 (the cap; 125 is reserved for errors)
         let many_high: Vec<Finding> = (0..300).map(|_| make_high()).collect();
-        assert_eq!(high_severity_exit_code(&many_high), 255);
+        assert_eq!(high_severity_exit_code(&many_high), 254);
     }
 }
