@@ -969,6 +969,18 @@ pub enum TypeExprKind {
     /// every other consumer of `TypeExpr` must reject this variant with a
     /// diagnostic.
     IntegerLiteral(u32),
+    /// An auto type argument in type-arg position: `auto: Bound` (strict) or
+    /// `auto(free): Bound` (free). `free: false` = bare `auto`, `free: true` =
+    /// `auto(free)`. `bound` is always a bare identifier — composite/parametric
+    /// bounds are explicitly deferred per grammar.js:658–662.
+    ///
+    /// Parallel to `ExprKind::Auto { free: bool }` (lib.rs:872) for the
+    /// value-position analogue. The `auto_keyword` grammar rule is shared between
+    /// param-default and type-arg positions (grammar.js:433–436,654–657).
+    ///
+    /// Actual auto-type resolution semantics are deferred to task 3477/3558
+    /// (B1 grammar-fiction chain). Task 3665 wires the lowering extension only.
+    Auto { free: bool, bound: String },
 }
 
 /// A type expression in the AST (e.g., `Scalar`, `Bool`, `Box<T>`, `Force / Area`).
@@ -999,6 +1011,9 @@ impl fmt::Display for TypeExpr {
                 write!(f, "{} {} {}", left, op.as_str(), right)
             }
             TypeExprKind::IntegerLiteral(n) => write!(f, "{}", n),
+            TypeExprKind::Auto { free, bound } => {
+                write!(f, "auto{}: {}", if *free { "(free)" } else { "" }, bound)
+            }
         }
     }
 }

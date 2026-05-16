@@ -599,6 +599,26 @@ impl<'a> Lowering<'a> {
                             kind: TypeExprKind::IntegerLiteral(value),
                             span: self.span(inner),
                         });
+                    } else if inner.kind() == "auto_type_arg" {
+                        // Locate the auto_keyword child to check for the free modifier.
+                        // Reuses the same child_by_field_name("modifier").is_some() pattern as
+                        // lower_param (ts_parser.rs:1582-1592) — auto_keyword is shared between
+                        // param-default and type-arg positions (grammar.js:433-436, 654-657).
+                        let mut kw_cursor = inner.walk();
+                        if let Some(kw) = inner
+                            .named_children(&mut kw_cursor)
+                            .find(|n| n.kind() == "auto_keyword")
+                        {
+                            let free = kw.child_by_field_name("modifier").is_some();
+                            let bound = inner
+                                .child_by_field_name("bound")
+                                .map(|n| self.node_text(n).to_string())
+                                .unwrap_or_default();
+                            args.push(TypeExpr {
+                                kind: TypeExprKind::Auto { free, bound },
+                                span: self.span(inner),
+                            });
+                        }
                     }
                 }
                 return args;

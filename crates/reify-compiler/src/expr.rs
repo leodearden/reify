@@ -2281,6 +2281,9 @@ pub(crate) fn compile_expr_guarded(
                         reify_syntax::TypeExprKind::Named { name, .. } => Some(name.as_str()),
                         reify_syntax::TypeExprKind::DimensionalOp { .. } => None,
                         reify_syntax::TypeExprKind::IntegerLiteral(_) => None,
+                        // Auto type-args cannot be used as lambda param types;
+                        // resolution semantics are deferred to task 3477/3558.
+                        reify_syntax::TypeExprKind::Auto { .. } => None,
                     };
                     if let Some(name) = name_opt {
                         match resolve_type_name(name) {

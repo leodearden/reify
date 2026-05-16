@@ -240,6 +240,9 @@ pub(crate) fn resolve_dimension_type(
         reify_syntax::TypeExprKind::Named { name, .. } => name.as_str(),
         reify_syntax::TypeExprKind::DimensionalOp { .. } => return None,
         reify_syntax::TypeExprKind::IntegerLiteral(_) => return None,
+        // Auto type-args (e.g. `auto: Seal`) cannot be resolved to a dimension;
+        // resolution semantics are deferred to task 3477/3558.
+        reify_syntax::TypeExprKind::Auto { .. } => return None,
     };
     // Scan the shared table (name → dimension direction).
     if let Some((dim, _)) = reify_types::NAMED_DIMENSIONS
@@ -774,6 +777,9 @@ pub(crate) fn resolve_type_alias_expr(
             );
             None
         }
+        // Auto type-args (e.g. `auto: Seal`) cannot be resolved to a concrete type here;
+        // resolution semantics are deferred to task 3477/3558.
+        reify_syntax::TypeExprKind::Auto { .. } => None,
     }
 }
 
@@ -831,6 +837,9 @@ pub(crate) fn resolve_type_alias_expr_to_dimension(
             );
             None
         }
+        // Auto type-args cannot be resolved to a dimension;
+        // resolution semantics are deferred to task 3477/3558.
+        reify_syntax::TypeExprKind::Auto { .. } => None,
     }
 }
 
@@ -862,6 +871,9 @@ pub(crate) fn resolve_type_expr_with_aliases(
             );
             return None;
         }
+        // Auto type-args cannot be resolved to a concrete type here;
+        // resolution semantics are deferred to task 3477/3558.
+        reify_syntax::TypeExprKind::Auto { .. } => return None,
     };
     // Check parameterized builtins (List<T>, Set<T>, Map<K,V>, Option<T>)
     if !type_args.is_empty()
@@ -1152,6 +1164,9 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
             );
             None
         }
+        // Auto type-args cannot be resolved to a concrete type here;
+        // resolution semantics are deferred to task 3477/3558.
+        reify_syntax::TypeExprKind::Auto { .. } => None,
     }
 }
 
@@ -1597,6 +1612,9 @@ pub(crate) fn resolve_type_alias_expr_to_dim_with_subst(
             );
             None
         }
+        // Auto type-args cannot be resolved to a dimension;
+        // resolution semantics are deferred to task 3477/3558.
+        reify_syntax::TypeExprKind::Auto { .. } => None,
     }
 }
 
@@ -1616,6 +1634,10 @@ pub(crate) fn collect_type_expr_names(type_expr: &reify_syntax::TypeExpr) -> Vec
             .collect(),
         // Integer-literal type-args contribute no type *names* to dependency graphs.
         reify_syntax::TypeExprKind::IntegerLiteral(_) => Vec::new(),
+        // Auto type-args contribute the bound name (e.g. `Seal` in `auto: Seal`) so that
+        // trait/type-name references are preserved in dependency graphs.
+        // Resolution semantics are deferred to task 3477/3558; only the name is surfaced here.
+        reify_syntax::TypeExprKind::Auto { bound, .. } => vec![bound.clone()],
     }
 }
 
@@ -1734,6 +1756,12 @@ pub(crate) fn convert_type_params(
                     unreachable!(
                         "integer literal cannot appear as a type-parameter default; \
                              the grammar restricts integer literals to type_arg_list slots"
+                    )
+                }
+                reify_syntax::TypeExprKind::Auto { .. } => {
+                    unreachable!(
+                        "auto type-arg cannot appear as a type-parameter default; \
+                             the grammar restricts auto_type_arg to type_arg_list slots"
                     )
                 }
             });
