@@ -40,7 +40,7 @@ Use UTC (`Z` suffix). `ls data/audit-runs/` produces chronological order because
       "pattern": "P5PhantomDone",            // from Finding.pattern (CLI value)
       "task_id": "3242",                     // from Finding.task_id
       "summary": "task marked done but …",   // from Finding.summary
-      "evidence_refs": ["…"],                // from Finding.evidence (list of strings)
+      "evidence_refs": [{/* EvidenceRef */}],  // from Finding.evidence (list of EvidenceRef tagged-enum objects; see crates/reify-audit/src/lib.rs lines 94-105)
 
       // Action taken by the skill for this finding:
       "action_taken": "escalated",           // "escalated" | "filed" | "deduped" | "logged"
@@ -98,6 +98,8 @@ When `--task` and `--since` are both given, include both keys:
 { "task": "3242", "window": "2026-05-02..now" }
 ```
 
+**Source:** `Finding` struct and `EvidenceRef` enum: `crates/reify-audit/src/lib.rs` lines 109-115 and 94-105.
+
 ---
 
 ### Worked example — mixed-severity run
@@ -118,7 +120,7 @@ When `--task` and `--since` are both given, include both keys:
       "pattern": "P5PhantomDone",
       "task_id": "3242",
       "summary": "task marked done but metadata files missing",
-      "evidence_refs": ["task status=done; files=[]; done_provenance=null"],
+      "evidence_refs": [{"RunsDb": {"table": "task_runs", "key": "task_id=3242"}}],
       "action_taken": "escalated",
       "escalation_id": "esc-7f4a2b"
     },
@@ -128,7 +130,7 @@ When `--task` and `--since` are both given, include both keys:
       "pattern": "P2ConsumerStub",
       "task_id": "3301",
       "summary": "stub AuditReporter introduced but no consumer wired",
-      "evidence_refs": ["src/audit/reporter.rs:AuditReporter (stub, introduced task 3301)"],
+      "evidence_refs": [{"File": {"path": "src/audit/reporter.rs"}}],
       "action_taken": "filed",
       "task_id_filed": "3902"
     },
@@ -138,7 +140,7 @@ When `--task` and `--since` are both given, include both keys:
       "pattern": "P1ProducerOrphan",
       "task_id": "3288",
       "summary": "SchedulePolicy exported but no downstream consumer",
-      "evidence_refs": ["crates/reify-planner/src/schedule.rs:SchedulePolicy"],
+      "evidence_refs": [{"File": {"path": "crates/reify-planner/src/schedule.rs"}}],
       "action_taken": "deduped",
       "prior_finding_id": "f-20260510T120000Z-1"
     },
@@ -148,7 +150,7 @@ When `--task` and `--since` are both given, include both keys:
       "pattern": "P1ProducerOrphan",
       "task_id": "3210",
       "summary": "Cargo.lock-only change, no symbol orphan",
-      "evidence_refs": ["Cargo.lock"],
+      "evidence_refs": [{"File": {"path": "Cargo.lock"}}],
       "action_taken": "logged"
     }
   ]
