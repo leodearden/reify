@@ -42,26 +42,14 @@ Inside the cache directory each Reify engine version gets its own subdirectory, 
 
 1. `--cache-dir <path>` CLI flag (`stats`/`clear`/`gc` only — `export`/`import` do not accept this flag)
 2. `REIFY_CACHE_DIR` env var
-3. `dir` in `~/.config/reify/config.toml` `[cache]` section (user config)
-4. `dir` in `<project>/.reify/config.toml` `[cache]` section (project config)
-5. Default (`$XDG_CACHE_HOME/reify/fea` or `~/.cache/reify/fea`)
+3. Default (`$XDG_CACHE_HOME/reify/fea` or `~/.cache/reify/fea`)
 
 **Precedence ladder for max-bytes cap** (highest first — note: no `--cache-max-bytes` CLI flag):
 
 1. `REIFY_CACHE_MAX_BYTES` env var
-2. `max_bytes` in `~/.config/reify/config.toml` `[cache]` section (user config)
-3. `max_bytes` in `<project>/.reify/config.toml` `[cache]` section (project config)
-4. Default (25 GiB)
+2. Default (25 GiB)
 
-**Config file schema** (either `~/.config/reify/config.toml` or `<project>/.reify/config.toml`):
-
-```toml
-[cache]
-dir = "/path/to/cache"      # optional
-max_bytes = 53687091200     # optional; 50 GiB example
-```
-
-Unknown keys in `[cache]` or unknown top-level sections are a hard error (typo detection).
+> **Config file overrides are not wired up in v0.3.x.** The underlying resolver (`reify-config::cache::resolve_cache`) accepts `[cache]` sections from `~/.config/reify/config.toml` and `<project>/.reify/config.toml`, but no `reify cache` subcommand currently plumbs those layers in — env vars and defaults are the only effective configuration surface today. A future release will surface the config-file layers; until then, authoring `[cache]` in a config file has no effect on `reify cache` invocations.
 
 ---
 
