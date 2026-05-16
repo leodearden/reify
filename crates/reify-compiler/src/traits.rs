@@ -35,6 +35,7 @@ fn resolve_trait_member_type_annotation(
                     "unresolved type in trait '{}': {}",
                     trait_decl.name, type_expr
                 ))
+                .with_code(DiagnosticCode::UnresolvedType)
                 .with_label(DiagnosticLabel::new(
                     type_expr.span,
                     "unexpected dimensional expression",
@@ -89,6 +90,7 @@ fn resolve_trait_member_type_annotation(
                         "unresolved type in trait '{}': {}",
                         trait_decl.name, type_expr
                     ))
+                    .with_code(DiagnosticCode::UnresolvedType)
                     .with_label(DiagnosticLabel::new(type_expr.span, "unknown type name")),
                 );
                 Type::Real

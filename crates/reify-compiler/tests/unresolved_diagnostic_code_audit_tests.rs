@@ -74,17 +74,22 @@ fn unresolved_field_codomain_carries_code() {
     panic!("should be #[ignore]d");
 }
 
-/// `guards.rs:155` — purpose-guard `param` member has an unresolved type.
+/// `guards.rs:155` — structure guarded-group `param` member has an unresolved type.
 ///
-/// Source: a purpose declaration with a param whose type name is unknown.
-/// The `register_guarded_names` call resolves param types and emits
-/// "unresolved type: Bogus" with `DiagnosticCode::UnresolvedType`.
+/// Source: a structure with a `where active { param x : Bogus }` block.
+/// `register_guarded_names` (guards.rs:130) iterates over the block members;
+/// when `Bogus` fails to resolve it emits "unresolved type: Bogus" with
+/// `DiagnosticCode::UnresolvedType`. Note: top-level structure params go through
+/// entity.rs:487, but params nested inside a `where {}` block specifically
+/// exercise the guards.rs:155 path via `register_guarded_names`.
 #[test]
 fn unresolved_purpose_guard_param_type_carries_code() {
     let source = r#"
-purpose P(subject : Structure) {
-    param x : Bogus
-    constraint 1mm > 0mm
+structure S {
+    param active : Bool = true
+    where active {
+        param x : Bogus
+    }
 }
 "#;
     let parsed =
@@ -98,7 +103,7 @@ purpose P(subject : Structure) {
             .diagnostics
             .iter()
             .any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
-        "expected DiagnosticCode::UnresolvedType for unresolved purpose-guard param type \
+        "expected DiagnosticCode::UnresolvedType for unresolved guarded-block param type \
          'Bogus' (guards.rs:155), got: {:?}",
         compiled.diagnostics
     );

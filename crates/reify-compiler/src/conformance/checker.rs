@@ -131,6 +131,7 @@ pub(super) fn check_phase_resolve_structure_members(
             reify_syntax::TypeExprKind::DimensionalOp { .. } => {
                 diagnostics.push(
                     Diagnostic::error(format!("unresolved type in conformance check: {}", te))
+                        .with_code(DiagnosticCode::UnresolvedType)
                         .with_label(DiagnosticLabel::new(
                             te.span,
                             "unexpected dimensional expression",
@@ -184,6 +185,7 @@ pub(super) fn check_phase_resolve_structure_members(
                 } else {
                     diagnostics.push(
                         Diagnostic::error(format!("unresolved type in conformance check: {}", te))
+                            .with_code(DiagnosticCode::UnresolvedType)
                             .with_label(DiagnosticLabel::new(te.span, "unknown type name")),
                     );
                     Type::Error
