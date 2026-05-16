@@ -4845,7 +4845,8 @@ fn build_gui_state_tessellation_diagnostics_empty_on_clean_source() {
     // "no topology extraction fixture" warning into tessellation_diagnostics.
     let kernel = MockGeometryKernel::new()
         .with_extracted_faces(reify_types::GeometryHandleId(1), vec![])
-        .with_extracted_edges(reify_types::GeometryHandleId(1), vec![]);
+        .with_extracted_edges(reify_types::GeometryHandleId(1), vec![])
+        .with_extracted_vertices(reify_types::GeometryHandleId(1), vec![]);
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
