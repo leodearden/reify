@@ -229,20 +229,18 @@ pub fn detect_orphan_dofs(
     }
 
     // Global DOFs-per-node D = max(d_e_e) over all elements, mirroring the
-    // formula in assemble_global_stiffness. unwrap_or(3) matches the assembly
-    // default (pure-empty returns 3N×3N), but elements is non-empty here so
-    // the max is always Some.
-    let d_global: usize = elements
-        .iter()
-        .map(|e| e.k_e.n_dofs / e.connectivity.len())
-        .max()
-        .unwrap_or(3);
-
+    // formula in assemble_global_stiffness. Derived inline with the per-node
+    // aggregation below; the early return above guarantees elements is non-empty
+    // here so d_global is always set to at least the first element's d_e.
+    let mut d_global: usize = 0;
     // Build per-node d_e_max_local: the highest d_e of any element touching
     // that node. Nodes never mentioned in any connectivity stay 0 (untouched).
     let mut d_max_local = vec![0usize; n_nodes];
     for e in elements {
         let d_e = e.k_e.n_dofs / e.connectivity.len();
+        if d_e > d_global {
+            d_global = d_e;
+        }
         for &node in e.connectivity {
             if d_e > d_max_local[node] {
                 d_max_local[node] = d_e;
