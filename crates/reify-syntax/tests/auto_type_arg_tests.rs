@@ -314,13 +314,13 @@ fn auto_type_arg_cst_error_propagates_to_module_errors() {
          module.errors was empty — the ERROR node is not being propagated from the \
          type_arg_list subtree into module.errors"
     );
-    // The error message must mention the nature of the problem.
+    // The error message must specifically describe a type-argument-list syntax problem.
     let has_relevant_message = m.errors.iter().any(|e| {
-        e.message.contains("type arg") || e.message.contains("syntax error") || e.message.contains("ERROR")
+        e.message.contains("type arg") || e.message.contains("syntax error")
     });
     assert!(
         has_relevant_message,
-        "expected an error message mentioning 'type arg', 'syntax error', or 'ERROR'; \
+        "expected an error message mentioning 'type arg' or 'syntax error'; \
          got: {:?}",
         m.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
     );
