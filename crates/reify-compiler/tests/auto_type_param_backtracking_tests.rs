@@ -978,13 +978,9 @@ structure def S7 : T7 { param x : Real = 7.0 }
         "depth-bound diagnostic must contain 'substitution' (soundness caveat, task 3637 M-005); got: {:?}",
         extra.message
     );
-    // task 3753 S1: pin the stable caveat phrase rather than the internal audit-doc path.
-    assert!(
-        extra.message.contains("BFS-fallback soundness"),
-        "depth-bound diagnostic must pin the stable caveat phrase 'BFS-fallback soundness' (task 3753); got: {:?}",
-        extra.message
-    );
     // task 3753 S2: internal audit-doc filesystem path must NOT appear in user-facing output.
+    // (The 'substitution' check above covers soundness-caveat presence; no exact-phrase pin
+    // needed — avoids locking incidental wording per reviewer suggestion.)
     assert!(
         !extra.message.contains("docs/architecture-audit"),
         "depth-bound diagnostic must NOT leak internal audit-doc filesystem path to end users (task 3753 S2); got: {:?}",
@@ -1497,13 +1493,9 @@ structure def S4B : T4 { param x : Real = 4.5 }
         "cap diagnostic must contain 'substitution' (soundness caveat, task 3637 M-006); got: {:?}",
         extra.message
     );
-    // task 3753 S1: pin the stable caveat phrase rather than the internal audit-doc path.
-    assert!(
-        extra.message.contains("BFS-fallback soundness"),
-        "cap diagnostic must pin the stable caveat phrase 'BFS-fallback soundness' (task 3753); got: {:?}",
-        extra.message
-    );
     // task 3753 S2: internal audit-doc filesystem path must NOT appear in user-facing output.
+    // (The 'substitution' check above covers soundness-caveat presence; no exact-phrase pin
+    // needed — avoids locking incidental wording per reviewer suggestion.)
     assert!(
         !extra.message.contains("docs/architecture-audit"),
         "cap diagnostic must NOT leak internal audit-doc filesystem path to end users (task 3753 S2); got: {:?}",
