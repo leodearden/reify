@@ -263,6 +263,30 @@ pub trait GitOps {
 /// slice-1 integration suite (see `MockGitOps` for the test seam) — kept
 /// minimal so the eventual T-4 CLI can construct one and call
 /// [`p5_phantom_done::check_pre_done`].
+///
+/// # Invariants
+///
+/// **Construct exactly once per `project_root`.** The private
+/// `gitignore_unavailable` field is a per-instance `AtomicBool` that
+/// short-circuits all subsequent
+/// [`is_gitignored`](GitOps::is_gitignored) calls after the first
+/// unrecoverable `git check-ignore` exit, so a task with N files against
+/// a broken git repo emits at most one
+/// `reify-audit: git check-ignore exited …` breadcrumb rather than N
+/// copies of the same line.
+///
+/// This dedup is silently defeated by constructing a fresh [`RealGitOps`]
+/// per task, per file, or per worker: each new instance starts with a
+/// cleared flag and re-emits the breadcrumb on its first failing call.
+/// The CLI binary (`bin/reify-audit.rs`) constructs exactly one
+/// [`RealGitOps`] per invocation and threads it through [`AuditContext`]
+/// for every detector; future callers MUST preserve this single-instance
+/// discipline.
+///
+/// The multi-file regression test
+/// `cli::git_check_ignore_breadcrumb_dedups_across_files`
+/// (`tests/cli.rs`) pins the user-visible signal: with N≥2 files in a
+/// non-git directory, exactly one breadcrumb appears in stderr.
 pub struct RealGitOps {
     /// Working directory passed as `git -C <dir>` to every invocation.
     pub project_root: PathBuf,
@@ -270,6 +294,10 @@ pub struct RealGitOps {
     /// exit code (anything other than 0 or 1). Subsequent calls short-circuit
     /// and return `false` silently, so a task with N files against a broken git
     /// repo emits at most one breadcrumb rather than N copies of the same line.
+    ///
+    /// Invariant: per-instance — see [`RealGitOps`] doc for the
+    /// single-instance construction requirement that makes this budget
+    /// meaningful in production.
     gitignore_unavailable: AtomicBool,
 }
 
