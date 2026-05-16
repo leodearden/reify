@@ -435,6 +435,85 @@ mod tests {
         );
     }
 
+
+    /// Pins the discrimination half of `docs/architecture-audit/f-infra-design.md`
+    /// §10 acceptance-criterion: "seven canonical stub patterns detected, seven
+    /// non-stub patterns not" — this test covers the "not" side (regression-guard).
+    ///
+    /// Six near-miss added lines, each probing the discrimination boundary of one
+    /// family:
+    ///   (a) `// TODO(refactor) // see task_123` — `task_123` outside `TODO(...)`
+    ///       parens must NOT match `TODO(task_N)` (Family 1 paren-scoping).
+    ///   (b) `panic!("bad input")` — bare panic without `not yet` must NOT match
+    ///       Family 3.
+    ///   (c) `// TODO(refactor)` — TODO with no Family-1 sub-pattern must NOT match.
+    ///   (d) `Value::Undef => { /* unhandled */ }` — Undef arm without
+    ///       pending/stub/placeholder must NOT match Family 5.
+    ///   (e) `tracing::warn!(reason="some_other_reason", "x")` — warn! without
+    ///       `task_*_pending` reason must NOT match Family 4.
+    ///   (f) `// TODO_LIST.md note about followup` — "todo" not followed by `(`
+    ///       must NOT match any family (lexical `todo(` guard in Family 1).
+    ///
+    /// Expected outcome: `findings.is_empty()`. If this test fails, a real
+    /// regression in `line_matches_stub`'s discrimination logic has been introduced.
+    #[test]
+    fn near_miss_lines_not_flagged() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let task_id = "9100";
+        let near_miss_paths: Vec<&str> = vec![
+            "crates/x/near_a.rs",
+            "crates/x/near_b.rs",
+            "crates/x/near_c.rs",
+            "crates/x/near_d.rs",
+            "crates/x/near_e.rs",
+            "crates/x/near_f.rs",
+        ];
+        let near_miss_lines: Vec<&str> = vec![
+            "    // TODO(refactor) // see task_123",
+            "    panic!(\"bad input\")",
+            "    // TODO(refactor)",
+            "    Value::Undef => { /* unhandled */ }",
+            "    tracing::warn!(reason=\"some_other_reason\", \"x\")",
+            "    // TODO_LIST.md note about followup",
+        ];
+
+        let mut git = MockGitOps::new();
+        let task_branch = format!("task/{}", task_id);
+        for (path, line) in near_miss_paths.iter().zip(near_miss_lines.iter()) {
+            git.set_diff_added_lines(
+                "main",
+                &task_branch,
+                path,
+                vec![(1, line.to_string())],
+            );
+        }
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            task_id.to_string(),
+            benign_meta(task_id, near_miss_paths.iter().map(|p| p.to_string()).collect()),
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+        };
+
+        let findings = p2_consumer_stub::check(&ctx);
+        assert!(
+            findings.is_empty(),
+            "near-miss lines must NOT produce findings; got {:?}",
+            findings
+        );
+    }
+
 } // mod tests
 
 } // mod p2
