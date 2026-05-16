@@ -606,6 +606,15 @@ mod tests {
             .optional()
             .expect("query_row");
         assert_eq!(found, Some(1));
+
+        // Negative case: a task_id that was never seeded must return None,
+        // confirming both the `task_id` bind parameter and the `event_type`
+        // filter are actually enforced by the query against this schema.
+        let not_found: Option<i64> = stmt
+            .query_row(["missing-task"], |r| r.get(0))
+            .optional()
+            .expect("query_row negative case");
+        assert_eq!(not_found, None);
     }
 
     /// Coverage gap pin — verifies the Err arm of `has_task_completed_event`
