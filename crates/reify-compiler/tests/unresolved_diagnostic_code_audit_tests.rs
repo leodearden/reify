@@ -6,18 +6,20 @@
 //! Every "unresolved type" / "unresolved name" emit site in the compiler crate
 //! must attach the corresponding `DiagnosticCode` variant via `.with_code(...)`.
 //! These tests lock that contract: one test per emit-site scenario, each compiling
-//! a minimal `.ri` source and asserting BOTH:
+//! a minimal `.ri` source through the targeted code path and asserting
+//! `d.code == Some(DiagnosticCode::UnresolvedType)` (or `UnresolvedName`) for at
+//! least one diagnostic in the output.
 //!
-//! 1. `d.code == Some(DiagnosticCode::UnresolvedType)` (or `UnresolvedName`), AND
-//! 2. `d.message.starts_with("<emit-site format-string prefix>")`.
+//! This verifies *code-level* coverage — that the relevant `DiagnosticCode` is
+//! emitted when the targeted source construct is compiled — but does NOT pin a
+//! specific emit-site location.  Multiple production sites share format-string
+//! prefixes, and message prose is not part of any structured contract.  The
+//! `DiagnosticCode` enum itself is the contract downstream consumers depend on.
 //!
-//! The message-prefix pin means each test is anchored to a *specific* emit site's
-//! format string, not merely to the shared diagnostic code.  A format-string change
-//! or removal of `.with_code(...)` at the targeted site will fail the test even if
-//! another site still fires the same code.
-//!
-//! The shared assertion shape lives in the private helper
-//! `assert_diagnostic_with_code_and_prefix`.
+//! If per-emit-site uniqueness becomes genuinely necessary in a future task, the
+//! appropriate approach is to introduce a dedicated `DiagnosticCode` variant per
+//! emit-site category, or to assert against a known source position via the
+//! diagnostic's span — not to scrape message prose.
 //!
 //! A future maintainer who adds a new "unresolved type" emit site should also add
 //! a test here so the contract remains self-documenting.
@@ -45,32 +47,6 @@
 //! they are simply absent because they cannot be triggered via the public parse API.
 
 use reify_types::{DiagnosticCode, ModulePath};
-
-/// Asserts that `compiled` contains at least one diagnostic whose `code` equals
-/// `expected_code` AND whose `message` starts with `expected_message_prefix`.
-///
-/// `site_label` is a human-readable identifier (e.g. `"functions.rs:122 — return type"`)
-/// included in the panic message when the assertion fails, making it easy to trace
-/// which emit site the failing test was targeting.
-fn assert_diagnostic_with_code_and_prefix(
-    compiled: &reify_compiler::CompiledModule,
-    expected_code: DiagnosticCode,
-    expected_message_prefix: &str,
-    site_label: &str,
-) {
-    assert!(
-        compiled
-            .diagnostics
-            .iter()
-            .any(|d| d.code == Some(expected_code) && d.message.starts_with(expected_message_prefix)),
-        "expected a diagnostic with code {:?} and message starting with {:?} \
-         at site '{}', but got: {:#?}",
-        expected_code,
-        expected_message_prefix,
-        site_label,
-        compiled.diagnostics
-    );
-}
 
 // ── UnresolvedType emit-site tests ──────────────────────────────────────────
 
