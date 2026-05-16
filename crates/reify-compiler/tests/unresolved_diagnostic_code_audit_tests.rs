@@ -217,14 +217,11 @@ trait T {
 
     let compiled = reify_compiler::compile(&parsed);
 
-    assert!(
-        compiled
-            .diagnostics
-            .iter()
-            .any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
-        "expected DiagnosticCode::UnresolvedType for unresolved trait member type \
-         'Bogus' (traits.rs:87-92), got: {:?}",
-        compiled.diagnostics
+    assert_diagnostic_with_code_and_prefix(
+        &compiled,
+        DiagnosticCode::UnresolvedType,
+        "unresolved type in trait",
+        "traits.rs:88 — trait member type 'Bogus' in trait 'T'",
     );
 }
 
