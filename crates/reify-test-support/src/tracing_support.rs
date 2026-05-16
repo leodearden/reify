@@ -1915,6 +1915,54 @@ mod tests {
         );
     }
 
+    /// `Capture::fields_by_event()` returns structured field maps per event,
+    /// using the same MessageVisitor contract as WarnCapture.
+    ///
+    /// Verifies:
+    /// - messages() == ["evict complete"]
+    /// - fields_by_event()[0] contains ("kind", "summary") — raw &str field
+    /// - fields_by_event()[0] contains ("evicted_count", "2") — u64 via
+    ///   record_debug produces bare decimal digits (no quotes)
+    ///
+    /// This pins the field-capture contract inherited from MessageVisitor and
+    /// documents the value format expected by the persistent_cache migration.
+    #[test]
+    fn capturing_subscriber_captures_structured_fields() {
+        use crate::prime_tracing_callsite_cache;
+        use crate::CapturingSubscriberBuilder;
+
+        prime_tracing_callsite_cache();
+
+        let (subscriber, capture) = CapturingSubscriberBuilder::new()
+            .level(tracing::Level::INFO)
+            .build();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(evicted_count = 2u64, kind = "summary", "evict complete");
+        });
+
+        assert_eq!(
+            capture.messages(),
+            vec!["evict complete".to_string()],
+            "message text mismatch"
+        );
+
+        let all_fields = capture.fields_by_event();
+        assert_eq!(all_fields.len(), 1, "expected exactly one event's fields");
+        let f = &all_fields[0];
+
+        assert_eq!(
+            f.get("kind").map(|s| s.as_str()),
+            Some("summary"),
+            "kind field: raw &str should be stored verbatim"
+        );
+        assert_eq!(
+            f.get("evicted_count").map(|s| s.as_str()),
+            Some("2"),
+            "evicted_count field: u64 via record_debug should produce bare digits"
+        );
+    }
+
     // ── WarnCapture::assert_any_event_field_contains tests ────────────────────
 
     /// `assert_any_event_field_contains` succeeds when a captured field value
