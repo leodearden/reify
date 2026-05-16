@@ -94,6 +94,10 @@ pub(crate) struct AnnotationSchema {
     pub(crate) flag_set: Option<&'static [&'static str]>,
     /// Policy for extra positional arguments beyond `args`.
     pub(crate) on_extra: ExtraArgsPolicy,
+    /// Per-annotation arg-shape checker. `None` for annotations with no arg rules.
+    /// Unified signature `fn(&Annotation, &str, &mut Vec<Diagnostic>)` so all helpers
+    /// share a single fn-pointer type; helpers that don't need `context` accept `_context`.
+    pub(crate) arg_check: Option<fn(&Annotation, &str, &mut Vec<Diagnostic>)>,
 }
 
 // ─── Registry ────────────────────────────────────────────────────────────────
@@ -133,6 +137,7 @@ fn build_registry() -> HashMap<&'static str, AnnotationSchema> {
             args: &[],
             flag_set: None,
             on_extra: ExtraArgsPolicy::WarnIgnore,
+            arg_check: None,
         },
     );
 
@@ -145,6 +150,7 @@ fn build_registry() -> HashMap<&'static str, AnnotationSchema> {
             args: &[],
             flag_set: None,
             on_extra: ExtraArgsPolicy::WarnIgnore,
+            arg_check: None,
         },
     );
 
@@ -157,6 +163,7 @@ fn build_registry() -> HashMap<&'static str, AnnotationSchema> {
             args: &[],
             flag_set: None,
             on_extra: ExtraArgsPolicy::WarnIgnore,
+            arg_check: Some(check_optimized_args),
         },
     );
 
@@ -169,6 +176,7 @@ fn build_registry() -> HashMap<&'static str, AnnotationSchema> {
             args: &[],
             flag_set: None,
             on_extra: ExtraArgsPolicy::WarnIgnore,
+            arg_check: None,
         },
     );
 
@@ -181,6 +189,7 @@ fn build_registry() -> HashMap<&'static str, AnnotationSchema> {
             args: &[],
             flag_set: None,
             on_extra: ExtraArgsPolicy::WarnIgnore,
+            arg_check: Some(check_shell_args),
         },
     );
 
@@ -195,6 +204,7 @@ fn build_registry() -> HashMap<&'static str, AnnotationSchema> {
             // WarnIgnore matches the Warning severity emitted by check_solid_args.
             // Error is reserved for a future phase that intentionally upgrades severity.
             on_extra: ExtraArgsPolicy::WarnIgnore,
+            arg_check: Some(check_solid_args),
         },
     );
 
@@ -229,7 +239,10 @@ fn check_optimized_args(ann: &Annotation, context: &str, diagnostics: &mut Vec<D
 ///
 /// Only called when context is valid (structure/occurrence); the caller's
 /// `else` branch enforces the short-circuit so this never fires on wrong-context.
-fn check_shell_args(ann: &Annotation, diagnostics: &mut Vec<Diagnostic>) {
+///
+/// `_context` is unused but required for the uniform fn-pointer signature
+/// `fn(&Annotation, &str, &mut Vec<Diagnostic>)`.
+fn check_shell_args(ann: &Annotation, _context: &str, diagnostics: &mut Vec<Diagnostic>) {
     match ann.args.as_slice() {
         [] => {} // bare @shell — defer thickness to medial analysis.
         [
@@ -263,7 +276,10 @@ fn check_shell_args(ann: &Annotation, diagnostics: &mut Vec<Diagnostic>) {
 ///
 /// Only called when context is valid (structure/occurrence); the caller's
 /// `else` branch enforces the short-circuit so this never fires on wrong-context.
-fn check_solid_args(ann: &Annotation, diagnostics: &mut Vec<Diagnostic>) {
+///
+/// `_context` is unused but required for the uniform fn-pointer signature
+/// `fn(&Annotation, &str, &mut Vec<Diagnostic>)`.
+fn check_solid_args(ann: &Annotation, _context: &str, diagnostics: &mut Vec<Diagnostic>) {
     if !ann.args.is_empty() {
         diagnostics.push(
             Diagnostic::warning(
@@ -348,20 +364,12 @@ pub(crate) fn validate_via_schema(
                         )),
                     );
                 } else {
-                    // Valid context — dispatch into per-annotation arg-shape helpers.
-                    // The `else` enforces the short-circuit: arg-shape warnings must
-                    // not fire when the context is wrong (mirrors `else if` in legacy arms).
-                    match schema.name {
-                        reify_types::OPTIMIZED_ANNOTATION => {
-                            check_optimized_args(ann, context, diagnostics);
-                        }
-                        reify_types::SHELL_ANNOTATION => {
-                            check_shell_args(ann, diagnostics);
-                        }
-                        reify_types::SOLID_ANNOTATION => {
-                            check_solid_args(ann, diagnostics);
-                        }
-                        _ => {}
+                    // Valid context — dispatch into per-annotation arg-shape helper via
+                    // fn-pointer field. The `else` enforces the short-circuit: arg-shape
+                    // warnings must not fire when the context is wrong (mirrors `else if`
+                    // in legacy arms).
+                    if let Some(check) = schema.arg_check {
+                        check(ann, context, diagnostics);
                     }
                 }
             }
