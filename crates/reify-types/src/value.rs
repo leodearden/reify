@@ -1058,8 +1058,11 @@ impl Value {
     /// - empty `List` / `Set` → element type defaults to `Real`
     /// - empty `Map` → key defaults to `String`, value defaults to `Real`
     /// - `Option(None)` → inner type defaults to `Bool`
-    /// - empty `Point` / `Vector` → quantity type defaults to `Real`
     /// - `Range` with no bounds → element type defaults to `Real`
+    ///
+    /// Empty `Point` and `Vector` are not valid inputs to `infer_type` and
+    /// panic in debug builds via `debug_assert!`.  Use [`try_infer_type()`]
+    /// for ambiguity-aware inference that returns `None` instead of panicking.
     ///
     /// Use [`try_infer_type()`] when you need to distinguish "genuinely ambiguous"
     /// from "has a known fallback".
@@ -1097,29 +1100,37 @@ impl Value {
                 Value::Option(Some(inner)) => Type::Option(Box::new(inner.infer_type())),
                 Value::Option(None) => Type::Option(Box::new(Type::Bool)),
                 Value::Point(components) => {
-                    let q = components
-                        .first()
-                        .map(|v| v.infer_type())
-                        // G-allow: documented `infer_type()` with-defaults contract (function
-                        // docstring above); `try_infer_type()` returns None for ambiguity
-                        // (task 3639 review).
-                        .unwrap_or(Type::Real);
+                    debug_assert!(
+                        !components.is_empty(),
+                        "infer_type() called on empty Point — nonsensical for engineering \
+                         geometry; use try_infer_type() if ambiguity-aware inference is \
+                         required (task 3749)"
+                    );
+                    let first = components.first().unwrap_or_else(|| unreachable!(
+                        "infer_type() reached the None-fallback arm for an empty Value::Point; \
+                         the debug_assert above should have fired in dev — empty Point in \
+                         release indicates a bug at the construction site (task 3749)"
+                    ));
                     Type::Point {
                         n: components.len(),
-                        quantity: Box::new(q),
+                        quantity: Box::new(first.infer_type()),
                     }
                 }
                 Value::Vector(components) => {
-                    let q = components
-                        .first()
-                        .map(|v| v.infer_type())
-                        // G-allow: documented `infer_type()` with-defaults contract (function
-                        // docstring above); `try_infer_type()` returns None for ambiguity
-                        // (task 3639 review).
-                        .unwrap_or(Type::Real);
+                    debug_assert!(
+                        !components.is_empty(),
+                        "infer_type() called on empty Vector — nonsensical for engineering \
+                         geometry; use try_infer_type() if ambiguity-aware inference is \
+                         required (task 3749)"
+                    );
+                    let first = components.first().unwrap_or_else(|| unreachable!(
+                        "infer_type() reached the None-fallback arm for an empty Value::Vector; \
+                         the debug_assert above should have fired in dev — empty Vector in \
+                         release indicates a bug at the construction site (task 3749)"
+                    ));
                     Type::Vector {
                         n: components.len(),
-                        quantity: Box::new(q),
+                        quantity: Box::new(first.infer_type()),
                     }
                 }
                 Value::Range { lower, upper, .. } => {
