@@ -1504,6 +1504,18 @@ pub fn evict_over_cap(
         if we_removed_bin {
             evicted_count += 1;
             evicted_bytes += candidate.bin_size;
+            let age_secs = now
+                .duration_since(candidate.last_access)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            tracing::debug!(
+                target: "reify_eval::persistent_cache::gc",
+                bin_path = %candidate.bin_path.display(),
+                bin_size = candidate.bin_size,
+                solve_time_ms = candidate.solve_time_ms,
+                age_secs,
+                "evicting cache entry"
+            );
         }
         remaining -= candidate.bin_size;
 
