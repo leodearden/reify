@@ -1,7 +1,7 @@
 //! Tests for `auto:` / `auto(free):` in `type_arg_list` position (task 3526).
 //!
 //! User-observable signal: `cargo test -p reify-syntax --test auto_type_arg_tests`
-//! passes.  The load-bearing coverage spans four layers:
+//! passes.  The load-bearing coverage spans three layers:
 //!
 //! * **CST level** — `auto_type_arg_cst_bound_identifier_strict`, `_multi_param`,
 //!   `auto_type_arg_cst_strict_has_no_modifier_field`,
