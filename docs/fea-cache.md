@@ -55,7 +55,7 @@ Inside the cache directory each Reify engine version gets its own subdirectory, 
 
 ## CLI
 
-The `stats`, `clear`, and `gc` subcommands accept `--cache-dir <path>` to override the resolved cache directory for that invocation. The `export` and `import` subcommands do not accept `--cache-dir`; they resolve the cache directory from the `REIFY_CACHE_DIR` env var and config layers only. To redirect `export` or `import` to a non-default cache directory, set `REIFY_CACHE_DIR` for the invocation:
+The `stats`, `clear`, and `gc` subcommands accept `--cache-dir <path>` to override the resolved cache directory for that invocation. The `export` and `import` subcommands do not accept `--cache-dir`; they resolve the cache directory from the `REIFY_CACHE_DIR` env var and defaults only (no CLI override, and per the caveat above config-file layers are not wired up in v0.3.x). To redirect `export` or `import` to a non-default cache directory, set `REIFY_CACHE_DIR` for the invocation:
 
 ```sh
 REIFY_CACHE_DIR=/mnt/fast-disk/reify-fea reify cache export a3f1e2d4c5b6a7f8e9d0c1b2a3f4e5d6 > entry.tar
@@ -124,7 +124,7 @@ Read a cache tar archive from **stdin** and ingest the entries into the local ca
 reify cache import < entry.tar
 ```
 
-Entries whose embedded engine-version hash does not match the live engine version are **warn-and-skip**: a warning is printed to stderr and the entry is not written, but the overall command exits successfully. This prevents a mismatched entry from poisoning the local cache while still allowing a mixed-version tarball to partially import.
+Entries whose embedded engine-version hash does not match the live engine version are **warn-and-skip**: a warning is printed to stderr and the entry is not written, but the overall command exits successfully. This prevents a mismatched entry from poisoning the local cache while still allowing a mixed-version tarball to partially import. Several other conditions also trigger warn-and-skip (and exit 0): a malformed or non-hex tar-entry stem, an unrecognised file extension, a missing `.bin` for a staged stem, a header decode failure, an incompatible header format version, and a header-echo/stem mismatch. Read stderr even on a zero exit code to detect silently skipped entries.
 
 ---
 
@@ -160,7 +160,7 @@ scp -r ~/.cache/reify/fea peer:~/.cache/reify/
 rsync -av ~/.cache/reify/fea/ peer:~/.cache/reify/fea/
 ```
 
-Concurrent writes from multiple machines are safe — entries are content-addressed, so two machines writing the same hash produce byte-identical files. Last-writer-wins is correct by design for deterministic inputs.
+Concurrent writes from multiple machines are safe when each machine's rsync/scp writes through SSH to a **local** filesystem on the destination (i.e. the cache root is on local disk on every host that owns one). Entries are content-addressed, so two machines writing the same hash produce byte-identical files and last-writer-wins is correct by design. Do **not** point multiple machines at a shared NFS or SMB mount as the cache root — that is the unsupported scenario described in the "Local disk only" caveat below.
 
 ### git-LFS: per-project opt-in
 
