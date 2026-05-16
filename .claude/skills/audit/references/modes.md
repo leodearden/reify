@@ -2,6 +2,8 @@
 
 Five invocation modes. All modes write a per-run JSON artifact; `--format markdown` adds a fenced markdown report on top.
 
+> All argv paths use `$REPO_ROOT/` — see `references/cli-invocation.md` §1 for the pre-flight that resolves it.
+
 ---
 
 ## §1 Default mode (14-day window sweep)
@@ -13,9 +15,9 @@ Five invocation modes. All modes write a per-run JSON artifact; `--format markdo
 ```
 reify-audit \
   --since <14d-ago-iso> \
-  --tasks-file .taskmaster/tasks/tasks.json \
-  --runs-db data/orchestrator/runs.db \
-  --project-root .
+  --tasks-file "$REPO_ROOT/.taskmaster/tasks/tasks.json" \
+  --runs-db    "$REPO_ROOT/data/orchestrator/runs.db" \
+  --project-root "$REPO_ROOT"
 ```
 
 **Pre-flight:** Compute `<14d-ago-iso>` as the ISO-8601 date exactly 14 days before `now` (UTC). Example: if today is `2026-05-16`, use `--since 2026-05-02`. The CLI accepts `YYYY-MM-DD` or full ISO-8601 for `--since`.
@@ -39,9 +41,9 @@ reify-audit \
 ```
 reify-audit \
   --task <id> \
-  --tasks-file .taskmaster/tasks/tasks.json \
-  --runs-db data/orchestrator/runs.db \
-  --project-root .
+  --tasks-file "$REPO_ROOT/.taskmaster/tasks/tasks.json" \
+  --runs-db    "$REPO_ROOT/data/orchestrator/runs.db" \
+  --project-root "$REPO_ROOT"
 ```
 
 **Pre-flight:** `--task <id>` always shells out, regardless of the target task's status — including `done`. P5 (phantom-done) is the detector that only fires on done tasks, so spot-checking a freshly-completed task to confirm it is not phantom-done is precisely the intended use of this mode. A clean run (0 findings) on a done task is positive evidence that the task is not phantom-done.
@@ -67,9 +69,9 @@ reify-audit \
 ```
 reify-audit \
   --since <iso-date> \
-  --tasks-file .taskmaster/tasks/tasks.json \
-  --runs-db data/orchestrator/runs.db \
-  --project-root .
+  --tasks-file "$REPO_ROOT/.taskmaster/tasks/tasks.json" \
+  --runs-db    "$REPO_ROOT/data/orchestrator/runs.db" \
+  --project-root "$REPO_ROOT"
 ```
 
 **Pre-flight:** Validate that `<iso-date>` parses as a date (YYYY-MM-DD or full ISO-8601) and is in the past. If not, surface an error to the user and stop.
@@ -94,9 +96,9 @@ reify-audit \
 reify-audit \
   --since <14d-ago-iso> \
   --pattern <P1|P2|P5> \
-  --tasks-file .taskmaster/tasks/tasks.json \
-  --runs-db data/orchestrator/runs.db \
-  --project-root .
+  --tasks-file "$REPO_ROOT/.taskmaster/tasks/tasks.json" \
+  --runs-db    "$REPO_ROOT/data/orchestrator/runs.db" \
+  --project-root "$REPO_ROOT"
 ```
 
 (If `--since` or `--task` is also given, use that instead of the default 14d window.)
