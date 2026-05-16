@@ -10,9 +10,12 @@
 #      service environment (systemd user unit).
 #   2. The binary referenced by that env var is executable and responds
 #      to --help.
+#   (2.5) The env var value contains the required template tokens:
+#          --task, {id}, and --pre-done (per design §11.1).
 #   3. The fused-memory MCP endpoint at :8002 is responsive.
+#   (4) env value contains template tokens --task {id} --pre-done
 #
-# Exits 0 on success (all three assertions pass).
+# Exits 0 on success (all assertions pass).
 # Exits 1 on first failed assertion (with a descriptive error message).
 #
 # Run before activation to confirm RED; run after activation to confirm GREEN:
@@ -40,6 +43,7 @@ Usage: scripts/smoke-predone-hook.sh [-h|--help]
 
 Activation smoke test for the FUSED_MEMORY_PREDONE_HOOK_REIFY pre-done hook.
 Asserts: (1) env var set in fused-memory service, (2) binary executable,
+         (2.5) env value contains --task {id} --pre-done template tokens,
          (3) fused-memory MCP endpoint responsive.
 Exits 0 on success, 1 on failure.
 USAGE
@@ -95,6 +99,24 @@ fi
 
 if ! "$binary" --help >/dev/null 2>&1; then
     echo "FAIL: '$binary' --help failed (binary is present but crashes on --help)." >&2
+    exit 1
+fi
+
+# ── Assertion 2.5: env value contains required template tokens ───────────────
+echo "smoke-predone-hook: checking template tokens in ${ENV_VAR} value..."
+
+if [[ "$env_value" != *"--task"* ]]; then
+    echo "FAIL: env value missing template tokens. Expected '<binary> --task {id} --pre-done' per design §11.1; got: $env_value" >&2
+    exit 1
+fi
+
+if [[ "$env_value" != *"{id}"* ]]; then
+    echo "FAIL: env value missing template tokens. Expected '<binary> --task {id} --pre-done' per design §11.1; got: $env_value" >&2
+    exit 1
+fi
+
+if [[ "$env_value" != *"--pre-done"* ]]; then
+    echo "FAIL: env value missing template tokens. Expected '<binary> --task {id} --pre-done' per design §11.1; got: $env_value" >&2
     exit 1
 fi
 
