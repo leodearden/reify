@@ -4408,6 +4408,7 @@ name = "reify-audit"
 version = "0.1.0"
 dependencies = [
  "reify-audit",
+ "reify-test-support",
  "rusqlite",
  "serde",
  "serde_json",
@@ -4678,6 +4679,7 @@ dependencies = [
  "reify-compiler",
  "reify-eval",
  "reify-solver-elastic",
+ "reify-test-support",
  "reify-types",
  "serde",
  "serde_json",
