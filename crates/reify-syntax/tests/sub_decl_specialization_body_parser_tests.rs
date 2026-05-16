@@ -346,166 +346,143 @@ fn sub_decl_collection_form_regression() {
 }
 
 // ── D4 List/specialization explicit-precedence invariant lock ─────────────────
+//
+// The collection arm in grammar.js uses a bare `'List'` string token.
+// Disambiguation between the collection arm (`sub a : List<Foo>`) and the
+// specialization arm (`sub a : Foo<Bar>`) relies on two documented tree-sitter
+// lexer rules — NOT on `token(prec(...))` (which was considered and rejected
+// because it overrides rule #1 and breaks the longest-match case; see
+// grammar.js lines 523–528 and escalation esc-3712-201):
+//
+//   Rule #1 (longest-match, evaluated FIRST): for `Listicle<Foo>` the
+//   `$.identifier` regex matches 8 chars vs `'List'`'s 4 — identifier wins.
+//
+//   Rule #2 (string-vs-regex tie-break, on equal-length matches): for
+//   `List<Foo>` both `'List'` and `$.identifier` match exactly 4 chars, so
+//   the anonymous string token wins and the collection arm is taken.
+//
+// The `List<Foo>` AST baseline (rule #2 positive case) is already pinned by
+// `sub_decl_collection_form_regression` above. The three tests below lock the
+// complementary invariants independently so failures isolate to a single rule:
+//
+//   - sub_decl_non_list_specialization_arm: negative control — non-List
+//     identifiers must NOT be captured by the collection arm (rule #2 boundary).
+//   - sub_decl_listicle_longest_match: longest-match guard — a List-prefixed
+//     identifier must win via rule #1 before any tie-break is reached.
+//   - sub_decl_cst_shape_for_list_collection: CST-level pin — confirms `List`
+//     is consumed as the collection keyword, not as `structure_name`.
+//
+// RED-BAR PROOF (not committed): an earlier draft verified RED-bar by reordering
+// the specialization arm above the collection arm in grammar.js; assertions on
+// `List<Foo>` failed, proving this is a real regression lock. Revert was
+// confirmed before commit.
 
-/// Invariant lock: the collection arm in grammar.js uses a bare `'List'` string
-/// token. Disambiguation between the collection arm (`sub a : List<Foo>`) and the
-/// specialization arm (`sub a : Foo<Bar>`) relies on two documented tree-sitter
-/// lexer rules — NOT on `token(prec(...))` (which was considered and rejected
-/// because it overrides rule #1 and breaks Case 3; see grammar.js lines 523–528
-/// and escalation esc-3712-201):
+/// Non-List specialization: `sub a : Foo<Bar>` must route to the specialization
+/// arm (`is_collection==false`) — the bare `'List'` token must NOT capture
+/// non-List identifiers (they don't equal-length-match `'List'`).
 ///
-///   Rule #1 (longest-match, evaluated FIRST): for `Listicle<Foo>` the
-///   `$.identifier` regex matches 8 chars vs `'List'`'s 4 — identifier wins.
-///
-///   Rule #2 (string-vs-regex tie-break, on equal-length matches): for
-///   `List<Foo>` both `'List'` and `$.identifier` match exactly 4 chars, so
-///   the anonymous string token wins and the collection arm is taken.
-///
-/// This test pins the four load-bearing invariant cases:
-///
-/// 1. `sub a : List<Foo>` → collection arm wins: `is_collection==true`,
-///    `structure_name=="Foo"`, `body.is_none()`.
-/// 2. `sub a : Foo<Bar>` (non-List, same shape) → specialization arm:
-///    `is_collection==false`, `structure_name=="Foo"`.
-/// 3. `sub a : Listicle<Foo>` (List-prefixed identifier) → specialization arm
-///    wins by longest-match (rule #1 precedes any tie-break): `is_collection==false`,
-///    `structure_name=="Listicle"`.
-/// 4. CST: in the `List<Foo>` parse the `sub_declaration` `structure_name` field
-///    text is exactly "Foo" (not "List") and there is no `body` child.
-///
-/// RED-BAR PROOF (not committed): an earlier draft of this test verified RED-bar
-/// by reordering the specialization arm above the collection arm in grammar.js;
-/// assertions (1) and (4) failed, proving this is a real regression lock. Revert
-/// was confirmed before commit. The lock holds under bare `'List'` + rules #1+#2
-/// as currently committed in grammar.js.
+/// Note: this is distinct from `sub_decl_instantiation_form_regression`, which
+/// tests `sub a = Foo()` (the `=` / call-syntax instantiation form). This test
+/// exercises `sub a : Ident<…>` (the colon / type-args specialization form).
 #[test]
-fn sub_decl_list_vs_specialization_disambiguation_invariant() {
+fn sub_decl_non_list_specialization_arm() {
     use reify_syntax::{Declaration, MemberDecl};
+    let source = "structure S { sub a : Foo<Bar> }";
+    let module = reify_syntax::parse(source, ModulePath::single("test"));
+    let Declaration::Structure(s) = &module.declarations[0] else {
+        panic!("expected Structure declaration for Foo<Bar> source");
+    };
+    let MemberDecl::Sub(sub) = s
+        .members
+        .iter()
+        .find(|m| matches!(m, MemberDecl::Sub(_)))
+        .expect("expected a Sub member")
+    else {
+        unreachable!()
+    };
+    assert!(
+        !sub.is_collection,
+        "INVARIANT BROKEN: `sub a : Foo<Bar>` must parse via the specialization arm \
+         (is_collection==false). The bare `'List'` token must NOT capture non-List \
+         identifiers — they don't equal-length-match `List`.",
+    );
+    assert_eq!(
+        sub.structure_name, "Foo",
+        "specialization form `sub a : Foo<Bar>` structure_name must be 'Foo', got: {:?}",
+        sub.structure_name,
+    );
+}
 
-    // Case 1: List<Foo> → collection arm (the load-bearing invariant).
-    {
-        let source = "structure S { sub a : List<Foo> }";
-        let module = reify_syntax::parse(source, ModulePath::single("test"));
-        let Declaration::Structure(s) = &module.declarations[0] else {
-            panic!("expected Structure declaration for List<Foo> source");
-        };
-        let MemberDecl::Sub(sub) = s
-            .members
-            .iter()
-            .find(|m| matches!(m, MemberDecl::Sub(_)))
-            .expect("expected a Sub member")
-        else {
-            unreachable!()
-        };
-        assert!(
-            sub.is_collection,
-            "INVARIANT BROKEN: `sub a : List<Foo>` must parse via the collection arm \
-             (is_collection==true). If this fails, the bare `'List'` token lost its \
-             string-vs-regex tie-break (rule #2) over the `identifier` regex on the \
-             equal-length `List` match.",
-        );
-        assert!(
-            sub.body.is_none(),
-            "collection form `sub a : List<Foo>` must have body==None",
-        );
-        assert_eq!(
-            sub.structure_name, "Foo",
-            "collection form structure_name must be 'Foo' (not 'List'), got: {:?}",
-            sub.structure_name,
-        );
-    }
+/// Longest-match guard: `sub a : Listicle<Foo>` (List-prefixed identifier) must
+/// route to the specialization arm — rule #1 (longest-match) takes 'Listicle'
+/// (8 chars) over 'List' (4 chars) before any tie-break kicks in.
+#[test]
+fn sub_decl_listicle_longest_match() {
+    use reify_syntax::{Declaration, MemberDecl};
+    let source = "structure S { sub a : Listicle<Foo> }";
+    let module = reify_syntax::parse(source, ModulePath::single("test"));
+    let Declaration::Structure(s) = &module.declarations[0] else {
+        panic!("expected Structure declaration for Listicle<Foo> source");
+    };
+    let MemberDecl::Sub(sub) = s
+        .members
+        .iter()
+        .find(|m| matches!(m, MemberDecl::Sub(_)))
+        .expect("expected a Sub member")
+    else {
+        unreachable!()
+    };
+    assert!(
+        !sub.is_collection,
+        "LONGEST-MATCH REGRESSION: `sub a : Listicle<Foo>` must parse via the \
+         specialization arm (is_collection==false). Rule #1 (longest-match) must \
+         take 'Listicle' (8 chars) over 'List' (4 chars) before any tie-break \
+         kicks in.",
+    );
+    assert_eq!(
+        sub.structure_name, "Listicle",
+        "specialization form `sub a : Listicle<Foo>` structure_name must be 'Listicle', \
+         got: {:?}",
+        sub.structure_name,
+    );
+}
 
-    // Case 2: Foo<Bar> (same `sub name : Ident<…>` shape, non-List) → specialization arm.
-    {
-        let source = "structure S { sub a : Foo<Bar> }";
-        let module = reify_syntax::parse(source, ModulePath::single("test"));
-        let Declaration::Structure(s) = &module.declarations[0] else {
-            panic!("expected Structure declaration for Foo<Bar> source");
-        };
-        let MemberDecl::Sub(sub) = s
-            .members
-            .iter()
-            .find(|m| matches!(m, MemberDecl::Sub(_)))
-            .expect("expected a Sub member")
-        else {
-            unreachable!()
-        };
-        assert!(
-            !sub.is_collection,
-            "INVARIANT BROKEN: `sub a : Foo<Bar>` must parse via the specialization arm \
-             (is_collection==false). The bare `'List'` token must NOT capture non-List \
-             identifiers — they don't equal-length-match `List`.",
-        );
-        assert_eq!(
-            sub.structure_name, "Foo",
-            "specialization form `sub a : Foo<Bar>` structure_name must be 'Foo', got: {:?}",
-            sub.structure_name,
-        );
-    }
+/// CST shape: in the `List<Foo>` parse, `sub_declaration`'s `structure_name`
+/// field text is "Foo" (not "List") and there is no `body` child.
+///
+/// This CST-level pin is complementary to the AST-level `sub_decl_collection_form_regression`:
+/// it confirms that `List` is consumed as the collection keyword rather than being
+/// lexed as the `structure_name` identifier in the parse tree.
+#[test]
+fn sub_decl_cst_shape_for_list_collection() {
+    let source = "structure S { sub a : List<Foo> }";
+    let mut parser = make_ts_parser();
+    let tree = parser
+        .parse(source.as_bytes(), None)
+        .expect("tree-sitter parse failed for List<Foo>");
+    assert!(
+        !tree.root_node().has_error(),
+        "CST must have no ERROR nodes for `sub a : List<Foo>`",
+    );
 
-    // Case 3: Listicle<Foo> (List-prefixed identifier) → specialization arm wins by
-    // longest-match (tree-sitter rule #1, evaluated before lexical precedence).
-    {
-        let source = "structure S { sub a : Listicle<Foo> }";
-        let module = reify_syntax::parse(source, ModulePath::single("test"));
-        let Declaration::Structure(s) = &module.declarations[0] else {
-            panic!("expected Structure declaration for Listicle<Foo> source");
-        };
-        let MemberDecl::Sub(sub) = s
-            .members
-            .iter()
-            .find(|m| matches!(m, MemberDecl::Sub(_)))
-            .expect("expected a Sub member")
-        else {
-            unreachable!()
-        };
-        assert!(
-            !sub.is_collection,
-            "LONGEST-MATCH REGRESSION: `sub a : Listicle<Foo>` must parse via the \
-             specialization arm (is_collection==false). Rule #1 (longest-match) must \
-             take 'Listicle' (8 chars) over 'List' (4 chars) before any tie-break \
-             kicks in.",
-        );
-        assert_eq!(
-            sub.structure_name, "Listicle",
-            "specialization form `sub a : Listicle<Foo>` structure_name must be 'Listicle', \
-             got: {:?}",
-            sub.structure_name,
-        );
-    }
+    let sub_decl = find_cst_node(tree.root_node(), "sub_declaration")
+        .expect("expected a sub_declaration node in CST for List<Foo>");
 
-    // Case 4 (CST): in the `List<Foo>` parse, `sub_declaration`'s `structure_name`
-    // field text is "Foo" (not "List") and there is no `body` child.
-    {
-        let source = "structure S { sub a : List<Foo> }";
-        let mut parser = make_ts_parser();
-        let tree = parser
-            .parse(source.as_bytes(), None)
-            .expect("tree-sitter parse failed for List<Foo>");
-        assert!(
-            !tree.root_node().has_error(),
-            "CST must have no ERROR nodes for `sub a : List<Foo>`",
-        );
+    let structure_name_node = sub_decl
+        .child_by_field_name("structure_name")
+        .expect("sub_declaration must have a `structure_name` field for List<Foo>");
+    let structure_name_text = structure_name_node
+        .utf8_text(source.as_bytes())
+        .expect("structure_name node must be valid utf8");
+    assert_eq!(
+        structure_name_text, "Foo",
+        "INVARIANT BROKEN: CST `structure_name` field must be 'Foo' (not 'List') for \
+         `sub a : List<Foo>`. 'List' must be consumed as the collection keyword, not \
+         the structure name. Got: {structure_name_text:?}",
+    );
 
-        let sub_decl = find_cst_node(tree.root_node(), "sub_declaration")
-            .expect("expected a sub_declaration node in CST for List<Foo>");
-
-        let structure_name_node = sub_decl
-            .child_by_field_name("structure_name")
-            .expect("sub_declaration must have a `structure_name` field for List<Foo>");
-        let structure_name_text = structure_name_node
-            .utf8_text(source.as_bytes())
-            .expect("structure_name node must be valid utf8");
-        assert_eq!(
-            structure_name_text, "Foo",
-            "INVARIANT BROKEN: CST `structure_name` field must be 'Foo' (not 'List') for \
-             `sub a : List<Foo>`. 'List' must be consumed as the collection keyword, not \
-             the structure name. Got: {structure_name_text:?}",
-        );
-
-        assert!(
-            sub_decl.child_by_field_name("body").is_none(),
-            "CST: `sub a : List<Foo>` (collection form) must NOT have a `body` field",
-        );
-    }
+    assert!(
+        sub_decl.child_by_field_name("body").is_none(),
+        "CST: `sub a : List<Foo>` (collection form) must NOT have a `body` field",
+    );
 }
