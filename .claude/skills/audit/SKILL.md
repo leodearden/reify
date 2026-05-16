@@ -50,7 +50,7 @@ See `references/output-format.md` for the full JSON schema, `index.json` format,
 
 1. Resolve the `reify-audit` binary (prefer `target/release/reify-audit`; fallback to `cargo run --release --quiet -p reify-audit --`).
 2. Build the argv from the user's invocation mode (see `references/modes.md`).
-3. Shell out, capturing stderr to a tempfile (`2>/tmp/reify-audit-$$.json`).
+3. Shell out, capturing stderr to a tempfile (via `mktemp /tmp/reify-audit-XXXXXX.json` with an EXIT trap; see `references/cli-invocation.md` §2).
 4. Interpret the exit code (0 / 1–254 / 125) per `references/cli-invocation.md`.
 5. Parse the JSON array of `Finding` objects from the tempfile.
 6. For each finding, apply the severity ladder (see `references/severity-routing.md`), performing dedupe lookup before filing any medium-severity task.
