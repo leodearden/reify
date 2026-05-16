@@ -4556,6 +4556,7 @@ dependencies = [
  "axum",
  "notify",
  "reify-compiler",
+ "reify-config",
  "reify-constraints",
  "reify-eval",
  "reify-geometry",
