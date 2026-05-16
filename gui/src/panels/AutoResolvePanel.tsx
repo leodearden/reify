@@ -48,9 +48,9 @@ const PLOT_Y1 = CHART_PAD_TOP;          // top (high values)
 const PLOT_Y2 = CHART_H - CHART_PAD_BOTTOM; // bottom (low SVG-y = visual top)
 
 // Sparkline layout constants
-const SPARK_W = 80;
+export const SPARK_W = 80;
 const SPARK_H = 24;
-const SPARK_PAD = 2;
+export const SPARK_PAD = 2;
 
 /**
  * Build the polyline points string mapping data coordinates to SVG space.
