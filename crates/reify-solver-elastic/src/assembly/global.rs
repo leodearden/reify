@@ -128,7 +128,7 @@ impl std::fmt::Display for OrphanDofsSummary {
     ///
     /// Format (truncated, `examples.len() < count` — all `MAX_EXAMPLES`
     /// entries listed explicitly, then a trailing parenthetical):
-    /// `orphan DOFs: count=24, examples=[(1, 3), (1, 4), (1, 5), (2, 3), ... (16 entries total)] (first 16 of 24)`
+    /// `orphan DOFs: count=24, examples=[(1, 3), (1, 4), (1, 5), (2, 3), (2, 4), (2, 5), (3, 3), (3, 4), (3, 5), (4, 3), (4, 4), (4, 5), (5, 3), (5, 4), (5, 5), (6, 3)] (first 16 of 24)`
     ///
     /// Note: there is no `...` ellipsis inside the brackets — all stored
     /// examples are emitted verbatim. The parenthetical `(first N of M)` only
