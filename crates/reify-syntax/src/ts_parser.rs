@@ -688,13 +688,18 @@ impl<'a> Lowering<'a> {
                         // Grammar invariant (grammar.js:663-667): tree-sitter-reify always
                         // inserts a MISSING `auto_keyword` child for malformed `auto_type_arg`
                         // nodes (verified by a 15-input CST probe; task 3724), so kw_opt is
-                        // always Some under any currently-known input.  debug_assert makes
-                        // the invariant explicit without adding an untestable recovery path.
-                        debug_assert!(
-                            kw_opt.is_some(),
-                            "auto_type_arg missing auto_keyword child — grammar invariant violated"
-                        );
-                        let Some(kw) = kw_opt else { continue };
+                        // always Some under any currently-known input.  The push_error else-arm
+                        // is defense-in-depth, mirroring the sibling bound-missing guard
+                        // (lines 704-710): if a future grammar change ever weakens the
+                        // MISSING-node invariant, release users see the diagnostic instead of
+                        // a silently-dropped AST entry.
+                        let Some(kw) = kw_opt else {
+                            self.push_error(
+                                "auto type-arg missing auto keyword".to_string(),
+                                self.span(inner),
+                            );
+                            continue;
+                        };
                         let free = kw.child_by_field_name("modifier").is_some();
                         // The grammar guarantees a `bound` field (bare identifier) on every
                         // well-formed auto_type_arg. Guard defensively: if error recovery
