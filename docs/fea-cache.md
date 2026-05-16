@@ -40,7 +40,7 @@ Inside the cache directory each Reify engine version gets its own subdirectory, 
 
 **Precedence ladder for cache directory** (highest first):
 
-1. `--cache-dir <path>` CLI flag
+1. `--cache-dir <path>` CLI flag (`stats`/`clear`/`gc` only — `export`/`import` do not accept this flag)
 2. `REIFY_CACHE_DIR` env var
 3. `dir` in `~/.config/reify/config.toml` `[cache]` section (user config)
 4. `dir` in `<project>/.reify/config.toml` `[cache]` section (project config)
@@ -67,7 +67,12 @@ Unknown keys in `[cache]` or unknown top-level sections are a hard error (typo d
 
 ## CLI
 
-All `reify cache` subcommands accept `--cache-dir <path>` to override the resolved cache directory for that invocation.
+The `stats`, `clear`, and `gc` subcommands accept `--cache-dir <path>` to override the resolved cache directory for that invocation. The `export` and `import` subcommands do not accept `--cache-dir`; they resolve the cache directory from the `REIFY_CACHE_DIR` env var and config layers only. To redirect `export` or `import` to a non-default cache directory, set `REIFY_CACHE_DIR` for the invocation:
+
+```sh
+REIFY_CACHE_DIR=/mnt/fast-disk/reify-fea reify cache export a3f1e2d4c5b6a7f8e9d0c1b2a3f4e5d6 > entry.tar
+REIFY_CACHE_DIR=/mnt/fast-disk/reify-fea reify cache import < entry.tar
+```
 
 ### `reify cache stats [--cache-dir <path>]`
 
