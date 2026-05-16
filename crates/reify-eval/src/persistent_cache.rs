@@ -1323,6 +1323,16 @@ pub struct EvictionReport {
 ///
 /// Returns `Ok(EvictionReport::default())` when the engine-version subdir does
 /// not exist (no entries → nothing to evict). Other `io::Error` kinds propagate.
+///
+/// # Observability
+///
+/// Emits one `tracing::info!` event at the `reify_eval::persistent_cache::gc`
+/// target (message: `"evict_over_cap complete"`) **only** on the happy-path
+/// return — i.e., after the eviction loop completes without error.  Early-return
+/// paths (engine-version subdir absent, total already ≤ cap) stay silent.
+/// Any `Err` propagated from within the eviction loop exits without emitting the
+/// INFO summary; callers that want GC diagnostics on error paths must inspect the
+/// returned `io::Error` value directly.
 pub fn evict_over_cap(
     cache_root: &Path,
     engine_version_hash: &str,
@@ -1508,6 +1518,10 @@ pub fn evict_over_cap(
                 .duration_since(candidate.last_access)
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
+            // Hot-path: fires once per evicted entry inside the eviction loop.
+            // With `RUST_LOG=reify_eval::persistent_cache::gc=debug` enabled on
+            // a large cache, bin_path formatting + field encoding will dominate
+            // loop cost.  Keep at DEBUG; do NOT elevate to INFO.
             tracing::debug!(
                 target: "reify_eval::persistent_cache::gc",
                 bin_path = %candidate.bin_path.display(),
@@ -5151,7 +5165,7 @@ mod tests {
     ///
     /// Fails RED before the `tracing::info!` site is added in step-2.
     #[test]
-    fn evict_over_cap_emits_info_summary_at_gc_target_with_evicted_count_evicted_bytes_remaining_bytes_cap_bytes_engine_version_hash_fields_when_eviction_runs()
+    fn evict_over_cap_emits_info_summary_with_expected_fields()
     {
         reify_test_support::prime_tracing_callsite_cache();
 
@@ -5265,7 +5279,7 @@ mod tests {
     ///
     /// Fails RED before the `tracing::debug!` site is added in step-4.
     #[test]
-    fn evict_over_cap_emits_one_debug_event_per_evicted_entry_at_gc_target() {
+    fn evict_over_cap_debug_count_equals_evicted_count() {
         reify_test_support::prime_tracing_callsite_cache();
         use reify_test_support::CountingSubscriberBuilder;
         use std::sync::atomic::Ordering;
@@ -5334,7 +5348,7 @@ mod tests {
     /// because those sites were deliberately placed at the post-loop return
     /// only.
     #[test]
-    fn evict_over_cap_emits_no_gc_target_events_on_silent_fast_paths_under_cap_and_absent_subdir() {
+    fn evict_over_cap_silent_on_under_cap_and_absent_subdir() {
         reify_test_support::prime_tracing_callsite_cache();
         use reify_test_support::CountingSubscriberBuilder;
         use std::sync::atomic::Ordering;
