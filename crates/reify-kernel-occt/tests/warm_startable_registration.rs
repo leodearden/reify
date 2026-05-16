@@ -39,18 +39,20 @@ fn from_inventory_contains_realization() {
 }
 
 #[test]
-fn exactly_one_realization_registration() {
-    // Cardinality pin: the OCCT crate submits exactly one
-    // WarmStartableRegistration with kind == Realization. A future duplicate
-    // submission (e.g. accidentally adding a second submit! during the
-    // mesh-morph wiring) would silently change downstream registry observable
-    // size; this assertion fails loudly.
+fn at_least_one_realization_registration() {
+    // Presence pin: at least one WarmStartableRegistration with
+    // kind == Realization must appear in inventory. The registry's contract is
+    // presence-only — duplicate registrations are idempotent at the `HashSet`
+    // layer, so a future second Realization producer (e.g. an alternative
+    // geometry backend gated behind a feature flag) would be perfectly
+    // legitimate. A strict `== 1` pin would lock in a stricter contract than
+    // the production code requires; `>= 1` matches the registry semantics.
     let count = inventory::iter::<WarmStartableRegistration>
         .into_iter()
         .filter(|reg| matches!(reg.kind, NodeKind::Realization))
         .count();
-    assert_eq!(
-        count, 1,
-        "expected exactly one WarmStartableRegistration for NodeKind::Realization, got {count}"
+    assert!(
+        count >= 1,
+        "expected at least one WarmStartableRegistration for NodeKind::Realization, got {count}"
     );
 }

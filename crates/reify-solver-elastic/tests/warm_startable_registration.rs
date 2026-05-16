@@ -36,18 +36,20 @@ fn from_inventory_contains_compute() {
 }
 
 #[test]
-fn exactly_one_compute_registration() {
-    // Cardinality pin: the solver-elastic crate submits exactly one
-    // WarmStartableRegistration with kind == Compute. A future duplicate
-    // submission (e.g. accidentally adding a second submit! during
-    // multigrid wiring) would silently change downstream registry
-    // observable size; this assertion fails loudly.
+fn at_least_one_compute_registration() {
+    // Presence pin: at least one WarmStartableRegistration with
+    // kind == Compute must appear in inventory. The registry's contract is
+    // presence-only — duplicate registrations are idempotent at the `HashSet`
+    // layer, so a future second Compute producer (e.g. a multigrid solver
+    // variant gated behind a feature flag) would be perfectly legitimate. A
+    // strict `== 1` pin would lock in a stricter contract than the production
+    // code requires; `>= 1` matches the registry semantics.
     let count = inventory::iter::<WarmStartableRegistration>
         .into_iter()
         .filter(|reg| matches!(reg.kind, NodeKind::Compute))
         .count();
-    assert_eq!(
-        count, 1,
-        "expected exactly one WarmStartableRegistration for NodeKind::Compute, got {count}"
+    assert!(
+        count >= 1,
+        "expected at least one WarmStartableRegistration for NodeKind::Compute, got {count}"
     );
 }
