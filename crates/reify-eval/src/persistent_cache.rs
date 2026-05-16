@@ -5243,6 +5243,68 @@ mod tests {
         );
     }
 
+    /// Step-3 RED: `evict_over_cap` must emit exactly one DEBUG event at the
+    /// `reify_eval::persistent_cache::gc` target for each entry that was
+    /// actually evicted by THIS invocation (i.e. `we_removed_bin == true`).
+    ///
+    /// Setup: 3 entries, backdated so LRU order is deterministic (inp1 is
+    /// oldest); cap set to evict exactly 2 entries.  Expected DEBUG count == 2.
+    /// Also pins `report.evicted_count == 2` to anchor the count equality.
+    ///
+    /// Fails RED before the `tracing::debug!` site is added in step-4.
+    #[test]
+    fn evict_over_cap_emits_one_debug_event_per_evicted_entry_at_gc_target() {
+        reify_test_support::prime_tracing_callsite_cache();
+        use reify_test_support::CountingSubscriberBuilder;
+        use std::sync::atomic::Ordering;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeee00";
+        let inp1 = "1111111111111111111111111111dddd";
+        let inp2 = "2222222222222222222222222222eeee";
+        let inp3 = "3333333333333333333333333333ffff";
+
+        let v = make_sample_result();
+        write_entry(root, eng, inp1, &v).unwrap();
+        write_entry(root, eng, inp2, &v).unwrap();
+        write_entry(root, eng, inp3, &v).unwrap();
+
+        // Backdate inp1 and inp2 metas so they score highest (oldest, cheapest)
+        // and are evicted before inp3.
+        backdate_mtime(&entry_meta_path(root, eng, inp1), 7200);
+        backdate_mtime(&entry_meta_path(root, eng, inp2), 3600);
+
+        let sz = std::fs::metadata(entry_bin_path(root, eng, inp1))
+            .unwrap()
+            .len();
+
+        // Cap: allow exactly 1 entry to remain → evict exactly 2.
+        let cap = sz + sz / 2;
+
+        let (subscriber, counters) = CountingSubscriberBuilder::new()
+            .count_level(tracing::Level::DEBUG)
+            .target_prefix("reify_eval::persistent_cache::gc")
+            .build();
+        let debug_count = counters[&tracing::Level::DEBUG].clone();
+
+        let report = tracing::subscriber::with_default(subscriber, || {
+            evict_over_cap(root, eng, cap).unwrap()
+        });
+
+        assert_eq!(
+            report.evicted_count, 2,
+            "test precondition: exactly 2 entries must have been evicted"
+        );
+        assert_eq!(
+            debug_count.load(Ordering::Acquire),
+            2,
+            "expected exactly 2 DEBUG events at reify_eval::persistent_cache::gc \
+             (one per actually-evicted entry); got {}",
+            debug_count.load(Ordering::Acquire)
+        );
+    }
+
     // ── startup-sweep tests ──────────────────────────────────────────────────
 
     /// Step-1 RED: `sweep_stale_tempfiles` removes only old `.tmp.*` files.
