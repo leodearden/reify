@@ -1060,9 +1060,10 @@ impl Value {
     /// - `Option(None)` → inner type defaults to `Bool`
     /// - `Range` with no bounds → element type defaults to `Real`
     ///
-    /// Empty `Point` and `Vector` are not valid inputs to `infer_type` and
-    /// panic in debug builds via `debug_assert!`.  Use [`try_infer_type()`]
-    /// for ambiguity-aware inference that returns `None` instead of panicking.
+    /// Empty `Point` and `Vector` are not valid inputs to `infer_type` —
+    /// debug builds trip a `debug_assert!`; release builds panic via
+    /// `unreachable!`.  Use [`try_infer_type()`] for ambiguity-aware
+    /// inference that returns `None` without panicking.
     ///
     /// Use [`try_infer_type()`] when you need to distinguish "genuinely ambiguous"
     /// from "has a known fallback".
@@ -1106,11 +1107,9 @@ impl Value {
                          geometry; use try_infer_type() if ambiguity-aware inference is \
                          required (task 3749)"
                     );
-                    let first = components.first().unwrap_or_else(|| unreachable!(
-                        "infer_type() reached the None-fallback arm for an empty Value::Point; \
-                         the debug_assert above should have fired in dev — empty Point in \
-                         release indicates a bug at the construction site (task 3749)"
-                    ));
+                    let first = components
+                        .first()
+                        .expect("infer_type() on empty Point — see debug_assert above (task 3749)");
                     Type::Point {
                         n: components.len(),
                         quantity: Box::new(first.infer_type()),
@@ -1123,11 +1122,9 @@ impl Value {
                          geometry; use try_infer_type() if ambiguity-aware inference is \
                          required (task 3749)"
                     );
-                    let first = components.first().unwrap_or_else(|| unreachable!(
-                        "infer_type() reached the None-fallback arm for an empty Value::Vector; \
-                         the debug_assert above should have fired in dev — empty Vector in \
-                         release indicates a bug at the construction site (task 3749)"
-                    ));
+                    let first = components
+                        .first()
+                        .expect("infer_type() on empty Vector — see debug_assert above (task 3749)");
                     Type::Vector {
                         n: components.len(),
                         quantity: Box::new(first.infer_type()),

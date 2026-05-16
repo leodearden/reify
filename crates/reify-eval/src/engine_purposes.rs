@@ -389,9 +389,12 @@ impl Engine {
 /// from the looked-up `ValueCellNode.cell_type` (cell-type lockstep, task-1904
 /// cross-reference); the outer list `result_type` adopts
 /// `Type::List(Box::new(first_element_type))` when populated, falling back to
-/// `Type::List(Box::new(Type::Real))` for the empty-list case (no resolved
-/// query / no scannable params — preserves today's vacuous-true behaviour for
-/// `geometric_params` / `material_params`).
+/// `Type::List(Box::new(Type::Error))` for the empty-list case (anti-cascade
+/// poison — task 3749 tightened the 3639 Shape-A G-allow carve-out).  The
+/// `Type::Error` element type is not observed before `eval_quantifier`'s
+/// vacuous-true short-circuit fires: the sole caller
+/// (`activate_purpose_constraints`) stores the rewritten expr in the constraint
+/// graph without reading the outer `result_type` for type-compatibility checks.
 ///
 /// Resolution strategy for the `params` query:
 ///   1. Prefer the compile-time `ResolvedSchemaQuery` whose `query_kind`
@@ -564,6 +567,10 @@ fn expand_purpose_reflective_placeholders(
             // arithmetic, so the Type::Error element type is never observed in the
             // vacuous-true path; it is defense in depth for release-mode safety
             // (task 3749 tightened the 3639 Shape-A G-allow carve-out).
+            // Verified: the sole caller (activate_purpose_constraints) stores the
+            // rewritten expr in the constraint graph without reading the outer
+            // result_type for type-compatibility — no non-eval consumer of the
+            // Type::List(Type::Error) shape exists between expansion and eval.
             let element_type = elements
                 .first()
                 .map(|e| e.result_type.clone())
