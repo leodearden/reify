@@ -53,6 +53,7 @@ use std::process::ExitCode;
 use reify_audit::{
     AuditContext, ChangedSymbol, Finding, JCodemunchOps, RealGitOps, Severity, SymbolReference,
     TaskMetadata, TimeWindow,
+    fused_memory_client::FusedMemoryClient,
 };
 
 // -----------------------------------------------------------------------
@@ -88,20 +89,26 @@ fn print_usage(out: &mut dyn Write) {
     let _ = writeln!(out, "  --pre-done               With --task: run P5 pre-done check only");
     let _ = writeln!(out, "  --since <iso-date>       Window sweep from ISO date (all detectors)");
     let _ = writeln!(out, "  --pattern P1|P2|P5       Restrict to one detector");
-    let _ = writeln!(out, "  --tasks-file <path>      [required] JSON array of TaskMetadata");
+    let _ = writeln!(out, "  --tasks-file <path>      JSON array of TaskMetadata (overrides live loader; for tests)");
+    let _ = writeln!(out, "  --fused-memory-url <url> MCP endpoint (default: $FUSED_MEMORY_URL or http://localhost:8002/mcp)");
     let _ = writeln!(out, "  --runs-db <path>         SQLite runs.db path (default: data/orchestrator/runs.db)");
-    let _ = writeln!(out, "  --project-root <path>    Repo root for git operations (default: .)");
+    let _ = writeln!(out, "  --project-root <path>    Repo root for git ops + fused-memory project key (default: .)");
     let _ = writeln!(out, "  --help, -h               Show this help");
     let _ = writeln!(out, "  --version, -V            Print version");
     let _ = writeln!(out);
     let _ = writeln!(out, "Conflicts: --pre-done cannot be combined with --pattern or --since.");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "Tasks source:");
+    let _ = writeln!(out, "  By default, tasks are loaded live from the fused-memory MCP server.");
+    let _ = writeln!(out, "  Pass --tasks-file <path> to load from a JSON array fixture instead");
+    let _ = writeln!(out, "  (used by the integration test suite).");
     let _ = writeln!(out);
     let _ = writeln!(out, "Output:");
     let _ = writeln!(out, "  stderr: JSON array of Finding objects");
     let _ = writeln!(out, "  stdout: human-readable summary");
     let _ = writeln!(out, "  exit 0:    no High-severity findings");
     let _ = writeln!(out, "  exit 1-254: count of High-severity findings (capped at 254)");
-    let _ = writeln!(out, "  exit 125:  infrastructure/setup error (arg parse, IO failure)");
+    let _ = writeln!(out, "  exit 125:  infrastructure/setup error (arg parse, IO failure, MCP unreachable)");
     let _ = writeln!(out);
     let _ = writeln!(out, "Note: --tasks-file must be a JSON array of TaskMetadata objects");
     let _ = writeln!(out, "(all 9 fields required: task_id, status, files, done_provenance,");
@@ -144,7 +151,14 @@ struct Args {
     pre_done: bool,
     since: Option<String>,
     pattern: Option<String>,
+    /// `Some(path)` → load TaskMetadata from a JSON fixture (test path).
+    /// `None` → load live from fused-memory MCP at `fused_memory_url`.
+    /// Default is `None` (live loader); `--tasks-file` opts into the
+    /// fixture path for integration tests.
     tasks_file: Option<String>,
+    /// MCP HTTP endpoint, falls back to `FUSED_MEMORY_URL` env or
+    /// `http://localhost:8002/mcp`. Ignored when `tasks_file` is `Some`.
+    fused_memory_url: String,
     runs_db: String,
     project_root: String,
 }
@@ -155,6 +169,12 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
     let mut since = None;
     let mut pattern = None;
     let mut tasks_file: Option<String> = None;
+    // Default uses `/mcp` (no trailing slash) — `/mcp/` triggers a 307
+    // redirect that drops the `mcp-session-id` header and breaks the
+    // MCP handshake. The smoke script (`scripts/smoke-predone-hook.sh`)
+    // pins `/mcp` for the same reason.
+    let mut fused_memory_url = std::env::var("FUSED_MEMORY_URL")
+        .unwrap_or_else(|_| "http://localhost:8002/mcp".to_string());
     let mut runs_db = "data/orchestrator/runs.db".to_string();
     let mut project_root = ".".to_string();
 
@@ -210,6 +230,13 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
                         .clone(),
                 );
             }
+            "--fused-memory-url" => {
+                i += 1;
+                fused_memory_url = argv
+                    .get(i)
+                    .ok_or("--fused-memory-url requires a value")?
+                    .clone();
+            }
             "--runs-db" => {
                 i += 1;
                 runs_db = argv
@@ -231,7 +258,16 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
         i += 1;
     }
 
-    Ok(Args { task_id, pre_done, since, pattern, tasks_file, runs_db, project_root })
+    Ok(Args {
+        task_id,
+        pre_done,
+        since,
+        pattern,
+        tasks_file,
+        fused_memory_url,
+        runs_db,
+        project_root,
+    })
 }
 
 // -----------------------------------------------------------------------
@@ -249,6 +285,60 @@ fn print_summary(findings: &[Finding]) {
             "  [{:?}] {:?} task={}: {}",
             f.severity, f.pattern, f.task_id, f.summary
         );
+    }
+}
+
+// -----------------------------------------------------------------------
+// Task loaders
+// -----------------------------------------------------------------------
+
+/// JSON-fixture loader (test path). Reads a file containing a JSON array
+/// of [`TaskMetadata`] objects. Errors are formatted with a `reify-audit:`
+/// prefix so the caller can surface them on stderr verbatim.
+fn load_tasks_from_json_file(path: &str) -> Result<HashMap<String, TaskMetadata>, String> {
+    let tasks_json = std::fs::read_to_string(path)
+        .map_err(|e| format!("error reading tasks-file '{}': {}", path, e))?;
+    let tasks_vec: Vec<TaskMetadata> = serde_json::from_str(&tasks_json)
+        .map_err(|e| format!("error parsing tasks-file '{}': {}", path, e))?;
+    Ok(tasks_vec
+        .into_iter()
+        .map(|t| (t.task_id.clone(), t))
+        .collect())
+}
+
+/// Live fused-memory MCP loader (production path).
+///
+/// `pre_done_task_id` is `Some(id)` on the pre-done hook hot path — only
+/// that one task is fetched (`get_task`). On the sweep path it is `None`
+/// and the whole task corpus is pulled (`get_tasks`).
+fn load_tasks_from_fused_memory(
+    url: &str,
+    project_root: &str,
+    pre_done_task_id: Option<&str>,
+) -> Result<HashMap<String, TaskMetadata>, String> {
+    let client = FusedMemoryClient::new(url)
+        .map_err(|e| format!("error connecting to fused-memory at '{}': {}", url, e))?;
+    // Canonicalize project_root so `.` (the hook's inherited cwd) becomes
+    // the absolute path fused-memory keys its DB on.
+    let project_root_abs = std::fs::canonicalize(project_root)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| project_root.to_string());
+
+    if let Some(task_id) = pre_done_task_id {
+        let tm = client
+            .get_task(task_id, &project_root_abs)
+            .map_err(|e| format!("error loading task {} from fused-memory: {}", task_id, e))?;
+        let mut m = HashMap::new();
+        m.insert(tm.task_id.clone(), tm);
+        Ok(m)
+    } else {
+        let tasks = client
+            .get_tasks(&project_root_abs)
+            .map_err(|e| format!("error loading tasks from fused-memory: {}", e))?;
+        Ok(tasks
+            .into_iter()
+            .map(|t| (t.task_id.clone(), t))
+            .collect())
     }
 }
 
@@ -282,15 +372,6 @@ fn main() -> ExitCode {
         }
     };
 
-    // --tasks-file is required; no silent default.
-    if args.tasks_file.is_none() {
-        eprintln!(
-            "reify-audit: error: --tasks-file is required (path to JSON array of TaskMetadata)"
-        );
-        print_usage(&mut std::io::stderr());
-        return ExitCode::from(ERROR_EXIT);
-    }
-
     // --pre-done requires --task.
     if args.pre_done && args.task_id.is_none() {
         eprintln!("reify-audit: error: --pre-done requires --task");
@@ -306,29 +387,27 @@ fn main() -> ExitCode {
         return ExitCode::from(ERROR_EXIT);
     }
 
-    // Load tasks.json. tasks_file is guaranteed Some by the check above.
-    let tasks_file = args.tasks_file.as_deref().expect("tasks_file checked above");
-    let tasks_json = match std::fs::read_to_string(tasks_file) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("reify-audit: error reading tasks-file '{}': {}", tasks_file, e);
-            return ExitCode::from(ERROR_EXIT);
-        }
+    // Load tasks: JSON-file fixture (tests) OR live fused-memory MCP (prod).
+    let task_metadata: HashMap<String, TaskMetadata> = match &args.tasks_file {
+        Some(path) => match load_tasks_from_json_file(path) {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("reify-audit: {}", e);
+                return ExitCode::from(ERROR_EXIT);
+            }
+        },
+        None => match load_tasks_from_fused_memory(
+            &args.fused_memory_url,
+            &args.project_root,
+            args.task_id.as_deref().filter(|_| args.pre_done),
+        ) {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("reify-audit: {}", e);
+                return ExitCode::from(ERROR_EXIT);
+            }
+        },
     };
-    let tasks_vec: Vec<TaskMetadata> = match serde_json::from_str(&tasks_json) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!(
-                "reify-audit: error parsing tasks-file '{}': {}",
-                tasks_file, e
-            );
-            return ExitCode::from(ERROR_EXIT);
-        }
-    };
-    let task_metadata: HashMap<String, TaskMetadata> = tasks_vec
-        .into_iter()
-        .map(|t| (t.task_id.clone(), t))
-        .collect();
 
     // Open runs.db.
     let conn = match rusqlite::Connection::open(&args.runs_db) {
