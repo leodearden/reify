@@ -19,7 +19,8 @@ use std::collections::HashMap;
 use reify_types::{
     BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, DeterminacyPredicateKind,
     DeterminacyState, Diagnostic, DimensionVector, FIELD_ENTITY_PREFIX, FieldSourceKind,
-    PersistentMap, QuantifierKind, Type, UnOp, Value, ValueCellId, ValueMap, quaternion_is_finite,
+    PersistentMap, QuantifierKind, SelectorKind, Type, UnOp, Value, ValueCellId, ValueMap,
+    quaternion_is_finite,
 };
 
 /// Maximum recursion depth for user-defined function calls.
@@ -734,10 +735,57 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             ..
         } => eval_quantifier(*kind, variable_id, collection, predicate, ctx),
 
-        // Ad-hoc selector evaluation is handled by the engine (Task 250),
-        // which has access to the geometry kernel. The pure expression
-        // evaluator returns Undef as a placeholder.
-        CompiledExprKind::AdHocSelector { .. } => Value::Undef,
+        // Ad-hoc selector evaluation: @point(x,y,z) is handled here in the
+        // pure-expression evaluator (no kernel required). @face("name") and
+        // @edge("name") require the geometry kernel and are patched by
+        // Engine::post_process_ad_hoc_selectors after eval_expr completes.
+        CompiledExprKind::AdHocSelector {
+            selector_kind,
+            args,
+            ..
+        } => match selector_kind {
+            SelectorKind::Point => {
+                // @point(x, y, z): evaluate 3 coord args; if all are
+                // LENGTH-dimensioned scalars, build Frame{origin, identity_basis}.
+                if args.len() != 3 {
+                    return Value::Undef;
+                }
+                let mut si_coords = [0.0_f64; 3];
+                for (i, arg) in args.iter().enumerate() {
+                    match eval_expr(arg, ctx) {
+                        Value::Scalar { si_value, dimension }
+                            if dimension == DimensionVector::LENGTH =>
+                        {
+                            si_coords[i] = si_value;
+                        }
+                        _ => return Value::Undef,
+                    }
+                }
+                let origin = Value::Point(
+                    si_coords
+                        .iter()
+                        .map(|&v| Value::Scalar {
+                            si_value: v,
+                            dimension: DimensionVector::LENGTH,
+                        })
+                        .collect(),
+                );
+                Value::Frame {
+                    origin: Box::new(origin),
+                    basis: Box::new(Value::Orientation {
+                        w: 1.0,
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
+                    }),
+                }
+            }
+            // @face("name") and @edge("name"): the engine post-process
+            // (Engine::post_process_ad_hoc_selectors) patches these cells
+            // via kernel.extract_faces/edges + resolve_unique_by_attribute.
+            // Return Undef here as a placeholder for the engine to overwrite.
+            SelectorKind::Face | SelectorKind::Edge => Value::Undef,
+        },
 
         // Reflective-aggregation placeholder (task-2289). This variant is
         // emitted by the compiler for `subject.params` etc. and is expected
