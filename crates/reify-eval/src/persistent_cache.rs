@@ -5048,6 +5048,191 @@ mod tests {
         );
     }
 
+    // ── evict_over_cap tracing tests ─────────────────────────────────────────
+
+    /// Inline subscriber that captures INFO events at the
+    /// `reify_eval::persistent_cache::gc` target.
+    ///
+    /// Mirrors the structure of `WarnCapturingSubscriber` in reify-test-support
+    /// but is defined inline to keep the scope narrow — no additions to the
+    /// test-support API needed for one field-verification test.
+    ///
+    /// Field capture contract (mirrors MessageVisitor in tracing_support.rs):
+    /// - `record_str`:   `message` stored raw; other `&str` fields stored raw.
+    /// - `record_debug`: all fields stored as `format!("{v:?}")`.  For `%Display`
+    ///   fields (tracing wraps them in a Display newtype whose Debug delegates to
+    ///   Display), the result equals the Display output.  For numeric `u64` fields
+    ///   (no sigil = Debug encoding), `{v:?}` gives the bare decimal digits.
+    struct InfoCapturingSubscriber {
+        messages: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        fields:
+            std::sync::Arc<std::sync::Mutex<Vec<std::collections::HashMap<String, String>>>>,
+        span_counter: std::sync::atomic::AtomicU64,
+    }
+
+    struct InfoFieldVisitor {
+        message: String,
+        fields: std::collections::HashMap<String, String>,
+    }
+
+    impl tracing::field::Visit for InfoFieldVisitor {
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            if field.name() == "message" {
+                self.message = value.to_owned();
+            } else {
+                self.fields.insert(field.name().to_owned(), value.to_owned());
+            }
+        }
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.message = format!("{value:?}");
+            } else {
+                self.fields
+                    .insert(field.name().to_owned(), format!("{value:?}"));
+            }
+        }
+    }
+
+    impl tracing::Subscriber for InfoCapturingSubscriber {
+        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+            metadata.level() == &tracing::Level::INFO
+                && metadata
+                    .target()
+                    .starts_with("reify_eval::persistent_cache::gc")
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            let id = self
+                .span_counter
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            tracing::span::Id::from_u64(id)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            let mut visitor = InfoFieldVisitor {
+                message: String::new(),
+                fields: std::collections::HashMap::new(),
+            };
+            event.record(&mut visitor);
+            self.messages.lock().unwrap().push(visitor.message);
+            self.fields.lock().unwrap().push(visitor.fields);
+        }
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    /// Step-1 RED: `evict_over_cap` must emit exactly one INFO event at the
+    /// `reify_eval::persistent_cache::gc` target when eviction actually runs,
+    /// with message `"evict_over_cap complete"` and structured fields
+    /// `evicted_count`, `evicted_bytes`, `remaining_bytes`, `cap_bytes`,
+    /// `engine_version_hash`.
+    ///
+    /// Fails RED before the `tracing::info!` site is added in step-2.
+    #[test]
+    fn evict_over_cap_emits_info_summary_at_gc_target_with_evicted_count_evicted_bytes_remaining_bytes_cap_bytes_engine_version_hash_fields_when_eviction_runs()
+    {
+        reify_test_support::prime_tracing_callsite_cache();
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "dddddddddddddddddddddddddddddd00";
+        let inp1 = "1111111111111111111111111111aaaa";
+        let inp2 = "2222222222222222222222222222bbbb";
+        let inp3 = "3333333333333333333333333333cccc";
+
+        let v = make_sample_result();
+        write_entry(root, eng, inp1, &v).unwrap();
+        write_entry(root, eng, inp2, &v).unwrap();
+        write_entry(root, eng, inp3, &v).unwrap();
+
+        // Measure one entry size; set cap to evict at least 2 entries.
+        let sz = std::fs::metadata(entry_bin_path(root, eng, inp1))
+            .unwrap()
+            .len();
+        let cap = sz + sz / 2;
+
+        let messages = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let fields = std::sync::Arc::new(std::sync::Mutex::new(
+            Vec::<std::collections::HashMap<String, String>>::new(),
+        ));
+        let subscriber = InfoCapturingSubscriber {
+            messages: messages.clone(),
+            fields: fields.clone(),
+            span_counter: std::sync::atomic::AtomicU64::new(1),
+        };
+
+        let report = tracing::subscriber::with_default(subscriber, || {
+            evict_over_cap(root, eng, cap).unwrap()
+        });
+
+        assert!(
+            report.evicted_count >= 1,
+            "test precondition: at least 1 entry must have been evicted"
+        );
+
+        let msgs = messages.lock().unwrap();
+        assert_eq!(
+            msgs.len(),
+            1,
+            "expected exactly 1 INFO event at reify_eval::persistent_cache::gc target; got {}",
+            msgs.len()
+        );
+        assert_eq!(
+            msgs[0], "evict_over_cap complete",
+            "INFO event message mismatch"
+        );
+
+        let all_fields = fields.lock().unwrap();
+        let f = &all_fields[0];
+
+        assert!(
+            f.contains_key("evicted_count"),
+            "field 'evicted_count' missing from INFO event; got: {f:?}"
+        );
+        assert!(
+            f.contains_key("evicted_bytes"),
+            "field 'evicted_bytes' missing from INFO event; got: {f:?}"
+        );
+        assert!(
+            f.contains_key("remaining_bytes"),
+            "field 'remaining_bytes' missing from INFO event; got: {f:?}"
+        );
+        assert!(
+            f.contains_key("cap_bytes"),
+            "field 'cap_bytes' missing from INFO event; got: {f:?}"
+        );
+        assert!(
+            f.contains_key("engine_version_hash"),
+            "field 'engine_version_hash' missing from INFO event; got: {f:?}"
+        );
+
+        // Verify field values match the report and the inputs.
+        assert_eq!(
+            f["evicted_count"],
+            report.evicted_count.to_string(),
+            "evicted_count field value mismatch"
+        );
+        assert_eq!(
+            f["evicted_bytes"],
+            report.evicted_bytes.to_string(),
+            "evicted_bytes field value mismatch"
+        );
+        assert_eq!(
+            f["remaining_bytes"],
+            report.remaining_bytes.to_string(),
+            "remaining_bytes field value mismatch"
+        );
+        assert_eq!(
+            f["cap_bytes"],
+            cap.to_string(),
+            "cap_bytes field value mismatch"
+        );
+        assert_eq!(
+            f["engine_version_hash"], eng,
+            "engine_version_hash field value mismatch"
+        );
+    }
+
     // ── startup-sweep tests ──────────────────────────────────────────────────
 
     /// Step-1 RED: `sweep_stale_tempfiles` removes only old `.tmp.*` files.
