@@ -688,6 +688,187 @@ impl tracing::Subscriber for WarnCapturingSubscriber {
     fn exit(&self, _span: &tracing::span::Id) {}
 }
 
+// ── CapturingSubscriberBuilder ────────────────────────────────────────────────
+
+/// Builder for a minimal [`tracing::Subscriber`] that captures events at a
+/// single registered level and optionally filters by target prefix.
+///
+/// # Required fields
+///
+/// `.level(…)` must be called before `.build()`.  Calling `.build()` without
+/// setting a level panics with a clear message.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let (subscriber, capture) = CapturingSubscriberBuilder::new()
+///     .level(tracing::Level::INFO)
+///     .target_prefix("reify_eval::persistent_cache::gc")
+///     .build();
+/// tracing::subscriber::with_default(subscriber, || { /* run code */ });
+/// let msgs: Vec<String> = capture.messages();
+/// let fields: Vec<HashMap<String, String>> = capture.fields_by_event();
+/// let count: usize = capture.count();
+/// ```
+pub struct CapturingSubscriberBuilder {
+    level: Option<tracing::Level>,
+    target_prefix: Option<String>,
+}
+
+impl CapturingSubscriberBuilder {
+    /// Create a new builder with no level set and no target prefix filter.
+    pub fn new() -> Self {
+        Self {
+            level: None,
+            target_prefix: None,
+        }
+    }
+
+    /// Set the level to capture.  Required; `.build()` panics if not called.
+    pub fn level(mut self, level: tracing::Level) -> Self {
+        self.level = Some(level);
+        self
+    }
+
+    /// Set an optional target-prefix filter.  When set, only events whose
+    /// `metadata().target()` starts with `prefix` are captured inside
+    /// `event()`; all others are silently discarded.
+    pub fn target_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.target_prefix = Some(prefix.into());
+        self
+    }
+
+    /// Build the subscriber and return it alongside a [`Capture`] handle.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `.level(…)` was not called before `.build()`.
+    pub fn build(self) -> (impl tracing::Subscriber + Send + Sync, Capture) {
+        let level = self
+            .level
+            .expect("CapturingSubscriberBuilder requires .level(...) before .build()");
+
+        let count = Arc::new(AtomicUsize::new(0));
+        let messages = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let fields = Arc::new(std::sync::Mutex::new(Vec::<HashMap<String, String>>::new()));
+
+        let capture = Capture {
+            count: Arc::clone(&count),
+            messages: Arc::clone(&messages),
+            fields: Arc::clone(&fields),
+        };
+        let subscriber = LevelCapturingSubscriber {
+            level,
+            target_prefix: self.target_prefix,
+            count,
+            messages,
+            fields,
+            span_counter: AtomicU64::new(1),
+        };
+        (subscriber, capture)
+    }
+}
+
+impl Default for CapturingSubscriberBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ── Capture (public) ──────────────────────────────────────────────────────────
+
+/// Captured output from [`CapturingSubscriberBuilder`]: event count, message
+/// text, and structured fields for all captured events.
+pub struct Capture {
+    count: Arc<AtomicUsize>,
+    messages: Arc<std::sync::Mutex<Vec<String>>>,
+    fields: Arc<std::sync::Mutex<Vec<HashMap<String, String>>>>,
+}
+
+impl Capture {
+    /// Return the number of events that have been captured so far.
+    ///
+    /// Uses `Acquire` ordering, pairing with the `Release` store in
+    /// [`LevelCapturingSubscriber::event()`].
+    pub fn count(&self) -> usize {
+        self.count.load(Ordering::Acquire)
+    }
+
+    /// Return a snapshot of all captured event message strings.
+    pub fn messages(&self) -> Vec<String> {
+        self.messages.lock().unwrap().clone()
+    }
+
+    /// Return a snapshot of all captured event field maps, one per event.
+    ///
+    /// Each element is a [`HashMap`] of field name → field value (as a string)
+    /// for the corresponding event.  The `message` field is **not** included in
+    /// these maps — use [`messages()`](Self::messages) for the message text.
+    ///
+    /// Field value format follows the same contract as [`WarnCapture::fields_by_event`]:
+    /// `&str` fields are stored verbatim; `%Display` and `?Debug` fields are stored
+    /// as `format!("{value:?}")`.
+    pub fn fields_by_event(&self) -> Vec<HashMap<String, String>> {
+        self.fields.lock().unwrap().clone()
+    }
+}
+
+// ── LevelCapturingSubscriber (private) ───────────────────────────────────────
+
+struct LevelCapturingSubscriber {
+    level: tracing::Level,
+    target_prefix: Option<String>,
+    count: Arc<AtomicUsize>,
+    messages: Arc<std::sync::Mutex<Vec<String>>>,
+    fields: Arc<std::sync::Mutex<Vec<HashMap<String, String>>>>,
+    /// Monotonically increasing counter used to generate unique span IDs.
+    span_counter: AtomicU64,
+}
+
+impl tracing::Subscriber for LevelCapturingSubscriber {
+    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+        // Accept only events at the registered level; all other levels are
+        // rejected at the gate so they never reach event().
+        metadata.level() == &self.level
+    }
+
+    fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        // Relaxed ordering: uniqueness is all we need; no memory sync required.
+        let id = self.span_counter.fetch_add(1, Ordering::Relaxed);
+        // Safety: Id::from_u64 requires non-zero; counter starts at 1.
+        tracing::span::Id::from_u64(id)
+    }
+
+    fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+    fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+
+    fn event(&self, event: &tracing::Event<'_>) {
+        // Apply optional target-prefix filter before recording.
+        // (Level filtering is handled at enabled(); target filtering here
+        // mirrors CountingSubscriber::event()'s placement.)
+        if let Some(prefix) = &self.target_prefix
+            && !event.metadata().target().starts_with(prefix.as_str())
+        {
+            return;
+        }
+        // Release ordering pairs with Acquire loads in Capture::count(),
+        // ensuring all prior stores are visible to the reader.
+        self.count.fetch_add(1, Ordering::Release);
+        let mut visitor = MessageVisitor {
+            message: String::new(),
+            fields: HashMap::new(),
+        };
+        event.record(&mut visitor);
+        self.messages.lock().unwrap().push(visitor.message);
+        self.fields.lock().unwrap().push(visitor.fields);
+    }
+
+    fn enter(&self, _span: &tracing::span::Id) {}
+
+    fn exit(&self, _span: &tracing::span::Id) {}
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
