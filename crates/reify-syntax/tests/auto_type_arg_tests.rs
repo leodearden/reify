@@ -432,3 +432,63 @@ fn auto_type_expr_display_free() {
     );
 }
 
+// ── Task 3725: span narrowing for malformed type_arg_list ─────────────────────
+//
+// When a `type_arg_list` has_error(), the diagnostic span must point at the
+// first ERROR/MISSING descendant node — NOT at the whole type_arg_list.  This
+// prevents the diagnostic from covering well-formed sibling arguments.
+
+/// When a nested `type_arg_list` contains a malformed interior (e.g. `Vec<,>`)
+/// alongside a well-formed sibling (e.g. `String`), the diagnostic span emitted
+/// by `lower_type_args_from_node` must lie strictly inside the malformed
+/// portion and must NOT extend into the well-formed sibling.
+///
+/// Fixture: `fn f() -> Map<Vec<,>, String> { 0 }`.
+/// Malformed portion: `Vec<,>` — the inner `type_arg_list` `<,>` contains a
+/// bare comma which tree-sitter surfaces as an ERROR/MISSING descendant.
+/// Well-formed sibling: `String`.
+///
+/// RED state (before step-2): `lower_type_args_from_node` emits
+/// `self.span(child)` for the whole outer `type_arg_list` `<Vec<,>, String>`,
+/// whose end byte extends past `String` — the narrow-span assertion fails.
+///
+/// GREEN state (after step-2): `first_error_or_missing_descendant` finds the
+/// first ERROR/MISSING node inside the malformed portion and uses its (narrow)
+/// span — the assertion passes.
+#[test]
+fn type_arg_list_error_span_narrows_to_first_error_descendant() {
+    let source = "fn f() -> Map<Vec<,>, String> { 0 }";
+    let m = reify_syntax::parse(source, ModulePath::single("t"));
+    assert!(
+        !m.errors.is_empty(),
+        "expected at least one parse error for malformed `Vec<,>` in type-arg position; \
+         module.errors was empty"
+    );
+    // Compute byte offsets via str::find — avoids hard-coded numbers that go
+    // stale when the fixture changes.  Mirrors the pattern in
+    // auto_type_arg_tests.rs:168 (`auto_type_arg_rejects_unrecognized_modifier`).
+    let malformed_start = source
+        .find("Vec<")
+        .expect("fixture must contain 'Vec<'") as u32;
+    let well_formed_start = source
+        .find("String")
+        .expect("fixture must contain 'String'") as u32;
+    // No diagnostic should extend into (or past) the well-formed `String`
+    // sibling.  Before step-2 the outer `lower_type_args_from_node` call emits
+    // `self.span(child)` — the whole `<Vec<,>, String>` type_arg_list — whose
+    // end byte lies past `String`.  After step-2 the helper narrows that span
+    // to the first ERROR/MISSING descendant (inside `Vec<,>`), which ends
+    // before `String`.
+    let all_spans_narrow = m.errors.iter().all(|e| e.span.end <= well_formed_start);
+    assert!(
+        all_spans_narrow,
+        "expected all diagnostic spans to end before the well-formed `String` \
+         sibling (starts at byte {well_formed_start}); \
+         got errors: {:?}",
+        m.errors
+            .iter()
+            .map(|e| (&e.message, e.span.start, e.span.end))
+            .collect::<Vec<_>>(),
+    );
+}
+
