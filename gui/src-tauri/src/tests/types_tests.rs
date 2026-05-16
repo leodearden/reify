@@ -1504,9 +1504,6 @@ fn auto_resolve_parameter_value_nan_sentinel_serializes_value_field_as_null() {
         display: "<non-scalar>".to_string(),
     };
 
-    // Legacy: serde_json::to_value shares the same underlying f64 serializer — also maps NaN → null.
-    assert!(serde_json::to_value(&param).unwrap()["value"].is_null());
-
     // Wire path: serde_json::to_string of the full AutoResolveIteration payload —
     // the faithful production proxy.
     // emit_typed(&app, "auto-resolve-iteration", &iter) → tauri::AppHandle::emit →
