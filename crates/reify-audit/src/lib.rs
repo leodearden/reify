@@ -367,7 +367,16 @@ impl GitOps for RealGitOps {
             .args(["check-ignore", "--quiet", path])
             .output()
         {
-            Ok(out) => out.status.code() == Some(0),
+            Ok(out) if out.status.code() == Some(0) => true,
+            Ok(out) if out.status.code() == Some(1) => false,
+            Ok(out) => {
+                eprintln!(
+                    "reify-audit: git check-ignore exited {:?} in {}",
+                    out.status.code(),
+                    self.project_root.display()
+                );
+                false
+            }
             Err(e) => {
                 eprintln!(
                     "reify-audit: git check-ignore failed in {}: {}",
