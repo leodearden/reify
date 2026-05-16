@@ -7905,16 +7905,18 @@ fn load_file_commits_file_path_atomically_via_commit_state() {
     );
 }
 
-/// Regression test for the `None`-preserves-`file_path` contract in `commit_state`:
-/// when `update_source` passes `None` as the `file_path` argument to `commit_state`,
-/// the existing `file_path` must be preserved — NOT cleared to `None`.
+/// Regression test for the `FilePathUpdate::Preserve`-preserves-`file_path` contract
+/// in `commit_state`: when `update_source` passes `FilePathUpdate::Preserve` as the
+/// `file_path` argument to `commit_state`, the existing `file_path` must be preserved —
+/// NOT cleared to `None`.
 ///
-/// This test is RED against the naive `self.file_path = file_path;` implementation
-/// (which would clear `file_path` on every `update_source` call, breaking the
-/// multi-file edit-routing that derives `module_name` and project-root from
-/// `self.core.file_path()` in `update_source`).  It must be GREEN after step-2.
+/// This test is RED against the naive `match file_path { Set(p) => Some(p), Preserve => None }`
+/// implementation (which would clear `file_path` on every `update_source` call, breaking
+/// the multi-file edit-routing that derives `module_name` and project-root from
+/// `self.core.file_path()` in `update_source`).  It must be GREEN after the correct
+/// `Preserve => { /* leave self.file_path unchanged */ }` arm.
 #[test]
-fn update_source_preserves_file_path_when_commit_state_gets_none() {
+fn update_source_preserves_file_path_when_commit_state_gets_preserve() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
@@ -7934,18 +7936,18 @@ fn update_source_preserves_file_path_when_commit_state_gets_none() {
         "file_path must be Some(tmp_path) after load_file (pre-condition)"
     );
 
-    // update_source passes None for file_path to commit_state — must PRESERVE, not clear.
+    // update_source passes FilePathUpdate::Preserve for file_path to commit_state — must PRESERVE, not clear.
     let new_source = bracket_source_with_width("120mm");
     session
         .update_source(tmp_path.to_str().unwrap(), &new_source)
         .expect("update_source should succeed");
 
-    // file_path must still be Some(tmp_path) — None-preserves contract.
+    // file_path must still be Some(tmp_path) — Preserve-preserves contract.
     let core = session.core_state_for_test();
     assert_eq!(
         core.file_path(),
         Some(tmp_path.as_path()),
-        "file_path must still be Some(tmp_path) after update_source (None-preserves contract)"
+        "file_path must still be Some(tmp_path) after update_source (Preserve-preserves contract)"
     );
 
     // compiled and module_name must remain consistent after update_source.

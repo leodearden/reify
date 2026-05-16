@@ -32,7 +32,8 @@ fn panic_message(payload: &(dyn Any + Send)) -> String {
 /// five invariant-bearing fields (`compiled`, `source_map`, `module_name`,
 /// `last_check`, `file_path`) are:
 /// - `commit_state` — five-field atomic commit after a successful compile cycle
-///   (`file_path` is updated when `Some` is passed; `None` preserves the existing value)
+///   (`file_path` is updated when `FilePathUpdate::Set` is passed; `FilePathUpdate::Preserve`
+///   leaves it unchanged)
 /// - `commit_check` — single-field commit for `last_check` (used by `set_parameter`)
 ///
 /// `engine_mut()` does not touch those fields; the `#[cfg(test)]` mutators are
@@ -56,7 +57,7 @@ where
     // Recover from any pre-existing poisoning via into_inner().
     // Safety: CoreState's fields are strictly private; the only commit points for
     // the five invariant-bearing fields are commit_state (five-field atomic commit,
-    // file_path included via Option) and commit_check (single-field last_check),
+    // file_path updated via FilePathUpdate (Set/Preserve)) and commit_check (single-field last_check),
     // each atomic with respect to the fields it owns.
     // engine_mut() does not touch those fields; the #[cfg(test)] mutators are
     // intentional invariant-breakers absent from production builds — the

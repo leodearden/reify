@@ -346,7 +346,8 @@ pub(crate) struct CompileFailure {
 /// in a private sub-struct whose fields have no visibility marker, so any direct
 /// field assignment from outside `CoreState`'s impl fails to compile.  The only
 /// commit points that touch the five invariant-bearing fields are `commit_state`
-/// (five-field atomic commit, `file_path` included via `Option`) and `commit_check`
+/// (five-field atomic commit, `file_path` updated via `FilePathUpdate::Set` /
+/// preserved via `FilePathUpdate::Preserve`) and `commit_check`
 /// (single-field `last_check`); `engine_mut()` does not touch those fields,
 /// and the `#[cfg(test)]` mutators are intentional invariant-breakers absent from
 /// production builds — the poison-recovery property holds in production.
@@ -356,7 +357,8 @@ pub struct EngineSession {
     ///
     /// Fields are strictly private — direct assignment from outside `CoreState`'s
     /// impl fails to compile.  Use `commit_state` (five-field atomic commit,
-    /// `file_path` included via `Option`) or `commit_check` (single-field
+    /// `file_path` updated via `FilePathUpdate::Set` / preserved via `FilePathUpdate::Preserve`)
+    /// or `commit_check` (single-field
     /// `last_check`) to commit the invariant-bearing fields atomically.
     core: CoreState,
     /// In-memory cache for `get_def_preview` results.
