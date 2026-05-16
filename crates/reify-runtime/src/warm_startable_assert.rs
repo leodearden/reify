@@ -8,6 +8,39 @@
 //! field. The check uses `debug_assert_eq!` so release builds compile to a
 //! no-op.
 
+use reify_types::{NodeKind, NodeTraits, WarmStartableRegistry};
+
+/// Assert that the producer-side [`WarmStartableRegistry`] and the
+/// declaration-side `NodeKind::default_traits().contains(WARM_STARTABLE)`
+/// agree for every variant of [`NodeKind`].
+///
+/// The check is bidirectional:
+///
+/// 1. *declared-without-registered* — every kind whose
+///    `default_traits()` includes `WARM_STARTABLE` must appear in the
+///    registry (otherwise downstream consumers would dispatch on a flag with
+///    no producer behind it).
+/// 2. *registered-without-declared* — every kind in the registry must have
+///    `WARM_STARTABLE` set in its `default_traits()` (otherwise a producer
+///    crate is registering a kind that the architecture does not classify as
+///    warm-startable).
+///
+/// Implemented with `debug_assert_eq!`, so release builds compile to a no-op
+/// regardless of the registry's contents. No extra `#[cfg(debug_assertions)]`
+/// gate is required on the body.
+///
+/// See `docs/prds/v0_3/node-traits-unification.md` §5 B5 / §6 I-3 (M-013 fix).
+pub fn assert_warm_startable_coextensive(registry: &WarmStartableRegistry) {
+    for kind in NodeKind::ALL {
+        let declared = kind.default_traits().contains(NodeTraits::WARM_STARTABLE);
+        let registered = registry.contains_kind(kind);
+        debug_assert_eq!(
+            declared, registered,
+            "NodeKind {kind:?}: WARM_STARTABLE declaration ({declared}) must match WarmStartableRegistry presence ({registered}) — see PRD §5 B5 (docs/prds/v0_3/node-traits-unification.md)"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
