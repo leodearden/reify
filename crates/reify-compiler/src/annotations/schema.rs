@@ -765,13 +765,19 @@ mod tests {
 
     // ── validate_via_schema: @solid arg-shape tests ──────────────────────────
 
-    /// @solid on structure with [] → 0 diagnostics.
+    /// @solid bare on entity contexts (structure, occurrence) → 0 diagnostics.
     #[test]
-    fn validate_solid_bare_on_structure_produces_no_diagnostics() {
+    fn validate_solid_bare_on_entity_contexts_produces_no_diagnostics() {
         let a = ann(reify_types::SOLID_ANNOTATION, vec![]);
-        let mut diags: Vec<reify_types::Diagnostic> = vec![];
-        validate_via_schema(std::slice::from_ref(&a), "structure", &mut diags);
-        assert!(diags.is_empty(), "expected no diags, got: {:?}", diags);
+        for context in ["structure", "occurrence"] {
+            let mut diags: Vec<reify_types::Diagnostic> = vec![];
+            validate_via_schema(std::slice::from_ref(&a), context, &mut diags);
+            assert!(
+                diags.is_empty(),
+                "context={context}: expected no diags, got: {:?}",
+                diags
+            );
+        }
     }
 
     /// Any arg passed to @solid on a valid context emits "takes no arguments".
