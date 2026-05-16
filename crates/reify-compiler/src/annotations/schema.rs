@@ -36,6 +36,7 @@ pub(crate) enum EvalTime {
 
 /// Policy for extra positional arguments beyond those declared in `args`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Phase-1 scaffold; `Error` variant consumed in later phases.
 pub(crate) enum ExtraArgsPolicy {
     /// Extra arguments are an error.
     Error,
