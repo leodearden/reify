@@ -170,6 +170,13 @@ impl<'a> serde::Serialize for FiniteF32MapRef<'a> {
     }
 }
 
+/// Channel name suffix that marks a `vector_channels` entry as per-face.
+///
+/// Names ending in this suffix must have length `3 * face_count`; all other
+/// names are treated as per-vertex and must have length `3 * vertex_count`.
+/// This is the single source of truth for the OQ-4 naming convention (PRD §11).
+pub const PER_FACE_CHANNEL_SUFFIX: &str = "_per_face";
+
 /// Tessellated mesh for 3D display.
 ///
 /// # Serialization
@@ -343,7 +350,7 @@ impl serde::Serialize for MeshData {
         // the two valid lengths collapse and the layout cannot be recovered from
         // length alone.
         for (channel, values) in &self.vector_channels {
-            if channel.ends_with("_per_face") {
+            if channel.ends_with(PER_FACE_CHANNEL_SUFFIX) {
                 if values.len() != 3 * face_count {
                     return Err(S::Error::custom(format!(
                         "vector channel '{channel}' has suffix '_per_face' so expected \

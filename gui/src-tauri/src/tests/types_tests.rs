@@ -1388,10 +1388,10 @@ fn meshdata_rejects_element_kind_with_wrong_length() {
         msg.contains("element_kind"),
         "expected 'element_kind' in error message: {msg}"
     );
-    // Error message must contain face-count context ("face count" or the literal numbers)
+    // Error message must contain face-count context
     assert!(
-        msg.contains("face count") || (msg.contains("1") && msg.contains("2")),
-        "expected face-count context in error message: {msg}"
+        msg.contains("face count"),
+        "expected 'face count' in error message: {msg}"
     );
 }
 
@@ -1423,8 +1423,8 @@ fn meshdata_rejects_region_tags_with_wrong_length() {
     );
     // Error message must contain face-count context
     assert!(
-        msg.contains("face count") || (msg.contains("1") && msg.contains("2")),
-        "expected face-count context in error message: {msg}"
+        msg.contains("face count"),
+        "expected 'face count' in error message: {msg}"
     );
 }
 
