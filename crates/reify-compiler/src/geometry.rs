@@ -284,10 +284,21 @@ fn resolve_loft_like_args(
 /// past v0.1 because per-instance handles would require per-element realisation.
 /// The parallel value-level diagnostic continues to fire in `expr.rs` at the
 /// two collection-sub call sites.
-pub(crate) fn try_resolve_cross_sub_geom_ref(
+/// Match the two-level `self.<sub>.<member>` MemberAccess AST shape.
+///
+/// Returns `Some((sub_name, member))` when `expr` is exactly
+/// `MemberAccess { object: MemberAccess { object: Ident("self"), member: sub }, member }`,
+/// i.e. the cross-sub `self.<sub>.<member>` pattern.  Returns `None` for any
+/// other expression shape (bare ident, one-level member access, indexed
+/// access, etc.).
+///
+/// This is the **single source of truth** for detecting the `self.<sub>.<member>`
+/// AST shape.  Callers apply their own domain-specific filters on top (e.g. the
+/// `collection_sub_names` check in `try_resolve_cross_sub_geom_ref`, or the
+/// `try_emit_cross_sub_geometry` call in `geometry_boolean.rs`).
+pub(crate) fn match_self_sub_member(
     expr: &reify_syntax::Expr,
-    scope: &CompilationScope<'_>,
-) -> Option<GeomRef> {
+) -> Option<(&str, &str)> {
     if let reify_syntax::ExprKind::MemberAccess { object, member } = &expr.kind
         && let reify_syntax::ExprKind::MemberAccess {
             object: inner_obj,
@@ -295,15 +306,24 @@ pub(crate) fn try_resolve_cross_sub_geom_ref(
         } = &object.kind
         && let reify_syntax::ExprKind::Ident(self_name) = &inner_obj.kind
         && self_name == "self"
-        && !scope.collection_sub_names.contains(sub_name.as_str())
+    {
+        Some((sub_name.as_str(), member.as_str()))
+    } else {
+        None
+    }
+}
+
+pub(crate) fn try_resolve_cross_sub_geom_ref(
+    expr: &reify_syntax::Expr,
+    scope: &CompilationScope<'_>,
+) -> Option<GeomRef> {
+    if let Some((sub_name, member)) = match_self_sub_member(expr)
+        && !scope.collection_sub_names.contains(sub_name)
     {
         // Single source of truth shared with
         // `expr.rs::try_resolve_cross_sub_geometry_value_ref` (task 3455) — the
         // value-ref / GeomRef::Sub handshake stays in lockstep by construction.
-        if scope.sub_member_is_cross_sub_geometry_or_forward_declared(
-            sub_name.as_str(),
-            member.as_str(),
-        ) {
+        if scope.sub_member_is_cross_sub_geometry_or_forward_declared(sub_name, member) {
             return Some(GeomRef::Sub(format!("{}.{}", sub_name, member)));
         }
     }
