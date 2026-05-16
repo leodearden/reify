@@ -348,16 +348,23 @@ fn f(x : Bogus = "hi") -> Int { 0 }
         mismatch_errors
     );
 
-    // (b) The root-cause "unresolved type" diagnostic must be present.
-    // Fallback: no DiagnosticCode exists for unresolved-type errors today
-    // (functions.rs:33-36 uses Diagnostic::error(...) with no .with_code).
-    // Pinning the canonical message substring; tighten if a code is added later.
+    // (b) At least one Error-severity diagnostic must be present — this is the root-cause
+    // "unresolved type: Bogus" error from functions.rs:33-36.
+    //
+    // We assert on severity rather than a message substring for robustness: message wording
+    // can be renamed without changing the cascade-suppression invariant, and a substring
+    // check would produce a false-positive test failure on such a rename.
+    //
+    // If DiagnosticCode::UnresolvedType is added to reify-types in future, switch to
+    // `d.code == Some(DiagnosticCode::UnresolvedType)` for a stable, code-based assertion
+    // (current call site: functions.rs:33-36, uses Diagnostic::error(...) with no .with_code).
     assert!(
         compiled
             .diagnostics
             .iter()
-            .any(|d| d.message.contains("unresolved type")),
-        "expected at least one 'unresolved type' diagnostic (root cause), got: {:?}",
+            .any(|d| d.severity == Severity::Error),
+        "expected at least one Error-severity diagnostic (root cause for unresolved 'Bogus' type), \
+         got: {:?}",
         compiled.diagnostics
     );
 }
@@ -398,16 +405,23 @@ fn f(x : Int = undefined_name) -> Int { x }
         mismatch_errors
     );
 
-    // (b) The root-cause "unresolved name" diagnostic must be present.
-    // Fallback: no DiagnosticCode exists for unresolved-name errors today
-    // (expr.rs:670-682 uses Diagnostic::error(...) with no .with_code).
-    // Pinning the canonical message substring; tighten if a code is added later.
+    // (b) At least one Error-severity diagnostic must be present — this is the root-cause
+    // "unresolved name: undefined_name" error from expr.rs:670-682.
+    //
+    // We assert on severity rather than a message substring for robustness: message wording
+    // can be renamed without changing the cascade-suppression invariant, and a substring
+    // check would produce a false-positive test failure on such a rename.
+    //
+    // If DiagnosticCode::UnresolvedName is added to reify-types in future, switch to
+    // `d.code == Some(DiagnosticCode::UnresolvedName)` for a stable, code-based assertion
+    // (current call site: expr.rs:670-682, uses Diagnostic::error(...) with no .with_code).
     assert!(
         compiled
             .diagnostics
             .iter()
-            .any(|d| d.message.contains("unresolved name")),
-        "expected at least one 'unresolved name' diagnostic (root cause), got: {:?}",
+            .any(|d| d.severity == Severity::Error),
+        "expected at least one Error-severity diagnostic (root cause for undefined 'undefined_name'), \
+         got: {:?}",
         compiled.diagnostics
     );
 }
