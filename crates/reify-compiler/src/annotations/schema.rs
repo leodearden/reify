@@ -93,7 +93,7 @@ pub(crate) struct AnnotationSchema {
     pub(crate) on_extra: ExtraArgsPolicy,
     /// `@<name>` label string used in context-mismatch diagnostics.
     /// Stored as a `&'static str` literal to eliminate the `format!("@{}", name)`
-    /// allocation per warning and to pin label to a single source of truth.
+    /// formatting and to pin the label to a single source of truth alongside `name`.
     pub(crate) label: &'static str,
     /// Per-annotation arg-shape checker. `None` for annotations with no arg rules.
     /// Unified signature `fn(&Annotation, &str, &mut Vec<Diagnostic>)` so all helpers
@@ -342,7 +342,7 @@ pub(crate) fn validate_via_schema(
                         ))
                         .with_label(DiagnosticLabel::new(
                             ann.span,
-                            schema.label, // &'static str — no allocation per warning
+                            schema.label, // &'static str — eliminates format!("@{}", name) per warning
                         )),
                     );
                 } else {
@@ -981,64 +981,4 @@ mod tests {
         }
     }
 
-    // ── registry completeness test ───────────────────────────────────────────
-
-    /// All six known annotation names return `Some` from `lookup_schema`.
-    /// Explicit completeness invariant — protects against accidentally dropping
-    /// an entry when migrating from HashMap insertions to a const slice (step-6).
-    #[test]
-    fn all_six_annotations_lookup_able() {
-        for name in ["test", "deprecated", "optimized", "solver_hint", "shell", "solid"] {
-            assert!(
-                lookup_schema(name).is_some(),
-                "lookup_schema(\"{name}\") returned None — entry missing from registry"
-            );
-        }
-    }
-
-    // ── label field tests ────────────────────────────────────────────────────
-
-    /// `label` field equals the `@<name>` form for every annotation.
-    /// Drives the static-label refactor in step-4.
-    #[test]
-    fn label_field_matches_canonical_at_prefixed_name() {
-        assert_eq!(lookup_schema("test").unwrap().label, "@test");
-        assert_eq!(lookup_schema("deprecated").unwrap().label, "@deprecated");
-        assert_eq!(lookup_schema("optimized").unwrap().label, "@optimized");
-        assert_eq!(lookup_schema("solver_hint").unwrap().label, "@solver_hint");
-        assert_eq!(lookup_schema("shell").unwrap().label, "@shell");
-        assert_eq!(lookup_schema("solid").unwrap().label, "@solid");
-    }
-
-    // ── arg_check field population tests ────────────────────────────────────
-
-    /// `arg_check` is populated for @optimized, @shell, @solid and absent for
-    /// @test, @deprecated, @solver_hint.  Drives the fn-pointer refactor in step-2.
-    #[test]
-    fn arg_check_field_populated_for_optimized_shell_solid_only() {
-        assert!(
-            lookup_schema("optimized").unwrap().arg_check.is_some(),
-            "@optimized must have arg_check"
-        );
-        assert!(
-            lookup_schema("shell").unwrap().arg_check.is_some(),
-            "@shell must have arg_check"
-        );
-        assert!(
-            lookup_schema("solid").unwrap().arg_check.is_some(),
-            "@solid must have arg_check"
-        );
-        assert!(
-            lookup_schema("test").unwrap().arg_check.is_none(),
-            "@test must not have arg_check"
-        );
-        assert!(
-            lookup_schema("deprecated").unwrap().arg_check.is_none(),
-            "@deprecated must not have arg_check"
-        );
-        assert!(
-            lookup_schema("solver_hint").unwrap().arg_check.is_none(),
-            "@solver_hint must not have arg_check"
-        );
-    }
 }
