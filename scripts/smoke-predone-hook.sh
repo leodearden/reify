@@ -13,7 +13,6 @@
 #   (2.5) The env var value contains the required template tokens:
 #          --task, {id}, and --pre-done (per design §11.1).
 #   3. The fused-memory MCP endpoint at :8002 is responsive.
-#   (4) env value contains template tokens --task {id} --pre-done
 #
 # Exits 0 on success (all assertions pass).
 # Exits 1 on first failed assertion (with a descriptive error message).
@@ -81,7 +80,7 @@ fi
 # Values containing spaces are surrounded by double-quotes in the output.
 # Try the quoted form first (handles values with spaces such as our templated hook),
 # then fall back to the bare (no-space) form.
-env_value=$(echo "$service_env" | grep -oE '"'"${ENV_VAR}"'=[^"]*"' | head -1 | tr -d '"' | cut -d= -f2-)
+env_value=$(echo "$service_env" | grep -oE '"'"${ENV_VAR}"'=[^"]*"' | head -1 | tr -d '"' | cut -d= -f2- || true)
 if [[ -z "$env_value" ]]; then
     env_value=$(echo "$service_env" | grep -oE "${ENV_VAR}=[^ ]+" | head -1 | cut -d= -f2-)
 fi
