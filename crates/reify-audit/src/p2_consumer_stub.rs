@@ -132,6 +132,15 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         //   sweeps over hundreds of tasks. The `+++ b/path` hunk headers
         //   already delimit per-file sections in a multi-path diff output.
         //   Reference: docs/architecture-audit/f-infra-design.md §5 P2.
+        //
+        //   Additionally: `line_matches_stub` allocates a fresh `String` per
+        //   added line via `to_lowercase()` (see line_matches_stub, top of
+        //   function). When the per-task coalescing follow-up lands, consider
+        //   folding in either (a) an ASCII fast-path (`if line.is_ascii() { …
+        //   byte-level lowercase comparison … }`) — most stub markers in Rust
+        //   source are pure-ASCII — or (b) a per-task lowercase scratch buffer
+        //   reused across the added lines, to avoid N allocations on 100+-task
+        //   sweeps.
         for path in &meta.files {
             // Skip test-shaped paths to avoid false positives on intentional
             // stubs inside test helpers (design §5 P2 false-positive guards).
