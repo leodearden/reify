@@ -7,6 +7,8 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+use reify_types::{Annotation, Diagnostic, DiagnosticLabel};
+
 // ─── Schema types ────────────────────────────────────────────────────────────
 
 /// Evaluation time of an annotation argument.
@@ -184,6 +186,54 @@ fn build_registry() -> HashMap<&'static str, AnnotationSchema> {
 /// Returns `None` for names that are not registered (i.e. unknown annotations).
 pub(crate) fn lookup_schema(name: &str) -> Option<&'static AnnotationSchema> {
     ANNOTATION_REGISTRY.get_or_init(build_registry).get(name)
+}
+
+// ─── Dispatcher ──────────────────────────────────────────────────────────────
+
+/// Validate a slice of compiled annotations against the schema registry.
+///
+/// For each annotation:
+/// - If the name has no registry entry, emit an "unknown annotation @<name>" warning.
+/// - Else if the context is not in the schema's `valid_contexts`, emit a
+///   context-mismatch warning with the byte-identical wording from the legacy
+///   match-arm in `annotations.rs`.
+/// - Otherwise, dispatch into per-annotation arg-shape helpers (added in later steps).
+///
+/// After the per-annotation loop, run the slice-level duplicate-@optimized pass
+/// (added in step-8).
+pub(crate) fn validate_via_schema(
+    annotations: &[Annotation],
+    context: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for ann in annotations {
+        match lookup_schema(&ann.name) {
+            None => {
+                // Unknown annotation — mirrors legacy `other` arm (annotations.rs:207-212).
+                diagnostics.push(
+                    Diagnostic::warning(format!("unknown annotation @{}", ann.name))
+                        .with_label(DiagnosticLabel::new(ann.span, "unknown annotation")),
+                );
+            }
+            Some(schema) => {
+                if !schema.valid_contexts.contains(&context) {
+                    // Context mismatch — mirrors each legacy annotation's context arm.
+                    diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "annotation @{} is not valid on {context} declarations",
+                            schema.name
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            ann.span,
+                            format!("@{}", schema.name),
+                        )),
+                    );
+                }
+                // Arg-shape dispatch wired in step-6.
+            }
+        }
+    }
+    // Duplicate-@optimized slice pass wired in step-8.
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
