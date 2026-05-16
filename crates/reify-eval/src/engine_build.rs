@@ -639,27 +639,7 @@ impl Engine {
                     kernel.as_ref(),
                     &mut diagnostics,
                 );
-                // Task 2324: topology-selector post-process (closest_point /
-                // is_on / angle_between_surfaces) — sibling to the conformance-
-                // query and kinematic-query wirings; runs after `named_steps`
-                // is populated so the helpers can resolve let-bound geometry
-                // names to a `GeometryHandleId` and let-bound point names to
-                // a `Value::Point`.
-                Engine::post_process_topology_selectors(
-                    template,
-                    &named_steps,
-                    &mut values,
-                    kernel.as_ref(),
-                    &mut diagnostics,
-                );
-                // Task 3463: @face("name") / @edge("name") AdHocSelector
-                // post-process — resolves the kernel handle via
-                // `resolve_unique_by_attribute` and patches the cell to
-                // `Value::Frame { origin, basis }`. Runs after
-                // `post_process_topology_selectors` and `named_steps` is
-                // populated. Takes `kernel.as_mut()` (mutable) because
-                // `extract_faces` / `extract_edges` require `&mut self`.
-                Engine::post_process_ad_hoc_selectors(
+                Engine::run_post_processes(
                     template,
                     &named_steps,
                     &mut values,
@@ -904,25 +884,7 @@ impl Engine {
                     kernel.as_ref(),
                     &mut diagnostics,
                 );
-                // Task 2324: topology-selector post-process (closest_point /
-                // is_on / angle_between_surfaces) — sibling to the conformance-
-                // query and kinematic-query wirings; runs after `named_steps`
-                // is populated so the helpers can resolve let-bound geometry
-                // names to a `GeometryHandleId` and let-bound point names to
-                // a `Value::Point`.
-                Engine::post_process_topology_selectors(
-                    template,
-                    &named_steps,
-                    &mut values,
-                    kernel.as_ref(),
-                    &mut diagnostics,
-                );
-                // Task 3463: @face("name") / @edge("name") AdHocSelector
-                // post-process — mirrors the wiring in `build`. See the
-                // `post_process_ad_hoc_selectors` docstring for the full
-                // contract. Runs after `post_process_topology_selectors`
-                // and after `named_steps` is fully populated.
-                Engine::post_process_ad_hoc_selectors(
+                Engine::run_post_processes(
                     template,
                     &named_steps,
                     &mut values,
@@ -1519,27 +1481,7 @@ impl Engine {
                 kernel.as_ref(),
                 diagnostics,
             );
-            // Task 2324: topology-selector post-process (closest_point /
-            // is_on / angle_between_surfaces) — sibling to the conformance-
-            // query and kinematic-query wirings; runs after `named_steps`
-            // is populated so the helpers can resolve let-bound geometry
-            // names to a `GeometryHandleId` and let-bound point names to
-            // a `Value::Point`. Tessellate surface exposes the same
-            // kernel-resolved values as the build surface so GUI overlays
-            // stay consistent.
-            Engine::post_process_topology_selectors(
-                template,
-                &named_steps,
-                values,
-                kernel.as_ref(),
-                diagnostics,
-            );
-            // Task 3463: @face("name") / @edge("name") AdHocSelector
-            // post-process — mirrors the wiring in `build` /
-            // `build_snapshot`. Tessellate surface exposes the same
-            // kernel-resolved `Value::Frame` as the build surface so
-            // GUI overlays stay consistent.
-            Engine::post_process_ad_hoc_selectors(
+            Engine::run_post_processes(
                 template,
                 &named_steps,
                 values,
@@ -2196,6 +2138,34 @@ impl Engine {
                 values.insert(cell.id.clone(), value);
             }
         }
+    }
+
+    /// Run all selector / AdHocSelector post-process passes for a template
+    /// after `execute_realization_ops` has populated `named_steps`.
+    ///
+    /// Calls `post_process_topology_selectors` then
+    /// `post_process_ad_hoc_selectors` in order, consolidating the identical
+    /// two-call block that previously appeared verbatim in `build`,
+    /// `build_snapshot`, and `tessellate_from_values` (task 3745).  Any future
+    /// sibling passes should be added here so all three call sites pick them up
+    /// automatically.
+    fn run_post_processes(
+        template: &reify_compiler::TopologyTemplate,
+        named_steps: &HashMap<String, GeometryHandleId>,
+        values: &mut ValueMap,
+        kernel: &mut dyn GeometryKernel,
+        table: &TopologyAttributeTable,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        Engine::post_process_topology_selectors(template, named_steps, values, kernel, diagnostics);
+        Engine::post_process_ad_hoc_selectors(
+            template,
+            named_steps,
+            values,
+            kernel,
+            table,
+            diagnostics,
+        );
     }
 
     /// Post-process value cells for a template after `execute_realization_ops`
