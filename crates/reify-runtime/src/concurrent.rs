@@ -10,11 +10,12 @@ use std::sync::{Arc, Mutex};
 use reify_eval::cache::{CacheStore, EvalOutcome, NodeId};
 use reify_eval::deps::DependencyTrace;
 use reify_eval::gating;
-use reify_types::{NodeTraitsMap, ValueCellId};
+use reify_types::{NodeTraitsMap, ValueCellId, WarmStartableRegistry};
 
 use crate::Priority;
 use crate::commitment::{CommitmentTracker, NodeCommitmentOverride, NodePolicyOverrides};
 use crate::priority_promotion::SharedPriorityPromoter;
+use crate::warm_startable_assert::assert_warm_startable_coextensive;
 
 /// Configuration for [`ConcurrentScheduler::execute_with_config`].
 ///
@@ -33,6 +34,16 @@ use crate::priority_promotion::SharedPriorityPromoter;
 ///   default fallback (per PRD §5 B1 / arch §7.6). Default-empty — every
 ///   `resolve` call returns the §7.6 architecture default until a downstream
 ///   task (γ/δ/η/θ) wires consumer dispatch on it.
+/// - `warm_startable_registry`: optional bidirectional coextension fixture
+///   (per PRD §5 B5 / I-3, M-013 fix). When `Some(_)`,
+///   [`execute_with_config`](ConcurrentScheduler::execute_with_config) calls
+///   [`assert_warm_startable_coextensive`] after the empty-eval-set
+///   short-circuit to pin `kind.default_traits().contains(WARM_STARTABLE) ↔
+///   registry.contains_kind(kind)` for every variant in `NodeKind::ALL`.
+///   The assertion uses `debug_assert_eq!`, so release builds compile to a
+///   no-op even when `Some`. `Default` is `None` to preserve every existing
+///   scheduler test — production binaries opt in once a Resolution-side
+///   `WarmStartable` producer lands (see PRD §5 B5).
 pub struct SchedulerConfig<'a> {
     /// Optional commitment tracker for commitment-aware cancellation.
     pub commitment_tracker: Option<Arc<Mutex<CommitmentTracker>>>,
@@ -51,6 +62,12 @@ pub struct SchedulerConfig<'a> {
     /// `resolve` call returns the §7.6 architecture default until a
     /// downstream task (γ/δ/η/θ) wires consumer dispatch on it.
     pub node_traits: NodeTraitsMap<NodeId>,
+    /// Optional fixture for the PRD §5 B5 / I-3 bidirectional coextension
+    /// assertion (M-013 fix). When `Some(_)`, the scheduler invokes
+    /// [`assert_warm_startable_coextensive`] at execute init (after the
+    /// empty-eval-set short-circuit). `None` preserves prior behaviour for
+    /// every existing test.
+    pub warm_startable_registry: Option<WarmStartableRegistry>,
 }
 
 impl Default for SchedulerConfig<'_> {
@@ -62,6 +79,7 @@ impl Default for SchedulerConfig<'_> {
             node_priorities: HashMap::new(),
             cache: None,
             node_traits: NodeTraitsMap::default(),
+            warm_startable_registry: None,
         }
     }
 }
@@ -242,6 +260,14 @@ impl ConcurrentScheduler {
                 changed: HashSet::new(),
                 skipped: HashSet::new(),
             });
+        }
+
+        // PRD §5 B5 / I-3 (M-013 fix): when a `WarmStartableRegistry` fixture
+        // is attached to the config, fire the bidirectional coextension
+        // assertion before any spawn. The assertion body is `debug_assert_eq!`
+        // so release builds compile to a no-op even on the `Some(_)` arm.
+        if let Some(registry) = &config.warm_startable_registry {
+            assert_warm_startable_coextensive(registry);
         }
 
         // Single helper that calls gating::has_non_final_inputs when a cache
