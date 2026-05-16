@@ -326,10 +326,18 @@ mod tests {
     // ── Test helpers ─────────────────────────────────────────────────────────
 
     fn ann(name: &str, args: Vec<reify_types::AnnotationArg>) -> reify_types::Annotation {
+        ann_at(name, args, 0)
+    }
+
+    fn ann_at(
+        name: &str,
+        args: Vec<reify_types::AnnotationArg>,
+        offset: u32,
+    ) -> reify_types::Annotation {
         reify_types::Annotation {
             name: name.to_string(),
             args,
-            span: reify_types::SourceSpan::empty(0),
+            span: reify_types::SourceSpan::empty(offset),
         }
     }
 
@@ -788,5 +796,144 @@ mod tests {
             "expected context-mismatch message, got: {}",
             diags[0].message
         );
+    }
+
+    // ── validate_via_schema: duplicate @optimized slice-level pass ───────────
+
+    /// Two valid @optimized on constraint_def → exactly one duplicate warning
+    /// attached to the SECOND annotation's span.
+    #[test]
+    fn duplicate_valid_optimized_on_constraint_def_warns_on_second() {
+        let a1 = ann_at(
+            reify_types::OPTIMIZED_ANNOTATION,
+            vec![reify_types::AnnotationArg::String("a".to_string())],
+            0,
+        );
+        let a2 = ann_at(
+            reify_types::OPTIMIZED_ANNOTATION,
+            vec![reify_types::AnnotationArg::String("b".to_string())],
+            10,
+        );
+        let anns = vec![a1, a2.clone()];
+        let mut diags: Vec<reify_types::Diagnostic> = vec![];
+        validate_via_schema(&anns, "constraint_def", &mut diags);
+        assert_eq!(diags.len(), 1, "expected exactly 1 diagnostic, got: {:?}", diags);
+        assert!(
+            diags[0].message.contains("multiple @optimized annotations"),
+            "unexpected message: {}",
+            diags[0].message
+        );
+        assert_eq!(diags[0].labels[0].message, "duplicate @optimized");
+        assert_eq!(
+            diags[0].labels[0].span,
+            a2.span,
+            "duplicate warning must be on the second annotation's span"
+        );
+    }
+
+    /// Two valid @optimized on function → exactly one duplicate warning on the second.
+    #[test]
+    fn duplicate_valid_optimized_on_function_warns_on_second() {
+        let a1 = ann_at(
+            reify_types::OPTIMIZED_ANNOTATION,
+            vec![reify_types::AnnotationArg::String("a".to_string())],
+            0,
+        );
+        let a2 = ann_at(
+            reify_types::OPTIMIZED_ANNOTATION,
+            vec![reify_types::AnnotationArg::String("b".to_string())],
+            10,
+        );
+        let anns = vec![a1, a2.clone()];
+        let mut diags: Vec<reify_types::Diagnostic> = vec![];
+        validate_via_schema(&anns, "function", &mut diags);
+        assert_eq!(diags.len(), 1, "expected exactly 1 diagnostic, got: {:?}", diags);
+        assert!(
+            diags[0].message.contains("multiple @optimized annotations"),
+            "unexpected message: {}",
+            diags[0].message
+        );
+        assert_eq!(diags[0].labels[0].message, "duplicate @optimized");
+        assert_eq!(diags[0].labels[0].span, a2.span);
+    }
+
+    /// Two valid @optimized on structure → zero duplicate warnings
+    /// (slice-level pass does NOT fire outside constraint_def/function).
+    #[test]
+    fn duplicate_valid_optimized_on_structure_produces_no_duplicate_warning() {
+        let a1 = ann(
+            reify_types::OPTIMIZED_ANNOTATION,
+            vec![reify_types::AnnotationArg::String("a".to_string())],
+        );
+        let a2 = ann(
+            reify_types::OPTIMIZED_ANNOTATION,
+            vec![reify_types::AnnotationArg::String("b".to_string())],
+        );
+        let anns = vec![a1, a2];
+        let mut diags: Vec<reify_types::Diagnostic> = vec![];
+        validate_via_schema(&anns, "structure", &mut diags);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostics for @optimized on structure, got: {:?}",
+            diags
+        );
+    }
+
+    /// Malformed @optimized() then valid @optimized("b") on constraint_def →
+    /// exactly 1 missing-target warning, zero duplicate warnings.
+    /// Malformed entries don't count toward seen_valid.
+    #[test]
+    fn malformed_then_valid_optimized_no_duplicate_warning() {
+        let a_malformed = ann(reify_types::OPTIMIZED_ANNOTATION, vec![]);
+        let a_valid = ann(
+            reify_types::OPTIMIZED_ANNOTATION,
+            vec![reify_types::AnnotationArg::String("b".to_string())],
+        );
+        let anns = vec![a_malformed, a_valid];
+        let mut diags: Vec<reify_types::Diagnostic> = vec![];
+        validate_via_schema(&anns, "constraint_def", &mut diags);
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly 1 diagnostic (missing-target only), got: {:?}",
+            diags
+        );
+        assert!(
+            diags[0].message.contains("requires a string literal target"),
+            "unexpected message: {}",
+            diags[0].message
+        );
+    }
+
+    /// Two malformed @optimized() on constraint_def → exactly 2 missing-target
+    /// warnings, zero duplicate warnings.
+    #[test]
+    fn two_malformed_optimized_produces_two_missing_target_no_dup() {
+        let a1 = ann(reify_types::OPTIMIZED_ANNOTATION, vec![]);
+        let a2 = ann(reify_types::OPTIMIZED_ANNOTATION, vec![]);
+        let anns = vec![a1, a2];
+        let mut diags: Vec<reify_types::Diagnostic> = vec![];
+        validate_via_schema(&anns, "constraint_def", &mut diags);
+        assert_eq!(
+            diags.len(),
+            2,
+            "expected exactly 2 missing-target diagnostics, got: {:?}",
+            diags
+        );
+        for d in &diags {
+            assert!(
+                d.message.contains("requires a string literal target"),
+                "unexpected message: {}",
+                d.message
+            );
+        }
+        // No duplicate warning should be present
+        for d in &diags {
+            assert!(
+                !d.message.contains("multiple @optimized"),
+                "unexpected duplicate warning: {}",
+                d.message
+            );
+        }
     }
 }
