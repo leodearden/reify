@@ -25,6 +25,7 @@ path = "src/bin/reify-audit.rs"
 
 [dev-dependencies]
 tempfile.workspace = true
+reify-test-support.workspace = true
 # Self-pull with the test-support feature so integration tests in tests/p5.rs
 # can construct MockGitOps. Standard Rust pattern for integration-test-visible
 # test doubles that should NOT pollute the production public API.
