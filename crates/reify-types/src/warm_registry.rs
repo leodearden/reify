@@ -67,7 +67,7 @@ impl WarmStartableRegistry {
     /// linked into the current binary at static-init time.
     ///
     /// Iterates `inventory::iter::<WarmStartableRegistration>` and folds each
-    /// entry's `kind` into a fresh registry. Idempotent — multiple calls
+    /// entry's `kind` into a fresh registry. Deterministic — multiple calls
     /// observe the same static-init set and produce equivalent registries.
     /// Mirrors `reify_eval::kernel_registry::registry()` over
     /// [`crate::KernelRegistration`].
@@ -193,7 +193,11 @@ mod tests {
     }
 
     #[test]
-    fn from_inventory_is_idempotent() {
+    fn from_inventory_is_deterministic() {
+        // Two calls observe the same `inventory::iter` global static, so they
+        // must agree on `contains_kind` for every `NodeKind`. This pins
+        // determinism — not idempotency in the mutation-resistance sense
+        // (there is no mutation path between calls), per reviewer feedback.
         let a = WarmStartableRegistry::from_inventory();
         let b = WarmStartableRegistry::from_inventory();
         for k in NodeKind::ALL {
