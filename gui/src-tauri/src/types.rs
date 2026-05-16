@@ -250,8 +250,16 @@ pub struct MeshData {
     /// (`len == 3 * vertex_count`).  Example: `"shell_normal_per_face"`.
     ///
     /// OQ-4 resolution (PRD §11): a single `HashMap` (not two) keeps the wire
-    /// schema flat.  The length contract is enforced at serialization time:
-    /// `values.len() ∈ { 3 * vertex_count, 3 * face_count }`.
+    /// schema flat.  The channel name is the single source of truth for layout:
+    ///
+    /// - Names ending in `_per_face` → per-face channel; `len == 3 * face_count`
+    ///   (one XYZ triple per triangle face).
+    /// - All other names → per-vertex channel; `len == 3 * vertex_count`
+    ///   (one XYZ triple per vertex).
+    ///
+    /// Both contracts are enforced at serialization time.  This covers the
+    /// degenerate case where `vertex_count == face_count` (the two valid
+    /// lengths collapse and layout cannot be recovered from length alone).
     ///
     /// Non-finite f32 values are rejected at serialization time (reuses the
     /// `FiniteF32MapRef` guard).  Omitted from the wire when empty.
@@ -267,8 +275,15 @@ impl serde::Serialize for MeshData {
     /// - `displaced_positions` length ≠ `vertices.len()` (when `Some`), or
     /// - `element_kind` length ≠ `indices.len() / 3` (when `Some`), or
     /// - `region_tags` length ≠ `indices.len() / 3` (when `Some`), or
-    /// - any `vector_channels` entry length ∉ { 3*vertex_count, 3*face_count }, or
+    /// - any `vector_channels` entry with `_per_face` suffix has length ≠ `3*face_count`, or
+    /// - any `vector_channels` entry without `_per_face` suffix has length ≠ `3*vertex_count`, or
     /// - any f32 value is non-finite (NaN / ±Inf).
+    ///
+    /// The `_per_face` suffix convention for `vector_channels` is enforced here
+    /// (not just documented) so that mis-named or mis-sized channels are caught
+    /// before reaching the wire — including the degenerate-mesh case where
+    /// `vertex_count == face_count` and the layout cannot be recovered from
+    /// length alone.
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -319,14 +334,29 @@ impl serde::Serialize for MeshData {
             )));
         }
 
-        // Contract: each vector_channels entry length must be 3*vertex_count or 3*face_count.
+        // Contract: vector_channels length is determined by the channel name suffix.
+        // Names ending in `_per_face` must have length 3*face_count; all others
+        // must have length 3*vertex_count.  This enforces the OQ-4 naming convention
+        // (PRD §11) at the single enforcement chokepoint (the manual Serialize impl)
+        // so that mis-named or mis-sized channels are caught before reaching the wire
+        // — including the degenerate-mesh case (vertex_count == face_count) where
+        // the two valid lengths collapse and the layout cannot be recovered from
+        // length alone.
         for (channel, values) in &self.vector_channels {
-            if values.len() != 3 * vertex_count && values.len() != 3 * face_count {
+            if channel.ends_with("_per_face") {
+                if values.len() != 3 * face_count {
+                    return Err(S::Error::custom(format!(
+                        "vector channel '{channel}' has suffix '_per_face' so expected \
+                         length {} (3*face_count) but got {}",
+                        3 * face_count,
+                        values.len()
+                    )));
+                }
+            } else if values.len() != 3 * vertex_count {
                 return Err(S::Error::custom(format!(
-                    "vector channel '{channel}' has length {} but expected either {} (per-vertex) or {} (per-face)",
-                    values.len(),
+                    "vector channel '{channel}' expected length {} (3*vertex_count) but got {}",
                     3 * vertex_count,
-                    3 * face_count
+                    values.len()
                 )));
             }
         }

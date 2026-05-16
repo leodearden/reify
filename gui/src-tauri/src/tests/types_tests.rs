@@ -1543,15 +1543,16 @@ fn vector_channels_neg_infinity_causes_error_with_channel_key() {
     );
 }
 
-/// A `vector_channels` entry must have length `3 * vertex_count` (per-vertex) or
-/// `3 * face_count` (per-face).  Any other length must produce `Err` containing
-/// the channel name and both valid lengths.
+/// A per-vertex `vector_channels` entry (no `_per_face` suffix) must have
+/// length `3 * vertex_count`.  Any other length must produce `Err` containing
+/// the channel name and the vertex-count context.
 ///
 /// Setup: 3 vertices (vertex_count=3), 1 face (face_count=1).
-/// Valid per-vertex length = 9; valid per-face length = 3.
-/// An entry of length 2 is invalid for both.
+/// `"shell_normal"` has no `_per_face` suffix → required length = 9 (3*3).
+/// An entry of length 2 is invalid.
 ///
-/// Pins the two-valid-lengths contract in the Serialize impl (step-10).
+/// Pins the suffix-based enforcement in the Serialize impl (step-10 +
+/// amendment 2: enforce `_per_face` naming convention).
 #[test]
 fn meshdata_rejects_vector_channel_with_invalid_length() {
     use std::collections::HashMap;
@@ -1577,11 +1578,54 @@ fn meshdata_rejects_vector_channel_with_invalid_length() {
         msg.contains("shell_normal"),
         "expected channel name 'shell_normal' in error message: {msg}"
     );
-    // Must mention at least one of: vertex_count context, face_count context,
-    // or the two valid lengths (9 and 3).
+    // Must mention vertex-count context.  The new suffix-based enforcement
+    // produces "expected length 9 (3*vertex_count) but got 2", so both
+    // "vertex" and "9" appear.
     assert!(
-        msg.contains("vertex") || msg.contains("face") || msg.contains("9") || msg.contains("3"),
-        "expected size-context in error message: {msg}"
+        msg.contains("vertex") || msg.contains("9"),
+        "expected vertex-count context in error message: {msg}"
+    );
+}
+
+/// A `vector_channels` entry whose name ends in `_per_face` must have length
+/// `3 * face_count`.  Using a per-vertex-sized length (3*vertex_count) when
+/// `vertex_count ≠ face_count` must produce `Err` mentioning both the channel
+/// name and the `_per_face` convention.
+///
+/// Setup: 3 vertices (vertex_count=3), 1 face (face_count=1).
+/// `"data_per_face"` requires length 3 (3*face_count), but the inserted
+/// slice has length 9 (3*vertex_count).
+///
+/// Pins the `_per_face`-suffix enforcement introduced in amendment 2
+/// (reviewer suggestion 2).
+#[test]
+fn vector_channels_per_face_suffix_enforces_face_count_length() {
+    use std::collections::HashMap;
+
+    let mut vc = HashMap::new();
+    // length 9 = 3*vertex_count; _per_face requires 3*face_count = 3
+    vc.insert("data_per_face".to_string(), vec![0.0f32; 9]);
+
+    let mesh = MeshData {
+        entity_path: "test".to_string(),
+        vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0], // 3 vertices
+        indices: vec![0, 1, 2],                                          // 1 face
+        normals: None,
+        scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: None,
+        element_kind: None,
+        region_tags: None,
+        vector_channels: vc,
+    };
+    let err = serde_json::to_value(&mesh).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("data_per_face"),
+        "expected channel name 'data_per_face' in error message: {msg}"
+    );
+    assert!(
+        msg.contains("_per_face"),
+        "expected '_per_face' convention mention in error message: {msg}"
     );
 }
 
