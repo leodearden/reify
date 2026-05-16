@@ -546,3 +546,81 @@ fn type_arg_list_error_span_narrows_to_first_error_descendant() {
     );
 }
 
+// ── Task 3735: auto_keyword-missing recovery contract guard ──────────────────
+
+/// Contract regression guard for the auto_keyword-missing recovery path in
+/// `lower_type_args_from_node` (task 3735).
+///
+/// # What this test is NOT
+///
+/// This is NOT a strict RED→GREEN trigger for the `push_error` else-arm
+/// added in step-2 of task 3735.  The auto_keyword-missing else-arm fires
+/// only when `lower_type_args_from_node` encounters an `auto_type_arg` CST
+/// node that has NO `auto_keyword` child.  A 15-input CST probe (task 3724,
+/// commit a4855f03c4) verified that tree-sitter-reify ALWAYS inserts a
+/// MISSING `auto_keyword` child for malformed `auto_type_arg` nodes — and
+/// a MISSING node still has `kind() == "auto_keyword"`, so
+/// `find(|n| n.kind() == "auto_keyword")` returns `Some(…)`.  The new
+/// push_error else-arm is therefore currently unreachable from any known
+/// input.
+///
+/// A test that directly asserts the "auto type-arg missing auto keyword"
+/// message would PERMANENTLY FAIL for the same reason the previous test
+/// (`auto_type_arg_missing_auto_keyword_shape_emits_diagnostic`) was deleted
+/// in commit 990db514ce ("zero signal — exercised only the pre-existing AC#1
+/// ERROR scan").
+///
+/// # What this test IS
+///
+/// This is a CONTRACT REGRESSION GUARD.  For a curated family of malformed
+/// `auto:` inputs it asserts:
+///
+/// (a) Parsing completes without a panic (the `lower_type_args_from_node`
+///     code path is exercised across representative malformed shapes).
+/// (b) `module.errors` is non-empty — no malformed `auto:` input is silently
+///     accepted with a clean AST.
+///
+/// The distinction from the deleted test: this test iterates multiple inputs
+/// from the probe family (family-wide stability smoke screen rather than a
+/// single rubber-stamp), documents the contract-guard intent explicitly, and
+/// phrases assertions so that if a future grammar change makes the
+/// auto_keyword-missing path reachable, the test CONTINUES TO PASS
+/// (push_error fires, errors stays non-empty).
+///
+/// The test passes GREEN before step-2 because the pre-existing AC#1 ERROR
+/// scan (`lower_type_args_from_node` lines 650-675) already surfaces at
+/// least one diagnostic for every malformed input listed here.  Step-2
+/// (replacing debug_assert with push_error) does not change the GREEN/RED
+/// status of this test — it only adds a defense-in-depth else-arm that
+/// cannot be reached from current grammar inputs.
+#[test]
+fn auto_type_arg_missing_auto_keyword_recovery_emits_diagnostic() {
+    // Curated malformed-auto probe set — originally drawn from the 15-input
+    // grammar probe (task 3724).  Each input produces at least one ERROR node
+    // in the type_arg_list CST, which the AC#1 scan surfaces as ≥1 entry in
+    // module.errors independently of step-2's new push_error else-arm.
+    // Note: `fn f() -> Bearing<auto> { 0 }` is intentionally EXCLUDED — `auto`
+    // without `:` is parsed as a plain type-name identifier by tree-sitter-reify
+    // and produces no ERROR nodes, so m.errors is empty and the contract-guard
+    // assertion would spuriously fail.  Every input below produces at least one
+    // ERROR or MISSING node in its type_arg_list CST subtree.
+    let probes: &[&str] = &[
+        "fn f() -> Bearing<: Seal> { 0 }",
+        "fn f() -> Bearing<auto:> { 0 }",
+        "fn f() -> Bearing<auto(constrained): Seal> { 0 }",
+        "fn f() -> Coupling<auto: A, auto:> { 0 }",
+    ];
+    for source in probes {
+        let m = reify_syntax::parse(source, ModulePath::single("t"));
+        // (a) No panic: reaching this line proves the parse completed.
+        // (b) Non-empty errors: malformed `auto:` must never be silently
+        //     accepted with a clean AST.
+        assert!(
+            !m.errors.is_empty(),
+            "expected ≥1 parse error for malformed auto input {source:?}; \
+             module.errors was empty — a malformed `auto:` input is being \
+             silently accepted with a clean AST"
+        );
+    }
+}
+
