@@ -314,3 +314,50 @@ structure S {
         errors
     );
 }
+
+/// Test L (cascade-suppression regression for task 3718): when a function param's declared
+/// type fails to resolve (e.g. `Bogus`), the root-cause "unresolved type" diagnostic must
+/// be emitted, but the fn_param default type-check must NOT also fire a spurious
+/// `FnParamDefaultTypeMismatch` against the `Type::Real` fallback type.
+///
+/// Guards the `if !type_ok { continue; }` gate in `compile_function`
+/// (crates/reify-compiler/src/functions.rs:80-82). Without the gate, the String default
+/// expression's `result_type` would mismatch the `Type::Real` fallback param type and
+/// produce a cascading diagnostic on top of the unresolved-type root cause.
+#[test]
+fn fn_param_default_unresolved_param_type_no_cascade() {
+    let source = r#"
+fn f(x : Bogus = "hi") -> Int { 0 }
+"#;
+    let parsed = reify_syntax::parse(source, ModulePath::single("test_consume_l"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    // (a) Zero FnParamDefaultTypeMismatch errors — the param_type_resolved gate must
+    // suppress the cascade. Asserted via DiagnosticCode for narrowness.
+    let mismatch_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::FnParamDefaultTypeMismatch))
+        .collect();
+    assert!(
+        mismatch_errors.is_empty(),
+        "expected NO FnParamDefaultTypeMismatch errors when declared type is unresolved \
+         (param_type_resolved gate must suppress cascade), got: {:?}",
+        mismatch_errors
+    );
+
+    // (b) The root-cause "unresolved type" diagnostic must be present.
+    // Fallback: no DiagnosticCode exists for unresolved-type errors today
+    // (functions.rs:33-36 uses Diagnostic::error(...) with no .with_code).
+    // Pinning the canonical message substring; tighten if a code is added later.
+    assert!(
+        compiled
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("unresolved type")),
+        "expected at least one 'unresolved type' diagnostic (root cause), got: {:?}",
+        compiled.diagnostics
+    );
+}
