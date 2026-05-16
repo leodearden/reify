@@ -2006,6 +2006,36 @@ pub(crate) fn backdate_mtime(path: &std::path::Path, age_secs: u64) {
     }
 }
 
+/// Forward-date the mtime of `path` to `secs_in_future` seconds in the future.
+///
+/// Mirror of [`backdate_mtime`]: uses `checked_add` instead of `checked_sub`.
+/// Falls back to `SystemTime::now()` on overflow (astronomically unlikely).
+///
+/// Simulates clock-skew scenarios (NTP correction, live-migration, etc.) where
+/// a file's mtime appears to be ahead of the current wall clock. The sweep
+/// functions guard `now.duration_since(mtime)` with `Err(_) => continue` to
+/// keep such entries rather than treating them as stale.
+///
+/// Exposed `pub(crate)` so test modules across the crate can share this helper.
+#[cfg(test)]
+pub(crate) fn forward_mtime(path: &std::path::Path, secs_in_future: u64) {
+    use std::fs::FileTimes;
+    use std::time::{Duration, SystemTime};
+    let t = SystemTime::now()
+        .checked_add(Duration::from_secs(secs_in_future))
+        .unwrap_or_else(SystemTime::now);
+    let times = FileTimes::new().set_modified(t);
+    if path.is_dir() {
+        // Directories can be opened O_RDONLY; futimens checks ownership not
+        // fd write-access on Linux.
+        let f = std::fs::File::open(path).unwrap();
+        f.set_times(times).unwrap();
+    } else {
+        let f = std::fs::File::options().write(true).open(path).unwrap();
+        f.set_times(times).unwrap();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5576,6 +5606,69 @@ mod tests {
         assert_eq!(report.orphan_dirs_removed, 0);
     }
 
+    /// Clock-skew defensiveness: entries whose mtime is in the **future**
+    /// relative to `now` cause `now.duration_since(mtime)` to return
+    /// `Err(SystemTimeError)`. Both sweep functions guard this with
+    /// `Err(_) => continue` (sweep_stale_tempfiles_recursive line 1774-1776;
+    /// prune_orphan_engine_version_dirs line 1911-1913), keeping the entry
+    /// rather than treating it as stale.
+    ///
+    /// This test pins that conservative-keep behavior. If either `Err(_) =>
+    /// continue` branch were changed to treat the error as "stale" (e.g.
+    /// `Err(_) => Duration::from_secs(u64::MAX)`), the file and directory below
+    /// would be removed and both assertions would fail.
+    #[test]
+    fn sweep_keeps_entries_with_future_mtime_under_clock_skew() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // Use a hash distinct from ENGINE_VERSION_HASH so the orphan dir is a
+        // genuine prune candidate (name != current).
+        let orphan_eng = "dead000000000000000000000000dead";
+        let inp = "abcd111111111111111111111111abcd";
+
+        // Create a .tmp.* file inside the orphan shard dir.
+        let sd = shard_dir(root, orphan_eng, inp);
+        std::fs::create_dir_all(&sd).unwrap();
+        let future_tmp = sd.join(".tmp.fresh_skew");
+        std::fs::write(&future_tmp, b"in-flight write from the future").unwrap();
+        // Forward-date well past STALE_TEMPFILE_AGE: if the function treated
+        // future mtimes as stale this file would be removed.
+        forward_mtime(&future_tmp, STALE_TEMPFILE_AGE.as_secs() + 60);
+
+        // Forward-date the orphan engine-version dir itself well past
+        // ORPHAN_DIR_AGE: if the function treated future mtimes as stale this
+        // dir would be pruned.
+        let orphan_dir = root.join(orphan_eng);
+        forward_mtime(&orphan_dir, ORPHAN_DIR_AGE.as_secs() + 60);
+
+        // Use a current version distinct from orphan_eng so orphan_dir is
+        // considered a candidate by prune_orphan_engine_version_dirs.
+        let current = "cccc000000000000000000000000cccc";
+
+        let report_a = sweep_stale_tempfiles(root);
+        assert_eq!(
+            report_a,
+            SweepReport::default(),
+            "sweep_stale_tempfiles must not remove a .tmp.* file with a future mtime (clock skew)"
+        );
+        assert!(
+            future_tmp.exists(),
+            ".tmp.fresh_skew must survive: future mtime → Err(_) → keep branch"
+        );
+
+        let report_b = prune_orphan_engine_version_dirs(root, current);
+        assert_eq!(
+            report_b,
+            SweepReport::default(),
+            "prune_orphan_engine_version_dirs must not prune a dir with a future mtime (clock skew)"
+        );
+        assert!(
+            orphan_dir.exists(),
+            "orphan dir must survive: future mtime → Err(_) → keep branch"
+        );
+    }
+
     // ── prune_orphan_engine_version_dirs core behavior (step-5) ─────────────
 
     /// Step-5 RED: core behavior of `prune_orphan_engine_version_dirs`.
@@ -5709,6 +5802,39 @@ mod tests {
         );
         assert_eq!(report.orphan_dirs_removed, 1);
         assert_eq!(report.tempfiles_removed, 0);
+    }
+
+    /// Empty-`current_engine_version` safeguard: when the caller cannot
+    /// determine the live build's engine-version hash (e.g. a build-time env
+    /// var resolution failure that silently fell back to `""`), the prune is
+    /// skipped wholesale to avoid catastrophically deleting the live cache
+    /// subdir (which would also be unidentifiable).
+    ///
+    /// This test pins the early-return at lines 1823-1829. If that guard were
+    /// removed, the old subdir created below would be pruned and the
+    /// `old_orphan.exists()` assertion would fail.
+    #[test]
+    fn prune_orphan_engine_version_dirs_with_empty_current_version_skips_all() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // Create an old orphan-looking subdir that would normally be pruned if
+        // given a real current_engine_version.
+        let old_orphan = root.join("aaaa111111111111111111111111aaaa");
+        std::fs::create_dir_all(&old_orphan).unwrap();
+        backdate_mtime(&old_orphan, ORPHAN_DIR_AGE.as_secs() + 60);
+
+        let report = prune_orphan_engine_version_dirs(root, "");
+
+        assert!(
+            old_orphan.exists(),
+            "empty current_engine_version must skip the prune entirely; no dirs removed"
+        );
+        assert_eq!(
+            report,
+            SweepReport::default(),
+            "empty current_engine_version must return SweepReport::default() without pruning"
+        );
     }
 
     // ── sweep_on_startup composition + idempotence (step-9) ─────────────────
