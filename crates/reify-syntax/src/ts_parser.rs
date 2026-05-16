@@ -1784,8 +1784,9 @@ impl<'a> Lowering<'a> {
             args,
             is_collection,
             where_clause,
-            // Grammar does not yet produce specialization-scope bodies; see
-            // SubDecl docs and task 2368 plan.
+            // The tree-sitter grammar now admits `sub name : StructName { body }` (task 3569),
+            // but `lower_sub` still yields `None` here until sibling task 3571 wires the
+            // CST→AST mapping for the new `specialization_body` node.
             body: None,
             span: self.span(node),
             content_hash: self.content_hash(node),
