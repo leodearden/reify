@@ -307,35 +307,8 @@ fn pre1_error_node_is_within_type_arg_list_subtree() {
     );
 }
 
-/// Characterization: today `reify_syntax::parse` silently drops `auto_type_arg`
-/// children — `Bearing<auto: Seal>` lowers to `Named{{ name:"Bearing", type_args:[] }}`.
-///
-/// This establishes the BEFORE state. After step-2 of task 3665, `type_args` will
-/// contain `TypeExprKind::Auto{{ free:false, bound:"Seal" }}` and this test is removed.
-#[test]
-fn pre1_silent_drop_auto_type_arg_before_3665() {
-    let m = reify_syntax::parse(
-        "fn f() -> Bearing<auto: Seal> { 0 }",
-        ModulePath::single("t"),
-    );
-    let decls = &m.declarations;
-    assert_eq!(decls.len(), 1, "expected exactly one declaration");
-    let return_type = if let reify_syntax::Declaration::Function(f) = &decls[0] {
-        f.return_type.as_ref().expect("expected a return type on fn f")
-    } else {
-        panic!("expected a Function declaration, got {:?}", decls[0]);
-    };
-    match &return_type.kind {
-        reify_syntax::TypeExprKind::Named { name, type_args } => {
-            assert_eq!(name, "Bearing", "expected outer type name 'Bearing'");
-            assert_eq!(
-                type_args.len(),
-                0,
-                "before task 3665, auto_type_arg children are silently dropped; \
-                 expected type_args.len() == 0, got {}",
-                type_args.len()
-            );
-        }
-        other => panic!("expected TypeExprKind::Named, got {:?}", other),
-    }
-}
+// pre1_silent_drop_auto_type_arg_before_3665 was removed in step-2 of task 3665:
+// the lowering now surfaces auto_type_arg children as TypeExprKind::Auto, so the
+// "silent drop" assertion became contradictory.  The real coverage is provided
+// by auto_type_arg_lowers_to_ast_strict / _free (step-1 tests) which assert the
+// positive behaviour.
