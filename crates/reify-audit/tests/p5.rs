@@ -38,12 +38,16 @@ fn seed_db() -> Connection {
     conn
 }
 
-fn insert_task_completed_event(conn: &Connection, task_id: &str) {
+fn insert_event(conn: &Connection, task_id: &str, event_type: &str) {
     conn.execute(
-        "INSERT INTO events (task_id, event_type) VALUES (?, 'task_completed')",
-        rusqlite::params![task_id],
+        "INSERT INTO events (task_id, event_type) VALUES (?, ?)",
+        rusqlite::params![task_id, event_type],
     )
     .unwrap();
+}
+
+fn insert_task_completed_event(conn: &Connection, task_id: &str) {
+    insert_event(conn, task_id, "task_completed");
 }
 
 mod tests {
@@ -612,11 +616,7 @@ mod tests {
         // Also seed a row with a different task_id AND a different event_type
         // ('task_started'). This is the control row for the event_type-filter
         // assertion below.
-        conn.execute(
-            "INSERT INTO events (task_id, event_type) VALUES (?, 'task_started')",
-            rusqlite::params!["other-task"],
-        )
-        .expect("seed task_started row");
+        insert_event(&conn, "other-task", "task_started");
 
         let mut stmt = conn
             .prepare(p5_phantom_done::PRODUCTION_QUERY)
