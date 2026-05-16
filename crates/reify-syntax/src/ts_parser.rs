@@ -620,29 +620,43 @@ impl<'a> Lowering<'a> {
                         // lower_param (ts_parser.rs:1582-1592) — auto_keyword is shared between
                         // param-default and type-arg positions (grammar.js:433-436, 654-657).
                         let mut kw_cursor = inner.walk();
-                        if let Some(kw) = inner
+                        // Defensive guard mirroring the bound-missing branch below and the
+                        // `unrecognised expression in fn_param default` precedent at
+                        // ts_parser.rs:1214-1232. The grammar (grammar.js:663-667) requires
+                        // `auto_keyword` as the first child of `auto_type_arg`, and tree-sitter
+                        // inserts a MISSING auto_keyword node under error recovery, so this
+                        // arm is not reachable from a well-formed CST or any currently-known
+                        // malformed CST. It is retained as defense-in-depth so a future
+                        // grammar refactor that weakens the invariant surfaces a diagnostic
+                        // rather than silently dropping the entry (task 3724).
+                        let Some(kw) = inner
                             .named_children(&mut kw_cursor)
                             .find(|n| n.kind() == "auto_keyword")
-                        {
-                            let free = kw.child_by_field_name("modifier").is_some();
-                            // The grammar guarantees a `bound` field (bare identifier) on every
-                            // well-formed auto_type_arg. Guard defensively: if error recovery
-                            // produces an auto_type_arg without a bound, emit a diagnostic and
-                            // skip the entry rather than propagating an empty string into the
-                            // AST (which would corrupt Display output and collect_type_expr_names).
-                            let Some(bound_node) = inner.child_by_field_name("bound") else {
-                                self.push_error(
-                                    "auto type-arg missing bound identifier".to_string(),
-                                    self.span(inner),
-                                );
-                                continue;
-                            };
-                            let bound = self.node_text(bound_node).to_string();
-                            args.push(TypeExpr {
-                                kind: TypeExprKind::Auto { free, bound },
-                                span: self.span(inner),
-                            });
-                        }
+                        else {
+                            self.push_error(
+                                "auto type-arg missing auto keyword".to_string(),
+                                self.span(inner),
+                            );
+                            continue;
+                        };
+                        let free = kw.child_by_field_name("modifier").is_some();
+                        // The grammar guarantees a `bound` field (bare identifier) on every
+                        // well-formed auto_type_arg. Guard defensively: if error recovery
+                        // produces an auto_type_arg without a bound, emit a diagnostic and
+                        // skip the entry rather than propagating an empty string into the
+                        // AST (which would corrupt Display output and collect_type_expr_names).
+                        let Some(bound_node) = inner.child_by_field_name("bound") else {
+                            self.push_error(
+                                "auto type-arg missing bound identifier".to_string(),
+                                self.span(inner),
+                            );
+                            continue;
+                        };
+                        let bound = self.node_text(bound_node).to_string();
+                        args.push(TypeExpr {
+                            kind: TypeExprKind::Auto { free, bound },
+                            span: self.span(inner),
+                        });
                     }
                 }
                 return args;
