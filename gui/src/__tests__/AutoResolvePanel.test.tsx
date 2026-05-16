@@ -410,6 +410,31 @@ describe('AutoResolvePanel (e) non-scalar value sparkline null-filter', () => {
     const sparklineRow = sparklineSvg.closest('div')!;
     expect(within(sparklineRow).getByText('thickness')).toBeTruthy();
   });
+
+  it('(e.4) sparkline polyline excludes a non-null non-finite (NaN) iteration', () => {
+    // Defense-in-depth: a future wire change or manual store mutation could slip a
+    // NaN past the `number | null` type.  The cast `as unknown as number` simulates
+    // that runtime scenario without touching the production type.
+    // With the current `!== null` filter, NaN !== null → the NaN point reaches
+    // linearScale → emits "x.0,NaN" in the points string → 3-entry polyline → FAIL.
+    // After switching to Number.isFinite(...), NaN is rejected → 2-entry polyline → PASS.
+    const iterations = [
+      makeIteration(1, { parameters: { thickness: { value: 4.2, unit: 'mm', display: '4.2mm' } } }),
+      makeIteration(2, { parameters: { thickness: { value: NaN as unknown as number, unit: 'mm', display: 'NaN' } } }),
+      makeIteration(3, { parameters: { thickness: { value: 4.8, unit: 'mm', display: '4.8mm' } } }),
+    ];
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+    const sparklineSvg = screen.getByTestId('auto-resolve-sparkline');
+    const polyline = sparklineSvg.querySelector('polyline');
+    expect(polyline).toBeTruthy();
+    const pointsAttr = polyline!.getAttribute('points') ?? '';
+    // No coordinate string should contain "NaN"
+    expect(pointsAttr).not.toMatch(/NaN/);
+    // Exactly 2 pairs — the non-finite iteration is filtered out just like null
+    const points = pointsAttr.trim().split(/\s+/);
+    expect(points).toHaveLength(2);
+  });
 });
 
 // ── Test group (f): non-scalar error chip in Parameters section ──────────────
