@@ -7626,6 +7626,93 @@ mod tests {
         );
     }
 
+    // ── Point/Vector infer_type / try_infer_type tests (task 3749) ──────────
+
+    /// Empty Point has no inferable quantity type — try_infer_type() returns None.
+    ///
+    /// Mirrors `try_infer_type_empty_list_returns_none`: the `?` on
+    /// `components.first()?` propagates None out of the Point arm.
+    #[test]
+    fn try_infer_type_empty_point_returns_none() {
+        use crate::ty::Type;
+        let v = Value::Point(vec![]);
+        assert_eq!(
+            v.try_infer_type(),
+            None,
+            "empty Point has no inferable quantity type"
+        );
+        // try_infer_type returning None means infer_type dispatches to the None branch;
+        // step-04 replaces the unwrap_or(Type::Real) there with debug_assert + unreachable!.
+        let _ = Type::Real; // suppress unused import lint
+    }
+
+    /// Empty Vector has no inferable quantity type — try_infer_type() returns None.
+    #[test]
+    fn try_infer_type_empty_vector_returns_none() {
+        let v = Value::Vector(vec![]);
+        assert_eq!(
+            v.try_infer_type(),
+            None,
+            "empty Vector has no inferable quantity type"
+        );
+    }
+
+    /// Non-empty Point — infer_type() returns the correct Type::Point.
+    ///
+    /// This exercises the happy path (n > 0), which is unaffected by step-04.
+    #[test]
+    fn infer_type_nonempty_point_returns_point_real() {
+        use crate::ty::Type;
+        let v = Value::Point(vec![Value::Real(1.0), Value::Real(2.0)]);
+        assert_eq!(
+            v.infer_type(),
+            Type::Point {
+                n: 2,
+                quantity: Box::new(Type::Real),
+            },
+            "non-empty Point(Real, Real) should infer as Type::Point {{ n: 2, quantity: Real }}"
+        );
+    }
+
+    /// Non-empty Vector — infer_type() returns the correct Type::Vector.
+    #[test]
+    fn infer_type_nonempty_vector_returns_vector_real() {
+        use crate::ty::Type;
+        let v = Value::Vector(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+        assert_eq!(
+            v.infer_type(),
+            Type::Vector {
+                n: 3,
+                quantity: Box::new(Type::Real),
+            },
+            "non-empty Vector(Real×3) should infer as Type::Vector {{ n: 3, quantity: Real }}"
+        );
+    }
+
+    /// `infer_type()` on an empty `Value::Point` panics in debug builds (debug_assert).
+    ///
+    /// Gated by `#[cfg(debug_assertions)]` — in release builds the debug_assert is a
+    /// no-op and the `unreachable!()` arm is not exercised (task 3749, step-04 tightening).
+    /// Expected panic message matches the string written to the debug_assert in step-04.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "empty Point")]
+    fn infer_type_empty_point_panics_in_debug() {
+        let _ = Value::Point(vec![]).infer_type();
+    }
+
+    /// `infer_type()` on an empty `Value::Vector` panics in debug builds (debug_assert).
+    ///
+    /// Gated by `#[cfg(debug_assertions)]` — in release builds the debug_assert is a
+    /// no-op and the `unreachable!()` arm is not exercised (task 3749, step-04 tightening).
+    /// Expected panic message matches the string written to the debug_assert in step-04.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "empty Vector")]
+    fn infer_type_empty_vector_panics_in_debug() {
+        let _ = Value::Vector(vec![]).infer_type();
+    }
+
     // --- Freshness::default() tests (task #2326) ---
 
     #[test]
