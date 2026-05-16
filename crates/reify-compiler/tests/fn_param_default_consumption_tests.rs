@@ -361,3 +361,53 @@ fn f(x : Bogus = "hi") -> Int { 0 }
         compiled.diagnostics
     );
 }
+
+/// Test M (cascade-suppression regression for task 3718): when a function param's default
+/// expression fails to compile (e.g. references an undefined name), the root-cause
+/// "unresolved name" diagnostic must be emitted with the default poisoned to `Type::Error`,
+/// but the fn_param default type-check must NOT also fire a spurious
+/// `FnParamDefaultTypeMismatch` on top.
+///
+/// Guards the `default_ty.is_error()` short-circuit in `fn_param_default_compatible`
+/// (crates/reify-compiler/src/type_compat.rs:265-269). Without the short-circuit,
+/// `param_ty == Type::Int` compared against `default_ty == Type::Error` would be unequal
+/// under the strict-equality policy and cascade an `Int vs Error` mismatch.
+#[test]
+fn fn_param_default_undefined_default_expr_no_cascade() {
+    let source = r#"
+fn f(x : Int = undefined_name) -> Int { x }
+"#;
+    let parsed = reify_syntax::parse(source, ModulePath::single("test_consume_m"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    // (a) Zero FnParamDefaultTypeMismatch errors — the default_ty.is_error()
+    // short-circuit in fn_param_default_compatible must suppress the cascade.
+    // Asserted via DiagnosticCode for narrowness.
+    let mismatch_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::FnParamDefaultTypeMismatch))
+        .collect();
+    assert!(
+        mismatch_errors.is_empty(),
+        "expected NO FnParamDefaultTypeMismatch errors when default expression has Type::Error \
+         (is_error() short-circuit in fn_param_default_compatible must suppress cascade), \
+         got: {:?}",
+        mismatch_errors
+    );
+
+    // (b) The root-cause "unresolved name" diagnostic must be present.
+    // Fallback: no DiagnosticCode exists for unresolved-name errors today
+    // (expr.rs:670-682 uses Diagnostic::error(...) with no .with_code).
+    // Pinning the canonical message substring; tighten if a code is added later.
+    assert!(
+        compiled
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("unresolved name")),
+        "expected at least one 'unresolved name' diagnostic (root cause), got: {:?}",
+        compiled.diagnostics
+    );
+}
