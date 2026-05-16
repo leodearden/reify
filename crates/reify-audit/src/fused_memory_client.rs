@@ -180,12 +180,12 @@ impl FusedMemoryClient {
         }
         if let Some(content) = result.get("content").and_then(|c| c.as_array()) {
             for entry in content {
-                if entry.get("type").and_then(|t| t.as_str()) == Some("text") {
-                    if let Some(text) = entry.get("text").and_then(|t| t.as_str()) {
-                        return serde_json::from_str(text).map_err(|e| {
-                            LoadError::Protocol(format!("content text not JSON: {e}"))
-                        });
-                    }
+                if entry.get("type").and_then(|t| t.as_str()) == Some("text")
+                    && let Some(text) = entry.get("text").and_then(|t| t.as_str())
+                {
+                    return serde_json::from_str(text).map_err(|e| {
+                        LoadError::Protocol(format!("content text not JSON: {e}"))
+                    });
                 }
             }
         }
@@ -397,10 +397,10 @@ fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
 fn random_hex_32() -> String {
     use std::io::Read;
     let mut buf = [0u8; 16];
-    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
-        if f.read_exact(&mut buf).is_ok() {
-            return hex32(&buf);
-        }
+    if let Ok(mut f) = std::fs::File::open("/dev/urandom")
+        && f.read_exact(&mut buf).is_ok()
+    {
+        return hex32(&buf);
     }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
