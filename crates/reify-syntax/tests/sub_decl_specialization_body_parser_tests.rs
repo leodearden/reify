@@ -347,27 +347,37 @@ fn sub_decl_collection_form_regression() {
 
 // ── D4 List/specialization explicit-precedence invariant lock ─────────────────
 
-/// Invariant lock: `token(prec(1, 'List'))` in grammar.js gives the collection
-/// keyword explicit lexical precedence (1) over the `identifier` regex (0), so
-/// the tokenizer prefers `List` via rule #2 (explicit precedence), not the
-/// implicit string-vs-regexp tie-break (rule #3). This test pins the four
-/// load-bearing invariant cases:
+/// Invariant lock: the collection arm in grammar.js uses a bare `'List'` string
+/// token. Disambiguation between the collection arm (`sub a : List<Foo>`) and the
+/// specialization arm (`sub a : Foo<Bar>`) relies on two documented tree-sitter
+/// lexer rules — NOT on `token(prec(...))` (which was considered and rejected
+/// because it overrides rule #1 and breaks Case 3; see grammar.js lines 523–528
+/// and escalation esc-3712-201):
+///
+///   Rule #1 (longest-match, evaluated FIRST): for `Listicle<Foo>` the
+///   `$.identifier` regex matches 8 chars vs `'List'`'s 4 — identifier wins.
+///
+///   Rule #2 (string-vs-regex tie-break, on equal-length matches): for
+///   `List<Foo>` both `'List'` and `$.identifier` match exactly 4 chars, so
+///   the anonymous string token wins and the collection arm is taken.
+///
+/// This test pins the four load-bearing invariant cases:
 ///
 /// 1. `sub a : List<Foo>` → collection arm wins: `is_collection==true`,
 ///    `structure_name=="Foo"`, `body.is_none()`.
 /// 2. `sub a : Foo<Bar>` (non-List, same shape) → specialization arm:
 ///    `is_collection==false`, `structure_name=="Foo"`.
 /// 3. `sub a : Listicle<Foo>` (List-prefixed identifier) → specialization arm
-///    wins by longest-match (rule #1 precedes precedence): `is_collection==false`,
+///    wins by longest-match (rule #1 precedes any tie-break): `is_collection==false`,
 ///    `structure_name=="Listicle"`.
 /// 4. CST: in the `List<Foo>` parse the `sub_declaration` `structure_name` field
 ///    text is exactly "Foo" (not "List") and there is no `body` child.
 ///
-/// RED-BAR PROOF (not committed): temporarily reordering the specialization arm
-/// above the collection arm in grammar.js causes assertions (1) and (4) to fail,
-/// proving this test is a real regression lock (not a tautology). After verifying
-/// RED the grammar was reverted; the test is committed green on the un-modified
-/// grammar and robust under `token(prec(1, 'List'))` regardless of arm order.
+/// RED-BAR PROOF (not committed): an earlier draft of this test verified RED-bar
+/// by reordering the specialization arm above the collection arm in grammar.js;
+/// assertions (1) and (4) failed, proving this is a real regression lock. Revert
+/// was confirmed before commit. The lock holds under bare `'List'` + rules #1+#2
+/// as currently committed in grammar.js.
 #[test]
 fn sub_decl_list_vs_specialization_disambiguation_invariant() {
     use reify_syntax::{Declaration, MemberDecl};
@@ -390,8 +400,9 @@ fn sub_decl_list_vs_specialization_disambiguation_invariant() {
         assert!(
             sub.is_collection,
             "INVARIANT BROKEN: `sub a : List<Foo>` must parse via the collection arm \
-             (is_collection==true). If this fails, `token(prec(1,'List'))` lost its \
-             explicit precedence advantage over the identifier regex.",
+             (is_collection==true). If this fails, the bare `'List'` token lost its \
+             string-vs-regex tie-break (rule #2) over the `identifier` regex on the \
+             equal-length `List` match.",
         );
         assert!(
             sub.body.is_none(),
@@ -422,7 +433,8 @@ fn sub_decl_list_vs_specialization_disambiguation_invariant() {
         assert!(
             !sub.is_collection,
             "INVARIANT BROKEN: `sub a : Foo<Bar>` must parse via the specialization arm \
-             (is_collection==false). `token(prec(1,'List'))` must NOT capture non-List identifiers.",
+             (is_collection==false). The bare `'List'` token must NOT capture non-List \
+             identifiers — they don't equal-length-match `List`.",
         );
         assert_eq!(
             sub.structure_name, "Foo",
@@ -450,8 +462,9 @@ fn sub_decl_list_vs_specialization_disambiguation_invariant() {
         assert!(
             !sub.is_collection,
             "LONGEST-MATCH REGRESSION: `sub a : Listicle<Foo>` must parse via the \
-             specialization arm (is_collection==false). `token(prec(1,'List'))` must \
-             not break identifier maximal-munch — 'Listicle' is longer than 'List'.",
+             specialization arm (is_collection==false). Rule #1 (longest-match) must \
+             take 'Listicle' (8 chars) over 'List' (4 chars) before any tie-break \
+             kicks in.",
         );
         assert_eq!(
             sub.structure_name, "Listicle",
