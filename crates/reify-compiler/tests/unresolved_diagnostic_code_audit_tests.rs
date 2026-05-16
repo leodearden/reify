@@ -191,14 +191,11 @@ structure S {
 
     let compiled = reify_compiler::compile(&parsed);
 
-    assert!(
-        compiled
-            .diagnostics
-            .iter()
-            .any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
-        "expected DiagnosticCode::UnresolvedType for unresolved lambda param type \
-         'Bogus' (expr.rs:2294-2311), got: {:?}",
-        compiled.diagnostics
+    assert_diagnostic_with_code_and_prefix(
+        &compiled,
+        DiagnosticCode::UnresolvedType,
+        "unresolved type in lambda param",
+        "expr.rs:2297 — lambda param type 'Bogus'",
     );
 }
 
