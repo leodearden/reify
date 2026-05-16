@@ -184,5 +184,68 @@ assert "wrapper script references reify-audit-snapshot-filter.jq" \
     bash -c 'grep -qF "reify-audit-snapshot-filter.jq" "$1"' \
     -- "$REPO_ROOT/scripts/reify-audit-predone-wrapper.sh"
 
+# ==============================================================================
+# Check 6: exit-code propagation under `set -e`
+# ==============================================================================
+echo ""
+echo "--- Check 6: exit-code propagation through wrapper under set -e ---"
+
+# 6a: Static check — the wrapper must use an idiomatic form that keeps
+# `rc=$?` reachable on the non-zero path (i.e., `cmd || rc=$?` or
+# `set +e; cmd; set -e`).  Under `set -euo pipefail`, the original
+# `cmd; rc=$?; exit $rc` is dead code when cmd exits non-zero: bash
+# aborts before `rc=$?` runs (exit code propagates by ACCIDENT).
+# This assertion is RED until step-13 lands the `|| rc=$?` idiom.
+assert "wrapper uses idiomatic non-set-e-aborting exit-code pattern" \
+    bash -c 'grep -qE '"'"'(\|\| rc=|set \+e)'"'"' "$1"' \
+    -- "$REPO_ROOT/scripts/reify-audit-predone-wrapper.sh"
+
+# 6b+6c setup: fake curl + fake reify-audit shims in a behavioural tmpdir.
+BEHAVIORAL_TMPDIR=$(mktemp -d /tmp/test-wrapper-rc-XXXXXX)
+# Update the EXIT trap to cover both tmpdirs.
+trap 'rm -rf "$FILTER_TMPDIR" "$BEHAVIORAL_TMPDIR"' EXIT
+
+# Fake curl: ignores all args, emits a valid empty-tasks JSON-RPC envelope.
+# The sidecar filter expects .result.content[0].text | fromjson | .tasks → []
+cat > "$BEHAVIORAL_TMPDIR/curl" <<'FAKE_CURL_EOF'
+#!/usr/bin/env bash
+printf '%s\n' '{"result":{"content":[{"type":"text","text":"{\"tasks\":[]}"}]}}'
+FAKE_CURL_EOF
+chmod +x "$BEHAVIORAL_TMPDIR/curl"
+
+# Fake reify-audit: ignores all args, exits with $FAKE_RC (default 0).
+cat > "$BEHAVIORAL_TMPDIR/reify-audit" <<'FAKE_AUDIT_EOF'
+#!/usr/bin/env bash
+exit "${FAKE_RC:-0}"
+FAKE_AUDIT_EOF
+chmod +x "$BEHAVIORAL_TMPDIR/reify-audit"
+
+# 6b: Non-zero exit code propagation (7 simulates 7 High-severity findings).
+# Note: passes against the CURRENT dead-code pattern too (set -e abort
+# propagates the child's code by accident).  6a is the structural lock; 6b
+# guards against future refactors that break propagation on the non-zero path.
+set +e
+PATH="$BEHAVIORAL_TMPDIR:$PATH" \
+    FAKE_RC=7 \
+    REIFY_AUDIT_BIN="$BEHAVIORAL_TMPDIR/reify-audit" \
+    bash "$WRAPPER" --task abc --pre-done >/dev/null 2>&1
+actual_rc_6b=$?
+set -e
+
+assert "wrapper propagates child exit code 7 (simulated 7 High findings)" \
+    bash -c 'test "$1" -eq 7' -- "$actual_rc_6b"
+
+# 6c: Zero exit code propagation (no High-severity findings).
+set +e
+PATH="$BEHAVIORAL_TMPDIR:$PATH" \
+    FAKE_RC=0 \
+    REIFY_AUDIT_BIN="$BEHAVIORAL_TMPDIR/reify-audit" \
+    bash "$WRAPPER" --task abc --pre-done >/dev/null 2>&1
+actual_rc_6c=$?
+set -e
+
+assert "wrapper propagates child exit code 0 (no High findings)" \
+    bash -c 'test "$1" -eq 0' -- "$actual_rc_6c"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
