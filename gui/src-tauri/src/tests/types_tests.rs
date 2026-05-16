@@ -53,6 +53,9 @@ fn mesh_data_serializes_with_expected_fields() {
         normals: Some(vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0]),
         scalar_channels: std::collections::HashMap::new(),
         displaced_positions: None,
+        element_kind: None,
+        region_tags: None,
+        vector_channels: std::collections::HashMap::new(),
     };
     let v = serde_json::to_value(&mesh).unwrap();
     assert_eq!(v["entity_path"], json!("Bracket.body"));
@@ -538,6 +541,9 @@ fn serialize_finite_f32_vec_all_finite_values_round_trip() {
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
         displaced_positions: None,
+        element_kind: None,
+        region_tags: None,
+        vector_channels: std::collections::HashMap::new(),
     };
     let v = serde_json::to_value(&mesh).unwrap();
     let arr = v["vertices"].as_array().unwrap();
@@ -558,6 +564,9 @@ fn serialize_finite_f32_vec_empty_vec_serializes_to_empty_array() {
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
         displaced_positions: None,
+        element_kind: None,
+        region_tags: None,
+        vector_channels: std::collections::HashMap::new(),
     };
     let v = serde_json::to_value(&mesh).unwrap();
     let arr = v["vertices"].as_array().unwrap();
@@ -573,6 +582,9 @@ fn serialize_finite_f32_vec_nan_causes_error_with_non_finite_and_nan() {
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
         displaced_positions: None,
+        element_kind: None,
+        region_tags: None,
+        vector_channels: std::collections::HashMap::new(),
     };
     let err = serde_json::to_value(&mesh).unwrap_err();
     let msg = err.to_string();
@@ -592,6 +604,9 @@ fn serialize_finite_f32_vec_infinity_causes_error_with_non_finite_and_inf() {
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
         displaced_positions: None,
+        element_kind: None,
+        region_tags: None,
+        vector_channels: std::collections::HashMap::new(),
     };
     let err = serde_json::to_value(&mesh).unwrap_err();
     let msg = err.to_string();
@@ -611,6 +626,9 @@ fn serialize_finite_f32_vec_neg_infinity_causes_error_with_non_finite_and_neg_in
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
         displaced_positions: None,
+        element_kind: None,
+        region_tags: None,
+        vector_channels: std::collections::HashMap::new(),
     };
     let err = serde_json::to_value(&mesh).unwrap_err();
     let msg = err.to_string();
@@ -632,6 +650,9 @@ fn serialize_finite_f32_vec_nan_in_normals_causes_error() {
         normals: Some(vec![0.0, 0.0, f32::NAN]),
         scalar_channels: std::collections::HashMap::new(),
         displaced_positions: None,
+        element_kind: None,
+        region_tags: None,
+        vector_channels: std::collections::HashMap::new(),
     };
     let err = serde_json::to_value(&mesh).unwrap_err();
     let msg = err.to_string();
@@ -660,6 +681,9 @@ fn serialize_finite_f32_vec_non_finite_at_later_position_still_causes_error() {
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
         displaced_positions: None,
+        element_kind: None,
+        region_tags: None,
+        vector_channels: std::collections::HashMap::new(),
     };
     let err = serde_json::to_value(&mesh).unwrap_err();
     let msg = err.to_string();
@@ -975,6 +999,9 @@ fn mesh_data_scalar_channels_round_trips() {
         normals: None,
         scalar_channels: channels,
         displaced_positions: None,
+        element_kind: None,
+        region_tags: None,
+        vector_channels: std::collections::HashMap::new(),
     };
 
     let v = serde_json::to_value(&mesh).expect("serialize should succeed");
@@ -1014,6 +1041,9 @@ fn mesh_data_empty_scalar_channels_omitted_from_wire() {
         normals: None,
         scalar_channels: HashMap::new(),
         displaced_positions: None,
+        element_kind: None,
+        region_tags: None,
+        vector_channels: std::collections::HashMap::new(),
     };
 
     let v = serde_json::to_value(&mesh).expect("serialize should succeed");
@@ -1043,6 +1073,9 @@ fn serialize_finite_f32_map_nan_causes_error_with_channel_key() {
         normals: None,
         scalar_channels: channels,
         displaced_positions: None,
+        element_kind: None,
+        region_tags: None,
+        vector_channels: std::collections::HashMap::new(),
     };
 
     let err = serde_json::to_value(&mesh).unwrap_err();
@@ -1073,6 +1106,9 @@ fn serialize_finite_f32_map_infinity_causes_error_with_channel_key() {
         normals: None,
         scalar_channels: channels,
         displaced_positions: None,
+        element_kind: None,
+        region_tags: None,
+        vector_channels: std::collections::HashMap::new(),
     };
 
     let err = serde_json::to_value(&mesh).unwrap_err();
@@ -1103,6 +1139,9 @@ fn serialize_finite_f32_map_neg_infinity_causes_error_with_channel_key() {
         normals: None,
         scalar_channels: channels,
         displaced_positions: None,
+        element_kind: None,
+        region_tags: None,
+        vector_channels: std::collections::HashMap::new(),
     };
 
     let err = serde_json::to_value(&mesh).unwrap_err();
@@ -1130,6 +1169,9 @@ fn mesh_data_displaced_positions_some_serializes_to_array() {
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
         displaced_positions: Some(vec![1.0_f32, 2.0, 3.0]),
+        element_kind: None,
+        region_tags: None,
+        vector_channels: std::collections::HashMap::new(),
     };
 
     let v = serde_json::to_value(&mesh).expect("serialize should succeed");
@@ -1156,6 +1198,9 @@ fn mesh_data_displaced_positions_none_omitted_from_wire() {
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
         displaced_positions: None,
+        element_kind: None,
+        region_tags: None,
+        vector_channels: std::collections::HashMap::new(),
     };
 
     let v = serde_json::to_value(&mesh).expect("serialize should succeed");
@@ -1175,6 +1220,9 @@ fn mesh_data_displaced_positions_round_trips() {
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
         displaced_positions: Some(vec![1.0_f32, 2.0, 3.0]),
+        element_kind: None,
+        region_tags: None,
+        vector_channels: std::collections::HashMap::new(),
     };
 
     let v = serde_json::to_value(&mesh).expect("serialize should succeed");
@@ -1196,6 +1244,9 @@ fn mesh_data_displaced_positions_nan_causes_error() {
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
         displaced_positions: Some(vec![f32::NAN, 0.0, 0.0]), // 3 floats, length matches
+        element_kind: None,
+        region_tags: None,
+        vector_channels: std::collections::HashMap::new(),
     };
 
     let err = serde_json::to_value(&mesh).unwrap_err();
@@ -1227,6 +1278,9 @@ fn meshdata_rejects_scalar_channel_with_wrong_length() {
         normals: None,
         scalar_channels: channels,
         displaced_positions: None,
+        element_kind: None,
+        region_tags: None,
+        vector_channels: std::collections::HashMap::new(),
     };
 
     let err = serde_json::to_value(&mesh).unwrap_err();
@@ -1252,6 +1306,9 @@ fn meshdata_rejects_displaced_positions_with_wrong_length() {
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
         displaced_positions: Some(vec![0.1_f32, 0.2, 0.3, 0.4, 0.5, 0.6]), // 6 floats ≠ 9
+        element_kind: None,
+        region_tags: None,
+        vector_channels: std::collections::HashMap::new(),
     };
 
     let err = serde_json::to_value(&mesh).unwrap_err();
@@ -1647,6 +1704,9 @@ fn meshdata_accepts_matching_scalar_channel_length() {
         normals: None,
         scalar_channels: channels,
         displaced_positions: None,
+        element_kind: None,
+        region_tags: None,
+        vector_channels: std::collections::HashMap::new(),
     };
 
     let v = serde_json::to_value(&mesh).expect("should serialize successfully");

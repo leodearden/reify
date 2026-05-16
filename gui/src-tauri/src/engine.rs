@@ -1444,6 +1444,9 @@ impl EngineSession {
                         normals: mesh.normals,
                         scalar_channels: std::collections::HashMap::new(),
                         displaced_positions: None,
+                        element_kind: None,
+                        region_tags: None,
+                        vector_channels: std::collections::HashMap::new(),
                     })
                     .collect();
                 (meshes, tess_diags)
