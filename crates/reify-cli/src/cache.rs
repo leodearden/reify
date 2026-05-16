@@ -582,6 +582,24 @@ fn resolve_cache_root() -> Result<PathBuf, CacheError> {
     resolve_cache_root_with_cli(None).map(|(dir, _)| dir)
 }
 
+/// Run the persistent-cache stale-tempfile + orphan-directory sweep at
+/// CLI startup.
+///
+/// Called once from [`main`](crate) before the command dispatcher so every
+/// engine-using subcommand (`check`, `build`, `test`, `lsp`, `mcp-server`)
+/// inherits the cleanup for free without per-command wiring.
+///
+/// The sweep is best-effort: resolver errors (e.g. `REIFY_CACHE_MAX_BYTES`
+/// parse failure) are silently ignored so the missing sweep never blocks any
+/// command.  The returned `SweepReport` is discarded — callers get the same
+/// "never fails startup" contract documented on
+/// [`reify_eval::sweep_persistent_cache_at_startup`].
+pub(crate) fn run_startup_sweep() {
+    if let Ok(cache_root) = resolve_cache_root() {
+        let _ = reify_eval::sweep_persistent_cache_at_startup(&cache_root);
+    }
+}
+
 /// Resolve both the cache root AND the max-bytes cap, honouring the optional
 /// `--cache-dir` CLI override.
 ///
