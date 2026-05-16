@@ -57,9 +57,10 @@ mod tests {
     ///   k) `crates/x/k.rs` — `// placeholder: TBD`          (Family 6 // placeholder)
     ///
     /// Each path has exactly one stub line → eleven findings expected.
-    /// Having all three Family 6 sub-patterns covered ensures that removing or
-    /// reordering any `// stub` / `// placeholder` / `// fixme` arm in
-    /// `line_matches_stub` would make this test fail.
+    /// A per-family label assertion loop (see below) now pins each family's
+    /// routed `&'static str` label so that any cross-family swap (e.g. a
+    /// `// fixme` arm returning `"// stub"`) or mislabelling surfaces
+    /// immediately — not just the presence-of-finding invariant.
     #[test]
     fn detects_canonical_stub_patterns_on_added_lines() {
         let conn = Connection::open_in_memory().expect("open in-memory sqlite");
@@ -140,6 +141,39 @@ mod tests {
                 })
             });
             assert!(found, "no finding with EvidenceRef::File for {path}");
+        }
+
+        // Per-family label assertions: each finding's summary must contain
+        // "[<label>]" matching the `&'static str` returned by `line_matches_stub`
+        // for that family (rendered as `"line N [label]: snippet"` at
+        // p2_consumer_stub.rs:151). Using the bracketed form pins the routed
+        // position and guards against accidental fragment matches inside snippets.
+        let expected_labels: Vec<&str> = vec![
+            "TODO(pending)",                           // [0] a.rs — TODO(impl pending)
+            "TODO(post-\\w+)",                         // [1] b.rs — TODO(post-merge)
+            "TODO(later)",                             // [2] c.rs — TODO(wire later)
+            "TODO(task_N)",                            // [3] d.rs — TODO(task_9999)
+            "unimplemented!",                          // [4] e.rs — unimplemented!()
+            "panic!(not yet)",                         // [5] f.rs — panic!("not yet wired")
+            "tracing::warn!(task_pending)",            // [6] g.rs — tracing::warn! family
+            "Value::Undef(pending/stub/placeholder)",  // [7] h.rs — Value::Undef family
+            "// fixme",                                // [8] i.rs — // fixme
+            "// stub",                                 // [9] j.rs — // stub: wire later
+            "// placeholder",                          // [10] k.rs — // placeholder: TBD
+        ];
+        for (path, label) in paths.iter().zip(expected_labels.iter()) {
+            let bracketed = format!("[{}]", label);
+            let found = findings.iter().any(|f| {
+                f.evidence.iter().any(|e| match e {
+                    EvidenceRef::File { path: p } => p == path,
+                    _ => false,
+                }) && f.summary.contains(&bracketed)
+            });
+            assert!(
+                found,
+                "no finding for {path} with summary containing {bracketed}; findings: {:?}",
+                findings
+            );
         }
     }
 
