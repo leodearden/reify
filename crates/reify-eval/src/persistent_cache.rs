@@ -5317,6 +5317,117 @@ mod tests {
         );
     }
 
+    /// Regression guard: `evict_over_cap` must NOT emit any event at the
+    /// `reify_eval::persistent_cache::gc` target for either silent early-
+    /// return path:
+    ///
+    /// - Sub-scenario A: two entries totalling under cap → under-cap fast-path
+    ///   returns without evicting anything.
+    /// - Sub-scenario B: engine-version subdir entirely absent → first early
+    ///   return at the top of the function.
+    ///
+    /// Both INFO and DEBUG counters must stay at 0 for both paths.  Pins the
+    /// negative-space contract defined in design-decision #1 and prevents
+    /// future regressions that would add an info!/debug! at the wrong site.
+    ///
+    /// This guard test passes immediately against the step-2 + step-4 impl
+    /// because those sites were deliberately placed at the post-loop return
+    /// only.
+    #[test]
+    fn evict_over_cap_emits_no_gc_target_events_on_silent_fast_paths_under_cap_and_absent_subdir() {
+        reify_test_support::prime_tracing_callsite_cache();
+        use reify_test_support::CountingSubscriberBuilder;
+        use std::sync::atomic::Ordering;
+
+        // ── Sub-scenario A: under-cap fast path ─────────────────────────────
+        {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let root = tmp.path();
+            let eng = "ffffffffffffffffffffffffffffffff";
+            let inp1 = "1111111111111111111111111111aaaa";
+            let inp2 = "2222222222222222222222222222bbbb";
+
+            let v = make_sample_result();
+            write_entry(root, eng, inp1, &v).unwrap();
+            write_entry(root, eng, inp2, &v).unwrap();
+
+            let sz1 = std::fs::metadata(entry_bin_path(root, eng, inp1))
+                .unwrap()
+                .len();
+            let sz2 = std::fs::metadata(entry_bin_path(root, eng, inp2))
+                .unwrap()
+                .len();
+            // Cap well above total → under-cap fast path, no eviction.
+            let cap = sz1 + sz2 + 1024;
+
+            let (subscriber, counters) = CountingSubscriberBuilder::new()
+                .count_level(tracing::Level::INFO)
+                .count_level(tracing::Level::DEBUG)
+                .target_prefix("reify_eval::persistent_cache::gc")
+                .build();
+            let info_count = counters[&tracing::Level::INFO].clone();
+            let debug_count = counters[&tracing::Level::DEBUG].clone();
+
+            let report = tracing::subscriber::with_default(subscriber, || {
+                evict_over_cap(root, eng, cap).unwrap()
+            });
+
+            assert_eq!(
+                report.evicted_count, 0,
+                "sub-scenario A: no eviction should occur under cap"
+            );
+            assert_eq!(
+                info_count.load(Ordering::Acquire),
+                0,
+                "sub-scenario A: under-cap fast path must emit NO INFO events \
+                 at reify_eval::persistent_cache::gc"
+            );
+            assert_eq!(
+                debug_count.load(Ordering::Acquire),
+                0,
+                "sub-scenario A: under-cap fast path must emit NO DEBUG events \
+                 at reify_eval::persistent_cache::gc"
+            );
+        }
+
+        // ── Sub-scenario B: absent engine-version subdir ─────────────────────
+        {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let root = tmp.path();
+            // 32-char hex engine hash; no subdir created under root.
+            let eng = "0000000000000000000000000000dead";
+
+            let (subscriber, counters) = CountingSubscriberBuilder::new()
+                .count_level(tracing::Level::INFO)
+                .count_level(tracing::Level::DEBUG)
+                .target_prefix("reify_eval::persistent_cache::gc")
+                .build();
+            let info_count = counters[&tracing::Level::INFO].clone();
+            let debug_count = counters[&tracing::Level::DEBUG].clone();
+
+            let report = tracing::subscriber::with_default(subscriber, || {
+                evict_over_cap(root, eng, 1024).unwrap()
+            });
+
+            assert_eq!(
+                report.evicted_count, 0,
+                "sub-scenario B: no eviction should occur when subdir is absent"
+            );
+            assert_eq!(
+                info_count.load(Ordering::Acquire),
+                0,
+                "sub-scenario B: absent-subdir early-return must emit NO INFO events \
+                 at reify_eval::persistent_cache::gc"
+            );
+            assert_eq!(
+                debug_count.load(Ordering::Acquire),
+                0,
+                "sub-scenario B: absent-subdir early-return must emit NO DEBUG events \
+                 at reify_eval::persistent_cache::gc"
+            );
+        }
+    }
+
     // ── startup-sweep tests ──────────────────────────────────────────────────
 
     /// Step-1 RED: `sweep_stale_tempfiles` removes only old `.tmp.*` files.
