@@ -908,21 +908,27 @@ mod tests {
 
     /// Pins the structural-equivalence contract that `check_pre_done(ctx, id)`
     /// and `check(ctx)` with `target_task_id = Some(id)` must produce identical
-    /// findings for the same single-task scenario — the property the upcoming
-    /// `check_task` helper extraction enforces by construction. Without this
-    /// pin, a future per-task pass added to only one of the two call sites
-    /// could silently drift.
+    /// findings for the same single-task scenario — the property the `check_task`
+    /// helper extraction enforces by construction. Without this pin, a future
+    /// per-task pass added to only one of the two call sites could silently drift.
     ///
-    /// This test passes today (before the refactor) because both call sites
-    /// already implement equivalent logic; it future-proofs against drift if
-    /// one site grows a new pass that the other forgets. It also fills a real
-    /// coverage gap: no existing test exercises `target_task_id: Some(...)`.
+    /// Task 5001 is deliberately set up as a *second* phantom-done case so that
+    /// the `target_task_id` filter is genuinely load-bearing: without the filter,
+    /// `scoped_findings` would contain both 5000 and 5001. The assertion that
+    /// `scoped_findings.len() == 1` therefore validates both equivalence *and*
+    /// that the target filter actually excludes 5001.
+    ///
+    /// This test passes today (before/after the refactor) because both call sites
+    /// already implement equivalent logic; it future-proofs against drift if one
+    /// site grows a new pass that the other forgets. It also fills a real coverage
+    /// gap: no existing test exercises `target_task_id: Some(...)`.
     #[test]
     fn check_pre_done_equivalent_to_scoped_check() {
         let conn = seed_db();
         // Phantom-done task 5000 — same shape as check_pre_done_filters_to_single_task.
         insert_task_completed_event(&conn, "5000");
-        // Clean done task 5001.
+        // Phantom-done task 5001 — deliberately a second phantom so the target filter
+        // is load-bearing (without it scoped_findings would contain both 5000 and 5001).
         insert_task_completed_event(&conn, "5001");
 
         let mut git = MockGitOps::new();
@@ -933,11 +939,13 @@ mod tests {
             vec!["docs/unrelated.md".to_string()],
         );
         git.set_log_grep("main", "5000", vec![]);
-        // Task 5001: claimed commit's diff covers the metadata file cleanly.
+        // Task 5001: second phantom-done case — diff does NOT cover its metadata
+        // file. This makes the target_task_id filter load-bearing: without it,
+        // scoped_findings would contain both 5000 and 5001.
         git.set_diff_changed_paths(
             "main",
             "clean_sha",
-            vec!["crates/x/clean.rs".to_string()],
+            vec!["docs/unrelated2.md".to_string()],
         );
         git.set_log_grep("main", "5001", vec![]);
 
@@ -1024,10 +1032,11 @@ mod tests {
             pre_done_findings
         );
 
-        // Finding properties must match (task_id, severity, pattern).
-        assert_eq!(pre_done_findings[0].task_id, scoped_findings[0].task_id);
-        assert_eq!(pre_done_findings[0].severity, scoped_findings[0].severity);
-        assert_eq!(pre_done_findings[0].pattern, scoped_findings[0].pattern);
+        // Full Finding equality — `Finding` derives `PartialEq`, so all fields
+        // (task_id, severity, pattern, summary, evidence) are covered. Any
+        // future field added to `Finding` is automatically included in this pin;
+        // field-by-field comparisons would silently miss newly added fields.
+        assert_eq!(pre_done_findings, scoped_findings);
     }
 }
 
