@@ -24,6 +24,7 @@ pub mod traits;
 pub mod ty;
 pub mod value;
 pub mod warm;
+pub mod warm_registry;
 
 pub use annotation::{
     Annotation, AnnotationArg, DEPRECATED_ANNOTATION, OPTIMIZED_ANNOTATION, SHELL_ANNOTATION,

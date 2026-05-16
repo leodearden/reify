@@ -669,4 +669,33 @@ mod tests {
             NodeTraits::WARM_STARTABLE | NodeTraits::COMMITTABLE
         );
     }
+
+    // --- NodeKind::ALL exhaustive const slice (PRD §5 B5 / I-3) ---
+
+    #[test]
+    fn node_kind_all_covers_five_variants() {
+        // ALL must enumerate the closed 5-variant universe used by the
+        // `assert_warm_startable_coextensive` iteration in reify-runtime
+        // (PRD §5 B5). A literal-length pin here keeps any future variant
+        // addition from silently skipping the assertion's coverage.
+        assert_eq!(NodeKind::ALL.len(), 5);
+    }
+
+    #[test]
+    fn node_kind_all_has_no_duplicates() {
+        let mut seen = std::collections::HashSet::new();
+        for k in NodeKind::ALL {
+            assert!(seen.insert(k), "duplicate variant in NodeKind::ALL: {k:?}");
+        }
+    }
+
+    #[test]
+    fn node_kind_all_contains_every_variant() {
+        use NodeKind::*;
+        assert!(NodeKind::ALL.contains(&Value));
+        assert!(NodeKind::ALL.contains(&Constraint));
+        assert!(NodeKind::ALL.contains(&Realization));
+        assert!(NodeKind::ALL.contains(&Resolution));
+        assert!(NodeKind::ALL.contains(&Compute));
+    }
 }
