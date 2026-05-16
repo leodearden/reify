@@ -368,3 +368,85 @@ fn auto_type_arg_clean_input_has_no_spurious_errors() {
         );
     }
 }
+
+// ── Step-5 (task 3665): multi-param + no-regression ─────────────────────────
+//
+// These tests cover the remaining gaps called out in the task description:
+// (1) multi-param auto type-args lower both entries correctly, and
+// (2) pre-existing Named/IntegerLiteral lowering is not broken by the new branches.
+// Both should pass after steps 2+4 with no new production code.
+
+/// Multi-param `auto: A, auto: B` in type-arg position must lower to exactly
+/// `[Auto{free:false, bound:"A"}, Auto{free:false, bound:"B"}]`.
+///
+/// Covers the task-description "multi-param `auto: A, auto: B` shape are invisible
+/// to callers/tests" gap.
+#[test]
+fn auto_type_arg_multi_param_lowers_both() {
+    let args = get_return_type_args("fn h() -> Coupling<auto: A, auto: B> { 0 }");
+    assert_eq!(args.len(), 2, "expected exactly two type arguments");
+    match &args[0].kind {
+        reify_syntax::TypeExprKind::Auto { free, bound } => {
+            assert!(!free, "first arg must have free=false");
+            assert_eq!(bound, "A", "first arg bound must be 'A'");
+        }
+        other => panic!("expected TypeExprKind::Auto for first arg, got {:?}", other),
+    }
+    match &args[1].kind {
+        reify_syntax::TypeExprKind::Auto { free, bound } => {
+            assert!(!free, "second arg must have free=false");
+            assert_eq!(bound, "B", "second arg bound must be 'B'");
+        }
+        other => panic!("expected TypeExprKind::Auto for second arg, got {:?}", other),
+    }
+}
+
+/// Pre-existing Named and IntegerLiteral type-arg lowering must be unaffected
+/// by the new auto_type_arg and ERROR-scan branches.
+///
+/// Regression guard: if the new branches accidentally change control flow for
+/// well-known arg shapes (e.g. early return from the loop), these assertions
+/// will catch it.
+#[test]
+fn mixed_type_args_unaffected() {
+    // Named type arguments (e.g. Map<String, Int>)
+    let args = get_return_type_args("fn f() -> Map<String, Int> { 0 }");
+    assert_eq!(args.len(), 2, "Map<String, Int> must have 2 type args");
+    match &args[0].kind {
+        reify_syntax::TypeExprKind::Named { name, type_args } => {
+            assert_eq!(name, "String");
+            assert!(type_args.is_empty());
+        }
+        other => panic!("expected Named for 'String', got {:?}", other),
+    }
+    match &args[1].kind {
+        reify_syntax::TypeExprKind::Named { name, type_args } => {
+            assert_eq!(name, "Int");
+            assert!(type_args.is_empty());
+        }
+        other => panic!("expected Named for 'Int', got {:?}", other),
+    }
+
+    // IntegerLiteral type arguments (e.g. Tensor<2, 3, MomentOfInertia>)
+    let args2 = get_return_type_args("fn g() -> Tensor<2, 3, MomentOfInertia> { 0 }");
+    assert_eq!(args2.len(), 3, "Tensor<2, 3, MomentOfInertia> must have 3 type args");
+    match &args2[0].kind {
+        reify_syntax::TypeExprKind::IntegerLiteral(n) => {
+            assert_eq!(*n, 2u32, "first arg must be 2");
+        }
+        other => panic!("expected IntegerLiteral(2), got {:?}", other),
+    }
+    match &args2[1].kind {
+        reify_syntax::TypeExprKind::IntegerLiteral(n) => {
+            assert_eq!(*n, 3u32, "second arg must be 3");
+        }
+        other => panic!("expected IntegerLiteral(3), got {:?}", other),
+    }
+    match &args2[2].kind {
+        reify_syntax::TypeExprKind::Named { name, type_args } => {
+            assert_eq!(name, "MomentOfInertia");
+            assert!(type_args.is_empty());
+        }
+        other => panic!("expected Named for 'MomentOfInertia', got {:?}", other),
+    }
+}
