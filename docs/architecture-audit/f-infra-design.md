@@ -247,10 +247,22 @@ If the pre-done hook returns Err, `set_task_status` raises an exception; the orc
 
 | ID | Description | Who lands it | Blocking? |
 |---|---|---|---|
-| D-1 | dark-factory: pre-write validator hook on `set_task_status(done)` in fused-memory MCP. Configurable per-project via env var / config: `REIFY_AUDIT_PREDONE_CMD=reify-audit --task {id} --pre-done`. On exit-code ≠ 0, the MCP call raises and the done-flip is refused. | dark-factory side; implement session queues the task. | **Non-blocking for slice 1 of F-infra.** Slice-1 detector + CLI + skill ship without it; pre-done gating activates when D-1 lands. |
+| D-1 | dark-factory: pre-write validator hook on `set_task_status(done)` in fused-memory MCP. Configurable per-project via env var: `FUSED_MEMORY_PREDONE_HOOK_REIFY=/home/leo/.cargo/bin/reify-audit --task {id} --pre-done`. On exit-code ≠ 0, the MCP call raises and the done-flip is refused. Landed upstream as `fused_memory.middleware.pre_done_hook`. | dark-factory side; implement session queues the task. | **Done 2026-05-16:** D-1 shipped upstream; activated on Reify host via T-8. |
+| T-8 | Reify-side activation: set `Environment=FUSED_MEMORY_PREDONE_HOOK_REIFY=/home/leo/.cargo/bin/reify-audit --task {id} --pre-done` in `/home/leo/.config/systemd/user/fused-memory.service`; reload + restart fused-memory; verify via `bash scripts/smoke-predone-hook.sh`. | Reify side; this task (3675). | **Done 2026-05-16.** |
 | D-2 | jcodemunch repo index reasonably fresh (≤24h). F's invocation triggers `mcp__jcodemunch__index_repo` if stale. | F itself manages this. | Non-blocking. |
 | D-3 | Confirm `runs.db` schema (task_results, events tables) stable enough to pin SQL queries. | Verify during implementation. | Non-blocking; SQL embedded in T-1. |
 | D-4 | `/prd`-decomposed tasks already carry consumer_ref / user_observable_signal / grammar_confirmed. | Already shipped (per `procedural_prd_skill.md`). | Done. |
+
+### 11.1 Activation status (2026-05-16)
+
+The pre-done gating loop is **active** on the Reify host as of 2026-05-16 (F-infra T-8, task 3675).
+
+- **Systemd unit:** `/home/leo/.config/systemd/user/fused-memory.service`
+- **Env var:** `FUSED_MEMORY_PREDONE_HOOK_REIFY=/home/leo/.cargo/bin/reify-audit --task {id} --pre-done`
+- **Binary:** `/home/leo/.cargo/bin/reify-audit` (installed via `cargo install --path crates/reify-audit --root ~/.cargo --force`)
+- **Smoke test:** `bash scripts/smoke-predone-hook.sh` (exits 0 when wiring is correct)
+- **Reload command:** `systemctl --user daemon-reload && systemctl --user restart fused-memory`
+- **Procedural memory:** entry keyed `FUSED_MEMORY_PREDONE_HOOK_REIFY systemd activation` in fused-memory memory store
 
 ## 12. Implementation cost budget
 
