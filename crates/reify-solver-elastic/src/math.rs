@@ -33,7 +33,7 @@
 /// meshes, so the check should never false-positive on valid inputs. PRD
 /// task #21 (diagnostics) will replace this placeholder with a proper
 /// mesh-scale-aware degeneracy detector.
-pub const MIN_JACOBIAN_DET: f64 = 1.0e-30;
+pub(crate) const MIN_JACOBIAN_DET: f64 = 1.0e-30;
 
 /// Return `(M⁻¹)ᵀ = M⁻ᵀ` for a 3×3 matrix via the standard cofactor /
 /// adjugate formula.
@@ -57,7 +57,7 @@ pub const MIN_JACOBIAN_DET: f64 = 1.0e-30;
 /// PRD task #21's job. Callers should check with `MIN_JACOBIAN_DET` before
 /// calling this function.
 #[allow(clippy::needless_range_loop)]
-pub fn inverse_transpose_3x3(m: &[[f64; 3]; 3], det: f64) -> [[f64; 3]; 3] {
+pub(crate) fn inverse_transpose_3x3(m: &[[f64; 3]; 3], det: f64) -> [[f64; 3]; 3] {
     let mut inv_t = [[0.0_f64; 3]; 3];
     for i in 0..3 {
         for j in 0..3 {
@@ -77,14 +77,7 @@ pub fn inverse_transpose_3x3(m: &[[f64; 3]; 3], det: f64) -> [[f64; 3]; 3] {
 
 #[cfg(test)]
 mod tests {
-    use super::{inverse_transpose_3x3, MIN_JACOBIAN_DET};
-
-    /// Pin the exact threshold value — any future accidental drift trips this
-    /// test immediately.
-    #[test]
-    fn min_jacobian_det_constant_value() {
-        assert_eq!(MIN_JACOBIAN_DET, 1.0e-30);
-    }
+    use super::inverse_transpose_3x3;
 
     /// Identity matrix: `I⁻ᵀ = I`, exact bit-for-bit (no rounding because all
     /// minors are 0 or 1 and `det = 1`).
@@ -95,18 +88,41 @@ mod tests {
         assert_eq!(result, id);
     }
 
-    /// Diagonal matrix `diag(2, 3, 4)` with `det = 24`.
+    /// Non-symmetric shear-coupled matrix: `M = [[1,2,3],[0,1,4],[5,6,0]]`,
+    /// `det(M) = 1`.
     ///
-    /// `M⁻¹ = diag(1/2, 1/3, 1/4)`.  Because the matrix is symmetric,
-    /// `M⁻ᵀ = M⁻¹ = diag(0.5, 1/3, 0.25)`.  Check each entry to within
-    /// an absolute tolerance of `1e-12`.
+    /// Because M is non-symmetric, `M⁻ᵀ ≠ M⁻¹`, so this test exercises the
+    /// *transpose* direction of the function — a regression that returned
+    /// `M⁻¹` instead of `M⁻ᵀ` (or any sign-flipped cofactor pattern that
+    /// accidentally cancels on symmetric input) would produce wrong off-diagonal
+    /// entries here and fail.
+    ///
+    /// Hand derivation (det = 1, so `M⁻ᵀ = cofactor(M)`):
+    ///
+    /// ```text
+    /// cofactor(M)[0][0] = +(1·0 − 4·6) = −24
+    /// cofactor(M)[0][1] = −(0·0 − 4·5) =  20
+    /// cofactor(M)[0][2] = +(0·6 − 1·5) =  −5
+    /// cofactor(M)[1][0] = −(2·0 − 3·6) =  18
+    /// cofactor(M)[1][1] = +(1·0 − 3·5) = −15
+    /// cofactor(M)[1][2] = −(1·6 − 2·5) =   4
+    /// cofactor(M)[2][0] = +(2·4 − 3·1) =   5
+    /// cofactor(M)[2][1] = −(1·4 − 3·0) =  −4
+    /// cofactor(M)[2][2] = +(1·1 − 2·0) =   1
+    /// ```
+    ///
+    /// Verified: `M · M⁻¹ = I` where `M⁻¹ = (M⁻ᵀ)ᵀ`.
     #[test]
-    fn inverse_transpose_3x3_known_3x3() {
-        let m: [[f64; 3]; 3] = [[2.0, 0.0, 0.0], [0.0, 3.0, 0.0], [0.0, 0.0, 4.0]];
-        let det = 24.0_f64;
+    fn inverse_transpose_3x3_nonsymmetric() {
+        let m: [[f64; 3]; 3] = [[1.0, 2.0, 3.0], [0.0, 1.0, 4.0], [5.0, 6.0, 0.0]];
+        let det = 1.0_f64;
         let result = inverse_transpose_3x3(&m, det);
-        let expected: [[f64; 3]; 3] =
-            [[0.5, 0.0, 0.0], [0.0, 1.0 / 3.0, 0.0], [0.0, 0.0, 0.25]];
+        #[rustfmt::skip]
+        let expected: [[f64; 3]; 3] = [
+            [-24.0,  20.0, -5.0],
+            [ 18.0, -15.0,  4.0],
+            [  5.0,  -4.0,  1.0],
+        ];
         for i in 0..3 {
             for j in 0..3 {
                 let diff = (result[i][j] - expected[i][j]).abs();
