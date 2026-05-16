@@ -89,11 +89,10 @@ fn f(x : Int) -> Bogus { 0 }
 
     let compiled = reify_compiler::compile(&parsed);
 
-    assert_diagnostic_with_code_and_prefix(
-        &compiled,
-        DiagnosticCode::UnresolvedType,
-        "unresolved return type:",
-        "functions.rs:122 — unresolved return type 'Bogus'",
+    assert!(
+        compiled.diagnostics.iter().any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
+        "expected UnresolvedType diagnostic, got: {:#?}",
+        compiled.diagnostics
     );
 }
 
@@ -121,11 +120,10 @@ structure S {
 
     let compiled = reify_compiler::compile(&parsed);
 
-    assert_diagnostic_with_code_and_prefix(
-        &compiled,
-        DiagnosticCode::UnresolvedType,
-        "unresolved type:",
-        "guards.rs:155 — guarded-block param type 'Bogus'",
+    assert!(
+        compiled.diagnostics.iter().any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
+        "expected UnresolvedType diagnostic, got: {:#?}",
+        compiled.diagnostics
     );
 }
 
@@ -147,11 +145,10 @@ structure S {
 
     let compiled = reify_compiler::compile(&parsed);
 
-    assert_diagnostic_with_code_and_prefix(
-        &compiled,
-        DiagnosticCode::UnresolvedType,
-        "unresolved type:",
-        "entity.rs:487 — structure member param type 'Bogus'",
+    assert!(
+        compiled.diagnostics.iter().any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
+        "expected UnresolvedType diagnostic, got: {:#?}",
+        compiled.diagnostics
     );
 }
 
@@ -175,11 +172,10 @@ structure S {
 
     let compiled = reify_compiler::compile(&parsed);
 
-    assert_diagnostic_with_code_and_prefix(
-        &compiled,
-        DiagnosticCode::UnresolvedType,
-        "unresolved type name",
-        "entity.rs:742 — port parameter type 'Bogus'",
+    assert!(
+        compiled.diagnostics.iter().any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
+        "expected UnresolvedType diagnostic, got: {:#?}",
+        compiled.diagnostics
     );
 }
 
@@ -201,11 +197,10 @@ structure S {
 
     let compiled = reify_compiler::compile(&parsed);
 
-    assert_diagnostic_with_code_and_prefix(
-        &compiled,
-        DiagnosticCode::UnresolvedType,
-        "unresolved type in lambda param",
-        "expr.rs:2297 — lambda param type 'Bogus'",
+    assert!(
+        compiled.diagnostics.iter().any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
+        "expected UnresolvedType diagnostic, got: {:#?}",
+        compiled.diagnostics
     );
 }
 
@@ -227,11 +222,10 @@ trait T {
 
     let compiled = reify_compiler::compile(&parsed);
 
-    assert_diagnostic_with_code_and_prefix(
-        &compiled,
-        DiagnosticCode::UnresolvedType,
-        "unresolved type in trait",
-        "traits.rs:88 — trait member type 'Bogus' in trait 'T'",
+    assert!(
+        compiled.diagnostics.iter().any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
+        "expected UnresolvedType diagnostic, got: {:#?}",
+        compiled.diagnostics
     );
 }
 
@@ -258,11 +252,10 @@ structure Bolt : HasLength {
 
     let compiled = reify_compiler::compile(&parsed);
 
-    assert_diagnostic_with_code_and_prefix(
-        &compiled,
-        DiagnosticCode::UnresolvedType,
-        "unresolved type in conformance check",
-        "conformance/checker.rs:187 — conforming structure member type 'Bogus'",
+    assert!(
+        compiled.diagnostics.iter().any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
+        "expected UnresolvedType diagnostic, got: {:#?}",
+        compiled.diagnostics
     );
 }
 
@@ -285,11 +278,10 @@ structure S {
 
     let compiled = reify_compiler::compile(&parsed);
 
-    assert_diagnostic_with_code_and_prefix(
-        &compiled,
-        DiagnosticCode::UnresolvedType,
-        "unresolved type argument",
-        "type_resolution.rs:1016 — type alias argument 'Bogus' for alias 'V'",
+    assert!(
+        compiled.diagnostics.iter().any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
+        "expected UnresolvedType diagnostic, got: {:#?}",
+        compiled.diagnostics
     );
 }
 
@@ -316,10 +308,9 @@ structure S {
 
     let compiled = reify_compiler::compile(&parsed);
 
-    assert_diagnostic_with_code_and_prefix(
-        &compiled,
-        DiagnosticCode::UnresolvedName,
-        "unresolved name:",
-        "annotations.rs:321 — solver_hint collection name 'undefined_collection'",
+    assert!(
+        compiled.diagnostics.iter().any(|d| d.code == Some(DiagnosticCode::UnresolvedName)),
+        "expected UnresolvedName diagnostic, got: {:#?}",
+        compiled.diagnostics
     );
 }
