@@ -588,16 +588,36 @@ mod tests {
         );
     }
 
-    /// Seeds one `task_completed` row and asserts the production query (sourced
-    /// from `p5_phantom_done::PRODUCTION_QUERY`) prepares and matches the row
-    /// against the seeded `RUNS_DB_SCHEMA`. Fails if the schema or the query
-    /// string drift apart (column rename, type swap, query rewrite). Column
-    /// additions do not fail this test (they'd be caught by future detectors'
-    /// own tests when they add the columns they need).
+    /// Pins both clauses of the production query (sourced from
+    /// `p5_phantom_done::PRODUCTION_QUERY`) against the seeded `RUNS_DB_SCHEMA`.
+    ///
+    /// Three assertions together enforce the full contract:
+    /// 1. **Positive case** — `('test-task', 'task_completed')` row → `Some(1)`.
+    ///    Confirms the query prepares and executes against the seeded schema.
+    /// 2. **Negative-case 1** — querying for `'missing-task'` → `None`.
+    ///    Pins `task_id = ?`: no row exists with that task_id, so the bind
+    ///    parameter must be enforced.
+    /// 3. **Negative-case 2** — querying for `'other-task'` (which has a
+    ///    `'task_started'` row) → `None`.  Pins `AND event_type = 'task_completed'`:
+    ///    if that clause is dropped, the query matches the `task_started` row and
+    ///    returns `Some(1)`, failing this assertion.
+    ///
+    /// Fails if the schema or the query string drift apart (column rename, type
+    /// swap, query rewrite). Column additions do not fail this test (they'd be
+    /// caught by future detectors' own tests when they add the columns they need).
     #[test]
     fn runs_db_schema_pin() {
         let conn = seed_db();
         insert_task_completed_event(&conn, "test-task");
+        // Also seed a row with a different task_id AND a different event_type
+        // ('task_started'). This is the control row for the event_type-filter
+        // assertion below.
+        conn.execute(
+            "INSERT INTO events (task_id, event_type) VALUES (?, 'task_started')",
+            rusqlite::params!["other-task"],
+        )
+        .expect("seed task_started row");
+
         let mut stmt = conn
             .prepare(p5_phantom_done::PRODUCTION_QUERY)
             .expect("production query must prepare against seeded schema");
@@ -607,14 +627,26 @@ mod tests {
             .expect("query_row");
         assert_eq!(found, Some(1));
 
-        // Negative case: a task_id that was never seeded must return None,
-        // confirming both the `task_id` bind parameter and the `event_type`
-        // filter are actually enforced by the query against this schema.
+        // Negative-case 1 — task_id bind parameter:
+        // 'missing-task' has no row at all, so the query returns None regardless
+        // of event_type.  Pins `task_id = ?`.
         let not_found: Option<i64> = stmt
             .query_row(["missing-task"], |r| r.get(0))
             .optional()
             .expect("query_row negative case");
         assert_eq!(not_found, None);
+
+        // Negative-case 2 — event_type filter:
+        // 'other-task' has a row, but its event_type is 'task_started', not
+        // 'task_completed'.  The query must return None, confirming
+        // `AND event_type = 'task_completed'` is enforced.  If that clause is
+        // dropped from PRODUCTION_QUERY, the unfiltered query matches the
+        // 'task_started' row and returns Some(1), failing this assertion.
+        let other_event_type: Option<i64> = stmt
+            .query_row(["other-task"], |r| r.get(0))
+            .optional()
+            .expect("query_row event_type filter case");
+        assert_eq!(other_event_type, None);
     }
 
     /// Coverage gap pin — verifies the Err arm of `has_task_completed_event`
