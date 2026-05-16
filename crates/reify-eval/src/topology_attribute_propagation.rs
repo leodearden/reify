@@ -401,6 +401,7 @@ fn propagate_one(
 /// bounds in `result_face_handles`. The FFI primitive guarantees
 /// in-range indices, so this is a defense-in-depth path pinned by the
 /// step-11 unit tests.
+#[allow(clippy::too_many_arguments)]
 pub fn populate_extrude_attributes(
     table: &mut TopologyAttributeTable,
     feature_id: &FeatureId,
@@ -505,6 +506,7 @@ pub fn populate_extrude_attributes(
 /// Local-index assignment, parameter semantics, and out-of-range error
 /// behaviour are identical to [`populate_extrude_attributes`]; see
 /// that helper's doc-comment for the parameter contract.
+#[allow(clippy::too_many_arguments)]
 pub fn populate_revolve_attributes(
     table: &mut TopologyAttributeTable,
     feature_id: &FeatureId,
@@ -592,6 +594,7 @@ pub fn populate_revolve_attributes(
 /// Local-index assignment, parameter semantics, and out-of-range error
 /// behaviour are identical to [`populate_extrude_attributes`]; see that
 /// helper's doc-comment for the parameter contract.
+#[allow(clippy::too_many_arguments)]
 pub fn populate_sweep_attributes(
     table: &mut TopologyAttributeTable,
     feature_id: &FeatureId,
@@ -697,6 +700,7 @@ pub fn populate_sweep_attributes(
 /// cap-face index is out of range. The FFI primitive guarantees in-range
 /// indices on success, so these are defense-in-depth paths pinned by the
 /// step-9 unit tests.
+#[allow(clippy::too_many_arguments)]
 pub fn populate_loft_attributes(
     table: &mut TopologyAttributeTable,
     feature_id: &FeatureId,

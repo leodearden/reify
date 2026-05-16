@@ -324,6 +324,7 @@ fn build_cap_vertex_index_lists(
 /// metadata failure and silently converted to `(empty, empty, empty)` by the
 /// caller — this preserves the primary face/edge seeding path for mock kernels.
 /// For real OCCT kernels, this always succeeds.
+#[allow(clippy::type_complexity)]
 fn try_extract_sweep_cap_vertex_data(
     kernel: &mut dyn GeometryKernel,
     result_faces: &[GeometryHandleId],
