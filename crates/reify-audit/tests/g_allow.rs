@@ -10,6 +10,12 @@
 //! reasons outside this task (422 pre-existing orphans captured in the
 //! baseline report).
 //!
+//! Anti-gaming rationale: this pin defends against gaming the orphan-producer script
+//! via boilerplate `// G-allow:` markers — the script's regex (`//\s*G-allow:\s*(.+)`)
+//! only requires non-blank reason text. Semantic accuracy (the reason names a real
+//! deferred consumer or tracked task) is enforced by reviewer review; this test
+//! surfaces surface-level approvals to reviewers. See esc-3667-113 triage.
+//!
 //! Graceful skip: if `python3` or `git` are absent from PATH, the test prints
 //! a note to stderr and returns. Mirrors
 //! `crates/reify-kernel-gmsh/tests/rpath_smoke.rs`.
