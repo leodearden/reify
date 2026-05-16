@@ -20,6 +20,26 @@ use reify_types::ModulePath;
 mod common;
 use common::{find_cst_node, find_outermost_cst_nodes, make_ts_parser};
 
+/// Recursive helper: returns `true` if any node in `root`'s subtree satisfies
+/// `is_error() || is_missing() || kind == "ERROR"`.
+fn subtree_has_error(node: tree_sitter::Node) -> bool {
+    if node.is_error() || node.is_missing() || node.kind() == "ERROR" {
+        return true;
+    }
+    let mut cursor = node.walk();
+    if cursor.goto_first_child() {
+        loop {
+            if subtree_has_error(cursor.node()) {
+                return true;
+            }
+            if !cursor.goto_next_sibling() {
+                break;
+            }
+        }
+    }
+    false
+}
+
 // ── Parse-pipeline smoke check ──────────────────────────────────────────────
 
 #[test]
@@ -191,4 +211,70 @@ fn auto_type_arg_rejects_unrecognized_modifier() {
         "expected ERROR node to overlap `(constrained)` \
          (bytes {token_start}..{token_end}), got error at {error_start}..{error_end}",
     );
+}
+
+// ── pre-1 characterization tests (task 3665) ─────────────────────────────────
+//
+// These pin current behavior to de-risk AC#1 placement and will be removed in
+// step-6 of task 3665 once the real tests land and supersede them.
+
+/// Characterization: the CST ERROR node for `auto(constrained): Seal` lands
+/// *within* the `type_arg_list` subtree, not above it.
+///
+/// This confirms that `lower_type_args_from_node`'s inner subtree scan is the
+/// correct placement for AC#1 ERROR detection. If this assertion were to fail
+/// (the ERROR escaped above `type_arg_list`), the call-site approach would need
+/// to be adjusted — but it passes, so the placement stands.
+///
+/// Removed in step-6 when `auto_type_arg_cst_error_propagates_to_module_errors`
+/// covers the same guarantee at the higher-level parse API.
+#[test]
+fn pre1_error_node_is_within_type_arg_list_subtree() {
+    let source = "fn f() -> Bearing<auto(constrained): Seal> { 0 }";
+    let mut parser = make_ts_parser();
+    let tree = parser.parse(source.as_bytes(), None).expect("parse failed");
+    assert!(tree.root_node().has_error(), "precondition: tree must have an error");
+
+    let type_arg_list = find_cst_node(tree.root_node(), "type_arg_list")
+        .expect("expected a type_arg_list node in the CST for the `Bearing<...>` type");
+
+    assert!(
+        subtree_has_error(type_arg_list),
+        "expected an ERROR/MISSING node within the type_arg_list subtree; \
+         if this fails, lower_type_args_from_node cannot detect the error internally \
+         and the detection must move to the call-site (a follow-up for task 3665)"
+    );
+}
+
+/// Characterization: today `reify_syntax::parse` silently drops `auto_type_arg`
+/// children — `Bearing<auto: Seal>` lowers to `Named{{ name:"Bearing", type_args:[] }}`.
+///
+/// This establishes the BEFORE state. After step-2 of task 3665, `type_args` will
+/// contain `TypeExprKind::Auto{{ free:false, bound:"Seal" }}` and this test is removed.
+#[test]
+fn pre1_silent_drop_auto_type_arg_before_3665() {
+    let m = reify_syntax::parse(
+        "fn f() -> Bearing<auto: Seal> { 0 }",
+        ModulePath::single("t"),
+    );
+    let decls = &m.declarations;
+    assert_eq!(decls.len(), 1, "expected exactly one declaration");
+    let return_type = if let reify_syntax::Declaration::Function(f) = &decls[0] {
+        f.return_type.as_ref().expect("expected a return type on fn f")
+    } else {
+        panic!("expected a Function declaration, got {:?}", decls[0]);
+    };
+    match &return_type.kind {
+        reify_syntax::TypeExprKind::Named { name, type_args } => {
+            assert_eq!(name, "Bearing", "expected outer type name 'Bearing'");
+            assert_eq!(
+                type_args.len(),
+                0,
+                "before task 3665, auto_type_arg children are silently dropped; \
+                 expected type_args.len() == 0, got {}",
+                type_args.len()
+            );
+        }
+        other => panic!("expected TypeExprKind::Named, got {:?}", other),
+    }
 }
