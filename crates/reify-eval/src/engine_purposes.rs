@@ -554,22 +554,20 @@ fn expand_purpose_reflective_placeholders(
             // The `ReflectiveCellList(_)` no-op arm below relies on this.
 
             // Outer ReflectiveCellList type: inherit first element's type when
-            // populated; default to Type::Real on empty (anti-cascade).
+            // populated; default to Type::Error on empty (anti-cascade poison).
             // task-2458: emit ReflectiveCellList (not ListLiteral) so that
             // eval_quantifier's cell-iteration trigger fires only on this
             // placeholder-derived shape, not on user-written all-ValueRef
             // ListLiterals that share the same surface structure.
-            // G-allow: empty reflective cell-list ⇒ vacuous-true forall; element type
-            // is a conservative anti-cascade default for the empty match-set case —
-            // no objectives matched the purpose, so no element type can be inferred.
-            // The Type::Real default preserves the prior behaviour for the vacuous-true
-            // path and is acceptable here because an empty ReflectiveCellList triggers
-            // eval_quantifier's vacuous-true short-circuit before the element type is
-            // used for any arithmetic (task-2458, task 3639 review).
+            // An empty ReflectiveCellList still triggers eval_quantifier's
+            // vacuous-true short-circuit before the element type is used for any
+            // arithmetic, so the Type::Error element type is never observed in the
+            // vacuous-true path; it is defense in depth for release-mode safety
+            // (task 3749 tightened the 3639 Shape-A G-allow carve-out).
             let element_type = elements
                 .first()
                 .map(|e| e.result_type.clone())
-                .unwrap_or(Type::Real);
+                .unwrap_or(Type::Error);
             *expr =
                 CompiledExpr::reflective_cell_list(elements, Type::List(Box::new(element_type)));
         }
