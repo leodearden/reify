@@ -384,9 +384,16 @@ export interface PersistentViewState {
 /**
  * A single parameter value snapshot from one auto-resolve iteration.
  * Mirrors the engine's wire type for `param x = auto` iteration progress.
+ *
+ * `value` is `null` when the Rust side resolved this auto-parameter to a
+ * non-Scalar value (NaN sentinel; `serde_json` maps `f64::NAN` to JSON
+ * `null`). Wire contract pinned by
+ * `auto_resolve_parameter_value_nan_sentinel_serializes_value_field_as_null`
+ * in `gui/src-tauri/src/tests/types_tests.rs`. Mirrors the `number | null`
+ * convention used by `JointDescriptor.range_lower_si` and sibling fields.
  */
 export interface AutoResolveParameterValue {
-  value: number;
+  value: number | null;
   unit: string;
   display: string;
 }

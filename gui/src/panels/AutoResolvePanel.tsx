@@ -139,8 +139,8 @@ export const AutoResolvePanel: Component<AutoResolvePanelProps> = (props) => {
     return cellIds.map((cellId) => ({
       cellId,
       series: props.state.iterations
-        .filter((it) => cellId in it.parameters)
-        .map((it) => it.parameters[cellId].value),
+        .filter((it) => cellId in it.parameters && it.parameters[cellId].value !== null)
+        .map((it) => it.parameters[cellId].value as number),
     }));
   });
 
