@@ -36,6 +36,30 @@ mod core_state {
     #[cfg(test)]
     use reify_types::{ConstraintSolver, Diagnostic};
 
+    /// Describes how `commit_state` should handle the `file_path` core field.
+    ///
+    /// Using an explicit enum instead of `Option<PathBuf>` makes the intent
+    /// unambiguous at every call site and prevents a future caller from
+    /// accidentally passing `None` while meaning "clear the path" (which is
+    /// not a supported operation — `commit_state` never clears `file_path`).
+    ///
+    /// ## Variants
+    ///
+    /// - `Set(PathBuf)` — overwrite `file_path` with the given path.  Used by
+    ///   `load_file`, which passes `FilePathUpdate::Set(path.to_path_buf())`.
+    ///   Because Rust evaluates all call arguments before entering the callee body,
+    ///   a panic in `to_path_buf()` lands in the pre-commit window: none of the
+    ///   five fields are written.
+    /// - `Preserve` — leave `file_path` unchanged.  Used by `load_from_source`
+    ///   and `update_source`, which do not change which file is loaded; passing
+    ///   `Preserve` keeps the project-root anchor set by a prior `load_file` intact.
+    pub(crate) enum FilePathUpdate {
+        /// Set `file_path` to the given `PathBuf`.
+        Set(PathBuf),
+        /// Leave `file_path` unchanged.
+        Preserve,
+    }
+
     /// The six core fields of `EngineSession` that must stay consistent across panics.
     ///
     /// Fields have **no visibility marker** — they are strictly private to this `impl`
@@ -44,7 +68,8 @@ mod core_state {
     /// The only commit points that touch the five invariant-bearing fields (`compiled`,
     /// `source_map`, `module_name`, `last_check`, `file_path`) are:
     /// - `commit_state` — five-field atomic commit after a successful compile cycle
-    ///   (`file_path` is updated when `Some` is passed; `None` preserves the existing value)
+    ///   (`file_path` is updated when `FilePathUpdate::Set` is passed; `FilePathUpdate::Preserve`
+    ///   leaves it unchanged)
     /// - `commit_check` — single-field commit for `last_check` (used by `set_parameter`)
     ///
     /// `engine_mut()` exposes `&mut Engine` for method dispatch and does not touch the
@@ -151,23 +176,27 @@ mod core_state {
         /// This is the **single** multi-field commit point.  Writes proceed in a
         /// fixed order: `source_map` is rebuilt first (clear then insert), then
         /// `module_name`, `compiled`, `last_check`, and finally `file_path` (when
-        /// `Some`).  A panic on an intermediate allocation (e.g. inside
-        /// `source_map.insert` or a `to_string()` call) may leave the fields in a
-        /// partially-updated state.  This is tolerated: the surrounding mutex is
-        /// recovered via `PoisonError::into_inner`, and the affected fields are
-        /// either rebuilt on the next `commit_state` call or consumed only through
-        /// graceful-degrade paths (`resolve_source`, `get_diagnostics`).
+        /// `FilePathUpdate::Set`).  This is best-effort atomic: a panic on an
+        /// intermediate allocation (e.g. inside `source_map.insert` or a
+        /// `to_string()` call) may leave the fields in a partially-updated state.
+        /// That is tolerated: the surrounding mutex is recovered via
+        /// `PoisonError::into_inner`, and the affected fields are either rebuilt on
+        /// the next `commit_state` call or consumed only through graceful-degrade
+        /// paths (`resolve_source`, `get_diagnostics`).
         /// Callers must only invoke this after compilation and `check()` have
         /// both succeeded.
         ///
         /// ## `file_path` parameter
         ///
-        /// - `Some(p)` — sets `self.file_path = Some(p)`.  Pass `Some(path.to_path_buf())`
-        ///   from `load_file`; because Rust evaluates all call arguments before entering
-        ///   the callee body, a panic in `to_path_buf()` lands in the pre-commit window
-        ///   and the entire five-field commit is skipped atomically.
-        /// - `None` — PRESERVES the existing `file_path` unchanged (does **not** clear it).
-        ///   `load_from_source` and `update_source` pass `None`; this keeps the
+        /// Pass a [`FilePathUpdate`] variant to control whether `file_path` is updated:
+        ///
+        /// - `FilePathUpdate::Set(p)` — sets `self.file_path = Some(p)`.  Pass
+        ///   `FilePathUpdate::Set(path.to_path_buf())` from `load_file`.  Because Rust
+        ///   evaluates all call arguments before entering the callee body, a panic in
+        ///   `to_path_buf()` lands in the pre-commit window: none of the five fields are
+        ///   written (stronger than best-effort — the entire commit is skipped).
+        /// - `FilePathUpdate::Preserve` — leaves the existing `file_path` unchanged.
+        ///   `load_from_source` and `update_source` pass `Preserve`; this keeps the
         ///   project-root anchor set by a prior `load_file` intact.
         ///
         /// The five cache fields on `EngineSession` (`def_preview_cache`,
@@ -180,7 +209,7 @@ mod core_state {
             check_result: CheckResult,
             module_name: &str,
             source: &str,
-            file_path: Option<PathBuf>,
+            file_path: FilePathUpdate,
         ) {
             self.source_map.clear();
             self.source_map.insert(
@@ -190,7 +219,7 @@ mod core_state {
             self.module_name = Some(module_name.to_string());
             self.compiled = Some(compiled);
             self.last_check = Some(check_result);
-            if let Some(p) = file_path {
+            if let FilePathUpdate::Set(p) = file_path {
                 self.file_path = Some(p);
             }
         }
@@ -262,6 +291,7 @@ mod core_state {
 }
 
 pub(crate) use core_state::CoreState;
+pub(crate) use core_state::FilePathUpdate;
 
 /// Discriminant for a stored compile failure: records which execution path produced the error.
 ///
@@ -931,9 +961,9 @@ impl EngineSession {
         let check_result = self.core.engine_mut().check(&compiled);
 
         // Atomically commit all state after check() succeeds.
-        // Pass None for file_path: load_from_source has no file on disk; preserve
-        // any existing file_path from a prior load_file call.
-        self.commit_state(parsed, compiled, check_result, module_name, source, None);
+        // Preserve file_path: load_from_source has no file on disk; keep any
+        // existing file_path from a prior load_file call.
+        self.commit_state(parsed, compiled, check_result, module_name, source, FilePathUpdate::Preserve);
 
         // Emit auto-resolve events after committing state.
         //
@@ -1012,11 +1042,11 @@ impl EngineSession {
                 msg
             })?;
         let check_result = self.core.engine_mut().check(&compiled);
-        // Atomically commit all five core fields in a single call.  `path.to_path_buf()`
-        // is evaluated here as a call argument — before the callee body runs — so a
-        // panic in `to_path_buf()` lands in the pre-commit window and skips the entire
-        // five-field commit.  Atomic-commit invariant: see engine.rs:30-44 doc block.
-        self.commit_state(parsed, compiled, check_result, module_name, &source, Some(path.to_path_buf()));
+        // Atomically commit all five core fields in a single call.
+        // `path.to_path_buf()` is evaluated as a call argument — before the callee body
+        // runs — so a panic in `to_path_buf()` lands in the pre-commit window: none of
+        // the five fields are written.  Atomic-commit invariant: see engine.rs:30-44.
+        self.commit_state(parsed, compiled, check_result, module_name, &source, FilePathUpdate::Set(path.to_path_buf()));
         // Emit AFTER all state is committed — cross-cutting ordering invariant.
         self.emit_auto_resolve_if_any(self.core.last_check().expect(
             "emit_auto_resolve_if_any: last_check must be Some after commit_state — see ordering invariant",
@@ -1085,9 +1115,9 @@ impl EngineSession {
         let check_result = self.core.engine_mut().check(&compiled);
 
         // Atomically commit all state after check() succeeds.
-        // Pass None for file_path: update_source does not change which file is loaded;
-        // None preserves the file_path set by the prior load_file call.
-        self.commit_state(parsed, compiled, check_result, module_name, content, None);
+        // Preserve file_path: update_source does not change which file is loaded;
+        // Preserve keeps the file_path set by the prior load_file call.
+        self.commit_state(parsed, compiled, check_result, module_name, content, FilePathUpdate::Preserve);
 
         // Emit AFTER all state is committed — cross-cutting ordering invariant.
         self.emit_auto_resolve_if_any(self.core.last_check().expect(
@@ -1129,9 +1159,10 @@ impl EngineSession {
     ///
     /// ## `file_path` parameter
     ///
-    /// Pass `Some(path.to_path_buf())` from `load_file` to commit `file_path` together
-    /// with the other four fields in a single atomic call.  Pass `None` from
-    /// `load_from_source` and `update_source` to preserve the existing `file_path`.
+    /// Pass `FilePathUpdate::Set(path.to_path_buf())` from `load_file` to commit
+    /// `file_path` together with the other four fields in a single call.  Pass
+    /// `FilePathUpdate::Preserve` from `load_from_source` and `update_source` to
+    /// preserve the existing `file_path`.  See [`FilePathUpdate`] for the full contract.
     ///
     /// Callers **must** only invoke this after both compilation and `check()` have
     /// succeeded — invoking it on a partially-valid state would violate the invariant.
@@ -1146,7 +1177,7 @@ impl EngineSession {
         check_result: CheckResult,
         module_name: &str,
         source: &str,
-        file_path: Option<std::path::PathBuf>,
+        file_path: FilePathUpdate,
     ) {
         // Commit the five canonical core fields atomically via CoreState::commit_state.
         // A panic between the core commit and the cache updates below leaves core fields

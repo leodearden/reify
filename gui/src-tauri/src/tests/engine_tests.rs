@@ -7895,12 +7895,13 @@ fn load_file_commits_file_path_atomically_via_commit_state() {
         "module_name must be 'bracket' (from file stem) after load_file"
     );
 
-    // source_map must contain "bracket.ri" — five-field atomic commit pin.
-    // This key is produced by module_key("bracket") and proves commit_state
-    // wrote the source_map as part of the same atomic call that wrote file_path.
+    // source_map must contain the key produced by module_key("bracket") — five-field
+    // atomic commit pin.  Using module_key() here avoids coupling to the literal
+    // key format (".ri" suffix) so that a future rename (e.g. ".reify") does not
+    // break this test for an unrelated reason.
     assert!(
-        core.source_map().contains_key("bracket.ri"),
-        "source_map must contain 'bracket.ri' after load_file (five-field atomic commit pin)"
+        core.source_map().contains_key(&module_key("bracket")),
+        "source_map must contain module_key(\"bracket\") after load_file (five-field atomic commit pin)"
     );
 }
 
