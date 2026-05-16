@@ -1543,6 +1543,16 @@ pub fn evict_over_cap(
         }
     }
 
+    tracing::info!(
+        target: "reify_eval::persistent_cache::gc",
+        evicted_count,
+        evicted_bytes,
+        remaining_bytes = remaining,
+        cap_bytes,
+        engine_version_hash = %engine_version_hash,
+        "evict_over_cap complete"
+    );
+
     Ok(EvictionReport {
         evicted_count,
         evicted_bytes,
