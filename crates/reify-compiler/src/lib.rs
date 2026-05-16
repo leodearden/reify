@@ -88,6 +88,24 @@ use reify_types::{
     ValueCellId,
 };
 
+/// Expose `validate_annotations` to integration tests without plumbing a full
+/// compilation context.
+///
+/// # Stability
+///
+/// This function is intentionally named with `__` prefix to signal that it is
+/// an internal test shim and **not part of the public API**. It may be removed
+/// or changed at any time.
+#[doc(hidden)]
+pub fn __validate_annotations_for_parity_test(
+    annotations: &[reify_types::Annotation],
+    context: &str,
+) -> Vec<reify_types::Diagnostic> {
+    let mut diagnostics = Vec::new();
+    annotations::validate_annotations(annotations, context, &mut diagnostics);
+    diagnostics
+}
+
 /// Compile a parsed module into a compiled module.
 ///
 /// Performs name resolution, type checking, and expression compilation.
