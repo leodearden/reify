@@ -194,29 +194,34 @@ fn material_struct_call_is_valid_param_default() {
          default-expression compilation must not drop struct-constructor calls",
     );
 
-    // Struct-constructor calls lower to `CompiledExprKind::FunctionCall` with
-    // a ResolvedFunction whose `name` is the struct's simple name and whose
-    // `qualified_name` starts with the module prefix (e.g. `std::Material`).
-    // Named-arg reordering is handled by the compiler; here we only care that
-    // the callee is `Material` and that all three supplied values survived.
+    // SIR-α (task 3540, design-decision-2): a `structure def` constructor call
+    // lowers to `CompiledExprKind::StructureInstanceCtor` (NOT a stdlib
+    // `FunctionCall`) — the ctor path takes precedence over `eval_builtin`.
+    // The original task-1876 intent is preserved: the struct-call default must
+    // not be dropped, the callee is `Material`, and all three supplied values
+    // survive (here as `ordered_args`, since they cover all three params).
     match &default_expr.kind {
-        CompiledExprKind::FunctionCall { function, args } => {
+        CompiledExprKind::StructureInstanceCtor {
+            type_name,
+            ordered_args,
+            ..
+        } => {
             assert_eq!(
-                function.name, "Material",
-                "default_expr should be a call to `Material`, got function.name={:?}",
-                function.name
+                type_name, "Material",
+                "default_expr should construct `Material`, got type_name={:?}",
+                type_name
             );
             assert_eq!(
-                args.len(),
+                ordered_args.len(),
                 3,
-                "Material(...) should lower to a call with 3 args, got {}: {:?}",
-                args.len(),
-                args
+                "Material(...) should lower to a ctor with 3 bound args, got {}: {:?}",
+                ordered_args.len(),
+                ordered_args
             );
         }
         other => panic!(
-            "expected Part.material.default_expr to be a FunctionCall for `Material(...)`, \
-             got {:?}",
+            "expected Part.material.default_expr to be a StructureInstanceCtor for \
+             `Material(...)`, got {:?}",
             other
         ),
     }
@@ -308,25 +313,33 @@ fn boltflange_compiles_with_material_default() {
         "BoltFlange.material should carry the recorded `Material(...)` default — \
          the canonical struct default is the user-visible payoff for task 1876",
     );
+    // SIR-α (task 3540, design-decision-2): the `Material(...)` struct default
+    // lowers to a `StructureInstanceCtor`, not a stdlib `FunctionCall`. The
+    // task-1876 payoff (canonical struct default is recorded, carrying all
+    // three supplied values) is preserved against the new lowering shape.
     match &default_expr.kind {
-        CompiledExprKind::FunctionCall { function, args } => {
+        CompiledExprKind::StructureInstanceCtor {
+            type_name,
+            ordered_args,
+            ..
+        } => {
             assert_eq!(
-                function.name, "Material",
-                "BoltFlange.material default should be a `Material(...)` call, got {:?}",
-                function.name
+                type_name, "Material",
+                "BoltFlange.material default should construct `Material`, got {:?}",
+                type_name
             );
             assert_eq!(
-                args.len(),
+                ordered_args.len(),
                 3,
-                "BoltFlange.material default should carry 3 named args (name, density, \
+                "BoltFlange.material default should carry 3 bound args (name, density, \
                  youngs_modulus); got {}: {:?}",
-                args.len(),
-                args
+                ordered_args.len(),
+                ordered_args
             );
         }
         other => panic!(
-            "expected BoltFlange.material.default_expr to be a FunctionCall for `Material(...)`, \
-             got {:?}",
+            "expected BoltFlange.material.default_expr to be a StructureInstanceCtor for \
+             `Material(...)`, got {:?}",
             other
         ),
     }
@@ -389,23 +402,26 @@ fn material_spec_trait_still_usable_as_trait_object() {
         m_cell.cell_type
     );
 
-    // The default expression `SomeSteel()` must lower to a FunctionCall whose
-    // callee is `SomeSteel` — confirming the call-syntax struct constructor
-    // path survives as a valid default for a trait-typed param.
+    // The default expression `SomeSteel()` must lower to a
+    // `StructureInstanceCtor` (SIR-α design-decision-2) whose constructed type
+    // is `SomeSteel` — confirming the struct-constructor path survives as a
+    // valid default for a trait-typed param (task-1874 pathway) under the new
+    // SIR-α lowering.
     let default_expr = m_cell.default_expr.as_ref().expect(
         "Widget.m should carry the recorded `SomeSteel()` default — \
          struct-constructor call defaults must work for trait-typed params (task 1874)",
     );
     match &default_expr.kind {
-        CompiledExprKind::FunctionCall { function, .. } => {
+        CompiledExprKind::StructureInstanceCtor { type_name, .. } => {
             assert_eq!(
-                function.name, "SomeSteel",
-                "Widget.m default should be a `SomeSteel()` call, got {:?}",
-                function.name
+                type_name, "SomeSteel",
+                "Widget.m default should construct `SomeSteel`, got {:?}",
+                type_name
             );
         }
         other => panic!(
-            "expected Widget.m.default_expr to be a FunctionCall for `SomeSteel()`, got {:?}",
+            "expected Widget.m.default_expr to be a StructureInstanceCtor for `SomeSteel()`, \
+             got {:?}",
             other
         ),
     }
