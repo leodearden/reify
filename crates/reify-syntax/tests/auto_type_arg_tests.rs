@@ -431,3 +431,58 @@ fn auto_type_expr_display_free() {
         "free Auto Display must be 'auto(free): Seal'"
     );
 }
+
+// ── Task 3724: defensive auto-keyword-missing guard ──────────────────────────
+//
+// The `auto_type_arg` branch in `lower_type_args_from_node` (ts_parser.rs:617-645)
+// previously had no `else` arm on `if let Some(kw) = ...` — if the `auto_keyword`
+// child was missing, the entry was silently dropped with no diagnostic.  Task 3724
+// adds a let-else guard mirroring the bound-missing guard at ts_parser.rs:633-639.
+//
+// Because tree-sitter always inserts a MISSING `auto_keyword` node for malformed
+// `auto_type_arg` shapes (verified by a 15-input CST probe), the new guard is
+// defense-in-depth: not reachable via any current input.  The test below is
+// therefore a CONTRACT regression guard, not a strict RED→GREEN trigger.
+
+/// Contract guard: any input that yields a malformed `auto_type_arg` must emit
+/// at least one diagnostic — it must never be silently dropped.
+///
+/// **Why this is a contract test, not a strict trigger:**
+///
+/// (a) This test mirrors the spirit of the bound-missing guard added at
+///     `ts_parser.rs:633-639` and the `unrecognised expression in fn_param
+///     default` precedent at `ts_parser.rs:1214-1232`.
+///
+/// (b) Tree-sitter-reify's error recovery currently inserts a MISSING
+///     `auto_keyword` child for every malformed input probed (15 inputs
+///     including `Bearing<: Seal>`, `Bearing<auto:>`, `Bearing<auto>`,
+///     `Bearing<(free): Seal>`, multi-arg variants, etc.).  Therefore the
+///     new `let Some(kw) = ... else { ... }` guard (task 3724) is not
+///     directly reachable from any input today — it is defense-in-depth.
+///
+/// (c) The test is a CONTRACT regression guard: if a future grammar change
+///     weakens tree-sitter's MISSING-node insertion, the new defensive branch
+///     will fire and this test will still pass.
+///
+/// (d) The test passes both before and after the impl change because the
+///     AC#1 ERROR scan at `ts_parser.rs:594-599` already emits
+///     `"syntax error in type argument list"` for `Bearing<: Seal>`.
+///
+/// Do NOT assert the specific message `"auto type-arg missing auto keyword"`:
+/// no current tree-sitter input produces it, so asserting it would create a
+/// permanently-failing test that masks real regressions.
+#[test]
+fn auto_type_arg_missing_auto_keyword_shape_emits_diagnostic() {
+    // `Bearing<: Seal>` produces an `auto_type_arg has_error` node containing
+    // an `auto_keyword has_error` with a MISSING `auto` token (confirmed by
+    // CST probe).  The AC#1 ERROR scan in lower_type_args_from_node emits a
+    // diagnostic for this shape.
+    let source = "fn f() -> Bearing<: Seal> { 0 }";
+    let m = reify_syntax::parse(source, ModulePath::single("t"));
+    assert!(
+        !m.errors.is_empty(),
+        "malformed auto_type_arg shape must never be silently dropped without a \
+         diagnostic — module.errors was empty for {:?}",
+        source,
+    );
+}
