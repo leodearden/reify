@@ -281,6 +281,7 @@ impl CompiledFunction {
     /// `compile_function` in `reify-compiler/src/functions.rs` instead.
     ///
     /// task-3702 (canonicalize CompiledFunction.param_defaults representation)
+    #[allow(clippy::too_many_arguments)]
     pub fn new_with_no_defaults(
         name: String,
         is_pub: bool,
