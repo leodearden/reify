@@ -165,7 +165,12 @@ export const AutoResolvePanel: Component<AutoResolvePanelProps> = (props) => {
             {([cellId, paramValue]) => (
               <div class={styles.row}>
                 <span class={styles.cellId}>{cellId}</span>
-                <span class={styles.value}>{paramValue.display}</span>
+                <span
+                  class={styles.value}
+                  data-non-scalar={paramValue.value === null ? 'true' : undefined}
+                >
+                  {paramValue.display}
+                </span>
               </div>
             )}
           </For>

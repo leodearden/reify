@@ -77,6 +77,16 @@
   white-space: nowrap;
 }
 
+/* ── Non-scalar error chip (value === null / NaN sentinel) ──────────── */
+
+.value[data-non-scalar="true"] {
+  color: var(--status-violation, #ef5350);
+  background: rgba(239, 83, 80, 0.12);
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-style: italic;
+}
+
 /* ── Constraint target bound ────────────────────────────────────────── */
 
 .targetBound {
