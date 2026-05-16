@@ -43,9 +43,16 @@ where
 
 /// Custom serializer for `HashMap<String, Vec<f32>>` that rejects non-finite values.
 ///
-/// Mirrors [`serialize_finite_f32_vec`] but operates on a map of named scalar
+/// Mirrors [`serialize_finite_f32_vec`] but operates on a map of named float
 /// channels.  Each channel's values are validated element-by-element; the
-/// channel key is included in the error message for diagnostics.
+/// channel key and the `field_label` (e.g. `"scalar channel"` or
+/// `"vector channel"`) are included in the error message for diagnostics.
+///
+/// The `field_label` parameter lets callers produce accurate error messages
+/// regardless of which struct field is being serialized — for example,
+/// `"scalar channel"` for `scalar_channels` and `"vector channel"` for
+/// `vector_channels`.  Without this parameter both would produce the same
+/// hard-coded label, which confuses operators reading wire-error logs.
 ///
 /// # Note
 ///
@@ -55,6 +62,7 @@ where
 /// error.
 fn serialize_finite_f32_map<S>(
     map: &HashMap<String, Vec<f32>>,
+    field_label: &str,
     serializer: S,
 ) -> Result<S::Ok, S::Error>
 where
@@ -67,7 +75,7 @@ where
         for &v in values {
             if !v.is_finite() {
                 return Err(S::Error::custom(format!(
-                    "non-finite f32 value ({v}) in scalar channel '{key}'"
+                    "non-finite f32 value ({v}) in {field_label} '{key}'"
                 )));
             }
         }
@@ -136,7 +144,13 @@ pub struct GuiState {
 
 struct FiniteF32Slice<'a>(&'a [f32]);
 struct FiniteF32SliceOpt<'a>(&'a Option<Vec<f32>>);
-struct FiniteF32MapRef<'a>(&'a HashMap<String, Vec<f32>>);
+/// Newtype wrapper for `serialize_finite_f32_map`.
+///
+/// The second field is the human-readable field label included in NaN/Inf error
+/// messages (e.g. `"scalar channel"` or `"vector channel"`).  This lets
+/// operators immediately identify which struct field on the wire produced a
+/// non-finite value without inspecting a stack trace.
+struct FiniteF32MapRef<'a>(&'a HashMap<String, Vec<f32>>, &'a str);
 
 impl<'a> serde::Serialize for FiniteF32Slice<'a> {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
@@ -152,7 +166,7 @@ impl<'a> serde::Serialize for FiniteF32SliceOpt<'a> {
 
 impl<'a> serde::Serialize for FiniteF32MapRef<'a> {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        serialize_finite_f32_map(self.0, s)
+        serialize_finite_f32_map(self.0, self.1, s)
     }
 }
 
@@ -343,7 +357,7 @@ impl serde::Serialize for MeshData {
         s.serialize_field("indices", &self.indices)?;
         s.serialize_field("normals", &FiniteF32SliceOpt(&self.normals))?;
         if !self.scalar_channels.is_empty() {
-            s.serialize_field("scalar_channels", &FiniteF32MapRef(&self.scalar_channels))?;
+            s.serialize_field("scalar_channels", &FiniteF32MapRef(&self.scalar_channels, "scalar channel"))?;
         }
         if self.displaced_positions.is_some() {
             s.serialize_field(
@@ -358,7 +372,7 @@ impl serde::Serialize for MeshData {
             s.serialize_field("region_tags", rt)?;
         }
         if !self.vector_channels.is_empty() {
-            s.serialize_field("vector_channels", &FiniteF32MapRef(&self.vector_channels))?;
+            s.serialize_field("vector_channels", &FiniteF32MapRef(&self.vector_channels, "vector channel"))?;
         }
         s.end()
     }

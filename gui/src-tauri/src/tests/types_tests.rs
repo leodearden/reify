@@ -1430,7 +1430,9 @@ fn meshdata_rejects_region_tags_with_wrong_length() {
 
 /// A NaN value in a `vector_channels` entry must produce `Err` containing both
 /// `"non-finite f32 value"` and the channel key — mirroring the existing
-/// `scalar_channels` finite-value guard.
+/// `scalar_channels` finite-value guard.  The error must also say
+/// `"vector channel"` (not `"scalar channel"`) so operators can locate the
+/// offending field without inspecting a stack trace.
 ///
 /// Setup: 1 vertex (vertex_count=1), 0 faces (face_count=0).
 /// Per-vertex length = 3*1 = 3 → satisfies the length contract.
@@ -1463,9 +1465,14 @@ fn vector_channels_nan_causes_error_with_channel_key() {
         msg.contains("shell_normal"),
         "expected channel key 'shell_normal' in error message: {msg}"
     );
+    assert!(
+        msg.contains("vector channel"),
+        "expected 'vector channel' (not 'scalar channel') in error message: {msg}"
+    );
 }
 
-/// Same as above for f32::INFINITY.
+/// Same as above for f32::INFINITY.  Also pins the `"vector channel"` label
+/// (not `"scalar channel"`) in the error message.
 #[test]
 fn vector_channels_infinity_causes_error_with_channel_key() {
     use std::collections::HashMap;
@@ -1494,9 +1501,14 @@ fn vector_channels_infinity_causes_error_with_channel_key() {
         msg.contains("shell_normal"),
         "expected channel key 'shell_normal' in error message: {msg}"
     );
+    assert!(
+        msg.contains("vector channel"),
+        "expected 'vector channel' (not 'scalar channel') in error message: {msg}"
+    );
 }
 
-/// Same as above for f32::NEG_INFINITY.
+/// Same as above for f32::NEG_INFINITY.  Also pins the `"vector channel"` label
+/// (not `"scalar channel"`) in the error message.
 #[test]
 fn vector_channels_neg_infinity_causes_error_with_channel_key() {
     use std::collections::HashMap;
@@ -1524,6 +1536,10 @@ fn vector_channels_neg_infinity_causes_error_with_channel_key() {
     assert!(
         msg.contains("shell_normal"),
         "expected channel key 'shell_normal' in error message: {msg}"
+    );
+    assert!(
+        msg.contains("vector channel"),
+        "expected 'vector channel' (not 'scalar channel') in error message: {msg}"
     );
 }
 
