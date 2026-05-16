@@ -78,6 +78,73 @@ const DAY: i64 = 86_400;
 mod tests {
     use super::*;
 
+    /// False-positive cross-check — seven pre-`/prd` legacy tasks (sourced
+    /// from the phase-3-files-synthesis.md cluster index) must produce zero
+    /// findings across all three detectors in a single shared AuditContext.
+    ///
+    /// Why none fires:
+    ///  - P5 skips tasks with `done_provenance=None` (early-returns on the
+    ///    `done_provenance.as_ref()?` guard in p5_phantom_done.rs).
+    ///  - P1 skips tasks with `done_at=None` (the `let Some(done_at) = …`
+    ///    destructure at p1_producer_orphan.rs:82-84).
+    ///  - P2 iterates `meta.files` which is `vec![]` for all seven tasks
+    ///    → zero `diff_added_lines` calls → no markers → no findings.
+    ///
+    /// Task IDs: 215 (C-24), 250 (C-07), 2347 (C-07 doc), 2358 (C-36),
+    /// 2658 (C-04 substitute — avoids reusing 2657 from the P2 positive
+    /// fixture in step-3), 2699 (C-07 dispatch), 2954 (C-07 docs-only).
+    #[test]
+    fn seven_prepd_legacy_tasks_produce_no_false_positives() {
+        let conn = seed_db();
+        // Seed the schema but no rows — P5 will check the DB; an empty
+        // events table is valid (it just means no task_completed events).
+
+        // All seven tasks share the canonical legacy shape: status=done,
+        // files=vec![], no done_provenance, no done_at, benign title.
+        let legacy_ids = ["215", "250", "2347", "2358", "2658", "2699", "2954"];
+        let mut task_metadata = HashMap::new();
+        for id in legacy_ids {
+            task_metadata.insert(id.to_string(), legacy_meta(id));
+        }
+
+        // Default-empty mocks: no diff paths, no added lines, no changed
+        // symbols, no refs. Any unexpected call returns an empty vec.
+        let git = MockGitOps::new();
+        let jc = MockJCodemunchOps::new();
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: Some(NOW),
+        };
+
+        let p5_findings = p5_phantom_done::check(&ctx);
+        assert!(
+            p5_findings.is_empty(),
+            "P5: expected no findings on seven legacy tasks; got {:?}",
+            p5_findings
+        );
+
+        let p1_findings = p1_producer_orphan::check(&ctx);
+        assert!(
+            p1_findings.is_empty(),
+            "P1: expected no findings on seven legacy tasks; got {:?}",
+            p1_findings
+        );
+
+        let p2_findings = p2_consumer_stub::check(&ctx);
+        assert!(
+            p2_findings.is_empty(),
+            "P2: expected no findings on seven legacy tasks; got {:?}",
+            p2_findings
+        );
+    }
+
     /// Seeded incident #3 — P2 consumer-stub, synthetic cluster C-39 shape:
     /// Manifold `KernelAttributeHook::propagate_attributes` done task whose
     /// added diff introduces BOTH `tracing::warn!(reason="task_9_pending", …)`
