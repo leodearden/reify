@@ -1779,172 +1779,107 @@ mod tests {
         );
     }
 
-    // --- NoKernelChain tests (task 3434 — E_NO_KERNEL_CHAIN) ---
-    // Pairs with the dispatcher's no-kernel-chain diagnostic in
-    // `crates/reify-eval/src/dispatcher.rs::no_kernel_chain_diagnostic`
-    // (PRD `docs/prds/v0_3/multi-kernel-phase-3.md` §8 task γ + §2 "failing
-    // closed is the failure mode"). Variant-agnostic Copy/Clone/PartialEq/Eq/
-    // Hash/Debug derives are already covered by `diagnostic_code_derives`
-    // above; only the variant-specific round-trip and serde wire-format tests
-    // are added here.
+    // --- Multi-kernel dispatch failure variant tests (task 3434) ---
+    //
+    // Pairs with the five builders in
+    // `crates/reify-eval/src/dispatcher.rs` (no_kernel_chain_diagnostic,
+    // kernel_pragma_unsatisfiable_diagnostic, pinned_kernel_missing_diagnostic,
+    // unpinned_kernel_loaded_diagnostic, kernel_version_mismatch_diagnostic)
+    // per PRD `docs/prds/v0_3/multi-kernel-phase-3.md` §8 task γ.
+    //
+    // Test surface is split deliberately:
+    //   • Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives —
+    //     already covered by `diagnostic_code_derives` above.
+    //   • Per-variant severity + code round-trip — already pinned by each
+    //     `<builder>_carries_<severity>_severity_and_code` test in
+    //     `crates/reify-eval/src/dispatcher.rs` (the builders construct
+    //     `Diagnostic::error(...).with_code(...)` /
+    //     `Diagnostic::warning(...).with_code(...)`, so the dispatcher-side
+    //     assertion `(severity, code) == (expected, Some(variant))` is the
+    //     load-bearing severity pin).
+    //   • Per-variant serde wire form — consolidated into the single
+    //     table-driven test below so adding a sixth variant under this PRD
+    //     chain is a one-line extension to the table (and so a future
+    //     reviewer-flagged rename catches all variants at once).
 
-    /// `DiagnosticCode::NoKernelChain` round-trips through
-    /// `Diagnostic::error(...).with_code(...)` carrying both the expected
-    /// `Severity::Error` and `Some(DiagnosticCode::NoKernelChain)`.
-    /// Pins the error-severity contract and variant existence for the
-    /// dispatcher's None-return (no kernel chain found) failure mode (PRD
-    /// `docs/prds/v0_3/multi-kernel-phase-3.md` §2 "failing closed").
-    #[test]
-    fn diagnostic_code_no_kernel_chain_with_code_round_trips() {
-        use super::Severity;
-        let d = Diagnostic::error("x").with_code(DiagnosticCode::NoKernelChain);
-        assert_eq!(d.severity, Severity::Error);
-        assert_eq!(d.code, Some(DiagnosticCode::NoKernelChain));
-    }
-
-    /// Under `feature = "serde"`, `DiagnosticCode::NoKernelChain` serializes
-    /// as `"NoKernelChain"` (PascalCase, from `rename_all = "PascalCase"`).
-    /// Pins the wire-format contract for downstream consumers (LSP / MCP)
-    /// so a future variant rename is caught at the wire boundary.
+    /// Under `feature = "serde"`, every multi-kernel-phase-3 `DiagnosticCode`
+    /// variant serializes to its PascalCase identifier (inherited from
+    /// `rename_all = "PascalCase"` on the enum) and round-trips back via
+    /// deserialization. Pins the LSP / MCP wire contract for all five new
+    /// variants in one place — a future variant rename (or accidental
+    /// `rename_all` removal) loudly fails this single test rather than
+    /// silently passing five near-identical templates.
     #[cfg(feature = "serde")]
     #[test]
-    fn diagnostic_code_no_kernel_chain_serde_pascal_case() {
-        let s = serde_json::to_string(&DiagnosticCode::NoKernelChain).unwrap();
-        assert_eq!(s, "\"NoKernelChain\"");
+    fn diagnostic_code_multi_kernel_variants_serde_pascal_case() {
+        let cases: &[(DiagnosticCode, &str)] = &[
+            (DiagnosticCode::NoKernelChain, "\"NoKernelChain\""),
+            (
+                DiagnosticCode::KernelPragmaUnsatisfiable,
+                "\"KernelPragmaUnsatisfiable\"",
+            ),
+            (
+                DiagnosticCode::PinnedKernelMissing,
+                "\"PinnedKernelMissing\"",
+            ),
+            (
+                DiagnosticCode::UnpinnedKernelLoaded,
+                "\"UnpinnedKernelLoaded\"",
+            ),
+            (
+                DiagnosticCode::KernelVersionMismatch,
+                "\"KernelVersionMismatch\"",
+            ),
+        ];
+        for (variant, expected) in cases {
+            let got = serde_json::to_string(variant).unwrap();
+            assert_eq!(
+                &got, expected,
+                "serde wire form for {variant:?} must equal PascalCase identifier",
+            );
+            let back: DiagnosticCode = serde_json::from_str(&got).unwrap();
+            assert_eq!(
+                &back, variant,
+                "deserialize must round-trip back to the original {variant:?}",
+            );
+        }
     }
 
-    // --- KernelPragmaUnsatisfiable tests (task 3434 — W_KERNEL_PRAGMA_UNSATISFIABLE) ---
-    // Pairs with the dispatcher's pragma-fallthrough diagnostic in
-    // `crates/reify-eval/src/dispatcher.rs::kernel_pragma_unsatisfiable_diagnostic`
-    // (PRD `docs/prds/v0_3/multi-kernel-phase-3.md` §8 task γ + §5 "pragma
-    // steers"). Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives
-    // are already covered by `diagnostic_code_derives` above; only the
-    // variant-specific round-trip and serde wire-format tests are added here.
-
-    /// `DiagnosticCode::KernelPragmaUnsatisfiable` round-trips through
-    /// `Diagnostic::warning(...).with_code(...)` carrying both the expected
-    /// `Severity::Warning` and `Some(DiagnosticCode::KernelPragmaUnsatisfiable)`.
-    /// Pins the warning-severity contract and variant existence for the
-    /// `#kernel(...)` pragma fall-through (PRD §5 "warning, not error —
-    /// fall through to default lex-min selection").
+    /// Pins per-variant severity + variant-existence at the reify-types layer
+    /// for all five multi-kernel-phase-3 variants in one table. Although the
+    /// dispatcher-side `<builder>_carries_<severity>_severity_and_code` tests
+    /// already exercise these end-to-end through the builders, this
+    /// reify-types-local assertion guards against severity / variant drift
+    /// when the dispatcher crate is not in the test set (e.g. a cargo check
+    /// run scoped to `-p reify-types`). Severity assignments match PRD
+    /// `docs/prds/v0_3/multi-kernel-phase-3.md` §5: errors fail the build,
+    /// warnings let realization proceed.
     #[test]
-    fn diagnostic_code_kernel_pragma_unsatisfiable_with_code_round_trips() {
+    fn diagnostic_code_multi_kernel_variants_with_code_round_trip() {
         use super::Severity;
-        let d = Diagnostic::warning("x").with_code(DiagnosticCode::KernelPragmaUnsatisfiable);
-        assert_eq!(d.severity, Severity::Warning);
-        assert_eq!(d.code, Some(DiagnosticCode::KernelPragmaUnsatisfiable));
-    }
-
-    /// Under `feature = "serde"`, `DiagnosticCode::KernelPragmaUnsatisfiable`
-    /// serializes as `"KernelPragmaUnsatisfiable"` (PascalCase, from
-    /// `rename_all = "PascalCase"`). Pins the wire-format contract for
-    /// downstream consumers (LSP / MCP).
-    #[cfg(feature = "serde")]
-    #[test]
-    fn diagnostic_code_kernel_pragma_unsatisfiable_serde_pascal_case() {
-        let s = serde_json::to_string(&DiagnosticCode::KernelPragmaUnsatisfiable).unwrap();
-        assert_eq!(s, "\"KernelPragmaUnsatisfiable\"");
-    }
-
-    // --- PinnedKernelMissing tests (task 3434 — E_PINNED_KERNEL_MISSING) ---
-    // Pairs with the dispatcher's pinned-kernel-missing diagnostic in
-    // `crates/reify-eval/src/dispatcher.rs::pinned_kernel_missing_diagnostic`
-    // (PRD `docs/prds/v0_3/multi-kernel-phase-3.md` §8 task γ + §5 "Pin name
-    // not in registry"). Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug
-    // derives are already covered by `diagnostic_code_derives` above; only
-    // the variant-specific round-trip and serde wire-format tests are added
-    // here.
-
-    /// `DiagnosticCode::PinnedKernelMissing` round-trips through
-    /// `Diagnostic::error(...).with_code(...)` carrying both the expected
-    /// `Severity::Error` and `Some(DiagnosticCode::PinnedKernelMissing)`.
-    /// Pins the error-severity contract and variant existence for the
-    /// reify.toml pin-not-registered failure (PRD §5 "error; engine
-    /// refuses to start").
-    #[test]
-    fn diagnostic_code_pinned_kernel_missing_with_code_round_trips() {
-        use super::Severity;
-        let d = Diagnostic::error("x").with_code(DiagnosticCode::PinnedKernelMissing);
-        assert_eq!(d.severity, Severity::Error);
-        assert_eq!(d.code, Some(DiagnosticCode::PinnedKernelMissing));
-    }
-
-    /// Under `feature = "serde"`, `DiagnosticCode::PinnedKernelMissing`
-    /// serializes as `"PinnedKernelMissing"` (PascalCase, from
-    /// `rename_all = "PascalCase"`). Pins the wire-format contract for
-    /// downstream consumers (LSP / MCP).
-    #[cfg(feature = "serde")]
-    #[test]
-    fn diagnostic_code_pinned_kernel_missing_serde_pascal_case() {
-        let s = serde_json::to_string(&DiagnosticCode::PinnedKernelMissing).unwrap();
-        assert_eq!(s, "\"PinnedKernelMissing\"");
-    }
-
-    // --- UnpinnedKernelLoaded tests (task 3434 — W_UNPINNED_KERNEL_LOADED) ---
-    // Pairs with the dispatcher's unpinned-kernel-loaded diagnostic in
-    // `crates/reify-eval/src/dispatcher.rs::unpinned_kernel_loaded_diagnostic`
-    // (PRD `docs/prds/v0_3/multi-kernel-phase-3.md` §8 task γ + §5 "Registry
-    // name not pinned"). Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug
-    // derives are already covered by `diagnostic_code_derives` above; only
-    // the variant-specific round-trip and serde wire-format tests are added
-    // here.
-
-    /// `DiagnosticCode::UnpinnedKernelLoaded` round-trips through
-    /// `Diagnostic::warning(...).with_code(...)` carrying both the expected
-    /// `Severity::Warning` and `Some(DiagnosticCode::UnpinnedKernelLoaded)`.
-    /// Pins the warning-severity contract and variant existence for the
-    /// registered-but-unpinned advisory (PRD §5 "warning; engine starts").
-    #[test]
-    fn diagnostic_code_unpinned_kernel_loaded_with_code_round_trips() {
-        use super::Severity;
-        let d = Diagnostic::warning("x").with_code(DiagnosticCode::UnpinnedKernelLoaded);
-        assert_eq!(d.severity, Severity::Warning);
-        assert_eq!(d.code, Some(DiagnosticCode::UnpinnedKernelLoaded));
-    }
-
-    /// Under `feature = "serde"`, `DiagnosticCode::UnpinnedKernelLoaded`
-    /// serializes as `"UnpinnedKernelLoaded"` (PascalCase, from
-    /// `rename_all = "PascalCase"`). Pins the wire-format contract for
-    /// downstream consumers (LSP / MCP).
-    #[cfg(feature = "serde")]
-    #[test]
-    fn diagnostic_code_unpinned_kernel_loaded_serde_pascal_case() {
-        let s = serde_json::to_string(&DiagnosticCode::UnpinnedKernelLoaded).unwrap();
-        assert_eq!(s, "\"UnpinnedKernelLoaded\"");
-    }
-
-    // --- KernelVersionMismatch tests (task 3434 — E_KERNEL_VERSION_MISMATCH) ---
-    // Pairs with the dispatcher's version-mismatch diagnostic in
-    // `crates/reify-eval/src/dispatcher.rs::kernel_version_mismatch_diagnostic`
-    // (PRD `docs/prds/v0_3/multi-kernel-phase-3.md` §8 task γ + §5 "Pin
-    // version mismatch with adapter VERSION constant"). Variant-agnostic
-    // Copy/Clone/PartialEq/Eq/Hash/Debug derives are already covered by
-    // `diagnostic_code_derives` above; only the variant-specific round-trip
-    // and serde wire-format tests are added here.
-
-    /// `DiagnosticCode::KernelVersionMismatch` round-trips through
-    /// `Diagnostic::error(...).with_code(...)` carrying both the expected
-    /// `Severity::Error` and `Some(DiagnosticCode::KernelVersionMismatch)`.
-    /// Pins the error-severity contract and variant existence for the
-    /// reify.toml-vs-adapter version-mismatch failure (PRD §5 "error.
-    /// Determinism contract enforcement").
-    #[test]
-    fn diagnostic_code_kernel_version_mismatch_with_code_round_trips() {
-        use super::Severity;
-        let d = Diagnostic::error("x").with_code(DiagnosticCode::KernelVersionMismatch);
-        assert_eq!(d.severity, Severity::Error);
-        assert_eq!(d.code, Some(DiagnosticCode::KernelVersionMismatch));
-    }
-
-    /// Under `feature = "serde"`, `DiagnosticCode::KernelVersionMismatch`
-    /// serializes as `"KernelVersionMismatch"` (PascalCase, from
-    /// `rename_all = "PascalCase"`). Pins the wire-format contract for
-    /// downstream consumers (LSP / MCP).
-    #[cfg(feature = "serde")]
-    #[test]
-    fn diagnostic_code_kernel_version_mismatch_serde_pascal_case() {
-        let s = serde_json::to_string(&DiagnosticCode::KernelVersionMismatch).unwrap();
-        assert_eq!(s, "\"KernelVersionMismatch\"");
+        let error_variants = [
+            DiagnosticCode::NoKernelChain,
+            DiagnosticCode::PinnedKernelMissing,
+            DiagnosticCode::KernelVersionMismatch,
+        ];
+        for code in error_variants {
+            let d = Diagnostic::error("x").with_code(code);
+            assert_eq!(d.severity, Severity::Error, "severity mismatch for {code:?}");
+            assert_eq!(d.code, Some(code), "code mismatch for {code:?}");
+        }
+        let warning_variants = [
+            DiagnosticCode::KernelPragmaUnsatisfiable,
+            DiagnosticCode::UnpinnedKernelLoaded,
+        ];
+        for code in warning_variants {
+            let d = Diagnostic::warning("x").with_code(code);
+            assert_eq!(
+                d.severity,
+                Severity::Warning,
+                "severity mismatch for {code:?}",
+            );
+            assert_eq!(d.code, Some(code), "code mismatch for {code:?}");
+        }
     }
 }
 
