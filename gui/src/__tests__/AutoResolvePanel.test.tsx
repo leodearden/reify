@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { render, screen, cleanup, within } from '@solidjs/testing-library';
 import type { AutoResolveIteration } from '../types';
 import type { AutoResolveLoopState } from '../stores/engineStore';
-import { AutoResolvePanel } from '../panels/AutoResolvePanel';
+import { AutoResolvePanel, SPARK_W, SPARK_PAD } from '../panels/AutoResolvePanel';
 
 // ── Fixture helpers ──────────────────────────────────────────────────────────
 
@@ -375,6 +375,15 @@ describe('AutoResolvePanel (e) non-scalar value sparkline null-filter', () => {
     expect(Number.isFinite(yValues[0]!)).toBe(true);
     expect(Number.isFinite(yValues[1]!)).toBe(true);
     expect(yValues[0]).not.toBe(yValues[1]); // 4.2 and 4.8 map to different y coords
+    // X-axis anchor pin: iteration 1 (xMin) must map to SPARK_PAD and iteration 3
+    // (xMax) must map to SPARK_W - SPARK_PAD.  This locks the gap-preservation
+    // contract — if a regression swapped to filtered-index x-axis the x-domain
+    // would collapse to [0,1] instead of [1,3] and the anchors would still hit the
+    // endpoints, but the gap would be lost.  The assertion is self-documenting:
+    // the domain that produces these exact anchors IS the iteration-number domain.
+    const xs = points.map((pair) => parseFloat(pair.split(',')[0]!));
+    expect(xs[0]).toBeCloseTo(SPARK_PAD);
+    expect(xs[1]).toBeCloseTo(SPARK_W - SPARK_PAD);
   });
 
   it('(e.2) all-null sparkline draws no polyline but the sparkline SVG still renders', () => {
