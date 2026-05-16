@@ -77,6 +77,90 @@ const DAY: i64 = 86_400;
 
 mod tests {
     use super::*;
+
+    /// Seeded incident #1 — P5 phantom-done, May-09 task-3242 shape:
+    /// kind=merged, claimed commit's diff does NOT cover `metadata.files`;
+    /// `git log main --grep` returns empty (no sibling-FF rescue).
+    ///
+    /// Re-exercises the same incident shape as
+    /// `p5::tests::task_3242_shape_returns_high_severity_phantom_done` (in
+    /// `tests/p5.rs`) but via the integration-test binary's public-lib
+    /// invocation path rather than the unit-test seam.
+    #[test]
+    fn p5_phantom_done_task_3242_shape_flagged_high() {
+        let conn = seed_db();
+        // task_completed event is present (the orchestrator wrote one) —
+        // the phantom-done signal is in the *git* corroboration, not the DB.
+        insert_task_completed_event(&conn, "3242");
+
+        let mut git = MockGitOps::new();
+        // No sibling-FF rescue: log_grep returns empty.
+        git.set_log_grep("main", "3242", vec![]);
+        // Claimed commit's diff covers only an unrelated path; the
+        // `metadata.files` entry (pruning.rs) is absent → phantom-done.
+        git.set_diff_changed_paths(
+            "main",
+            "7958491da22f",
+            vec!["docs/unrelated.md".to_string()],
+        );
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "3242".to_string(),
+            TaskMetadata {
+                task_id: "3242".to_string(),
+                status: "done".to_string(),
+                // The actual May-09 3242 incident path from the task write-up.
+                files: vec!["crates/reify-shell-extract/src/pruning.rs".to_string()],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("7958491da22f".to_string()),
+                    note: None,
+                }),
+                title: "Wire shell-extract pruning".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let jc = MockJCodemunchOps::new(); // P5 ignores jcodemunch
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+        };
+
+        let findings = p5_phantom_done::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly one phantom-done finding; got {:?}",
+            findings
+        );
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::P5PhantomDone, "wrong pattern: {:?}", f);
+        assert_eq!(f.severity, Severity::High, "expected High severity; got {:?}", f.severity);
+        assert_eq!(f.task_id, "3242");
+
+        // Evidence must include a MetadataFiles ref naming the missing path.
+        let meta_files_evidence = f.evidence.iter().find_map(|e| match e {
+            EvidenceRef::MetadataFiles { entries } => Some(entries),
+            _ => None,
+        });
+        let entries = meta_files_evidence.expect("MetadataFiles evidence must be present");
+        assert!(
+            entries.iter().any(|p| p == "crates/reify-shell-extract/src/pruning.rs"),
+            "expected pruning.rs in MetadataFiles evidence; got {:?}",
+            entries
+        );
+    }
 }
 
 } // mod audit_integration
