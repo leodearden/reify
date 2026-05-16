@@ -23,6 +23,7 @@ reify-mesh-morph = { workspace = true, optional = true }
 reify-syntax.workspace = true
 reify-compiler.workspace = true
 reify-eval.workspace = true
+reify-config.workspace = true
 reify-constraints.workspace = true
 reify-geometry.workspace = true
 # OCCT bundling strategy: OCCT is dynamically linked via reify-kernel-occt's
