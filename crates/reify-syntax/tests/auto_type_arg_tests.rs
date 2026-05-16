@@ -256,18 +256,6 @@ fn auto_type_arg_lowers_to_ast_free() {
     }
 }
 
-// pre-1 characterization tests (task 3665) were removed in step-6:
-// - pre1_error_node_is_within_type_arg_list_subtree: the higher-level
-//   auto_type_arg_cst_error_propagates_to_module_errors (step-3) covers the
-//   same guarantee; the CST-placement characterization is no longer needed.
-// - pre1_silent_drop_auto_type_arg_before_3665: removed in step-2 when the
-//   TypeExprKind::Auto lowering made the "silent drop" assertion contradictory.
-
-// pre1_silent_drop_auto_type_arg_before_3665 was removed in step-2 of task 3665:
-// the lowering now surfaces auto_type_arg children as TypeExprKind::Auto, so the
-// "silent drop" assertion became contradictory.  The real coverage is provided
-// by auto_type_arg_lowers_to_ast_strict / _free (step-1 tests) which assert the
-// positive behaviour.
 
 // ── Step-3 (task 3665): RED tests — ERROR propagation into module.errors ────────
 //
@@ -275,13 +263,9 @@ fn auto_type_arg_lowers_to_ast_free() {
 // These tests drive the implementation in step-4 (lower_type_args_from_node).
 
 /// `auto(constrained): Seal` contains an unrecognised modifier; the grammar
-/// produces an ERROR node inside the `type_arg_list` subtree (confirmed by
-/// `pre1_error_node_is_within_type_arg_list_subtree`).  After step-4 the
-/// lowering will scan the subtree and push at least one entry to `module.errors`.
-///
-/// RED today: `module.errors` is empty (ERROR silently dropped).
-/// GREEN after step-4: `module.errors` is non-empty and the message refers to
-/// the syntax error in the type argument list.
+/// produces an ERROR node inside the `type_arg_list` subtree.  The lowering
+/// pipeline (task 3665, step-4) scans the subtree and pushes at least one
+/// entry to `module.errors`.
 #[test]
 fn auto_type_arg_cst_error_propagates_to_module_errors() {
     let source = "fn f() -> Bearing<auto(constrained): Seal> { 0 }";
@@ -305,10 +289,8 @@ fn auto_type_arg_cst_error_propagates_to_module_errors() {
 }
 
 /// Well-formed `auto:` type-arg inputs must produce ZERO parse errors (negative
-/// guard — the new ERROR subtree scan must not false-positive on valid inputs).
-///
-/// GREEN today (no scan yet means no spurious errors).
-/// Must stay GREEN after step-4.
+/// guard — the ERROR subtree scan in `lower_type_args_from_node` must not
+/// false-positive on valid inputs).
 #[test]
 fn auto_type_arg_clean_input_has_no_spurious_errors() {
     for source in &[
@@ -405,4 +387,47 @@ fn mixed_type_args_unaffected() {
         }
         other => panic!("expected Named for 'MomentOfInertia', got {:?}", other),
     }
+}
+
+// ── Display impl for TypeExprKind::Auto (task 3665 amendment) ───────────────
+//
+// The Display output is user-facing: it appears in compiler diagnostics via
+// format!("... {}", field_def.codomain_type) in functions.rs and expr.rs.
+// These tests guard against regressions in the format string without requiring
+// a full parse round-trip.
+
+/// Strict `auto: Seal` — Display must render `"auto: Seal"`.
+#[test]
+fn auto_type_expr_display_strict() {
+    use reify_types::SourceSpan;
+    let te = reify_syntax::TypeExpr {
+        kind: reify_syntax::TypeExprKind::Auto {
+            free: false,
+            bound: "Seal".to_string(),
+        },
+        span: SourceSpan::empty(0),
+    };
+    assert_eq!(
+        format!("{}", te),
+        "auto: Seal",
+        "strict Auto Display must be 'auto: Seal'"
+    );
+}
+
+/// Free `auto(free): Seal` — Display must render `"auto(free): Seal"`.
+#[test]
+fn auto_type_expr_display_free() {
+    use reify_types::SourceSpan;
+    let te = reify_syntax::TypeExpr {
+        kind: reify_syntax::TypeExprKind::Auto {
+            free: true,
+            bound: "Seal".to_string(),
+        },
+        span: SourceSpan::empty(0),
+    };
+    assert_eq!(
+        format!("{}", te),
+        "auto(free): Seal",
+        "free Auto Display must be 'auto(free): Seal'"
+    );
 }
