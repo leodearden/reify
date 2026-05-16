@@ -462,4 +462,108 @@ mod tests {
         let many_high: Vec<Finding> = (0..300).map(|_| make_high()).collect();
         assert_eq!(high_severity_exit_code(&many_high), 254);
     }
+
+    // -------------------------------------------------------------------
+    // parse_args error-branch coverage
+    //
+    // The hand-rolled parser has many error branches that previously had
+    // no test coverage. These tests pin every error-message format string
+    // so a typo or refactor flips a test red instead of silently changing
+    // the user-visible CLI error.
+    // -------------------------------------------------------------------
+
+    fn unwrap_err(r: Result<Args, String>) -> String {
+        match r {
+            Ok(_) => panic!("parse_args returned Ok where Err was expected"),
+            Err(e) => e,
+        }
+    }
+
+    #[test]
+    fn parse_args_empty_returns_defaults() {
+        let args = parse_args(&[]).unwrap_or_else(|e| panic!("empty argv must parse: {e}"));
+        assert!(args.task_id.is_none());
+        assert!(!args.pre_done);
+        assert!(args.since.is_none());
+        assert!(args.pattern.is_none());
+        assert_eq!(args.tasks_file, ".taskmaster/tasks/tasks.json");
+        assert_eq!(args.runs_db, "data/orchestrator/runs.db");
+        assert_eq!(args.project_root, ".");
+    }
+
+    #[test]
+    fn parse_args_unknown_flag_returns_err() {
+        let err = unwrap_err(parse_args(&["--bogus".to_string()]));
+        assert!(
+            err.contains("--bogus"),
+            "error must name the offending flag; got: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_args_missing_value_after_each_flag_returns_err() {
+        // Every flag that takes a value must report its name in the error
+        // when the value is missing (final-position bare flag).
+        for flag in [
+            "--task",
+            "--since",
+            "--pattern",
+            "--tasks-file",
+            "--runs-db",
+            "--project-root",
+        ] {
+            let err = unwrap_err(parse_args(&[flag.to_string()]));
+            assert!(
+                err.contains(flag),
+                "error for `{flag}` must mention the flag name; got: {err}"
+            );
+            assert!(
+                err.contains("requires a value"),
+                "error for `{flag}` must say 'requires a value'; got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_args_unknown_pattern_literal_returns_err() {
+        let err = unwrap_err(parse_args(&["--pattern".to_string(), "P9".to_string()]));
+        assert!(
+            err.contains("P9"),
+            "error must name the offending literal; got: {err}"
+        );
+        assert!(
+            err.contains("P1, P2, or P5"),
+            "error must list the valid pattern literals; got: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_args_happy_path_round_trip() {
+        let argv: Vec<String> = [
+            "--task",
+            "3242",
+            "--pre-done",
+            "--since",
+            "2026-05-01",
+            "--pattern",
+            "P5",
+            "--tasks-file",
+            "/tmp/tasks.json",
+            "--runs-db",
+            "/tmp/runs.db",
+            "--project-root",
+            "/tmp/repo",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let args = parse_args(&argv).unwrap_or_else(|e| panic!("happy-path argv must parse: {e}"));
+        assert_eq!(args.task_id.as_deref(), Some("3242"));
+        assert!(args.pre_done);
+        assert_eq!(args.since.as_deref(), Some("2026-05-01"));
+        assert_eq!(args.pattern.as_deref(), Some("P5"));
+        assert_eq!(args.tasks_file, "/tmp/tasks.json");
+        assert_eq!(args.runs_db, "/tmp/runs.db");
+        assert_eq!(args.project_root, "/tmp/repo");
+    }
 }
