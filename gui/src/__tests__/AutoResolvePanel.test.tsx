@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { render, screen, cleanup, within } from '@solidjs/testing-library';
 import type { AutoResolveIteration } from '../types';
 import type { AutoResolveLoopState } from '../stores/engineStore';
-import { AutoResolvePanel, SPARK_W, SPARK_PAD } from '../panels/AutoResolvePanel';
+import { AutoResolvePanel } from '../panels/AutoResolvePanel';
 
 // ── Fixture helpers ──────────────────────────────────────────────────────────
 
@@ -375,15 +375,17 @@ describe('AutoResolvePanel (e) non-scalar value sparkline null-filter', () => {
     expect(Number.isFinite(yValues[0]!)).toBe(true);
     expect(Number.isFinite(yValues[1]!)).toBe(true);
     expect(yValues[0]).not.toBe(yValues[1]); // 4.2 and 4.8 map to different y coords
-    // X-axis anchor pin: iteration 1 (xMin) must map to SPARK_PAD and iteration 3
-    // (xMax) must map to SPARK_W - SPARK_PAD.  This locks the gap-preservation
-    // contract — if a regression swapped to filtered-index x-axis the x-domain
-    // would collapse to [0,1] instead of [1,3] and the anchors would still hit the
-    // endpoints, but the gap would be lost.  The assertion is self-documenting:
-    // the domain that produces these exact anchors IS the iteration-number domain.
+    // X-axis anchor pin: iteration 1 (xMin) maps to SPARK_PAD=2 and iteration 3
+    // (xMax) maps to SPARK_W - SPARK_PAD = 80 - 2 = 78.  Literals are intentional
+    // here — they're stable endpoint values whose derivation is explained in this
+    // comment, and they keep SPARK_W/SPARK_PAD as module-private implementation
+    // details rather than widening the panel's exported surface for test purposes.
+    // This locks the gap-preservation contract: if a regression swapped to
+    // filtered-index x-axis the x-domain would collapse to [0,1] instead of [1,3]
+    // and the anchors would still hit the endpoints, but the gap would be lost.
     const xs = points.map((pair) => parseFloat(pair.split(',')[0]!));
-    expect(xs[0]).toBeCloseTo(SPARK_PAD);
-    expect(xs[1]).toBeCloseTo(SPARK_W - SPARK_PAD);
+    expect(xs[0]).toBeCloseTo(2);  // SPARK_PAD
+    expect(xs[1]).toBeCloseTo(78); // SPARK_W - SPARK_PAD
   });
 
   it('(e.2) all-null sparkline draws no polyline but the sparkline SVG still renders', () => {
@@ -421,12 +423,11 @@ describe('AutoResolvePanel (e) non-scalar value sparkline null-filter', () => {
   });
 
   it('(e.4) sparkline polyline excludes a non-null non-finite (NaN) iteration', () => {
-    // Defense-in-depth: a future wire change or manual store mutation could slip a
-    // NaN past the `number | null` type.  The cast `as unknown as number` simulates
-    // that runtime scenario without touching the production type.
-    // With the current `!== null` filter, NaN !== null → the NaN point reaches
-    // linearScale → emits "x.0,NaN" in the points string → 3-entry polyline → FAIL.
-    // After switching to Number.isFinite(...), NaN is rejected → 2-entry polyline → PASS.
+    // NaN can arrive from JSON parsing or arithmetic in upstream stores;
+    // Number.isFinite rejects it where !== null would not.  The cast
+    // `as unknown as number` simulates that runtime scenario without touching
+    // the production type — this test specifically guards the NaN/Infinity case,
+    // not all possible type bypasses.
     const iterations = [
       makeIteration(1, { parameters: { thickness: { value: 4.2, unit: 'mm', display: '4.2mm' } } }),
       makeIteration(2, { parameters: { thickness: { value: NaN as unknown as number, unit: 'mm', display: 'NaN' } } }),
@@ -441,6 +442,28 @@ describe('AutoResolvePanel (e) non-scalar value sparkline null-filter', () => {
     // No coordinate string should contain "NaN"
     expect(pointsAttr).not.toMatch(/NaN/);
     // Exactly 2 pairs — the non-finite iteration is filtered out just like null
+    const points = pointsAttr.trim().split(/\s+/);
+    expect(points).toHaveLength(2);
+  });
+
+  it('(e.5) sparkline polyline excludes a non-null Infinity iteration', () => {
+    // Parallel to (e.4): Infinity also arrives via arithmetic (e.g. divide-by-zero)
+    // and bypasses !== null.  Number.isFinite rejects both NaN and Infinity, so this
+    // test locks the full non-finite half of the contract.
+    const iterations = [
+      makeIteration(1, { parameters: { thickness: { value: 4.2, unit: 'mm', display: '4.2mm' } } }),
+      makeIteration(2, { parameters: { thickness: { value: Infinity as unknown as number, unit: 'mm', display: 'Infinity' } } }),
+      makeIteration(3, { parameters: { thickness: { value: 4.8, unit: 'mm', display: '4.8mm' } } }),
+    ];
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+    const sparklineSvg = screen.getByTestId('auto-resolve-sparkline');
+    const polyline = sparklineSvg.querySelector('polyline');
+    expect(polyline).toBeTruthy();
+    const pointsAttr = polyline!.getAttribute('points') ?? '';
+    // No coordinate should contain "Infinity"
+    expect(pointsAttr).not.toMatch(/Infinity/);
+    // Exactly 2 pairs — the Infinity iteration is filtered out
     const points = pointsAttr.trim().split(/\s+/);
     expect(points).toHaveLength(2);
   });
