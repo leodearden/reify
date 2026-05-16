@@ -6,8 +6,18 @@
 //! Every "unresolved type" / "unresolved name" emit site in the compiler crate
 //! must attach the corresponding `DiagnosticCode` variant via `.with_code(...)`.
 //! These tests lock that contract: one test per emit-site scenario, each compiling
-//! a minimal `.ri` source and asserting `d.code == Some(DiagnosticCode::UnresolvedType)`
-//! (or `UnresolvedName`).
+//! a minimal `.ri` source and asserting BOTH:
+//!
+//! 1. `d.code == Some(DiagnosticCode::UnresolvedType)` (or `UnresolvedName`), AND
+//! 2. `d.message.starts_with("<emit-site format-string prefix>")`.
+//!
+//! The message-prefix pin means each test is anchored to a *specific* emit site's
+//! format string, not merely to the shared diagnostic code.  A format-string change
+//! or removal of `.with_code(...)` at the targeted site will fail the test even if
+//! another site still fires the same code.
+//!
+//! The shared assertion shape lives in the private helper
+//! `assert_diagnostic_with_code_and_prefix`.
 //!
 //! A future maintainer who adds a new "unresolved type" emit site should also add
 //! a test here so the contract remains self-documenting.
