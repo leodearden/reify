@@ -213,6 +213,67 @@ fn auto_type_arg_rejects_unrecognized_modifier() {
     );
 }
 
+// ── Step-1 (task 3665): RED tests — TypeExprKind::Auto variant ───────────────
+//
+// These tests reference `reify_syntax::TypeExprKind::Auto { free, bound }` which
+// does not exist yet.  They are intentionally non-compiling (the compile failure
+// IS the RED signal).  They turn green in step-2 when the variant is added and
+// lower_type_args_from_node is extended.
+
+/// Helper: parse `source`, find the single Function declaration, and return its
+/// return-type's `type_args` slice. Panics with a clear message if any step fails.
+fn get_return_type_args(source: &str) -> Vec<reify_syntax::TypeExpr> {
+    let m = reify_syntax::parse(source, ModulePath::single("t"));
+    assert!(
+        m.errors.is_empty(),
+        "parse of {:?} produced unexpected errors: {:?}",
+        source,
+        m.errors
+    );
+    let decls = &m.declarations;
+    assert_eq!(decls.len(), 1, "expected exactly one declaration in {:?}", source);
+    if let reify_syntax::Declaration::Function(f) = &decls[0] {
+        let rt = f.return_type.as_ref().expect("expected a return type");
+        if let reify_syntax::TypeExprKind::Named { type_args, .. } = &rt.kind {
+            type_args.clone()
+        } else {
+            panic!("expected outer type to be Named, got {:?}", rt.kind);
+        }
+    } else {
+        panic!("expected Function declaration, got {:?}", decls[0]);
+    }
+}
+
+/// Strict `auto: Seal` in type-arg position must lower to
+/// `TypeExprKind::Auto { free: false, bound: "Seal" }`.
+#[test]
+fn auto_type_arg_lowers_to_ast_strict() {
+    let args = get_return_type_args("fn f() -> Bearing<auto: Seal> { 0 }");
+    assert_eq!(args.len(), 1, "expected exactly one type argument");
+    match &args[0].kind {
+        reify_syntax::TypeExprKind::Auto { free, bound } => {
+            assert!(!free, "strict auto: Seal must have free=false");
+            assert_eq!(bound, "Seal", "bound must be 'Seal'");
+        }
+        other => panic!("expected TypeExprKind::Auto, got {:?}", other),
+    }
+}
+
+/// Free `auto(free): Seal` in type-arg position must lower to
+/// `TypeExprKind::Auto { free: true, bound: "Seal" }`.
+#[test]
+fn auto_type_arg_lowers_to_ast_free() {
+    let args = get_return_type_args("fn g() -> Bearing<auto(free): Seal> { 0 }");
+    assert_eq!(args.len(), 1, "expected exactly one type argument");
+    match &args[0].kind {
+        reify_syntax::TypeExprKind::Auto { free, bound } => {
+            assert!(*free, "free auto(free): Seal must have free=true");
+            assert_eq!(bound, "Seal", "bound must be 'Seal'");
+        }
+        other => panic!("expected TypeExprKind::Auto, got {:?}", other),
+    }
+}
+
 // ── pre-1 characterization tests (task 3665) ─────────────────────────────────
 //
 // These pin current behavior to de-risk AC#1 placement and will be removed in
