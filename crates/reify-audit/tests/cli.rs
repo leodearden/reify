@@ -480,6 +480,75 @@ mod cli {
         );
     }
 
+    /// `--help` output must NOT mention the old dead default path
+    /// `.taskmaster/tasks/tasks.json`. The flag is now required; any default
+    /// reference would silently re-introduce the regression.
+    #[test]
+    fn binary_help_omits_dead_taskmaster_default() {
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .arg("--help")
+            .output()
+            .expect("failed to invoke reify-audit --help");
+
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "--help must exit 0; got {:?}",
+            out.status.code()
+        );
+
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            !stdout.contains(".taskmaster/tasks/tasks.json"),
+            "--help must NOT contain '.taskmaster/tasks/tasks.json' (dead default removed); \
+             full stdout:\n{}",
+            stdout
+        );
+    }
+
+    /// Invoking the binary without `--tasks-file` must exit 125 with a clear
+    /// message naming the missing flag. The old silent default
+    /// `.taskmaster/tasks/tasks.json` must not silently replace it.
+    #[test]
+    fn missing_tasks_file_exits_125_with_clear_error() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let dir = tmp.path();
+        let runs_db = write_empty_runs_db(dir);
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task",
+                "1",
+                "--pre-done",
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                dir.to_str().unwrap(),
+                // NOTE: intentionally omitting --tasks-file
+            ])
+            .output()
+            .expect("invoke reify-audit without --tasks-file");
+
+        assert_eq!(
+            out.status.code(),
+            Some(125),
+            "missing --tasks-file must exit 125; got {:?}\nstdout: {}\nstderr: {}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("--tasks-file"),
+            "stderr must mention '--tasks-file' to identify the missing flag; \
+             full stderr:\n{}",
+            stderr
+        );
+    }
+
     /// `--pattern P1` over the same fixture yields an empty array (Noop
     /// JCodemunchOps means P1 never fires), proving P5 is NOT invoked.
     #[test]
