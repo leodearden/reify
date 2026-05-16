@@ -2078,6 +2078,295 @@ fn dispatch_surface_angle(
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Ad-hoc selector eval dispatch (task 3463)
+//
+// Layer 2 of the two-layer @face/@edge evaluation split.  Layer 1 (pure-expr
+// @point) lives in `reify-expr/src/lib.rs`.  Here we wire the kernel-aware
+// @face/@edge path, mirroring `try_eval_topology_selector` in structure.
+//
+// Why `pub` (not `pub(crate)`): integration tests in `tests/` are separate
+// crates and cannot see `pub(crate)`.  The function is also re-exported from
+// `lib.rs` for the same reason, following the `resolve_unique_by_attribute`
+// precedent.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Dispatch a `CompiledExprKind::AdHocSelector` expression through the engine
+/// attribute table and geometry kernel, returning the resolved `Value::Frame`
+/// (or `Some(Value::Undef)` on a diagnostic failure, or `None` if the
+/// expression is not an `AdHocSelector` or the arg shapes are unsupported).
+///
+/// Called by `Engine::post_process_ad_hoc_selectors` after `eval_expr` has set
+/// Face/Edge cells to `Value::Undef`.  Layer-1 (`@point`) was already resolved
+/// by `eval_expr` directly, so `Point` arms here return `None` immediately.
+///
+/// # Arg-shape contract
+/// - `expr.kind` must be `AdHocSelector` — anything else yields `None`.
+/// - `base` must be a `Literal(Value::String(name))` — other shapes yield `None`
+///   (cell stays at Undef).
+/// - `args[0]` must be a `Literal(Value::String(label))` — same fall-through.
+/// - `name` must exist in `named_steps` — miss yields `None`.
+///
+/// # Returns
+/// - `Some(Value::Frame { origin, basis })` on success.
+/// - `Some(Value::Undef)` on any diagnostic failure (resolver emits its own
+///   `TopologyAttributeStale` Warning; kernel errors get a new Warning here).
+/// - `None` for non-AdHocSelector, Point-kind, or unsupported arg shapes.
+pub fn try_eval_ad_hoc_selector(
+    expr: &reify_types::CompiledExpr,
+    named_steps: &HashMap<String, GeometryHandleId>,
+    kernel: &mut dyn reify_types::GeometryKernel,
+    table: &reify_types::TopologyAttributeTable,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_types::Value> {
+    // (1) Must be an AdHocSelector — anything else is not applicable.
+    let (base, selector_kind, args) = match &expr.kind {
+        reify_types::CompiledExprKind::AdHocSelector {
+            base,
+            selector_kind,
+            args,
+        } => (base.as_ref(), selector_kind, args),
+        _ => return None,
+    };
+
+    // (2) Point arm was handled by Layer-1 (eval_expr); post-process is a no-op.
+    if *selector_kind == reify_types::SelectorKind::Point {
+        return None;
+    }
+
+    // (3) Extract the base name — must be a string literal.
+    let name = resolve_string_literal_arg(base)?;
+
+    // (4) Extract the face/edge label — must be args[0] string literal.
+    let label = match args.first() {
+        Some(a) => resolve_string_literal_arg(a)?,
+        None => return None,
+    };
+
+    // (5) Look up the base name in named_steps → GeometryHandleId.
+    let handle = match named_steps.get(name) {
+        Some(&h) => h,
+        None => return None,
+    };
+
+    // (6) Extract sub-shape handles from the kernel.
+    let span = reify_types::SourceSpan::empty(0);
+    let candidates: Vec<GeometryHandleId> = match selector_kind {
+        reify_types::SelectorKind::Face => match kernel.extract_faces(handle) {
+            Ok(faces) => faces,
+            Err(err) => {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "@face(\"{label}\"): extract_faces({handle:?}) failed: {err}"
+                )));
+                return Some(reify_types::Value::Undef);
+            }
+        },
+        reify_types::SelectorKind::Edge => match kernel.extract_edges(handle) {
+            Ok(edges) => edges,
+            Err(err) => {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "@edge(\"{label}\"): extract_edges({handle:?}) failed: {err}"
+                )));
+                return Some(reify_types::Value::Undef);
+            }
+        },
+        reify_types::SelectorKind::Point => unreachable!("Point arm returned None above"),
+    };
+
+    // (7) Build AttributeQuery with dual user_label + canonical-name role translation.
+    let query = crate::topology_attribute_resolver::AttributeQuery {
+        user_label: Some(label.to_string()),
+        role_and_index: cap_kind_translation(label),
+        feature_id: None,
+    };
+
+    // (8) Resolve via the attribute table.
+    let resolution = crate::topology_attribute_resolver::resolve_unique_by_attribute(
+        table,
+        &candidates,
+        &query,
+        span,
+        diagnostics,
+    );
+
+    // (9) On Resolved: query kernel for Frame; on any other outcome: Some(Undef).
+    //     The resolver already pushed its TopologyAttributeStale / AmbiguousAfterSplit
+    //     Warning, so we only need to patch the cell value here.
+    match resolution {
+        crate::topology_attribute_resolver::AttributeResolution::Resolved(target_id) => {
+            construct_frame_from_kernel(target_id, selector_kind, kernel, diagnostics)
+        }
+        _ => Some(reify_types::Value::Undef),
+    }
+}
+
+/// Helper: extract a `&str` from a `CompiledExprKind::Literal(Value::String(s))`
+/// expression.  Returns `None` for any other expression kind or value payload.
+///
+/// Used by `try_eval_ad_hoc_selector` to extract the base name and the label
+/// from an `AdHocSelector`'s `base` and `args[0]` respectively.
+fn resolve_string_literal_arg(expr: &reify_types::CompiledExpr) -> Option<&str> {
+    match &expr.kind {
+        reify_types::CompiledExprKind::Literal(reify_types::Value::String(s)) => Some(s.as_str()),
+        _ => None,
+    }
+}
+
+/// Translate a canonical face/edge label into a `(Role, local_index)` pair for
+/// the `AttributeQuery::role_and_index` field.
+///
+/// The translation covers the four labels wired by the Cylinder seeder
+/// (`seed_primitive_attributes`), making `@face("top")` / `@face("bottom")`
+/// / `@face("start")` / `@face("end")` work against Cylinder and Extrude /
+/// Revolve primitives without requiring a `name = "..."` source annotation on
+/// the face (which is deferred per the PRD).
+///
+/// Any unrecognised label returns `None` — the query then relies entirely on
+/// `user_label` and will Unresolve if no `user_label` entry exists in the table.
+pub fn cap_kind_translation(label: &str) -> Option<(reify_types::Role, u32)> {
+    use reify_types::{CapKind, Role};
+    match label {
+        "top" => Some((Role::Cap(CapKind::Top), 0)),
+        "bottom" => Some((Role::Cap(CapKind::Bottom), 0)),
+        "start" => Some((Role::Cap(CapKind::Start), 0)),
+        "end" => Some((Role::Cap(CapKind::End), 0)),
+        _ => None,
+    }
+}
+
+/// Query the kernel for centroid and normal/tangent of `target_id`, then
+/// construct a `Value::Frame { origin, basis }`.
+///
+/// On centroid failure: push a Warning and return `Some(Value::Undef)`.
+/// On normal/tangent failure: push a Warning and use identity basis, so the
+/// Frame still has a meaningful origin.
+fn construct_frame_from_kernel(
+    target_id: GeometryHandleId,
+    selector_kind: &reify_types::SelectorKind,
+    kernel: &mut dyn reify_types::GeometryKernel,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_types::Value> {
+    // ── Origin via Centroid ───────────────────────────────────────────────
+    // `GeometryQuery::Centroid` is unified — works for faces, edges, AND solids.
+    let origin = match kernel.query(&reify_types::GeometryQuery::Centroid(target_id)) {
+        Ok(value) => {
+            match crate::topology_selectors::parse_xyz_value(&value, "Centroid") {
+                Ok([x, y, z]) => reify_types::Value::Point(vec![
+                    reify_types::Value::length(x),
+                    reify_types::Value::length(y),
+                    reify_types::Value::length(z),
+                ]),
+                Err(err) => {
+                    diagnostics.push(Diagnostic::warning(format!(
+                        "@face/@edge centroid parse failed: {err}; cell left as Undef"
+                    )));
+                    return Some(reify_types::Value::Undef);
+                }
+            }
+        }
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "@face/@edge centroid query failed: {err}; cell left as Undef"
+            )));
+            return Some(reify_types::Value::Undef);
+        }
+    };
+
+    // ── Basis via FaceNormal (face) or EdgeTangent (edge) ─────────────────
+    let basis_query = match selector_kind {
+        reify_types::SelectorKind::Face => {
+            reify_types::GeometryQuery::FaceNormal(target_id)
+        }
+        reify_types::SelectorKind::Edge => {
+            reify_types::GeometryQuery::EdgeTangent(target_id)
+        }
+        reify_types::SelectorKind::Point => {
+            unreachable!("Point arm returned None before construct_frame_from_kernel is called")
+        }
+    };
+    let query_label = match selector_kind {
+        reify_types::SelectorKind::Face => "FaceNormal",
+        reify_types::SelectorKind::Edge => "EdgeTangent",
+        reify_types::SelectorKind::Point => unreachable!(),
+    };
+
+    let basis = match kernel.query(&basis_query) {
+        Ok(value) => {
+            match crate::topology_selectors::parse_xyz_value(&value, query_label) {
+                Ok([nx, ny, nz]) => quaternion_from_z_to_axis(nx, ny, nz),
+                Err(err) => {
+                    diagnostics.push(Diagnostic::warning(format!(
+                        "@face/@edge {query_label} parse failed: {err}; using identity basis"
+                    )));
+                    // Degrade gracefully: return a Frame with correct origin, identity basis.
+                    reify_types::Value::Orientation {
+                        w: 1.0,
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
+                    }
+                }
+            }
+        }
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "@face/@edge {query_label} query failed: {err}; using identity basis"
+            )));
+            // Degrade gracefully: origin was obtained, identity basis.
+            reify_types::Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }
+        }
+    };
+
+    Some(reify_types::Value::Frame {
+        origin: Box::new(origin),
+        basis: Box::new(basis),
+    })
+}
+
+/// Compute the shortest-arc unit quaternion that rotates the +Z axis `(0, 0, 1)`
+/// to the given (approximately unit) axis vector `(nx, ny, nz)`.
+///
+/// Formula: for unit vectors `a` and `b`,
+///   `q_unnorm = (1 + dot(a,b),  cross(a,b))`
+/// where `a = +Z = (0,0,1)`, so:
+///   `dot(+Z, b) = nz`
+///   `cross(+Z, b) = (-ny, nx, 0)`
+///   `q_unnorm = (1 + nz, -ny, nx, 0)`
+///
+/// Special case: `b ≈ -Z` makes `q_unnorm ≈ (0,0,0,0)` — degenerate.
+/// Fall back to a 180° rotation around the +X axis.
+fn quaternion_from_z_to_axis(nx: f64, ny: f64, nz: f64) -> reify_types::Value {
+    let w_unnorm = 1.0 + nz;
+    let x_unnorm = -ny;
+    let y_unnorm = nx;
+    // z component of cross(+Z, b) is always 0.
+
+    let len_sq = w_unnorm * w_unnorm + x_unnorm * x_unnorm + y_unnorm * y_unnorm;
+
+    if len_sq < 1e-18 {
+        // (nx, ny, nz) ≈ -Z: degenerate case. Rotate 180° around +X.
+        return reify_types::Value::Orientation {
+            w: 0.0,
+            x: 1.0,
+            y: 0.0,
+            z: 0.0,
+        };
+    }
+
+    let len = len_sq.sqrt();
+    reify_types::Value::Orientation {
+        w: w_unnorm / len,
+        x: x_unnorm / len,
+        y: y_unnorm / len,
+        z: 0.0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
