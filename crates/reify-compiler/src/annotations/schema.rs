@@ -192,6 +192,16 @@ pub(crate) fn lookup_schema(name: &str) -> Option<&'static AnnotationSchema> {
 mod tests {
     use super::*;
 
+    // ── Test helpers ─────────────────────────────────────────────────────────
+
+    fn ann(name: &str, args: Vec<reify_types::AnnotationArg>) -> reify_types::Annotation {
+        reify_types::Annotation {
+            name: name.to_string(),
+            args,
+            span: reify_types::SourceSpan::empty(0),
+        }
+    }
+
     // ── Registry lookup tests ────────────────────────────────────────────────
 
     #[test]
@@ -275,6 +285,138 @@ mod tests {
         assert!(
             lookup_schema("nonexistent_xyz").is_none(),
             "expected None for unknown annotation"
+        );
+    }
+
+    // ── validate_via_schema: context-mismatch tests ──────────────────────────
+
+    /// @test on an invalid context emits exactly one warning with the
+    /// byte-identical message from the legacy match-arm.
+    #[test]
+    fn validate_test_on_invalid_context_emits_warning() {
+        let a = ann(reify_types::TEST_ANNOTATION, vec![]);
+        let mut diags: Vec<reify_types::Diagnostic> = vec![];
+        validate_via_schema(std::slice::from_ref(&a), "param", &mut diags);
+        assert_eq!(diags.len(), 1, "expected exactly 1 diagnostic, got: {:?}", diags);
+        assert_eq!(
+            diags[0].message,
+            "annotation @test is not valid on param declarations",
+            "unexpected message"
+        );
+        assert_eq!(diags[0].labels.len(), 1);
+        assert_eq!(diags[0].labels[0].message, "@test", "unexpected label");
+        assert_eq!(diags[0].labels[0].span, a.span, "label span must equal ann span");
+    }
+
+    /// @optimized on an invalid context emits the same wording as the legacy arm.
+    #[test]
+    fn validate_optimized_on_invalid_context_emits_warning() {
+        let a = ann(reify_types::OPTIMIZED_ANNOTATION, vec![]);
+        let mut diags: Vec<reify_types::Diagnostic> = vec![];
+        validate_via_schema(std::slice::from_ref(&a), "param", &mut diags);
+        assert_eq!(diags.len(), 1, "expected exactly 1 diagnostic, got: {:?}", diags);
+        assert_eq!(
+            diags[0].message,
+            "annotation @optimized is not valid on param declarations"
+        );
+        assert_eq!(diags[0].labels[0].message, "@optimized");
+        assert_eq!(diags[0].labels[0].span, a.span);
+    }
+
+    /// @solver_hint on "function" (not in its valid set) emits one warning.
+    #[test]
+    fn validate_solver_hint_on_invalid_context_emits_warning() {
+        let a = ann(reify_types::SOLVER_HINT_ANNOTATION, vec![]);
+        let mut diags: Vec<reify_types::Diagnostic> = vec![];
+        validate_via_schema(std::slice::from_ref(&a), "function", &mut diags);
+        assert_eq!(diags.len(), 1, "expected exactly 1 diagnostic, got: {:?}", diags);
+        assert_eq!(
+            diags[0].message,
+            "annotation @solver_hint is not valid on function declarations"
+        );
+        assert_eq!(diags[0].labels[0].message, "@solver_hint");
+        assert_eq!(diags[0].labels[0].span, a.span);
+    }
+
+    /// @shell on "function" emits one context-mismatch warning.
+    #[test]
+    fn validate_shell_on_invalid_context_emits_warning() {
+        let a = ann(reify_types::SHELL_ANNOTATION, vec![]);
+        let mut diags: Vec<reify_types::Diagnostic> = vec![];
+        validate_via_schema(std::slice::from_ref(&a), "function", &mut diags);
+        assert_eq!(diags.len(), 1, "expected exactly 1 diagnostic, got: {:?}", diags);
+        assert_eq!(
+            diags[0].message,
+            "annotation @shell is not valid on function declarations"
+        );
+        assert_eq!(diags[0].labels[0].message, "@shell");
+        assert_eq!(diags[0].labels[0].span, a.span);
+    }
+
+    /// @solid on "function" emits one context-mismatch warning.
+    #[test]
+    fn validate_solid_on_invalid_context_emits_warning() {
+        let a = ann(reify_types::SOLID_ANNOTATION, vec![]);
+        let mut diags: Vec<reify_types::Diagnostic> = vec![];
+        validate_via_schema(std::slice::from_ref(&a), "function", &mut diags);
+        assert_eq!(diags.len(), 1, "expected exactly 1 diagnostic, got: {:?}", diags);
+        assert_eq!(
+            diags[0].message,
+            "annotation @solid is not valid on function declarations"
+        );
+        assert_eq!(diags[0].labels[0].message, "@solid");
+        assert_eq!(diags[0].labels[0].span, a.span);
+    }
+
+    /// Empty annotation slice produces zero diagnostics.
+    #[test]
+    fn validate_empty_slice_produces_no_diagnostics() {
+        let mut diags: Vec<reify_types::Diagnostic> = vec![];
+        validate_via_schema(&[], "structure", &mut diags);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {:?}", diags);
+    }
+
+    /// @deprecated on any context produces zero diagnostics.
+    #[test]
+    fn validate_deprecated_on_any_context_produces_no_diagnostics() {
+        for ctx in ["structure", "occurrence", "function", "constraint_def", "param", "let"] {
+            let a = ann(reify_types::DEPRECATED_ANNOTATION, vec![]);
+            let mut diags: Vec<reify_types::Diagnostic> = vec![];
+            validate_via_schema(std::slice::from_ref(&a), ctx, &mut diags);
+            assert!(
+                diags.is_empty(),
+                "context={ctx}: expected no diagnostics, got: {:?}",
+                diags
+            );
+        }
+    }
+
+    /// Unknown annotation name emits "unknown annotation @<name>" warning.
+    #[test]
+    fn validate_unknown_annotation_emits_warning() {
+        let a = ann("future_annotation", vec![]);
+        let mut diags: Vec<reify_types::Diagnostic> = vec![];
+        validate_via_schema(std::slice::from_ref(&a), "structure", &mut diags);
+        assert_eq!(diags.len(), 1, "expected exactly 1 diagnostic, got: {:?}", diags);
+        assert_eq!(
+            diags[0].message,
+            "unknown annotation @future_annotation",
+            "unexpected message"
+        );
+        assert_eq!(diags[0].labels[0].message, "unknown annotation");
+        assert_eq!(diags[0].labels[0].span, a.span);
+    }
+
+    /// @test on a valid context (structure) produces zero diagnostics.
+    #[test]
+    fn validate_test_on_valid_context_produces_no_diagnostics() {
+        let a = ann(reify_types::TEST_ANNOTATION, vec![]);
+        let mut diags: Vec<reify_types::Diagnostic> = vec![];
+        validate_via_schema(std::slice::from_ref(&a), "structure", &mut diags);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostics on valid context, got: {:?}",
+            diags
         );
     }
 }
