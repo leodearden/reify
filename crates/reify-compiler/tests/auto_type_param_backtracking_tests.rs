@@ -974,19 +974,20 @@ structure def S7 : T7 { param x : Real = 7.0 }
     // depth-bound fallback diagnostic so future agents implementing the
     // Type::TypeParam → Type::StructureRef substitution pass see the hazard.
     assert!(
-        extra.message.contains("BFS") || extra.message.contains("falling back"),
-        "depth-bound diagnostic must include 'BFS'/'falling back' in the caveat; got: {:?}",
-        extra.message
-    );
-    assert!(
         extra.message.contains("substitution"),
         "depth-bound diagnostic must contain 'substitution' (soundness caveat, task 3637 M-005); got: {:?}",
         extra.message
     );
+    // task 3753 S1: pin the stable caveat phrase rather than the internal audit-doc path.
     assert!(
-        extra.message.contains("auto-resolution-backtracking.md M-005"),
-        "depth-bound diagnostic must contain the stable audit-citation path \
-         'auto-resolution-backtracking.md M-005' (task 3637 M-005); got: {:?}",
+        extra.message.contains("BFS-fallback soundness"),
+        "depth-bound diagnostic must pin the stable caveat phrase 'BFS-fallback soundness' (task 3753); got: {:?}",
+        extra.message
+    );
+    // task 3753 S2: internal audit-doc filesystem path must NOT appear in user-facing output.
+    assert!(
+        !extra.message.contains("docs/architecture-audit"),
+        "depth-bound diagnostic must NOT leak internal audit-doc filesystem path to end users (task 3753 S2); got: {:?}",
         extra.message
     );
 }
