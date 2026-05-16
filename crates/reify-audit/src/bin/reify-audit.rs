@@ -26,6 +26,20 @@
 //! `exit == 125` to detect misconfigured invocations without misreading
 //! them as "125 phantom-done tasks".
 //!
+//! ### Why JSON on stderr?
+//!
+//! Per design §3/§10, this binary is primarily invoked as a subprocess — by
+//! the dark-factory pre-done hook (D-1) and by the `/audit` skill (T-5),
+//! both of which capture *stderr* for structured data and let *stdout* surface
+//! as human-visible progress output in the terminal/log. The JSON-on-stderr
+//! convention keeps the machine-readable payload on the fd that subprocess
+//! wrappers typically capture separately from the user-facing summary.
+//!
+//! If you need JSON on stdout (e.g. `reify-audit ... | jq`), redirect stderr:
+//! ```text
+//! reify-audit --task 1234 2>&1 >/dev/null | jq '.[].severity'
+//! ```
+//!
 //! ## Arg parsing
 //!
 //! Hand-rolled `std::env::args()` — mirrors `crates/reify-cli/src/main.rs` to
