@@ -312,13 +312,22 @@ mod node_traits_map_tests {
     }
 
     fn value_key(id: u32) -> TestKey {
-        TestKey { id, kind: NodeKind::Value }
+        TestKey {
+            id,
+            kind: NodeKind::Value,
+        }
     }
     fn compute_key(id: u32) -> TestKey {
-        TestKey { id, kind: NodeKind::Compute }
+        TestKey {
+            id,
+            kind: NodeKind::Compute,
+        }
     }
     fn constraint_key(id: u32) -> TestKey {
-        TestKey { id, kind: NodeKind::Constraint }
+        TestKey {
+            id,
+            kind: NodeKind::Constraint,
+        }
     }
 
     #[test]
@@ -351,7 +360,10 @@ mod node_traits_map_tests {
     fn set_instance_resolves_to_instance_value() {
         let mut m = NodeTraitsMap::<TestKey>::default();
         let key = compute_key(7);
-        m.set_instance(key.clone(), NodeTraits::PROGRESSIVE.union(NodeTraits::COMMITTABLE));
+        m.set_instance(
+            key.clone(),
+            NodeTraits::PROGRESSIVE.union(NodeTraits::COMMITTABLE),
+        );
         assert_eq!(
             m.resolve(&key),
             NodeTraits::PROGRESSIVE.union(NodeTraits::COMMITTABLE)
@@ -418,17 +430,26 @@ mod node_traits_map_tests {
         let m = NodeTraitsMap::<TestKey>::default();
         // Sanity: no stale entries; each kind falls back to default_traits()
         assert_eq!(m.resolve(&value_key(0)), NodeKind::Value.default_traits());
-        assert_eq!(m.resolve(&compute_key(0)), NodeKind::Compute.default_traits());
+        assert_eq!(
+            m.resolve(&compute_key(0)),
+            NodeKind::Compute.default_traits()
+        );
         assert_eq!(
             m.resolve(&constraint_key(0)),
             NodeKind::Constraint.default_traits()
         );
         assert_eq!(
-            m.resolve(&TestKey { id: 0, kind: NodeKind::Realization }),
+            m.resolve(&TestKey {
+                id: 0,
+                kind: NodeKind::Realization
+            }),
             NodeKind::Realization.default_traits()
         );
         assert_eq!(
-            m.resolve(&TestKey { id: 0, kind: NodeKind::Resolution }),
+            m.resolve(&TestKey {
+                id: 0,
+                kind: NodeKind::Resolution
+            }),
             NodeKind::Resolution.default_traits()
         );
     }
@@ -439,7 +460,10 @@ mod node_traits_map_tests {
         // Covers the public `new()` method so it doesn't ship as untested surface area.
         let m = NodeTraitsMap::<TestKey>::new();
         assert_eq!(m.resolve(&value_key(0)), NodeKind::Value.default_traits());
-        assert_eq!(m.resolve(&compute_key(0)), NodeKind::Compute.default_traits());
+        assert_eq!(
+            m.resolve(&compute_key(0)),
+            NodeKind::Compute.default_traits()
+        );
         assert_eq!(
             m.resolve(&constraint_key(0)),
             NodeKind::Constraint.default_traits()

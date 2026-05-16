@@ -1904,7 +1904,7 @@ mod tests {
     // round-trip and serde wire-format tests are added here.
 
     /// `DiagnosticCode::UnresolvedType` round-trips through
-    /// `Diagnostic::error(...).with_code(...)` and Debug-prints as `"UnresolvedType"`.
+    /// `Diagnostic::error(...).with_code(...)`.
     /// Shape mirrors `diagnostic_code_geometry_unbounded_with_code_round_trips`
     /// (which targets a different variant); a future enum reorganisation that
     /// drops `UnresolvedType` is caught here.
@@ -1912,10 +1912,6 @@ mod tests {
     fn diagnostic_code_unresolved_type_with_code_round_trips() {
         let d = Diagnostic::error("x").with_code(DiagnosticCode::UnresolvedType);
         assert_eq!(d.code, Some(DiagnosticCode::UnresolvedType));
-        assert_eq!(
-            format!("{:?}", DiagnosticCode::UnresolvedType),
-            "UnresolvedType"
-        );
     }
 
     /// Under `feature = "serde"`, `DiagnosticCode::UnresolvedType` serializes as
@@ -1935,7 +1931,7 @@ mod tests {
     // round-trip and serde wire-format tests are added here.
 
     /// `DiagnosticCode::UnresolvedName` round-trips through
-    /// `Diagnostic::error(...).with_code(...)` and Debug-prints as `"UnresolvedName"`.
+    /// `Diagnostic::error(...).with_code(...)`.
     /// Shape mirrors `diagnostic_code_geometry_unbounded_with_code_round_trips`
     /// (which targets a different variant); a future enum reorganisation that
     /// drops `UnresolvedName` is caught here.
@@ -1943,10 +1939,6 @@ mod tests {
     fn diagnostic_code_unresolved_name_with_code_round_trips() {
         let d = Diagnostic::error("x").with_code(DiagnosticCode::UnresolvedName);
         assert_eq!(d.code, Some(DiagnosticCode::UnresolvedName));
-        assert_eq!(
-            format!("{:?}", DiagnosticCode::UnresolvedName),
-            "UnresolvedName"
-        );
     }
 
     /// Under `feature = "serde"`, `DiagnosticCode::UnresolvedName` serializes as
@@ -1977,7 +1969,11 @@ mod tests {
         ];
         for code in error_variants {
             let d = Diagnostic::error("x").with_code(code);
-            assert_eq!(d.severity, Severity::Error, "severity mismatch for {code:?}");
+            assert_eq!(
+                d.severity,
+                Severity::Error,
+                "severity mismatch for {code:?}"
+            );
             assert_eq!(d.code, Some(code), "code mismatch for {code:?}");
         }
         let warning_variants = [

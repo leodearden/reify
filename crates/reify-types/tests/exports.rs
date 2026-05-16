@@ -295,8 +295,7 @@ fn cross_sub_geometry_ref_variant_exported_and_distinct_from_value_ref() {
     ));
     // (e) content hashes must differ — TAG_CROSS_SUB_GEOMETRY_REF != TAG_VALUE_REF
     assert_ne!(
-        xref.content_hash,
-        vref.content_hash,
+        xref.content_hash, vref.content_hash,
         "TAG_CROSS_SUB_GEOMETRY_REF must seed a distinct content hash"
     );
     // (f) result_type is preserved
