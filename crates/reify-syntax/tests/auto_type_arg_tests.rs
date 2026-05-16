@@ -3,9 +3,6 @@
 //! User-observable signal: `cargo test -p reify-syntax --test auto_type_arg_tests`
 //! passes.  The load-bearing coverage spans four layers:
 //!
-//! * **Parse-pipeline regression guards** — `auto_type_arg_parses_free`,
-//!   `auto_type_arg_parses_multi_param` (task 3662, gated on task 3665).
-//!
 //! * **CST level** — `auto_type_arg_cst_bound_identifier_strict`, `_multi_param`,
 //!   `auto_type_arg_cst_strict_has_no_modifier_field`,
 //!   `auto_type_arg_cst_free_has_modifier_field_with_text_free`, and the
@@ -19,8 +16,9 @@
 //!   and `auto_type_arg_clean_input_has_no_spurious_errors` (task 3665: CST ERROR
 //!   nodes inside `type_arg_list` are now surfaced in `module.errors`).
 //!
-//! Task 3662 re-introduced parse-level free/multi-param coverage after task 3665
-//! closed the gap that made the zero-error signal load-bearing as a grammar-regression guard.
+//! Task 3662 consolidated free/multi-param zero-error coverage into
+//! `auto_type_arg_clean_input_has_no_spurious_errors` (gated on task 3665; the
+//! `auto(free):` fixture was added to that test rather than kept as a separate test).
 
 use reify_types::ModulePath;
 
@@ -38,41 +36,6 @@ fn parse_pipeline_smoke_auto_type_arg() {
     let _ = reify_syntax::parse(
         "fn f() -> Bearing<auto: Seal> { 0 }",
         ModulePath::single("test"),
-    );
-}
-
-// ── Task 3662: parse-pipeline regression guards (re-introduced after task 3665) ──
-//
-// These tests were originally removed by task 3654 (commit edf3e2e170) because
-// `module.errors` did not yet propagate CST ERROR nodes from `type_arg_list`
-// subtrees — so the zero-error signal was vacuous and a grammar regression could
-// silently pass.  Task 3665 closed that gap: `lower_type_args_from_node` now
-// scans `type_arg_list.has_error()` and pushes a "syntax error in type argument
-// list" diagnostic.  The zero-error signal is therefore now load-bearing: a
-// grammar regression dropping `auto(free):` or multi-param `auto:` will produce
-// a non-empty `module.errors` and fail these tests.
-// AST-shape assertions for the same fixtures live in `auto_type_arg_lowers_to_ast_free`
-// and `auto_type_arg_multi_param_lowers_both`.
-
-#[test]
-fn auto_type_arg_parses_free() {
-    let source = "fn g() -> Bearing<auto(free): Seal> { 0 }";
-    let module = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        module.errors.is_empty(),
-        "expected zero parse errors for `auto(free): Seal` in type-arg position, got: {:?}",
-        module.errors,
-    );
-}
-
-#[test]
-fn auto_type_arg_parses_multi_param() {
-    let source = "fn h() -> Coupling<auto: A, auto: B> { 0 }";
-    let module = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        module.errors.is_empty(),
-        "expected zero parse errors for `auto: A, auto: B` in type-arg list, got: {:?}",
-        module.errors,
     );
 }
 
@@ -326,13 +289,15 @@ fn auto_type_arg_cst_error_propagates_to_module_errors() {
     );
 }
 
-/// Well-formed `auto:` type-arg inputs must produce ZERO parse errors (negative
-/// guard — the ERROR subtree scan in `lower_type_args_from_node` must not
-/// false-positive on valid inputs).
+/// Well-formed `auto:` / `auto(free):` type-arg inputs must produce ZERO parse errors
+/// (negative guard — the ERROR subtree scan in `lower_type_args_from_node` must not
+/// false-positive on valid inputs).  Covers strict, free, and multi-param forms;
+/// task 3662 added the `auto(free):` entry here to consolidate zero-error coverage.
 #[test]
 fn auto_type_arg_clean_input_has_no_spurious_errors() {
     for source in &[
         "fn f() -> Bearing<auto: Seal> { 0 }",
+        "fn g() -> Bearing<auto(free): Seal> { 0 }",
         "fn h() -> Coupling<auto: A, auto: B> { 0 }",
     ] {
         let m = reify_syntax::parse(source, ModulePath::single("t"));
