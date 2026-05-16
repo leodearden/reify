@@ -439,11 +439,16 @@ describe('AutoResolvePanel (e) non-scalar value sparkline null-filter', () => {
     const polyline = sparklineSvg.querySelector('polyline');
     expect(polyline).toBeTruthy();
     const pointsAttr = polyline!.getAttribute('points') ?? '';
-    // No coordinate string should contain "NaN"
-    expect(pointsAttr).not.toMatch(/NaN/);
     // Exactly 2 pairs — the non-finite iteration is filtered out just like null
     const points = pointsAttr.trim().split(/\s+/);
     expect(points).toHaveLength(2);
+    // Parse-then-finite: mirrors the production Number.isFinite predicate and is
+    // robust to serialization changes (unlike a /NaN/ regex check).
+    for (const pair of points) {
+      const [x, y] = pair.split(',').map(parseFloat);
+      expect(Number.isFinite(x!)).toBe(true);
+      expect(Number.isFinite(y!)).toBe(true);
+    }
   });
 
   it('(e.5) sparkline polyline excludes a non-null Infinity iteration', () => {
@@ -461,11 +466,16 @@ describe('AutoResolvePanel (e) non-scalar value sparkline null-filter', () => {
     const polyline = sparklineSvg.querySelector('polyline');
     expect(polyline).toBeTruthy();
     const pointsAttr = polyline!.getAttribute('points') ?? '';
-    // No coordinate should contain "Infinity"
-    expect(pointsAttr).not.toMatch(/Infinity/);
     // Exactly 2 pairs — the Infinity iteration is filtered out
     const points = pointsAttr.trim().split(/\s+/);
     expect(points).toHaveLength(2);
+    // Parse-then-finite: parallels (e.4) and covers the Infinity half of the
+    // contract. Mirrors the production Number.isFinite predicate exactly.
+    for (const pair of points) {
+      const [x, y] = pair.split(',').map(parseFloat);
+      expect(Number.isFinite(x!)).toBe(true);
+      expect(Number.isFinite(y!)).toBe(true);
+    }
   });
 });
 
