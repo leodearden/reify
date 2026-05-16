@@ -79,14 +79,11 @@ fn f(x : Int) -> Bogus { 0 }
 
     let compiled = reify_compiler::compile(&parsed);
 
-    assert!(
-        compiled
-            .diagnostics
-            .iter()
-            .any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
-        "expected DiagnosticCode::UnresolvedType for unresolved return type 'Bogus' \
-         (functions.rs:122), got: {:?}",
-        compiled.diagnostics
+    assert_diagnostic_with_code_and_prefix(
+        &compiled,
+        DiagnosticCode::UnresolvedType,
+        "unresolved return type:",
+        "functions.rs:122 — unresolved return type 'Bogus'",
     );
 }
 
