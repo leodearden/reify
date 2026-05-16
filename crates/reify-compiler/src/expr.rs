@@ -1008,7 +1008,7 @@ pub(crate) fn compile_expr_guarded(
                     // same-name candidate whose trailing params all have compiled defaults
                     // and whose provided-arg prefix types match exactly.
                     if let Some((padded_fn, default_exprs)) =
-                        try_default_padding(&named_candidates, &compiled_args, &arg_types)
+                        try_default_padding(&named_candidates, &arg_types)
                     {
                         let result_type = padded_fn.return_type.clone();
                         // Deprecation check: mirror the Resolved arm — warn if the

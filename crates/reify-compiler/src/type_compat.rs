@@ -856,15 +856,23 @@ mod tests {
 /// - the provided prefix `arg_types[..provided]` matches `cand.params[..provided]` exactly, and
 /// - every trailing `cand.param_defaults[provided..]` is `Some`.
 ///
+/// `provided` is `arg_types.len()` — callers no longer pass `compiled_args`
+/// because only its length was used and `arg_types` is always length-aligned
+/// to `compiled_args` by construction (task-3702).
+///
 /// If exactly one such candidate exists, returns it together with the cloned default
 /// `CompiledExpr`s for the trailing params. Returns `None` when zero or multiple
 /// candidates are satisfiable (caller falls through to the existing NoMatch error).
+///
+/// **Invariant:** every candidate in `named` must satisfy
+/// `param_defaults.len() == params.len()` (task-3702 strict alignment now
+/// enforced by `debug_assert!`). Violations are programming errors, not
+/// recoverable call-site conditions.
 pub(crate) fn try_default_padding<'a>(
     named: &[&'a CompiledFunction],
-    compiled_args: &[CompiledExpr],
     arg_types: &[Type],
 ) -> Option<(&'a CompiledFunction, Vec<CompiledExpr>)> {
-    let provided = compiled_args.len();
+    let provided = arg_types.len();
     let mut satisfiable: Vec<(&CompiledFunction, Vec<CompiledExpr>)> = Vec::new();
 
     for &cand in named {
@@ -872,10 +880,15 @@ pub(crate) fn try_default_padding<'a>(
         if cand.params.len() <= provided {
             continue;
         }
-        // param_defaults must be populated and length-aligned to params.
-        if cand.param_defaults.len() != cand.params.len() {
-            continue;
-        }
+        // Strict invariant: param_defaults must be length-aligned to params.
+        // Violations are bugs, not recoverable conditions — surface in debug builds.
+        debug_assert!(
+            cand.param_defaults.len() == cand.params.len(),
+            "param_defaults.len() == params.len() invariant violated for candidate `{}` (task-3702): expected {}, got {}",
+            cand.name,
+            cand.params.len(),
+            cand.param_defaults.len()
+        );
         // Provided prefix types must match candidate params exactly.
         let prefix_matches = cand.params[..provided]
             .iter()
