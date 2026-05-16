@@ -730,20 +730,30 @@ mod tests {
 
     // --- NodeKind::ALL exhaustive const slice (PRD §5 B5 / I-3) ---
 
-    /// Length pin on [`NodeKind::ALL`]: paired with the compile-time
+    /// Distinct-variant pin on [`NodeKind::ALL`]: paired with the compile-time
     /// `_all_exhaustive_guard` match (in this file, above) this is sufficient
     /// to catch every realistic drift mode — adding a new variant fails
     /// compilation in the guard, removing-and-not-shortening-`ALL` fails
-    /// compilation in the guard, removing-and-shortening-`ALL` fails this
-    /// length pin. Per-variant `contains` and duplicate-check tests were
-    /// dropped after reviewer feedback noted they were belt-and-suspenders
-    /// for cases already structurally prevented.
+    /// compilation in the guard, and shrinking or duplicating an entry in
+    /// `ALL` fails this distinct-set pin (a length-only check would accept
+    /// e.g. `[Value, Value, Constraint, Realization, Resolution]`, silently
+    /// dropping Compute from the assertion's iteration).
     #[test]
-    fn node_kind_all_covers_five_variants() {
+    fn node_kind_all_covers_five_distinct_variants() {
         // ALL must enumerate the closed 5-variant universe used by the
         // `assert_warm_startable_coextensive` iteration in reify-runtime
-        // (PRD §5 B5). A literal-length pin here keeps any future variant
-        // addition from silently skipping the assertion's coverage.
-        assert_eq!(NodeKind::ALL.len(), 5);
+        // (PRD §5 B5). Collecting into a HashSet pins both cardinality and
+        // distinctness in one step.
+        let seen: std::collections::HashSet<NodeKind> = NodeKind::ALL.iter().copied().collect();
+        assert_eq!(seen.len(), 5);
+        for expected in [
+            NodeKind::Value,
+            NodeKind::Compute,
+            NodeKind::Constraint,
+            NodeKind::Realization,
+            NodeKind::Resolution,
+        ] {
+            assert!(seen.contains(&expected), "ALL missing {expected:?}");
+        }
     }
 }

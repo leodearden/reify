@@ -266,19 +266,24 @@ impl ConcurrentScheduler {
         changed_cells: &HashSet<ValueCellId>,
         config: SchedulerConfig<'_>,
     ) -> Result<SchedulerResult, SchedulerError> {
+        // PRD §5 B5 / I-3 (M-013 fix): when a `WarmStartableRegistry` fixture
+        // is attached to the config, fire the bidirectional coextension
+        // assertion before any spawn. The assertion body is `debug_assert_eq!`
+        // so release builds compile to a no-op even on the `Some(_)` arm.
+        //
+        // Runs above the empty-eval-set short-circuit because the invariant is
+        // global (a property of `NodeKind::default_traits` ↔ static-init
+        // submissions, both fixed at process start), not per-eval-set — an
+        // empty execute call must still trip a malformed registry.
+        if let Some(registry) = &config.warm_startable_registry {
+            assert_warm_startable_coextensive(registry);
+        }
+
         if eval_set.is_empty() {
             return Ok(SchedulerResult {
                 changed: HashSet::new(),
                 skipped: HashSet::new(),
             });
-        }
-
-        // PRD §5 B5 / I-3 (M-013 fix): when a `WarmStartableRegistry` fixture
-        // is attached to the config, fire the bidirectional coextension
-        // assertion before any spawn. The assertion body is `debug_assert_eq!`
-        // so release builds compile to a no-op even on the `Some(_)` arm.
-        if let Some(registry) = &config.warm_startable_registry {
-            assert_warm_startable_coextensive(registry);
         }
 
         // Single helper that calls gating::has_non_final_inputs when a cache

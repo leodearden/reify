@@ -189,12 +189,6 @@ mod tests {
     }
 
     #[test]
-    fn registration_struct_carries_kind() {
-        let r = WarmStartableRegistration { kind: NodeKind::Realization };
-        assert_eq!(r.kind, NodeKind::Realization);
-    }
-
-    #[test]
     fn from_inventory_picks_up_test_submission() {
         let r = WarmStartableRegistry::from_inventory();
         assert!(

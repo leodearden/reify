@@ -137,9 +137,12 @@ mod t5 {
 
     /// Common scheduler-driver harness for T5 cases.
     ///
-    /// Builds a single-node eval set (the registry assertion fires after the
-    /// empty-set short-circuit per `execute_with_config`) with the given
-    /// fixture registry attached to the config, then awaits the scheduler.
+    /// Builds a single-node eval set with the given fixture registry attached
+    /// to the config, then awaits the scheduler. The registry assertion runs
+    /// in `execute_with_config` above the empty-eval-set short-circuit, so a
+    /// single-node set is overkill for the assertion's sake — it is kept here
+    /// to exercise the surrounding scheduler wiring rather than reach for the
+    /// invariant by a different path.
     async fn drive_scheduler_with_registry(registry: WarmStartableRegistry) {
         // Single Compute node, no upstream reads — dirty by safety default.
         let node = compute_node(0);
@@ -185,7 +188,7 @@ mod t5 {
     /// here would duplicate that observation at the higher cost of a tokio runtime
     /// and a cyclic dev-dep without strengthening it.
     #[tokio::test]
-    #[should_panic(expected = "WARM_STARTABLE")]
+    #[should_panic(expected = "WarmStartableRegistry presence")]
     async fn t5a_empty_registry_panics_in_debug() {
         let empty = WarmStartableRegistry::new();
         drive_scheduler_with_registry(empty).await;
