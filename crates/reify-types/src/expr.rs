@@ -229,11 +229,11 @@ pub struct CompiledFunction {
     /// `reify-compiler/src/functions.rs`; consumed at call sites for argument
     /// defaulting (task 3688).
     ///
-    /// **Length invariant:** either empty (legacy/test-stub constructions that use
-    /// `param_defaults: Vec::new()` directly) **or** exactly `params.len()` (parallel /
-    /// index-aligned, as set by `compile_function`). Consumers that index into both
-    /// vectors should check `param_defaults.len() == params.len()` before zipping;
-    /// `try_default_padding` in `reify-compiler/src/type_compat.rs` does this defensively.
+    /// **Length invariant:** always exactly `params.len()`; entry `i` is
+    /// `Some(expr)` iff param `i` has a default, otherwise `None`. Built
+    /// canonically by `compile_function` in `reify-compiler/src/functions.rs`
+    /// and by `CompiledFunction::new_with_no_defaults` for tests/stubs
+    /// (task-3702).
     ///
     /// **Compilation scope:** Default expressions are compiled in a neutral scope
     /// containing only module-level names — they cannot reference sibling params
@@ -268,6 +268,41 @@ impl CompiledFunction {
     /// Returns `true` if this function is tagged with `@test`.
     pub fn is_test(&self) -> bool {
         crate::annotation::has_test_annotation(&self.annotations)
+    }
+
+    /// Construct a `CompiledFunction` where every param has no default.
+    ///
+    /// Sets `param_defaults` to `vec![None; params.len()]`, satisfying the
+    /// strict length invariant (`param_defaults.len() == params.len()`) while
+    /// expressing "no parameter has a default value."
+    ///
+    /// Use this constructor for test stubs and any producer that does not need
+    /// to supply defaults. For functions that carry defaults, build via
+    /// `compile_function` in `reify-compiler/src/functions.rs` instead.
+    ///
+    /// task-3702 (canonicalize CompiledFunction.param_defaults representation)
+    pub fn new_with_no_defaults(
+        name: String,
+        is_pub: bool,
+        params: Vec<(String, Type)>,
+        return_type: Type,
+        body: CompiledFnBody,
+        content_hash: crate::hash::ContentHash,
+        annotations: Vec<crate::annotation::Annotation>,
+        optimized_target: Option<String>,
+    ) -> Self {
+        let n = params.len();
+        CompiledFunction {
+            name,
+            is_pub,
+            params,
+            param_defaults: vec![None; n],
+            return_type,
+            body,
+            content_hash,
+            annotations,
+            optimized_target,
+        }
     }
 }
 
