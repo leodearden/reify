@@ -78,6 +78,102 @@ const DAY: i64 = 86_400;
 mod tests {
     use super::*;
 
+    /// Seeded incident #3 — P2 consumer-stub, synthetic cluster C-39 shape:
+    /// Manifold `KernelAttributeHook::propagate_attributes` done task whose
+    /// added diff introduces BOTH `tracing::warn!(reason="task_9_pending", …)`
+    /// AND `unimplemented!()` on the same file. Both stub markers must appear
+    /// in the single consolidated finding (per-file aggregation).
+    #[test]
+    fn p2_consumer_stub_c39_manifold_hook_shape_flags_both_markers() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        // P2 issues zero SQL; in-memory connection satisfies AuditContext.conn.
+        let hook_path = "crates/reify-kernel-manifold/src/attr_hook.rs";
+
+        let mut git = MockGitOps::new();
+        // The task branch's diff of attr_hook.rs adds two stub lines that
+        // mirror the actual C-39 cluster body (task_9_pending + unimplemented!).
+        git.set_diff_added_lines(
+            "main",
+            "task/2657",
+            hook_path,
+            vec![
+                (
+                    15,
+                    "        tracing::warn!(reason=\"task_9_pending\", \"manifold hook deferred\")"
+                        .to_string(),
+                ),
+                (16, "        unimplemented!()".to_string()),
+            ],
+        );
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "2657".to_string(),
+            TaskMetadata {
+                task_id: "2657".to_string(),
+                status: "done".to_string(),
+                files: vec![hook_path.to_string()],
+                done_provenance: None,
+                // Benign title: no "stub"/"placeholder" → Medium not Low.
+                title: "Wire Manifold attribute hook".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let jc = MockJCodemunchOps::new(); // P2 ignores jcodemunch
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+        };
+
+        let findings = p2_consumer_stub::check(&ctx);
+        // P2 aggregates per (task, file): two stub lines on one file → one finding.
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly one P2 finding (dual-marker on one file); got {:?}",
+            findings
+        );
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::P2ConsumerStub, "wrong pattern: {:?}", f);
+        assert_eq!(
+            f.severity,
+            Severity::Medium,
+            "benign title → Medium; got {:?}",
+            f.severity
+        );
+        assert_eq!(f.task_id, "2657");
+        // Evidence must reference the hook path.
+        assert!(
+            f.evidence.iter().any(|e| matches!(
+                e,
+                EvidenceRef::File { path } if path == hook_path
+            )),
+            "expected EvidenceRef::File for attr_hook.rs; got {:?}",
+            f.evidence
+        );
+        // The §14 hand-off requirement: summary must contain BOTH canonical labels.
+        assert!(
+            f.summary.contains("tracing::warn!(task_pending)"),
+            "summary must contain tracing::warn! label; got: {:?}",
+            f.summary
+        );
+        assert!(
+            f.summary.contains("unimplemented!"),
+            "summary must contain unimplemented! label; got: {:?}",
+            f.summary
+        );
+    }
+
     /// Seeded incident #2 — P1 producer-orphan, synthetic cluster C-04 shape:
     /// public symbol `resolve_unique_by_attribute` introduced by a done task
     /// 15 days ago (past the 14-day grace window); zero workspace callers;
