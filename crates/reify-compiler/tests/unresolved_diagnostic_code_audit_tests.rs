@@ -12,13 +12,27 @@
 //! A future maintainer who adds a new "unresolved type" emit site should also add
 //! a test here so the contract remains self-documenting.
 //!
-//! # Skipped / stubbed tests
+//! # Coverage gaps — DimensionalOp arms
 //!
-//! A few field domain/codomain arms (DimensionalOp) cannot be cleanly triggered
-//! from an end-to-end `compile()` call because the Reify field syntax does not
-//! expose a surface that produces `TypeExprKind::DimensionalOp` in the domain/
-//! codomain position of a field declaration. Those arms are wired in step-6 via
-//! manual audit and are marked `#[ignore]` here.
+//! Four `DimensionalOp` early-reject branches cannot be exercised from an
+//! end-to-end `reify_syntax::parse(...)` + `reify_compiler::compile(...)` call
+//! because the Reify parser only produces `TypeExprKind::Named` in type-annotation
+//! positions (param declarations, field domain/codomain, trait members, conformance
+//! member annotations).  The four affected sites are:
+//!
+//! - `functions.rs:280`  — field domain DimensionalOp arm
+//! - `functions.rs:319`  — field codomain DimensionalOp arm
+//! - `traits.rs:34-42`   — trait-member type DimensionalOp arm
+//! - `conformance/checker.rs:132-138` — conformance-check DimensionalOp arm
+//!
+//! Dispatch through these arms (at the *message* level) is already exercised by
+//! the direct-AST-construction tests in
+//! `crates/reify-compiler/tests/type_expr_kind_dispatch_tests.rs`
+//! (`dim_op_in_field_domain_emits_exactly_one_diagnostic`,
+//! `dim_op_in_trait_param_emits_diagnostic`).  The `.with_code(DiagnosticCode::UnresolvedType)`
+//! attachment at those sites is verified only by step-6 code inspection.  No
+//! end-to-end tests for these four arms are included here; they are not stubs —
+//! they are simply absent because they cannot be triggered via the public parse API.
 
 use reify_types::{DiagnosticCode, ModulePath};
 
@@ -48,30 +62,6 @@ fn f(x : Int) -> Bogus { 0 }
          (functions.rs:122), got: {:?}",
         compiled.diagnostics
     );
-}
-
-/// `functions.rs:280` — field domain type is a DimensionalOp expression.
-///
-/// Cannot be cleanly triggered from end-to-end `compile()` because the Reify
-/// field syntax does not expose a surface that produces `TypeExprKind::DimensionalOp`
-/// in the domain position. Wired in step-6 via manual audit.
-#[test]
-#[ignore = "DimensionalOp field domain cannot be triggered from end-to-end compile(); \
-            wired in step-6 via manual audit"]
-fn unresolved_field_domain_dimensional_op_carries_code() {
-    // Stub — see module doc comment above.
-    panic!("should be #[ignore]d");
-}
-
-/// `functions.rs:319` — field codomain type is a DimensionalOp expression.
-///
-/// Same rationale as `unresolved_field_domain_dimensional_op_carries_code`.
-#[test]
-#[ignore = "DimensionalOp field codomain cannot be triggered from end-to-end compile(); \
-            wired in step-6 via manual audit"]
-fn unresolved_field_codomain_carries_code() {
-    // Stub — see module doc comment above.
-    panic!("should be #[ignore]d");
 }
 
 /// `guards.rs:155` — structure guarded-group `param` member has an unresolved type.
