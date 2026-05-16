@@ -130,4 +130,46 @@ mod tests {
         want.sort_by_key(|k| format!("{k:?}"));
         assert_eq!(got, want);
     }
+
+    // --- inventory plumbing ---
+    //
+    // The submission below is `#[cfg(test)]`-gated so it only links into this
+    // crate's lib-test binary, NOT into downstream consumer binaries (where
+    // the production kernel-occt and solver-elastic submissions are the only
+    // ones expected to fire). Picking `NodeKind::Value` keeps it disjoint
+    // from the production Realization / Compute submissions tested in the
+    // adapter crates' integration tests — so the cardinality pin there isn't
+    // disturbed by an accidental cross-link.
+
+    inventory::submit! {
+        WarmStartableRegistration { kind: NodeKind::Value }
+    }
+
+    #[test]
+    fn registration_struct_carries_kind() {
+        let r = WarmStartableRegistration { kind: NodeKind::Realization };
+        assert_eq!(r.kind, NodeKind::Realization);
+    }
+
+    #[test]
+    fn from_inventory_picks_up_test_submission() {
+        let r = WarmStartableRegistry::from_inventory();
+        assert!(
+            r.contains_kind(NodeKind::Value),
+            "expected the test-only inventory submission for NodeKind::Value to be visible"
+        );
+    }
+
+    #[test]
+    fn from_inventory_is_idempotent() {
+        let a = WarmStartableRegistry::from_inventory();
+        let b = WarmStartableRegistry::from_inventory();
+        for k in NodeKind::ALL {
+            assert_eq!(
+                a.contains_kind(k),
+                b.contains_kind(k),
+                "from_inventory() must be deterministic across calls for kind {k:?}"
+            );
+        }
+    }
 }
