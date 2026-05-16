@@ -661,7 +661,7 @@ pub enum DiagnosticCode {
     /// Origin: `crates/reify-compiler/src/auto_type_param.rs::resolve_auto_type_params_with_backtracking`.
     ///
     /// Canonical message form:
-    /// `"auto type-parameter cross-product search exceeded size cap: <N> auto-type-params declared (<P1>, <P2>, ...) with per-param candidate counts [<k1>, <k2>, ...] yielding cross-product size <S>, max_cross_product_size = <C>; falling back to per-parameter BFS (v0.1 algorithm). NOTE: BFS-fallback soundness is contingent on Type::TypeParam → Type::StructureRef substitution remaining deferred; once the substitution pass lands, this fallback may silently pick wrong substitutions (audit: docs/architecture-audit/findings/auto-resolution-backtracking.md M-006)."`
+    /// `"auto type-parameter cross-product search exceeded size cap: <N> auto-type-params declared (<P1>, <P2>, ...) with per-param candidate counts [<k1>, <k2>, ...] yielding cross-product size <S>, max_cross_product_size = <C>; falling back to per-parameter BFS (v0.1 algorithm). NOTE: BFS-fallback soundness is contingent on Type::TypeParam → Type::StructureRef substitution remaining deferred; once the substitution pass lands, this fallback may silently pick wrong substitutions."`
     /// where `<N>` is `params.len()`, `<P*>` are the param names, `<k*>` are
     /// the per-param Phase A candidate counts, `<S>` is the computed
     /// cross-product size (`per_param_candidates.iter().map(|v| v.len()).fold(1, checked_mul)`),
