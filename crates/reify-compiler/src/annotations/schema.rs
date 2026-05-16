@@ -999,6 +999,20 @@ mod tests {
         }
     }
 
+    // ── label field tests ────────────────────────────────────────────────────
+
+    /// `label` field equals the `@<name>` form for every annotation.
+    /// Drives the static-label refactor in step-4.
+    #[test]
+    fn label_field_matches_canonical_at_prefixed_name() {
+        assert_eq!(lookup_schema("test").unwrap().label, "@test");
+        assert_eq!(lookup_schema("deprecated").unwrap().label, "@deprecated");
+        assert_eq!(lookup_schema("optimized").unwrap().label, "@optimized");
+        assert_eq!(lookup_schema("solver_hint").unwrap().label, "@solver_hint");
+        assert_eq!(lookup_schema("shell").unwrap().label, "@shell");
+        assert_eq!(lookup_schema("solid").unwrap().label, "@solid");
+    }
+
     // ── arg_check field population tests ────────────────────────────────────
 
     /// `arg_check` is populated for @optimized, @shell, @solid and absent for
