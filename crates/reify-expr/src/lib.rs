@@ -755,6 +755,32 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
     }
 }
 
+/// Find the first compiled function matching `name`, arity, and per-parameter
+/// [`Type`] equality against the compiled arguments' result types.
+///
+/// This is the canonical first-match-wins overload-resolution helper shared by:
+/// - [`eval_user_function_call`] in this crate, and
+/// - the `@optimized` `UserFunctionCall` → `ComputeNode` lowering site in
+///   `reify-eval/src/engine_eval.rs`.
+///
+/// If the resolution rule ever grows (e.g. subtyping, coercion ranking,
+/// operator-overloading nuance), update only this function; both call sites
+/// will inherit the fix automatically.
+pub fn find_matching_compiled_function<'a>(
+    fns: &'a [CompiledFunction],
+    name: &str,
+    args: &[CompiledExpr],
+) -> Option<&'a CompiledFunction> {
+    fns.iter().find(|f| {
+        f.name == name
+            && f.params.len() == args.len()
+            && f.params
+                .iter()
+                .zip(args.iter())
+                .all(|((_, param_ty), arg)| *param_ty == arg.result_type)
+    })
+}
+
 /// Evaluate a user-defined function call.
 fn eval_user_function_call(function_name: &str, args: &[CompiledExpr], ctx: &EvalContext) -> Value {
     // Evaluate arguments
@@ -774,16 +800,7 @@ fn eval_user_function_call(function_name: &str, args: &[CompiledExpr], ctx: &Eva
     // The compiler uses exact type matching during resolution, so the compiled args'
     // result_types exactly equal the selected overload's param types. Matching on
     // these result_types selects the same overload the compiler chose.
-    let func = ctx.functions.iter().find(|f| {
-        f.name == function_name
-            && f.params.len() == args.len()
-            && f.params
-                .iter()
-                .zip(args.iter())
-                .all(|((_, param_ty), arg)| *param_ty == arg.result_type)
-    });
-
-    let func = match func {
+    let func = match find_matching_compiled_function(ctx.functions, function_name, args) {
         Some(f) => f,
         None => return Value::Undef, // no matching function
     };
