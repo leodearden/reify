@@ -905,6 +905,130 @@ mod tests {
             clean_only
         );
     }
+
+    /// Pins the structural-equivalence contract that `check_pre_done(ctx, id)`
+    /// and `check(ctx)` with `target_task_id = Some(id)` must produce identical
+    /// findings for the same single-task scenario — the property the upcoming
+    /// `check_task` helper extraction enforces by construction. Without this
+    /// pin, a future per-task pass added to only one of the two call sites
+    /// could silently drift.
+    ///
+    /// This test passes today (before the refactor) because both call sites
+    /// already implement equivalent logic; it future-proofs against drift if
+    /// one site grows a new pass that the other forgets. It also fills a real
+    /// coverage gap: no existing test exercises `target_task_id: Some(...)`.
+    #[test]
+    fn check_pre_done_equivalent_to_scoped_check() {
+        let conn = seed_db();
+        // Phantom-done task 5000 — same shape as check_pre_done_filters_to_single_task.
+        insert_task_completed_event(&conn, "5000");
+        // Clean done task 5001.
+        insert_task_completed_event(&conn, "5001");
+
+        let mut git = MockGitOps::new();
+        // Task 5000: claimed commit's diff doesn't cover the metadata file.
+        git.set_diff_changed_paths(
+            "main",
+            "phantom_sha",
+            vec!["docs/unrelated.md".to_string()],
+        );
+        git.set_log_grep("main", "5000", vec![]);
+        // Task 5001: claimed commit's diff covers the metadata file cleanly.
+        git.set_diff_changed_paths(
+            "main",
+            "clean_sha",
+            vec!["crates/x/clean.rs".to_string()],
+        );
+        git.set_log_grep("main", "5001", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "5000".to_string(),
+            TaskMetadata {
+                task_id: "5000".to_string(),
+                status: "done".to_string(),
+                files: vec!["crates/reify-shell-extract/src/pruning.rs".to_string()],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("phantom_sha".to_string()),
+                    note: None,
+                }),
+                title: "Wire foo into bar".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+        task_metadata.insert(
+            "5001".to_string(),
+            TaskMetadata {
+                task_id: "5001".to_string(),
+                status: "done".to_string(),
+                files: vec!["crates/x/clean.rs".to_string()],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("clean_sha".to_string()),
+                    note: None,
+                }),
+                title: "Wire foo into bar".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let jc = MockJCodemunchOps::new();
+
+        // ctx_a: no target filter — passed to check_pre_done with explicit task_id.
+        let ctx_a = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata: task_metadata.clone(),
+            target_task_id: None,
+            window: None,
+            now: None,
+        };
+
+        // ctx_b: scoped to task 5000 — passed to check (the periodic-sweep entry point).
+        let ctx_b = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: Some("5000".to_string()),
+            window: None,
+            now: None,
+        };
+
+        let pre_done_findings = p5_phantom_done::check_pre_done(&ctx_a, "5000");
+        let scoped_findings = p5_phantom_done::check(&ctx_b);
+
+        // Both paths must agree on finding count for task 5000.
+        assert_eq!(
+            pre_done_findings.len(),
+            scoped_findings.len(),
+            "check_pre_done and scoped check must return the same number of findings; \
+             pre_done={:?}, scoped={:?}",
+            pre_done_findings,
+            scoped_findings
+        );
+        assert_eq!(
+            pre_done_findings.len(),
+            1,
+            "expected exactly one phantom-done finding; got {:?}",
+            pre_done_findings
+        );
+
+        // Finding properties must match (task_id, severity, pattern).
+        assert_eq!(pre_done_findings[0].task_id, scoped_findings[0].task_id);
+        assert_eq!(pre_done_findings[0].severity, scoped_findings[0].severity);
+        assert_eq!(pre_done_findings[0].pattern, scoped_findings[0].pattern);
+    }
 }
 
 } // mod p5
