@@ -1257,6 +1257,43 @@ fn mesh_data_displaced_positions_nan_causes_error() {
     );
 }
 
+// --- MeshData new-shell-field backward-compat tests (Task 3597 step-3) ---
+
+/// When the three new shell-extract fields have their default values
+/// (`element_kind: None`, `region_tags: None`, `vector_channels: HashMap::new()`),
+/// they must all be absent from the JSON wire format.
+///
+/// This pins the manual Serialize impl's `is_some()`/`is_empty()` skip-if
+/// discipline so that a future refactor that accidentally serializes a field
+/// unconditionally is caught immediately.
+#[test]
+fn mesh_data_omits_new_shell_fields_when_default() {
+    let mesh = MeshData {
+        entity_path: "Bracket.body".to_string(),
+        vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        indices: vec![0, 1, 2],
+        normals: None,
+        scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: None,
+        element_kind: None,
+        region_tags: None,
+        vector_channels: std::collections::HashMap::new(),
+    };
+    let v = serde_json::to_value(&mesh).expect("serialize should succeed");
+    assert!(
+        v.get("element_kind").is_none(),
+        "element_kind: None must be omitted from the wire"
+    );
+    assert!(
+        v.get("region_tags").is_none(),
+        "region_tags: None must be omitted from the wire"
+    );
+    assert!(
+        v.get("vector_channels").is_none(),
+        "empty vector_channels must be omitted from the wire"
+    );
+}
+
 // --- MeshData length contract tests (amendment, suggestion 3) ---
 
 /// Serializing a MeshData whose scalar_channels entry has a different length
