@@ -101,22 +101,36 @@ fn node_traits_map_with_node_id_instance_wins_over_kind() {
 // Test vehicle uses a single-node eval set with a no-op evaluator so the
 // scheduler reaches the assertion site. The assertion firing — or not firing —
 // is the observable signal; the actual node evaluation is incidental.
+//
+// The whole T5 region is gated on `#[cfg(debug_assertions)]` because the only
+// remaining case (T5a) is itself debug-only — the release-mode no-op invariant
+// is pinned more cheaply by `release_mode_no_op_on_empty_registry` in
+// `crates/reify-runtime/src/warm_startable_assert.rs`. Gating the region
+// avoids unused-import / dead-code warnings in `cargo test --release` builds.
 
+#[cfg(debug_assertions)]
 use std::collections::{HashMap, HashSet};
+#[cfg(debug_assertions)]
 use std::sync::Arc;
 
+#[cfg(debug_assertions)]
 use reify_eval::cache::EvalOutcome;
+#[cfg(debug_assertions)]
 use reify_eval::deps::DependencyTrace;
+#[cfg(debug_assertions)]
 use reify_runtime::concurrent::{
     AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler, SchedulerConfig,
 };
+#[cfg(debug_assertions)]
 use reify_types::WarmStartableRegistry;
 
 /// Minimal no-op evaluator: every node evaluates to `Changed`. The T5 cases
 /// don't care about the evaluation result — they care only whether the
 /// pre-spawn assertion fires.
+#[cfg(debug_assertions)]
 struct NoopEvaluator;
 
+#[cfg(debug_assertions)]
 impl AsyncNodeEvaluator for NoopEvaluator {
     async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
         EvalOutcome::Changed
@@ -128,6 +142,7 @@ impl AsyncNodeEvaluator for NoopEvaluator {
 /// Builds a single-node eval set (the registry assertion fires after the
 /// empty-set short-circuit per `execute_with_config`) with the given
 /// fixture registry attached to the config, then awaits the scheduler.
+#[cfg(debug_assertions)]
 async fn drive_scheduler_with_registry(registry: WarmStartableRegistry) {
     // Single Compute node, no upstream reads — dirty by safety default.
     let node = compute_node(0);
@@ -165,22 +180,17 @@ async fn drive_scheduler_with_registry(registry: WarmStartableRegistry) {
 /// in `crates/reify-runtime/src/warm_startable_assert.rs`; pinning it a
 /// second time here would add a redundant tokio-runtime + cyclic dev-dep
 /// without strengthening the observation.
+///
+/// The release-mode no-op invariant (empty registry compiles to no-op under
+/// `cfg(not(debug_assertions))`) is covered by
+/// `release_mode_no_op_on_empty_registry` in
+/// `crates/reify-runtime/src/warm_startable_assert.rs`; a parallel `T5c` case
+/// here would duplicate that observation at the higher cost of a tokio runtime
+/// and a cyclic dev-dep without strengthening it.
 #[cfg(debug_assertions)]
 #[tokio::test]
 #[should_panic(expected = "WARM_STARTABLE")]
 async fn t5a_empty_registry_panics_in_debug() {
-    let empty = WarmStartableRegistry::new();
-    drive_scheduler_with_registry(empty).await;
-}
-
-/// T5c — release-mode skip: in `cfg(not(debug_assertions))` builds the
-/// assertion macro `debug_assert_eq!` compiles to a no-op. The same
-/// empty-registry fixture that triggers T5a's panic in debug must NOT
-/// panic in release; the scheduler should drive the no-op evaluator to
-/// completion. PRD §5 B5 / I-3.
-#[cfg(not(debug_assertions))]
-#[tokio::test]
-async fn t5c_empty_registry_no_panic_in_release() {
     let empty = WarmStartableRegistry::new();
     drive_scheduler_with_registry(empty).await;
 }
