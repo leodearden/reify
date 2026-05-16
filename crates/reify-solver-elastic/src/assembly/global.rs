@@ -2535,13 +2535,9 @@ mod tests {
     /// Pins:
     /// 1. Single line: `!s.contains('\n')`.
     /// 2. Names the true (untruncated) count: `s.contains("count=24")`.
-    /// 3. No `...` ellipsis anywhere in the output — the formatter emits all
-    ///    stored entries verbatim and never inserts an ellipsis (regression guard
-    ///    against any future "fix" of the formatter to match the buggy rustdoc
-    ///    example that implied an ellipsis inside the brackets).
-    /// 4. Every one of the 16 stored `(node, axis)` pairs appears literally as
+    /// 3. Every one of the 16 stored `(node, axis)` pairs appears literally as
     ///    a substring in the formatted output.
-    /// 5. Trailing parenthetical: `s.ends_with("] (first 16 of 24)")`.
+    /// 4. Trailing parenthetical: `s.ends_with("] (first 16 of 24)")`.
     #[test]
     fn orphan_dofs_summary_display_truncated_form_lists_all_stored_examples_verbatim() {
         // Truncating fixture: shell on [0,9,10] + two P1 tets on [1,2,3,4] and
