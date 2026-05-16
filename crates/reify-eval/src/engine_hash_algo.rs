@@ -106,11 +106,11 @@ pub(crate) const CONTRIBUTORS_RELATIVE: &[&str] = &[
     "../../Cargo.lock",
 ];
 
-#[allow(dead_code)]
 /// Suffix set shared by the bare dot-prefix branch and the extension branch of
 /// [`is_editor_debris`].  Kept as a single constant so both branches always
 /// test the same set — a future addition to one cannot silently diverge from
 /// the other.
+#[allow(dead_code)]
 const DEBRIS_SUFFIXES: &[&str] = &[
     "swp", "swo", "swn", "bk", "bak", "orig", "rej", "tmp",
 ];
