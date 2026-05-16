@@ -388,6 +388,7 @@ pub mod shell_boundary;
 pub mod shell_kinematics;
 pub mod shell_result;
 pub mod solver;
+pub(crate) mod sparse_util;
 pub mod sweep;
 pub mod volume_refine;
 pub mod warm_state;
