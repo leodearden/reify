@@ -42,7 +42,12 @@ pub(crate) fn compile_function(
     }
 
     // Compile default expressions in a neutral scope (no params registered) so
-    // defaults cannot reference sibling params — definition-time semantics.
+    // defaults cannot reference sibling params and cannot recurse into the
+    // enclosing function — definition-time semantics. Rationale: keeps defaults
+    // pure-by-construction and order-independent.
+    // See `CompiledFunction::param_defaults` in `reify-types/src/expr.rs` for the
+    // field-level doc and `docs/initial-design/name-resolution-and-scoping-design-decisions.md`
+    // §2.3 for the full language-design rationale.
     let neutral_scope = CompilationScope::new(&fn_def.name);
     let param_defaults: Vec<Option<CompiledExpr>> = fn_def
         .params

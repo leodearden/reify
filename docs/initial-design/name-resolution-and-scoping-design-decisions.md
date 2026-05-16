@@ -28,6 +28,14 @@ All declarations within a body are mutually visible regardless of textual order.
 
 **Rationale:** The language is declarative, not imperative. Requiring topological ordering of declarations would impose an artificial sequencing constraint on what is fundamentally a set of simultaneous declarations. It would also be hostile to both human editing and LLM generation.
 
+### 2.3 Function parameter default scope
+
+Default expressions on function parameters (`fn f(x : Real = expr)`) are compiled in a neutral scope containing only module-level names. They cannot reference sibling parameters and cannot recurse into the enclosing function.
+
+**Rationale:** Keeps defaults pure-by-construction and order-independent — neither parameter-declaration order nor recursive self-reference can affect a default's compiled meaning. The same logic that gives order-independence to sibling parameter declarations (§2.2) would otherwise be in tension with sibling-default references.
+
+**Locked in by:** Implementation at `compile_function` in `crates/reify-compiler/src/functions.rs` and the regression test `fn_param_default_sibling_param_ref_errors` in `crates/reify-compiler/tests/fn_param_default_consumption_tests.rs`.
+
 ---
 
 ## 3. Scope visibility rules
@@ -255,6 +263,7 @@ This avoids fixpoint computation across the recursive structure. The upgrade pat
 | Recursive structures | Eager unfolding; termination required; unfolding needs determined control params | Natural fit with eval graph's demand-driven resolution; `undef` ≠ absent |
 | Resolution boundaries | No cross-instance resolution in recursive structures | Each instance resolves independently; dependency graph handles ordering naturally |
 | `auto` candidate errors | Constraint violation = prune silently; exhaustion = `indeterminate`; type/structural error = propagate | Solver operation is silent; definition errors surface to designer |
+| Function parameter defaults | Compiled in a neutral scope — only module-level names visible, no sibling params, no recursion | Defaults stay pure-by-construction and order-independent |
 
 ---
 

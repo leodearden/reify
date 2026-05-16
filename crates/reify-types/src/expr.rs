@@ -234,6 +234,18 @@ pub struct CompiledFunction {
     /// index-aligned, as set by `compile_function`). Consumers that index into both
     /// vectors should check `param_defaults.len() == params.len()` before zipping;
     /// `try_default_padding` in `reify-compiler/src/type_compat.rs` does this defensively.
+    ///
+    /// **Compilation scope:** Default expressions are compiled in a neutral scope
+    /// containing only module-level names — they cannot reference sibling params
+    /// (e.g. `fn f(a: Real, b: Real = a)` is rejected at compile time with an
+    /// "unresolved name" diagnostic) and cannot recurse into the enclosing function.
+    /// Rationale: keeps defaults pure-by-construction and order-independent. See
+    /// `crates/reify-compiler/src/functions.rs` (`compile_function`) for the inline
+    /// implementation comment and
+    /// `docs/initial-design/name-resolution-and-scoping-design-decisions.md` §2.3
+    /// for the full language-design rationale. Locked in by the regression test
+    /// `fn_param_default_sibling_param_ref_errors` in
+    /// `crates/reify-compiler/tests/fn_param_default_consumption_tests.rs`.
     pub param_defaults: Vec<Option<CompiledExpr>>,
     pub return_type: Type,
     pub body: CompiledFnBody,
