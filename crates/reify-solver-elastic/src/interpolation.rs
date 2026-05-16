@@ -21,51 +21,7 @@
 //! - [`locate_element_p1`] + [`LocatableTet`] — linear-scan search for the
 //!   first P1 element containing a query point.
 
-/// Conservative lower bound on `|det J|` for the debug-mode
-/// degenerate-element check inside [`barycentric_p1`].
-///
-/// Mirrors `crates/reify-solver-elastic/src/assembly/tet.rs:75`'s
-/// `MIN_JACOBIAN_DET = 1e-30` — kept in sync by convention rather than a
-/// re-export, because that constant is private to the assembly module
-/// and its containing file is not in this task's lock set. Anything at
-/// or below this threshold is treated as a malformed element and trips
-/// a `debug_assert!` rather than silently dividing by it (which would
-/// propagate `±∞` / `NaN` through the inverse Jacobian into the
-/// barycentric coordinates). PRD task #21 (diagnostics) will replace
-/// this placeholder with a proper mesh-scale-aware degeneracy detector.
-const MIN_JACOBIAN_DET: f64 = 1.0e-30;
-
-/// Return `(M⁻¹)ᵀ = M⁻ᵀ` for a 3×3 matrix via the standard cofactor /
-/// adjugate formula.
-///
-/// `det` is the determinant of `m`, taken from the caller (already
-/// computed alongside the forward Jacobian rather than recomputed). The
-/// canonical formula is single-sourced in spirit by
-/// `crates/reify-solver-elastic/src/assembly/tet.rs:103` — this is a
-/// local copy so this module stays self-contained, per the design
-/// decision documented in `.task/plan.json`.
-///
-/// # Preconditions
-///
-/// `det != 0`. For a degenerate tet with `det == 0` the result is
-/// non-finite (division by zero); diagnosing that condition is PRD task
-/// #21's job.
-#[allow(clippy::needless_range_loop)]
-fn inverse_transpose_3x3(m: &[[f64; 3]; 3], det: f64) -> [[f64; 3]; 3] {
-    let mut inv_t = [[0.0_f64; 3]; 3];
-    for i in 0..3 {
-        for j in 0..3 {
-            let r0 = if i == 0 { 1 } else { 0 };
-            let r1 = if i == 2 { 1 } else { 2 };
-            let c0 = if j == 0 { 1 } else { 0 };
-            let c1 = if j == 2 { 1 } else { 2 };
-            let minor = m[r0][c0] * m[r1][c1] - m[r0][c1] * m[r1][c0];
-            let sign = if (i + j) % 2 == 0 { 1.0 } else { -1.0 };
-            inv_t[i][j] = sign * minor / det;
-        }
-    }
-    inv_t
-}
+use crate::math::{MIN_JACOBIAN_DET, inverse_transpose_3x3};
 
 /// Compute the four P1 barycentric coordinates of `p` with respect to
 /// the tetrahedron `phys_nodes`.

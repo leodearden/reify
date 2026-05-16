@@ -47,8 +47,8 @@
 //! because `γ_ij = 2 ε_ij`.
 //!
 //! Physical-frame gradients are obtained from reference gradients via
-//! `∇_x N_i = J⁻ᵀ ∇_ξ N_i`. The 3×3 inverse-transpose is computed
-//! inline ([`inverse_transpose_3x3`]) — no external linear-algebra
+//! `∇_x N_i = J⁻ᵀ ∇_ξ N_i`. The 3×3 inverse-transpose is computed via
+//! [`crate::math::inverse_transpose_3x3`] — no external linear-algebra
 //! dependency.
 //!
 //! # DOF ordering
@@ -61,62 +61,7 @@
 use crate::assembly::ElementStiffness;
 use crate::constitutive::IsotropicElastic;
 use crate::elements::{ReferenceElement, tet_p1::TetP1, tet_p2::TetP2};
-
-/// Conservative lower bound on `|det J|` for [`element_stiffness_generic`]'s
-/// debug-mode degenerate-element check.
-///
-/// Anything at or below this threshold is treated as a malformed element
-/// and trips a `debug_assert!` rather than silently dividing by it (which
-/// would propagate `±∞` / `NaN` through the inverse Jacobian into `K_e`).
-/// `1e-30` is far below any plausible real-world element volume even in
-/// micrometre meshes, so the check should never false-positive on valid
-/// inputs; PRD task #21 (diagnostics) will replace this placeholder with
-/// a proper mesh-scale-aware degeneracy detector.
-const MIN_JACOBIAN_DET: f64 = 1.0e-30;
-
-/// Return `(M⁻¹)ᵀ = M⁻ᵀ` via the standard 3×3 cofactor / adjugate formula.
-///
-/// `det` is the determinant of `m` and is taken from
-/// [`crate::elements::Jacobian::det`] (already computed when the element's
-/// Jacobian was evaluated) rather than recomputed.
-///
-/// # Derivation
-///
-/// For any invertible `M`,
-///
-/// ```text
-/// (adj M)[i][j] = c[j][i]      where c[i][j] is the (i, j) cofactor of M
-/// (M⁻¹)[i][j]   = (adj M)[i][j] / det M
-/// (M⁻ᵀ)[i][j]   = (M⁻¹)[j][i] = c[i][j] / det M
-/// ```
-///
-/// so the `(i, j)` entry of `M⁻ᵀ` is just the `(i, j)` cofactor divided
-/// by `det M`. Each cofactor is `(-1)^(i+j)` times the 2×2 minor obtained
-/// by deleting row `i` and column `j`.
-///
-/// # Preconditions
-///
-/// `det != 0`. For a degenerate / inverted element with `det == 0` the
-/// result is non-finite (division by zero); diagnosing that condition
-/// is PRD task #21's job.
-#[allow(clippy::needless_range_loop)]
-fn inverse_transpose_3x3(m: &[[f64; 3]; 3], det: f64) -> [[f64; 3]; 3] {
-    let mut inv_t = [[0.0_f64; 3]; 3];
-    for i in 0..3 {
-        for j in 0..3 {
-            // Indices of the two rows / columns that survive after
-            // deleting row i / column j.
-            let r0 = if i == 0 { 1 } else { 0 };
-            let r1 = if i == 2 { 1 } else { 2 };
-            let c0 = if j == 0 { 1 } else { 0 };
-            let c1 = if j == 2 { 1 } else { 2 };
-            let minor = m[r0][c0] * m[r1][c1] - m[r0][c1] * m[r1][c0];
-            let sign = if (i + j) % 2 == 0 { 1.0 } else { -1.0 };
-            inv_t[i][j] = sign * minor / det;
-        }
-    }
-    inv_t
-}
+use crate::math::{MIN_JACOBIAN_DET, inverse_transpose_3x3};
 
 /// Generic element-stiffness assembly: `K_e = ∫ BᵀDB |det J| dV` integrated
 /// via the element's Gauss quadrature rule.
