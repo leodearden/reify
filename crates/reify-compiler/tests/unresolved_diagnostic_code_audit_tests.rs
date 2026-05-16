@@ -306,13 +306,10 @@ structure S {
 
     let compiled = reify_compiler::compile(&parsed);
 
-    assert!(
-        compiled
-            .diagnostics
-            .iter()
-            .any(|d| d.code == Some(DiagnosticCode::UnresolvedName)),
-        "expected DiagnosticCode::UnresolvedName for undefined solver-hint collection \
-         'undefined_collection' (annotations.rs:321), got: {:?}",
-        compiled.diagnostics
+    assert_diagnostic_with_code_and_prefix(
+        &compiled,
+        DiagnosticCode::UnresolvedName,
+        "unresolved name:",
+        "annotations.rs:321 — solver_hint collection name 'undefined_collection'",
     );
 }
