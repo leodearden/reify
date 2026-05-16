@@ -2570,4 +2570,92 @@ mod tests {
         }
         assert_eq!(remapped.result_type, Type::Geometry);
     }
+
+    // ── task-3702 tests ───────────────────────────────────────────────────────
+
+    /// `CompiledFunction::new_with_no_defaults` produces the canonical
+    /// `param_defaults` shape: length == params.len(), every entry is `None`.
+    ///
+    /// Tests three arities (0, 1, 2) to confirm `vec![None; n]` is produced
+    /// for all sizes, including the nullary case where `vec![None; 0]` ==
+    /// `Vec::new()`.
+    ///
+    /// RED before step-2: the constructor does not yet exist, so this test
+    /// fails to compile.
+    ///
+    /// task-3702 (canonicalize CompiledFunction.param_defaults representation)
+    #[test]
+    fn compiled_function_new_with_no_defaults_produces_canonical_shape() {
+        let stub_body = || CompiledFnBody {
+            let_bindings: vec![],
+            result_expr: CompiledExpr::literal(Value::Real(0.0), Type::Real),
+        };
+        let hash = ContentHash::of_str("stub");
+
+        // arity 0
+        let f0 = CompiledFunction::new_with_no_defaults(
+            "f0".to_string(),
+            false,
+            vec![],
+            Type::Real,
+            stub_body(),
+            hash.clone(),
+            vec![],
+            None,
+        );
+        assert_eq!(
+            f0.param_defaults.len(),
+            f0.params.len(),
+            "arity-0: param_defaults.len() must equal params.len()"
+        );
+        assert!(
+            f0.param_defaults.iter().all(|d| d.is_none()),
+            "arity-0: every param_defaults entry must be None"
+        );
+
+        // arity 1
+        let f1 = CompiledFunction::new_with_no_defaults(
+            "f1".to_string(),
+            false,
+            vec![("x".to_string(), Type::Real)],
+            Type::Real,
+            stub_body(),
+            hash.clone(),
+            vec![],
+            None,
+        );
+        assert_eq!(
+            f1.param_defaults.len(),
+            f1.params.len(),
+            "arity-1: param_defaults.len() must equal params.len()"
+        );
+        assert!(
+            f1.param_defaults.iter().all(|d| d.is_none()),
+            "arity-1: every param_defaults entry must be None"
+        );
+
+        // arity 2
+        let f2 = CompiledFunction::new_with_no_defaults(
+            "f2".to_string(),
+            false,
+            vec![
+                ("x".to_string(), Type::Real),
+                ("y".to_string(), Type::Real),
+            ],
+            Type::Real,
+            stub_body(),
+            hash.clone(),
+            vec![],
+            None,
+        );
+        assert_eq!(
+            f2.param_defaults.len(),
+            f2.params.len(),
+            "arity-2: param_defaults.len() must equal params.len()"
+        );
+        assert!(
+            f2.param_defaults.iter().all(|d| d.is_none()),
+            "arity-2: every param_defaults entry must be None"
+        );
+    }
 }
