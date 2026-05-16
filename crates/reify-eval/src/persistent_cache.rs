@@ -5146,10 +5146,10 @@ mod tests {
             .len();
         let cap = sz + sz / 2;
 
-        let (subscriber, capture) = reify_test_support::CapturingSubscriberBuilder::new()
-            .level(tracing::Level::INFO)
-            .target_prefix("reify_eval::persistent_cache::gc")
-            .build();
+        let (subscriber, capture) =
+            reify_test_support::CapturingSubscriberBuilder::new(tracing::Level::INFO)
+                .target_prefix("reify_eval::persistent_cache::gc")
+                .build();
 
         let report = tracing::subscriber::with_default(subscriber, || {
             evict_over_cap(root, eng, cap).unwrap()

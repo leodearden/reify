@@ -601,6 +601,14 @@ pub fn warn_capturing_subscriber() -> (impl tracing::Subscriber + Send + Sync, W
 }
 
 // ── WarnCapturingSubscriber (private) ─────────────────────────────────────────
+//
+// TODO: `WarnCapturingSubscriber` is now nearly identical to the private
+// `LevelCapturingSubscriber` backing `CapturingSubscriberBuilder` (same
+// fields, same `event()` body minus the `debug_assert` and the optional
+// `target_prefix` filter).  A follow-up task should reimplement
+// `warn_capturing_subscriber()` as a thin wrapper around
+// `CapturingSubscriberBuilder::new(Level::WARN)` and have `WarnCapture`
+// delegate to `Capture`, so contract changes only have one place to land.
 
 struct WarnCapturingSubscriber {
     count: Arc<AtomicUsize>,
@@ -671,9 +679,6 @@ impl tracing::Subscriber for WarnCapturingSubscriber {
             "WarnCapturingSubscriber: event() reached with non-WARN — {}",
             CONTRACT_VIOLATION_MARKER
         );
-        // Release ordering pairs with Acquire loads in assertion helpers and
-        // WarnCapture::count(), ensuring all prior memory writes are visible.
-        self.count.fetch_add(1, Ordering::Release);
         let mut visitor = MessageVisitor {
             message: String::new(),
             fields: HashMap::new(),
@@ -681,6 +686,10 @@ impl tracing::Subscriber for WarnCapturingSubscriber {
         event.record(&mut visitor);
         self.messages.lock().unwrap().push(visitor.message);
         self.fields.lock().unwrap().push(visitor.fields);
+        // Increment count *after* pushing to the vectors so that an Acquire
+        // load of count() is a fence for vector contents (Release pairs with
+        // WarnCapture::count()'s Acquire load and with assertion helpers).
+        self.count.fetch_add(1, Ordering::Release);
     }
 
     fn enter(&self, _span: &tracing::span::Id) {}
@@ -693,41 +702,32 @@ impl tracing::Subscriber for WarnCapturingSubscriber {
 /// Builder for a minimal [`tracing::Subscriber`] that captures events at a
 /// single registered level and optionally filters by target prefix.
 ///
-/// # Required fields
-///
-/// `.level(…)` must be called before `.build()`.  Calling `.build()` without
-/// setting a level panics with a clear message.
+/// `level` is a required constructor argument — there is no runtime panic path.
 ///
 /// # Example
 ///
 /// ```rust,ignore
-/// let (subscriber, capture) = CapturingSubscriberBuilder::new()
-///     .level(tracing::Level::INFO)
-///     .target_prefix("reify_eval::persistent_cache::gc")
-///     .build();
+/// let (subscriber, capture) =
+///     CapturingSubscriberBuilder::new(tracing::Level::INFO)
+///         .target_prefix("reify_eval::persistent_cache::gc")
+///         .build();
 /// tracing::subscriber::with_default(subscriber, || { /* run code */ });
 /// let msgs: Vec<String> = capture.messages();
 /// let fields: Vec<HashMap<String, String>> = capture.fields_by_event();
 /// let count: usize = capture.count();
 /// ```
 pub struct CapturingSubscriberBuilder {
-    level: Option<tracing::Level>,
+    level: tracing::Level,
     target_prefix: Option<String>,
 }
 
 impl CapturingSubscriberBuilder {
-    /// Create a new builder with no level set and no target prefix filter.
-    pub fn new() -> Self {
+    /// Create a new builder for the given `level` with no target-prefix filter.
+    pub fn new(level: tracing::Level) -> Self {
         Self {
-            level: None,
+            level,
             target_prefix: None,
         }
-    }
-
-    /// Set the level to capture.  Required; `.build()` panics if not called.
-    pub fn level(mut self, level: tracing::Level) -> Self {
-        self.level = Some(level);
-        self
     }
 
     /// Set an optional target-prefix filter.  When set, only events whose
@@ -739,15 +739,7 @@ impl CapturingSubscriberBuilder {
     }
 
     /// Build the subscriber and return it alongside a [`Capture`] handle.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `.level(…)` was not called before `.build()`.
     pub fn build(self) -> (impl tracing::Subscriber + Send + Sync, Capture) {
-        let level = self
-            .level
-            .expect("CapturingSubscriberBuilder requires .level(...) before .build()");
-
         let count = Arc::new(AtomicUsize::new(0));
         let messages = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let fields = Arc::new(std::sync::Mutex::new(Vec::<HashMap<String, String>>::new()));
@@ -758,7 +750,7 @@ impl CapturingSubscriberBuilder {
             fields: Arc::clone(&fields),
         };
         let subscriber = LevelCapturingSubscriber {
-            level,
+            level: self.level,
             target_prefix: self.target_prefix,
             count,
             messages,
@@ -766,12 +758,6 @@ impl CapturingSubscriberBuilder {
             span_counter: AtomicU64::new(1),
         };
         (subscriber, capture)
-    }
-}
-
-impl Default for CapturingSubscriberBuilder {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -788,8 +774,11 @@ pub struct Capture {
 impl Capture {
     /// Return the number of events that have been captured so far.
     ///
-    /// Uses `Acquire` ordering, pairing with the `Release` store in
-    /// [`LevelCapturingSubscriber::event()`].
+    /// Uses `Acquire` ordering, pairing with the `Release` store that
+    /// finalises each event in [`LevelCapturingSubscriber::event()`].
+    /// The count is incremented only *after* the event's message and fields
+    /// have been pushed to the shared vectors, so `count() == N` implies
+    /// `messages()[N-1]` is already visible.
     pub fn count(&self) -> usize {
         self.count.load(Ordering::Acquire)
     }
@@ -852,9 +841,6 @@ impl tracing::Subscriber for LevelCapturingSubscriber {
         {
             return;
         }
-        // Release ordering pairs with Acquire loads in Capture::count(),
-        // ensuring all prior stores are visible to the reader.
-        self.count.fetch_add(1, Ordering::Release);
         let mut visitor = MessageVisitor {
             message: String::new(),
             fields: HashMap::new(),
@@ -862,6 +848,10 @@ impl tracing::Subscriber for LevelCapturingSubscriber {
         event.record(&mut visitor);
         self.messages.lock().unwrap().push(visitor.message);
         self.fields.lock().unwrap().push(visitor.fields);
+        // Increment count *after* pushing to the vectors so that an Acquire
+        // load of count() is a fence for the vector contents (Release pairs
+        // with Capture::count()'s Acquire load).
+        self.count.fetch_add(1, Ordering::Release);
     }
 
     fn enter(&self, _span: &tracing::span::Id) {}
@@ -1866,9 +1856,8 @@ mod tests {
 
         prime_tracing_callsite_cache();
 
-        let (subscriber, capture) = CapturingSubscriberBuilder::new()
-            .level(tracing::Level::INFO)
-            .build();
+        let (subscriber, capture) =
+            CapturingSubscriberBuilder::new(tracing::Level::INFO).build();
 
         tracing::subscriber::with_default(subscriber, || {
             tracing::info!("captured");
@@ -1897,8 +1886,7 @@ mod tests {
 
         prime_tracing_callsite_cache();
 
-        let (subscriber, capture) = CapturingSubscriberBuilder::new()
-            .level(tracing::Level::INFO)
+        let (subscriber, capture) = CapturingSubscriberBuilder::new(tracing::Level::INFO)
             .target_prefix("reify_constraints")
             .build();
 
@@ -1933,9 +1921,8 @@ mod tests {
 
         prime_tracing_callsite_cache();
 
-        let (subscriber, capture) = CapturingSubscriberBuilder::new()
-            .level(tracing::Level::INFO)
-            .build();
+        let (subscriber, capture) =
+            CapturingSubscriberBuilder::new(tracing::Level::INFO).build();
 
         tracing::subscriber::with_default(subscriber, || {
             tracing::info!(evicted_count = 2u64, kind = "summary", "evict complete");
@@ -1961,20 +1948,6 @@ mod tests {
             Some("2"),
             "evicted_count field: u64 via record_debug should produce bare digits"
         );
-    }
-
-    /// Calling `.build()` without first calling `.level()` must panic with a
-    /// message that starts with "CapturingSubscriberBuilder requires .level".
-    ///
-    /// Uses `#[should_panic(expected = ...)]` for substring matching so the test
-    /// fails if `build()` silently accepts `None` or panics with a different
-    /// message.
-    #[test]
-    #[should_panic(expected = "CapturingSubscriberBuilder requires .level")]
-    fn capturing_subscriber_build_panics_without_level() {
-        use crate::CapturingSubscriberBuilder;
-
-        let _ = CapturingSubscriberBuilder::new().build();
     }
 
     // ── WarnCapture::assert_any_event_field_contains tests ────────────────────
