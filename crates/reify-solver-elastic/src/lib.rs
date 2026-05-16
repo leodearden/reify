@@ -362,6 +362,9 @@ pub mod solver;
 pub mod sweep;
 pub mod volume_refine;
 pub mod warm_state;
+// Unconditional `WarmStartableRegistration` submission for NodeKind::Compute
+// — see module docs and PRD §5 B5 / I-3 (M-013 fix).
+mod warm_register;
 
 pub use assembly::{
     AssemblyElement, AssemblyMode, ElementOrder, ElementStiffness, OrphanDofsSummary,
