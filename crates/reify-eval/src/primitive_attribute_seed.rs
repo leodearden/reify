@@ -476,7 +476,7 @@ fn pack_sign_bits(x: AxisSign, y: AxisSign, z: AxisSign) -> u32 {
 /// Mirrors the `parse_normal_z` pattern — strip braces, split on commas,
 /// parse each `"key":NUM` pair. Same error-wording convention for diagnostic
 /// consistency.
-fn parse_bbox_xyz_min(value: &Value) -> Result<(f64, f64, f64), QueryError> {
+pub(crate) fn parse_bbox_xyz_min(value: &Value) -> Result<(f64, f64, f64), QueryError> {
     let s = match value {
         Value::String(s) => s,
         other => {
