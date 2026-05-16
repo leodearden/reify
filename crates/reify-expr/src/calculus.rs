@@ -687,6 +687,13 @@ pub(crate) fn compute_numerical_gradient_at_point(
     };
 
     let n = coords.len();
+    // Defense in depth (task 3749): make the n>=1 contract independently true at the
+    // gradient boundary, decoupling from extract_coords's empty-input None return;
+    // prevents Value::Vector(vec![]) escaping to a Value::infer_type call that would
+    // panic under the Shape-C debug_assert.
+    if n == 0 {
+        return Value::Undef;
+    }
 
     // Determine if domain is dimensioned (for constructing perturbed args)
     let domain_dim = extract_explicit_domain_dim(domain_type);
@@ -960,6 +967,13 @@ pub(crate) fn compute_numerical_divergence_at_point(
     };
 
     let n = coords.len();
+    // Defense in depth (task 3749): make the n>=1 contract independently true at the
+    // divergence boundary, decoupling from extract_point_coords's empty-input None return;
+    // prevents Value::Vector(vec![]) escaping to a Value::infer_type call that would
+    // panic under the Shape-C debug_assert.
+    if n == 0 {
+        return Value::Undef;
+    }
 
     let domain_dim = extract_explicit_domain_dim(domain_type);
 
@@ -1246,6 +1260,13 @@ pub(crate) fn compute_numerical_laplacian_at_point(
     };
 
     let n = coords.len();
+    // Defense in depth (task 3749): make the n>=1 contract independently true at the
+    // laplacian boundary, decoupling from extract_coords's empty-input None return;
+    // prevents Value::Vector(vec![]) escaping to a Value::infer_type call that would
+    // panic under the Shape-C debug_assert.
+    if n == 0 {
+        return Value::Undef;
+    }
 
     let domain_dim = extract_explicit_domain_dim(domain_type);
 
