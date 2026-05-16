@@ -981,4 +981,24 @@ mod tests {
         }
     }
 
+    // ── label-name parity invariant ──────────────────────────────────────────
+
+    /// Every SCHEMAS entry must satisfy `label == "@" + name`.
+    ///
+    /// This is a regression-guard: the invariant holds for all six current
+    /// entries.  It will fail fast if a future contributor adds a 7th entry
+    /// with a mismatched label, without requiring them to remember to extend
+    /// a hard-coded list.
+    #[test]
+    fn schema_labels_match_names() {
+        for s in SCHEMAS {
+            assert_eq!(
+                s.label,
+                format!("@{}", s.name),
+                "label/name mismatch in SCHEMAS entry for '{}'",
+                s.name
+            );
+        }
+    }
+
 }
