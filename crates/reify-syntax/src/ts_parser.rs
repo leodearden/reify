@@ -582,6 +582,21 @@ impl<'a> Lowering<'a> {
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             if child.kind() == "type_arg_list" {
+                // AC#1: recursively scan the type_arg_list subtree for any ERROR
+                // or MISSING node (tree-sitter's has_error() does this in O(1)).
+                // Mirrors the "ERROR" => arm in lower_source_file (ts_parser.rs:305-313).
+                // Emit exactly ONE aggregated diagnostic per malformed type_arg_list to
+                // avoid per-ERROR-node spam when recovery produces multiple fragments.
+                if child.has_error() {
+                    self.push_error(
+                        format!(
+                            "syntax error in type argument list: {}",
+                            self.node_text(child)
+                        ),
+                        self.span(child),
+                    );
+                    return args; // skip lowering a malformed list
+                }
                 let mut inner_cursor = child.walk();
                 for inner in child.named_children(&mut inner_cursor) {
                     if inner.kind() == "type_expr"
