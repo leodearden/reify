@@ -2362,12 +2362,16 @@ fn construct_frame_from_kernel(
 /// Special case: `b ≈ -Z` makes `q_unnorm ≈ (0,0,0,0)` — degenerate.
 /// Fall back to a 180° rotation around the +X axis.
 ///
-/// **Numerical note:** the degenerate threshold is `1e-12` rather than a
-/// smaller value. When `nz` is near -1, `(1 + nz) ≈ ε` and the cross
-/// components `(nx, ny)` are also small; dividing them by `√(2ε)` loses
-/// precision rapidly. `1e-12` detects inputs within ~`1e-6` of `-Z` and
-/// falls back to the exact 180° rotation before the cross-product
-/// normalization becomes dominated by rounding error.
+/// **Numerical note:** for an approximately unit input, `len_sq = (1 + nz)² + nx² + ny²`.
+/// Since `nx² + ny² = 1 − nz² = (1 − nz)(1 + nz)`, this simplifies to
+///   `len_sq = 2·(1 + nz)`.
+/// So `len_sq < 1e-12` fires for `nz < −1 + 5e-13` — roughly half a femto-unit from
+/// `−Z`. The margin is intentional: it is well above the rounding noise accumulated
+/// by the multiply-and-add chain that produces `len_sq`, yet small enough that the
+/// fallback only activates for genuinely degenerate inputs. **Do not tighten the
+/// threshold further**: reducing it below ~`1e-13` would shrink the safety margin
+/// into f64 rounding noise and allow near-degenerate inputs to produce NaN-carrying
+/// quaternions.
 fn quaternion_from_z_to_axis(nx: f64, ny: f64, nz: f64) -> reify_types::Value {
     let w_unnorm = 1.0 + nz;
     // Use `0.0 - ny` instead of `-ny` to avoid producing -0.0 when ny = 0.0.
