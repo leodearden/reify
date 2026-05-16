@@ -5116,77 +5116,6 @@ mod tests {
 
     // ── evict_over_cap tracing tests ─────────────────────────────────────────
 
-    /// Inline subscriber that captures INFO events at the
-    /// `reify_eval::persistent_cache::gc` target.
-    ///
-    /// Mirrors the structure of `WarnCapturingSubscriber` in reify-test-support
-    /// but is defined inline to keep the scope narrow — no additions to the
-    /// test-support API needed for one field-verification test.
-    ///
-    /// Field capture contract (mirrors MessageVisitor in tracing_support.rs):
-    /// - `record_str`:   `message` stored raw; other `&str` fields stored raw.
-    /// - `record_debug`: all fields stored as `format!("{v:?}")`.  For `%Display`
-    ///   fields (tracing wraps them in a Display newtype whose Debug delegates to
-    ///   Display), the result equals the Display output.  For numeric `u64` fields
-    ///   (no sigil = Debug encoding), `{v:?}` gives the bare decimal digits.
-    struct InfoCapturingSubscriber {
-        messages: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-        fields:
-            std::sync::Arc<std::sync::Mutex<Vec<std::collections::HashMap<String, String>>>>,
-        span_counter: std::sync::atomic::AtomicU64,
-    }
-
-    struct InfoFieldVisitor {
-        message: String,
-        fields: std::collections::HashMap<String, String>,
-    }
-
-    impl tracing::field::Visit for InfoFieldVisitor {
-        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-            if field.name() == "message" {
-                self.message = value.to_owned();
-            } else {
-                self.fields.insert(field.name().to_owned(), value.to_owned());
-            }
-        }
-        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-            if field.name() == "message" {
-                self.message = format!("{value:?}");
-            } else {
-                self.fields
-                    .insert(field.name().to_owned(), format!("{value:?}"));
-            }
-        }
-    }
-
-    impl tracing::Subscriber for InfoCapturingSubscriber {
-        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
-            metadata.level() == &tracing::Level::INFO
-                && metadata
-                    .target()
-                    .starts_with("reify_eval::persistent_cache::gc")
-        }
-        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-            let id = self
-                .span_counter
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            tracing::span::Id::from_u64(id)
-        }
-        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
-        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
-        fn event(&self, event: &tracing::Event<'_>) {
-            let mut visitor = InfoFieldVisitor {
-                message: String::new(),
-                fields: std::collections::HashMap::new(),
-            };
-            event.record(&mut visitor);
-            self.messages.lock().unwrap().push(visitor.message);
-            self.fields.lock().unwrap().push(visitor.fields);
-        }
-        fn enter(&self, _: &tracing::span::Id) {}
-        fn exit(&self, _: &tracing::span::Id) {}
-    }
-
     /// Step-1 RED: `evict_over_cap` must emit exactly one INFO event at the
     /// `reify_eval::persistent_cache::gc` target when eviction actually runs,
     /// with message `"evict_over_cap complete"` and structured fields
@@ -5217,15 +5146,10 @@ mod tests {
             .len();
         let cap = sz + sz / 2;
 
-        let messages = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-        let fields = std::sync::Arc::new(std::sync::Mutex::new(
-            Vec::<std::collections::HashMap<String, String>>::new(),
-        ));
-        let subscriber = InfoCapturingSubscriber {
-            messages: messages.clone(),
-            fields: fields.clone(),
-            span_counter: std::sync::atomic::AtomicU64::new(1),
-        };
+        let (subscriber, capture) = reify_test_support::CapturingSubscriberBuilder::new()
+            .level(tracing::Level::INFO)
+            .target_prefix("reify_eval::persistent_cache::gc")
+            .build();
 
         let report = tracing::subscriber::with_default(subscriber, || {
             evict_over_cap(root, eng, cap).unwrap()
@@ -5236,7 +5160,7 @@ mod tests {
             "test precondition: at least 1 entry must have been evicted"
         );
 
-        let msgs = messages.lock().unwrap();
+        let msgs = capture.messages();
         assert_eq!(
             msgs.len(),
             1,
@@ -5248,7 +5172,7 @@ mod tests {
             "INFO event message mismatch"
         );
 
-        let all_fields = fields.lock().unwrap();
+        let all_fields = capture.fields_by_event();
         let f = &all_fields[0];
 
         assert!(
