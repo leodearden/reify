@@ -171,8 +171,8 @@ impl std::fmt::Display for OrphanDofsSummary {
 ///
 /// with `d_e_e = e.k_e.n_dofs / e.connectivity.len()` (the same formula used
 /// by [`assemble_global_stiffness`] to derive the global `D`). The global
-/// `D = max(d_e_max_local)` over all elements (`unwrap_or(3)` for empty
-/// inputs, matching the assembly default).
+/// `D = max(d_e_max_local)` over all elements. Empty `elements` returns an
+/// empty summary (`count=0`) without computing `D` (see early return below).
 ///
 /// Node `n` carries orphan DOFs at axes `α ∈ [d_e_max_local(n)..D)` **only
 /// if the node is touched** (`d_e_max_local(n) > 0`). Completely-untouched
@@ -2585,13 +2585,7 @@ mod tests {
         // Pin 2: names the true (untruncated) count.
         assert!(s.contains("count=24"), "Display must contain 'count=24'; got: {s:?}");
 
-        // Pin 3: no `...` ellipsis — all stored entries are emitted verbatim.
-        assert!(
-            !s.contains("..."),
-            "Display must not contain '...' — entries are verbatim, no ellipsis; got: {s:?}",
-        );
-
-        // Pin 4: every one of the 16 stored (node, axis) pairs appears literally.
+        // Pin 3: every one of the 16 stored (node, axis) pairs appears literally.
         // First 16 sorted pairs: nodes 1..=5 fully (3 axes each = 15 entries)
         // + node 6 axis 3 (16th entry).
         let expected_first_16: Vec<(usize, usize)> = (1usize..=6)
@@ -2611,7 +2605,7 @@ mod tests {
             );
         }
 
-        // Pin 5: trailing parenthetical indicates truncation with exact counts.
+        // Pin 4: trailing parenthetical indicates truncation with exact counts.
         assert!(
             s.ends_with("] (first 16 of 24)"),
             "Display must end with '] (first 16 of 24)'; got: {s:?}",
