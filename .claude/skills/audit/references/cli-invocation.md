@@ -22,7 +22,7 @@ else
 fi
 ```
 
-**Pre-flight:** Always resolve `REPO_ROOT` first — every subsequent path (`--tasks-file`, `--runs-db`, `--project-root`) is anchored against it. This makes `/audit` safe to invoke from any subdirectory of the worktree; without it, relative paths like `.taskmaster/tasks/tasks.json` resolve against whatever directory the user invoked the skill from, hitting the "missing tasks-file" error path.
+**Pre-flight:** Always resolve `REPO_ROOT` first — every subsequent path (`--tasks-file`, `--runs-db`, `--project-root`) is anchored against it. This makes `/audit` safe to invoke from any subdirectory of the worktree. Before invoking `reify-audit`, materialize a TaskMetadata snapshot from fused-memory (see §2); `--tasks-file` is a required flag with no default.
 
 **Why release?** The binary will be invoked the same way by the dark-factory D-1 pre-done hook (`REIFY_AUDIT_PREDONE_CMD`). Using the release binary in the skill keeps the invocation in parity with how D-1 sees it.
 
@@ -34,15 +34,49 @@ fi
 
 The `reify-audit` binary emits **JSON on stderr** and a human-readable summary on **stdout**. Capture stderr to a tempfile so both streams stay cleanly separated:
 
-```bash
-TMPFILE=$(mktemp /tmp/reify-audit-XXXXXX.json)
-trap 'rm -f "$TMPFILE"' EXIT   # clean up on early exit, interrupt, or error
+**Step 1: Materialize a TaskMetadata JSON snapshot from fused-memory.**
 
+The skill executes as an LLM (this Claude session), not as a pure bash script,
+so this step is split into two stages — an MCP-tool call the LLM makes
+directly, and a bash filter step. Do **not** try to pipe the MCP tool through
+`jq` from a shell: `mcp__fused-memory__get_tasks` is a JSON-RPC tool
+invocation that travels over the MCP transport, not a shell command.
+
+1. Create the tempfiles and EXIT trap (bash):
+
+   ```bash
+   SNAPSHOT=$(mktemp /tmp/reify-audit-snapshot-XXXXXX.json)
+   RESPONSE=$(mktemp /tmp/reify-audit-response-XXXXXX.json)
+   TMPFILE=$(mktemp /tmp/reify-audit-XXXXXX.json)
+   trap 'rm -f "$SNAPSHOT" "$RESPONSE" "$TMPFILE"' EXIT
+   ```
+
+2. From the LLM, call `mcp__fused-memory__get_tasks` with
+   `project_root="$REPO_ROOT"` and write the returned JSON object to
+   `$RESPONSE`. (If a pure-bash equivalent is needed — e.g. from a script
+   outside the LLM — use the curl + JSON-RPC recipe in
+   `scripts/reify-audit-predone-wrapper.sh` against
+   `$FUSED_MEMORY_MCP_URL`. The wrapper is the canonical non-LLM path.)
+
+3. Filter the response through the canonical jq sidecar (bash):
+
+   ```bash
+   jq -f "$REPO_ROOT/scripts/reify-audit-snapshot-filter.jq" \
+      < "$RESPONSE" > "$SNAPSHOT"
+   ```
+
+   The filter (`scripts/reify-audit-snapshot-filter.jq`) is the single point
+   of truth, shared with the systemd pre-done hook wrapper. It derives
+   `done_at` from `updatedAt` for done tasks (required for P1).
+
+**Step 2: Invoke reify-audit with the snapshot as `--tasks-file`** (bash):
+
+```bash
 $REIFY_AUDIT_BIN \
   [--task <id>] \
   [--since <iso-date>] \
   [--pattern P1|P2|P5] \
-  --tasks-file "$REPO_ROOT/.taskmaster/tasks/tasks.json" \
+  --tasks-file "$SNAPSHOT" \
   --runs-db    "$REPO_ROOT/data/orchestrator/runs.db" \
   --project-root "$REPO_ROOT" \
   2>"$TMPFILE"
@@ -53,7 +87,7 @@ EXIT_CODE=$?
 FINDINGS=$(cat "$TMPFILE")
 
 # Clean up (EXIT trap above also covers abnormal exits).
-rm -f "$TMPFILE"
+rm -f "$SNAPSHOT" "$RESPONSE" "$TMPFILE"
 ```
 
 **Why a tempfile?** The CLI writes the human-readable summary to stdout and the JSON array to stderr in a single run. A tempfile sink for stderr survives multi-line pretty-printed JSON without the LLM needing to parse a mixed stream inline. `mktemp` generates a collision-free name (`XXXXXX` entropy), safer than a `$$`-based name (which reuses the parent shell PID in long-lived shells and risks stale-file cross-contamination across runs). The `trap 'rm -f "$TMPFILE"' EXIT` guard ensures cleanup even on early exit (parse failure, exception, `Ctrl-C`).
@@ -96,7 +130,7 @@ Each failure mode yields exit code 125. The skill should surface the human-reada
 
 | Failure | Error message pattern | Recovery hint to user |
 |---------|-----------------------|-----------------------|
-| Missing tasks-file | `error reading tasks-file '.taskmaster/tasks/tasks.json': …` | Confirm the tasks file exists; run `ls .taskmaster/tasks/tasks.json` |
+| Missing tasks-file | `error reading tasks-file '/tmp/reify-audit-snapshot-XXXXXX.json': …` | Confirm fused-memory MCP is responsive; the snapshot tempfile should have been written by the snapshot step above. Check `systemctl --user status fused-memory`. |
 | Malformed tasks-file | `error parsing tasks-file '…': …` | Tasks JSON is not a valid array of `TaskMetadata`; check fused-memory sync |
 | Unreadable runs.db | `error opening runs-db 'data/orchestrator/runs.db': …` | DB may not exist yet; confirm orchestrator has run at least once |
 | Broken stderr serialization | `error serializing findings to JSON (broken stderr?)` | Rare; may indicate a resource limit; retry or report as infra issue |
@@ -169,7 +203,7 @@ Skill behaviour: `exit_code == 125` triggers the disambiguator (§3.1): skill pa
 
 ```
 $ reify-audit --since 2026-05-02 2>/tmp/out.json; echo "exit=$?"
-reify-audit: error reading tasks-file '.taskmaster/tasks/tasks.json': No such file or directory
+reify-audit: error: --tasks-file is required (path to JSON array of TaskMetadata)
 exit=125
 ```
 

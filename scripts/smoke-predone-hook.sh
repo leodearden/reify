@@ -43,7 +43,8 @@ Usage: scripts/smoke-predone-hook.sh [-h|--help]
 Activation smoke test for the FUSED_MEMORY_PREDONE_HOOK_REIFY pre-done hook.
 Asserts: (1) env var set in fused-memory service, (2) binary executable,
          (2.5) env value contains --task {id} --pre-done template tokens,
-         (3) fused-memory MCP endpoint responsive.
+         (3) fused-memory MCP endpoint responsive,
+         (4a/4b) binary round-trip with seeded fixtures (known-pass + known-fail).
 Exits 0 on success, 1 on failure.
 USAGE
 }
@@ -153,6 +154,118 @@ if ! grep -q '"jsonrpc"' /tmp/smoke-predone-mcp-resp.json 2>/dev/null; then
 fi
 
 rm -f /tmp/smoke-predone-mcp-resp.json
+
+# ── Assertion 4: binary round-trip with seeded fixtures ──────────────────────
+# Tests a known-pass task (4a) and a known-fail task (4b) directly against the
+# binary (not via the wrapper) to catch re-introduction of the dead
+# .taskmaster/tasks/tasks.json default and output-format regressions.
+#
+# Design ref: task 3731 Part B; docs/architecture-audit/f-infra-design.md §11.
+echo "smoke-predone-hook: running seeded fixture round-trips (assertions 4a, 4b)..."
+
+SMOKE_TMPDIR=$(mktemp -d /tmp/smoke-predone-XXXXXX)
+trap 'rm -rf "$SMOKE_TMPDIR"' EXIT
+
+# Write tasks.json with two synthetic TaskMetadata shapes.
+cat > "$SMOKE_TMPDIR/tasks.json" <<'TASKS_EOF'
+[
+  {
+    "task_id": "smoke-pass-99991",
+    "status": "pending",
+    "files": [],
+    "done_provenance": null,
+    "title": "Smoke test known-pass task",
+    "prd": null,
+    "consumer_ref": null,
+    "audit_foundation": null,
+    "done_at": null
+  },
+  {
+    "task_id": "smoke-fail-99992",
+    "status": "done",
+    "files": ["crates/reify-audit/src/lib.rs"],
+    "done_provenance": {
+      "kind": "manual",
+      "commit": "0000000000000000000000000000000000000000",
+      "note": null
+    },
+    "title": "Smoke test known-fail (phantom-done) task",
+    "prd": null,
+    "consumer_ref": null,
+    "audit_foundation": null,
+    "done_at": null
+  }
+]
+TASKS_EOF
+
+# Create a minimal runs.db with just the events table.
+if ! sqlite3 "$SMOKE_TMPDIR/runs.db" "CREATE TABLE events (task_id TEXT, event_type TEXT);" 2>/dev/null; then
+    echo "FAIL (4-setup): could not create seeded runs.db via sqlite3." >&2
+    echo "  Ensure sqlite3 is installed (apt install sqlite3)." >&2
+    exit 1
+fi
+
+# ── Sub-assertion 4a: known-pass → expect exit 0 ─────────────────────────────
+set +e
+"$binary" \
+    --task smoke-pass-99991 \
+    --pre-done \
+    --tasks-file "$SMOKE_TMPDIR/tasks.json" \
+    --runs-db    "$SMOKE_TMPDIR/runs.db" \
+    --project-root "$SMOKE_TMPDIR" \
+    >"$SMOKE_TMPDIR/pass.stdout" \
+    2>"$SMOKE_TMPDIR/pass.stderr"
+pass_exit=$?
+set -e
+
+if [[ "$pass_exit" -ne 0 ]]; then
+    echo "FAIL (4a): known-pass task exited $pass_exit (expected 0)." >&2
+    echo "  stdout: $(cat "$SMOKE_TMPDIR/pass.stdout")" >&2
+    echo "  stderr: $(cat "$SMOKE_TMPDIR/pass.stderr")" >&2
+    exit 1
+fi
+
+# Extract the trailing JSON block from stderr. The binary may emit git
+# diagnostic warnings before the JSON array (see crates/reify-audit/tests/
+# cli.rs:73-85, which uses rfind("\n[") for the same reason). $SMOKE_TMPDIR
+# is not a git repo today, so the warning path is dormant — but mirroring
+# the cli.rs helper keeps 4a robust to future binary changes.
+if ! awk 'BEGIN{p=0} /^\[/{p=1} p{print}' "$SMOKE_TMPDIR/pass.stderr" \
+        | jq -e 'type == "array"' >/dev/null 2>&1; then
+    echo "FAIL (4a): known-pass stderr trailing block is not a JSON array (output-format regression)." >&2
+    echo "  stderr: $(cat "$SMOKE_TMPDIR/pass.stderr")" >&2
+    exit 1
+fi
+
+echo "smoke-predone-hook: assertion 4a OK (known-pass → exit 0, stderr JSON array)"
+
+# ── Sub-assertion 4b: known-fail → expect non-zero AND not 125 ───────────────
+set +e
+"$binary" \
+    --task smoke-fail-99992 \
+    --pre-done \
+    --tasks-file "$SMOKE_TMPDIR/tasks.json" \
+    --runs-db    "$SMOKE_TMPDIR/runs.db" \
+    --project-root "$SMOKE_TMPDIR" \
+    >"$SMOKE_TMPDIR/fail.stdout" \
+    2>"$SMOKE_TMPDIR/fail.stderr"
+fail_exit=$?
+set -e
+
+if [[ "$fail_exit" -eq 0 ]]; then
+    echo "FAIL (4b): known-fail task exited 0 (expected non-zero High-finding count)." >&2
+    echo "  stderr: $(cat "$SMOKE_TMPDIR/fail.stderr")" >&2
+    exit 1
+fi
+
+if [[ "$fail_exit" -eq 125 ]]; then
+    echo "FAIL (4b): known-fail task exited 125 (infrastructure error — likely missing" >&2
+    echo "  --tasks-file or output-format-parser regression)." >&2
+    echo "  stderr: $(cat "$SMOKE_TMPDIR/fail.stderr")" >&2
+    exit 1
+fi
+
+echo "smoke-predone-hook: assertion 4b OK (known-fail → exit $fail_exit, not 125)"
 
 # ── All assertions passed ─────────────────────────────────────────────────────
 echo "smoke-predone-hook: OK  binary=$binary  service=active"

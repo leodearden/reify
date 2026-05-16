@@ -88,7 +88,7 @@ fn print_usage(out: &mut dyn Write) {
     let _ = writeln!(out, "  --pre-done               With --task: run P5 pre-done check only");
     let _ = writeln!(out, "  --since <iso-date>       Window sweep from ISO date (all detectors)");
     let _ = writeln!(out, "  --pattern P1|P2|P5       Restrict to one detector");
-    let _ = writeln!(out, "  --tasks-file <path>      JSON array of TaskMetadata (default: .taskmaster/tasks/tasks.json)");
+    let _ = writeln!(out, "  --tasks-file <path>      [required] JSON array of TaskMetadata");
     let _ = writeln!(out, "  --runs-db <path>         SQLite runs.db path (default: data/orchestrator/runs.db)");
     let _ = writeln!(out, "  --project-root <path>    Repo root for git operations (default: .)");
     let _ = writeln!(out, "  --help, -h               Show this help");
@@ -144,7 +144,7 @@ struct Args {
     pre_done: bool,
     since: Option<String>,
     pattern: Option<String>,
-    tasks_file: String,
+    tasks_file: Option<String>,
     runs_db: String,
     project_root: String,
 }
@@ -154,10 +154,19 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
     let mut pre_done = false;
     let mut since = None;
     let mut pattern = None;
-    let mut tasks_file = ".taskmaster/tasks/tasks.json".to_string();
+    let mut tasks_file: Option<String> = None;
     let mut runs_db = "data/orchestrator/runs.db".to_string();
     let mut project_root = ".".to_string();
 
+    // NOTE: Last-wins semantics for duplicate flags.
+    // When a flag appears more than once (e.g. the pre-done hook wrapper passes
+    // its own --tasks-file, --runs-db, and --project-root before forwarding $@
+    // which may include caller-supplied overrides), the last occurrence wins.
+    // The wrapper relies on this contract: it prepends its defaults so that
+    // any flag in the caller's $@ implicitly overrides the wrapper-supplied
+    // value without requiring the wrapper to parse and strip $@.
+    // This behaviour is locked by the `duplicate_flags_last_wins` integration
+    // test in crates/reify-audit/tests/cli.rs.
     let mut i = 0usize;
     while i < argv.len() {
         match argv[i].as_str() {
@@ -195,10 +204,11 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
             }
             "--tasks-file" => {
                 i += 1;
-                tasks_file = argv
-                    .get(i)
-                    .ok_or("--tasks-file requires a value")?
-                    .clone();
+                tasks_file = Some(
+                    argv.get(i)
+                        .ok_or("--tasks-file requires a value")?
+                        .clone(),
+                );
             }
             "--runs-db" => {
                 i += 1;
@@ -272,6 +282,15 @@ fn main() -> ExitCode {
         }
     };
 
+    // --tasks-file is required; no silent default.
+    if args.tasks_file.is_none() {
+        eprintln!(
+            "reify-audit: error: --tasks-file is required (path to JSON array of TaskMetadata)"
+        );
+        print_usage(&mut std::io::stderr());
+        return ExitCode::from(ERROR_EXIT);
+    }
+
     // --pre-done requires --task.
     if args.pre_done && args.task_id.is_none() {
         eprintln!("reify-audit: error: --pre-done requires --task");
@@ -287,11 +306,12 @@ fn main() -> ExitCode {
         return ExitCode::from(ERROR_EXIT);
     }
 
-    // Load tasks.json.
-    let tasks_json = match std::fs::read_to_string(&args.tasks_file) {
+    // Load tasks.json. tasks_file is guaranteed Some by the check above.
+    let tasks_file = args.tasks_file.as_deref().expect("tasks_file checked above");
+    let tasks_json = match std::fs::read_to_string(tasks_file) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("reify-audit: error reading tasks-file '{}': {}", args.tasks_file, e);
+            eprintln!("reify-audit: error reading tasks-file '{}': {}", tasks_file, e);
             return ExitCode::from(ERROR_EXIT);
         }
     };
@@ -300,7 +320,7 @@ fn main() -> ExitCode {
         Err(e) => {
             eprintln!(
                 "reify-audit: error parsing tasks-file '{}': {}",
-                args.tasks_file, e
+                tasks_file, e
             );
             return ExitCode::from(ERROR_EXIT);
         }

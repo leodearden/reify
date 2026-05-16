@@ -480,6 +480,103 @@ mod cli {
         );
     }
 
+    /// Invoking the binary without `--tasks-file` must exit 125 with a clear
+    /// message naming the missing flag. The old silent default
+    /// `.taskmaster/tasks/tasks.json` must not silently replace it.
+    #[test]
+    fn missing_tasks_file_exits_125_with_clear_error() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let dir = tmp.path();
+        let runs_db = write_empty_runs_db(dir);
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task",
+                "1",
+                "--pre-done",
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                dir.to_str().unwrap(),
+                // NOTE: intentionally omitting --tasks-file
+            ])
+            .output()
+            .expect("invoke reify-audit without --tasks-file");
+
+        assert_eq!(
+            out.status.code(),
+            Some(125),
+            "missing --tasks-file must exit 125; got {:?}\nstdout: {}\nstderr: {}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("--tasks-file"),
+            "stderr must mention '--tasks-file' to identify the missing flag; \
+             full stderr:\n{}",
+            stderr
+        );
+    }
+
+    /// Duplicate flags follow last-wins semantics.
+    ///
+    /// The pre-done hook wrapper (`scripts/reify-audit-predone-wrapper.sh`)
+    /// passes `--tasks-file <snapshot> --runs-db <db> --project-root <root>`
+    /// *before* forwarding `$@`. Callers can override any of those defaults by
+    /// appending their own flags. This test locks that the last `--tasks-file`
+    /// occurrence wins, so the wrapper's assumption never silently breaks.
+    ///
+    /// See the `parse_args` doc-comment in `src/bin/reify-audit.rs` for the
+    /// authoritative description of the last-wins contract.
+    #[test]
+    fn duplicate_flags_last_wins() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let dir = tmp.path();
+
+        // A valid tasks file (the last --tasks-file should point here).
+        let task = task_fixture("dup-test-1", "done", None, None);
+        let tasks_path = write_tasks_json(dir, &[task]);
+        let runs_db = write_empty_runs_db(dir);
+
+        // A non-existent tasks file (the first --tasks-file; should lose).
+        let nonexistent = dir.join("does-not-exist.json");
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task",
+                "dup-test-1",
+                "--pre-done",
+                // First --tasks-file (non-existent) — wrapper-supplied position.
+                "--tasks-file",
+                nonexistent.to_str().unwrap(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                dir.to_str().unwrap(),
+                // Second --tasks-file (valid) — caller-supplied override wins.
+                "--tasks-file",
+                tasks_path.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit with duplicate --tasks-file");
+
+        // If the first (non-existent) --tasks-file won, the binary would
+        // exit 125 ("error reading tasks-file: ..."). Any other exit code
+        // (0 or 1-254) means the last flag correctly won.
+        assert_ne!(
+            out.status.code(),
+            Some(125),
+            "last --tasks-file must win (exit 125 means the wrong, non-existent \
+             file was used); stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
     /// `--pattern P1` over the same fixture yields an empty array (Noop
     /// JCodemunchOps means P1 never fires), proving P5 is NOT invoked.
     #[test]
