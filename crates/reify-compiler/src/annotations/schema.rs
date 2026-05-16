@@ -780,7 +780,7 @@ mod tests {
         }
     }
 
-    /// Any arg passed to @solid on a valid context emits "takes no arguments".
+    /// Any arg passed to @solid on any valid context (structure, occurrence) emits "takes no arguments".
     #[test]
     fn validate_solid_with_any_arg_on_valid_context_warns() {
         let arg_shapes: &[(&str, Vec<reify_types::AnnotationArg>)] = &[
@@ -803,26 +803,28 @@ mod tests {
                 ],
             ),
         ];
-        for (label, args) in arg_shapes {
-            let a = ann(reify_types::SOLID_ANNOTATION, args.clone());
-            let mut diags: Vec<reify_types::Diagnostic> = vec![];
-            validate_via_schema(std::slice::from_ref(&a), "structure", &mut diags);
-            assert_eq!(
-                diags.len(),
-                1,
-                "arg shape {label}: expected exactly 1 diagnostic, got: {:?}",
-                diags
-            );
-            assert!(
-                diags[0].message.contains("takes no arguments"),
-                "arg shape {label}: unexpected message: {}",
-                diags[0].message
-            );
-            assert_eq!(
-                diags[0].labels[0].message,
-                "@solid takes no arguments",
-                "arg shape {label}: unexpected label"
-            );
+        for context in ["structure", "occurrence"] {
+            for (label, args) in arg_shapes {
+                let a = ann(reify_types::SOLID_ANNOTATION, args.clone());
+                let mut diags: Vec<reify_types::Diagnostic> = vec![];
+                validate_via_schema(std::slice::from_ref(&a), context, &mut diags);
+                assert_eq!(
+                    diags.len(),
+                    1,
+                    "context={context}, arg shape {label}: expected exactly 1 diagnostic, got: {:?}",
+                    diags
+                );
+                assert!(
+                    diags[0].message.contains("takes no arguments"),
+                    "context={context}, arg shape {label}: unexpected message: {}",
+                    diags[0].message
+                );
+                assert_eq!(
+                    diags[0].labels[0].message,
+                    "@solid takes no arguments",
+                    "context={context}, arg shape {label}: unexpected label"
+                );
+            }
         }
     }
 
