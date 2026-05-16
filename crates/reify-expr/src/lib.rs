@@ -739,53 +739,17 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
         // pure-expression evaluator (no kernel required). @face("name") and
         // @edge("name") require the geometry kernel and are patched by
         // Engine::post_process_ad_hoc_selectors after eval_expr completes.
+        //
+        // Body extracted into `eval_ad_hoc_selector` to keep this recursive
+        // frame small in debug builds — the [f64; 3] coord buffer and Value
+        // locals would otherwise sit on every `eval_expr` frame and risk
+        // overflowing the 2 MiB test-thread stack at MAX_RECURSION_DEPTH
+        // levels of recursive user-fn evaluation (cf. `eval_quantifier`).
         CompiledExprKind::AdHocSelector {
             selector_kind,
             args,
             ..
-        } => match selector_kind {
-            SelectorKind::Point => {
-                // @point(x, y, z): evaluate 3 coord args; if all are
-                // LENGTH-dimensioned scalars, build Frame{origin, identity_basis}.
-                if args.len() != 3 {
-                    return Value::Undef;
-                }
-                let mut si_coords = [0.0_f64; 3];
-                for (i, arg) in args.iter().enumerate() {
-                    match eval_expr(arg, ctx) {
-                        Value::Scalar { si_value, dimension }
-                            if dimension == DimensionVector::LENGTH =>
-                        {
-                            si_coords[i] = si_value;
-                        }
-                        _ => return Value::Undef,
-                    }
-                }
-                let origin = Value::Point(
-                    si_coords
-                        .iter()
-                        .map(|&v| Value::Scalar {
-                            si_value: v,
-                            dimension: DimensionVector::LENGTH,
-                        })
-                        .collect(),
-                );
-                Value::Frame {
-                    origin: Box::new(origin),
-                    basis: Box::new(Value::Orientation {
-                        w: 1.0,
-                        x: 0.0,
-                        y: 0.0,
-                        z: 0.0,
-                    }),
-                }
-            }
-            // @face("name") and @edge("name"): the engine post-process
-            // (Engine::post_process_ad_hoc_selectors) patches these cells
-            // via kernel.extract_faces/edges + resolve_unique_by_attribute.
-            // Return Undef here as a placeholder for the engine to overwrite.
-            SelectorKind::Face | SelectorKind::Edge => Value::Undef,
-        },
+        } => eval_ad_hoc_selector(selector_kind, args, ctx),
 
         // Reflective-aggregation placeholder (task-2289). This variant is
         // emitted by the compiler for `subject.params` etc. and is expected
@@ -800,6 +764,70 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             );
             Value::Undef
         }
+    }
+}
+
+/// Evaluate an ad-hoc selector expression (`@point(x,y,z)`, `@face("n")`, `@edge("n")`).
+///
+/// Extracted from `eval_expr` to keep that recursive function's stack frame
+/// small (the coord buffer and Value locals below would otherwise sit on every
+/// `eval_expr` frame and risk overflowing the 2 MiB test-thread stack at
+/// `MAX_RECURSION_DEPTH` levels of recursive user-fn evaluation — see the
+/// `eval_user_fn_recursion_depth_exceeded` test and the matching extraction of
+/// `eval_quantifier`).
+///
+/// - `SelectorKind::Point`: evaluates the 3 length-scalar args and builds a
+///   `Value::Frame` with identity basis. Returns `Value::Undef` if any arg is
+///   not a LENGTH-dimensioned scalar.
+/// - `SelectorKind::Face | SelectorKind::Edge`: returns `Value::Undef` as a
+///   placeholder for `Engine::post_process_ad_hoc_selectors` to overwrite.
+fn eval_ad_hoc_selector(
+    selector_kind: &SelectorKind,
+    args: &[CompiledExpr],
+    ctx: &EvalContext,
+) -> Value {
+    match selector_kind {
+        SelectorKind::Point => {
+            // @point(x, y, z): evaluate 3 coord args; if all are
+            // LENGTH-dimensioned scalars, build Frame{origin, identity_basis}.
+            if args.len() != 3 {
+                return Value::Undef;
+            }
+            let mut si_coords = [0.0_f64; 3];
+            for (i, arg) in args.iter().enumerate() {
+                match eval_expr(arg, ctx) {
+                    Value::Scalar { si_value, dimension }
+                        if dimension == DimensionVector::LENGTH =>
+                    {
+                        si_coords[i] = si_value;
+                    }
+                    _ => return Value::Undef,
+                }
+            }
+            let origin = Value::Point(
+                si_coords
+                    .iter()
+                    .map(|&v| Value::Scalar {
+                        si_value: v,
+                        dimension: DimensionVector::LENGTH,
+                    })
+                    .collect(),
+            );
+            Value::Frame {
+                origin: Box::new(origin),
+                basis: Box::new(Value::Orientation {
+                    w: 1.0,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                }),
+            }
+        }
+        // @face("name") and @edge("name"): the engine post-process
+        // (Engine::post_process_ad_hoc_selectors) patches these cells
+        // via kernel.extract_faces/edges + resolve_unique_by_attribute.
+        // Return Undef here as a placeholder for the engine to overwrite.
+        SelectorKind::Face | SelectorKind::Edge => Value::Undef,
     }
 }
 
