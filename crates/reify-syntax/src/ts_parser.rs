@@ -78,6 +78,35 @@ pub fn parse_with_prelude_enums(
     }
 }
 
+// ── Tree-walk helpers ────────────────────────────────────────────────────────
+
+/// Walk `node`'s descendants depth-first and return the first node whose
+/// `is_error()` or `is_missing()` is true, pruning subtrees where
+/// `has_error()` is false for O(1) early-out on clean branches.
+///
+/// Uses the same `is_error() || is_missing()` predicate as the test-only
+/// `count_errors` helper (ts_parser.rs test module) and the production guards
+/// in struct/connect lowering — keeping the predicate shape canonical.
+///
+/// Returns `None` only when the subtree contains no ERROR or MISSING node.
+/// Under the `has_error()` precondition at its sole call site this cannot
+/// happen, so `None` is a purely defensive fallback.
+fn first_error_or_missing_descendant(node: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> {
+    if node.is_error() || node.is_missing() {
+        return Some(node);
+    }
+    if !node.has_error() {
+        return None; // O(1) prune — no error anywhere in this subtree
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if let Some(found) = first_error_or_missing_descendant(child) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 /// CST → AST lowering context.
 struct Lowering<'a> {
     source: &'a str,
@@ -591,10 +620,19 @@ impl<'a> Lowering<'a> {
                 // lowered so callers see a partial AST instead of an empty type_args list.
                 // ERROR-bearing children naturally fail to match any inner kind branch and
                 // are skipped; only the aggregated diagnostic is emitted.
+                //
+                // Task 3725: narrow the diagnostic span to the first ERROR/MISSING
+                // descendant so the span does not cover well-formed sibling arguments.
+                // first_error_or_missing_descendant prunes clean subtrees in O(1) via
+                // has_error(); the fallback to self.span(child) is purely defensive —
+                // has_error() guarantees at least one ERROR/MISSING exists.
                 if child.has_error() {
+                    let fault_span = first_error_or_missing_descendant(child)
+                        .map(|n| self.span(n))
+                        .unwrap_or_else(|| self.span(child));
                     self.push_error(
                         "syntax error in type argument list".to_string(),
-                        self.span(child),
+                        fault_span,
                     );
                 }
                 let mut inner_cursor = child.walk();
