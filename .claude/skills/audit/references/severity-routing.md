@@ -18,9 +18,11 @@ Per-finding action ladder. Apply this logic to each `Finding` in the parsed JSON
 mcp__escalation__escalate_info(
     category="risk_identified",
     summary=f"[{finding.pattern}] task {finding.task_id}: {finding.summary}",
-    detail=json.dumps(finding.evidence),   # JSON-serialized evidence list
+    detail=json.dumps(finding.evidence),   # JSON-serialized list of EvidenceRef tagged-enum objects (not bare strings)
 )
 ```
+
+**Source:** `Finding` and `EvidenceRef` definitions at `crates/reify-audit/src/lib.rs` lines 109-115 and 94-105 respectively.
 
 The escalation lands in the same queue `/unblock` drains. The skill is **advisory** here — pre-done blocking is D-1 hook territory. High findings raise visibility without mutating task state.
 
