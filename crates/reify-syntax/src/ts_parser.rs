@@ -84,6 +84,11 @@ pub fn parse_with_prelude_enums(
 /// `is_error()` or `is_missing()` is true, pruning subtrees where
 /// `has_error()` is false for O(1) early-out on clean branches.
 ///
+/// Uses an iterative `TreeCursor` pre-order walk (goto_first_child /
+/// goto_next_sibling / goto_parent) rather than recursion, so deeply-nested
+/// type-arg trees cannot cause a stack overflow — matching the iterative
+/// tree-walk pattern used elsewhere in this file.
+///
 /// Uses the same `is_error() || is_missing()` predicate as the test-only
 /// `count_errors` helper (ts_parser.rs test module) and the production guards
 /// in struct/connect lowering — keeping the predicate shape canonical.
@@ -98,13 +103,32 @@ fn first_error_or_missing_descendant(node: tree_sitter::Node<'_>) -> Option<tree
     if !node.has_error() {
         return None; // O(1) prune — no error anywhere in this subtree
     }
+    // Iterative pre-order DFS: descend into subtrees that contain an error,
+    // skip clean subtrees in O(1), and terminate when we ascend back to `node`.
     let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if let Some(found) = first_error_or_missing_descendant(child) {
-            return Some(found);
+    if !cursor.goto_first_child() {
+        return None; // defensive: has_error() true but node has no children
+    }
+    loop {
+        let cur = cursor.node();
+        if cur.is_error() || cur.is_missing() {
+            return Some(cur);
+        }
+        // Descend only into subtrees that contain an error (O(1) per node).
+        if cur.has_error() && cursor.goto_first_child() {
+            continue;
+        }
+        // No error in this subtree (or no children); advance to next sibling,
+        // ascending as needed until we find one or return to the starting node.
+        loop {
+            if cursor.goto_next_sibling() {
+                break;
+            }
+            if !cursor.goto_parent() || cursor.node() == node {
+                return None;
+            }
         }
     }
-    None
 }
 
 /// CST → AST lowering context.

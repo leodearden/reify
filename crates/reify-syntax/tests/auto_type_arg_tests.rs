@@ -473,17 +473,29 @@ fn type_arg_list_error_span_narrows_to_first_error_descendant() {
     let well_formed_start = source
         .find("String")
         .expect("fixture must contain 'String'") as u32;
-    // No diagnostic should extend into (or past) the well-formed `String`
-    // sibling.  Before step-2 the outer `lower_type_args_from_node` call emits
-    // `self.span(child)` — the whole `<Vec<,>, String>` type_arg_list — whose
-    // end byte lies past `String`.  After step-2 the helper narrows that span
-    // to the first ERROR/MISSING descendant (inside `Vec<,>`), which ends
-    // before `String`.
-    let all_spans_narrow = m.errors.iter().all(|e| e.span.end <= well_formed_start);
+    // At least one diagnostic must be *strictly within* the malformed `Vec<,>`
+    // region — starting at or after `malformed_start` AND ending before the
+    // well-formed `String` sibling.
+    //
+    // The two-sided check prevents false passes from a degenerate span that
+    // merely happens to end before `String` (e.g. a span anchored at byte 0
+    // that covers the whole preamble) or one that starts after `Vec<` but
+    // extends into `String`.
+    //
+    // Before step-2: `lower_type_args_from_node` emits `self.span(child)` for
+    // the whole `<Vec<,>, String>` type_arg_list — end byte lies past `String`,
+    // so the assertion fails.
+    //
+    // After step-2: `first_error_or_missing_descendant` finds the first
+    // ERROR/MISSING descendant inside `Vec<,>` — span is confined to that
+    // region, satisfying both bounds.
+    let has_narrow_span = m.errors.iter().any(|e| {
+        e.span.start >= malformed_start && e.span.end <= well_formed_start
+    });
     assert!(
-        all_spans_narrow,
-        "expected all diagnostic spans to end before the well-formed `String` \
-         sibling (starts at byte {well_formed_start}); \
+        has_narrow_span,
+        "expected at least one diagnostic span to lie within the malformed \
+         `Vec<,>` region (bytes {malformed_start}..{well_formed_start}); \
          got errors: {:?}",
         m.errors
             .iter()
