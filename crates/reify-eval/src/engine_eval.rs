@@ -1791,12 +1791,12 @@ impl Engine {
                             fields.insert(cell.id.member.clone(), v.clone());
                         }
                     }
-                    let si = Value::StructureInstance {
+                    let si = Value::StructureInstance(Box::new(reify_types::StructureInstanceData {
                         type_id: reify_types::StructureTypeId(0),
                         type_name: sub.structure_name.clone(),
                         version: child_template.version(),
                         fields,
-                    };
+                    }));
                     let sub_id = ValueCellId::new(&template.name, &sub.name);
                     values.insert(sub_id.clone(), si.clone());
                     snapshot

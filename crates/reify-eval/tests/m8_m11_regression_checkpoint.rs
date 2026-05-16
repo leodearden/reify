@@ -448,7 +448,7 @@ fn assert_all_value_variants_listed(v: &reify_types::Value) {
         // Sampled field runtime payload (v0.2 — task 2341)
         Value::SampledField(_) => true,
         // Nominal structure instance (v0.3 — task 3540 / SIR-α)
-        Value::StructureInstance { .. } => true,
+        Value::StructureInstance(_) => true,
         // Undefined
         Value::Undef => true,
     };

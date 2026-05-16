@@ -75,7 +75,8 @@ pub use traits::{EnumDef, PortDirection, TraitBound, TraitDef, TraitMember, Trai
 pub use ty::Type;
 pub use value::{
     DeterminacyState, ErrorRef, EvalError, FieldSourceKind, Freshness, InterpolationKind,
-    ResultRef, SampledField, SampledGridKind, Satisfaction, Value, ValueMap, quaternion_is_finite,
+    ResultRef, SampledField, SampledGridKind, Satisfaction, StructureInstanceData, Value, ValueMap,
+    quaternion_is_finite,
 };
 pub use warm::{OpaqueState, WarmStartable};
 pub use warm_registry::{WarmStartableRegistration, WarmStartableRegistry};

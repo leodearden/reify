@@ -193,12 +193,13 @@ fn multi_load_case_stdlib_smoke_e2e() {
     // updates the *active* tripwire so the suite stays green.
     let mcr_ctor = get_value(v, "mcr_ctor");
     match mcr_ctor {
-        Value::StructureInstance { type_name, .. } => {
+        Value::StructureInstance(data) => {
             assert_eq!(
-                type_name, "MultiCaseResult",
+                data.type_name, "MultiCaseResult",
                 "MultiCaseResult(...) struct-ctor must eval to a \
                  Value::StructureInstance named \"MultiCaseResult\" (SIR-α); \
-                 got type_name={type_name:?}"
+                 got type_name={:?}",
+                data.type_name
             );
         }
         other => panic!(

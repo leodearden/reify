@@ -259,12 +259,10 @@ fn value_type_kind_matches(
         // at compile time by the trait-typed-param machinery; this runtime
         // check is the defence-in-depth arm). Any non-structure target type
         // (Int, Real, List, …) default-rejects via the inner `_` arm.
-        Value::StructureInstance {
-            type_id, type_name, ..
-        } => match ty {
-            Type::StructureRef(n) => n == type_name,
+        Value::StructureInstance(data) => match ty {
+            Type::StructureRef(n) => n == &data.type_name,
             Type::TraitObject(bound) => registry
-                .and_then(|r| r.meta(*type_id))
+                .and_then(|r| r.meta(data.type_id))
                 .map(|m| m.declared_trait_bounds.iter().any(|b| b == bound))
                 .unwrap_or(false),
             _ => false,
@@ -1219,7 +1217,7 @@ mod tests {
         name: &str,
         bounds: &[&str],
     ) -> (reify_types::Value, reify_types::StructureRegistry) {
-        use reify_types::{StructureMeta, StructureRegistry, Value};
+        use reify_types::{StructureInstanceData, StructureMeta, StructureRegistry, Value};
         let mut reg = StructureRegistry::new();
         let id = reg.intern(
             name,
@@ -1231,12 +1229,12 @@ mod tests {
                 field_layout: vec![],
             },
         );
-        let v = Value::StructureInstance {
+        let v = Value::StructureInstance(Box::new(StructureInstanceData {
             type_id: id,
             type_name: name.to_string(),
             version: 1,
             fields: Default::default(),
-        };
+        }));
         (v, reg)
     }
 

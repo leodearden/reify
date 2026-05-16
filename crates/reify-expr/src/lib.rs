@@ -593,34 +593,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             Value::Map(map)
         }
 
-        CompiledExprKind::IndexAccess { object, index } => {
-            let obj = eval_expr(object, ctx);
-            let idx = eval_expr(index, ctx);
-            if obj.is_undef() || idx.is_undef() {
-                return Value::Undef;
-            }
-            match (&obj, &idx) {
-                (Value::List(items), Value::Int(i)) => {
-                    if *i < 0 {
-                        return Value::Undef;
-                    }
-                    let i = *i as usize;
-                    items.get(i).cloned().unwrap_or(Value::Undef)
-                }
-                (Value::Map(entries), key) => entries.get(key).cloned().unwrap_or(Value::Undef),
-                // task 3540 (SIR-α), handler esc-3540-182 (A)(1): field
-                // projection on a `Value::StructureInstance`. The compiler
-                // lowers `structure_instance.member` to
-                // `IndexAccess { object, index: Literal(String("member")) }`
-                // (reusing the existing IndexAccess node rather than a new
-                // CompiledExprKind). A missing field reads as `Undef`, matching
-                // the Map arm's absent-key behaviour.
-                (Value::StructureInstance { fields, .. }, Value::String(k)) => {
-                    fields.get(k).cloned().unwrap_or(Value::Undef)
-                }
-                _ => Value::Undef,
-            }
-        }
+        CompiledExprKind::IndexAccess { object, index } => eval_index_access(object, index, ctx),
 
         CompiledExprKind::MethodCall {
             object,
@@ -845,11 +818,46 @@ fn eval_structure_instance_ctor(
             fields.insert(name.clone(), eval_expr(def, ctx));
         }
     }
-    Value::StructureInstance {
+    Value::StructureInstance(Box::new(reify_types::StructureInstanceData {
         type_id,
         type_name: type_name.to_string(),
         version,
         fields,
+    }))
+}
+
+/// Evaluate `CompiledExprKind::IndexAccess`. Extracted from `eval_expr`'s
+/// match arm and marked `#[inline(never)]` for the same reason
+/// `eval_structure_instance_ctor` is hoisted out: the local `Value` slots
+/// here (`obj`, `idx`) widen `eval_expr`'s debug-mode stack frame enough to
+/// regress `eval_user_fn_recursion_depth_exceeded` (the safety test that
+/// drives `MAX_RECURSION_DEPTH=256` and asserts the runtime guard trips
+/// *before* the native stack is exhausted). Keeping this body in a separate
+/// non-inlined frame — allocated only when an index access is actually
+/// evaluated, not on every recursive `eval_expr` frame — restores the lean
+/// frame the guard relies on. The `Value::StructureInstance` arm here is the
+/// SIR-α (task 3540) field-projection path; lowering site is
+/// `CompiledExpr::index_access` in `reify-compiler/src/expr.rs`.
+#[inline(never)]
+fn eval_index_access(object: &CompiledExpr, index: &CompiledExpr, ctx: &EvalContext) -> Value {
+    let obj = eval_expr(object, ctx);
+    let idx = eval_expr(index, ctx);
+    if obj.is_undef() || idx.is_undef() {
+        return Value::Undef;
+    }
+    match (&obj, &idx) {
+        (Value::List(items), Value::Int(i)) => {
+            if *i < 0 {
+                return Value::Undef;
+            }
+            let i = *i as usize;
+            items.get(i).cloned().unwrap_or(Value::Undef)
+        }
+        (Value::Map(entries), key) => entries.get(key).cloned().unwrap_or(Value::Undef),
+        (Value::StructureInstance(data), Value::String(k)) => {
+            data.fields.get(k).cloned().unwrap_or(Value::Undef)
+        }
+        _ => Value::Undef,
     }
 }
 
@@ -3877,21 +3885,19 @@ mod tests {
         );
         let values = ValueMap::new();
         match eval_expr(&expr, &EvalContext::simple(&values)) {
-            Value::StructureInstance {
-                type_id,
-                type_name,
-                version,
-                fields,
-            } => {
-                assert_eq!(type_id, reify_types::StructureTypeId(0));
-                assert_eq!(type_name, "Steel_AISI_1045");
-                assert_eq!(version, 1);
+            Value::StructureInstance(data) => {
+                assert_eq!(data.type_id, reify_types::StructureTypeId(0));
+                assert_eq!(data.type_name, "Steel_AISI_1045");
+                assert_eq!(data.version, 1);
                 assert_eq!(
-                    fields.get(&"youngs_modulus".to_string()),
+                    data.fields.get(&"youngs_modulus".to_string()),
                     Some(&Value::Int(200))
                 );
-                assert_eq!(fields.get(&"poisson".to_string()), Some(&Value::Real(0.3)));
-                assert_eq!(fields.len(), 2);
+                assert_eq!(
+                    data.fields.get(&"poisson".to_string()),
+                    Some(&Value::Real(0.3))
+                );
+                assert_eq!(data.fields.len(), 2);
             }
             other => panic!("expected StructureInstance, got {:?}", other),
         }
@@ -3908,14 +3914,14 @@ mod tests {
         );
         let values = ValueMap::new();
         match eval_expr(&expr, &EvalContext::simple(&values)) {
-            Value::StructureInstance { fields, .. } => {
-                assert_eq!(fields.get(&"target".to_string()), Some(&Value::Int(7)));
+            Value::StructureInstance(data) => {
+                assert_eq!(data.fields.get(&"target".to_string()), Some(&Value::Int(7)));
                 assert_eq!(
-                    fields.get(&"magnitude".to_string()),
+                    data.fields.get(&"magnitude".to_string()),
                     Some(&Value::Int(0)),
                     "omitted param filled from its captured default"
                 );
-                assert_eq!(fields.len(), 2);
+                assert_eq!(data.fields.len(), 2);
             }
             other => panic!("expected StructureInstance, got {:?}", other),
         }
@@ -3934,23 +3940,14 @@ mod tests {
         let outer = sct("Beam", 2, vec![], vec![("material", inner)]);
         let values = ValueMap::new();
         match eval_expr(&outer, &EvalContext::simple(&values)) {
-            Value::StructureInstance {
-                type_name,
-                version,
-                fields,
-                ..
-            } => {
-                assert_eq!(type_name, "Beam");
-                assert_eq!(version, 2);
-                match fields.get(&"material".to_string()) {
-                    Some(Value::StructureInstance {
-                        type_name: inner_name,
-                        fields: inner_fields,
-                        ..
-                    }) => {
-                        assert_eq!(inner_name, "Steel_AISI_1045");
+            Value::StructureInstance(data) => {
+                assert_eq!(data.type_name, "Beam");
+                assert_eq!(data.version, 2);
+                match data.fields.get(&"material".to_string()) {
+                    Some(Value::StructureInstance(inner)) => {
+                        assert_eq!(inner.type_name, "Steel_AISI_1045");
                         assert_eq!(
-                            inner_fields.get(&"youngs_modulus".to_string()),
+                            inner.fields.get(&"youngs_modulus".to_string()),
                             Some(&Value::Int(200))
                         );
                     }
@@ -3980,10 +3977,10 @@ mod tests {
         );
         let values = ValueMap::new();
         match eval_expr(&expr, &EvalContext::simple(&values)) {
-            Value::StructureInstance { fields, .. } => {
-                assert_eq!(fields.get(&"length".to_string()), Some(&Value::Int(5)));
+            Value::StructureInstance(data) => {
+                assert_eq!(data.fields.get(&"length".to_string()), Some(&Value::Int(5)));
                 assert_eq!(
-                    fields.get(&"mystery".to_string()),
+                    data.fields.get(&"mystery".to_string()),
                     Some(&Value::Undef),
                     "Undef field value stays Undef in its own slot"
                 );

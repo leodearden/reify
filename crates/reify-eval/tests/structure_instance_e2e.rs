@@ -19,7 +19,7 @@
 use reify_test_support::{
     collect_errors, compile_source_with_stdlib, make_simple_engine, parse_and_compile_with_stdlib,
 };
-use reify_types::{PersistentMap, StructureTypeId, Value, ValueCellId};
+use reify_types::{PersistentMap, StructureInstanceData, StructureTypeId, Value, ValueCellId};
 
 /// `PersistentMap<String, Value>::get` is keyed by `&String`; this lets the
 /// scenarios index `StructureInstance.fields` with a string literal.
@@ -35,18 +35,16 @@ fn structure_instance_is_constructible() {
     let fields: PersistentMap<String, Value> = [("youngs_modulus".to_string(), Value::Real(205e9))]
         .into_iter()
         .collect();
-    let v = Value::StructureInstance {
+    let v = Value::StructureInstance(Box::new(StructureInstanceData {
         type_id: StructureTypeId(0),
         type_name: "Steel_AISI_1045".to_string(),
         version: 1,
         fields,
-    };
+    }));
     match &v {
-        Value::StructureInstance {
-            type_name, version, ..
-        } => {
-            assert_eq!(type_name, "Steel_AISI_1045");
-            assert_eq!(*version, 1);
+        Value::StructureInstance(data) => {
+            assert_eq!(data.type_name, "Steel_AISI_1045");
+            assert_eq!(data.version, 1);
         }
         other => panic!("expected StructureInstance, got {other:?}"),
     }
@@ -77,11 +75,12 @@ structure def PointLoadFixture {
         .unwrap_or_else(|| panic!("PointLoadFixture.load cell missing from eval result"));
 
     match load {
-        Value::StructureInstance { type_name, .. } => {
+        Value::StructureInstance(data) => {
             assert_eq!(
-                type_name, "PointLoad",
+                data.type_name, "PointLoad",
                 "expected type_name=\"PointLoad\" (the wave-1 SIR-α stdlib structure_def), \
-                 got {type_name:?}"
+                 got {:?}",
+                data.type_name
             );
         }
         other => panic!(
@@ -113,18 +112,16 @@ structure def FlatPart {
         .unwrap_or_else(|| panic!("FlatPart.steel cell missing from eval result"));
 
     match steel {
-        Value::StructureInstance {
-            type_name, fields, ..
-        } => {
-            assert_eq!(type_name, "Steel_AISI_1045");
+        Value::StructureInstance(data) => {
+            assert_eq!(data.type_name, "Steel_AISI_1045");
             assert!(
-                field(fields, "youngs_modulus").is_some(),
+                field(&data.fields, "youngs_modulus").is_some(),
                 "Steel_AISI_1045 instance must carry its `youngs_modulus` default field; \
                  fields present: {:?}",
-                fields.iter().map(|(k, _)| k).collect::<Vec<_>>()
+                data.fields.iter().map(|(k, _)| k).collect::<Vec<_>>()
             );
             assert!(
-                !matches!(field(fields, "youngs_modulus"), Some(Value::Undef)),
+                !matches!(field(&data.fields, "youngs_modulus"), Some(Value::Undef)),
                 "youngs_modulus default (205GPa) must evaluate to a non-Undef value"
             );
         }
@@ -159,19 +156,13 @@ structure def NestedAssembly {
         .get(&ValueCellId::new("NestedAssembly", "primary"))
         .unwrap_or_else(|| panic!("NestedAssembly.primary cell missing"));
     match primary {
-        Value::StructureInstance {
-            type_name, fields, ..
-        } => {
-            assert_eq!(type_name, "Beam");
-            match field(fields, "material") {
-                Some(Value::StructureInstance {
-                    type_name: mat_name,
-                    fields: mat_fields,
-                    ..
-                }) => {
-                    assert_eq!(mat_name, "Steel_AISI_1045");
+        Value::StructureInstance(data) => {
+            assert_eq!(data.type_name, "Beam");
+            match field(&data.fields, "material") {
+                Some(Value::StructureInstance(mat)) => {
+                    assert_eq!(mat.type_name, "Steel_AISI_1045");
                     assert!(
-                        field(mat_fields, "youngs_modulus").is_some(),
+                        field(&mat.fields, "youngs_modulus").is_some(),
                         "nested material must carry youngs_modulus"
                     );
                 }
@@ -223,11 +214,8 @@ structure def UseBeam {
         .get(&ValueCellId::new("UseBeam", "b"))
         .unwrap_or_else(|| panic!("UseBeam.b cell missing"));
     match b {
-        Value::StructureInstance { fields, .. } => match field(fields, "mat") {
-            Some(Value::StructureInstance {
-                type_name: mat_name,
-                ..
-            }) => assert_eq!(mat_name, "Steel_AISI_1045"),
+        Value::StructureInstance(data) => match field(&data.fields, "mat") {
+            Some(Value::StructureInstance(mat)) => assert_eq!(mat.type_name, "Steel_AISI_1045"),
             other => panic!("expected BeamT.mat to be a nested StructureInstance, got {other:?}"),
         },
         other => panic!("expected Value::StructureInstance for UseBeam.b, got {other:?}"),
@@ -263,7 +251,7 @@ structure def MapVsStruct {
         "a `map{{...}}` literal must remain a Value::Map, got {m:?}"
     );
     assert!(
-        matches!(s, Value::StructureInstance { .. }),
+        matches!(s, Value::StructureInstance(_)),
         "a structure constructor must produce a Value::StructureInstance, got {s:?}"
     );
     assert_ne!(
@@ -318,20 +306,20 @@ fn cache_key_deterministic_across_field_order() {
     .into_iter()
     .collect();
 
-    let va = Value::StructureInstance {
+    let va = Value::StructureInstance(Box::new(StructureInstanceData {
         type_id: StructureTypeId(0),
         type_name: "Steel_AISI_1045".to_string(),
         version: 1,
         fields: a,
-    };
+    }));
     // A different type_id must NOT change the content hash (per-Engine,
     // ephemeral; cache must survive an Engine restart).
-    let vb = Value::StructureInstance {
+    let vb = Value::StructureInstance(Box::new(StructureInstanceData {
         type_id: StructureTypeId(99),
         type_name: "Steel_AISI_1045".to_string(),
         version: 1,
         fields: b,
-    };
+    }));
     assert_eq!(
         va.content_hash().0,
         vb.content_hash().0,
@@ -346,18 +334,18 @@ fn cache_key_changes_on_version_bump() {
     let fields: PersistentMap<String, Value> = [("youngs_modulus".to_string(), Value::Real(205e9))]
         .into_iter()
         .collect();
-    let v1 = Value::StructureInstance {
+    let v1 = Value::StructureInstance(Box::new(StructureInstanceData {
         type_id: StructureTypeId(0),
         type_name: "Steel_AISI_1045".to_string(),
         version: 1,
         fields: fields.clone(),
-    };
-    let v2 = Value::StructureInstance {
+    }));
+    let v2 = Value::StructureInstance(Box::new(StructureInstanceData {
         type_id: StructureTypeId(0),
         type_name: "Steel_AISI_1045".to_string(),
         version: 2,
         fields,
-    };
+    }));
     assert_ne!(
         v1.content_hash().0,
         v2.content_hash().0,
