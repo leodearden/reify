@@ -8138,4 +8138,26 @@ mod tests {
             diagnostics
         );
     }
+
+    #[test]
+    fn cap_kind_translation_maps_all_canonical_labels_and_returns_none_for_unknown() {
+        use reify_types::{CapKind, Role};
+        let cases: &[(&str, Option<(Role, u32)>)] = &[
+            ("top",         Some((Role::Cap(CapKind::Top), 0))),
+            ("bottom",      Some((Role::Cap(CapKind::Bottom), 0))),
+            ("start",       Some((Role::Cap(CapKind::Start), 0))),
+            ("end",         Some((Role::Cap(CapKind::End), 0))),
+            ("side",        Some((Role::Side, 0))),
+            ("nonexistent", None),
+        ];
+        for (label, expected) in cases {
+            assert_eq!(
+                cap_kind_translation(label),
+                *expected,
+                "label {:?} should map to {:?}",
+                label,
+                expected
+            );
+        }
+    }
 }
