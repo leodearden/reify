@@ -870,3 +870,58 @@ fn delta_to_events_omits_compile_diagnostics_event_when_none() {
         events.iter().map(|(n, _)| n).collect::<Vec<_>>()
     );
 }
+
+// --- Shell-extract backward-compat regression (Task 3597 step-13) ---
+
+/// `delta_to_events` must produce a `mesh-update` event whose JSON payload
+/// does NOT contain `element_kind`, `region_tags`, or `vector_channels` keys
+/// when the `MeshData` has all three new fields at their default values.
+///
+/// This pins the backward-compat invariant at the `delta_to_events` emit site:
+/// the manual `Serialize` impl's skip-if-none/skip-if-empty branches must drive
+/// the wire shape correctly through the existing `serde_json::to_value` call
+/// in `diff.rs`.  No code change to `diff.rs` is required or expected.
+#[test]
+fn delta_to_events_omits_new_shell_fields_for_default_mesh() {
+    let old = crate::types::GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+    };
+    let new = crate::types::GuiState {
+        meshes: vec![sample_mesh("Bracket.body", vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0])],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+    };
+
+    let delta = diff_gui_state(&old, &new);
+    let events = delta_to_events(&delta);
+
+    // Locate the mesh-update event
+    let mesh_events: Vec<_> = events
+        .iter()
+        .filter(|(name, _)| name == "mesh-update")
+        .collect();
+    assert_eq!(mesh_events.len(), 1, "expected exactly one mesh-update event");
+    let payload = &mesh_events[0].1;
+
+    // The three new shell fields must be absent for a default MeshData
+    assert!(
+        payload.get("element_kind").is_none(),
+        "element_kind must be absent from mesh-update wire payload for default MeshData"
+    );
+    assert!(
+        payload.get("region_tags").is_none(),
+        "region_tags must be absent from mesh-update wire payload for default MeshData"
+    );
+    assert!(
+        payload.get("vector_channels").is_none(),
+        "vector_channels must be absent from mesh-update wire payload for default MeshData"
+    );
+}
