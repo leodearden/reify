@@ -3832,22 +3832,21 @@ mod tests {
         );
     }
 
-    /// Pins the defensive-default fallback branch of `resolve_let_advertised_type`.
+    /// Pins the anti-cascade-poison fallback branch of `resolve_let_advertised_type`.
     ///
     /// When neither a cell_type annotation nor an inferred expression is available,
-    /// the helper must return `Type::Real` as a conservative default. After task 1914
-    /// suggestion #1 (`pass2_compile_errors` filter), this arm should not be reached
-    /// in practice — but the helper must be correct for the contract to hold.
-    /// The `debug_assert!` at the call site in `check_phase_build_available_defaults_map`
-    /// guards against this arm being hit with a name that survived both pass2_skipped and
-    /// pass2_compile_errors filters (which would indicate a Pass 2 contract violation).
+    /// the helper returns `Type::Error` (anti-cascade poison). This arm should not be
+    /// reached in practice — the `debug_assert!` at the call site in
+    /// `check_phase_build_available_defaults_map` (checker.rs:766-772) catches drift;
+    /// the `Type::Error` fallback is defense in depth for release builds where the
+    /// `debug_assert!` is a no-op (task 3749, tightening of the 3639 G-allow carve-out).
     #[test]
-    fn resolve_let_advertised_type_falls_back_to_real_when_neither_annotation_nor_inferred() {
+    fn resolve_let_advertised_type_falls_back_to_error_when_neither_annotation_nor_inferred() {
         let result = resolve_let_advertised_type(&None, None);
         assert_eq!(
             result,
-            Type::Real,
-            "Expected Type::Real defensive fallback when no annotation and no inferred expression"
+            Type::Error,
+            "Expected Type::Error anti-cascade poison when no annotation and no inferred expression"
         );
     }
 
