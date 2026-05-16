@@ -1009,6 +1009,21 @@ mod tests {
         }
     }
 
+    // ── registry completeness test ───────────────────────────────────────────
+
+    /// All six known annotation names return `Some` from `lookup_schema`.
+    /// Explicit completeness invariant — protects against accidentally dropping
+    /// an entry when migrating from HashMap insertions to a const slice (step-6).
+    #[test]
+    fn all_six_annotations_lookup_able() {
+        for name in ["test", "deprecated", "optimized", "solver_hint", "shell", "solid"] {
+            assert!(
+                lookup_schema(name).is_some(),
+                "lookup_schema(\"{name}\") returned None — entry missing from registry"
+            );
+        }
+    }
+
     // ── label field tests ────────────────────────────────────────────────────
 
     /// `label` field equals the `@<name>` form for every annotation.
