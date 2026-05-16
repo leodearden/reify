@@ -522,6 +522,71 @@ mod cli {
         );
     }
 
+    /// Pins the per-instance `AtomicBool` dedup at
+    /// `src/lib.rs:275, 375, 387, 396`. With N=3 metadata.files entries and
+    /// `git check-ignore` exiting 128 on each call (non-git tempdir), the
+    /// pre-dedup code emitted three breadcrumbs; the current short-circuit
+    /// emits exactly one.
+    ///
+    /// Distinct from `git_check_ignore_non_standard_exit_logs_breadcrumb`,
+    /// which uses N=1 — the AtomicBool dedup is never exercised there
+    /// because is_gitignored is only invoked once.
+    ///
+    /// N=3 (not N=2) catches three regression modes at once: pre-dedup
+    /// (3 breadcrumbs), partial-skip (2), and any future bug that fires
+    /// the breadcrumb twice.
+    ///
+    /// The single-instance contract that makes the per-task budget
+    /// meaningful in production is documented on `RealGitOps` in
+    /// `src/lib.rs` (Part D of task 3720).
+    ///
+    /// No `task_completed` event is inserted: `check_one` would emit a
+    /// P5 High in its absence, but `check_task` still invokes
+    /// `check_gitignored` afterwards (`p5_phantom_done.rs:102-114`), so
+    /// the breadcrumb fires regardless.
+    #[test]
+    fn git_check_ignore_breadcrumb_dedups_across_files() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let dir = tmp.path();
+
+        let mut t = task_fixture("4201", "done", Some("merged"), Some("deadbeef"));
+        t["files"] = serde_json::json!([
+            "crates/x/a.rs",
+            "crates/x/b.rs",
+            "crates/x/c.rs",
+        ]);
+        let tasks = vec![t];
+        let tasks_file = write_tasks_json(dir, &tasks);
+        let runs_db = write_empty_runs_db(dir);
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task",
+                "4201",
+                "--pre-done",
+                "--tasks-file",
+                tasks_file.to_str().unwrap(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit --task 4201 --pre-done");
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let breadcrumb_count = stderr
+            .matches("reify-audit: git check-ignore exited Some(128)")
+            .count();
+        assert_eq!(
+            breadcrumb_count, 1,
+            "with N=3 files in a non-git dir, the AtomicBool dedup must emit \
+             exactly 1 breadcrumb (not 3); got {breadcrumb_count}\n\
+             full stderr:\n{stderr}"
+        );
+    }
+
     /// Duplicate flags follow last-wins semantics.
     ///
     /// The pre-done hook wrapper (`scripts/reify-audit-predone-wrapper.sh`)

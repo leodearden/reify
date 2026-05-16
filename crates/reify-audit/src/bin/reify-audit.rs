@@ -486,7 +486,7 @@ mod tests {
         assert!(!args.pre_done);
         assert!(args.since.is_none());
         assert!(args.pattern.is_none());
-        assert_eq!(args.tasks_file, ".taskmaster/tasks/tasks.json");
+        assert!(args.tasks_file.is_none());
         assert_eq!(args.runs_db, "data/orchestrator/runs.db");
         assert_eq!(args.project_root, ".");
     }
@@ -562,7 +562,7 @@ mod tests {
         assert!(args.pre_done);
         assert_eq!(args.since.as_deref(), Some("2026-05-01"));
         assert_eq!(args.pattern.as_deref(), Some("P5"));
-        assert_eq!(args.tasks_file, "/tmp/tasks.json");
+        assert_eq!(args.tasks_file.as_deref(), Some("/tmp/tasks.json"));
         assert_eq!(args.runs_db, "/tmp/runs.db");
         assert_eq!(args.project_root, "/tmp/repo");
     }
