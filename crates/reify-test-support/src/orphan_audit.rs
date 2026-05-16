@@ -89,6 +89,19 @@ pub fn run_orphan_audit(scope: &str) -> Option<serde_json::Value> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
+    // Guard: empty stdout means the scope is in EXCLUDE_CRATES or the script
+    // produced no envelope.  `serde_json::from_str("")` would panic with a
+    // "not valid JSON" error whose accompanying "status: ExitStatus(0)" would
+    // be misleading.  Surface a clear skip-style message instead.
+    if stdout.trim().is_empty() {
+        eprintln!(
+            "audit-orphan-producers.sh produced empty output for scope {scope:?} \
+             — scope may be in EXCLUDE_CRATES (exit status: {:?})",
+            output.status
+        );
+        return None;
+    }
+
     let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
         panic!(
             "audit-orphan-producers.sh output was not valid JSON: {e}\n\
@@ -114,6 +127,15 @@ mod tests {
     /// `audit-orphan-producers.sh`, which causes the script to emit empty stdout
     /// (exit 0) rather than a JSON envelope — so it cannot be used as a scope
     /// for testing the JSON-parse path.
+    ///
+    /// **Scope overlap is intentional.** This test shares the
+    /// `crates/reify-audit/src` scope with `reify-audit/tests/g_allow.rs`.
+    /// The purposes differ: this test verifies the helper's JSON-parse contract
+    /// (`orphan_count` is a u64, `orphans` is an array); `g_allow.rs` verifies
+    /// the domain assertion (`orphan_count == 0`).  On a full
+    /// `cargo test --workspace` run the audit script fires twice against the
+    /// same scope.  The cost is acceptable — the script is fast and a dedicated
+    /// fixture directory would add maintenance overhead for minimal benefit.
     ///
     /// The test applies the same graceful-skip pattern as all downstream
     /// callers: if the environment lacks `python3` or `git`, we return early.
