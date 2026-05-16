@@ -105,7 +105,7 @@ pub use topology_attribute_propagation::{
 pub use topology_attribute_resolver::{
     AttributeQuery, AttributeResolution, resolve_unique_by_attribute,
 };
-pub use geometry_ops::{cap_kind_translation, try_eval_ad_hoc_selector};
+pub use geometry_ops::try_eval_ad_hoc_selector;
 
 use std::collections::HashMap;
 use std::sync::Arc;
