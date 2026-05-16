@@ -45,6 +45,8 @@ mcp__fused-memory__submit_task(
 )
 ```
 
+(Note: `planning_mode=True` implies `deferred` status — the tool flips to `deferred` automatically. Do NOT add an explicit `status=` kwarg. See `submit_task` docstring in `fused-memory/src/fused_memory/server/tools.py` lines 1770-1771.)
+
 `planning_mode=True` is **synchronous** (curator-bypassing) and returns `task_id` directly — no `resolve_ticket` round trip. This is the same pattern used by `/prd` decompose mode (see `.claude/skills/prd/references/decompose-mode.md` Step 3); the contract is captured in fused-memory entity `feedback_planning_mode_scope`. Tasks are filed as `deferred` (not `pending`), awaiting human triage. The skill does **not** call `set_task_status` to flip them to `pending`.
 
 ---
