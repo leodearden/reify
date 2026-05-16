@@ -990,4 +990,36 @@ mod tests {
             );
         }
     }
+
+    // ── arg_check field population tests ────────────────────────────────────
+
+    /// `arg_check` is populated for @optimized, @shell, @solid and absent for
+    /// @test, @deprecated, @solver_hint.  Drives the fn-pointer refactor in step-2.
+    #[test]
+    fn arg_check_field_populated_for_optimized_shell_solid_only() {
+        assert!(
+            lookup_schema("optimized").unwrap().arg_check.is_some(),
+            "@optimized must have arg_check"
+        );
+        assert!(
+            lookup_schema("shell").unwrap().arg_check.is_some(),
+            "@shell must have arg_check"
+        );
+        assert!(
+            lookup_schema("solid").unwrap().arg_check.is_some(),
+            "@solid must have arg_check"
+        );
+        assert!(
+            lookup_schema("test").unwrap().arg_check.is_none(),
+            "@test must not have arg_check"
+        );
+        assert!(
+            lookup_schema("deprecated").unwrap().arg_check.is_none(),
+            "@deprecated must not have arg_check"
+        );
+        assert!(
+            lookup_schema("solver_hint").unwrap().arg_check.is_none(),
+            "@solver_hint must not have arg_check"
+        );
+    }
 }
