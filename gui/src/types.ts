@@ -126,6 +126,19 @@ export function convertRawMesh(raw: RawMeshData): MeshData {
   if (raw.displaced_positions) {
     result.displaced_positions = new Float32Array(raw.displaced_positions);
   }
+  if (raw.vector_channels !== undefined) {
+    const converted: Record<string, Float32Array> = {};
+    for (const [key, values] of Object.entries(raw.vector_channels)) {
+      converted[key] = new Float32Array(values);
+    }
+    result.vector_channels = converted;
+  }
+  if (raw.element_kind !== undefined) {
+    result.element_kind = new Uint8Array(raw.element_kind);
+  }
+  if (raw.region_tags !== undefined) {
+    result.region_tags = new Uint32Array(raw.region_tags);
+  }
   return result;
 }
 
