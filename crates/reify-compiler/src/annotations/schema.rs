@@ -254,6 +254,39 @@ fn check_solid_args(ann: &Annotation, diagnostics: &mut Vec<Diagnostic>) {
     }
 }
 
+/// Slice-level duplicate-@optimized pass. Mirrors annotations.rs:236-252 verbatim.
+///
+/// Only fires in `constraint_def` and `function` contexts (the two that consume
+/// `optimized_target` downstream). Tracks the first *valid* @optimized seen;
+/// every subsequent valid @optimized emits a "duplicate" warning. Malformed
+/// entries (those where `is_valid_optimized` returns `false`) are excluded from
+/// the "seen" count so they don't trigger contradictory diagnostics.
+fn duplicate_optimized_check(
+    annotations: &[Annotation],
+    context: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if !matches!(context, "constraint_def" | "function") {
+        return;
+    }
+    let mut seen_valid_optimized = false;
+    for ann in annotations {
+        if super::is_valid_optimized(ann) {
+            if seen_valid_optimized {
+                diagnostics.push(
+                    Diagnostic::warning(
+                        "multiple @optimized annotations on the same declaration \
+                         — only the first well-formed one is used"
+                            .to_string(),
+                    )
+                    .with_label(DiagnosticLabel::new(ann.span, "duplicate @optimized")),
+                );
+            }
+            seen_valid_optimized = true;
+        }
+    }
+}
+
 // ─── Dispatcher ──────────────────────────────────────────────────────────────
 
 /// Validate a slice of compiled annotations against the schema registry.
@@ -314,7 +347,8 @@ pub(crate) fn validate_via_schema(
             }
         }
     }
-    // Duplicate-@optimized slice pass wired in step-8.
+    // Slice-level duplicate-@optimized pass (mirrors annotations.rs:236-252).
+    duplicate_optimized_check(annotations, context, diagnostics);
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
