@@ -65,10 +65,21 @@ If you need JSON on stdout (for piping to `jq` in a one-off shell session), redi
 | Exit code | Meaning | Skill action |
 |-----------|---------|--------------|
 | `0` | No High-severity findings | Parse findings (may still contain Medium/Low); proceed with severity routing |
-| `1`–`254` | Count of High-severity findings (capped at 254) | Parse findings; route each by severity (§6 in severity-routing.md) |
-| `125` | Infrastructure/setup error | Surface error to user verbatim and stop — do NOT treat as "125 findings" |
+| `1`–`124`, `126`–`254` | Count of High-severity findings (capped at 254) | Parse findings; route each by severity (§6 in severity-routing.md) |
+| `125`* | Ambiguous: infra/setup error **or** exactly 125 High findings | Disambiguate via tempfile parse — see §3.1 |
 
-**Critical:** Exit code `125` is reserved for infrastructure errors (arg parse failure, IO error, broken stderr serialization). It never collides with a finding count because High findings are capped at 254. Branch on `exit_code == 125` before treating the exit code as a finding count.
+\* Exit code `125` collides with a literal count of 125 High findings because `high_severity_exit_code` returns `count.min(254)`. The disambiguator in §3.1 resolves the ambiguity without requiring any change to the CLI.
+
+### §3.1 Disambiguating exit code 125
+
+When `exit_code == 125`, the skill **MUST** attempt to parse the tempfile as a JSON array before treating it as an infra error:
+
+- **Parse succeeds** (tempfile contains a valid JSON array): treat as **125 High findings** — route each via `references/severity-routing.md`. This is NOT an infra error.
+- **Parse fails or tempfile is empty**: treat as an **infra error** — surface the tempfile contents verbatim to the user and stop.
+
+**Why this works:** The CLI's successful runs always emit a JSON array on stderr (via `serde_json::to_writer_pretty`). Error paths emit human-readable text via `eprintln!` and never produce parseable JSON. A non-empty JSON array on stderr always wins over the `exit_code == 125` infra-error reading.
+
+**Why this is arm (b):** The CLI in task 3672 does NOT remap a literal-125-count to 124 or 126 (that would be arm (a), requiring changes to `crates/reify-audit/src/bin/reify-audit.rs::high_severity_exit_code` — T-4 territory, outside this task's scope). Arm (b) keeps all disambiguation inside the skill: zero coupling to the CLI's exit-code remapping. Future re-evaluation could move to arm (a) if the boundary case appears in practice.
 
 ---
 
@@ -83,6 +94,7 @@ Each failure mode yields exit code 125. The skill should surface the human-reada
 | Unreadable runs.db | `error opening runs-db 'data/orchestrator/runs.db': …` | DB may not exist yet; confirm orchestrator has run at least once |
 | Broken stderr serialization | `error serializing findings to JSON (broken stderr?)` | Rare; may indicate a resource limit; retry or report as infra issue |
 | Unknown flag or missing value | `error: unknown flag '…'` or `error: --<flag> requires a value` | Bug in skill argv construction — check `references/modes.md` |
+| Literal 125 High findings (boundary) | tempfile contains a JSON array of 125 Finding objects | NOT an infra error — route as findings per §3.1 disambiguator |
 
 ---
 
@@ -131,6 +143,21 @@ $ cat /tmp/out.json
 
 Skill behaviour: exit code 2 (2 High findings); parse 2 findings; escalate both via `mcp__escalation__escalate_info`; write per-run JSON with `action_taken: "escalated"` for each.
 
+### 125 legitimate High findings (boundary collision)
+
+```
+$ reify-audit --since 2026-05-02 2>/tmp/out.json; echo "exit=$?"
+reify-audit: 125 finding(s):
+  [High] P1OrphanExport task=3100: exported symbol has no downstream consumer
+  … (124 more High findings)
+exit=125
+
+$ jq 'length' /tmp/out.json
+125
+```
+
+Skill behaviour: `exit_code == 125` triggers the disambiguator (§3.1): skill parses `/tmp/out.json`, sees a JSON array of 125 Finding objects — parse succeeds. Classifies as **125 High findings** (not infra error), routes each via `references/severity-routing.md`.
+
 ### Infrastructure error (exit 125)
 
 ```
@@ -139,4 +166,4 @@ reify-audit: error reading tasks-file '.taskmaster/tasks/tasks.json': No such fi
 exit=125
 ```
 
-Skill behaviour: detect `exit == 125`; surface the error message to the user; stop — do NOT attempt to parse `/tmp/out.json` as findings.
+Skill behaviour: `exit_code == 125` triggers the disambiguator (§3.1): skill attempts to parse `/tmp/out.json` as a JSON array. The tempfile does not parse as a JSON array (it is human-readable text), so the disambiguator confirms infra error. Surface the error message to the user; stop — do NOT write a per-run JSON artifact.
