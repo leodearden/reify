@@ -2899,9 +2899,61 @@ impl Engine {
                                 continue;
                             }
                             Err(diags) => {
-                                // Registered trampoline failed/cancelled — surface diags
-                                // and fall through to body-inlining as best-effort.
+                                // Registered trampoline returned Failed/Cancelled —
+                                // do NOT body-inline. The user explicitly registered
+                                // a trampoline for this target, so a failure there is
+                                // a genuine compute error, not an unknown-target case.
+                                // Silently substituting an inlined body would mask the
+                                // failure: the diagnostic would say "compute trampoline
+                                // failed" while the cell happily holds an unrelated
+                                // Determined value (review feedback #1, suggestion 1).
+                                //
+                                // Mirror the §9.1 panic-boundary handler below
+                                // (engine_eval.rs ~L2929-2965): surface the
+                                // diagnostics, mark the cell Failed via
+                                // `cache.mark_failed`, emit an EventKind::Failed
+                                // journal event, and `continue`. Downstream cells
+                                // that depend on this Failed cell propagate Failed
+                                // via the freshness walk (cache.rs §9.2).
+                                //
+                                // PRD §9 Q1 explicitly resolved unregistered-target
+                                // fallback to "inline + diagnostic in debug" — the
+                                // Failed/Cancelled arm is NOT covered by that
+                                // resolution; the contract for a registered
+                                // trampoline that reports failure is that the
+                                // failure surfaces, not that it is silently
+                                // recovered.
                                 diagnostics.extend(diags);
+                                let error = ErrorRef::new(format!(
+                                    "@optimized target {:?}: compute trampoline \
+                                     returned Failed/Cancelled",
+                                    target
+                                ));
+                                let trace = take_trace(
+                                    &mut let_traces,
+                                    &node_id,
+                                    "sorted_lets",
+                                    "let_traces",
+                                );
+                                self.cache.record_evaluation_propagating_freshness(
+                                    node_id.clone(),
+                                    CachedResult::Value(
+                                        Value::Undef,
+                                        DeterminacyState::Determined,
+                                    ),
+                                    VersionId(version_id),
+                                    trace,
+                                    false,
+                                );
+                                let _ = self.cache.mark_failed(&node_id, error.clone());
+                                self.journal.record(EvalEvent {
+                                    timestamp: Instant::now(),
+                                    node_id: node_id.clone(),
+                                    kind: EventKind::Failed { error },
+                                    version: VersionId(version_id),
+                                    payload: Some(EventPayload::Duration(start.elapsed())),
+                                });
+                                continue;
                             }
                         }
                     } else {

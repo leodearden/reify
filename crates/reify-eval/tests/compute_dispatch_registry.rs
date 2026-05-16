@@ -434,3 +434,79 @@ fn e2e_compute_node_value_inputs_does_not_include_output_cell() {
         data.output_value_cells
     );
 }
+
+// ── amend: registered Failed trampoline does NOT silently body-inline ────────
+// Review feedback (suggestion 1, engine_eval.rs:2888-2893): before this
+// amendment, when a registered compute trampoline returned
+// ComputeOutcome::Failed (or Cancelled), the lowering surfaced the Error
+// diagnostics but then fell through to body-inlining — and (assuming the body
+// succeeded) the cell ended up with a perfectly valid Determined value. From
+// the user's perspective the structure 'evaluated' successfully despite a hard
+// Error diagnostic claiming the @optimized target failed.
+//
+// This regression test pins the contract that Failed/Cancelled propagate
+// through to the cell: the diagnostics are surfaced AND the cell is NOT
+// rescued by body-inline. Distinct from the unregistered-target case (PRD §9
+// Q1), where fallback IS the documented behaviour.
+
+/// Test: a registered trampoline that returns Failed surfaces the diagnostics
+/// and the observable cell is NOT silently rescued via body-inlining.
+#[test]
+fn e2e_registered_failed_trampoline_does_not_silently_body_inline() {
+    // Inline fixture: `@optimized("test::failing")` with body `x` (the same
+    // inline-fallback shape as the identity fixture). Registers `failing_fn`
+    // for "test::failing" so the trampoline is present but always Failed.
+    let source = r#"
+        @optimized("test::failing")
+        fn failing_compute_test(x: Int) -> Int {
+            x
+        }
+
+        structure FailingFixture {
+            param input: Int = 42
+            let result = failing_compute_test(input)
+        }
+    "#;
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_simple_engine();
+    engine.register_compute_fn("test::failing", failing_fn as ComputeFn);
+
+    let eval_result = engine.eval(&compiled);
+
+    // (a) The failing trampoline's diagnostics are surfaced.
+    let error_diags: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !error_diags.is_empty(),
+        "expected at least one Error diagnostic from the Failed trampoline, \
+         got diagnostics: {:?}",
+        eval_result.diagnostics
+    );
+    let failing_named = error_diags
+        .iter()
+        .any(|d| d.message.contains("test trampoline failed"));
+    assert!(
+        failing_named,
+        "expected the trampoline's own \"test trampoline failed\" diagnostic to \
+         be surfaced, got: {:?}",
+        error_diags
+    );
+
+    // (b) Body-inlining did NOT occur — the cell is NOT a Determined Int(42).
+    //     The §9.1-mirroring Failed handler does not write to `values`, so the
+    //     cell is absent from the result map (matching the panic-boundary
+    //     precedent at engine_eval.rs ~L2929-2965). The KEY assertion is
+    //     "NOT Int(42)" — that distinguishes Failed from the body-inline
+    //     rescue this amendment removed.
+    let result_cell = ValueCellId::new("FailingFixture", "result");
+    let inlined = eval_result.values.get(&result_cell) == Some(&Value::Int(42));
+    assert!(
+        !inlined,
+        "expected the cell to NOT be silently body-inlined to Int(42); got {:?}",
+        eval_result.values.get(&result_cell)
+    );
+}
