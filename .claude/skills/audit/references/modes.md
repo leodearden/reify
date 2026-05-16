@@ -44,11 +44,9 @@ reify-audit \
   --project-root .
 ```
 
-**Pre-flight:** Before shelling out, look up the task status via `mcp__fused-memory__get_task`. If `status == "done"`, emit the "already done" message without running the CLI:
+**Pre-flight:** `--task <id>` always shells out, regardless of the target task's status — including `done`. P5 (phantom-done) is the detector that only fires on done tasks, so spot-checking a freshly-completed task to confirm it is not phantom-done is precisely the intended use of this mode. A clean run (0 findings) on a done task is positive evidence that the task is not phantom-done.
 
-> Task `<id>` is already marked done. No audit sweep needed. If you suspect phantom-done, use `/audit --task <id> --pattern P5` to run just the P5 detector.
-
-(This avoids a redundant run and clarifies the pre-done hook distinction.)
+(If a "you ran P1/P2 on a done task and got nothing — that's expected" hint is useful context for the user, it belongs in the summary the skill prints *after* findings come back — e.g. a one-line aside appended to the per-run report — NOT in this pre-flight block. Future authors: do not re-introduce a status-conditional CLI-skip here.)
 
 **Scope object in per-run JSON:**
 
