@@ -1963,6 +1963,20 @@ mod tests {
         );
     }
 
+    /// Calling `.build()` without first calling `.level()` must panic with a
+    /// message that starts with "CapturingSubscriberBuilder requires .level".
+    ///
+    /// Uses `#[should_panic(expected = ...)]` for substring matching so the test
+    /// fails if `build()` silently accepts `None` or panics with a different
+    /// message.
+    #[test]
+    #[should_panic(expected = "CapturingSubscriberBuilder requires .level")]
+    fn capturing_subscriber_build_panics_without_level() {
+        use crate::CapturingSubscriberBuilder;
+
+        let _ = CapturingSubscriberBuilder::new().build();
+    }
+
     // ── WarnCapture::assert_any_event_field_contains tests ────────────────────
 
     /// `assert_any_event_field_contains` succeeds when a captured field value
