@@ -516,10 +516,16 @@ module.exports = grammar({
       //
       // Together these two rules give: `List<X>` → collection arm; everything
       // else (`Foo<X>`, `Listicle<X>`, `MyList<X>`, …) → this specialization
-      // arm. The invariant is pinned by
-      // `sub_decl_list_vs_specialization_disambiguation_invariant` in
-      // `crates/reify-syntax/tests/sub_decl_specialization_body_parser_tests.rs`
-      // (Cases 1–4), which is the regression lock for this disambiguation.
+      // arm. The invariant is pinned by four tests in
+      // `crates/reify-syntax/tests/sub_decl_specialization_body_parser_tests.rs`:
+      //   - `sub_decl_collection_form_regression`: AST-level positive case —
+      //     `List<Foo>` → collection arm (rule #2 win, pre-existing regression pin)
+      //   - `sub_decl_non_list_specialization_arm`: rule #2 negative control —
+      //     `Foo<Bar>` must NOT be captured by the collection arm
+      //   - `sub_decl_listicle_longest_match`: rule #1 longest-match guard —
+      //     `Listicle<Foo>` must reach this specialization arm (not collection)
+      //   - `sub_decl_cst_shape_for_list_collection`: CST-level pin — confirms
+      //     `List` is consumed as the collection keyword (not as structure_name)
       //
       // History: an earlier plan proposed `token(prec(1, 'List'))` here to make
       // the precedence "explicit" in the grammar. That mechanism does NOT
