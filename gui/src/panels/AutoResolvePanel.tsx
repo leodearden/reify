@@ -138,11 +138,13 @@ export const AutoResolvePanel: Component<AutoResolvePanelProps> = (props) => {
     );
     return cellIds.map((cellId) => ({
       cellId,
-      // Keep iteration number as x so a null-filtered gap shows as a visual
-      // hole (wider x-spacing) rather than silently collapsing to even spacing.
-      // Mirrors the chartPoints pattern (x: it.iteration, y: value).
+      // Keep iteration number as x so a null- or non-finite-filtered gap shows
+      // as a visual hole (wider x-spacing) rather than silently collapsing to
+      // even spacing.  Mirrors the chartPoints pattern (x: it.iteration, y: value).
+      // Number.isFinite rejects null, NaN, and ±Infinity in one predicate,
+      // giving symmetric defensive posture with the chartPoints filter on line 126.
       series: props.state.iterations
-        .filter((it) => cellId in it.parameters && it.parameters[cellId].value !== null)
+        .filter((it) => cellId in it.parameters && Number.isFinite(it.parameters[cellId].value))
         .map((it) => ({ x: it.iteration, y: it.parameters[cellId].value as number })),
     }));
   });
