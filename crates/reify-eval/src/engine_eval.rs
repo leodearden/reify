@@ -2762,7 +2762,17 @@ impl Engine {
                 args,
             } = &expr.kind
             {
-                // First-match-wins lookup — same logic as eval_user_function_call in reify-expr.
+                // First-match-wins lookup — same logic as
+                // `eval_user_function_call` in `reify-expr/src/lib.rs:734`
+                // (lookup at lib.rs:752-759).
+                //
+                // TODO(follow-up): extract this matcher into a shared helper
+                // exposed by reify-expr so both call sites delegate
+                // (review feedback suggestion 5). If the resolution rule
+                // changes (e.g., to handle subtyping or operator-overloading
+                // nuance), the two sites would otherwise drift silently. Not
+                // extracted in this amendment pass because the natural home
+                // (reify-expr) is outside task 3422's locked-module scope.
                 let maybe_target: Option<String> = functions
                     .iter()
                     .find(|f| {
