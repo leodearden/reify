@@ -89,6 +89,15 @@ fn node_traits_map_with_node_id_instance_wins_over_kind() {
 // to `reify_runtime::assert_warm_startable_coextensive` (debug-builds only,
 // fires once per execute call after the empty-eval-set short-circuit).
 //
+// Scope: this file pins the scheduler **wiring** — that `execute_with_config`
+// actually invokes the assertion. The underlying invariant (both directions
+// of the coextension) is already pinned by the runtime-internal unit tests
+// in `crates/reify-runtime/src/warm_startable_assert.rs`
+// (`empty_registry_panics_declared_without_registered` /
+// `extra_value_panics_registered_without_declared`); one T5 case here
+// demonstrates the wiring observation without re-pinning the invariant a
+// second time at a higher cost (full cyclic dev-dep + tokio runtime).
+//
 // Test vehicle uses a single-node eval set with a no-op evaluator so the
 // scheduler reaches the assertion site. The assertion firing — or not firing —
 // is the observable signal; the actual node evaluation is incidental.
@@ -148,29 +157,20 @@ async fn drive_scheduler_with_registry(registry: WarmStartableRegistry) {
 /// trips the bidirectional assertion because Realization / Resolution / Compute
 /// all declare `WARM_STARTABLE` via `default_traits()` but no producer
 /// registered presence. PRD §5 B5 / I-3 (M-013 fix).
+///
+/// This is the single T5 wiring-pin case: it demonstrates that
+/// `execute_with_config` reaches the assertion site. The opposite
+/// (registered-without-declared) direction of the coextension is covered by
+/// the runtime-internal unit test `extra_value_panics_registered_without_declared`
+/// in `crates/reify-runtime/src/warm_startable_assert.rs`; pinning it a
+/// second time here would add a redundant tokio-runtime + cyclic dev-dep
+/// without strengthening the observation.
 #[cfg(debug_assertions)]
 #[tokio::test]
 #[should_panic(expected = "WARM_STARTABLE")]
 async fn t5a_empty_registry_panics_in_debug() {
     let empty = WarmStartableRegistry::new();
     drive_scheduler_with_registry(empty).await;
-}
-
-/// T5b — registered-without-declared (debug): a fixture registry that has
-/// all three declared-WARM_STARTABLE kinds present plus an extra
-/// `NodeKind::Value` (whose `default_traits()` does NOT declare
-/// `WARM_STARTABLE`) trips the assertion from the opposite direction.
-/// Pins both arms of the coextension. PRD §5 B5 / I-3.
-#[cfg(debug_assertions)]
-#[tokio::test]
-#[should_panic(expected = "WARM_STARTABLE")]
-async fn t5b_value_registered_undeclared_panics_in_debug() {
-    let mut r = WarmStartableRegistry::new();
-    r.register(NodeKind::Realization);
-    r.register(NodeKind::Resolution);
-    r.register(NodeKind::Compute);
-    r.register(NodeKind::Value); // <-- undeclared kind triggers the panic
-    drive_scheduler_with_registry(r).await;
 }
 
 /// T5c — release-mode skip: in `cfg(not(debug_assertions))` builds the
