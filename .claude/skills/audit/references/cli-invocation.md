@@ -136,14 +136,14 @@ $ cat /tmp/out.json
     "severity": "High",
     "task_id": "3242",
     "summary": "task marked done but metadata files missing",
-    "evidence": ["task status=done; files=[]; done_provenance=null"]
+    "evidence": [{"RunsDb": {"table": "task_runs", "key": "task_id=3242"}}]
   },
   {
     "pattern": "P5PhantomDone",
     "severity": "High",
     "task_id": "3242",
     "summary": "done_provenance field absent",
-    "evidence": ["done_provenance=null"]
+    "evidence": [{"RunsDb": {"table": "task_runs", "key": "task_id=3242"}}]
   }
 ]
 ```

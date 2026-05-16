@@ -22,7 +22,7 @@ mcp__escalation__escalate_info(
 )
 ```
 
-**Source:** `Finding` and `EvidenceRef` definitions at `crates/reify-audit/src/lib.rs` lines 109-115 and 94-105 respectively.
+**Source:** `Finding` struct and `EvidenceRef` enum in `crates/reify-audit/src/lib.rs`.
 
 The escalation lands in the same queue `/unblock` drains. The skill is **advisory** here — pre-done blocking is D-1 hook territory. High findings raise visibility without mutating task state.
 
@@ -47,7 +47,7 @@ mcp__fused-memory__submit_task(
 )
 ```
 
-(Note: `planning_mode=True` implies `deferred` status — the tool flips to `deferred` automatically. Do NOT add an explicit `status=` kwarg. See `submit_task` docstring in `fused-memory/src/fused_memory/server/tools.py` lines 1770-1771.)
+(Note: `planning_mode=True` implies `deferred` status — the tool flips to `deferred` automatically. Do NOT add an explicit `status=` kwarg. See the `submit_task` docstring in `fused-memory/src/fused_memory/server/tools.py`.)
 
 `planning_mode=True` is **synchronous** (curator-bypassing) and returns `task_id` directly — no `resolve_ticket` round trip. This is the same pattern used by `/prd` decompose mode (see `.claude/skills/prd/references/decompose-mode.md` Step 3); the contract is captured in fused-memory entity `feedback_planning_mode_scope`. Tasks are filed as `deferred` (not `pending`), awaiting human triage. The skill does **not** call `set_task_status` to flip them to `pending`.
 

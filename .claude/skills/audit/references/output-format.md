@@ -40,7 +40,7 @@ Use UTC (`Z` suffix). `ls data/audit-runs/` produces chronological order because
       "pattern": "P5PhantomDone",            // from Finding.pattern (CLI value)
       "task_id": "3242",                     // from Finding.task_id
       "summary": "task marked done but …",   // from Finding.summary
-      "evidence_refs": [{/* EvidenceRef */}],  // from Finding.evidence (list of EvidenceRef tagged-enum objects; see crates/reify-audit/src/lib.rs lines 94-105)
+      "evidence_refs": [{/* EvidenceRef */}],  // from Finding.evidence (list of EvidenceRef tagged-enum objects; see EvidenceRef enum in crates/reify-audit/src/lib.rs)
 
       // Action taken by the skill for this finding:
       "action_taken": "escalated",           // "escalated" | "filed" | "deduped" | "logged"
@@ -98,7 +98,7 @@ When `--task` and `--since` are both given, include both keys:
 { "task": "3242", "window": "2026-05-02..now" }
 ```
 
-**Source:** `Finding` struct and `EvidenceRef` enum: `crates/reify-audit/src/lib.rs` lines 109-115 and 94-105.
+**Source:** `Finding` struct and `EvidenceRef` enum in `crates/reify-audit/src/lib.rs`.
 
 ---
 
