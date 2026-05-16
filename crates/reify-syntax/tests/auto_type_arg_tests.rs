@@ -312,3 +312,59 @@ fn pre1_error_node_is_within_type_arg_list_subtree() {
 // "silent drop" assertion became contradictory.  The real coverage is provided
 // by auto_type_arg_lowers_to_ast_strict / _free (step-1 tests) which assert the
 // positive behaviour.
+
+// ── Step-3 (task 3665): RED tests — ERROR propagation into module.errors ────────
+//
+// AC#1: a CST ERROR node inside a type_arg_list must surface in module.errors.
+// These tests drive the implementation in step-4 (lower_type_args_from_node).
+
+/// `auto(constrained): Seal` contains an unrecognised modifier; the grammar
+/// produces an ERROR node inside the `type_arg_list` subtree (confirmed by
+/// `pre1_error_node_is_within_type_arg_list_subtree`).  After step-4 the
+/// lowering will scan the subtree and push at least one entry to `module.errors`.
+///
+/// RED today: `module.errors` is empty (ERROR silently dropped).
+/// GREEN after step-4: `module.errors` is non-empty and the message refers to
+/// the syntax error in the type argument list.
+#[test]
+fn auto_type_arg_cst_error_propagates_to_module_errors() {
+    let source = "fn f() -> Bearing<auto(constrained): Seal> { 0 }";
+    let m = reify_syntax::parse(source, ModulePath::single("t"));
+    assert!(
+        !m.errors.is_empty(),
+        "expected at least one parse error for `auto(constrained):` in type-arg position; \
+         module.errors was empty — the ERROR node is not being propagated from the \
+         type_arg_list subtree into module.errors"
+    );
+    // The error message must mention the nature of the problem.
+    let has_relevant_message = m.errors.iter().any(|e| {
+        e.message.contains("type arg") || e.message.contains("syntax error") || e.message.contains("ERROR")
+    });
+    assert!(
+        has_relevant_message,
+        "expected an error message mentioning 'type arg', 'syntax error', or 'ERROR'; \
+         got: {:?}",
+        m.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+}
+
+/// Well-formed `auto:` type-arg inputs must produce ZERO parse errors (negative
+/// guard — the new ERROR subtree scan must not false-positive on valid inputs).
+///
+/// GREEN today (no scan yet means no spurious errors).
+/// Must stay GREEN after step-4.
+#[test]
+fn auto_type_arg_clean_input_has_no_spurious_errors() {
+    for source in &[
+        "fn f() -> Bearing<auto: Seal> { 0 }",
+        "fn h() -> Coupling<auto: A, auto: B> { 0 }",
+    ] {
+        let m = reify_syntax::parse(source, ModulePath::single("t"));
+        assert!(
+            m.errors.is_empty(),
+            "expected no parse errors for well-formed input {:?}; got: {:?}",
+            source,
+            m.errors,
+        );
+    }
+}
