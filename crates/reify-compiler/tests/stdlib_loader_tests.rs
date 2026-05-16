@@ -704,13 +704,12 @@ fn hardness_scale_enum_present_in_stdlib() {
 #[test]
 fn prelude_function_merging_path() {
     // Build a synthetic prelude module containing a single function: double(x: Real) -> Real
-    let double_fn = CompiledFunction {
-        name: "double".to_string(),
-        is_pub: true,
-        params: vec![("x".to_string(), Type::Real)],
-        param_defaults: Vec::new(),
-        return_type: Type::Real,
-        body: CompiledFnBody {
+    let double_fn = CompiledFunction::new_with_no_defaults(
+        "double".to_string(),
+        true,
+        vec![("x".to_string(), Type::Real)],
+        Type::Real,
+        CompiledFnBody {
             let_bindings: vec![],
             result_expr: CompiledExpr {
                 kind: CompiledExprKind::Literal(reify_types::Value::Real(0.0)),
@@ -718,10 +717,10 @@ fn prelude_function_merging_path() {
                 content_hash: ContentHash::of_str("double_stub"),
             },
         },
-        content_hash: ContentHash::of_str("fn_double"),
-        annotations: vec![],
-        optimized_target: None,
-    };
+        ContentHash::of_str("fn_double"),
+        vec![],
+        None,
+    );
 
     let synthetic_prelude = CompiledModuleBuilder::new(ModulePath::single("synthetic"))
         .function(double_fn)

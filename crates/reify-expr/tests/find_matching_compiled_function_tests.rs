@@ -16,38 +16,36 @@ use reify_types::{CompiledExpr, CompiledFnBody, CompiledFunction, ContentHash, T
 /// parameter of the given type. The body is a constant `Int(0)` literal —
 /// irrelevant for matching purposes.
 fn make_fn(name: &str, param_type: Type) -> CompiledFunction {
-    CompiledFunction {
-        name: name.to_string(),
-        is_pub: false,
-        params: vec![("x".to_string(), param_type)],
-        param_defaults: Vec::new(),
-        return_type: Type::Int,
-        body: CompiledFnBody {
+    CompiledFunction::new_with_no_defaults(
+        name.to_string(),
+        false,
+        vec![("x".to_string(), param_type)],
+        Type::Int,
+        CompiledFnBody {
             let_bindings: vec![],
             result_expr: CompiledExpr::literal(Value::Int(0), Type::Int),
         },
-        content_hash: ContentHash::of(name.as_bytes()),
-        annotations: vec![],
-        optimized_target: None,
-    }
+        ContentHash::of(name.as_bytes()),
+        vec![],
+        None,
+    )
 }
 
 /// Build a minimal `CompiledFunction` with the given name and NO parameters.
 fn make_fn_nullary(name: &str) -> CompiledFunction {
-    CompiledFunction {
-        name: name.to_string(),
-        is_pub: false,
-        params: vec![],
-        param_defaults: Vec::new(),
-        return_type: Type::Int,
-        body: CompiledFnBody {
+    CompiledFunction::new_with_no_defaults(
+        name.to_string(),
+        false,
+        vec![],
+        Type::Int,
+        CompiledFnBody {
             let_bindings: vec![],
             result_expr: CompiledExpr::literal(Value::Int(0), Type::Int),
         },
-        content_hash: ContentHash::of(name.as_bytes()),
-        annotations: vec![],
-        optimized_target: None,
-    }
+        ContentHash::of(name.as_bytes()),
+        vec![],
+        None,
+    )
 }
 
 // ────────────────────────────────────────────────────────────────────────────
