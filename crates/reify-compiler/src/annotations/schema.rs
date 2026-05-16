@@ -1,8 +1,21 @@
 //! Declarative annotation schema registry for `validate_annotations`.
 //!
-//! This module defines the `AnnotationSchema` type, a lazy-initialized registry
-//! of all known annotations, and the `validate_via_schema` dispatcher that
+//! This module defines the [`AnnotationSchema`] type, a lazy-initialized registry
+//! of all known annotations, and the [`validate_via_schema`] dispatcher that
 //! replaces the per-annotation match-arm in `annotations.rs`.
+//!
+//! ## Phase-1 hybrid: registry + per-annotation helpers
+//!
+//! The schema struct is pure declarative data (valid contexts, staged fields for
+//! later phases). Per-annotation arg-shape rules live in three private helper
+//! functions (`check_optimized_args`, `check_shell_args`, `check_solid_args`)
+//! called via a `match schema.name` in [`validate_via_schema`]. This is a
+//! deliberate Phase-1 trade-off: the registry centralises cross-cutting metadata
+//! while the helpers preserve bit-for-bit wording from the legacy match-arm.
+//! Later phases (δ, ζ, η) can migrate rules into the schema struct and remove
+//! the name-match once the framework matures.
+//!
+//! See `docs/prds/annotation-args.md` §4 (Phase-1 scope) for the full rationale.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -178,7 +191,9 @@ fn build_registry() -> HashMap<&'static str, AnnotationSchema> {
             valid_contexts: &["structure", "occurrence"],
             args: &[],
             flag_set: None,
-            on_extra: ExtraArgsPolicy::Error,
+            // WarnIgnore matches the Warning severity emitted by check_solid_args.
+            // Error is reserved for a future phase that intentionally upgrades severity.
+            on_extra: ExtraArgsPolicy::WarnIgnore,
         },
     );
 

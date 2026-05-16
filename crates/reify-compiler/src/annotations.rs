@@ -61,13 +61,10 @@ pub(crate) fn lower_annotations(
 
 /// Validate annotations against known annotation rules and context.
 ///
-/// Known annotations and their valid contexts:
-/// - `@test`: valid on structure, occurrence, function, constraint_def
-/// - `@optimized`: valid on structure, occurrence, constraint_def
-/// - `@solver_hint`: valid on structure, occurrence
-/// - `@shell`: valid on structure, occurrence (zero or one numeric thickness arg)
-/// - `@solid`: valid on structure, occurrence (bare marker — no args)
-/// - `@deprecated`: valid on any context
+/// Dispatches to [`schema::validate_via_schema`], which consults the
+/// `schema::ANNOTATION_REGISTRY` for the authoritative per-annotation
+/// valid-context lists and arg-shape rules. See
+/// `crates/reify-compiler/src/annotations/schema.rs` for the full listing.
 pub(crate) fn validate_annotations(
     annotations: &[reify_types::Annotation],
     context: &str,
@@ -504,84 +501,6 @@ mod tests {
         );
     }
 
-    // ── @shell annotation tests ──────────────────────────────────────────────
-
-    /// Bare `@shell` and `@shell(numeric)` on entity contexts (structure,
-    /// occurrence) validate without diagnostics. Bare form defers thickness
-    /// to T18's medial-axis fallback; numeric form supplies it explicitly.
-    #[test]
-    fn shell_valid_arg_shapes_on_entity_contexts() {
-        let cases = [
-            (vec![], "structure"),
-            (vec![reify_types::AnnotationArg::Real(0.5)], "structure"),
-            (vec![reify_types::AnnotationArg::Int(2)], "occurrence"),
-        ];
-        for (args, context) in cases {
-            let anns = vec![ann(reify_types::SHELL_ANNOTATION, args)];
-            let mut diagnostics = Vec::new();
-            validate_annotations(&anns, context, &mut diagnostics);
-            assert!(
-                diagnostics.is_empty(),
-                "context={context} produced unexpected diagnostics: {:?}",
-                diagnostics
-            );
-        }
-    }
-
-    /// `@shell` on a non-entity context (e.g. function) emits a context warning.
-    #[test]
-    fn shell_on_function_context_warns() {
-        let anns = vec![ann(reify_types::SHELL_ANNOTATION, vec![])];
-        let mut diagnostics = Vec::new();
-        validate_annotations(&anns, "function", &mut diagnostics);
-        assert_eq!(diagnostics.len(), 1);
-        assert!(
-            diagnostics[0]
-                .message
-                .contains("@shell is not valid on function"),
-            "unexpected message: {}",
-            diagnostics[0].message
-        );
-    }
-
-    /// `@shell("foo")` — non-numeric thickness — emits a single warning
-    /// pointing at the numeric-literal requirement.
-    #[test]
-    fn shell_non_numeric_thickness_warns() {
-        let anns = vec![ann(
-            reify_types::SHELL_ANNOTATION,
-            vec![reify_types::AnnotationArg::String("thick".to_string())],
-        )];
-        let mut diagnostics = Vec::new();
-        validate_annotations(&anns, "structure", &mut diagnostics);
-        assert_eq!(diagnostics.len(), 1);
-        assert!(
-            diagnostics[0].message.contains("numeric literal"),
-            "unexpected message: {}",
-            diagnostics[0].message
-        );
-    }
-
-    /// `@shell(0.5, 0.6)` — extra args — emits a single "too many" warning.
-    #[test]
-    fn shell_extra_args_warn() {
-        let anns = vec![ann(
-            reify_types::SHELL_ANNOTATION,
-            vec![
-                reify_types::AnnotationArg::Real(0.5),
-                reify_types::AnnotationArg::Real(0.6),
-            ],
-        )];
-        let mut diagnostics = Vec::new();
-        validate_annotations(&anns, "structure", &mut diagnostics);
-        assert_eq!(diagnostics.len(), 1);
-        assert!(
-            diagnostics[0].message.contains("at most one argument"),
-            "unexpected message: {}",
-            diagnostics[0].message
-        );
-    }
-
     /// An unresolvable discrete_set collection name emits an Error diagnostic.
     #[test]
     fn validate_collections_errors_on_unresolvable_name() {
@@ -600,121 +519,4 @@ mod tests {
         );
     }
 
-    // ── @solid annotation tests ──────────────────────────────────────────────
-
-    /// Bare `@solid` on entity contexts (structure, occurrence) validates
-    /// without diagnostics. The annotation is a bare marker; no arguments are
-    /// expected.
-    #[test]
-    fn solid_valid_on_entity_contexts() {
-        for context in ["structure", "occurrence"] {
-            let anns = vec![ann(reify_types::SOLID_ANNOTATION, vec![])];
-            let mut diagnostics = Vec::new();
-            validate_annotations(&anns, context, &mut diagnostics);
-            assert!(
-                diagnostics.is_empty(),
-                "context={context} produced unexpected diagnostics: {:?}",
-                diagnostics
-            );
-        }
-    }
-
-    /// `@solid` on a non-entity context (`function`) produces exactly one
-    /// diagnostic whose message mentions `"@solid is not valid on function"`.
-    #[test]
-    fn solid_on_function_context_warns() {
-        let anns = vec![ann(reify_types::SOLID_ANNOTATION, vec![])];
-        let mut diagnostics = Vec::new();
-        validate_annotations(&anns, "function", &mut diagnostics);
-        assert_eq!(
-            diagnostics.len(),
-            1,
-            "expected exactly 1 diagnostic, got: {:?}",
-            diagnostics
-        );
-        assert!(
-            diagnostics[0]
-                .message
-                .contains("@solid is not valid on function"),
-            "unexpected message: {}",
-            diagnostics[0].message
-        );
-    }
-
-    /// `@solid(arg)` on a non-entity context (e.g. `function`) produces exactly
-    /// one diagnostic — the context-mismatch warning — not two. The args-shape
-    /// warning is suppressed because the wrong-context branch short-circuits via
-    /// `else if`.
-    ///
-    /// This test pins the single-warning-per-error contract so a future refactor
-    /// that accidentally emits both warnings is caught immediately.
-    #[test]
-    fn solid_on_function_with_args_emits_one_warning() {
-        let anns = vec![ann(
-            reify_types::SOLID_ANNOTATION,
-            vec![reify_types::AnnotationArg::Real(0.5)],
-        )];
-        let mut diagnostics = Vec::new();
-        validate_annotations(&anns, "function", &mut diagnostics);
-        assert_eq!(
-            diagnostics.len(),
-            1,
-            "expected exactly 1 diagnostic (context-mismatch only), got: {:?}",
-            diagnostics
-        );
-        assert!(
-            diagnostics[0]
-                .message
-                .contains("@solid is not valid on function"),
-            "expected context-mismatch message, got: {}",
-            diagnostics[0].message
-        );
-    }
-
-    /// Any argument shape passed to `@solid` on a valid entity context (structure)
-    /// produces exactly one diagnostic whose message mentions `"takes no arguments"`.
-    ///
-    /// `@solid` is a bare marker — force-tet is unconditional, no parameter
-    /// controls its behaviour. The grid documents that every arg variant is
-    /// rejected uniformly, distinguishing it from annotations that accept typed
-    /// args (e.g. `@optimized` requires a string literal target).
-    #[test]
-    fn solid_with_any_arg_warns() {
-        let arg_shapes: &[(&str, Vec<reify_types::AnnotationArg>)] = &[
-            ("Real(0.5)", vec![reify_types::AnnotationArg::Real(0.5)]),
-            ("Int(2)", vec![reify_types::AnnotationArg::Int(2)]),
-            (
-                "String(foo)",
-                vec![reify_types::AnnotationArg::String("foo".into())],
-            ),
-            ("Bool(true)", vec![reify_types::AnnotationArg::Bool(true)]),
-            (
-                "Ident(id)",
-                vec![reify_types::AnnotationArg::Ident("ident".into())],
-            ),
-            (
-                "two reals",
-                vec![
-                    reify_types::AnnotationArg::Real(0.5),
-                    reify_types::AnnotationArg::Real(0.6),
-                ],
-            ),
-        ];
-        for (label, args) in arg_shapes {
-            let anns = vec![ann(reify_types::SOLID_ANNOTATION, args.clone())];
-            let mut diagnostics = Vec::new();
-            validate_annotations(&anns, "structure", &mut diagnostics);
-            assert_eq!(
-                diagnostics.len(),
-                1,
-                "arg shape {label}: expected exactly 1 diagnostic, got: {:?}",
-                diagnostics
-            );
-            assert!(
-                diagnostics[0].message.contains("takes no arguments"),
-                "arg shape {label}: unexpected message: {}",
-                diagnostics[0].message
-            );
-        }
-    }
 }
