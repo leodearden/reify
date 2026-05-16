@@ -47,6 +47,30 @@ export interface MeshData {
    * `Float32Array` after passing it to `sync()`.
    */
   displaced_positions?: Float32Array;
+  /**
+   * Per-face element kind for shell-extract meshes (task 3597).
+   * Byte-value enum: `0` = tet face, `1` = shell triangle.
+   * Length equals `indices.length / 3` (one byte per face).
+   * Omitted from the wire when absent (`None` on the Rust side).
+   */
+  element_kind?: Uint8Array;
+  /**
+   * Per-face stable region labels for shell-extract meshes (task 3597).
+   * One `u32` label per face; length equals `indices.length / 3`.
+   * Labels are stable across incremental re-tessellations within a single
+   * eval generation. Omitted from the wire when absent.
+   */
+  region_tags?: Uint32Array;
+  /**
+   * Named vector attribute channels for shell-extract meshes (task 3597).
+   * Each entry is a packed `Float32Array` of 3-component vectors.
+   * Entry length is either `3 * vertex_count` (per-vertex channel) or
+   * `3 * face_count` (per-face channel); disambiguate using the channel name
+   * convention: per-face channel names end in `_per_face`
+   * (e.g. `"shell_normal_per_face"`).
+   * Omitted from the wire when the map is empty.
+   */
+  vector_channels?: Record<string, Float32Array>;
 }
 
 /** Wire-format mesh data as received from Tauri IPC (JSON number arrays). */
@@ -66,6 +90,22 @@ export interface RawMeshData {
    * The field is never sent as JSON `null`; it is either present (array) or absent.
    */
   displaced_positions?: number[];
+  /**
+   * Per-face element kind as raw number array from the IPC wire (task 3597).
+   * Byte-value enum: `0` = tet face, `1` = shell triangle.
+   * Absent when not present in the Rust payload.
+   */
+  element_kind?: number[];
+  /**
+   * Per-face stable region labels as raw number array from the IPC wire (task 3597).
+   * Absent when not present in the Rust payload.
+   */
+  region_tags?: number[];
+  /**
+   * Named vector attribute channels as raw number arrays from the IPC wire (task 3597).
+   * Absent when the Rust backend serializes an empty map.
+   */
+  vector_channels?: Record<string, number[]>;
 }
 
 /** Convert wire-format mesh data to typed arrays for WebGL consumption. */
