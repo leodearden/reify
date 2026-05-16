@@ -158,6 +158,15 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
     let mut runs_db = "data/orchestrator/runs.db".to_string();
     let mut project_root = ".".to_string();
 
+    // NOTE: Last-wins semantics for duplicate flags.
+    // When a flag appears more than once (e.g. the pre-done hook wrapper passes
+    // its own --tasks-file, --runs-db, and --project-root before forwarding $@
+    // which may include caller-supplied overrides), the last occurrence wins.
+    // The wrapper relies on this contract: it prepends its defaults so that
+    // any flag in the caller's $@ implicitly overrides the wrapper-supplied
+    // value without requiring the wrapper to parse and strip $@.
+    // This behaviour is locked by the `duplicate_flags_last_wins` integration
+    // test in crates/reify-audit/tests/cli.rs.
     let mut i = 0usize;
     while i < argv.len() {
         match argv[i].as_str() {
