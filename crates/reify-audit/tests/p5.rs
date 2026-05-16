@@ -19,7 +19,7 @@ use reify_audit::{
     AuditContext, DoneProvenance, EvidenceRef, Finding, GitCommit, MockGitOps, MockJCodemunchOps,
     Pattern, Severity, TaskMetadata, p5_phantom_done,
 };
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -588,36 +588,24 @@ mod tests {
         );
     }
 
-    /// Pin the minimal schema contract assumed by production's
-    /// `has_task_completed_event` query (`SELECT 1 FROM events WHERE task_id = ?
-    /// AND event_type = 'task_completed'`). This test fails if `RUNS_DB_SCHEMA`
-    /// is edited to rename or remove either column, acting as a reminder to also
-    /// update the production query and any dark-factory migration that changes the
-    /// real runs.db schema. Column additions do not fail this test (they'd be
-    /// caught by future detectors' own tests when they add the columns they need).
+    /// Seeds one `task_completed` row and asserts the production query (sourced
+    /// from `p5_phantom_done::PRODUCTION_QUERY`) prepares and matches the row
+    /// against the seeded `RUNS_DB_SCHEMA`. Fails if the schema or the query
+    /// string drift apart (column rename, type swap, query rewrite). Column
+    /// additions do not fail this test (they'd be caught by future detectors'
+    /// own tests when they add the columns they need).
     #[test]
     fn runs_db_schema_pin() {
         let conn = seed_db();
+        insert_task_completed_event(&conn, "test-task");
         let mut stmt = conn
-            .prepare("PRAGMA table_info(events)")
-            .expect("PRAGMA must succeed on seeded schema");
-        let column_names: Vec<String> = stmt
-            .query_map([], |row| row.get::<_, String>(1))
-            .expect("query_map")
-            .map(|r| r.expect("row"))
-            .collect();
-        assert!(
-            column_names.iter().any(|c| c == "task_id"),
-            "events table missing `task_id` column — production query in \
-             has_task_completed_event reads it; got {:?}",
-            column_names
-        );
-        assert!(
-            column_names.iter().any(|c| c == "event_type"),
-            "events table missing `event_type` column — production query in \
-             has_task_completed_event reads it; got {:?}",
-            column_names
-        );
+            .prepare(p5_phantom_done::PRODUCTION_QUERY)
+            .expect("production query must prepare against seeded schema");
+        let found: Option<i64> = stmt
+            .query_row(["test-task"], |r| r.get(0))
+            .optional()
+            .expect("query_row");
+        assert_eq!(found, Some(1));
     }
 
     /// Coverage gap pin — verifies the Err arm of `has_task_completed_event`
