@@ -78,6 +78,16 @@ assert "wrapper without --task exits non-zero" \
 assert "wrapper without --task emits usage hint to stderr" \
     bash -c 'bash "$1" 2>&1 >/dev/null | grep -qiE "Usage:|requires --task"' -- "$WRAPPER"
 
+# Edge case: `--task --pre-done` (no positional id supplied, next flag consumed
+# as value). The validator rejects flag-shaped task ids (leading `--`) and exits
+# 125 with a clear message. Previously the loop would silently set
+# task_id="--pre-done" and proceed to the MCP step, failing ambiguously.
+assert "wrapper with flag-shaped --task value (--task --pre-done) exits non-zero" \
+    bash -c '! bash "$1" --task --pre-done 2>/dev/null' -- "$WRAPPER"
+
+assert "wrapper with flag-shaped --task value emits usage hint to stderr" \
+    bash -c 'bash "$1" --task --pre-done 2>&1 >/dev/null | grep -qiE "looks like a flag|requires --task"' -- "$WRAPPER"
+
 # ==============================================================================
 # Check 5: snapshot filter sidecar derives done_at correctly
 # ==============================================================================

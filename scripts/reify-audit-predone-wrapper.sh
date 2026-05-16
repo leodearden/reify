@@ -82,6 +82,10 @@ EOF
 }
 
 # ── --help / -h short-circuit (before any MCP calls) ────────────────────────
+# Note: --help/-h is matched anywhere in argv, including positions that would
+# normally be flag values (e.g. `--task --help`). This is an intentional
+# convenience — operators use --help to discover the interface, and the
+# ambiguity is harmless in practice (the systemd hook never passes --help).
 for arg in "$@"; do
     case "$arg" in
         --help|-h)
@@ -106,12 +110,28 @@ if [ -z "$task_id" ]; then
     echo "reify-audit-predone-wrapper.sh: error: requires --task <id>" >&2
     echo "" >&2
     usage >&2
-    exit 2
+    exit 125
 fi
+
+# Reject flag-shaped task ids (e.g. `--task --pre-done` with no id supplied).
+# The loop above would set task_id to the next argv token regardless of whether
+# it looks like a flag; a leading `--` means the caller forgot the task id.
+case "$task_id" in
+    --*)
+        echo "reify-audit-predone-wrapper.sh: error: --task value looks like a flag ('$task_id'); did you forget the task id?" >&2
+        echo "" >&2
+        usage >&2
+        exit 125
+        ;;
+esac
 
 # ── Materialize snapshot from fused-memory MCP ───────────────────────────────
 SNAPSHOT=$(mktemp /tmp/reify-audit-snapshot-XXXXXX.json)
-trap 'rm -f "$SNAPSHOT"' EXIT
+# Separate stderr tempfiles for curl and jq so operators can distinguish
+# "MCP unavailable" from "envelope shape changed" from "sidecar filter bug".
+CURL_ERR=$(mktemp /tmp/reify-audit-curl-err-XXXXXX)
+JQ_ERR=$(mktemp /tmp/reify-audit-jq-err-XXXXXX)
+trap 'rm -f "$SNAPSHOT" "$CURL_ERR" "$JQ_ERR"' EXIT
 
 # JSON-RPC get_tasks call. The fused-memory MCP speaks JSON-RPC 2.0 over HTTP.
 # Response shape: {"result":{"content":[{"type":"text","text":"<json-string>"}],...}}
@@ -123,12 +143,17 @@ if ! curl -sf \
     -X POST "$MCP_URL" \
     -H "Content-Type: application/json" \
     -H "Accept: application/json, text/event-stream" \
-    -d "$get_tasks_payload" 2>/dev/null \
+    -d "$get_tasks_payload" 2>"$CURL_ERR" \
     | jq -r -f "$REPO_ROOT/scripts/reify-audit-snapshot-filter.jq" \
-    > "$SNAPSHOT" 2>/dev/null; then
+    > "$SNAPSHOT" 2>"$JQ_ERR"; then
     echo "reify-audit-predone-wrapper.sh: error: failed to fetch tasks from fused-memory MCP at $MCP_URL" >&2
     echo "  Check: systemctl --user status fused-memory" >&2
-    echo "  Snapshot path (may be empty): $SNAPSHOT" >&2
+    if [ -s "$CURL_ERR" ]; then
+        echo "  curl stderr: $(head -5 "$CURL_ERR")" >&2
+    fi
+    if [ -s "$JQ_ERR" ]; then
+        echo "  jq stderr: $(head -5 "$JQ_ERR")" >&2
+    fi
     exit 125
 fi
 
