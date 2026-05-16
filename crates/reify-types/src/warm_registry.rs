@@ -172,6 +172,17 @@ mod tests {
     // from the production Realization / Compute submissions tested in the
     // adapter crates' integration tests — so the cardinality pin there isn't
     // disturbed by an accidental cross-link.
+    //
+    // IMPORTANT: this test-only submission is deliberately INCOHERENT with
+    // `NodeKind::Value.default_traits()` (which yields `IMMEDIATE`, with no
+    // `WARM_STARTABLE` flag). The submission exists *solely* to exercise the
+    // inventory plumbing — i.e. that `from_inventory()` actually picks up
+    // submissions visible in the current binary. Do NOT try to assemble an
+    // end-to-end `assert_warm_startable_coextensive` test inside this crate's
+    // lib-tests: it would trip the bidirectional invariant on Value (Value is
+    // registered here but NOT declared as warm-startable). The coextension
+    // invariant lives in `reify_runtime::warm_startable_assert` and is tested
+    // there with explicit fixture registries (see PRD §5 B5 / I-3).
 
     inventory::submit! {
         WarmStartableRegistration { kind: NodeKind::Value }
@@ -190,22 +201,5 @@ mod tests {
             r.contains_kind(NodeKind::Value),
             "expected the test-only inventory submission for NodeKind::Value to be visible"
         );
-    }
-
-    #[test]
-    fn from_inventory_is_deterministic() {
-        // Two calls observe the same `inventory::iter` global static, so they
-        // must agree on `contains_kind` for every `NodeKind`. This pins
-        // determinism — not idempotency in the mutation-resistance sense
-        // (there is no mutation path between calls), per reviewer feedback.
-        let a = WarmStartableRegistry::from_inventory();
-        let b = WarmStartableRegistry::from_inventory();
-        for k in NodeKind::ALL {
-            assert_eq!(
-                a.contains_kind(k),
-                b.contains_kind(k),
-                "from_inventory() must be deterministic across calls for kind {k:?}"
-            );
-        }
     }
 }
