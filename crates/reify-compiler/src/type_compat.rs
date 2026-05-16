@@ -748,6 +748,105 @@ mod tests {
             );
         }
     }
+
+    // ── task-3702 tests ───────────────────────────────────────────────────────
+
+    /// Helper: build a minimal `CompiledFnBody` returning a Real(2.0) literal.
+    fn stub_body_real() -> CompiledFnBody {
+        CompiledFnBody {
+            let_bindings: vec![],
+            result_expr: CompiledExpr::literal(Value::Real(2.0), Type::Real),
+        }
+    }
+
+    /// `try_default_padding` with the tightened signature (no `compiled_args`
+    /// argument) returns the expected candidate and default expressions when
+    /// exactly one candidate satisfies the padding contract.
+    ///
+    /// Candidate: `f(x: Real, y: Real)` where param 1 (`y`) has default
+    /// `Real(2.0)`. Caller provides 1 arg of type `Real` — the trailing
+    /// default must be filled in.
+    ///
+    /// Expected: `Some((&cand, vec![Real(2.0) literal]))`.
+    ///
+    /// RED before step-5: the current `try_default_padding` signature still
+    /// requires a `compiled_args: &[CompiledExpr]` second argument, so this
+    /// call (with only 2 positional args) fails to compile.
+    ///
+    /// task-3702 (tighten try_default_padding signature)
+    #[test]
+    fn try_default_padding_new_signature_returns_padded_fn() {
+        let default_expr = CompiledExpr::literal(Value::Real(2.0), Type::Real);
+        let cand = CompiledFunction {
+            name: "f".to_string(),
+            is_pub: false,
+            params: vec![
+                ("x".to_string(), Type::Real),
+                ("y".to_string(), Type::Real),
+            ],
+            param_defaults: vec![None, Some(default_expr.clone())],
+            return_type: Type::Real,
+            body: stub_body_real(),
+            content_hash: ContentHash::of_str("f_stub_3702"),
+            annotations: vec![],
+            optimized_target: None,
+        };
+
+        // New signature: no compiled_args — only arg_types.
+        let result = try_default_padding(&[&cand], &[Type::Real]);
+
+        let (matched_fn, defaults) = result.expect("should find a matching candidate");
+        assert!(
+            std::ptr::eq(matched_fn, &cand),
+            "returned candidate must be the same object"
+        );
+        assert_eq!(defaults.len(), 1, "one trailing default expected");
+        assert_eq!(
+            defaults[0].content_hash, default_expr.content_hash,
+            "default expr content hash must match the Real(2.0) literal"
+        );
+    }
+
+    /// `try_default_padding` fires a `debug_assert!` (panics in debug builds)
+    /// when a candidate violates the length invariant
+    /// (`param_defaults.len() != params.len()`).
+    ///
+    /// This is the "bad shape" that was previously silently skipped by the
+    /// defensive filter; after task-3702 it is a programming error surfaced in
+    /// debug builds.
+    ///
+    /// Candidate: deliberately constructed via struct-literal with
+    /// `params = vec![("x", Real)]` but `param_defaults = Vec::new()` —
+    /// the legacy empty form that violates the invariant.
+    ///
+    /// RED before step-5: the assert is not yet in the code, so calling
+    /// `try_default_padding` with this candidate returns `None` silently
+    /// instead of panicking, causing the `#[should_panic]` annotation to
+    /// make the test fail.
+    ///
+    /// task-3702 (tighten try_default_padding signature)
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "param_defaults.len() == params.len()")]
+    fn try_default_padding_debug_assert_fires_on_misaligned_param_defaults() {
+        // Deliberately bad shape: params has 1 entry, param_defaults is empty.
+        let bad_cand = CompiledFunction {
+            name: "bad".to_string(),
+            is_pub: false,
+            params: vec![("x".to_string(), Type::Real)],
+            param_defaults: Vec::new(), // invariant violation — intentional for this test
+            return_type: Type::Real,
+            body: stub_body_real(),
+            content_hash: ContentHash::of_str("bad_stub_3702"),
+            annotations: vec![],
+            optimized_target: None,
+        };
+
+        // New signature: (named, arg_types). Providing 0 arg types so the
+        // candidate has more params than provided (1 > 0) — the invariant
+        // check fires before any other filtering.
+        let _ = try_default_padding(&[&bad_cand], &[]);
+    }
 }
 
 /// Attempt to satisfy a `NoMatch` call via default-padding.
