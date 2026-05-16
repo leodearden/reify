@@ -1885,6 +1885,36 @@ mod tests {
         );
     }
 
+    /// `CapturingSubscriberBuilder` with `target_prefix` only captures events
+    /// whose target starts with the given prefix.
+    ///
+    /// Emits two INFO events — one with a matching target and one without;
+    /// asserts count==1 and messages contains only the matching event.
+    #[test]
+    fn capturing_subscriber_filters_by_target_prefix() {
+        use crate::prime_tracing_callsite_cache;
+        use crate::CapturingSubscriberBuilder;
+
+        prime_tracing_callsite_cache();
+
+        let (subscriber, capture) = CapturingSubscriberBuilder::new()
+            .level(tracing::Level::INFO)
+            .target_prefix("reify_constraints")
+            .build();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(target: "reify_constraints::solver", "match");
+            tracing::info!(target: "argmin::core", "skip");
+        });
+
+        assert_eq!(capture.count(), 1, "only the matching-target event should be captured");
+        assert_eq!(
+            capture.messages(),
+            vec!["match".to_string()],
+            "only the matching-target message should appear"
+        );
+    }
+
     // ── WarnCapture::assert_any_event_field_contains tests ────────────────────
 
     /// `assert_any_event_field_contains` succeeds when a captured field value
