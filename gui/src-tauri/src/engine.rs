@@ -41,11 +41,11 @@ mod core_state {
     /// Fields have **no visibility marker** — they are strictly private to this `impl`
     /// block.  Any direct field assignment from outside (e.g. `session.core.compiled = …`)
     /// fails to compile, enforcing the poison-recovery invariant at the type level.
-    /// The only commit points that touch the four invariant-bearing fields (`compiled`,
-    /// `source_map`, `module_name`, `last_check`) are:
-    /// - `commit_state` — four-field atomic commit after a successful compile cycle
+    /// The only commit points that touch the five invariant-bearing fields (`compiled`,
+    /// `source_map`, `module_name`, `last_check`, `file_path`) are:
+    /// - `commit_state` — five-field atomic commit after a successful compile cycle
+    ///   (`file_path` is updated when `Some` is passed; `None` preserves the existing value)
     /// - `commit_check` — single-field commit for `last_check` (used by `set_parameter`)
-    /// - `commit_file_path` — single-field commit for `file_path` (used by `load_file`)
     ///
     /// `engine_mut()` exposes `&mut Engine` for method dispatch and does not touch the
     /// invariant-bearing fields.  The `#[cfg(test)]` mutators (`break_module_name`,
@@ -145,31 +145,30 @@ mod core_state {
             self.last_check = Some(check);
         }
 
-        /// Atomically commit a resolved `PathBuf` into `file_path`.
-        ///
-        /// This is the **single** write-point for `file_path`, used by
-        /// `EngineSession::load_file` **after** `commit_state` has already succeeded.
-        /// The ordering invariant — `commit_file_path` must never run before
-        /// `commit_state` — means a failed parse/compile leaves `file_path` as `None`
-        /// (or its previous value) while the core fields remain at the last-good
-        /// committed state.  See the deferred-assignment comment in `load_file`.
-        pub(crate) fn commit_file_path(&mut self, path: PathBuf) {
-            self.file_path = Some(path);
-        }
-
-        /// Commit the four canonical core fields after a successful
+        /// Commit the five canonical core fields after a successful
         /// parse+compile+check cycle.
         ///
         /// This is the **single** multi-field commit point.  Writes proceed in a
         /// fixed order: `source_map` is rebuilt first (clear then insert), then
-        /// `module_name`, `compiled`, `last_check`.  A panic on an intermediate
-        /// allocation (e.g. inside `source_map.insert` or a `to_string()` call) may
-        /// leave the fields in a partially-updated state.  This is tolerated: the
-        /// surrounding mutex is recovered via `PoisonError::into_inner`, and the
-        /// affected fields are either rebuilt on the next `commit_state` call or
-        /// consumed only through graceful-degrade paths (`resolve_source`,
-        /// `get_diagnostics`).  Callers must only invoke this after compilation and
-        /// `check()` have both succeeded.
+        /// `module_name`, `compiled`, `last_check`, and finally `file_path` (when
+        /// `Some`).  A panic on an intermediate allocation (e.g. inside
+        /// `source_map.insert` or a `to_string()` call) may leave the fields in a
+        /// partially-updated state.  This is tolerated: the surrounding mutex is
+        /// recovered via `PoisonError::into_inner`, and the affected fields are
+        /// either rebuilt on the next `commit_state` call or consumed only through
+        /// graceful-degrade paths (`resolve_source`, `get_diagnostics`).
+        /// Callers must only invoke this after compilation and `check()` have
+        /// both succeeded.
+        ///
+        /// ## `file_path` parameter
+        ///
+        /// - `Some(p)` — sets `self.file_path = Some(p)`.  Pass `Some(path.to_path_buf())`
+        ///   from `load_file`; because Rust evaluates all call arguments before entering
+        ///   the callee body, a panic in `to_path_buf()` lands in the pre-commit window
+        ///   and the entire five-field commit is skipped atomically.
+        /// - `None` — PRESERVES the existing `file_path` unchanged (does **not** clear it).
+        ///   `load_from_source` and `update_source` pass `None`; this keeps the
+        ///   project-root anchor set by a prior `load_file` intact.
         ///
         /// The five cache fields on `EngineSession` (`def_preview_cache`,
         /// `parsed_cache`, `line_offsets_cache`, `consumed_idents_cache`,
@@ -181,6 +180,7 @@ mod core_state {
             check_result: CheckResult,
             module_name: &str,
             source: &str,
+            file_path: Option<PathBuf>,
         ) {
             self.source_map.clear();
             self.source_map.insert(
@@ -190,6 +190,9 @@ mod core_state {
             self.module_name = Some(module_name.to_string());
             self.compiled = Some(compiled);
             self.last_check = Some(check_result);
+            if let Some(p) = file_path {
+                self.file_path = Some(p);
+            }
         }
 
         // ---- Test-only mutators (cfg(test)) ---------------------------------
@@ -312,8 +315,9 @@ pub(crate) struct CompileFailure {
 /// **Mutation is type-enforced via `CoreState`:** the six core fields are held
 /// in a private sub-struct whose fields have no visibility marker, so any direct
 /// field assignment from outside `CoreState`'s impl fails to compile.  The only
-/// commit points that touch the four invariant-bearing fields are `commit_state`,
-/// `commit_check`, and `commit_file_path`; `engine_mut()` does not touch those fields,
+/// commit points that touch the five invariant-bearing fields are `commit_state`
+/// (five-field atomic commit, `file_path` included via `Option`) and `commit_check`
+/// (single-field `last_check`); `engine_mut()` does not touch those fields,
 /// and the `#[cfg(test)]` mutators are intentional invariant-breakers absent from
 /// production builds — the poison-recovery property holds in production.
 /// See `engine_lock.rs` for the rationale.
@@ -321,8 +325,9 @@ pub struct EngineSession {
     /// The six core fields protected by the type system via `CoreState`.
     ///
     /// Fields are strictly private — direct assignment from outside `CoreState`'s
-    /// impl fails to compile.  Use `commit_state`, `commit_check`, or
-    /// `commit_file_path` to commit the four invariant-bearing fields atomically.
+    /// impl fails to compile.  Use `commit_state` (five-field atomic commit,
+    /// `file_path` included via `Option`) or `commit_check` (single-field
+    /// `last_check`) to commit the invariant-bearing fields atomically.
     core: CoreState,
     /// In-memory cache for `get_def_preview` results.
     ///
@@ -926,7 +931,9 @@ impl EngineSession {
         let check_result = self.core.engine_mut().check(&compiled);
 
         // Atomically commit all state after check() succeeds.
-        self.commit_state(parsed, compiled, check_result, module_name, source);
+        // Pass None for file_path: load_from_source has no file on disk; preserve
+        // any existing file_path from a prior load_file call.
+        self.commit_state(parsed, compiled, check_result, module_name, source, None);
 
         // Emit auto-resolve events after committing state.
         //
@@ -999,20 +1006,18 @@ impl EngineSession {
             .and_then(|s| s.to_str())
             .unwrap_or("unnamed");
 
-        // Defer `self.file_path = ...` until after `commit_state` succeeds so an
-        // Err from `compile_entry_with_imports` doesn't leave file_path pointing
-        // at a file whose compiled / module_name / source_map state hasn't been
-        // committed.  Atomic-commit invariant: see engine.rs:30-44 doc block.
         let (compiled, parsed) =
             compile_entry_with_imports(path, &source, module_name).map_err(|(msg, diags)| {
                 self.record_compile_failure(diags);
                 msg
             })?;
         let check_result = self.core.engine_mut().check(&compiled);
-        self.commit_state(parsed, compiled, check_result, module_name, &source);
-        self.core.commit_file_path(path.to_path_buf());
-        // Emit AFTER all state is committed so phantom events cannot fire if
-        // commit_state or commit_file_path panics — cross-cutting ordering invariant.
+        // Atomically commit all five core fields in a single call.  `path.to_path_buf()`
+        // is evaluated here as a call argument — before the callee body runs — so a
+        // panic in `to_path_buf()` lands in the pre-commit window and skips the entire
+        // five-field commit.  Atomic-commit invariant: see engine.rs:30-44 doc block.
+        self.commit_state(parsed, compiled, check_result, module_name, &source, Some(path.to_path_buf()));
+        // Emit AFTER all state is committed — cross-cutting ordering invariant.
         self.emit_auto_resolve_if_any(self.core.last_check().expect(
             "emit_auto_resolve_if_any: last_check must be Some after commit_state — see ordering invariant",
         ));
@@ -1080,7 +1085,9 @@ impl EngineSession {
         let check_result = self.core.engine_mut().check(&compiled);
 
         // Atomically commit all state after check() succeeds.
-        self.commit_state(parsed, compiled, check_result, module_name, content);
+        // Pass None for file_path: update_source does not change which file is loaded;
+        // None preserves the file_path set by the prior load_file call.
+        self.commit_state(parsed, compiled, check_result, module_name, content, None);
 
         // Emit AFTER all state is committed — cross-cutting ordering invariant.
         self.emit_auto_resolve_if_any(self.core.last_check().expect(
@@ -1111,13 +1118,20 @@ impl EngineSession {
 
     /// Atomically commit all session state after a successful parse+compile+check cycle.
     ///
-    /// This wrapper first delegates the four-field core commit to
+    /// This wrapper first delegates the five-field core commit to
     /// [`CoreState::commit_state`] (see that method's doc for the canonical-field
-    /// contract: `source_map`, `module_name`, `compiled`, `last_check`), then
-    /// updates the five cache/failure-tracking fields owned by `EngineSession`:
+    /// contract: `source_map`, `module_name`, `compiled`, `last_check`, and optionally
+    /// `file_path`), then updates the five cache/failure-tracking fields owned by
+    /// `EngineSession`:
     ///
     /// - **Derived caches**: `def_preview_cache`, `parsed_cache`, `line_offsets_cache`, `consumed_idents_cache`
     /// - **Failure-diagnostic state**: `compile_failure`
+    ///
+    /// ## `file_path` parameter
+    ///
+    /// Pass `Some(path.to_path_buf())` from `load_file` to commit `file_path` together
+    /// with the other four fields in a single atomic call.  Pass `None` from
+    /// `load_from_source` and `update_source` to preserve the existing `file_path`.
     ///
     /// Callers **must** only invoke this after both compilation and `check()` have
     /// succeeded — invoking it on a partially-valid state would violate the invariant.
@@ -1132,12 +1146,13 @@ impl EngineSession {
         check_result: CheckResult,
         module_name: &str,
         source: &str,
+        file_path: Option<std::path::PathBuf>,
     ) {
-        // Commit the four canonical core fields atomically via CoreState::commit_state.
+        // Commit the five canonical core fields atomically via CoreState::commit_state.
         // A panic between the core commit and the cache updates below leaves core fields
         // consistent (at new values) while caches may be stale — that is tolerated per
         // engine_lock.rs:30-34 ("other fields are caches that tolerate partial state").
-        self.core.commit_state(compiled, check_result, module_name, source);
+        self.core.commit_state(compiled, check_result, module_name, source, file_path);
         // Invalidate def preview cache — new module may have different content hashes.
         self.def_preview_cache.clear();
         // Cache the parse result so get_containing_definition can avoid re-parsing
