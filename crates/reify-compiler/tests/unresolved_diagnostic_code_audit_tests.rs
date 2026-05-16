@@ -6,8 +6,20 @@
 //! Every "unresolved type" / "unresolved name" emit site in the compiler crate
 //! must attach the corresponding `DiagnosticCode` variant via `.with_code(...)`.
 //! These tests lock that contract: one test per emit-site scenario, each compiling
-//! a minimal `.ri` source and asserting `d.code == Some(DiagnosticCode::UnresolvedType)`
-//! (or `UnresolvedName`).
+//! a minimal `.ri` source through the targeted code path and asserting
+//! `d.code == Some(DiagnosticCode::UnresolvedType)` (or `UnresolvedName`) for at
+//! least one diagnostic in the output.
+//!
+//! This verifies *code-level* coverage — that the relevant `DiagnosticCode` is
+//! emitted when the targeted source construct is compiled — but does NOT pin a
+//! specific emit-site location.  Multiple production sites share format-string
+//! prefixes, and message prose is not part of any structured contract.  The
+//! `DiagnosticCode` enum itself is the contract downstream consumers depend on.
+//!
+//! If per-emit-site uniqueness becomes genuinely necessary in a future task, the
+//! appropriate approach is to introduce a dedicated `DiagnosticCode` variant per
+//! emit-site category, or to assert against a known source position via the
+//! diagnostic's span — not to scrape message prose.
 //!
 //! A future maintainer who adds a new "unresolved type" emit site should also add
 //! a test here so the contract remains self-documenting.
@@ -54,12 +66,8 @@ fn f(x : Int) -> Bogus { 0 }
     let compiled = reify_compiler::compile(&parsed);
 
     assert!(
-        compiled
-            .diagnostics
-            .iter()
-            .any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
-        "expected DiagnosticCode::UnresolvedType for unresolved return type 'Bogus' \
-         (functions.rs:122), got: {:?}",
+        compiled.diagnostics.iter().any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
+        "expected UnresolvedType diagnostic, got: {:#?}",
         compiled.diagnostics
     );
 }
@@ -89,12 +97,8 @@ structure S {
     let compiled = reify_compiler::compile(&parsed);
 
     assert!(
-        compiled
-            .diagnostics
-            .iter()
-            .any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
-        "expected DiagnosticCode::UnresolvedType for unresolved guarded-block param type \
-         'Bogus' (guards.rs:155), got: {:?}",
+        compiled.diagnostics.iter().any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
+        "expected UnresolvedType diagnostic, got: {:#?}",
         compiled.diagnostics
     );
 }
@@ -118,12 +122,8 @@ structure S {
     let compiled = reify_compiler::compile(&parsed);
 
     assert!(
-        compiled
-            .diagnostics
-            .iter()
-            .any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
-        "expected DiagnosticCode::UnresolvedType for unresolved entity-member param type \
-         'Bogus' (entity.rs:487), got: {:?}",
+        compiled.diagnostics.iter().any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
+        "expected UnresolvedType diagnostic, got: {:#?}",
         compiled.diagnostics
     );
 }
@@ -149,12 +149,8 @@ structure S {
     let compiled = reify_compiler::compile(&parsed);
 
     assert!(
-        compiled
-            .diagnostics
-            .iter()
-            .any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
-        "expected DiagnosticCode::UnresolvedType for unresolved port parameter type \
-         'Bogus' (entity.rs:742-743), got: {:?}",
+        compiled.diagnostics.iter().any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
+        "expected UnresolvedType diagnostic, got: {:#?}",
         compiled.diagnostics
     );
 }
@@ -178,12 +174,8 @@ structure S {
     let compiled = reify_compiler::compile(&parsed);
 
     assert!(
-        compiled
-            .diagnostics
-            .iter()
-            .any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
-        "expected DiagnosticCode::UnresolvedType for unresolved lambda param type \
-         'Bogus' (expr.rs:2294-2311), got: {:?}",
+        compiled.diagnostics.iter().any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
+        "expected UnresolvedType diagnostic, got: {:#?}",
         compiled.diagnostics
     );
 }
@@ -207,12 +199,8 @@ trait T {
     let compiled = reify_compiler::compile(&parsed);
 
     assert!(
-        compiled
-            .diagnostics
-            .iter()
-            .any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
-        "expected DiagnosticCode::UnresolvedType for unresolved trait member type \
-         'Bogus' (traits.rs:87-92), got: {:?}",
+        compiled.diagnostics.iter().any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
+        "expected UnresolvedType diagnostic, got: {:#?}",
         compiled.diagnostics
     );
 }
@@ -241,12 +229,8 @@ structure Bolt : HasLength {
     let compiled = reify_compiler::compile(&parsed);
 
     assert!(
-        compiled
-            .diagnostics
-            .iter()
-            .any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
-        "expected DiagnosticCode::UnresolvedType for unresolved conformance-check type \
-         'Bogus' (conformance/checker.rs:185-188), got: {:?}",
+        compiled.diagnostics.iter().any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
+        "expected UnresolvedType diagnostic, got: {:#?}",
         compiled.diagnostics
     );
 }
@@ -271,12 +255,8 @@ structure S {
     let compiled = reify_compiler::compile(&parsed);
 
     assert!(
-        compiled
-            .diagnostics
-            .iter()
-            .any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
-        "expected DiagnosticCode::UnresolvedType for unresolved type alias argument \
-         'Bogus' in 'V<Bogus>' (type_resolution.rs:1015-1021), got: {:?}",
+        compiled.diagnostics.iter().any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
+        "expected UnresolvedType diagnostic, got: {:#?}",
         compiled.diagnostics
     );
 }
@@ -305,12 +285,8 @@ structure S {
     let compiled = reify_compiler::compile(&parsed);
 
     assert!(
-        compiled
-            .diagnostics
-            .iter()
-            .any(|d| d.code == Some(DiagnosticCode::UnresolvedName)),
-        "expected DiagnosticCode::UnresolvedName for undefined solver-hint collection \
-         'undefined_collection' (annotations.rs:321), got: {:?}",
+        compiled.diagnostics.iter().any(|d| d.code == Some(DiagnosticCode::UnresolvedName)),
+        "expected UnresolvedName diagnostic, got: {:#?}",
         compiled.diagnostics
     );
 }
