@@ -12,8 +12,12 @@
 //! - `args`:          annotation argument list
 //! - `expected`:      expected diagnostics (may be empty)
 //!
-//! The shim `reify_compiler::__validate_annotations_for_parity_test` is added
-//! in step-10 and exposes `validate_annotations` to integration tests.
+//! The shim `reify_compiler::__validate_annotations_for_parity_test` is
+//! feature-gated under `test-support`; this integration test target opts in via
+//! the self-pull `reify-compiler = { path = ".", features = ["test-support"] }`
+//! in `[dev-dependencies]`.
+
+#![cfg(feature = "test-support")]
 
 /// Shape of an expected diagnostic in the parity test matrix.
 #[derive(Debug)]
