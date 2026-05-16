@@ -109,7 +109,7 @@ When `--task` and `--since` are both given, include both keys:
   "timestamp": "2026-05-16T07:30:45Z",
   "scope": { "window": "14d" },
   "cli": {
-    "argv": ["--since", "2026-05-02", "--tasks-file", ".taskmaster/tasks/tasks.json",
+    "argv": ["--since", "2026-05-02", "--tasks-file", "/tmp/reify-audit-snapshot-a1b2c3.json",
              "--runs-db", "data/orchestrator/runs.db", "--project-root", "."],
     "exit_code": 1
   },

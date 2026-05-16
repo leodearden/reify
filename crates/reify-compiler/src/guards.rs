@@ -153,6 +153,7 @@ pub(crate) fn register_guarded_names<'a>(
                     .unwrap_or_else(|| {
                         diagnostics.push(
                             Diagnostic::error(format!("unresolved type: {}", type_expr))
+                                .with_code(DiagnosticCode::UnresolvedType)
                                 .with_label(DiagnosticLabel::new(
                                     type_expr.span,
                                     "unknown type name",

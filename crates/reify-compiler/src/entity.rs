@@ -485,6 +485,7 @@ pub(crate) fn compile_entity(
                             } else {
                                 diagnostics.push(
                                     Diagnostic::error(format!("unresolved type: {}", type_expr))
+                                        .with_code(DiagnosticCode::UnresolvedType)
                                         .with_label(DiagnosticLabel::new(
                                             type_expr.span,
                                             "unknown type name",
@@ -743,6 +744,7 @@ pub(crate) fn compile_entity(
                                             "unresolved type name '{}' in port parameter",
                                             type_expr
                                         ))
+                                        .with_code(DiagnosticCode::UnresolvedType)
                                         .with_label(
                                             DiagnosticLabel::new(type_expr.span, "unknown type"),
                                         ),

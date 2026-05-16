@@ -2078,6 +2078,332 @@ fn dispatch_surface_angle(
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Ad-hoc selector eval dispatch (task 3463)
+//
+// Layer 2 of the two-layer @face/@edge evaluation split.  Layer 1 (pure-expr
+// @point) lives in `reify-expr/src/lib.rs`.  Here we wire the kernel-aware
+// @face/@edge path, mirroring `try_eval_topology_selector` in structure.
+//
+// Why `pub` (not `pub(crate)`): integration tests in `tests/` are separate
+// crates and cannot see `pub(crate)`.  The function is also re-exported from
+// `lib.rs` for the same reason, following the `resolve_unique_by_attribute`
+// precedent.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Dispatch a `CompiledExprKind::AdHocSelector` expression through the engine
+/// attribute table and geometry kernel, returning the resolved `Value::Frame`
+/// (or `Some(Value::Undef)` on a diagnostic failure, or `None` if the
+/// expression is not an `AdHocSelector` or the arg shapes are unsupported).
+///
+/// Called by `Engine::post_process_ad_hoc_selectors` after `eval_expr` has set
+/// Face/Edge cells to `Value::Undef`.  Layer-1 (`@point`) was already resolved
+/// by `eval_expr` directly, so `Point` arms here return `None` immediately.
+///
+/// # Arg-shape contract
+/// - `expr.kind` must be `AdHocSelector` — anything else yields `None`.
+/// - `base` must be a `Literal(Value::String(name))` — other shapes yield `None`
+///   (cell stays at Undef).
+/// - `args[0]` must be a `Literal(Value::String(label))` — same fall-through.
+/// - `name` must exist in `named_steps` — miss yields `None`.
+///
+/// # Returns
+/// - `Some(Value::Frame { origin, basis })` on success.
+/// - `Some(Value::Undef)` on any diagnostic failure (resolver emits its own
+///   `TopologyAttributeStale` Warning; kernel errors get a new Warning here).
+/// - `None` for non-AdHocSelector, Point-kind, or unsupported arg shapes.
+pub fn try_eval_ad_hoc_selector(
+    expr: &reify_types::CompiledExpr,
+    named_steps: &HashMap<String, GeometryHandleId>,
+    kernel: &mut dyn reify_types::GeometryKernel,
+    table: &reify_types::TopologyAttributeTable,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_types::Value> {
+    // (1) Must be an AdHocSelector — anything else is not applicable.
+    let (base, selector_kind, args) = match &expr.kind {
+        reify_types::CompiledExprKind::AdHocSelector {
+            base,
+            selector_kind,
+            args,
+        } => (base.as_ref(), selector_kind, args),
+        _ => return None,
+    };
+
+    // (2) Point arm was handled by Layer-1 (eval_expr); post-process is a no-op.
+    if *selector_kind == reify_types::SelectorKind::Point {
+        return None;
+    }
+
+    // (3) Extract the base name — must be a string literal.
+    let name = resolve_string_literal_arg(base)?;
+
+    // (4) Extract the face/edge label — must be args[0] string literal.
+    let label = match args.first() {
+        Some(a) => resolve_string_literal_arg(a)?,
+        None => return None,
+    };
+
+    // (5) Look up the base name in named_steps → GeometryHandleId.
+    let handle = match named_steps.get(name) {
+        Some(&h) => h,
+        None => return None,
+    };
+
+    // (6) Extract sub-shape handles from the kernel.
+    let span = reify_types::SourceSpan::empty(0);
+    let candidates: Vec<GeometryHandleId> = match selector_kind {
+        reify_types::SelectorKind::Face => match kernel.extract_faces(handle) {
+            Ok(faces) => faces,
+            Err(err) => {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "@face(\"{label}\"): extract_faces({handle:?}) failed: {err}"
+                )));
+                return Some(reify_types::Value::Undef);
+            }
+        },
+        reify_types::SelectorKind::Edge => match kernel.extract_edges(handle) {
+            Ok(edges) => edges,
+            Err(err) => {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "@edge(\"{label}\"): extract_edges({handle:?}) failed: {err}"
+                )));
+                return Some(reify_types::Value::Undef);
+            }
+        },
+        reify_types::SelectorKind::Point => unreachable!("Point arm returned None above"),
+    };
+
+    // (7) Build AttributeQuery with dual user_label + canonical-name role translation.
+    let query = crate::topology_attribute_resolver::AttributeQuery {
+        user_label: Some(label.to_string()),
+        role_and_index: cap_kind_translation(label),
+        feature_id: None,
+    };
+
+    // (8) Resolve via the attribute table.
+    let resolution = crate::topology_attribute_resolver::resolve_unique_by_attribute(
+        table,
+        &candidates,
+        &query,
+        span,
+        diagnostics,
+    );
+
+    // (9) On Resolved: query kernel for Frame; on any other outcome: Some(Undef).
+    //     The resolver already pushed its TopologyAttributeStale / AmbiguousAfterSplit
+    //     Warning, so we only need to patch the cell value here.
+    match resolution {
+        crate::topology_attribute_resolver::AttributeResolution::Resolved(target_id) => {
+            construct_frame_from_kernel(target_id, selector_kind, kernel, diagnostics)
+        }
+        _ => Some(reify_types::Value::Undef),
+    }
+}
+
+/// Helper: extract a `&str` from a `CompiledExprKind::Literal(Value::String(s))`
+/// expression.  Returns `None` for any other expression kind or value payload.
+///
+/// Used by `try_eval_ad_hoc_selector` to extract the base name and the label
+/// from an `AdHocSelector`'s `base` and `args[0]` respectively.
+fn resolve_string_literal_arg(expr: &reify_types::CompiledExpr) -> Option<&str> {
+    match &expr.kind {
+        reify_types::CompiledExprKind::Literal(reify_types::Value::String(s)) => Some(s.as_str()),
+        _ => None,
+    }
+}
+
+/// Translate a canonical face/edge label into a `(Role, local_index)` pair for
+/// the `AttributeQuery::role_and_index` field.
+///
+/// The translation covers canonical labels wired by the Cylinder seeder
+/// (`seed_primitive_attributes`), making `@face("top")` / `@face("bottom")`
+/// / `@face("start")` / `@face("end")` / `@face("side")` work against
+/// Cylinder and Extrude / Revolve primitives without requiring a
+/// `name = "..."` source annotation on the face (which is deferred per the
+/// PRD).
+///
+/// **`"side"` note:** `Role::Side` with `local_index = 0` is the entry
+/// seeded for the single lateral face of a Cylinder. For primitives with
+/// multiple side faces (future Boolean / Loft results) this match selects
+/// index 0 only; if the resolver finds multiple `Role::Side` entries it will
+/// return `AmbiguousAfterSplit`, surfacing a `TopologyAttributeStale` Warning
+/// and leaving the cell at `Value::Undef` — the same graceful-degradation
+/// path as all other Unresolved outcomes.
+///
+/// Any unrecognised label returns `None` — the query then relies entirely on
+/// `user_label` and will Unresolve if no `user_label` entry exists in the table.
+pub fn cap_kind_translation(label: &str) -> Option<(reify_types::Role, u32)> {
+    use reify_types::{CapKind, Role};
+    match label {
+        "top" => Some((Role::Cap(CapKind::Top), 0)),
+        "bottom" => Some((Role::Cap(CapKind::Bottom), 0)),
+        "start" => Some((Role::Cap(CapKind::Start), 0)),
+        "end" => Some((Role::Cap(CapKind::End), 0)),
+        "side" => Some((Role::Side, 0)),
+        _ => None,
+    }
+}
+
+/// Query the kernel for centroid and normal/tangent of `target_id`, then
+/// construct a `Value::Frame { origin, basis }`.
+///
+/// **Axis convention:**
+/// - For *faces*: the face normal maps to the frame's **+Z** axis.
+///   This is the standard CAD convention (Z-up frames for planar features).
+/// - For *edges*: the edge tangent also maps to the frame's **+Z** axis.
+///   Downstream consumers (sweep ports, path-mating jigs) that expect the
+///   tangent along **+X** should apply a 90° R_Y pre-rotation. This is
+///   documented here rather than baked in so that future consumers can choose
+///   the convention that suits them without the call site growing parameters.
+///   A `quaternion_from_z_to_axis` call with the tangent vector produces a
+///   basis whose +Z column equals the tangent direction.
+///
+/// On centroid failure: push a Warning and return `Some(Value::Undef)`.
+/// On normal/tangent failure: push a Warning and use identity basis, so the
+/// Frame still has a meaningful origin.
+fn construct_frame_from_kernel(
+    target_id: GeometryHandleId,
+    selector_kind: &reify_types::SelectorKind,
+    kernel: &mut dyn reify_types::GeometryKernel,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_types::Value> {
+    // ── Origin via Centroid ───────────────────────────────────────────────
+    // `GeometryQuery::Centroid` is unified — works for faces, edges, AND solids.
+    let origin = match kernel.query(&reify_types::GeometryQuery::Centroid(target_id)) {
+        Ok(value) => {
+            match crate::topology_selectors::parse_xyz_value(&value, "Centroid") {
+                Ok([x, y, z]) => reify_types::Value::Point(vec![
+                    reify_types::Value::length(x),
+                    reify_types::Value::length(y),
+                    reify_types::Value::length(z),
+                ]),
+                Err(err) => {
+                    diagnostics.push(Diagnostic::warning(format!(
+                        "@face/@edge centroid parse failed: {err}; cell left as Undef"
+                    )));
+                    return Some(reify_types::Value::Undef);
+                }
+            }
+        }
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "@face/@edge centroid query failed: {err}; cell left as Undef"
+            )));
+            return Some(reify_types::Value::Undef);
+        }
+    };
+
+    // ── Basis via FaceNormal (face) or EdgeTangent (edge) ─────────────────
+    let basis_query = match selector_kind {
+        reify_types::SelectorKind::Face => {
+            reify_types::GeometryQuery::FaceNormal(target_id)
+        }
+        reify_types::SelectorKind::Edge => {
+            reify_types::GeometryQuery::EdgeTangent(target_id)
+        }
+        reify_types::SelectorKind::Point => {
+            unreachable!("Point arm returned None before construct_frame_from_kernel is called")
+        }
+    };
+    let query_label = match selector_kind {
+        reify_types::SelectorKind::Face => "FaceNormal",
+        reify_types::SelectorKind::Edge => "EdgeTangent",
+        reify_types::SelectorKind::Point => unreachable!(),
+    };
+
+    let basis = match kernel.query(&basis_query) {
+        Ok(value) => {
+            match crate::topology_selectors::parse_xyz_value(&value, query_label) {
+                Ok([nx, ny, nz]) => quaternion_from_z_to_axis(nx, ny, nz),
+                Err(err) => {
+                    diagnostics.push(Diagnostic::warning(format!(
+                        "@face/@edge {query_label} parse failed: {err}; using identity basis"
+                    )));
+                    // Degrade gracefully: return a Frame with correct origin, identity basis.
+                    reify_types::Value::Orientation {
+                        w: 1.0,
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
+                    }
+                }
+            }
+        }
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "@face/@edge {query_label} query failed: {err}; using identity basis"
+            )));
+            // Degrade gracefully: origin was obtained, identity basis.
+            reify_types::Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }
+        }
+    };
+
+    Some(reify_types::Value::Frame {
+        origin: Box::new(origin),
+        basis: Box::new(basis),
+    })
+}
+
+/// Compute the shortest-arc unit quaternion that rotates the +Z axis `(0, 0, 1)`
+/// to the given (approximately unit) axis vector `(nx, ny, nz)`.
+///
+/// Formula: for unit vectors `a` and `b`,
+///   `q_unnorm = (1 + dot(a,b),  cross(a,b))`
+/// where `a = +Z = (0,0,1)`, so:
+///   `dot(+Z, b) = nz`
+///   `cross(+Z, b) = (-ny, nx, 0)`
+///   `q_unnorm = (1 + nz, -ny, nx, 0)`
+///
+/// Special case: `b ≈ -Z` makes `q_unnorm ≈ (0,0,0,0)` — degenerate.
+/// Fall back to a 180° rotation around the +X axis.
+///
+/// **Numerical note:** for an approximately unit input, `len_sq = (1 + nz)² + nx² + ny²`.
+/// Since `nx² + ny² = 1 − nz² = (1 − nz)(1 + nz)`, this simplifies to
+///   `len_sq = 2·(1 + nz)`.
+/// So `len_sq < 1e-12` fires for `nz < −1 + 5e-13` — roughly half a femto-unit from
+/// `−Z`. The margin is intentional: it is well above the rounding noise accumulated
+/// by the multiply-and-add chain that produces `len_sq`, yet small enough that the
+/// fallback only activates for genuinely degenerate inputs. **Do not tighten the
+/// threshold further**: reducing it below ~`1e-13` would shrink the safety margin
+/// into f64 rounding noise and allow near-degenerate inputs to produce NaN-carrying
+/// quaternions.
+fn quaternion_from_z_to_axis(nx: f64, ny: f64, nz: f64) -> reify_types::Value {
+    let w_unnorm = 1.0 + nz;
+    // Use `0.0 - ny` instead of `-ny` to avoid producing -0.0 when ny = 0.0.
+    // In IEEE 754, `0.0 - 0.0 = +0.0` (round-to-nearest), whereas the unary
+    // negation `-0.0 = -0.0`.  The bit-exact `PartialEq` on `Value::Orientation`
+    // would treat -0.0 and +0.0 as unequal, causing spurious test failures when
+    // the input has a zero component.
+    let x_unnorm = 0.0 - ny;
+    let y_unnorm = nx;
+    // z component of cross(+Z, b) is always 0.
+
+    let len_sq = w_unnorm * w_unnorm + x_unnorm * x_unnorm + y_unnorm * y_unnorm;
+
+    if len_sq < 1e-12 {
+        // (nx, ny, nz) ≈ -Z: degenerate case. Rotate 180° around +X.
+        return reify_types::Value::Orientation {
+            w: 0.0,
+            x: 1.0,
+            y: 0.0,
+            z: 0.0,
+        };
+    }
+
+    let len = len_sq.sqrt();
+    reify_types::Value::Orientation {
+        w: w_unnorm / len,
+        x: x_unnorm / len,
+        y: y_unnorm / len,
+        z: 0.0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6778,5 +7104,131 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Unit tests for `quaternion_from_z_to_axis` (task 3463 amend pass)
+    //
+    // Covers the four canonical axis directions and the degenerate (-Z) fallback.
+    // Each test verifies unit norm AND correct component values.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Helper: apply quaternion `(w, qx, qy, qz)` to a pure vector `(vx, vy, vz)`.
+    /// Returns the rotated vector `[rx, ry, rz]`.
+    ///
+    /// Uses the Rodrigues-style formula:
+    ///   `v' = v + 2w*(q_vec × v) + 2*(q_vec × (q_vec × v))`
+    fn quat_rotate(w: f64, qx: f64, qy: f64, qz: f64, vx: f64, vy: f64, vz: f64) -> [f64; 3] {
+        let cx = qy * vz - qz * vy;
+        let cy = qz * vx - qx * vz;
+        let cz = qx * vy - qy * vx;
+        let dx = qy * cz - qz * cy;
+        let dy = qz * cx - qx * cz;
+        let dz = qx * cy - qy * cx;
+        [
+            vx + 2.0 * w * cx + 2.0 * dx,
+            vy + 2.0 * w * cy + 2.0 * dy,
+            vz + 2.0 * w * cz + 2.0 * dz,
+        ]
+    }
+
+    /// Helper: extract `(w, x, y, z)` from a `Value::Orientation`.
+    fn orientation_components(v: reify_types::Value) -> (f64, f64, f64, f64) {
+        match v {
+            reify_types::Value::Orientation { w, x, y, z } => (w, x, y, z),
+            other => panic!("expected Value::Orientation, got {other:?}"),
+        }
+    }
+
+    /// `+Z → +Z`: shortest arc is zero rotation → identity quaternion.
+    ///
+    /// All arithmetic is exact (w_unnorm = 2.0, len = 2.0, components are
+    /// integer multiples of 0.5), so `assert_eq!` with bit-exact comparison
+    /// is appropriate here.
+    #[test]
+    fn quaternion_from_z_to_axis_z_plus_is_identity() {
+        let q = super::quaternion_from_z_to_axis(0.0, 0.0, 1.0);
+        assert_eq!(
+            q,
+            reify_types::Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0
+            },
+            "+Z → +Z should yield identity quaternion"
+        );
+    }
+
+    /// `(0, 0, -1)` is the degenerate case (anti-parallel). The function
+    /// falls back to a 180° rotation around +X: `{w:0, x:1, y:0, z:0}`.
+    #[test]
+    fn quaternion_from_z_to_axis_z_minus_gives_180_around_x() {
+        let q = super::quaternion_from_z_to_axis(0.0, 0.0, -1.0);
+        assert_eq!(
+            q,
+            reify_types::Value::Orientation {
+                w: 0.0,
+                x: 1.0,
+                y: 0.0,
+                z: 0.0
+            },
+            "-Z degenerate case should fall back to 180° around +X"
+        );
+        // Round-trip: applying the quaternion to (0,0,1) should give (0,0,-1).
+        let (w, x, y, z) = orientation_components(q);
+        let rotated = quat_rotate(w, x, y, z, 0.0, 0.0, 1.0);
+        assert!(
+            rotated[0].abs() < 1e-12 && rotated[1].abs() < 1e-12 && (rotated[2] + 1.0).abs() < 1e-12,
+            "180°/+X applied to +Z should give -Z, got {rotated:?}"
+        );
+    }
+
+    /// `+X axis`: shortest arc from +Z to +X is 90° around +Y.
+    /// `quaternion_from_z_to_axis(1,0,0)` → `{w: 1/√2, x: 0, y: 1/√2, z: 0}`.
+    #[test]
+    fn quaternion_from_z_to_axis_x_plus_unit_norm_and_round_trip() {
+        let q = super::quaternion_from_z_to_axis(1.0, 0.0, 0.0);
+        let (w, x, y, z) = orientation_components(q);
+        let norm = (w * w + x * x + y * y + z * z).sqrt();
+        assert!(
+            (norm - 1.0).abs() < 1e-12,
+            "+X axis: quaternion should be unit-norm; norm={norm}"
+        );
+        let sqrt2_inv = std::f64::consts::FRAC_1_SQRT_2;
+        assert!((w - sqrt2_inv).abs() < 1e-12, "+X axis: w should be 1/√2; got {w}");
+        assert!(x.abs() < 1e-12, "+X axis: x should be 0; got {x}");
+        assert!((y - sqrt2_inv).abs() < 1e-12, "+X axis: y should be 1/√2; got {y}");
+        assert!(z.abs() < 1e-12, "+X axis: z should be 0; got {z}");
+        // Round-trip: q applied to (0,0,1) should give (1,0,0).
+        let rotated = quat_rotate(w, x, y, z, 0.0, 0.0, 1.0);
+        assert!(
+            (rotated[0] - 1.0).abs() < 1e-12 && rotated[1].abs() < 1e-12 && rotated[2].abs() < 1e-12,
+            "+X round-trip: expected (1,0,0), got {rotated:?}"
+        );
+    }
+
+    /// `+Y axis`: shortest arc from +Z to +Y is 90° around -X.
+    /// `quaternion_from_z_to_axis(0,1,0)` → `{w: 1/√2, x: -1/√2, y: 0, z: 0}`.
+    #[test]
+    fn quaternion_from_z_to_axis_y_plus_unit_norm_and_round_trip() {
+        let q = super::quaternion_from_z_to_axis(0.0, 1.0, 0.0);
+        let (w, x, y, z) = orientation_components(q);
+        let norm = (w * w + x * x + y * y + z * z).sqrt();
+        assert!(
+            (norm - 1.0).abs() < 1e-12,
+            "+Y axis: quaternion should be unit-norm; norm={norm}"
+        );
+        let sqrt2_inv = std::f64::consts::FRAC_1_SQRT_2;
+        assert!((w - sqrt2_inv).abs() < 1e-12, "+Y axis: w should be 1/√2; got {w}");
+        assert!((x + sqrt2_inv).abs() < 1e-12, "+Y axis: x should be -1/√2; got {x}");
+        assert!(y.abs() < 1e-12, "+Y axis: y should be 0; got {y}");
+        assert!(z.abs() < 1e-12, "+Y axis: z should be 0; got {z}");
+        // Round-trip: q applied to (0,0,1) should give (0,1,0).
+        let rotated = quat_rotate(w, x, y, z, 0.0, 0.0, 1.0);
+        assert!(
+            rotated[0].abs() < 1e-12 && (rotated[1] - 1.0).abs() < 1e-12 && rotated[2].abs() < 1e-12,
+            "+Y round-trip: expected (0,1,0), got {rotated:?}"
+        );
     }
 }

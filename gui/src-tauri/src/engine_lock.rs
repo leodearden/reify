@@ -29,11 +29,12 @@ fn panic_message(payload: &(dyn Any + Send)) -> String {
 /// `file_path`, `last_check`, `module_name`) live inside a private `CoreState`
 /// struct whose fields are strictly private — direct field assignment outside
 /// `CoreState`'s impl fails to compile.  The only commit points that touch the
-/// four invariant-bearing fields (`compiled`, `source_map`, `module_name`,
-/// `last_check`) are:
-/// - `commit_state` — four-field atomic commit after a successful compile cycle
+/// five invariant-bearing fields (`compiled`, `source_map`, `module_name`,
+/// `last_check`, `file_path`) are:
+/// - `commit_state` — five-field atomic commit after a successful compile cycle
+///   (`file_path` is updated when `FilePathUpdate::Set` is passed; `FilePathUpdate::Preserve`
+///   leaves it unchanged)
 /// - `commit_check` — single-field commit for `last_check` (used by `set_parameter`)
-/// - `commit_file_path` — single-field commit for `file_path` (used by `load_file`)
 ///
 /// `engine_mut()` does not touch those fields; the `#[cfg(test)]` mutators are
 /// intentional invariant-breakers absent from production builds — the
@@ -55,8 +56,9 @@ where
 {
     // Recover from any pre-existing poisoning via into_inner().
     // Safety: CoreState's fields are strictly private; the only commit points for
-    // the four invariant-bearing fields are commit_state, commit_check, and
-    // commit_file_path, each atomic with respect to the fields it owns.
+    // the five invariant-bearing fields are commit_state (five-field atomic commit,
+    // file_path updated via FilePathUpdate (Set/Preserve)) and commit_check (single-field last_check),
+    // each atomic with respect to the fields it owns.
     // engine_mut() does not touch those fields; the #[cfg(test)] mutators are
     // intentional invariant-breakers absent from production builds — the
     // poison-recovery property holds in production.

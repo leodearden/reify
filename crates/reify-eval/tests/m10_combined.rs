@@ -606,18 +606,16 @@ fn ad_hoc_port_selector_let_binding_present() {
     );
 }
 
-/// Forward-marker: once engine-side ad-hoc selector resolution lands, `supply_point`
-/// should evaluate to a concrete geometric value (not `Value::Undef`).
+/// `supply_point = supply @ point(0mm, 0mm, 0mm)` — a `@point` selector against
+/// a named step. The pure-expression evaluator (step-2 of task 3463) handles
+/// `SelectorKind::Point` directly in `eval_expr`, so this resolves to a
+/// `Value::Frame` without any kernel or engine post-process.
 ///
-/// Currently ignored because reify-expr/src/lib.rs:511 returns `Value::Undef` for
-/// AdHocSelector in the pure-expression evaluator and engine-side resolution is
-/// tracked as a separate follow-up task. When the resolver lands, un-ignore this
-/// test and assert the expected concrete shape (e.g., `Value::Point(_)`).
+/// Previously `#[ignore]`-d because the blanket `AdHocSelector => Undef` arm was
+/// still in place. Now active: `supply_point` must be a `Value::Frame`.
 ///
-/// If this test starts failing while still ignored, it means the resolver landed
-/// and the companion test `ad_hoc_port_selector_let_binding_present` needs updating.
+/// Witness: `m10_combined.ri` line 88 — `let supply_point = supply @ point(0mm, 0mm, 0mm)`.
 #[test]
-#[ignore = "ad-hoc selector resolution not yet wired up; see reify-expr/src/lib.rs:511"]
 fn supply_point_resolves_to_concrete_value() {
     let mut engine = make_simple_engine();
     let result = engine.eval(&compiled());
@@ -627,9 +625,10 @@ fn supply_point_resolves_to_concrete_value() {
         .get(&supply_point_id)
         .expect("Assembly.supply_point should exist");
     assert!(
-        !matches!(v, Value::Undef),
-        "supply_point should resolve to a concrete value once the ad-hoc selector \
-         resolver is wired up (currently Undef; see reify-expr/src/lib.rs:511)"
+        matches!(v, Value::Frame { .. }),
+        "supply_point should resolve to Value::Frame {{ .. }} after task-3463 step-2 \
+         wired @point in eval_expr; got {:?}",
+        v
     );
 }
 

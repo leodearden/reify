@@ -1017,6 +1017,7 @@ pub(crate) fn resolve_parameterized_alias(
                     "unresolved type argument '{}' for alias '{}'",
                     arg_expr, alias_entry.name
                 ))
+                .with_code(DiagnosticCode::UnresolvedType)
                 .with_label(DiagnosticLabel::new(arg_expr.span, "unknown type")),
             );
             return None;

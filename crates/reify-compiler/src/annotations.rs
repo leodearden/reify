@@ -319,6 +319,7 @@ pub(crate) fn validate_solver_hint_collections(
         if scope.resolve(name).is_none() && !functions.iter().any(|f| f.name == *name) {
             diagnostics.push(
                 Diagnostic::error(format!("unresolved name: {}", name))
+                    .with_code(DiagnosticCode::UnresolvedName)
                     .with_label(DiagnosticLabel::new(hint.span, "not found in scope")),
             );
         }

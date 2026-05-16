@@ -19,7 +19,8 @@ use std::collections::HashMap;
 use reify_types::{
     BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, DeterminacyPredicateKind,
     DeterminacyState, Diagnostic, DimensionVector, FIELD_ENTITY_PREFIX, FieldSourceKind,
-    PersistentMap, QuantifierKind, Type, UnOp, Value, ValueCellId, ValueMap, quaternion_is_finite,
+    PersistentMap, QuantifierKind, SelectorKind, Type, UnOp, Value, ValueCellId, ValueMap,
+    quaternion_is_finite,
 };
 
 /// Maximum recursion depth for user-defined function calls.
@@ -734,10 +735,21 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             ..
         } => eval_quantifier(*kind, variable_id, collection, predicate, ctx),
 
-        // Ad-hoc selector evaluation is handled by the engine (Task 250),
-        // which has access to the geometry kernel. The pure expression
-        // evaluator returns Undef as a placeholder.
-        CompiledExprKind::AdHocSelector { .. } => Value::Undef,
+        // Ad-hoc selector evaluation: @point(x,y,z) is handled here in the
+        // pure-expression evaluator (no kernel required). @face("name") and
+        // @edge("name") require the geometry kernel and are patched by
+        // Engine::post_process_ad_hoc_selectors after eval_expr completes.
+        //
+        // Body extracted into `eval_ad_hoc_selector` to keep this recursive
+        // frame small in debug builds — the [f64; 3] coord buffer and Value
+        // locals would otherwise sit on every `eval_expr` frame and risk
+        // overflowing the 2 MiB test-thread stack at MAX_RECURSION_DEPTH
+        // levels of recursive user-fn evaluation (cf. `eval_quantifier`).
+        CompiledExprKind::AdHocSelector {
+            selector_kind,
+            args,
+            ..
+        } => eval_ad_hoc_selector(selector_kind, args, ctx),
 
         // Reflective-aggregation placeholder (task-2289). This variant is
         // emitted by the compiler for `subject.params` etc. and is expected
@@ -752,6 +764,70 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             );
             Value::Undef
         }
+    }
+}
+
+/// Evaluate an ad-hoc selector expression (`@point(x,y,z)`, `@face("n")`, `@edge("n")`).
+///
+/// Extracted from `eval_expr` to keep that recursive function's stack frame
+/// small (the coord buffer and Value locals below would otherwise sit on every
+/// `eval_expr` frame and risk overflowing the 2 MiB test-thread stack at
+/// `MAX_RECURSION_DEPTH` levels of recursive user-fn evaluation — see the
+/// `eval_user_fn_recursion_depth_exceeded` test and the matching extraction of
+/// `eval_quantifier`).
+///
+/// - `SelectorKind::Point`: evaluates the 3 length-scalar args and builds a
+///   `Value::Frame` with identity basis. Returns `Value::Undef` if any arg is
+///   not a LENGTH-dimensioned scalar.
+/// - `SelectorKind::Face | SelectorKind::Edge`: returns `Value::Undef` as a
+///   placeholder for `Engine::post_process_ad_hoc_selectors` to overwrite.
+fn eval_ad_hoc_selector(
+    selector_kind: &SelectorKind,
+    args: &[CompiledExpr],
+    ctx: &EvalContext,
+) -> Value {
+    match selector_kind {
+        SelectorKind::Point => {
+            // @point(x, y, z): evaluate 3 coord args; if all are
+            // LENGTH-dimensioned scalars, build Frame{origin, identity_basis}.
+            if args.len() != 3 {
+                return Value::Undef;
+            }
+            let mut si_coords = [0.0_f64; 3];
+            for (i, arg) in args.iter().enumerate() {
+                match eval_expr(arg, ctx) {
+                    Value::Scalar { si_value, dimension }
+                        if dimension == DimensionVector::LENGTH =>
+                    {
+                        si_coords[i] = si_value;
+                    }
+                    _ => return Value::Undef,
+                }
+            }
+            let origin = Value::Point(
+                si_coords
+                    .iter()
+                    .map(|&v| Value::Scalar {
+                        si_value: v,
+                        dimension: DimensionVector::LENGTH,
+                    })
+                    .collect(),
+            );
+            Value::Frame {
+                origin: Box::new(origin),
+                basis: Box::new(Value::Orientation {
+                    w: 1.0,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                }),
+            }
+        }
+        // @face("name") and @edge("name"): the engine post-process
+        // (Engine::post_process_ad_hoc_selectors) patches these cells
+        // via kernel.extract_faces/edges + resolve_unique_by_attribute.
+        // Return Undef here as a placeholder for the engine to overwrite.
+        SelectorKind::Face | SelectorKind::Edge => Value::Undef,
     }
 }
 
@@ -4659,6 +4735,103 @@ mod tests {
     /// "CrossSubGeometryRef should not reach eval; ...")` message does NOT contain
     /// the expected substring `"should be consumed"`, so `should_panic`'s
     /// substring check fails in debug; and in release no panic fires at all.
+    // ── AdHocSelector (@point) unit tests ────────────────────────────────────
+
+    /// Build a length-dimensioned scalar for a given mm value.
+    fn mm_lit(v_mm: f64) -> CompiledExpr {
+        lit(
+            Value::Scalar {
+                si_value: v_mm * 1e-3,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        )
+    }
+
+    /// `@point(1mm, 2mm, 3mm)` should evaluate to a `Value::Frame` whose origin
+    /// is a `Value::Point` of three length-dimensioned scalars (in SI metres) and
+    /// whose basis is the identity orientation `Orientation { w: 1, x: 0, y: 0, z: 0 }`.
+    ///
+    /// RED on HEAD: current arm returns `Value::Undef` unconditionally.
+    #[test]
+    fn ad_hoc_selector_point_constructs_frame_at_world_coords() {
+        use reify_types::SelectorKind;
+        let base = lit(Value::String("ignored".into()), Type::String);
+        let args = vec![mm_lit(1.0), mm_lit(2.0), mm_lit(3.0)];
+        let expr = CompiledExpr::ad_hoc_selector(base, SelectorKind::Point, args);
+        let values = ValueMap::new();
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
+        match result {
+            Value::Frame { origin, basis } => {
+                // Check origin is a Point of three length scalars (SI metres)
+                match *origin {
+                    Value::Point(ref comps) => {
+                        assert_eq!(comps.len(), 3, "origin Point should have 3 components");
+                        let expected = [1e-3_f64, 2e-3_f64, 3e-3_f64];
+                        for (i, (comp, &exp)) in comps.iter().zip(&expected).enumerate() {
+                            match comp {
+                                Value::Scalar { si_value, dimension } => {
+                                    assert_eq!(
+                                        *dimension, DimensionVector::LENGTH,
+                                        "origin[{i}] dimension should be LENGTH"
+                                    );
+                                    assert!(
+                                        (si_value - exp).abs() < 1e-15,
+                                        "origin[{i}] si_value: expected {exp}, got {si_value}"
+                                    );
+                                }
+                                other => panic!(
+                                    "origin[{i}] should be Value::Scalar, got {:?}", other
+                                ),
+                            }
+                        }
+                    }
+                    other => panic!("origin should be Value::Point, got {:?}", other),
+                }
+                // Check basis is identity orientation
+                match *basis {
+                    Value::Orientation { w, x, y, z } => {
+                        assert!(
+                            (w - 1.0).abs() < 1e-15 && x.abs() < 1e-15
+                                && y.abs() < 1e-15 && z.abs() < 1e-15,
+                            "basis should be identity orientation (w=1,x=0,y=0,z=0), got w={w},x={x},y={y},z={z}"
+                        );
+                    }
+                    other => panic!("basis should be Value::Orientation, got {:?}", other),
+                }
+            }
+            other => panic!(
+                "ad_hoc_selector @point(1mm,2mm,3mm) should return Value::Frame, got {:?}",
+                other
+            ),
+        }
+    }
+
+    /// When one of the coordinate args is `Value::Undef`, `@point` should return
+    /// `Value::Undef` as a defensive degraded path.
+    ///
+    /// RED on HEAD: current arm already returns `Value::Undef`, but for the wrong
+    /// reason (blanket arm). After step-2 this test stays GREEN via the explicit
+    /// Undef-propagation logic.
+    #[test]
+    fn ad_hoc_selector_point_with_undef_arg_returns_undef() {
+        use reify_types::SelectorKind;
+        let base = lit(Value::String("ignored".into()), Type::String);
+        let args = vec![
+            mm_lit(1.0),
+            lit(Value::Undef, Type::length()), // <-- Undef arg
+            mm_lit(3.0),
+        ];
+        let expr = CompiledExpr::ad_hoc_selector(base, SelectorKind::Point, args);
+        let values = ValueMap::new();
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
+        assert!(
+            matches!(result, Value::Undef),
+            "@point with Undef coord arg should return Value::Undef, got {:?}",
+            result
+        );
+    }
+
     #[test]
     #[should_panic(expected = "CrossSubGeometryRef should be consumed by entity.rs")]
     fn cross_sub_geometry_ref_panics_in_eval_when_not_consumed() {

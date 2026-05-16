@@ -168,10 +168,7 @@ impl SampledField {
             data: _,
             oob_emitted: _,
         } = self;
-        if name != &other.name
-            || kind != &other.kind
-            || interpolation != &other.interpolation
-        {
+        if name != &other.name || kind != &other.kind || interpolation != &other.interpolation {
             return false;
         }
         let vecs_bit_eq = |xs: &[f64], ys: &[f64]| -> bool {
@@ -1058,8 +1055,12 @@ impl Value {
     /// - empty `List` / `Set` → element type defaults to `Real`
     /// - empty `Map` → key defaults to `String`, value defaults to `Real`
     /// - `Option(None)` → inner type defaults to `Bool`
-    /// - empty `Point` / `Vector` → quantity type defaults to `Real`
     /// - `Range` with no bounds → element type defaults to `Real`
+    ///
+    /// Empty `Point` and `Vector` are not valid inputs to `infer_type` —
+    /// debug builds trip a `debug_assert!`; release builds panic via
+    /// `unreachable!`.  Use [`try_infer_type()`] for ambiguity-aware
+    /// inference that returns `None` without panicking.
     ///
     /// Use [`try_infer_type()`] when you need to distinguish "genuinely ambiguous"
     /// from "has a known fallback".
@@ -1097,29 +1098,33 @@ impl Value {
                 Value::Option(Some(inner)) => Type::Option(Box::new(inner.infer_type())),
                 Value::Option(None) => Type::Option(Box::new(Type::Bool)),
                 Value::Point(components) => {
-                    let q = components
+                    debug_assert!(
+                        !components.is_empty(),
+                        "infer_type() called on empty Point — nonsensical for engineering \
+                         geometry; use try_infer_type() if ambiguity-aware inference is \
+                         required (task 3749)"
+                    );
+                    let first = components
                         .first()
-                        .map(|v| v.infer_type())
-                        // G-allow: documented `infer_type()` with-defaults contract (function
-                        // docstring above); `try_infer_type()` returns None for ambiguity
-                        // (task 3639 review).
-                        .unwrap_or(Type::Real);
+                        .expect("infer_type() on empty Point — see debug_assert above (task 3749)");
                     Type::Point {
                         n: components.len(),
-                        quantity: Box::new(q),
+                        quantity: Box::new(first.infer_type()),
                     }
                 }
                 Value::Vector(components) => {
-                    let q = components
+                    debug_assert!(
+                        !components.is_empty(),
+                        "infer_type() called on empty Vector — nonsensical for engineering \
+                         geometry; use try_infer_type() if ambiguity-aware inference is \
+                         required (task 3749)"
+                    );
+                    let first = components
                         .first()
-                        .map(|v| v.infer_type())
-                        // G-allow: documented `infer_type()` with-defaults contract (function
-                        // docstring above); `try_infer_type()` returns None for ambiguity
-                        // (task 3639 review).
-                        .unwrap_or(Type::Real);
+                        .expect("infer_type() on empty Vector — see debug_assert above (task 3749)");
                     Type::Vector {
                         n: components.len(),
-                        quantity: Box::new(q),
+                        quantity: Box::new(first.infer_type()),
                     }
                 }
                 Value::Range { lower, upper, .. } => {
@@ -1609,7 +1614,11 @@ impl Value {
                 dimension,
             } => {
                 let (display_value, unit) = dimension.to_display_units(*si_value);
-                Some((display_value, format_display_number(display_value), unit.to_string()))
+                Some((
+                    display_value,
+                    format_display_number(display_value),
+                    unit.to_string(),
+                ))
             }
             Value::Option(Some(inner)) => inner.format_display_triple(),
             _ => None,
@@ -7626,6 +7635,93 @@ mod tests {
         );
     }
 
+    // ── Point/Vector infer_type / try_infer_type tests (task 3749) ──────────
+
+    /// Empty Point has no inferable quantity type — try_infer_type() returns None.
+    ///
+    /// Mirrors `try_infer_type_empty_list_returns_none`: the `?` on
+    /// `components.first()?` propagates None out of the Point arm.
+    #[test]
+    fn try_infer_type_empty_point_returns_none() {
+        use crate::ty::Type;
+        let v = Value::Point(vec![]);
+        assert_eq!(
+            v.try_infer_type(),
+            None,
+            "empty Point has no inferable quantity type"
+        );
+        // try_infer_type returning None means infer_type dispatches to the None branch;
+        // step-04 replaces the unwrap_or(Type::Real) there with debug_assert + unreachable!.
+        let _ = Type::Real; // suppress unused import lint
+    }
+
+    /// Empty Vector has no inferable quantity type — try_infer_type() returns None.
+    #[test]
+    fn try_infer_type_empty_vector_returns_none() {
+        let v = Value::Vector(vec![]);
+        assert_eq!(
+            v.try_infer_type(),
+            None,
+            "empty Vector has no inferable quantity type"
+        );
+    }
+
+    /// Non-empty Point — infer_type() returns the correct Type::Point.
+    ///
+    /// This exercises the happy path (n > 0), which is unaffected by step-04.
+    #[test]
+    fn infer_type_nonempty_point_returns_point_real() {
+        use crate::ty::Type;
+        let v = Value::Point(vec![Value::Real(1.0), Value::Real(2.0)]);
+        assert_eq!(
+            v.infer_type(),
+            Type::Point {
+                n: 2,
+                quantity: Box::new(Type::Real),
+            },
+            "non-empty Point(Real, Real) should infer as Type::Point {{ n: 2, quantity: Real }}"
+        );
+    }
+
+    /// Non-empty Vector — infer_type() returns the correct Type::Vector.
+    #[test]
+    fn infer_type_nonempty_vector_returns_vector_real() {
+        use crate::ty::Type;
+        let v = Value::Vector(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+        assert_eq!(
+            v.infer_type(),
+            Type::Vector {
+                n: 3,
+                quantity: Box::new(Type::Real),
+            },
+            "non-empty Vector(Real×3) should infer as Type::Vector {{ n: 3, quantity: Real }}"
+        );
+    }
+
+    /// `infer_type()` on an empty `Value::Point` panics in debug builds (debug_assert).
+    ///
+    /// Gated by `#[cfg(debug_assertions)]` — in release builds the debug_assert is a
+    /// no-op and the `unreachable!()` arm is not exercised (task 3749, step-04 tightening).
+    /// Expected panic message matches the string written to the debug_assert in step-04.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "empty Point")]
+    fn infer_type_empty_point_panics_in_debug() {
+        let _ = Value::Point(vec![]).infer_type();
+    }
+
+    /// `infer_type()` on an empty `Value::Vector` panics in debug builds (debug_assert).
+    ///
+    /// Gated by `#[cfg(debug_assertions)]` — in release builds the debug_assert is a
+    /// no-op and the `unreachable!()` arm is not exercised (task 3749, step-04 tightening).
+    /// Expected panic message matches the string written to the debug_assert in step-04.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "empty Vector")]
+    fn infer_type_empty_vector_panics_in_debug() {
+        let _ = Value::Vector(vec![]).infer_type();
+    }
+
     // --- Freshness::default() tests (task #2326) ---
 
     #[test]
@@ -7927,8 +8023,8 @@ mod tests {
     fn sampled_field_grid_metadata_eq_positive_zero_vs_negative_zero_returns_false() {
         let mut a = sample_field_1d_fixture();
         let mut b = sample_field_1d_fixture();
-        a.spacing[0] = 0.0_f64;           // +0.0
-        b.spacing[0] = -0.0_f64;          // -0.0  (different bit pattern)
+        a.spacing[0] = 0.0_f64; // +0.0
+        b.spacing[0] = -0.0_f64; // -0.0  (different bit pattern)
         assert!(
             !a.grid_metadata_eq(&b),
             "+0.0 and -0.0 must compare as different (bit-equality semantics)"
@@ -7963,9 +8059,8 @@ mod tests {
             si_value: 0.0042,
             dimension: DimensionVector::LENGTH,
         };
-        let (display_value, formatted, unit) = v
-            .format_display_triple()
-            .expect("Scalar must return Some");
+        let (display_value, formatted, unit) =
+            v.format_display_triple().expect("Scalar must return Some");
         assert!(
             (display_value - 4.2).abs() < 1e-10,
             "display_value must be 4.2, got {}",
@@ -7986,9 +8081,8 @@ mod tests {
             si_value: 0.080,
             dimension: DimensionVector::LENGTH,
         };
-        let (display_value, formatted, unit) = v
-            .format_display_triple()
-            .expect("Scalar must return Some");
+        let (display_value, formatted, unit) =
+            v.format_display_triple().expect("Scalar must return Some");
         assert!(
             (display_value - 80.0).abs() < 1e-10,
             "display_value must be 80.0, got {}",
@@ -8055,5 +8149,4 @@ mod tests {
             "distinct-bit-pattern NaN values must compare as unequal (NaN bit-equality contract)"
         );
     }
-
 }

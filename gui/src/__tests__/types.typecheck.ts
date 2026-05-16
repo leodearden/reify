@@ -48,6 +48,36 @@ const meshWithScalars: MeshData = {
 };
 void meshWithScalars;
 
+// --- MeshData with shell-extract fields (task 3597) ---
+// (a) All three new fields populated with their typed-array forms.
+const meshWithShellFields: MeshData = {
+  entity_path: 'Shell.body',
+  vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+  indices: new Uint32Array([0, 1, 2]),
+  normals: null,
+  element_kind: new Uint8Array([1]),
+  region_tags: new Uint32Array([42]),
+  vector_channels: { shell_normal_per_face: new Float32Array([0, 0, 1]) },
+};
+void meshWithShellFields;
+
+// (b) MeshData with new fields absent — asserts they are optional.
+const meshWithoutShellFields: MeshData = {
+  entity_path: 'Tet.body',
+  vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+  indices: new Uint32Array([0, 1, 2]),
+  normals: null,
+};
+void meshWithoutShellFields;
+
+// (c) Type assertions extracting each new typed-array field.
+const _ek: Uint8Array | undefined = meshWithShellFields.element_kind;
+void _ek;
+const _rt: Uint32Array | undefined = meshWithShellFields.region_tags;
+void _rt;
+const _vc: Record<string, Float32Array> | undefined = meshWithShellFields.vector_channels;
+void _vc;
+
 // --- RawMeshData (wire format from Tauri IPC) ---
 const rawMesh: RawMeshData = {
   entity_path: 'Bracket.body',
@@ -76,6 +106,28 @@ const rawMeshWithoutScalars: RawMeshData = {
   normals: null,
 };
 void rawMeshWithoutScalars;
+
+// --- RawMeshData with shell-extract fields (task 3597) ---
+// (d) RawMeshData with all three new fields as raw number[] / Record<string,number[]>.
+const rawMeshWithShellFields: RawMeshData = {
+  entity_path: 'Shell.body',
+  vertices: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+  indices: [0, 1, 2],
+  normals: null,
+  element_kind: [1],
+  region_tags: [42],
+  vector_channels: { shell_normal_per_face: [0, 0, 1] },
+};
+void rawMeshWithShellFields;
+
+// (e) RawMeshData with new fields absent — asserts they remain optional.
+const rawMeshWithoutShellFields: RawMeshData = {
+  entity_path: 'Tet.body',
+  vertices: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+  indices: [0, 1, 2],
+  normals: null,
+};
+void rawMeshWithoutShellFields;
 
 // --- convertRawMesh ---
 const converted: MeshData = convertRawMesh(rawMesh);

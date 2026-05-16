@@ -206,6 +206,230 @@ pub fn long_chain_diagnostic(
     Some(Diagnostic::warning(message).with_code(DiagnosticCode::LongChainRealization))
 }
 
+/// Build the `Severity::Error` diagnostic emitted when the multi-kernel
+/// dispatcher cannot find any kernel + conversion chain that performs `op`
+/// to produce the `demanded` repr from the currently-`available` reprs.
+///
+/// Unlike [`long_chain_diagnostic`] (which carries an internal predicate
+/// gate and returns `Option<Diagnostic>` because the caller cannot know
+/// whether to skip), this builder is *unconditional*: the caller has
+/// already walked the BFS to exhaustion and decided the failure applies, so
+/// it returns [`Diagnostic`] directly (mirroring
+/// [`crate::tolerance_promise::imported_tolerance_promise_diagnostic`]). The
+/// diagnostic carries [`DiagnosticCode::NoKernelChain`] for filter-by-code
+/// downstream consumers and a human-readable message naming the op, the
+/// demanded repr, and every available repr so the user can see exactly
+/// which conversion was impossible.
+///
+/// # Integration status
+///
+/// TODO(task-3435/δ): wire this builder into the dispatcher's `None`-return
+/// path in op-execution once the multi-kernel dispatch surface lands (PRD
+/// `docs/prds/v0_3/multi-kernel-phase-3.md` §8 DAG; consumers δ/ε =
+/// IDs 3435/3436). Until then, `no_kernel_chain_diagnostic` is scaffolding
+/// — public API with no in-tree caller — exactly mirroring the scope
+/// boundary documented at the module level and the `long_chain_diagnostic`
+/// precedent (task 2646). Greppable callout intentionally duplicated here so
+/// a future wiring pass can locate the seam without re-reading module docs.
+///
+/// # Severity rationale
+///
+/// PRD `docs/prds/v0_3/multi-kernel-phase-3.md` §2: "The error is
+/// user-visible — failing closed is the failure mode." The dispatcher
+/// refuses to silently pick an incompatible kernel; the user gets a typed
+/// error and can adjust their kernel set or `#kernel(...)` pragma.
+///
+/// # Determinism
+///
+/// `available` is collected into a [`BTreeSet`] before rendering so the
+/// message is stable across runs — the caller's `HashSet<ReprKind>`
+/// iteration order is salted by the process hash seed (see
+/// `dispatch`'s `seeds: BTreeSet<ReprKind>` step and the
+/// `dispatch_seeding_order_is_deterministic` test for the same
+/// load-bearing convention).
+///
+/// # Arguments
+///
+/// - `op` — the [`Operation`] the dispatcher failed to route.
+/// - `demanded` — the [`ReprKind`] the op was required to produce.
+/// - `available` — the reprs the inputs were realised in when dispatch
+///   failed; rendered sorted via [`ReprKind`]'s `Ord` derive.
+pub fn no_kernel_chain_diagnostic(
+    op: Operation,
+    demanded: ReprKind,
+    available: &[ReprKind],
+) -> Diagnostic {
+    let available_sorted: BTreeSet<ReprKind> = available.iter().copied().collect();
+    let available_rendered = available_sorted
+        .iter()
+        .map(|r| format!("{r:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let message = format!(
+        "no kernel chain found for op '{op:?}' to produce '{demanded:?}'; \
+         available reprs: [{available_rendered}]"
+    );
+    Diagnostic::error(message).with_code(DiagnosticCode::NoKernelChain)
+}
+
+/// Build the `Severity::Warning` diagnostic emitted when a `#kernel(...)`
+/// pragma names a kernel that cannot serve the demanded `(op, demanded)`
+/// pair, so the dispatcher falls through to default lex-min selection.
+///
+/// Unconditional [`Diagnostic`]-returning builder (the caller has already
+/// observed the pragma kernel does not support the demand). Carries
+/// [`DiagnosticCode::KernelPragmaUnsatisfiable`] for filter-by-code
+/// consumers and a message naming the pragma kernel, the op, and the
+/// demanded repr.
+///
+/// # Integration status
+///
+/// TODO(task-3443/ο): wire this builder into the `#kernel(...)` pragma
+/// surface once it lands (PRD `docs/prds/v0_3/multi-kernel-phase-3.md`
+/// §5 + §8 DAG; consumer ο = ID 3443). Until then, scaffolding — public
+/// API with no in-tree caller — mirroring the `long_chain_diagnostic`
+/// precedent (task 2646).
+///
+/// # Severity rationale
+///
+/// PRD `docs/prds/v0_3/multi-kernel-phase-3.md` §5: "warning, not error —
+/// fall through to default lex-min selection so the user's design still
+/// evaluates." The realization proceeds; the warning gives the author
+/// visibility into the unmet kernel preference.
+///
+/// # Arguments
+///
+/// - `pragma_kernel` — the kernel name written in the `#kernel(...)`
+///   pragma that could not be honoured.
+/// - `op` — the [`Operation`] the pragma kernel was asked to perform.
+/// - `demanded` — the [`ReprKind`] the op was required to produce.
+pub fn kernel_pragma_unsatisfiable_diagnostic(
+    pragma_kernel: &str,
+    op: Operation,
+    demanded: ReprKind,
+) -> Diagnostic {
+    let message = format!(
+        "#kernel('{pragma_kernel}') cannot serve op '{op:?}' producing \
+         '{demanded:?}'; falling through to default kernel selection"
+    );
+    Diagnostic::warning(message).with_code(DiagnosticCode::KernelPragmaUnsatisfiable)
+}
+
+/// Build the `Severity::Error` diagnostic emitted when `reify.toml`
+/// `[kernels]` pins a kernel that the current build did not register
+/// (typically because the corresponding Cargo feature was not enabled).
+///
+/// Unconditional [`Diagnostic`]-returning builder (the caller has already
+/// observed the pinned kernel is absent from the registry). Carries
+/// [`DiagnosticCode::PinnedKernelMissing`] for filter-by-code consumers
+/// and a message naming the missing kernel id.
+///
+/// # Integration status
+///
+/// TODO(task-3444/π): wire this builder into `reify.toml` parsing in
+/// `Engine::with_registered_kernels` once it lands (PRD
+/// `docs/prds/v0_3/multi-kernel-phase-3.md` §5 + §8 DAG; consumer π =
+/// ID 3444). Until then, scaffolding — public API with no in-tree caller
+/// — mirroring the `long_chain_diagnostic` precedent (task 2646).
+///
+/// # Severity rationale
+///
+/// PRD `docs/prds/v0_3/multi-kernel-phase-3.md` §5: "error; engine
+/// refuses to start." The determinism contract requires every pinned
+/// kernel to be present; the engine fails closed at startup rather than
+/// silently downgrading to a different kernel set.
+///
+/// # Arguments
+///
+/// - `kernel_id` — the kernel name pinned in `reify.toml` `[kernels]`
+///   that is missing from the build's registry.
+pub fn pinned_kernel_missing_diagnostic(kernel_id: &str) -> Diagnostic {
+    let message = format!(
+        "kernel '{kernel_id}' is pinned in reify.toml but not registered in \
+         this build; rebuild with the required kernel feature enabled"
+    );
+    Diagnostic::error(message).with_code(DiagnosticCode::PinnedKernelMissing)
+}
+
+/// Build the `Severity::Warning` diagnostic emitted when a kernel is present
+/// in the registry but not listed in `reify.toml` `[kernels]`.
+///
+/// Unconditional [`Diagnostic`]-returning builder (the caller has already
+/// observed the registered kernel is absent from the pin set). Carries
+/// [`DiagnosticCode::UnpinnedKernelLoaded`] for filter-by-code consumers
+/// and a message naming the unpinned kernel id.
+///
+/// # Integration status
+///
+/// TODO(task-3444/π): wire this builder into `reify.toml` parsing in
+/// `Engine::with_registered_kernels` once it lands (PRD
+/// `docs/prds/v0_3/multi-kernel-phase-3.md` §5 + §8 DAG; consumer π =
+/// ID 3444). Until then, scaffolding — public API with no in-tree caller
+/// — mirroring the `long_chain_diagnostic` precedent (task 2646).
+///
+/// # Severity rationale
+///
+/// PRD `docs/prds/v0_3/multi-kernel-phase-3.md` §5: "warning; engine
+/// starts." The kernel is usable, so the realization proceeds; the missing
+/// pin only weakens the determinism contract (a future build that omits
+/// the same kernel feature could shift selection), so the author gets an
+/// advisory rather than a hard failure.
+///
+/// # Arguments
+///
+/// - `kernel_id` — the kernel name present in the registry but absent from
+///   `reify.toml` `[kernels]`.
+pub fn unpinned_kernel_loaded_diagnostic(kernel_id: &str) -> Diagnostic {
+    let message = format!(
+        "kernel '{kernel_id}' is registered but not listed in reify.toml \
+         [kernels]; consider pinning it for build determinism"
+    );
+    Diagnostic::warning(message).with_code(DiagnosticCode::UnpinnedKernelLoaded)
+}
+
+/// Build the `Severity::Error` diagnostic emitted when `reify.toml` pins a
+/// kernel version that disagrees with the adapter's compiled-in `VERSION`
+/// constant.
+///
+/// Unconditional [`Diagnostic`]-returning builder (the caller has already
+/// compared the pinned version against the adapter `VERSION`). Carries
+/// [`DiagnosticCode::KernelVersionMismatch`] for filter-by-code consumers
+/// and a message naming the kernel id, the pinned version, and the actual
+/// adapter version.
+///
+/// # Integration status
+///
+/// TODO(task-3444/π): wire this builder into `reify.toml` parsing in
+/// `Engine::with_registered_kernels` once it lands (PRD
+/// `docs/prds/v0_3/multi-kernel-phase-3.md` §5 + §8 DAG; consumer π =
+/// ID 3444). Until then, scaffolding — public API with no in-tree caller
+/// — mirroring the `long_chain_diagnostic` precedent (task 2646).
+///
+/// # Severity rationale
+///
+/// PRD `docs/prds/v0_3/multi-kernel-phase-3.md` §5: "error. Determinism
+/// contract enforcement." Matching versions is load-bearing for
+/// reproducible realization across build hosts; the engine fails closed
+/// rather than silently using a different adapter than the project pins.
+///
+/// # Arguments
+///
+/// - `kernel_id` — the kernel name whose version disagrees.
+/// - `pinned` — the version string pinned in `reify.toml` `[kernels]`.
+/// - `actual` — the adapter's compiled-in `VERSION` constant.
+pub fn kernel_version_mismatch_diagnostic(
+    kernel_id: &str,
+    pinned: &str,
+    actual: &str,
+) -> Diagnostic {
+    let message = format!(
+        "kernel '{kernel_id}' version mismatch: reify.toml pins '{pinned}' \
+         but adapter VERSION = '{actual}'; determinism contract requires \
+         matching versions"
+    );
+    Diagnostic::error(message).with_code(DiagnosticCode::KernelVersionMismatch)
+}
+
 /// Resolve the long-chain wall-time threshold from the
 /// [`LONG_CHAIN_THRESHOLD_ENV_VAR`] environment variable, falling back to
 /// [`LONG_CHAIN_DEFAULT_THRESHOLD_MS`] when unset or unparseable.
@@ -456,8 +680,11 @@ mod tests {
 
     use super::{
         DispatchPlan, LONG_CHAIN_DEFAULT_THRESHOLD_MS, LONG_CHAIN_MIN_STAGES,
-        LONG_CHAIN_THRESHOLD_ENV_VAR, dispatch, is_long_chain_realization, long_chain_diagnostic,
-        long_chain_threshold_from_env_value, per_stage_tolerance_for_plan,
+        LONG_CHAIN_THRESHOLD_ENV_VAR, dispatch, is_long_chain_realization,
+        kernel_pragma_unsatisfiable_diagnostic, kernel_version_mismatch_diagnostic,
+        long_chain_diagnostic, long_chain_threshold_from_env_value,
+        no_kernel_chain_diagnostic, per_stage_tolerance_for_plan,
+        pinned_kernel_missing_diagnostic, unpinned_kernel_loaded_diagnostic,
     };
     use crate::tolerance_budget::{SAFETY_FACTOR, per_stage_tolerance};
     use std::time::Duration;
@@ -1414,6 +1641,279 @@ mod tests {
             per_stage_tolerance_for_plan(&plan, req),
             req * SAFETY_FACTOR,
             "single-conversion chain must return requested_tol × SAFETY_FACTOR (N=1 short-circuit)",
+        );
+    }
+
+    /// Pins the wire-contract of [`no_kernel_chain_diagnostic`]: the emitted
+    /// [`reify_types::Diagnostic`] carries `Severity::Error` and
+    /// `Some(DiagnosticCode::NoKernelChain)`. This is the load-bearing
+    /// assertion downstream tasks δ/ε (3435/3436) filter on when wiring the
+    /// dispatcher None-return into op-execution. Mirrors
+    /// `long_chain_diagnostic_carries_warning_severity_and_code_when_emitted`
+    /// (the severity+code half of the long-chain precedent), except severity
+    /// is Error here per PRD `docs/prds/v0_3/multi-kernel-phase-3.md` §2
+    /// "failing closed is the failure mode".
+    #[test]
+    fn no_kernel_chain_diagnostic_carries_error_severity_and_code() {
+        use reify_types::{DiagnosticCode, Severity};
+
+        let diag = no_kernel_chain_diagnostic(
+            Operation::BooleanUnion,
+            ReprKind::BRep,
+            &[ReprKind::Mesh, ReprKind::Voxel],
+        );
+
+        assert_eq!(
+            diag.severity,
+            Severity::Error,
+            "diagnostic severity must be Error (PRD §2: failing closed is \
+             the failure mode — the dispatcher exhausted its BFS without \
+             reaching the demanded repr)"
+        );
+        assert_eq!(
+            diag.code,
+            Some(DiagnosticCode::NoKernelChain),
+            "diagnostic code must round-trip the typed variant for downstream \
+             filter-by-code consumers (tasks δ/ε wiring + LSP / MCP)"
+        );
+    }
+
+    /// Pins the user-visible-content requirement: the message must name the
+    /// op (Debug-rendered), the demanded repr, AND every available repr so
+    /// the user can see exactly which conversion was impossible. Asserts
+    /// only `contains()` of each named element — does NOT pin surrounding
+    /// prose — keeping the test wording-churn-resistant per the
+    /// `long_chain_diagnostic_message_names_each_chain_kernel_and_final_stage`
+    /// precedent.
+    #[test]
+    fn no_kernel_chain_diagnostic_message_names_op_demanded_and_available() {
+        let diag = no_kernel_chain_diagnostic(
+            Operation::BooleanUnion,
+            ReprKind::BRep,
+            &[ReprKind::Mesh, ReprKind::Voxel],
+        );
+
+        for needle in ["BooleanUnion", "BRep", "Mesh", "Voxel"] {
+            assert!(
+                diag.message.contains(needle),
+                "diagnostic message must surface {:?} so the user can see \
+                 which op/repr conversion was impossible (got: {:?})",
+                needle,
+                diag.message,
+            );
+        }
+    }
+
+    /// Pins the empty-`available` rendering boundary: when the caller passes
+    /// `&[]` (e.g. a dispatcher whose inputs were realised in zero reprs, or
+    /// a future op that demands a fresh-synthesis repr from nothing), the
+    /// available-reprs list must render as `[]` rather than panicking or
+    /// producing a malformed string like `[, ]`. Locks the rendering
+    /// contract that downstream tasks δ/ε (3435/3436) can rely on when
+    /// wiring this builder into op-execution. Also implicitly covers
+    /// the dedup contract: `BTreeSet` silently drops duplicates, which is
+    /// load-bearing for deterministic rendering — empty input is the
+    /// degenerate-but-valid case at one end of that spectrum.
+    #[test]
+    fn no_kernel_chain_diagnostic_renders_empty_available_as_brackets() {
+        let diag = no_kernel_chain_diagnostic(Operation::BooleanUnion, ReprKind::BRep, &[]);
+
+        assert!(
+            diag.message.contains("[]"),
+            "empty `available` slice must render as `[]` so the message stays \
+             well-formed when the dispatcher fails before any input is \
+             realised (got: {:?})",
+            diag.message,
+        );
+    }
+
+    /// Pins the wire-contract of [`kernel_pragma_unsatisfiable_diagnostic`]:
+    /// `Severity::Warning` + `Some(DiagnosticCode::KernelPragmaUnsatisfiable)`.
+    /// Warning (not Error) per PRD `docs/prds/v0_3/multi-kernel-phase-3.md`
+    /// §5 "warning, not error — fall through to default lex-min selection so
+    /// the user's design still evaluates". Consumed by task ο (ID 3443).
+    #[test]
+    fn kernel_pragma_unsatisfiable_diagnostic_carries_warning_severity_and_code() {
+        use reify_types::{DiagnosticCode, Severity};
+
+        let diag = kernel_pragma_unsatisfiable_diagnostic(
+            "manifold",
+            Operation::BooleanUnion,
+            ReprKind::Mesh,
+        );
+
+        assert_eq!(
+            diag.severity,
+            Severity::Warning,
+            "diagnostic severity must be Warning (PRD §5: warning, not \
+             error — fall through to default kernel selection)"
+        );
+        assert_eq!(
+            diag.code,
+            Some(DiagnosticCode::KernelPragmaUnsatisfiable),
+            "diagnostic code must round-trip the typed variant for downstream \
+             filter-by-code consumers (task ο wiring + LSP / MCP)"
+        );
+    }
+
+    /// Pins the user-visible-content requirement: the message must name the
+    /// pragma kernel, the op (Debug-rendered), and the demanded repr so the
+    /// user can see which `#kernel(...)` preference could not be honoured.
+    /// Asserts only `contains()` — wording-churn-resistant per the
+    /// long-chain precedent.
+    #[test]
+    fn kernel_pragma_unsatisfiable_diagnostic_message_names_pragma_op_demanded() {
+        let diag = kernel_pragma_unsatisfiable_diagnostic(
+            "manifold",
+            Operation::BooleanUnion,
+            ReprKind::Mesh,
+        );
+
+        for needle in ["manifold", "BooleanUnion", "Mesh"] {
+            assert!(
+                diag.message.contains(needle),
+                "diagnostic message must surface {:?} so the user can see \
+                 which pragma preference was unmet (got: {:?})",
+                needle,
+                diag.message,
+            );
+        }
+    }
+
+    /// Pins the wire-contract of [`pinned_kernel_missing_diagnostic`]:
+    /// `Severity::Error` + `Some(DiagnosticCode::PinnedKernelMissing)`.
+    /// Error per PRD `docs/prds/v0_3/multi-kernel-phase-3.md` §5 "error;
+    /// engine refuses to start". Consumed by task π (ID 3444).
+    #[test]
+    fn pinned_kernel_missing_diagnostic_carries_error_severity_and_code() {
+        use reify_types::{DiagnosticCode, Severity};
+
+        let diag = pinned_kernel_missing_diagnostic("truck");
+
+        assert_eq!(
+            diag.severity,
+            Severity::Error,
+            "diagnostic severity must be Error (PRD §5: error; engine \
+             refuses to start — the determinism contract requires every \
+             pinned kernel to be present)"
+        );
+        assert_eq!(
+            diag.code,
+            Some(DiagnosticCode::PinnedKernelMissing),
+            "diagnostic code must round-trip the typed variant for downstream \
+             filter-by-code consumers (task π wiring + LSP / MCP)"
+        );
+    }
+
+    /// Pins the user-visible-content requirement: the message must name the
+    /// missing pinned kernel so the user can see which `reify.toml` pin is
+    /// unsatisfied. Asserts only `contains()` — wording-churn-resistant.
+    #[test]
+    fn pinned_kernel_missing_diagnostic_message_names_kernel_id() {
+        let diag = pinned_kernel_missing_diagnostic("truck");
+
+        assert!(
+            diag.message.contains("truck"),
+            "diagnostic message must surface the missing pinned kernel id \
+             so the user can see which reify.toml pin is unsatisfied \
+             (got: {:?})",
+            diag.message,
+        );
+    }
+
+    /// Pins the wire-contract of [`unpinned_kernel_loaded_diagnostic`]:
+    /// `Severity::Warning` + `Some(DiagnosticCode::UnpinnedKernelLoaded)`.
+    /// Warning per PRD `docs/prds/v0_3/multi-kernel-phase-3.md` §5
+    /// "warning; engine starts" — the kernel is usable; the missing pin
+    /// only weakens the determinism contract. Consumed by task π (ID 3444).
+    #[test]
+    fn unpinned_kernel_loaded_diagnostic_carries_warning_severity_and_code() {
+        use reify_types::{DiagnosticCode, Severity};
+
+        let diag = unpinned_kernel_loaded_diagnostic("fidget");
+
+        assert_eq!(
+            diag.severity,
+            Severity::Warning,
+            "diagnostic severity must be Warning (PRD §5: warning; engine \
+             starts — the kernel is usable, the missing pin only weakens \
+             the determinism contract)"
+        );
+        assert_eq!(
+            diag.code,
+            Some(DiagnosticCode::UnpinnedKernelLoaded),
+            "diagnostic code must round-trip the typed variant for downstream \
+             filter-by-code consumers (task π wiring + LSP / MCP)"
+        );
+    }
+
+    /// Pins the user-visible-content requirement: the message must name the
+    /// unpinned kernel so the user can see which kernel to add to
+    /// `reify.toml` for build determinism. Asserts only `contains()`.
+    #[test]
+    fn unpinned_kernel_loaded_diagnostic_message_names_kernel_id() {
+        let diag = unpinned_kernel_loaded_diagnostic("fidget");
+
+        assert!(
+            diag.message.contains("fidget"),
+            "diagnostic message must surface the unpinned kernel id so the \
+             user can see which kernel to pin for build determinism \
+             (got: {:?})",
+            diag.message,
+        );
+    }
+
+    /// Pins the wire-contract of [`kernel_version_mismatch_diagnostic`]:
+    /// `Severity::Error` + `Some(DiagnosticCode::KernelVersionMismatch)`.
+    /// Error per PRD `docs/prds/v0_3/multi-kernel-phase-3.md` §5 "error.
+    /// Determinism contract enforcement" — matching versions is
+    /// load-bearing for reproducible realization. Consumed by task π
+    /// (ID 3444).
+    #[test]
+    fn kernel_version_mismatch_diagnostic_carries_error_severity_and_code() {
+        use reify_types::{DiagnosticCode, Severity};
+
+        let diag = kernel_version_mismatch_diagnostic("manifold", "1.2.0", "1.3.0");
+
+        assert_eq!(
+            diag.severity,
+            Severity::Error,
+            "diagnostic severity must be Error (PRD §5: error — \
+             determinism contract enforcement; the engine fails closed \
+             rather than using a different adapter than the project pins)"
+        );
+        assert_eq!(
+            diag.code,
+            Some(DiagnosticCode::KernelVersionMismatch),
+            "diagnostic code must round-trip the typed variant for downstream \
+             filter-by-code consumers (task π wiring + LSP / MCP)"
+        );
+    }
+
+    /// Pins the user-visible-content requirement: the message must name the
+    /// kernel id, the pinned version, and the actual adapter version so the
+    /// user can see exactly which pin is unsatisfied and by how much.
+    /// Asserts only `contains()` — wording-churn-resistant.
+    #[test]
+    fn kernel_version_mismatch_diagnostic_message_names_kernel_and_versions() {
+        let diag = kernel_version_mismatch_diagnostic("manifold", "1.2.0", "1.3.0");
+
+        assert!(
+            diag.message.contains("manifold"),
+            "diagnostic message must surface the kernel id (got: {:?})",
+            diag.message,
+        );
+        assert!(
+            diag.message.contains("1.2.0"),
+            "diagnostic message must surface the pinned reify.toml version \
+             (got: {:?})",
+            diag.message,
+        );
+        assert!(
+            diag.message.contains("1.3.0"),
+            "diagnostic message must surface the actual adapter VERSION \
+             (got: {:?})",
+            diag.message,
         );
     }
 }

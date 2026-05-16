@@ -138,9 +138,14 @@ export const AutoResolvePanel: Component<AutoResolvePanelProps> = (props) => {
     );
     return cellIds.map((cellId) => ({
       cellId,
+      // Keep iteration number as x so a null- or non-finite-filtered gap shows
+      // as a visual hole (wider x-spacing) rather than silently collapsing to
+      // even spacing.  Mirrors the chartPoints pattern (x: it.iteration, y: value).
+      // Number.isFinite rejects null, NaN, and ±Infinity in one predicate,
+      // giving symmetric defensive posture with the chartPoints filter on line 126.
       series: props.state.iterations
-        .filter((it) => cellId in it.parameters)
-        .map((it) => it.parameters[cellId].value),
+        .filter((it) => cellId in it.parameters && Number.isFinite(it.parameters[cellId].value))
+        .map((it) => ({ x: it.iteration, y: it.parameters[cellId].value as number })),
     }));
   });
 
@@ -165,7 +170,12 @@ export const AutoResolvePanel: Component<AutoResolvePanelProps> = (props) => {
             {([cellId, paramValue]) => (
               <div class={styles.row}>
                 <span class={styles.cellId}>{cellId}</span>
-                <span class={styles.value}>{paramValue.display}</span>
+                <span
+                  class={styles.value}
+                  data-non-scalar={paramValue.value === null ? 'true' : undefined}
+                >
+                  {paramValue.display}
+                </span>
               </div>
             )}
           </For>
@@ -208,8 +218,8 @@ export const AutoResolvePanel: Component<AutoResolvePanelProps> = (props) => {
               // Build points in sparkline SVG coordinate space (SPARK_W × SPARK_H)
               const pts = hasLine
                 ? buildPolylinePoints(
-                    series.map((_, i) => i),
-                    series,
+                    series.map((p) => p.x),
+                    series.map((p) => p.y),
                     SPARK_PAD,
                     SPARK_W - SPARK_PAD,
                     SPARK_PAD,

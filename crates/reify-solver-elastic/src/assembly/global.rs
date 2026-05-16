@@ -128,7 +128,7 @@ impl std::fmt::Display for OrphanDofsSummary {
     ///
     /// Format (truncated, `examples.len() < count` — all `MAX_EXAMPLES`
     /// entries listed explicitly, then a trailing parenthetical):
-    /// `orphan DOFs: count=24, examples=[(1, 3), (1, 4), (1, 5), (2, 3), ... (16 entries total)] (first 16 of 24)`
+    /// `orphan DOFs: count=24, examples=[(1, 3), (1, 4), (1, 5), (2, 3), (2, 4), (2, 5), (3, 3), (3, 4), (3, 5), (4, 3), (4, 4), (4, 5), (5, 3), (5, 4), (5, 5), (6, 3)] (first 16 of 24)`
     ///
     /// Note: there is no `...` ellipsis inside the brackets — all stored
     /// examples are emitted verbatim. The parenthetical `(first N of M)` only
@@ -171,8 +171,8 @@ impl std::fmt::Display for OrphanDofsSummary {
 ///
 /// with `d_e_e = e.k_e.n_dofs / e.connectivity.len()` (the same formula used
 /// by [`assemble_global_stiffness`] to derive the global `D`). The global
-/// `D = max(d_e_max_local)` over all elements (`unwrap_or(3)` for empty
-/// inputs, matching the assembly default).
+/// `D = max(d_e_max_local)` over all elements. Empty `elements` returns an
+/// empty summary (`count=0`) without computing `D` (see early return below).
 ///
 /// Node `n` carries orphan DOFs at axes `α ∈ [d_e_max_local(n)..D)` **only
 /// if the node is touched** (`d_e_max_local(n) > 0`). Completely-untouched
@@ -229,20 +229,18 @@ pub fn detect_orphan_dofs(
     }
 
     // Global DOFs-per-node D = max(d_e_e) over all elements, mirroring the
-    // formula in assemble_global_stiffness. unwrap_or(3) matches the assembly
-    // default (pure-empty returns 3N×3N), but elements is non-empty here so
-    // the max is always Some.
-    let d_global: usize = elements
-        .iter()
-        .map(|e| e.k_e.n_dofs / e.connectivity.len())
-        .max()
-        .unwrap_or(3);
-
+    // formula in assemble_global_stiffness. Derived inline with the per-node
+    // aggregation below; the early return above guarantees elements is non-empty
+    // here so d_global is always set to at least the first element's d_e.
+    let mut d_global: usize = 0;
     // Build per-node d_e_max_local: the highest d_e of any element touching
     // that node. Nodes never mentioned in any connectivity stay 0 (untouched).
     let mut d_max_local = vec![0usize; n_nodes];
     for e in elements {
         let d_e = e.k_e.n_dofs / e.connectivity.len();
+        if d_e > d_global {
+            d_global = d_e;
+        }
         for &node in e.connectivity {
             if d_e > d_max_local[node] {
                 d_max_local[node] = d_e;
@@ -2435,11 +2433,10 @@ mod tests {
         // weakening the loop below.
         assert!(
             summary.examples.len() == summary.count,
-            "fixture has more orphans ({}) than MAX_EXAMPLES ({}); \
-             the consistency loop below only covers summary.examples — \
+            "examples truncated: stored {} of {} total orphans — \
              either raise MAX_EXAMPLES or use a smaller fixture",
-            summary.count,
             summary.examples.len(),
+            summary.count,
         );
 
         // For every reported orphan (node, α) the entire DOF row and column
@@ -2528,6 +2525,86 @@ mod tests {
         assert!(
             se.contains("count=0"),
             "empty Display must contain 'count=0'; got: {se:?}",
+        );
+    }
+
+    /// `Display` for `OrphanDofsSummary` in the truncated regime
+    /// (`examples.len() < count`) lists all stored entries verbatim — no
+    /// `...` ellipsis — followed by a trailing parenthetical.
+    ///
+    /// Pins:
+    /// 1. Single line: `!s.contains('\n')`.
+    /// 2. Names the true (untruncated) count: `s.contains("count=24")`.
+    /// 3. Every one of the 16 stored `(node, axis)` pairs appears literally as
+    ///    a substring in the formatted output.
+    /// 4. Trailing parenthetical: `s.ends_with("] (first 16 of 24)")`.
+    #[test]
+    fn orphan_dofs_summary_display_truncated_form_lists_all_stored_examples_verbatim() {
+        // Truncating fixture: shell on [0,9,10] + two P1 tets on [1,2,3,4] and
+        // [5,6,7,8], n_nodes=11. D=6 (shell). Tet-only nodes {1..=8}: 8 nodes ×
+        // 3 orphan axes {3,4,5} = 24 total, capped to MAX_EXAMPLES=16 stored.
+        let mat = dimensionless_steel_like();
+        let k_e_tet1 = element_stiffness_p1(&UNIT_TET_P1, &mat);
+        let k_e_tet2 = element_stiffness_p1(&UNIT_TET_P1, &mat);
+        let k_e_shell = shell_element_stiffness(&UNIT_TRI, SHELL_T, &mat);
+
+        let n_nodes = 11;
+        let conn_shell = [0usize, 9, 10];
+        let conn_tet1 = [1usize, 2, 3, 4];
+        let conn_tet2 = [5usize, 6, 7, 8];
+        let elements = [
+            AssemblyElement {
+                id: 0,
+                connectivity: &conn_shell,
+                k_e: &k_e_shell,
+            },
+            AssemblyElement {
+                id: 1,
+                connectivity: &conn_tet1,
+                k_e: &k_e_tet1,
+            },
+            AssemblyElement {
+                id: 2,
+                connectivity: &conn_tet2,
+                k_e: &k_e_tet2,
+            },
+        ];
+        let summary = detect_orphan_dofs(n_nodes, &elements);
+        assert_eq!(summary.count, 24, "fixture must produce 24 orphans");
+        assert_eq!(summary.examples.len(), 16, "fixture must be truncated to 16");
+
+        let s = format!("{}", summary);
+
+        // Pin 1: single line.
+        assert!(!s.contains('\n'), "Display must not contain newlines; got: {s:?}");
+
+        // Pin 2: names the true (untruncated) count.
+        assert!(s.contains("count=24"), "Display must contain 'count=24'; got: {s:?}");
+
+        // Pin 3: every one of the 16 stored (node, axis) pairs appears literally.
+        // First 16 sorted pairs: nodes 1..=5 fully (3 axes each = 15 entries)
+        // + node 6 axis 3 (16th entry).
+        let expected_first_16: Vec<(usize, usize)> = (1usize..=6)
+            .flat_map(|n| {
+                if n < 6 {
+                    (3usize..6).map(|a| (n, a)).collect::<Vec<_>>()
+                } else {
+                    vec![(n, 3)]
+                }
+            })
+            .collect();
+        for (node, axis) in &expected_first_16 {
+            let pair = format!("({node}, {axis})");
+            assert!(
+                s.contains(&pair),
+                "Display must contain '{pair}'; got: {s:?}",
+            );
+        }
+
+        // Pin 4: trailing parenthetical indicates truncation with exact counts.
+        assert!(
+            s.ends_with("] (first 16 of 24)"),
+            "Display must end with '] (first 16 of 24)'; got: {s:?}",
         );
     }
 

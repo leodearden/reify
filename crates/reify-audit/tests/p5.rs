@@ -38,12 +38,16 @@ fn seed_db() -> Connection {
     conn
 }
 
-fn insert_task_completed_event(conn: &Connection, task_id: &str) {
+fn insert_event(conn: &Connection, task_id: &str, event_type: &str) {
     conn.execute(
-        "INSERT INTO events (task_id, event_type) VALUES (?, 'task_completed')",
-        rusqlite::params![task_id],
+        "INSERT INTO events (task_id, event_type) VALUES (?, ?)",
+        rusqlite::params![task_id, event_type],
     )
     .unwrap();
+}
+
+fn insert_task_completed_event(conn: &Connection, task_id: &str) {
+    insert_event(conn, task_id, "task_completed");
 }
 
 mod tests {
@@ -588,16 +592,32 @@ mod tests {
         );
     }
 
-    /// Seeds one `task_completed` row and asserts the production query (sourced
-    /// from `p5_phantom_done::PRODUCTION_QUERY`) prepares and matches the row
-    /// against the seeded `RUNS_DB_SCHEMA`. Fails if the schema or the query
-    /// string drift apart (column rename, type swap, query rewrite). Column
-    /// additions do not fail this test (they'd be caught by future detectors'
-    /// own tests when they add the columns they need).
+    /// Pins both clauses of the production query (sourced from
+    /// `p5_phantom_done::PRODUCTION_QUERY`) against the seeded `RUNS_DB_SCHEMA`.
+    ///
+    /// Three assertions together enforce the full contract:
+    /// 1. **Positive case** — `('test-task', 'task_completed')` row → `Some(1)`.
+    ///    Confirms the query prepares and executes against the seeded schema.
+    /// 2. **Negative-case 1** — querying for `'missing-task'` → `None`.
+    ///    Pins `task_id = ?`: no row exists with that task_id, so the bind
+    ///    parameter must be enforced.
+    /// 3. **Negative-case 2** — querying for `'other-task'` (which has a
+    ///    `'task_started'` row) → `None`.  Pins `AND event_type = 'task_completed'`:
+    ///    if that clause is dropped, the query matches the `task_started` row and
+    ///    returns `Some(1)`, failing this assertion.
+    ///
+    /// Fails if the schema or the query string drift apart (column rename, type
+    /// swap, query rewrite). Column additions do not fail this test (they'd be
+    /// caught by future detectors' own tests when they add the columns they need).
     #[test]
     fn runs_db_schema_pin() {
         let conn = seed_db();
         insert_task_completed_event(&conn, "test-task");
+        // Also seed a row with a different task_id AND a different event_type
+        // ('task_started'). This is the control row for the event_type-filter
+        // assertion below.
+        insert_event(&conn, "other-task", "task_started");
+
         let mut stmt = conn
             .prepare(p5_phantom_done::PRODUCTION_QUERY)
             .expect("production query must prepare against seeded schema");
@@ -607,14 +627,26 @@ mod tests {
             .expect("query_row");
         assert_eq!(found, Some(1));
 
-        // Negative case: a task_id that was never seeded must return None,
-        // confirming both the `task_id` bind parameter and the `event_type`
-        // filter are actually enforced by the query against this schema.
+        // Negative-case 1 — task_id bind parameter:
+        // 'missing-task' has no row at all, so the query returns None regardless
+        // of event_type.  Pins `task_id = ?`.
         let not_found: Option<i64> = stmt
             .query_row(["missing-task"], |r| r.get(0))
             .optional()
             .expect("query_row negative case");
         assert_eq!(not_found, None);
+
+        // Negative-case 2 — event_type filter:
+        // 'other-task' has a row, but its event_type is 'task_started', not
+        // 'task_completed'.  The query must return None, confirming
+        // `AND event_type = 'task_completed'` is enforced.  If that clause is
+        // dropped from PRODUCTION_QUERY, the unfiltered query matches the
+        // 'task_started' row and returns Some(1), failing this assertion.
+        let other_event_type: Option<i64> = stmt
+            .query_row(["other-task"], |r| r.get(0))
+            .optional()
+            .expect("query_row event_type filter case");
+        assert_eq!(other_event_type, None);
     }
 
     /// Coverage gap pin — verifies the Err arm of `has_task_completed_event`
@@ -872,6 +904,139 @@ mod tests {
             "check_pre_done(5001) should be empty; got {:?}",
             clean_only
         );
+    }
+
+    /// Pins the structural-equivalence contract that `check_pre_done(ctx, id)`
+    /// and `check(ctx)` with `target_task_id = Some(id)` must produce identical
+    /// findings for the same single-task scenario — the property the `check_task`
+    /// helper extraction enforces by construction. Without this pin, a future
+    /// per-task pass added to only one of the two call sites could silently drift.
+    ///
+    /// Task 5001 is deliberately set up as a *second* phantom-done case so that
+    /// the `target_task_id` filter is genuinely load-bearing: without the filter,
+    /// `scoped_findings` would contain both 5000 and 5001. The assertion that
+    /// `scoped_findings.len() == 1` therefore validates both equivalence *and*
+    /// that the target filter actually excludes 5001.
+    ///
+    /// This test passes today (before/after the refactor) because both call sites
+    /// already implement equivalent logic; it future-proofs against drift if one
+    /// site grows a new pass that the other forgets. It also fills a real coverage
+    /// gap: no existing test exercises `target_task_id: Some(...)`.
+    #[test]
+    fn check_pre_done_equivalent_to_scoped_check() {
+        let conn = seed_db();
+        // Phantom-done task 5000 — same shape as check_pre_done_filters_to_single_task.
+        insert_task_completed_event(&conn, "5000");
+        // Phantom-done task 5001 — deliberately a second phantom so the target filter
+        // is load-bearing (without it scoped_findings would contain both 5000 and 5001).
+        insert_task_completed_event(&conn, "5001");
+
+        let mut git = MockGitOps::new();
+        // Task 5000: claimed commit's diff doesn't cover the metadata file.
+        git.set_diff_changed_paths(
+            "main",
+            "phantom_sha",
+            vec!["docs/unrelated.md".to_string()],
+        );
+        git.set_log_grep("main", "5000", vec![]);
+        // Task 5001: second phantom-done case — diff does NOT cover its metadata
+        // file. This makes the target_task_id filter load-bearing: without it,
+        // scoped_findings would contain both 5000 and 5001.
+        git.set_diff_changed_paths(
+            "main",
+            "clean_sha",
+            vec!["docs/unrelated2.md".to_string()],
+        );
+        git.set_log_grep("main", "5001", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "5000".to_string(),
+            TaskMetadata {
+                task_id: "5000".to_string(),
+                status: "done".to_string(),
+                files: vec!["crates/reify-shell-extract/src/pruning.rs".to_string()],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("phantom_sha".to_string()),
+                    note: None,
+                }),
+                title: "Wire foo into bar".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+        task_metadata.insert(
+            "5001".to_string(),
+            TaskMetadata {
+                task_id: "5001".to_string(),
+                status: "done".to_string(),
+                files: vec!["crates/x/clean.rs".to_string()],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("clean_sha".to_string()),
+                    note: None,
+                }),
+                title: "Wire foo into bar".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let jc = MockJCodemunchOps::new();
+
+        // ctx_a: no target filter — passed to check_pre_done with explicit task_id.
+        let ctx_a = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata: task_metadata.clone(),
+            target_task_id: None,
+            window: None,
+            now: None,
+        };
+
+        // ctx_b: scoped to task 5000 — passed to check (the periodic-sweep entry point).
+        let ctx_b = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: Some("5000".to_string()),
+            window: None,
+            now: None,
+        };
+
+        let pre_done_findings = p5_phantom_done::check_pre_done(&ctx_a, "5000");
+        let scoped_findings = p5_phantom_done::check(&ctx_b);
+
+        // Both paths must agree on finding count for task 5000.
+        assert_eq!(
+            pre_done_findings.len(),
+            scoped_findings.len(),
+            "check_pre_done and scoped check must return the same number of findings; \
+             pre_done={:?}, scoped={:?}",
+            pre_done_findings,
+            scoped_findings
+        );
+        assert_eq!(
+            pre_done_findings.len(),
+            1,
+            "expected exactly one phantom-done finding; got {:?}",
+            pre_done_findings
+        );
+
+        // Full Finding equality — `Finding` derives `PartialEq`, so all fields
+        // (task_id, severity, pattern, summary, evidence) are covered. Any
+        // future field added to `Finding` is automatically included in this pin;
+        // field-by-field comparisons would silently miss newly added fields.
+        assert_eq!(pre_done_findings, scoped_findings);
     }
 }
 

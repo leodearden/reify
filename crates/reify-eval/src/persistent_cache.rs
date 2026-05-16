@@ -1323,6 +1323,16 @@ pub struct EvictionReport {
 ///
 /// Returns `Ok(EvictionReport::default())` when the engine-version subdir does
 /// not exist (no entries → nothing to evict). Other `io::Error` kinds propagate.
+///
+/// # Observability
+///
+/// Emits one `tracing::info!` event at the `reify_eval::persistent_cache::gc`
+/// target (message: `"evict_over_cap complete"`) **only** on the happy-path
+/// return — i.e., after the eviction loop completes without error.  Early-return
+/// paths (engine-version subdir absent, total already ≤ cap) stay silent.
+/// Any `Err` propagated from within the eviction loop exits without emitting the
+/// INFO summary; callers that want GC diagnostics on error paths must inspect the
+/// returned `io::Error` value directly.
 pub fn evict_over_cap(
     cache_root: &Path,
     engine_version_hash: &str,
@@ -1504,6 +1514,22 @@ pub fn evict_over_cap(
         if we_removed_bin {
             evicted_count += 1;
             evicted_bytes += candidate.bin_size;
+            let age_secs = now
+                .duration_since(candidate.last_access)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            // Hot-path: fires once per evicted entry inside the eviction loop.
+            // With `RUST_LOG=reify_eval::persistent_cache::gc=debug` enabled on
+            // a large cache, bin_path formatting + field encoding will dominate
+            // loop cost.  Keep at DEBUG; do NOT elevate to INFO.
+            tracing::debug!(
+                target: "reify_eval::persistent_cache::gc",
+                bin_path = %candidate.bin_path.display(),
+                bin_size = candidate.bin_size,
+                solve_time_ms = candidate.solve_time_ms,
+                age_secs,
+                "evicting cache entry"
+            );
         }
         remaining -= candidate.bin_size;
 
@@ -1542,6 +1568,16 @@ pub fn evict_over_cap(
             }
         }
     }
+
+    tracing::info!(
+        target: "reify_eval::persistent_cache::gc",
+        evicted_count,
+        evicted_bytes,
+        remaining_bytes = remaining,
+        cap_bytes,
+        engine_version_hash = %engine_version_hash,
+        "evict_over_cap complete"
+    );
 
     Ok(EvictionReport {
         evicted_count,
@@ -1958,6 +1994,36 @@ pub(crate) fn backdate_mtime(path: &std::path::Path, age_secs: u64) {
     let t = SystemTime::now()
         .checked_sub(Duration::from_secs(age_secs))
         .unwrap_or(SystemTime::UNIX_EPOCH);
+    let times = FileTimes::new().set_modified(t);
+    if path.is_dir() {
+        // Directories can be opened O_RDONLY; futimens checks ownership not
+        // fd write-access on Linux.
+        let f = std::fs::File::open(path).unwrap();
+        f.set_times(times).unwrap();
+    } else {
+        let f = std::fs::File::options().write(true).open(path).unwrap();
+        f.set_times(times).unwrap();
+    }
+}
+
+/// Forward-date the mtime of `path` to `secs_in_future` seconds in the future.
+///
+/// Mirror of [`backdate_mtime`]: uses `checked_add` instead of `checked_sub`.
+/// Falls back to `SystemTime::now()` on overflow (astronomically unlikely).
+///
+/// Simulates clock-skew scenarios (NTP correction, live-migration, etc.) where
+/// a file's mtime appears to be ahead of the current wall clock. The sweep
+/// functions guard `now.duration_since(mtime)` with `Err(_) => continue` to
+/// keep such entries rather than treating them as stale.
+///
+/// Exposed `pub(crate)` so test modules across the crate can share this helper.
+#[cfg(test)]
+pub(crate) fn forward_mtime(path: &std::path::Path, secs_in_future: u64) {
+    use std::fs::FileTimes;
+    use std::time::{Duration, SystemTime};
+    let t = SystemTime::now()
+        .checked_add(Duration::from_secs(secs_in_future))
+        .unwrap_or_else(SystemTime::now);
     let times = FileTimes::new().set_modified(t);
     if path.is_dir() {
         // Directories can be opened O_RDONLY; futimens checks ownership not
@@ -5048,6 +5114,364 @@ mod tests {
         );
     }
 
+    // ── evict_over_cap tracing tests ─────────────────────────────────────────
+
+    /// Inline subscriber that captures INFO events at the
+    /// `reify_eval::persistent_cache::gc` target.
+    ///
+    /// Mirrors the structure of `WarnCapturingSubscriber` in reify-test-support
+    /// but is defined inline to keep the scope narrow — no additions to the
+    /// test-support API needed for one field-verification test.
+    ///
+    /// Field capture contract (mirrors MessageVisitor in tracing_support.rs):
+    /// - `record_str`:   `message` stored raw; other `&str` fields stored raw.
+    /// - `record_debug`: all fields stored as `format!("{v:?}")`.  For `%Display`
+    ///   fields (tracing wraps them in a Display newtype whose Debug delegates to
+    ///   Display), the result equals the Display output.  For numeric `u64` fields
+    ///   (no sigil = Debug encoding), `{v:?}` gives the bare decimal digits.
+    struct InfoCapturingSubscriber {
+        messages: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        fields:
+            std::sync::Arc<std::sync::Mutex<Vec<std::collections::HashMap<String, String>>>>,
+        span_counter: std::sync::atomic::AtomicU64,
+    }
+
+    struct InfoFieldVisitor {
+        message: String,
+        fields: std::collections::HashMap<String, String>,
+    }
+
+    impl tracing::field::Visit for InfoFieldVisitor {
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            if field.name() == "message" {
+                self.message = value.to_owned();
+            } else {
+                self.fields.insert(field.name().to_owned(), value.to_owned());
+            }
+        }
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.message = format!("{value:?}");
+            } else {
+                self.fields
+                    .insert(field.name().to_owned(), format!("{value:?}"));
+            }
+        }
+    }
+
+    impl tracing::Subscriber for InfoCapturingSubscriber {
+        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+            metadata.level() == &tracing::Level::INFO
+                && metadata
+                    .target()
+                    .starts_with("reify_eval::persistent_cache::gc")
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            let id = self
+                .span_counter
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            tracing::span::Id::from_u64(id)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            let mut visitor = InfoFieldVisitor {
+                message: String::new(),
+                fields: std::collections::HashMap::new(),
+            };
+            event.record(&mut visitor);
+            self.messages.lock().unwrap().push(visitor.message);
+            self.fields.lock().unwrap().push(visitor.fields);
+        }
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    /// Step-1 RED: `evict_over_cap` must emit exactly one INFO event at the
+    /// `reify_eval::persistent_cache::gc` target when eviction actually runs,
+    /// with message `"evict_over_cap complete"` and structured fields
+    /// `evicted_count`, `evicted_bytes`, `remaining_bytes`, `cap_bytes`,
+    /// `engine_version_hash`.
+    ///
+    /// Fails RED before the `tracing::info!` site is added in step-2.
+    #[test]
+    fn evict_over_cap_emits_info_summary_with_expected_fields()
+    {
+        reify_test_support::prime_tracing_callsite_cache();
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "dddddddddddddddddddddddddddddd00";
+        let inp1 = "1111111111111111111111111111aaaa";
+        let inp2 = "2222222222222222222222222222bbbb";
+        let inp3 = "3333333333333333333333333333cccc";
+
+        let v = make_sample_result();
+        write_entry(root, eng, inp1, &v).unwrap();
+        write_entry(root, eng, inp2, &v).unwrap();
+        write_entry(root, eng, inp3, &v).unwrap();
+
+        // Measure one entry size; set cap to evict at least 2 entries.
+        let sz = std::fs::metadata(entry_bin_path(root, eng, inp1))
+            .unwrap()
+            .len();
+        let cap = sz + sz / 2;
+
+        let messages = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let fields = std::sync::Arc::new(std::sync::Mutex::new(
+            Vec::<std::collections::HashMap<String, String>>::new(),
+        ));
+        let subscriber = InfoCapturingSubscriber {
+            messages: messages.clone(),
+            fields: fields.clone(),
+            span_counter: std::sync::atomic::AtomicU64::new(1),
+        };
+
+        let report = tracing::subscriber::with_default(subscriber, || {
+            evict_over_cap(root, eng, cap).unwrap()
+        });
+
+        assert!(
+            report.evicted_count >= 1,
+            "test precondition: at least 1 entry must have been evicted"
+        );
+
+        let msgs = messages.lock().unwrap();
+        assert_eq!(
+            msgs.len(),
+            1,
+            "expected exactly 1 INFO event at reify_eval::persistent_cache::gc target; got {}",
+            msgs.len()
+        );
+        assert_eq!(
+            msgs[0], "evict_over_cap complete",
+            "INFO event message mismatch"
+        );
+
+        let all_fields = fields.lock().unwrap();
+        let f = &all_fields[0];
+
+        assert!(
+            f.contains_key("evicted_count"),
+            "field 'evicted_count' missing from INFO event; got: {f:?}"
+        );
+        assert!(
+            f.contains_key("evicted_bytes"),
+            "field 'evicted_bytes' missing from INFO event; got: {f:?}"
+        );
+        assert!(
+            f.contains_key("remaining_bytes"),
+            "field 'remaining_bytes' missing from INFO event; got: {f:?}"
+        );
+        assert!(
+            f.contains_key("cap_bytes"),
+            "field 'cap_bytes' missing from INFO event; got: {f:?}"
+        );
+        assert!(
+            f.contains_key("engine_version_hash"),
+            "field 'engine_version_hash' missing from INFO event; got: {f:?}"
+        );
+
+        // Verify field values match the report and the inputs.
+        assert_eq!(
+            f["evicted_count"],
+            report.evicted_count.to_string(),
+            "evicted_count field value mismatch"
+        );
+        assert_eq!(
+            f["evicted_bytes"],
+            report.evicted_bytes.to_string(),
+            "evicted_bytes field value mismatch"
+        );
+        assert_eq!(
+            f["remaining_bytes"],
+            report.remaining_bytes.to_string(),
+            "remaining_bytes field value mismatch"
+        );
+        assert_eq!(
+            f["cap_bytes"],
+            cap.to_string(),
+            "cap_bytes field value mismatch"
+        );
+        assert_eq!(
+            f["engine_version_hash"], eng,
+            "engine_version_hash field value mismatch"
+        );
+    }
+
+    /// Step-3 RED: `evict_over_cap` must emit exactly one DEBUG event at the
+    /// `reify_eval::persistent_cache::gc` target for each entry that was
+    /// actually evicted by THIS invocation (i.e. `we_removed_bin == true`).
+    ///
+    /// Setup: 3 entries, backdated so LRU order is deterministic (inp1 is
+    /// oldest); cap set to evict exactly 2 entries.  Expected DEBUG count == 2.
+    /// Also pins `report.evicted_count == 2` to anchor the count equality.
+    ///
+    /// Fails RED before the `tracing::debug!` site is added in step-4.
+    #[test]
+    fn evict_over_cap_debug_count_equals_evicted_count() {
+        reify_test_support::prime_tracing_callsite_cache();
+        use reify_test_support::CountingSubscriberBuilder;
+        use std::sync::atomic::Ordering;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeee00";
+        let inp1 = "1111111111111111111111111111dddd";
+        let inp2 = "2222222222222222222222222222eeee";
+        let inp3 = "3333333333333333333333333333ffff";
+
+        let v = make_sample_result();
+        write_entry(root, eng, inp1, &v).unwrap();
+        write_entry(root, eng, inp2, &v).unwrap();
+        write_entry(root, eng, inp3, &v).unwrap();
+
+        // Backdate inp1 and inp2 metas so they score highest (oldest, cheapest)
+        // and are evicted before inp3.
+        backdate_mtime(&entry_meta_path(root, eng, inp1), 7200);
+        backdate_mtime(&entry_meta_path(root, eng, inp2), 3600);
+
+        let sz = std::fs::metadata(entry_bin_path(root, eng, inp1))
+            .unwrap()
+            .len();
+
+        // Cap: allow exactly 1 entry to remain → evict exactly 2.
+        let cap = sz + sz / 2;
+
+        let (subscriber, counters) = CountingSubscriberBuilder::new()
+            .count_level(tracing::Level::DEBUG)
+            .target_prefix("reify_eval::persistent_cache::gc")
+            .build();
+        let debug_count = counters[&tracing::Level::DEBUG].clone();
+
+        let report = tracing::subscriber::with_default(subscriber, || {
+            evict_over_cap(root, eng, cap).unwrap()
+        });
+
+        assert_eq!(
+            report.evicted_count, 2,
+            "test precondition: exactly 2 entries must have been evicted"
+        );
+        assert_eq!(
+            debug_count.load(Ordering::Acquire),
+            2,
+            "expected exactly 2 DEBUG events at reify_eval::persistent_cache::gc \
+             (one per actually-evicted entry); got {}",
+            debug_count.load(Ordering::Acquire)
+        );
+    }
+
+    /// Regression guard: `evict_over_cap` must NOT emit any event at the
+    /// `reify_eval::persistent_cache::gc` target for either silent early-
+    /// return path:
+    ///
+    /// - Sub-scenario A: two entries totalling under cap → under-cap fast-path
+    ///   returns without evicting anything.
+    /// - Sub-scenario B: engine-version subdir entirely absent → first early
+    ///   return at the top of the function.
+    ///
+    /// Both INFO and DEBUG counters must stay at 0 for both paths.  Pins the
+    /// negative-space contract defined in design-decision #1 and prevents
+    /// future regressions that would add an info!/debug! at the wrong site.
+    ///
+    /// This guard test passes immediately against the step-2 + step-4 impl
+    /// because those sites were deliberately placed at the post-loop return
+    /// only.
+    #[test]
+    fn evict_over_cap_silent_on_under_cap_and_absent_subdir() {
+        reify_test_support::prime_tracing_callsite_cache();
+        use reify_test_support::CountingSubscriberBuilder;
+        use std::sync::atomic::Ordering;
+
+        // ── Sub-scenario A: under-cap fast path ─────────────────────────────
+        {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let root = tmp.path();
+            let eng = "ffffffffffffffffffffffffffffffff";
+            let inp1 = "1111111111111111111111111111aaaa";
+            let inp2 = "2222222222222222222222222222bbbb";
+
+            let v = make_sample_result();
+            write_entry(root, eng, inp1, &v).unwrap();
+            write_entry(root, eng, inp2, &v).unwrap();
+
+            let sz1 = std::fs::metadata(entry_bin_path(root, eng, inp1))
+                .unwrap()
+                .len();
+            let sz2 = std::fs::metadata(entry_bin_path(root, eng, inp2))
+                .unwrap()
+                .len();
+            // Cap well above total → under-cap fast path, no eviction.
+            let cap = sz1 + sz2 + 1024;
+
+            let (subscriber, counters) = CountingSubscriberBuilder::new()
+                .count_level(tracing::Level::INFO)
+                .count_level(tracing::Level::DEBUG)
+                .target_prefix("reify_eval::persistent_cache::gc")
+                .build();
+            let info_count = counters[&tracing::Level::INFO].clone();
+            let debug_count = counters[&tracing::Level::DEBUG].clone();
+
+            let report = tracing::subscriber::with_default(subscriber, || {
+                evict_over_cap(root, eng, cap).unwrap()
+            });
+
+            assert_eq!(
+                report.evicted_count, 0,
+                "sub-scenario A: no eviction should occur under cap"
+            );
+            assert_eq!(
+                info_count.load(Ordering::Acquire),
+                0,
+                "sub-scenario A: under-cap fast path must emit NO INFO events \
+                 at reify_eval::persistent_cache::gc"
+            );
+            assert_eq!(
+                debug_count.load(Ordering::Acquire),
+                0,
+                "sub-scenario A: under-cap fast path must emit NO DEBUG events \
+                 at reify_eval::persistent_cache::gc"
+            );
+        }
+
+        // ── Sub-scenario B: absent engine-version subdir ─────────────────────
+        {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let root = tmp.path();
+            // 32-char hex engine hash; no subdir created under root.
+            let eng = "0000000000000000000000000000dead";
+
+            let (subscriber, counters) = CountingSubscriberBuilder::new()
+                .count_level(tracing::Level::INFO)
+                .count_level(tracing::Level::DEBUG)
+                .target_prefix("reify_eval::persistent_cache::gc")
+                .build();
+            let info_count = counters[&tracing::Level::INFO].clone();
+            let debug_count = counters[&tracing::Level::DEBUG].clone();
+
+            let report = tracing::subscriber::with_default(subscriber, || {
+                evict_over_cap(root, eng, 1024).unwrap()
+            });
+
+            assert_eq!(
+                report.evicted_count, 0,
+                "sub-scenario B: no eviction should occur when subdir is absent"
+            );
+            assert_eq!(
+                info_count.load(Ordering::Acquire),
+                0,
+                "sub-scenario B: absent-subdir early-return must emit NO INFO events \
+                 at reify_eval::persistent_cache::gc"
+            );
+            assert_eq!(
+                debug_count.load(Ordering::Acquire),
+                0,
+                "sub-scenario B: absent-subdir early-return must emit NO DEBUG events \
+                 at reify_eval::persistent_cache::gc"
+            );
+        }
+    }
+
     // ── startup-sweep tests ──────────────────────────────────────────────────
 
     /// Step-1 RED: `sweep_stale_tempfiles` removes only old `.tmp.*` files.
@@ -5180,6 +5604,74 @@ mod tests {
             "tempfiles_removed must be 1 for the file in the orphan subdir"
         );
         assert_eq!(report.orphan_dirs_removed, 0);
+    }
+
+    /// Clock-skew defensiveness: entries whose mtime is in the **future**
+    /// relative to `now` cause `now.duration_since(mtime)` to return
+    /// `Err(SystemTimeError)`. Both sweep functions guard this with
+    /// `Err(_) => continue` (sweep_stale_tempfiles_recursive line 1774-1776;
+    /// prune_orphan_engine_version_dirs line 1911-1913), keeping the entry
+    /// rather than treating it as stale.
+    ///
+    /// This test pins that conservative-keep behavior. If either `Err(_) =>
+    /// continue` branch were changed to treat the error as "stale" (e.g.
+    /// `Err(_) => Duration::from_secs(u64::MAX)`), the file and directory below
+    /// would be removed and both assertions would fail.
+    #[test]
+    fn sweep_keeps_entries_with_future_mtime_under_clock_skew() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // Use a hash distinct from ENGINE_VERSION_HASH so the orphan dir is a
+        // genuine prune candidate (name != current).
+        let orphan_eng = "dead000000000000000000000000dead";
+        let inp = "abcd111111111111111111111111abcd";
+
+        // Create a .tmp.* file inside the orphan shard dir.
+        let sd = shard_dir(root, orphan_eng, inp);
+        std::fs::create_dir_all(&sd).unwrap();
+        let future_tmp = sd.join(".tmp.fresh_skew");
+        std::fs::write(&future_tmp, b"in-flight write from the future").unwrap();
+        // Forward-date well past STALE_TEMPFILE_AGE: if the function treated
+        // future mtimes as stale this file would be removed.
+        forward_mtime(&future_tmp, STALE_TEMPFILE_AGE.as_secs() + 60);
+
+        // Forward-date the orphan engine-version dir itself well past
+        // ORPHAN_DIR_AGE: if the function treated future mtimes as stale this
+        // dir would be pruned.
+        // NOTE: this call must come AFTER creating the shard dir and writing the
+        // tmp file above — those fs operations update orphan_dir's mtime to ~now,
+        // which would make it look fresh (age <= ORPHAN_DIR_AGE) and let it
+        // survive for the wrong reason, masking any regression in the Err(_)
+        // branch.
+        let orphan_dir = root.join(orphan_eng);
+        forward_mtime(&orphan_dir, ORPHAN_DIR_AGE.as_secs() + 60);
+
+        // Use a current version distinct from orphan_eng so orphan_dir is
+        // considered a candidate by prune_orphan_engine_version_dirs.
+        let current = "cccc000000000000000000000000cccc";
+
+        let report_a = sweep_stale_tempfiles(root);
+        assert_eq!(
+            report_a,
+            SweepReport::default(),
+            "sweep_stale_tempfiles must not remove a .tmp.* file with a future mtime (clock skew)"
+        );
+        assert!(
+            future_tmp.exists(),
+            ".tmp.fresh_skew must survive: future mtime → Err(_) → keep branch"
+        );
+
+        let report_b = prune_orphan_engine_version_dirs(root, current);
+        assert_eq!(
+            report_b,
+            SweepReport::default(),
+            "prune_orphan_engine_version_dirs must not prune a dir with a future mtime (clock skew)"
+        );
+        assert!(
+            orphan_dir.exists(),
+            "orphan dir must survive: future mtime → Err(_) → keep branch"
+        );
     }
 
     // ── prune_orphan_engine_version_dirs core behavior (step-5) ─────────────
@@ -5315,6 +5807,39 @@ mod tests {
         );
         assert_eq!(report.orphan_dirs_removed, 1);
         assert_eq!(report.tempfiles_removed, 0);
+    }
+
+    /// Empty-`current_engine_version` safeguard: when the caller cannot
+    /// determine the live build's engine-version hash (e.g. a build-time env
+    /// var resolution failure that silently fell back to `""`), the prune is
+    /// skipped wholesale to avoid catastrophically deleting the live cache
+    /// subdir (which would also be unidentifiable).
+    ///
+    /// This test pins the early-return at lines 1823-1829. If that guard were
+    /// removed, the old subdir created below would be pruned and the
+    /// `old_orphan.exists()` assertion would fail.
+    #[test]
+    fn prune_orphan_engine_version_dirs_with_empty_current_version_skips_all() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // Create an old orphan-looking subdir that would normally be pruned if
+        // given a real current_engine_version.
+        let old_orphan = root.join("aaaa111111111111111111111111aaaa");
+        std::fs::create_dir_all(&old_orphan).unwrap();
+        backdate_mtime(&old_orphan, ORPHAN_DIR_AGE.as_secs() + 60);
+
+        let report = prune_orphan_engine_version_dirs(root, "");
+
+        assert!(
+            old_orphan.exists(),
+            "empty current_engine_version must skip the prune entirely; no dirs removed"
+        );
+        assert_eq!(
+            report,
+            SweepReport::default(),
+            "empty current_engine_version must return SweepReport::default() without pruning"
+        );
     }
 
     // ── sweep_on_startup composition + idempotence (step-9) ─────────────────

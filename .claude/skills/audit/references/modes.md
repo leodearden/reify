@@ -3,6 +3,12 @@
 Five invocation modes. All modes write a per-run JSON artifact; `--format markdown` adds a fenced markdown report on top.
 
 > All argv paths use `$REPO_ROOT/` — see `references/cli-invocation.md` §1 for the pre-flight that resolves it.
+>
+> Every invocation below assumes `$SNAPSHOT` has already been materialized
+> per `references/cli-invocation.md` §2 (an MCP-tool call from the LLM
+> followed by a `jq` filter step — **not** a single shell pipeline). The
+> per-mode `reify-audit` argvs below are the bash-side invocation only; do
+> not re-inline the snapshot setup here. Single point of truth: §2.
 
 ---
 
@@ -10,12 +16,12 @@ Five invocation modes. All modes write a per-run JSON artifact; `--format markdo
 
 **When to use:** Routine periodic sweep — no specific task or date in mind.
 
-**Argv produced:**
+**Argv produced** (after `$SNAPSHOT` is materialized per `cli-invocation.md` §2):
 
-```
+```bash
 reify-audit \
   --since <14d-ago-iso> \
-  --tasks-file "$REPO_ROOT/.taskmaster/tasks/tasks.json" \
+  --tasks-file "$SNAPSHOT" \
   --runs-db    "$REPO_ROOT/data/orchestrator/runs.db" \
   --project-root "$REPO_ROOT"
 ```
@@ -36,12 +42,12 @@ reify-audit \
 
 **When to use:** User says `/audit --task 3242` or wants to audit a specific task.
 
-**Argv produced:**
+**Argv produced** (after `$SNAPSHOT` is materialized per `cli-invocation.md` §2):
 
-```
+```bash
 reify-audit \
   --task <id> \
-  --tasks-file "$REPO_ROOT/.taskmaster/tasks/tasks.json" \
+  --tasks-file "$SNAPSHOT" \
   --runs-db    "$REPO_ROOT/data/orchestrator/runs.db" \
   --project-root "$REPO_ROOT"
 ```
@@ -64,12 +70,12 @@ reify-audit \
 
 **When to use:** User wants to sweep a custom date range, e.g. `/audit --since 2026-04-01`.
 
-**Argv produced:**
+**Argv produced** (after `$SNAPSHOT` is materialized per `cli-invocation.md` §2):
 
-```
+```bash
 reify-audit \
   --since <iso-date> \
-  --tasks-file "$REPO_ROOT/.taskmaster/tasks/tasks.json" \
+  --tasks-file "$SNAPSHOT" \
   --runs-db    "$REPO_ROOT/data/orchestrator/runs.db" \
   --project-root "$REPO_ROOT"
 ```
@@ -90,13 +96,13 @@ reify-audit \
 
 **When to use:** User wants to run only one detector, e.g. `/audit --pattern P5`.
 
-**Argv produced:**
+**Argv produced** (after `$SNAPSHOT` is materialized per `cli-invocation.md` §2):
 
-```
+```bash
 reify-audit \
   --since <14d-ago-iso> \
   --pattern <P1|P2|P5> \
-  --tasks-file "$REPO_ROOT/.taskmaster/tasks/tasks.json" \
+  --tasks-file "$SNAPSHOT" \
   --runs-db    "$REPO_ROOT/data/orchestrator/runs.db" \
   --project-root "$REPO_ROOT"
 ```

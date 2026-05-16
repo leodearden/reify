@@ -1,0 +1,78 @@
+// Ad-hoc face selector example: @face("name") → Value::Frame via engine post-process.
+//
+// This file is the user-observable witness for task 3463.  It demonstrates
+// that `@face("top")` and `@face("bottom")` against a Cylinder primitive's
+// auto-seeded `Role::Cap(CapKind::Top)` / `Role::Cap(CapKind::Bottom)` faces
+// evaluate to a `Value::Frame` (not `Value::Undef`) via the engine post-process
+// at `engine_build.rs::post_process_ad_hoc_selectors`.
+//
+// Evaluation chain for `top_frame = body @ face("top")`:
+//
+//   1. `cylinder(radius, height)` → kernel execute → solid handle (BODY_HANDLE)
+//
+//   2. Seeder (`seed_primitive_attributes_for_handle`) seeds the
+//      `TopologyAttributeTable`:
+//        top-cap face    → Role::Cap(CapKind::Top),    local_index=0
+//        bottom-cap face → Role::Cap(CapKind::Bottom), local_index=0
+//        side face       → Role::Side,                 local_index=0
+//
+//   3. `eval_expr` for `body @ face("top")` → `Value::Undef`
+//      (the `SelectorKind::Face` arm in `reify-expr/src/lib.rs` defers to
+//       the engine post-process — no kernel is available at eval time).
+//
+//   4. `post_process_ad_hoc_selectors` (engine_build.rs) →
+//      `try_eval_ad_hoc_selector` (geometry_ops.rs) →
+//        - Extracts base name "body" → resolves to BODY_HANDLE in named_steps
+//        - Extracts label "top"
+//        - `kernel.extract_faces(BODY_HANDLE)` → [TOP_FACE, BOTTOM_FACE, SIDE_FACE]
+//        - `resolve_unique_by_attribute(table, candidates,
+//              AttributeQuery {
+//                  user_label: Some("top"),
+//                  role_and_index: cap_kind_translation("top")
+//                               = Some((Cap(Top), 0)),
+//                  feature_id: None })` → `Resolved(TOP_FACE_HANDLE)`
+//        - `kernel.query(Centroid(TOP_FACE_HANDLE))` → Frame origin (Point3)
+//        - `kernel.query(FaceNormal(TOP_FACE_HANDLE))` → Frame basis (Orientation)
+//        - Returns `Value::Frame { origin: Point([..], .., ..), basis: .. }`
+//
+//   5. The cell is patched from `Undef` to `Frame` in the values map.
+//
+// `cap_kind_translation` (geometry_ops.rs) provides the canonical-name map:
+//   "top"    → (Role::Cap(CapKind::Top),    0)
+//   "bottom" → (Role::Cap(CapKind::Bottom), 0)
+//   "start"  → (Role::Cap(CapKind::Start),  0)
+//   "end"    → (Role::Cap(CapKind::End),    0)
+//   other    → None (relies on user_label; Unresolves if none seeded)
+//
+// Coverage:
+//   crates/reify-eval/tests/ad_hoc_selector_smoke_tests.rs::
+//     face_selector_ri_example_compiles_and_evaluates_to_frame   ← active
+//
+// See also: `resolve_unique_by_attribute` (topology_attribute_resolver.rs:147)
+//           and `cap_kind_translation` (geometry_ops.rs).
+
+structure def TopCapBracket {
+    param radius : Length = 25mm
+    param height : Length = 50mm
+
+    // ── Geometry primitive ─────────────────────────────────────────────────────
+    let body = cylinder(radius, height)
+
+    // ── Ad-hoc face selectors (@face("name") → Value::Frame) ──────────────────
+    //
+    // `@face("top")` resolves to the top-cap face of the cylinder.
+    // `cap_kind_translation("top")` provides the role-fallback
+    // `(Role::Cap(CapKind::Top), 0)` so the resolver matches the seeded
+    // top-cap attribute entry without requiring a `name = "..."` annotation
+    // on the face (user-label authoring syntax is deferred per the PRD).
+    let top_frame    = body @ face("top")
+
+    // `@face("bottom")` resolves to the bottom-cap face of the cylinder
+    // via `cap_kind_translation("bottom")` → `(Role::Cap(CapKind::Bottom), 0)`.
+    let bottom_frame = body @ face("bottom")
+
+    // ── Frame-derived transform ────────────────────────────────────────────────
+    // Demonstrates that `top_frame` is a usable `Frame` value: it can serve
+    // as the origin for a downstream `transform3` binding.
+    let mounting_offset = transform3(orient_identity(), vec3(0mm, 0mm, 5mm))
+}

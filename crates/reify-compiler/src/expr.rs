@@ -677,6 +677,7 @@ pub(crate) fn compile_expr_guarded(
                     make_poison_literal(
                         diagnostics,
                         Diagnostic::error(msg)
+                            .with_code(DiagnosticCode::UnresolvedName)
                             .with_label(DiagnosticLabel::new(expr.span, "not found in scope")),
                     )
                 }
@@ -2296,7 +2297,8 @@ pub(crate) fn compile_expr_guarded(
                                     Diagnostic::error(format!(
                                         "unresolved type in lambda param '{}': {}",
                                         param.name, name
-                                    )),
+                                    ))
+                                    .with_code(DiagnosticCode::UnresolvedType),
                                 )
                             }
                         }
@@ -2307,7 +2309,8 @@ pub(crate) fn compile_expr_guarded(
                             Diagnostic::error(format!(
                                 "unresolved type in lambda param '{}': {}",
                                 param.name, type_expr
-                            )),
+                            ))
+                            .with_code(DiagnosticCode::UnresolvedType),
                         )
                     }
                 } else {

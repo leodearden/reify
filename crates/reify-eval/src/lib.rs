@@ -81,9 +81,11 @@ mod unfold;
 pub mod warm_pool;
 pub use dispatcher::{
     DispatchPlan, LONG_CHAIN_DEFAULT_THRESHOLD_MS, LONG_CHAIN_MIN_STAGES,
-    LONG_CHAIN_THRESHOLD_ENV_VAR, dispatch, is_long_chain_realization, long_chain_diagnostic,
-    long_chain_threshold_from_env, long_chain_threshold_from_env_value,
-    per_stage_tolerance_for_plan,
+    LONG_CHAIN_THRESHOLD_ENV_VAR, dispatch, is_long_chain_realization,
+    kernel_pragma_unsatisfiable_diagnostic, kernel_version_mismatch_diagnostic,
+    long_chain_diagnostic, long_chain_threshold_from_env,
+    long_chain_threshold_from_env_value, no_kernel_chain_diagnostic, per_stage_tolerance_for_plan,
+    pinned_kernel_missing_diagnostic, unpinned_kernel_loaded_diagnostic,
 };
 pub use kernel_attribute_hook::propagate_via_kernel_attribute_hook;
 pub use kernel_registry::{
@@ -100,6 +102,7 @@ pub use topology_attribute_propagation::{
 pub use topology_attribute_resolver::{
     AttributeQuery, AttributeResolution, resolve_unique_by_attribute,
 };
+pub use geometry_ops::{cap_kind_translation, try_eval_ad_hoc_selector};
 
 use std::collections::HashMap;
 use std::sync::Arc;

@@ -117,6 +117,20 @@ pub fn run_orphan_audit(scope: &str) -> Option<serde_json::Value> {
 mod tests {
     use super::*;
 
+    /// Covers the empty-stdout → `None` branch: `crates/reify-test-support/src` is in
+    /// `EXCLUDE_CRATES` so the script exits 0 with no output. A flat `is_none()` assertion
+    /// is environment-safe — all four `None`-yielding branches converge on the same outcome.
+    #[test]
+    fn run_orphan_audit_on_excluded_crate_returns_none() {
+        let result = run_orphan_audit("crates/reify-test-support/src");
+        assert!(
+            result.is_none(),
+            "expected None for EXCLUDE_CRATES scope `crates/reify-test-support/src` \
+             (the script emits empty stdout for excluded crates); got Some(_): {:#?}",
+            result
+        );
+    }
+
     /// Smoke-test: run the audit against `crates/reify-audit/src`.
     ///
     /// `crates/reify-audit/src` is a stable, assertion-friendly baseline: it

@@ -78,6 +78,59 @@ pub fn parse_with_prelude_enums(
     }
 }
 
+// ── Tree-walk helpers ────────────────────────────────────────────────────────
+
+/// Walk `node`'s descendants depth-first and return the first node whose
+/// `is_error()` or `is_missing()` is true, pruning subtrees where
+/// `has_error()` is false for O(1) early-out on clean branches.
+///
+/// Uses an iterative `TreeCursor` pre-order walk (goto_first_child /
+/// goto_next_sibling / goto_parent) rather than recursion, so deeply-nested
+/// type-arg trees cannot cause a stack overflow — matching the iterative
+/// tree-walk pattern used elsewhere in this file.
+///
+/// Uses the same `is_error() || is_missing()` predicate as the test-only
+/// `count_errors` helper (ts_parser.rs test module) and the production guards
+/// in struct/connect lowering — keeping the predicate shape canonical.
+///
+/// Returns `None` only when the subtree contains no ERROR or MISSING node.
+/// Under the `has_error()` precondition at its sole call site this cannot
+/// happen, so `None` is a purely defensive fallback.
+fn first_error_or_missing_descendant(node: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> {
+    if node.is_error() || node.is_missing() {
+        return Some(node);
+    }
+    if !node.has_error() {
+        return None; // O(1) prune — no error anywhere in this subtree
+    }
+    // Iterative pre-order DFS: descend into subtrees that contain an error,
+    // skip clean subtrees in O(1), and terminate when we ascend back to `node`.
+    let mut cursor = node.walk();
+    if !cursor.goto_first_child() {
+        return None; // defensive: has_error() true but node has no children
+    }
+    loop {
+        let cur = cursor.node();
+        if cur.is_error() || cur.is_missing() {
+            return Some(cur);
+        }
+        // Descend only into subtrees that contain an error (O(1) per node).
+        if cur.has_error() && cursor.goto_first_child() {
+            continue;
+        }
+        // No error in this subtree (or no children); advance to next sibling,
+        // ascending as needed until we find one or return to the starting node.
+        loop {
+            if cursor.goto_next_sibling() {
+                break;
+            }
+            if !cursor.goto_parent() || cursor.node() == node {
+                return None;
+            }
+        }
+    }
+}
+
 /// CST → AST lowering context.
 struct Lowering<'a> {
     source: &'a str,
@@ -591,10 +644,19 @@ impl<'a> Lowering<'a> {
                 // lowered so callers see a partial AST instead of an empty type_args list.
                 // ERROR-bearing children naturally fail to match any inner kind branch and
                 // are skipped; only the aggregated diagnostic is emitted.
+                //
+                // Task 3725: narrow the diagnostic span to the first ERROR/MISSING
+                // descendant so the span does not cover well-formed sibling arguments.
+                // first_error_or_missing_descendant prunes clean subtrees in O(1) via
+                // has_error(); the fallback to self.span(child) is purely defensive —
+                // has_error() guarantees at least one ERROR/MISSING exists.
                 if child.has_error() {
+                    let fault_span = first_error_or_missing_descendant(child)
+                        .map(|n| self.span(n))
+                        .unwrap_or_else(|| self.span(child));
                     self.push_error(
                         "syntax error in type argument list".to_string(),
-                        self.span(child),
+                        fault_span,
                     );
                 }
                 let mut inner_cursor = child.walk();
@@ -620,29 +682,42 @@ impl<'a> Lowering<'a> {
                         // lower_param (ts_parser.rs:1582-1592) — auto_keyword is shared between
                         // param-default and type-arg positions (grammar.js:433-436, 654-657).
                         let mut kw_cursor = inner.walk();
-                        if let Some(kw) = inner
+                        let kw_opt = inner
                             .named_children(&mut kw_cursor)
-                            .find(|n| n.kind() == "auto_keyword")
-                        {
-                            let free = kw.child_by_field_name("modifier").is_some();
-                            // The grammar guarantees a `bound` field (bare identifier) on every
-                            // well-formed auto_type_arg. Guard defensively: if error recovery
-                            // produces an auto_type_arg without a bound, emit a diagnostic and
-                            // skip the entry rather than propagating an empty string into the
-                            // AST (which would corrupt Display output and collect_type_expr_names).
-                            let Some(bound_node) = inner.child_by_field_name("bound") else {
-                                self.push_error(
-                                    "auto type-arg missing bound identifier".to_string(),
-                                    self.span(inner),
-                                );
-                                continue;
-                            };
-                            let bound = self.node_text(bound_node).to_string();
-                            args.push(TypeExpr {
-                                kind: TypeExprKind::Auto { free, bound },
-                                span: self.span(inner),
-                            });
-                        }
+                            .find(|n| n.kind() == "auto_keyword");
+                        // Grammar invariant (grammar.js:663-667): tree-sitter-reify always
+                        // inserts a MISSING `auto_keyword` child for malformed `auto_type_arg`
+                        // nodes (verified by a 15-input CST probe; task 3724), so kw_opt is
+                        // always Some under any currently-known input.  The push_error else-arm
+                        // is defense-in-depth, mirroring the sibling bound-missing guard
+                        // (lines 704-710): if a future grammar change ever weakens the
+                        // MISSING-node invariant, release users see the diagnostic instead of
+                        // a silently-dropped AST entry.
+                        let Some(kw) = kw_opt else {
+                            self.push_error(
+                                "auto type-arg missing auto keyword".to_string(),
+                                self.span(inner),
+                            );
+                            continue;
+                        };
+                        let free = kw.child_by_field_name("modifier").is_some();
+                        // The grammar guarantees a `bound` field (bare identifier) on every
+                        // well-formed auto_type_arg. Guard defensively: if error recovery
+                        // produces an auto_type_arg without a bound, emit a diagnostic and
+                        // skip the entry rather than propagating an empty string into the
+                        // AST (which would corrupt Display output and collect_type_expr_names).
+                        let Some(bound_node) = inner.child_by_field_name("bound") else {
+                            self.push_error(
+                                "auto type-arg missing bound identifier".to_string(),
+                                self.span(inner),
+                            );
+                            continue;
+                        };
+                        let bound = self.node_text(bound_node).to_string();
+                        args.push(TypeExpr {
+                            kind: TypeExprKind::Auto { free, bound },
+                            span: self.span(inner),
+                        });
                     }
                 }
                 return args;
@@ -1776,8 +1851,9 @@ impl<'a> Lowering<'a> {
             args,
             is_collection,
             where_clause,
-            // Grammar does not yet produce specialization-scope bodies; see
-            // SubDecl docs and task 2368 plan.
+            // The tree-sitter grammar now admits `sub name : StructName { body }` (task 3569),
+            // but `lower_sub` still yields `None` here until sibling task 3571 wires the
+            // CST→AST mapping for the new `specialization_body` node.
             body: None,
             span: self.span(node),
             content_hash: self.content_hash(node),

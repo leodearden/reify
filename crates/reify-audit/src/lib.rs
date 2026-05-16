@@ -24,6 +24,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub mod p5_phantom_done;
 pub mod p2_consumer_stub;
@@ -267,11 +268,16 @@ pub trait GitOps {
 pub struct RealGitOps {
     /// Working directory passed as `git -C <dir>` to every invocation.
     pub project_root: PathBuf,
+    /// Set to `true` the first time `is_gitignored` encounters an unrecoverable
+    /// exit code (anything other than 0 or 1). Subsequent calls short-circuit
+    /// and return `false` silently, so a task with N files against a broken git
+    /// repo emits at most one breadcrumb rather than N copies of the same line.
+    gitignore_unavailable: AtomicBool,
 }
 
 impl RealGitOps {
     pub fn new(project_root: impl Into<PathBuf>) -> Self {
-        Self { project_root: project_root.into() }
+        Self { project_root: project_root.into(), gitignore_unavailable: AtomicBool::new(false) }
     }
 
     /// Run a git command and return its stdout as `Ok(String)`, or an error
@@ -361,14 +367,33 @@ impl GitOps for RealGitOps {
         // that "fatal: not a git repository" and similar diagnostics do not
         // leak to *our* process's stderr and corrupt the machine-readable
         // JSON output written there by the CLI dispatcher.
+        //
+        // Once an unrecoverable exit code is observed, `gitignore_unavailable`
+        // is set so that subsequent calls for this project_root short-circuit
+        // without forking git again — a task with N files in a broken repo
+        // emits at most one breadcrumb rather than N identical lines.
+        if self.gitignore_unavailable.load(Ordering::Relaxed) {
+            return false;
+        }
         match std::process::Command::new("git")
             .arg("-C")
             .arg(&self.project_root)
             .args(["check-ignore", "--quiet", path])
             .output()
         {
-            Ok(out) => out.status.code() == Some(0),
+            Ok(out) if out.status.code() == Some(0) => true,
+            Ok(out) if out.status.code() == Some(1) => false,
+            Ok(out) => {
+                self.gitignore_unavailable.store(true, Ordering::Relaxed);
+                eprintln!(
+                    "reify-audit: git check-ignore exited {:?} in {}",
+                    out.status.code(),
+                    self.project_root.display()
+                );
+                false
+            }
             Err(e) => {
+                self.gitignore_unavailable.store(true, Ordering::Relaxed);
                 eprintln!(
                     "reify-audit: git check-ignore failed in {}: {}",
                     self.project_root.display(),
