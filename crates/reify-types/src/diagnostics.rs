@@ -1047,6 +1047,56 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_QUERY_NOT_SUPPORTED_ON_REPR`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
     QueryNotSupportedOnRepr,
+    /// A declared type name failed to resolve in any compile-time context.
+    ///
+    /// Origin sites (all carry this code):
+    /// - `crates/reify-compiler/src/functions.rs:34` — function parameter type (KEY site)
+    /// - `crates/reify-compiler/src/functions.rs:122` — function return type
+    /// - `crates/reify-compiler/src/functions.rs:280,290,301` — field domain type
+    ///   (DimensionalOp / IntegerLiteral / Auto arms)
+    /// - `crates/reify-compiler/src/functions.rs:319,333,347` — field codomain type
+    ///   (DimensionalOp / IntegerLiteral / Auto arms)
+    /// - `crates/reify-compiler/src/guards.rs:155` — purpose-guard parameter type
+    /// - `crates/reify-compiler/src/entity.rs:487` — entity-member parameter type
+    /// - `crates/reify-compiler/src/entity.rs:742-743` — port parameter type
+    /// - `crates/reify-compiler/src/expr.rs:2294-2300` — lambda parameter type (Named arm)
+    /// - `crates/reify-compiler/src/expr.rs:2305-2311` — lambda parameter type (non-Named arm)
+    /// - `crates/reify-compiler/src/traits.rs:34-42` — trait member type (DimensionalOp)
+    /// - `crates/reify-compiler/src/traits.rs:87-92` — trait member type (resolve-fail)
+    /// - `crates/reify-compiler/src/conformance/checker.rs:132-138` — conformance type (DimensionalOp)
+    /// - `crates/reify-compiler/src/conformance/checker.rs:185-188` — conformance type (resolve-fail)
+    /// - `crates/reify-compiler/src/type_resolution.rs:1015-1021` — type-alias argument
+    ///
+    /// Canonical message forms (context prefix only annotates the declaration site;
+    /// the root semantic — a declared type name failed to resolve — is identical
+    /// across all forms, so they share one code rather than per-context codes):
+    /// - `"unresolved type: <name>"` (bare form)
+    /// - `"unresolved return type: <name>"`
+    /// - `"unresolved field type: <expr>"`
+    /// - `"unresolved type in lambda param '<p>': <name>"`
+    /// - `"unresolved type in trait '<t>': <name>"`
+    /// - `"unresolved type in conformance check: <name>"`
+    /// - `"unresolved type argument '<arg>' for alias '<alias>'"`
+    /// - `"unresolved type name '<n>' in port parameter"`
+    ///
+    /// The PRD-prose mnemonic for this code is `E_UNRESOLVED_TYPE`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    UnresolvedType,
+    /// An expression references an unbound identifier at compile time.
+    ///
+    /// Origin sites (all carry this code):
+    /// - `crates/reify-compiler/src/expr.rs:670-681` — unbound identifier in expression
+    ///   context (KEY site; also emits the `"did you mean \`<canonical>\`?"` hint variant)
+    /// - `crates/reify-compiler/src/annotations.rs:321` — solver-hint collection reference
+    ///   (relocated from old line 500 in a file reorganisation)
+    ///
+    /// Canonical message forms:
+    /// - `"unresolved name: <name>"`
+    /// - `"unresolved name: <name> (did you mean \`<canonical>\`?)"` (builtin-hint variant)
+    ///
+    /// The PRD-prose mnemonic for this code is `E_UNRESOLVED_NAME`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    UnresolvedName,
 }
 
 /// A diagnostic message with location and optional labels.
