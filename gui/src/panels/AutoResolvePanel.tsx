@@ -138,9 +138,12 @@ export const AutoResolvePanel: Component<AutoResolvePanelProps> = (props) => {
     );
     return cellIds.map((cellId) => ({
       cellId,
+      // Keep iteration number as x so a null-filtered gap shows as a visual
+      // hole (wider x-spacing) rather than silently collapsing to even spacing.
+      // Mirrors the chartPoints pattern (x: it.iteration, y: value).
       series: props.state.iterations
         .filter((it) => cellId in it.parameters && it.parameters[cellId].value !== null)
-        .map((it) => it.parameters[cellId].value as number),
+        .map((it) => ({ x: it.iteration, y: it.parameters[cellId].value as number })),
     }));
   });
 
@@ -213,8 +216,8 @@ export const AutoResolvePanel: Component<AutoResolvePanelProps> = (props) => {
               // Build points in sparkline SVG coordinate space (SPARK_W × SPARK_H)
               const pts = hasLine
                 ? buildPolylinePoints(
-                    series.map((_, i) => i),
-                    series,
+                    series.map((p) => p.x),
+                    series.map((p) => p.y),
                     SPARK_PAD,
                     SPARK_W - SPARK_PAD,
                     SPARK_PAD,

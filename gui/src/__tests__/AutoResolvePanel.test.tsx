@@ -368,6 +368,13 @@ describe('AutoResolvePanel (e) non-scalar value sparkline null-filter', () => {
     const points = (polyline!.getAttribute('points') ?? '').trim().split(/\s+/);
     // Exactly 2 coordinate pairs — the null iteration is filtered out
     expect(points).toHaveLength(2);
+    // Parse the two coordinate pairs and verify both y-values are finite and
+    // distinct — guards against a filter inversion that kept the null and dropped
+    // a finite value, which would emit a 2-point polyline at y=NaN or identical y.
+    const yValues = points.map((pair) => parseFloat(pair.split(',')[1]!));
+    expect(Number.isFinite(yValues[0]!)).toBe(true);
+    expect(Number.isFinite(yValues[1]!)).toBe(true);
+    expect(yValues[0]).not.toBe(yValues[1]); // 4.2 and 4.8 map to different y coords
   });
 
   it('(e.2) all-null sparkline draws no polyline but the sparkline SVG still renders', () => {
