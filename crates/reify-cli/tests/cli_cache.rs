@@ -1558,8 +1558,6 @@ fn cli_check_sweeps_stale_persistent_cache_tempfile_at_startup() {
     // Exercises the wiring added by task 3698: the CLI calls
     // cache::run_startup_sweep() before the command dispatcher so every
     // engine-using invocation inherits the cleanup for free.
-    //
-    // RED until step-2 wires cache::run_startup_sweep() into main().
     use std::fs::{self, File, OpenOptions};
     use std::io::Write as _;
     use std::time::{Duration, SystemTime};
@@ -1595,6 +1593,10 @@ fn cli_check_sweeps_stale_persistent_cache_tempfile_at_startup() {
     let output = Command::new(env!("CARGO_BIN_EXE_reify"))
         .args(["check", fixture.to_str().unwrap()])
         .env("REIFY_CACHE_DIR", cache_dir.path())
+        // Remove vars the resolver also consults so a stale dev-shell env
+        // cannot trigger an InvalidMaxBytes error and skip the sweep.
+        .env_remove("REIFY_CACHE_MAX_BYTES")
+        .env_remove("XDG_CACHE_HOME")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

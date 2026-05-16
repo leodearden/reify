@@ -7965,15 +7965,12 @@ fn update_source_preserves_file_path_when_commit_state_gets_preserve() {
 
 #[test]
 fn sweep_persistent_cache_removes_stale_tempfile_under_explicit_cache_root() {
-    // Parameterized-seam unit test for task 3698 (step-3 RED / step-4 GREEN).
-    //
-    // Calls `crate::engine::sweep_persistent_cache(cache_dir.path())` with an
-    // explicit hermetic TempDir, avoiding env-var manipulation (which is not
-    // thread-safe in in-process tests).
+    // Parameterized-seam unit test (task 3698): calls
+    // `crate::engine::sweep_persistent_cache(cache_dir.path())` with an
+    // explicit hermetic TempDir rather than manipulating process env — which
+    // would be racy in in-process tests (std::env::set_var is not thread-safe).
     //
     // Asserts: stale .tmp.* file is gone, report.tempfiles_removed == 1.
-    //
-    // RED until step-4 adds sweep_persistent_cache() to engine.rs.
     use std::fs::{self, File, OpenOptions};
     use std::io::Write as _;
     use std::time::{Duration, SystemTime};
