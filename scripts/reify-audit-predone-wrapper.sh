@@ -151,10 +151,20 @@ fi
 # ── Invoke reify-audit with explicit --tasks-file ────────────────────────────
 # Pass ALL original args through; do not consume any. The EXIT trap handles
 # snapshot cleanup after reify-audit returns (exec would skip the trap).
+#
+# Idiomatic exit-code forwarding under `set -e`: reify-audit deliberately
+# returns 1-254 to indicate the count of High-severity findings (the EXPECTED
+# gating signal, not an error). A bare `cmd; rc=$?; exit $rc` would abort on
+# `set -e` BEFORE `rc=$?` ran — the propagation would still work by accident
+# (bash exits with the child's code on set-e abort), but `rc=$?; exit $rc`
+# would be dead code, and any future cleanup/diagnostic code added between
+# the invocation and `exit $rc` would be silently skipped. The `|| rc=$?`
+# form makes the failure path explicit and keeps the post-invocation block
+# reachable. See task 3731 review cycle 2.
+rc=0
 "$REIFY_AUDIT_BIN" \
     --tasks-file "$SNAPSHOT" \
     --runs-db "$RUNS_DB" \
     --project-root "$REPO_ROOT" \
-    "$@"
-rc=$?
-exit $rc
+    "$@" || rc=$?
+exit "$rc"
