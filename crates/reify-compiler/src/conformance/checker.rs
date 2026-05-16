@@ -14,7 +14,7 @@ pub(super) enum AvailableDefaultKind {
     Let,
 }
 
-/// Centralised "annotation wins, else inferred, else Type::Real" rule for let defaults.
+/// Centralised "annotation wins, else inferred, else Type::Error" rule for let defaults.
 ///
 /// Both call sites in the trait-conformance pipeline share this three-way precedence:
 /// 1. **`check_phase_build_available_defaults_map`** (site 1): passes
@@ -24,11 +24,12 @@ pub(super) enum AvailableDefaultKind {
 /// 2. **`check_phase_inject_defaults`** (site 2): passes `Some(&compiled_expr)` because
 ///    the injection loop already has the compiled expression in hand.
 ///
-/// After task 1914 suggestion #1, the `Type::Real` fallback arm is a defensive-default
-/// — actual callers either hold an annotation (`cell_type` is `Some`) or have a valid
-/// inferred expression (the `pass2_compile_errors` filter excludes compile-error names
-/// before this helper is reached). The `debug_assert!` at site 1 guards the fallback
-/// to catch any drift between the filter sets and this helper.
+/// After task 1914 suggestion #1 (debug_assert at site 1) and task 3749 (this tightening),
+/// the `Type::Error` fallback arm is anti-cascade defense in depth: actual callers either
+/// hold an annotation (`cell_type` is `Some`) or have a valid inferred expression (the
+/// `pass2_compile_errors` filter excludes compile-error names before this helper is reached);
+/// the `debug_assert!` at site 1 fires in dev to catch drift, and the `Type::Error` fallback
+/// ensures release-mode safety if the assert is bypassed.
 pub(super) fn resolve_let_advertised_type(
     cell_type: &Option<Type>,
     inferred: Option<&CompiledExpr>,
@@ -36,10 +37,7 @@ pub(super) fn resolve_let_advertised_type(
     cell_type.clone().unwrap_or_else(|| {
         inferred
             .map(|e| e.result_type.clone())
-            // G-allow: defensive default for unreachable arm; debug_assert! at
-            // checker.rs:761-767 catches any drift between the pass2_compile_errors
-            // filter set and this helper (task 1914 suggestion #1, task 3639 review).
-            .unwrap_or(Type::Real)
+            .unwrap_or(Type::Error)
     })
 }
 

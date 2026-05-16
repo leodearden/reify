@@ -687,6 +687,13 @@ pub(crate) fn compute_numerical_gradient_at_point(
     };
 
     let n = coords.len();
+    // Defense in depth (task 3749): make the n>=1 contract independently true at the
+    // gradient boundary, decoupling from extract_coords's empty-input None return;
+    // prevents Value::Vector(vec![]) escaping to a Value::infer_type call that would
+    // panic under the Shape-C debug_assert.
+    if n == 0 {
+        return Value::Undef;
+    }
 
     // Determine if domain is dimensioned (for constructing perturbed args)
     let domain_dim = extract_explicit_domain_dim(domain_type);
@@ -960,6 +967,13 @@ pub(crate) fn compute_numerical_divergence_at_point(
     };
 
     let n = coords.len();
+    // Defense in depth (task 3749): make the n>=1 contract independently true at the
+    // divergence boundary, decoupling from extract_point_coords's empty-input None return;
+    // prevents Value::Vector(vec![]) escaping to a Value::infer_type call that would
+    // panic under the Shape-C debug_assert.
+    if n == 0 {
+        return Value::Undef;
+    }
 
     let domain_dim = extract_explicit_domain_dim(domain_type);
 
@@ -1246,6 +1260,13 @@ pub(crate) fn compute_numerical_laplacian_at_point(
     };
 
     let n = coords.len();
+    // Defense in depth (task 3749): make the n>=1 contract independently true at the
+    // laplacian boundary, decoupling from extract_coords's empty-input None return;
+    // prevents Value::Vector(vec![]) escaping to a Value::infer_type call that would
+    // panic under the Shape-C debug_assert.
+    if n == 0 {
+        return Value::Undef;
+    }
 
     let domain_dim = extract_explicit_domain_dim(domain_type);
 
@@ -2386,5 +2407,75 @@ mod tests {
             }
             other => panic!("expected Value::Field, got {:?}", other),
         }
+    }
+
+    // --- n==0 guard regression tests ---
+
+    /// Pin that `compute_numerical_gradient_at_point` returns `Value::Undef` without
+    /// panicking when handed an empty `Value::Point(vec![])` (zero-dimension path).
+    ///
+    /// `Value::Undef` is produced via `extract_coords` returning `None` for an empty
+    /// Point (items_to_f64_vec's empty-input → None contract).  The `if n == 0` guard
+    /// at the function boundary (task 3749) provides independent defense-in-depth —
+    /// the Undef contract holds regardless of which mechanism fires first.
+    #[test]
+    fn gradient_empty_point_returns_undef_no_panic() {
+        let lambda = make_scalar_lambda("p");
+        let values = ValueMap::new();
+        let ctx = EvalContext::simple(&values);
+        let result = compute_numerical_gradient_at_point(
+            &lambda,
+            &Value::Point(vec![]),
+            &Type::Real,
+            &Type::Real,
+            &ctx,
+        );
+        assert_eq!(result, Value::Undef);
+    }
+
+    /// Pin that `compute_numerical_divergence_at_point` returns `Value::Undef` without
+    /// panicking when handed an empty `Value::Point(vec![])` (zero-dimension path).
+    ///
+    /// Divergence codomain must be scalar (Type::Real) per the function's debug_assert.
+    /// `Value::Undef` is produced via `extract_coords` returning `None` for the empty
+    /// Point; the `if n == 0` guard at the function boundary (task 3749) provides
+    /// independent defense-in-depth — the Undef contract holds regardless of which
+    /// mechanism fires first.
+    #[test]
+    fn divergence_empty_point_returns_undef_no_panic() {
+        let lambda = make_scalar_lambda("p");
+        let values = ValueMap::new();
+        let ctx = EvalContext::simple(&values);
+        let result = compute_numerical_divergence_at_point(
+            &lambda,
+            &Value::Point(vec![]),
+            &Type::Real,
+            &Type::Real,
+            &ctx,
+        );
+        assert_eq!(result, Value::Undef);
+    }
+
+    /// Pin that `compute_numerical_laplacian_at_point` returns `Value::Undef` without
+    /// panicking when handed an empty `Value::Point(vec![])` (zero-dimension path).
+    ///
+    /// Laplacian codomain must be scalar (Type::Real) per the function's debug_assert.
+    /// `Value::Undef` is produced via `extract_coords` returning `None` for the empty
+    /// Point; the `if n == 0` guard at the function boundary (task 3749) provides
+    /// independent defense-in-depth — the Undef contract holds regardless of which
+    /// mechanism fires first.
+    #[test]
+    fn laplacian_empty_point_returns_undef_no_panic() {
+        let lambda = make_scalar_lambda("p");
+        let values = ValueMap::new();
+        let ctx = EvalContext::simple(&values);
+        let result = compute_numerical_laplacian_at_point(
+            &lambda,
+            &Value::Point(vec![]),
+            &Type::Real,
+            &Type::Real,
+            &ctx,
+        );
+        assert_eq!(result, Value::Undef);
     }
 }
