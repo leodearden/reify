@@ -68,17 +68,7 @@ pub fn check_pre_done(ctx: &AuditContext, task_id: &str) -> Vec<Finding> {
     let Some(meta) = ctx.task_metadata.get(task_id) else {
         return vec![];
     };
-    if meta.status != "done" {
-        return vec![];
-    }
-    let mut findings = Vec::new();
-    if let Some(f) = check_one(ctx, meta) {
-        findings.push(f);
-    }
-    if let Some(f) = check_gitignored(ctx, meta) {
-        findings.push(f);
-    }
-    findings
+    check_task(ctx, meta)
 }
 
 /// Inner loop for the [`check`] periodic-sweep entry point. Iterates all
@@ -93,23 +83,33 @@ fn check_with_target(ctx: &AuditContext, target_task_id: Option<&str>) -> Vec<Fi
     let mut findings = Vec::new();
 
     for meta in ctx.task_metadata.values() {
-        if meta.status != "done" {
-            continue;
-        }
         if let Some(target) = target_task_id
             && meta.task_id != target
         {
             continue;
         }
 
-        if let Some(finding) = check_one(ctx, meta) {
-            findings.push(finding);
-        }
-        if let Some(finding) = check_gitignored(ctx, meta) {
-            findings.push(finding);
-        }
+        findings.extend(check_task(ctx, meta));
     }
 
+    findings
+}
+
+/// Per-task pass set shared by [`check_pre_done`] (D-1 hot path, O(1) lookup)
+/// and the inner loop of [`check_with_target`] (periodic sweep, O(n) iteration).
+/// Centralising the pass list here prevents drift when future P1/P2 detectors
+/// join the per-task pass set — they get added in exactly one place.
+fn check_task(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Finding> {
+    if meta.status != "done" {
+        return vec![];
+    }
+    let mut findings = Vec::new();
+    if let Some(f) = check_one(ctx, meta) {
+        findings.push(f);
+    }
+    if let Some(f) = check_gitignored(ctx, meta) {
+        findings.push(f);
+    }
     findings
 }
 
