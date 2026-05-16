@@ -358,7 +358,7 @@ mod cli {
         let non_p5 = findings.iter().find(|f| {
             !matches!(
                 f["pattern"].as_str(),
-                Some("P5PhantomDone") | Some("MetadataFilesGitignored")
+                Some("P5PhantomDone") | Some("P5MetadataFilesGitignored")
             )
         });
         assert!(

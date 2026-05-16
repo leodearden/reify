@@ -55,19 +55,17 @@ pub enum Severity {
 /// - `P5PhantomDone` — phantom-done: commit provenance cannot be corroborated.
 /// - `P2ConsumerStub` — consumer task with stub markers in changed lines.
 /// - `P1ProducerOrphan` — producer with no non-test workspace callers.
-/// - `MetadataFilesGitignored` — metadata-hygiene: gitignored paths in
+/// - `P5MetadataFilesGitignored` — metadata-hygiene: gitignored paths in
 ///   `metadata.files` that should be stripped. Complement to `P5PhantomDone`
 ///   (medium-severity cleanliness signal, not a phantom-done).
 ///   See `project_steward_metadata_files_gitignore_falsepositive.md`.
 ///
 /// ## Naming convention
 ///
-/// `P5PhantomDone`, `P2ConsumerStub`, and `P1ProducerOrphan` carry section
-/// prefixes that map to `f-infra-design.md` (§10/§5). `MetadataFilesGitignored`
-/// intentionally has no numeric prefix: it is a metadata-hygiene complement
-/// described within the P5 section (§10) rather than a new independent detector
-/// section. If `f-infra-design.md` later assigns it a dedicated section number,
-/// this variant should be updated to carry the corresponding `§N` prefix.
+/// All variants carry a `P<N>` prefix mapping to the corresponding
+/// `f-infra-design.md` §5 invariant. New detector variants must follow the
+/// same `P<N><Name>` shape so downstream dispatch (T-4 CLI report renderer)
+/// can route on prefix without an out-of-band mapping table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Pattern {
     /// P5 — phantom-done: a task marked `status=done` whose claimed
@@ -86,7 +84,7 @@ pub enum Pattern {
     /// Metadata-hygiene: one or more entries in `metadata.files` are
     /// gitignored paths that should be stripped. Distinct from `P5PhantomDone`
     /// (medium-severity cleanliness signal, not a phantom-done).
-    MetadataFilesGitignored,
+    P5MetadataFilesGitignored,
 }
 
 /// A pointer to forensic evidence supporting a [`Finding`]. Renders verbatim

@@ -134,13 +134,13 @@ mod tests {
             Pattern::P5PhantomDone,
             Pattern::P2ConsumerStub,
             Pattern::P1ProducerOrphan,
-            Pattern::MetadataFilesGitignored,
+            Pattern::P5MetadataFilesGitignored,
         ] {
             match p {
                 Pattern::P5PhantomDone => {}
                 Pattern::P2ConsumerStub => {}
                 Pattern::P1ProducerOrphan => {}
-                Pattern::MetadataFilesGitignored => {}
+                Pattern::P5MetadataFilesGitignored => {}
             }
         }
 
@@ -567,7 +567,7 @@ mod tests {
             findings
         );
         let f = &findings[0];
-        assert_eq!(f.pattern, Pattern::MetadataFilesGitignored);
+        assert_eq!(f.pattern, Pattern::P5MetadataFilesGitignored);
         assert_eq!(f.severity, Severity::Medium);
         assert_eq!(f.task_id, "6000");
         assert!(
