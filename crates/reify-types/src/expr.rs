@@ -280,6 +280,12 @@ impl CompiledFunction {
     /// to supply defaults. For functions that carry defaults, build via
     /// `compile_function` in `reify-compiler/src/functions.rs` instead.
     ///
+    /// The invariant is enforced at construction by an internal `debug_assert!`.
+    /// Other constructors (e.g. `compile_function`) should add a similar guard
+    /// if they build `param_defaults` from an independent expression — a
+    /// post-condition check surfaces mismatches at the point of construction
+    /// rather than later in `try_default_padding`.
+    ///
     /// task-3702 (canonicalize CompiledFunction.param_defaults representation)
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_no_defaults(
@@ -293,7 +299,7 @@ impl CompiledFunction {
         optimized_target: Option<String>,
     ) -> Self {
         let n = params.len();
-        CompiledFunction {
+        let result = CompiledFunction {
             name,
             is_pub,
             params,
@@ -303,7 +309,35 @@ impl CompiledFunction {
             content_hash,
             annotations,
             optimized_target,
-        }
+        };
+        debug_assert_eq!(
+            result.param_defaults.len(),
+            result.params.len(),
+            "param_defaults.len() == params.len() invariant violated in \
+             CompiledFunction::new_with_no_defaults (task-3702)"
+        );
+        result
+    }
+
+    /// Return a `Vec<Option<CompiledExpr>>` with `params.len()` `None` entries.
+    ///
+    /// This is a convenience helper for struct-literal construction in tests
+    /// where the named-field form is preferred over the positional
+    /// `new_with_no_defaults` constructor. The returned vec satisfies the strict
+    /// `param_defaults.len() == params.len()` invariant.
+    ///
+    /// ```ignore
+    /// let params = vec![("x".to_string(), Type::Real)];
+    /// let f = CompiledFunction {
+    ///     name: "f".to_string(),
+    ///     param_defaults: CompiledFunction::no_defaults_for(&params),
+    ///     ..
+    /// };
+    /// ```
+    ///
+    /// task-3702 (api_ergonomics — reviewer suggestion)
+    pub fn no_defaults_for(params: &[(String, Type)]) -> Vec<Option<CompiledExpr>> {
+        vec![None; params.len()]
     }
 }
 
