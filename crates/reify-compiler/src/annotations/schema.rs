@@ -992,9 +992,8 @@ mod tests {
     #[test]
     fn schema_labels_match_names() {
         for s in SCHEMAS {
-            assert_eq!(
-                s.label,
-                format!("@{}", s.name),
+            assert!(
+                s.label.starts_with('@') && &s.label[1..] == s.name,
                 "label/name mismatch in SCHEMAS entry for '{}'",
                 s.name
             );
