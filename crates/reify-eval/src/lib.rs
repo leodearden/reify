@@ -10,6 +10,7 @@ pub use compute_cache_key::compute_cache_key;
 mod concurrent;
 pub use concurrent::{ConcurrentEditResult, ConcurrentEditSetup, ConcurrentNodeResult};
 pub mod demand;
+pub mod multi_load_dispatch;
 pub mod deps;
 pub mod dirty;
 pub mod dispatcher;
