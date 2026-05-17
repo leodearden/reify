@@ -21,13 +21,25 @@ pub fn parse_marlin(src: &str) -> Result<Vec<GcodeCommand>, ParseError> {
     let mut out = Vec::new();
     for (idx, raw) in src.split('\n').enumerate() {
         let line_no = idx + 1;
-        let trimmed = raw.trim();
+        let trimmed = strip_comment_and_trim(raw);
         if trimmed.is_empty() {
             continue;
         }
         out.push(parse_line(line_no, trimmed)?);
     }
     Ok(out)
+}
+
+/// Strip a `;`-to-EOL Marlin comment (if any) and trim surrounding ASCII
+/// whitespace. Tabs / multi-space runs between tokens are preserved
+/// inside the returned slice; the per-line tokenizer relies on
+/// `split_whitespace` to collapse them.
+fn strip_comment_and_trim(line: &str) -> &str {
+    let body = match line.find(';') {
+        Some(idx) => &line[..idx],
+        None => line,
+    };
+    body.trim()
 }
 
 /// Parse a single non-empty line. The caller is responsible for skipping
