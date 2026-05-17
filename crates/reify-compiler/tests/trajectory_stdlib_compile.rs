@@ -569,3 +569,95 @@ fn periodic_spline_refines_boundary_condition_with_no_params() {
             .collect::<Vec<_>>()
     );
 }
+
+// ─── step-17: PiecewisePolynomialProfile param shape ─────────────────────────
+
+/// `PiecewisePolynomialProfile` is the α-phase concrete `Profile` variant —
+/// it carries the four authoring-time params the β-phase evaluator needs to
+/// build per-segment polynomial coefficients (PRD §4.1):
+///
+///   - `mechanism   : Real`               (TODO(mechanism-type) placeholder —
+///                                         retargets to the kinematic-
+///                                         completion `Mechanism` type when
+///                                         that PRD lands)
+///   - `waypoints   : List<Waypoint>`     (per-knot data; ordered by `t`)
+///   - `boundary    : BoundaryCondition`  (variant chooses tangent / endpoint
+///                                         policy — Natural / Clamped /
+///                                         Periodic)
+///   - `spline_kind : SplineKind`         (CubicSpline | QuinticSpline)
+///
+/// `List<Waypoint>` compiles to `Type::List(Box::new(Type::StructureRef
+/// ("Waypoint")))` (the structure_def is in the same module). `BoundaryCondition`
+/// resolves to `Type::TraitObject("BoundaryCondition")` (trait-typed param
+/// precedent: `param m : MaterialSpec` in `trait_typed_param_tests.rs`).
+/// `SplineKind` resolves to `Type::Enum("SplineKind")` (precedent:
+/// `hardness_scale : Enum(HardnessScale)` in `materials_mechanical_tests.rs`).
+///
+/// Test pins five invariants: (a) the structure refines `Profile`, (b) the
+/// four params exist in canonical order with the expected types, (c) every
+/// param has no default (caller-supplied), (d) the constraint count is
+/// asserted separately by step-19, (e) the structure refines exactly one
+/// trait (Profile, not Profile + BoundaryCondition or similar).
+#[test]
+fn piecewise_polynomial_profile_has_correct_param_shape() {
+    let template = find_structure("PiecewisePolynomialProfile");
+
+    assert_eq!(
+        template.trait_bounds,
+        vec!["Profile".to_string()],
+        "PiecewisePolynomialProfile must refine Profile; got trait_bounds: {:?}",
+        template.trait_bounds
+    );
+
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    assert_eq!(
+        params.len(),
+        4,
+        "PiecewisePolynomialProfile should declare exactly 4 params \
+         (mechanism, waypoints, boundary, spline_kind); got: {:?}",
+        names
+    );
+
+    let expected: &[(&str, Type)] = &[
+        ("mechanism", Type::Real),
+        (
+            "waypoints",
+            Type::List(Box::new(Type::StructureRef("Waypoint".to_string()))),
+        ),
+        (
+            "boundary",
+            Type::TraitObject("BoundaryCondition".to_string()),
+        ),
+        ("spline_kind", Type::Enum("SplineKind".to_string())),
+    ];
+
+    for (member, expected_ty) in expected {
+        let cell = params
+            .iter()
+            .find(|vc| vc.id.member == *member)
+            .unwrap_or_else(|| {
+                panic!(
+                    "PiecewisePolynomialProfile missing required param '{}'; \
+                     got: {:?}",
+                    member, names
+                )
+            });
+        assert_eq!(
+            cell.cell_type, *expected_ty,
+            "PiecewisePolynomialProfile.{} should be {:?}, got {:?}",
+            member, expected_ty, cell.cell_type
+        );
+    }
+
+    for cell in &params {
+        assert!(
+            cell.default_expr.is_none(),
+            "PiecewisePolynomialProfile.{} should have no default_expr \
+             (caller-supplied), but got: {:?}",
+            cell.id.member,
+            cell.default_expr
+        );
+    }
+}
