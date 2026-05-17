@@ -349,4 +349,86 @@ mod tests {
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 1.0, 0.0, 0.0, 0.0]
         );
     }
+
+    // ── JointValue::from_slice tests (step-5) ────────────────────────────
+
+    #[test]
+    fn from_slice_prismatic_single_f64_builds_scalar() {
+        let v = JointValue::from_slice(JointKind::Prismatic, &[2.5]).expect("Ok");
+        assert_eq!(v, JointValue::Scalar(2.5));
+    }
+
+    #[test]
+    fn from_slice_revolute_single_f64_builds_scalar() {
+        let v = JointValue::from_slice(JointKind::Revolute, &[1.25]).expect("Ok");
+        assert_eq!(v, JointValue::Scalar(1.25));
+    }
+
+    #[test]
+    fn from_slice_coupling_single_f64_builds_scalar() {
+        let v = JointValue::from_slice(JointKind::Coupling, &[0.1]).expect("Ok");
+        assert_eq!(v, JointValue::Scalar(0.1));
+    }
+
+    #[test]
+    fn from_slice_fixed_single_f64_builds_scalar() {
+        // Fixed is a 0-DOF joint but its flat_len is still 1 (motion-value
+        // slot is reserved in the chain even though the value is ignored).
+        let v = JointValue::from_slice(JointKind::Fixed, &[0.0]).expect("Ok");
+        assert_eq!(v, JointValue::Scalar(0.0));
+    }
+
+    #[test]
+    fn from_slice_cylindrical_two_f64s_builds_cyl() {
+        let v = JointValue::from_slice(JointKind::Cylindrical, &[1.0, 2.0]).expect("Ok");
+        assert_eq!(v, JointValue::Cyl([1.0, 2.0]));
+    }
+
+    #[test]
+    fn from_slice_planar_three_f64s_builds_planar() {
+        let v = JointValue::from_slice(JointKind::Planar, &[1.0, 2.0, 3.0]).expect("Ok");
+        assert_eq!(v, JointValue::Planar([1.0, 2.0, 3.0]));
+    }
+
+    #[test]
+    fn from_slice_spherical_four_f64s_builds_sphere() {
+        let v = JointValue::from_slice(JointKind::Spherical, &[1.0, 0.0, 0.0, 0.0]).expect("Ok");
+        assert_eq!(v, JointValue::Sphere([1.0, 0.0, 0.0, 0.0]));
+    }
+
+    #[test]
+    fn from_slice_wrong_length_returns_err_without_panic() {
+        // Spherical wants 4 f64s — feeding 2 must NOT panic, must return Err.
+        let err = JointValue::from_slice(JointKind::Spherical, &[1.0, 2.0]).unwrap_err();
+        assert!(matches!(
+            err,
+            FlattenError::WrongLen {
+                kind: JointKind::Spherical,
+                expected: 4,
+                actual: 2,
+            }
+        ));
+
+        // Prismatic wants 1 — feeding 3 must Err.
+        let err = JointValue::from_slice(JointKind::Prismatic, &[1.0, 2.0, 3.0]).unwrap_err();
+        assert!(matches!(
+            err,
+            FlattenError::WrongLen {
+                kind: JointKind::Prismatic,
+                expected: 1,
+                actual: 3,
+            }
+        ));
+
+        // Planar wants 3 — empty slice must Err.
+        let err = JointValue::from_slice(JointKind::Planar, &[]).unwrap_err();
+        assert!(matches!(
+            err,
+            FlattenError::WrongLen {
+                kind: JointKind::Planar,
+                expected: 3,
+                actual: 0,
+            }
+        ));
+    }
 }
