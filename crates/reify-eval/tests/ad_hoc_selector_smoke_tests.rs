@@ -921,3 +921,52 @@ fn try_eval_ad_hoc_selector_edge_kernel_error_returns_undef_with_warning() {
         warnings[0].message
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test 11: non-Literal args[0] → None early return, no diagnostics
+// Characterisation test for the resolve_string_literal_arg(a)? arm at
+// geometry_ops.rs:2142.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `try_eval_ad_hoc_selector` must return `None` (not applicable) and emit no
+/// diagnostics when `args[0]` is not a `Literal(String(..))` — e.g. a `ValueRef`.
+///
+/// The base remains `Literal(String("body"))` so the function passes step (3)
+/// and reaches the `resolve_string_literal_arg(a)?` call at step (4).  The
+/// `ValueRef` causes `resolve_string_literal_arg` to return `None`, triggering
+/// the early return via `?`.
+///
+/// Pins the contract at geometry_ops.rs:2142.
+/// Passes on HEAD — characterisation test for already-implemented behaviour.
+#[test]
+fn try_eval_ad_hoc_selector_non_literal_arg_returns_none() {
+    // `@face(<dynamic_expr>)` — args[0] is a ValueRef, not a Literal(String).
+    // The base is a Literal so the function reaches the args[0] check.
+    let expr = CompiledExpr::ad_hoc_selector(
+        CompiledExpr::literal(Value::String("body".to_string()), Type::String),
+        SelectorKind::Face,
+        vec![CompiledExpr::value_ref(
+            ValueCellId::new("Body", "dynamic_label"),
+            Type::String,
+        )],
+    );
+
+    let named_steps = named_steps_with_body();
+    let table = seeded_cylinder_table();
+    let mut kernel = configured_kernel();
+    let mut diagnostics = Vec::new();
+
+    let result =
+        try_eval_ad_hoc_selector(&expr, &named_steps, &mut kernel, &table, &mut diagnostics);
+
+    assert!(
+        result.is_none(),
+        "non-Literal args[0] should return None (not applicable), got {:?}",
+        result
+    );
+    assert!(
+        diagnostics.is_empty(),
+        "None-path should emit no diagnostics; got {:?}",
+        diagnostics
+    );
+}
