@@ -822,8 +822,15 @@ struct LevelCapturingSubscriber {
 impl tracing::Subscriber for LevelCapturingSubscriber {
     fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
         // Accept only events at the registered level; all other levels are
-        // rejected at the gate so they never reach event().
+        // rejected at the gate so they never reach event().  The optional
+        // target-prefix filter is applied here alongside the level check so
+        // that non-matching targets are also rejected at the callsite gate
+        // rather than silently discarded inside event().
         metadata.level() == &self.level
+            && match &self.target_prefix {
+                Some(prefix) => metadata.target().starts_with(prefix.as_str()),
+                None => true,
+            }
     }
 
     fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
@@ -838,14 +845,6 @@ impl tracing::Subscriber for LevelCapturingSubscriber {
     fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
 
     fn event(&self, event: &tracing::Event<'_>) {
-        // Apply optional target-prefix filter before recording.
-        // (Level filtering is handled at enabled(); target filtering here
-        // mirrors CountingSubscriber::event()'s placement.)
-        if let Some(prefix) = &self.target_prefix
-            && !event.metadata().target().starts_with(prefix.as_str())
-        {
-            return;
-        }
         let mut visitor = MessageVisitor {
             message: String::new(),
             fields: HashMap::new(),
