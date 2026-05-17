@@ -181,6 +181,12 @@ impl JointKind {
     ///
     /// The 7 accepted strings mirror `crate::joints::JOINT_KINDS` exactly —
     /// if a new kind is added there, a variant must be added here too.
+    ///
+    /// Not an impl of `std::str::FromStr`: that trait's signature is
+    /// `Result<Self, Self::Err>`, but the PRD §5.1 surface specifies an
+    /// `Option<JointKind>` return so unknown-kind callers can pattern-match
+    /// directly without dragging an error type through the API.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<JointKind> {
         match s {
             "prismatic" => Some(JointKind::Prismatic),
