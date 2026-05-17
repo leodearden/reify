@@ -81,3 +81,19 @@ trait Profile { }
 // type-tag — exactly the same mechanism `solve_elastic_static` uses to
 // dispatch on `PointLoad` vs `FixedSupport`.
 trait BoundaryCondition { }
+
+// ── Spline degree selector ────────────────────────────────────────────────
+
+// SplineKind — selects the polynomial degree the β evaluator uses when
+// building the per-segment coefficients for a `PiecewisePolynomialProfile`
+// (PRD §4.1):
+//
+//   CubicSpline   — degree-3 polynomial per segment; the default when
+//                   waypoints carry only positions (vels / accels are none).
+//   QuinticSpline — degree-5 polynomial per segment; selected when waypoints
+//                   carry explicit `vels` AND `accels` (per-waypoint q̇ and q̈
+//                   give the extra degrees of freedom a quintic needs).
+//
+// Same module-top-level positioning as `enum HardnessScale` in
+// `materials_mechanical.ri`.
+enum SplineKind { CubicSpline, QuinticSpline }
