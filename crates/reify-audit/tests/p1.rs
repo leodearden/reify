@@ -126,6 +126,7 @@ mod tests {
             target_task_id: None,
             window: None,
             now: None,
+            producer_branch: None,
         };
 
         // Default-empty mock → no changed symbols → no findings.
@@ -177,6 +178,7 @@ mod tests {
             target_task_id: None,
             window: None,
             now: Some(NOW),
+            producer_branch: None,
         };
 
         let findings = p1_producer_orphan::check(&ctx);
@@ -257,6 +259,7 @@ mod tests {
             target_task_id: None,
             window: None,
             now: Some(NOW),
+            producer_branch: None,
         };
 
         let findings = p1_producer_orphan::check(&ctx);
@@ -319,6 +322,7 @@ mod tests {
             target_task_id: None,
             window: None,
             now: Some(NOW),
+            producer_branch: None,
         };
 
         let findings = p1_producer_orphan::check(&ctx);
@@ -384,6 +388,7 @@ mod tests {
             target_task_id: None,
             window: None,
             now: Some(NOW),
+            producer_branch: None,
         };
         let findings_a = p1_producer_orphan::check(&ctx_a);
         assert!(
@@ -421,6 +426,7 @@ mod tests {
             target_task_id: None,
             window: None,
             now: Some(NOW),
+            producer_branch: None,
         };
         let findings_b = p1_producer_orphan::check(&ctx_b);
         assert!(
@@ -477,6 +483,7 @@ mod tests {
             target_task_id: None,
             window: None,
             now: Some(NOW),
+            producer_branch: None,
         };
 
         let findings = p1_producer_orphan::check(&ctx);
@@ -561,6 +568,7 @@ mod tests {
             target_task_id: None,
             window: None,
             now: Some(NOW),
+            producer_branch: None,
         };
 
         let findings = p1_producer_orphan::check(&ctx);
@@ -621,6 +629,7 @@ mod tests {
                 target_task_id: None,
                 window: None,
                 now: Some(NOW),
+                producer_branch: None,
             };
 
             let findings = p1_producer_orphan::check(&ctx);
@@ -769,6 +778,7 @@ mod tests {
             target_task_id: Some("task_A".to_string()),
             window: None,
             now: Some(NOW),
+            producer_branch: None,
         };
 
         let findings = p1_producer_orphan::check(&ctx);
@@ -840,6 +850,7 @@ mod tests {
             target_task_id: None,
             window: None,
             now: Some(NOW),
+            producer_branch: None,
         };
 
         let findings = p1_producer_orphan::check(&ctx);

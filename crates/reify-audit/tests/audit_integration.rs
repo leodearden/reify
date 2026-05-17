@@ -135,6 +135,7 @@ mod tests {
             target_task_id: None,
             window: None,
             now: Some(NOW),
+            producer_branch: None,
         };
 
         let p5_findings = p5_phantom_done::check(&ctx);
@@ -214,6 +215,7 @@ mod tests {
             target_task_id: None,
             window: None,
             now: None,
+            producer_branch: None,
         };
 
         let findings = p2_consumer_stub::check(&ctx);
@@ -309,6 +311,7 @@ mod tests {
             target_task_id: None,
             window: None,
             now: Some(NOW),
+            producer_branch: None,
         };
 
         let findings = p1_producer_orphan::check(&ctx);
@@ -398,6 +401,7 @@ mod tests {
             target_task_id: None,
             window: None,
             now: None,
+            producer_branch: None,
         };
 
         let findings = p5_phantom_done::check(&ctx);

@@ -110,7 +110,8 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
             continue;
         }
 
-        for symbol in ctx.jcodemunch.get_changed_symbols("main", done_at) {
+        let branch = ctx.producer_branch.as_deref().unwrap_or("main");
+        for symbol in ctx.jcodemunch.get_changed_symbols(branch, done_at) {
             // Per-symbol guard: stdlib `.ri` defs are scope-excluded — every
             // `structure_def` is technically "orphan" until something calls
             // it (design §5 P1 invariant).

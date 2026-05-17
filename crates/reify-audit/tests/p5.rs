@@ -101,6 +101,7 @@ mod tests {
             target_task_id: None,
             window: None,
             now: None,
+            producer_branch: None,
         };
 
         let findings = p5_phantom_done::check(&ctx);
@@ -282,6 +283,7 @@ mod tests {
             target_task_id: None,
             window: None,
             now: None,
+            producer_branch: None,
         };
 
         let findings = p5_phantom_done::check(&ctx);
@@ -365,6 +367,7 @@ mod tests {
             target_task_id: None,
             window: None,
             now: None,
+            producer_branch: None,
         };
 
         let findings = p5_phantom_done::check(&ctx);
@@ -463,6 +466,7 @@ mod tests {
             target_task_id: None,
             window: None,
             now: None,
+            producer_branch: None,
         };
 
         let findings = p5_phantom_done::check(&ctx);
@@ -557,6 +561,7 @@ mod tests {
             target_task_id: None,
             window: None,
             now: None,
+            producer_branch: None,
         };
 
         let findings = p5_phantom_done::check(&ctx);
@@ -693,6 +698,7 @@ mod tests {
             target_task_id: None,
             window: None,
             now: None,
+            producer_branch: None,
         };
 
         let findings = p5_phantom_done::check(&ctx);
@@ -779,6 +785,7 @@ mod tests {
             target_task_id: None,
             window: None,
             now: None,
+            producer_branch: None,
         };
 
         let findings = p5_phantom_done::check(&ctx);
@@ -879,6 +886,7 @@ mod tests {
             target_task_id: None,
             window: None,
             now: None,
+            producer_branch: None,
         };
 
         // Sanity: full check returns the single phantom finding.
@@ -999,6 +1007,7 @@ mod tests {
             target_task_id: None,
             window: None,
             now: None,
+            producer_branch: None,
         };
 
         // ctx_b: scoped to task 5000 — passed to check (the periodic-sweep entry point).
@@ -1011,6 +1020,7 @@ mod tests {
             target_task_id: Some("5000".to_string()),
             window: None,
             now: None,
+            producer_branch: None,
         };
 
         let pre_done_findings = p5_phantom_done::check_pre_done(&ctx_a, "5000");

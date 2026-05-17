@@ -427,6 +427,7 @@ mod tests {
             target_task_id: None,
             window: None,
             now: None,
+            producer_branch: None,
         };
 
         let findings = check_pre_done(&ctx, "9001");

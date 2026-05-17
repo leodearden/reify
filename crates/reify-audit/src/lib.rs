@@ -208,6 +208,12 @@ pub struct AuditContext<'a> {
     /// boundaries are deterministic. Epoch-seconds keeps the crate's dep-set
     /// minimal (no chrono/time) per `f-infra-design.md` §12.
     pub now: Option<i64>,
+    /// Branch P1 queries via `get_changed_symbols`. `None` defaults to
+    /// `"main"` inside the P1 detector (via `.as_deref().unwrap_or("main")`),
+    /// keeping all existing fixtures unchanged. The periodic-sweep CLI (T-4
+    /// #3672) sets this when running against a non-main branch. Per
+    /// `f-infra-design.md` §5 P1.
+    pub producer_branch: Option<String>,
 }
 
 // -----------------------------------------------------------------------

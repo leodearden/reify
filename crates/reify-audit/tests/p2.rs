@@ -120,6 +120,7 @@ mod tests {
             target_task_id: None,
             window: None,
             now: None,
+            producer_branch: None,
         };
 
         let findings = p2_consumer_stub::check(&ctx);
@@ -245,6 +246,7 @@ mod tests {
             target_task_id: None,
             window: None,
             now: None,
+            producer_branch: None,
         };
 
         let findings = p2_consumer_stub::check(&ctx);
@@ -310,6 +312,7 @@ mod tests {
             target_task_id: None,
             window: None,
             now: None,
+            producer_branch: None,
         };
 
         let findings = p2_consumer_stub::check(&ctx);
@@ -384,6 +387,7 @@ mod tests {
                 target_task_id: None,
                 window: None,
                 now: None,
+                producer_branch: None,
             };
             p2_consumer_stub::check(&ctx)
         };
@@ -466,6 +470,7 @@ mod tests {
             target_task_id: None,
             window: None,
             now: None,
+            producer_branch: None,
         };
 
         // Before the fix this panics with "byte index 60 is not a char boundary".
@@ -565,6 +570,7 @@ mod tests {
             target_task_id: None,
             window: None,
             now: None,
+            producer_branch: None,
         };
 
         let findings = p2_consumer_stub::check(&ctx);

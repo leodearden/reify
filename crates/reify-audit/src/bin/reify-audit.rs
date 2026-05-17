@@ -438,6 +438,7 @@ fn main() -> ExitCode {
         target_task_id: args.task_id.clone(),
         window,
         now: None,
+        producer_branch: None,
     };
 
     // Dispatch.
