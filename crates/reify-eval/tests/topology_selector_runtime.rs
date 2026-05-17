@@ -559,6 +559,39 @@ fn faces_by_normal_let_resolves_to_filtered_list_via_helper() {
     );
 }
 
+/// `let es = edges_parallel_to(body, axis, tol)` with `let axis = vec3(0.0, 0.0, 1.0)`
+/// and `let tol = 1deg` must resolve to the tangent-filtered `Value::List`. The
+/// single staged edge's tangent is `+z` (parallel to `axis`), so it survives
+/// the 1° tolerance. Pins the Vec3-arg + angle-arg resolution + delegation to
+/// `topology_selectors::edges_parallel_to` (sign-tolerant tangent predicate).
+#[test]
+fn edges_parallel_to_let_resolves_to_filtered_list_via_helper() {
+    let source = "structure def Bracket {\n    \
+        let body = box(10mm, 10mm, 10mm)\n    \
+        let axis = vec3(0.0, 0.0, 1.0)\n    \
+        let tol = 1deg\n    \
+        let es = edges_parallel_to(body, axis, tol)\n}";
+    let compiled = compile_no_errors(source);
+    let mut engine = engine_with_mock_kernel(|k| {
+        k.with_extracted_edges(GeometryHandleId(1), vec![GeometryHandleId(2)])
+            .with_edge_tangent_result(
+                GeometryHandleId(2),
+                Value::String("{\"x\":0.0,\"y\":0.0,\"z\":1.0}".to_string()),
+            )
+    });
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let cell = ValueCellId::new("Bracket", "es");
+    assert_eq!(
+        result.values.get(&cell),
+        Some(&Value::List(vec![Value::Int(2)])),
+        "Bracket.es must resolve to the tangent-filtered Value::List via \
+         topology_selectors::edges_parallel_to, got {:?}",
+        result.values.get(&cell),
+    );
+}
+
 // ── Tessellate-path parity test ─────────────────────────────────────────────
 
 /// The post-process must run on the `tessellate_realizations` path too, so
