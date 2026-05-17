@@ -1968,6 +1968,7 @@ mod tests {
         let enum_defs = vec![reify_types::EnumDef {
             name: "Direction".to_string(),
             variants: vec!["In".to_string(), "Out".to_string()],
+            doc: None,
         }];
         assert_eq!(
             resolve_enum_type("Direction", &enum_defs),
@@ -1980,6 +1981,7 @@ mod tests {
         let enum_defs = vec![reify_types::EnumDef {
             name: "Direction".to_string(),
             variants: vec!["In".to_string(), "Out".to_string()],
+            doc: None,
         }];
         assert_eq!(resolve_enum_type("Missing", &enum_defs), None);
     }

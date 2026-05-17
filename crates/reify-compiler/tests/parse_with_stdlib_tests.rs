@@ -26,14 +26,17 @@ fn enum_names_iterates_in_resolution_enums_order() {
     let enum_a = EnumDef {
         name: "EnumA".to_string(),
         variants: vec!["A1".to_string(), "A2".to_string()],
+        doc: None,
     };
     let enum_b = EnumDef {
         name: "EnumB".to_string(),
         variants: vec!["B1".to_string()],
+        doc: None,
     };
     let enum_c = EnumDef {
         name: "EnumC".to_string(),
         variants: vec!["C1".to_string(), "C2".to_string(), "C3".to_string()],
+        doc: None,
     };
 
     let m1 = CompiledModuleBuilder::new(ModulePath::single("enum_names_m1"))

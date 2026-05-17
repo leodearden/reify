@@ -837,6 +837,7 @@ mod tests {
         let enum_defs = vec![reify_types::EnumDef {
             name: "Direction".to_string(),
             variants: vec!["In".to_string(), "Out".to_string()],
+            doc: None,
         }];
 
         // TypeExpr for `Direction` (bare named type, no type_args)
@@ -1408,6 +1409,7 @@ mod tests {
         let enum_defs = vec![reify_types::EnumDef {
             name: "Direction".to_string(),
             variants: vec!["In".to_string(), "Out".to_string()],
+            doc: None,
         }];
 
         let structure_def = reify_syntax::StructureDef {
@@ -1476,6 +1478,7 @@ mod tests {
         let enum_defs = vec![reify_types::EnumDef {
             name: "Direction".to_string(),
             variants: vec!["In".to_string(), "Out".to_string()],
+            doc: None,
         }];
 
         let structure_def = reify_syntax::StructureDef {

@@ -9,6 +9,8 @@ pub struct EnumDef {
     pub name: String,
     /// The variant names.
     pub variants: Vec<String>,
+    /// Doc comment extracted from the `///` lines preceding the declaration.
+    pub doc: Option<String>,
 }
 
 /// Direction of a port in a trait definition.
@@ -86,6 +88,8 @@ pub enum TraitMember {
 pub struct TraitDef {
     /// The name of the trait.
     pub name: String,
+    /// Doc comment extracted from the `///` lines preceding the declaration.
+    pub doc: Option<String>,
     /// Type parameters on the trait.
     pub type_params: Vec<TypeParam>,
     /// Names of traits this refines (supertrait names).

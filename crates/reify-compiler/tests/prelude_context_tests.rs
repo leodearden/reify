@@ -23,10 +23,12 @@ fn from_slice_borrows_same_addresses_and_matches_new() {
     let enum_x = EnumDef {
         name: "EnumX".to_string(),
         variants: vec!["X1".to_string()],
+        doc: None,
     };
     let enum_y = EnumDef {
         name: "EnumY".to_string(),
         variants: vec!["Y1".to_string(), "Y2".to_string()],
+        doc: None,
     };
 
     let m1 = CompiledModuleBuilder::new(ModulePath::single("from_slice_m1"))
@@ -93,14 +95,17 @@ fn new_two_module_prelude_preserves_enum_order() {
     let enum_a = EnumDef {
         name: "EnumA".to_string(),
         variants: vec!["A1".to_string(), "A2".to_string()],
+        doc: None,
     };
     let enum_b = EnumDef {
         name: "EnumB".to_string(),
         variants: vec!["B1".to_string()],
+        doc: None,
     };
     let enum_c = EnumDef {
         name: "EnumC".to_string(),
         variants: vec!["C1".to_string(), "C2".to_string(), "C3".to_string()],
+        doc: None,
     };
 
     let m1 = CompiledModuleBuilder::new(ModulePath::single("prelude_m1"))
@@ -228,10 +233,12 @@ fn compile_with_prelude_context_parity_two_module_prelude_with_enum() {
     let enum_status = EnumDef {
         name: "Status".to_string(),
         variants: vec!["Active".to_string(), "Inactive".to_string()],
+        doc: None,
     };
     let enum_mode = EnumDef {
         name: "Mode".to_string(),
         variants: vec!["Fast".to_string(), "Slow".to_string()],
+        doc: None,
     };
 
     // Build two synthetic prelude modules with enums.
@@ -330,10 +337,12 @@ fn compile_with_prelude_context_parity_no_prelude_pragma() {
     let enum_status = EnumDef {
         name: "Status".to_string(),
         variants: vec!["Active".to_string(), "Inactive".to_string()],
+        doc: None,
     };
     let enum_mode = EnumDef {
         name: "Mode".to_string(),
         variants: vec!["Fast".to_string(), "Slow".to_string()],
+        doc: None,
     };
 
     let pm1 = CompiledModuleBuilder::new(ModulePath::single("no_prelude_pm1"))

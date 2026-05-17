@@ -100,6 +100,7 @@ fn all_m5_types_exported() {
     let _ed = reify_types::EnumDef {
         name: "Shape".into(),
         variants: vec!["Circle".into()],
+        doc: None,
     };
 
     // PortDirection
@@ -136,6 +137,7 @@ fn all_m5_types_exported() {
     // TraitDef
     let _td = reify_types::TraitDef {
         name: "Component".into(),
+        doc: None,
         type_params: vec![],
         refinements: vec![],
         members: vec![],
