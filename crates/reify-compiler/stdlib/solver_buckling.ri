@@ -119,11 +119,30 @@ structure def BucklingOptions {
 //                pair `(K + λ K_g) φ = 0`, this is λ; the critical load is
 //                `λ × reference_load_magnitude` (computed by the stdlib
 //                helper `critical_load`, PRD §13 task ε).
-//   mode_shape — eigenvector reshaped as a per-node displacement Field over
-//                the mesh. Precise `Field<Point3<Length>, Vector3<Length>>`
-//                type per the `ElasticResult.displacement` precedent (task
-//                3117 landed; PRD §4's "Real-placeholder per #3117 workaround"
-//                footnote is stale — see plan.json design-decision-1).
+//   mode_shape — eigenvector reshaped as a per-node displacement-shaped
+//                Field over the mesh. Precise `Field<Point3<Length>,
+//                Vector3<Length>>` type per the `ElasticResult.displacement`
+//                precedent (task 3117 landed; PRD §4's "Real-placeholder
+//                per #3117 workaround" footnote is stale — see plan.json
+//                design-decision-1).
+//
+//                ⚠ DIMENSIONALITY NOTE — `Vector3<Length>` inherits Length
+//                units by convention for parallelism with displacement
+//                fields, but a buckling eigenvector is mathematically only
+//                defined up to scalar multiplication: the linear-buckling
+//                eigenproblem `(K + λ K_g) φ = 0` determines φ only up to
+//                a scaling. The FEA convention is to normalize the
+//                eigenvector (e.g., to unit `||φ||_M = 1` or `||φ||_∞ = 1`)
+//                and treat the result as dimensionless. The Length unit
+//                here is a typing convention only, NOT a physical claim;
+//                callers must not add a `mode_shape` to a real
+//                `displacement` Field as if the two were comparable
+//                quantities. A more rigorous future encoding could retype
+//                this as `Field<Point3<Length>, Vector3<Real>>` to make
+//                the dimensionlessness explicit, but the precedent
+//                established by `ElasticResult.displacement` is followed
+//                here to keep all per-node vector-field types uniform
+//                across the solver result containers.
 //
 // PRD reference: docs/prds/v0_5/buckling-eigensolver.md §4.
 structure def Mode {
