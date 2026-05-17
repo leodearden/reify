@@ -1393,9 +1393,9 @@ pub fn evict_over_cap(
             // Race site #1 — concurrent eviction: another reify process may
             // have removed this .bin between read_dir and here (see the
             // `we_removed_bin` match in the remove loop below for the same
-            // race on the eviction side).  On NotFound from either metadata()
-            // or modified(), skip to the next file_entry rather than
-            // propagating the transient error.
+            // race on the eviction side).  On NotFound from metadata(),
+            // skip to the next file_entry rather than propagating the
+            // transient error.
             let last_access = match read_sidecar_mtime(&meta_path) {
                 Ok(t) => t,
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -5535,19 +5535,25 @@ mod tests {
         let orphan_dir = root.join(orphan_eng);
         forward_mtime(&orphan_dir, ORPHAN_DIR_AGE.as_secs() + 60);
         // Defensive re-stat: confirm forward_mtime actually advanced the
-        // directory's mtime into the future.  On filesystems where
-        // File::set_times silently no-ops on directories (some
-        // tmpfs/overlayfs configs), the mtime would stay at ~now and
-        // prune_orphan_engine_version_dirs would treat the dir as fresh
-        // (age <= ORPHAN_DIR_AGE → continue), passing the test for the
+        // directory's mtime well into the future (at least ORPHAN_DIR_AGE/2
+        // past now).  A bare `mtime > now` check would pass even if
+        // File::set_times silently updated the dir mtime to ~now rather than
+        // the intended now + ORPHAN_DIR_AGE + 60s — the failure mode on some
+        // tmpfs/overlayfs configs where set_times on directory FDs is a
+        // no-op.  prune_orphan_engine_version_dirs would then see the dir as
+        // fresh (age <= ORPHAN_DIR_AGE → continue), passing the test for the
         // wrong reason and masking any regression in the Err(_) branch.
-        let before = std::time::SystemTime::now();
+        let threshold = std::time::SystemTime::now()
+            .checked_add(ORPHAN_DIR_AGE / 2)
+            .expect("ORPHAN_DIR_AGE/2 overflow is astronomically unlikely");
         assert!(
-            std::fs::metadata(&orphan_dir).unwrap().modified().unwrap() > before,
-            "forward_mtime must advance orphan_dir's mtime past `now`; \
-             if File::set_times silently no-ops on this directory \
-             (some tmpfs/overlayfs configs), the test precondition has \
-             not taken effect and any result is unreliable"
+            std::fs::metadata(&orphan_dir).unwrap().modified().unwrap() > threshold,
+            "forward_mtime must advance orphan_dir's mtime by more than \
+             ORPHAN_DIR_AGE/2 (≈15 days) past `now`; a bare `mtime > now` \
+             passes even when set_times silently updates the dir mtime to ~now \
+             (the no-op case on some tmpfs/overlayfs configs), masking \
+             regressions in the `Err(_) => continue` branch of \
+             prune_orphan_engine_version_dirs"
         );
 
         // Use a current version distinct from orphan_eng so orphan_dir is
