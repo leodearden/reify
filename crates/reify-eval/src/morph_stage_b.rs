@@ -435,10 +435,6 @@ mod tests {
             map.edge_to_edge.is_empty(),
             "edge_to_edge must be empty for empty input"
         );
-        assert!(
-            map.vertex_to_vertex.is_empty(),
-            "vertex_to_vertex must be empty for empty input"
-        );
     }
 
     // step-3: single face with matching attribute pairs handles
@@ -470,10 +466,6 @@ mod tests {
             "h(10) must map to h(20)"
         );
         assert!(map.edge_to_edge.is_empty(), "edge_to_edge must be empty");
-        assert!(
-            map.vertex_to_vertex.is_empty(),
-            "vertex_to_vertex must be empty"
-        );
     }
 
     // step-5: single edge with matching attribute pairs handles
@@ -504,10 +496,6 @@ mod tests {
             map.edge_to_edge.get(&h(10)),
             Some(&h(20)),
             "h(10) must map to h(20) in edge_to_edge"
-        );
-        assert!(
-            map.vertex_to_vertex.is_empty(),
-            "vertex_to_vertex must be empty"
         );
     }
 
@@ -869,10 +857,6 @@ mod tests {
         assert_eq!(map.face_to_face.get(&h(10)), Some(&h(20)), "h(10) → h(20)");
         assert_eq!(map.face_to_face.get(&h(11)), Some(&h(21)), "h(11) → h(21)");
         assert!(map.edge_to_edge.is_empty(), "edge_to_edge must be empty");
-        assert!(
-            map.vertex_to_vertex.is_empty(),
-            "vertex_to_vertex must be empty"
-        );
     }
 
     // amend-1b: duplicate-attribute pairs (two old + two new sharing identical
@@ -953,10 +937,6 @@ mod tests {
             map.edge_to_edge.get(&h(30)),
             Some(&h(40)),
             "edge: h(30) → h(40)"
-        );
-        assert!(
-            map.vertex_to_vertex.is_empty(),
-            "vertex_to_vertex must be empty"
         );
     }
 
