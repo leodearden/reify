@@ -2551,15 +2551,40 @@ impl<'a> Lowering<'a> {
         node: tree_sitter::Node,
     ) -> Option<MatchArmDeclGroupDecl> {
         let discriminant_node = node.child_by_field_name("discriminant")?;
-        let discriminant = self.lower_expr(discriminant_node)?;
+        let discriminant = self.lower_expr(discriminant_node).or_else(|| {
+            // A well-formed discriminant node that lower_expr cannot produce an
+            // Expr for indicates a grammar/lowering mismatch.  Surface it rather
+            // than silently yielding a phantom non-exhaustive-match later.
+            self.push_error(
+                format!(
+                    "unable to lower match discriminant: {}",
+                    self.node_text(discriminant_node)
+                ),
+                self.span(discriminant_node),
+            );
+            None
+        })?;
 
         let mut arms = Vec::new();
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            if child.kind() == "match_arm_decl_arm"
-                && let Some(arm) = self.lower_match_arm_decl_arm(child)
-            {
-                arms.push(arm);
+            if child.kind() == "match_arm_decl_arm" {
+                match self.lower_match_arm_decl_arm(child) {
+                    Some(arm) => arms.push(arm),
+                    None if !child.has_error() => {
+                        // Arm has no CST error but lowering failed — grammar/lowering
+                        // mismatch.  Push a diagnostic so the mismatch surfaces rather
+                        // than producing a silent non-exhaustive match.
+                        self.push_error(
+                            format!(
+                                "unable to lower match arm: {}",
+                                self.node_text(child)
+                            ),
+                            self.span(child),
+                        );
+                    }
+                    None => {} // child.has_error() — already caught by check_and_lower! at dispatch
+                }
             }
         }
 
