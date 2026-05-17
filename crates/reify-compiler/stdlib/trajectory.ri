@@ -172,3 +172,44 @@ structure def ClampedSpline : BoundaryCondition {
 // evaluator a nominal type-tag to dispatch on; the dispatch shape mirrors
 // `PointLoad` / `FixedSupport` in `solve_elastic_static`.
 structure def PeriodicSpline : BoundaryCondition { }
+
+// ── PiecewisePolynomialProfile ────────────────────────────────────────────
+
+// PiecewisePolynomialProfile — α-phase concrete `Profile` variant carrying
+// the four authoring-time params the β-phase evaluator needs to build
+// per-segment polynomial coefficients (PRD §4.1):
+//
+//   mechanism   : Real                 — the kinematic chain whose joints
+//                                        the profile interpolates over.
+//                                        Currently `Real` placeholder.
+//   waypoints   : List<Waypoint>       — per-knot data, ordered by `t`.
+//   boundary    : BoundaryCondition    — variant chooses tangent / endpoint
+//                                        policy (Natural / Clamped /
+//                                        Periodic). The β evaluator
+//                                        dispatches on the SIR-α nominal
+//                                        type-tag exactly as
+//                                        `solve_elastic_static` does for
+//                                        `PointLoad` vs `FixedSupport`.
+//   spline_kind : SplineKind           — selects polynomial degree (cubic
+//                                        for position-only waypoints,
+//                                        quintic when waypoints carry
+//                                        vels AND accels).
+//
+// No defaults — every field is caller-supplied. There is no meaningful
+// default `mechanism` (the chain is the whole point of a motion profile),
+// no default `waypoints` (an empty profile is rejected by the constraint
+// below — see step-20), no default `boundary` (the caller must choose
+// `NaturalSpline` / `ClampedSpline` / `PeriodicSpline` explicitly), and no
+// default `spline_kind` (the cubic-vs-quintic decision is the caller's per-
+// problem trade-off).
+//
+// TODO(mechanism-type): tighten `mechanism : Real` to the kinematic-
+// completion PRD's `Mechanism` type when that PRD lands. Same shape and
+// rationale as `LoadCase.loads : List<Real>` with its `TODO(load-trait)`
+// annotation in `fea_multi_case.ri:84`.
+structure def PiecewisePolynomialProfile : Profile {
+    param mechanism : Real
+    param waypoints : List<Waypoint>
+    param boundary : BoundaryCondition
+    param spline_kind : SplineKind
+}
