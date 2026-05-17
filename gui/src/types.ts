@@ -508,3 +508,21 @@ export interface MorphStats {
   remesh_count: number;
   last_rejection_reason?: string;
 }
+
+/**
+ * Payload for the `warm-pool-event` Tauri channel (GR-016 ε).
+ *
+ * Wire format per PRD §2.2: field names match the Rust IPC struct in
+ * `gui/src-tauri/src/types.rs::WarmPoolEvent` exactly — no `serde(rename_all)`.
+ *
+ * Emitted by `EngineSession::drain_and_emit_warm_pool_events` after each engine
+ * call boundary. Consumer: `WarmPoolDebugPanel` (debug-mode only, PRD §11 Q6).
+ */
+export interface WarmPoolEvent {
+  /** `'evicted'` when a warm state was evicted; `'donated'` when one was donated. */
+  kind: 'evicted' | 'donated';
+  /** Warm-state size involved in the event, in bytes. */
+  size_bytes: number;
+  /** Stringified `NodeId` of the victim (evicted) or donor (donated) node. */
+  node_id: string;
+}
