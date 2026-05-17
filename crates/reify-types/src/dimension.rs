@@ -237,6 +237,18 @@ impl DimensionVector {
     pub const STIFFNESS: DimensionVector = DimensionVector::from_exps(&[(1, 1), (2, -2)]);
     /// Absorption coefficient: 1/m
     pub const ABSORPTION_COEFF: DimensionVector = DimensionVector::from_exps(&[(0, -1)]);
+    /// Curvature: 1/m — dimensionally identical to `ABSORPTION_COEFF`.
+    ///
+    /// Both are `1/Length`. There is no physically honest way to make them
+    /// distinct DimensionVectors; the alias is justified because the
+    /// source-syntax name `Curvature` carries different engineering intent
+    /// (reciprocal-length-of-arc) than `AbsorptionCoeff` (per-distance decay).
+    /// Per task 3603 / GHR-α design decision: `canonical_name()` continues to
+    /// return `"AbsorptionCoeff"` for the shared dim because the `Curvature`
+    /// entry is placed AFTER `AbsorptionCoeff` in `NAMED_DIMENSIONS` (first-
+    /// match wins). The `Curvature` alias resolves correctly in the name→dim
+    /// direction via `resolve_dimension_type` (used by `param k : Curvature`).
+    pub const CURVATURE: DimensionVector = DimensionVector::from_exps(&[(0, -1)]);
     /// Fracture toughness: Pa·√m = kg·m^(-1/2)·s⁻²
     ///
     /// The only fractional-exponent named alias — Length slot is Rational(-1, 2).
