@@ -492,10 +492,23 @@ pub struct JointDescriptor {
     /// `bind(joint, param_ref)` inside a `snapshot()` call.
     /// `None` when the bind expression is a literal rather than a param reference,
     /// or when no `snapshot()` / `bind()` call references this joint.
+    ///
+    /// **Backward-compat:** kept for parity with the downstream η-frontend consumer
+    /// which has not yet migrated to the `binding` field. The `binding` field is
+    /// the authoritative source going forward.
     pub driving_param_cell_id: Option<String>,
     /// Current evaluated SI value of the `driving_param_cell_id` cell.
     /// `None` when `driving_param_cell_id` is `None` or the value is `Undef`.
+    ///
+    /// **Backward-compat:** mirrors the `current_value_si` inside `binding` for the
+    /// `ParamBound` case. See `driving_param_cell_id` note above.
     pub current_value_si: Option<f64>,
+    /// Structured description of how this joint is driven (introduced in task 3783).
+    ///
+    /// This is the authoritative field. The legacy `driving_param_cell_id` /
+    /// `current_value_si` flat fields carry the same data for the `ParamBound` case
+    /// and are kept for backward compatibility with the η-frontend (separate task).
+    pub binding: JointBinding,
 }
 
 /// Describes how a kinematic joint is driven within a `snapshot()` call.

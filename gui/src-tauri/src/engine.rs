@@ -21,7 +21,7 @@ use reify_types::{Diagnostic, DiagnosticInfo, DiagnosticLabel, SourceLocationInf
 
 use crate::types::{
     AutoResolveConstraintProgress, AutoResolveIteration, AutoResolveParameterValue, ConstraintData,
-    DefInfo, EntityIdentity, EntityTreeNode, FileData, GuiState, JointDescriptor,
+    DefInfo, EntityIdentity, EntityTreeNode, FileData, GuiState, JointBinding, JointDescriptor,
     MechanismDescriptor, MeshData, SourceSpanInfo, ValueData, format_determinacy, format_freshness,
     format_value,
 };
@@ -2456,6 +2456,23 @@ fn extract_joint_descriptor(joint_val: &Value, joint_index: usize) -> Option<Joi
         _ => ("dimensionless".to_string(), None, None, None),
     };
 
+    // Default binding keyed off joint kind.  Prismatic/revolute default to
+    // LiteralBound with a joint_index-based synth name; the AST resolver
+    // (resolve_driving_params_from_ast) promotes this to ParamBound or refines
+    // the synth name when a `bind()` call is found.
+    let binding = match kind.as_str() {
+        "fixed" => JointBinding::FixedNoMotion,
+        "coupling" => JointBinding::CouplingDerived {
+            source_joint: String::new(), // source detection deferred to ζ work
+        },
+        "prismatic" | "revolute" => JointBinding::LiteralBound {
+            synth_param_name: format!("__joint_{joint_index}_v"),
+            initial_value_si: None,
+            scrubbable: true,
+        },
+        _ => JointBinding::FixedNoMotion, // conservative default for unknown kinds
+    };
+
     Some(JointDescriptor {
         joint_index,
         kind,
@@ -2465,6 +2482,7 @@ fn extract_joint_descriptor(joint_val: &Value, joint_index: usize) -> Option<Joi
         axis,
         driving_param_cell_id: None,
         current_value_si: None,
+        binding,
     })
 }
 

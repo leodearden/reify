@@ -878,7 +878,7 @@ fn mechanism_descriptor_ipc_contract() {
 
 #[test]
 fn mechanism_descriptor_round_trips_through_serde_json_with_snake_case_keys() {
-    use crate::types::{JointDescriptor, MechanismDescriptor};
+    use crate::types::{JointBinding, JointDescriptor, MechanismDescriptor};
 
     let joint = JointDescriptor {
         joint_index: 0,
@@ -889,6 +889,10 @@ fn mechanism_descriptor_round_trips_through_serde_json_with_snake_case_keys() {
         axis: Some([1.0, 0.0, 0.0]),
         driving_param_cell_id: Some("Kinematic.y_pos".to_string()),
         current_value_si: Some(0.5),
+        binding: JointBinding::ParamBound {
+            param_cell_id: "Kinematic.y_pos".to_string(),
+            current_value_si: Some(0.5),
+        },
     };
 
     let descriptor = MechanismDescriptor {
@@ -947,7 +951,7 @@ fn mechanism_descriptor_round_trips_through_serde_json_with_snake_case_keys() {
 
 #[test]
 fn joint_descriptor_optional_fields_serialize_as_null() {
-    use crate::types::JointDescriptor;
+    use crate::types::{JointBinding, JointDescriptor};
 
     let joint = JointDescriptor {
         joint_index: 2,
@@ -958,6 +962,7 @@ fn joint_descriptor_optional_fields_serialize_as_null() {
         axis: None,
         driving_param_cell_id: None,
         current_value_si: None,
+        binding: JointBinding::FixedNoMotion,
     };
 
     let v = serde_json::to_value(&joint).expect("serialize");
