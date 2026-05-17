@@ -54,10 +54,15 @@ fn strip_comment_and_trim(line: &str) -> &str {
 /// blank lines and bumping the 1-indexed line counter.
 fn parse_line(line_no: usize, line: &str) -> Result<GcodeCommand, ParseError> {
     let mut tokens = line.split_whitespace();
-    let cmd = tokens.next().ok_or(ParseError {
-        line: line_no,
-        kind: ParseErrorKind::MissingCommand,
-    })?;
+    // Caller guarantees `line` is non-empty and non-whitespace (see
+    // `strip_comment_and_trim` + the `trimmed.is_empty()` skip in
+    // `parse_marlin`), so `split_whitespace` must yield at least one
+    // token. The `expect` keeps `ParseErrorKind::MissingCommand`
+    // statically-unreachable here, matching its doc-comment in
+    // `error.rs`.
+    let cmd = tokens
+        .next()
+        .expect("parse_line precondition: trimmed line is non-empty, split_whitespace yields ≥1 token");
     let params: Vec<&str> = tokens.collect();
 
     match cmd {
@@ -114,10 +119,17 @@ fn parse_line(line_no: usize, line: &str) -> Result<GcodeCommand, ParseError> {
                 }
                 if !params.is_empty() {
                     // Bare-F lines carry no trailing params; anything else
-                    // is malformed.
+                    // is malformed. Issue `UnexpectedTrailingTokens` (not
+                    // `UnknownCommand`) so the diagnostic doesn't claim
+                    // the F-prefix command itself was unrecognised — a
+                    // user debugging `F100 X10` should be told the F is
+                    // fine and the X10 is the problem.
                     return Err(ParseError {
                         line: line_no,
-                        kind: ParseErrorKind::UnknownCommand(other.to_string()),
+                        kind: ParseErrorKind::UnexpectedTrailingTokens {
+                            command: other.to_string(),
+                            tokens: params.iter().map(|t| (*t).to_string()).collect(),
+                        },
                     });
                 }
                 let value = parse_value(line_no, 'F', body)?;
@@ -281,14 +293,16 @@ where
     Ok(())
 }
 
-/// Split a `<letter><value>` token into its parts. Errors if the letter
-/// is missing or non-ASCII-alphabetic.
+/// Split a `<letter><value>` token into its parts. Errors if the leading
+/// character is non-ASCII-alphabetic.
 fn split_param(line_no: usize, tok: &str) -> Result<(char, &str), ParseError> {
     let mut chars = tok.chars();
-    let letter = chars.next().ok_or(ParseError {
-        line: line_no,
-        kind: ParseErrorKind::MissingCommand,
-    })?;
+    // `tok` is sourced from `split_whitespace`, which never yields an
+    // empty &str; the `expect` pins that invariant rather than emitting
+    // a `MissingCommand` that the caller can never observe.
+    let letter = chars
+        .next()
+        .expect("split_param precondition: tok is from split_whitespace, non-empty");
     if !letter.is_ascii_alphabetic() {
         return Err(ParseError {
             line: line_no,

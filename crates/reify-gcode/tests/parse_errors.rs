@@ -58,3 +58,59 @@ fn line_counter_counts_blank_and_comment_lines() {
         }
     );
 }
+
+// Pins documented behaviour at `marlin.rs` (parse_value) — a bare axis
+// letter with no numeric body produces `InvalidParameter { letter, value:
+// "" }` rather than `MissingCommand` or a panic.
+#[test]
+fn axis_letter_without_value_is_invalid_parameter() {
+    let err = parse_marlin("G1 X").unwrap_err();
+    assert_eq!(
+        err,
+        ParseError {
+            line: 1,
+            kind: ParseErrorKind::InvalidParameter {
+                letter: 'X',
+                value: String::new(),
+            },
+        }
+    );
+}
+
+// Pins documented behaviour at `marlin.rs` (F-prefix branch) — a bare
+// `F` with no numeric body produces `InvalidParameter { letter: 'F',
+// value: "" }`, the same shape the inline-feedrate path emits.
+#[test]
+fn bare_f_without_value_is_invalid_parameter() {
+    let err = parse_marlin("F").unwrap_err();
+    assert_eq!(
+        err,
+        ParseError {
+            line: 1,
+            kind: ParseErrorKind::InvalidParameter {
+                letter: 'F',
+                value: String::new(),
+            },
+        }
+    );
+}
+
+// Pins amendment-1 behaviour: when a recognised standalone feedrate
+// (`F<number>`) is followed by trailing tokens, the diagnostic must
+// surface BOTH the command and the offending tokens — not
+// `UnknownCommand("F100")`, which would mislead a user into thinking
+// the F-prefix itself was wrong.
+#[test]
+fn feedrate_with_trailing_tokens_is_unexpected_trailing_tokens() {
+    let err = parse_marlin("F100 X10").unwrap_err();
+    assert_eq!(
+        err,
+        ParseError {
+            line: 1,
+            kind: ParseErrorKind::UnexpectedTrailingTokens {
+                command: "F100".to_string(),
+                tokens: vec!["X10".to_string()],
+            },
+        }
+    );
+}

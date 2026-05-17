@@ -22,7 +22,16 @@ pub enum ParseErrorKind {
     UnknownCommand(String),
     /// A parameter `<letter><value>` failed to parse as `f64`.
     InvalidParameter { letter: char, value: String },
-    /// A non-blank line had no recognisable command token (currently
-    /// unused by `parse_marlin`; reserved for future stricter dialects).
+    /// The leading token IS a recognised command (e.g. a standalone
+    /// `F<number>` feedrate) but the line carries trailing tokens that
+    /// the command does not accept. Issued instead of [`UnknownCommand`]
+    /// so the diagnostic does not mislead a user into thinking the
+    /// command itself was unrecognised. Both `command` and `tokens`
+    /// preserve the raw source spelling for editor/IDE display.
+    UnexpectedTrailingTokens { command: String, tokens: Vec<String> },
+    /// A non-blank line had no recognisable command token. Unused by
+    /// `parse_marlin` (the only sites that could construct it are
+    /// statically unreachable — see `marlin::parse_line` and
+    /// `marlin::split_param`); reserved for future stricter dialects.
     MissingCommand,
 }
