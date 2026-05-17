@@ -2022,3 +2022,75 @@ fn meshdata_accepts_matching_scalar_channel_length() {
         "vonMises must have 3 elements"
     );
 }
+
+// ── Task 3541 step-7: WarmPoolEvent IPC struct serialization ─────────────────
+
+/// Pin the PRD §2.2 / PRD §3.2 wire format for the `warm-pool-event` channel.
+///
+/// Exact JSON shape: `{"kind":"evicted"|"donated","size_bytes":<u64>,"node_id":<string>}`.
+/// No `serde(rename_all)` — field names match the TS interface exactly.
+///
+/// Mirrors `auto_resolve_iteration_serializes_with_expected_field_set` (line 1662).
+#[test]
+fn warm_pool_event_serializes_with_expected_field_set() {
+    use crate::types::WarmPoolEvent;
+    use serde_json::json;
+
+    // (a) Evicted variant serializes to the expected flat shape.
+    let evicted = WarmPoolEvent {
+        kind: "evicted".to_string(),
+        size_bytes: 1024,
+        node_id: "Body.thickness".to_string(),
+    };
+    let v = serde_json::to_value(&evicted).expect("WarmPoolEvent must serialize");
+    assert_eq!(v, json!({"kind": "evicted", "size_bytes": 1024, "node_id": "Body.thickness"}),
+        "evicted: exact JSON shape mismatch");
+    // Top-level key set must be exactly {kind, size_bytes, node_id} — no extras.
+    let obj = v.as_object().unwrap();
+    assert_eq!(obj.len(), 3, "evicted must have exactly 3 top-level keys, got {:?}", obj.keys().collect::<Vec<_>>());
+
+    // (b) Donated variant serializes identically (only kind differs).
+    let donated = WarmPoolEvent {
+        kind: "donated".to_string(),
+        size_bytes: 4096,
+        node_id: "Plate.width".to_string(),
+    };
+    let v2 = serde_json::to_value(&donated).expect("WarmPoolEvent must serialize");
+    assert_eq!(v2, json!({"kind": "donated", "size_bytes": 4096, "node_id": "Plate.width"}),
+        "donated: exact JSON shape mismatch");
+
+    // (c) Round-trip via serde_json::from_value preserves all fields.
+    let rt: WarmPoolEvent = serde_json::from_value(v2.clone()).expect("must deserialize");
+    assert_eq!(rt.kind, "donated");
+    assert_eq!(rt.size_bytes, 4096);
+    assert_eq!(rt.node_id, "Plate.width");
+
+    // (d) from_engine_event: WarmPoolEvent::Evicted maps to kind="evicted", correct size_bytes
+    //     and node_id stringified via NodeId Display.
+    use reify_eval::cache::NodeId;
+    use reify_eval::warm_pool::WarmPoolEvent as EngineWarmPoolEvent;
+    use reify_types::ValueCellId;
+
+    let victim = NodeId::Value(ValueCellId::new("Body", "thickness"));
+    let eng_ev = EngineWarmPoolEvent::Evicted {
+        node_id: victim,
+        size_bytes: 512,
+    };
+    let ipc = WarmPoolEvent::from_engine_event(&eng_ev);
+    assert_eq!(ipc.kind, "evicted");
+    assert_eq!(ipc.size_bytes, 512u64);
+    // node_id is NodeId::Display — must be non-empty and contain "thickness"
+    assert!(!ipc.node_id.is_empty(), "node_id must not be empty");
+    assert!(ipc.node_id.contains("thickness"), "node_id must contain 'thickness', got: {}", ipc.node_id);
+
+    // (e) from_engine_event: WarmPoolEvent::Donated maps to kind="donated".
+    let donor = NodeId::Value(ValueCellId::new("Plate", "width"));
+    let eng_donated = EngineWarmPoolEvent::Donated {
+        node_id: donor,
+        size_bytes: 8192,
+    };
+    let ipc2 = WarmPoolEvent::from_engine_event(&eng_donated);
+    assert_eq!(ipc2.kind, "donated");
+    assert_eq!(ipc2.size_bytes, 8192u64);
+    assert!(ipc2.node_id.contains("width"), "node_id must contain 'width', got: {}", ipc2.node_id);
+}
