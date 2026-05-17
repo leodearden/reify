@@ -366,3 +366,71 @@ fn buckling_options_constrains_positivity_invariants() {
         );
     }
 }
+
+// ─── step-9: Mode param shape ────────────────────────────────────────────────
+
+/// `Mode` is a single buckling eigenpair. It must declare exactly the two
+/// PRD §4 params with the canonical types:
+///
+///   - `eigenvalue : Real`                                       (load multiplier)
+///   - `mode_shape : Field<Point3<Length>, Vector3<Length>>`     (displacement field)
+///
+/// The PRD's "Real placeholder for mode_shape per #3117 workaround" footnote
+/// is stale — task #3117 landed and the `Field<D, C>` resolver arm at
+/// `type_resolution.rs:1313` accepts the precise type in `param` positions,
+/// confirmed by `ElasticResult.displacement` / `ElasticResult.stress` /
+/// `ElasticResult.frame` already using their proper Field types. See plan.json
+/// design-decision-1 for the full rationale.
+///
+/// Mode is a solver-populated output container — no defaults are meaningful.
+#[test]
+fn mode_struct_has_eigenvalue_and_mode_shape_params() {
+    let template = find_structure("Mode");
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    assert_eq!(
+        params.len(),
+        2,
+        "Mode should have exactly 2 param cells (eigenvalue, mode_shape), got: {:?}",
+        names
+    );
+
+    let expected: &[(&str, Type)] = &[
+        ("eigenvalue", Type::Real),
+        (
+            "mode_shape",
+            Type::Field {
+                domain: Box::new(Type::Point {
+                    n: 3,
+                    quantity: Box::new(Type::Scalar {
+                        dimension: DimensionVector::LENGTH,
+                    }),
+                }),
+                codomain: Box::new(Type::Vector {
+                    n: 3,
+                    quantity: Box::new(Type::Scalar {
+                        dimension: DimensionVector::LENGTH,
+                    }),
+                }),
+            },
+        ),
+    ];
+
+    for (member, expected_ty) in expected {
+        let cell = params
+            .iter()
+            .find(|vc| vc.id.member == *member)
+            .unwrap_or_else(|| {
+                panic!(
+                    "Mode missing required param '{}'; got: {:?}",
+                    member, names
+                )
+            });
+        assert_eq!(
+            cell.cell_type, *expected_ty,
+            "Mode.{} should be {:?}, got {:?}",
+            member, expected_ty, cell.cell_type
+        );
+    }
+}
