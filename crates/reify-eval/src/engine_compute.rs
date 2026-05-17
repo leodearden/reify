@@ -6,7 +6,9 @@
 
 use std::collections::HashMap;
 
-use reify_types::{Diagnostic, OpaqueState, RealizationNodeId, Value};
+use reify_types::{
+    ComputeNodeId, Diagnostic, OpaqueState, RealizationNodeId, Value, ValueCellId, VersionId,
+};
 
 use crate::graph::CancellationHandle;
 
@@ -104,6 +106,109 @@ impl ComputeDispatchRegistry {
     pub fn new() -> Self {
         Self {
             fns: HashMap::new(),
+        }
+    }
+}
+
+impl crate::Engine {
+    /// Run the full in-flight ComputeNode dispatch lifecycle for `c_id` —
+    /// begin → invoke trampoline → atomic-complete-or-leave-Pending.
+    ///
+    /// PRD §3 "Atomic completion" / §8 task δ
+    /// (`docs/prds/v0_3/compute-node-contract.md`):
+    ///
+    /// 1. [`CacheStore::begin_compute_dispatch`][crate::cache::CacheStore::begin_compute_dispatch]
+    ///    pre-marks every output VC `Freshness::Pending` with
+    ///    `pending_cause = NodeId::Compute(c_id)` (the prior best stays on
+    ///    display while recomputation is in flight).
+    /// 2. [`Engine::dispatch_compute_node`](crate::Engine::dispatch_compute_node)
+    ///    invokes the registered trampoline synchronously (γ helper; maps
+    ///    Failed/Cancelled/unregistered → `Err`).
+    /// 3. On `Ok((result, diagnostics))` —
+    ///    [`CacheStore::complete_compute_dispatch_atomically`][crate::cache::CacheStore::complete_compute_dispatch_atomically]
+    ///    writes the new value, flips Pending → Final, and clears
+    ///    `pending_cause` in a single critical section. Returns
+    ///    `Ok((result, diagnostics))`.
+    /// 4. On `Err(diagnostics)` — the output VCs are deliberately LEFT
+    ///    Pending per PRD §2 ("Freshness::Pending persists until the next
+    ///    dispatch completes successfully or fails"). The caller (the
+    ///    `@optimized` lowering site in `engine_eval.rs`) owns the Failed
+    ///    transition via its existing `cache.mark_failed` path, which has the
+    ///    diagnostic context to build the `ErrorRef`. Returns
+    ///    `Err(diagnostics)` verbatim.
+    ///
+    /// `c_id` is forwarded to `complete_compute_dispatch_atomically`, where it
+    /// is reserved for ζ-scope warm-state donation (task 3425).
+    ///
+    /// ## Freshness on completion is unconditionally Final
+    ///
+    /// On `Ok`, `complete_compute_dispatch_atomically` stamps the output VCs
+    /// `Freshness::Final` regardless of the input cells' freshness. The
+    /// pre-`run_compute_dispatch` wiring at the only caller propagated derived
+    /// freshness (Intermediate when any value-input was Intermediate, etc.) via
+    /// `record_evaluation_propagating_freshness`; the δ contract (PRD §3) flips
+    /// Pending → Final on successful completion. Callers that need to surface
+    /// "this @optimized output is still refining because its inputs are
+    /// Intermediate" must gate the dispatch upstream rather than relying on
+    /// derived freshness here; restoring §7.2 propagation for @optimized cells
+    /// is deferred to a future slice.
+    ///
+    /// ## Multi-output dispatch is NOT yet defined
+    ///
+    /// The `outputs` parameter is a slice for forward-compatibility, but
+    /// [`Engine::dispatch_compute_node`] returns a single `Value`. Today the
+    /// only caller (the `@optimized` lowering site in `engine_eval.rs`) passes
+    /// `slice::from_ref(cell_id)`, i.e. a single output. A `debug_assert_eq!`
+    /// pins this contract: if a future caller passes more than one output, the
+    /// helper would silently broadcast the single trampoline result to every
+    /// cell rather than fan out per-component. Multi-output semantics (e.g.
+    /// destructuring a tuple return) require a separate trampoline signature
+    /// extension; until then, this assertion catches accidental misuse.
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_compute_dispatch(
+        &mut self,
+        c_id: &ComputeNodeId,
+        outputs: &[ValueCellId],
+        target: &str,
+        value_inputs: &[Value],
+        realization_inputs: &[RealizationReadHandle],
+        options: &Value,
+        prior_warm_state: Option<&OpaqueState>,
+        version: VersionId,
+    ) -> Result<(Value, Vec<Diagnostic>), Vec<Diagnostic>> {
+        // Multi-output dispatch is not yet defined — see docstring.
+        debug_assert_eq!(
+            outputs.len(),
+            1,
+            "run_compute_dispatch only supports single-output dispatch today; \
+             trampoline returns a single Value and would be broadcast to every \
+             cell. Multi-output semantics require a trampoline signature change.",
+        );
+
+        // Step 1: pre-mark output VCs Pending (the in-flight state).
+        self.cache.begin_compute_dispatch(c_id, outputs);
+
+        // Step 2: invoke the trampoline synchronously (γ helper).
+        match self.dispatch_compute_node(
+            target,
+            value_inputs,
+            realization_inputs,
+            options,
+            prior_warm_state,
+        ) {
+            Ok((result, diagnostics)) => {
+                // Step 3a: atomic completion (write + flip + clear).
+                let pairs: Vec<(ValueCellId, Value)> = outputs
+                    .iter()
+                    .map(|o| (o.clone(), result.clone()))
+                    .collect();
+                self.cache
+                    .complete_compute_dispatch_atomically(c_id, &pairs, version);
+                Ok((result, diagnostics))
+            }
+            // Step 3b: leave output VCs Pending — caller owns the Failed
+            // transition (PRD §2 cancellation / Failed contract).
+            Err(diagnostics) => Err(diagnostics),
         }
     }
 }
