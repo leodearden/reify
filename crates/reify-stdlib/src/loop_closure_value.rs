@@ -201,4 +201,40 @@ mod tests {
         // STORES 4 quaternion components but only has 3 rotational DOF.
         assert_eq!(JointValue::Sphere([1.0, 0.0, 0.0, 0.0]).dof_count(), 3);
     }
+
+    // ── JointValue::as_f64_slice tests (step-2) ──────────────────────────
+
+    #[test]
+    fn as_f64_slice_scalar_yields_single_element() {
+        let v = JointValue::Scalar(7.0);
+        let s = v.as_f64_slice();
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0], 7.0);
+    }
+
+    #[test]
+    fn as_f64_slice_cyl_yields_two_elements_in_order() {
+        let v = JointValue::Cyl([1.5, -2.5]);
+        let s = v.as_f64_slice();
+        assert_eq!(s.len(), 2);
+        assert_eq!(s[0], 1.5);
+        assert_eq!(s[1], -2.5);
+    }
+
+    #[test]
+    fn as_f64_slice_planar_yields_three_elements_in_order() {
+        let v = JointValue::Planar([0.1, 0.2, 0.3]);
+        let s = v.as_f64_slice();
+        assert_eq!(s.len(), 3);
+        assert_eq!(s, &[0.1, 0.2, 0.3]);
+    }
+
+    #[test]
+    fn as_f64_slice_sphere_yields_four_elements_in_wxyz_order() {
+        // Storage length is 4 (quaternion w, x, y, z) even though dof_count = 3.
+        let v = JointValue::Sphere([1.0, 0.0, 0.0, 0.0]);
+        let s = v.as_f64_slice();
+        assert_eq!(s.len(), 4);
+        assert_eq!(s, &[1.0, 0.0, 0.0, 0.0]);
+    }
 }
