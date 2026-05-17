@@ -1051,3 +1051,69 @@ fn engine_build_topology_stale_warning_carries_nonzero_source_span() {
         primary_span
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Regression pin: @point selector → None (Layer-1 / Layer-2 split)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `try_eval_ad_hoc_selector` must return `None` for a `SelectorKind::Point`
+/// expression and emit no diagnostics.
+///
+/// # Why this pin exists
+///
+/// `@point` selectors are resolved by Layer-1 (`eval_expr`) directly from
+/// literal coordinate arguments; they never reach the kernel-aware Layer-2
+/// dispatch (`try_eval_ad_hoc_selector`).  The test is GREEN both before and
+/// after the step-4 refactor — its role is to lock the dispatcher's
+/// Point→None contract so it survives any future refactor of the
+/// `FrameSubShapeKind::from_selector_kind` converter.
+///
+/// Pre-refactor: the Point→None path is implemented by the line-2133
+/// early-return `if *selector_kind == SelectorKind::Point { return None; }`.
+/// Post-refactor: the `?` on `FrameSubShapeKind::from_selector_kind` propagates
+/// `None` to the same effect.  In both cases `diagnostics` stays empty.
+#[test]
+fn try_eval_ad_hoc_selector_point_returns_none() {
+    // `@point(0m, 0m, 0m)` expression: base="body", kind=Point, args=[0m,0m,0m]
+    // (Layer-1 resolves @point from its literal coordinate args; Layer-2 must
+    // be a no-op and return None without touching the kernel.)
+    let expr = CompiledExpr::ad_hoc_selector(
+        CompiledExpr::literal(Value::String("body".to_string()), Type::String),
+        SelectorKind::Point,
+        vec![
+            CompiledExpr::literal(Value::length(0.0), Type::length()),
+            CompiledExpr::literal(Value::length(0.0), Type::length()),
+            CompiledExpr::literal(Value::length(0.0), Type::length()),
+        ],
+    );
+
+    let named_steps = named_steps_with_body();
+    let table = seeded_cylinder_table();
+    // MockGeometryKernel with no results configured — any accidental kernel
+    // query would return an error, making a spurious Some(Value::Undef) visible.
+    let mut kernel = MockGeometryKernel::new();
+    let mut diagnostics = Vec::new();
+
+    let result = try_eval_ad_hoc_selector(
+        &expr,
+        &named_steps,
+        &mut kernel,
+        &table,
+        SourceSpan::empty(0),
+        &mut diagnostics,
+    );
+
+    assert!(
+        result.is_none(),
+        "try_eval_ad_hoc_selector with SelectorKind::Point must return None — \
+         @point selectors are handled by Layer-1 eval_expr and Layer-2 is a no-op; \
+         got {:?}",
+        result
+    );
+    assert!(
+        diagnostics.is_empty(),
+        "no diagnostics expected for a Point selector (Layer-2 early-returns None \
+         without emitting any warning); got {:?}",
+        diagnostics
+    );
+}

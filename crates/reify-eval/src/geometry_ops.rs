@@ -7309,4 +7309,126 @@ mod tests {
              handled by Layer-1 eval_expr and must not reach kernel dispatch"
         );
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // construct_frame_from_kernel with narrowed FrameSubShapeKind signature
+    //
+    // These tests exercise the two match arms inside construct_frame_from_kernel
+    // directly, locking the Face↔FaceNormal and Edge↔EdgeTangent dispatch.
+    // They are RED until step 4 changes the function signature from
+    // `selector_kind: &SelectorKind` to `sub_shape_kind: FrameSubShapeKind`.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// `construct_frame_from_kernel` with `FrameSubShapeKind::Face` must query
+    /// `GeometryQuery::FaceNormal` for the basis and return a `Value::Frame`
+    /// whose origin is the centroid and whose basis is the identity quaternion
+    /// when the face normal is +Z (the CAD standard orientation for a top cap).
+    ///
+    /// Pins the Face↔FaceNormal dispatch: the Face arm must use FaceNormal, not
+    /// EdgeTangent.  With centroid (0, 0, 0.01) and normal (0, 0, 1) (both +Z),
+    /// `quaternion_from_z_to_axis(0, 0, 1)` produces the identity quaternion
+    /// (w=1, x=0, y=0, z=0) — exact IEEE 754.
+    #[test]
+    fn construct_frame_from_kernel_face_returns_frame_from_centroid_and_face_normal() {
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let target = reify_types::GeometryHandleId(10);
+        let centroid_json =
+            reify_types::Value::String(r#"{"x":0.0,"y":0.0,"z":0.01}"#.to_string());
+        let normal_json =
+            reify_types::Value::String(r#"{"x":0.0,"y":0.0,"z":1.0}"#.to_string());
+        let mut kernel = MockGeometryKernel::new()
+            .with_centroid_result(target, centroid_json)
+            .with_face_normal_result(target, normal_json);
+        let mut diagnostics = Vec::new();
+
+        let result = super::construct_frame_from_kernel(
+            target,
+            super::FrameSubShapeKind::Face,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        let Some(reify_types::Value::Frame { ref origin, ref basis }) = result else {
+            panic!(
+                "construct_frame_from_kernel(Face) should return Some(Value::Frame {{ .. }}); got {:?}",
+                result
+            );
+        };
+        assert_eq!(
+            **origin,
+            reify_types::Value::Point(vec![
+                reify_types::Value::length(0.0),
+                reify_types::Value::length(0.0),
+                reify_types::Value::length(0.01),
+            ]),
+            "Face: origin should be centroid (0m, 0m, 0.01m)"
+        );
+        assert_eq!(
+            **basis,
+            reify_types::Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
+            "Face: basis should be identity (FaceNormal +Z → +Z = zero rotation)"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "Face: no diagnostics expected on clean kernel results; got {:?}",
+            diagnostics
+        );
+    }
+
+    /// `construct_frame_from_kernel` with `FrameSubShapeKind::Edge` must query
+    /// `GeometryQuery::EdgeTangent` for the basis and return a `Value::Frame`
+    /// whose origin is the centroid and whose basis is the identity quaternion
+    /// when the edge tangent is +Z.
+    ///
+    /// Pins the Edge↔EdgeTangent dispatch: the Edge arm must use EdgeTangent,
+    /// not FaceNormal.  With centroid (0, 0, 0.005) and tangent (0, 0, 1),
+    /// `quaternion_from_z_to_axis(0, 0, 1)` produces identity — exact IEEE 754.
+    #[test]
+    fn construct_frame_from_kernel_edge_returns_frame_from_centroid_and_edge_tangent() {
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let target = reify_types::GeometryHandleId(20);
+        let centroid_json =
+            reify_types::Value::String(r#"{"x":0.0,"y":0.0,"z":0.005}"#.to_string());
+        let tangent_json =
+            reify_types::Value::String(r#"{"x":0.0,"y":0.0,"z":1.0}"#.to_string());
+        let mut kernel = MockGeometryKernel::new()
+            .with_centroid_result(target, centroid_json)
+            .with_edge_tangent_result(target, tangent_json);
+        let mut diagnostics = Vec::new();
+
+        let result = super::construct_frame_from_kernel(
+            target,
+            super::FrameSubShapeKind::Edge,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        let Some(reify_types::Value::Frame { ref origin, ref basis }) = result else {
+            panic!(
+                "construct_frame_from_kernel(Edge) should return Some(Value::Frame {{ .. }}); got {:?}",
+                result
+            );
+        };
+        assert_eq!(
+            **origin,
+            reify_types::Value::Point(vec![
+                reify_types::Value::length(0.0),
+                reify_types::Value::length(0.0),
+                reify_types::Value::length(0.005),
+            ]),
+            "Edge: origin should be centroid (0m, 0m, 0.005m)"
+        );
+        assert_eq!(
+            **basis,
+            reify_types::Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
+            "Edge: basis should be identity (EdgeTangent +Z → +Z = zero rotation)"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "Edge: no diagnostics expected on clean kernel results; got {:?}",
+            diagnostics
+        );
+    }
 }
