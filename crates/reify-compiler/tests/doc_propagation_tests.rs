@@ -23,3 +23,20 @@ fn structure_def_doc_propagates_to_topology_template() {
         "TopologyTemplate.doc should carry the doc comment"
     );
 }
+
+// ─── step-3: fn → CompiledFunction ──────────────────────────────────────────
+
+#[test]
+fn fn_def_doc_propagates_to_compiled_function() {
+    let compiled = compile_source("/// Doubles it\nfn dbl(x: Real) -> Real { x + x }");
+    let func = compiled
+        .functions
+        .iter()
+        .find(|f| f.name == "dbl")
+        .expect("dbl function should exist");
+    assert_eq!(
+        func.doc,
+        Some("Doubles it".to_string()),
+        "CompiledFunction.doc should carry the doc comment"
+    );
+}
